@@ -85,18 +85,42 @@ if [[ -z "$GIT_COMMON_DIR" ]]; then
   echo "not inside a git repo at $REPO_ROOT — bailing." >&2
   exit 1
 fi
-if [[ "$GIT_COMMON_DIR" == "$REPO_ROOT/.git" ]]; then
+
+# This repo can be checked out as a git submodule, in which case the dev scripts
+# run from the submodule working tree. `git submodule update` gives every
+# superproject worktree its own independent submodule clone whose dir is *always*
+# named the same and whose git dir lives under the superproject's
+# `.git/…/modules/<submodule>`. So the worktree identity (stack name) and the
+# `apps/*/.env` files belong to the superproject worktree, not this submodule —
+# deriving them from this repo alone would collide across worktrees (same name
+# every time) and never find the env files. Pivot to the superproject when we're a
+# submodule; fall back to this repo for a normal standalone checkout.
+SUPERPROJECT="$(git -C "$REPO_ROOT" rev-parse --show-superproject-working-tree 2>/dev/null || true)"
+if [[ -n "$SUPERPROJECT" ]]; then
+  IDENTITY_ROOT="$SUPERPROJECT"
+  IDENTITY_GIT_COMMON_DIR="$(git -C "$SUPERPROJECT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+else
+  IDENTITY_ROOT="$REPO_ROOT"
+  IDENTITY_GIT_COMMON_DIR="$GIT_COMMON_DIR"
+fi
+
+if [[ "$IDENTITY_GIT_COMMON_DIR" == "$IDENTITY_ROOT/.git" ]]; then
   echo "not in a worktree — bootstrap is a no-op for the main checkout."
   echo "use \`docker compose up -d && overmind start -D\` directly."
   exit 0
 fi
 
-WT_NAME="$(basename "$REPO_ROOT")"
+WT_NAME="$(basename "$IDENTITY_ROOT")"
 
 if [[ -z "$MAIN_REPO" ]]; then
-  # The shared `.git` dir lives inside the main checkout — its parent is the
-  # main repo root regardless of where the worktree itself was created.
-  MAIN_REPO="$(dirname "$GIT_COMMON_DIR")"
+  if [[ -n "$SUPERPROJECT" ]]; then
+    # Submodule layout: the .env files live in the superproject working-tree root.
+    MAIN_REPO="$SUPERPROJECT"
+  else
+    # Standalone checkout — the shared `.git` dir lives inside the main checkout,
+    # so its parent is the main repo root wherever the worktree was created.
+    MAIN_REPO="$(dirname "$GIT_COMMON_DIR")"
+  fi
 fi
 if [[ ! -d "$MAIN_REPO" ]]; then
   echo "main repo not found: $MAIN_REPO" >&2
