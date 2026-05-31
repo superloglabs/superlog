@@ -28,8 +28,17 @@ slugify() {
 }
 
 default_stack_name() {
-  local root branch
+  local root branch superproject
   root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+  # When checked out as a git submodule, the stack identity is the superproject
+  # worktree, not this submodule dir (which is always named the same).
+  # Keep in sync with scripts/worktree-bootstrap.sh.
+  superproject="$(git rev-parse --show-superproject-working-tree 2>/dev/null || true)"
+  if [[ -n "$superproject" ]]; then
+    basename "$superproject"
+    return
+  fi
 
   case "$root" in
     */.claude/worktrees/*)
