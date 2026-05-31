@@ -105,7 +105,14 @@ export async function captureBody(
   }
 
   if (sink) {
-    await sink.finish();
+    // Abort on a finish failure too (e.g. S3 CompleteMultipartUpload throwing),
+    // otherwise a failed spill leaves a dangling partial upload behind.
+    try {
+      await sink.finish();
+    } catch (err) {
+      await sink.abort().catch(() => {});
+      throw err;
+    }
     return { storage: "spilled", totalBytes };
   }
 

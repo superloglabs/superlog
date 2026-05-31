@@ -105,6 +105,23 @@ test("accepts a body exactly at maxBytes", async () => {
   assert.equal(result.totalBytes, 8);
 });
 
+test("aborts the sink when finish() fails, so a failed spill leaves nothing dangling", async () => {
+  const sink = new FakeSink();
+  const finishError = new Error("CompleteMultipartUpload failed");
+  sink.finish = async () => {
+    throw finishError;
+  };
+  await assert.rejects(
+    captureBody(source("AAAA", "BBBB", "CCCC"), {
+      inlineThresholdBytes: 5, // forces a spill
+      maxBytes: 1000,
+      createSpillSink: () => sink,
+    }),
+    (err: unknown) => err === finishError,
+  );
+  assert.equal(sink.aborted, true);
+});
+
 test("treats a zero-byte body as an EmptyBodyError", async () => {
   await assert.rejects(
     captureBody(source(), {
