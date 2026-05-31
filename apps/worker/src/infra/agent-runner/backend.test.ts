@@ -6,12 +6,18 @@ import { test } from "node:test";
 import { getAgentRunnerBackend } from "./backend.js";
 
 const originalCommunityStateDir = process.env.COMMUNITY_AGENT_RUNNER_STATE_DIR;
+const originalAnthropicModule = process.env.AGENT_RUNNER_ANTHROPIC_MODULE;
 
 test.afterEach(() => {
   if (originalCommunityStateDir === undefined) {
     Reflect.deleteProperty(process.env, "COMMUNITY_AGENT_RUNNER_STATE_DIR");
   } else {
     process.env.COMMUNITY_AGENT_RUNNER_STATE_DIR = originalCommunityStateDir;
+  }
+  if (originalAnthropicModule === undefined) {
+    Reflect.deleteProperty(process.env, "AGENT_RUNNER_ANTHROPIC_MODULE");
+  } else {
+    process.env.AGENT_RUNNER_ANTHROPIC_MODULE = originalAnthropicModule;
   }
 });
 
@@ -95,6 +101,32 @@ test("getAgentRunnerBackend returns a built-in disabled backend for community in
         customInstructions: "",
       }),
     /disabled/,
+  );
+});
+
+test("getAgentRunnerBackend loads the closed-overlay anthropic backend from configured module", async () => {
+  process.env.AGENT_RUNNER_ANTHROPIC_MODULE =
+    "data:text/javascript,export const agentRunnerBackend = { name: 'anthropic', maxRepoResources: 7, async start() { return { sessionId: 's' }; }, async collect() { throw new Error('not used'); }, async resume() {}, async steer() {}, async dispatchIntegrationToolCalls() { return 2; } };";
+
+  const backend = await getAgentRunnerBackend("anthropic");
+
+  assert.equal(backend.name, "anthropic");
+  assert.equal(backend.maxRepoResources, 7);
+  assert.deepEqual(await backend.start({} as Parameters<typeof backend.start>[0]), {
+    sessionId: "s",
+  });
+  assert.equal(
+    await backend.dispatchIntegrationToolCalls({ sessionId: "s", orgId: "o", incidentId: "i" }),
+    2,
+  );
+});
+
+test("getAgentRunnerBackend rejects anthropic runtime when no closed-overlay module is configured", async () => {
+  Reflect.deleteProperty(process.env, "AGENT_RUNNER_ANTHROPIC_MODULE");
+
+  await assert.rejects(
+    () => getAgentRunnerBackend("anthropic"),
+    /AGENT_RUNNER_ANTHROPIC_MODULE is required/,
   );
 });
 
