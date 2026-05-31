@@ -98,7 +98,7 @@ async function selectRunnerBackend(
   deps: StartQueuedAgentRunDeps,
 ): Promise<AgentRunnerBackend | null> {
   try {
-    return deps.getRunnerBackend(ctx.agentRun.runtime);
+    return await deps.getRunnerBackend(ctx.agentRun.runtime);
   } catch {
     await deps.fail(
       ctx,

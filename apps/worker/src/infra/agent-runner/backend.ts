@@ -1,4 +1,5 @@
 import type { AgentRunnerBackend } from "../../agent-runner-backend.js";
+import { communityRunnerBackend } from "./community.js";
 
 type ManagedAgentsModule = {
   MAX_AGENT_RUN_REPO_RESOURCES: number;
@@ -32,6 +33,7 @@ const disabledRunnerBackend: AgentRunnerBackend = {
 };
 
 export async function getAgentRunnerBackend(runtime: string): Promise<AgentRunnerBackend> {
+  if (runtime === "community") return communityRunnerBackend;
   if (runtime === "disabled") return disabledRunnerBackend;
   if (runtime === "anthropic") return loadAnthropicManagedRunner();
   throw new Error(`unsupported agent runner backend: ${runtime}`);

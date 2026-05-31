@@ -56,6 +56,27 @@ test("startQueuedAgentRunWorkflow starts runner with capped repo candidates", as
   ]);
 });
 
+test("startQueuedAgentRunWorkflow fails cleanly when async backend selection rejects", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+  ctx.agentRun.runtime = "missing-runtime";
+
+  await startQueuedAgentRunWorkflow(
+    ctx,
+    makeDeps(calls, {
+      async getRunnerBackend() {
+        calls.push("getRunnerBackend");
+        throw new Error("unsupported agent runner backend: missing-runtime");
+      },
+    }),
+  );
+
+  assert.deepEqual(calls, [
+    "getRunnerBackend",
+    "fail:unsupported_provider:Investigation provider missing-runtime is not supported.",
+  ]);
+});
+
 function makeDeps(
   calls: string[],
   overrides: Partial<StartQueuedAgentRunDeps> = {},

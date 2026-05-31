@@ -1,5 +1,11 @@
 export { closeDb, db } from "./client.js";
 export type { DB } from "./client.js";
+export {
+  AGENT_RUN_PROVIDERS,
+  DEFAULT_AGENT_RUN_PROVIDER,
+  isAgentRunProvider,
+  type AgentRunProvider,
+} from "./agent-runtime.js";
 export { runMigrations } from "./migrate.js";
 export * as schema from "./schema.js";
 export {

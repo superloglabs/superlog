@@ -81,10 +81,11 @@ async function main(): Promise<void> {
     throw new Error("--owner-email is required");
   }
 
-  const [{ db }, schema, keys] = await Promise.all([
+  const [{ db }, schema, keys, agentRuntime] = await Promise.all([
     import("../../packages/db/src/client.js"),
     import("../../packages/db/src/schema.js"),
     import("../../packages/db/src/keys.js"),
+    import("../../packages/db/src/agent-runtime.js"),
   ]);
 
   const existingByClerk = options.ownerClerkId
@@ -133,17 +134,11 @@ async function main(): Promise<void> {
     null;
   if (!org) throw new Error("failed to provision org");
   if (org.name !== options.orgName) {
-    await db
-      .update(schema.orgs)
-      .set({ name: options.orgName })
-      .where(eq(schema.orgs.id, org.id));
+    await db.update(schema.orgs).set({ name: options.orgName }).where(eq(schema.orgs.id, org.id));
   }
 
   const existingMembership = await db.query.orgMembers.findFirst({
-    where: and(
-      eq(schema.orgMembers.orgId, org.id),
-      eq(schema.orgMembers.userId, user.id),
-    ),
+    where: and(eq(schema.orgMembers.orgId, org.id), eq(schema.orgMembers.userId, user.id)),
   });
   if (!existingMembership) {
     await db.insert(schema.orgMembers).values({
@@ -155,19 +150,11 @@ async function main(): Promise<void> {
     await db
       .update(schema.orgMembers)
       .set({ role: "owner" })
-      .where(
-        and(
-          eq(schema.orgMembers.orgId, org.id),
-          eq(schema.orgMembers.userId, user.id),
-        ),
-      );
+      .where(and(eq(schema.orgMembers.orgId, org.id), eq(schema.orgMembers.userId, user.id)));
   }
 
   const existingProject = await db.query.projects.findFirst({
-    where: and(
-      eq(schema.projects.orgId, org.id),
-      eq(schema.projects.slug, options.projectSlug),
-    ),
+    where: and(eq(schema.projects.orgId, org.id), eq(schema.projects.slug, options.projectSlug)),
   });
   const project =
     existingProject ??
@@ -219,7 +206,7 @@ async function main(): Promise<void> {
     .values({
       projectId: project.id,
       autoInvestigateIssuesEnabled: true,
-      agentRunProvider: "anthropic",
+      agentRunProvider: agentRuntime.DEFAULT_AGENT_RUN_PROVIDER,
       maxRuntimeMinutes: 90,
       maxHumanResumeCount: 3,
       updatedAt: new Date(),
@@ -228,7 +215,7 @@ async function main(): Promise<void> {
       target: schema.projectAutomationSettings.projectId,
       set: {
         autoInvestigateIssuesEnabled: true,
-        agentRunProvider: "anthropic",
+        agentRunProvider: agentRuntime.DEFAULT_AGENT_RUN_PROVIDER,
         maxRuntimeMinutes: 90,
         maxHumanResumeCount: 3,
         updatedAt: new Date(),

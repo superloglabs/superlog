@@ -5,8 +5,9 @@ import { downloadAgentPatchFile } from "./patch-files.js";
 const originalModule = process.env.AGENT_PATCH_FILE_DOWNLOADER_MODULE;
 
 afterEach(() => {
-  if (originalModule === undefined) process.env.AGENT_PATCH_FILE_DOWNLOADER_MODULE = undefined;
-  else process.env.AGENT_PATCH_FILE_DOWNLOADER_MODULE = originalModule;
+  if (originalModule === undefined) {
+    Reflect.deleteProperty(process.env, "AGENT_PATCH_FILE_DOWNLOADER_MODULE");
+  } else process.env.AGENT_PATCH_FILE_DOWNLOADER_MODULE = originalModule;
 });
 
 test("downloadAgentPatchFile delegates to the configured downloader module", async () => {

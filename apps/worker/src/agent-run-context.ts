@@ -1,5 +1,6 @@
 import {
   type AccessibleGithubInstall,
+  DEFAULT_AGENT_RUN_PROVIDER,
   db,
   listAccessibleGithubInstallsForProject,
   schema,
@@ -61,7 +62,7 @@ export async function getProjectAutomation(projectId: string): Promise<{
   });
   return {
     autoInvestigateIssuesEnabled: row?.autoInvestigateIssuesEnabled ?? true,
-    agentRunProvider: row?.agentRunProvider ?? "anthropic",
+    agentRunProvider: row?.agentRunProvider ?? DEFAULT_AGENT_RUN_PROVIDER,
     maxRuntimeMinutes: row?.maxRuntimeMinutes ?? 90,
     maxHumanResumeCount: row?.maxHumanResumeCount ?? 3,
     customInstructions: row?.customInstructions ?? "",

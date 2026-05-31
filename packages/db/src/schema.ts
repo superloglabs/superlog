@@ -15,6 +15,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { DEFAULT_AGENT_RUN_PROVIDER } from "./agent-runtime.js";
 
 export type IssueSample = {
   kind: "span" | "log";
@@ -625,7 +626,7 @@ export const projectAutomationSettings = pgTable(
     autoInvestigateIssuesEnabled: boolean("auto_investigate_issues_enabled")
       .notNull()
       .default(true),
-    agentRunProvider: text("agent_run_provider").notNull().default("anthropic"),
+    agentRunProvider: text("agent_run_provider").notNull().default(DEFAULT_AGENT_RUN_PROVIDER),
     maxRuntimeMinutes: integer("max_runtime_minutes").notNull().default(90),
     maxHumanResumeCount: integer("max_human_resume_count").notNull().default(3),
     customInstructions: text("custom_instructions").notNull().default(""),
@@ -676,7 +677,7 @@ export const agentRuns = pgTable(
     incidentId: uuid("incident_id")
       .notNull()
       .references(() => incidents.id, { onDelete: "cascade" }),
-    runtime: text("runtime").notNull().default("anthropic"),
+    runtime: text("runtime").notNull().default(DEFAULT_AGENT_RUN_PROVIDER),
     state: text("state").notNull().default("queued"),
     providerSessionId: text("provider_session_id"),
     providerThreadId: text("provider_thread_id"),

@@ -379,6 +379,13 @@
       "when": 1780185561163,
       "tag": "0053_funny_phalanx",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1780201841657,
+      "tag": "0054_ancient_prodigy",
+      "breakpoints": true
     }
   ]
 }

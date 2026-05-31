@@ -11,6 +11,7 @@ This repository contains the community edition:
 - Worker processes for incident grouping and background jobs
 - Postgres schema and ClickHouse-backed telemetry queries
 - Agent runner interfaces for pluggable investigation runtimes
+- A default `community` agent runner that records a local incident summary
 
 Managed cloud infrastructure and Superlog's hosted agent runtime are maintained
 outside this repository.

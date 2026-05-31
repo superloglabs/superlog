@@ -4,11 +4,13 @@ import { createClient } from "@clickhouse/client";
 import { serve } from "@hono/node-server";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import {
+  DEFAULT_AGENT_RUN_PROVIDER,
   type Issue,
   confirmResolutionProposal,
   createIncidentLifecycle,
   db,
   dismissResolutionProposal,
+  isAgentRunProvider,
   listAccessibleGithubInstallsForProject,
   mintApiKey,
   resolveIncident,
@@ -1026,7 +1028,7 @@ async function getProjectAutomation(projectId: string): Promise<{
   });
   return {
     autoInvestigateIssuesEnabled: row?.autoInvestigateIssuesEnabled ?? true,
-    agentRunProvider: row?.agentRunProvider ?? "anthropic",
+    agentRunProvider: row?.agentRunProvider ?? DEFAULT_AGENT_RUN_PROVIDER,
     maxRuntimeMinutes: row?.maxRuntimeMinutes ?? 90,
     maxHumanResumeCount: row?.maxHumanResumeCount ?? 3,
     customInstructions: row?.customInstructions ?? "",
@@ -1495,8 +1497,10 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
       ? sanitizeIssueFilterConfig(body.issueFilterConfig, current.issueFilterConfig)
       : current.issueFilterConfig;
 
-  if (agentRunProvider !== "anthropic") {
-    throw new HTTPException(400, { message: "agentRunProvider must be 'anthropic'" });
+  if (!isAgentRunProvider(agentRunProvider)) {
+    throw new HTTPException(400, {
+      message: "agentRunProvider must be one of: community, anthropic, disabled",
+    });
   }
   if (!Number.isFinite(maxRuntimeMinutes) || maxRuntimeMinutes < 1 || maxRuntimeMinutes > 720) {
     throw new HTTPException(400, { message: "maxRuntimeMinutes must be between 1 and 720" });
