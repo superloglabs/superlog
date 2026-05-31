@@ -1,0 +1,2 @@
+ALTER TABLE "incidents" ADD COLUMN "autorecovery_last_evaluated_at" timestamp with time zone;--> statement-breakpoint
+CREATE INDEX "incidents_autorecovery_eval_idx" ON "incidents" USING btree ("status","autorecovery_last_evaluated_at");

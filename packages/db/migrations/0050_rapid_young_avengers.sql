@@ -1,0 +1,2 @@
+ALTER TABLE "project_automation_settings" ADD COLUMN "issue_filter" text DEFAULT '' NOT NULL;--> statement-breakpoint
+ALTER TABLE "project_automation_settings" ADD COLUMN "issue_filter_config" jsonb DEFAULT '{"includeLogs":[],"includeSpans":[],"excludeLogs":[],"excludeSpans":[]}'::jsonb NOT NULL;

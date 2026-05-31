@@ -1,0 +1,17 @@
+node_modules
+dist
+.turbo
+.next
+.env
+.env.local
+.env.superlog
+*.log
+.DS_Store
+*.tsbuildinfo
+.claude/*
+!.claude/skills/
+.playwright-mcp/
+.overmind.sock
+tmp/
+target/
+evals/results/

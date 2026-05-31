@@ -1,0 +1,1 @@
+ALTER TABLE "orgs" ADD COLUMN "github_setup_skipped_at" timestamp with time zone;

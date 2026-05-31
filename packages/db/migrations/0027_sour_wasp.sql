@@ -1,0 +1,1 @@
+ALTER TABLE "incidents" ADD COLUMN "auto_investigate_suppressed_until" timestamp with time zone;

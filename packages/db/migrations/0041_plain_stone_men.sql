@@ -1,0 +1,1 @@
+ALTER TABLE "orgs" ADD COLUMN "allowed_return_url_hosts" text[] DEFAULT '{}'::text[] NOT NULL;

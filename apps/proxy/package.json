@@ -1,0 +1,40 @@
+{
+  "name": "@superlog/proxy",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --import ./tracing.ts src/index.ts",
+    "start": "tsx --import ./tracing.ts src/index.ts",
+    "test:ingest-queue": "tsx --test src/ingest-queue.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1053.0",
+    "@aws-sdk/client-sqs": "^3.1053.0",
+    "@hono/node-server": "^1.13.7",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api-logs": "^0.215.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.73.0",
+    "@opentelemetry/exporter-logs-otlp-http": "^0.215.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.215.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.215.0",
+    "@opentelemetry/otlp-transformer": "0.215.0",
+    "@opentelemetry/resources": "^2.7.0",
+    "@opentelemetry/sdk-logs": "^0.215.0",
+    "@opentelemetry/sdk-metrics": "^2.7.0",
+    "@opentelemetry/sdk-node": "^0.215.0",
+    "@opentelemetry/semantic-conventions": "^1.40.0",
+    "@superlog/db": "workspace:*",
+    "@superlog/fingerprint": "workspace:*",
+    "dotenv": "^17.4.2",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.6.12",
+    "pino": "^10.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

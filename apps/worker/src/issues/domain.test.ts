@@ -1,0 +1,97 @@
+import "../agent-run.test-env.js";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import type { schema } from "@superlog/db";
+import {
+  type LinkedIncidentIssue,
+  buildGroupingCandidate,
+  findHeuristicIncidentMatch,
+  groupingIssueInput,
+  overlapCount,
+} from "./domain.js";
+
+test("overlapCount compares only the top five normalized frames", () => {
+  assert.equal(overlapCount(["a", "b", "c", "d", "e", "ignored"], ["x", "b", "c"]), 2);
+  assert.equal(overlapCount(["ignored"], ["a", "b", "c", "d", "e", "ignored"]), 0);
+});
+
+test("findHeuristicIncidentMatch joins the strongest stack-frame match", () => {
+  const issue = makeIssue(["svc/a.ts", "svc/b.ts", "svc/c.ts"]);
+  const candidates = [makeIncident("inc-1"), makeIncident("inc-2")];
+  const linked: LinkedIncidentIssue[] = [
+    makeLinkedIssue("inc-1", ["svc/a.ts", "other.ts"]),
+    makeLinkedIssue("inc-2", ["svc/a.ts", "svc/b.ts", "svc/c.ts"]),
+  ];
+
+  const match = findHeuristicIncidentMatch(issue, candidates, linked);
+
+  assert.equal(match?.incident.id, "inc-2");
+  assert.equal(match?.source, "heuristic");
+  assert.equal(match?.reason, "Matched existing incident by 3 overlapping stack frames.");
+});
+
+test("groupingIssueInput and buildGroupingCandidate keep LLM input shape explicit", () => {
+  const issue = {
+    ...makeIssue(["svc/a.ts"]),
+    lastSample: { traceId: "trace-1", spanId: "span-1", stacktrace: "stack" },
+  } as schema.Issue;
+  const candidate = buildGroupingCandidate(makeIncident("inc-1"), [
+    {
+      ...makeLinkedIssue("inc-1", ["svc/a.ts"]),
+      lastSample: { traceId: "trace-2", spanId: "span-2" } as LinkedIncidentIssue["lastSample"],
+    },
+  ]);
+
+  assert.deepEqual(groupingIssueInput(issue), {
+    id: "issue-1",
+    title: "Issue title",
+    service: "api",
+    exceptionType: "TypeError",
+    message: "boom",
+    topFrame: "svc/a.ts",
+    normalizedFrames: ["svc/a.ts"],
+    stacktrace: "stack",
+    traceId: "trace-1",
+    spanId: "span-1",
+  });
+  assert.ok(candidate?.representative);
+  assert.equal(candidate.representative.traceId, "trace-2");
+  assert.deepEqual(candidate.representative.normalizedFrames, ["svc/a.ts"]);
+});
+
+function makeIssue(normalizedFrames: string[]): schema.Issue {
+  return {
+    id: "issue-1",
+    title: "Issue title",
+    service: "api",
+    exceptionType: "TypeError",
+    message: "boom",
+    topFrame: normalizedFrames[0] ?? null,
+    normalizedFrames,
+    lastSample: null,
+  } as schema.Issue;
+}
+
+function makeIncident(id: string): schema.Incident {
+  return {
+    id,
+    title: `Incident ${id}`,
+    service: "api",
+    firstSeen: new Date(0),
+    lastSeen: new Date(1),
+    issueCount: 1,
+  } as schema.Incident;
+}
+
+function makeLinkedIssue(incidentId: string, normalizedFrames: string[]): LinkedIncidentIssue {
+  return {
+    incidentId,
+    title: "Linked issue",
+    exceptionType: "TypeError",
+    message: "boom",
+    topFrame: normalizedFrames[0] ?? null,
+    normalizedFrames,
+    lastSample: null,
+    lastSeen: new Date(1),
+  };
+}

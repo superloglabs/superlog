@@ -1,0 +1,40 @@
+/* Re-skin react-grid-layout to match Superlog's sharp-edge design language. */
+
+.react-grid-item.react-grid-placeholder {
+  background: rgba(46, 75, 255, 0.18);
+  border: 1px dashed rgba(46, 75, 255, 0.6);
+  border-radius: 0;
+  opacity: 1;
+}
+
+.react-grid-item > .react-resizable-handle {
+  background-image: none;
+  width: 14px;
+  height: 14px;
+  bottom: 2px;
+  right: 2px;
+}
+
+.react-grid-item > .react-resizable-handle::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid rgba(255, 255, 255, 0.25);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.25);
+}
+
+.react-grid-item > .react-resizable-handle:hover::after {
+  border-color: rgba(255, 255, 255, 0.6);
+}
+
+.dashboard-widget-handle {
+  cursor: grab;
+}
+
+.react-grid-item.react-draggable-dragging .dashboard-widget-handle,
+.dashboard-widget-handle:active {
+  cursor: grabbing;
+}

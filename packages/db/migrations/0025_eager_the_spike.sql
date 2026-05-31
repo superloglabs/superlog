@@ -1,0 +1,1 @@
+ALTER TABLE "obs_onboarding_repos" ADD COLUMN "pending_pr" jsonb;

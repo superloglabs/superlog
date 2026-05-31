@@ -1,0 +1,62 @@
+import { db } from "@superlog/db";
+import type { AgentRunContext } from "../agent-run-context.js";
+import { listAccessibleGithubRepositories, scoreRepos } from "../agent-run-context.js";
+import { createAgentRunLifecycle } from "../agent-run.js";
+import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
+import { createRepositoryReadToken } from "../infra/github/repositories.js";
+import {
+  incidentBlocks,
+  postIncidentThreadMessage,
+  updateIncidentMainMessage,
+} from "../infra/slack/incident-messages.js";
+import { buildIssueSummaryWithTrace } from "./prompt-context.js";
+import { startQueuedAgentRunWorkflow } from "./start.js";
+import {
+  failAgentRun,
+  moveAgentRunToAwaitingHuman,
+  moveAgentRunToBlockedNoGithub,
+} from "./status.js";
+
+const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
+const agentRunLifecycle = createAgentRunLifecycle(db);
+
+export async function startQueuedAgentRun(ctx: AgentRunContext): Promise<void> {
+  await startQueuedAgentRunWorkflow(ctx, {
+    lifecycle: agentRunLifecycle,
+    getRunnerBackend: getAgentRunnerBackend,
+    listRepositories: listAccessibleGithubRepositories,
+    scoreRepositories: scoreRepos,
+    createRepositoryReadToken,
+    buildIssueSummaries: (ctx) =>
+      Promise.all(ctx.issueRows.map((issue) => buildIssueSummaryWithTrace(ctx.project.id, issue))),
+    fail: failAgentRun,
+    blockForGithub: moveAgentRunToBlockedNoGithub,
+    pauseForRepositorySelection: moveAgentRunToAwaitingHuman,
+    notifyStarted: notifyAgentRunStarted,
+  });
+}
+
+async function notifyAgentRunStarted(
+  ctx: AgentRunContext,
+  repoCandidateCount: number,
+): Promise<void> {
+  await postIncidentThreadMessage(
+    ctx.incident.id,
+    `:mag: Investigation started across ${repoCandidateCount} candidate repos.`,
+  );
+  const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
+  await updateIncidentMainMessage(
+    ctx.incident.id,
+    `:rotating_light: ${ctx.incident.title} — Investigation ongoing`,
+    incidentBlocks({
+      emoji: "rotating_light",
+      status: "Investigation ongoing",
+      title: ctx.incident.title,
+      projectName: ctx.project.name,
+      service: ctx.incident.service,
+      buttons: [{ text: "View agent run", url: incidentUrl, actionId: "view_agent_run" }],
+      incidentId: ctx.incident.id,
+      showResolveButton: true,
+    }),
+  );
+}

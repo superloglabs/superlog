@@ -1,0 +1,34 @@
+{
+  "name": "@superlog/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema.ts",
+    "./keys": "./src/keys.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "migrate": "tsx src/migrate-cli.ts",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
+    "db:seed": "tsx src/seed.ts",
+    "test:migrations": "tsx --test src/migrations.test.ts"
+  },
+  "dependencies": {
+    "better-auth": "^1.6.11",
+    "drizzle-orm": "^0.45.2",
+    "nanoid": "^5.0.9",
+    "postgres": "^3.4.5"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.2.17",
+    "@types/node": "^22.10.2",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

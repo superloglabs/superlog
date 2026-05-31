@@ -1,0 +1,1 @@
+DROP TABLE "project_slack_routes" CASCADE;

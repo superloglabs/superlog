@@ -1,0 +1,301 @@
+import { type AgentRunResult, db, schema } from "@superlog/db";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import type { AgentRunContext } from "../agent-run-context.js";
+import { createAgentRunLifecycle } from "../agent-run.js";
+import { type AgentRunOutcome, recordAgentRunCompletion } from "../ai-cost.js";
+import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
+import { postIncidentThreadMessage } from "../infra/slack/incident-messages.js";
+import { logger } from "../logger.js";
+import { completeWithoutPullRequest } from "./completion.js";
+import { tryMergeAfterAgentRun } from "./merge.js";
+import { completeWithPullRequest } from "./pr-delivery.js";
+import { applyIncidentMetadataFromResult } from "./result-metadata.js";
+import {
+  exceededWallClockBudget,
+  failAgentRun,
+  isTransientError,
+  moveAgentRunToAwaitingHuman,
+} from "./status.js";
+
+const agentRunLifecycle = createAgentRunLifecycle(db);
+
+export type PendingContextEvent = {
+  id: string;
+  summary: string | null;
+};
+
+export async function steerIdleRunnerWithPendingContext(opts: {
+  snapshotStatus: string;
+  pendingContextEvents: PendingContextEvent[];
+  runner: { steer(sessionId: string, message: string): Promise<void> };
+  sessionId: string;
+  incidentId: string;
+  markEventsProcessed(ids: string[]): Promise<void>;
+  notifySteered(incidentId: string): Promise<void>;
+}): Promise<boolean> {
+  if (opts.snapshotStatus !== "idle" || opts.pendingContextEvents.length === 0) {
+    return false;
+  }
+  const delta = opts.pendingContextEvents
+    .map((event) => event.summary)
+    .filter((value): value is string => !!value)
+    .join("\n");
+  await opts.runner.steer(opts.sessionId, delta || "New issues joined the incident.");
+  await opts.markEventsProcessed(opts.pendingContextEvents.map((event) => event.id));
+  await opts.notifySteered(opts.incidentId);
+  return true;
+}
+
+export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
+  const sessionId = ctx.agentRun.providerSessionId;
+  if (!sessionId) {
+    await failAgentRun(ctx, "missing_session", "Investigation has no managed session ID.");
+    return;
+  }
+
+  try {
+    const runner = await getAgentRunnerBackend(ctx.agentRun.runtime);
+    const dispatched = await runner
+      .dispatchIntegrationToolCalls({
+        sessionId,
+        orgId: ctx.project.orgId,
+        incidentId: ctx.incident.id,
+      })
+      .catch((err) => {
+        logger.error({ err, sessionId }, "integration tool dispatch failed");
+        return 0;
+      });
+    if (dispatched > 0) {
+      logger.info({ sessionId, dispatched }, "dispatched custom-tool calls");
+    }
+    const snapshot = await runner.collect(sessionId);
+    for (const event of snapshot.events) {
+      await agentRunLifecycle.appendAgentEvent({
+        agentRunId: ctx.agentRun.id,
+        kind: event.type,
+        summary: event.summary,
+        providerEventId: event.id,
+        detail: event.detail,
+      });
+    }
+
+    const nextRuntimeMinutes = Math.ceil(snapshot.activeSeconds / 60);
+    if (nextRuntimeMinutes >= ctx.automation.maxRuntimeMinutes) {
+      await failAgentRun(
+        ctx,
+        "runtime_budget_exhausted",
+        "Investigation stalled after exhausting the runtime budget.",
+      );
+      return;
+    }
+
+    // The provider-active budget above doesn't fire for sessions Anthropic
+    // marks idle without an `active_seconds` count — typically because the
+    // agent emitted a custom_tool_use we never ack'd. Use wall-clock as a
+    // backstop so those runs eventually die instead of accumulating in the
+    // 'running' state. Distinct failure reason so you can audit them later.
+    // Guard on `!snapshot.result` so we never preempt a run that just
+    // submitted right at the budget boundary.
+    if (
+      !snapshot.result &&
+      exceededWallClockBudget({
+        startedAt: ctx.agentRun.startedAt,
+        now: new Date(),
+        maxRuntimeMinutes: ctx.automation.maxRuntimeMinutes,
+      })
+    ) {
+      await failAgentRun(
+        ctx,
+        "wall_clock_timeout",
+        "Investigation exceeded its wall-clock budget without producing a result.",
+      );
+      return;
+    }
+
+    // The collector already ack'd these with an error payload so the session
+    // can leave requires_action. There's no useful work left on this run.
+    // Distinct failure reason makes it easy to audit which agents are
+    // hallucinating non-existent tool names.
+    if (snapshot.unknownCustomTools.length > 0 && !snapshot.result) {
+      const names = snapshot.unknownCustomTools.map((t) => t.name).join(", ");
+      await failAgentRun(
+        ctx,
+        "unknown_custom_tool",
+        `Agent called a tool the runtime does not handle: ${names}`,
+      );
+      return;
+    }
+
+    const baseUpdate: Partial<schema.AgentRun> = {
+      providerSessionStatus: snapshot.status,
+      cumulativeRuntimeMinutes: nextRuntimeMinutes,
+      lastSyncedAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const selectedRepoFullName = snapshot.result?.pr?.selectedRepoFullName ?? null;
+    const baseBranch = snapshot.result?.pr?.baseBranch ?? null;
+    if (selectedRepoFullName) {
+      baseUpdate.selectedRepoFullName = selectedRepoFullName;
+    }
+    if (baseBranch) {
+      baseUpdate.selectedBaseBranch = baseBranch;
+    }
+    await db
+      .update(schema.agentRuns)
+      .set(baseUpdate)
+      .where(eq(schema.agentRuns.id, ctx.agentRun.id));
+
+    if (snapshot.result) {
+      const metadataChanged = await applyIncidentMetadataFromResult(ctx, snapshot.result);
+      if (metadataChanged) {
+        // Refresh ctx.incident so downstream Slack messages and PR titles use
+        // the renamed title / new severity rather than the stale snapshot.
+        const refreshed = await db.query.incidents.findFirst({
+          where: eq(schema.incidents.id, ctx.incident.id),
+        });
+        if (refreshed) ctx.incident = refreshed;
+      }
+
+      if (selectedRepoFullName) {
+        await agentRunLifecycle.appendRepoSelectedEvent({
+          agentRunId: ctx.agentRun.id,
+          selectedRepoFullName,
+        });
+      }
+
+      // Helper for AI-cost metering. We emit ONLY after the paired DB state
+      // transition commits — a transient DB failure leaves the agentRun
+      // in its current state, the next tick re-enters this block with the
+      // same Anthropic snapshot, and we'd double-count cumulative counters.
+      const meterAgentRun = (outcome: AgentRunOutcome): void => {
+        recordAgentRunCompletion({
+          orgId: ctx.project.orgId,
+          projectId: ctx.project.id,
+          incidentId: ctx.incident.id,
+          model: snapshot.modelUsage.model,
+          callSite: "agent_run",
+          usage: snapshot.modelUsage,
+          activeSeconds: snapshot.activeSeconds,
+          outcome,
+          hasPr: outcome === "complete_with_pr",
+        });
+      };
+
+      if (snapshot.result.state === "awaiting_human") {
+        await moveAgentRunToAwaitingHuman(
+          ctx,
+          snapshot.result.question ?? "Reply in this thread with the missing context.",
+          snapshot.result.summary,
+        );
+        meterAgentRun("awaiting_human");
+        return;
+      }
+
+      if (snapshot.result.state === "failed") {
+        const reason: schema.AgentRunFailureReason =
+          snapshot.result.failureReason ?? "agent_no_findings";
+        await failAgentRun(ctx, reason, snapshot.result.summary, {
+          existingResult: snapshot.result,
+        });
+        meterAgentRun("failed");
+        return;
+      }
+
+      if (snapshot.result.state === "complete") {
+        const pr = snapshot.result.pr ?? null;
+        if (pr && pr.validationPassed === false) {
+          await failAgentRun(ctx, "patch_validation_failed", snapshot.result.summary, {
+            existingResult: snapshot.result,
+          });
+          meterAgentRun("failed");
+          return;
+        }
+        const merged = await tryMergeAfterAgentRun(
+          ctx,
+          snapshot.result,
+          sessionId,
+          nextRuntimeMinutes,
+        );
+        if (merged) {
+          // tryMergeAfterAgentRun commits the terminal state itself; if
+          // it succeeds, the agentRun is complete (the merged-incident
+          // path implies the result was actionable, treat as complete_no_pr
+          // unless a PR was actually opened).
+          meterAgentRun(pr?.validationPassed === true ? "complete_with_pr" : "complete_no_pr");
+          return;
+        }
+        const shouldOpenPr =
+          !!pr &&
+          pr.validationPassed === true &&
+          pr.openStatus === "pending" &&
+          ctx.prPolicy !== "never";
+        if (shouldOpenPr && pr) {
+          await completeWithPullRequest(ctx, snapshot.result, pr, sessionId, nextRuntimeMinutes);
+          meterAgentRun("complete_with_pr");
+        } else {
+          await completeWithoutPullRequest(ctx, snapshot.result, sessionId, nextRuntimeMinutes);
+          meterAgentRun("complete_no_pr");
+        }
+        return;
+      }
+    }
+
+    const pendingContextEvents = await db.query.incidentEvents.findMany({
+      where: and(
+        eq(schema.incidentEvents.agentRunId, ctx.agentRun.id),
+        eq(schema.incidentEvents.kind, "incident_context_changed"),
+        isNull(schema.incidentEvents.processedAt),
+      ),
+      orderBy: [desc(schema.incidentEvents.createdAt)],
+    });
+    const steered = await steerIdleRunnerWithPendingContext({
+      snapshotStatus: snapshot.status,
+      pendingContextEvents,
+      runner,
+      sessionId,
+      incidentId: ctx.incident.id,
+      markEventsProcessed: async (ids) => {
+        await db
+          .update(schema.incidentEvents)
+          .set({ processedAt: new Date() })
+          .where(inArray(schema.incidentEvents.id, ids));
+      },
+      notifySteered: async (incidentId) => {
+        await postIncidentThreadMessage(
+          incidentId,
+          ":information_source: Investigation updated with new incident context.",
+        );
+      },
+    });
+    if (steered) {
+      return;
+    }
+
+    if (snapshot.status === "terminated" && !snapshot.result) {
+      await failAgentRun(
+        ctx,
+        "terminated_without_result",
+        "Managed agent run terminated without a structured result.",
+      );
+    }
+  } catch (err) {
+    if (isTransientError(err)) {
+      logger.error(
+        {
+          err,
+          scope: "agent_run",
+          agent_run_id: ctx.agentRun.id,
+          incident_id: ctx.incident.id,
+          project_id: ctx.project.id,
+          org_id: ctx.project.orgId,
+          provider_session_id: sessionId,
+          stage: "sync",
+        },
+        "agent run sync hit transient error; will retry on next tick",
+      );
+      return;
+    }
+    await failAgentRun(ctx, "sync_failed", "Investigation sync failed.", { err });
+  }
+}

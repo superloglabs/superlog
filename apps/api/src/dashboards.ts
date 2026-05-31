@@ -1,0 +1,136 @@
+import { db, schema } from "@superlog/db";
+import { eq } from "drizzle-orm";
+import type { Context, Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
+import { z } from "zod";
+import {
+  addDashboardWidget,
+  createDashboard,
+  dashboardCreateSchema,
+  dashboardUpdateSchema,
+  dashboardWidgetCreateSchema,
+  dashboardWidgetLayoutSchema,
+  dashboardWidgetUpdateSchema,
+  deleteDashboard,
+  deleteDashboardWidget,
+  getDashboardWithWidgets,
+  listDashboardsForProject,
+  updateDashboard,
+  updateDashboardLayout,
+  updateDashboardWidget,
+} from "./dashboards-service.js";
+import { resolveActiveOrgContext } from "./org-context.js";
+
+type Vars = { userId: string; orgId: string | null };
+
+export function mountDashboards(app: Hono<{ Variables: Vars }>) {
+  const requireAccess = async (c: Context<{ Variables: Vars }>, projectId: string) => {
+    const project = await db.query.projects.findFirst({
+      where: eq(schema.projects.id, projectId),
+    });
+    if (!project) throw new HTTPException(404, { message: "project not found" });
+    const ctx = await resolveActiveOrgContext({
+      userId: c.var.userId,
+      preferredOrgId: c.var.orgId,
+    });
+    if (project.orgId !== ctx.org.id) throw new HTTPException(403, { message: "forbidden" });
+    return { project, user: ctx.user };
+  };
+
+  app.get("/api/projects/:projectId/dashboards", async (c) => {
+    const projectId = c.req.param("projectId");
+    await requireAccess(c, projectId);
+    return c.json(await listDashboardsForProject(projectId));
+  });
+
+  app.post("/api/projects/:projectId/dashboards", async (c) => {
+    const projectId = c.req.param("projectId");
+    const { user } = await requireAccess(c, projectId);
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = dashboardCreateSchema.safeParse(body);
+    if (!parsed.success) throw new HTTPException(400, { message: "invalid body" });
+    return c.json(await createDashboard(projectId, user.id, parsed.data));
+  });
+
+  app.get("/api/projects/:projectId/dashboards/:id", async (c) => {
+    const projectId = c.req.param("projectId");
+    const id = c.req.param("id");
+    await requireAccess(c, projectId);
+    const dashboard = await getDashboardWithWidgets(projectId, id);
+    if (!dashboard) throw new HTTPException(404, { message: "dashboard not found" });
+    return c.json(dashboard);
+  });
+
+  app.patch("/api/projects/:projectId/dashboards/:id", async (c) => {
+    const projectId = c.req.param("projectId");
+    const id = c.req.param("id");
+    await requireAccess(c, projectId);
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = dashboardUpdateSchema.safeParse(body);
+    if (!parsed.success) throw new HTTPException(400, { message: "invalid body" });
+    const updated = await updateDashboard(projectId, id, parsed.data);
+    if (!updated) throw new HTTPException(404, { message: "dashboard not found" });
+    return c.json(updated);
+  });
+
+  app.delete("/api/projects/:projectId/dashboards/:id", async (c) => {
+    const projectId = c.req.param("projectId");
+    const id = c.req.param("id");
+    await requireAccess(c, projectId);
+    await deleteDashboard(projectId, id);
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/projects/:projectId/dashboards/:id/widgets", async (c) => {
+    const projectId = c.req.param("projectId");
+    const id = c.req.param("id");
+    await requireAccess(c, projectId);
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = dashboardWidgetCreateSchema.safeParse(body);
+    if (!parsed.success) throw new HTTPException(400, { message: "invalid body" });
+    const widget = await addDashboardWidget(projectId, id, parsed.data);
+    if (!widget) throw new HTTPException(404, { message: "dashboard not found" });
+    return c.json(widget);
+  });
+
+  app.patch("/api/projects/:projectId/dashboards/:id/widgets/:widgetId", async (c) => {
+    const projectId = c.req.param("projectId");
+    const id = c.req.param("id");
+    const widgetId = c.req.param("widgetId");
+    await requireAccess(c, projectId);
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = dashboardWidgetUpdateSchema.safeParse(body);
+    if (!parsed.success) throw new HTTPException(400, { message: "invalid body" });
+    const widget = await updateDashboardWidget(projectId, id, widgetId, parsed.data);
+    if (!widget) throw new HTTPException(404, { message: "widget not found" });
+    return c.json(widget);
+  });
+
+  app.patch("/api/projects/:projectId/dashboards/:id/layout", async (c) => {
+    const projectId = c.req.param("projectId");
+    const id = c.req.param("id");
+    await requireAccess(c, projectId);
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = z
+      .object({
+        widgets: z
+          .array(z.object({ id: z.string().uuid(), layout: dashboardWidgetLayoutSchema }))
+          .max(200),
+      })
+      .safeParse(body);
+    if (!parsed.success) throw new HTTPException(400, { message: "invalid body" });
+    const ok = await updateDashboardLayout(projectId, id, parsed.data.widgets);
+    if (!ok) throw new HTTPException(404, { message: "dashboard not found" });
+    return c.json({ ok: true });
+  });
+
+  app.delete("/api/projects/:projectId/dashboards/:id/widgets/:widgetId", async (c) => {
+    const projectId = c.req.param("projectId");
+    const id = c.req.param("id");
+    const widgetId = c.req.param("widgetId");
+    await requireAccess(c, projectId);
+    const ok = await deleteDashboardWidget(projectId, id, widgetId);
+    if (!ok) throw new HTTPException(404, { message: "dashboard not found" });
+    return c.json({ ok: true });
+  });
+}

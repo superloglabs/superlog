@@ -1,0 +1,48 @@
+{
+  "name": "@superlog/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --import ./tracing.ts src/index.ts",
+    "start": "tsx --import ./tracing.ts src/index.ts",
+    "test": "tsx --test src/**/*.test.ts",
+    "test:mcp-agent-telemetry": "tsx scripts/test-mcp-agent-telemetry-scope.ts",
+    "test:mcp-clickhouse-ranges": "tsx scripts/test-mcp-clickhouse-ranges.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@clickhouse/client": "^1.9.0",
+    "@hono/node-server": "^1.13.7",
+    "@hono/standard-validator": "^0.2.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api-logs": "^0.215.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.73.0",
+    "@opentelemetry/exporter-logs-otlp-http": "^0.215.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.215.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.215.0",
+    "@opentelemetry/resources": "^2.7.0",
+    "@opentelemetry/sdk-logs": "^0.215.0",
+    "@opentelemetry/sdk-metrics": "^2.7.0",
+    "@opentelemetry/sdk-node": "^0.215.0",
+    "@opentelemetry/semantic-conventions": "^1.40.0",
+    "@scalar/hono-api-reference": "^0.10.19",
+    "@superlog/db": "workspace:*",
+    "@superlog/fingerprint": "workspace:*",
+    "better-auth": "^1.6.11",
+    "dotenv": "^17.4.2",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.6.12",
+    "hono-openapi": "^1.3.0",
+    "nanoid": "^5.0.9",
+    "pino": "^10.3.1",
+    "resend": "^6.12.3",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,341 @@
+import { useQueryClient } from "@tanstack/react-query";
+import { usePostHog } from "posthog-js/react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { AcceptInvitation } from "./AcceptInvitation.tsx";
+import { Activate } from "./Activate.tsx";
+import { Admin } from "./Admin.tsx";
+import { AdminFeedback } from "./AdminFeedback.tsx";
+import { CommandPalette } from "./CommandPalette.tsx";
+import { EvalInvestigationDetail } from "./EvalInvestigationDetail.tsx";
+import { Evals } from "./Evals.tsx";
+import { Explore } from "./Explore.tsx";
+import { ForgotPassword } from "./ForgotPassword.tsx";
+import { Issues } from "./Issues.tsx";
+import { Landing } from "./Landing.tsx";
+import { OauthConsent } from "./OauthConsent.tsx";
+import { OrgProjectSwitcher } from "./OrgProjectSwitcher.tsx";
+import { Overview } from "./Overview.tsx";
+import { PrFeedback } from "./PrFeedback.tsx";
+import { Pricing } from "./Pricing.tsx";
+import { ResetPassword } from "./ResetPassword.tsx";
+import { Settings } from "./Settings.tsx";
+import { AlertEdit } from "./alerts/AlertEdit.tsx";
+import { AlertsList } from "./alerts/AlertsList.tsx";
+import { useMe } from "./api.ts";
+import { authClient, useSession } from "./auth-client.ts";
+import { DashboardView } from "./dashboards/DashboardView.tsx";
+import { DashboardsList } from "./dashboards/DashboardsList.tsx";
+import { AppShell, ThemeToggle, Wordmark } from "./design/ui.tsx";
+import { OnboardingGate } from "./onboarding/OnboardingGate.tsx";
+import { startSkillOnboarding } from "./skillOnboarding.ts";
+
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4100";
+
+function SignupSourceCapture() {
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get("source");
+    if (!raw) return;
+    const source = raw.trim().toLowerCase();
+    if (!/^[a-z0-9_-]{1,32}$/.test(source)) return;
+    try {
+      const existing = window.localStorage.getItem("superlog.signup_source");
+      if (!existing) window.localStorage.setItem("superlog.signup_source", source);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  return null;
+}
+
+function GithubInstallCallbackForwarder() {
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has("installation_id") || !params.has("state")) return;
+    window.location.replace(`${API_URL}/github/install/callback${window.location.search}`);
+  }, []);
+  return null;
+}
+
+function PostHogUserSync() {
+  const { data, isPending } = useSession();
+  const posthog = usePostHog();
+
+  useEffect(() => {
+    if (isPending) return;
+    if (data?.user) {
+      posthog.identify(data.user.id, {
+        email: data.user.email,
+        name: data.user.name,
+      });
+    } else {
+      posthog.reset();
+    }
+  }, [isPending, data?.user, posthog]);
+
+  return null;
+}
+
+function ActiveOrgSync() {
+  const { data, isPending } = useSession();
+  const queryClient = useQueryClient();
+  const previous = useRef<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    if (isPending) return;
+    const current = data?.session?.activeOrganizationId ?? null;
+    if (previous.current === undefined) {
+      previous.current = current;
+      return;
+    }
+    if (previous.current !== current) {
+      previous.current = current;
+      queryClient.clear();
+    }
+  }, [isPending, data?.session?.activeOrganizationId, queryClient]);
+
+  return null;
+}
+
+export function App() {
+  return (
+    <>
+      <SignupSourceCapture />
+      <GithubInstallCallbackForwarder />
+      <PostHogUserSync />
+      <ActiveOrgSync />
+      <Routes>
+        <Route path="/activate" element={<Activate />} />
+        <Route path="/accept-invitation" element={<AcceptInvitation />} />
+        <Route path="/oauth/consent" element={<OauthConsent />} />
+        <Route path="/pricing" element={<Pricing />} />
+        <Route path="/signup" element={<SignupRoute />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
+        {/* Public, no-auth feedback link reached from agent-opened PR descriptions. */}
+        <Route path="/feedback/pr/:owner/:repo/:number" element={<PrFeedback />} />
+        <Route path="*" element={<AuthenticatedApp />} />
+      </Routes>
+    </>
+  );
+}
+
+function SignupRoute() {
+  const { data, isPending } = useSession();
+  // The skill points users at /signup?from=skill. Stash the flag in
+  // sessionStorage so it survives the auth handoff and OnboardingGate can
+  // switch the normal onboarding UI into agent mode.
+  if (typeof window !== "undefined") {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("from") === "skill") {
+      startSkillOnboarding(params.get("intent"));
+    }
+  }
+  if (isPending) return null;
+  if (data) return <Navigate to="/" replace />;
+  return <Landing initialAuthMode="sign-up" />;
+}
+
+function AuthenticatedApp() {
+  const { data, isPending } = useSession();
+  const me = useMe();
+  useGlobalKeybinds(!!data);
+  const impersonating = me.data?.user.impersonating === true;
+  // The banner is fixed-positioned so it doesn't shove the page below it (the
+  // fixed nav can't be pushed by document flow anyway). Instead, every piece
+  // of chrome that pins to the top reads --impersonation-h and shifts down by
+  // exactly the banner's height, and the top padding on RouteContainer grows
+  // to match. Setting it on the root keeps everything in sync without
+  // threading a prop through AppShell, which is shared with Landing.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (impersonating) root.style.setProperty("--impersonation-h", "1.75rem");
+    else root.style.removeProperty("--impersonation-h");
+    return () => {
+      root.style.removeProperty("--impersonation-h");
+    };
+  }, [impersonating]);
+  if (isPending) return null;
+  if (!data) return <Landing />;
+  return (
+    <OnboardingGate>
+      {impersonating && <ImpersonationBar email={data.user.email} />}
+      <AppShell nav={<TopNav />}>
+        <RouteContainer>
+          <Routes>
+            <Route path="/explore/*" element={<Explore />} />
+            <Route path="/incidents" element={<Issues />} />
+            <Route path="/incidents/:id" element={<Issues />} />
+            <Route path="/issues" element={<Issues />} />
+            <Route path="/issues/:id" element={<Issues />} />
+            <Route path="/alerts" element={<AlertsList />} />
+            <Route path="/alerts/new" element={<AlertEdit />} />
+            <Route path="/alerts/:id" element={<AlertEdit />} />
+            <Route path="/dashboards" element={<DashboardsList />} />
+            <Route path="/dashboards/:id" element={<DashboardView />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/admin" element={<Admin />} />
+            <Route path="/admin/evals" element={<Evals />} />
+            <Route path="/admin/evals/investigations/:slug" element={<EvalInvestigationDetail />} />
+            <Route path="/admin/feedback" element={<AdminFeedback />} />
+            <Route path="*" element={<Overview />} />
+          </Routes>
+        </RouteContainer>
+      </AppShell>
+      <CommandPalette />
+    </OnboardingGate>
+  );
+}
+
+function useGlobalKeybinds(enabled: boolean) {
+  useEffect(() => {
+    if (!enabled) return;
+    function handler(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey;
+      // ⌘K / Ctrl+K: open the command palette.
+      if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        globalThis.__superlogPalette?.toggle();
+        return;
+      }
+      // ⌘⇧P: stop impersonating from anywhere. ⌘⇧X was the obvious mnemonic
+      // but it collides with 1Password's "show app" hotkey on macOS, which
+      // ate the keystroke before we ever saw it. The call 400s for non-
+      // impersonating sessions — only redirect on success, otherwise a
+      // misfired shortcut would yank a regular user back to the dashboard.
+      if (mod && e.shiftKey && e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        void authClient.admin.stopImpersonating().then((result) => {
+          if (!result?.error) window.location.assign("/");
+        });
+      }
+    }
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [enabled]);
+}
+
+function ImpersonationBar({ email }: { email: string }) {
+  return (
+    <div className="fixed inset-x-0 top-0 z-[60] flex h-7 w-full items-center justify-center gap-3 bg-amber-500 px-3 font-mono text-[11px] text-black">
+      <span className="uppercase tracking-[0.2em]">impersonating</span>
+      <span className="font-medium">{email}</span>
+      <span className="opacity-70">·</span>
+      <button
+        type="button"
+        onClick={() => {
+          void authClient.admin.stopImpersonating().finally(() => {
+            window.location.assign("/");
+          });
+        }}
+        className="underline underline-offset-2 hover:opacity-80"
+      >
+        stop (⌘⇧P)
+      </button>
+    </div>
+  );
+}
+
+function RouteContainer({ children }: { children: ReactNode }) {
+  const { pathname } = useLocation();
+  const wide = pathname.startsWith("/dashboards/");
+  return (
+    <div
+      className={`mx-auto px-6 pb-24 pt-[calc(6rem+var(--impersonation-h,0px))] ${wide ? "max-w-[2400px]" : "max-w-6xl"}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+function TopNav() {
+  const { pathname } = useLocation();
+  // /api/me reports `isStaff` based on the server's STAFF_EMAILS env. The route
+  // is still gated server-side; this just controls discoverability of the link.
+  const me = useMe();
+  const isStaff = me.data?.user.isStaff === true;
+
+  const navLink = (href: string, label: string, extraPrefixes: string[] = []) => {
+    const active =
+      href === "/"
+        ? pathname === "/" || pathname === ""
+        : pathname.startsWith(href) || extraPrefixes.some((p) => pathname.startsWith(p));
+    return (
+      <Link
+        key={href}
+        to={href}
+        className={
+          active
+            ? "text-[13px] font-medium text-fg underline underline-offset-[6px] decoration-1"
+            : "text-[13px] font-medium text-muted transition-opacity hover:text-fg"
+        }
+      >
+        {label}
+      </Link>
+    );
+  };
+
+  return (
+    <nav className="flex items-center justify-between py-5">
+      <div className="flex items-center gap-8">
+        <Wordmark />
+        <div className="hidden items-center gap-6 md:flex">
+          {navLink("/", "Overview")}
+          {navLink("/incidents", "Issues", ["/issues"])}
+          {navLink("/alerts", "Alerts")}
+          {navLink("/explore", "Explore")}
+          {navLink("/dashboards", "Dashboards")}
+          {navLink("/settings", "Settings")}
+          {isStaff && navLink("/admin", "Admin")}
+        </div>
+      </div>
+      <div className="flex items-center gap-3">
+        <ThemeToggle />
+        <OrgProjectSwitcher />
+        <UserMenu />
+      </div>
+    </nav>
+  );
+}
+
+function UserMenu() {
+  const { data } = useSession();
+  const [open, setOpen] = useState(false);
+  if (!data?.user) return null;
+  const email = data.user.email;
+  const initial = (data.user.name?.[0] ?? email[0] ?? "?").toUpperCase();
+
+  async function handleSignOut() {
+    setOpen(false);
+    await authClient.signOut();
+    window.location.href = "/";
+  }
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex h-7 w-7 items-center justify-center rounded-full bg-fg text-xs font-medium text-bg"
+        aria-label={`Account menu for ${email}`}
+      >
+        {initial}
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-2 w-56 rounded-md border border-border bg-surface p-2 shadow-md">
+          <div className="border-b border-border px-2 py-1.5 text-xs text-muted">{email}</div>
+          <button
+            type="button"
+            onClick={handleSignOut}
+            className="mt-1 w-full rounded px-2 py-1.5 text-left text-sm hover:bg-bg"
+          >
+            Sign out
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

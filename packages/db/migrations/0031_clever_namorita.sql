@@ -1,0 +1,1 @@
+ALTER TABLE "orgs" ADD COLUMN "signup_source" text;

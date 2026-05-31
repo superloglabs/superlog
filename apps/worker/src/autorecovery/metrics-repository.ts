@@ -1,0 +1,132 @@
+import type { ClickHouseClient } from "@clickhouse/client";
+import type { CandidateIncident } from "./domain.js";
+
+export type ActivityBucket = { hour: string; count: number };
+
+export type IncidentActivity = {
+  totalEvents: number;
+  perHour: ActivityBucket[];
+  lookbackHours: number;
+};
+
+export type ServiceTraffic = {
+  totalSpans: number;
+  perHour: ActivityBucket[];
+  lookbackHours: number;
+  service: string | null;
+};
+
+export type AutorecoveryMetricsRepository = ReturnType<typeof createAutorecoveryMetricsRepository>;
+
+export function createAutorecoveryMetricsRepository(getCh: () => Promise<ClickHouseClient>) {
+  return {
+    // Counts exception events on the incident's service whose `exception.type`
+    // matches one of the live issues linked to the incident. Filtering by
+    // exception.type is a strict superset of the actual incident events (an
+    // unrelated issue with the same type would also match), but it cuts out
+    // the dominant noise mode: a project-wide error storm on a different
+    // exception type being misattributed to this incident. See incident
+    // 779a80aa (2026-05-22) where the un-scoped query counted 90k/hr of
+    // ECONNREFUSED storms against an "Invitation not found" issue that had
+    // fired twice.
+    //
+    // Ideal long-term filter would re-compute the fingerprint per event in
+    // CH; that's expensive without the JS-side bucketing logic. Adding
+    // exception.message into the filter could narrow further but risks
+    // undercounting since `issues.message` only stores the latest sample.
+    async queryIncidentActivity(
+      incident: CandidateIncident,
+      hours: number,
+    ): Promise<IncidentActivity> {
+      const exceptionTypes = Array.from(
+        new Set(incident.issueSignatures.map((s) => s.exceptionType)),
+      );
+      // No live signatures means we have nothing to scope the query to —
+      // return zero and let the agent treat it as no signal. Counting the
+      // whole service here would be the original bug.
+      if (exceptionTypes.length === 0) {
+        return { totalEvents: 0, perHour: [], lookbackHours: hours };
+      }
+      const ch = await getCh();
+      const result = await ch.query({
+        query: `
+          SELECT
+            toString(toStartOfHour(Timestamp)) AS hour,
+            toUInt64(count()) AS count
+          FROM otel_traces
+          ARRAY JOIN Events AS event
+          WHERE ResourceAttributes['superlog.project_id'] = {project_id:String}
+            AND event.Name = 'exception'
+            AND event.Attributes['exception.type'] IN {exception_types:Array(String)}
+            AND Timestamp >= now() - INTERVAL {hours:UInt32} HOUR
+            ${incident.service ? "AND ServiceName = {service:String}" : ""}
+          GROUP BY hour
+          ORDER BY hour ASC
+        `,
+        query_params: {
+          project_id: incident.projectId,
+          service: incident.service ?? "",
+          exception_types: exceptionTypes,
+          hours,
+        },
+        format: "JSONEachRow",
+      });
+      const rows = (await result.json()) as ActivityBucket[];
+      const totalEvents = rows.reduce((acc, r) => acc + Number(r.count), 0);
+      return { totalEvents, perHour: rows, lookbackHours: hours };
+    },
+
+    async queryServiceTraffic(
+      incident: CandidateIncident,
+      hours: number,
+    ): Promise<ServiceTraffic> {
+      if (!incident.service) {
+        return { totalSpans: 0, perHour: [], lookbackHours: hours, service: null };
+      }
+      const ch = await getCh();
+      const result = await ch.query({
+        query: `
+          SELECT
+            toString(toStartOfHour(Timestamp)) AS hour,
+            toUInt64(count()) AS count
+          FROM otel_traces
+          WHERE ResourceAttributes['superlog.project_id'] = {project_id:String}
+            AND ServiceName = {service:String}
+            AND Timestamp >= now() - INTERVAL {hours:UInt32} HOUR
+          GROUP BY hour
+          ORDER BY hour ASC
+        `,
+        query_params: {
+          project_id: incident.projectId,
+          service: incident.service,
+          hours,
+        },
+        format: "JSONEachRow",
+      });
+      const rows = (await result.json()) as ActivityBucket[];
+      const totalSpans = rows.reduce((acc, r) => acc + Number(r.count), 0);
+      return { totalSpans, perHour: rows, lookbackHours: hours, service: incident.service };
+    },
+  };
+}
+
+let cachedClient: ClickHouseClient | null = null;
+
+// Default ClickHouse provider — lazy-initialised, shared across calls.
+// Module-level cache is OK here because credentials only come from env
+// and never change at runtime. Callers that need a different config
+// (tests, alt-region readers) should construct their own and pass it in.
+export async function defaultClickhouseClient(): Promise<ClickHouseClient> {
+  if (cachedClient) return cachedClient;
+  const { createClient } = await import("@clickhouse/client");
+  cachedClient = createClient({
+    url: process.env.CLICKHOUSE_URL ?? "http://localhost:8123",
+    username: process.env.CLICKHOUSE_USER ?? "default",
+    password: process.env.CLICKHOUSE_PASSWORD ?? "",
+    // Local portless stacks ship a `superlog` database; prod uses `olly`.
+    // `CLICKHOUSE_DB` is the env name `scripts/portless-stack.sh` writes.
+    database:
+      process.env.CLICKHOUSE_DATABASE ?? process.env.CLICKHOUSE_DB ?? "olly",
+  });
+  return cachedClient;
+}

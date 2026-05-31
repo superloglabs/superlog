@@ -1,0 +1,384 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1777004587289,
+      "tag": "0000_initial_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1777004605637,
+      "tag": "0001_github_installations",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1777008340669,
+      "tag": "0002_orgs_github_setup_skipped",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1777010059531,
+      "tag": "0003_strong_james_howlett",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1777011256434,
+      "tag": "0004_rainy_caretaker",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1777055930910,
+      "tag": "0005_warm_zarda",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1777060421945,
+      "tag": "0006_overconfident_marrow",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1777063047000,
+      "tag": "0007_silence_issues",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1777079233000,
+      "tag": "0008_dashboards",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1777260153000,
+      "tag": "0009_issue_grouping",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1777260200000,
+      "tag": "0010_linear_and_agent_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1777260300000,
+      "tag": "0011_org_linear_ticket_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1777263000000,
+      "tag": "0012_org_investigation_pr_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1777268278000,
+      "tag": "0013_integrations",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1777268500000,
+      "tag": "0014_active_project",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1777310000000,
+      "tag": "0015_alerts",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1777331787191,
+      "tag": "0016_huge_xorn",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1777412531879,
+      "tag": "0017_salty_dark_phoenix",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1777426531678,
+      "tag": "0018_ambitious_leader",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1777430675203,
+      "tag": "0019_medical_lifeguard",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1777433023068,
+      "tag": "0020_eager_catseye",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1777436817323,
+      "tag": "0021_groovy_tomas",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1777496950390,
+      "tag": "0022_good_terror",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1777503215648,
+      "tag": "0023_dashing_the_enforcers",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1777510534454,
+      "tag": "0024_outstanding_justin_hammer",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1777592617369,
+      "tag": "0025_eager_the_spike",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1778035361385,
+      "tag": "0026_round_ikaris",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1778193597911,
+      "tag": "0027_sour_wasp",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1778195028405,
+      "tag": "0028_marvelous_preak",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1778263291103,
+      "tag": "0029_living_kinsey_walden",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1778283310005,
+      "tag": "0030_gifted_cardiac",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1778291753178,
+      "tag": "0031_clever_namorita",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1778541471862,
+      "tag": "0032_mean_the_hand",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1778551158883,
+      "tag": "0033_damp_agent_zero",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1778713892972,
+      "tag": "0034_magical_mephisto",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1778716929891,
+      "tag": "0035_luxuriant_darkstar",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1778717207061,
+      "tag": "0036_romantic_wraith",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1778718033321,
+      "tag": "0037_wakeful_metal_master",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1778718476616,
+      "tag": "0038_grey_expediter",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1778719703614,
+      "tag": "0039_chubby_vindicator",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1778878826057,
+      "tag": "0040_jittery_whiplash",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1778879633181,
+      "tag": "0041_plain_stone_men",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1778883293447,
+      "tag": "0042_sparkling_expediter",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1779066514836,
+      "tag": "0043_closed_franklin_richards",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1779123776789,
+      "tag": "0044_goofy_toro",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1779124868085,
+      "tag": "0045_productive_proteus",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1779147453804,
+      "tag": "0046_worthless_grim_reaper",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1779404886656,
+      "tag": "0047_cuddly_mandroid",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1779406039893,
+      "tag": "0048_goofy_namor",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1779409225481,
+      "tag": "0049_closed_talos",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1779413995076,
+      "tag": "0050_rapid_young_avengers",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1779493100560,
+      "tag": "0051_robust_stone_men",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1779582200054,
+      "tag": "0052_brainy_sphinx",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1780185561163,
+      "tag": "0053_funny_phalanx",
+      "breakpoints": true
+    }
+  ]
+}

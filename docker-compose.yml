@@ -1,0 +1,57 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: superlog
+    ports:
+      - "${POSTGRES_HOST_PORT:-5434}:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 10
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.1
+    environment:
+      CLICKHOUSE_DB: superlog
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "${CLICKHOUSE_HTTP_HOST_PORT:-8123}:8123"
+      - "${CLICKHOUSE_TCP_HOST_PORT:-9000}:9000"
+    volumes:
+      - ch-data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      retries: 10
+
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.150.1
+    command: ["--config=/etc/collector/config.yaml"]
+    volumes:
+      - ./infra/collector/config.yaml:/etc/collector/config.yaml:ro
+    environment:
+      CLICKHOUSE_ENDPOINT: "tcp://clickhouse:9000"
+      CLICKHOUSE_DB: superlog
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+    ports:
+      - "${COLLECTOR_GRPC_HOST_PORT:-4317}:4317"
+      - "${COLLECTOR_HTTP_HOST_PORT:-4318}:4318"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+volumes:
+  pg-data:
+  ch-data:

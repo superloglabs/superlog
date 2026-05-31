@@ -1,0 +1,4 @@
+DROP INDEX IF EXISTS "github_installations_project_installation_idx";--> statement-breakpoint
+ALTER TABLE "github_installations" ALTER COLUMN "org_id" SET NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "github_installations_org_installation_idx" ON "github_installations" USING btree ("org_id","installation_id") WHERE project_id IS NULL AND revoked_at IS NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "github_installations_project_installation_idx" ON "github_installations" USING btree ("project_id","installation_id") WHERE project_id IS NOT NULL AND revoked_at IS NULL;

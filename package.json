@@ -1,0 +1,49 @@
+{
+  "name": "superlog",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "dev:portless": "scripts/portless-stack.sh start",
+    "dev:portless:env": "scripts/portless-stack.sh env",
+    "dev:portless:status": "scripts/portless-stack.sh status",
+    "dev:portless:stop": "scripts/portless-stack.sh stop",
+    "worktree:bootstrap": "scripts/worktree-bootstrap.sh",
+    "worktree:seed": "scripts/worktree-seed.sh",
+    "worktree:verify": "scripts/worktree-verify.sh",
+    "worktree:gc": "scripts/worktree-gc.sh",
+    "conductor:setup": "scripts/conductor-setup.sh",
+    "demo:bootstrap:acme": "tsx scripts/demo/bootstrap-acme.ts",
+    "demo:seed:acme": "tsx scripts/demo/seed-acme-telemetry.ts",
+    "demo:seed:rich": "tsx scripts/demo/seed-rich-telemetry.ts",
+    "demo:seed:everything": "tsx scripts/demo/seed-everything.ts",
+    "attio:sync": "pnpm --filter @superlog/worker sync:attio",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^0.91.0",
+    "@biomejs/biome": "^1.9.4",
+    "@grpc/grpc-js": "^1.14.3",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-grpc": "^0.215.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.215.0",
+    "@opentelemetry/resources": "^2.7.0",
+    "@opentelemetry/sdk-trace-base": "^2.7.0",
+    "@opentelemetry/sdk-trace-node": "^2.7.0",
+    "drizzle-orm": "^0.45.2",
+    "portless": "^0.11.1",
+    "postgres": "^3.4.5",
+    "tsx": "^4.19.2",
+    "turbo": "^2.3.0",
+    "typescript": "^5.7.2",
+    "zod": "^4.4.3"
+  }
+}

@@ -1,0 +1,2 @@
+ALTER TABLE "project_automation_settings" ADD COLUMN "auto_merge_fix_prs" text DEFAULT 'never' NOT NULL;--> statement-breakpoint
+ALTER TABLE "project_automation_settings" ADD COLUMN "auto_merge_method" text DEFAULT 'squash' NOT NULL;

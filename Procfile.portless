@@ -1,0 +1,4 @@
+api:    mkdir -p "${SUPERLOG_LOG_DIR:-tmp/logs}" && ./scripts/portless-run.sh api pnpm --filter @superlog/api dev 2>&1 | tee "${SUPERLOG_LOG_DIR:-tmp/logs}/api.log"
+web:    mkdir -p "${SUPERLOG_LOG_DIR:-tmp/logs}" && ./scripts/portless-run.sh web pnpm --filter @superlog/web dev 2>&1 | tee "${SUPERLOG_LOG_DIR:-tmp/logs}/web.log"
+worker: mkdir -p "${SUPERLOG_LOG_DIR:-tmp/logs}" && ./scripts/with-stack-env.sh pnpm --filter @superlog/worker dev 2>&1 | tee "${SUPERLOG_LOG_DIR:-tmp/logs}/worker.log"
+proxy:  mkdir -p "${SUPERLOG_LOG_DIR:-tmp/logs}" && ./scripts/portless-run.sh proxy pnpm --filter @superlog/proxy dev 2>&1 | tee "${SUPERLOG_LOG_DIR:-tmp/logs}/proxy.log"

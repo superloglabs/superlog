@@ -1,0 +1,136 @@
+import { strict as assert } from "node:assert";
+import { test } from "node:test";
+import type { ClickHouseClient } from "@clickhouse/client";
+import { countSeries, metricSeries, queryMetrics, queryTraces } from "./clickhouse.js";
+
+function fakeClickhouse(capture: { query?: string; params?: Record<string, unknown> }) {
+  return {
+    async query(input: { query: string; query_params?: Record<string, unknown> }) {
+      capture.query = input.query;
+      capture.params = input.query_params;
+      return {
+        async json() {
+          return [];
+        },
+      };
+    },
+  } as unknown as ClickHouseClient;
+}
+
+// queryMetrics fans out across four metric tables, so a single-slot capture
+// would only retain the last query. This collects every query it runs.
+function fakeClickhouseMulti(queries: string[]) {
+  return {
+    async query(input: { query: string; query_params?: Record<string, unknown> }) {
+      queries.push(input.query);
+      return {
+        async json() {
+          return [];
+        },
+      };
+    },
+  } as unknown as ClickHouseClient;
+}
+
+test("countSeries groups traces by span attributes when groupBy uses attr prefix", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await countSeries(
+    fakeClickhouse(capture),
+    "project-1",
+    "traces",
+    { range: { since: "now() - INTERVAL 1 HOUR", until: "now()" } },
+    "attr:superlog.endpoint",
+    { n: 1, unit: "MINUTE" },
+  );
+
+  assert.match(capture.query ?? "", /SpanAttributes\[\{groupKey:String\}\]/);
+  assert.equal(capture.params?.groupKey, "superlog.endpoint");
+});
+
+test("countSeries groups logs by log attributes when groupBy uses attr prefix", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await countSeries(
+    fakeClickhouse(capture),
+    "project-1",
+    "logs",
+    { range: { since: "now() - INTERVAL 1 HOUR", until: "now()" } },
+    "attr:log.level",
+    { n: 1, unit: "MINUTE" },
+  );
+
+  assert.match(capture.query ?? "", /LogAttributes\[\{groupKey:String\}\]/);
+  assert.equal(capture.params?.groupKey, "log.level");
+});
+
+test("metricSeries can exclude resource attributes by substring", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await metricSeries(
+    fakeClickhouse(capture),
+    "project-1",
+    "superlog.worker.cursor_lag_ms",
+    {
+      range: { since: "now() - INTERVAL 1 HOUR", until: "now()" },
+      resourceAttrs: [{ key: "host.name", value: ".local", op: "not_contains" }],
+    },
+    undefined,
+    { n: 1, unit: "MINUTE" },
+    "max",
+  );
+
+  assert.match(
+    capture.query ?? "",
+    /positionCaseInsensitive\(ResourceAttributes\[\{attr_k_0:String\}\], \{attr_v_0:String\}\) = 0/,
+  );
+  assert.equal(capture.params?.attr_k_0, "host.name");
+  assert.equal(capture.params?.attr_v_0, ".local");
+});
+
+test("queryTraces returns resource attributes alongside span attributes", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await queryTraces(fakeClickhouse(capture), "project-1", {
+    range: { since: "now() - INTERVAL 1 HOUR", until: "now()" },
+    limit: 50,
+  });
+
+  assert.match(capture.query ?? "", /SpanAttributes AS span_attrs/);
+  assert.match(capture.query ?? "", /ResourceAttributes AS resource_attrs/);
+});
+
+test("queryMetrics returns data-point attributes for every metric kind", async () => {
+  const queries: string[] = [];
+
+  await queryMetrics(fakeClickhouseMulti(queries), "project-1", {
+    range: { since: "now() - INTERVAL 1 HOUR", until: "now()" },
+    limit: 100,
+  });
+
+  assert.equal(queries.length, 4);
+  for (const q of queries) {
+    assert.match(q, /Attributes AS attributes/);
+    assert.match(q, /ResourceAttributes AS resource_attrs/);
+  }
+});
+
+test("queryMetrics surfaces sum/min/max for histogram points", async () => {
+  const queries: string[] = [];
+
+  await queryMetrics(fakeClickhouseMulti(queries), "project-1", {
+    range: { since: "now() - INTERVAL 1 HOUR", until: "now()" },
+    limit: 100,
+  });
+
+  const histogramQuery = queries.find((q) => q.includes("'histogram' AS kind"));
+  assert.ok(histogramQuery, "expected a histogram query");
+  assert.match(histogramQuery, /Count AS count/);
+  assert.match(histogramQuery, /Sum AS sum/);
+  assert.match(histogramQuery, /Min AS min/);
+  assert.match(histogramQuery, /Max AS max/);
+
+  const gaugeQuery = queries.find((q) => q.includes("'gauge' AS kind"));
+  assert.ok(gaugeQuery, "expected a gauge query");
+  assert.match(gaugeQuery, /Value AS value/);
+});

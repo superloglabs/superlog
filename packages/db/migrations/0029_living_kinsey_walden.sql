@@ -1,0 +1,2 @@
+ALTER TABLE "github_installations" DROP CONSTRAINT "github_installations_installation_id_unique";--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "github_installations_org_installation_idx" ON "github_installations" USING btree ("org_id","installation_id");

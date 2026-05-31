@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" xmlns:xlink="http://www.w3.org/1999/xlink" width="1000" height="1000"><metadata><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/"><rdf:Description><dc:creator>RealFaviconGenerator</dc:creator><dc:source>https://realfavicongenerator.net</dc:source></rdf:Description></rdf:RDF></metadata><style>
+    #light-icon {
+      display: inline;
+    }
+    #dark-icon {
+      display: none;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      #light-icon {
+        display: none;
+      }
+      #dark-icon {
+        display: inline;
+      }
+    }
+  </style><g id="light-icon"><svg xmlns="http://www.w3.org/2000/svg" version="1.1" xmlns:xlink="http://www.w3.org/1999/xlink" width="1000" height="1000"><g clip-path="url(#SvgjsClipPath1038)"><rect width="1000" height="1000" fill="#ffffff"></rect><g transform="matrix(2,0,0,2,150,150)"><svg xmlns="http://www.w3.org/2000/svg" width="350" height="350" viewBox="0 0 350 350" fill="none"><g clip-path="url(#clip0_2021_2)">
+<rect x="172.464" y="172.464" width="96.3768" height="96.3768" fill="black"></rect>
+<rect y="81.1594" width="81.1594" height="187.681" fill="black"></rect>
+<rect x="268.841" y="81.1594" width="81.1594" height="187.681" fill="black"></rect>
+<rect x="268.841" width="81.1594" height="187.681" transform="rotate(90 268.841 0)" fill="black"></rect>
+<rect x="268.841" y="268.841" width="81.1594" height="187.681" transform="rotate(90 268.841 268.841)" fill="black"></rect>
+</g><defs>
+<clipPath id="clip0_2021_2">
+<rect width="350" height="350" fill="white"></rect>
+</clipPath>
+<clipPath id="SvgjsClipPath1038"><rect width="1000" height="1000" x="0" y="0" rx="350" ry="350"></rect></clipPath></defs></svg></g></g></svg></g><g id="dark-icon"><svg xmlns="http://www.w3.org/2000/svg" version="1.1" xmlns:xlink="http://www.w3.org/1999/xlink" width="1000" height="1000"><g clip-path="url(#SvgjsClipPath1039)"><rect width="1000" height="1000" fill="#000000"></rect><g transform="matrix(2,0,0,2,150,150)"><svg xmlns="http://www.w3.org/2000/svg" width="350" height="350" viewBox="0 0 350 350" fill="none"><g clip-path="url(#clip0_2021_2)">
+<rect x="172.464" y="172.464" width="96.3768" height="96.3768" fill="black"></rect>
+<rect y="81.1594" width="81.1594" height="187.681" fill="black"></rect>
+<rect x="268.841" y="81.1594" width="81.1594" height="187.681" fill="black"></rect>
+<rect x="268.841" width="81.1594" height="187.681" transform="rotate(90 268.841 0)" fill="black"></rect>
+<rect x="268.841" y="268.841" width="81.1594" height="187.681" transform="rotate(90 268.841 268.841)" fill="black"></rect>
+</g><defs>
+<clipPath id="clip0_2021_2">
+<rect width="350" height="350" fill="white"></rect>
+</clipPath>
+<clipPath id="SvgjsClipPath1039"><rect width="1000" height="1000" x="0" y="0" rx="350" ry="350"></rect></clipPath></defs></svg></g></g></svg></g></svg>

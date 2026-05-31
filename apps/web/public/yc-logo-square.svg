@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: #f05f22;
+      }
+
+      .cls-1, .cls-2 {
+        fill-rule: evenodd;
+      }
+
+      .cls-2 {
+        fill: #fff;
+      }
+    </style>
+  </defs>
+  <g id="logo-y-combinator-copy">
+    <g id="Group-19">
+      <polygon id="Fill-1" class="cls-1" points="0 320 320 320 320 0 0 0 0 320"/>
+      <polygon id="Fill-2" class="cls-2" points="173 175.87 173 247 146 247 146 175.87 77.09 73 110 73 159.63 149 209 73 241.91 73 173 175.87"/>
+    </g>
+  </g>
+</svg>

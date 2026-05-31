@@ -1,0 +1,86 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        include_metadata: true
+        max_request_body_size: 536870912
+      grpc:
+        endpoint: 0.0.0.0:4317
+        include_metadata: true
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+  # Strip any client-supplied `superlog.*` attributes from every signal at
+  # both span/log/datapoint and resource scope. The proxy is the only
+  # authoritative source of `superlog.*` keys; without this strip a customer
+  # could spoof another tenant by setting `superlog.project_id` themselves.
+  transform/strip_superlog:
+    error_mode: ignore
+    trace_statements:
+      - delete_matching_keys(span.attributes, "^superlog\\..*")
+      - delete_matching_keys(resource.attributes, "^superlog\\..*")
+    log_statements:
+      - delete_matching_keys(log.attributes, "^superlog\\..*")
+      - delete_matching_keys(resource.attributes, "^superlog\\..*")
+    metric_statements:
+      - delete_matching_keys(datapoint.attributes, "^superlog\\..*")
+      - delete_matching_keys(resource.attributes, "^superlog\\..*")
+
+  attributes/from_metadata:
+    actions:
+      - key: superlog.project_id
+        action: insert
+        from_context: metadata.x-superlog-project-id
+
+  groupbyattrs/project_id:
+    keys:
+      - superlog.project_id
+
+exporters:
+  clickhouse:
+    endpoint: ${env:CLICKHOUSE_ENDPOINT}
+    database: ${env:CLICKHOUSE_DB}
+    username: ${env:CLICKHOUSE_USER}
+    password: ${env:CLICKHOUSE_PASSWORD}
+    create_schema: true
+    logs_table_name: otel_logs
+    traces_table_name: otel_traces
+    metrics_tables:
+      gauge:
+        name: otel_metrics_gauge
+      sum:
+        name: otel_metrics_sum
+      summary:
+        name: otel_metrics_summary
+      histogram:
+        name: otel_metrics_histogram
+      exponential_histogram:
+        name: otel_metrics_exp_histogram
+    timeout: 10s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 5m
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [transform/strip_superlog, attributes/from_metadata, groupbyattrs/project_id, batch]
+      exporters: [clickhouse]
+    logs:
+      receivers: [otlp]
+      processors: [transform/strip_superlog, attributes/from_metadata, groupbyattrs/project_id, batch]
+      exporters: [clickhouse]
+    metrics:
+      receivers: [otlp]
+      processors: [transform/strip_superlog, attributes/from_metadata, groupbyattrs/project_id, batch]
+      exporters: [clickhouse]
+  telemetry:
+    logs:
+      level: info
