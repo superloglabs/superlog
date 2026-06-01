@@ -2,7 +2,8 @@ export type ReopenedIncidentQueueStatus =
   | "queued"
   | "existing_active"
   | "suppressed"
-  | "disabled";
+  | "disabled"
+  | "no_credits";
 
 export function buildReopenedIncidentSlackUpdate(opts: {
   issueTitle: string;
@@ -34,6 +35,15 @@ export function buildReopenedIncidentSlackUpdate(opts: {
     case "suppressed":
       threadLines.push(
         ":pause_button: Auto-investigation is temporarily suppressed because the last resolution was fixed in current code.",
+      );
+      return {
+        threadSummary: threadLines.join("\n"),
+        rootStatus: "Incident reopened",
+        rootTagline: `Linked issue regressed: ${opts.issueTitle}`,
+      };
+    case "no_credits":
+      threadLines.push(
+        ":credit_card: Investigation not started — you've gone over the Free plan's monthly investigation limit. Upgrade to pay-as-you-go for more investigations.",
       );
       return {
         threadSummary: threadLines.join("\n"),

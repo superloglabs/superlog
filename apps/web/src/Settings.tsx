@@ -71,6 +71,7 @@ import {
   useWebhooks,
 } from "./api";
 import { Btn, Chip, FieldLabel, Input, Label, Tile } from "./design/ui";
+import { BillingCard } from "./settings/BillingCard.tsx";
 import { OrgGeneralCard } from "./settings/OrgGeneralCard.tsx";
 import { OrgMembersCard } from "./settings/OrgMembersCard.tsx";
 
@@ -79,6 +80,7 @@ type SettingsScope = "org" | "project";
 type OrgSectionId =
   | "general"
   | "members"
+  | "billing"
   | "agent-guidance"
   | "weekly-digest"
   | "mgmt-keys"
@@ -95,6 +97,7 @@ type SectionId = OrgSectionId | ProjectSectionId;
 const ORG_SECTIONS: ReadonlyArray<{ id: OrgSectionId; label: string }> = [
   { id: "general", label: "General" },
   { id: "members", label: "Members" },
+  { id: "billing", label: "Billing" },
   { id: "agent-guidance", label: "Agent guidance" },
   { id: "weekly-digest", label: "Weekly digest" },
   { id: "mgmt-keys", label: "Management API keys" },
@@ -644,6 +647,15 @@ function OrgSectionView({ section }: { section: OrgSectionId }) {
       return (
         <Section title="Members" subtitle="Invite teammates, change roles, and remove access.">
           <OrgMembersCard />
+        </Section>
+      );
+    case "billing":
+      return (
+        <Section
+          title="Billing"
+          subtitle="Your plan, usage this period, and payment — billed per org."
+        >
+          <BillingCard />
         </Section>
       );
     case "agent-guidance":

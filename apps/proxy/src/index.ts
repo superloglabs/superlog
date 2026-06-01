@@ -7,6 +7,7 @@ import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
+import { createIngestEntitlementGate, signalForPath } from "./billing/ingest-entitlement.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import { IngestQueue, getIngestQueueConfig } from "./ingest-queue.js";
 import { logger } from "./logger.js";
@@ -23,6 +24,10 @@ const COLLECTOR_URL = process.env.COLLECTOR_URL ?? "http://localhost:4318";
 const PORT = Number(process.env.PORT ?? 4000);
 const ingestQueueConfig = getIngestQueueConfig(process.env);
 const ingestQueue = ingestQueueConfig ? new IngestQueue(ingestQueueConfig, logger) : null;
+// Free-tier ingest hard-block. Null (disabled) without AUTUMN_SECRET_KEY. The
+// verdict is a cached, fail-open in-memory read — never a blocking call on the
+// ingest hot path (see billing/ingest-entitlement.ts).
+const ingestGate = createIngestEntitlementGate({ lookupOrgForProject });
 
 app.use(
   "/v1/*",
@@ -136,6 +141,21 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
     if (contentEncoding) span.setAttribute("http.request.content_encoding", contentEncoding);
 
     try {
+      // Free-tier hard-block: if the org has exhausted its monthly allowance for
+      // this signal, drop with a non-retryable 4xx (402) so OTLP exporters stop
+      // sending rather than retry-storm. Cached + fail-open, so this is a cheap
+      // in-memory read that never blocks on Autumn.
+      const signal = signalForPath(path);
+      if (ingestGate && signal && !ingestGate.allows(projectId, signal)) {
+        responseStatus = 402;
+        span.setAttribute("ingest.blocked", "quota_exceeded");
+        logger.info({ path, projectId, signal }, "blocking ingest; org over plan quota");
+        return c.json(
+          { error: "telemetry quota exceeded for this billing period; upgrade your plan to resume ingest" },
+          402,
+        );
+      }
+
       const upstreamHeaders: Record<string, string> = {
         "content-type": contentType,
         "x-superlog-project-id": projectId,

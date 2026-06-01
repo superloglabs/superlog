@@ -2,6 +2,7 @@ import "./env.js";
 import "./net.js";
 import { createClient } from "@clickhouse/client";
 import { serve } from "@hono/node-server";
+import { Autumn } from "autumn-js";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import {
   DEFAULT_AGENT_RUN_PROVIDER,
@@ -690,6 +691,48 @@ app.get("/api/projects/:projectId/stats", async (c) => {
     metrics,
     issues: Number(issueRows[0]?.c ?? 0),
   });
+});
+
+// Immediate "cancel my paid plan" → Free. Autumn's React SDK / better-auth
+// plugin doesn't expose cancel, and downgrades otherwise schedule to cycle end,
+// so we do it server-side with the secret key: cancel any active paid plan now
+// (cancel_immediately), then attach Free (which isn't the default product, so a
+// bare cancel would leave the org with no plan). Per-org (org = Autumn customer).
+app.post("/api/me/billing/cancel", async (c) => {
+  const ctx = await resolveMaybeActiveOrgContext({
+    userId: c.var.userId,
+    preferredOrgId: c.var.orgId,
+  });
+  if (!ctx.org) throw new HTTPException(400, { message: "no active org" });
+  const key = process.env.AUTUMN_SECRET_KEY;
+  if (!key) throw new HTTPException(400, { message: "billing is not configured" });
+  const orgId = ctx.org.id;
+  // "Switch to Free" — per Autumn's guidance, attach the Free plan immediately
+  // and carry usage over, rather than cancelling the paid plan. When a paid
+  // plan is active this is a real downgrade: planSchedule:"immediate" applies it
+  // now and carryOverUsages preserves the org's metered usage (spans / logs /
+  // metric points / investigation credits) so a maxed cap can't be reset by
+  // toggling paid↔Free. (Cancelling instead spins up a fresh Free entitlement
+  // with usage 0 — the reset we were fighting; and billing.update has no
+  // carry-over option.) If the org is ALREADY on Free (Free is the auto_enable
+  // default), the attach 409s "plan_already_attached" — that's a no-op success.
+  const autumn = new Autumn({ secretKey: key });
+  try {
+    await autumn.billing.attach({
+      customerId: orgId,
+      planId: "free",
+      planSchedule: "immediate",
+      carryOverUsages: { enabled: true },
+    });
+  } catch (err) {
+    const status = (err as { statusCode?: number }).statusCode;
+    const body = String((err as { body?: unknown }).body ?? (err as Error).message ?? "");
+    if (status === 409 || body.includes("plan_already_attached")) {
+      return c.json({ ok: true }); // already on Free
+    }
+    throw err;
+  }
+  return c.json({ ok: true });
 });
 
 app.get("/api/projects/:projectId/explore/attribute-keys", async (c) => {

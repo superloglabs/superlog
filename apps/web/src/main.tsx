@@ -1,5 +1,6 @@
 import "./instrumentation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { AutumnProvider } from "autumn-js/react";
 import { PostHogProvider } from "posthog-js/react";
 import React from "react";
 import ReactDOM from "react-dom/client";
@@ -46,7 +47,15 @@ if (window.location.pathname.startsWith("/design")) {
       >
         <BrowserRouter>
           <QueryClientProvider client={queryClient}>
-            <App />
+            {/* Billing context. Web and API are separate origins, so point
+                Autumn at the API; useBetterAuth routes through /api/auth/autumn
+                with the session cookie. Harmless when billing is unconfigured. */}
+            <AutumnProvider
+              backendUrl={import.meta.env.VITE_API_URL ?? "http://localhost:4100"}
+              useBetterAuth
+            >
+              <App />
+            </AutumnProvider>
           </QueryClientProvider>
         </BrowserRouter>
       </PostHogProvider>

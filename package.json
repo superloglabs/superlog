@@ -38,6 +38,7 @@
     "@opentelemetry/resources": "^2.7.0",
     "@opentelemetry/sdk-trace-base": "^2.7.0",
     "@opentelemetry/sdk-trace-node": "^2.7.0",
+    "atmn": "^1.1.8",
     "drizzle-orm": "^0.45.2",
     "portless": "^0.11.1",
     "postgres": "^3.4.5",
