@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { PassThrough } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   DeleteObjectCommand,
@@ -14,10 +15,22 @@ import {
   SQSClient,
   SendMessageCommand,
 } from "@aws-sdk/client-sqs";
+import { Upload } from "@aws-sdk/lib-storage";
+import { type SpillSink, captureBody } from "./body-capture.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import { proxyOperationalRecorder } from "./operational-metrics.js";
 
 const DEFAULT_MAX_MESSAGE_BYTES = 240_000;
+// Hard ceiling on a single ingest body. Bodies above this are rejected at the
+// edge (413) instead of accepted and buffered/streamed. Set well above the
+// largest legitimate payload we have observed (~38 MiB).
+const DEFAULT_MAX_BODY_BYTES = 64 * 1024 * 1024;
+// Slack reserved for the JSON envelope (field names + metadata) when deciding
+// the raw-byte threshold under which a base64 inline message still fits SQS.
+const INLINE_ENVELOPE_SLACK_BYTES = 1_024;
+// One S3 multipart part held in memory at a time per spilling upload, so a
+// large body costs ~PART_SIZE of RSS regardless of its total size.
+const SPILL_PART_SIZE_BYTES = 5 * 1024 * 1024;
 const DEFAULT_WAIT_TIME_SECONDS = 20;
 const DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 120;
 const DEFAULT_BATCH_SIZE = 10;
@@ -36,6 +49,7 @@ export type IngestQueueConfig = {
   oversizeBucket?: string;
   oversizePrefix: string;
   maxMessageBytes: number;
+  maxBodyBytes: number;
   consumerEnabled: boolean;
   waitTimeSeconds: number;
   visibilityTimeoutSeconds: number;
@@ -111,6 +125,7 @@ export function getIngestQueueConfig(env: NodeJS.ProcessEnv): IngestQueueConfig 
     oversizeBucket: env.INGEST_OVERSIZE_BUCKET || undefined,
     oversizePrefix: env.INGEST_OVERSIZE_PREFIX || "otlp-oversize",
     maxMessageBytes: readPositiveInt(env.INGEST_QUEUE_MAX_MESSAGE_BYTES, DEFAULT_MAX_MESSAGE_BYTES),
+    maxBodyBytes: readPositiveInt(env.INGEST_MAX_BODY_BYTES, DEFAULT_MAX_BODY_BYTES),
     consumerEnabled: env.INGEST_QUEUE_CONSUMER_ENABLED !== "false",
     waitTimeSeconds: readPositiveInt(env.INGEST_QUEUE_WAIT_TIME_SECONDS, DEFAULT_WAIT_TIME_SECONDS),
     visibilityTimeoutSeconds: readPositiveInt(
@@ -251,17 +266,46 @@ export function describeCollectorFailure(
   };
 }
 
+/** Builds the {@link SpillSink} for a body that exceeds the inline threshold.
+ *  Injectable so the streaming/enqueue logic can be tested without S3 (the
+ *  default is an S3 multipart upload). */
+export type SpillSinkFactory = (params: {
+  bucket: string | undefined;
+  key: string;
+  contentType: string;
+}) => SpillSink;
+
 export class IngestQueue {
   private readonly sqs: SQSClient;
   private readonly s3: S3Client;
+  // Raw-byte threshold below which a body's base64 inline envelope still fits
+  // within maxMessageBytes. Bodies at or under this are buffered in memory and
+  // sent inline; larger ones stream to S3. Derived from the SQS message budget.
+  private readonly inlineRawThreshold: number;
+  private readonly spillSinkFactory: SpillSinkFactory;
 
   constructor(
     private readonly config: IngestQueueConfig,
     private readonly logger: LoggerLike,
+    spillSinkFactory?: SpillSinkFactory,
   ) {
     const clientConfig = config.region ? { region: config.region } : {};
     this.sqs = new SQSClient(clientConfig);
     this.s3 = new S3Client(clientConfig);
+    this.inlineRawThreshold = Math.max(
+      0,
+      Math.floor(((config.maxMessageBytes - INLINE_ENVELOPE_SLACK_BYTES) * 3) / 4),
+    );
+    this.spillSinkFactory =
+      spillSinkFactory ??
+      (({ bucket, key, contentType }) => {
+        if (!bucket) {
+          throw new Error(
+            "ingest body exceeds the inline limit but INGEST_OVERSIZE_BUCKET is not set for S3 offload",
+          );
+        }
+        return this.createS3SpillSink(bucket, key, contentType);
+      });
   }
 
   async enqueue(input: IngestQueueInput): Promise<"inline" | "s3"> {
@@ -299,6 +343,127 @@ export class IngestQueue {
       }
       throw err;
     }
+  }
+
+  /**
+   * Stream a request body into the queue with bounded memory. Small bodies are
+   * buffered and sent inline (delegating to {@link enqueue} for the exact
+   * envelope-size decision); larger bodies stream straight to S3 via a multipart
+   * upload so the proxy never holds the whole payload. Throws PayloadTooLargeError
+   * for bodies over maxBodyBytes and EmptyBodyError for empty ones (the caller
+   * maps these to 413 / 400).
+   */
+  async enqueueStream(input: {
+    path: string;
+    projectId: string;
+    contentType: string;
+    contentEncoding?: string;
+    body: AsyncIterable<Uint8Array>;
+  }): Promise<{ storage: "inline" | "s3"; bytes: number }> {
+    const now = new Date();
+    const datePrefix = now.toISOString().slice(0, 10).replaceAll("-", "/");
+    const key = `${trimSlashes(this.config.oversizePrefix)}/${datePrefix}/${randomUUID()}.otlp`;
+    const bucket = this.config.oversizeBucket;
+
+    const result = await captureBody(input.body, {
+      inlineThresholdBytes: this.inlineRawThreshold,
+      maxBytes: this.config.maxBodyBytes,
+      createSpillSink: () => this.spillSinkFactory({ bucket, key, contentType: input.contentType }),
+    });
+
+    if (result.storage === "buffer") {
+      // Small enough to buffer: reuse the exact inline-vs-S3 envelope decision.
+      const storage = await this.enqueue({
+        path: input.path,
+        projectId: input.projectId,
+        contentType: input.contentType,
+        contentEncoding: input.contentEncoding,
+        body: result.buffer,
+      });
+      return { storage, bytes: result.totalBytes };
+    }
+
+    // Large body: already streamed to S3 by the sink. Enqueue the pointer.
+    if (!bucket) throw new Error("spilled body has no oversize bucket configured");
+    const message: IngestQueueMessage = {
+      version: 1,
+      kind: "otlp",
+      path: input.path,
+      projectId: input.projectId,
+      contentType: input.contentType,
+      contentEncoding: input.contentEncoding,
+      receivedAt: now.toISOString(),
+      body: { storage: "s3", bucket, key, sizeBytes: result.totalBytes },
+    };
+    try {
+      await this.sqs.send(
+        new SendMessageCommand({ QueueUrl: this.config.queueUrl, MessageBody: JSON.stringify(message) }),
+      );
+    } catch (err) {
+      // The object already landed; clean up the orphan so a failed enqueue does
+      // not leak S3 storage, mirroring enqueue()'s rollback.
+      await this.deleteS3Object(bucket, key).catch((deleteErr) => {
+        this.logger.warn(
+          { err: deleteErr, bucket, key },
+          "failed to clean up oversize ingest object after enqueue failure",
+        );
+      });
+      throw err;
+    }
+    return { storage: "s3", bytes: result.totalBytes };
+  }
+
+  /**
+   * A {@link SpillSink} backed by a streaming S3 multipart upload. Only one part
+   * (SPILL_PART_SIZE_BYTES) is held in memory at a time, and `write` honors the
+   * PassThrough's backpressure so a slow upload throttles the source read.
+   */
+  private createS3SpillSink(bucket: string, key: string, contentType: string): SpillSink {
+    const pass = new PassThrough();
+    const upload = new Upload({
+      client: this.s3,
+      params: { Bucket: bucket, Key: key, Body: pass, ContentType: contentType },
+      partSize: SPILL_PART_SIZE_BYTES,
+      queueSize: 1,
+    });
+    const done = upload.done();
+    let uploadError: unknown;
+    // If the upload fails, surface it on the stream so in-flight writes reject
+    // instead of hanging; the trailing catch keeps `done` from going unhandled
+    // before finish()/abort() observes it.
+    done.catch((err) => {
+      uploadError = err;
+      if (!pass.destroyed) pass.destroy(err instanceof Error ? err : new Error(String(err)));
+    });
+
+    return {
+      write: (chunk) =>
+        new Promise<void>((resolve, reject) => {
+          if (uploadError) {
+            reject(uploadError);
+            return;
+          }
+          const flushed = pass.write(chunk, (err) => {
+            if (err) reject(err);
+          });
+          if (flushed) resolve();
+          else pass.once("drain", resolve);
+        }),
+      finish: async () => {
+        await new Promise<void>((resolve, reject) => {
+          pass.end((err?: Error | null) => (err ? reject(err) : resolve()));
+        });
+        await done;
+      },
+      abort: async () => {
+        try {
+          await upload.abort();
+        } catch {
+          // best-effort; the multipart upload may not have started a part yet.
+        }
+        if (!pass.destroyed) pass.destroy();
+      },
+    };
   }
 
   startConsumer(collectorUrl: string): void {
