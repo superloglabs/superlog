@@ -2,7 +2,7 @@ import "./env.js";
 import "./net.js";
 import { createClient } from "@clickhouse/client";
 import { serve } from "@hono/node-server";
-import { Autumn } from "autumn-js";
+import { Autumn, AutumnError } from "autumn-js";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import {
   DEFAULT_AGENT_RUN_PROVIDER,
@@ -27,7 +27,6 @@ import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { nanoid } from "nanoid";
-import { z } from "zod";
 import { mountAdmin, userIsStaff } from "./admin.js";
 import { mountAlerts } from "./alerts.js";
 import { auth } from "./auth.js";
@@ -694,29 +693,15 @@ app.get("/api/projects/:projectId/stats", async (c) => {
   });
 });
 
-// Autumn SDK errors expose a numeric `statusCode` and a JSON-string `body`.
-// Decode the body string through Zod (transform → pipe) so the whole error
-// validates in one safeParse and we match the structured "already on Free"
-// error code — no `as` casts and no hand-rolled JSON.parse. Unparseable JSON
-// transforms to `{}`, so it simply doesn't match.
-const autumnErrorSchema = z.object({
-  statusCode: z.number().optional(),
-  body: z
-    .string()
-    .transform((s): unknown => {
-      try {
-        return JSON.parse(s);
-      } catch {
-        return {};
-      }
-    })
-    .pipe(z.object({ code: z.string().optional() }))
-    .optional(),
-});
-
+// The Autumn SDK throws a typed AutumnError carrying the HTTP `statusCode` and
+// raw `body` — use it directly (no casts) and match the specific 409
+// "plan_already_attached" conflict code in the body.
 function isPlanAlreadyAttached(err: unknown): boolean {
-  const parsed = autumnErrorSchema.safeParse(err);
-  return parsed.success && parsed.data.body?.code === "plan_already_attached";
+  return (
+    err instanceof AutumnError &&
+    err.statusCode === 409 &&
+    err.body.includes("plan_already_attached")
+  );
 }
 
 // Immediate "switch to Free" — per Autumn's guidance, attach the Free plan now
