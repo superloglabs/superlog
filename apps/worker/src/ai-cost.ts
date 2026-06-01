@@ -80,7 +80,7 @@ export function sessionRuntimeUsd(activeSeconds: number): number {
 const PRICING: Array<{ match: RegExp; pricing: Pricing }> = [
   // Opus 4.7+ ($5/$25); any other Opus id (4.6/4.1/4.0/claude-3-opus) is legacy
   // ($15/$75). Order matters — the specific 4.7+ match must come first.
-  { match: /opus-4-[789]/i, pricing: OPUS },
+  { match: /opus-4-(?:[5-9]|[1-9]\d)(?=-|$)/i, pricing: OPUS },
   { match: /opus/i, pricing: OPUS_LEGACY },
   { match: /sonnet/i, pricing: SONNET },
   {
