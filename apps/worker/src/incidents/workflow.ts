@@ -53,6 +53,19 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
     return { agentRun: null, queueStatus: "suppressed" };
   }
 
+  // If an investigation is already active for this incident, skip the credit
+  // gate — it's already running and only needs a context update, not a fresh
+  // credit. Gating first would wrongly suppress updates to active runs once
+  // credits are exhausted. (The transaction below re-checks under a row lock.)
+  const activeRun = await db.query.agentRuns.findFirst({
+    where: and(
+      eq(schema.agentRuns.incidentId, incident.id),
+      inArray(schema.agentRuns.state, [...AGENT_RUN_ACTIVE_STATES]),
+    ),
+    orderBy: [desc(schema.agentRuns.createdAt)],
+  });
+  if (activeRun) return { agentRun: activeRun, queueStatus: "existing_active" };
+
   // Investigation credit gate (Autumn). The org is the Autumn customer. Free
   // orgs that have spent their monthly credits are blocked here; paid plans
   // allow overage so the gate returns true. Fails open if billing is unset or

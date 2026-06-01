@@ -66,6 +66,11 @@ export async function meterTelemetryUsageTick(deps: UsageMeterDeps): Promise<num
       cursor.toISOString(),
       until.toISOString(),
     );
+    // Persist the cursor BEFORE issuing the non-idempotent track() calls. track()
+    // is additive, so a setCursor failure AFTER tracking would replay this window
+    // next tick and double-charge. Advancing first makes it strictly at-most-once:
+    // a track failure below under-reports one window rather than risk double-count.
+    await deps.setCursor(cursorName, until);
     if (perProject.size > 0) {
       const orgMap = await deps.resolveOrgIds([...perProject.keys()]);
       for (const [orgId, value] of aggregateByOrg(perProject, orgMap)) {
@@ -81,12 +86,11 @@ export async function meterTelemetryUsageTick(deps: UsageMeterDeps): Promise<num
               value,
               err: err instanceof Error ? err.message : String(err),
             },
-            "usage track failed; window not re-reported (cursor still advances)",
+            "usage track failed; window not re-reported (cursor already advanced)",
           );
         }
       }
     }
-    await deps.setCursor(cursorName, until);
   }
   return reported;
 }

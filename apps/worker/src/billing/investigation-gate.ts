@@ -87,7 +87,7 @@ export function createAutumnInvestigationGate(opts: {
 // Singleton used by the worker. Autumn-backed when AUTUMN_SECRET_KEY is set,
 // otherwise a no-op allow-all gate so dev/worktrees aren't blocked.
 export function createInvestigationGate(env: NodeJS.ProcessEnv = process.env): InvestigationGate {
-  const secretKey = env.AUTUMN_SECRET_KEY;
+  const secretKey = env.AUTUMN_SECRET_KEY?.trim();
   if (!secretKey) return allowAllGate;
   return createAutumnInvestigationGate({ secretKey });
 }

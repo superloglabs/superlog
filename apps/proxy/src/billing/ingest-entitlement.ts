@@ -42,6 +42,18 @@ export function createEntitlementCache(deps: {
   const cache = new Map<string, Entry>();
   const inflight = new Set<string>();
 
+  // Bound memory in the long-lived proxy: evict the oldest entry once a NEW key
+  // would push past the cap (Map preserves insertion order). 50k keys (~16k
+  // projects × 3 signals) is far above any realistic active set within one TTL.
+  const MAX_ENTRIES = 50_000;
+  function setEntry(key: string, entry: Entry): void {
+    if (!cache.has(key) && cache.size >= MAX_ENTRIES) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(key, entry);
+  }
+
   function refresh(key: string, projectId: string, signal: IngestSignal): void {
     if (inflight.has(key)) return;
     inflight.add(key);
@@ -49,10 +61,10 @@ export function createEntitlementCache(deps: {
       try {
         const orgId = await deps.lookupOrgId(projectId);
         const allowed = orgId ? await deps.check(orgId, signal) : true;
-        cache.set(key, { allowed, expiresAt: now() + ttlMs });
+        setEntry(key, { allowed, expiresAt: now() + ttlMs });
       } catch (err) {
         // Fail open: never let a billing/lookup error block customer telemetry.
-        cache.set(key, { allowed: true, expiresAt: now() + ERROR_TTL_MS });
+        setEntry(key, { allowed: true, expiresAt: now() + ERROR_TTL_MS });
         logger.warn(
           { scope: "billing.ingest_gate", projectId, signal, err: err instanceof Error ? err.message : String(err) },
           "entitlement refresh failed; allowing ingest (fail-open)",

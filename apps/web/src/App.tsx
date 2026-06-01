@@ -152,7 +152,9 @@ function AuthenticatedApp() {
   const billingPaused =
     !impersonating &&
     !!billingCustomer &&
-    ["investigations", "spans", "logs", "metric_points"].some((f) => {
+    // Only the telemetry signals gate ingest. Investigation credits running out
+    // doesn't pause ingest, so it must not trigger the "Ingest paused" bar.
+    ["spans", "logs", "metric_points"].some((f) => {
       const b = check({ featureId: f }).balance;
       return !!b && !b.unlimited && b.granted > 0 && !b.overageAllowed && b.usage >= b.granted;
     });

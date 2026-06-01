@@ -91,3 +91,17 @@ test("pure PAYG always allows investigations, always billable", () => {
     billable: true,
   });
 });
+
+test("free plan blocks a batch that would exceed the cap even while still under it", () => {
+  const free = getPlan("free");
+  // 0 used, but a 2M batch exceeds the 1M spans cap → block (no large-batch bypass).
+  assert.deepEqual(
+    evaluateTelemetryQuota({ plan: free, signal: "spans", alreadyUsed: 0, incoming: 2_000_000 }),
+    { allowed: false, reason: "over_free_cap" },
+  );
+  // A batch that fits under the cap is still allowed.
+  assert.deepEqual(
+    evaluateTelemetryQuota({ plan: free, signal: "spans", alreadyUsed: 0, incoming: 500_000 }),
+    { allowed: true, overageEvents: 0, overageUsd: 0 },
+  );
+});

@@ -32,9 +32,10 @@ export type TokenUsage = {
 // and reconcile periodically against the Anthropic Admin API cost report — these
 // token rates are the per-call estimate; managed-agent session runtime is a
 // separate dimension added in recordAgentRunCompletion (see sessionRuntimeUsd).
-//   sonnet 4.6: $3 in / $15 out / $0.30 cache read / $3.75 cache write
-//   opus 4.7:   $5 in / $25 out / $0.50 cache read / $6.25 cache write
-// (opus was previously $15/$75; that was Opus <=4.6 — 4.7 dropped to $5/$25.)
+//   sonnet 4.6:    $3 in / $15 out / $0.30 cache read / $3.75 cache write
+//   opus 4.7+:     $5 in / $25 out / $0.50 cache read / $6.25 cache write
+//   opus <=4.6/4.1/4.0/3: $15 in / $75 out / $1.50 read / $18.75 write (legacy)
+// 4.7 dropped Opus from $15/$75 to $5/$25, so legacy Opus IDs are priced higher.
 // If a model isn't in the table we fall back to sonnet pricing and tag the
 // metric with model.pricing_fallback=true so it's visible on the dashboard.
 type Pricing = {
@@ -58,6 +59,14 @@ const OPUS: Pricing = {
   cacheWritePerMTok: 6.25,
 };
 
+// Opus 4.6 and earlier (incl. 4.1, 4.0, claude-3-opus) — before the 4.7 price cut.
+const OPUS_LEGACY: Pricing = {
+  inputPerMTok: 15,
+  outputPerMTok: 75,
+  cacheReadPerMTok: 1.5,
+  cacheWritePerMTok: 18.75,
+};
+
 // Claude Managed Agents bill session runtime at $0.08 per session-hour on top of
 // tokens (billed to the millisecond while status=running). estimateCostUsd above
 // covers only tokens, so recordAgentRunCompletion adds this for agent runs.
@@ -69,7 +78,10 @@ export function sessionRuntimeUsd(activeSeconds: number): number {
 }
 
 const PRICING: Array<{ match: RegExp; pricing: Pricing }> = [
-  { match: /opus/i, pricing: OPUS },
+  // Opus 4.7+ ($5/$25); any other Opus id (4.6/4.1/4.0/claude-3-opus) is legacy
+  // ($15/$75). Order matters — the specific 4.7+ match must come first.
+  { match: /opus-4-[789]/i, pricing: OPUS },
+  { match: /opus/i, pricing: OPUS_LEGACY },
   { match: /sonnet/i, pricing: SONNET },
   {
     match: /haiku/i,

@@ -300,7 +300,10 @@ function UsageMeter({
   }
 
   // Free tier: granted is a hard cap → progress bar, red + "limit reached" once full.
-  const pct = Math.max(0, Math.min(100, Math.round((balance.usage / balance.granted) * 100)));
+  // "At cap" is the exact usage>=granted check (not the rounded %), so 99.9% never
+  // shows as "limit reached"; the % floors below 100 until actually exhausted.
+  const atCap = balance.usage >= balance.granted;
+  const pct = atCap ? 100 : Math.max(0, Math.min(99, Math.floor((balance.usage / balance.granted) * 100)));
   return (
     <div className="py-1">
       <div className="flex items-baseline justify-between gap-3">
@@ -309,13 +312,13 @@ function UsageMeter({
       </div>
       <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-border">
         <div
-          className={`h-full rounded-full ${pct >= 100 ? "bg-danger" : "bg-accent"}`}
+          className={`h-full rounded-full ${atCap ? "bg-danger" : "bg-accent"}`}
           style={{ width: `${pct}%` }}
         />
       </div>
       <div className="mt-1.5 text-[11.5px] tabular-nums text-subtle">
         {format(balance.usage)} of {format(balance.granted)}
-        {pct >= 100 ? " · limit reached" : ""}
+        {atCap ? " · limit reached" : ""}
       </div>
     </div>
   );

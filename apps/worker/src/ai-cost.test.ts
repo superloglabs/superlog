@@ -29,6 +29,15 @@ test("Opus 4.7 token pricing corrected to $5 / $25 / $0.50 / $6.25 (was $15/$75)
   );
 });
 
+test("legacy Opus (<=4.6) bills at $15/$75, while Opus 4.7+ stays at $5/$25", () => {
+  // Opus 4.1 / 4.0 / claude-3-opus predate the 4.7 price cut → $15 in / $75 out.
+  assert.equal(estimateCostUsd("claude-opus-4-1", { ...ONE_M }), 15);
+  assert.equal(estimateCostUsd("claude-opus-4-1", { ...ONE_M, inputTokens: 0, outputTokens: 1_000_000 }), 75);
+  assert.equal(estimateCostUsd("claude-3-opus-20240229", { ...ONE_M }), 15);
+  // 4.7 and 4.8 stay on the new $5/$25.
+  assert.equal(estimateCostUsd("claude-opus-4-8", { ...ONE_M }), 5);
+});
+
 test("unknown model falls back to Sonnet pricing", () => {
   assert.equal(estimateCostUsd("some-other-model", { ...ONE_M }), 3);
 });

@@ -119,6 +119,13 @@ export const PLANS: Record<PlanKey, Plan> = {
   },
 };
 
+// Deep-freeze the catalog: getPlan hands out shared references, so a frozen
+// plan prevents an accidental mutation from globally changing billing behavior.
+for (const plan of Object.values(PLANS)) {
+  if (plan.includedTelemetry) Object.freeze(plan.includedTelemetry);
+  Object.freeze(plan);
+}
+
 export function getPlan(key: PlanKey): Plan {
   return PLANS[key];
 }

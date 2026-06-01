@@ -100,12 +100,18 @@ function createCursorStore(database: DB, windowMs: number) {
   };
 }
 
+const TRACK_TIMEOUT_MS = 10_000;
+
 function createAutumnTrack(secretKey: string, fetchImpl: typeof fetch = fetch) {
   return async (orgId: string, featureId: string, value: number): Promise<void> => {
+    // Bound the request so a hung Autumn connection can't stall the worker tick
+    // loop indefinitely. On timeout the fetch rejects → the caller logs + skips
+    // (cursor already advanced), same as any other track failure.
     const res = await fetchImpl("https://api.useautumn.com/v1/track", {
       method: "POST",
       headers: { Authorization: `Bearer ${secretKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({ customer_id: orgId, feature_id: featureId, value }),
+      signal: AbortSignal.timeout(TRACK_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`autumn /track -> ${res.status}`);
   };

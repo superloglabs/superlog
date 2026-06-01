@@ -725,10 +725,11 @@ app.post("/api/me/billing/cancel", async (c) => {
       carryOverUsages: { enabled: true },
     });
   } catch (err) {
-    const status = (err as { statusCode?: number }).statusCode;
     const body = String((err as { body?: unknown }).body ?? (err as Error).message ?? "");
-    if (status === 409 || body.includes("plan_already_attached")) {
-      return c.json({ ok: true }); // already on Free
+    // Only the "already on Free" conflict is a no-op success; surface any other
+    // 409 (or error) so a genuine failure isn't reported as a successful switch.
+    if (body.includes("plan_already_attached")) {
+      return c.json({ ok: true });
     }
     throw err;
   }

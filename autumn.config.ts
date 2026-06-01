@@ -59,21 +59,15 @@ export const free = plan({
   id: "free",
   name: "Free",
   group: "main",
-  // NOTE: mark "Free" as the DEFAULT product in the Autumn dashboard so new orgs
-  // are auto-assigned it (config-as-code doesn't carry the default flag). Until
-  // then an un-provisioned org returns 404 on check() and the gate fails open.
+  // Free is the DEFAULT product: auto-attached on customer creation so every new
+  // org is provisioned (and the gates always have a balance to read) without a
+  // manual dashboard step. Without this an un-provisioned org returns 404 on
+  // check() and the gates fail open (no enforcement).
   //
-  // NOTE: also set `reset_usage_when_enabled = false` on EACH Free item below
-  // (dashboard, or `autumn.plans.update({planId:"free", items:[...]})` — the SDK
-  // accepts it, but atmn's DSL has no field for it and `plans.get` doesn't echo
-  // it). This makes usage CARRY OVER when an org cancels a paid plan and reverts
-  // to Free, instead of resetting to 0 — otherwise a user can toggle paid→Free
-  // to mint a fresh free allowance ("infinite money glitch"). Cancel itself is
-  // apps/api `/api/me/billing/cancel` → `billing.update(cancelAction:
-  // "cancel_immediately")`. Leave the PAID plans' items at the default (reset on
-  // enable) so an upgrade from Free starts a clean meter and we never bill for
-  // free-tier usage. CAVEAT: `atmn push` rewrites these items WITHOUT the flag,
-  // so re-apply it after any push.
+  // NOTE: the switch-to-Free carry-over (so a maxed cap can't be reset by
+  // toggling paid↔Free) is handled in code — apps/api `/api/me/billing/cancel`
+  // attaches Free with `carryOverUsages` — not via a plan-item flag here.
+  autoEnable: true,
   items: [
     // No price on any item → hard cap: check() denies once the allowance is hit.
     item({ featureId: investigations.id, included: 5, reset: { interval: "month" } }),

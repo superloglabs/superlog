@@ -24,7 +24,10 @@ export function evaluateTelemetryQuota(input: {
   const included = input.plan.includedTelemetry?.[input.signal] ?? 0;
 
   if (input.plan.overage === "block") {
-    if (input.alreadyUsed >= included) {
+    // Block once already at the cap, OR when this batch would push past it —
+    // otherwise a single large `incoming` batch sails through while cumulative
+    // usage is still under the cap.
+    if (input.alreadyUsed >= included || input.alreadyUsed + input.incoming > included) {
       return { allowed: false, reason: "over_free_cap" };
     }
     return { allowed: true, overageEvents: 0, overageUsd: 0 };
