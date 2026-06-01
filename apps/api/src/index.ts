@@ -695,25 +695,28 @@ app.get("/api/projects/:projectId/stats", async (c) => {
 });
 
 // Autumn SDK errors expose a numeric `statusCode` and a JSON-string `body`.
-// Parse both with Zod (no `as` casts) so we can structurally detect the
-// "already on Free" conflict from its error code rather than a substring match.
+// Decode the body string through Zod (transform → pipe) so the whole error
+// validates in one safeParse and we match the structured "already on Free"
+// error code — no `as` casts and no hand-rolled JSON.parse. Unparseable JSON
+// transforms to `{}`, so it simply doesn't match.
 const autumnErrorSchema = z.object({
   statusCode: z.number().optional(),
-  body: z.string().optional(),
+  body: z
+    .string()
+    .transform((s): unknown => {
+      try {
+        return JSON.parse(s);
+      } catch {
+        return {};
+      }
+    })
+    .pipe(z.object({ code: z.string().optional() }))
+    .optional(),
 });
-const autumnErrorBodySchema = z.object({ code: z.string().optional() });
 
 function isPlanAlreadyAttached(err: unknown): boolean {
   const parsed = autumnErrorSchema.safeParse(err);
-  if (!parsed.success || !parsed.data.body) return false;
-  let bodyJson: unknown;
-  try {
-    bodyJson = JSON.parse(parsed.data.body);
-  } catch {
-    return false;
-  }
-  const body = autumnErrorBodySchema.safeParse(bodyJson);
-  return body.success && body.data.code === "plan_already_attached";
+  return parsed.success && parsed.data.body?.code === "plan_already_attached";
 }
 
 // Immediate "switch to Free" — per Autumn's guidance, attach the Free plan now
