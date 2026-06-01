@@ -27,6 +27,7 @@ import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { nanoid } from "nanoid";
+import { z } from "zod";
 import { mountAdmin, userIsStaff } from "./admin.js";
 import { mountAlerts } from "./alerts.js";
 import { auth } from "./auth.js";
@@ -693,11 +694,33 @@ app.get("/api/projects/:projectId/stats", async (c) => {
   });
 });
 
-// Immediate "cancel my paid plan" → Free. Autumn's React SDK / better-auth
-// plugin doesn't expose cancel, and downgrades otherwise schedule to cycle end,
-// so we do it server-side with the secret key: cancel any active paid plan now
-// (cancel_immediately), then attach Free (which isn't the default product, so a
-// bare cancel would leave the org with no plan). Per-org (org = Autumn customer).
+// Autumn SDK errors expose a numeric `statusCode` and a JSON-string `body`.
+// Parse both with Zod (no `as` casts) so we can structurally detect the
+// "already on Free" conflict from its error code rather than a substring match.
+const autumnErrorSchema = z.object({
+  statusCode: z.number().optional(),
+  body: z.string().optional(),
+});
+const autumnErrorBodySchema = z.object({ code: z.string().optional() });
+
+function isPlanAlreadyAttached(err: unknown): boolean {
+  const parsed = autumnErrorSchema.safeParse(err);
+  if (!parsed.success || !parsed.data.body) return false;
+  let bodyJson: unknown;
+  try {
+    bodyJson = JSON.parse(parsed.data.body);
+  } catch {
+    return false;
+  }
+  const body = autumnErrorBodySchema.safeParse(bodyJson);
+  return body.success && body.data.code === "plan_already_attached";
+}
+
+// Immediate "switch to Free" — per Autumn's guidance, attach the Free plan now
+// (planSchedule "immediate") and carry usage over, rather than cancelling. Free
+// is the auto_enable default, so attaching it when already on Free returns a
+// "plan_already_attached" conflict, which we treat as a no-op success. Per-org
+// (org = Autumn customer); the carry-over closes the toggle-to-reset loophole.
 app.post("/api/me/billing/cancel", async (c) => {
   const ctx = await resolveMaybeActiveOrgContext({
     userId: c.var.userId,
@@ -725,10 +748,9 @@ app.post("/api/me/billing/cancel", async (c) => {
       carryOverUsages: { enabled: true },
     });
   } catch (err) {
-    const body = String((err as { body?: unknown }).body ?? (err as Error).message ?? "");
     // Only the "already on Free" conflict is a no-op success; surface any other
-    // 409 (or error) so a genuine failure isn't reported as a successful switch.
-    if (body.includes("plan_already_attached")) {
+    // error so a genuine failure isn't reported as a successful switch.
+    if (isPlanAlreadyAttached(err)) {
       return c.json({ ok: true });
     }
     throw err;
