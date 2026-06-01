@@ -34,7 +34,7 @@ Run npx skills add superloglabs/skills --all and use the skills to install Super
 
 
 
-# Superlog
+## What is Superlog?
 
 Superlog is an open-core observability workspace for OpenTelemetry data. It
 ingests traces, logs, and metrics, groups noisy signals into incidents, and gives
