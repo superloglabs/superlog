@@ -1,6 +1,7 @@
 import "./env.js";
+import { Readable } from "node:stream";
 import { serve } from "@hono/node-server";
-import { SpanStatusCode, trace } from "@opentelemetry/api";
+import { type Span, SpanStatusCode, trace } from "@opentelemetry/api";
 import { hashApiKey, schema, syncLoopsContactsForProject } from "@superlog/db";
 import { db } from "@superlog/db";
 import { eq } from "drizzle-orm";
@@ -8,10 +9,12 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { createIngestEntitlementGate, signalForPath } from "./billing/ingest-entitlement.js";
+import { EmptyBodyError, PayloadTooLargeError } from "./body-capture.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import { IngestQueue, getIngestQueueConfig } from "./ingest-queue.js";
 import { logger } from "./logger.js";
 import { proxyOperationalRecorder } from "./operational-metrics.js";
+import { Semaphore } from "./semaphore.js";
 import { lookupOrgForProject, recordIngestRequest } from "./tenant-metrics.js";
 
 const tracer = trace.getTracer("@superlog/proxy");
@@ -28,6 +31,28 @@ const ingestQueue = ingestQueueConfig ? new IngestQueue(ingestQueueConfig, logge
 // verdict is a cached, fail-open in-memory read — never a blocking call on the
 // ingest hot path (see billing/ingest-entitlement.ts).
 const ingestGate = createIngestEntitlementGate({ lookupOrgForProject });
+
+// Bound how many ingest requests buffer/stream their bodies at once. Together
+// with the per-request body cap (INGEST_MAX_BODY_BYTES) and S3 streaming for
+// large bodies, this makes the proxy's memory a provable constant — roughly
+// `permits × max_bytes_held_per_request` — so a burst can never OOM-kill the
+// task (exit 137, the 2026-05-31 incident). Excess requests WAIT for a permit
+// (backpressure) rather than being rejected; the body is only read once a permit
+// is held, so waiters cost ~nothing. Default 64; tune via
+// INGEST_MAX_INFLIGHT_REQUESTS, or set to 0 to disable.
+const DEFAULT_MAX_INFLIGHT_REQUESTS = 64;
+const MAX_INFLIGHT_REQUESTS = readNonNegativeIntEnv(
+  process.env.INGEST_MAX_INFLIGHT_REQUESTS,
+  DEFAULT_MAX_INFLIGHT_REQUESTS,
+);
+const requestSemaphore = new Semaphore(MAX_INFLIGHT_REQUESTS);
+
+// Hard per-request body ceiling for the no-queue (direct) path. The queue path
+// enforces its own copy via IngestQueueConfig.maxBodyBytes; both read the same
+// env so they stay in lockstep. Bodies above this get a 413 (a permanent 4xx —
+// OTLP exporters drop rather than retry), which is the explicit "too big to
+// accept" decision. 64 MiB sits above the largest legitimate payload (~38 MiB).
+const MAX_BODY_BYTES = readNonNegativeIntEnv(process.env.INGEST_MAX_BODY_BYTES, 64 * 1024 * 1024);
 
 app.use(
   "/v1/*",
@@ -116,6 +141,75 @@ app.post("/v1/metrics", (c) => forward(c, "/v1/metrics", "resourceMetrics"));
 
 app.get("/health", (c) => c.json({ ok: true }));
 
+function readNonNegativeIntEnv(value: string | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+/** The request body as a byte stream, or null when there is no body to read. */
+function requestBodyStream(c: Context<{ Variables: Variables }>): AsyncIterable<Uint8Array> | null {
+  const body = c.req.raw.body;
+  if (!body) return null;
+  return Readable.fromWeb(
+    body as Parameters<typeof Readable.fromWeb>[0],
+  ) as unknown as AsyncIterable<Uint8Array>;
+}
+
+/** Buffer a stream fully, aborting at `maxBytes` (413) and on empty (400). */
+async function collectStreamWithCap(
+  source: AsyncIterable<Uint8Array>,
+  maxBytes: number,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const raw of source) {
+    const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+    if (chunk.length === 0) continue;
+    total += chunk.length;
+    if (total > maxBytes) throw new PayloadTooLargeError(maxBytes, total);
+    chunks.push(chunk);
+  }
+  if (total === 0) throw new EmptyBodyError();
+  return Buffer.concat(chunks, total);
+}
+
+/**
+ * Map a body-capture failure to a permanent (non-retryable) 4xx response:
+ * too-big → 413, empty → 400. Returns null for any other error so the caller
+ * rethrows it (those become 5xx and OTLP exporters retry). 413/400 are 4xx, so
+ * exporters drop the batch — correct, since neither will ever succeed on retry.
+ */
+function handleIngestBodyError(
+  err: unknown,
+  c: Context<{ Variables: Variables }>,
+  span: Span,
+  path: string,
+  projectId: string,
+): { status: number; response: Response } | null {
+  if (err instanceof PayloadTooLargeError) {
+    span.setAttribute("ingest.too_large", true);
+    span.setAttribute("ingest.limit_bytes", err.limitBytes);
+    logger.warn(
+      { path, projectId, limitBytes: err.limitBytes, observedBytes: err.observedBytes },
+      "rejecting oversize OTLP body",
+    );
+    return {
+      status: 413,
+      response: c.json({ error: `request body exceeds the ${err.limitBytes}-byte limit` }, 413),
+    };
+  }
+  if (err instanceof EmptyBodyError) {
+    span.setAttribute("ingest.empty_body", true);
+    logger.warn({ path, projectId }, "dropping empty OTLP request body");
+    return {
+      status: 400,
+      response: c.json({ error: "empty OTLP request body; no records to ingest" }, 400),
+    };
+  }
+  return null;
+}
+
 function extractApiKey(c: Context): string | null {
   const header = c.req.header("x-api-key");
   if (header) return header;
@@ -139,6 +233,12 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
     span.setAttribute("tenant.project_id", projectId);
     span.setAttribute("http.request.content_type", contentType);
     if (contentEncoding) span.setAttribute("http.request.content_encoding", contentEncoding);
+
+    // Wait for a concurrency permit before touching the body. Excess requests
+    // queue here cheaply (just a pending promise + their socket) instead of being
+    // rejected — backpressure, not shedding. The body is only read once a permit
+    // is held, so memory stays bounded by `permits × max-bytes-per-request`.
+    await requestSemaphore.acquire();
 
     try {
       // Free-tier hard-block: if the org has exhausted its monthly allowance for
@@ -167,45 +267,51 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
         logger.warn({ err, path, projectId }, "tenant counter increment failed");
       });
 
-      const body = await c.req.arrayBuffer();
-      const bodyBuffer = Buffer.from(body);
-      requestBytes = bodyBuffer.byteLength;
-
-      // Some OTLP/HTTP exporters (observed: a Bun fetch-based logs exporter) periodically
-      // POST a zero-byte body — an empty export carrying no records. There is nothing to
-      // forward, and enqueuing it only poisons the ingest queue: the consumer rejects an
-      // empty payload and it churns through redeliveries until it reaches the DLQ. Drop it
-      // here with a 4xx (which OTLP exporters treat as non-retryable, so no retry storm).
-      if (bodyBuffer.byteLength === 0) {
+      const bodyStream = requestBodyStream(c);
+      if (!bodyStream) {
         responseStatus = 400;
         span.setAttribute("ingest.empty_body", true);
-        logger.warn({ path, projectId }, "dropping empty OTLP request body");
+        logger.warn({ path, projectId }, "dropping OTLP request with no body");
         return c.json({ error: "empty OTLP request body; no records to ingest" }, 400);
       }
 
-      // Issue-fingerprint stamping deserializes the whole payload, so it now runs on the
-      // consumer (ingest-queue.ts) right before the collector POST — not here on the
-      // latency-critical, shared-event-loop ingest edge. The proxy just enqueues raw bytes.
+      // Issue-fingerprint stamping deserializes the whole payload, so in queue mode it runs
+      // on the consumer (ingest-queue.ts) right before the collector POST — not here on the
+      // latency-critical ingest edge. The proxy streams raw bytes: small bodies are buffered
+      // and enqueued inline, larger ones stream straight to S3, so memory per request stays
+      // bounded regardless of body size. A body over the cap → 413; an empty one → 400.
       if (ingestQueue) {
-        storage = await tracer.startActiveSpan("ingest.queue_send", async (queueSpan) => {
-          try {
-            const result = await ingestQueue.enqueue({
-              path,
-              projectId,
-              contentType,
-              contentEncoding,
-              body: bodyBuffer,
-            });
-            queueSpan.setAttribute("ingest.queue.storage", result);
-            return result;
-          } catch (err) {
-            queueSpan.recordException(err as Error);
-            queueSpan.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
-            throw err;
-          } finally {
-            queueSpan.end();
+        let result: { storage: "inline" | "s3"; bytes: number };
+        try {
+          result = await tracer.startActiveSpan("ingest.queue_send", async (queueSpan) => {
+            try {
+              const r = await ingestQueue.enqueueStream({
+                path,
+                projectId,
+                contentType,
+                contentEncoding,
+                body: bodyStream,
+              });
+              queueSpan.setAttribute("ingest.queue.storage", r.storage);
+              return r;
+            } catch (err) {
+              queueSpan.recordException(err as Error);
+              queueSpan.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+              throw err;
+            } finally {
+              queueSpan.end();
+            }
+          });
+        } catch (err) {
+          const handled = handleIngestBodyError(err, c, span, path, projectId);
+          if (handled) {
+            responseStatus = handled.status;
+            return handled.response;
           }
-        });
+          throw err;
+        }
+        storage = result.storage;
+        requestBytes = result.bytes;
 
         span.setAttribute("ingest.queue.enabled", true);
         span.setAttribute("ingest.queue.storage", storage);
@@ -217,8 +323,23 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
         });
       }
 
-      // No queue (local dev): forward straight to the collector, stamping inline here since
-      // there is no consumer to do it. Size-guarded + fail-open inside the helper.
+      // No queue (local dev / community direct mode): there is no consumer to stamp
+      // fingerprints and no S3 to spill to, so buffer the body (bounded by the cap → 413)
+      // and forward it straight to the collector. Memory here is bounded by
+      // `permits × MAX_BODY_BYTES`; operators on small boxes should size those envs down.
+      let bodyBuffer: Buffer;
+      try {
+        bodyBuffer = await collectStreamWithCap(bodyStream, MAX_BODY_BYTES);
+      } catch (err) {
+        const handled = handleIngestBodyError(err, c, span, path, projectId);
+        if (handled) {
+          responseStatus = handled.status;
+          return handled.response;
+        }
+        throw err;
+      }
+      requestBytes = bodyBuffer.byteLength;
+
       const stampedBody = stampIssueFingerprintsFailOpen(
         { path, contentType, contentEncoding, body: bodyBuffer, projectId },
         logger,
@@ -262,6 +383,11 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
       span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
       throw err;
     } finally {
+      // Release the permit once the body is fully read and forwarded. Released on
+      // every path (success, 4xx, throw) so a failing request can't leak permits
+      // and wedge the proxy into permanent backpressure.
+      requestSemaphore.release();
+
       const durationMs = performance.now() - startedAt;
       const emitOperationalMetric = (org?: { orgId: string; orgName: string } | null) => {
         proxyOperationalRecorder.recordIngestRequest({

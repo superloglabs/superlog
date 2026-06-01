@@ -47,8 +47,19 @@ fi
 # `~/conductor/workspaces`, `.codex/worktrees`, or any other path. Keep both
 # the raw directory basename (for compose working_dir labels) and the slugified
 # portless stack name (for `superlog-portless-<name>` resources).
+#
+# When this repo is checked out as a git submodule it's a plain clone with no
+# worktrees of its own — `git worktree list` here would only ever return one
+# name. The portless stacks are named after the *superproject* worktrees (see
+# scripts/worktree-bootstrap.sh), so enumerate those as well; otherwise gc treats
+# a live stack as an orphan and `down -v` nukes its volumes. Union both so a
+# standalone checkout still works.
+SUPERPROJECT="$(git -C "$REPO_ROOT" rev-parse --show-superproject-working-tree 2>/dev/null || true)"
 LIVE_NAMES="$(
-  git worktree list --porcelain 2>/dev/null \
+  {
+    git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null || true
+    [[ -n "$SUPERPROJECT" ]] && git -C "$SUPERPROJECT" worktree list --porcelain 2>/dev/null
+  } \
     | awk '
       /^worktree / {
         path = substr($0, 10)
