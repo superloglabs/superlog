@@ -2,6 +2,7 @@ import "./env.js";
 import "./net.js";
 import { createClient } from "@clickhouse/client";
 import { serve } from "@hono/node-server";
+import { Autumn, AutumnError } from "autumn-js";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import {
   DEFAULT_AGENT_RUN_PROVIDER,
@@ -690,6 +691,59 @@ app.get("/api/projects/:projectId/stats", async (c) => {
     metrics,
     issues: Number(issueRows[0]?.c ?? 0),
   });
+});
+
+// The Autumn SDK throws a typed AutumnError carrying the HTTP `statusCode` and
+// raw `body` — use it directly (no casts) and match the specific 409
+// "plan_already_attached" conflict code in the body.
+function isPlanAlreadyAttached(err: unknown): boolean {
+  return (
+    err instanceof AutumnError &&
+    err.statusCode === 409 &&
+    err.body.includes("plan_already_attached")
+  );
+}
+
+// Immediate "switch to Free" — per Autumn's guidance, attach the Free plan now
+// (planSchedule "immediate") and carry usage over, rather than cancelling. Free
+// is the auto_enable default, so attaching it when already on Free returns a
+// "plan_already_attached" conflict, which we treat as a no-op success. Per-org
+// (org = Autumn customer); the carry-over closes the toggle-to-reset loophole.
+app.post("/api/me/billing/cancel", async (c) => {
+  const ctx = await resolveMaybeActiveOrgContext({
+    userId: c.var.userId,
+    preferredOrgId: c.var.orgId,
+  });
+  if (!ctx.org) throw new HTTPException(400, { message: "no active org" });
+  const key = process.env.AUTUMN_SECRET_KEY;
+  if (!key) throw new HTTPException(400, { message: "billing is not configured" });
+  const orgId = ctx.org.id;
+  // "Switch to Free" — per Autumn's guidance, attach the Free plan immediately
+  // and carry usage over, rather than cancelling the paid plan. When a paid
+  // plan is active this is a real downgrade: planSchedule:"immediate" applies it
+  // now and carryOverUsages preserves the org's metered usage (spans / logs /
+  // metric points / investigation credits) so a maxed cap can't be reset by
+  // toggling paid↔Free. (Cancelling instead spins up a fresh Free entitlement
+  // with usage 0 — the reset we were fighting; and billing.update has no
+  // carry-over option.) If the org is ALREADY on Free (Free is the auto_enable
+  // default), the attach 409s "plan_already_attached" — that's a no-op success.
+  const autumn = new Autumn({ secretKey: key });
+  try {
+    await autumn.billing.attach({
+      customerId: orgId,
+      planId: "free",
+      planSchedule: "immediate",
+      carryOverUsages: { enabled: true },
+    });
+  } catch (err) {
+    // Only the "already on Free" conflict is a no-op success; surface any other
+    // error so a genuine failure isn't reported as a successful switch.
+    if (isPlanAlreadyAttached(err)) {
+      return c.json({ ok: true });
+    }
+    throw err;
+  }
+  return c.json({ ok: true });
 });
 
 app.get("/api/projects/:projectId/explore/attribute-keys", async (c) => {

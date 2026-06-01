@@ -2,6 +2,7 @@ import { db, schema } from "@superlog/db";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { admin, organization } from "better-auth/plugins";
+import { autumn } from "autumn-js/better-auth";
 import { eq } from "drizzle-orm";
 import {
   orgInvitationEmailBody,
@@ -53,6 +54,14 @@ function sharedCookieDomain(): string | undefined {
 }
 
 const COOKIE_DOMAIN = sharedCookieDomain();
+
+// Autumn billing plugin. Maps each org (a Better Auth "organization") to an
+// Autumn customer, auto-created on first sign-in, so billing is per-org. Only
+// enabled when AUTUMN_SECRET_KEY is present, so local dev / worktrees without
+// billing config keep working — same opt-in pattern as the social providers.
+const autumnPlugins = process.env.AUTUMN_SECRET_KEY
+  ? [autumn({ customerScope: "organization" })]
+  : [];
 
 // Fail loud and early if the signing secret is missing. Better Auth doesn't
 // throw on undefined `secret` — depending on the build it falls back to a
@@ -187,6 +196,7 @@ export const auth = betterAuth({
       },
     }),
     admin(),
+    ...autumnPlugins,
   ],
   databaseHooks: {
     session: {

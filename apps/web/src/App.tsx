@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { useCustomer } from "autumn-js/react";
 import { usePostHog } from "posthog-js/react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
@@ -144,6 +145,20 @@ function AuthenticatedApp() {
   const me = useMe();
   useGlobalKeybinds(!!data);
   const impersonating = me.data?.user.impersonating === true;
+  // Billing top bar: a Free org that has exhausted a hard-capped signal has its
+  // ingest paused — surface that app-wide with a prompt to add a card / switch
+  // to pay-as-you-go. Reads the same Autumn balances as the billing page.
+  const { check, data: billingCustomer } = useCustomer();
+  const billingPaused =
+    !impersonating &&
+    !!billingCustomer &&
+    // Only the telemetry signals gate ingest. Investigation credits running out
+    // doesn't pause ingest, so it must not trigger the "Ingest paused" bar.
+    ["spans", "logs", "metric_points"].some((f) => {
+      const b = check({ featureId: f }).balance;
+      return !!b && !b.unlimited && b.granted > 0 && !b.overageAllowed && b.usage >= b.granted;
+    });
+  const showTopBar = impersonating || billingPaused;
   // The banner is fixed-positioned so it doesn't shove the page below it (the
   // fixed nav can't be pushed by document flow anyway). Instead, every piece
   // of chrome that pins to the top reads --impersonation-h and shifts down by
@@ -152,17 +167,21 @@ function AuthenticatedApp() {
   // threading a prop through AppShell, which is shared with Landing.
   useEffect(() => {
     const root = document.documentElement;
-    if (impersonating) root.style.setProperty("--impersonation-h", "1.75rem");
+    if (showTopBar) root.style.setProperty("--impersonation-h", "1.75rem");
     else root.style.removeProperty("--impersonation-h");
     return () => {
       root.style.removeProperty("--impersonation-h");
     };
-  }, [impersonating]);
+  }, [showTopBar]);
   if (isPending) return null;
   if (!data) return <Landing />;
   return (
     <OnboardingGate>
-      {impersonating && <ImpersonationBar email={data.user.email} />}
+      {impersonating ? (
+        <ImpersonationBar email={data.user.email} />
+      ) : (
+        billingPaused && <BillingLimitBar />
+      )}
       <AppShell nav={<TopNav />}>
         <RouteContainer>
           <Routes>
@@ -235,6 +254,21 @@ function ImpersonationBar({ email }: { email: string }) {
       >
         stop (⌘⇧P)
       </button>
+    </div>
+  );
+}
+
+function BillingLimitBar() {
+  return (
+    <div className="fixed inset-x-0 top-0 z-[60] flex h-7 w-full items-center justify-center gap-2 bg-danger px-3 text-[11px] text-white">
+      <span className="font-semibold">Ingest paused</span>
+      <span className="opacity-90">You’ve hit your Free plan limits.</span>
+      <Link
+        to="/settings?scope=org&section=billing"
+        className="font-medium underline underline-offset-2 hover:opacity-80"
+      >
+        Add a card to switch to pay-as-you-go →
+      </Link>
     </div>
   );
 }

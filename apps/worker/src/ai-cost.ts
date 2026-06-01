@@ -28,9 +28,14 @@ export type TokenUsage = {
   cacheCreationTokens: number;
 };
 
-// USD per million tokens. Sources:
-//   sonnet 4.x family: $3 in / $15 out / $0.30 cache read / $3.75 cache write
-//   opus 4.x family:   $15 in / $75 out / $1.50 cache read / $18.75 cache write
+// USD per million tokens. Keep in sync with https://www.anthropic.com/pricing#api
+// and reconcile periodically against the Anthropic Admin API cost report — these
+// token rates are the per-call estimate; managed-agent session runtime is a
+// separate dimension added in recordAgentRunCompletion (see sessionRuntimeUsd).
+//   sonnet 4.6:    $3 in / $15 out / $0.30 cache read / $3.75 cache write
+//   opus 4.7+:     $5 in / $25 out / $0.50 cache read / $6.25 cache write
+//   opus <=4.6/4.1/4.0/3: $15 in / $75 out / $1.50 read / $18.75 write (legacy)
+// 4.7 dropped Opus from $15/$75 to $5/$25, so legacy Opus IDs are priced higher.
 // If a model isn't in the table we fall back to sonnet pricing and tag the
 // metric with model.pricing_fallback=true so it's visible on the dashboard.
 type Pricing = {
@@ -48,14 +53,35 @@ const SONNET: Pricing = {
 };
 
 const OPUS: Pricing = {
+  inputPerMTok: 5,
+  outputPerMTok: 25,
+  cacheReadPerMTok: 0.5,
+  cacheWritePerMTok: 6.25,
+};
+
+// Opus 4.6 and earlier (incl. 4.1, 4.0, claude-3-opus) — before the 4.7 price cut.
+const OPUS_LEGACY: Pricing = {
   inputPerMTok: 15,
   outputPerMTok: 75,
   cacheReadPerMTok: 1.5,
   cacheWritePerMTok: 18.75,
 };
 
+// Claude Managed Agents bill session runtime at $0.08 per session-hour on top of
+// tokens (billed to the millisecond while status=running). estimateCostUsd above
+// covers only tokens, so recordAgentRunCompletion adds this for agent runs.
+const MANAGED_AGENT_RUNTIME_USD_PER_HOUR = 0.08;
+
+export function sessionRuntimeUsd(activeSeconds: number): number {
+  if (!Number.isFinite(activeSeconds) || activeSeconds <= 0) return 0;
+  return (activeSeconds / 3600) * MANAGED_AGENT_RUNTIME_USD_PER_HOUR;
+}
+
 const PRICING: Array<{ match: RegExp; pricing: Pricing }> = [
-  { match: /opus/i, pricing: OPUS },
+  // Opus 4.7+ ($5/$25); any other Opus id (4.6/4.1/4.0/claude-3-opus) is legacy
+  // ($15/$75). Order matters — the specific 4.7+ match must come first.
+  { match: /opus-4-(?:[5-9]|[1-9]\d)(?=-|$)/i, pricing: OPUS },
+  { match: /opus/i, pricing: OPUS_LEGACY },
   { match: /sonnet/i, pricing: SONNET },
   {
     match: /haiku/i,
@@ -184,6 +210,10 @@ export function recordAgentRunCompletion(input: {
     callSite: input.callSite,
     usage: input.usage,
   });
+  // Managed-agent session runtime ($0.08/session-hr) is billed on top of tokens;
+  // fold it into the same cost counter so cost_usd reflects true Anthropic spend.
+  const runtimeUsd = sessionRuntimeUsd(input.activeSeconds);
+  if (runtimeUsd > 0) costUsd.add(runtimeUsd, baseAttrs(input));
   const attrs = {
     ...baseAttrs(input),
     "superlog.outcome": input.outcome,

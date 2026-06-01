@@ -1208,6 +1208,15 @@ export function useStats(projectId: string | undefined, opts: { poll?: boolean }
   });
 }
 
+// Cancels the org's active paid plan immediately and lands it back on Free
+// (server-side — Autumn's client/better-auth plugin doesn't expose cancel).
+export function useCancelBilling() {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: () => fetcher<{ ok: boolean }>("/api/me/billing/cancel", { method: "POST" }),
+  });
+}
+
 export function useMcpStatus(projectId: string | undefined) {
   const fetcher = useFetcher();
   return useQuery({

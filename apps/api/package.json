@@ -30,6 +30,7 @@
     "@scalar/hono-api-reference": "^0.10.19",
     "@superlog/db": "workspace:*",
     "@superlog/fingerprint": "workspace:*",
+    "autumn-js": "^1.2.27",
     "better-auth": "^1.6.11",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",

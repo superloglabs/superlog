@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import { type AgentRunOutcome, recordAgentRunCompletion } from "../ai-cost.js";
+import { investigationGate } from "../billing/investigation-gate.js";
 import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
 import { postIncidentThreadMessage } from "../infra/slack/incident-messages.js";
 import { logger } from "../logger.js";
@@ -168,7 +169,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       // transition commits — a transient DB failure leaves the agentRun
       // in its current state, the next tick re-enters this block with the
       // same Anthropic snapshot, and we'd double-count cumulative counters.
-      const meterAgentRun = (outcome: AgentRunOutcome): void => {
+      const meterAgentRun = async (outcome: AgentRunOutcome): Promise<void> => {
         recordAgentRunCompletion({
           orgId: ctx.project.orgId,
           projectId: ctx.project.id,
@@ -180,6 +181,12 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           outcome,
           hasPr: outcome === "complete_with_pr",
         });
+        // Consume one investigation credit per COMPLETED run (the billable
+        // unit). Failed / awaiting_human runs don't burn a credit. Fail-open:
+        // recordInvestigation never throws (see investigation-gate.ts).
+        if (outcome === "complete_with_pr" || outcome === "complete_no_pr") {
+          await investigationGate.recordInvestigation(ctx.project.orgId);
+        }
       };
 
       if (snapshot.result.state === "awaiting_human") {
@@ -188,7 +195,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           snapshot.result.question ?? "Reply in this thread with the missing context.",
           snapshot.result.summary,
         );
-        meterAgentRun("awaiting_human");
+        await meterAgentRun("awaiting_human");
         return;
       }
 
@@ -198,7 +205,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         await failAgentRun(ctx, reason, snapshot.result.summary, {
           existingResult: snapshot.result,
         });
-        meterAgentRun("failed");
+        await meterAgentRun("failed");
         return;
       }
 
@@ -208,7 +215,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           await failAgentRun(ctx, "patch_validation_failed", snapshot.result.summary, {
             existingResult: snapshot.result,
           });
-          meterAgentRun("failed");
+          await meterAgentRun("failed");
           return;
         }
         const merged = await tryMergeAfterAgentRun(
@@ -222,7 +229,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           // it succeeds, the agentRun is complete (the merged-incident
           // path implies the result was actionable, treat as complete_no_pr
           // unless a PR was actually opened).
-          meterAgentRun(pr?.validationPassed === true ? "complete_with_pr" : "complete_no_pr");
+          await meterAgentRun(pr?.validationPassed === true ? "complete_with_pr" : "complete_no_pr");
           return;
         }
         const shouldOpenPr =
@@ -232,10 +239,10 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           ctx.prPolicy !== "never";
         if (shouldOpenPr && pr) {
           await completeWithPullRequest(ctx, snapshot.result, pr, sessionId, nextRuntimeMinutes);
-          meterAgentRun("complete_with_pr");
+          await meterAgentRun("complete_with_pr");
         } else {
           await completeWithoutPullRequest(ctx, snapshot.result, sessionId, nextRuntimeMinutes);
-          meterAgentRun("complete_no_pr");
+          await meterAgentRun("complete_no_pr");
         }
         return;
       }

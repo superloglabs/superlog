@@ -2,6 +2,7 @@ import "./env.js";
 import { createClient } from "@clickhouse/client";
 import { db } from "@superlog/db";
 import { createAttioSyncTicker } from "./attio/tick.js";
+import { createUsageMeterTicker } from "./billing/usage-meter-ticker.js";
 import { handleIssueTransition } from "./incidents/workflow.js";
 import { logger } from "./logger.js";
 import { registerDatastoreObservability } from "./observability/datastores.js";
@@ -41,7 +42,8 @@ registerTelemetryIngestMetrics({
 });
 
 const attioSync = createAttioSyncTicker({ db, clickhouse: ch });
-const tick = createWorkerTick({ clickhouse: ch, telemetryIngestor, attioSync });
+const usageMeter = createUsageMeterTicker({ db, clickhouse: ch });
+const tick = createWorkerTick({ clickhouse: ch, telemetryIngestor, attioSync, usageMeter });
 
 runWorker({ pollIntervalMs: POLL_INTERVAL_MS, batchSize: BATCH_SIZE, tick }).catch((err) => {
   logger.fatal({ err }, "worker crashed");

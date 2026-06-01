@@ -34,7 +34,7 @@ export function Tile({
 }) {
   return (
     <div
-      className={`relative rounded-2xl border border-border bg-surface ${padded ? "p-5" : ""} ${className}`}
+      className={`relative rounded-lg border border-border bg-surface ${padded ? "p-5" : ""} ${className}`}
     >
       {label && (
         <div className="mb-4 flex items-center justify-between">
