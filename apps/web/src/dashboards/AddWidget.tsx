@@ -80,6 +80,7 @@ export function AddWidget({
   const [metricName, setMetricName] = useState("");
   const [groupBy, setGroupBy] = useState("");
   const [limit, setLimit] = useState(50);
+  const [seriesLimit, setSeriesLimit] = useState(10);
   const [attrs, setAttrs] = useState<ResourceAttr[]>([]);
   const [filterOpen, setFilterOpen] = useState(false);
   const [chartType, setChartType] = useState<ChartType | undefined>(undefined);
@@ -96,6 +97,7 @@ export function AddWidget({
 
   const type = widgetTypeFor(kind, source);
   const isMetric = kind === "chart" && source === "metric";
+  const isCountChart = type === "timeseries_count";
   const isTable = kind === "table";
   const isNote = kind === "note";
   const supportsGroupBy = kind === "chart";
@@ -124,7 +126,7 @@ export function AddWidget({
         filter: { resourceAttrs: attrs.length ? attrs : undefined },
         groupBy: supportsGroupBy && groupBy ? groupBy : undefined,
         metricName: isMetric ? metricName : undefined,
-        limit: isTable ? limit : undefined,
+        limit: isTable ? limit : isCountChart && groupBy ? seriesLimit : undefined,
         chartType: kind === "chart" ? chartType : undefined,
         markdown: isNote ? markdown : undefined,
       },
@@ -142,8 +144,10 @@ export function AddWidget({
       groupBy,
       metricName,
       limit,
+      seriesLimit,
       supportsGroupBy,
       isMetric,
+      isCountChart,
       isTable,
       isNote,
       kind,
@@ -275,6 +279,25 @@ export function AddWidget({
                       </option>
                     ))}
                 </select>
+              </div>
+            )}
+
+            {isCountChart && groupBy && (
+              <div>
+                <FieldLabel>top series</FieldLabel>
+                <Input
+                  type="number"
+                  min={1}
+                  max={50}
+                  step={1}
+                  value={seriesLimit}
+                  onChange={(e) =>
+                    setSeriesLimit(Math.max(1, Math.min(50, Number(e.target.value) || 10)))
+                  }
+                />
+                <div className="mt-1 font-mono text-[10px] text-subtle">
+                  remaining groups roll into “Other”
+                </div>
               </div>
             )}
 

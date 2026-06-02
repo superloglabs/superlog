@@ -29,6 +29,7 @@ export const dashboardWidgetConfigSchema = z.object({
   showXAxis: z.boolean().optional(),
   showYAxis: z.boolean().optional(),
   showLegend: z.boolean().optional(),
+  legendPosition: z.enum(["side", "bottom"]).optional(),
   markdown: z.string().max(20_000).optional(),
 });
 

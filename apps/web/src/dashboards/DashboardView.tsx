@@ -567,8 +567,9 @@ function WidgetSettingsButton({
 
   const chartType = widget.config.chartType ?? defaultChartType(widget.type);
   const showXAxis = widget.config.showXAxis ?? widget.type === "timeseries_count";
-  const showYAxis = widget.config.showYAxis ?? false;
+  const showYAxis = widget.config.showYAxis ?? widget.type === "timeseries_count";
   const showLegend = widget.config.showLegend ?? false;
+  const legendPosition = widget.config.legendPosition ?? "side";
   const aggregation = widget.config.aggregation ?? "auto";
   const resourceAttrs = widget.config.filter.resourceAttrs ?? [];
 
@@ -640,6 +641,30 @@ function WidgetSettingsButton({
             checked={showLegend}
             onChange={(v) => setConfig({ showLegend: v })}
           />
+          {showLegend && widget.type === "timeseries_count" && (
+            <div>
+              <div className="mb-1 uppercase tracking-[0.2em] text-subtle">legend position</div>
+              <div className="flex gap-1">
+                {(["side", "bottom"] as const).map((pos) => {
+                  const active = legendPosition === pos;
+                  return (
+                    <button
+                      key={pos}
+                      type="button"
+                      onClick={() => setConfig({ legendPosition: pos })}
+                      className={`h-7 flex-1 rounded-sm px-2 ${
+                        active
+                          ? "bg-accent text-accent-ink"
+                          : "border border-border text-muted hover:text-fg"
+                      }`}
+                    >
+                      {pos}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <div>
             <div className="mb-1 uppercase tracking-[0.2em] text-subtle">filters</div>
             <div className="flex flex-col gap-1.5">

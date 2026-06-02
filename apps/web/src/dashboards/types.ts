@@ -21,8 +21,11 @@ export type WidgetConfig = {
   showXAxis?: boolean;
   showYAxis?: boolean;
   showLegend?: boolean;
+  legendPosition?: LegendPosition;
   markdown?: string;
 };
+
+export type LegendPosition = "side" | "bottom";
 
 export function defaultChartType(type: WidgetType): ChartType {
   return type === "timeseries_metric" ? "line" : "bar";
