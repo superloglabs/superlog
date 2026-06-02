@@ -188,6 +188,13 @@ if [[ "$SKIP_LINK" -eq 0 ]]; then
   done
 fi
 
+if [[ ! -e apps/api/.env ]]; then
+  echo "==> apps/api/.env missing; writing dev-only BETTER_AUTH_SECRET fallback"
+  cat > apps/api/.env <<EOF
+BETTER_AUTH_SECRET=${WT_NAME}-local-dev-better-auth-secret
+EOF
+fi
+
 # -----------------------------------------------------------------------------
 # 3. mode-specific bring-up
 # -----------------------------------------------------------------------------

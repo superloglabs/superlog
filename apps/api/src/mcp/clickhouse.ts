@@ -7,6 +7,10 @@ export type ResourceAttrFilter = {
   op?: "eq" | "neq" | "not_contains";
 };
 
+type AttributeColumn = "ResourceAttributes" | "SpanAttributes" | "LogAttributes";
+type AttributeScope = "resource" | "span" | "log";
+type ParsedAttributeKey = { scope: AttributeScope; key: string };
+
 const RELATIVE_TIME_EXPR_RE =
   /^now\(\)(?:\s*-\s*INTERVAL\s+(?:[1-9][0-9]*)\s+(?:SECOND|MINUTE|HOUR|DAY|WEEK|MONTH))?$/i;
 
@@ -34,7 +38,7 @@ function resolveRange(range?: TimeRange): {
 
 function attrConds(
   attrs: ResourceAttrFilter[] | undefined,
-  column: "ResourceAttributes" | "SpanAttributes" | "LogAttributes" = "ResourceAttributes",
+  column: AttributeColumn = "ResourceAttributes",
   paramPrefix = "attr",
 ): {
   conds: string[];
@@ -59,6 +63,55 @@ function attrConds(
   return { conds, params };
 }
 
+function parseAttributeKey(key: string): ParsedAttributeKey {
+  if (key.startsWith("resource.")) return { scope: "resource", key: key.slice("resource.".length) };
+  if (key.startsWith("span.")) return { scope: "span", key: key.slice("span.".length) };
+  if (key.startsWith("log.")) return { scope: "log", key: key.slice("log.".length) };
+  return { scope: "resource", key };
+}
+
+function splitAttrs(
+  attrs: ResourceAttrFilter[] | undefined,
+): Record<AttributeScope, ResourceAttrFilter[]> {
+  const out: Record<AttributeScope, ResourceAttrFilter[]> = { resource: [], span: [], log: [] };
+  for (const attr of attrs ?? []) {
+    const parsed = parseAttributeKey(attr.key);
+    out[parsed.scope].push({ ...attr, key: parsed.key });
+  }
+  return out;
+}
+
+function groupExprForAttribute(
+  groupBy: string | undefined,
+  source: SeriesSource,
+): { expr: string; params: Record<string, string> } {
+  if (groupBy === "service.name" || groupBy === "service") {
+    return { expr: "ServiceName", params: {} };
+  }
+  if (groupBy?.startsWith("attr:")) {
+    return {
+      expr:
+        source === "logs"
+          ? "LogAttributes[{groupKey:String}]"
+          : "SpanAttributes[{groupKey:String}]",
+      params: { groupKey: groupBy.slice("attr:".length) },
+    };
+  }
+  if (groupBy) {
+    const parsed = parseAttributeKey(groupBy);
+    if (parsed.scope === "resource") {
+      return { expr: "ResourceAttributes[{groupKey:String}]", params: { groupKey: parsed.key } };
+    }
+    if (parsed.scope === "log" && source === "logs") {
+      return { expr: "LogAttributes[{groupKey:String}]", params: { groupKey: parsed.key } };
+    }
+    if (parsed.scope === "span" && source === "traces") {
+      return { expr: "SpanAttributes[{groupKey:String}]", params: { groupKey: parsed.key } };
+    }
+  }
+  return { expr: "''", params: {} };
+}
+
 export async function queryLogs(
   ch: ClickHouseClient,
   projectId: string,
@@ -74,8 +127,9 @@ export async function queryLogs(
   },
 ) {
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(params.range);
-  const attr = attrConds(params.resourceAttrs);
-  const logAttr = attrConds(params.logAttrs, "LogAttributes", "lattr");
+  const split = splitAttrs(params.resourceAttrs);
+  const attr = attrConds(split.resource);
+  const logAttr = attrConds([...split.log, ...(params.logAttrs ?? [])], "LogAttributes", "lattr");
   const conds: string[] = [
     "ResourceAttributes['superlog.project_id'] = {projectId:String}",
     `Timestamp >= ${sinceExpr}`,
@@ -138,8 +192,13 @@ export async function queryTraces(
   },
 ) {
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(params.range);
-  const attr = attrConds(params.resourceAttrs);
-  const spanAttr = attrConds(params.spanAttrs, "SpanAttributes", "sattr");
+  const split = splitAttrs(params.resourceAttrs);
+  const attr = attrConds(split.resource);
+  const spanAttr = attrConds(
+    [...split.span, ...(params.spanAttrs ?? [])],
+    "SpanAttributes",
+    "sattr",
+  );
   const conds: string[] = [
     "ResourceAttributes['superlog.project_id'] = {projectId:String}",
     `Timestamp >= ${sinceExpr}`,
@@ -206,7 +265,9 @@ export async function queryTracesAggregated(
   },
 ) {
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(params.range);
-  const attr = attrConds(params.resourceAttrs);
+  const split = splitAttrs(params.resourceAttrs);
+  const attr = attrConds(split.resource);
+  const spanAttr = attrConds(split.span, "SpanAttributes", "sattr");
   // Outer scope: trace-level. We aggregate over every span of every matching
   // trace in the window so span_count / duration_ms / error_count describe the
   // whole trace rather than only the spans matching span-level filters.
@@ -217,11 +278,16 @@ export async function queryTracesAggregated(
     ...attr.conds,
   ];
   // Inner scope: span-level filters pick which TraceIds qualify.
-  const innerConds: string[] = [...outerConds];
+  const innerConds: string[] = [...outerConds, ...spanAttr.conds];
   if (params.service) innerConds.push("ServiceName = {service:String}");
   if (params.spanName) innerConds.push("SpanName = {spanName:String}");
   if (params.statusCode) innerConds.push("StatusCode = {statusCode:String}");
-  const hasSpanLevelFilter = !!(params.service || params.spanName || params.statusCode);
+  const hasSpanLevelFilter = !!(
+    params.service ||
+    params.spanName ||
+    params.statusCode ||
+    spanAttr.conds.length
+  );
 
   // After GROUP BY TraceId, filter by total duration if requested.
   const havingMinDuration =
@@ -269,6 +335,7 @@ export async function queryTracesAggregated(
       statusCode: params.statusCode ?? "",
       limit: params.limit,
       ...attr.params,
+      ...spanAttr.params,
     },
     format: "JSONEachRow",
   });
@@ -432,25 +499,78 @@ export async function listAttributeKeys(
   ch: ClickHouseClient,
   projectId: string,
   range?: TimeRange,
+  source?: SeriesSource | "metrics",
 ): Promise<{ key: string; count: number }[]> {
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(range);
-  const query = `
-    SELECT k, sum(c) AS c FROM (
+  const resourceFromLogs = source === undefined || source === "logs" || source === "metrics";
+  const resourceFromTraces = source === undefined || source === "traces" || source === "metrics";
+  const subqueries: string[] = [];
+  if (source === undefined) {
+    subqueries.push(`
       SELECT arrayJoin(mapKeys(ResourceAttributes)) AS k, count() AS c
       FROM otel_logs
       WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
-      GROUP BY k
-      UNION ALL
+      GROUP BY k`);
+    subqueries.push(`
       SELECT arrayJoin(mapKeys(ResourceAttributes)) AS k, count() AS c
       FROM otel_traces
       WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
-      GROUP BY k
+      GROUP BY k`);
+  } else {
+    if (resourceFromLogs) {
+      subqueries.push(`
+      SELECT concat('resource.', k) AS k, c FROM (
+        SELECT arrayJoin(mapKeys(ResourceAttributes)) AS k, count() AS c
+        FROM otel_logs
+        WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+          AND Timestamp >= ${sinceExpr}
+          AND Timestamp <= ${untilExpr}
+        GROUP BY k
+      )`);
+    }
+    if (source === "logs") {
+      subqueries.push(`
+      SELECT concat('log.', k) AS k, c FROM (
+        SELECT arrayJoin(mapKeys(LogAttributes)) AS k, count() AS c
+        FROM otel_logs
+        WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+          AND Timestamp >= ${sinceExpr}
+          AND Timestamp <= ${untilExpr}
+        GROUP BY k
+      )`);
+    }
+    if (resourceFromTraces) {
+      subqueries.push(`
+      SELECT concat('resource.', k) AS k, c FROM (
+        SELECT arrayJoin(mapKeys(ResourceAttributes)) AS k, count() AS c
+        FROM otel_traces
+        WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+          AND Timestamp >= ${sinceExpr}
+          AND Timestamp <= ${untilExpr}
+        GROUP BY k
+      )`);
+    }
+    if (source === "traces") {
+      subqueries.push(`
+      SELECT concat('span.', k) AS k, c FROM (
+        SELECT arrayJoin(mapKeys(SpanAttributes)) AS k, count() AS c
+        FROM otel_traces
+        WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+          AND Timestamp >= ${sinceExpr}
+          AND Timestamp <= ${untilExpr}
+        GROUP BY k
+      )`);
+    }
+  }
+  const query = `
+    SELECT k, sum(c) AS c FROM (
+      ${subqueries.join("\n      UNION ALL\n")}
     )
-    WHERE k != 'superlog.project_id'
+    WHERE k != 'superlog.project_id' AND k != 'resource.superlog.project_id' AND k != ''
     GROUP BY k
     ORDER BY c DESC
     LIMIT 200
@@ -470,25 +590,56 @@ export async function listAttributeValues(
   key: string,
   range?: TimeRange,
   limit = 200,
+  source?: SeriesSource | "metrics",
 ): Promise<{ value: string; count: number }[]> {
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(range);
-  const query = `
-    SELECT v, sum(c) AS c FROM (
+  const parsed = parseAttributeKey(key);
+  const keyParam = parsed.key;
+  const subqueries: string[] = [];
+  if (parsed.scope === "resource") {
+    if (source === undefined || source === "logs" || source === "metrics") {
+      subqueries.push(`
       SELECT ResourceAttributes[{key:String}] AS v, count() AS c
       FROM otel_logs
       WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
         AND mapContains(ResourceAttributes, {key:String})
-      GROUP BY v
-      UNION ALL
+      GROUP BY v`);
+    }
+    if (source === undefined || source === "traces" || source === "metrics") {
+      subqueries.push(`
       SELECT ResourceAttributes[{key:String}] AS v, count() AS c
       FROM otel_traces
       WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
         AND mapContains(ResourceAttributes, {key:String})
-      GROUP BY v
+      GROUP BY v`);
+    }
+  } else if (parsed.scope === "log" && source === "logs") {
+    subqueries.push(`
+      SELECT LogAttributes[{key:String}] AS v, count() AS c
+      FROM otel_logs
+      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+        AND Timestamp >= ${sinceExpr}
+        AND Timestamp <= ${untilExpr}
+        AND mapContains(LogAttributes, {key:String})
+      GROUP BY v`);
+  } else if (parsed.scope === "span" && source === "traces") {
+    subqueries.push(`
+      SELECT SpanAttributes[{key:String}] AS v, count() AS c
+      FROM otel_traces
+      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+        AND Timestamp >= ${sinceExpr}
+        AND Timestamp <= ${untilExpr}
+        AND mapContains(SpanAttributes, {key:String})
+      GROUP BY v`);
+  }
+  if (subqueries.length === 0) return [];
+  const query = `
+    SELECT v, sum(c) AS c FROM (
+      ${subqueries.join("\n      UNION ALL\n")}
     )
     WHERE v != ''
     GROUP BY v
@@ -497,7 +648,7 @@ export async function listAttributeValues(
   `;
   const r = await ch.query({
     query,
-    query_params: { projectId, key, since: sinceSql, until: untilSql, limit },
+    query_params: { projectId, key: keyParam, since: sinceSql, until: untilSql, limit },
     format: "JSONEachRow",
   });
   const rows = (await r.json()) as { v: string; c: string | number }[];
@@ -797,13 +948,19 @@ export async function countSeries(
   step: Step,
 ): Promise<{ bucket: string; group: string; count: number }[]> {
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(filter.range);
-  const attr = attrConds(filter.resourceAttrs);
+  const split = splitAttrs(filter.resourceAttrs);
+  const attr = attrConds(split.resource);
+  const eventAttr =
+    source === "logs"
+      ? attrConds(split.log, "LogAttributes", "event_attr")
+      : attrConds(split.span, "SpanAttributes", "event_attr");
   const table = source === "logs" ? "otel_logs" : "otel_traces";
   const conds: string[] = [
     "ResourceAttributes['superlog.project_id'] = {projectId:String}",
     `Timestamp >= ${sinceExpr}`,
     `Timestamp <= ${untilExpr}`,
     ...attr.conds,
+    ...eventAttr.conds,
   ];
   if (filter.service) conds.push("ServiceName = {service:String}");
   if (source === "logs") {
@@ -817,23 +974,12 @@ export async function countSeries(
     }
   }
 
-  let groupExpr = "''";
-  const groupParams: Record<string, string> = {};
-  if (groupBy === "service.name" || groupBy === "service") {
-    groupExpr = "ServiceName";
-  } else if (groupBy?.startsWith("attr:")) {
-    groupExpr =
-      source === "logs" ? "LogAttributes[{groupKey:String}]" : "SpanAttributes[{groupKey:String}]";
-    groupParams.groupKey = groupBy.slice("attr:".length);
-  } else if (groupBy) {
-    groupExpr = "ResourceAttributes[{groupKey:String}]";
-    groupParams.groupKey = groupBy;
-  }
+  const group = groupExprForAttribute(groupBy, source);
 
   const query = `
     SELECT
       toString(toStartOfInterval(Timestamp, INTERVAL ${step.n} ${step.unit})) AS bucket,
-      ${groupExpr} AS group_key,
+      ${group.expr} AS group_key,
       count() AS c
     FROM ${table}
     WHERE ${conds.join(" AND ")}
@@ -855,7 +1001,8 @@ export async function countSeries(
       statusCode: filter.statusCode ?? "",
       minDurationNs: Math.round((filter.minDurationMs ?? 0) * 1_000_000),
       ...attr.params,
-      ...groupParams,
+      ...eventAttr.params,
+      ...group.params,
     },
     format: "JSONEachRow",
   });
