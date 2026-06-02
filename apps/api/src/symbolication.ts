@@ -95,6 +95,7 @@ export async function findSourceMapArtifact(opts: {
   attrs: SymbolicationAttrs;
   stacktrace?: string | null;
 }): Promise<schema.SourceMapArtifact | null> {
+  const stackFiles = stackFrameFiles(opts.stacktrace);
   if (opts.attrs.debugId) {
     const byDebugId = await opts.database.query.sourceMapArtifacts.findFirst({
       where: and(
@@ -105,7 +106,7 @@ export async function findSourceMapArtifact(opts: {
     if (byDebugId) return byDebugId;
   }
 
-  if (!opts.attrs.release) return null;
+  if (!opts.attrs.release) return findProjectArtifactMatchingStackFile(opts, stackFiles);
 
   const rows = await opts.database.query.sourceMapArtifacts.findMany({
     where: and(
@@ -123,10 +124,27 @@ export async function findSourceMapArtifact(opts: {
     if (dist && row.dist !== dist) return false;
     return true;
   });
-  const stackFiles = stackFrameFiles(opts.stacktrace);
-  return (
-    candidates.find((row) => artifactMatchesStackFile(row, stackFiles)) ?? candidates[0] ?? null
-  );
+  const matchingCandidate = candidates.find((row) => artifactMatchesStackFile(row, stackFiles));
+  if (matchingCandidate) return matchingCandidate;
+  const projectStackMatch = await findProjectArtifactMatchingStackFile(opts, stackFiles);
+  if (projectStackMatch) return projectStackMatch;
+  return candidates[0] ?? null;
+}
+
+async function findProjectArtifactMatchingStackFile(
+  opts: {
+    database: DB;
+    projectId: string;
+  },
+  stackFiles: string[],
+): Promise<schema.SourceMapArtifact | null> {
+  if (stackFiles.length === 0) return null;
+  const rows = await opts.database.query.sourceMapArtifacts.findMany({
+    where: eq(schema.sourceMapArtifacts.projectId, opts.projectId),
+    orderBy: [desc(schema.sourceMapArtifacts.createdAt)],
+    limit: 100,
+  });
+  return rows.find((row) => artifactMatchesStackFile(row, stackFiles)) ?? null;
 }
 
 export function symbolicateStacktraceWithArtifact(opts: {

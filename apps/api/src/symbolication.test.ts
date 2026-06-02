@@ -225,3 +225,76 @@ test("findSourceMapArtifact prefers artifact matching generated stack frame file
 
   assert.equal(result?.id, "entry-artifact");
 });
+
+test("findSourceMapArtifact falls back to generated stack frame file when release is missing", async () => {
+  const entryArtifact = {
+    ...artifact,
+    id: "entry-artifact",
+    platform: "web",
+    release: "expo-test-2@local",
+    bundleFile: "dist-superlog/_expo/static/js/web/entry-90d9514ed4f128f73d2feaf2e08ff315.js",
+    mapFile: "dist-superlog/_expo/static/js/web/entry-90d9514ed4f128f73d2feaf2e08ff315.js.map",
+    createdAt: new Date("2026-06-02T00:00:00.000Z"),
+    updatedAt: new Date("2026-06-02T00:00:00.000Z"),
+  } satisfies schema.SourceMapArtifact;
+  const database = {
+    query: {
+      sourceMapArtifacts: {
+        findFirst: async () => null,
+        findMany: async () => [entryArtifact],
+      },
+    },
+  } as unknown as DB;
+
+  const result = await findSourceMapArtifact({
+    database,
+    projectId: "project-1",
+    attrs: {
+      debugId: null,
+      release: null,
+      dist: null,
+      platform: null,
+    },
+    stacktrace:
+      "Error: Expo SDK demo error\n    at L (http://localhost:8093/_expo/static/js/web/entry-90d9514ed4f128f73d2feaf2e08ff315.js:1095:1077)",
+  });
+
+  assert.equal(result?.id, "entry-artifact");
+});
+
+test("findSourceMapArtifact falls back to generated stack frame file when release attrs do not match upload release", async () => {
+  const entryArtifact = {
+    ...artifact,
+    id: "entry-artifact",
+    platform: "web",
+    release: "expo-test-2@local",
+    dist: null,
+    bundleFile: "dist-superlog/_expo/static/js/web/entry-90d9514ed4f128f73d2feaf2e08ff315.js",
+    mapFile: "dist-superlog/_expo/static/js/web/entry-90d9514ed4f128f73d2feaf2e08ff315.js.map",
+    createdAt: new Date("2026-06-02T00:00:00.000Z"),
+    updatedAt: new Date("2026-06-02T00:00:00.000Z"),
+  } satisfies schema.SourceMapArtifact;
+  const database = {
+    query: {
+      sourceMapArtifacts: {
+        findFirst: async () => null,
+        findMany: async (_query: unknown) => [entryArtifact],
+      },
+    },
+  } as unknown as DB;
+
+  const result = await findSourceMapArtifact({
+    database,
+    projectId: "project-1",
+    attrs: {
+      debugId: null,
+      release: "1.0.0",
+      dist: "embedded",
+      platform: "web",
+    },
+    stacktrace:
+      "Error: Expo SDK demo error\n    at L (http://localhost:8093/_expo/static/js/web/entry-90d9514ed4f128f73d2feaf2e08ff315.js:1095:1077)",
+  });
+
+  assert.equal(result?.id, "entry-artifact");
+});
