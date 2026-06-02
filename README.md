@@ -17,6 +17,8 @@
   <a href="https://github.com/superloglabs/skills">Skills</a>
   ·
   <a href="https://github.com/superloglabs/otel-helpers">Helpers</a>
+  ·
+  <a href="https://discord.gg/bqJYtW3n">Discord</a>
 </p>
 
 ## About
