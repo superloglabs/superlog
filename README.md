@@ -2,12 +2,20 @@
   <img width="1200" height="675" alt="github" src="https://github.com/user-attachments/assets/b04b83a7-7c0f-481d-8bdd-ced1d3ca5fd2" />
 
 </a>
-&nbsp;
-<p align="center">
-  badge1
-  &nbsp;
-  badge2
-</p>
+
+<div align="center" style="margin:24px 0;">
+  
+<br />
+
+[![Last Commit](https://img.shields.io/github/last-commit/superloglabs/superlog?labelColor=333333&color=666666)](https://github.com/superloglabs/superlog/commits/main)
+[![Commit Activity](https://img.shields.io/github/commit-activity/m/superloglabs/superlog?labelColor=333333&color=666666)](https://github.com/superloglabs/superlog/graphs/commit-activity)
+[![Apache 2.0 License](https://img.shields.io/badge/License-Apache_2.0-555555.svg?labelColor=333333&color=666666)](./LICENSE.md)
+<br>
+![Discord](https://img.shields.io/discord/1511214206123380867?link=https%3A%2F%2Fdiscord.gg%2FbqJYtW3n)
+<a href="https://www.ycombinator.com"><img src="https://img.shields.io/badge/Y%20Combinator-P26-orange" alt="Y Combinator P26"></a>
+[![Follow @superlogYC on X](https://img.shields.io/twitter/follow/superlogyc?logo=X&color=%23f5f5f5)](https://twitter.com/intent/follow?screen_name=superlogYC)
+
+</div>
 
 <p align="center">
   <a href="https://superlog.sh">Website</a>
