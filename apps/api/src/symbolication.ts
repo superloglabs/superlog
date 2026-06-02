@@ -44,11 +44,27 @@ type SymbolicationAttrs = {
   platform: string | null;
 };
 
+type TelemetrySymbolicationSample = {
+  stacktrace: string | null;
+  logAttrs?: Record<string, string> | null;
+  resourceAttrs?: Record<string, string> | null;
+  spanAttrs?: Record<string, string> | null;
+};
+
 export async function symbolicateIssueSample(opts: {
   database: DB;
   objectReader: SourceMapObjectReader | null;
   projectId: string;
   sample: IssueSample | null | undefined;
+}): Promise<IssueSymbolication | null> {
+  return symbolicateTelemetrySample(opts);
+}
+
+export async function symbolicateTelemetrySample(opts: {
+  database: DB;
+  objectReader: SourceMapObjectReader | null;
+  projectId: string;
+  sample: TelemetrySymbolicationSample | null | undefined;
 }): Promise<IssueSymbolication | null> {
   if (!opts.objectReader || !opts.sample?.stacktrace) return null;
 
@@ -161,7 +177,9 @@ export function symbolicateStacktraceWithArtifact(opts: {
   };
 }
 
-export function symbolicationAttrsForSample(sample: IssueSample): SymbolicationAttrs {
+export function symbolicationAttrsForSample(
+  sample: TelemetrySymbolicationSample,
+): SymbolicationAttrs {
   const attrs = {
     ...sample.resourceAttrs,
     ...sample.logAttrs,

@@ -76,7 +76,7 @@ import { normalizeSignupIntentKeyHash, normalizeSignupIntentKeyPrefix } from "./
 import { mountSlackAuthed, mountSlackPublic } from "./slack.js";
 import { sourceMapObjectStoreFromEnv } from "./sourcemaps.js";
 import { userIsStaff } from "./staff.js";
-import { symbolicateIssueSample } from "./symbolication.js";
+import { symbolicateIssueSample, symbolicateTelemetrySample } from "./symbolication.js";
 import { buildSystemCapabilities } from "./system-capabilities.js";
 import { mountWebhooks } from "./webhooks.js";
 
@@ -1248,6 +1248,30 @@ app.post("/api/projects/:projectId/issues/lookup", async (c) => {
     where: and(eq(schema.issues.projectId, projectId), eq(schema.issues.fingerprint, fp.hash)),
   });
   return c.json({ issue: issue ?? null });
+});
+
+app.post("/api/projects/:projectId/symbolication/log", async (c) => {
+  const projectId = c.req.param("projectId");
+  await requireProjectAccess(c, projectId);
+  const body = (await c.req.json().catch(() => ({}))) as {
+    stacktrace?: string | null;
+    logAttrs?: Record<string, string> | null;
+    resourceAttrs?: Record<string, string> | null;
+  };
+  const symbolication = await symbolicateTelemetrySample({
+    database: db,
+    objectReader: sourceMapObjectStore,
+    projectId,
+    sample: {
+      stacktrace: body.stacktrace ?? null,
+      logAttrs: body.logAttrs ?? null,
+      resourceAttrs: body.resourceAttrs ?? null,
+    },
+  }).catch((err) => {
+    logger.warn({ err, projectId }, "failed to symbolicate log sample");
+    return null;
+  });
+  return c.json({ symbolication });
 });
 
 app.get("/api/projects/:projectId/issues/:issueId/agent-run", async (c) => {

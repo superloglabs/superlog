@@ -7,6 +7,7 @@ import {
   findSourceMapArtifact,
   symbolicateIssueSample,
   symbolicateStacktraceWithArtifact,
+  symbolicateTelemetrySample,
   symbolicationAttrsForSample,
 } from "./symbolication.js";
 
@@ -129,6 +130,56 @@ test("symbolicateIssueSample loads matching source map object and symbolicates",
   assert.ok(result);
   assert.equal(result.artifact.id, "artifact-1");
   assert.equal(result.frames[0]?.source, "app/index.tsx");
+});
+
+test("symbolicateTelemetrySample symbolicates logs without issue rows", async () => {
+  const database = {
+    query: {
+      sourceMapArtifacts: {
+        findFirst: async () => null,
+        findMany: async () => [artifact],
+      },
+    },
+  } as unknown as DB;
+
+  const result = await symbolicateTelemetrySample({
+    database,
+    objectReader: {
+      async getSourceMapObject(input) {
+        assert.equal(input.bucket, "source-map-bucket");
+        assert.equal(input.key, "source-maps/project-1/android/hash.map.gz");
+        return gzipSync(sourceMap);
+      },
+    },
+    projectId: "project-1",
+    sample: {
+      stacktrace: "TypeError: bad\n    at useMemoCache (index.android.bundle:1:1)",
+      logAttrs: {
+        "service.version": "juno@1.2.3",
+        "device.platform": "android",
+      },
+      resourceAttrs: null,
+    },
+  });
+
+  assert.ok(result);
+  assert.equal(result.artifact.id, "artifact-1");
+  assert.equal(result.frames[0]?.source, "app/index.tsx");
+});
+
+test("symbolicateTelemetrySample returns null when a log has no stacktrace", async () => {
+  const result = await symbolicateTelemetrySample({
+    database: {} as DB,
+    objectReader: null,
+    projectId: "project-1",
+    sample: {
+      stacktrace: null,
+      logAttrs: null,
+      resourceAttrs: null,
+    },
+  });
+
+  assert.equal(result, null);
 });
 
 test("findSourceMapArtifact prefers artifact matching generated stack frame file", async () => {

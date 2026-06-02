@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useMemo } from "react";
-import { type LogRow, useIssueForLog } from "./api.ts";
+import { type LogRow, useIssueForLog, useLogSymbolication } from "./api.ts";
 import { RowMenu, type RowMenuItem } from "./design/RowMenu.tsx";
 import { attrFilterKey } from "./exploreAttrFilter.ts";
 import { formatLocalTimestampMs } from "./timeFormat.ts";
@@ -97,7 +97,9 @@ function LogDrawerBody({
   const logAttrs = useMemo(() => sortedEntries(log.log_attrs), [log.log_attrs]);
   const resourceAttrs = useMemo(() => sortedEntries(log.resource_attrs), [log.resource_attrs]);
   const { data: issueLookup } = useIssueForLog(projectId, log);
+  const { data: symbolicationLookup } = useLogSymbolication(projectId, log);
   const issue = issueLookup?.issue ?? null;
+  const symbolication = symbolicationLookup?.symbolication ?? null;
 
   return (
     <div className="flex flex-col gap-5">
@@ -117,6 +119,20 @@ function LogDrawerBody({
               open issue →
             </span>
           </button>
+        </section>
+      ) : null}
+
+      {symbolication ? (
+        <section>
+          <div className="flex items-center justify-between gap-3">
+            <SectionHeader>Original stack</SectionHeader>
+            <span className="font-mono text-[10px] text-subtle">
+              {symbolication.artifact.platform} - {symbolication.artifact.release}
+            </span>
+          </div>
+          <pre className="mt-2 max-h-[320px] overflow-auto whitespace-pre-wrap break-all border border-border bg-surface-2 px-3 py-2 font-mono text-[12px] text-fg">
+            {symbolication.stacktrace}
+          </pre>
         </section>
       ) : null}
 
@@ -255,7 +271,7 @@ function KvList({ rows }: { rows: KvRow[] }) {
     <dl className="mt-2 grid grid-cols-[minmax(140px,auto)_1fr] border border-border font-mono text-[12px]">
       {rows.map((row, i) => (
         <div
-          key={`${row.key}-${i}`}
+          key={`${row.key}-${row.value}`}
           className={`contents ${i > 0 ? "[&>*]:border-t [&>*]:border-border" : ""}`}
         >
           <dt className="flex items-center break-all border-r border-border bg-surface-2 px-3 py-1.5 text-subtle">
