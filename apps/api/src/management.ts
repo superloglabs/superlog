@@ -2,6 +2,7 @@ import type { ClickHouseClient } from "@clickhouse/client";
 import { Scalar } from "@scalar/hono-api-reference";
 import {
   db,
+  isIngestApiKey,
   isOrgManagementKey,
   mintApiKey,
   mintOrgApiKey,
@@ -18,6 +19,7 @@ import {
   listCurrentInstallationRepos,
 } from "./github.js";
 import { logger } from "./logger.js";
+import { resolvePublicSourceMapUploadAuth } from "./management-auth.js";
 import {
   apiKeyListResponseSchema,
   createProjectInputSchema,
@@ -55,7 +57,11 @@ import {
 const log = logger.child({ scope: "management" });
 const sourceMapObjectStore = sourceMapObjectStoreFromEnv(process.env);
 
-type MgmtVars = { managementOrgId: string; managementKeyId: string };
+type MgmtVars = {
+  managementOrgId: string;
+  managementKeyId: string;
+  sourceMapUploadProjectId?: string;
+};
 type DashboardVars = { userId: string; orgId: string | null };
 
 async function getAutomergeForProject(projectId: string): Promise<{
@@ -154,6 +160,26 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
       return c.json({ error: "missing bearer token" }, 401);
     }
     const token = header.slice(7).trim();
+    if (isIngestApiKey(token)) {
+      const resolved = await resolvePublicSourceMapUploadAuth({
+        database: db,
+        method: c.req.method,
+        path: c.req.path,
+        token,
+      });
+      if (!resolved) {
+        return c.json(
+          {
+            error:
+              "wrong credential type: public ingest keys can only upload source maps for their own project",
+          },
+          401,
+        );
+      }
+      c.set("sourceMapUploadProjectId", resolved.projectId);
+      await next();
+      return;
+    }
     if (!isOrgManagementKey(token)) {
       return c.json(
         { error: "wrong credential type: /api/v1/* requires an sl_management_* key" },
@@ -515,7 +541,8 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
       summary: "Upload a source map artifact",
       description:
         "Uploads a compressed source map artifact for later issue symbolication. " +
-        "Use a server-side `sl_management_*` key from CI; do not use public mobile ingest keys.",
+        "Accepts either a project-scoped `sl_public_*` ingest key for this project " +
+        "or a server-side `sl_management_*` key for the org.",
       responses: {
         200: {
           description: "Source map stored",
@@ -529,10 +556,18 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
     validator("param", projectIdParamSchema),
     validator("json", sourceMapUploadSchema),
     async (c) => {
-      const orgId = (c.var as MgmtVars).managementOrgId;
-      const keyId = (c.var as MgmtVars).managementKeyId;
+      const vars = c.var as MgmtVars;
       const { projectId } = c.req.valid("param");
-      await requireProjectInOrg(orgId, projectId);
+      if (vars.sourceMapUploadProjectId) {
+        if (vars.sourceMapUploadProjectId !== projectId) {
+          throw new HTTPException(404, { message: "project not found" });
+        }
+      } else {
+        if (!vars.managementOrgId || !vars.managementKeyId) {
+          throw new HTTPException(401, { message: "missing upload authorization" });
+        }
+        await requireProjectInOrg(vars.managementOrgId, projectId);
+      }
       if (!sourceMapObjectStore) {
         throw new HTTPException(503, {
           message: "source map storage is not configured",
@@ -541,7 +576,7 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
       const artifact = await storeSourceMapArtifact({
         database: db,
         projectId,
-        uploadedByOrgApiKeyId: keyId,
+        uploadedByOrgApiKeyId: vars.managementKeyId ?? null,
         objectStore: sourceMapObjectStore,
         input: c.req.valid("json"),
       });
