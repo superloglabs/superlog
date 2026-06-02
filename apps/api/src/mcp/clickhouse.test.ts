@@ -3,9 +3,11 @@ import { test } from "node:test";
 import type { ClickHouseClient } from "@clickhouse/client";
 import {
   countSeries,
+  fieldColumnExpr,
   listAttributeKeys,
   listAttributeValues,
   metricSeries,
+  queryLogs,
   queryMetrics,
   queryTraces,
 } from "./clickhouse.js";
@@ -149,6 +151,59 @@ test("queryTraces filters by prefixed span attributes", async () => {
   );
   assert.equal(capture.params?.sattr_k_0, "session.id");
   assert.equal(capture.params?.sattr_v_0, "s1");
+});
+
+test("fieldColumnExpr allowlists identifier columns per source", () => {
+  assert.equal(fieldColumnExpr("trace_id", "logs"), "TraceId");
+  assert.equal(fieldColumnExpr("span_id", "logs"), "SpanId");
+  assert.equal(fieldColumnExpr("severity_number", "logs"), "toString(SeverityNumber)");
+  assert.equal(fieldColumnExpr("trace_id", "traces"), "TraceId");
+  assert.equal(fieldColumnExpr("severity_number", "traces"), null);
+  assert.equal(fieldColumnExpr("unknown", "logs"), null);
+});
+
+test("queryLogs filters by field.trace_id against the TraceId column", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await queryLogs(fakeClickhouse(capture), "project-1", {
+    range: { since: "now() - INTERVAL 1 HOUR", until: "now()" },
+    resourceAttrs: [{ key: "field.trace_id", value: "abc123" }],
+    limit: 50,
+  });
+
+  assert.match(capture.query ?? "", /TraceId = \{fattr_v_0:String\}/);
+  assert.equal(capture.params?.fattr_v_0, "abc123");
+});
+
+test("queryLogs filters by field.severity_number via a string-cast column", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await queryLogs(fakeClickhouse(capture), "project-1", {
+    range: { since: "now() - INTERVAL 1 HOUR", until: "now()" },
+    resourceAttrs: [{ key: "field.severity_number", value: "9" }],
+    limit: 50,
+  });
+
+  assert.match(capture.query ?? "", /toString\(SeverityNumber\) = \{fattr_v_0:String\}/);
+  assert.equal(capture.params?.fattr_v_0, "9");
+});
+
+test("queryTraces filters by field.span_id, ignoring non-applicable field keys", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await queryTraces(fakeClickhouse(capture), "project-1", {
+    range: { since: "now() - INTERVAL 1 HOUR", until: "now()" },
+    resourceAttrs: [
+      { key: "field.span_id", value: "span-9" },
+      { key: "field.severity_number", value: "9" },
+    ],
+    limit: 50,
+  });
+
+  assert.match(capture.query ?? "", /SpanId = \{fattr_v_0:String\}/);
+  assert.equal(capture.params?.fattr_v_0, "span-9");
+  // severity_number isn't a traces column, so it must not produce a condition.
+  assert.doesNotMatch(capture.query ?? "", /SeverityNumber/);
 });
 
 test("metricSeries can exclude resource attributes by substring", async () => {

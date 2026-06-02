@@ -7,7 +7,18 @@ export type RowMenuItem = {
   icon?: ReactNode;
 };
 
-export function RowMenu({ items, label = "More" }: { items: RowMenuItem[]; label?: string }) {
+export function RowMenu({
+  items,
+  label = "More",
+  compact = false,
+}: {
+  items: RowMenuItem[];
+  label?: string;
+  // `compact` shrinks the trigger to fit dense key/value rows (e.g. the
+  // log/trace attribute inspectors) so the menu doesn't make a row taller than
+  // its neighbours. Default keeps the roomier list-row size.
+  compact?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -40,7 +51,9 @@ export function RowMenu({ items, label = "More" }: { items: RowMenuItem[]; label
           e.stopPropagation();
           setOpen((v) => !v);
         }}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface-2 hover:text-fg"
+        className={`inline-flex items-center justify-center rounded-md text-muted transition-colors hover:bg-surface-2 hover:text-fg ${
+          compact ? "h-5 w-5" : "h-7 w-7"
+        }`}
       >
         <DotsIcon />
       </button>
@@ -61,9 +74,7 @@ export function RowMenu({ items, label = "More" }: { items: RowMenuItem[]; label
                 item.onClick();
               }}
               className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors ${
-                item.danger
-                  ? "text-danger hover:bg-danger/10"
-                  : "text-fg hover:bg-surface-2"
+                item.danger ? "text-danger hover:bg-danger/10" : "text-fg hover:bg-surface-2"
               }`}
             >
               {item.icon && <span className="shrink-0">{item.icon}</span>}
@@ -78,13 +89,7 @@ export function RowMenu({ items, label = "More" }: { items: RowMenuItem[]; label
 
 function DotsIcon() {
   return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      aria-hidden
-    >
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
       <circle cx="5" cy="12" r="1.6" />
       <circle cx="12" cy="12" r="1.6" />
       <circle cx="19" cy="12" r="1.6" />
