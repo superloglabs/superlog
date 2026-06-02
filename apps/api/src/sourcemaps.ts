@@ -146,7 +146,7 @@ export function prepareSourceMapUpload(input: SourceMapUploadInput): {
 export async function storeSourceMapArtifact(opts: {
   database: DB;
   projectId: string;
-  uploadedByOrgApiKeyId: string;
+  uploadedByOrgApiKeyId: string | null;
   objectStore: SourceMapObjectStore;
   input: SourceMapUploadInput;
 }): Promise<schema.SourceMapArtifact> {
