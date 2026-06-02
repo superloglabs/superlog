@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   mobileRegressionGateState,
+  mobileRegressionGateTerminatedSummary,
   mobileRegressionRepairPrompt,
   needsMobileRegressionRepair,
   steerIdleRunnerWithPendingContext,
@@ -284,6 +285,11 @@ test("mobileRegressionGateState repairs only when enabled mobile PRs lack a deci
     }),
     "allow",
   );
+});
+
+test("mobileRegressionGateTerminatedSummary explains terminal repair failures", () => {
+  assert.match(mobileRegressionGateTerminatedSummary("repair"), /required mobile regression/);
+  assert.match(mobileRegressionGateTerminatedSummary("defer_lookup"), /could be checked/);
 });
 
 test("mobileRegressionRepairPrompt tells the agent exactly how to repair the result", () => {

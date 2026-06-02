@@ -104,6 +104,15 @@ function mobileRegressionGateFailureSummary(
   return "Investigation exceeded its wall-clock budget while waiting for a mobile regression test decision.";
 }
 
+export function mobileRegressionGateTerminatedSummary(
+  gateState: Exclude<MobileRegressionGateState, "allow">,
+) {
+  if (gateState === "defer_lookup") {
+    return "Investigation terminated before the mobile regression integration could be checked.";
+  }
+  return "Investigation terminated before producing the required mobile regression test decision.";
+}
+
 export function mobileRegressionRepairPrompt(): string {
   return [
     "Your previous result proposed a mobile PR while Revyl is enabled, but it did not include a `mobileRegressionTest` decision.",
@@ -243,6 +252,18 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           result: snapshot.result,
         });
         if (gateState !== "allow") {
+          if (snapshot.status === "terminated") {
+            await failAgentRun(
+              ctx,
+              "terminated_without_result",
+              mobileRegressionGateTerminatedSummary(gateState),
+              {
+                existingResult: snapshot.result,
+              },
+            );
+            return;
+          }
+
           if (
             exceededWallClockBudget({
               startedAt: ctx.agentRun.startedAt,
