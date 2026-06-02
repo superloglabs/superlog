@@ -1105,6 +1105,26 @@ export type IssueSample = {
   resourceAttrs?: Record<string, string> | null;
 };
 
+export type Symbolication = {
+  artifact: {
+    id: string;
+    release: string;
+    dist: string | null;
+    platform: string;
+    debugId: string | null;
+  };
+  stacktrace: string;
+  frames: {
+    functionName: string | null;
+    source: string;
+    line: number;
+    column: number;
+    generatedFile: string;
+    generatedLine: number;
+    generatedColumn: number;
+  }[];
+};
+
 export type Issue = {
   id: string;
   projectId: string;
@@ -1123,25 +1143,7 @@ export type Issue = {
   groupingSource: "heuristic" | "llm" | "manual" | null;
   groupingReason: string | null;
   lastSample: IssueSample | null;
-  symbolication?: {
-    artifact: {
-      id: string;
-      release: string;
-      dist: string | null;
-      platform: string;
-      debugId: string | null;
-    };
-    stacktrace: string;
-    frames: {
-      functionName: string | null;
-      source: string;
-      line: number;
-      column: number;
-      generatedFile: string;
-      generatedLine: number;
-      generatedColumn: number;
-    }[];
-  } | null;
+  symbolication?: Symbolication | null;
   createdAt: string;
 };
 
@@ -1192,6 +1194,30 @@ export function useIssueForLog(projectId: string | undefined, log: LogRow | null
         body: JSON.stringify({ kind: "log", ...key }),
       }),
     enabled: !!projectId && !!log && isError,
+  });
+}
+
+export function useLogSymbolication(projectId: string | undefined, log: LogRow | null) {
+  const fetcher = useFetcher();
+  const stacktrace = log?.log_attrs?.["exception.stacktrace"] ?? null;
+  const key = log
+    ? {
+        stacktrace,
+        logAttrs: log.log_attrs,
+        resourceAttrs: log.resource_attrs,
+      }
+    : null;
+  return useQuery({
+    queryKey: ["log-symbolication", projectId, key],
+    queryFn: () =>
+      fetcher<{ symbolication: Symbolication | null }>(
+        `/api/projects/${projectId}/symbolication/log`,
+        {
+          method: "POST",
+          body: JSON.stringify(key),
+        },
+      ),
+    enabled: !!projectId && !!log && !!stacktrace,
   });
 }
 
