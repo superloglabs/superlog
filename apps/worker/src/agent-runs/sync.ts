@@ -49,6 +49,8 @@ export async function steerIdleRunnerWithPendingContext(opts: {
 }
 
 const MOBILE_FILE_PREFIXES = ["app/", "ios/", "android/", "components/", "screens/"];
+type MobileRegressionToolLookupState = "enabled" | "disabled" | "failed";
+type MobileRegressionGateState = "allow" | "repair" | "defer_lookup";
 
 export function hasRevylCreateTestIntegration(integrations: ResolvedIntegration[]): boolean {
   return integrations.some(
@@ -63,18 +65,43 @@ export function needsMobileRegressionRepair(opts: {
   service: string | null;
   result: AgentRunResult;
 }): boolean {
-  if (!opts.revylEnabled) return false;
-  if (opts.result.state !== "complete") return false;
+  return (
+    mobileRegressionGateState({
+      toolLookup: opts.revylEnabled ? "enabled" : "disabled",
+      service: opts.service,
+      result: opts.result,
+    }) === "repair"
+  );
+}
+
+export function mobileRegressionGateState(opts: {
+  toolLookup: MobileRegressionToolLookupState;
+  service: string | null;
+  result: AgentRunResult;
+}): MobileRegressionGateState {
+  if (opts.result.state !== "complete") return "allow";
   const pr = opts.result.pr;
-  if (!pr || pr.validationPassed !== true) return false;
-  if (opts.result.mobileRegressionTest) return false;
+  if (!pr || pr.validationPassed !== true) return "allow";
+  if (opts.result.mobileRegressionTest) return "allow";
 
   const serviceLooksMobile = /mobile/i.test(opts.service ?? "");
   const changedFiles = pr.changedFiles ?? [];
   const changedMobileFiles = changedFiles.some((file) =>
     MOBILE_FILE_PREFIXES.some((prefix) => file === prefix.slice(0, -1) || file.startsWith(prefix)),
   );
-  return serviceLooksMobile || changedMobileFiles;
+  if (!serviceLooksMobile && !changedMobileFiles) return "allow";
+  if (opts.toolLookup === "failed") return "defer_lookup";
+  if (opts.toolLookup === "enabled") return "repair";
+  return "allow";
+}
+
+function mobileRegressionGateFailureSummary(
+  gateState: Exclude<MobileRegressionGateState, "allow">,
+) {
+  if (gateState === "defer_lookup") {
+    return "Investigation exceeded its wall-clock budget while checking the mobile regression integration.";
+  }
+  return "Investigation exceeded its wall-clock budget while waiting for a mobile regression test decision.";
 }
 
 export function mobileRegressionRepairPrompt(): string {
@@ -189,30 +216,66 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
 
     if (snapshot.result) {
       if (snapshot.result.state === "complete") {
-        const integrations = await loadEnabledIntegrationsForOrg(ctx.project.orgId).catch((err) => {
-          logger.error(
-            { err, orgId: ctx.project.orgId },
-            "failed to load integrations for result repair gate",
-          );
-          return [];
-        });
-        if (
-          snapshot.status === "idle" &&
-          needsMobileRegressionRepair({
-            revylEnabled: hasRevylCreateTestIntegration(integrations),
+        let toolLookup: MobileRegressionToolLookupState = "disabled";
+        const unresolvedMobileGate =
+          mobileRegressionGateState({
+            toolLookup: "failed",
             service: ctx.incident.service,
             result: snapshot.result,
-          })
-        ) {
-          await runner.steer(sessionId, mobileRegressionRepairPrompt());
-          logger.info(
-            {
-              agent_run_id: ctx.agentRun.id,
-              incident_id: ctx.incident.id,
-              provider_session_id: sessionId,
-            },
-            "steered agent to repair missing mobile regression test decision",
-          );
+          }) === "defer_lookup";
+
+        if (unresolvedMobileGate) {
+          try {
+            const integrations = await loadEnabledIntegrationsForOrg(ctx.project.orgId);
+            toolLookup = hasRevylCreateTestIntegration(integrations) ? "enabled" : "disabled";
+          } catch (err) {
+            toolLookup = "failed";
+            logger.error(
+              { err, orgId: ctx.project.orgId },
+              "failed to load integrations for result repair gate",
+            );
+          }
+        }
+
+        const gateState = mobileRegressionGateState({
+          toolLookup,
+          service: ctx.incident.service,
+          result: snapshot.result,
+        });
+        if (gateState !== "allow") {
+          if (
+            exceededWallClockBudget({
+              startedAt: ctx.agentRun.startedAt,
+              now: new Date(),
+              maxRuntimeMinutes: ctx.automation.maxRuntimeMinutes,
+            })
+          ) {
+            await failAgentRun(
+              ctx,
+              "wall_clock_timeout",
+              mobileRegressionGateFailureSummary(gateState),
+              {
+                existingResult: snapshot.result,
+              },
+            );
+            return;
+          }
+
+          if (gateState === "defer_lookup") {
+            return;
+          }
+
+          if (snapshot.status === "idle") {
+            await runner.steer(sessionId, mobileRegressionRepairPrompt());
+            logger.info(
+              {
+                agent_run_id: ctx.agentRun.id,
+                incident_id: ctx.incident.id,
+                provider_session_id: sessionId,
+              },
+              "steered agent to repair missing mobile regression test decision",
+            );
+          }
           return;
         }
       }

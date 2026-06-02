@@ -100,6 +100,24 @@ test("accepts skipped mobile regression test decision with a reason", () => {
   assert.deepEqual(r.drops, []);
 });
 
+test("accepts stringified mobile regression test decisions", () => {
+  const r = normalizeAgentResult({
+    state: "complete",
+    summary: "x",
+    mobileRegressionTest: JSON.stringify({
+      status: "created",
+      testId: "test_123",
+      url: "https://app.revyl.ai/tests/test_123",
+    }),
+  });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.equal(r.result.mobileRegressionTest?.status, "created");
+  assert.equal(r.result.mobileRegressionTest?.testId, "test_123");
+  assert.equal(r.result.mobileRegressionTest?.url, "https://app.revyl.ai/tests/test_123");
+  assert.deepEqual(r.drops, []);
+});
+
 test("drops malformed mobile regression test decisions", () => {
   const r = normalizeAgentResult({
     state: "complete",

@@ -113,21 +113,22 @@ function asResolutionClassification(v: unknown): IncidentResolutionClassificatio
 }
 
 function asMobileRegressionTest(v: unknown): AgentRunMobileRegressionTest | null {
-  if (!isRecord(v)) return null;
-  const status = asString(v.status);
+  const parsed = parseStringifiedRecord(v);
+  if (!isRecord(parsed)) return null;
+  const status = asString(parsed.status);
   if (status == null || !MOBILE_REGRESSION_TEST_STATUSES.has(status)) return null;
 
-  const testId = asString(v.testId);
-  const url = asString(v.url);
-  const reason = asString(v.reason);
+  const testId = asString(parsed.testId);
+  const url = asString(parsed.url);
+  const reason = asString(parsed.reason);
 
   if (status === "created") {
     if (testId == null || testId.trim().length === 0) return null;
     return {
       status,
       testId,
-      ...(url != null ? { url } : v.url === null ? { url: null } : {}),
-      ...(reason != null ? { reason } : v.reason === null ? { reason: null } : {}),
+      ...(url != null ? { url } : parsed.url === null ? { url: null } : {}),
+      ...(reason != null ? { reason } : parsed.reason === null ? { reason: null } : {}),
     };
   }
 
@@ -135,8 +136,8 @@ function asMobileRegressionTest(v: unknown): AgentRunMobileRegressionTest | null
   return {
     status: status as "skipped" | "not_applicable",
     reason,
-    ...(testId != null ? { testId } : v.testId === null ? { testId: null } : {}),
-    ...(url != null ? { url } : v.url === null ? { url: null } : {}),
+    ...(testId != null ? { testId } : parsed.testId === null ? { testId: null } : {}),
+    ...(url != null ? { url } : parsed.url === null ? { url: null } : {}),
   };
 }
 

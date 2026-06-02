@@ -2,6 +2,7 @@ import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  mobileRegressionGateState,
   mobileRegressionRepairPrompt,
   needsMobileRegressionRepair,
   steerIdleRunnerWithPendingContext,
@@ -204,6 +205,84 @@ test("needsMobileRegressionRepair ignores non-Revyl or non-mobile results", () =
       result: { ...result, pr: null },
     }),
     false,
+  );
+});
+
+test("mobileRegressionGateState defers when integration lookup fails for mobile PRs", () => {
+  const result = {
+    state: "complete" as const,
+    summary: "x",
+    pr: {
+      selectedRepoFullName: "org/repo",
+      branchName: "superlog/fix",
+      baseBranch: "main",
+      validationPassed: true,
+      openStatus: "pending" as const,
+      changedFiles: ["app/chat.tsx"],
+    },
+  };
+
+  assert.equal(
+    mobileRegressionGateState({
+      toolLookup: "failed",
+      service: "juno-mobile",
+      result,
+    }),
+    "defer_lookup",
+  );
+  assert.equal(
+    mobileRegressionGateState({
+      toolLookup: "failed",
+      service: "api",
+      result: {
+        ...result,
+        pr: { ...result.pr, changedFiles: ["server/chat.ts"] },
+      },
+    }),
+    "allow",
+  );
+});
+
+test("mobileRegressionGateState repairs only when enabled mobile PRs lack a decision", () => {
+  const result = {
+    state: "complete" as const,
+    summary: "x",
+    pr: {
+      selectedRepoFullName: "org/repo",
+      branchName: "superlog/fix",
+      baseBranch: "main",
+      validationPassed: true,
+      openStatus: "pending" as const,
+      changedFiles: ["screens/chat.tsx"],
+    },
+  };
+
+  assert.equal(
+    mobileRegressionGateState({
+      toolLookup: "enabled",
+      service: "api",
+      result,
+    }),
+    "repair",
+  );
+  assert.equal(
+    mobileRegressionGateState({
+      toolLookup: "disabled",
+      service: "juno-mobile",
+      result,
+    }),
+    "allow",
+  );
+  assert.equal(
+    mobileRegressionGateState({
+      toolLookup: "enabled",
+      service: "juno-mobile",
+      result: {
+        ...result,
+        mobileRegressionTest: { status: "created", testId: "test_123" },
+      },
+    }),
+    "allow",
   );
 });
 
