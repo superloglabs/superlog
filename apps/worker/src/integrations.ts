@@ -134,6 +134,30 @@ export const REVYL_INTEGRATION: IntegrationDefinition = {
       query_template: { limit: "{{input.limit?}}" },
     },
     {
+      name: "revyl_list_apps",
+      description:
+        "List Revyl apps/build targets available to this org. Use before creating YAML tests so test.build.name matches an existing app name exactly.",
+      method: "GET",
+      path: "/api/v1/builds/vars",
+      input_schema: {
+        type: "object",
+        required: [],
+        additionalProperties: false,
+        properties: {
+          platform: {
+            type: "string",
+            description: "Optional platform filter, typically android or ios.",
+          },
+        },
+      },
+      query_template: {
+        page: "1",
+        page_size: "100",
+        platform: "{{input.platform?}}",
+      },
+      response_filter: ["items", "total", "page", "page_size", "has_next", "has_previous"],
+    },
+    {
       name: "revyl_validate_yaml",
       description:
         "Pre-flight a YAML test definition before creating it. Returns is_valid + per-line messages.",

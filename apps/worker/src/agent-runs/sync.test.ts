@@ -295,6 +295,8 @@ test("mobileRegressionGateTerminatedSummary explains terminal repair failures", 
 test("mobileRegressionRepairPrompt tells the agent exactly how to repair the result", () => {
   const prompt = mobileRegressionRepairPrompt();
   assert.match(prompt, /mobileRegressionTest/);
+  assert.match(prompt, /revyl_list_apps/);
+  assert.match(prompt, /test\.build\.name/);
   assert.match(prompt, /revyl_validate_yaml/);
   assert.match(prompt, /revyl_create_test_from_yaml/);
   assert.match(prompt, /Do not resubmit/);
