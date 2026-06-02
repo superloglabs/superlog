@@ -143,11 +143,16 @@ export type ImpersonationTarget = {
   orgs: { name: string; slug: string }[];
 };
 
-export function useImpersonationTargets(enabled: boolean) {
+export function useImpersonationTargets(enabled: boolean, query: string) {
   const fetcher = useFetcher();
+  const q = query.trim();
+  const path =
+    q.length > 0
+      ? `/api/admin/impersonation-targets?q=${encodeURIComponent(q)}`
+      : "/api/admin/impersonation-targets";
   return useQuery({
-    queryKey: ["impersonation-targets"],
-    queryFn: () => fetcher<{ users: ImpersonationTarget[] }>("/api/admin/impersonation-targets"),
+    queryKey: ["impersonation-targets", q],
+    queryFn: () => fetcher<{ users: ImpersonationTarget[]; limit: number }>(path),
     enabled,
   });
 }

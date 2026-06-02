@@ -1,9 +1,14 @@
 import { db, schema } from "@superlog/db";
-import { eq } from "drizzle-orm";
+import { asc, eq, ilike, or } from "drizzle-orm";
 import type { Hono } from "hono";
 import { requireStaff } from "./staff.js";
 
 type Vars = { userId: string; orgId: string | null };
+const MAX_TARGET_ROWS = 100;
+
+function normalizeSearch(raw: string | null): string {
+  return (raw ?? "").trim().replace(/[%_]/g, "").slice(0, 80);
+}
 
 // Minimal staff-only user picker for the impersonation command-palette flow.
 // The actual impersonation is performed by Better Auth's admin plugin
@@ -14,7 +19,8 @@ type Vars = { userId: string; orgId: string | null };
 export function mountImpersonation(app: Hono<{ Variables: Vars }>): void {
   app.get("/api/admin/impersonation-targets", async (c) => {
     await requireStaff(c.var.userId);
-    const rows = await db
+    const q = normalizeSearch(c.req.query("q") ?? null);
+    const rowsQuery = db
       .select({
         userId: schema.users.id,
         email: schema.users.email,
@@ -24,7 +30,19 @@ export function mountImpersonation(app: Hono<{ Variables: Vars }>): void {
       })
       .from(schema.orgMembers)
       .innerJoin(schema.users, eq(schema.users.id, schema.orgMembers.userId))
-      .innerJoin(schema.orgs, eq(schema.orgs.id, schema.orgMembers.orgId));
+      .innerJoin(schema.orgs, eq(schema.orgs.id, schema.orgMembers.orgId))
+      .orderBy(asc(schema.users.email), asc(schema.orgs.name))
+      .limit(MAX_TARGET_ROWS);
+    const rows = q
+      ? await rowsQuery.where(
+          or(
+            ilike(schema.users.email, `%${q}%`),
+            ilike(schema.users.name, `%${q}%`),
+            ilike(schema.orgs.name, `%${q}%`),
+            ilike(schema.orgs.slug, `%${q}%`),
+          ),
+        )
+      : await rowsQuery;
 
     // Collapse to one row per user; carry the orgs they belong to so the
     // palette can match on either a person or a company.
@@ -45,6 +63,6 @@ export function mountImpersonation(app: Hono<{ Variables: Vars }>): void {
         });
       }
     }
-    return c.json({ users: Array.from(byUser.values()) });
+    return c.json({ users: Array.from(byUser.values()), limit: MAX_TARGET_ROWS });
   });
 }

@@ -43,7 +43,7 @@ export function CommandPalette() {
   // Only fetch the impersonation targets when an admin actually opens the
   // impersonate sub-mode — non-admins never need it, and we don't want to
   // hammer the endpoint on every page load.
-  const targets = useImpersonationTargets(open && mode === "impersonate" && isStaff);
+  const targets = useImpersonationTargets(open && mode === "impersonate" && isStaff, query);
 
   useEffect(() => {
     const api: PaletteAPI = {
