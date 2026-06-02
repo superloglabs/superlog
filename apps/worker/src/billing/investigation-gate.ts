@@ -30,9 +30,13 @@ export function createAutumnInvestigationGate(opts: {
   secretKey: string;
   baseUrl?: string;
   fetchImpl?: FetchLike;
+  // When false, usage is still tracked (recordInvestigation) but the gate never
+  // blocks — i.e. metering-on, enforcement-off. Defaults to enforcing.
+  enforce?: boolean;
 }): InvestigationGate {
   const baseUrl = opts.baseUrl ?? "https://api.useautumn.com/v1";
   const doFetch = opts.fetchImpl ?? fetch;
+  const enforce = opts.enforce !== false;
 
   async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
     const res = await doFetch(`${baseUrl}${path}`, {
@@ -51,6 +55,9 @@ export function createAutumnInvestigationGate(opts: {
 
   return {
     canRunInvestigation: async (orgId) => {
+      // Enforcement gated separately from metering: when off, never block (but
+      // recordInvestigation below still tracks usage for billing + the UI meters).
+      if (!enforce) return true;
       try {
         const r = await post("/check", {
           customer_id: orgId,
@@ -89,7 +96,11 @@ export function createAutumnInvestigationGate(opts: {
 export function createInvestigationGate(env: NodeJS.ProcessEnv = process.env): InvestigationGate {
   const secretKey = env.AUTUMN_SECRET_KEY?.trim();
   if (!secretKey) return allowAllGate;
-  return createAutumnInvestigationGate({ secretKey });
+  // Meter always (when keyed), but only BLOCK when enforcement is explicitly on.
+  return createAutumnInvestigationGate({
+    secretKey,
+    enforce: env.BILLING_ENFORCEMENT_ENABLED === "true",
+  });
 }
 
 export const investigationGate: InvestigationGate = createInvestigationGate();

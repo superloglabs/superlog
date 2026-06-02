@@ -103,3 +103,17 @@ test("no AUTUMN_SECRET_KEY → gate disabled (null), never blocks", () => {
   });
   assert.equal(gate, null);
 });
+
+test("gate is null unless BILLING_ENFORCEMENT_ENABLED — metering on, blocking off", () => {
+  const opts = { lookupOrgForProject: async () => ({ orgId: "orgA" }), secretKey: "am_sk_test_x" };
+  const prev = process.env.BILLING_ENFORCEMENT_ENABLED;
+  try {
+    delete process.env.BILLING_ENFORCEMENT_ENABLED;
+    assert.equal(createIngestEntitlementGate(opts), null); // keyed but not enforcing → no block
+    process.env.BILLING_ENFORCEMENT_ENABLED = "true";
+    assert.notEqual(createIngestEntitlementGate(opts), null); // enforcing → real gate
+  } finally {
+    if (prev === undefined) delete process.env.BILLING_ENFORCEMENT_ENABLED;
+    else process.env.BILLING_ENFORCEMENT_ENABLED = prev;
+  }
+});
