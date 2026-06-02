@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { type AdminOrgOverviewRow, useAdminOverview, useMe } from "./api.ts";
+import { type ImpersonationTarget, useImpersonationTargets, useMe } from "./api.ts";
 import { authClient } from "./auth-client.ts";
 
 type Mode = "root" | "impersonate";
@@ -40,10 +40,10 @@ export function CommandPalette() {
   const isStaff = me.data?.user.isStaff === true;
   const isImpersonating = me.data?.user.impersonating === true;
 
-  // Only fetch the org overview when an admin actually opens the impersonate
-  // sub-mode — non-admins never need it, and we don't want to hammer the
-  // endpoint on every page load.
-  const overview = useAdminOverview(open && mode === "impersonate" && isStaff);
+  // Only fetch the impersonation targets when an admin actually opens the
+  // impersonate sub-mode — non-admins never need it, and we don't want to
+  // hammer the endpoint on every page load.
+  const targets = useImpersonationTargets(open && mode === "impersonate" && isStaff);
 
   useEffect(() => {
     const api: PaletteAPI = {
@@ -84,8 +84,6 @@ export function CommandPalette() {
       ];
       const adminItems: Item[] = isStaff
         ? [
-            { id: "nav-admin", label: "Admin", group: "Admin", haystack: "admin staff", onSelect: () => navigate("/admin") },
-            { id: "nav-evals", label: "Evals", group: "Admin", haystack: "evals", onSelect: () => navigate("/admin/evals") },
             {
               id: "impersonate",
               label: "Impersonate user…",
@@ -124,47 +122,27 @@ export function CommandPalette() {
       return [...stopItem, ...navItems, ...adminItems];
     }
 
-    // impersonate mode: one item per user, deduped across orgs. The admin is a
-    // member of every org in this codebase, so a per-(user × org) list balloons
-    // and makes "type the name" feel broken — the same handful of users repeat
-    // across every org. Collapse to one row per user; show their org list as a
-    // sublabel and pack name + email + every org name/slug into the haystack so
-    // typing either a person or a company narrows correctly.
-    const rows: AdminOrgOverviewRow[] = overview.data ?? [];
+    // impersonate mode: one item per user. The endpoint already collapses to a
+    // single row per user (carrying the orgs they belong to); we show their org
+    // list as a sublabel and pack name + email + every org name/slug into the
+    // haystack so typing either a person or a company narrows correctly.
     const selfId = me.data?.user.id;
-    const byUser = new Map<
-      string,
-      { email: string; name: string | null; orgs: string[]; slugs: string[] }
-    >();
-    for (const row of rows) {
-      for (const m of row.members) {
-        if (m.userId === selfId) continue;
-        const existing = byUser.get(m.userId);
-        if (existing) {
-          existing.orgs.push(row.org.name);
-          existing.slugs.push(row.org.slug);
-        } else {
-          byUser.set(m.userId, {
-            email: m.email,
-            name: m.name,
-            orgs: [row.org.name],
-            slugs: [row.org.slug],
-          });
-        }
-      }
-    }
+    const users: ImpersonationTarget[] = targets.data?.users ?? [];
     const out: Item[] = [];
-    for (const [userId, info] of byUser) {
+    for (const info of users) {
+      if (info.userId === selfId) continue;
       const label = info.name ? `${info.name} · ${info.email}` : info.email;
+      const orgNames = info.orgs.map((o) => o.name);
+      const orgSlugs = info.orgs.map((o) => o.slug);
       out.push({
-        id: `imp-${userId}`,
+        id: `imp-${info.userId}`,
         label,
-        sublabel: info.orgs.join(", "),
-        haystack: `${info.email} ${info.name ?? ""} ${info.orgs.join(" ")} ${info.slugs.join(" ")}`.toLowerCase(),
+        sublabel: orgNames.join(", "),
+        haystack: `${info.email} ${info.name ?? ""} ${orgNames.join(" ")} ${orgSlugs.join(" ")}`.toLowerCase(),
         onSelect: async () => {
           // Same pattern as stopImpersonating: error lands in result.error,
           // not as a throw. Don't reload if the impersonation didn't take.
-          const result = await authClient.admin.impersonateUser({ userId });
+          const result = await authClient.admin.impersonateUser({ userId: info.userId });
           if (result?.error) {
             console.error("impersonateUser failed", result.error);
             return;
@@ -178,7 +156,7 @@ export function CommandPalette() {
     }
     out.sort((a, b) => a.label.localeCompare(b.label));
     return out;
-  }, [mode, navigate, isStaff, isImpersonating, overview.data, me.data?.user.id]);
+  }, [mode, navigate, isStaff, isImpersonating, targets.data, me.data?.user.id]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -255,10 +233,10 @@ export function CommandPalette() {
         </div>
 
         <div ref={listRef} className="max-h-[60vh] overflow-y-auto py-1">
-          {mode === "impersonate" && overview.isLoading && (
+          {mode === "impersonate" && targets.isLoading && (
             <div className="px-3 py-6 text-center text-[12px] text-subtle">Loading users…</div>
           )}
-          {filtered.length === 0 && !(mode === "impersonate" && overview.isLoading) && (
+          {filtered.length === 0 && !(mode === "impersonate" && targets.isLoading) && (
             <div className="px-3 py-6 text-center text-[12px] text-subtle">No results.</div>
           )}
           {filtered.map((it, idx) => {

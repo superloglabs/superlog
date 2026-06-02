@@ -133,139 +133,29 @@ export function useClaimSignupIntent(projectId: string | undefined) {
   });
 }
 
-export type AdminOrgOverviewRow = {
-  org: {
-    id: string;
-    name: string;
-    slug: string;
-    createdAt: string;
-    signupSource: string | null;
-  };
-  githubConnected: boolean;
-  githubConnectedAt: string | null;
-  slackConnected: boolean;
-  slackConnectedAt: string | null;
-  mcpConnected: boolean;
-  mcpConnectedAt: string | null;
-  members: { userId: string; email: string; name: string | null; joinedAt: string }[];
-  thisWeek: { traces: number; incidents: number; prsOpened: number; prsMerged: number };
-  prevWeek: { traces: number; incidents: number; prsOpened: number; prsMerged: number };
+// Staff-only user picker that backs the impersonation command-palette flow.
+// The admin analytics surface (org overview, evals, feedback triage) lives in
+// the private admin app; this endpoint only returns enough to find a user.
+export type ImpersonationTarget = {
+  userId: string;
+  email: string;
+  name: string | null;
+  orgs: { name: string; slug: string }[];
 };
 
-export function useAdminOverview(enabled: boolean) {
+export function useImpersonationTargets(enabled: boolean) {
   const fetcher = useFetcher();
   return useQuery({
-    queryKey: ["admin-org-overview"],
-    queryFn: () => fetcher<AdminOrgOverviewRow[]>("/api/admin/org-overview"),
+    queryKey: ["impersonation-targets"],
+    queryFn: () => fetcher<{ users: ImpersonationTarget[] }>("/api/admin/impersonation-targets"),
     enabled,
-  });
-}
-
-export type IncidentEvalFixture = {
-  file: string;
-  incidentId: string;
-  codename: string | null;
-  capturedAt: string;
-  userPrompt: string;
-  referenceOutput: { title: string; summary: string | null };
-  humanLabel: { title: string; summary: string; notes: string };
-};
-
-export type InvestigationEvalFixture = {
-  slug: string;
-  incidentId: string;
-  title: string;
-  service: string | null;
-  window: { since: string | null; until: string | null };
-  telemetryTables: string[];
-  hasCode: boolean;
-  hasGroundTruth: boolean;
-  hasRubric: boolean;
-};
-
-export type AdminEvalsOverview = {
-  incidentSummarization: {
-    fixturesDir: string;
-    fixtures: IncidentEvalFixture[];
-    readError: string | null;
-  };
-  investigations: {
-    fixturesDir: string;
-    fixtures: InvestigationEvalFixture[];
-    readError: string | null;
-  };
-};
-
-export function useAdminEvals(enabled: boolean) {
-  const fetcher = useFetcher();
-  return useQuery({
-    queryKey: ["admin-evals"],
-    queryFn: () => fetcher<AdminEvalsOverview>("/api/admin/evals"),
-    enabled,
-  });
-}
-
-export type InvestigationEvalDetail = {
-  slug: string;
-  fixturesDir: string;
-  incident: {
-    id: string;
-    title: string;
-    service: string | null;
-    window: { since: string | null; until: string | null };
-  };
-  fixture: unknown;
-  groundTruth: string | null;
-  rubric: unknown | null;
-  postgres: Array<{ file: string; json: unknown }>;
-  telemetry: Array<{ table: string; path: string; rowCount: number; sample: unknown[] }>;
-  code: { artifact: string; bytes: number } | null;
-  readError: string | null;
-};
-
-export function useAdminInvestigationEval(slug: string | undefined, enabled: boolean) {
-  const fetcher = useFetcher();
-  return useQuery({
-    queryKey: ["admin-investigation-eval", slug],
-    queryFn: () =>
-      fetcher<InvestigationEvalDetail>(
-        `/api/admin/evals/investigations/${encodeURIComponent(slug ?? "")}`,
-      ),
-    enabled: enabled && !!slug,
   });
 }
 
 // --- Feedback ---
 
-export type FeedbackKind = "incident" | "issue" | "pr";
-export type FeedbackSource = "dialog" | "slack_button" | "pr_comment" | "pr_link";
-export type FeedbackStatus = "new" | "triaged" | "closed";
-
-export type FeedbackRow = {
-  id: string;
-  kind: FeedbackKind;
-  refId: string;
-  refRepo: string | null;
-  source: FeedbackSource;
-  body: string;
-  authorEmail: string | null;
-  authorExternal: {
-    githubLogin?: string;
-    githubCommentUrl?: string;
-    slackUserId?: string;
-    slackTeamId?: string;
-  } | null;
-  orgId: string | null;
-  projectId: string | null;
-  status: FeedbackStatus;
-  triagedByEmail: string | null;
-  triagedAt: string | null;
-  createdAt: string;
-};
-
 export function useSubmitFeedback() {
   const fetcher = useFetcher();
-  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (vars: {
       kind: "incident" | "issue";
@@ -277,11 +167,6 @@ export function useSubmitFeedback() {
         method: "POST",
         body: JSON.stringify(vars),
       }),
-    onSuccess: () => {
-      // Refresh the admin badge optimistically for staff users; non-staff
-      // get a 403 and the query just stays empty, which is fine.
-      queryClient.invalidateQueries({ queryKey: ["admin-feedback-unread"] });
-    },
   });
 }
 
@@ -304,44 +189,6 @@ export function submitPrFeedback(opts: {
   }).then(async (res) => {
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
     return res.json() as Promise<{ ok: true }>;
-  });
-}
-
-export function useAdminFeedback(enabled: boolean, status: "all" | FeedbackStatus = "all") {
-  const fetcher = useFetcher();
-  return useQuery({
-    queryKey: ["admin-feedback", status],
-    queryFn: () =>
-      fetcher<{ rows: FeedbackRow[] }>(
-        status === "all" ? "/api/admin/feedback" : `/api/admin/feedback?status=${status}`,
-      ),
-    enabled,
-  });
-}
-
-export function useAdminFeedbackUnreadCount(enabled: boolean) {
-  const fetcher = useFetcher();
-  return useQuery({
-    queryKey: ["admin-feedback-unread"],
-    queryFn: () => fetcher<{ count: number }>("/api/admin/feedback/unread-count"),
-    enabled,
-    refetchInterval: 30_000,
-  });
-}
-
-export function useUpdateFeedbackStatus() {
-  const fetcher = useFetcher();
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (vars: { id: string; status: FeedbackStatus }) =>
-      fetcher<{ ok: true }>(`/api/admin/feedback/${vars.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status: vars.status }),
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["admin-feedback"] });
-      queryClient.invalidateQueries({ queryKey: ["admin-feedback-unread"] });
-    },
   });
 }
 
