@@ -64,7 +64,6 @@ export const REVYL_INTEGRATION: IntegrationDefinition = {
       description: "Retrieve current status and result of a previously triggered test run.",
       method: "GET",
       path: "/api/v1/tests/get_test_execution_task",
-      docs_only: true,
       input_schema: {
         type: "object",
         required: ["task_id"],
@@ -72,6 +71,7 @@ export const REVYL_INTEGRATION: IntegrationDefinition = {
         properties: { task_id: { type: "string" } },
       },
       query_template: { task_id: "{{input.task_id}}" },
+      response_filter: ["status", "message", "result", "error", "report_url", "artifacts"],
     },
     {
       name: "revyl_cancel_test_run",

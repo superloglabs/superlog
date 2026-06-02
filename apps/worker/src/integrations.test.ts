@@ -1,7 +1,11 @@
 import "./agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { REVYL_INTEGRATION, executeIntegrationOperation } from "./integrations.js";
+import {
+  REVYL_INTEGRATION,
+  buildCustomToolParams,
+  executeIntegrationOperation,
+} from "./integrations.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -45,4 +49,30 @@ test("Revyl app listing operation calls the build vars endpoint with platform fi
   assert.deepEqual(result, {
     items: [{ id: "app-1", name: "Juno Android", platform: "android", latest_version: "1" }],
   });
+});
+
+test("Revyl run status operation is exposed with a compact response filter", () => {
+  const op = REVYL_INTEGRATION.operations.find(
+    (candidate) => candidate.name === "revyl_get_test_run",
+  );
+  assert.ok(op, "expected revyl_get_test_run operation");
+  assert.equal(op.docs_only, undefined);
+
+  const toolNames = buildCustomToolParams([
+    {
+      row: {} as never,
+      definition: REVYL_INTEGRATION,
+      secrets: { REVYL_API_KEY: "revyl_test_key" },
+    },
+  ]).map((tool) => tool.name);
+
+  assert.ok(toolNames.includes("revyl_get_test_run"));
+  assert.deepEqual(op.response_filter, [
+    "status",
+    "message",
+    "result",
+    "error",
+    "report_url",
+    "artifacts",
+  ]);
 });
