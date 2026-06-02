@@ -12,9 +12,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1053.0",
     "@clickhouse/client": "^1.9.0",
     "@hono/node-server": "^1.13.7",
     "@hono/standard-validator": "^0.2.2",
+    "@jridgewell/trace-mapping": "^0.3.31",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/api-logs": "^0.215.0",

@@ -14,6 +14,8 @@ import type {
 import { logger } from "../logger.js";
 
 const tracer = trace.getTracer("@superlog/worker");
+export const TELEMETRY_INVESTIGATION_HINT =
+  "When an issue sample includes a session.id attribute, use it to query preceding traces and logs from the same user/app session before focusing only on the failing trace or log line.";
 
 export type StartQueuedAgentRunDeps = {
   lifecycle: Pick<AgentRunLifecycle, "beginRepoDiscovery" | "startRunning">;
@@ -229,6 +231,7 @@ async function startRunnerSession(
         linearTicketInstructions: ctx.linearTicketInstructions,
         prPolicy: ctx.prPolicy,
         githubConnected: ctx.githubInstalls.length > 0,
+        telemetryInvestigationHint: TELEMETRY_INVESTIGATION_HINT,
         customInstructions: ctx.customInstructions,
       });
       llmSpan.setAttribute("agent_run.session_id", result.sessionId);

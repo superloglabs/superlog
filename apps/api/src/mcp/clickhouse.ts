@@ -152,7 +152,10 @@ export async function queryLogs(
       TraceId AS trace_id,
       SpanId AS span_id,
       LogAttributes AS log_attrs,
-      ResourceAttributes AS resource_attrs
+      ResourceAttributes AS resource_attrs,
+      LogAttributes['exception.type'] AS exception_type,
+      LogAttributes['exception.message'] AS exception_message,
+      LogAttributes['exception.stacktrace'] AS exception_stacktrace
     FROM otel_logs
     WHERE ${conds.join(" AND ")}
     ORDER BY Timestamp DESC
@@ -226,7 +229,11 @@ export async function queryTraces(
       StatusMessage AS status_message,
       Duration / 1000000 AS duration_ms,
       SpanAttributes AS span_attrs,
-      ResourceAttributes AS resource_attrs
+      ResourceAttributes AS resource_attrs,
+      indexOf(Events.Name, 'exception') AS exception_event_index,
+      if(exception_event_index = 0, '', Events.Attributes[exception_event_index]['exception.type']) AS exception_type,
+      if(exception_event_index = 0, '', Events.Attributes[exception_event_index]['exception.message']) AS exception_message,
+      if(exception_event_index = 0, '', Events.Attributes[exception_event_index]['exception.stacktrace']) AS exception_stacktrace
     FROM otel_traces
     WHERE ${conds.join(" AND ")}
     ORDER BY Timestamp DESC
@@ -359,7 +366,11 @@ export async function getTraceDetail(ch: ClickHouseClient, projectId: string, tr
         toString(Duration) AS duration_ns,
         toFloat64(Duration) / 1000000 AS duration_ms,
         SpanAttributes AS span_attrs,
-        ResourceAttributes AS resource_attrs
+        ResourceAttributes AS resource_attrs,
+        indexOf(Events.Name, 'exception') AS exception_event_index,
+        if(exception_event_index = 0, '', Events.Attributes[exception_event_index]['exception.type']) AS exception_type,
+        if(exception_event_index = 0, '', Events.Attributes[exception_event_index]['exception.message']) AS exception_message,
+        if(exception_event_index = 0, '', Events.Attributes[exception_event_index]['exception.stacktrace']) AS exception_stacktrace
       FROM otel_traces
       WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
         AND TraceId = {traceId:String}
@@ -380,7 +391,11 @@ export async function getTraceDetail(ch: ClickHouseClient, projectId: string, tr
         Body AS body,
         TraceId AS trace_id,
         SpanId AS span_id,
-        LogAttributes AS log_attrs
+        LogAttributes AS log_attrs,
+        ResourceAttributes AS resource_attrs,
+        LogAttributes['exception.type'] AS exception_type,
+        LogAttributes['exception.message'] AS exception_message,
+        LogAttributes['exception.stacktrace'] AS exception_stacktrace
       FROM otel_logs
       WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
         AND TraceId = {traceId:String}

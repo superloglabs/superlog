@@ -386,6 +386,20 @@
       "when": 1780201841657,
       "tag": "0054_ancient_prodigy",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1780366759351,
+      "tag": "0055_lean_the_fury",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1780368640007,
+      "tag": "0056_complete_golden_guardian",
+      "breakpoints": true
     }
   ]
 }

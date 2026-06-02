@@ -1100,6 +1100,7 @@ export type IssueSample = {
   traceId?: string | null;
   spanId?: string | null;
   severityNumber?: number | null;
+  spanAttrs?: Record<string, string> | null;
   logAttrs?: Record<string, string> | null;
   resourceAttrs?: Record<string, string> | null;
 };
@@ -1122,6 +1123,25 @@ export type Issue = {
   groupingSource: "heuristic" | "llm" | "manual" | null;
   groupingReason: string | null;
   lastSample: IssueSample | null;
+  symbolication?: {
+    artifact: {
+      id: string;
+      release: string;
+      dist: string | null;
+      platform: string;
+      debugId: string | null;
+    };
+    stacktrace: string;
+    frames: {
+      functionName: string | null;
+      source: string;
+      line: number;
+      column: number;
+      generatedFile: string;
+      generatedLine: number;
+      generatedColumn: number;
+    }[];
+  } | null;
   createdAt: string;
 };
 

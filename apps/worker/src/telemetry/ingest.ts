@@ -579,6 +579,8 @@ async function tickSpans(opts: {
           traceId: row.trace_id || null,
           spanId: row.span_id || null,
           spanName: row.span_name || null,
+          spanAttrs: row.span_attrs ?? null,
+          resourceAttrs: row.resource_attrs ?? null,
         };
         const up = await upsertIssue({
           database: opts.database,

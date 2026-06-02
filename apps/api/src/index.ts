@@ -2,7 +2,6 @@ import "./env.js";
 import "./net.js";
 import { createClient } from "@clickhouse/client";
 import { serve } from "@hono/node-server";
-import { Autumn, AutumnError } from "autumn-js";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import {
   DEFAULT_AGENT_RUN_PROVIDER,
@@ -21,6 +20,7 @@ import {
   upsertLoopsContact,
 } from "@superlog/db";
 import { fingerprint, fingerprintLog } from "@superlog/fingerprint";
+import { Autumn, AutumnError } from "autumn-js";
 import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -74,7 +74,9 @@ import { resolveActiveOrgContext, resolveMaybeActiveOrgContext } from "./org-con
 import { mountSettingsAuthed } from "./settings.js";
 import { normalizeSignupIntentKeyHash, normalizeSignupIntentKeyPrefix } from "./signup-intents.js";
 import { mountSlackAuthed, mountSlackPublic } from "./slack.js";
+import { sourceMapObjectStoreFromEnv } from "./sourcemaps.js";
 import { userIsStaff } from "./staff.js";
+import { symbolicateIssueSample } from "./symbolication.js";
 import { buildSystemCapabilities } from "./system-capabilities.js";
 import { mountWebhooks } from "./webhooks.js";
 
@@ -106,6 +108,7 @@ type Vars = {
 } & Partial<GatewayVars>;
 const app = new Hono<{ Variables: Vars }>();
 const incidentLifecycle = createIncidentLifecycle(db);
+const sourceMapObjectStore = sourceMapObjectStoreFromEnv(process.env);
 
 app.use(
   "/api/*",
@@ -1202,7 +1205,16 @@ app.get("/api/projects/:projectId/issues/:issueId", async (c) => {
     where: and(eq(schema.issues.id, issueId), eq(schema.issues.projectId, projectId)),
   });
   if (!issue) throw new HTTPException(404, { message: "issue not found" });
-  return c.json(issue);
+  const symbolication = await symbolicateIssueSample({
+    database: db,
+    objectReader: sourceMapObjectStore,
+    projectId,
+    sample: issue.lastSample,
+  }).catch((err) => {
+    logger.warn({ err, projectId, issueId }, "failed to symbolicate issue sample");
+    return null;
+  });
+  return c.json({ ...issue, symbolication });
 });
 
 app.post("/api/projects/:projectId/issues/lookup", async (c) => {

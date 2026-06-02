@@ -19,6 +19,8 @@ export type AgentRunnerIssueSummary = {
   message: string | null;
   topFrame: string | null;
   normalizedFrames: string[];
+  stacktrace: string | null;
+  sessionId: string | null;
   lastSample: unknown;
   traceContext: string | null;
 };
@@ -37,6 +39,7 @@ export type AgentRunnerStartInput = {
   linearTicketInstructions: LinearTicketInstruction[];
   prPolicy: PrPolicy;
   githubConnected: boolean;
+  telemetryInvestigationHint: string;
   customInstructions: string;
 };
 
