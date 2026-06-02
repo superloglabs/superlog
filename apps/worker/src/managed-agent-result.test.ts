@@ -44,6 +44,11 @@ test("accepts a fully-populated well-formed result", () => {
     rootCause: { text: "because", confidence: 9 },
     estimatedImpact: { text: "blocks signup", confidence: 7 },
     severity: "SEV-2",
+    mobileRegressionTest: {
+      status: "created",
+      testId: "test_123",
+      url: "https://app.revyl.ai/tests/test_123",
+    },
     noiseClassification: null,
     resolutionClassification: null,
     pr: {
@@ -58,7 +63,11 @@ test("accepts a fully-populated well-formed result", () => {
       validationCommands: ["pnpm test"],
       changedFiles: ["src/a.ts"],
     },
-    linearTicket: { id: "TEAM-123", url: "https://linear.app/t/TEAM-123", createdByAgent: true },
+    linearTicket: {
+      id: "TEAM-123",
+      url: "https://linear.app/t/TEAM-123",
+      createdByAgent: true,
+    },
   });
   assert.equal(r.ok, true);
   if (!r.ok) return;
@@ -66,11 +75,62 @@ test("accepts a fully-populated well-formed result", () => {
   assert.equal(r.result.rootCause?.confidence, 9);
   assert.equal(r.result.estimatedImpact?.confidence, 7);
   assert.equal(r.result.severity, "SEV-2");
+  assert.equal(r.result.mobileRegressionTest?.status, "created");
+  assert.equal(r.result.mobileRegressionTest?.testId, "test_123");
   assert.equal(r.result.pr?.branchName, "superlog/fix");
   assert.equal(r.result.pr?.title, "[superlog] Fix the broken flow");
   assert.equal(r.result.pr?.body, "# Summary\nFixes the broken flow.");
   assert.equal(r.result.linearTicket?.id, "TEAM-123");
   assert.deepEqual(r.drops, []);
+});
+
+test("accepts skipped mobile regression test decision with a reason", () => {
+  const r = normalizeAgentResult({
+    state: "complete",
+    summary: "x",
+    mobileRegressionTest: {
+      status: "skipped",
+      reason: "The fix changes a backend-only webhook and has no reliable mobile UI flow.",
+    },
+  });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.equal(r.result.mobileRegressionTest?.status, "skipped");
+  assert.match(r.result.mobileRegressionTest?.reason ?? "", /backend-only webhook/);
+  assert.deepEqual(r.drops, []);
+});
+
+test("accepts stringified mobile regression test decisions", () => {
+  const r = normalizeAgentResult({
+    state: "complete",
+    summary: "x",
+    mobileRegressionTest: JSON.stringify({
+      status: "created",
+      testId: "test_123",
+      url: "https://app.revyl.ai/tests/test_123",
+    }),
+  });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.equal(r.result.mobileRegressionTest?.status, "created");
+  assert.equal(r.result.mobileRegressionTest?.testId, "test_123");
+  assert.equal(r.result.mobileRegressionTest?.url, "https://app.revyl.ai/tests/test_123");
+  assert.deepEqual(r.drops, []);
+});
+
+test("drops malformed mobile regression test decisions", () => {
+  const r = normalizeAgentResult({
+    state: "complete",
+    summary: "x",
+    mobileRegressionTest: {
+      status: "created",
+      reason: "created cannot omit testId",
+    },
+  });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.equal(r.result.mobileRegressionTest, undefined);
+  assert.deepEqual(r.drops, ["mobileRegressionTest"]);
 });
 
 test("drops malformed estimatedImpact (flat string instead of object) — repro of fae38dd9 incident", () => {
@@ -183,7 +243,11 @@ test("rejects state=awaiting_human without a question", () => {
 });
 
 test("rejects state=awaiting_human with empty question", () => {
-  const r = normalizeAgentResult({ state: "awaiting_human", summary: "x", question: "" });
+  const r = normalizeAgentResult({
+    state: "awaiting_human",
+    summary: "x",
+    question: "",
+  });
   assert.equal(r.ok, false);
 });
 

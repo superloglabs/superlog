@@ -756,7 +756,12 @@ app.get("/api/projects/:projectId/explore/attribute-keys", async (c) => {
   const projectId = c.req.param("projectId");
   await requireProjectAccess(c, projectId);
   const { since, until } = parseRangeQuery(c);
-  const rows = await listAttributeKeys(ch, projectId, { since, until });
+  const rows = await listAttributeKeys(
+    ch,
+    projectId,
+    { since, until },
+    parseExploreAttributeSource(c),
+  );
   return c.json(rows);
 });
 
@@ -766,7 +771,14 @@ app.get("/api/projects/:projectId/explore/attribute-values", async (c) => {
   const key = c.req.query("key");
   if (!key) throw new HTTPException(400, { message: "key is required" });
   const { since, until } = parseRangeQuery(c);
-  const rows = await listAttributeValues(ch, projectId, key, { since, until });
+  const rows = await listAttributeValues(
+    ch,
+    projectId,
+    key,
+    { since, until },
+    200,
+    parseExploreAttributeSource(c),
+  );
   return c.json(rows);
 });
 
@@ -964,6 +976,14 @@ function parseRangeQuery(c: Context<{ Variables: Vars }>): { since?: string; unt
   const since = c.req.query("since");
   const until = c.req.query("until");
   return { since, until };
+}
+
+function parseExploreAttributeSource(
+  c: Context<{ Variables: Vars }>,
+): SeriesSource | "metrics" | undefined {
+  const source = c.req.query("source");
+  if (source === "logs" || source === "traces" || source === "metrics") return source;
+  return undefined;
 }
 
 function clampLimit(n: number | undefined, fallback: number, max: number): number {

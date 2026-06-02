@@ -1812,6 +1812,7 @@ export type SeriesRow = { bucket: string; group: string; count: number };
 
 export type AttributeKey = { key: string; count: number };
 export type AttributeValue = { value: string; count: number };
+export type ExploreAttributeSource = "logs" | "traces" | "metrics";
 
 export type MetricName = { name: string; kind: string; unit: string };
 export type MetricRow = {
@@ -1825,15 +1826,19 @@ export type MetricRow = {
 };
 export type MetricSeriesRow = { bucket: string; group: string; value: number };
 
-export function useExploreAttributeKeys(projectId: string | undefined, range: ExploreRange) {
+export function useExploreAttributeKeys(
+  projectId: string | undefined,
+  range: ExploreRange,
+  source?: ExploreAttributeSource,
+) {
   const fetcher = useFetcher();
   return useQuery({
-    queryKey: ["explore", "attribute-keys", projectId, range.since, range.until],
+    queryKey: ["explore", "attribute-keys", projectId, range.since, range.until, source ?? ""],
     queryFn: () =>
       fetcher<AttributeKey[]>(
         `/api/projects/${projectId}/explore/attribute-keys?since=${encodeURIComponent(
           range.since,
-        )}&until=${encodeURIComponent(range.until)}`,
+        )}&until=${encodeURIComponent(range.until)}${source ? `&source=${source}` : ""}`,
       ),
     enabled: !!projectId,
   });
@@ -1843,16 +1848,27 @@ export function useExploreAttributeValues(
   projectId: string | undefined,
   key: string | undefined,
   range: ExploreRange,
+  source?: ExploreAttributeSource,
 ) {
   const fetcher = useFetcher();
   return useQuery({
-    queryKey: ["explore", "attribute-values", projectId, key, range.since, range.until],
+    queryKey: [
+      "explore",
+      "attribute-values",
+      projectId,
+      key,
+      range.since,
+      range.until,
+      source ?? "",
+    ],
     queryFn: () => {
       if (!projectId || !key) return Promise.resolve([]);
       return fetcher<AttributeValue[]>(
         `/api/projects/${projectId}/explore/attribute-values?key=${encodeURIComponent(
           key,
-        )}&since=${encodeURIComponent(range.since)}&until=${encodeURIComponent(range.until)}`,
+        )}&since=${encodeURIComponent(range.since)}&until=${encodeURIComponent(range.until)}${
+          source ? `&source=${source}` : ""
+        }`,
       );
     },
     enabled: !!projectId && !!key,

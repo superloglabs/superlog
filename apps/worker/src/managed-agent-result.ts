@@ -20,6 +20,7 @@
 
 import type {
   AgentRunLinearTicket,
+  AgentRunMobileRegressionTest,
   AgentRunPr,
   AgentRunResult,
   IncidentNoiseClassification,
@@ -55,6 +56,7 @@ const RESOLUTION_REASONS = new Set([
   "upstream_recovered",
 ]);
 const PR_OPEN_STATUSES = new Set(["pending", "opened"]);
+const MOBILE_REGRESSION_TEST_STATUSES = new Set(["created", "skipped", "not_applicable"]);
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
@@ -104,7 +106,39 @@ function asResolutionClassification(v: unknown): IncidentResolutionClassificatio
   const evidence = asString(v.evidence);
   if (reason == null || evidence == null) return null;
   if (!RESOLUTION_REASONS.has(reason)) return null;
-  return { reason: reason as IncidentResolutionClassification["reason"], evidence };
+  return {
+    reason: reason as IncidentResolutionClassification["reason"],
+    evidence,
+  };
+}
+
+function asMobileRegressionTest(v: unknown): AgentRunMobileRegressionTest | null {
+  const parsed = parseStringifiedRecord(v);
+  if (!isRecord(parsed)) return null;
+  const status = asString(parsed.status);
+  if (status == null || !MOBILE_REGRESSION_TEST_STATUSES.has(status)) return null;
+
+  const testId = asString(parsed.testId);
+  const url = asString(parsed.url);
+  const reason = asString(parsed.reason);
+
+  if (status === "created") {
+    if (testId == null || testId.trim().length === 0) return null;
+    return {
+      status,
+      testId,
+      ...(url != null ? { url } : parsed.url === null ? { url: null } : {}),
+      ...(reason != null ? { reason } : parsed.reason === null ? { reason: null } : {}),
+    };
+  }
+
+  if (reason == null || reason.trim().length === 0) return null;
+  return {
+    status: status as "skipped" | "not_applicable",
+    reason,
+    ...(testId != null ? { testId } : parsed.testId === null ? { testId: null } : {}),
+    ...(url != null ? { url } : parsed.url === null ? { url: null } : {}),
+  };
 }
 
 function parseStringifiedRecord(v: unknown): unknown {
@@ -201,7 +235,10 @@ export function normalizeAgentResult(rawInput: unknown): NormalizeResult {
 
   const state = asString(input.state);
   if (state == null || !STATES.has(state)) {
-    return { ok: false, reason: `invalid state: ${JSON.stringify(input.state)}` };
+    return {
+      ok: false,
+      reason: `invalid state: ${JSON.stringify(input.state)}`,
+    };
   }
   const summary = asString(input.summary);
   if (summary == null) {
@@ -236,7 +273,10 @@ export function normalizeAgentResult(rawInput: unknown): NormalizeResult {
 
   const question = asString(input.question);
   if (state === "awaiting_human" && (question == null || question.length === 0)) {
-    return { ok: false, reason: "state=awaiting_human requires a non-empty question" };
+    return {
+      ok: false,
+      reason: "state=awaiting_human requires a non-empty question",
+    };
   }
   take("question", "question", question);
 
@@ -273,6 +313,12 @@ export function normalizeAgentResult(rawInput: unknown): NormalizeResult {
     "severity",
     "severity",
     severity != null && SEVERITIES.has(severity) ? (severity as "SEV-1" | "SEV-2" | "SEV-3") : null,
+  );
+
+  take(
+    "mobileRegressionTest",
+    "mobileRegressionTest",
+    asMobileRegressionTest(input.mobileRegressionTest),
   );
 
   take(

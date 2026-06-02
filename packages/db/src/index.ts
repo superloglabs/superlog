@@ -22,7 +22,11 @@ export {
   isOrgManagementKey,
 } from "./keys.js";
 export { mintApiKey, type MintedApiKey } from "./api-keys.js";
-export { mintOrgApiKey, resolveOrgApiKey, type MintedOrgApiKey } from "./org-api-keys.js";
+export {
+  mintOrgApiKey,
+  resolveOrgApiKey,
+  type MintedOrgApiKey,
+} from "./org-api-keys.js";
 export {
   listAccessibleGithubInstallsForProject,
   type AccessibleGithubInstall,
@@ -59,6 +63,7 @@ export type {
   AgentRunResult,
   AgentRunPr,
   AgentRunLinearTicket,
+  AgentRunMobileRegressionTest,
   AgentRunFailureReason,
   AgentRunFailureCategory,
   IncidentEvent,
@@ -132,7 +137,11 @@ export {
   createLinearWebhook,
   deleteLinearWebhook,
 } from "./linear.js";
-export type { LinearTokenResponse, LinearViewer, LinearWebhook } from "./linear.js";
+export type {
+  LinearTokenResponse,
+  LinearViewer,
+  LinearWebhook,
+} from "./linear.js";
 export {
   DEFAULT_LOOPS_WELCOME_EVENT,
   buildLoopsContactPayload,

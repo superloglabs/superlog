@@ -1031,11 +1031,12 @@ export function AddFilter({
     searchInputRef.current?.focus();
   }, [drill?.kind, drill?.kind === "attr" ? drill.key : null]);
 
-  const keys = useExploreAttributeKeys(projectId, range);
+  const keys = useExploreAttributeKeys(projectId, range, source);
   const values = useExploreAttributeValues(
     projectId,
     drill?.kind === "attr" ? drill.key : undefined,
     range,
+    source,
   );
 
   const existingPairs = useMemo(
@@ -1526,17 +1527,19 @@ function KeyboardSelect({
 export function GroupBySelect({
   projectId,
   range,
+  source,
   value,
   onChange,
   step,
 }: {
   projectId: string;
   range: ExploreRange;
+  source?: Source;
   value: string;
   onChange: (g: string) => void;
   step?: string;
 }) {
-  const keys = useExploreAttributeKeys(projectId, range);
+  const keys = useExploreAttributeKeys(projectId, range, source);
   const options = useMemo<KeyboardSelectOption[]>(() => {
     const out: KeyboardSelectOption[] = [
       { value: "", label: "none" },
@@ -1623,6 +1626,7 @@ function ChartPanel({
           <GroupBySelect
             projectId={projectId}
             range={range}
+            source={source}
             value={groupBy}
             onChange={onGroupByChange}
             step={step}
