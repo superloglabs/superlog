@@ -51,6 +51,7 @@ test("startQueuedAgentRunWorkflow starts runner with capped repo candidates", as
     "createRepositoryReadToken:repo-1",
     "buildIssueSummaries",
     "runner.start:1",
+    "telemetryHint:session.id",
     "startRunning:session-1:1",
     "notifyStarted:1",
   ]);
@@ -86,6 +87,9 @@ function makeDeps(
     maxRepoResources: 1,
     async start(input) {
       calls.push(`runner.start:${input.repoCandidates.length}`);
+      if (input.telemetryInvestigationHint.includes("session.id")) {
+        calls.push("telemetryHint:session.id");
+      }
       return { sessionId: "session-1" };
     },
     async collect() {

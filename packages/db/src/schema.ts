@@ -32,6 +32,7 @@ export type IssueSample = {
   spanId?: string | null;
   spanName?: string | null;
   severityNumber?: number | null;
+  spanAttrs?: Record<string, string> | null;
   logAttrs?: Record<string, string> | null;
   resourceAttrs?: Record<string, string> | null;
 };
@@ -1427,6 +1428,43 @@ export const orgIntegrationSecrets = pgTable(
   }),
 );
 
+export const sourceMapArtifacts = pgTable(
+  "source_map_artifacts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    platform: text("platform").notNull(),
+    release: text("release").notNull(),
+    dist: text("dist"),
+    debugId: text("debug_id"),
+    bundleFile: text("bundle_file"),
+    mapFile: text("map_file").notNull(),
+    sourceMapHash: text("source_map_hash").notNull(),
+    sourceMapBytes: integer("source_map_bytes").notNull(),
+    storageBucket: text("storage_bucket").notNull(),
+    storageKey: text("storage_key").notNull(),
+    contentEncoding: text("content_encoding").notNull().default("gzip"),
+    uploadedByOrgApiKeyId: uuid("uploaded_by_org_api_key_id").references(() => orgApiKeys.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    debugIdUniq: uniqueIndex("source_map_artifacts_project_debug_id_idx")
+      .on(t.projectId, t.debugId)
+      .where(sql`debug_id IS NOT NULL`),
+    releaseIdx: index("source_map_artifacts_project_release_idx").on(
+      t.projectId,
+      t.platform,
+      t.release,
+      t.dist,
+    ),
+  }),
+);
+
 export type AlertSource = "logs" | "traces" | "metric";
 export type AlertAggregation = "count" | "sum" | "avg";
 export type AlertComparator = "gt" | "lt";
@@ -1570,6 +1608,7 @@ export type LinearInstallation = typeof linearInstallations.$inferSelect;
 export type OrgAgentSettings = typeof orgAgentSettings.$inferSelect;
 export type OrgIntegration = typeof orgIntegrations.$inferSelect;
 export type OrgIntegrationSecret = typeof orgIntegrationSecrets.$inferSelect;
+export type SourceMapArtifact = typeof sourceMapArtifacts.$inferSelect;
 export type Alert = typeof alerts.$inferSelect;
 export type AlertFiring = typeof alertFirings.$inferSelect;
 export type AgentPullRequest = typeof agentPullRequests.$inferSelect;

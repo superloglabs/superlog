@@ -17,7 +17,6 @@ import {
   fetchInstallationRepoById,
   listCurrentInstallationRepos,
 } from "./github.js";
-import { getTraceDetail, queryLogs, queryMetrics } from "./mcp/clickhouse.js";
 import { logger } from "./logger.js";
 import {
   apiKeyListResponseSchema,
@@ -45,9 +44,16 @@ import {
   traceByIdParamSchema,
   updateProjectInputSchema,
 } from "./management-schemas.js";
+import { getTraceDetail, queryLogs, queryMetrics } from "./mcp/clickhouse.js";
 import { resolveActiveOrgContext } from "./org-context.js";
+import {
+  sourceMapObjectStoreFromEnv,
+  sourceMapUploadSchema,
+  storeSourceMapArtifact,
+} from "./sourcemaps.js";
 
 const log = logger.child({ scope: "management" });
+const sourceMapObjectStore = sourceMapObjectStoreFromEnv(process.env);
 
 type MgmtVars = { managementOrgId: string; managementKeyId: string };
 type DashboardVars = { userId: string; orgId: string | null };
@@ -498,6 +504,64 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
           revoked_at: k.revokedAt?.toISOString() ?? null,
           created_at: k.createdAt.toISOString(),
         })),
+      });
+    },
+  );
+
+  app.post(
+    "/api/v1/projects/:projectId/sourcemaps",
+    describeRoute({
+      tags: ["Projects"],
+      summary: "Upload a source map artifact",
+      description:
+        "Uploads a compressed source map artifact for later issue symbolication. " +
+        "Use a server-side `sl_management_*` key from CI; do not use public mobile ingest keys.",
+      responses: {
+        200: {
+          description: "Source map stored",
+          content: { "application/json": { schema: resolver(okResponseSchema) } },
+        },
+        ...BAD_REQUEST,
+        ...COMMON_ERRORS,
+        ...NOT_FOUND,
+      },
+    }),
+    validator("param", projectIdParamSchema),
+    validator("json", sourceMapUploadSchema),
+    async (c) => {
+      const orgId = (c.var as MgmtVars).managementOrgId;
+      const keyId = (c.var as MgmtVars).managementKeyId;
+      const { projectId } = c.req.valid("param");
+      await requireProjectInOrg(orgId, projectId);
+      if (!sourceMapObjectStore) {
+        throw new HTTPException(503, {
+          message: "source map storage is not configured",
+        });
+      }
+      const artifact = await storeSourceMapArtifact({
+        database: db,
+        projectId,
+        uploadedByOrgApiKeyId: keyId,
+        objectStore: sourceMapObjectStore,
+        input: c.req.valid("json"),
+      });
+      return c.json({
+        ok: true,
+        artifact: {
+          id: artifact.id,
+          project_id: artifact.projectId,
+          platform: artifact.platform,
+          release: artifact.release,
+          dist: artifact.dist,
+          debug_id: artifact.debugId,
+          map_file: artifact.mapFile,
+          source_map_hash: artifact.sourceMapHash,
+          source_map_bytes: artifact.sourceMapBytes,
+          storage_bucket: artifact.storageBucket,
+          storage_key: artifact.storageKey,
+          created_at: artifact.createdAt.toISOString(),
+          updated_at: artifact.updatedAt.toISOString(),
+        },
       });
     },
   );
@@ -1012,7 +1076,10 @@ async function revokeProjectRepoGrant(args: {
   if (result.length === 0) {
     throw new HTTPException(404, { message: "grant not found" });
   }
-  const removed = result[0]!;
+  const removed = result[0];
+  if (!removed) {
+    throw new HTTPException(404, { message: "grant not found" });
+  }
   log.info(
     {
       org_id: orgId,

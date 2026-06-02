@@ -44,6 +44,8 @@ test("getAgentRunnerBackend returns the default community backend", async () => 
           message: "Cannot read properties of undefined",
           topFrame: "checkout.ts:42",
           normalizedFrames: ["checkout.ts:42"],
+          stacktrace: null,
+          sessionId: null,
           lastSample: null,
           traceContext: null,
         },
@@ -55,6 +57,8 @@ test("getAgentRunnerBackend returns the default community backend", async () => 
       linearTicketInstructions: [],
       prPolicy: "never",
       githubConnected: false,
+      telemetryInvestigationHint:
+        "When an issue sample includes a session.id attribute, use it to query preceding traces and logs.",
       customInstructions: "",
     });
     const snapshot = await backend.collect(session.sessionId);
@@ -98,6 +102,8 @@ test("getAgentRunnerBackend returns a built-in disabled backend for community in
         linearTicketInstructions: [],
         prPolicy: "never",
         githubConnected: false,
+        telemetryInvestigationHint:
+          "When an issue sample includes a session.id attribute, use it to query preceding traces and logs.",
         customInstructions: "",
       }),
     /disabled/,

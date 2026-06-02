@@ -175,7 +175,7 @@ test("metricSeries can exclude resource attributes by substring", async () => {
   assert.equal(capture.params?.attr_v_0, ".local");
 });
 
-test("queryTraces returns resource attributes alongside span attributes", async () => {
+test("queryTraces returns resource attributes and flattened exception fields", async () => {
   const capture: { query?: string; params?: Record<string, unknown> } = {};
 
   await queryTraces(fakeClickhouse(capture), "project-1", {
@@ -185,6 +185,9 @@ test("queryTraces returns resource attributes alongside span attributes", async 
 
   assert.match(capture.query ?? "", /SpanAttributes AS span_attrs/);
   assert.match(capture.query ?? "", /ResourceAttributes AS resource_attrs/);
+  assert.match(capture.query ?? "", /AS exception_type/);
+  assert.match(capture.query ?? "", /AS exception_message/);
+  assert.match(capture.query ?? "", /AS exception_stacktrace/);
 });
 
 test("queryMetrics returns data-point attributes for every metric kind", async () => {

@@ -97,7 +97,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
     {
       title: "Query logs",
       description:
-        "Search OpenTelemetry logs. Targets the session's active project unless project_id is given.",
+        "Search OpenTelemetry logs. Targets the session's active project unless project_id is given. Error rows include flattened exception_type, exception_message, and exception_stacktrace fields when present.",
       inputSchema: {
         project_id: projectIdSchema,
         range: timeRangeSchema,
@@ -132,7 +132,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
     {
       title: "Query traces",
       description:
-        "Search OpenTelemetry spans. Targets the session's active project unless project_id is given.",
+        "Search OpenTelemetry spans. Targets the session's active project unless project_id is given. Spans with exception events include flattened exception_type, exception_message, and exception_stacktrace fields when present.",
       inputSchema: {
         project_id: projectIdSchema,
         range: timeRangeSchema,

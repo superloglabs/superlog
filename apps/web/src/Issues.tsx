@@ -420,6 +420,20 @@ function IssueDetailContent({
         </div>
       )}
 
+      {issue.symbolication && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <SectionHeading>Original stack</SectionHeading>
+            <span className="font-mono text-[10px] text-subtle">
+              {issue.symbolication.artifact.platform} - {issue.symbolication.artifact.release}
+            </span>
+          </div>
+          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-sm border border-border bg-surface-2 px-3 py-2 font-mono text-[11px] text-fg">
+            {issue.symbolication.stacktrace}
+          </pre>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-3">
         <MetaField label="Service" value={issue.service ?? "—"} />
         <MetaField label="Events" value={fmtCount(issue.eventCount)} />
@@ -904,6 +918,7 @@ function buildAgentRunPrompt({
         `   - Service: ${issue.service ?? "unknown"}`,
         `   - Message: ${issue.message ?? "(none)"}`,
         `   - Top frame: ${issue.topFrame ?? "(none)"}`,
+        `   - Symbolicated top frame: ${formatSymbolicatedTopFrame(issue) ?? "(none)"}`,
         `   - Event count: ${issue.eventCount}`,
         `   - First/last seen: ${issue.firstSeen} → ${issue.lastSeen}`,
         `   - Issue ID: ${issue.id}`,
@@ -952,12 +967,20 @@ function buildAgentRunPrompt({
     "",
     "## Task",
     `1. Query the Superlog MCP for traces, logs, and metrics around \`${incident.lastSeen}\` for service \`${incident.service ?? "(see above)"}\` and project \`${incident.projectId}\`. Pull representative samples for each issue ID above.`,
-    "2. Identify the root cause. Cite specific trace IDs, span attributes, log lines, and (if you have repo access) the offending file + line.",
-    "3. Propose a fix. If a prior agent run is shown above, treat it as a hypothesis — verify or refute it against the data rather than restating it.",
-    "4. Reply with: a short root-cause statement, the supporting evidence (trace/log/metric references), and the proposed change.",
+    "2. If a sample includes a `session.id` attribute, use it to query preceding traces and logs from the same user/app session before focusing only on the failing trace or log line.",
+    "3. Identify the root cause. Cite specific trace IDs, span attributes, log lines, and (if you have repo access) the offending file + line.",
+    "4. Propose a fix. If a prior agent run is shown above, treat it as a hypothesis — verify or refute it against the data rather than restating it.",
+    "5. Reply with: a short root-cause statement, the supporting evidence (trace/log/metric references), and the proposed change.",
   );
 
   return lines.join("\n");
+}
+
+function formatSymbolicatedTopFrame(issue: Issue): string | null {
+  const frame = issue.symbolication?.frames[0];
+  if (!frame) return null;
+  const fn = frame.functionName ? `${frame.functionName}@` : "";
+  return `${fn}${frame.source}:${frame.line}:${frame.column}`;
 }
 
 function CopyAgentPromptButton({

@@ -83,6 +83,7 @@ export type {
   OrgIntegrationSecret,
   Project,
   ProjectAutomationSetting,
+  SourceMapArtifact,
   User,
   WebhookDelivery,
   WebhookDeliveryStatus,
