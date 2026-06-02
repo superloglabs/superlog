@@ -57,3 +57,12 @@ test("recordInvestigation swallows API errors (no throw)", async () => {
   const gate = createAutumnInvestigationGate({ secretKey: "k", fetchImpl: impl });
   await gate.recordInvestigation("org_1"); // must not throw
 });
+
+test("enforce:false meters but never blocks (no /check call; /track still fires)", async () => {
+  const { impl, calls } = fakeFetch(() => ({ status: 200, json: { allowed: false } }));
+  const gate = createAutumnInvestigationGate({ secretKey: "k", fetchImpl: impl, enforce: false });
+  assert.equal(await gate.canRunInvestigation("org_1"), true); // allowed despite allowed:false
+  assert.equal(calls.length, 0); // didn't even call /check
+  await gate.recordInvestigation("org_1");
+  assert.match(calls[0]!.url, /\/track$/); // usage still metered
+});

@@ -8,6 +8,9 @@ export type Me = {
   // The onboarding wizard's create-org step posts to /api/me/orgs to fix that.
   org: { id: string; name: string; slug: string; githubSetupNeeded: boolean } | null;
   project: { id: string; name: string; slug: string; hasIngested: boolean } | null;
+  // Whether billing hard-blocks are enforced. Metering runs regardless; this
+  // gates the "Ingest paused" bar so we don't show it when nothing is blocked.
+  billingEnforcement?: boolean;
 };
 
 export type ApiKey = {

@@ -274,6 +274,10 @@ app.get("/api/me", async (c) => {
     preferredOrgId: c.var.orgId,
   });
   const { user } = ctx;
+  // Whether billing hard-blocks (ingest 402 / investigation cap) are enforced.
+  // Metering runs regardless; this only gates blocking, so the web can avoid
+  // showing an "Ingest paused" bar when nothing is actually being blocked.
+  const billingEnforcement = process.env.BILLING_ENFORCEMENT_ENABLED === "true";
 
   // Pre-org users (just signed up, haven't created their first org yet) get a
   // null org/project so the web client can route them to the create-org step
@@ -289,6 +293,7 @@ app.get("/api/me", async (c) => {
       },
       org: null,
       project: null,
+      billingEnforcement,
     });
   }
 
@@ -339,6 +344,7 @@ app.get("/api/me", async (c) => {
     },
     org: { id: org.id, name: org.name, slug: org.slug, githubSetupNeeded },
     project: { id: project.id, name: project.name, slug: project.slug, hasIngested },
+    billingEnforcement,
   });
 });
 

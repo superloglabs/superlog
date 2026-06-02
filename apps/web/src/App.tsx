@@ -152,6 +152,9 @@ function AuthenticatedApp() {
   const billingPaused =
     !impersonating &&
     !!billingCustomer &&
+    // Only show the bar when blocking is actually enforced (metering can be on
+    // without capping), so we never claim "Ingest paused" when it isn't.
+    me.data?.billingEnforcement === true &&
     // Only the telemetry signals gate ingest. Investigation credits running out
     // doesn't pause ingest, so it must not trigger the "Ingest paused" bar.
     ["spans", "logs", "metric_points"].some((f) => {

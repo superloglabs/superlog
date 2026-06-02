@@ -104,7 +104,11 @@ function createAutumnCheck(secretKey: string, fetchImpl: typeof fetch = fetch) {
 }
 
 // Returns null when AUTUMN_SECRET_KEY is unset — no billing, no blocking
-// (dev/worktrees/self-hosted ingest unaffected).
+// (dev/worktrees/self-hosted ingest unaffected). Also returns null unless
+// BILLING_ENFORCEMENT_ENABLED is "true": the hard-block is gated SEPARATELY from
+// metering, so we can turn billing on (the worker feeder still meters usage and
+// bills paying customers) without 402-capping anyone's ingest. Flip the env to
+// "true" when ready to actually enforce the Free caps.
 export function createIngestEntitlementGate(opts: {
   lookupOrgForProject: (projectId: string) => Promise<{ orgId: string } | null>;
   secretKey?: string | null;
@@ -113,6 +117,7 @@ export function createIngestEntitlementGate(opts: {
 }): IngestEntitlementGate | null {
   const secretKey = (opts.secretKey ?? process.env.AUTUMN_SECRET_KEY)?.trim();
   if (!secretKey) return null;
+  if (process.env.BILLING_ENFORCEMENT_ENABLED !== "true") return null;
   return createEntitlementCache({
     lookupOrgId: async (projectId) => (await opts.lookupOrgForProject(projectId))?.orgId ?? null,
     check: createAutumnCheck(secretKey, opts.fetchImpl),
