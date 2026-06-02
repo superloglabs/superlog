@@ -8,8 +8,31 @@ export type ResourceAttrFilter = {
 };
 
 type AttributeColumn = "ResourceAttributes" | "SpanAttributes" | "LogAttributes";
-type AttributeScope = "resource" | "span" | "log";
+// `field` is not an attribute map — it routes a `field.<name>` filter key to a
+// top-level column (TraceId, SpanId, SeverityNumber) via the fieldColumnExpr
+// allowlist below, so the explore UI can filter on identifiers, not just attrs.
+type AttributeScope = "resource" | "span" | "log" | "field";
 type ParsedAttributeKey = { scope: AttributeScope; key: string };
+
+export type FieldFilterSource = "logs" | "traces";
+
+// Allowlist mapping a `field.<name>` filter key to the ClickHouse column
+// expression it compares against (as a String). Returns null for anything not
+// on the list so an arbitrary `field.*` key can never reach the query — the
+// value is always bound as a parameter, the column expression never is.
+export function fieldColumnExpr(field: string, source: FieldFilterSource): string | null {
+  switch (field) {
+    case "trace_id":
+      return "TraceId";
+    case "span_id":
+      return "SpanId";
+    case "severity_number":
+      // SeverityNumber only exists on logs; cast so the String param compares.
+      return source === "logs" ? "toString(SeverityNumber)" : null;
+    default:
+      return null;
+  }
+}
 
 const RELATIVE_TIME_EXPR_RE =
   /^now\(\)(?:\s*-\s*INTERVAL\s+(?:[1-9][0-9]*)\s+(?:SECOND|MINUTE|HOUR|DAY|WEEK|MONTH))?$/i;
@@ -67,18 +90,45 @@ function parseAttributeKey(key: string): ParsedAttributeKey {
   if (key.startsWith("resource.")) return { scope: "resource", key: key.slice("resource.".length) };
   if (key.startsWith("span.")) return { scope: "span", key: key.slice("span.".length) };
   if (key.startsWith("log.")) return { scope: "log", key: key.slice("log.".length) };
+  if (key.startsWith("field.")) return { scope: "field", key: key.slice("field.".length) };
   return { scope: "resource", key };
 }
 
 function splitAttrs(
   attrs: ResourceAttrFilter[] | undefined,
 ): Record<AttributeScope, ResourceAttrFilter[]> {
-  const out: Record<AttributeScope, ResourceAttrFilter[]> = { resource: [], span: [], log: [] };
+  const out: Record<AttributeScope, ResourceAttrFilter[]> = {
+    resource: [],
+    span: [],
+    log: [],
+    field: [],
+  };
   for (const attr of attrs ?? []) {
     const parsed = parseAttributeKey(attr.key);
     out[parsed.scope].push({ ...attr, key: parsed.key });
   }
   return out;
+}
+
+// Build equality conditions for `field.*` filters against top-level columns.
+// Only keys on the fieldColumnExpr allowlist for this source produce a
+// condition; everything else is silently dropped. Op is ignored — identifier
+// filters are equality-only.
+function fieldConds(
+  attrs: ResourceAttrFilter[],
+  source: FieldFilterSource,
+  paramPrefix = "fattr",
+): { conds: string[]; params: Record<string, string> } {
+  const conds: string[] = [];
+  const params: Record<string, string> = {};
+  attrs.forEach((a, i) => {
+    const expr = fieldColumnExpr(a.key, source);
+    if (!expr) return;
+    const vName = `${paramPrefix}_v_${i}`;
+    conds.push(`${expr} = {${vName}:String}`);
+    params[vName] = a.value;
+  });
+  return { conds, params };
 }
 
 function groupExprForAttribute(
@@ -130,12 +180,14 @@ export async function queryLogs(
   const split = splitAttrs(params.resourceAttrs);
   const attr = attrConds(split.resource);
   const logAttr = attrConds([...split.log, ...(params.logAttrs ?? [])], "LogAttributes", "lattr");
+  const field = fieldConds(split.field, "logs");
   const conds: string[] = [
     "ResourceAttributes['superlog.project_id'] = {projectId:String}",
     `Timestamp >= ${sinceExpr}`,
     `Timestamp <= ${untilExpr}`,
     ...attr.conds,
     ...logAttr.conds,
+    ...field.conds,
   ];
   if (params.service) conds.push("ServiceName = {service:String}");
   if (params.severity) conds.push("upper(SeverityText) = upper({severity:String})");
@@ -174,6 +226,7 @@ export async function queryLogs(
       limit: params.limit,
       ...attr.params,
       ...logAttr.params,
+      ...field.params,
     },
     format: "JSONEachRow",
   });
@@ -202,12 +255,14 @@ export async function queryTraces(
     "SpanAttributes",
     "sattr",
   );
+  const field = fieldConds(split.field, "traces");
   const conds: string[] = [
     "ResourceAttributes['superlog.project_id'] = {projectId:String}",
     `Timestamp >= ${sinceExpr}`,
     `Timestamp <= ${untilExpr}`,
     ...attr.conds,
     ...spanAttr.conds,
+    ...field.conds,
   ];
   if (params.service) conds.push("ServiceName = {service:String}");
   if (params.spanName) conds.push("SpanName = {spanName:String}");
@@ -252,6 +307,7 @@ export async function queryTraces(
       limit: params.limit,
       ...attr.params,
       ...spanAttr.params,
+      ...field.params,
     },
     format: "JSONEachRow",
   });
@@ -275,6 +331,7 @@ export async function queryTracesAggregated(
   const split = splitAttrs(params.resourceAttrs);
   const attr = attrConds(split.resource);
   const spanAttr = attrConds(split.span, "SpanAttributes", "sattr");
+  const field = fieldConds(split.field, "traces");
   // Outer scope: trace-level. We aggregate over every span of every matching
   // trace in the window so span_count / duration_ms / error_count describe the
   // whole trace rather than only the spans matching span-level filters.
@@ -284,8 +341,9 @@ export async function queryTracesAggregated(
     `Timestamp <= ${untilExpr}`,
     ...attr.conds,
   ];
-  // Inner scope: span-level filters pick which TraceIds qualify.
-  const innerConds: string[] = [...outerConds, ...spanAttr.conds];
+  // Inner scope: span-level filters pick which TraceIds qualify. Identifier
+  // (field.*) filters like span_id are span-level too.
+  const innerConds: string[] = [...outerConds, ...spanAttr.conds, ...field.conds];
   if (params.service) innerConds.push("ServiceName = {service:String}");
   if (params.spanName) innerConds.push("SpanName = {spanName:String}");
   if (params.statusCode) innerConds.push("StatusCode = {statusCode:String}");
@@ -293,7 +351,8 @@ export async function queryTracesAggregated(
     params.service ||
     params.spanName ||
     params.statusCode ||
-    spanAttr.conds.length
+    spanAttr.conds.length ||
+    field.conds.length
   );
 
   // After GROUP BY TraceId, filter by total duration if requested.
@@ -343,6 +402,7 @@ export async function queryTracesAggregated(
       limit: params.limit,
       ...attr.params,
       ...spanAttr.params,
+      ...field.params,
     },
     format: "JSONEachRow",
   });
@@ -969,6 +1029,7 @@ export async function countSeries(
     source === "logs"
       ? attrConds(split.log, "LogAttributes", "event_attr")
       : attrConds(split.span, "SpanAttributes", "event_attr");
+  const field = fieldConds(split.field, source === "logs" ? "logs" : "traces");
   const table = source === "logs" ? "otel_logs" : "otel_traces";
   const conds: string[] = [
     "ResourceAttributes['superlog.project_id'] = {projectId:String}",
@@ -976,6 +1037,7 @@ export async function countSeries(
     `Timestamp <= ${untilExpr}`,
     ...attr.conds,
     ...eventAttr.conds,
+    ...field.conds,
   ];
   if (filter.service) conds.push("ServiceName = {service:String}");
   if (source === "logs") {
@@ -1017,6 +1079,7 @@ export async function countSeries(
       minDurationNs: Math.round((filter.minDurationMs ?? 0) * 1_000_000),
       ...attr.params,
       ...eventAttr.params,
+      ...field.params,
       ...group.params,
     },
     format: "JSONEachRow",

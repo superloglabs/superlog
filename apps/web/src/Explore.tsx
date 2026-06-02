@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import { LogDrawer } from "./LogDetail.tsx";
 import { TraceDrawer } from "./TraceDetail.tsx";
+import { addAttrFilter } from "./exploreAttrFilter.ts";
 import {
   type ExploreFilter,
   type ExploreRange,
@@ -258,6 +259,23 @@ function ExploreInner({ projectId }: { projectId: string }) {
     updateParams((p) => p.delete("log"), { replace: false });
   }, [updateParams]);
 
+  // Add a scope-prefixed attribute filter from a log/trace detail drawer to the
+  // current view's filter bar. Mirrors what AddFilter does on pick, deduping
+  // exact repeats so clicking the same attribute twice is a no-op. Severity has
+  // a dedicated facet/pill, so the drawer's severity row (emitted as the
+  // synthetic `field.severity` key) routes there instead of becoming a parallel
+  // attr pill — keeping one canonical severity filter.
+  const addFilter = useCallback(
+    (key: string, value: string) => {
+      if (key === "field.severity") {
+        setSeverity(value);
+        return;
+      }
+      setAttrs(addAttrFilter(attrs, key, value));
+    },
+    [attrs, setAttrs, setSeverity],
+  );
+
   return (
     <div className="flex flex-col gap-6">
       <section className="flex flex-wrap items-center justify-between gap-4">
@@ -366,7 +384,16 @@ function ExploreInner({ projectId }: { projectId: string }) {
           />
         </>
       )}
-      <TraceDrawer projectId={projectId} traceId={selectedTraceId} onClose={closeTrace} />
+      <TraceDrawer
+        projectId={projectId}
+        traceId={selectedTraceId}
+        onClose={closeTrace}
+        // The traces query filters on span.*/resource.* attributes, so only
+        // offer inline filtering when the trace is being viewed on the traces
+        // tab (a trace opened from the logs view filters logs, where span
+        // attributes wouldn't apply).
+        onAddFilter={source === "traces" ? addFilter : undefined}
+      />
       <LogDrawer
         projectId={projectId}
         log={selectedLog}
@@ -379,6 +406,7 @@ function ExploreInner({ projectId }: { projectId: string }) {
           closeLog();
           navigate(`/issues/${id}`);
         }}
+        onAddFilter={addFilter}
       />
     </div>
   );

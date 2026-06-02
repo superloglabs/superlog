@@ -1,5 +1,7 @@
 import { type ReactNode, useEffect, useMemo } from "react";
 import { type LogRow, useIssueForLog } from "./api.ts";
+import { RowMenu, type RowMenuItem } from "./design/RowMenu.tsx";
+import { attrFilterKey } from "./exploreAttrFilter.ts";
 import { formatLocalTimestampMs } from "./timeFormat.ts";
 
 export function LogDrawer({
@@ -8,12 +10,17 @@ export function LogDrawer({
   onClose,
   onOpenTrace,
   onOpenIssue,
+  onAddFilter,
 }: {
   projectId?: string;
   log: LogRow | null;
   onClose: () => void;
   onOpenTrace?: (traceId: string) => void;
   onOpenIssue?: (issueId: string) => void;
+  // Add a scope-prefixed key=value filter to the current logs view. When
+  // omitted (e.g. the drawer is shown outside the filterable explore page) the
+  // per-attribute filter buttons are hidden.
+  onAddFilter?: (key: string, value: string) => void;
 }) {
   useEffect(() => {
     if (!log) return;
@@ -42,6 +49,7 @@ export function LogDrawer({
             log={log}
             onOpenTrace={onOpenTrace}
             onOpenIssue={onOpenIssue}
+            onAddFilter={onAddFilter}
           />
         </div>
       </aside>
@@ -77,18 +85,17 @@ function LogDrawerBody({
   log,
   onOpenTrace,
   onOpenIssue,
+  onAddFilter,
 }: {
   projectId?: string;
   log: LogRow;
   onOpenTrace?: (traceId: string) => void;
   onOpenIssue?: (issueId: string) => void;
+  onAddFilter?: (key: string, value: string) => void;
 }) {
   const parsedBody = useMemo(() => tryParseJson(log.body), [log.body]);
   const logAttrs = useMemo(() => sortedEntries(log.log_attrs), [log.log_attrs]);
-  const resourceAttrs = useMemo(
-    () => sortedEntries(log.resource_attrs),
-    [log.resource_attrs],
-  );
+  const resourceAttrs = useMemo(() => sortedEntries(log.resource_attrs), [log.resource_attrs]);
   const { data: issueLookup } = useIssueForLog(projectId, log);
   const issue = issueLookup?.issue ?? null;
 
@@ -116,9 +123,7 @@ function LogDrawerBody({
       <section>
         <SectionHeader>Body</SectionHeader>
         <pre className="mt-2 max-h-[320px] overflow-auto whitespace-pre-wrap break-all border border-border bg-surface-2 px-3 py-2 font-mono text-[12px] text-fg">
-          {parsedBody !== undefined
-            ? JSON.stringify(parsedBody, null, 2)
-            : log.body || "—"}
+          {parsedBody !== undefined ? JSON.stringify(parsedBody, null, 2) : log.body || "—"}
         </pre>
       </section>
 
@@ -126,21 +131,43 @@ function LogDrawerBody({
         <SectionHeader>Identifiers</SectionHeader>
         <KvList
           rows={[
-            ["timestamp", formatLocalTimestampMs(log.timestamp)],
-            ["severity", log.severity || "—"],
-            [
-              "severity_number",
-              log.severity_number ? String(log.severity_number) : "—",
-            ],
-            ["service", log.service || "—"],
-            [
-              "trace_id",
-              log.trace_id || "—",
-              log.trace_id && onOpenTrace
-                ? { label: "open trace", onClick: () => onOpenTrace(log.trace_id) }
-                : undefined,
-            ],
-            ["span_id", log.span_id || "—"],
+            { key: "timestamp", value: formatLocalTimestampMs(log.timestamp) },
+            {
+              key: "severity",
+              value: log.severity || "—",
+              // Severity has a dedicated facet; Explore routes `field.severity`
+              // there so it doesn't duplicate the canonical severity pill.
+              menu: menuOf(
+                log.severity ? logFilterItem("field.severity", log.severity, onAddFilter) : null,
+              ),
+            },
+            {
+              key: "severity_number",
+              value: log.severity_number ? String(log.severity_number) : "—",
+              menu: menuOf(
+                log.severity_number
+                  ? logFilterItem("field.severity_number", String(log.severity_number), onAddFilter)
+                  : null,
+              ),
+            },
+            { key: "service", value: log.service || "—" },
+            {
+              key: "trace_id",
+              value: log.trace_id || "—",
+              menu: menuOf(
+                log.trace_id && onOpenTrace
+                  ? { label: "Open trace", onClick: () => onOpenTrace(log.trace_id) }
+                  : null,
+                log.trace_id ? logFilterItem("field.trace_id", log.trace_id, onAddFilter) : null,
+              ),
+            },
+            {
+              key: "span_id",
+              value: log.span_id || "—",
+              menu: menuOf(
+                log.span_id ? logFilterItem("field.span_id", log.span_id, onAddFilter) : null,
+              ),
+            },
           ]}
         />
       </section>
@@ -152,7 +179,13 @@ function LogDrawerBody({
         {logAttrs.length === 0 ? (
           <EmptyHint>none</EmptyHint>
         ) : (
-          <KvList rows={logAttrs.map(([k, v]) => [k, v])} />
+          <KvList
+            rows={logAttrs.map(([k, v]) => ({
+              key: k,
+              value: v,
+              menu: menuOf(logFilterItem(attrFilterKey("log", k), v, onAddFilter)),
+            }))}
+          />
         )}
       </section>
 
@@ -163,7 +196,13 @@ function LogDrawerBody({
         {resourceAttrs.length === 0 ? (
           <EmptyHint>none</EmptyHint>
         ) : (
-          <KvList rows={resourceAttrs.map(([k, v]) => [k, v])} />
+          <KvList
+            rows={resourceAttrs.map(([k, v]) => ({
+              key: k,
+              value: v,
+              menu: menuOf(logFilterItem(attrFilterKey("resource", k), v, onAddFilter)),
+            }))}
+          />
         )}
       </section>
     </div>
@@ -171,11 +210,7 @@ function LogDrawerBody({
 }
 
 function SectionHeader({ children }: { children: ReactNode }) {
-  return (
-    <h3 className="text-[12px] font-medium tracking-tight text-fg">
-      {children}
-    </h3>
-  );
+  return <h3 className="text-[12px] font-medium tracking-tight text-fg">{children}</h3>;
 }
 
 function Count({ children }: { children: ReactNode }) {
@@ -194,31 +229,41 @@ function EmptyHint({ children }: { children: ReactNode }) {
   );
 }
 
-type KvAction = { label: string; onClick: () => void };
-type KvRow = [string, string] | [string, string, KvAction | undefined];
+type KvRow = { key: string; value: string; menu?: RowMenuItem[] };
+
+// A "Filter logs on this value" menu item. `key` is the already-scoped filter
+// key (`log.<k>` / `resource.<k>` / `field.<id>`). Returns null when no filter
+// handler is wired so callers can drop it.
+function logFilterItem(
+  key: string,
+  value: string,
+  onAddFilter?: (key: string, value: string) => void,
+): RowMenuItem | null {
+  if (!onAddFilter) return null;
+  return { label: "Filter logs on this value", onClick: () => onAddFilter(key, value) };
+}
+
+// Collapse a list of maybe-items into a RowMenu's items, or undefined when
+// nothing is actionable (so the row renders without a kebab).
+function menuOf(...items: (RowMenuItem | null)[]): RowMenuItem[] | undefined {
+  const out = items.filter((i): i is RowMenuItem => i !== null);
+  return out.length > 0 ? out : undefined;
+}
 
 function KvList({ rows }: { rows: KvRow[] }) {
   return (
     <dl className="mt-2 grid grid-cols-[minmax(140px,auto)_1fr] border border-border font-mono text-[12px]">
-      {rows.map(([k, v, action], i) => (
+      {rows.map((row, i) => (
         <div
-          key={`${k}-${i}`}
+          key={`${row.key}-${i}`}
           className={`contents ${i > 0 ? "[&>*]:border-t [&>*]:border-border" : ""}`}
         >
-          <dt className="break-all border-r border-border bg-surface-2 px-3 py-1.5 text-subtle">
-            {k}
+          <dt className="flex items-center break-all border-r border-border bg-surface-2 px-3 py-1.5 text-subtle">
+            {row.key}
           </dt>
-          <dd className="flex items-start gap-2 px-3 py-1.5 text-fg">
-            <span className="min-w-0 flex-1 break-all">{v}</span>
-            {action ? (
-              <button
-                type="button"
-                onClick={action.onClick}
-                className="shrink-0 rounded-sm border border-border px-1.5 py-0.5 text-[10px] text-muted hover:text-fg"
-              >
-                {action.label}
-              </button>
-            ) : null}
+          <dd className="flex items-center justify-between gap-2 px-3 py-1.5 text-fg">
+            <span className="min-w-0 flex-1 break-all">{row.value}</span>
+            {row.menu ? <RowMenu items={row.menu} compact /> : null}
           </dd>
         </div>
       ))}

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { type TraceLog, type TraceSpan, useTraceDetail } from "./api.ts";
+import { RowMenu, type RowMenuItem } from "./design/RowMenu.tsx";
+import { type AttrScope, attrFilterKey } from "./exploreAttrFilter.ts";
 import { tracer } from "./instrumentation.ts";
 import { Chip, Label } from "./design/ui.tsx";
 import { formatLocalTimestampMs } from "./timeFormat.ts";
@@ -9,11 +11,17 @@ export function TraceDrawer({
   traceId,
   focusSpanId,
   onClose,
+  onAddFilter,
 }: {
   projectId: string;
   traceId: string | null;
   focusSpanId?: string | null;
   onClose: () => void;
+  // Add a scope-prefixed key=value filter to the current traces view. Only
+  // wired on the traces explore page — the traces query filters on
+  // `span.*` / `resource.*` attributes, so it's left undefined when a trace is
+  // opened from the logs view (where those scopes wouldn't apply).
+  onAddFilter?: (key: string, value: string) => void;
 }) {
   useEffect(() => {
     if (!traceId) return;
@@ -43,7 +51,12 @@ export function TraceDrawer({
         >
           ✕
         </button>
-        <TraceDrawerBody projectId={projectId} traceId={traceId} focusSpanId={focusSpanId} />
+        <TraceDrawerBody
+          projectId={projectId}
+          traceId={traceId}
+          focusSpanId={focusSpanId}
+          onAddFilter={onAddFilter}
+        />
       </aside>
     </div>
   );
@@ -53,10 +66,12 @@ function TraceDrawerBody({
   projectId,
   traceId,
   focusSpanId,
+  onAddFilter,
 }: {
   projectId: string;
   traceId: string;
   focusSpanId?: string | null;
+  onAddFilter?: (key: string, value: string) => void;
 }) {
   const detail = useTraceDetail(projectId, traceId);
 
@@ -106,6 +121,7 @@ function TraceDrawerBody({
       spans={detail.data.spans}
       logs={detail.data.logs}
       focusSpanId={focusSpanId}
+      onAddFilter={onAddFilter}
     />
   );
 }
@@ -174,11 +190,13 @@ function TraceContents({
   spans,
   logs,
   focusSpanId,
+  onAddFilter,
 }: {
   traceId: string;
   spans: TraceSpan[];
   logs: TraceLog[];
   focusSpanId?: string | null;
+  onAddFilter?: (key: string, value: string) => void;
 }) {
   const { rows, traceStartNs, traceEndNs } = useMemo(() => buildLayout(spans), [spans]);
   const totalNs = traceEndNs - traceStartNs;
@@ -186,12 +204,8 @@ function TraceContents({
   const rootRow = rows.find((r) => r.depth === 0) ?? rows[0]!;
 
   const initialSpanId =
-    focusSpanId && rows.some((r) => r.span_id === focusSpanId)
-      ? focusSpanId
-      : rootRow.span_id;
-  type Selection =
-    | { kind: "span"; spanId: string }
-    | { kind: "log"; index: number };
+    focusSpanId && rows.some((r) => r.span_id === focusSpanId) ? focusSpanId : rootRow.span_id;
+  type Selection = { kind: "span"; spanId: string } | { kind: "log"; index: number };
   const [selection, setSelection] = useState<Selection>({
     kind: "span",
     spanId: initialSpanId,
@@ -204,10 +218,9 @@ function TraceContents({
 
   const selectedSpan =
     selection.kind === "span"
-      ? rows.find((r) => r.span_id === selection.spanId) ?? rootRow
+      ? (rows.find((r) => r.span_id === selection.spanId) ?? rootRow)
       : rootRow;
-  const selectedLog =
-    selection.kind === "log" ? logs[selection.index] : undefined;
+  const selectedLog = selection.kind === "log" ? logs[selection.index] : undefined;
 
   return (
     <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] lg:divide-x lg:divide-border">
@@ -219,9 +232,7 @@ function TraceContents({
               rows={rows}
               traceStartNs={traceStartNs}
               totalNs={totalNs}
-              selectedSpanId={
-                selection.kind === "span" ? selection.spanId : null
-              }
+              selectedSpanId={selection.kind === "span" ? selection.spanId : null}
               onSelect={(spanId) => setSelection({ kind: "span", spanId })}
             />
           </div>
@@ -234,9 +245,7 @@ function TraceContents({
           <div className="border border-border">
             <LogsForTrace
               logs={logs}
-              selectedIndex={
-                selection.kind === "log" ? selection.index : null
-              }
+              selectedIndex={selection.kind === "log" ? selection.index : null}
               onSelect={(index) => setSelection({ kind: "log", index })}
             />
           </div>
@@ -246,10 +255,7 @@ function TraceContents({
       <aside className="min-h-0 min-w-0 overflow-y-auto px-6 py-6">
         {selectedLog ? (
           <>
-            <SectionHeader
-              title="Log"
-              id={formatLocalTimestampMs(selectedLog.timestamp)}
-            />
+            <SectionHeader title="Log" id={formatLocalTimestampMs(selectedLog.timestamp)} />
             <div className="border border-border">
               <LogAttributesPanel log={selectedLog} />
             </div>
@@ -258,7 +264,7 @@ function TraceContents({
           <>
             <SectionHeader title="Span" id={selectedSpan.span_id} />
             <div className="border border-border">
-              <SpanAttributesPanel span={selectedSpan} />
+              <SpanAttributesPanel span={selectedSpan} onAddFilter={onAddFilter} />
             </div>
           </>
         )}
@@ -303,7 +309,11 @@ function SpanWaterfall({
         const offsetMs = offsetNs / 1_000_000;
         const durationMs = durationNs / 1_000_000;
         const durationLabel =
-          durationMs < 0.01 ? "<0.01" : durationMs < 1 ? durationMs.toFixed(2) : durationMs.toFixed(2);
+          durationMs < 0.01
+            ? "<0.01"
+            : durationMs < 1
+              ? durationMs.toFixed(2)
+              : durationMs.toFixed(2);
         const isSelected = s.span_id === selectedSpanId;
         return (
           <button
@@ -337,9 +347,7 @@ function SpanWaterfall({
                 title={`+${offsetMs.toFixed(2)}ms · ${durationMs.toFixed(2)}ms`}
               />
             </div>
-            <div className="text-right tabular-nums text-muted">
-              {durationLabel}ms
-            </div>
+            <div className="text-right tabular-nums text-muted">{durationLabel}ms</div>
           </button>
         );
       })}
@@ -350,11 +358,7 @@ function SpanWaterfall({
             <div
               key={t.pct}
               className={`absolute top-0 text-[10px] tabular-nums text-subtle ${
-                t.pct === 0
-                  ? ""
-                  : t.pct === 100
-                    ? "-translate-x-full"
-                    : "-translate-x-1/2"
+                t.pct === 0 ? "" : t.pct === 100 ? "-translate-x-full" : "-translate-x-1/2"
               }`}
               style={{ left: `${t.pct}%` }}
             >
@@ -431,17 +435,20 @@ function SectionHeader({ title, id }: { title: string; id: string }) {
   return (
     <div className="mb-2 flex items-baseline gap-2">
       <h2 className="text-sm font-medium text-fg">{title}</h2>
-      <span
-        className="min-w-0 truncate font-mono text-[11px] text-subtle"
-        title={id}
-      >
+      <span className="min-w-0 truncate font-mono text-[11px] text-subtle" title={id}>
         {id}
       </span>
     </div>
   );
 }
 
-function SpanAttributesPanel({ span }: { span: SpanWithLayout }) {
+function SpanAttributesPanel({
+  span,
+  onAddFilter,
+}: {
+  span: SpanWithLayout;
+  onAddFilter?: (key: string, value: string) => void;
+}) {
   const spanAttrs = span.span_attrs ?? {};
   const resourceAttrs = span.resource_attrs ?? {};
   const durationMs = Number(span.endNs - span.startNs) / 1_000_000;
@@ -450,25 +457,64 @@ function SpanAttributesPanel({ span }: { span: SpanWithLayout }) {
     ["service", span.service],
     ["kind", span.span_kind || "—"],
     ["status", span.status_code || "—"],
-    ...(span.status_message ? ([["status_message", span.status_message]] as Array<[string, string]>) : []),
+    ...(span.status_message
+      ? ([["status_message", span.status_message]] as Array<[string, string]>)
+      : []),
     ["duration", `${durationMs.toFixed(2)} ms`],
     ["span_id", span.span_id],
-    ...(span.parent_span_id ? ([["parent_span_id", span.parent_span_id]] as Array<[string, string]>) : []),
+    ...(span.parent_span_id
+      ? ([["parent_span_id", span.parent_span_id]] as Array<[string, string]>)
+      : []),
   ];
 
   return (
     <div className="flex flex-col font-mono text-[11.5px]">
-      <AttrSection title="metadata" entries={meta} />
+      <AttrSection
+        title="metadata"
+        entries={meta}
+        // Most metadata rows are descriptive, but span_id is filterable as a
+        // top-level identifier (field.span_id), so give just that row a menu.
+        menuFor={
+          onAddFilter
+            ? (key, value) =>
+                key === "span_id"
+                  ? [traceFilterItem(attrFilterKey("field", "span_id"), value, onAddFilter)]
+                  : undefined
+            : undefined
+        }
+      />
       <AttrSection
         title={`span attributes (${Object.keys(spanAttrs).length})`}
         entries={sortedEntries(spanAttrs)}
+        menuFor={traceFilterMenu("span", onAddFilter)}
       />
       <AttrSection
         title={`resource attributes (${Object.keys(resourceAttrs).length})`}
         entries={sortedEntries(resourceAttrs)}
+        menuFor={traceFilterMenu("resource", onAddFilter)}
       />
     </div>
   );
+}
+
+// A "Filter traces on this value" menu item for an already-scoped filter key.
+function traceFilterItem(
+  key: string,
+  value: string,
+  onAddFilter: (key: string, value: string) => void,
+): RowMenuItem {
+  return { label: "Filter traces on this value", onClick: () => onAddFilter(key, value) };
+}
+
+// Build a per-row menu factory bound to an attribute scope, emitting the
+// scope-prefixed key the traces query expects (`span.<k>` / `resource.<k>`).
+// Returns undefined when no filter handler is wired so the rows render plain.
+function traceFilterMenu(
+  scope: AttrScope,
+  onAddFilter?: (key: string, value: string) => void,
+): ((key: string, value: string) => RowMenuItem[]) | undefined {
+  if (!onAddFilter) return undefined;
+  return (key, value) => [traceFilterItem(attrFilterKey(scope, key), value, onAddFilter)];
 }
 
 function LogAttributesPanel({ log }: { log: TraceLog }) {
@@ -481,8 +527,7 @@ function LogAttributesPanel({ log }: { log: TraceLog }) {
     ["trace_id", log.trace_id],
   ];
   const parsedBody = tryParseJson(log.body);
-  const bodyText =
-    parsedBody !== undefined ? JSON.stringify(parsedBody, null, 2) : log.body;
+  const bodyText = parsedBody !== undefined ? JSON.stringify(parsedBody, null, 2) : log.body;
 
   return (
     <div className="flex flex-col font-mono text-[11.5px]">
@@ -525,9 +570,13 @@ function sortedEntries(obj: Record<string, string>): Array<[string, string]> {
 function AttrSection({
   title,
   entries,
+  menuFor,
 }: {
   title: string;
   entries: Array<[string, string]>;
+  // When provided, each row may get a kebab menu (e.g. "Filter traces on this
+  // value"). Returning undefined for a row leaves it without a menu.
+  menuFor?: (key: string, value: string) => RowMenuItem[] | undefined;
 }) {
   return (
     <section className="border-b border-border last:border-b-0">
@@ -538,16 +587,25 @@ function AttrSection({
         <div className="px-3 py-2 text-subtle">none</div>
       ) : (
         <dl className="divide-y divide-border">
-          {entries.map(([k, v]) => (
-            <div key={k} className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-3 px-3 py-1.5">
-              <dt className="truncate text-subtle" title={k}>
-                {k}
-              </dt>
-              <dd className="break-all text-fg" title={v}>
-                {v}
-              </dd>
-            </div>
-          ))}
+          {entries.map(([k, v]) => {
+            const menu = menuFor?.(k, v);
+            return (
+              <div
+                key={k}
+                className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] items-center gap-3 px-3 py-1.5"
+              >
+                <dt className="truncate text-subtle" title={k}>
+                  {k}
+                </dt>
+                <dd className="flex items-center justify-between gap-2 break-all text-fg">
+                  <span className="min-w-0 flex-1 break-all" title={v}>
+                    {v}
+                  </span>
+                  {menu && menu.length > 0 ? <RowMenu items={menu} compact /> : null}
+                </dd>
+              </div>
+            );
+          })}
         </dl>
       )}
     </section>
