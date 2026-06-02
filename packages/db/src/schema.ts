@@ -95,6 +95,20 @@ export type AgentRunLinearTicket = {
   createdByAgent: boolean;
 };
 
+export type AgentRunMobileRegressionTest =
+  | {
+      status: "created";
+      testId: string;
+      url?: string | null;
+      reason?: string | null;
+    }
+  | {
+      status: "skipped" | "not_applicable";
+      reason: string;
+      testId?: string | null;
+      url?: string | null;
+    };
+
 export type IncidentSeverity = "SEV-1" | "SEV-2" | "SEV-3";
 export type IncidentStatus = "open" | "resolved" | "autoresolved_noise" | "merged";
 
@@ -158,6 +172,7 @@ export type AgentRunResult = {
   rootCause?: AgentRunConfidence | null;
   estimatedImpact?: AgentRunConfidence | null;
   severity?: IncidentSeverity | null;
+  mobileRegressionTest?: AgentRunMobileRegressionTest | null;
   noiseClassification?: IncidentNoiseClassification | null;
   resolutionClassification?: IncidentResolutionClassification | null;
 };
@@ -170,7 +185,9 @@ export const orgs = pgTable("orgs", {
   // Better Auth organization plugin fields.
   logo: text("logo"),
   metadata: text("metadata"),
-  githubSetupSkippedAt: timestamp("github_setup_skipped_at", { withTimezone: true }),
+  githubSetupSkippedAt: timestamp("github_setup_skipped_at", {
+    withTimezone: true,
+  }),
   signupSource: text("signup_source"),
   // Exact-match hostnames allowed as `return_url` for management-API flows
   // that hand control back to a customer-controlled URL (e.g. GitHub install
@@ -273,8 +290,12 @@ export const accounts = pgTable(
     accessToken: text("access_token"),
     refreshToken: text("refresh_token"),
     idToken: text("id_token"),
-    accessTokenExpiresAt: timestamp("access_token_expires_at", { withTimezone: true }),
-    refreshTokenExpiresAt: timestamp("refresh_token_expires_at", { withTimezone: true }),
+    accessTokenExpiresAt: timestamp("access_token_expires_at", {
+      withTimezone: true,
+    }),
+    refreshTokenExpiresAt: timestamp("refresh_token_expires_at", {
+      withTimezone: true,
+    }),
     scope: text("scope"),
     password: text("password"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -385,7 +406,9 @@ export const signupIntents = pgTable("signup_intents", {
   claimedProjectId: uuid("claimed_project_id").references(() => projects.id, {
     onDelete: "set null",
   }),
-  claimedByUserId: uuid("claimed_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  claimedByUserId: uuid("claimed_by_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
   consumedAt: timestamp("consumed_at", { withTimezone: true }),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -419,7 +442,9 @@ export const issues = pgTable(
     groupingState: text("grouping_state").notNull().default("grouped"),
     groupingSource: text("grouping_source"),
     groupingReason: text("grouping_reason"),
-    groupingAttemptedAt: timestamp("grouping_attempted_at", { withTimezone: true }),
+    groupingAttemptedAt: timestamp("grouping_attempted_at", {
+      withTimezone: true,
+    }),
     groupingAttemptCount: integer("grouping_attempt_count").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
@@ -473,7 +498,9 @@ export const incidents = pgTable(
       (): AnyPgColumn => slackInstallations.id,
       { onDelete: "set null" },
     ),
-    lastSlackPostedAt: timestamp("last_slack_posted_at", { withTimezone: true }),
+    lastSlackPostedAt: timestamp("last_slack_posted_at", {
+      withTimezone: true,
+    }),
     // Suppress auto-investigation until this time. Set when an agent run
     // resolves an incident as `fixed_in_current_code`, since prod recurrence
     // before the deploy promotes is expected and shouldn't re-trigger the agent.
@@ -691,7 +718,9 @@ export const agentRuns = pgTable(
     lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
-    lastSlackPostedAt: timestamp("last_slack_posted_at", { withTimezone: true }),
+    lastSlackPostedAt: timestamp("last_slack_posted_at", {
+      withTimezone: true,
+    }),
     failureReason: text("failure_reason"),
     // Full agent output. Findings (root cause, severity suggestion, noise/
     // resolution classification, summary) are also flattened onto the incident
@@ -1031,7 +1060,9 @@ export const mcpOauthTokens = pgTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     resource: text("resource").notNull(),
     scope: text("scope"),
-    accessExpiresAt: timestamp("access_expires_at", { withTimezone: true }).notNull(),
+    accessExpiresAt: timestamp("access_expires_at", {
+      withTimezone: true,
+    }).notNull(),
     refreshExpiresAt: timestamp("refresh_expires_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -1053,7 +1084,9 @@ export const githubInstallations = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => orgs.id, { onDelete: "cascade" }),
-    projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id").references(() => projects.id, {
+      onDelete: "cascade",
+    }),
     installationId: bigint("installation_id", { mode: "number" }).notNull(),
     accountLogin: text("account_login"),
     accountType: text("account_type"),
@@ -1068,7 +1101,9 @@ export const githubInstallations = pgTable(
     commitAuthorSetByUserId: uuid("commit_author_set_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
-    commitAuthorSetAt: timestamp("commit_author_set_at", { withTimezone: true }),
+    commitAuthorSetAt: timestamp("commit_author_set_at", {
+      withTimezone: true,
+    }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
@@ -1152,7 +1187,11 @@ export type DashboardWidgetType =
 export type DashboardWidgetConfig = {
   source?: "logs" | "traces";
   filter: {
-    resourceAttrs?: { key: string; value: string; op?: "eq" | "neq" | "not_contains" }[];
+    resourceAttrs?: {
+      key: string;
+      value: string;
+      op?: "eq" | "neq" | "not_contains";
+    }[];
   };
   groupBy?: string;
   metricName?: string;
@@ -1223,7 +1262,9 @@ export const linearInstallations = pgTable(
     workspaceId: text("workspace_id").notNull(),
     workspaceName: text("workspace_name"),
     workspaceUrlKey: text("workspace_url_key"),
-    actorUserId: uuid("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+    actorUserId: uuid("actor_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
     actorEmail: text("actor_email"),
     accessToken: text("access_token").notNull(),
     refreshToken: text("refresh_token"),
@@ -1443,7 +1484,9 @@ export const alertFirings = pgTable(
     state: text("state").$type<"firing" | "ok">().notNull(),
     observedValue: doublePrecision("observed_value").notNull(),
     evaluatedAt: timestamp("evaluated_at", { withTimezone: true }).notNull(),
-    issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
+    issueId: uuid("issue_id").references(() => issues.id, {
+      onDelete: "set null",
+    }),
   },
   (t) => ({
     alertGroupIdx: index("alert_firings_alert_group_idx").on(t.alertId, t.groupKey, t.evaluatedAt),
@@ -1481,10 +1524,14 @@ export const feedback = pgTable(
     refRepo: text("ref_repo"),
     source: text("source").$type<FeedbackSource>().notNull(),
     body: text("body").notNull(),
-    authorUserId: uuid("author_user_id").references(() => users.id, { onDelete: "set null" }),
+    authorUserId: uuid("author_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
     authorExternal: jsonb("author_external").$type<FeedbackAuthorExternal>(),
     orgId: uuid("org_id").references(() => orgs.id, { onDelete: "set null" }),
-    projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
+    projectId: uuid("project_id").references(() => projects.id, {
+      onDelete: "set null",
+    }),
     status: text("status").$type<FeedbackStatus>().notNull().default("new"),
     triagedByUserId: uuid("triaged_by_user_id").references(() => users.id, {
       onDelete: "set null",

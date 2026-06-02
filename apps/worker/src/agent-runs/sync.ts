@@ -6,6 +6,7 @@ import { type AgentRunOutcome, recordAgentRunCompletion } from "../ai-cost.js";
 import { investigationGate } from "../billing/investigation-gate.js";
 import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
 import { postIncidentThreadMessage } from "../infra/slack/incident-messages.js";
+import { type ResolvedIntegration, loadEnabledIntegrationsForOrg } from "../integrations.js";
 import { logger } from "../logger.js";
 import { completeWithoutPullRequest } from "./completion.js";
 import { tryMergeAfterAgentRun } from "./merge.js";
@@ -45,6 +46,45 @@ export async function steerIdleRunnerWithPendingContext(opts: {
   await opts.markEventsProcessed(opts.pendingContextEvents.map((event) => event.id));
   await opts.notifySteered(opts.incidentId);
   return true;
+}
+
+const MOBILE_FILE_PREFIXES = ["app/", "ios/", "android/", "components/", "screens/"];
+
+export function hasRevylCreateTestIntegration(integrations: ResolvedIntegration[]): boolean {
+  return integrations.some(
+    (integration) =>
+      integration.definition.slug === "revyl" &&
+      integration.definition.operations.some((op) => op.name === "revyl_create_test_from_yaml"),
+  );
+}
+
+export function needsMobileRegressionRepair(opts: {
+  revylEnabled: boolean;
+  service: string | null;
+  result: AgentRunResult;
+}): boolean {
+  if (!opts.revylEnabled) return false;
+  if (opts.result.state !== "complete") return false;
+  const pr = opts.result.pr;
+  if (!pr || pr.validationPassed !== true) return false;
+  if (opts.result.mobileRegressionTest) return false;
+
+  const serviceLooksMobile = /mobile/i.test(opts.service ?? "");
+  const changedFiles = pr.changedFiles ?? [];
+  const changedMobileFiles = changedFiles.some((file) =>
+    MOBILE_FILE_PREFIXES.some((prefix) => file === prefix.slice(0, -1) || file.startsWith(prefix)),
+  );
+  return serviceLooksMobile || changedMobileFiles;
+}
+
+export function mobileRegressionRepairPrompt(): string {
+  return [
+    "Your previous result proposed a mobile PR while Revyl is enabled, but it did not include a `mobileRegressionTest` decision.",
+    "Do not resubmit the final result until you repair this omission.",
+    'If the fix can be covered by a reliable mobile user flow, author the Revyl YAML, call `revyl_validate_yaml`, then call `revyl_create_test_from_yaml`, and resubmit with `mobileRegressionTest.status="created"` plus the returned `testId`.',
+    'If it cannot be represented as a reliable mobile user flow, resubmit with `mobileRegressionTest.status="skipped"` and a concrete `reason`.',
+    'Use `mobileRegressionTest.status="not_applicable"` only for backend-only, noise-only, development-only, or non-mobile incidents, and include a concrete `reason`.',
+  ].join("\n");
 }
 
 export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
@@ -148,6 +188,35 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       .where(eq(schema.agentRuns.id, ctx.agentRun.id));
 
     if (snapshot.result) {
+      if (snapshot.result.state === "complete") {
+        const integrations = await loadEnabledIntegrationsForOrg(ctx.project.orgId).catch((err) => {
+          logger.error(
+            { err, orgId: ctx.project.orgId },
+            "failed to load integrations for result repair gate",
+          );
+          return [];
+        });
+        if (
+          snapshot.status === "idle" &&
+          needsMobileRegressionRepair({
+            revylEnabled: hasRevylCreateTestIntegration(integrations),
+            service: ctx.incident.service,
+            result: snapshot.result,
+          })
+        ) {
+          await runner.steer(sessionId, mobileRegressionRepairPrompt());
+          logger.info(
+            {
+              agent_run_id: ctx.agentRun.id,
+              incident_id: ctx.incident.id,
+              provider_session_id: sessionId,
+            },
+            "steered agent to repair missing mobile regression test decision",
+          );
+          return;
+        }
+      }
+
       const metadataChanged = await applyIncidentMetadataFromResult(ctx, snapshot.result);
       if (metadataChanged) {
         // Refresh ctx.incident so downstream Slack messages and PR titles use
@@ -229,7 +298,9 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           // it succeeds, the agentRun is complete (the merged-incident
           // path implies the result was actionable, treat as complete_no_pr
           // unless a PR was actually opened).
-          await meterAgentRun(pr?.validationPassed === true ? "complete_with_pr" : "complete_no_pr");
+          await meterAgentRun(
+            pr?.validationPassed === true ? "complete_with_pr" : "complete_no_pr",
+          );
           return;
         }
         const shouldOpenPr =
@@ -303,6 +374,8 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       );
       return;
     }
-    await failAgentRun(ctx, "sync_failed", "Investigation sync failed.", { err });
+    await failAgentRun(ctx, "sync_failed", "Investigation sync failed.", {
+      err,
+    });
   }
 }
