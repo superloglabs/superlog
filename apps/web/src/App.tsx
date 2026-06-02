@@ -5,11 +5,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AcceptInvitation } from "./AcceptInvitation.tsx";
 import { Activate } from "./Activate.tsx";
-import { Admin } from "./Admin.tsx";
-import { AdminFeedback } from "./AdminFeedback.tsx";
 import { CommandPalette } from "./CommandPalette.tsx";
-import { EvalInvestigationDetail } from "./EvalInvestigationDetail.tsx";
-import { Evals } from "./Evals.tsx";
 import { Explore } from "./Explore.tsx";
 import { ForgotPassword } from "./ForgotPassword.tsx";
 import { Issues } from "./Issues.tsx";
@@ -199,10 +195,6 @@ function AuthenticatedApp() {
             <Route path="/dashboards" element={<DashboardsList />} />
             <Route path="/dashboards/:id" element={<DashboardView />} />
             <Route path="/settings" element={<Settings />} />
-            <Route path="/admin" element={<Admin />} />
-            <Route path="/admin/evals" element={<Evals />} />
-            <Route path="/admin/evals/investigations/:slug" element={<EvalInvestigationDetail />} />
-            <Route path="/admin/feedback" element={<AdminFeedback />} />
             <Route path="*" element={<Overview />} />
           </Routes>
         </RouteContainer>
@@ -290,11 +282,6 @@ function RouteContainer({ children }: { children: ReactNode }) {
 
 function TopNav() {
   const { pathname } = useLocation();
-  // /api/me reports `isStaff` based on the server's STAFF_EMAILS env. The route
-  // is still gated server-side; this just controls discoverability of the link.
-  const me = useMe();
-  const isStaff = me.data?.user.isStaff === true;
-
   const navLink = (href: string, label: string, extraPrefixes: string[] = []) => {
     const active =
       href === "/"
@@ -326,7 +313,6 @@ function TopNav() {
           {navLink("/explore", "Explore")}
           {navLink("/dashboards", "Dashboards")}
           {navLink("/settings", "Settings")}
-          {isStaff && navLink("/admin", "Admin")}
         </div>
       </div>
       <div className="flex items-center gap-3">

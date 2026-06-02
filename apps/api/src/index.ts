@@ -27,7 +27,6 @@ import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { nanoid } from "nanoid";
-import { mountAdmin, userIsStaff } from "./admin.js";
 import { mountAlerts } from "./alerts.js";
 import { auth } from "./auth.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
@@ -36,6 +35,7 @@ import { mountFeedbackAuthed, mountFeedbackPublic } from "./feedback.js";
 import { type GatewayVars, mountGateway } from "./gateway.js";
 import { mountGithubAuthed, mountGithubAuthorOAuth, mountGithubPublic } from "./github.js";
 import { createApiHttpObservabilityMiddleware } from "./http-observability.js";
+import { mountImpersonation } from "./impersonation.js";
 import { buildIncidentListItem, shouldInlineIncidentListStats } from "./incidents/list.js";
 import { getPrDeliveryRetryEligibility } from "./incidents/pr-retry.js";
 import {
@@ -74,6 +74,7 @@ import { resolveActiveOrgContext, resolveMaybeActiveOrgContext } from "./org-con
 import { mountSettingsAuthed } from "./settings.js";
 import { normalizeSignupIntentKeyHash, normalizeSignupIntentKeyPrefix } from "./signup-intents.js";
 import { mountSlackAuthed, mountSlackPublic } from "./slack.js";
+import { userIsStaff } from "./staff.js";
 import { buildSystemCapabilities } from "./system-capabilities.js";
 import { mountWebhooks } from "./webhooks.js";
 
@@ -264,7 +265,7 @@ mountDashboards(app);
 mountAlerts(app, { ch });
 mountWebhooks(app);
 mountFeedbackAuthed(app);
-mountAdmin(app, { ch });
+mountImpersonation(app);
 
 const ALLOWED_SIGNUP_SOURCES = new Set(["skill", "web", "mcp", "github", "cli"]);
 

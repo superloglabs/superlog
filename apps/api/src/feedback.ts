@@ -1,15 +1,11 @@
 import { db, schema } from "@superlog/db";
-import { and, count, desc, eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Hono } from "hono";
-import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { userIsStaff } from "./admin.js";
 import { auth } from "./auth.js";
 import { logger } from "./logger.js";
 
 const log = logger.child({ scope: "feedback" });
-
-type Vars = { userId: string; orgId: string | null };
 
 const MAX_BODY_LEN = 8_000;
 const FEEDBACK_KINDS = new Set<schema.FeedbackKind>(["incident", "issue", "pr"]);
@@ -152,93 +148,9 @@ export function mountFeedbackAuthed(app: Hono<any>): void {
     return c.json({ ok: true });
   });
 
-  // --- Admin inbox ---
-
-  const requireAdmin = async (c: Context<{ Variables: Vars }>) => {
-    const user = await db.query.users.findFirst({
-      where: eq(schema.users.id, c.var.userId),
-    });
-    // Mirror apps/api/src/admin.ts: banned admins lose access even if
-    // their role still has "admin" in it. Better Auth's session middleware
-    // already gates banned users, but defense-in-depth.
-    if (!user || user.banned || !userIsStaff(user.role)) {
-      throw new HTTPException(403, { message: "admin access required" });
-    }
-  };
-
-  app.get("/api/admin/feedback", async (c) => {
-    await requireAdmin(c);
-    const status = c.req.query("status") ?? "all";
-    const where =
-      status === "new" || status === "triaged" || status === "closed"
-        ? eq(schema.feedback.status, status)
-        : undefined;
-    const rows = await db.query.feedback.findMany({
-      where,
-      orderBy: [desc(schema.feedback.createdAt)],
-      limit: 200,
-    });
-    const userIds = Array.from(
-      new Set(
-        rows.flatMap((r) => [r.authorUserId, r.triagedByUserId]).filter((x): x is string => !!x),
-      ),
-    );
-    const users = userIds.length
-      ? await db.query.users.findMany({
-          where: (t, { inArray }) => inArray(t.id, userIds),
-        })
-      : [];
-    const userMap = new Map(users.map((u) => [u.id, u.email]));
-    return c.json({
-      rows: rows.map((r) => ({
-        id: r.id,
-        kind: r.kind,
-        refId: r.refId,
-        refRepo: r.refRepo,
-        source: r.source,
-        body: r.body,
-        authorEmail: r.authorUserId ? (userMap.get(r.authorUserId) ?? null) : null,
-        authorExternal: r.authorExternal,
-        orgId: r.orgId,
-        projectId: r.projectId,
-        status: r.status,
-        triagedByEmail: r.triagedByUserId ? (userMap.get(r.triagedByUserId) ?? null) : null,
-        triagedAt: r.triagedAt?.toISOString() ?? null,
-        createdAt: r.createdAt.toISOString(),
-      })),
-    });
-  });
-
-  app.get("/api/admin/feedback/unread-count", async (c) => {
-    await requireAdmin(c);
-    // Polled every 30s by every signed-in admin (AdminSubnav badge). Use
-    // SQL COUNT(*) instead of SELECT id ... rows.length so we don't ship
-    // a growing list of UUIDs over the wire every half-minute.
-    const [result] = await db
-      .select({ count: count() })
-      .from(schema.feedback)
-      .where(eq(schema.feedback.status, "new"));
-    return c.json({ count: result?.count ?? 0 });
-  });
-
-  app.patch("/api/admin/feedback/:id", async (c) => {
-    await requireAdmin(c);
-    const id = c.req.param("id");
-    const body = (await c.req.json().catch(() => ({}))) as { status?: unknown };
-    const status = typeof body.status === "string" ? body.status : "";
-    if (status !== "new" && status !== "triaged" && status !== "closed") {
-      throw new HTTPException(400, { message: "invalid status" });
-    }
-    await db
-      .update(schema.feedback)
-      .set({
-        status: status as schema.FeedbackStatus,
-        triagedByUserId: status === "new" ? null : c.var.userId,
-        triagedAt: status === "new" ? null : new Date(),
-      })
-      .where(eq(schema.feedback.id, id));
-    return c.json({ ok: true });
-  });
+  // The staff feedback-triage inbox (GET/PATCH /api/admin/feedback*) moved to
+  // the private admin app. Submission paths above stay here; the admin app
+  // reads the same `feedback` table directly.
 }
 
 // Shared insert + notify. Exported so the github webhook handler and Slack
@@ -294,8 +206,10 @@ export async function recordFeedback(input: {
 async function notifyFeedbackSlack(row: schema.Feedback): Promise<void> {
   const webhookUrl = process.env.FEEDBACK_SLACK_WEBHOOK;
   if (!webhookUrl) return;
-  const webOrigin = process.env.WEB_ORIGIN ?? "http://localhost:5173";
-  const link = `${webOrigin}/admin/feedback?id=${row.id}`;
+  // The feedback triage inbox lives in the private admin app; ADMIN_WEB_ORIGIN
+  // points at it (e.g. https://admin.superlog.sh). Unset → no deep link.
+  const adminOrigin = process.env.ADMIN_WEB_ORIGIN;
+  const link = adminOrigin ? `${adminOrigin}/feedback?id=${row.id}` : null;
   const preview = row.body.length > 280 ? `${row.body.slice(0, 277)}…` : row.body;
   let authorEmail: string | null = null;
   if (row.authorUserId) {
@@ -324,7 +238,9 @@ async function notifyFeedbackSlack(row: schema.Feedback): Promise<void> {
         ? `PR ${row.refId}`
         : `PR ${row.refRepo ?? ""} (${row.refId.slice(0, 8)}…)`
       : `${row.kind} ${row.refId.slice(0, 8)}…`;
-  const text = `:speech_balloon: *New feedback* on ${refDesc} via _${row.source}_ from ${author}\n>${preview}\n<${link}|Open in admin>`;
+  const text = `:speech_balloon: *New feedback* on ${refDesc} via _${row.source}_ from ${author}\n>${preview}${
+    link ? `\n<${link}|Open in admin>` : ""
+  }`;
   try {
     const res = await fetch(webhookUrl, {
       method: "POST",

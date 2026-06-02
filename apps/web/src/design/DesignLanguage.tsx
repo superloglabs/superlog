@@ -23,7 +23,6 @@ import type {
   Issue,
 } from "../api.ts";
 import { AgentKeyStep } from "../onboarding/OnboardingWizard.tsx";
-import { AdminOverviewPlayground } from "./admin-overview/Playground.tsx";
 import { OrgSwitcherPlayground } from "./org-switcher/Playground.tsx";
 import { ServiceMapPlayground } from "./service-map/Playground.tsx";
 import { SuperlogOnboardingPlayground } from "./superlog-onboarding/Playground.tsx";
@@ -56,7 +55,6 @@ export function DesignLanguage() {
       <Route path="/design/issues" element={<IssuesPage />} />
       <Route path="/design/onboarding" element={<SuperlogOnboardingPlayground />} />
       <Route path="/design/agent-congrats" element={<AgentCongratsPlayground />} />
-      <Route path="/design/admin-overview" element={<AdminOverviewPlayground />} />
       <Route path="/design/org-switcher" element={<OrgSwitcherPlayground />} />
       <Route path="/design/service-map" element={<ServiceMapPlayground />} />
       <Route path="*" element={<MainStorybook />} />
