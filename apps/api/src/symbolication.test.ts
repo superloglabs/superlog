@@ -58,6 +58,37 @@ test("symbolicateStacktraceWithArtifact rewrites generated stack frames", () => 
   });
 });
 
+test("symbolicateStacktraceWithArtifact infers original function names from source content", () => {
+  const sourceMapWithoutNames = JSON.stringify({
+    version: 3,
+    file: "entry.js",
+    sources: ["/app/(tabs)/index.tsx"],
+    sourcesContent: [
+      [
+        "async function emitError() {",
+        "  const superlog = await ensureSuperlog();",
+        "  superlog?.captureException(new Error('Expo SDK demo error'), { component: 'home' });",
+        "}",
+      ].join("\n"),
+    ],
+    names: [],
+    mappings: "AAAA",
+  });
+
+  const result = symbolicateStacktraceWithArtifact({
+    stacktrace: "Error: Expo SDK demo error\n    at L (entry.js:1:1)",
+    sourceMap: sourceMapWithoutNames,
+    artifact: { ...artifact, platform: "web" },
+  });
+
+  assert.ok(result);
+  assert.equal(
+    result.stacktrace,
+    "Error: Expo SDK demo error\n    at emitError (/app/(tabs)/index.tsx:1:1)",
+  );
+  assert.equal(result.frames[0]?.functionName, "emitError");
+});
+
 test("symbolicationAttrsForSample extracts release, platform, dist, and debug id", () => {
   const sample = {
     kind: "log",

@@ -1,5 +1,6 @@
 import { gunzipSync } from "node:zlib";
 import { GREATEST_LOWER_BOUND, TraceMap, originalPositionFor } from "@jridgewell/trace-mapping";
+import type { SourceMapInput } from "@jridgewell/trace-mapping";
 import type { DB, IssueSample } from "@superlog/db";
 import * as schema from "@superlog/db/schema";
 import { and, desc, eq } from "drizzle-orm";
@@ -42,6 +43,11 @@ type SymbolicationAttrs = {
   release: string | null;
   dist: string | null;
   platform: string | null;
+};
+
+type RawSourceMap = {
+  sources?: unknown;
+  sourcesContent?: unknown;
 };
 
 type TelemetrySymbolicationSample = {
@@ -152,7 +158,8 @@ export function symbolicateStacktraceWithArtifact(opts: {
   sourceMap: string;
   artifact: Pick<schema.SourceMapArtifact, "id" | "release" | "dist" | "platform" | "debugId">;
 }): IssueSymbolication | null {
-  const traceMap = new TraceMap(JSON.parse(opts.sourceMap));
+  const parsedSourceMap = JSON.parse(opts.sourceMap) as SourceMapInput & RawSourceMap;
+  const traceMap = new TraceMap(parsedSourceMap);
   const frames: SymbolicatedFrame[] = [];
   const lines = opts.stacktrace.split("\n").map((line) => {
     const frame = parseStackFrameLine(line);
@@ -165,8 +172,12 @@ export function symbolicateStacktraceWithArtifact(opts: {
     });
     if (!original.source || !original.line || original.column == null) return line;
 
+    const functionName =
+      original.name ??
+      inferOriginalFunctionName(parsedSourceMap, original.source, original.line) ??
+      frame.functionName;
     const symbolicated: SymbolicatedFrame = {
-      functionName: original.name ?? frame.functionName,
+      functionName,
       source: original.source,
       line: original.line,
       column: original.column + 1,
@@ -313,4 +324,76 @@ function trimSlashes(value: string): string {
 
 function basename(value: string): string {
   return value.split("/").filter(Boolean).at(-1) ?? value;
+}
+
+function inferOriginalFunctionName(
+  sourceMap: RawSourceMap,
+  source: string,
+  line: number,
+): string | null {
+  if (!Array.isArray(sourceMap.sources) || !Array.isArray(sourceMap.sourcesContent)) return null;
+  const sourceIndex = findSourceIndex(sourceMap.sources, source);
+  if (sourceIndex < 0) return null;
+  const content = sourceMap.sourcesContent[sourceIndex];
+  if (typeof content !== "string") return null;
+
+  const lines = content.split("\n");
+  let braceDepth = 0;
+  for (let index = Math.min(line - 1, lines.length - 1); index >= 0; index -= 1) {
+    const sourceLine = lines[index] ?? "";
+    const name = functionNameFromSourceLine(sourceLine);
+    if (name && braceDepth === 0) return name;
+    braceDepth += countChar(sourceLine, "}") - countChar(sourceLine, "{");
+    if (braceDepth < 0) braceDepth = 0;
+  }
+  return null;
+}
+
+function countChar(value: string, char: "{" | "}"): number {
+  let count = 0;
+  for (const candidate of value) {
+    if (candidate === char) count += 1;
+  }
+  return count;
+}
+
+function findSourceIndex(sources: unknown[], source: string): number {
+  const exact = sources.findIndex((candidate) => candidate === source);
+  if (exact >= 0) return exact;
+
+  const normalizedSource = normalizeGeneratedFilePath(source);
+  if (!normalizedSource) return -1;
+  return sources.findIndex((candidate) => {
+    if (typeof candidate !== "string") return false;
+    return normalizeGeneratedFilePath(candidate) === normalizedSource;
+  });
+}
+
+function functionNameFromSourceLine(line: string): string | null {
+  const declaration = line.match(/\b(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/);
+  if (declaration?.[1]) return declaration[1];
+
+  const assignedFunction = line.match(
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function(?:\s+[A-Za-z_$][\w$]*)?\s*\(/,
+  );
+  if (assignedFunction?.[1]) return assignedFunction[1];
+
+  const arrow = line.match(
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/,
+  );
+  if (arrow?.[1]) return arrow[1];
+
+  const propertyArrow = line.match(
+    /^\s*([A-Za-z_$][\w$]*)\s*:\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/,
+  );
+  if (propertyArrow?.[1]) return propertyArrow[1];
+
+  const method = line.match(/^\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/);
+  if (method?.[1] && !isControlKeyword(method[1])) return method[1];
+
+  return null;
+}
+
+function isControlKeyword(value: string): boolean {
+  return ["if", "for", "while", "switch", "catch", "function"].includes(value);
 }
