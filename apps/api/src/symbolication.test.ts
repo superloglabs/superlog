@@ -4,6 +4,7 @@ import { gzipSync } from "node:zlib";
 import type { DB, IssueSample } from "@superlog/db";
 import type * as schema from "@superlog/db/schema";
 import {
+  findSourceMapArtifact,
   symbolicateIssueSample,
   symbolicateStacktraceWithArtifact,
   symbolicationAttrsForSample,
@@ -128,4 +129,48 @@ test("symbolicateIssueSample loads matching source map object and symbolicates",
   assert.ok(result);
   assert.equal(result.artifact.id, "artifact-1");
   assert.equal(result.frames[0]?.source, "app/index.tsx");
+});
+
+test("findSourceMapArtifact prefers artifact matching generated stack frame file", async () => {
+  const entryArtifact = {
+    ...artifact,
+    id: "entry-artifact",
+    platform: "web",
+    bundleFile: "dist/_expo/static/js/web/entry-abc123.js",
+    mapFile: "dist/_expo/static/js/web/entry-abc123.js.map",
+    createdAt: new Date("2026-06-02T00:00:00.000Z"),
+    updatedAt: new Date("2026-06-02T00:00:00.000Z"),
+  } satisfies schema.SourceMapArtifact;
+  const indexArtifact = {
+    ...artifact,
+    id: "index-artifact",
+    platform: "web",
+    bundleFile: "dist/_expo/static/js/web/index-def456.js",
+    mapFile: "dist/_expo/static/js/web/index-def456.js.map",
+    createdAt: new Date("2026-06-02T00:01:00.000Z"),
+    updatedAt: new Date("2026-06-02T00:01:00.000Z"),
+  } satisfies schema.SourceMapArtifact;
+  const database = {
+    query: {
+      sourceMapArtifacts: {
+        findFirst: async () => null,
+        findMany: async () => [indexArtifact, entryArtifact],
+      },
+    },
+  } as unknown as DB;
+
+  const result = await findSourceMapArtifact({
+    database,
+    projectId: "project-1",
+    attrs: {
+      debugId: null,
+      release: "juno@1.2.3",
+      dist: null,
+      platform: "web",
+    },
+    stacktrace:
+      "TypeError: bad\n    at useMemoCache (https://app.example.com/_expo/static/js/web/entry-abc123.js:1:1)",
+  });
+
+  assert.equal(result?.id, "entry-artifact");
 });

@@ -57,6 +57,7 @@ export async function symbolicateIssueSample(opts: {
     database: opts.database,
     projectId: opts.projectId,
     attrs,
+    stacktrace: opts.sample.stacktrace,
   });
   if (!artifact) return null;
 
@@ -76,6 +77,7 @@ export async function findSourceMapArtifact(opts: {
   database: DB;
   projectId: string;
   attrs: SymbolicationAttrs;
+  stacktrace?: string | null;
 }): Promise<schema.SourceMapArtifact | null> {
   if (opts.attrs.debugId) {
     const byDebugId = await opts.database.query.sourceMapArtifacts.findFirst({
@@ -100,12 +102,14 @@ export async function findSourceMapArtifact(opts: {
 
   const platform = opts.attrs.platform?.toLowerCase() ?? null;
   const dist = opts.attrs.dist ?? null;
+  const candidates = rows.filter((row) => {
+    if (platform && row.platform.toLowerCase() !== platform) return false;
+    if (dist && row.dist !== dist) return false;
+    return true;
+  });
+  const stackFiles = stackFrameFiles(opts.stacktrace);
   return (
-    rows.find((row) => {
-      if (platform && row.platform.toLowerCase() !== platform) return false;
-      if (dist && row.dist !== dist) return false;
-      return true;
-    }) ?? null
+    candidates.find((row) => artifactMatchesStackFile(row, stackFiles)) ?? candidates[0] ?? null
   );
 }
 
@@ -228,4 +232,49 @@ function normalizePlatform(value: string | null): string | null {
   if (lower.includes("android")) return "android";
   if (lower.includes("web")) return "web";
   return lower;
+}
+
+function stackFrameFiles(stacktrace: string | null | undefined): string[] {
+  if (!stacktrace) return [];
+  return stacktrace
+    .split("\n")
+    .map((line) => parseStackFrameLine(line)?.file)
+    .filter((file): file is string => Boolean(file));
+}
+
+function artifactMatchesStackFile(
+  artifact: schema.SourceMapArtifact,
+  stackFiles: string[],
+): boolean {
+  const artifactPath = normalizeGeneratedFilePath(artifact.bundleFile);
+  if (!artifactPath) return false;
+
+  const artifactBasename = basename(artifactPath);
+  return stackFiles.some((file) => {
+    const stackPath = normalizeGeneratedFilePath(file);
+    if (!stackPath) return false;
+    if (stackPath === artifactPath || stackPath.endsWith(`/${artifactPath}`)) return true;
+    return Boolean(artifactBasename && basename(stackPath) === artifactBasename);
+  });
+}
+
+function normalizeGeneratedFilePath(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.split(/[?#]/, 1)[0]?.trim();
+  if (!trimmed) return null;
+
+  try {
+    const url = new URL(trimmed);
+    return trimSlashes(url.pathname);
+  } catch {
+    return trimSlashes(trimmed);
+  }
+}
+
+function trimSlashes(value: string): string {
+  return value.replace(/^\/+/, "");
+}
+
+function basename(value: string): string {
+  return value.split("/").filter(Boolean).at(-1) ?? value;
 }
