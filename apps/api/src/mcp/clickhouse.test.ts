@@ -1,7 +1,14 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { ClickHouseClient } from "@clickhouse/client";
-import { countSeries, metricSeries, queryMetrics, queryTraces } from "./clickhouse.js";
+import {
+  countSeries,
+  listAttributeKeys,
+  listAttributeValues,
+  metricSeries,
+  queryMetrics,
+  queryTraces,
+} from "./clickhouse.js";
 
 function fakeClickhouse(capture: { query?: string; params?: Record<string, unknown> }) {
   return {
@@ -48,6 +55,38 @@ test("countSeries groups traces by span attributes when groupBy uses attr prefix
   assert.equal(capture.params?.groupKey, "superlog.endpoint");
 });
 
+test("countSeries groups traces by prefixed span attributes", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await countSeries(
+    fakeClickhouse(capture),
+    "project-1",
+    "traces",
+    { range: { since: "now() - INTERVAL 1 HOUR", until: "now()" } },
+    "span.session.id",
+    { n: 1, unit: "MINUTE" },
+  );
+
+  assert.match(capture.query ?? "", /SpanAttributes\[\{groupKey:String\}\]/);
+  assert.equal(capture.params?.groupKey, "session.id");
+});
+
+test("countSeries groups logs by prefixed log attributes", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await countSeries(
+    fakeClickhouse(capture),
+    "project-1",
+    "logs",
+    { range: { since: "now() - INTERVAL 1 HOUR", until: "now()" } },
+    "log.session.id",
+    { n: 1, unit: "MINUTE" },
+  );
+
+  assert.match(capture.query ?? "", /LogAttributes\[\{groupKey:String\}\]/);
+  assert.equal(capture.params?.groupKey, "session.id");
+});
+
 test("countSeries groups logs by log attributes when groupBy uses attr prefix", async () => {
   const capture: { query?: string; params?: Record<string, unknown> } = {};
 
@@ -62,6 +101,54 @@ test("countSeries groups logs by log attributes when groupBy uses attr prefix", 
 
   assert.match(capture.query ?? "", /LogAttributes\[\{groupKey:String\}\]/);
   assert.equal(capture.params?.groupKey, "log.level");
+});
+
+test("listAttributeKeys includes prefixed span attributes for trace exploration", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await listAttributeKeys(
+    fakeClickhouse(capture),
+    "project-1",
+    { since: "now() - INTERVAL 1 HOUR", until: "now()" },
+    "traces",
+  );
+
+  assert.match(capture.query ?? "", /mapKeys\(ResourceAttributes\)/);
+  assert.match(capture.query ?? "", /mapKeys\(SpanAttributes\)/);
+  assert.match(capture.query ?? "", /concat\('span\.', k\)/);
+});
+
+test("listAttributeValues resolves prefixed span attributes", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await listAttributeValues(
+    fakeClickhouse(capture),
+    "project-1",
+    "span.session.id",
+    { since: "now() - INTERVAL 1 HOUR", until: "now()" },
+    200,
+    "traces",
+  );
+
+  assert.match(capture.query ?? "", /SpanAttributes\[\{key:String\}\]/);
+  assert.equal(capture.params?.key, "session.id");
+});
+
+test("queryTraces filters by prefixed span attributes", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await queryTraces(fakeClickhouse(capture), "project-1", {
+    range: { since: "now() - INTERVAL 1 HOUR", until: "now()" },
+    resourceAttrs: [{ key: "span.session.id", value: "s1" }],
+    limit: 50,
+  });
+
+  assert.match(
+    capture.query ?? "",
+    /SpanAttributes\[\{sattr_k_0:String\}\] = \{sattr_v_0:String\}/,
+  );
+  assert.equal(capture.params?.sattr_k_0, "session.id");
+  assert.equal(capture.params?.sattr_v_0, "s1");
 });
 
 test("metricSeries can exclude resource attributes by substring", async () => {
