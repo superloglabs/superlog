@@ -247,7 +247,7 @@ test("metricSeries can exclude resource attributes by substring", async () => {
   assert.equal(capture.params?.attr_v_0, ".local");
 });
 
-test("metricSeries converts cumulative monotonic sum counters into per-bucket deltas", async () => {
+test("metricSeries spreads cumulative monotonic sum increases across the interval each sample covers", async () => {
   const queries: string[] = [];
 
   await metricSeries(
@@ -264,9 +264,21 @@ test("metricSeries converts cumulative monotonic sum counters into per-bucket de
   assert.ok(sumQuery, "expected a sum metric query");
   assert.match(sumQuery, /AggregationTemporality = 2/);
   assert.match(sumQuery, /IsMonotonic/);
+  // Per-sample increase (delta) from the cumulative value.
   assert.match(sumQuery, /lagInFrame\(toNullable\(Value\), 1, NULL\)/);
   assert.match(sumQuery, /Value - previous_value/);
+  // First sample of a series has no predecessor: only count it if the series
+  // actually started inside the window.
   assert.match(sumQuery, /StartTimeUnix >= now\(\) - INTERVAL 1 HOUR/);
+  // The increase is spread over the wall-clock interval (prev sample -> this
+  // sample) by weighting each render bucket's overlap with that interval —
+  // this is what removes the "comb" when the step is finer than the export
+  // interval. Needs the previous sample's timestamp and an overlap weight.
+  assert.match(sumQuery, /lagInFrame\(TimeUnix, 1, TimeUnix\)/);
+  assert.match(sumQuery, /ARRAY JOIN spread/);
+  assert.match(sumQuery, /least\(b, g \+ 60\) - greatest\(a, g\)/);
+  assert.match(sumQuery, /\/ dt/);
+  // Non-cumulative / non-monotonic points are still summed as-is.
   assert.match(sumQuery, /NOT \(AggregationTemporality = 2 AND IsMonotonic\)/);
   assert.match(sumQuery, /Attributes\[\{groupKey:String\}\] AS group_key/);
   assert.equal(queries.length, 4);
