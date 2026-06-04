@@ -4,6 +4,7 @@ import { db } from "@superlog/db";
 import { initAiUsageSink } from "./ai-usage.js";
 import { createUsageMeterTicker } from "./billing/usage-meter-ticker.js";
 import { handleIssueTransition } from "./incidents/workflow.js";
+import { loadJobs } from "./jobs.js";
 import { logger } from "./logger.js";
 import { registerDatastoreObservability } from "./observability/datastores.js";
 import { createTelemetryIngestor, registerTelemetryIngestMetrics } from "./telemetry/ingest.js";
@@ -46,7 +47,15 @@ registerTelemetryIngestMetrics({
 });
 
 const usageMeter = createUsageMeterTicker({ db, clickhouse: ch });
-const tick = createWorkerTick({ clickhouse: ch, telemetryIngestor, usageMeter });
+
+// Discover and register background jobs from the jobs dir. Empty by default
+// (stock builds register nothing); deployments overlay extra job files in.
+const extraJobs = await loadJobs({ db, clickhouse: ch });
+if (extraJobs.length > 0) {
+  logger.info({ scope: "boot", jobs: extraJobs.map((j) => j.name) }, "background jobs registered");
+}
+
+const tick = createWorkerTick({ clickhouse: ch, telemetryIngestor, usageMeter, extraJobs });
 
 runWorker({ pollIntervalMs: POLL_INTERVAL_MS, batchSize: BATCH_SIZE, tick }).catch((err) => {
   logger.fatal({ err }, "worker crashed");

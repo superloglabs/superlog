@@ -9,6 +9,7 @@
     "start": "tsx --import ./tracing.ts src/index.ts",
     "backfill:issue-activity-daily": "tsx scripts/backfill-issue-activity-daily.ts",
     "seed:worker-telemetry-dashboard": "tsx scripts/seed-worker-telemetry-dashboard.ts",
+    "test:jobs-loader": "tsx --test src/jobs.test.ts",
     "test:git-auth-no-argv": "tsx scripts/test-git-auth-no-argv.ts",
     "test:patch-normalization": "tsx scripts/test-patch-normalization.ts",
     "test:slack-pinning": "tsx --test src/slack-pinning.test.ts",

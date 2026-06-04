@@ -4,6 +4,7 @@ import { tickAlerts } from "../alerts.js";
 import { tickAutorecovery } from "../autorecovery.js";
 import { tickDigests } from "../digest.js";
 import { handleIssueTransition } from "../incidents/workflow.js";
+import type { Job } from "../jobs.js";
 import { logger } from "../logger.js";
 import type { TelemetryIngestor } from "../telemetry/ingest.js";
 import { tickWebhooks } from "../webhooks.js";
@@ -21,12 +22,18 @@ export type WorkerTickResult = {
   webhooks: number;
   autorecoveryProposals: number;
   usageReported: number;
+  // Total items processed across all registered background jobs (see jobs.ts).
+  jobsReported: number;
 };
 
 export function createWorkerTick(opts: {
   clickhouse: ClickHouseClientLike;
   telemetryIngestor: TelemetryIngestor;
   usageMeter?: (() => Promise<number>) | null;
+  // Extra jobs discovered from the jobs dir at boot. Each runs through the same
+  // `safe()` wrapper as the built-in steps, so one failing job is logged and
+  // skipped rather than aborting the tick.
+  extraJobs?: Job[];
 }): () => Promise<WorkerTickResult> {
   return () =>
     tracer.startActiveSpan("worker.tick", async (span) => {
@@ -70,6 +77,12 @@ export function createWorkerTick(opts: {
         const usageReported = opts.usageMeter
           ? await safe("usage_metering", opts.usageMeter, 0)
           : 0;
+        let jobsReported = 0;
+        for (const job of opts.extraJobs ?? []) {
+          const processed = await safe(`job:${job.name}`, job.tick, 0);
+          span.setAttribute(`tick.job.${job.name}`, processed);
+          jobsReported += processed;
+        }
         span.setAttribute("tick.spans", spans);
         span.setAttribute("tick.logs", logs);
         span.setAttribute("tick.agent_runs", agentRuns);
@@ -78,6 +91,7 @@ export function createWorkerTick(opts: {
         span.setAttribute("tick.webhooks", webhooks);
         span.setAttribute("tick.autorecovery_proposals", autorecoveryProposals);
         span.setAttribute("tick.usage_reported", usageReported);
+        span.setAttribute("tick.jobs_reported", jobsReported);
         return {
           spans,
           logs,
@@ -87,6 +101,7 @@ export function createWorkerTick(opts: {
           webhooks,
           autorecoveryProposals,
           usageReported,
+          jobsReported,
         };
       } catch (err) {
         span.recordException(err as Error);
