@@ -4,6 +4,7 @@ import type { JobDefinition } from "../jobs.js";
 // loader logs and skips it, and the rest still load.
 export const job: JobDefinition = {
   name: "fixture.throws",
+  schedule: "*/5 * * * *",
   create: () => {
     throw new Error("boom");
   },

@@ -4,5 +4,6 @@ import type { JobDefinition } from "../jobs.js";
 // absent). The loader must skip it rather than register a no-op ticker.
 export const job: JobDefinition = {
   name: "fixture.disabled",
+  schedule: "*/5 * * * *",
   create: () => null,
 };

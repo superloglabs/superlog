@@ -10,6 +10,7 @@
     "backfill:issue-activity-daily": "tsx scripts/backfill-issue-activity-daily.ts",
     "seed:worker-telemetry-dashboard": "tsx scripts/seed-worker-telemetry-dashboard.ts",
     "test:jobs-loader": "tsx --test src/jobs.test.ts",
+    "test:jobs-runner": "tsx --test src/jobs/runner.test.ts",
     "test:git-auth-no-argv": "tsx scripts/test-git-auth-no-argv.ts",
     "test:patch-normalization": "tsx scripts/test-patch-normalization.ts",
     "test:slack-pinning": "tsx --test src/slack-pinning.test.ts",
@@ -54,7 +55,11 @@
     "@superlog/fingerprint": "workspace:*",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
+    "pg-boss": "^12.0.0",
     "pino": "^10.3.1"
+  },
+  "engines": {
+    "node": ">=22.12.0"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.2.17",

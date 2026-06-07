@@ -8,11 +8,14 @@ const deps = {} as unknown as JobDeps;
 
 const fixturesDir = new URL("./jobs-fixtures/", import.meta.url);
 
-test("loads every valid job file and returns its ticker", async () => {
+test("loads every valid job file with its schedule and handler", async () => {
   const jobs = await loadJobs(deps, { dir: fixturesDir });
   const valid = jobs.find((j) => j.name === "fixture.valid");
   assert.ok(valid, "expected the valid fixture job to be registered");
-  assert.equal(await valid.tick(), 7);
+  assert.equal(valid.schedule, "*/5 * * * *");
+  assert.equal(typeof valid.handler, "function");
+  await valid.handler();
+  assert.equal((globalThis as Record<string, unknown>).__fixtureValidRan, true);
 });
 
 test("skips a job whose create() returns null (opted out)", async () => {

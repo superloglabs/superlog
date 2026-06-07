@@ -1,5 +1,6 @@
 # Build context: repo root. Build with `docker build -f apps/worker/Dockerfile .`
-FROM node:20-slim
+# Node 22 (LTS): required by pg-boss v12, which backs the background job runner.
+FROM node:22-slim
 
 WORKDIR /app
 

@@ -5,5 +5,6 @@ import type { JobDefinition } from "../jobs.js";
 // it is inert if a future glob test runner ever discovers it.)
 export const job: JobDefinition = {
   name: "fixture.ignored-test",
-  create: () => async () => 1,
+  schedule: "*/5 * * * *",
+  create: () => async () => {},
 };
