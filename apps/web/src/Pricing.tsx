@@ -4,6 +4,11 @@ import { Btn, Label, Tile, Wordmark } from "./design/ui.tsx";
 
 type AuthMode = "sign-in" | "sign-up" | null;
 
+// Where the "Contact us" / "Talk to us about Enterprise" links route. Enterprise
+// is a contact-sales plan, so its CTA books a discovery call instead of opening
+// the sign-up modal.
+const ENTERPRISE_CONTACT_URL = "https://cal.com/pulsent/superlog-discovery";
+
 // Pay-as-you-go unit prices. Source of truth: packages/billing/src/pricing.ts —
 // keep in sync if those change.
 const PAYG = {
@@ -21,7 +26,19 @@ const FREE_INCLUDED = [
   "5 investigations / month",
 ];
 
-const packs = [
+type Pack = {
+  name: string;
+  price: string;
+  cadence: string;
+  description: string;
+  cta: string;
+  highlighted: boolean;
+  features: string[];
+  // When set, the CTA is a contact link to this URL instead of the sign-up modal.
+  href?: string;
+};
+
+const packs: Pack[] = [
   {
     name: "Pro",
     price: "$150",
@@ -46,6 +63,21 @@ const packs = [
       "300 investigation credits / month",
       "then $1.00 per investigation",
       "Telemetry metered at pay-as-you-go rates",
+    ],
+  },
+  {
+    name: "Enterprise",
+    price: "Custom",
+    cadence: "",
+    description: "For high-volume teams that need committed pricing, security review, and support.",
+    cta: "Contact us",
+    highlighted: false,
+    href: ENTERPRISE_CONTACT_URL,
+    features: [
+      "Custom investigation & telemetry volumes",
+      "SAML / SSO and custom retention",
+      "Dedicated support with SLAs",
+      "Invoicing and annual commitments",
     ],
   },
 ];
@@ -89,7 +121,7 @@ export function Pricing() {
         <div className="mx-auto w-full max-w-[1400px] px-6 pb-24 md:px-8 xl:px-12">
           <FreeRow onSignUp={openSignUp} />
           <PaygEstimator onSignUp={openSignUp} />
-          <section className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2">
+          <section className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-3">
             {packs.map((plan) => (
               <PlanCard key={plan.name} plan={plan} onSignUp={openSignUp} />
             ))}
@@ -103,7 +135,7 @@ export function Pricing() {
               <p className="mt-2 text-sm leading-relaxed text-muted lg:mt-6 lg:text-[16px] lg:leading-relaxed">
                 You pay for telemetry you send and investigations you run — nothing else. The
                 plumbing, incident intelligence, and agent workflows come together as one system.
-                Need higher volumes, custom retention, or SAML? <a href="https://cal.com/pulsent/superlog-discovery" className="text-fg underline underline-offset-4 hover:text-accent" target="_blank" rel="noopener noreferrer">Talk to us about Enterprise</a>.
+                Need higher volumes, custom retention, or SAML? <a href={ENTERPRISE_CONTACT_URL} className="text-fg underline underline-offset-4 hover:text-accent" target="_blank" rel="noopener noreferrer">Talk to us about Enterprise</a>.
               </p>
             </header>
 
@@ -135,7 +167,7 @@ export function Pricing() {
                 Get started
               </Btn>
               <a
-                href="https://cal.com/pulsent/superlog-discovery"
+                href={ENTERPRISE_CONTACT_URL}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex h-10 items-center rounded-sm border border-border px-4 text-[14px] font-medium tracking-tight text-fg transition-colors hover:border-border-strong"
@@ -192,7 +224,7 @@ function PlanCard({
   plan,
   onSignUp,
 }: {
-  plan: (typeof packs)[number];
+  plan: Pack;
   onSignUp: () => void;
 }) {
   return (
@@ -230,14 +262,27 @@ function PlanCard({
         </ul>
 
         <div className="mt-auto pt-6">
-          <Btn
-            variant={plan.highlighted ? "primary" : "secondary"}
-            size="lg"
-            className="w-full justify-center"
-            onClick={onSignUp}
-          >
-            {plan.cta}
-          </Btn>
+          {plan.href ? (
+            // Contact-sales CTA: an anchor styled to match the secondary button
+            // (Btn only renders a <button>), routing to the discovery call.
+            <a
+              href={plan.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-sm border border-border px-4 text-[14px] font-medium tracking-tight text-fg transition-all duration-150 hover:border-border-strong"
+            >
+              {plan.cta}
+            </a>
+          ) : (
+            <Btn
+              variant={plan.highlighted ? "primary" : "secondary"}
+              size="lg"
+              className="w-full justify-center"
+              onClick={onSignUp}
+            >
+              {plan.cta}
+            </Btn>
+          )}
         </div>
       </div>
     </Tile>
