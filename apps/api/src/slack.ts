@@ -202,7 +202,16 @@ export function mountSlackPublic(app: Hono<any>): void {
     } catch (err) {
       log.error({ err, type: payload.type }, "slack interactivity handler failed");
     }
-    return c.json({ ok: true });
+
+    // view_submission has a strict ack contract: to close the modal, respond
+    // HTTP 200 with an EMPTY body. Any non-empty body that isn't a recognized
+    // `response_action` makes Slack surface "We had some trouble connecting.
+    // Try again?" and leave the modal open — which is exactly what broke the
+    // incident feedback modal's Send step (we were returning `{"ok":true}`).
+    // block_actions has no such constraint (Slack ignores the ack body), so an
+    // empty 200 is a valid ack there too — return one for every interactivity
+    // type to stay on the safe side of the contract.
+    return c.body(null, 200);
   });
 }
 

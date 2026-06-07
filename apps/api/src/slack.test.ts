@@ -99,6 +99,54 @@ test("listSlackChannels returns the Slack error without paginating further", asy
   assert.equal(result.error, "token_revoked");
 });
 
+// Regression guard: clicking Send on the Slack incident feedback modal kept
+// surfacing "We had some trouble connecting. Try again?". Slack's
+// view_submission ack contract requires an EMPTY 200 body to close the modal;
+// our route was returning `{"ok":true}`, which Slack treats as an invalid
+// response and refuses to close. The ack body must be empty.
+test("view_submission ack is an empty 200 body (closes the Slack modal)", async () => {
+  const { Hono } = await import("hono");
+  const { mountSlackPublic } = await import("./slack.js");
+
+  const secret = "test-slack-signing-secret";
+  process.env.SLACK_SIGNING_SECRET = secret;
+
+  const app = new Hono();
+  mountSlackPublic(app);
+
+  // Empty feedback value → handler returns before any DB access, isolating the
+  // ack-body behavior we care about.
+  const payload = {
+    type: "view_submission",
+    view: {
+      callback_id: "feedback_modal:incident-123",
+      state: { values: { feedback_body: { value: { value: "" } } } },
+    },
+    user: { id: "U1" },
+    team: { id: "T1" },
+  };
+  const rawBody = `payload=${encodeURIComponent(JSON.stringify(payload))}`;
+  const ts = Math.floor(Date.now() / 1000).toString();
+  const crypto = await import("node:crypto");
+  const sig = `v0=${crypto
+    .createHmac("sha256", secret)
+    .update(`v0:${ts}:${rawBody}`)
+    .digest("hex")}`;
+
+  const res = await app.request("/slack/interactivity", {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      "x-slack-signature": sig,
+      "x-slack-request-timestamp": ts,
+    },
+    body: rawBody,
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(await res.text(), "");
+});
+
 test("listSlackChannels returns an error when the page cap is exhausted", async () => {
   const { listSlackChannels } = await import("./slack.js");
   const { fetchImpl, calls } = fakeFetch(
