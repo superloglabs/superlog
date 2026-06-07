@@ -130,6 +130,12 @@ export {
   type ResolveIncidentResult,
 } from "./resolve-incident.js";
 export {
+  closeIncidentOpenPullRequestsAfterResolution,
+  type CloseIncidentOpenPullRequestsResult,
+  type CloseIncidentPullRequest,
+  type IncidentOpenPullRequestToClose,
+} from "./incident-pr-resolution.js";
+export {
   encryptIntegrationSecret,
   decryptIntegrationSecret,
   type IntegrationSecretCipher,

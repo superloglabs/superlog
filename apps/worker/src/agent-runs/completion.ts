@@ -1,7 +1,14 @@
-import { type AgentRunResult, createIncidentLifecycle, db, schema } from "@superlog/db";
+import {
+  type AgentRunResult,
+  closeIncidentOpenPullRequestsAfterResolution,
+  createIncidentLifecycle,
+  db,
+  schema,
+} from "@superlog/db";
 import { eq } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
+import { closeAgentPullRequestOnGithub } from "../github-app.js";
 import { FIXED_IN_CURRENT_CODE_COOLDOWN_MS } from "../incident-cooldown.js";
 import {
   completedNoiseReason,
@@ -23,11 +30,35 @@ const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 const agentRunLifecycle = createAgentRunLifecycle(db);
 const incidentLifecycle = createIncidentLifecycle(db);
 
+async function closeOpenPullRequestsForResolvedIncident(incidentId: string): Promise<void> {
+  await closeIncidentOpenPullRequestsAfterResolution({
+    incidentId,
+    closePullRequest: (pr) =>
+      closeAgentPullRequestOnGithub({
+        installationId: pr.githubInstallationId,
+        repoFullName: pr.repoFullName,
+        prNumber: pr.prNumber,
+      }),
+    onCloseFailure: ({ pr, error }) =>
+      logger.warn(
+        {
+          scope: "incident-resolution-side-effects",
+          incident_id: incidentId,
+          agent_pr_id: pr.id,
+          repo: pr.repoFullName,
+          pr_number: pr.prNumber,
+          error,
+        },
+        "failed to close incident PR after resolve",
+      ),
+  });
+}
+
 async function resolveIncidentFromAgentRunConclusion(
   ctx: AgentRunContext,
   result: AgentRunResult,
   reason: schema.IncidentResolutionReason,
-): Promise<number> {
+): Promise<{ resolved: boolean; resolvedIssueCount: number }> {
   const now = new Date();
   const evidence = result.resolutionClassification?.evidence?.trim() ?? null;
   // For `fixed_in_current_code`, prod will keep producing the same exception
@@ -39,7 +70,7 @@ async function resolveIncidentFromAgentRunConclusion(
       ? new Date(now.getTime() + FIXED_IN_CURRENT_CODE_COOLDOWN_MS)
       : null;
 
-  const { resolvedIssueCount } = await incidentLifecycle.resolve({
+  return incidentLifecycle.resolve({
     incidentId: ctx.incident.id,
     kind: "agent_classification",
     reasonCode: reason,
@@ -55,8 +86,6 @@ async function resolveIncidentFromAgentRunConclusion(
     resolvedAt: now,
     autoInvestigateSuppressedUntil,
   });
-
-  return resolvedIssueCount;
 }
 
 export async function completeWithoutPullRequest(
@@ -95,11 +124,16 @@ export async function completeWithoutPullRequest(
   );
   await recordFiledLinearTicket(ctx, result.linearTicket);
   if (resolutionReason) {
-    await resolveIncidentFromAgentRunConclusion(ctx, result, resolutionReason);
+    const { resolved } = await resolveIncidentFromAgentRunConclusion(ctx, result, resolutionReason);
+    if (resolved) {
+      await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
+    }
     const refreshed = await db.query.incidents.findFirst({
       where: eq(schema.incidents.id, ctx.incident.id),
     });
     if (refreshed) ctx.incident = refreshed;
+  } else if (metadataOutcome.noiseResolved) {
+    await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
   }
   logger.info(
     {

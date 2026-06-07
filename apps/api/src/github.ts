@@ -15,6 +15,7 @@ import {
   recordFeedback,
 } from "./feedback.js";
 import { getDeviceFlow, getLinkedDevice, getSkillDeviceForIntegration } from "./gateway.js";
+import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolution-side-effects.js";
 import { logger } from "./logger.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 
@@ -679,7 +680,7 @@ async function resolveIncidentForMergedAgentPr(opts: {
   mergedByLogin: string | null;
 }): Promise<void> {
   const { agentPr, mergedAt, mergedByLogin } = opts;
-  await resolveIncident({
+  const { resolved } = await resolveIncident({
     incidentId: agentPr.incidentId,
     kind: "agent_pr_merged",
     reasonCode: "agent_pr_merged",
@@ -698,6 +699,17 @@ async function resolveIncidentForMergedAgentPr(opts: {
     eventDedupeKey: `incident_resolved:agent_pr:${agentPr.id}`,
     resolvedAt: mergedAt,
   });
+  if (resolved) {
+    await runResolvedIncidentSideEffectsForIncident({
+      incidentId: agentPr.incidentId,
+      closePullRequest: (pr) =>
+        closeAgentPullRequestOnGithub({
+          installationId: pr.githubInstallationId,
+          repoFullName: pr.repoFullName,
+          prNumber: pr.prNumber,
+        }),
+    });
+  }
 }
 
 async function maybeRecordPrCommentFeedback(opts: {
@@ -1069,6 +1081,35 @@ export async function mergeGithubPullRequest(opts: {
   }
   const body = (await res.json().catch(() => ({}))) as { sha?: string };
   return { sha: body.sha ?? null };
+}
+
+export async function closeAgentPullRequestOnGithub(opts: {
+  installationId: number;
+  repoFullName: string;
+  prNumber: number;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const token = await createInstallationWriteToken(opts.installationId);
+    const res = await fetch(
+      `https://api.github.com/repos/${opts.repoFullName}/pulls/${opts.prNumber}`,
+      {
+        method: "PATCH",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version": "2022-11-28",
+          "user-agent": "superlog-api",
+        },
+        body: JSON.stringify({ state: "closed" }),
+      },
+    );
+    if (res.ok) return { ok: true };
+    const text = await res.text().catch(() => "");
+    return { ok: false, error: `github PATCH /pulls/${opts.prNumber} ${res.status} ${text}` };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 export async function listCurrentInstallationRepos(installationId: number): Promise<StoredRepo[]> {

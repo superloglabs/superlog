@@ -692,6 +692,35 @@ export async function getObsPrMerged(
   }
 }
 
+export async function closeAgentPullRequestOnGithub(opts: {
+  installationId: number;
+  repoFullName: string;
+  prNumber: number;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const token = await createGithubWriteToken(opts.installationId);
+    const res = await fetch(
+      `${GITHUB_API}/repos/${opts.repoFullName}/pulls/${opts.prNumber}`,
+      {
+        method: "PATCH",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version": "2022-11-28",
+          "user-agent": "superlog-worker",
+        },
+        body: JSON.stringify({ state: "closed" }),
+      },
+    );
+    if (res.ok) return { ok: true };
+    const text = await res.text().catch(() => "");
+    return { ok: false, error: `github PATCH /pulls/${opts.prNumber} ${res.status} ${text}` };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export type AutoMergeMethod = "squash" | "merge" | "rebase";
 export type AutoMergePolicy = "never" | "when_checks_pass" | "immediately";
 
