@@ -5,6 +5,7 @@ type PrCopyContext = {
 type PrCopyResult = {
   summary: string;
   proposedTitle?: string | null;
+  linearTicket?: { id: string; url?: string | null } | null;
 };
 
 type PrCopyPr = {
@@ -35,12 +36,29 @@ export function buildPrBody(opts: {
   pr: PrCopyPr;
 }): string {
   const explicit = opts.pr.body?.trim();
-  if (explicit) return explicit;
-  return [
-    "# Summary",
-    "",
-    opts.result.summary.trim(),
-    "",
-    `[Incident on Superlog](${opts.incidentUrl})`,
-  ].join("\n");
+  const base =
+    explicit ||
+    [
+      "# Summary",
+      "",
+      opts.result.summary.trim(),
+      "",
+      `[Incident on Superlog](${opts.incidentUrl})`,
+    ].join("\n");
+  return withLinearReference(base, opts.result.linearTicket);
+}
+
+// Deterministically stitch the filed Linear ticket into the PR body so the
+// agent doesn't have to remember to (its body schema actively pushes toward a
+// minimal body), and so Linear's GitHub integration auto-links the PR to the
+// issue. We mention the id without a `Closes`/`Fixes` magic word on purpose —
+// linking is always wanted, but auto-resolving the tracking issue on merge is a
+// per-team call we don't make here. Skip if the body already names the ticket.
+function withLinearReference(
+  body: string,
+  ticket: { id: string; url?: string | null } | null | undefined,
+): string {
+  if (!ticket?.id || body.includes(ticket.id)) return body;
+  const reference = ticket.url ? `[${ticket.id}](${ticket.url})` : ticket.id;
+  return `${body}\n\nLinear: ${reference}`;
 }
