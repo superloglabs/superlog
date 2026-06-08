@@ -21,6 +21,8 @@ import {
   useDeleteOrgProject,
   useDeleteSlackRoute,
   useDeleteWebhook,
+  type RepoBranch,
+  useGithubBranches,
   useGithubInstallation,
   useGrantOrgRepoToProject,
   useIntegrations,
@@ -70,7 +72,7 @@ import {
   useWebhookDeliveries,
   useWebhooks,
 } from "./api";
-import { Dropdown } from "./design/Dropdown.tsx";
+import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
 import { Btn, Chip, FieldLabel, Input, Label, Tile } from "./design/ui";
 import { BillingCard } from "./settings/BillingCard.tsx";
 import { OrgGeneralCard } from "./settings/OrgGeneralCard.tsx";
@@ -1562,6 +1564,7 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
   const linearConnected = linear.data?.installed === true && !linear.data.needsReauth;
   const linearNeedsReauth = linear.data?.installed === true && linear.data.needsReauth;
   const githubConnected = github.data?.installed === true;
+  const branches = useGithubBranches(projectId, githubConnected);
 
   const data: AgentSettings = settings.data ?? {
     customInstructions: "",
@@ -1728,6 +1731,9 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
               </p>
               <PrBaseBranchField
                 value={data.prBaseBranch}
+                branches={branches.data?.branches ?? []}
+                loading={branches.isLoading}
+                loadError={branches.isError}
                 disabled={!downstreamEligible || data.prPolicy === "never" || save.isPending}
                 onSave={(v) => patch({ prBaseBranch: v })}
               />
@@ -1745,42 +1751,81 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
   );
 }
 
+// The empty-string option means "use the repository default branch" — it maps
+// to a null prBaseBranch on save.
+const REPO_DEFAULT_BRANCH = "";
+
 function PrBaseBranchField({
   value,
+  branches,
+  loading,
+  loadError,
   disabled,
   onSave,
 }: {
   value: string | null;
+  branches: RepoBranch[];
+  loading: boolean;
+  loadError: boolean;
   disabled: boolean;
   onSave: (value: string | null) => void;
 }) {
-  const [draft, setDraft] = useState(value ?? "");
-  useEffect(() => setDraft(value ?? ""), [value]);
-  const normalized = draft.trim();
-  const dirty = normalized !== (value ?? "");
+  const [draft, setDraft] = useState(value ?? REPO_DEFAULT_BRANCH);
+  useEffect(() => setDraft(value ?? REPO_DEFAULT_BRANCH), [value]);
+  const dirty = draft !== (value ?? REPO_DEFAULT_BRANCH);
+
+  // Loading/error disable the picker — strict mode means we only ever offer
+  // branches we've confirmed exist, so we can't let the user save against a
+  // list we couldn't fetch.
+  const pickerDisabled = disabled || loading || loadError;
+
+  const options: DropdownOption[] = [
+    { value: REPO_DEFAULT_BRANCH, label: "Repository default", searchText: "Repository default" },
+    ...branches.map((branch) => ({
+      value: branch.name,
+      searchText: branch.name,
+      label: (
+        <span className="flex items-center gap-2">
+          <span className="font-mono">{branch.name}</span>
+          {branch.isDefault && <span className="text-[11px] text-subtle">default</span>}
+        </span>
+      ),
+    })),
+  ];
 
   return (
     <div className="space-y-2">
       <FieldLabel>PR target branch</FieldLabel>
       <div className="flex flex-col gap-2 sm:flex-row">
-        <Input
-          value={draft}
-          disabled={disabled}
-          onChange={(e) => setDraft(e.target.value.slice(0, 200))}
-          placeholder="Use repository default"
-          className="font-mono text-[12.5px]"
-        />
+        <div className="min-w-[260px] flex-1">
+          <Dropdown
+            value={draft}
+            onChange={setDraft}
+            disabled={pickerDisabled}
+            options={options}
+            placeholder={
+              loading
+                ? "Loading branches…"
+                : loadError
+                  ? "Couldn't load branches"
+                  : "Repository default"
+            }
+            emptyLabel="No branches found"
+          />
+        </div>
         <Btn
           size="sm"
           variant="secondary"
-          disabled={disabled || !dirty}
-          onClick={() => onSave(normalized || null)}
+          disabled={pickerDisabled || !dirty}
+          onClick={() => onSave(draft || null)}
         >
           Save
         </Btn>
       </div>
       <p className="text-[12px] text-muted">
-        Leave blank for the repo default branch, or set a branch like development.
+        {loadError
+          ? "Couldn't load branches from GitHub — try again, or check the App's repo access."
+          : "Pick the branch agent PRs target. Defaults to each repo's default branch."}
       </p>
     </div>
   );

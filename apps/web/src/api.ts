@@ -568,6 +568,20 @@ export function useStartGithubInstall() {
   });
 }
 
+export type RepoBranch = { name: string; isDefault: boolean };
+
+// Branches the agent can target for PRs, fetched live from the project's
+// connected GitHub repos. Used by the PR-target-branch picker in Settings.
+export function useGithubBranches(projectId: string | undefined, enabled: boolean) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["github-branches", projectId],
+    queryFn: () =>
+      fetcher<{ branches: RepoBranch[] }>(`/api/projects/${projectId}/github/branches`),
+    enabled: enabled && !!projectId,
+  });
+}
+
 export function useStartGithubAuthorLogin() {
   const fetcher = useFetcher();
   return useMutation({

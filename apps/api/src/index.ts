@@ -33,8 +33,10 @@ import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountDashboards } from "./dashboards.js";
 import { mountFeedbackAuthed, mountFeedbackPublic } from "./feedback.js";
 import { type GatewayVars, mountGateway } from "./gateway.js";
+import { prBaseBranchExists } from "./github-branches.js";
 import {
   closeAgentPullRequestOnGithub,
+  listProjectRepoBranches,
   mergeGithubPullRequest,
   mountGithubAuthed,
   mountGithubAuthorOAuth,
@@ -1580,6 +1582,19 @@ function parsePrBaseBranch(input: unknown, current: string | null): string | nul
   return branch;
 }
 
+// Branches the agent could target for PRs: the union across the project's
+// enabled GitHub repos. Powers the strict PR-target-branch picker in Settings.
+app.get("/api/projects/:projectId/github/branches", async (c) => {
+  const projectId = c.req.param("projectId");
+  await requireProjectAccess(c, projectId);
+
+  const result = await listProjectRepoBranches(projectId);
+  if (result.errored) {
+    return c.json({ error: "failed to load branches from GitHub" }, 502);
+  }
+  return c.json({ branches: result.branches });
+});
+
 app.patch("/api/projects/:projectId/automation", async (c) => {
   const projectId = c.req.param("projectId");
   await requireProjectAccess(c, projectId);
@@ -1676,6 +1691,20 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     maxHumanResumeCount > 10
   ) {
     throw new HTTPException(400, { message: "maxHumanResumeCount must be between 0 and 10" });
+  }
+
+  // When the target branch changed to a non-blank value, confirm it actually
+  // exists in one of the project's repos. Skipped when GitHub can't be reached
+  // (errored) so a transient API failure can't lock the user out of saving
+  // unrelated settings — the worker still falls back to the repo default at PR
+  // time if the branch later disappears.
+  if (prBaseBranch && prBaseBranch !== current.prBaseBranch) {
+    const { branches, errored } = await listProjectRepoBranches(projectId);
+    if (!errored && !prBaseBranchExists(prBaseBranch, branches)) {
+      throw new HTTPException(400, {
+        message: `Branch "${prBaseBranch}" was not found in this project's connected repositories.`,
+      });
+    }
   }
 
   const values = {

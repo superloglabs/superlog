@@ -15,6 +15,7 @@ import {
   recordFeedback,
 } from "./feedback.js";
 import { getDeviceFlow, getLinkedDevice, getSkillDeviceForIntegration } from "./gateway.js";
+import { type RepoBranch, type RepoBranchInfo, mergeRepoBranches } from "./github-branches.js";
 import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolution-side-effects.js";
 import { logger } from "./logger.js";
 import { resolveActiveOrgContext } from "./org-context.js";
@@ -1150,6 +1151,70 @@ export async function fetchInstallationRepoById(
     }
     throw err;
   }
+}
+
+async function fetchRepoBranchInfo(
+  installationId: number,
+  repoFullName: string,
+): Promise<RepoBranchInfo> {
+  const token = await createInstallationReadToken(installationId);
+  const repo = await githubRequest<{ default_branch?: string }>(`/repos/${repoFullName}`, token);
+  const branches: string[] = [];
+  for (let page = 1; page <= 10; page += 1) {
+    const data = await githubRequest<{ name: string }[]>(
+      `/repos/${repoFullName}/branches?per_page=100&page=${page}`,
+      token,
+    );
+    branches.push(...data.map((b) => b.name));
+    if (data.length < 100) break;
+  }
+  return { defaultBranch: repo.default_branch ?? null, branches };
+}
+
+// Lists the branch set the agent could target for a project: the union of
+// branches across every enabled repo the project's GitHub installation(s) can
+// reach. `errored` is true when there were repos to inspect but every lookup
+// failed (token/network), so callers can disable the picker instead of
+// pretending the repo simply has no branches.
+export async function listProjectRepoBranches(
+  projectId: string,
+): Promise<{ branches: RepoBranch[]; errored: boolean }> {
+  const accessible = await listAccessibleGithubInstallsForProject(projectId);
+  const perRepo: RepoBranchInfo[] = [];
+  const seenRepos = new Set<string>();
+  let sawError = false;
+  for (const { installation: row, allowedRepoIds } of accessible) {
+    if (!row.agentEnabled) continue;
+    let repos: StoredRepo[];
+    try {
+      repos = await listCurrentInstallationRepos(row.installationId);
+    } catch (err) {
+      sawError = true;
+      log.warn(
+        { err, projectId, installationId: row.installationId },
+        "github repository listing failed while loading branches",
+      );
+      continue;
+    }
+    const grantSet = allowedRepoIds === null ? null : new Set(allowedRepoIds);
+    const repoAccess = normalizeRepoAccess(row.repoAccess);
+    for (const repo of repos) {
+      if (grantSet && !grantSet.has(repo.id)) continue;
+      if (!isRepoEnabled(repoAccess, repo.id)) continue;
+      if (seenRepos.has(repo.fullName)) continue;
+      seenRepos.add(repo.fullName);
+      try {
+        perRepo.push(await fetchRepoBranchInfo(row.installationId, repo.fullName));
+      } catch (err) {
+        sawError = true;
+        log.warn({ err, projectId, repo: repo.fullName }, "github branch listing failed for repo");
+      }
+    }
+  }
+  // Distinguish "GitHub call failed" from "project genuinely has no branches":
+  // only flag errored when something broke AND we produced nothing, so a
+  // partial failure still returns the branches we did manage to load.
+  return { branches: mergeRepoBranches(perRepo), errored: sawError && perRepo.length === 0 };
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
