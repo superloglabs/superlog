@@ -1,6 +1,7 @@
-import { parsePatchFiles, type FileDiffMetadata } from "@pierre/diffs";
-import { FileDiff, PatchDiff } from "@pierre/diffs/react";
+import type { FileDiffMetadata } from "@pierre/diffs";
+import { FileDiff } from "@pierre/diffs/react";
 import { useMemo, useState } from "react";
+import { parseIncidentPrPatchFiles, visibleIncidentPrDiffFiles } from "./incident-pr-diff-model.ts";
 
 const DIFF_OPTIONS = {
   theme: "pierre-dark",
@@ -19,36 +20,30 @@ export default function IncidentPrDiffView({
   patchKey: string;
 }) {
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
-  const files = useMemo(() => parsePrPatchFiles(patch), [patch]);
-  const selectedFile = selectedFileName
-    ? (files.find((file) => file.name === selectedFileName) ?? null)
-    : null;
+  const files = useMemo(() => parseIncidentPrPatchFiles(patch), [patch]);
+  const visibleFiles = visibleIncidentPrDiffFiles(files, selectedFileName);
 
   return (
     <div className="grid min-h-[520px] grid-cols-[190px_minmax(0,1fr)] overflow-hidden rounded-md border border-border bg-surface">
       <FileTree files={files} selectedFileName={selectedFileName} onSelect={setSelectedFileName} />
       <div className="min-w-0 overflow-auto bg-[#0d0d0f]">
-        {selectedFile ? (
-          <FileDiff
-            key={`${patchKey}:${selectedFile.name}`}
-            fileDiff={selectedFile}
-            options={DIFF_OPTIONS}
-            disableWorkerPool
-          />
+        {visibleFiles.length > 0 ? (
+          <div className="space-y-4">
+            {visibleFiles.map((file) => (
+              <FileDiff
+                key={`${patchKey}:${file.name}`}
+                fileDiff={file}
+                options={DIFF_OPTIONS}
+                disableWorkerPool
+              />
+            ))}
+          </div>
         ) : (
-          <PatchDiff key={patchKey} patch={patch} options={DIFF_OPTIONS} disableWorkerPool />
+          <div className="p-4 text-[12px] text-muted">Diff could not be parsed.</div>
         )}
       </div>
     </div>
   );
-}
-
-function parsePrPatchFiles(patch: string): FileDiffMetadata[] {
-  try {
-    return parsePatchFiles(patch, "incident-pr", true).flatMap((parsed) => parsed.files);
-  } catch {
-    return [];
-  }
 }
 
 function FileTree({
