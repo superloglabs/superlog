@@ -48,6 +48,18 @@ test("returns null when neither a pin nor a team match resolves", () => {
   assert.equal(preferPinnedInstallation(null, null), null);
 });
 
+test("Slack resolve clicks on noise incidents refresh resolved-side effects", async () => {
+  const { resolveSlackResolveClickDisposition } = await import("./slack.js");
+
+  assert.equal(resolveSlackResolveClickDisposition("autoresolved_noise"), "refresh_side_effects");
+});
+
+test("Slack resolve clicks on open incidents perform a fresh resolve", async () => {
+  const { resolveSlackResolveClickDisposition } = await import("./slack.js");
+
+  assert.equal(resolveSlackResolveClickDisposition("open"), "resolve");
+});
+
 test("listSlackChannels requests both public and private channels", async () => {
   const { listSlackChannels } = await import("./slack.js");
   const { fetchImpl, calls } = fakeFetch([{ ok: true, channels: [] }]);

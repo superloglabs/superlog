@@ -25,6 +25,12 @@ const SCOPES =
 
 type Vars = { userId: string; orgId: string | null };
 
+export type SlackResolveClickDisposition = "resolve" | "refresh_side_effects";
+
+export function resolveSlackResolveClickDisposition(status: string): SlackResolveClickDisposition {
+  return status === "open" ? "resolve" : "refresh_side_effects";
+}
+
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
 export function mountSlackPublic(app: Hono<any>): void {
   const clientId = process.env.SLACK_CLIENT_ID;
@@ -335,11 +341,12 @@ async function handleSlackResolveIncident(
     log.warn({ incidentId }, "resolve_incident click for unknown incident");
     return;
   }
-  if (incident.status !== "open") {
+  if (resolveSlackResolveClickDisposition(incident.status) === "refresh_side_effects") {
     log.info(
       { incidentId, status: incident.status },
-      "resolve_incident click on already-closed incident, ignoring",
+      "resolve_incident click on already-closed incident, refreshing side effects",
     );
+    await runSlackResolvedIncidentSideEffects(incidentId);
     return;
   }
 
@@ -363,15 +370,7 @@ async function handleSlackResolveIncident(
     return;
   }
 
-  await runResolvedIncidentSideEffectsForIncident({
-    incidentId,
-    closePullRequest: (pr) =>
-      closeAgentPullRequestOnGithub({
-        installationId: pr.githubInstallationId,
-        repoFullName: pr.repoFullName,
-        prNumber: pr.prNumber,
-      }),
-  });
+  await runSlackResolvedIncidentSideEffects(incidentId);
 
   const installation = await installationForIncident({
     pinnedId: incident.slackInstallationId,
@@ -389,6 +388,18 @@ async function handleSlackResolveIncident(
       text: `:white_check_mark: Incident resolved by ${attribution}. If the underlying error reappears it will re-open automatically.`,
     });
   }
+}
+
+async function runSlackResolvedIncidentSideEffects(incidentId: string): Promise<void> {
+  await runResolvedIncidentSideEffectsForIncident({
+    incidentId,
+    closePullRequest: (pr) =>
+      closeAgentPullRequestOnGithub({
+        installationId: pr.githubInstallationId,
+        repoFullName: pr.repoFullName,
+        prNumber: pr.prNumber,
+      }),
+  });
 }
 
 // Confirm / Dismiss buttons on a sweep-agent resolution proposal posted
