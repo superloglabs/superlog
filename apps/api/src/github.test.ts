@@ -61,6 +61,7 @@ test("merged agent PR resolves incident, cascades linked issues, and writes time
     where: eq(schema.incidents.id, fixture.incidentId),
   });
   assert.equal(incident?.status, "resolved");
+  assert.equal(incident?.resolvedReasonCode, "agent_pr_merged");
 
   const issue = await db.query.issues.findFirst({
     where: eq(schema.issues.id, fixture.issueId),
@@ -78,7 +79,8 @@ test("merged agent PR resolves incident, cascades linked issues, and writes time
     resolvedEvents[0]?.summary,
     `Incident resolved because PR #${fixture.prNumber} was merged.`,
   );
-  assert.equal(resolvedEvents[0]?.detail?.reason, "agent_pr_merged");
+  assert.equal(resolvedEvents[0]?.detail?.kind, "agent_pr_merged");
+  assert.equal(resolvedEvents[0]?.detail?.reasonCode, "agent_pr_merged");
 
   const prMergedEvent = await db.query.agentPrEvents.findFirst({
     where: and(
@@ -142,6 +144,7 @@ test("closed unmerged agent PR does not resolve incident or linked issue", async
     where: eq(schema.incidents.id, fixture.incidentId),
   });
   assert.equal(incident?.status, "open");
+  assert.equal(incident?.resolvedReasonCode, null);
 
   const issue = await db.query.issues.findFirst({
     where: eq(schema.issues.id, fixture.issueId),
@@ -174,10 +177,7 @@ async function seedAgentPrFixture(label: string): Promise<{
   const installationId = Math.floor(Date.now() / 1000) + Math.floor(Math.random() * 1_000_000);
   const prNumber = Math.floor(Math.random() * 10_000) + 1;
 
-  const [org] = await db
-    .insert(schema.orgs)
-    .values({ name: tag, slug: tag })
-    .returning();
+  const [org] = await db.insert(schema.orgs).values({ name: tag, slug: tag }).returning();
   if (!org) throw new Error("failed to seed org");
   orgIds.push(org.id);
 
