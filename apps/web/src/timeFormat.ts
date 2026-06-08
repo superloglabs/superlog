@@ -9,7 +9,7 @@ function parseChUtc(s: string): { date: Date; frac: string } | null {
   const head = dot === -1 ? s : s.slice(0, dot);
   const frac = dot === -1 ? "" : s.slice(dot + 1);
   // Accept both "YYYY-MM-DD HH:MM:SS" and ISO "YYYY-MM-DDTHH:MM:SS".
-  const iso = head.replace(" ", "T") + "Z";
+  const iso = `${head.replace(" ", "T")}Z`;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
   return { date: d, frac };
@@ -24,13 +24,16 @@ export function formatLocalTimestampMs(s: string): string {
   const p = parseChUtc(s);
   if (!p) return s;
   const { date, frac } = p;
-  const head =
-    `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ` +
-    `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
   const fracN = Number(`0.${frac || "0"}`);
-  const f = Number.isFinite(fracN)
-    ? Math.round(fracN * 100).toString().padStart(2, "0")
-    : "00";
+  const hundredths = Number.isFinite(fracN) ? Math.round(fracN * 100) : 0;
+  const roundedDate = new Date(date);
+  if (hundredths === 100) {
+    roundedDate.setTime(roundedDate.getTime() + 1000);
+  }
+  const f = (hundredths % 100).toString().padStart(2, "0");
+  const head =
+    `${roundedDate.getFullYear()}-${pad2(roundedDate.getMonth() + 1)}-${pad2(roundedDate.getDate())} ` +
+    `${pad2(roundedDate.getHours())}:${pad2(roundedDate.getMinutes())}:${pad2(roundedDate.getSeconds())}`;
   return `${head}.${f}`;
 }
 
@@ -65,5 +68,6 @@ export function localTzAbbr(): string {
   } catch {
     cachedTzAbbr = "local";
   }
-  return cachedTzAbbr!;
+  if (!cachedTzAbbr) cachedTzAbbr = "local";
+  return cachedTzAbbr;
 }
