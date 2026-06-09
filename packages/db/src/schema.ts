@@ -1343,6 +1343,42 @@ export const orgAgentSettings = pgTable(
   }),
 );
 
+export type AgentMemoryKind = "feedback" | "terminology" | "infra" | "project";
+export type AgentMemoryStatus = "active" | "archived";
+
+// Durable facts the investigation agent carries across runs: org terminology,
+// infra/project structure, and lessons from user feedback or conversations.
+// Active memories are injected into every run's initial prompt; the agent
+// writes new ones via the save_memory / update_memory tools, and users manage
+// them from org settings.
+export const agentMemories = pgTable(
+  "agent_memories",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    // Null scopes the memory to the whole org; set narrows it to one project.
+    projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    kind: text("kind").$type<AgentMemoryKind>().notNull().default("project"),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    status: text("status").$type<AgentMemoryStatus>().notNull().default("active"),
+    // Provenance: exactly one of these is set for agent- vs user-authored
+    // memories; both stay null only for system backfills.
+    sourceAgentRunId: uuid("source_agent_run_id").references(() => agentRuns.id, {
+      onDelete: "set null",
+    }),
+    sourceUserId: uuid("source_user_id").references(() => users.id, { onDelete: "set null" }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    orgStatusIdx: index("agent_memories_org_status_idx").on(t.orgId, t.status),
+  }),
+);
+
 export type LinearTicketPolicy = "never" | "on_ready_to_pr" | "always";
 export type PrPolicy = "never" | "on_ready_to_pr" | "always";
 export type AutoMergePolicy = "never" | "when_checks_pass" | "immediately";
@@ -1742,6 +1778,8 @@ export type GithubInstallation = typeof githubInstallations.$inferSelect;
 export type ProjectGithubRepo = typeof projectGithubRepos.$inferSelect;
 export type LinearInstallation = typeof linearInstallations.$inferSelect;
 export type OrgAgentSettings = typeof orgAgentSettings.$inferSelect;
+export type AgentMemory = typeof agentMemories.$inferSelect;
+export type NewAgentMemory = typeof agentMemories.$inferInsert;
 export type OrgIntegration = typeof orgIntegrations.$inferSelect;
 export type OrgIntegrationSecret = typeof orgIntegrationSecrets.$inferSelect;
 export type SourceMapArtifact = typeof sourceMapArtifacts.$inferSelect;
