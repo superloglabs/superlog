@@ -8,7 +8,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "tsx --test \"src/**/*.test.ts\"",
+    "test": "find src -name '*.test.ts' -print | sort | xargs tsx --test",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
