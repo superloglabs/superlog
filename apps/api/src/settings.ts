@@ -10,6 +10,43 @@ type Vars = { userId: string; orgId: string | null };
 const ORG_INSTRUCTIONS_MAX_LEN = 8000;
 const PROJECT_CONTEXT_MAX_LEN = 8000;
 
+const AGENT_MEMORY_TITLE_MAX_LEN = 200;
+const AGENT_MEMORY_BODY_MAX_LEN = 4000;
+const AGENT_MEMORY_KINDS: schema.AgentMemoryKind[] = [
+  "feedback",
+  "terminology",
+  "infra",
+  "project",
+];
+
+function parseMemoryKind(value: unknown): schema.AgentMemoryKind | null {
+  return typeof value === "string" &&
+    (AGENT_MEMORY_KINDS as string[]).includes(value)
+    ? (value as schema.AgentMemoryKind)
+    : null;
+}
+
+function parseMemoryText(value: unknown, maxLen: number): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  return trimmed.slice(0, maxLen);
+}
+
+function serializeAgentMemory(row: schema.AgentMemory) {
+  return {
+    id: row.id,
+    kind: row.kind,
+    projectId: row.projectId,
+    title: row.title,
+    body: row.body,
+    status: row.status,
+    source: row.sourceAgentRunId ? "agent" : row.sourceUserId ? "user" : null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
 const PROJECT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 const PROJECT_NAME_MAX_LEN = 80;
 
@@ -51,6 +88,109 @@ export function mountSettingsAuthed(app: Hono<any>): void {
         set: { customInstructions, updatedAt: new Date() },
       });
     return c.json({ customInstructions });
+  });
+
+  app.get("/api/org/agent-memories", async (c) => {
+    const ctx = await resolveUserOrg(c);
+    if (!ctx) return c.json({ memories: [] });
+    const rows = await db.query.agentMemories.findMany({
+      where: eq(schema.agentMemories.orgId, ctx.orgId),
+      orderBy: [asc(schema.agentMemories.createdAt)],
+    });
+    return c.json({ memories: rows.map(serializeAgentMemory) });
+  });
+
+  app.post("/api/org/agent-memories", async (c) => {
+    const ctx = await resolveUserOrg(c);
+    if (!ctx) return c.json({ error: "no org for user" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const kind = parseMemoryKind(body.kind);
+    if (!kind) return c.json({ error: "kind must be one of: feedback, terminology, infra, project" }, 400);
+    const title = parseMemoryText(body.title, AGENT_MEMORY_TITLE_MAX_LEN);
+    if (!title) return c.json({ error: "title is required" }, 400);
+    const memoryBody = parseMemoryText(body.body, AGENT_MEMORY_BODY_MAX_LEN);
+    if (!memoryBody) return c.json({ error: "body is required" }, 400);
+    let projectId: string | null = null;
+    if (typeof body.projectId === "string" && body.projectId.length > 0) {
+      const project = await db.query.projects.findFirst({
+        where: and(eq(schema.projects.id, body.projectId), eq(schema.projects.orgId, ctx.orgId)),
+        columns: { id: true },
+      });
+      if (!project) return c.json({ error: "unknown project" }, 400);
+      projectId = project.id;
+    }
+    const [row] = await db
+      .insert(schema.agentMemories)
+      .values({
+        orgId: ctx.orgId,
+        projectId,
+        kind,
+        title,
+        body: memoryBody,
+        sourceUserId: ctx.userId,
+      })
+      .returning();
+    if (!row) return c.json({ error: "failed to create memory" }, 500);
+    return c.json({ memory: serializeAgentMemory(row) });
+  });
+
+  app.put("/api/org/agent-memories/:id", async (c) => {
+    const ctx = await resolveUserOrg(c);
+    if (!ctx) return c.json({ error: "no org for user" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const patch: Partial<typeof schema.agentMemories.$inferInsert> = {};
+    if (body.kind !== undefined) {
+      const kind = parseMemoryKind(body.kind);
+      if (!kind) return c.json({ error: "invalid kind" }, 400);
+      patch.kind = kind;
+    }
+    if (body.title !== undefined) {
+      const title = parseMemoryText(body.title, AGENT_MEMORY_TITLE_MAX_LEN);
+      if (!title) return c.json({ error: "title must be a non-empty string" }, 400);
+      patch.title = title;
+    }
+    if (body.body !== undefined) {
+      const memoryBody = parseMemoryText(body.body, AGENT_MEMORY_BODY_MAX_LEN);
+      if (!memoryBody) return c.json({ error: "body must be a non-empty string" }, 400);
+      patch.body = memoryBody;
+    }
+    if (body.status !== undefined) {
+      if (body.status !== "active" && body.status !== "archived") {
+        return c.json({ error: "status must be active or archived" }, 400);
+      }
+      patch.status = body.status;
+    }
+    if (Object.keys(patch).length === 0) {
+      return c.json({ error: "provide at least one of kind, title, body, status" }, 400);
+    }
+    const [row] = await db
+      .update(schema.agentMemories)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(
+        and(
+          eq(schema.agentMemories.id, c.req.param("id")),
+          eq(schema.agentMemories.orgId, ctx.orgId),
+        ),
+      )
+      .returning();
+    if (!row) return c.json({ error: "memory not found" }, 404);
+    return c.json({ memory: serializeAgentMemory(row) });
+  });
+
+  app.delete("/api/org/agent-memories/:id", async (c) => {
+    const ctx = await resolveUserOrg(c);
+    if (!ctx) return c.json({ error: "no org for user" }, 404);
+    const [row] = await db
+      .delete(schema.agentMemories)
+      .where(
+        and(
+          eq(schema.agentMemories.id, c.req.param("id")),
+          eq(schema.agentMemories.orgId, ctx.orgId),
+        ),
+      )
+      .returning({ id: schema.agentMemories.id });
+    if (!row) return c.json({ error: "memory not found" }, 404);
+    return c.json({ ok: true });
   });
 
   app.get("/api/org/digest", async (c) => {
