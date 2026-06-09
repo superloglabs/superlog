@@ -96,6 +96,26 @@ export type AgentMemoryToolContext = {
   agentRunId: string | null;
 };
 
+// Dispatchers only carry { sessionId, orgId, incidentId }; memory writes also
+// need the project scope and run provenance. Resolves both from the incident
+// row and the run's provider session id.
+export async function resolveAgentMemoryToolContext(args: {
+  orgId: string;
+  incidentId: string;
+  sessionId: string;
+}): Promise<AgentMemoryToolContext | null> {
+  const incident = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.id, args.incidentId),
+    columns: { projectId: true },
+  });
+  if (!incident) return null;
+  const run = await db.query.agentRuns.findFirst({
+    where: eq(schema.agentRuns.providerSessionId, args.sessionId),
+    columns: { id: true },
+  });
+  return { orgId: args.orgId, projectId: incident.projectId, agentRunId: run?.id ?? null };
+}
+
 export type AgentMemoryToolDeps = {
   insertMemory(values: NewAgentMemory): Promise<{ id: string }>;
   updateMemory(
