@@ -19,6 +19,7 @@ import {
   syncConnectionResources,
 } from "./cloud-resources-service.js";
 import { resolveActiveOrgContext } from "./org-context.js";
+import { buildServiceMap } from "./service-map-service.js";
 
 type Vars = { userId: string; orgId: string | null };
 
@@ -288,6 +289,31 @@ export function mountCloudConnectionsAuthed(
         and(eq(schema.cloudConnections.id, id), eq(schema.cloudConnections.projectId, projectId)),
       );
     return c.json({ ok: true });
+  });
+
+  // Service map: cluster the project's resources into logical services (+ lanes
+  // and inferred edges) for the topology view.
+  app.get("/api/projects/:projectId/service-map", async (c) => {
+    const projectId = c.req.param("projectId");
+    await requireAccess(c, projectId);
+    const rows = await db.query.cloudResources.findMany({
+      where: and(
+        eq(schema.cloudResources.projectId, projectId),
+        isNull(schema.cloudResources.removedAt),
+      ),
+    });
+    return c.json(
+      buildServiceMap(
+        rows.map((r) => ({
+          arn: r.arn,
+          service: r.service,
+          resourceType: r.resourceType,
+          name: r.name,
+          tags: r.tags,
+          config: r.config as Record<string, unknown> | null,
+        })),
+      ),
+    );
   });
 
   // Inventory: list the project's discovered AWS resources (excludes soft-removed).
