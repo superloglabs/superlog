@@ -20,8 +20,7 @@ const AGENT_MEMORY_KINDS: schema.AgentMemoryKind[] = [
 ];
 
 function parseMemoryKind(value: unknown): schema.AgentMemoryKind | null {
-  return typeof value === "string" &&
-    (AGENT_MEMORY_KINDS as string[]).includes(value)
+  return typeof value === "string" && (AGENT_MEMORY_KINDS as string[]).includes(value)
     ? (value as schema.AgentMemoryKind)
     : null;
 }
@@ -105,7 +104,8 @@ export function mountSettingsAuthed(app: Hono<any>): void {
     if (!ctx) return c.json({ error: "no org for user" }, 404);
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const kind = parseMemoryKind(body.kind);
-    if (!kind) return c.json({ error: "kind must be one of: feedback, terminology, infra, project" }, 400);
+    if (!kind)
+      return c.json({ error: "kind must be one of: feedback, terminology, infra, project" }, 400);
     const title = parseMemoryText(body.title, AGENT_MEMORY_TITLE_MAX_LEN);
     if (!title) return c.json({ error: "title is required" }, 400);
     const memoryBody = parseMemoryText(body.body, AGENT_MEMORY_BODY_MAX_LEN);

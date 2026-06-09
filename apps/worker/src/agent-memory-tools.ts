@@ -1,7 +1,7 @@
 // Custom tools that let the investigation agent persist durable facts across
 // runs (terminology, infra/project structure, lessons from feedback). The
 // runner backend declares these on the agent and dispatches calls back here.
-import { db, type NewAgentMemory, schema } from "@superlog/db";
+import { type NewAgentMemory, db, schema } from "@superlog/db";
 import { and, asc, eq, isNull, or } from "drizzle-orm";
 
 export const SAVE_MEMORY_TOOL_NAME = "save_memory";
@@ -121,9 +121,7 @@ export type AgentMemoryToolDeps = {
   updateMemory(
     id: string,
     orgId: string,
-    patch: Partial<
-      Pick<schema.AgentMemory, "kind" | "title" | "body" | "status">
-    >,
+    patch: Partial<Pick<schema.AgentMemory, "kind" | "title" | "body" | "status">>,
   ): Promise<{ id: string } | null>;
   listMemories(orgId: string, projectId: string): Promise<schema.AgentMemory[]>;
 };

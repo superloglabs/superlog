@@ -165,11 +165,7 @@ function MemoryRow({ memory }: { memory: AgentMemory }) {
   if (editing) {
     return (
       <li className="space-y-2 py-3 first:pt-0 last:pb-0">
-        <Input
-          value={title}
-          maxLength={TITLE_MAX_LEN}
-          onChange={(e) => setTitle(e.target.value)}
-        />
+        <Input value={title} maxLength={TITLE_MAX_LEN} onChange={(e) => setTitle(e.target.value)} />
         <textarea
           value={body}
           rows={3}
@@ -233,9 +229,7 @@ function MemoryRow({ memory }: { memory: AgentMemory }) {
           size="sm"
           variant="ghost"
           disabled={busy}
-          onClick={() =>
-            update.mutate({ id: memory.id, status: archived ? "active" : "archived" })
-          }
+          onClick={() => update.mutate({ id: memory.id, status: archived ? "active" : "archived" })}
         >
           {archived ? "Restore" : "Archive"}
         </Btn>

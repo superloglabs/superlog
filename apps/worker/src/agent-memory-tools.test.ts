@@ -4,12 +4,12 @@ import { test } from "node:test";
 import type { schema } from "@superlog/db";
 import {
   type AgentMemoryToolDeps,
-  agentMemoryToolParams,
-  executeAgentMemoryTool,
-  isAgentMemoryToolName,
   LIST_MEMORIES_TOOL_NAME,
   SAVE_MEMORY_TOOL_NAME,
   UPDATE_MEMORY_TOOL_NAME,
+  agentMemoryToolParams,
+  executeAgentMemoryTool,
+  isAgentMemoryToolName,
 } from "./agent-memory-tools.js";
 
 const ctx = { orgId: "org-1", projectId: "project-1", agentRunId: "run-1" };
@@ -40,7 +40,11 @@ function makeDeps(overrides: Partial<AgentMemoryToolDeps> = {}): AgentMemoryTool
 
 test("agent memory tool params declare save, update, and list tools", () => {
   const names = agentMemoryToolParams.map((tool) => tool.name);
-  assert.deepEqual(names, [SAVE_MEMORY_TOOL_NAME, UPDATE_MEMORY_TOOL_NAME, LIST_MEMORIES_TOOL_NAME]);
+  assert.deepEqual(names, [
+    SAVE_MEMORY_TOOL_NAME,
+    UPDATE_MEMORY_TOOL_NAME,
+    LIST_MEMORIES_TOOL_NAME,
+  ]);
   for (const tool of agentMemoryToolParams) {
     assert.equal(tool.type, "custom");
     assert.equal(tool.input_schema.type, "object");
@@ -128,9 +132,7 @@ test("update_memory patches fields and can archive", async () => {
 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, { ok: true, id: "mem-1" });
-  assert.deepEqual(deps.updates, [
-    { id: "mem-1", orgId: "org-1", patch: { status: "archived" } },
-  ]);
+  assert.deepEqual(deps.updates, [{ id: "mem-1", orgId: "org-1", patch: { status: "archived" } }]);
 });
 
 test("update_memory requires at least one updatable field", async () => {
