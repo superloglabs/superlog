@@ -2,8 +2,8 @@ import { useEffect, useState, type ReactNode } from "react";
 
 // ---------------------------------------------------------------------------
 // Shared primitives used across the app and the /design storybook.
-// Dark canvas · cobalt accent · soft corners (10px controls, 10-12px cards) ·
-// bento grids.
+// Dark canvas · cobalt accent · soft corners (6px buttons, 10px inputs,
+// 10-12px cards) · bento grids.
 // ---------------------------------------------------------------------------
 
 export function ShortcutKey({
@@ -104,7 +104,7 @@ export function Btn({
   onClick,
 }: BtnProps) {
   const base =
-    "inline-flex items-center gap-2 rounded-lg font-medium tracking-tight transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40 select-none";
+    "inline-flex items-center gap-2 rounded-md font-medium tracking-tight transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40 select-none";
   const sizes = {
     sm: "h-7 px-2.5 text-[12px]",
     md: "h-8 px-3 text-[13px]",

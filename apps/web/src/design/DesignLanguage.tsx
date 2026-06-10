@@ -39,8 +39,8 @@ import {
 // Design Language — /design
 //
 // Storybook for the primitives in ./ui.tsx. Black canvas · cobalt accent ·
-// soft corners (10px controls, 10-12px cards) · bento grids. No deboss; flat
-// hero; split nav.
+// soft corners (6px buttons, 10px inputs, 10-12px cards) · bento grids. No
+// deboss; flat hero; split nav.
 // ---------------------------------------------------------------------------
 
 export function DesignLanguage() {
