@@ -100,16 +100,31 @@ const WEB_CORS_ORIGINS = Array.from(
   new Set([WEB_ORIGIN, "http://localhost:5173", "http://127.0.0.1:5173"]),
 );
 
-const ch = createClient({
+const CH_BASE_CONFIG = {
   url: process.env.CLICKHOUSE_URL ?? "http://localhost:8123",
   database: process.env.CLICKHOUSE_DB ?? "superlog",
   username: process.env.CLICKHOUSE_USER ?? "default",
   password: process.env.CLICKHOUSE_PASSWORD ?? "",
   // idle_socket_ttl must stay below CH server's keep_alive_timeout (3s default)
-  // so we recycle before the server closes; request_timeout short-circuits
-  // stale sockets that slipped through instead of hanging 30s.
-  request_timeout: 10_000,
+  // so we recycle before the server closes.
   keep_alive: { enabled: true, idle_socket_ttl: 2_500 },
+};
+
+// Standard client for fast queries (explore filters, incident stats, etc.).
+const ch = createClient({
+  ...CH_BASE_CONFIG,
+  // Short-circuits stale sockets that slipped through idle_socket_ttl
+  // instead of hanging up to 30s.
+  request_timeout: 10_000,
+});
+
+// Heavy-query client for endpoints that can legitimately take longer — e.g.
+// fetching all spans + logs for a large trace on a cold ClickHouse cache.
+// idle_socket_ttl is the same as ch so stale sockets are recycled promptly;
+// only the HTTP response deadline is raised.
+const chHeavy = createClient({
+  ...CH_BASE_CONFIG,
+  request_timeout: 30_000,
 });
 
 const tracer = trace.getTracer("@superlog/api");
@@ -255,7 +270,7 @@ mountFeedbackPublic(app);
 // Management API (org-key auth, /api/v1/*) registers its own middleware
 // before the session middleware below — the session middleware skips
 // /api/v1/* and /api/auth/*.
-mountManagementApi(app, { ch });
+mountManagementApi(app, { ch, chHeavy });
 
 app.use("/api/*", async (c, next) => {
   if (c.req.path.startsWith("/api/v1/")) return next();
@@ -885,7 +900,9 @@ app.get("/api/projects/:projectId/explore/traces/:traceId", async (c) => {
   if (!/^[a-fA-F0-9]{1,64}$/.test(traceId)) {
     throw new HTTPException(400, { message: "invalid trace id" });
   }
-  const detail = await getTraceDetail(ch, projectId, traceId);
+  // Use chHeavy: large traces (many spans + logs) can exceed the standard
+  // 10s request timeout on the first (cold) ClickHouse execution.
+  const detail = await getTraceDetail(chHeavy, projectId, traceId);
   return c.json(detail);
 });
 
@@ -2494,8 +2511,8 @@ app.get("/api/projects/:projectId/incidents/:incidentId/stats", async (c) => {
 
   const stats = await buildIncidentStatsWithFallback({
     fallback: fallbackStats,
-    // Stay below the ClickHouse client's 10s request timeout so this endpoint
-    // returns issue-derived activity instead of surfacing a 500 to the drawer.
+    // Stay below the ClickHouse client's standard 10s request timeout so this
+    // endpoint returns issue-derived activity instead of surfacing a 500 to the drawer.
     timeoutMs: 8_500,
     onTelemetryUnavailable: (reason, err) => {
       logger.warn(

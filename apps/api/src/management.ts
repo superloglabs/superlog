@@ -120,8 +120,11 @@ const SERVICE_UNAVAILABLE = {
 };
 
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
-export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient }): void {
-  const { ch } = opts;
+export function mountManagementApi(
+  app: Hono<any>,
+  opts: { ch: ClickHouseClient; chHeavy?: ClickHouseClient },
+): void {
+  const { ch, chHeavy = ch } = opts;
   // Public docs paths (openapi.json + Scalar reference) are mounted first so
   // they don't go through the bearer-token middleware below.
   app.get(
@@ -879,7 +882,7 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
       const orgId = (c.var as MgmtVars).managementOrgId;
       const { projectId, traceId } = c.req.valid("param");
       await requireProjectInOrg(orgId, projectId);
-      const detail = await getTraceDetail(ch, projectId, traceId);
+      const detail = await getTraceDetail(chHeavy, projectId, traceId);
       const spans = (detail.spans as unknown[]) ?? [];
       if (spans.length === 0) throw new HTTPException(404, { message: "trace not found" });
       return c.json(detail);
