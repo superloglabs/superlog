@@ -3,6 +3,7 @@ import {
   confirmResolutionProposal,
   db,
   dismissResolutionProposal,
+  requestFollowUpAgentRun,
   resolveIncident,
   schema,
   syncLoopsContactsForOrg,
@@ -829,28 +830,50 @@ async function handleSlackEventEnvelope(payload: SlackEventEnvelope): Promise<vo
     where: eq(schema.agentRuns.incidentId, incident.id),
     orderBy: [desc(schema.agentRuns.createdAt)],
   });
-  if (!agentRun || agentRun.state !== "awaiting_human") return;
+  if (!agentRun) return;
 
-  await db
-    .insert(schema.incidentEvents)
-    .values({
-      agentRunId: agentRun.id,
-      kind: "human_reply",
-      summary: event.text.trim(),
-      detail: {
-        slackEventId: payload.event_id ?? null,
-        slackUserId: event.user ?? null,
-        slackChannelId: event.channel,
-        slackThreadTs: event.thread_ts,
-        slackMessageTs: event.ts,
-      },
-      dedupeKey: payload.event_id
-        ? `slack:${payload.event_id}`
-        : `slack:${event.channel}:${event.ts}`,
-    })
-    .onConflictDoNothing({
-      target: [schema.incidentEvents.agentRunId, schema.incidentEvents.dedupeKey],
-    });
+  if (agentRun.state === "awaiting_human") {
+    await db
+      .insert(schema.incidentEvents)
+      .values({
+        agentRunId: agentRun.id,
+        kind: "human_reply",
+        summary: event.text.trim(),
+        detail: {
+          slackEventId: payload.event_id ?? null,
+          slackUserId: event.user ?? null,
+          slackChannelId: event.channel,
+          slackThreadTs: event.thread_ts,
+          slackMessageTs: event.ts,
+        },
+        dedupeKey: payload.event_id
+          ? `slack:${payload.event_id}`
+          : `slack:${event.channel}:${event.ts}`,
+      })
+      .onConflictDoNothing({
+        target: [schema.incidentEvents.agentRunId, schema.incidentEvents.dedupeKey],
+      });
+    return;
+  }
+
+  // A reply after the latest run finished revives the agent as a follow-up
+  // run (eligibility — caps, staleness, project gate — is decided inside).
+  const result = await requestFollowUpAgentRun(db, {
+    incidentId: incident.id,
+    trigger: "slack_reply",
+    interaction: {
+      channel: "slack_reply",
+      author: event.user ?? null,
+      text: event.text.trim(),
+      occurredAt: new Date().toISOString(),
+    },
+  });
+  if (result.outcome === "skipped") {
+    logger.info(
+      { scope: "slack", incident_id: incident.id, reason: result.reason },
+      "slack reply did not trigger a follow-up run",
+    );
+  }
 }
 
 async function resolveUserOrg(
