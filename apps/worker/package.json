@@ -34,6 +34,7 @@
     "test:incident-intake": "tsx --test src/incidents/intake.test.ts",
     "test:incident-state": "tsx --test src/incident-state.test.ts",
     "test:managed-agent-result": "tsx --test src/managed-agent-result.test.ts",
+    "test:integrations": "tsx --test src/integrations.test.ts",
     "test:github-app": "tsx --test src/github-app.test.ts",
     "test:autorecovery-repository": "tsx --test src/autorecovery/repository.integration.test.ts",
     "typecheck": "tsc --noEmit"
