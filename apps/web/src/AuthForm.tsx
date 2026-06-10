@@ -341,7 +341,7 @@ function PrimaryButton({
     <button
       type={type}
       disabled={loading}
-      className="flex h-11 w-full items-center justify-center gap-2 rounded-[8px] bg-accent text-[14px] font-semibold text-accent-ink transition-[filter] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+      className="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-accent text-[14px] font-semibold text-accent-ink shadow-[0_1px_0_0_rgba(255,255,255,0.12)_inset,0_6px_14px_-6px_rgba(72,90,226,0.55)] transition-[filter] hover:brightness-110 active:brightness-95 disabled:cursor-not-allowed disabled:opacity-60"
     >
       <span>{loading ? "…" : children}</span>
       {!loading && (
