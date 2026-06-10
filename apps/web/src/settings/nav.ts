@@ -4,6 +4,11 @@
 
 export type SettingsScope = "org" | "project";
 
+export type SettingsProject = {
+  id: string;
+  name: string;
+};
+
 export type OrgSectionId =
   | "general"
   | "members"
@@ -29,6 +34,8 @@ export type NavGroup<Id extends string> = {
   label?: string;
   items: ReadonlyArray<{ id: Id; label: string }>;
 };
+
+export const NEW_PROJECT_OPTION_VALUE = "__new_project__";
 
 export const ORG_NAV_GROUPS: ReadonlyArray<NavGroup<OrgSectionId>> = [
   {
@@ -68,9 +75,7 @@ export const PROJECT_NAV_GROUPS: ReadonlyArray<NavGroup<ProjectSectionId>> = [
   },
 ];
 
-const ORG_SECTION_IDS = new Set<string>(
-  ORG_NAV_GROUPS.flatMap((g) => g.items.map((i) => i.id)),
-);
+const ORG_SECTION_IDS = new Set<string>(ORG_NAV_GROUPS.flatMap((g) => g.items.map((i) => i.id)));
 const PROJECT_SECTION_IDS = new Set<string>(
   PROJECT_NAV_GROUPS.flatMap((g) => g.items.map((i) => i.id)),
 );
@@ -90,4 +95,26 @@ export function resolveOrgSection(param: string | undefined): OrgSectionId {
 export function resolveProjectSection(param: string | undefined): ProjectSectionId {
   if (!param) return "general";
   return PROJECT_SECTION_IDS.has(param) ? (param as ProjectSectionId) : "general";
+}
+
+export function shouldShowProjectPicker(scope: SettingsScope): boolean {
+  return scope === "project";
+}
+
+export function projectPickerOptions(projects: ReadonlyArray<SettingsProject>) {
+  return [
+    ...projects.map((p) => ({ value: p.id, label: p.name, searchText: p.name })),
+    { value: NEW_PROJECT_OPTION_VALUE, label: "+ New project", searchText: "new project" },
+  ];
+}
+
+export function nextProjectIdAfterDelete(
+  projects: ReadonlyArray<SettingsProject>,
+  deletedProjectId: string,
+): string | undefined {
+  const deletedIndex = projects.findIndex((p) => p.id === deletedProjectId);
+  const remaining = projects.filter((p) => p.id !== deletedProjectId);
+  if (remaining.length === 0) return undefined;
+  if (deletedIndex < 0) return remaining[0]?.id;
+  return remaining[Math.min(deletedIndex, remaining.length - 1)]?.id;
 }

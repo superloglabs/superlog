@@ -90,14 +90,18 @@ import {
   type ProjectSectionId,
   type SectionId,
   type SettingsScope,
+  NEW_PROJECT_OPTION_VALUE,
+  nextProjectIdAfterDelete,
+  projectPickerOptions,
   resolveOrgSection,
   resolveProjectSection,
+  shouldShowProjectPicker,
 } from "./settings/nav.ts";
 import { SettingsCard, SettingsCardFooter, SettingsRow } from "./settings/rows.tsx";
 
 type NavTarget = {
   scope?: SettingsScope;
-  projectId?: string;
+  projectId?: string | null;
   section?: SectionId;
 };
 
@@ -145,7 +149,10 @@ export function Settings() {
       if (next.scope === "project") updated.delete("scope");
       else updated.set("scope", next.scope);
     }
-    if (next.projectId) updated.set("projectId", next.projectId);
+    if (next.projectId !== undefined) {
+      if (next.projectId) updated.set("projectId", next.projectId);
+      else updated.delete("projectId");
+    }
     if (next.section) updated.set("section", next.section);
     setParams(updated, { replace: true });
   };
@@ -191,6 +198,9 @@ export function Settings() {
             <ProjectSectionView
               section={activeSection as ProjectSectionId}
               projectId={activeProjectId}
+              onProjectDeleted={(nextProjectId) => {
+                navigate({ scope: "project", projectId: nextProjectId ?? null, section: "general" });
+              }}
             />
           )}
         </div>
@@ -212,11 +222,7 @@ function SettingsTabs({
   onNavigate: (target: NavTarget) => void;
   onCreateProject: () => void;
 }) {
-  const NEW_PROJECT = "__new_project__";
-  const pickerOptions: DropdownOption[] = [
-    ...projects.map((p) => ({ value: p.id, label: p.name, searchText: p.name })),
-    { value: NEW_PROJECT, label: "+ New project", searchText: "new project" },
-  ];
+  const pickerOptions: DropdownOption[] = projectPickerOptions(projects);
   return (
     <div className="flex items-end gap-7 border-b border-border">
       <TabButton
@@ -230,12 +236,12 @@ function SettingsTabs({
         onClick={() => onNavigate({ scope: "project", section: "general" })}
       />
       <div className="flex-1" />
-      {scope === "project" && projects.length > 0 && (
+      {shouldShowProjectPicker(scope) && (
         <div className="pb-2">
           <Dropdown
             value={activeProjectId ?? ""}
             onChange={(v) => {
-              if (v === NEW_PROJECT) {
+              if (v === NEW_PROJECT_OPTION_VALUE) {
                 onCreateProject();
                 return;
               }
@@ -541,9 +547,11 @@ function OrgSectionView({ section }: { section: OrgSectionId }) {
 function ProjectSectionView({
   section,
   projectId,
+  onProjectDeleted,
 }: {
   section: ProjectSectionId;
   projectId: string | undefined;
+  onProjectDeleted: (nextProjectId: string | undefined) => void;
 }) {
   switch (section) {
     case "general":
@@ -552,7 +560,7 @@ function ProjectSectionView({
           title="General"
           subtitle="Project name, slug, and context available to investigations."
         >
-          <ProjectGeneralCard projectId={projectId} />
+          <ProjectGeneralCard projectId={projectId} onDeleted={onProjectDeleted} />
         </Section>
       );
     case "integrations":
@@ -625,7 +633,13 @@ function ProjectSectionView({
 
 const PROJECT_CONTEXT_MAX_LEN = 8000;
 
-function ProjectGeneralCard({ projectId }: { projectId: string | undefined }) {
+function ProjectGeneralCard({
+  projectId,
+  onDeleted,
+}: {
+  projectId: string | undefined;
+  onDeleted: (nextProjectId: string | undefined) => void;
+}) {
   const projectsQ = useOrgProjects();
   const update = useUpdateOrgProject();
   const del = useDeleteOrgProject();
@@ -757,7 +771,11 @@ function ProjectGeneralCard({ projectId }: { projectId: string | undefined }) {
                   `Delete project "${project.name}"? Telemetry, API keys, and integrations for this project will be deleted. This cannot be undone.`,
                 );
                 if (!ok) return;
+                const nextProjectId = nextProjectIdAfterDelete(projects, project.id);
                 del.mutate(project.id, {
+                  onSuccess: () => {
+                    onDeleted(nextProjectId);
+                  },
                   onError: (err) => {
                     window.alert(
                       `Delete failed: ${err instanceof Error ? err.message : String(err)}`,
