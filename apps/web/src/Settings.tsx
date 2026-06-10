@@ -218,7 +218,7 @@ function SettingsTabs({
     { value: NEW_PROJECT, label: "+ New project", searchText: "new project" },
   ];
   return (
-    <div className="flex items-center gap-7 border-b border-border">
+    <div className="flex items-end gap-7 border-b border-border">
       <TabButton
         label="Organization"
         active={scope === "org"}
