@@ -80,6 +80,16 @@ test("skips once the per-incident follow-up cap is reached", () => {
   assert.deepEqual(verdict, { action: "skip", reason: "follow_up_cap_reached" });
 });
 
+test("append wins over the cap so review-burst interactions are not dropped", () => {
+  const verdict = evaluateFollowUpEligibility(
+    input({
+      followUpCount: MAX_FOLLOW_UP_RUNS,
+      activeRun: { id: "run-2", state: "queued", trigger: "pr_comment" },
+    }),
+  );
+  assert.deepEqual(verdict, { action: "append", runId: "run-2" });
+});
+
 test("appends to a still-queued follow-up run instead of enqueuing a second", () => {
   const verdict = evaluateFollowUpEligibility(
     input({ activeRun: { id: "run-2", state: "queued", trigger: "pr_comment" } }),

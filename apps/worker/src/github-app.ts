@@ -544,7 +544,10 @@ export async function applyPatchAndOpenPr(opts: {
     await ensureGitOk(["config", "user.name", gitIdentity.name], { cwd: repoDir });
     await ensureGitOk(["config", "user.email", gitIdentity.email], { cwd: repoDir });
 
-    const patchPath = path.join(repoDir, "superlog.patch");
+    // Written OUTSIDE the repo checkout: an untracked patch file inside
+    // repoDir would make `git status --porcelain` non-empty even when the
+    // patch changed nothing, defeating the no-op detection below.
+    const patchPath = path.join(workdir, "superlog.patch");
     const patchBody = normalizeAgentPatch(opts.patch);
     await writeFile(patchPath, patchBody, "utf8");
     const applyArgs = ["apply", "--index", "--whitespace=nowarn", patchPath];
@@ -675,7 +678,10 @@ export async function pushPatchToExistingAgentPr(opts: {
     await ensureGitOk(["config", "user.name", gitIdentity.name], { cwd: repoDir });
     await ensureGitOk(["config", "user.email", gitIdentity.email], { cwd: repoDir });
 
-    const patchPath = path.join(repoDir, "superlog.patch");
+    // Written OUTSIDE the repo checkout: an untracked patch file inside
+    // repoDir would make `git status --porcelain` non-empty even when the
+    // patch changed nothing, defeating the no-op detection below.
+    const patchPath = path.join(workdir, "superlog.patch");
     const patchBody = normalizeAgentPatch(opts.patch);
     await writeFile(patchPath, patchBody, "utf8");
     const applyArgs = ["apply", "--index", "--whitespace=nowarn", patchPath];

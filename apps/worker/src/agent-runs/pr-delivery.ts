@@ -246,6 +246,17 @@ export async function completeWithPullRequest(
           "failed to enqueue agent run.completed webhook",
         ),
       );
+      await recordFiledLinearTicket(ctx, result.linearTicket).catch((err) =>
+        logger.error(
+          {
+            scope: "agent_run.pr_delivery",
+            agent_run_id: ctx.agentRun.id,
+            incident_id: ctx.incident.id,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "failed to record filed Linear ticket",
+        ),
+      );
       await notifyFollowUpPrUpdated(ctx, existingPr.url).catch((err) =>
         logger.warn(
           {
@@ -255,6 +266,18 @@ export async function completeWithPullRequest(
           },
           "failed to post follow-up PR update to Slack",
         ),
+      );
+      logger.info(
+        {
+          scope: "agent_run",
+          agent_run_id: ctx.agentRun.id,
+          incident_id: ctx.incident.id,
+          session_id: sessionId,
+          runtime_minutes: runtimeMinutes,
+          selected_repo: pr.selectedRepoFullName,
+          pr_url: existingPr.url,
+        },
+        "agent run complete (existing pr updated)",
       );
       return;
     }

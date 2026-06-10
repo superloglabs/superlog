@@ -12,6 +12,12 @@ import { logger } from "./logger.js";
 
 const log = logger.child({ scope: "follow-up-offer" });
 
+// Slack mrkdwn control characters. User-provided feedback must not be able
+// to inject mentions (<!channel>, <@U…>) or links into the incident thread.
+function escapeSlackText(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 // kind=incident → refId is the incident UUID; kind=pr → refId is an
 // agent_pull_requests UUID (when tracked). kind=issue and untracked PR refs
 // don't bind to an incident, so no offer.
@@ -68,7 +74,9 @@ export async function offerFollowUpForFeedback(feedback: schema.Feedback): Promi
     : null;
   if (!installation?.botAccessToken) return;
 
-  const preview = feedback.body.length > 280 ? `${feedback.body.slice(0, 277)}…` : feedback.body;
+  const preview = escapeSlackText(
+    feedback.body.length > 280 ? `${feedback.body.slice(0, 277)}…` : feedback.body,
+  );
   const text = `New feedback on this incident:\n>${preview}\nWant the agent to run a follow-up investigation that takes it into account?`;
   try {
     const res = await fetch("https://slack.com/api/chat.postMessage", {

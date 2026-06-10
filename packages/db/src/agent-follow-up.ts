@@ -60,17 +60,20 @@ export function evaluateFollowUpEligibility(input: FollowUpEligibilityInput): Fo
   if (!input.autoFollowUpEnabled && !input.confirmed) {
     return { action: "skip", reason: "auto_follow_up_disabled" };
   }
-  if (input.followUpCount >= MAX_FOLLOW_UP_RUNS) {
-    return { action: "skip", reason: "follow_up_cap_reached" };
-  }
   if (input.activeRun) {
     // A queued follow-up absorbs further interactions (a PR review burst is
-    // one run, not one per comment). Anything past queued is already talking
-    // to a session — don't stack a second run behind it.
+    // one run, not one per comment). Checked before the cap on purpose:
+    // appending doesn't create a run, so a burst that crosses the cap mid-
+    // review still lands in the queued run instead of being dropped.
+    // Anything past queued is already talking to a session — don't stack a
+    // second run behind it.
     if (input.activeRun.state === "queued" && input.activeRun.trigger !== "incident") {
       return { action: "append", runId: input.activeRun.id };
     }
     return { action: "skip", reason: "run_active" };
+  }
+  if (input.followUpCount >= MAX_FOLLOW_UP_RUNS) {
+    return { action: "skip", reason: "follow_up_cap_reached" };
   }
   if (!input.priorRun || !TERMINAL_PRIOR_STATES.has(input.priorRun.state)) {
     return { action: "skip", reason: "no_prior_run" };
@@ -150,11 +153,18 @@ export async function requestFollowUpAgentRun(
     const detail: AgentRunTriggerDetail = {
       interactions: [...existing.interactions, args.interaction],
     };
-    await db
+    // The state predicate guards against the run leaving `queued` between
+    // our read and this write; .returning() tells us whether we actually
+    // landed the interaction. On a miss the run is already executing — same
+    // outcome as the run_active skip, and the caller should not believe the
+    // interaction was persisted.
+    const [appended] = await db
       .update(schema.agentRuns)
       .set({ triggerDetail: detail, updatedAt: now })
-      .where(and(eq(schema.agentRuns.id, verdict.runId), eq(schema.agentRuns.state, "queued")));
-    return { outcome: "appended", agentRunId: verdict.runId };
+      .where(and(eq(schema.agentRuns.id, verdict.runId), eq(schema.agentRuns.state, "queued")))
+      .returning({ id: schema.agentRuns.id });
+    if (!appended) return { outcome: "skipped", reason: "run_active" };
+    return { outcome: "appended", agentRunId: appended.id };
   }
 
   const runtime = priorRun?.runtime ?? automation?.agentRunProvider;
