@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type DB } from "./client.js";
+import type { DB } from "./client.js";
 import {
-  closeIncidentOpenPullRequestsAfterResolution,
   type IncidentOpenPullRequestToClose,
+  closeIncidentOpenPullRequestsAfterResolution,
 } from "./incident-pr-resolution.js";
 import * as schema from "./schema.js";
 
@@ -11,8 +11,19 @@ type RecordedCall =
   | { op: "update"; table: unknown; values: Record<string, unknown> }
   | { op: "insert"; table: unknown; values: Record<string, unknown> };
 
-function recordingDb(rows: IncidentOpenPullRequestToClose[]): { db: DB; calls: RecordedCall[] } {
+type OpenPullRequestTestRow = IncidentOpenPullRequestToClose & { projectId?: string | null };
+
+function recordingDb(opts: {
+  openPullRequests: OpenPullRequestTestRow[];
+  projectInstallationIds?: Array<{ projectId: string; githubInstallationId: number }>;
+  projectRepoInstallationIds?: Array<{ projectId: string; githubInstallationId: number }>;
+}): { db: DB; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
+  const selectRows = [
+    opts.openPullRequests,
+    opts.projectInstallationIds ?? [],
+    opts.projectRepoInstallationIds ?? [],
+  ];
   const db = {
     select() {
       return {
@@ -21,9 +32,19 @@ function recordingDb(rows: IncidentOpenPullRequestToClose[]): { db: DB; calls: R
             innerJoin() {
               return {
                 async where() {
-                  return rows;
+                  return selectRows.shift() ?? [];
+                },
+                innerJoin() {
+                  return {
+                    async where() {
+                      return selectRows.shift() ?? [];
+                    },
+                  };
                 },
               };
+            },
+            async where() {
+              return selectRows.shift() ?? [];
             },
           };
         },
@@ -57,22 +78,26 @@ function recordingDb(rows: IncidentOpenPullRequestToClose[]): { db: DB; calls: R
 
 test("closeIncidentOpenPullRequestsAfterResolution closes open PRs and records events", async () => {
   const closedAt = new Date("2026-06-07T01:02:03.000Z");
-  const { db, calls } = recordingDb([
-    {
-      id: "pr-1",
-      githubInstallationId: 101,
-      repoFullName: "acme/api",
-      prNumber: 12,
-      prNodeId: "PR_node_1",
-    },
-    {
-      id: "pr-2",
-      githubInstallationId: 202,
-      repoFullName: "acme/web",
-      prNumber: 34,
-      prNodeId: null,
-    },
-  ]);
+  const { db, calls } = recordingDb({
+    openPullRequests: [
+      {
+        id: "pr-1",
+        githubInstallationId: 101,
+        fallbackGithubInstallationIds: [],
+        repoFullName: "acme/api",
+        prNumber: 12,
+        prNodeId: "PR_node_1",
+      },
+      {
+        id: "pr-2",
+        githubInstallationId: 202,
+        fallbackGithubInstallationIds: [],
+        repoFullName: "acme/web",
+        prNumber: 34,
+        prNodeId: null,
+      },
+    ],
+  });
   const closed: string[] = [];
 
   const result = await closeIncidentOpenPullRequestsAfterResolution({
@@ -99,15 +124,18 @@ test("closeIncidentOpenPullRequestsAfterResolution closes open PRs and records e
 });
 
 test("closeIncidentOpenPullRequestsAfterResolution leaves failed PRs open", async () => {
-  const { db, calls } = recordingDb([
-    {
-      id: "pr-1",
-      githubInstallationId: 101,
-      repoFullName: "acme/api",
-      prNumber: 12,
-      prNodeId: "PR_node_1",
-    },
-  ]);
+  const { db, calls } = recordingDb({
+    openPullRequests: [
+      {
+        id: "pr-1",
+        githubInstallationId: 101,
+        fallbackGithubInstallationIds: [],
+        repoFullName: "acme/api",
+        prNumber: 12,
+        prNodeId: "PR_node_1",
+      },
+    ],
+  });
   const failures: string[] = [];
 
   const result = await closeIncidentOpenPullRequestsAfterResolution({
@@ -120,4 +148,37 @@ test("closeIncidentOpenPullRequestsAfterResolution leaves failed PRs open", asyn
   assert.deepEqual(result, { closedPullRequestCount: 0, failedPullRequestCount: 1 });
   assert.deepEqual(failures, ["pr-1:rate_limited"]);
   assert.equal(calls.length, 0);
+});
+
+test("closeIncidentOpenPullRequestsAfterResolution offers current project installations as fallback", async () => {
+  const { db } = recordingDb({
+    openPullRequests: [
+      {
+        id: "pr-1",
+        projectId: "project-1",
+        githubInstallationId: 101,
+        fallbackGithubInstallationIds: [],
+        repoFullName: "old-owner/api",
+        prNumber: 12,
+        prNodeId: "PR_node_1",
+      },
+    ],
+    projectInstallationIds: [
+      { projectId: "project-1", githubInstallationId: 303 },
+      { projectId: "project-1", githubInstallationId: 101 },
+    ],
+    projectRepoInstallationIds: [{ projectId: "project-1", githubInstallationId: 404 }],
+  });
+  const attempted: number[][] = [];
+
+  await closeIncidentOpenPullRequestsAfterResolution({
+    incidentId: "inc-1",
+    database: db,
+    closePullRequest: async (pr) => {
+      attempted.push([pr.githubInstallationId, ...pr.fallbackGithubInstallationIds]);
+      return { ok: true };
+    },
+  });
+
+  assert.deepEqual(attempted, [[101, 303, 404]]);
 });

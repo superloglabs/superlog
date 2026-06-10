@@ -694,22 +694,34 @@ export async function getObsPrMerged(
 
 export async function closeAgentPullRequestOnGithub(opts: {
   installationId: number;
+  fallbackInstallationIds?: number[];
   repoFullName: string;
   prNumber: number;
   prNodeId?: string | null;
 }): Promise<{ ok: true } | { ok: false; error: string }> {
-  try {
-    const token = await createGithubWriteToken(opts.installationId);
-    return closeGithubPullRequestWithToken({
-      token,
-      repoFullName: opts.repoFullName,
-      prNumber: opts.prNumber,
-      prNodeId: opts.prNodeId,
-      userAgent: "superlog-worker",
-    });
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  const errors: string[] = [];
+  for (const installationId of dedupeInstallationIds([
+    opts.installationId,
+    ...(opts.fallbackInstallationIds ?? []),
+  ])) {
+    try {
+      const token = await createGithubWriteToken(installationId);
+      const result = await closeGithubPullRequestWithToken({
+        token,
+        repoFullName: opts.repoFullName,
+        prNumber: opts.prNumber,
+        prNodeId: opts.prNodeId,
+        userAgent: "superlog-worker",
+      });
+      if (result.ok) return result;
+      errors.push(`installation ${installationId}: ${result.error}`);
+    } catch (err) {
+      errors.push(
+        `installation ${installationId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
+  return { ok: false, error: errors.join("; ") || "no github installations available" };
 }
 
 async function closeGithubPullRequestWithToken(opts: {
@@ -772,6 +784,10 @@ function parseGithubGraphqlResponse(text: string): { errors?: unknown[] } {
   } catch {
     return { errors: [{ message: "invalid json response" }] };
   }
+}
+
+function dedupeInstallationIds(values: number[]): number[] {
+  return [...new Set(values)];
 }
 
 export type AutoMergeMethod = "squash" | "merge" | "rebase";

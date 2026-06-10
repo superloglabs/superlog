@@ -1350,6 +1350,7 @@ app.patch("/api/projects/:projectId/incidents/:incidentId", async (c) => {
         closePullRequest: (pr) =>
           closeAgentPullRequestOnGithub({
             installationId: pr.githubInstallationId,
+            fallbackInstallationIds: pr.fallbackGithubInstallationIds,
             repoFullName: pr.repoFullName,
             prNumber: pr.prNumber,
             prNodeId: pr.prNodeId,
@@ -1432,6 +1433,7 @@ async function decideResolutionProposal(
       closePullRequest: (pr) =>
         closeAgentPullRequestOnGithub({
           installationId: pr.githubInstallationId,
+          fallbackInstallationIds: pr.fallbackGithubInstallationIds,
           repoFullName: pr.repoFullName,
           prNumber: pr.prNumber,
           prNodeId: pr.prNodeId,

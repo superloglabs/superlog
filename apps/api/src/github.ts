@@ -706,6 +706,7 @@ async function resolveIncidentForMergedAgentPr(opts: {
       closePullRequest: (pr) =>
         closeAgentPullRequestOnGithub({
           installationId: pr.githubInstallationId,
+          fallbackInstallationIds: pr.fallbackGithubInstallationIds,
           repoFullName: pr.repoFullName,
           prNumber: pr.prNumber,
           prNodeId: pr.prNodeId,
@@ -1087,22 +1088,51 @@ export async function mergeGithubPullRequest(opts: {
 
 export async function closeAgentPullRequestOnGithub(opts: {
   installationId: number;
+  fallbackInstallationIds?: number[];
   repoFullName: string;
   prNumber: number;
   prNodeId?: string | null;
 }): Promise<{ ok: true } | { ok: false; error: string }> {
-  try {
-    const token = await createInstallationWriteToken(opts.installationId);
-    return closeGithubPullRequestWithToken({
-      token,
-      repoFullName: opts.repoFullName,
-      prNumber: opts.prNumber,
-      prNodeId: opts.prNodeId,
-      userAgent: "superlog-api",
-    });
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  return closeGithubPullRequestWithInstallations({
+    installationIds: [opts.installationId, ...(opts.fallbackInstallationIds ?? [])],
+    repoFullName: opts.repoFullName,
+    prNumber: opts.prNumber,
+    prNodeId: opts.prNodeId,
+    userAgent: "superlog-api",
+    createWriteToken: createInstallationWriteToken,
+  });
+}
+
+export async function closeGithubPullRequestWithInstallations(opts: {
+  installationIds: number[];
+  repoFullName: string;
+  prNumber: number;
+  prNodeId?: string | null;
+  userAgent: string;
+  fetchImpl?: typeof fetch;
+  createWriteToken: (installationId: number) => Promise<string>;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const errors: string[] = [];
+  for (const installationId of dedupeInstallationIds(opts.installationIds)) {
+    try {
+      const token = await opts.createWriteToken(installationId);
+      const result = await closeGithubPullRequestWithToken({
+        token,
+        repoFullName: opts.repoFullName,
+        prNumber: opts.prNumber,
+        prNodeId: opts.prNodeId,
+        userAgent: opts.userAgent,
+        fetchImpl: opts.fetchImpl,
+      });
+      if (result.ok) return result;
+      errors.push(`installation ${installationId}: ${result.error}`);
+    } catch (err) {
+      errors.push(
+        `installation ${installationId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
+  return { ok: false, error: errors.join("; ") || "no github installations available" };
 }
 
 export async function closeGithubPullRequestWithToken(opts: {
@@ -1168,6 +1198,10 @@ function parseGithubGraphqlResponse(text: string): { errors?: unknown[] } {
   } catch {
     return { errors: [{ message: "invalid json response" }] };
   }
+}
+
+function dedupeInstallationIds(values: number[]): number[] {
+  return [...new Set(values)];
 }
 
 // Safety ceiling on paginated GitHub list calls: 100 pages × 100 per page =

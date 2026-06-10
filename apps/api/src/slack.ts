@@ -396,6 +396,7 @@ async function runSlackResolvedIncidentSideEffects(incidentId: string): Promise<
     closePullRequest: (pr) =>
       closeAgentPullRequestOnGithub({
         installationId: pr.githubInstallationId,
+        fallbackInstallationIds: pr.fallbackGithubInstallationIds,
         repoFullName: pr.repoFullName,
         prNumber: pr.prNumber,
         prNodeId: pr.prNodeId,
@@ -437,6 +438,7 @@ async function handleProposalDecision(
       closePullRequest: (pr) =>
         closeAgentPullRequestOnGithub({
           installationId: pr.githubInstallationId,
+          fallbackInstallationIds: pr.fallbackGithubInstallationIds,
           repoFullName: pr.repoFullName,
           prNumber: pr.prNumber,
           prNodeId: pr.prNodeId,

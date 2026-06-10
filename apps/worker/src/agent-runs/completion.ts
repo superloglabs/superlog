@@ -36,6 +36,7 @@ async function closeOpenPullRequestsForResolvedIncident(incidentId: string): Pro
     closePullRequest: (pr) =>
       closeAgentPullRequestOnGithub({
         installationId: pr.githubInstallationId,
+        fallbackInstallationIds: pr.fallbackGithubInstallationIds,
         repoFullName: pr.repoFullName,
         prNumber: pr.prNumber,
         prNodeId: pr.prNodeId,
