@@ -16,6 +16,7 @@ const config: IngestQueueConfig = {
   visibilityTimeoutSeconds: 120,
   batchSize: 1,
   consumerConcurrency: 1,
+  sendLingerMs: 0,
 };
 
 const inlineBody = encodeIngestMessage(
@@ -61,9 +62,10 @@ class FakeConsumerSqs {
         signal?.addEventListener("abort", abort, { once: true });
       });
     }
-    if (name === "DeleteMessageCommand") {
-      this.deleted.push(cmd.input.ReceiptHandle);
-      return {};
+    if (name === "DeleteMessageBatchCommand") {
+      const entries = cmd.input.Entries as Array<{ Id: string; ReceiptHandle: string }>;
+      for (const entry of entries) this.deleted.push(entry.ReceiptHandle);
+      return { Successful: entries.map((entry) => ({ Id: entry.Id })), Failed: [] };
     }
     throw new Error(`unexpected SQS command: ${name}`);
   }

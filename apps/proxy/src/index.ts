@@ -459,7 +459,9 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
         resolve();
       }
     });
-    if (ingestQueue && ingestQueueConfig?.consumerEnabled) {
+    // stop() also flushes any sends still waiting on the batching linger, so a
+    // producer-only proxy (consumer disabled) must call it too.
+    if (ingestQueue) {
       await ingestQueue.stop();
     }
   } catch (err) {

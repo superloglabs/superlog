@@ -7,11 +7,12 @@ class FakeSqs {
   sent: string[] = [];
   // biome-ignore lint/suspicious/noExplicitAny: test double for the AWS client surface
   async send(cmd: any): Promise<unknown> {
-    if (cmd.constructor.name !== "SendMessageCommand") {
+    if (cmd.constructor.name !== "SendMessageBatchCommand") {
       throw new Error(`unexpected SQS command: ${cmd.constructor.name}`);
     }
-    this.sent.push(cmd.input.MessageBody);
-    return { MessageId: "m-1" };
+    const entries = cmd.input.Entries as Array<{ Id: string; MessageBody: string }>;
+    for (const entry of entries) this.sent.push(entry.MessageBody);
+    return { Successful: entries.map((entry) => ({ Id: entry.Id })), Failed: [] };
   }
 }
 
@@ -52,6 +53,7 @@ function buildQueue(overrides: Partial<IngestQueueConfig> = {}): {
     visibilityTimeoutSeconds: 120,
     batchSize: 10,
     consumerConcurrency: 4,
+    sendLingerMs: 0,
     ...overrides,
   };
   const sinks: RecordingSink[] = [];
