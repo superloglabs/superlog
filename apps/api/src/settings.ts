@@ -89,19 +89,25 @@ export function mountSettingsAuthed(app: Hono<any>): void {
     return c.json({ customInstructions });
   });
 
-  app.get("/api/org/agent-memories", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ memories: [] });
+  // Agent memories are strictly project-scoped: every route requires a
+  // project that belongs to the caller's org, and rows never leak across
+  // projects.
+  app.get("/api/org/projects/:projectId/agent-memories", async (c) => {
+    const scope = await resolveProjectScope(c);
+    if (!scope) return c.json({ error: "project not found" }, 404);
     const rows = await db.query.agentMemories.findMany({
-      where: eq(schema.agentMemories.orgId, ctx.orgId),
+      where: and(
+        eq(schema.agentMemories.orgId, scope.orgId),
+        eq(schema.agentMemories.projectId, scope.projectId),
+      ),
       orderBy: [asc(schema.agentMemories.createdAt)],
     });
     return c.json({ memories: rows.map(serializeAgentMemory) });
   });
 
-  app.post("/api/org/agent-memories", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ error: "no org for user" }, 404);
+  app.post("/api/org/projects/:projectId/agent-memories", async (c) => {
+    const scope = await resolveProjectScope(c);
+    if (!scope) return c.json({ error: "project not found" }, 404);
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const kind = parseMemoryKind(body.kind);
     if (!kind)
@@ -110,33 +116,24 @@ export function mountSettingsAuthed(app: Hono<any>): void {
     if (!title) return c.json({ error: "title is required" }, 400);
     const memoryBody = parseMemoryText(body.body, AGENT_MEMORY_BODY_MAX_LEN);
     if (!memoryBody) return c.json({ error: "body is required" }, 400);
-    let projectId: string | null = null;
-    if (typeof body.projectId === "string" && body.projectId.length > 0) {
-      const project = await db.query.projects.findFirst({
-        where: and(eq(schema.projects.id, body.projectId), eq(schema.projects.orgId, ctx.orgId)),
-        columns: { id: true },
-      });
-      if (!project) return c.json({ error: "unknown project" }, 400);
-      projectId = project.id;
-    }
     const [row] = await db
       .insert(schema.agentMemories)
       .values({
-        orgId: ctx.orgId,
-        projectId,
+        orgId: scope.orgId,
+        projectId: scope.projectId,
         kind,
         title,
         body: memoryBody,
-        sourceUserId: ctx.userId,
+        sourceUserId: scope.userId,
       })
       .returning();
     if (!row) return c.json({ error: "failed to create memory" }, 500);
     return c.json({ memory: serializeAgentMemory(row) });
   });
 
-  app.put("/api/org/agent-memories/:id", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ error: "no org for user" }, 404);
+  app.put("/api/org/projects/:projectId/agent-memories/:id", async (c) => {
+    const scope = await resolveProjectScope(c);
+    if (!scope) return c.json({ error: "project not found" }, 404);
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const patch: Partial<typeof schema.agentMemories.$inferInsert> = {};
     if (body.kind !== undefined) {
@@ -169,7 +166,8 @@ export function mountSettingsAuthed(app: Hono<any>): void {
       .where(
         and(
           eq(schema.agentMemories.id, c.req.param("id")),
-          eq(schema.agentMemories.orgId, ctx.orgId),
+          eq(schema.agentMemories.orgId, scope.orgId),
+          eq(schema.agentMemories.projectId, scope.projectId),
         ),
       )
       .returning();
@@ -177,15 +175,16 @@ export function mountSettingsAuthed(app: Hono<any>): void {
     return c.json({ memory: serializeAgentMemory(row) });
   });
 
-  app.delete("/api/org/agent-memories/:id", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ error: "no org for user" }, 404);
+  app.delete("/api/org/projects/:projectId/agent-memories/:id", async (c) => {
+    const scope = await resolveProjectScope(c);
+    if (!scope) return c.json({ error: "project not found" }, 404);
     const [row] = await db
       .delete(schema.agentMemories)
       .where(
         and(
           eq(schema.agentMemories.id, c.req.param("id")),
-          eq(schema.agentMemories.orgId, ctx.orgId),
+          eq(schema.agentMemories.orgId, scope.orgId),
+          eq(schema.agentMemories.projectId, scope.projectId),
         ),
       )
       .returning({ id: schema.agentMemories.id });
@@ -650,4 +649,21 @@ async function resolveUserOrg(
   }).catch(() => null);
   if (!ctx) return null;
   return { userId: ctx.user.id, orgId: ctx.org.id };
+}
+
+// resolveUserOrg plus a :projectId param check — the project must belong to
+// the caller's org or the route behaves as if it doesn't exist.
+async function resolveProjectScope(
+  c: Context<{ Variables: Vars }>,
+): Promise<{ userId: string; orgId: string; projectId: string } | null> {
+  const ctx = await resolveUserOrg(c);
+  if (!ctx) return null;
+  const projectId = c.req.param("projectId");
+  if (!projectId) return null;
+  const project = await db.query.projects.findFirst({
+    where: and(eq(schema.projects.id, projectId), eq(schema.projects.orgId, ctx.orgId)),
+    columns: { id: true },
+  });
+  if (!project) return null;
+  return { ...ctx, projectId: project.id };
 }

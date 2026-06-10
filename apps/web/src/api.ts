@@ -1087,7 +1087,7 @@ export type AgentMemoryKind = "feedback" | "terminology" | "infra" | "project";
 export type AgentMemory = {
   id: string;
   kind: AgentMemoryKind;
-  projectId: string | null;
+  projectId: string;
   title: string;
   body: string;
   status: "active" | "archived";
@@ -1096,28 +1096,30 @@ export type AgentMemory = {
   updatedAt: string;
 };
 
-export function useOrgAgentMemories() {
+export function useProjectAgentMemories(projectId: string | undefined) {
   const fetcher = useFetcher();
   return useQuery({
-    queryKey: ["org-agent-memories"],
-    queryFn: () => fetcher<{ memories: AgentMemory[] }>("/api/org/agent-memories"),
+    queryKey: ["project-agent-memories", projectId],
+    queryFn: () =>
+      fetcher<{ memories: AgentMemory[] }>(`/api/org/projects/${projectId}/agent-memories`),
+    enabled: !!projectId,
   });
 }
 
-export function useCreateOrgAgentMemory() {
+export function useCreateProjectAgentMemory(projectId: string | undefined) {
   const fetcher = useFetcher();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: { kind: AgentMemoryKind; title: string; body: string }) =>
-      fetcher<{ memory: AgentMemory }>("/api/org/agent-memories", {
+      fetcher<{ memory: AgentMemory }>(`/api/org/projects/${projectId}/agent-memories`, {
         method: "POST",
         body: JSON.stringify(input),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["org-agent-memories"] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-agent-memories", projectId] }),
   });
 }
 
-export function useUpdateOrgAgentMemory() {
+export function useUpdateProjectAgentMemory(projectId: string | undefined) {
   const fetcher = useFetcher();
   const qc = useQueryClient();
   return useMutation({
@@ -1131,21 +1133,23 @@ export function useUpdateOrgAgentMemory() {
       body?: string;
       status?: "active" | "archived";
     }) =>
-      fetcher<{ memory: AgentMemory }>(`/api/org/agent-memories/${id}`, {
+      fetcher<{ memory: AgentMemory }>(`/api/org/projects/${projectId}/agent-memories/${id}`, {
         method: "PUT",
         body: JSON.stringify(patch),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["org-agent-memories"] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-agent-memories", projectId] }),
   });
 }
 
-export function useDeleteOrgAgentMemory() {
+export function useDeleteProjectAgentMemory(projectId: string | undefined) {
   const fetcher = useFetcher();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      fetcher<{ ok: boolean }>(`/api/org/agent-memories/${id}`, { method: "DELETE" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["org-agent-memories"] }),
+      fetcher<{ ok: boolean }>(`/api/org/projects/${projectId}/agent-memories/${id}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-agent-memories", projectId] }),
   });
 }
 

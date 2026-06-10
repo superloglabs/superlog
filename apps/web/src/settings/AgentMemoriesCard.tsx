@@ -2,10 +2,10 @@ import { useState } from "react";
 import {
   type AgentMemory,
   type AgentMemoryKind,
-  useCreateOrgAgentMemory,
-  useDeleteOrgAgentMemory,
-  useOrgAgentMemories,
-  useUpdateOrgAgentMemory,
+  useCreateProjectAgentMemory,
+  useDeleteProjectAgentMemory,
+  useProjectAgentMemories,
+  useUpdateProjectAgentMemory,
 } from "../api.ts";
 import { Btn, FieldLabel, Input, Tile } from "../design/ui.tsx";
 
@@ -19,21 +19,21 @@ const MEMORY_KINDS: ReadonlyArray<{ id: AgentMemoryKind; label: string }> = [
 const TITLE_MAX_LEN = 200;
 const BODY_MAX_LEN = 4000;
 
-export function AgentMemoriesCard() {
-  const memoriesQ = useOrgAgentMemories();
+export function AgentMemoriesCard({ projectId }: { projectId: string | undefined }) {
+  const memoriesQ = useProjectAgentMemories(projectId);
   const memories = memoriesQ.data?.memories ?? [];
   const active = memories.filter((m) => m.status === "active");
   const archived = memories.filter((m) => m.status === "archived");
 
   return (
     <div className="flex flex-col gap-4">
-      <NewMemoryTile />
+      <NewMemoryTile projectId={projectId} />
       <Tile>
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <FieldLabel>Active memories</FieldLabel>
             <span className="text-[12px] text-muted">
-              Injected into every investigation prompt in this org.
+              Injected into every investigation prompt for this project.
             </span>
           </div>
           {memoriesQ.isLoading ? (
@@ -46,7 +46,7 @@ export function AgentMemoriesCard() {
           ) : (
             <ul className="flex flex-col divide-y divide-border">
               {active.map((memory) => (
-                <MemoryRow key={memory.id} memory={memory} />
+                <MemoryRow key={memory.id} memory={memory} projectId={projectId} />
               ))}
             </ul>
           )}
@@ -63,7 +63,7 @@ export function AgentMemoriesCard() {
             </div>
             <ul className="flex flex-col divide-y divide-border">
               {archived.map((memory) => (
-                <MemoryRow key={memory.id} memory={memory} />
+                <MemoryRow key={memory.id} memory={memory} projectId={projectId} />
               ))}
             </ul>
           </div>
@@ -73,8 +73,8 @@ export function AgentMemoriesCard() {
   );
 }
 
-function NewMemoryTile() {
-  const create = useCreateOrgAgentMemory();
+function NewMemoryTile({ projectId }: { projectId: string | undefined }) {
+  const create = useCreateProjectAgentMemory(projectId);
   const [kind, setKind] = useState<AgentMemoryKind>("terminology");
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -97,7 +97,7 @@ function NewMemoryTile() {
           value={body}
           rows={3}
           maxLength={BODY_MAX_LEN}
-          placeholder="The fact itself, 1-4 sentences. e.g. Dashboards and alerts in this org say “journeys” wherever OTel says “sessions”."
+          placeholder="The fact itself, 1-4 sentences. e.g. Dashboards and alerts here say “journeys” wherever OTel says “sessions”."
           onChange={(e) => setBody(e.target.value)}
           className="w-full rounded-sm border border-border bg-surface-2 p-3 text-[13px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none"
         />
@@ -153,9 +153,15 @@ function KindPicker({
   );
 }
 
-function MemoryRow({ memory }: { memory: AgentMemory }) {
-  const update = useUpdateOrgAgentMemory();
-  const remove = useDeleteOrgAgentMemory();
+function MemoryRow({
+  memory,
+  projectId,
+}: {
+  memory: AgentMemory;
+  projectId: string | undefined;
+}) {
+  const update = useUpdateProjectAgentMemory(projectId);
+  const remove = useDeleteProjectAgentMemory(projectId);
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(memory.title);
   const [body, setBody] = useState(memory.body);

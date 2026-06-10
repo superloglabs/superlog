@@ -16,10 +16,18 @@ const ctx = { orgId: "org-1", projectId: "project-1", agentRunId: "run-1" };
 
 function makeDeps(overrides: Partial<AgentMemoryToolDeps> = {}): AgentMemoryToolDeps & {
   inserts: Array<Record<string, unknown>>;
-  updates: Array<{ id: string; orgId: string; patch: Record<string, unknown> }>;
+  updates: Array<{
+    id: string;
+    scope: { orgId: string; projectId: string };
+    patch: Record<string, unknown>;
+  }>;
 } {
   const inserts: Array<Record<string, unknown>> = [];
-  const updates: Array<{ id: string; orgId: string; patch: Record<string, unknown> }> = [];
+  const updates: Array<{
+    id: string;
+    scope: { orgId: string; projectId: string };
+    patch: Record<string, unknown>;
+  }> = [];
   return {
     inserts,
     updates,
@@ -27,8 +35,8 @@ function makeDeps(overrides: Partial<AgentMemoryToolDeps> = {}): AgentMemoryTool
       inserts.push(values as Record<string, unknown>);
       return { id: "mem-new" };
     },
-    async updateMemory(id, orgId, patch) {
-      updates.push({ id, orgId, patch: patch as Record<string, unknown> });
+    async updateMemory(id, scope, patch) {
+      updates.push({ id, scope, patch: patch as Record<string, unknown> });
       return { id };
     },
     async listMemories() {
@@ -54,7 +62,7 @@ test("agent memory tool params declare save, update, and list tools", () => {
   assert.ok(!isAgentMemoryToolName("revyl_run_test"));
 });
 
-test("save_memory inserts an org-wide memory by default", async () => {
+test("save_memory inserts a memory scoped to the run's project", async () => {
   const deps = makeDeps();
   const result = await executeAgentMemoryTool(
     SAVE_MEMORY_TOOL_NAME,
@@ -72,26 +80,13 @@ test("save_memory inserts an org-wide memory by default", async () => {
   assert.deepEqual(deps.inserts, [
     {
       orgId: "org-1",
-      projectId: null,
+      projectId: "project-1",
       kind: "terminology",
       title: "Sessions are called journeys",
       body: "This org calls user sessions journeys.",
       sourceAgentRunId: "run-1",
     },
   ]);
-});
-
-test("save_memory scopes to the run's project when scope=project", async () => {
-  const deps = makeDeps();
-  const result = await executeAgentMemoryTool(
-    SAVE_MEMORY_TOOL_NAME,
-    { kind: "infra", title: "Checkout on ECS", body: "Checkout deploys to ECS.", scope: "project" },
-    ctx,
-    deps,
-  );
-
-  assert.equal(result.isError, false);
-  assert.equal(deps.inserts[0]?.projectId, "project-1");
 });
 
 test("save_memory rejects an unknown kind", async () => {
@@ -132,7 +127,13 @@ test("update_memory patches fields and can archive", async () => {
 
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, { ok: true, id: "mem-1" });
-  assert.deepEqual(deps.updates, [{ id: "mem-1", orgId: "org-1", patch: { status: "archived" } }]);
+  assert.deepEqual(deps.updates, [
+    {
+      id: "mem-1",
+      scope: { orgId: "org-1", projectId: "project-1" },
+      patch: { status: "archived" },
+    },
+  ]);
 });
 
 test("update_memory requires at least one updatable field", async () => {
@@ -160,13 +161,13 @@ test("update_memory reports unknown ids as errors", async () => {
   assert.match(String((result.payload as { error: string }).error), /not found/);
 });
 
-test("list_memories returns memories with scope labels", async () => {
+test("list_memories returns the project's memories", async () => {
   const deps = makeDeps({
     async listMemories(orgId, projectId) {
       assert.equal(orgId, "org-1");
       assert.equal(projectId, "project-1");
       return [
-        { id: "m1", kind: "terminology", title: "t1", body: "b1", projectId: null },
+        { id: "m1", kind: "terminology", title: "t1", body: "b1", projectId: "project-1" },
         { id: "m2", kind: "infra", title: "t2", body: "b2", projectId: "project-1" },
       ] as schema.AgentMemory[];
     },
@@ -176,8 +177,8 @@ test("list_memories returns memories with scope labels", async () => {
   assert.equal(result.isError, false);
   assert.deepEqual(result.payload, {
     memories: [
-      { id: "m1", kind: "terminology", scope: "org", title: "t1", body: "b1" },
-      { id: "m2", kind: "infra", scope: "project", title: "t2", body: "b2" },
+      { id: "m1", kind: "terminology", title: "t1", body: "b1" },
+      { id: "m2", kind: "infra", title: "t2", body: "b2" },
     ],
   });
 });

@@ -1351,11 +1351,12 @@ export const orgAgentSettings = pgTable(
 export type AgentMemoryKind = "feedback" | "terminology" | "infra" | "project";
 export type AgentMemoryStatus = "active" | "archived";
 
-// Durable facts the investigation agent carries across runs: org terminology,
+// Durable facts the investigation agent carries across runs: terminology,
 // infra/project structure, and lessons from user feedback or conversations.
-// Active memories are injected into every run's initial prompt; the agent
-// writes new ones via the save_memory / update_memory tools, and users manage
-// them from org settings.
+// Memories are strictly project-scoped — each project's investigations see
+// only that project's memories. Active ones are injected into every run's
+// initial prompt; the agent writes new ones via the save_memory /
+// update_memory tools, and users manage them from project settings.
 export const agentMemories = pgTable(
   "agent_memories",
   {
@@ -1363,8 +1364,9 @@ export const agentMemories = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => orgs.id, { onDelete: "cascade" }),
-    // Null scopes the memory to the whole org; set narrows it to one project.
-    projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
     kind: text("kind").$type<AgentMemoryKind>().notNull().default("project"),
     title: text("title").notNull(),
     body: text("body").notNull(),

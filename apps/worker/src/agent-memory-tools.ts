@@ -1,8 +1,10 @@
 // Custom tools that let the investigation agent persist durable facts across
-// runs (terminology, infra/project structure, lessons from feedback). The
-// runner backend declares these on the agent and dispatches calls back here.
+// runs (terminology, infra/project structure, lessons from feedback). Memories
+// are strictly project-scoped — a run sees and writes only the memories of the
+// project it is investigating. The runner backend declares these on the agent
+// and dispatches calls back here.
 import { type NewAgentMemory, db, schema } from "@superlog/db";
-import { and, asc, eq, isNull, or } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 
 export const SAVE_MEMORY_TOOL_NAME = "save_memory";
 export const UPDATE_MEMORY_TOOL_NAME = "update_memory";
@@ -25,9 +27,10 @@ export const agentMemoryToolParams: AgentMemoryToolParam[] = [
     type: "custom",
     name: SAVE_MEMORY_TOOL_NAME,
     description:
-      "Save a durable fact for future investigations: org terminology, infra/project structure, or a lesson from human feedback. " +
-      "Save when a human corrects you or teaches you something, and when you learn a stable fact the hard way (which repo owns a service, what an org-specific term means, how the infra is laid out). " +
-      "Keep memories short, general, and self-contained — they are injected into every future run's prompt. Do not save incident-specific findings, secrets, or anything already in the memories list.",
+      "Save a durable fact for future investigations of this project: terminology, infra/project structure, or a lesson from human feedback. " +
+      "Save when a human corrects you or teaches you something, and when you learn a stable fact the hard way (which repo owns a service, what a team-specific term means, how the infra is laid out). " +
+      "Memories are scoped to the current project and injected into every future run's prompt for it. " +
+      "Keep them short, general, and self-contained. Do not save incident-specific findings, secrets, or anything already in the memories list.",
     input_schema: {
       type: "object",
       required: ["kind", "title", "body"],
@@ -36,18 +39,12 @@ export const agentMemoryToolParams: AgentMemoryToolParam[] = [
           type: "string",
           enum: MEMORY_KINDS,
           description:
-            "feedback = lesson from human feedback/corrections; terminology = org-specific naming; infra = deployment/infrastructure facts; project = codebase/project structure facts.",
+            "feedback = lesson from human feedback/corrections; terminology = team-specific naming; infra = deployment/infrastructure facts; project = codebase/project structure facts.",
         },
         title: { type: "string", description: "Short one-line summary (max 200 chars)." },
         body: {
           type: "string",
           description: "The fact itself, 1-4 sentences, self-contained (max 4000 chars).",
-        },
-        scope: {
-          type: "string",
-          enum: ["org", "project"],
-          description:
-            "org (default) = visible to investigations in every project; project = only investigations in the current project.",
         },
       },
     },
@@ -78,7 +75,7 @@ export const agentMemoryToolParams: AgentMemoryToolParam[] = [
     type: "custom",
     name: LIST_MEMORIES_TOOL_NAME,
     description:
-      "List the active memories visible to this investigation (org-wide plus current-project). " +
+      "List the active memories of the project under investigation. " +
       "Call before save_memory if you are unsure whether a fact is already recorded.",
     input_schema: { type: "object", properties: {} },
   },
@@ -125,17 +122,19 @@ export async function resolveAgentMemoryToolContext(args: {
 
 export type AgentMemoryToolDeps = {
   insertMemory(values: NewAgentMemory): Promise<{ id: string }>;
+  // Scoped by project (not just org) so a run can only touch the memories of
+  // the project it is investigating.
   updateMemory(
     id: string,
-    orgId: string,
+    scope: { orgId: string; projectId: string },
     patch: Partial<Pick<schema.AgentMemory, "kind" | "title" | "body" | "status">>,
   ): Promise<{ id: string } | null>;
   listMemories(orgId: string, projectId: string): Promise<schema.AgentMemory[]>;
 };
 
-// Active memories visible to a run: org-wide rows (project_id null) plus rows
-// scoped to the given project. Oldest first so prompts read in the order the
-// knowledge was learned.
+// Active memories visible to a run: strictly the given project's rows (the
+// org filter is a tenant guard, not a scope-widener). Oldest first so prompts
+// read in the order the knowledge was learned.
 export async function listActiveAgentMemories(
   orgId: string,
   projectId: string,
@@ -143,8 +142,8 @@ export async function listActiveAgentMemories(
   return db.query.agentMemories.findMany({
     where: and(
       eq(schema.agentMemories.orgId, orgId),
+      eq(schema.agentMemories.projectId, projectId),
       eq(schema.agentMemories.status, "active"),
-      or(isNull(schema.agentMemories.projectId), eq(schema.agentMemories.projectId, projectId)),
     ),
     orderBy: [asc(schema.agentMemories.createdAt)],
   });
@@ -159,11 +158,17 @@ const defaultDeps: AgentMemoryToolDeps = {
     if (!row) throw new Error("failed to insert agent memory");
     return row;
   },
-  async updateMemory(id, orgId, patch) {
+  async updateMemory(id, scope, patch) {
     const [row] = await db
       .update(schema.agentMemories)
       .set({ ...patch, updatedAt: new Date() })
-      .where(and(eq(schema.agentMemories.id, id), eq(schema.agentMemories.orgId, orgId)))
+      .where(
+        and(
+          eq(schema.agentMemories.id, id),
+          eq(schema.agentMemories.orgId, scope.orgId),
+          eq(schema.agentMemories.projectId, scope.projectId),
+        ),
+      )
       .returning({ id: schema.agentMemories.id });
     return row ?? null;
   },
@@ -201,13 +206,10 @@ async function saveMemory(
   if (typeof title !== "string") return title;
   const body = parseText(record.body, "body", BODY_MAX_CHARS);
   if (typeof body !== "string") return body;
-  const scope =
-    record.scope === undefined ? "org" : parseEnum(record.scope, ["org", "project"], "scope");
-  if (typeof scope !== "string") return scope;
 
   const inserted = await deps.insertMemory({
     orgId: ctx.orgId,
-    projectId: scope === "project" ? ctx.projectId : null,
+    projectId: ctx.projectId,
     kind,
     title,
     body,
@@ -252,7 +254,11 @@ async function updateMemory(
     return error("provide at least one of kind, title, body, status");
   }
 
-  const updated = await deps.updateMemory(record.id, ctx.orgId, patch);
+  const updated = await deps.updateMemory(
+    record.id,
+    { orgId: ctx.orgId, projectId: ctx.projectId },
+    patch,
+  );
   if (!updated) return error(`memory not found: ${record.id}`);
   return { payload: { ok: true, id: updated.id }, isError: false };
 }
@@ -267,7 +273,6 @@ async function listMemories(
       memories: memories.map((memory) => ({
         id: memory.id,
         kind: memory.kind,
-        scope: memory.projectId ? "project" : "org",
         title: memory.title,
         body: memory.body,
       })),

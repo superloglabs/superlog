@@ -13,6 +13,7 @@ import {
   type LinearTicketInstruction,
   type LinearTicketPolicy,
   type PrPolicy,
+  type RepoBranch,
   type WebhookDelivery,
   type WebhookEndpoint,
   useAgentSettings,
@@ -25,7 +26,6 @@ import {
   useDeleteOrgProject,
   useDeleteSlackRoute,
   useDeleteWebhook,
-  type RepoBranch,
   useGithubBranches,
   useGithubInstallation,
   useGrantOrgRepoToProject,
@@ -91,7 +91,6 @@ type OrgSectionId =
   | "members"
   | "billing"
   | "agent-guidance"
-  | "agent-memories"
   | "weekly-digest"
   | "mgmt-keys"
   | "github-install";
@@ -99,6 +98,7 @@ type ProjectSectionId =
   | "general"
   | "integrations"
   | "agent"
+  | "agent-memories"
   | "issue-filter"
   | "slack-channel"
   | "api-keys"
@@ -110,7 +110,6 @@ const ORG_SECTIONS: ReadonlyArray<{ id: OrgSectionId; label: string }> = [
   { id: "members", label: "Members" },
   { id: "billing", label: "Billing" },
   { id: "agent-guidance", label: "Agent guidance" },
-  { id: "agent-memories", label: "Agent memories" },
   { id: "weekly-digest", label: "Weekly digest" },
   { id: "mgmt-keys", label: "Management API keys" },
   { id: "github-install", label: "GitHub install" },
@@ -120,6 +119,7 @@ const PROJECT_SECTIONS: ReadonlyArray<{ id: ProjectSectionId; label: string }> =
   { id: "general", label: "General" },
   { id: "integrations", label: "Integrations" },
   { id: "agent", label: "Agent" },
+  { id: "agent-memories", label: "Agent memories" },
   { id: "issue-filter", label: "Issue filter" },
   { id: "slack-channel", label: "Slack channel" },
   { id: "api-keys", label: "API keys" },
@@ -680,15 +680,6 @@ function OrgSectionView({ section }: { section: OrgSectionId }) {
           <OrgGuidanceCard />
         </Section>
       );
-    case "agent-memories":
-      return (
-        <Section
-          title="Agent memories"
-          subtitle="Durable facts the investigation agent carries across runs — terminology, infra layout, lessons from your feedback. The agent saves these itself; review and prune them here."
-        >
-          <AgentMemoriesCard />
-        </Section>
-      );
     case "weekly-digest":
       return (
         <Section
@@ -754,6 +745,15 @@ function ProjectSectionView({
           subtitle="The flow each incident runs through. Toggle steps and configure their policies."
         >
           <AgentFlowchart projectId={projectId} />
+        </Section>
+      );
+    case "agent-memories":
+      return (
+        <Section
+          title="Agent memories"
+          subtitle="Durable facts the investigation agent carries across runs of this project — terminology, infra layout, lessons from your feedback. The agent saves these itself; review and prune them here."
+        >
+          <AgentMemoriesCard projectId={projectId} />
         </Section>
       );
     case "issue-filter":
