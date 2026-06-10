@@ -1,0 +1,93 @@
+// Settings navigation model: two scopes (org / project) rendered as top
+// tabs, each with a grouped icon sidebar. Pure data + resolution logic so
+// the IA is testable without rendering.
+
+export type SettingsScope = "org" | "project";
+
+export type OrgSectionId =
+  | "general"
+  | "members"
+  | "billing"
+  | "agent-guidance"
+  | "mgmt-keys"
+  | "github-install";
+
+export type ProjectSectionId =
+  | "general"
+  | "agent"
+  | "agent-memories"
+  | "integrations"
+  | "issue-filter"
+  | "slack-channel"
+  | "api-keys"
+  | "webhooks";
+
+export type SectionId = OrgSectionId | ProjectSectionId;
+
+export type NavGroup<Id extends string> = {
+  // Undefined for the primary group; "More" for the secondary one.
+  label?: string;
+  items: ReadonlyArray<{ id: Id; label: string }>;
+};
+
+export const ORG_NAV_GROUPS: ReadonlyArray<NavGroup<OrgSectionId>> = [
+  {
+    items: [
+      { id: "general", label: "General" },
+      { id: "members", label: "Members" },
+      { id: "billing", label: "Billing" },
+      { id: "agent-guidance", label: "Agent guidance" },
+    ],
+  },
+  {
+    label: "More",
+    items: [
+      { id: "mgmt-keys", label: "API keys" },
+      { id: "github-install", label: "GitHub" },
+    ],
+  },
+];
+
+export const PROJECT_NAV_GROUPS: ReadonlyArray<NavGroup<ProjectSectionId>> = [
+  {
+    items: [
+      { id: "general", label: "General" },
+      { id: "agent", label: "Agent" },
+      { id: "agent-memories", label: "Agent memories" },
+      { id: "integrations", label: "Integrations" },
+      { id: "issue-filter", label: "Issue filter" },
+      { id: "slack-channel", label: "Slack channel" },
+    ],
+  },
+  {
+    label: "More",
+    items: [
+      { id: "api-keys", label: "API keys" },
+      { id: "webhooks", label: "Webhooks" },
+    ],
+  },
+];
+
+const ORG_SECTION_IDS = new Set<string>(
+  ORG_NAV_GROUPS.flatMap((g) => g.items.map((i) => i.id)),
+);
+const PROJECT_SECTION_IDS = new Set<string>(
+  PROJECT_NAV_GROUPS.flatMap((g) => g.items.map((i) => i.id)),
+);
+
+// Sections that used to be their own page and now live inside another one.
+const LEGACY_ORG_SECTION_ALIASES: Record<string, OrgSectionId> = {
+  "weekly-digest": "general",
+};
+
+export function resolveOrgSection(param: string | undefined): OrgSectionId {
+  if (!param) return "general";
+  const alias = LEGACY_ORG_SECTION_ALIASES[param];
+  if (alias) return alias;
+  return ORG_SECTION_IDS.has(param) ? (param as OrgSectionId) : "general";
+}
+
+export function resolveProjectSection(param: string | undefined): ProjectSectionId {
+  if (!param) return "general";
+  return PROJECT_SECTION_IDS.has(param) ? (param as ProjectSectionId) : "general";
+}

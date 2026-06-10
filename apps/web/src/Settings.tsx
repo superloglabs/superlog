@@ -83,51 +83,16 @@ import { AgentMemoriesCard } from "./settings/AgentMemoriesCard.tsx";
 import { BillingCard } from "./settings/BillingCard.tsx";
 import { OrgGeneralCard } from "./settings/OrgGeneralCard.tsx";
 import { OrgMembersCard } from "./settings/OrgMembersCard.tsx";
-
-type SettingsScope = "org" | "project";
-
-type OrgSectionId =
-  | "general"
-  | "members"
-  | "billing"
-  | "agent-guidance"
-  | "weekly-digest"
-  | "mgmt-keys"
-  | "github-install";
-type ProjectSectionId =
-  | "general"
-  | "integrations"
-  | "agent"
-  | "agent-memories"
-  | "issue-filter"
-  | "slack-channel"
-  | "api-keys"
-  | "webhooks";
-type SectionId = OrgSectionId | ProjectSectionId;
-
-const ORG_SECTIONS: ReadonlyArray<{ id: OrgSectionId; label: string }> = [
-  { id: "general", label: "General" },
-  { id: "members", label: "Members" },
-  { id: "billing", label: "Billing" },
-  { id: "agent-guidance", label: "Agent guidance" },
-  { id: "weekly-digest", label: "Weekly digest" },
-  { id: "mgmt-keys", label: "Management API keys" },
-  { id: "github-install", label: "GitHub install" },
-];
-
-const PROJECT_SECTIONS: ReadonlyArray<{ id: ProjectSectionId; label: string }> = [
-  { id: "general", label: "General" },
-  { id: "integrations", label: "Integrations" },
-  { id: "agent", label: "Agent" },
-  { id: "agent-memories", label: "Agent memories" },
-  { id: "issue-filter", label: "Issue filter" },
-  { id: "slack-channel", label: "Slack channel" },
-  { id: "api-keys", label: "API keys" },
-  { id: "webhooks", label: "Webhooks" },
-];
-
-const PROJECT_SECTION_IDS = new Set<string>(PROJECT_SECTIONS.map((s) => s.id));
-const ORG_SECTION_IDS = new Set<string>(ORG_SECTIONS.map((s) => s.id));
+import {
+  ORG_NAV_GROUPS,
+  type OrgSectionId,
+  PROJECT_NAV_GROUPS,
+  type ProjectSectionId,
+  type SectionId,
+  type SettingsScope,
+  resolveOrgSection,
+  resolveProjectSection,
+} from "./settings/nav.ts";
 
 type NavTarget = {
   scope?: SettingsScope;
@@ -170,14 +135,7 @@ export function Settings() {
   }, [scope, projectIdParam, projects, defaultProjectId]);
 
   const activeSection: SectionId = useMemo(() => {
-    if (scope === "org") {
-      return sectionParam && ORG_SECTION_IDS.has(sectionParam)
-        ? (sectionParam as OrgSectionId)
-        : ORG_SECTIONS[0]!.id;
-    }
-    return sectionParam && PROJECT_SECTION_IDS.has(sectionParam)
-      ? (sectionParam as ProjectSectionId)
-      : PROJECT_SECTIONS[0]!.id;
+    return scope === "org" ? resolveOrgSection(sectionParam) : resolveProjectSection(sectionParam);
   }, [scope, sectionParam]);
 
   const navigate = (next: NavTarget) => {
@@ -191,8 +149,10 @@ export function Settings() {
     setParams(updated, { replace: true });
   };
 
+  const [creatingProject, setCreatingProject] = useState(false);
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {(linearStatus || githubStatus || githubAuthorStatus) && (
         <header className="space-y-2">
           {linearStatus && <LinearStatusBanner status={linearStatus} />}
@@ -201,15 +161,29 @@ export function Settings() {
         </header>
       )}
 
+      <SettingsTabs
+        scope={scope}
+        projects={projects}
+        activeProjectId={activeProjectId}
+        onNavigate={navigate}
+        onCreateProject={() => setCreatingProject(true)}
+      />
+
       <div className="flex flex-col gap-8 md:flex-row md:items-start">
-        <SettingsSidebar
-          scope={scope}
-          section={activeSection}
-          projects={projects}
-          activeProjectId={activeProjectId}
-          onNavigate={navigate}
-        />
+        <SettingsSideNav scope={scope} section={activeSection} onNavigate={navigate} />
         <div className="min-w-0 flex-1">
+          {creatingProject && (
+            <div className="mb-6 max-w-sm rounded-lg border border-border bg-surface p-3">
+              <p className="mb-2 text-[13px] font-medium text-fg">New project</p>
+              <NewProjectForm
+                onCancel={() => setCreatingProject(false)}
+                onCreated={(p) => {
+                  setCreatingProject(false);
+                  navigate({ scope: "project", projectId: p.id, section: "general" });
+                }}
+              />
+            </div>
+          )}
           {scope === "org" ? (
             <OrgSectionView section={activeSection as OrgSectionId} />
           ) : (
@@ -224,334 +198,227 @@ export function Settings() {
   );
 }
 
-function SettingsSidebar({
+function SettingsTabs({
   scope,
-  section,
   projects,
   activeProjectId,
+  onNavigate,
+  onCreateProject,
+}: {
+  scope: SettingsScope;
+  projects: Array<{ id: string; name: string }>;
+  activeProjectId: string | undefined;
+  onNavigate: (target: NavTarget) => void;
+  onCreateProject: () => void;
+}) {
+  const NEW_PROJECT = "__new_project__";
+  const pickerOptions: DropdownOption[] = [
+    ...projects.map((p) => ({ value: p.id, label: p.name, searchText: p.name })),
+    { value: NEW_PROJECT, label: "+ New project", searchText: "new project" },
+  ];
+  return (
+    <div className="flex items-center gap-7 border-b border-border">
+      <TabButton
+        label="Organization"
+        active={scope === "org"}
+        onClick={() => onNavigate({ scope: "org", section: "general" })}
+      />
+      <TabButton
+        label="Project"
+        active={scope === "project"}
+        onClick={() => onNavigate({ scope: "project", section: "general" })}
+      />
+      <div className="flex-1" />
+      {scope === "project" && projects.length > 0 && (
+        <div className="pb-2">
+          <Dropdown
+            value={activeProjectId ?? ""}
+            onChange={(v) => {
+              if (v === NEW_PROJECT) {
+                onCreateProject();
+                return;
+              }
+              onNavigate({ scope: "project", projectId: v });
+            }}
+            options={pickerOptions}
+            searchable={projects.length > 6}
+            className="w-52"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TabButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`-mb-px border-b-2 pb-2.5 pt-1 text-[14px] transition-colors ${
+        active
+          ? "border-fg font-semibold text-fg"
+          : "border-transparent font-medium text-muted hover:text-fg"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function SettingsSideNav({
+  scope,
+  section,
   onNavigate,
 }: {
   scope: SettingsScope;
   section: SectionId;
-  projects: Array<{ id: string; name: string }>;
-  activeProjectId: string | undefined;
   onNavigate: (target: NavTarget) => void;
 }) {
-  const [creating, setCreating] = useState(false);
-  const projectSection: ProjectSectionId = PROJECT_SECTION_IDS.has(section)
-    ? (section as ProjectSectionId)
-    : "integrations";
+  const groups = scope === "org" ? ORG_NAV_GROUPS : PROJECT_NAV_GROUPS;
   return (
-    <nav className="shrink-0 md:sticky md:top-6 md:w-60">
+    <nav className="shrink-0 md:sticky md:top-6 md:w-56">
       <ul className="flex flex-col gap-0.5">
-        <SidebarItem
-          label="Org"
-          icon={<OrgIcon />}
-          active={scope === "org"}
-          onClick={() =>
-            onNavigate({
-              scope: "org",
-              section: ORG_SECTION_IDS.has(section)
-                ? (section as OrgSectionId)
-                : ORG_SECTIONS[0]!.id,
-            })
-          }
-        />
-        {scope === "org" && (
-          <ul className="ml-[22px] mt-0.5 mb-1 flex flex-col gap-0.5 border-l border-border pl-2">
-            {ORG_SECTIONS.map((s) => (
-              <SidebarLeaf
-                key={s.id}
-                label={s.label}
-                active={section === s.id}
-                onClick={() => onNavigate({ scope: "org", section: s.id })}
-              />
-            ))}
-          </ul>
-        )}
-
-        <li className="mt-3 mb-1 flex items-center justify-between px-3">
-          <span className="text-[11px] uppercase tracking-wider text-muted">Projects</span>
-          <button
-            type="button"
-            onClick={() => setCreating((v) => !v)}
-            aria-label="New project"
-            className="flex h-5 w-5 items-center justify-center rounded-sm text-muted hover:bg-surface-2 hover:text-fg"
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-          </button>
-        </li>
-        {creating && (
-          <li className="mb-1 px-1">
-            <NewProjectForm
-              onCancel={() => setCreating(false)}
-              onCreated={(p) => {
-                setCreating(false);
-                onNavigate({ scope: "project", projectId: p.id, section: "general" });
-              }}
-            />
+        {groups.map((group, gi) => (
+          <li key={group.label ?? gi}>
+            {group.label && (
+              <p className="mb-1 mt-4 px-3 text-[11px] uppercase tracking-wider text-muted">
+                {group.label}
+              </p>
+            )}
+            <ul className="flex flex-col gap-0.5">
+              {group.items.map((item) => (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate({ scope, section: item.id })}
+                    className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-[13px] transition-colors ${
+                      section === item.id
+                        ? "bg-surface-2 text-fg"
+                        : "text-muted hover:bg-surface-2 hover:text-fg"
+                    }`}
+                  >
+                    <span className="flex h-4 w-4 items-center justify-center" aria-hidden>
+                      <SectionIcon scope={scope} section={item.id} />
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
           </li>
-        )}
-
-        {projects.map((p) => {
-          const isActive = scope === "project" && activeProjectId === p.id;
-          return (
-            <li key={p.id}>
-              <ProjectRow
-                project={p}
-                active={isActive}
-                canDelete={projects.length > 1}
-                onSelect={() =>
-                  onNavigate({
-                    scope: "project",
-                    projectId: p.id,
-                    section: projectSection,
-                  })
-                }
-                onDeleted={() => {
-                  if (isActive) {
-                    const next = projects.find((q) => q.id !== p.id);
-                    if (next) {
-                      onNavigate({
-                        scope: "project",
-                        projectId: next.id,
-                        section: "integrations",
-                      });
-                    }
-                  }
-                }}
-              />
-              {isActive && (
-                <ul className="ml-[22px] mt-0.5 mb-1 flex flex-col gap-0.5 border-l border-border pl-2">
-                  {PROJECT_SECTIONS.map((s) => (
-                    <SidebarLeaf
-                      key={s.id}
-                      label={s.label}
-                      active={section === s.id}
-                      onClick={() =>
-                        onNavigate({ scope: "project", projectId: p.id, section: s.id })
-                      }
-                    />
-                  ))}
-                </ul>
-              )}
-            </li>
-          );
-        })}
+        ))}
       </ul>
     </nav>
   );
 }
 
-function SidebarItem({
-  label,
-  icon,
-  active,
-  onClick,
-}: {
-  label: string;
-  icon: ReactNode;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <li>
-      <button
-        type="button"
-        onClick={onClick}
-        className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-[13px] transition-colors ${
-          active ? "bg-surface-2 text-fg" : "text-muted hover:bg-surface-2 hover:text-fg"
-        }`}
-      >
-        <span className="flex h-4 w-4 items-center justify-center text-current" aria-hidden>
-          {icon}
-        </span>
-        <span className="min-w-0 flex-1 truncate">{label}</span>
-      </button>
-    </li>
-  );
-}
-
-function SidebarLeaf({
-  label,
-  active,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <li>
-      <button
-        type="button"
-        onClick={onClick}
-        className={`flex w-full items-center rounded-md px-2 py-1.5 text-left text-[12.5px] transition-colors ${
-          active ? "bg-surface-2 text-fg" : "text-muted hover:bg-surface-2 hover:text-fg"
-        }`}
-      >
-        <span className="min-w-0 flex-1 truncate">{label}</span>
-      </button>
-    </li>
-  );
-}
-
-function ProjectRow({
-  project,
-  active,
-  canDelete,
-  onSelect,
-  onDeleted,
-}: {
-  project: { id: string; name: string };
-  active: boolean;
-  canDelete: boolean;
-  onSelect: () => void;
-  onDeleted: () => void;
-}) {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [renaming, setRenaming] = useState(false);
-  const [draft, setDraft] = useState(project.name);
-  const update = useUpdateOrgProject();
-  const del = useDeleteOrgProject();
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onDown = () => setMenuOpen(false);
-    window.addEventListener("click", onDown);
-    return () => window.removeEventListener("click", onDown);
-  }, [menuOpen]);
-
-  if (renaming) {
-    const submit = (e: React.FormEvent) => {
-      e.preventDefault();
-      const name = draft.trim();
-      if (!name || name === project.name) {
-        setRenaming(false);
-        setDraft(project.name);
-        return;
-      }
-      update.mutate(
-        { projectId: project.id, patch: { name } },
-        {
-          onSuccess: () => setRenaming(false),
-          onError: () => {
-            setRenaming(false);
-            setDraft(project.name);
-          },
-        },
-      );
-    };
-    return (
-      <form onSubmit={submit} className="flex items-center gap-1 px-3 py-1.5">
-        <input
-          autoFocus
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={(e) => {
-            // Form's onSubmit may have already fired via Enter; don't issue a
-            // second PATCH while the first is still in flight.
-            if (!update.isPending) submit(e);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") {
-              setRenaming(false);
-              setDraft(project.name);
-            }
-          }}
-          className="h-7 w-full rounded-sm border border-border bg-surface-2 px-2 text-[13px] text-fg focus:border-border-strong focus:outline-none"
-        />
-      </form>
-    );
-  }
-
-  return (
-    <div className="group relative flex items-center">
-      <button
-        type="button"
-        onClick={onSelect}
-        className={`flex min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2 text-left text-[13px] transition-colors ${
-          active ? "bg-surface-2 text-fg" : "text-muted hover:bg-surface-2 hover:text-fg"
-        }`}
-      >
-        <span className="flex h-4 w-4 items-center justify-center text-current" aria-hidden>
-          <ProjectIcon />
-        </span>
-        <span className="min-w-0 flex-1 truncate">{project.name}</span>
-      </button>
-      <button
-        type="button"
-        aria-label="Project menu"
-        onClick={(e) => {
-          e.stopPropagation();
-          setMenuOpen((v) => !v);
-        }}
-        className={`absolute right-1 flex h-6 w-6 items-center justify-center rounded-sm text-muted hover:bg-surface-3 hover:text-fg ${
-          menuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus:opacity-100"
-        }`}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-          <circle cx="5" cy="12" r="1.5" />
-          <circle cx="12" cy="12" r="1.5" />
-          <circle cx="19" cy="12" r="1.5" />
+function SectionIcon({ scope, section }: { scope: SettingsScope; section: SectionId }) {
+  const props = {
+    width: 16,
+    height: 16,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.7,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+  } as const;
+  const key = `${scope}:${section}`;
+  switch (key) {
+    case "org:general":
+    case "project:general":
+      return (
+        <svg {...props} aria-hidden="true">
+          <line x1="4" y1="8" x2="20" y2="8" />
+          <line x1="4" y1="16" x2="20" y2="16" />
+          <circle cx="9" cy="8" r="2" />
+          <circle cx="15" cy="16" r="2" />
         </svg>
-      </button>
-      {menuOpen && (
-        <div
-          className="absolute right-0 top-full z-10 mt-1 w-32 overflow-hidden rounded-sm border border-border bg-surface-1 shadow-lg"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button
-            type="button"
-            onClick={() => {
-              setMenuOpen(false);
-              setDraft(project.name);
-              setRenaming(true);
-            }}
-            className="block w-full px-3 py-1.5 text-left text-[12.5px] text-fg hover:bg-surface-2"
-          >
-            Rename
-          </button>
-          <button
-            type="button"
-            disabled={!canDelete || del.isPending}
-            onClick={() => {
-              setMenuOpen(false);
-              if (!canDelete) return;
-              const ok = window.confirm(
-                `Delete project "${project.name}"? Telemetry, API keys, and integrations for this project will be deleted. This cannot be undone.`,
-              );
-              if (!ok) return;
-              del.mutate(project.id, {
-                onSuccess: () => onDeleted(),
-                onError: (err) => {
-                  window.alert(
-                    `Delete failed: ${err instanceof Error ? err.message : String(err)}`,
-                  );
-                },
-              });
-            }}
-            className="block w-full px-3 py-1.5 text-left text-[12.5px] text-danger hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
-            title={canDelete ? undefined : "Can't delete the last project in an org"}
-          >
-            Delete
-          </button>
-        </div>
-      )}
-    </div>
-  );
+      );
+    case "org:members":
+      return (
+        <svg {...props} aria-hidden="true">
+          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+          <circle cx="9" cy="7" r="4" />
+          <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+          <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+        </svg>
+      );
+    case "org:billing":
+      return (
+        <svg {...props} aria-hidden="true">
+          <rect x="1" y="4" width="22" height="16" rx="2" />
+          <line x1="1" y1="10" x2="23" y2="10" />
+        </svg>
+      );
+    case "org:agent-guidance":
+    case "project:agent":
+      return (
+        <svg {...props} aria-hidden="true">
+          <path d="M12 3a7 7 0 0 1 7 7v3a7 7 0 0 1-14 0v-3a7 7 0 0 1 7-7z" />
+          <circle cx="9" cy="12" r="0.5" fill="currentColor" />
+          <circle cx="15" cy="12" r="0.5" fill="currentColor" />
+        </svg>
+      );
+    case "org:mgmt-keys":
+    case "project:api-keys":
+      return (
+        <svg {...props} aria-hidden="true">
+          <circle cx="7.5" cy="15.5" r="5.5" />
+          <path d="m21 2-9.6 9.6" />
+          <path d="m15.5 7.5 3 3L22 7l-3-3" />
+        </svg>
+      );
+    case "org:github-install":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" />
+        </svg>
+      );
+    case "project:integrations":
+      return (
+        <svg {...props} aria-hidden="true">
+          <path d="M9 2v6" />
+          <path d="M15 2v6" />
+          <path d="M6 8h12v4a6 6 0 0 1-12 0V8z" />
+          <path d="M12 18v4" />
+        </svg>
+      );
+    case "project:issue-filter":
+      return (
+        <svg {...props} aria-hidden="true">
+          <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" />
+        </svg>
+      );
+    case "project:slack-channel":
+      return (
+        <svg {...props} aria-hidden="true">
+          <line x1="10" y1="3" x2="7" y2="21" />
+          <line x1="17" y1="3" x2="14" y2="21" />
+          <line x1="3" y1="9" x2="21" y2="9" />
+          <line x1="3" y1="15" x2="21" y2="15" />
+        </svg>
+      );
+    case "project:webhooks":
+      return (
+        <svg {...props} aria-hidden="true">
+          <path d="M18 16.98h-5.99c-1.1 0-1.95.94-2.48 1.9A4 4 0 0 1 2 17c.01-.7.2-1.4.57-2" />
+          <path d="m6 17 3.13-5.78c.53-.97.1-2.18-.5-3.1a4 4 0 1 1 6.89-4.06" />
+          <path d="m12 6 3.13 5.73C15.66 12.7 16.9 13 18 13a4 4 0 0 1 0 8" />
+        </svg>
+      );
+    default:
+      return null;
+  }
 }
 
 function NewProjectForm({
@@ -606,55 +473,24 @@ function NewProjectForm({
   );
 }
 
-function OrgIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M3 21h18" />
-      <path d="M5 21V7l8-4v18" />
-      <path d="M19 21V11l-6-4" />
-      <path d="M9 9v.01" />
-      <path d="M9 13v.01" />
-      <path d="M9 17v.01" />
-    </svg>
-  );
-}
-
-function ProjectIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
-    </svg>
-  );
-}
-
 function OrgSectionView({ section }: { section: OrgSectionId }) {
   switch (section) {
     case "general":
       return (
-        <Section
-          title="General"
-          subtitle="Organization name and slug. Visible to everyone in the org."
-        >
-          <OrgGeneralCard />
-        </Section>
+        <div className="space-y-10">
+          <Section
+            title="General"
+            subtitle="Organization name and slug. Visible to everyone in the org."
+          >
+            <OrgGeneralCard />
+          </Section>
+          <Section
+            title="Weekly fixes digest"
+            subtitle="A short Slack recap of the top 3 pending bug-fix PRs, ranked by an LLM."
+          >
+            <WeeklyDigestCard />
+          </Section>
+        </div>
       );
     case "members":
       return (
@@ -678,15 +514,6 @@ function OrgSectionView({ section }: { section: OrgSectionId }) {
           subtitle="Prepended to every agent run prompt across all projects in this org."
         >
           <OrgGuidanceCard />
-        </Section>
-      );
-    case "weekly-digest":
-      return (
-        <Section
-          title="Weekly fixes digest"
-          subtitle="A short Slack recap of the top 3 pending bug-fix PRs, ranked by an LLM."
-        >
-          <WeeklyDigestCard />
         </Section>
       );
     case "mgmt-keys":
@@ -800,9 +627,12 @@ const PROJECT_CONTEXT_MAX_LEN = 8000;
 function ProjectGeneralCard({ projectId }: { projectId: string | undefined }) {
   const projectsQ = useOrgProjects();
   const update = useUpdateOrgProject();
-  const project = projectsQ.data?.projects.find((p) => p.id === projectId) ?? null;
+  const del = useDeleteOrgProject();
+  const projects = projectsQ.data?.projects ?? [];
+  const project = projects.find((p) => p.id === projectId) ?? null;
   const value = project?.projectContext ?? "";
   const [draft, setDraft] = useState(value);
+  const [nameDraft, setNameDraft] = useState(project?.name ?? "");
   const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedTick, setSavedTick] = useState(false);
@@ -811,13 +641,16 @@ function ProjectGeneralCard({ projectId }: { projectId: string | undefined }) {
     if (!project) return;
     if (loadedProjectId === project.id) return;
     setDraft(project.projectContext);
+    setNameDraft(project.name);
     setLoadedProjectId(project.id);
     setError(null);
   }, [loadedProjectId, project]);
 
   const loaded = !!project && loadedProjectId === project.id;
-  const dirty = loaded && draft !== value;
+  const nameDirty = loaded && nameDraft.trim() !== project.name && nameDraft.trim().length > 0;
+  const dirty = (loaded && draft !== value) || nameDirty;
   const disabled = !loaded || projectsQ.isLoading || update.isPending;
+  const canDelete = projects.length > 1;
 
   return (
     <Tile>
@@ -825,7 +658,11 @@ function ProjectGeneralCard({ projectId }: { projectId: string | undefined }) {
         <div className="grid gap-4 md:grid-cols-2">
           <div>
             <span className="mb-1.5 block text-[12px] text-muted">Project name</span>
-            <Input value={project?.name ?? ""} disabled />
+            <Input
+              value={nameDraft}
+              disabled={disabled}
+              onChange={(e) => setNameDraft(e.target.value)}
+            />
           </div>
           <div>
             <span className="mb-1.5 block text-[12px] text-muted">Slug</span>
@@ -863,7 +700,13 @@ function ProjectGeneralCard({ projectId }: { projectId: string | undefined }) {
               if (!project || !loaded) return;
               setError(null);
               update.mutate(
-                { projectId: project.id, patch: { projectContext: draft } },
+                {
+                  projectId: project.id,
+                  patch: {
+                    projectContext: draft,
+                    ...(nameDirty ? { name: nameDraft.trim() } : {}),
+                  },
+                },
                 {
                   onSuccess: () => {
                     setSavedTick(true);
@@ -874,19 +717,56 @@ function ProjectGeneralCard({ projectId }: { projectId: string | undefined }) {
               );
             }}
           >
-            Save context
+            Save
           </Btn>
           {dirty && (
             <Btn
               size="sm"
               variant="ghost"
               disabled={update.isPending}
-              onClick={() => setDraft(value)}
+              onClick={() => {
+                setDraft(value);
+                setNameDraft(project?.name ?? "");
+              }}
             >
               Discard
             </Btn>
           )}
           {savedTick && <span className="text-[12px] text-success">Saved</span>}
+        </div>
+
+        <div className="border-t border-border pt-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-[13px] font-medium text-fg">Delete project</p>
+              <p className="text-[12px] text-muted">
+                Telemetry, API keys, and integrations for this project will be deleted. This
+                cannot be undone.
+              </p>
+            </div>
+            <Btn
+              size="sm"
+              variant="danger"
+              disabled={!project || !canDelete || del.isPending}
+              loading={del.isPending}
+              onClick={() => {
+                if (!project || !canDelete) return;
+                const ok = window.confirm(
+                  `Delete project "${project.name}"? Telemetry, API keys, and integrations for this project will be deleted. This cannot be undone.`,
+                );
+                if (!ok) return;
+                del.mutate(project.id, {
+                  onError: (err) => {
+                    window.alert(
+                      `Delete failed: ${err instanceof Error ? err.message : String(err)}`,
+                    );
+                  },
+                });
+              }}
+            >
+              Delete
+            </Btn>
+          </div>
         </div>
       </div>
     </Tile>
