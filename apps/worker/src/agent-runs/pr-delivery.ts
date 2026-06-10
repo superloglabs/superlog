@@ -3,16 +3,16 @@ import {
   createIncidentLifecycle,
   db,
   normalizePrBaseBranch,
-  type schema,
+  schema,
 } from "@superlog/db";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import {
   type AgentRunContext,
   type InstalledGithubRepo,
   listAccessibleGithubRepositories,
 } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
-import { mergeAgentPullRequest } from "../github-app.js";
+import { mergeAgentPullRequest, pushPatchToExistingAgentPr } from "../github-app.js";
 import { downloadAgentPatchFile } from "../infra/agent-runner/patch-files.js";
 import { openAgentRunPullRequest } from "../infra/github/pull-requests.js";
 import {
@@ -34,6 +34,29 @@ const DEFAULT_COMMIT_AUTHOR = {
 };
 const agentRunLifecycle = createAgentRunLifecycle(db);
 const incidentLifecycle = createIncidentLifecycle(db);
+
+// Reply posted on the existing PR after a follow-up run pushes new commits.
+function buildFollowUpPrComment(ctx: AgentRunContext, result: AgentRunResult): string {
+  const interactions = ctx.followUp?.interactions ?? [];
+  const authors = [...new Set(interactions.map((i) => i.author).filter((a): a is string => !!a))];
+  const lines = [
+    authors.length > 0
+      ? `Addressed review feedback from ${authors.map((a) => `@${a}`).join(", ")} in a follow-up investigation.`
+      : "Addressed review feedback in a follow-up investigation.",
+    "",
+    result.summary,
+  ];
+  const validation = result.pr?.validationSummary;
+  if (validation) lines.push("", `Validation: ${validation}`);
+  return lines.join("\n");
+}
+
+async function notifyFollowUpPrUpdated(ctx: AgentRunContext, prUrl: string): Promise<void> {
+  await postIncidentThreadMessage(
+    ctx.incident.id,
+    `:arrows_counterclockwise: Follow-up investigation pushed an update to the existing PR: ${prUrl}`,
+  );
+}
 
 export function resolvePullRequestBaseBranch(
   ctx: Pick<AgentRunContext, "prBaseBranch">,
@@ -129,6 +152,115 @@ export async function completeWithPullRequest(
   // later "retry PR" can re-attempt delivery from the patch on record without
   // depending on the agent session (which may have expired) to re-download it.
   const resultWithPatch: AgentRunResult = { ...result, pr: { ...pr, patch, patchFileId } };
+
+  // Follow-up runs deliver onto the prior run's still-open PR: push the patch
+  // as an additional commit on the existing branch and reply on the PR
+  // instead of opening a second one.
+  if (ctx.agentRun.trigger !== "incident") {
+    const existingPr = await db.query.agentPullRequests.findFirst({
+      where: and(
+        eq(schema.agentPullRequests.incidentId, ctx.incident.id),
+        eq(schema.agentPullRequests.repoFullName, pr.selectedRepoFullName),
+        eq(schema.agentPullRequests.state, "open"),
+      ),
+      orderBy: [desc(schema.agentPullRequests.createdAt)],
+    });
+    if (existingPr) {
+      let pushed: { headSha: string };
+      try {
+        pushed = await pushPatchToExistingAgentPr({
+          installationId: repoMeta.installation.installationId,
+          repositoryId: repoMeta.id,
+          repoFullName: pr.selectedRepoFullName,
+          patch,
+          branchName: existingPr.branchName,
+          prNumber: existingPr.prNumber,
+          commitTitle: prTitle,
+          commentBody: buildFollowUpPrComment(ctx, result),
+          commitAuthor:
+            repoMeta.installation.commitAuthorName && repoMeta.installation.commitAuthorEmail
+              ? {
+                  name: repoMeta.installation.commitAuthorName,
+                  email: repoMeta.installation.commitAuthorEmail,
+                }
+              : DEFAULT_COMMIT_AUTHOR,
+        });
+      } catch (err) {
+        await failAgentRun(ctx, "pr_open_failed", summarizePrOpenFailure(err), {
+          existingResult: resultWithPatch,
+          err,
+        });
+        return;
+      }
+
+      const now = new Date();
+      await db
+        .update(schema.agentPullRequests)
+        .set({ headSha: pushed.headSha, lastSyncedAt: now, updatedAt: now })
+        .where(eq(schema.agentPullRequests.id, existingPr.id));
+
+      const followUpResult: AgentRunResult = {
+        ...result,
+        pr: {
+          ...pr,
+          patch,
+          patchFileId,
+          branchName: existingPr.branchName,
+          baseBranch: existingPr.baseBranch,
+          openStatus: "opened",
+          url: existingPr.url,
+        },
+      };
+      await agentRunLifecycle.completeWithPullRequest({
+        id: ctx.agentRun.id,
+        currentState: ctx.agentRun.state,
+        result: followUpResult,
+        selectedRepoFullName: pr.selectedRepoFullName,
+        selectedBaseBranch: existingPr.baseBranch,
+        prUrl: existingPr.url,
+      });
+      await incidentLifecycle
+        .applyAgentRunResult({
+          incident: ctx.incident,
+          agentRunId: ctx.agentRun.id,
+          result: followUpResult,
+        })
+        .catch((err) =>
+          logger.error(
+            {
+              scope: "agent_run.pr_delivery",
+              agent_run_id: ctx.agentRun.id,
+              incident_id: ctx.incident.id,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "failed to apply incident metadata after updating PR",
+          ),
+        );
+      await enqueueAgentRunCompleted(ctx.agentRun.id).catch((err) =>
+        logger.error(
+          {
+            scope: "webhooks.enqueue",
+            agent_run_id: ctx.agentRun.id,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "failed to enqueue agent run.completed webhook",
+        ),
+      );
+      await notifyFollowUpPrUpdated(ctx, existingPr.url).catch((err) =>
+        logger.warn(
+          {
+            scope: "agent_run.pr_delivery",
+            agent_run_id: ctx.agentRun.id,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "failed to post follow-up PR update to Slack",
+        ),
+      );
+      return;
+    }
+    // No open PR to land on (closed meanwhile, or the prior run never opened
+    // one) — fall through to the normal open-a-new-PR path.
+  }
   let opened: Awaited<ReturnType<typeof openAgentRunPullRequest>>;
   try {
     opened = await openAgentRunPullRequest({

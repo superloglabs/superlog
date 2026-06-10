@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import {
   db,
   listAccessibleGithubInstallsForProject,
+  requestFollowUpAgentRun,
   resolveIncident,
   schema,
   syncLoopsContactsForOrg,
@@ -361,6 +362,9 @@ type WebhookPayload = {
     user?: GhActor;
     html_url?: string;
     author_association?: string;
+    // pull_request_review_comment only
+    path?: string;
+    line?: number | null;
   };
   review?: {
     id?: number;
@@ -604,6 +608,12 @@ async function handleAgentPrWebhook(
     log.warn({ err, event, agent_pr_id: agentPrRow.id }, "pr comment feedback capture failed");
   });
 
+  // Same best-effort posture: a follow-up enqueue failure must not 500 the
+  // webhook delivery.
+  await maybeRequestPrCommentFollowUp({ event, payload, agentPrRow }).catch((err) => {
+    log.warn({ err, event, agent_pr_id: agentPrRow.id }, "pr comment follow-up enqueue failed");
+  });
+
   const now = new Date();
 
   // Update the parent row when this is a state-changing event.
@@ -713,18 +723,27 @@ async function resolveIncidentForMergedAgentPr(opts: {
   }
 }
 
-async function maybeRecordPrCommentFeedback(opts: {
-  event: string;
-  payload: WebhookPayload;
-  agentPrRow: schema.AgentPullRequest;
-}): Promise<void> {
-  const { event, payload, agentPrRow } = opts;
-  // Only the comment-bearing events count; PR open/close/merge has its
-  // own first-class handling and isn't user feedback.
+type EligiblePrComment = {
+  body: string;
+  actor: GhActor;
+  commentUrl: string | null;
+  path: string | null;
+  line: number | null;
+};
+
+// Shared gate for the comment-bearing PR events: real text from a real
+// (non-bot, repo-associated) human, excluding our own feedback footer.
+// PR open/close/merge has its own first-class handling and isn't a comment.
+function extractEligiblePrComment(
+  event: string,
+  payload: WebhookPayload,
+): EligiblePrComment | null {
   let body: string | null = null;
   let actor: GhActor = null;
   let authorAssociation: string | null = null;
   let commentUrl: string | null = null;
+  let path: string | null = null;
+  let line: number | null = null;
   if (event === "issue_comment" && payload.action === "created") {
     body = payload.comment?.body ?? null;
     actor = payload.comment?.user ?? null;
@@ -735,21 +754,23 @@ async function maybeRecordPrCommentFeedback(opts: {
     actor = payload.comment?.user ?? null;
     authorAssociation = payload.comment?.author_association ?? null;
     commentUrl = payload.comment?.html_url ?? null;
+    path = payload.comment?.path ?? null;
+    line = payload.comment?.line ?? null;
   } else if (event === "pull_request_review" && payload.action === "submitted") {
     body = payload.review?.body ?? null;
     actor = payload.review?.user ?? null;
     authorAssociation = payload.review?.author_association ?? null;
     commentUrl = payload.review?.html_url ?? null;
   } else {
-    return;
+    return null;
   }
-  if (!body || body.trim().length === 0) return;
+  if (!body || body.trim().length === 0) return null;
 
   // Skip our own footer echoed back by the GitHub UI — the PR description
   // itself is rendered into comment-like contexts occasionally (e.g. the
   // squashed merge commit message), and we don't want our own "leave
   // feedback" link surfaced as feedback.
-  if (body.includes(FEEDBACK_PR_FOOTER_MARKER)) return;
+  if (body.includes(FEEDBACK_PR_FOOTER_MARKER)) return null;
 
   if (
     !isFeedbackEligibleCommenter({
@@ -757,8 +778,53 @@ async function maybeRecordPrCommentFeedback(opts: {
       authorAssociation,
     })
   ) {
-    return;
+    return null;
   }
+  return { body, actor, commentUrl, path, line };
+}
+
+// Review feedback on an agent PR revives the agent as a follow-up run that
+// addresses the requested changes on the existing branch. Eligibility (caps,
+// staleness, project gate) is enforced by requestFollowUpAgentRun; comments
+// arriving while a follow-up is still queued append to it, so a review burst
+// becomes one run.
+async function maybeRequestPrCommentFollowUp(opts: {
+  event: string;
+  payload: WebhookPayload;
+  agentPrRow: schema.AgentPullRequest;
+}): Promise<void> {
+  const comment = extractEligiblePrComment(opts.event, opts.payload);
+  if (!comment) return;
+  const result = await requestFollowUpAgentRun(db, {
+    incidentId: opts.agentPrRow.incidentId,
+    trigger: "pr_comment",
+    interaction: {
+      channel: "pr_comment",
+      author: comment.actor?.login ?? null,
+      text: comment.body,
+      url: comment.commentUrl,
+      path: comment.path,
+      line: comment.line,
+      occurredAt: new Date().toISOString(),
+    },
+  });
+  if (result.outcome === "skipped") {
+    log.info(
+      { incident_id: opts.agentPrRow.incidentId, reason: result.reason },
+      "pr comment did not trigger a follow-up run",
+    );
+  }
+}
+
+async function maybeRecordPrCommentFeedback(opts: {
+  event: string;
+  payload: WebhookPayload;
+  agentPrRow: schema.AgentPullRequest;
+}): Promise<void> {
+  const { event, payload, agentPrRow } = opts;
+  const eligible = extractEligiblePrComment(event, payload);
+  if (!eligible) return;
+  const { body, actor, commentUrl } = eligible;
 
   // Resolve org + project via the agent PR's installation so the admin
   // inbox can show which org's PR this feedback is on.
