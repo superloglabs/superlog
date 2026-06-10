@@ -11,25 +11,43 @@
      banner doesn't collide with chrome or force the whole page to scroll. */
   --impersonation-h: 0px;
 
-  --color-bg: #141414;
-  --color-surface: #1c1c1e;
-  --color-surface-2: #232325;
-  --color-surface-3: #2b2b2e;
+  /* Solid colors live as space-separated RGB triplets so tailwind's opacity
+     modifiers (bg-danger/20 etc.) can inject <alpha-value>. The legacy
+     --color-* hex-style vars are derived from them — raw CSS/chart code keeps
+     reading var(--color-x) and stays theme-aware. */
+  --color-bg-rgb: 20 20 20;
+  --color-surface-rgb: 28 28 30;
+  --color-surface-2-rgb: 35 35 37;
+  --color-surface-3-rgb: 43 43 46;
+  --color-fg-rgb: 245 245 246;
+  --color-muted-rgb: 138 138 143;
+  --color-subtle-rgb: 90 90 96;
+  --color-accent-rgb: 72 90 226;
+  --color-accent-ink-rgb: 255 255 255;
+  --color-accent-deep-rgb: 49 64 184;
+  --color-danger-rgb: 239 90 111;
+  --color-warning-rgb: 231 177 90;
+  --color-success-rgb: 65 209 149;
+
+  --color-bg: rgb(var(--color-bg-rgb));
+  --color-surface: rgb(var(--color-surface-rgb));
+  --color-surface-2: rgb(var(--color-surface-2-rgb));
+  --color-surface-3: rgb(var(--color-surface-3-rgb));
   --color-border: rgba(255, 255, 255, 0.07);
   --color-border-strong: rgba(255, 255, 255, 0.12);
 
-  --color-fg: #f5f5f6;
-  --color-muted: #8a8a8f;
-  --color-subtle: #5a5a60;
+  --color-fg: rgb(var(--color-fg-rgb));
+  --color-muted: rgb(var(--color-muted-rgb));
+  --color-subtle: rgb(var(--color-subtle-rgb));
 
-  --color-accent: #485ae2;
-  --color-accent-ink: #ffffff;
+  --color-accent: rgb(var(--color-accent-rgb));
+  --color-accent-ink: rgb(var(--color-accent-ink-rgb));
   --color-accent-soft: rgba(72, 90, 226, 0.14);
-  --color-accent-deep: #3140b8;
+  --color-accent-deep: rgb(var(--color-accent-deep-rgb));
 
-  --color-danger: #ef5a6f;
-  --color-warning: #e7b15a;
-  --color-success: #41d195;
+  --color-danger: rgb(var(--color-danger-rgb));
+  --color-warning: rgb(var(--color-warning-rgb));
+  --color-success: rgb(var(--color-success-rgb));
 
   --dot-color: rgba(245, 245, 246, 0.05);
 }
@@ -37,25 +55,22 @@
 :root[data-theme="light"] {
   color-scheme: light;
 
-  --color-bg: #f5f5f5;
-  --color-surface: #fcfcfc;
-  --color-surface-2: #efefef;
-  --color-surface-3: #e6e6e6;
+  /* Only the RGB triplets need overriding — the derived --color-* vars at
+     :root re-resolve against these at point of use. */
+  --color-bg-rgb: 245 245 245;
+  --color-surface-rgb: 252 252 252;
+  --color-surface-2-rgb: 239 239 239;
+  --color-surface-3-rgb: 230 230 230;
+  --color-fg-rgb: 35 35 35;
+  --color-muted-rgb: 91 94 102;
+  --color-subtle-rgb: 156 159 166;
+  --color-danger-rgb: 214 56 64;
+  --color-warning-rgb: 184 117 3;
+  --color-success-rgb: 31 143 95;
+
   --color-border: rgba(15, 17, 21, 0.08);
   --color-border-strong: rgba(15, 17, 21, 0.16);
-
-  --color-fg: #232323;
-  --color-muted: #5b5e66;
-  --color-subtle: #9c9fa6;
-
-  --color-accent: #485ae2;
-  --color-accent-ink: #ffffff;
   --color-accent-soft: rgba(72, 90, 226, 0.1);
-  --color-accent-deep: #3140b8;
-
-  --color-danger: #d63840;
-  --color-warning: #b87503;
-  --color-success: #1f8f5f;
 
   --dot-color: rgba(0, 0, 0, 0.06);
 }

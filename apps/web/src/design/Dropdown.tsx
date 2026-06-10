@@ -102,7 +102,7 @@ export function Dropdown({
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className="flex h-9 w-full items-center gap-2 rounded-sm border border-border bg-surface-2 px-3 text-left text-[13px] text-fg transition-colors hover:border-border-strong focus:border-border-strong focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+        className="flex h-9 w-full items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 text-left text-[13px] text-fg transition-colors hover:border-border-strong focus:border-border-strong focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
       >
         <span className={`flex-1 truncate ${selected ? "text-fg" : "text-subtle"}`}>
           {selected ? (selected.searchText ?? selected.label) : placeholder}

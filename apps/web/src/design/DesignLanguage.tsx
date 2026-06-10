@@ -39,7 +39,8 @@ import {
 // Design Language — /design
 //
 // Storybook for the primitives in ./ui.tsx. Black canvas · cobalt accent ·
-// sharp edges · bento grids. No deboss; flat hero; split nav.
+// soft corners (10px controls, 10-12px cards) · bento grids. No deboss; flat
+// hero; split nav.
 // ---------------------------------------------------------------------------
 
 export function DesignLanguage() {
@@ -110,7 +111,7 @@ function MainStorybook() {
             id="space"
             n="03"
             title="Space & Radius"
-            subtitle="Eight-pixel rhythm. Near-zero radius."
+            subtitle="Eight-pixel rhythm. Soft radius."
           >
             <SpaceBento />
           </Section>
@@ -561,13 +562,14 @@ function TypeBento() {
 // ---------------------------------------------------------------------------
 
 const spaceSteps = [4, 8, 12, 16, 24, 32, 48, 64];
+// Mirrors the borderRadius scale in tailwind.config.ts — keep in sync.
 const radiusSteps = [
-  { name: "none", px: 0 },
-  { name: "xs", px: 1 },
   { name: "sm", px: 2 },
-  { name: "md", px: 3 },
-  { name: "lg", px: 4 },
-  { name: "xl", px: 5 },
+  { name: "base", px: 4 },
+  { name: "md", px: 6 },
+  { name: "lg", px: 10 },
+  { name: "xl", px: 12 },
+  { name: "2xl", px: 14 },
 ];
 
 function SpaceBento() {
@@ -587,7 +589,7 @@ function SpaceBento() {
         </div>
       </Tile>
 
-      <Tile className="col-span-12 md:col-span-4" label="Radius · near-zero">
+      <Tile className="col-span-12 md:col-span-4" label="Radius · soft">
         <div className="grid grid-cols-3 gap-3">
           {radiusSteps.map((r) => (
             <div key={r.name} className="flex flex-col items-center gap-2">
@@ -672,7 +674,7 @@ function InputsBento() {
         <textarea
           rows={4}
           defaultValue={'error.rate > 0.05 AND service.name == "checkout"'}
-          className="w-full resize-none rounded-sm border border-border bg-surface-2 px-3 py-2 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none"
+          className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none"
         />
       </Tile>
     </div>

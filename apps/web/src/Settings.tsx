@@ -459,7 +459,7 @@ function NewProjectForm({
         }}
         placeholder="Project name"
         disabled={create.isPending}
-        className="h-7 w-full rounded-sm border border-border bg-surface-2 px-2 text-[13px] text-fg focus:border-border-strong focus:outline-none"
+        className="h-7 w-full rounded-lg border border-border bg-surface-2 px-2 text-[13px] text-fg focus:border-border-strong focus:outline-none"
       />
       {error && <span className="px-1 text-[11px] text-danger">{error}</span>}
       <div className="flex items-center gap-1">
@@ -688,7 +688,7 @@ function ProjectGeneralCard({ projectId }: { projectId: string | undefined }) {
             onChange={(e) => setDraft(e.target.value.slice(0, PROJECT_CONTEXT_MAX_LEN))}
             rows={7}
             placeholder="e.g. This project is the billing API. Stripe customer IDs are org-scoped. Prefer touching packages/billing before app code."
-            className="w-full rounded-sm border border-border bg-surface-2 p-3 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
+            className="w-full rounded-lg border border-border bg-surface-2 p-3 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
           />
           <div className="mt-1 flex justify-end font-mono text-[12px] tabular-nums text-muted">
             {draft.length} / {PROJECT_CONTEXT_MAX_LEN}
@@ -1638,7 +1638,7 @@ function OrgGuidanceCard() {
           onChange={(e) => setDraft(e.target.value.slice(0, ORG_GUIDANCE_MAX_LEN))}
           rows={5}
           placeholder="e.g. Always link incidents to the on-call runbook before filing a ticket. Prefer reverts over forward fixes for prod regressions."
-          className="w-full rounded-sm border border-border bg-surface-2 p-3 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
+          className="w-full rounded-lg border border-border bg-surface-2 p-3 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
         />
         <div className="flex items-center justify-between text-[12px] text-muted">
           <span>Prepended to every agent run prompt across all projects in this org.</span>
@@ -2125,7 +2125,7 @@ function IssueFilterBucket({
         <FieldLabel>{meta.label}</FieldLabel>
         <p className="mt-0.5 text-[12px] text-subtle">{meta.subtitle}</p>
       </div>
-      <div className="relative flex min-h-[40px] flex-wrap items-center gap-2 rounded-sm border border-border bg-surface-2 p-2">
+      <div className="relative flex min-h-[40px] flex-wrap items-center gap-2 rounded-lg border border-border bg-surface-2 p-2">
         {clauses.length === 0 && (
           <span className="px-1 text-[12.5px] text-subtle">
             {meta.mode === "include" ? "Any" : "Nothing"} — no constraint.
@@ -2297,7 +2297,7 @@ function IssueFilterPicker({
               }
             }}
             autoFocus
-            className="h-7 w-full rounded-sm border border-border bg-surface-2 px-2 text-[12px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none"
+            className="h-7 w-full rounded-lg border border-border bg-surface-2 px-2 text-[12px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none"
           />
         </div>
         <div className="max-h-72 overflow-y-auto">
@@ -2366,7 +2366,7 @@ function IssueFilterPicker({
             }
           }}
           autoFocus
-          className="h-7 w-full rounded-sm border border-border bg-surface-2 px-2 text-[12px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none"
+          className="h-7 w-full rounded-lg border border-border bg-surface-2 px-2 text-[12px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none"
         />
       </div>
       <div className="max-h-72 overflow-y-auto">
@@ -2778,7 +2778,7 @@ function InstructionsField({
         placeholder={
           "e.g. Prefer one-line fixes when possible. When patching the billing service, run pnpm typecheck before declaring the patch validated."
         }
-        className="w-full rounded-sm border border-border bg-surface-2 p-3 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
+        className="w-full rounded-lg border border-border bg-surface-2 p-3 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
       />
       <div className="flex items-center justify-between text-[12px] text-muted">
         <span>Appended to every agent run prompt for this workspace.</span>
@@ -2980,7 +2980,7 @@ function InstructionForm({
         onChange={(e) => onTextChange(e.target.value)}
         rows={3}
         placeholder="Describe the requirement the agent must follow when filing this ticket…"
-        className="w-full rounded-sm border border-border bg-surface-1 p-2 font-mono text-[12px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
+        className="w-full rounded-lg border border-border bg-surface-1 p-2 font-mono text-[12px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
       />
       <div className="flex items-center gap-2">
         <Btn size="sm" variant="primary" disabled={!title.trim() || disabled} onClick={onSave}>
