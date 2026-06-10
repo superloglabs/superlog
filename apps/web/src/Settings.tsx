@@ -93,6 +93,7 @@ import {
   resolveOrgSection,
   resolveProjectSection,
 } from "./settings/nav.ts";
+import { SettingsCard, SettingsCardFooter, SettingsRow } from "./settings/rows.tsx";
 
 type NavTarget = {
   scope?: SettingsScope;
@@ -653,25 +654,34 @@ function ProjectGeneralCard({ projectId }: { projectId: string | undefined }) {
   const canDelete = projects.length > 1;
 
   return (
-    <Tile>
-      <div className="space-y-4">
-        <div className="grid gap-4 md:grid-cols-2">
-          <div>
-            <span className="mb-1.5 block text-[12px] text-muted">Project name</span>
-            <Input
-              value={nameDraft}
-              disabled={disabled}
-              onChange={(e) => setNameDraft(e.target.value)}
-            />
-          </div>
-          <div>
-            <span className="mb-1.5 block text-[12px] text-muted">Slug</span>
-            <Input value={project?.slug ?? ""} disabled />
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <FieldLabel>Project context</FieldLabel>
+    <div className="space-y-4">
+      <SettingsCard>
+        <SettingsRow
+          title="Name"
+          description="Shown across the app and in incident threads"
+          control={
+            <div className="w-60">
+              <Input
+                value={nameDraft}
+                disabled={disabled}
+                onChange={(e) => setNameDraft(e.target.value)}
+              />
+            </div>
+          }
+        />
+        <SettingsRow
+          title="Slug"
+          description="Used in URLs — fixed after creation"
+          control={
+            <div className="w-60">
+              <Input className="font-mono text-[12.5px]" value={project?.slug ?? ""} disabled />
+            </div>
+          }
+        />
+        <SettingsRow
+          title="Project context"
+          description="Included as project context for investigations in this project"
+        >
           <textarea
             value={draft}
             disabled={disabled}
@@ -680,17 +690,26 @@ function ProjectGeneralCard({ projectId }: { projectId: string | undefined }) {
             placeholder="e.g. This project is the billing API. Stripe customer IDs are org-scoped. Prefer touching packages/billing before app code."
             className="w-full rounded-sm border border-border bg-surface-2 p-3 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
           />
-          <div className="flex items-center justify-between text-[12px] text-muted">
-            <span>Included as project context for investigations in this project.</span>
-            <span className="font-mono tabular-nums">
-              {draft.length} / {PROJECT_CONTEXT_MAX_LEN}
-            </span>
+          <div className="mt-1 flex justify-end font-mono text-[12px] tabular-nums text-muted">
+            {draft.length} / {PROJECT_CONTEXT_MAX_LEN}
           </div>
-        </div>
-
-        {error && <p className="text-[12px] text-danger">{error}</p>}
-
-        <div className="flex items-center gap-2">
+        </SettingsRow>
+        <SettingsCardFooter>
+          {error && <span className="mr-auto text-[12px] text-danger">{error}</span>}
+          {savedTick && <span className="text-[12px] text-success">Saved</span>}
+          {dirty && (
+            <Btn
+              size="sm"
+              variant="ghost"
+              disabled={update.isPending}
+              onClick={() => {
+                setDraft(value);
+                setNameDraft(project?.name ?? "");
+              }}
+            >
+              Discard
+            </Btn>
+          )}
           <Btn
             size="sm"
             variant="primary"
@@ -719,31 +738,14 @@ function ProjectGeneralCard({ projectId }: { projectId: string | undefined }) {
           >
             Save
           </Btn>
-          {dirty && (
-            <Btn
-              size="sm"
-              variant="ghost"
-              disabled={update.isPending}
-              onClick={() => {
-                setDraft(value);
-                setNameDraft(project?.name ?? "");
-              }}
-            >
-              Discard
-            </Btn>
-          )}
-          {savedTick && <span className="text-[12px] text-success">Saved</span>}
-        </div>
+        </SettingsCardFooter>
+      </SettingsCard>
 
-        <div className="border-t border-border pt-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <p className="text-[13px] font-medium text-fg">Delete project</p>
-              <p className="text-[12px] text-muted">
-                Telemetry, API keys, and integrations for this project will be deleted. This
-                cannot be undone.
-              </p>
-            </div>
+      <SettingsCard>
+        <SettingsRow
+          title="Delete project"
+          description="Telemetry, API keys, and integrations for this project will be deleted. This cannot be undone."
+          control={
             <Btn
               size="sm"
               variant="danger"
@@ -766,10 +768,10 @@ function ProjectGeneralCard({ projectId }: { projectId: string | undefined }) {
             >
               Delete
             </Btn>
-          </div>
-        </div>
-      </div>
-    </Tile>
+          }
+        />
+      </SettingsCard>
+    </div>
   );
 }
 
@@ -1141,63 +1143,18 @@ function SlackRoutingCard({ projectId }: { projectId: string | undefined }) {
   }
 
   return (
-    <Tile>
-      <div className="space-y-4">
-        <div>
-          {configured ? (
-            <Chip tone="success" dot>
-              Posting to #{currentChannelName ?? currentChannelId}
-            </Chip>
-          ) : (
-            <Chip tone="muted" dot>
-              Disabled — incidents are not posted to Slack
-            </Chip>
-          )}
-        </div>
-
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="min-w-[260px] flex-1">
-            <FieldLabel>Channel</FieldLabel>
-            <Dropdown
-              value={pendingChannelId}
-              onChange={setPendingChannelId}
-              disabled={!projectId || channels.isLoading || channels.isError}
-              placeholder={
-                channels.isLoading
-                  ? "Loading channels…"
-                  : channels.isError
-                    ? "Failed to load channels"
-                    : "Select a channel…"
-              }
-              emptyLabel="No channels found"
-              options={channelList.map((ch) => ({
-                value: ch.id,
-                searchText: `${ch.isPrivate ? "🔒 " : "#"}${ch.name}`,
-                label: (
-                  <span className="flex items-center gap-1.5">
-                    <span className="text-subtle">{ch.isPrivate ? "🔒" : "#"}</span>
-                    <span>{ch.name}</span>
-                  </span>
-                ),
-              }))}
-            />
-          </div>
-          <Btn
-            size="md"
-            variant="primary"
-            disabled={!projectId || !dirty || setRoute.isPending}
-            loading={setRoute.isPending}
-            onClick={async () => {
-              const ch = channelList.find((c) => c.id === pendingChannelId);
-              if (!ch) return;
-              await setRoute.mutateAsync(ch);
-            }}
-          >
-            {configured ? "Update channel" : "Enable"}
-          </Btn>
-          {configured && (
+    <SettingsCard>
+      <SettingsRow
+        title="Incident threads"
+        description={
+          configured
+            ? `Posting to #${currentChannelName ?? currentChannelId}`
+            : "Disabled — incidents are not posted to Slack"
+        }
+        control={
+          configured ? (
             <Btn
-              size="md"
+              size="sm"
               variant="danger"
               disabled={!projectId || deleteRoute.isPending}
               loading={deleteRoute.isPending}
@@ -1205,24 +1162,68 @@ function SlackRoutingCard({ projectId }: { projectId: string | undefined }) {
             >
               Disable
             </Btn>
-          )}
-        </div>
-
-        {channels.isError ? (
-          <p className="text-[12px] text-muted">
-            Couldn't fetch the channel list — try reconnecting Slack.
-          </p>
-        ) : (
-          <p className="text-[12px] text-muted">
-            Don't see a private channel? Slack only lists private channels the bot belongs to — run{" "}
-            <code className="rounded-sm bg-surface-2 px-1 py-0.5 text-[11px]">
-              /invite @Superlog
-            </code>{" "}
-            in that channel, then reopen this list.
-          </p>
-        )}
-      </div>
-    </Tile>
+          ) : undefined
+        }
+      />
+      <SettingsRow
+        title="Channel"
+        description={
+          channels.isError ? (
+            "Couldn't fetch the channel list — try reconnecting Slack."
+          ) : (
+            <>
+              Private channels only appear once the bot is invited — run{" "}
+              <code className="rounded-sm bg-surface-2 px-1 py-0.5 text-[11px]">
+                /invite @Superlog
+              </code>{" "}
+              there first
+            </>
+          )
+        }
+        control={
+          <>
+            <div className="w-60">
+              <Dropdown
+                value={pendingChannelId}
+                onChange={setPendingChannelId}
+                disabled={!projectId || channels.isLoading || channels.isError}
+                placeholder={
+                  channels.isLoading
+                    ? "Loading channels…"
+                    : channels.isError
+                      ? "Failed to load channels"
+                      : "Select a channel…"
+                }
+                emptyLabel="No channels found"
+                options={channelList.map((ch) => ({
+                  value: ch.id,
+                  searchText: `${ch.isPrivate ? "🔒 " : "#"}${ch.name}`,
+                  label: (
+                    <span className="flex items-center gap-1.5">
+                      <span className="text-subtle">{ch.isPrivate ? "🔒" : "#"}</span>
+                      <span>{ch.name}</span>
+                    </span>
+                  ),
+                }))}
+              />
+            </div>
+            <Btn
+              size="sm"
+              variant="primary"
+              disabled={!projectId || !dirty || setRoute.isPending}
+              loading={setRoute.isPending}
+              onClick={async () => {
+                const ch = channelList.find((c) => c.id === pendingChannelId);
+                if (!ch) return;
+                await setRoute.mutateAsync(ch);
+              }}
+            >
+              {configured ? "Update" : "Enable"}
+            </Btn>
+          </>
+        }
+      />
+    </SettingsCard>
   );
 }
 
@@ -1255,35 +1256,27 @@ function WeeklyDigestCard() {
     : "Never sent";
 
   return (
-    <Tile>
-      <div className="space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            {enabled && channelId ? (
-              <Chip tone="success" dot>
-                Posting weekly to #{channelName ?? channelId}
-              </Chip>
-            ) : (
-              <Chip tone="muted" dot>
-                Disabled
-              </Chip>
-            )}
-            <p className="mt-2 text-[12px] text-muted">{lastRunLabel}</p>
-          </div>
-          <label className="flex cursor-pointer items-center gap-2 text-[13px] text-muted">
-            <input
-              type="checkbox"
-              checked={enabled}
-              disabled={save.isPending || (!enabled && !channelId)}
-              onChange={(e) => save.mutate({ enabled: e.target.checked })}
-            />
-            Enabled
-          </label>
-        </div>
-
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="min-w-[260px] flex-1">
-            <FieldLabel>Channel</FieldLabel>
+    <SettingsCard>
+      <SettingsRow
+        title="Post a weekly recap to Slack"
+        description={
+          enabled && channelId
+            ? `Posting to #${channelName ?? channelId} · ${lastRunLabel}`
+            : lastRunLabel
+        }
+        control={
+          <Toggle
+            checked={enabled}
+            disabled={save.isPending || (!enabled && !channelId)}
+            onChange={(v) => save.mutate({ enabled: v })}
+          />
+        }
+      />
+      <SettingsRow
+        title="Channel"
+        description="Use a different channel from incident threads if it's noisy — invite the bot to private channels"
+        control={
+          <div className="w-60">
             <Dropdown
               value={channelId}
               disabled={channels.isLoading || channels.isError || save.isPending}
@@ -1318,24 +1311,24 @@ function WeeklyDigestCard() {
               ]}
             />
           </div>
+        }
+      />
+      <SettingsRow
+        title="Send digest now"
+        description="An LLM ranks the open bug-fix PRs across this org and posts the top 3"
+        control={
           <Btn
-            size="md"
+            size="sm"
             variant="secondary"
             disabled={!channelId || runNow.isPending}
             loading={runNow.isPending}
             onClick={() => runNow.mutate()}
           >
-            Send digest now
+            Send now
           </Btn>
-        </div>
-
-        <p className="text-[12px] text-muted">
-          Each week, an LLM ranks the open bug-fix PRs the agent has produced across this org and
-          posts the top 3. Use a different channel from incident threads if it's noisy. Same Slack
-          install — invite the bot to private channels you want to use.
-        </p>
-      </div>
-    </Tile>
+        }
+      />
+    </SettingsCard>
   );
 }
 
