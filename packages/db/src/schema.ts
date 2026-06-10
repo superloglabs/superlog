@@ -175,6 +175,10 @@ export type AgentRunResult = {
   rootCause?: AgentRunConfidence | null;
   estimatedImpact?: AgentRunConfidence | null;
   severity?: IncidentSeverity | null;
+  // Self-authored handover note for future follow-up runs on this incident:
+  // files/areas examined, hypotheses ruled out and why, repo gotchas. Written
+  // at completion when the agent still has full context.
+  handoffNotes?: string | null;
   mobileRegressionTest?: AgentRunMobileRegressionTest | null;
   noiseClassification?: IncidentNoiseClassification | null;
   resolutionClassification?: IncidentResolutionClassification | null;

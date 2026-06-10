@@ -296,6 +296,8 @@ export function normalizeAgentResult(rawInput: unknown): NormalizeResult {
   const proposedTitle = asString(input.proposedTitle);
   take("proposedTitle", "proposedTitle", proposedTitle);
 
+  take("handoffNotes", "handoffNotes", asString(input.handoffNotes));
+
   const rootCauseConfidence = asString(input.rootCauseConfidence);
   take(
     "rootCauseConfidence",

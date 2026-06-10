@@ -33,6 +33,27 @@ test("accepts minimal well-formed result", () => {
   assert.deepEqual(r.drops, []);
 });
 
+test("normalizes handoffNotes and drops non-string values", () => {
+  const ok = normalizeAgentResult({
+    state: "complete",
+    summary: "x",
+    handoffNotes: "Examined apps/api/src/billing.ts; ruled out the retry path (idempotent).",
+  });
+  assert.equal(ok.ok, true);
+  if (!ok.ok) return;
+  assert.equal(
+    ok.result.handoffNotes,
+    "Examined apps/api/src/billing.ts; ruled out the retry path (idempotent).",
+  );
+  assert.deepEqual(ok.drops, []);
+
+  const bad = normalizeAgentResult({ state: "complete", summary: "x", handoffNotes: 42 });
+  assert.equal(bad.ok, true);
+  if (!bad.ok) return;
+  assert.equal(bad.result.handoffNotes, undefined);
+  assert.deepEqual(bad.drops, ["handoffNotes"]);
+});
+
 test("accepts a fully-populated well-formed result", () => {
   const r = normalizeAgentResult({
     state: "complete",
