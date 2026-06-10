@@ -1,6 +1,8 @@
 import type {
   AgentMemoryKind,
+  AgentRunFollowUpInteraction,
   AgentRunResult,
+  AgentRunTrigger,
   LinearTicketInstruction,
   LinearTicketPolicy,
   PrPolicy,
@@ -33,6 +35,26 @@ export type AgentRunnerMemory = {
   body: string;
 };
 
+// Context for a follow-up run revived by a human interaction after a prior
+// investigation finished. The prior session is gone; this block plus the PR
+// branch and project memories is everything the new session inherits.
+export type AgentRunnerFollowUp = {
+  trigger: Exclude<AgentRunTrigger, "incident">;
+  interactions: AgentRunFollowUpInteraction[];
+  priorRun: {
+    state: "complete" | "failed";
+    summary: string;
+    rootCause: string | null;
+    handoffNotes: string | null;
+    validationSummary: string | null;
+    repoFullName: string | null;
+    prBranch: string | null;
+    prUrl: string | null;
+  } | null;
+  // Condensed incident timeline ("kind: summary" lines, oldest first).
+  timeline: string[];
+};
+
 export type AgentRunnerStartInput = {
   incidentId: string;
   projectId: string;
@@ -53,6 +75,8 @@ export type AgentRunnerStartInput = {
   // Durable cross-run facts (terminology, infra, feedback lessons) saved by
   // earlier runs or by users. Injected into the initial prompt in full.
   memories: AgentRunnerMemory[];
+  // Null for ordinary incident-triggered investigations.
+  followUp: AgentRunnerFollowUp | null;
 };
 
 export type AgentRunnerSnapshot = {

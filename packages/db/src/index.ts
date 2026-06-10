@@ -64,6 +64,9 @@ export type {
   AgentMemoryKind,
   AgentMemoryStatus,
   NewAgentMemory,
+  AgentRunTrigger,
+  AgentRunFollowUpInteraction,
+  AgentRunTriggerDetail,
   AgentRunResult,
   AgentRunPr,
   AgentRunLinearTicket,
@@ -107,6 +110,15 @@ export {
   generateWebhookSecret,
 } from "./webhooks.js";
 export { generateCodename } from "./codename.js";
+export {
+  evaluateFollowUpEligibility,
+  requestFollowUpAgentRun,
+  FOLLOW_UP_MAX_AGE_DAYS,
+  MAX_FOLLOW_UP_RUNS,
+  type FollowUpEligibilityInput,
+  type FollowUpVerdict,
+  type RequestFollowUpResult,
+} from "./agent-follow-up.js";
 export {
   isActiveIncidentState,
   buildAgentRunIncidentPatch,

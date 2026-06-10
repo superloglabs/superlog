@@ -62,6 +62,7 @@ test("getAgentRunnerBackend returns the default community backend", async () => 
         "When an issue sample includes a session.id attribute, use it to query preceding traces and logs.",
       customInstructions: "",
       memories: [],
+      followUp: null,
     });
     const snapshot = await backend.collect(session.sessionId);
 
@@ -109,6 +110,7 @@ test("getAgentRunnerBackend returns a built-in disabled backend for community in
           "When an issue sample includes a session.id attribute, use it to query preceding traces and logs.",
         customInstructions: "",
         memories: [],
+        followUp: null,
       }),
     /disabled/,
   );

@@ -240,6 +240,7 @@ async function startRunnerSession(
           title: memory.title,
           body: memory.body,
         })),
+        followUp: ctx.followUp,
       });
       llmSpan.setAttribute("agent_run.session_id", result.sessionId);
       return result;

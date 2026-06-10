@@ -5,9 +5,10 @@ import {
   listAccessibleGithubInstallsForProject,
   schema,
 } from "@superlog/db";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import { listActiveAgentMemories } from "./agent-memory-tools.js";
 import { buildAgentRunInstructions } from "./agent-run-instructions.js";
+import type { AgentRunnerFollowUp } from "./agent-runner-backend.js";
 import { listInstallationRepositories } from "./infra/github/repositories.js";
 import { logger } from "./logger.js";
 
@@ -45,7 +46,47 @@ export type AgentRunContext = {
   autoMergeMethod: schema.AutoMergeMethod;
   issueRows: Array<schema.Issue>;
   memories: Array<schema.AgentMemory>;
+  // Set for follow-up runs (trigger != incident): the prior run's distilled
+  // context plus the interaction(s) that revived the agent.
+  followUp: AgentRunnerFollowUp | null;
 };
+
+const FOLLOW_UP_TIMELINE_MAX_LINES = 20;
+
+// Pure assembly of the follow-up block from the run row, the latest terminal
+// prior run, and the incident timeline. Returns null for ordinary
+// incident-triggered runs.
+export function buildFollowUpContext(args: {
+  trigger: schema.AgentRunTrigger;
+  triggerDetail: schema.AgentRunTriggerDetail | null;
+  priorRun: schema.AgentRun | null;
+  events: Array<Pick<schema.IncidentEvent, "kind" | "summary">>;
+}): AgentRunnerFollowUp | null {
+  if (args.trigger === "incident") return null;
+  const result = args.priorRun?.result ?? null;
+  const priorState = args.priorRun?.state;
+  return {
+    trigger: args.trigger,
+    interactions: args.triggerDetail?.interactions ?? [],
+    priorRun:
+      args.priorRun && result && (priorState === "complete" || priorState === "failed")
+        ? {
+            state: priorState,
+            summary: result.summary,
+            rootCause: result.rootCause?.text ?? null,
+            handoffNotes: result.handoffNotes ?? null,
+            validationSummary: result.pr?.validationSummary ?? null,
+            repoFullName: args.priorRun.selectedRepoFullName ?? null,
+            prBranch: result.pr?.branchName ?? null,
+            prUrl: result.pr?.url ?? null,
+          }
+        : null,
+    timeline: args.events
+      .filter((event) => typeof event.summary === "string" && event.summary.length > 0)
+      .slice(-FOLLOW_UP_TIMELINE_MAX_LINES)
+      .map((event) => `${event.kind}: ${event.summary}`),
+  };
+}
 
 export async function getProjectAutomation(projectId: string): Promise<{
   autoInvestigateIssuesEnabled: boolean;
@@ -126,6 +167,29 @@ export async function loadAgentRunContext(
     projectInstructions: automation.customInstructions,
   });
   const memories = await listActiveAgentMemories(project.orgId, project.id);
+  let followUp: AgentRunnerFollowUp | null = null;
+  if (agentRun.trigger !== "incident") {
+    const priorRun =
+      (await db.query.agentRuns.findFirst({
+        where: and(
+          eq(schema.agentRuns.incidentId, incident.id),
+          ne(schema.agentRuns.id, agentRun.id),
+          inArray(schema.agentRuns.state, ["complete", "failed"]),
+        ),
+        orderBy: [desc(schema.agentRuns.createdAt)],
+      })) ?? null;
+    const events = await db.query.incidentEvents.findMany({
+      where: eq(schema.incidentEvents.incidentId, incident.id),
+      orderBy: [asc(schema.incidentEvents.createdAt)],
+      columns: { kind: true, summary: true },
+    });
+    followUp = buildFollowUpContext({
+      trigger: agentRun.trigger,
+      triggerDetail: agentRun.triggerDetail,
+      priorRun,
+      events,
+    });
+  }
   return {
     agentRun,
     incident,
@@ -142,6 +206,7 @@ export async function loadAgentRunContext(
     autoMergeMethod: automation.autoMergeMethod,
     issueRows,
     memories,
+    followUp,
   };
 }
 

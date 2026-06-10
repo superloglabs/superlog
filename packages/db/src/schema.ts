@@ -162,6 +162,23 @@ export type AgentRunConfidence = {
   confidence: number;
 };
 
+export type AgentRunTrigger = "incident" | "pr_comment" | "feedback" | "slack_reply";
+
+export type AgentRunFollowUpInteraction = {
+  channel: Exclude<AgentRunTrigger, "incident">;
+  author: string | null;
+  text: string;
+  // PR comments: the comment URL and, for review comments, the file/line.
+  url?: string | null;
+  path?: string | null;
+  line?: number | null;
+  occurredAt: string;
+};
+
+export type AgentRunTriggerDetail = {
+  interactions: AgentRunFollowUpInteraction[];
+};
+
 export type AgentRunResult = {
   state: "complete" | "awaiting_human" | "failed";
   summary: string;
@@ -675,6 +692,10 @@ export const projectAutomationSettings = pgTable(
     maxHumanResumeCount: integer("max_human_resume_count").notNull().default(3),
     customInstructions: text("custom_instructions").notNull().default(""),
     agentRunEnabled: boolean("agent_run_enabled").notNull().default(true),
+    // Gate for follow-up runs auto-triggered by PR comments and Slack
+    // replies after a prior run completed (feedback-triggered follow-ups
+    // are always confirm-gated regardless).
+    autoFollowUpEnabled: boolean("auto_follow_up_enabled").notNull().default(true),
     linearTicketPolicy: text("linear_ticket_policy")
       .$type<"never" | "on_ready_to_pr" | "always">()
       .notNull()
@@ -724,6 +745,14 @@ export const agentRuns = pgTable(
       .references(() => incidents.id, { onDelete: "cascade" }),
     runtime: text("runtime").notNull().default(DEFAULT_AGENT_RUN_PROVIDER),
     state: text("state").notNull().default("queued"),
+    // What started this run. "incident" is the normal investigation kicked
+    // off when the incident opens; the rest are follow-up runs revived by a
+    // human interaction after a prior run finished.
+    trigger: text("trigger").$type<AgentRunTrigger>().notNull().default("incident"),
+    // For follow-up runs: the interaction(s) that triggered it. Multiple
+    // interactions accumulate while the run is still queued (e.g. a PR
+    // review burst becomes one run, not one per comment).
+    triggerDetail: jsonb("trigger_detail").$type<AgentRunTriggerDetail>(),
     providerSessionId: text("provider_session_id"),
     providerThreadId: text("provider_thread_id"),
     providerSessionStatus: text("provider_session_status"),

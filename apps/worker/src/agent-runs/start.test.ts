@@ -54,6 +54,7 @@ test("startQueuedAgentRunWorkflow starts runner with capped repo candidates", as
     "prBaseBranch:development",
     "telemetryHint:session.id",
     "memories:0",
+    "followUp:none",
     "startRunning:session-1:1",
     "notifyStarted:1",
   ]);
@@ -137,6 +138,7 @@ function makeDeps(
         calls.push("telemetryHint:session.id");
       }
       calls.push(`memories:${input.memories.length}`);
+      calls.push(`followUp:${input.followUp ? input.followUp.trigger : "none"}`);
       onStart?.(input);
       return { sessionId: "session-1" };
     },
@@ -240,6 +242,7 @@ function makeContext(opts: { githubInstalled?: boolean } = {}): AgentRunContext 
     autoMergeMethod: "squash",
     issueRows: [],
     memories: [],
+    followUp: null,
   };
 }
 
