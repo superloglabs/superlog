@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { auth } from "./auth.js";
+import { offerFollowUpForFeedback } from "./follow-up-offer.js";
 import { logger } from "./logger.js";
 
 const log = logger.child({ scope: "feedback" });
@@ -192,6 +193,12 @@ export async function recordFeedback(input: {
   if (row) {
     void notifyFeedbackSlack(row).catch((err) => {
       log.warn({ err, feedback_id: row.id }, "feedback slack notify failed");
+    });
+    // Confirm-gated follow-up: offer a "Run follow-up" button in the
+    // incident's Slack thread (no-op for pr_comment feedback, which
+    // auto-triggers from the webhook path instead).
+    void offerFollowUpForFeedback(row).catch((err) => {
+      log.warn({ err, feedback_id: row.id }, "follow-up offer failed");
     });
   }
 }
