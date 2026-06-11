@@ -148,6 +148,33 @@ export async function loadAgentRunHealthCounts(): Promise<AgentRunOrgHealthCount
   );
 }
 
+// An org that emitted last pass but dropped out of the snapshot (e.g. its
+// only stuck run got superseded) gets one explicit all-zero entry so its
+// series ends at 0 instead of freezing at the last bad value. It only lives
+// for one pass — `previous` tracks the orgs the *snapshot* contained, so the
+// recovery zeros don't keep themselves alive.
+export function withRecoveryZeros(
+  current: AgentRunOrgHealthCounts[],
+  previous: ReadonlyMap<string, string>,
+): AgentRunOrgHealthCounts[] {
+  const seen = new Set(current.map((o) => o.orgId));
+  const out = [...current];
+  for (const [orgId, orgName] of previous) {
+    if (seen.has(orgId)) continue;
+    out.push({
+      orgId,
+      orgName,
+      failedRecentByReason: {},
+      completedRecent: 0,
+      stuck: 0,
+      queued: 0,
+      awaitingHuman: 0,
+      blocked: 0,
+    });
+  }
+  return out;
+}
+
 // Pure mapping from counts to gauge observations — kept separate from the OTel
 // callback so it's unit-testable. Orgs in the snapshot emit every gauge
 // (including zeros) so a recovered org drops to 0 instead of freezing at its
@@ -200,12 +227,15 @@ export function buildAgentRunHealthObservations(
 
 let cached: { at: number; counts: AgentRunOrgHealthCounts[] } | null = null;
 const CACHE_TTL_MS = 30_000;
+let previousSnapshotOrgs = new Map<string, string>();
 
 async function snapshot(): Promise<AgentRunOrgHealthCounts[]> {
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.counts;
   const counts = await loadAgentRunHealthCounts();
-  cached = { at: Date.now(), counts };
-  return counts;
+  const withZeros = withRecoveryZeros(counts, previousSnapshotOrgs);
+  previousSnapshotOrgs = new Map(counts.map((o) => [o.orgId, o.orgName]));
+  cached = { at: Date.now(), counts: withZeros };
+  return withZeros;
 }
 
 export function registerAgentRunHealthMetrics(): void {

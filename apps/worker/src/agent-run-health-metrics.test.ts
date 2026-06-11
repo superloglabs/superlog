@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   type AgentRunOrgHealthCounts,
   buildAgentRunHealthObservations,
+  withRecoveryZeros,
 } from "./agent-run-health-metrics.js";
 
 const ACME: AgentRunOrgHealthCounts = {
@@ -64,6 +65,27 @@ test("zero failures across all orgs still observe an explicit failed_recent zero
   assert.equal(failed.length, 1);
   assert.equal(failed[0]?.value, 0);
   assert.equal(failed[0]?.attributes?.["failure.reason"], "none");
+});
+
+test("orgs that drop out of the snapshot get one explicit all-zero pass", () => {
+  // Globex emitted last pass but has nothing to report now (e.g. its only
+  // stuck run got superseded). It must emit zeros once so its series ends at
+  // 0 instead of freezing at the last bad value.
+  const previous = new Map([
+    ["org-acme", "Acme"],
+    ["org-globex", "Globex"],
+  ]);
+  const out = withRecoveryZeros([ACME], previous);
+  assert.equal(out.length, 2);
+  const globex = out.find((o) => o.orgId === "org-globex");
+  assert.ok(globex);
+  assert.equal(globex.orgName, "Globex");
+  assert.equal(globex.stuck, 0);
+  assert.equal(globex.queued, 0);
+  assert.equal(globex.blocked, 0);
+  assert.deepEqual(globex.failedRecentByReason, {});
+  // Orgs still present are passed through untouched.
+  assert.equal(out.find((o) => o.orgId === "org-acme"), ACME);
 });
 
 test("no orgs at all still observes every gauge so the series never goes dark", () => {
