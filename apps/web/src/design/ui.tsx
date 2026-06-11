@@ -2,7 +2,8 @@ import { useEffect, useState, type ReactNode } from "react";
 
 // ---------------------------------------------------------------------------
 // Shared primitives used across the app and the /design storybook.
-// Dark canvas · cobalt accent · sharp edges · bento grids.
+// Dark canvas · cobalt accent · soft corners (6px buttons, 10px inputs,
+// 10-12px cards) · bento grids.
 // ---------------------------------------------------------------------------
 
 export function ShortcutKey({
@@ -48,9 +49,7 @@ export function Tile({
 
 export function Label({ children }: { children: ReactNode }) {
   return (
-    <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-subtle">
-      {children}
-    </span>
+    <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-subtle">{children}</span>
   );
 }
 
@@ -105,7 +104,7 @@ export function Btn({
   onClick,
 }: BtnProps) {
   const base =
-    "inline-flex items-center gap-2 rounded-sm font-medium tracking-tight transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40 select-none";
+    "inline-flex items-center gap-2 rounded-md font-medium tracking-tight transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40 select-none";
   const sizes = {
     sm: "h-7 px-2.5 text-[12px]",
     md: "h-8 px-3 text-[13px]",
@@ -114,11 +113,9 @@ export function Btn({
   const variants = {
     primary:
       "bg-accent text-accent-ink hover:brightness-110 active:brightness-95 shadow-[0_1px_0_0_rgba(255,255,255,0.12)_inset,0_6px_14px_-6px_rgba(72,90,226,0.55)]",
-    secondary:
-      "bg-transparent text-fg border border-border hover:border-border-strong",
+    secondary: "bg-transparent text-fg border border-border hover:border-border-strong",
     ghost: "bg-transparent text-fg hover:bg-surface-2",
-    danger:
-      "bg-transparent text-danger border border-danger/50 hover:bg-danger/10",
+    danger: "bg-danger/20 text-danger hover:bg-danger/30 active:bg-danger/25",
   };
   return (
     <button
@@ -139,13 +136,7 @@ export function Btn({
 // Chips
 // ---------------------------------------------------------------------------
 
-export type ChipTone =
-  | "neutral"
-  | "success"
-  | "warning"
-  | "danger"
-  | "muted"
-  | "accent";
+export type ChipTone = "neutral" | "success" | "warning" | "danger" | "muted" | "accent";
 
 export function Chip({
   children,
@@ -191,7 +182,7 @@ export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...rest}
-      className={`h-9 w-full rounded-sm border border-border bg-surface-2 px-3 text-[13px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none ${className}`}
+      className={`h-9 w-full rounded-lg border border-border bg-surface-2 px-3 text-[13px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none ${className}`}
     />
   );
 }
@@ -217,7 +208,7 @@ export function SearchInput({
       </svg>
       <input
         placeholder={placeholder}
-        className="h-9 w-full rounded-sm border border-border bg-surface-2 pl-8 pr-16 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none"
+        className="h-9 w-full rounded-lg border border-border bg-surface-2 pl-8 pr-16 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none"
       />
       <span className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm border border-border bg-surface-3 px-1.5 py-0.5 font-mono text-[10px] text-muted">
         {shortcut}
@@ -231,7 +222,7 @@ export function Select({ options }: { options: string[] }) {
     <div className="relative">
       <select
         defaultValue={options[0]}
-        className="h-9 w-full appearance-none rounded-sm border border-border bg-surface-2 pl-3 pr-8 text-[13px] text-fg focus:border-border-strong focus:outline-none"
+        className="h-9 w-full appearance-none rounded-lg border border-border bg-surface-2 pl-3 pr-8 text-[13px] text-fg focus:border-border-strong focus:outline-none"
       >
         {options.map((o) => (
           <option key={o} value={o}>
@@ -280,9 +271,7 @@ export function MetricTile({
   return (
     <div className={`relative rounded-2xl border border-border bg-surface p-5 ${className}`}>
       <div className="flex items-center justify-between">
-        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted">
-          {label}
-        </span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted">{label}</span>
         {hasDelta && (
           <span className={`font-mono text-[11px] tabular-nums ${tone}`}>
             {sign}
@@ -313,8 +302,7 @@ export function Sparkline({
   const d = pts
     .map((y, i) => `${i === 0 ? "M" : "L"} ${(i / (pts.length - 1)) * 100} ${40 - (y / max) * 38}`)
     .join(" ");
-  const color =
-    tone === "success" ? "#41D195" : tone === "danger" ? "#EF5A6F" : "#485AE2";
+  const color = tone === "success" ? "#41D195" : tone === "danger" ? "#EF5A6F" : "#485AE2";
   return (
     <svg
       className={className}
@@ -388,9 +376,7 @@ export type Theme = "light" | "dark";
 
 function readTheme(): Theme {
   if (typeof document === "undefined") return "dark";
-  return document.documentElement.getAttribute("data-theme") === "light"
-    ? "light"
-    : "dark";
+  return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
 }
 
 export function useTheme(): Theme {
@@ -424,12 +410,30 @@ export function ThemeToggle() {
       className="grid h-7 w-7 place-items-center border border-border text-muted transition-colors hover:text-fg"
     >
       {theme === "dark" ? (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
           <circle cx="12" cy="12" r="4" />
           <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
         </svg>
       ) : (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
         </svg>
       )}

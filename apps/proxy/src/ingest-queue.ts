@@ -9,12 +9,12 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import {
-  DeleteMessageCommand,
+  DeleteMessageBatchCommand,
   type Message,
   ReceiveMessageCommand,
   type ReceiveMessageCommandOutput,
   SQSClient,
-  SendMessageCommand,
+  SendMessageBatchCommand,
 } from "@aws-sdk/client-sqs";
 import { Upload } from "@aws-sdk/lib-storage";
 import { type SpillSink, captureBody } from "./body-capture.js";
@@ -37,6 +37,15 @@ const DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 120;
 const DEFAULT_BATCH_SIZE = 10;
 const DEFAULT_CONSUMER_CONCURRENCY = 4;
 const MAX_COLLECTOR_ERROR_BODY_CHARS = 1_000;
+// SQS hard limits on a single SendMessageBatch/DeleteMessageBatch call: at most
+// 10 entries, and (for sends) at most 256 KiB of total payload across entries.
+const SQS_BATCH_MAX_ENTRIES = 10;
+const SQS_BATCH_MAX_PAYLOAD_BYTES = 256 * 1024;
+// How long a pending send may wait for batch-mates before it is flushed anyway.
+// Each SQS request is billed individually, so coalescing sends into
+// SendMessageBatch cuts the request bill up to 10x; the linger is the latency
+// ceiling that coalescing may add to an ingest ack.
+const DEFAULT_SEND_LINGER_MS = 50;
 
 type LoggerLike = {
   info: (obj: Record<string, unknown>, msg: string) => void;
@@ -56,6 +65,7 @@ export type IngestQueueConfig = {
   visibilityTimeoutSeconds: number;
   batchSize: number;
   consumerConcurrency: number;
+  sendLingerMs: number;
 };
 
 export type IngestQueueInput = {
@@ -138,6 +148,7 @@ export function getIngestQueueConfig(env: NodeJS.ProcessEnv): IngestQueueConfig 
       readPositiveInt(env.INGEST_QUEUE_CONSUMER_CONCURRENCY, DEFAULT_CONSUMER_CONCURRENCY),
       32,
     ),
+    sendLingerMs: readNonNegativeInt(env.INGEST_QUEUE_SEND_LINGER_MS, DEFAULT_SEND_LINGER_MS),
   };
 }
 
@@ -276,6 +287,22 @@ export type SpillSinkFactory = (params: {
   contentType: string;
 }) => SpillSink;
 
+type PendingSend = {
+  messageBody: string;
+  bytes: number;
+  resolve: () => void;
+  reject: (err: unknown) => void;
+};
+
+/** Outcome of processing one received message: whether the consume loop should
+ *  delete it from the queue, and which offloaded S3 body to purge once that
+ *  delete has succeeded. */
+type ProcessedMessage = {
+  message: Message;
+  shouldDelete: boolean;
+  s3Cleanup?: { bucket: string; key: string };
+};
+
 export class IngestQueue {
   private readonly sqs: SQSClient;
   private readonly s3: S3Client;
@@ -326,12 +353,7 @@ export class IngestQueue {
         );
       }
 
-      await this.sqs.send(
-        new SendMessageCommand({
-          QueueUrl: this.config.queueUrl,
-          MessageBody: encoded.messageBody,
-        }),
-      );
+      await this.sendToQueue(encoded.messageBody);
       return encoded.storage;
     } catch (err) {
       if (uploadedObject) {
@@ -397,9 +419,7 @@ export class IngestQueue {
       body: { storage: "s3", bucket, key, sizeBytes: result.totalBytes },
     };
     try {
-      await this.sqs.send(
-        new SendMessageCommand({ QueueUrl: this.config.queueUrl, MessageBody: JSON.stringify(message) }),
-      );
+      await this.sendToQueue(JSON.stringify(message));
     } catch (err) {
       // The object already landed; clean up the orphan so a failed enqueue does
       // not leak S3 storage, mirroring enqueue()'s rollback.
@@ -467,6 +487,104 @@ export class IngestQueue {
     };
   }
 
+  // Producer-side micro-batching: pending sends accumulate here until a flush
+  // (10 entries, the 256 KiB payload budget, or the linger timer) groups them
+  // into SendMessageBatch calls. Every SQS request is billed individually, so at
+  // ingest volume this cuts the request bill up to 10x for the price of at most
+  // sendLingerMs of added ack latency.
+  private pendingSends: PendingSend[] = [];
+  private pendingSendBytes = 0;
+  private sendFlushTimer: NodeJS.Timeout | null = null;
+  private readonly inFlightSends = new Set<Promise<void>>();
+
+  /** Resolves once this message body has been accepted by SQS (its batch entry
+   *  succeeded); rejects with the entry/batch failure otherwise. */
+  private sendToQueue(messageBody: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const bytes = Buffer.byteLength(messageBody);
+      this.pendingSends.push({ messageBody, bytes, resolve, reject });
+      this.pendingSendBytes += bytes;
+      if (
+        this.pendingSends.length >= SQS_BATCH_MAX_ENTRIES ||
+        this.pendingSendBytes >= SQS_BATCH_MAX_PAYLOAD_BYTES
+      ) {
+        this.flushPendingSends();
+      } else if (!this.sendFlushTimer) {
+        this.sendFlushTimer = setTimeout(() => this.flushPendingSends(), this.config.sendLingerMs);
+        // Never keep the process alive just for a pending flush; shutdown
+        // flushes explicitly via stop().
+        this.sendFlushTimer.unref?.();
+      }
+    });
+  }
+
+  private flushPendingSends(): void {
+    if (this.sendFlushTimer) {
+      clearTimeout(this.sendFlushTimer);
+      this.sendFlushTimer = null;
+    }
+    const pending = this.pendingSends;
+    this.pendingSends = [];
+    this.pendingSendBytes = 0;
+    if (pending.length === 0) return;
+
+    // Greedy chunking under both SQS batch limits. A single message can be at
+    // most maxMessageBytes (< the payload budget), so every entry fits somewhere.
+    const chunks: PendingSend[][] = [];
+    let current: PendingSend[] = [];
+    let currentBytes = 0;
+    for (const entry of pending) {
+      if (
+        current.length > 0 &&
+        (current.length >= SQS_BATCH_MAX_ENTRIES ||
+          currentBytes + entry.bytes > SQS_BATCH_MAX_PAYLOAD_BYTES)
+      ) {
+        chunks.push(current);
+        current = [];
+        currentBytes = 0;
+      }
+      current.push(entry);
+      currentBytes += entry.bytes;
+    }
+    if (current.length > 0) chunks.push(current);
+
+    for (const chunk of chunks) {
+      const sendPromise: Promise<void> = this.sendBatchChunk(chunk).finally(() => {
+        this.inFlightSends.delete(sendPromise);
+      });
+      this.inFlightSends.add(sendPromise);
+    }
+  }
+
+  private async sendBatchChunk(chunk: PendingSend[]): Promise<void> {
+    try {
+      const result = await this.sqs.send(
+        new SendMessageBatchCommand({
+          QueueUrl: this.config.queueUrl,
+          Entries: chunk.map((entry, index) => ({
+            Id: String(index),
+            MessageBody: entry.messageBody,
+          })),
+        }),
+      );
+      const failed = new Map((result.Failed ?? []).map((failure) => [failure.Id, failure]));
+      chunk.forEach((entry, index) => {
+        const failure = failed.get(String(index));
+        if (failure) {
+          entry.reject(
+            new Error(
+              `SQS batch entry failed: ${failure.Code ?? "unknown"}: ${failure.Message ?? "no message"}`,
+            ),
+          );
+        } else {
+          entry.resolve();
+        }
+      });
+    } catch (err) {
+      for (const entry of chunk) entry.reject(err);
+    }
+  }
+
   // Set by stop(); flips the consume loops out of their receive cycle so a
   // rolling deploy can drain cleanly instead of abandoning in-flight messages.
   private shuttingDown = false;
@@ -512,6 +630,12 @@ export class IngestQueue {
       { queueUrl: this.config.queueUrl },
       "ingest queue consumer draining in-flight messages",
     );
+    // Flush any sends still waiting on the linger timer so a producer-only
+    // proxy doesn't drop the tail of accepted requests on SIGTERM. The entry
+    // promises are awaited by their HTTP handlers; allSettled only waits for
+    // the wire calls to finish.
+    this.flushPendingSends();
+    await Promise.allSettled([...this.inFlightSends]);
     // consumersDone never rejects (see startConsumer); a loop failure is logged
     // and surfaced as a non-zero exit there.
     await this.consumersDone;
@@ -555,7 +679,10 @@ export class IngestQueue {
       const messages = result.Messages ?? [];
       if (messages.length === 0) continue;
 
-      await Promise.all(messages.map((message) => this.processMessage(message, collectorUrl)));
+      const processed = await Promise.all(
+        messages.map((message) => this.processMessage(message, collectorUrl)),
+      );
+      await this.deleteProcessedMessages(processed.filter((outcome) => outcome.shouldDelete));
     }
 
     this.logger.info(
@@ -564,9 +691,16 @@ export class IngestQueue {
     );
   }
 
-  private async processMessage(message: Message, collectorUrl: string): Promise<void> {
+  /**
+   * Forward one received message to the collector and report whether it should
+   * be deleted from the queue. Deletion itself happens in batch back in the
+   * consume loop (see {@link deleteProcessedMessages}); the optional s3Cleanup
+   * is only acted on once the SQS delete for this message actually succeeded,
+   * so a redelivered message can still read its offloaded body.
+   */
+  private async processMessage(message: Message, collectorUrl: string): Promise<ProcessedMessage> {
     const startedAt = performance.now();
-    if (!message.Body) return;
+    if (!message.Body) return { message, shouldDelete: false };
 
     let parsed: IngestQueueMessage | undefined;
     let collectorFailure: CollectorFailureDescription | undefined;
@@ -607,18 +741,6 @@ export class IngestQueue {
         throw new Error(collectorFailure.message);
       }
 
-      if (!message.ReceiptHandle) throw new Error("SQS message is missing receipt handle");
-      await this.sqs.send(
-        new DeleteMessageCommand({
-          QueueUrl: this.config.queueUrl,
-          ReceiptHandle: message.ReceiptHandle,
-        }),
-      );
-
-      if (parsed.body.storage === "s3") {
-        await this.deleteS3Object(parsed.body.bucket, parsed.body.key);
-      }
-
       proxyOperationalRecorder.recordQueueDelivery({
         path: parsed.path,
         projectId: parsed.projectId,
@@ -638,6 +760,15 @@ export class IngestQueue {
         },
         "delivered queued ingest payload",
       );
+
+      return {
+        message,
+        shouldDelete: true,
+        s3Cleanup:
+          parsed.body.storage === "s3"
+            ? { bucket: parsed.body.bucket, key: parsed.body.key }
+            : undefined,
+      };
     } catch (err) {
       const poison = isPoisonMessageError(err);
       // A collector 4xx (other than 408/429) rejects these exact bytes permanently, so it
@@ -684,30 +815,79 @@ export class IngestQueue {
       // An undeliverable message (poison envelope or permanent collector 4xx) can never
       // succeed; leaving it in place means 50 redeliveries (15-min visibility each) before
       // it reaches the DLQ, which pins oldest-message-age into a sawtooth and keeps the bad
-      // payload churning in-flight. Delete it immediately so it stops cycling.
-      if (drop && message.ReceiptHandle) {
-        const sqsDeleted = await this.sqs
-          .send(
-            new DeleteMessageCommand({
-              QueueUrl: this.config.queueUrl,
-              ReceiptHandle: message.ReceiptHandle,
-            }),
-          )
-          .then(() => true)
-          .catch((deleteErr: unknown) => {
-            this.logger.warn(
-              { err: deleteErr, messageId: message.MessageId },
-              "failed to delete undeliverable ingest message",
-            );
-            return false;
-          });
-        // Only purge the S3 body once the queue message is actually gone. If the SQS delete
-        // failed, the message will be redelivered after the visibility timeout and still needs
-        // its body — deleting it here would strand the retry with a missing object until the DLQ.
-        if (sqsDeleted && parsed?.body?.storage === "s3" && parsed.body.bucket && parsed.body.key) {
-          await this.deleteS3Object(parsed.body.bucket, parsed.body.key).catch(() => {});
-        }
+      // payload churning in-flight. Mark it for deletion so it stops cycling; the S3 body
+      // is only purged once the SQS delete actually succeeded (see deleteProcessedMessages).
+      return {
+        message,
+        shouldDelete: drop,
+        s3Cleanup:
+          drop && parsed?.body?.storage === "s3" && parsed.body.bucket && parsed.body.key
+            ? { bucket: parsed.body.bucket, key: parsed.body.key }
+            : undefined,
+      };
+    }
+  }
+
+  /**
+   * Delete a processed batch of messages with DeleteMessageBatch (one billed
+   * request per 10 messages instead of one per message). A failed entry is only
+   * logged — the message redelivers after its visibility timeout, which at worst
+   * forwards the same payload to the collector twice; its offloaded S3 body is
+   * kept so the retry can still read it.
+   */
+  private async deleteProcessedMessages(outcomes: ProcessedMessage[]): Promise<void> {
+    const deletable = outcomes.filter((outcome) => {
+      if (outcome.message.ReceiptHandle) return true;
+      this.logger.warn(
+        { messageId: outcome.message.MessageId },
+        "SQS message is missing receipt handle; it cannot be deleted",
+      );
+      return false;
+    });
+
+    for (let offset = 0; offset < deletable.length; offset += SQS_BATCH_MAX_ENTRIES) {
+      const chunk = deletable.slice(offset, offset + SQS_BATCH_MAX_ENTRIES);
+      let failedIds: Set<string | undefined>;
+      try {
+        const result = await this.sqs.send(
+          new DeleteMessageBatchCommand({
+            QueueUrl: this.config.queueUrl,
+            Entries: chunk.map((outcome, index) => ({
+              Id: String(index),
+              ReceiptHandle: outcome.message.ReceiptHandle,
+            })),
+          }),
+        );
+        failedIds = new Set((result.Failed ?? []).map((failure) => failure.Id));
+      } catch (err) {
+        this.logger.warn(
+          { err, count: chunk.length },
+          "failed to delete processed ingest messages; they will be redelivered",
+        );
+        continue;
       }
+
+      await Promise.all(
+        chunk.map(async (outcome, index) => {
+          if (failedIds.has(String(index))) {
+            this.logger.warn(
+              { messageId: outcome.message.MessageId },
+              "failed to delete processed ingest message; it will be redelivered",
+            );
+            return;
+          }
+          if (outcome.s3Cleanup) {
+            await this.deleteS3Object(outcome.s3Cleanup.bucket, outcome.s3Cleanup.key).catch(
+              (err) => {
+                this.logger.warn(
+                  { err, ...outcome.s3Cleanup },
+                  "failed to delete oversize ingest object after delivery",
+                );
+              },
+            );
+          }
+        }),
+      );
     }
   }
 
@@ -773,6 +953,12 @@ function readPositiveInt(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readNonNegativeInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function trimSlashes(value: string): string {

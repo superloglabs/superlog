@@ -2,7 +2,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useMe } from "../api.ts";
 import { authClient } from "../auth-client.ts";
-import { Btn, Input, Tile } from "../design/ui.tsx";
+import { Btn, Input } from "../design/ui.tsx";
+import { SettingsCard, SettingsCardFooter, SettingsRow } from "./rows.tsx";
 
 export function OrgGeneralCard() {
   const me = useMe();
@@ -68,31 +69,39 @@ export function OrgGeneralCard() {
   const dirty = name.trim() !== orgName || slug.trim() !== orgSlug;
 
   return (
-    <Tile>
-      <form onSubmit={submit} className="flex flex-col gap-4">
-        <div>
-          <label className="mb-1.5 block text-[12px] text-muted">Organization name</label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme" />
-        </div>
-        <div>
-          <label className="mb-1.5 block text-[12px] text-muted">Slug</label>
-          <Input
-            value={slug}
-            onChange={(e) => setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"))}
-            placeholder="acme"
-          />
-          <p className="mt-1 text-[11px] text-subtle">
-            Lowercase letters, numbers, and dashes. Used in URLs and emails.
-          </p>
-        </div>
-        {error && <p className="text-[12px] text-danger">{error}</p>}
-        <div className="flex items-center gap-2">
-          <Btn type="submit" loading={update.isPending} disabled={!dirty || !name.trim()}>
+    <form onSubmit={submit}>
+      <SettingsCard>
+        <SettingsRow
+          title="Name"
+          description="Shown across the app and in emails"
+          control={
+            <div className="w-60">
+              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme" />
+            </div>
+          }
+        />
+        <SettingsRow
+          title="Slug"
+          description="Used in URLs and emails — lowercase letters, numbers, and dashes"
+          control={
+            <div className="w-60">
+              <Input
+                className="font-mono text-[12.5px]"
+                value={slug}
+                onChange={(e) => setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"))}
+                placeholder="acme"
+              />
+            </div>
+          }
+        />
+        <SettingsCardFooter>
+          {error && <span className="mr-auto text-[12px] text-danger">{error}</span>}
+          {savedTick && <span className="text-[12px] text-success">Saved</span>}
+          <Btn type="submit" size="sm" loading={update.isPending} disabled={!dirty || !name.trim()}>
             Save
           </Btn>
-          {savedTick && <span className="text-[12px] text-success">Saved</span>}
-        </div>
-      </form>
-    </Tile>
+        </SettingsCardFooter>
+      </SettingsCard>
+    </form>
   );
 }
