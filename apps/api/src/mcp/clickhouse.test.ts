@@ -458,6 +458,91 @@ test("countSeries falls back to the raw table for sub-minute steps", async () =>
   assert.match(capture.query ?? "", /FROM otel_traces/);
 });
 
+// -----------------------------------------------------------------------------
+// service.name attribute filters should hit the native ServiceName column
+// (the tables' primary key starts with ServiceName) instead of the
+// ResourceAttributes map, which forces a full-window scan.
+// -----------------------------------------------------------------------------
+
+test("countSeries maps a service.name resource filter to the ServiceName column", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await countSeries(
+    fakeClickhouse(capture),
+    "project-1",
+    "logs",
+    {
+      range: HOUR_RANGE,
+      resourceAttrs: [
+        { key: "service.name", value: "worker", op: "eq" },
+        { key: "env", value: "prod", op: "eq" },
+      ],
+    },
+    undefined,
+    { n: 1, unit: "MINUTE" },
+  );
+
+  assert.match(capture.query ?? "", /ServiceName = \{attr_v_0:String\}/);
+  assert.doesNotMatch(capture.query ?? "", /ResourceAttributes\[\{attr_k_0:String\}\]/);
+  // the other attribute still goes through the map
+  assert.match(capture.query ?? "", /ResourceAttributes\[\{attr_k_1:String\}\]/);
+  assert.equal(capture.params?.attr_v_0, "worker");
+});
+
+test("countSeries maps negated service.name filters onto ServiceName too", async () => {
+  const neqCapture: { query?: string; params?: Record<string, unknown> } = {};
+  await countSeries(
+    fakeClickhouse(neqCapture),
+    "project-1",
+    "traces",
+    { range: HOUR_RANGE, resourceAttrs: [{ key: "resource.service.name", value: "worker", op: "neq" }] },
+    undefined,
+    { n: 1, unit: "MINUTE" },
+  );
+  assert.match(neqCapture.query ?? "", /ServiceName != \{attr_v_0:String\}/);
+
+  const ncCapture: { query?: string; params?: Record<string, unknown> } = {};
+  await countSeries(
+    fakeClickhouse(ncCapture),
+    "project-1",
+    "traces",
+    { range: HOUR_RANGE, resourceAttrs: [{ key: "service.name", value: "work", op: "not_contains" }] },
+    undefined,
+    { n: 1, unit: "MINUTE" },
+  );
+  assert.match(ncCapture.query ?? "", /positionCaseInsensitive\(ServiceName, \{attr_v_0:String\}\) = 0/);
+});
+
+test("queryLogs maps a service.name resource filter to the ServiceName column", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await queryLogs(fakeClickhouse(capture), "project-1", {
+    range: { since: "now() - INTERVAL 1 HOUR", until: "now()" },
+    resourceAttrs: [{ key: "service.name", value: "worker", op: "eq" }],
+    limit: 50,
+  });
+
+  assert.match(capture.query ?? "", /ServiceName = \{attr_v_0:String\}/);
+  assert.doesNotMatch(capture.query ?? "", /ResourceAttributes\[\{attr_k_0:String\}\]/);
+});
+
+test("countSeries treats a lone service.name equality filter as rollup-coverable", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await countSeries(
+    fakeClickhouseRollup(capture),
+    "project-1",
+    "traces",
+    { range: HOUR_RANGE, resourceAttrs: [{ key: "service.name", value: "worker", op: "eq" }] },
+    undefined,
+    { n: 15, unit: "MINUTE" },
+  );
+
+  assert.match(capture.query ?? "", /FROM events_per_minute/);
+  assert.match(capture.query ?? "", /service = \{service:String\}/);
+  assert.equal(capture.params?.service, "worker");
+});
+
 test("countSeries falls back to the raw table when the rollup table is absent", async () => {
   const capture: { query?: string; params?: Record<string, unknown> } = {};
 

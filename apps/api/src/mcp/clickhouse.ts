@@ -73,14 +73,21 @@ function attrConds(
   attrs.forEach((a, i) => {
     const kName = `${paramPrefix}_k_${i}`;
     const vName = `${paramPrefix}_v_${i}`;
+    // service.name lives in the dedicated ServiceName column, which leads
+    // every otel table's primary key — filter it natively so ClickHouse can
+    // prune to the service's PK range instead of scanning the resource map
+    // for the whole window. (The collector populates ServiceName from the
+    // service.name resource attribute, so the two are equivalent.)
+    const native = column === "ResourceAttributes" && a.key === "service.name";
+    const target = native ? "ServiceName" : `${column}[{${kName}:String}]`;
     if (a.op === "neq") {
-      conds.push(`${column}[{${kName}:String}] != {${vName}:String}`);
+      conds.push(`${target} != {${vName}:String}`);
     } else if (a.op === "not_contains") {
-      conds.push(`positionCaseInsensitive(${column}[{${kName}:String}], {${vName}:String}) = 0`);
+      conds.push(`positionCaseInsensitive(${target}, {${vName}:String}) = 0`);
     } else {
-      conds.push(`${column}[{${kName}:String}] = {${vName}:String}`);
+      conds.push(`${target} = {${vName}:String}`);
     }
-    params[kName] = a.key;
+    if (!native) params[kName] = a.key;
     params[vName] = a.value;
   });
   return { conds, params };
@@ -1154,6 +1161,21 @@ function rollupAvailable(ch: ClickHouseClient): Promise<boolean> {
   return probe;
 }
 
+// A widget that filters on the service.name resource attribute (instead of
+// the dedicated service field) is still asking a service question — fold a
+// lone equality into `service` so the rollup can answer it. Returns null
+// when the filter isn't foldable.
+function foldServiceAttrFilter(filter: SeriesFilter): SeriesFilter | null {
+  const attrs = filter.resourceAttrs ?? [];
+  if (attrs.length === 0) return filter;
+  if (attrs.length !== 1 || filter.service) return null;
+  const attr = attrs[0];
+  if (!attr || (attr.op && attr.op !== "eq")) return null;
+  const parsed = parseAttributeKey(attr.key);
+  if (parsed.scope !== "resource" || parsed.key !== "service.name") return null;
+  return { ...filter, service: attr.value, resourceAttrs: [] };
+}
+
 function rollupEligible(filter: SeriesFilter, groupBy: string | undefined, step: Step): boolean {
   if (step.unit === "SECOND") return false; // rollup resolution is one minute
   if (filter.resourceAttrs?.length) return false;
@@ -1226,8 +1248,9 @@ export async function countSeries(
   groupBy: string | undefined,
   step: Step,
 ): Promise<{ bucket: string; group: string; count: number }[]> {
-  if (rollupEligible(filter, groupBy, step) && (await rollupAvailable(ch))) {
-    return countSeriesFromRollup(ch, projectId, source, filter, groupBy, step);
+  const folded = foldServiceAttrFilter(filter);
+  if (folded && rollupEligible(folded, groupBy, step) && (await rollupAvailable(ch))) {
+    return countSeriesFromRollup(ch, projectId, source, folded, groupBy, step);
   }
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(filter.range);
   const split = splitAttrs(filter.resourceAttrs);

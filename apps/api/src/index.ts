@@ -107,8 +107,11 @@ const ch = createClient({
   password: process.env.CLICKHOUSE_PASSWORD ?? "",
   // idle_socket_ttl must stay below CH server's keep_alive_timeout (3s default)
   // so we recycle before the server closes; request_timeout short-circuits
-  // stale sockets that slipped through instead of hanging 30s.
-  request_timeout: 10_000,
+  // stale sockets that slipped through instead of hanging forever. 20s gives
+  // heavy filtered/grouped widget queries on high-volume projects room to
+  // finish; cancel_http_readonly_queries_on_client_close below keeps a
+  // timed-out query from living on server-side.
+  request_timeout: 20_000,
   keep_alive: { enabled: true, idle_socket_ttl: 2_500 },
   clickhouse_settings: {
     // When request_timeout (or a caller's abort signal) drops the HTTP
