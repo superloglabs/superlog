@@ -12,6 +12,7 @@ const COUNTS: AgentRunHealthCounts = {
   stuck: 4,
   queued: 12,
   awaitingHuman: 3,
+  blocked: 5,
 };
 
 test("health counts map onto the agent_runs gauges", () => {
@@ -23,6 +24,7 @@ test("health counts map onto the agent_runs gauges", () => {
   assert.equal(byMetric.get("superlog.agent_runs.stuck|"), 4);
   assert.equal(byMetric.get("superlog.agent_runs.queued|"), 12);
   assert.equal(byMetric.get("superlog.agent_runs.awaiting_human|"), 3);
+  assert.equal(byMetric.get("superlog.agent_runs.blocked|"), 5);
   assert.equal(byMetric.get("superlog.agent_runs.completed_recent|"), 31);
   assert.equal(byMetric.get("superlog.agent_runs.failed_recent|patch_validation_failed"), 7);
   assert.equal(byMetric.get("superlog.agent_runs.failed_recent|sync_failed"), 2);
@@ -35,6 +37,7 @@ test("zero failures still observe gauges so the series never goes dark", () => {
     stuck: 0,
     queued: 0,
     awaitingHuman: 0,
+    blocked: 0,
   });
   const metrics = observations.map((o) => o.metric);
   assert.ok(metrics.includes("superlog.agent_runs.stuck"));

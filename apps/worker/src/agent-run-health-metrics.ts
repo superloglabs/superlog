@@ -14,11 +14,20 @@ export type AgentRunHealthCounts = {
   // state='failed' within the recent window, keyed by failure_reason.
   failedRecentByReason: Record<string, number>;
   completedRecent: number;
-  // Non-terminal, non-human-gated runs older than the stuck threshold.
+  // Actively-moving states that stopped moving (older than the stuck threshold).
   stuck: number;
   queued: number;
   awaitingHuman: number;
+  // Runs parked on missing prerequisites (e.g. no GitHub connected).
+  blocked: number;
 };
+
+// States that should always be progressing on their own. Anything here older
+// than the stuck threshold has genuinely wedged. Deliberately an allow-list:
+// parked states (awaiting_human, blocked_no_github, superseded, and whatever
+// gets added next) accumulate by design — counting them as stuck pins the
+// gauge at a permanently-elevated baseline and makes it unreadable.
+const ACTIVE_RUN_STATES = ["queued", "repo_discovery", "running", "pr_retry_queued"] as const;
 
 export type AgentRunHealthObservation = {
   metric: string;
@@ -28,9 +37,9 @@ export type AgentRunHealthObservation = {
 
 // The 1h window matches "how bad is it right now" rather than all-time
 // counters; the 2h stuck threshold sits above the 90-minute default
-// maxRuntimeMinutes, so anything non-terminal past it has outlived its own
-// budget. awaiting_human is excluded from stuck — parked on a human is
-// waiting, not stuck — but exposed as its own gauge.
+// maxRuntimeMinutes, so any active run past it has outlived its own budget.
+// Parked states are not stuck: awaiting_human and blocked runs each get their
+// own gauge instead.
 export async function loadAgentRunHealthCounts(): Promise<AgentRunHealthCounts> {
   const failedRows = (await db.execute<{ reason: string; count: number }>(sql`
     SELECT coalesce(nullif(failure_reason, ''), 'unknown') AS reason, count(*)::int AS count
@@ -44,25 +53,37 @@ export async function loadAgentRunHealthCounts(): Promise<AgentRunHealthCounts> 
     stuck: number;
     queued: number;
     awaiting: number;
+    blocked: number;
   }>(sql`
     SELECT
       count(*) FILTER (WHERE state = 'complete' AND updated_at > now() - interval '1 hour')::int AS completed,
       count(*) FILTER (
-        WHERE state NOT IN ('complete', 'failed', 'awaiting_human')
+        WHERE state IN (${sql.join(
+          ACTIVE_RUN_STATES.map((s) => sql`${s}`),
+          sql`, `,
+        )})
           AND created_at < now() - interval '2 hours'
       )::int AS stuck,
       count(*) FILTER (WHERE state = 'queued')::int AS queued,
-      count(*) FILTER (WHERE state = 'awaiting_human')::int AS awaiting
+      count(*) FILTER (WHERE state = 'awaiting_human')::int AS awaiting,
+      count(*) FILTER (WHERE state LIKE 'blocked_%')::int AS blocked
     FROM agent_runs
-  `)) as unknown as Array<{ completed: number; stuck: number; queued: number; awaiting: number }>;
+  `)) as unknown as Array<{
+    completed: number;
+    stuck: number;
+    queued: number;
+    awaiting: number;
+    blocked: number;
+  }>;
 
-  const gauges = gaugeRows[0] ?? { completed: 0, stuck: 0, queued: 0, awaiting: 0 };
+  const gauges = gaugeRows[0] ?? { completed: 0, stuck: 0, queued: 0, awaiting: 0, blocked: 0 };
   return {
     failedRecentByReason: Object.fromEntries(failedRows.map((r) => [r.reason, Number(r.count)])),
     completedRecent: Number(gauges.completed),
     stuck: Number(gauges.stuck),
     queued: Number(gauges.queued),
     awaitingHuman: Number(gauges.awaiting),
+    blocked: Number(gauges.blocked),
   };
 }
 
@@ -77,6 +98,7 @@ export function buildAgentRunHealthObservations(
     { metric: "superlog.agent_runs.stuck", value: counts.stuck },
     { metric: "superlog.agent_runs.queued", value: counts.queued },
     { metric: "superlog.agent_runs.awaiting_human", value: counts.awaitingHuman },
+    { metric: "superlog.agent_runs.blocked", value: counts.blocked },
     { metric: "superlog.agent_runs.completed_recent", value: counts.completedRecent },
   ];
   const reasons = Object.entries(counts.failedRecentByReason);
@@ -123,6 +145,9 @@ export function registerAgentRunHealthMetrics(): void {
       "superlog.agent_runs.awaiting_human",
       { description: "Agent runs parked on a human response." },
     ),
+    "superlog.agent_runs.blocked": meter.createObservableGauge("superlog.agent_runs.blocked", {
+      description: "Agent runs parked on missing prerequisites (e.g. no GitHub connected).",
+    }),
     "superlog.agent_runs.completed_recent": meter.createObservableGauge(
       "superlog.agent_runs.completed_recent",
       { description: "Agent runs that completed in the last hour." },
