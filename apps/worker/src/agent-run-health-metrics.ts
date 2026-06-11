@@ -6,11 +6,15 @@ import { logger } from "./logger.js";
 // Agent-run health gauges, exported through the worker's own OTel pipeline
 // (same pattern as tenant-metrics.ts). These power dashboards/alerts on
 // investigations piling up in a bad state: failures by reason, runs stuck
-// past their runtime budget, and current queue depth.
+// past their runtime budget, and current queue depth. Every observation
+// carries tenant.org.id / tenant.org.name (the tenant-metrics convention) so
+// dashboards can group by org.
 
 const meter = metrics.getMeter("@superlog/worker/agent-runs");
 
-export type AgentRunHealthCounts = {
+export type AgentRunOrgHealthCounts = {
+  orgId: string;
+  orgName: string;
   // state='failed' within the recent window, keyed by failure_reason.
   failedRecentByReason: Record<string, number>;
   completedRecent: number;
@@ -40,15 +44,33 @@ export type AgentRunHealthObservation = {
 // maxRuntimeMinutes, so any active run past it has outlived its own budget.
 // Parked states are not stuck: awaiting_human and blocked runs each get their
 // own gauge instead.
-export async function loadAgentRunHealthCounts(): Promise<AgentRunHealthCounts> {
-  const failedRows = (await db.execute<{ reason: string; count: number }>(sql`
-    SELECT coalesce(nullif(failure_reason, ''), 'unknown') AS reason, count(*)::int AS count
-    FROM agent_runs
-    WHERE state = 'failed' AND updated_at > now() - interval '1 hour'
-    GROUP BY 1
-  `)) as unknown as Array<{ reason: string; count: number }>;
+//
+// Orgs whose runs are all in old terminal states (every gauge zero, no recent
+// failures) are dropped: emitting permanent zeros for every org that ever ran
+// an investigation would grow export volume without adding information.
+export async function loadAgentRunHealthCounts(): Promise<AgentRunOrgHealthCounts[]> {
+  const failedRows = (await db.execute<{
+    org_id: string;
+    org_name: string;
+    reason: string;
+    count: number;
+  }>(sql`
+    SELECT
+      o.id AS org_id,
+      o.name AS org_name,
+      coalesce(nullif(ar.failure_reason, ''), 'unknown') AS reason,
+      count(*)::int AS count
+    FROM agent_runs ar
+    JOIN incidents i ON i.id = ar.incident_id
+    JOIN projects p ON p.id = i.project_id
+    JOIN orgs o ON o.id = p.org_id
+    WHERE ar.state = 'failed' AND ar.updated_at > now() - interval '1 hour'
+    GROUP BY 1, 2, 3
+  `)) as unknown as Array<{ org_id: string; org_name: string; reason: string; count: number }>;
 
   const gaugeRows = (await db.execute<{
+    org_id: string;
+    org_name: string;
     completed: number;
     stuck: number;
     queued: number;
@@ -56,19 +78,27 @@ export async function loadAgentRunHealthCounts(): Promise<AgentRunHealthCounts> 
     blocked: number;
   }>(sql`
     SELECT
-      count(*) FILTER (WHERE state = 'complete' AND updated_at > now() - interval '1 hour')::int AS completed,
+      o.id AS org_id,
+      o.name AS org_name,
+      count(*) FILTER (WHERE ar.state = 'complete' AND ar.updated_at > now() - interval '1 hour')::int AS completed,
       count(*) FILTER (
-        WHERE state IN (${sql.join(
+        WHERE ar.state IN (${sql.join(
           ACTIVE_RUN_STATES.map((s) => sql`${s}`),
           sql`, `,
         )})
-          AND created_at < now() - interval '2 hours'
+          AND ar.created_at < now() - interval '2 hours'
       )::int AS stuck,
-      count(*) FILTER (WHERE state = 'queued')::int AS queued,
-      count(*) FILTER (WHERE state = 'awaiting_human')::int AS awaiting,
-      count(*) FILTER (WHERE state LIKE 'blocked_%')::int AS blocked
-    FROM agent_runs
+      count(*) FILTER (WHERE ar.state = 'queued')::int AS queued,
+      count(*) FILTER (WHERE ar.state = 'awaiting_human')::int AS awaiting,
+      count(*) FILTER (WHERE ar.state LIKE 'blocked_%')::int AS blocked
+    FROM agent_runs ar
+    JOIN incidents i ON i.id = ar.incident_id
+    JOIN projects p ON p.id = i.project_id
+    JOIN orgs o ON o.id = p.org_id
+    GROUP BY 1, 2
   `)) as unknown as Array<{
+    org_id: string;
+    org_name: string;
     completed: number;
     stuck: number;
     queued: number;
@@ -76,53 +106,102 @@ export async function loadAgentRunHealthCounts(): Promise<AgentRunHealthCounts> 
     blocked: number;
   }>;
 
-  const gauges = gaugeRows[0] ?? { completed: 0, stuck: 0, queued: 0, awaiting: 0, blocked: 0 };
-  return {
-    failedRecentByReason: Object.fromEntries(failedRows.map((r) => [r.reason, Number(r.count)])),
-    completedRecent: Number(gauges.completed),
-    stuck: Number(gauges.stuck),
-    queued: Number(gauges.queued),
-    awaitingHuman: Number(gauges.awaiting),
-    blocked: Number(gauges.blocked),
+  const byOrg = new Map<string, AgentRunOrgHealthCounts>();
+  const orgEntry = (orgId: string, orgName: string): AgentRunOrgHealthCounts => {
+    let entry = byOrg.get(orgId);
+    if (!entry) {
+      entry = {
+        orgId,
+        orgName,
+        failedRecentByReason: {},
+        completedRecent: 0,
+        stuck: 0,
+        queued: 0,
+        awaitingHuman: 0,
+        blocked: 0,
+      };
+      byOrg.set(orgId, entry);
+    }
+    return entry;
   };
+
+  for (const r of gaugeRows) {
+    const entry = orgEntry(r.org_id, r.org_name);
+    entry.completedRecent = Number(r.completed);
+    entry.stuck = Number(r.stuck);
+    entry.queued = Number(r.queued);
+    entry.awaitingHuman = Number(r.awaiting);
+    entry.blocked = Number(r.blocked);
+  }
+  for (const r of failedRows) {
+    orgEntry(r.org_id, r.org_name).failedRecentByReason[r.reason] = Number(r.count);
+  }
+
+  return [...byOrg.values()].filter(
+    (o) =>
+      o.completedRecent > 0 ||
+      o.stuck > 0 ||
+      o.queued > 0 ||
+      o.awaitingHuman > 0 ||
+      o.blocked > 0 ||
+      Object.keys(o.failedRecentByReason).length > 0,
+  );
 }
 
 // Pure mapping from counts to gauge observations — kept separate from the OTel
-// callback so it's unit-testable. A zero-failure pass still emits an explicit
-// zero (failure.reason="none") so charts drop to 0 instead of holding the last
-// bad value when a reason's series stops being observed.
+// callback so it's unit-testable. Orgs in the snapshot emit every gauge
+// (including zeros) so a recovered org drops to 0 instead of freezing at its
+// last bad value. When nothing is failing anywhere, an explicit zero with
+// failure.reason="none" keeps the failed_recent series alive; an empty
+// snapshot does the same for every gauge.
 export function buildAgentRunHealthObservations(
-  counts: AgentRunHealthCounts,
+  orgs: AgentRunOrgHealthCounts[],
 ): AgentRunHealthObservation[] {
-  const observations: AgentRunHealthObservation[] = [
-    { metric: "superlog.agent_runs.stuck", value: counts.stuck },
-    { metric: "superlog.agent_runs.queued", value: counts.queued },
-    { metric: "superlog.agent_runs.awaiting_human", value: counts.awaitingHuman },
-    { metric: "superlog.agent_runs.blocked", value: counts.blocked },
-    { metric: "superlog.agent_runs.completed_recent", value: counts.completedRecent },
-  ];
-  const reasons = Object.entries(counts.failedRecentByReason);
-  if (reasons.length === 0) {
+  const observations: AgentRunHealthObservation[] = [];
+  let failedObserved = 0;
+
+  for (const org of orgs) {
+    const attrs = { "tenant.org.id": org.orgId, "tenant.org.name": org.orgName };
+    observations.push(
+      { metric: "superlog.agent_runs.stuck", value: org.stuck, attributes: attrs },
+      { metric: "superlog.agent_runs.queued", value: org.queued, attributes: attrs },
+      { metric: "superlog.agent_runs.awaiting_human", value: org.awaitingHuman, attributes: attrs },
+      { metric: "superlog.agent_runs.blocked", value: org.blocked, attributes: attrs },
+      { metric: "superlog.agent_runs.completed_recent", value: org.completedRecent, attributes: attrs },
+    );
+    for (const [reason, count] of Object.entries(org.failedRecentByReason)) {
+      failedObserved++;
+      observations.push({
+        metric: "superlog.agent_runs.failed_recent",
+        value: count,
+        attributes: { ...attrs, "failure.reason": reason },
+      });
+    }
+  }
+
+  if (orgs.length === 0) {
+    observations.push(
+      { metric: "superlog.agent_runs.stuck", value: 0 },
+      { metric: "superlog.agent_runs.queued", value: 0 },
+      { metric: "superlog.agent_runs.awaiting_human", value: 0 },
+      { metric: "superlog.agent_runs.blocked", value: 0 },
+      { metric: "superlog.agent_runs.completed_recent", value: 0 },
+    );
+  }
+  if (failedObserved === 0) {
     observations.push({
       metric: "superlog.agent_runs.failed_recent",
       value: 0,
       attributes: { "failure.reason": "none" },
     });
   }
-  for (const [reason, count] of reasons) {
-    observations.push({
-      metric: "superlog.agent_runs.failed_recent",
-      value: count,
-      attributes: { "failure.reason": reason },
-    });
-  }
   return observations;
 }
 
-let cached: { at: number; counts: AgentRunHealthCounts } | null = null;
+let cached: { at: number; counts: AgentRunOrgHealthCounts[] } | null = null;
 const CACHE_TTL_MS = 30_000;
 
-async function snapshot(): Promise<AgentRunHealthCounts> {
+async function snapshot(): Promise<AgentRunOrgHealthCounts[]> {
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.counts;
   const counts = await loadAgentRunHealthCounts();
   cached = { at: Date.now(), counts };
@@ -133,24 +212,24 @@ export function registerAgentRunHealthMetrics(): void {
   const gauges = {
     "superlog.agent_runs.failed_recent": meter.createObservableGauge(
       "superlog.agent_runs.failed_recent",
-      { description: "Agent runs that failed in the last hour, by failure.reason." },
+      { description: "Agent runs that failed in the last hour, by org and failure.reason." },
     ),
     "superlog.agent_runs.stuck": meter.createObservableGauge("superlog.agent_runs.stuck", {
-      description: "Non-terminal agent runs (excluding awaiting_human) older than 2 hours.",
+      description: "Actively-moving agent runs older than 2 hours, by org.",
     }),
     "superlog.agent_runs.queued": meter.createObservableGauge("superlog.agent_runs.queued", {
-      description: "Agent runs currently queued.",
+      description: "Agent runs currently queued, by org.",
     }),
     "superlog.agent_runs.awaiting_human": meter.createObservableGauge(
       "superlog.agent_runs.awaiting_human",
-      { description: "Agent runs parked on a human response." },
+      { description: "Agent runs parked on a human response, by org." },
     ),
     "superlog.agent_runs.blocked": meter.createObservableGauge("superlog.agent_runs.blocked", {
-      description: "Agent runs parked on missing prerequisites (e.g. no GitHub connected).",
+      description: "Agent runs parked on missing prerequisites (e.g. no GitHub connected), by org.",
     }),
     "superlog.agent_runs.completed_recent": meter.createObservableGauge(
       "superlog.agent_runs.completed_recent",
-      { description: "Agent runs that completed in the last hour." },
+      { description: "Agent runs that completed in the last hour, by org." },
     ),
   } as const;
 
