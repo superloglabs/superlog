@@ -23,6 +23,7 @@ import {
 import { logger } from "../logger.js";
 import { enqueueAgentRunCompleted } from "../webhooks.js";
 import { recordFiledLinearTicket, recordOpenedAgentPullRequest } from "./deliverable-records.js";
+import { findRejectedDuplicatePatch, hashAgentPatch } from "./patch-dedupe.js";
 import { buildPrBody, buildPrTitle } from "./pr-copy.js";
 import { summarizePrOpenFailure } from "./pr-open-failure.js";
 import { failAgentRun } from "./status.js";
@@ -115,6 +116,34 @@ export async function completeWithPullRequest(
       {
         existingResult: result,
       },
+    );
+    return;
+  }
+
+  // Refuse to resubmit a patch a human already rejected: a byte-identical
+  // twin that was closed unmerged on this repo means re-opening it would
+  // just re-litigate the same review.
+  const patchHash = hashAgentPatch(patch);
+  const rejectedTwin = await findRejectedDuplicatePatch({
+    repoFullName: pr.selectedRepoFullName,
+    patchHash,
+  });
+  if (rejectedTwin) {
+    logger.warn(
+      {
+        scope: "agent_run.pr_delivery.duplicate_patch",
+        agent_run_id: ctx.agentRun.id,
+        incident_id: ctx.incident.id,
+        repo: pr.selectedRepoFullName,
+        rejected_pr: rejectedTwin.url,
+      },
+      "duplicate of a previously rejected patch; refusing to reopen",
+    );
+    await failAgentRun(
+      ctx,
+      "duplicate_rejected_patch",
+      `An identical patch was already proposed and closed unmerged (${rejectedTwin.url}). Not reopening it. ${result.summary}`,
+      { existingResult: { ...result, pr: { ...pr, patch, patchFileId } } },
     );
     return;
   }
@@ -214,6 +243,7 @@ export async function completeWithPullRequest(
     branchName: opened.branchName,
     baseBranch: opened.baseBranch,
     headSha: opened.headSha,
+    patchHash,
     title: prTitle,
     authorLogin: opened.authorLogin,
     authorGithubId: opened.authorGithubId,

@@ -18,6 +18,7 @@ import {
   isTransientError,
   moveAgentRunToAwaitingHuman,
 } from "./status.js";
+import { assessPatchValidation } from "./validation-gate.js";
 
 const agentRunLifecycle = createAgentRunLifecycle(db);
 
@@ -365,10 +366,25 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
 
       if (snapshot.result.state === "complete") {
         const pr = snapshot.result.pr ?? null;
-        if (pr && pr.validationPassed === false) {
-          await failAgentRun(ctx, "patch_validation_failed", snapshot.result.summary, {
-            existingResult: snapshot.result,
-          });
+        const validationVerdict = pr ? assessPatchValidation(pr) : null;
+        if (pr && validationVerdict && !validationVerdict.ok) {
+          logger.warn(
+            {
+              scope: "agent_run.publication_gate",
+              agent_run_id: ctx.agentRun.id,
+              incident_id: ctx.incident.id,
+              repo: pr.selectedRepoFullName,
+              reason: validationVerdict.reason,
+              validation_commands: pr.validationCommands ?? [],
+            },
+            "publication gate blocked PR delivery",
+          );
+          await failAgentRun(
+            ctx,
+            "patch_validation_failed",
+            `${validationVerdict.reason} ${snapshot.result.summary}`,
+            { existingResult: snapshot.result },
+          );
           await meterAgentRun("failed");
           return;
         }

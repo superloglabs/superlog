@@ -1,0 +1,2 @@
+ALTER TABLE "agent_pull_requests" ADD COLUMN "patch_hash" text;--> statement-breakpoint
+CREATE INDEX "agent_pull_requests_repo_patch_hash_idx" ON "agent_pull_requests" USING btree ("repo_full_name","patch_hash");

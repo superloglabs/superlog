@@ -1434,6 +1434,7 @@ export type AgentRunFailureReason =
   | "agent_no_findings"
   | "patch_validation_failed"
   | "pr_open_failed"
+  | "duplicate_rejected_patch"
   | "terminated_without_result"
   | "runtime_budget_exhausted"
   | "human_resume_budget_exhausted"
@@ -1454,6 +1455,7 @@ export function agentRunFailureCategory(reason: AgentRunFailureReason): AgentRun
       return "agent";
     case "patch_validation_failed":
     case "pr_open_failed":
+    case "duplicate_rejected_patch":
       return "deliverable";
     default:
       return "infra";

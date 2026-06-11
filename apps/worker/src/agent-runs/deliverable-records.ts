@@ -49,6 +49,7 @@ export async function recordOpenedAgentPullRequest(opts: {
   branchName: string;
   baseBranch: string;
   headSha: string;
+  patchHash?: string | null;
   title: string;
   authorLogin: string | null;
   authorGithubId: number | null;
@@ -68,6 +69,7 @@ export async function recordOpenedAgentPullRequest(opts: {
       branchName: opts.branchName,
       baseBranch: opts.baseBranch,
       headSha: opts.headSha,
+      patchHash: opts.patchHash ?? null,
       state: "open",
       title: opts.title,
       lastSyncedAt: now,

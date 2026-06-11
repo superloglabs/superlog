@@ -47,6 +47,7 @@ export type AgentRunFailureReason =
   | "agent_no_findings"
   | "patch_validation_failed"
   | "pr_open_failed"
+  | "duplicate_rejected_patch"
   | "terminated_without_result"
   | "runtime_budget_exhausted"
   | "wall_clock_timeout"
@@ -69,6 +70,7 @@ export function agentRunFailureCategory(reason: AgentRunFailureReason): AgentRun
       return "agent";
     case "patch_validation_failed":
     case "pr_open_failed":
+    case "duplicate_rejected_patch":
       return "deliverable";
     default:
       return "infra";
@@ -833,6 +835,10 @@ export const agentPullRequests = pgTable(
     branchName: text("branch_name").notNull(),
     baseBranch: text("base_branch").notNull(),
     headSha: text("head_sha"),
+    // SHA-256 of the normalized patch body. Lets the worker refuse to reopen
+    // a byte-identical patch that a human already closed unmerged on the
+    // same repo. Nullable: rows recorded before the column existed.
+    patchHash: text("patch_hash"),
     state: text("state").$type<AgentPrState>().notNull().default("open"),
     title: text("title"),
     mergedAt: timestamp("merged_at", { withTimezone: true }),
@@ -847,6 +853,10 @@ export const agentPullRequests = pgTable(
     incidentIdx: index("agent_pull_requests_incident_idx").on(t.incidentId, t.createdAt),
     agentRunIdx: index("agent_pull_requests_agent_run_idx").on(t.agentRunId),
     repoPrUniq: uniqueIndex("agent_pull_requests_repo_pr_idx").on(t.repoFullName, t.prNumber),
+    repoPatchHashIdx: index("agent_pull_requests_repo_patch_hash_idx").on(
+      t.repoFullName,
+      t.patchHash,
+    ),
   }),
 );
 
