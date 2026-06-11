@@ -381,8 +381,45 @@ test("countSeries reads the events_per_minute rollup for unfiltered minute-step 
 
   assert.match(capture.query ?? "", /FROM events_per_minute/);
   assert.match(capture.query ?? "", /sum\(c\)/);
+  // sub-minute `since` values round down to the cell boundary so the partial
+  // first minute is included rather than dropped
+  assert.match(capture.query ?? "", /minute >= toStartOfMinute\(/);
   assert.doesNotMatch(capture.query ?? "", /FROM otel_traces/);
   assert.equal(capture.params?.signal, "traces");
+});
+
+test("countSeries re-probes rollup availability after a failed probe", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+  let probes = 0;
+  const ch = {
+    async query(input: { query: string; query_params?: Record<string, unknown> }) {
+      if (/^EXISTS TABLE/i.test(input.query.trim())) {
+        probes += 1;
+        if (probes === 1) throw new Error("clickhouse unreachable");
+        return {
+          async json() {
+            return [{ result: 1 }];
+          },
+        };
+      }
+      capture.query = input.query;
+      capture.params = input.query_params;
+      return {
+        async json() {
+          return [];
+        },
+      };
+    },
+  } as unknown as ClickHouseClient;
+
+  // first call: probe fails -> raw scan
+  await countSeries(ch, "project-1", "traces", { range: HOUR_RANGE }, undefined, { n: 15, unit: "MINUTE" });
+  assert.match(capture.query ?? "", /FROM otel_traces/);
+
+  // second call on the same client: probe retried -> rollup
+  await countSeries(ch, "project-1", "traces", { range: HOUR_RANGE }, undefined, { n: 15, unit: "MINUTE" });
+  assert.equal(probes, 2);
+  assert.match(capture.query ?? "", /FROM events_per_minute/);
 });
 
 test("countSeries rollup path supports grouping by service", async () => {

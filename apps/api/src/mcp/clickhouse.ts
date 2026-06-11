@@ -1153,6 +1153,10 @@ function rollupAvailable(ch: ClickHouseClient): Promise<boolean> {
         const rows = (await r.json()) as { result: number | string }[];
         return Number(rows[0]?.result) === 1;
       } catch {
+        // A failed probe (e.g. ClickHouse briefly unreachable) says nothing
+        // about whether the rollup exists — drop the memo so the next call
+        // re-probes instead of pinning the raw path until restart.
+        rollupAvailability.delete(ch);
         return false;
       }
     })();
@@ -1198,7 +1202,14 @@ async function countSeriesFromRollup(
   const conds = [
     "project_id = {projectId:String}",
     "signal = {signal:String}",
-    `minute >= ${sinceExpr}`,
+    // Rollup cells are whole minutes, so a sub-minute `since` cannot be
+    // honored exactly. Round the lower bound down to the cell boundary so the
+    // partial first minute is included in full rather than dropped — edge
+    // buckets may overcount by up to one minute of data, never undercount.
+    // (The upper bound needs no rounding: the cell at until's minute starts
+    // at or before `until` and already satisfies <=.) The fast path only
+    // serves >= 1-minute chart buckets, so the skew stays within one bucket.
+    `minute >= toStartOfMinute(${sinceExpr})`,
     `minute <= ${untilExpr}`,
   ];
   if (filter.service) conds.push("service = {service:String}");
