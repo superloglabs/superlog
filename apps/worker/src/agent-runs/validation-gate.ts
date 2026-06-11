@@ -67,9 +67,45 @@ const STRUCTURAL_PROGRAMS = new Set([
 const RECORDED_FAILURE =
   /(?:❌|✗)[^\n]*\bexit(?:ed)?(?:\s+with)?(?:\s+(?:code|status))?\s*[:= ]?\s*[1-9]\d*\b|\bexit(?:ed)?(?:\s+with)?(?:\s+(?:code|status))?\s*[:= ]?\s*[1-9]\d*\b[^\n]*(?:❌|✗)/iu;
 
+// Split a shell command on unquoted pipeline/chaining operators (|, ||, &&,
+// ;). A naive split would break inside quoted arguments — `grep "a|b" file`
+// must stay one segment, or the bogus tail segment fails open and a pure
+// grep bypasses the gate.
+function splitOnShellOperators(command: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i] as string;
+    if (quote) {
+      if (ch === quote) quote = null;
+      current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === "\\") {
+      current += ch + (command[i + 1] ?? "");
+      i += 1;
+      continue;
+    }
+    if (ch === ";" || ch === "|" || (ch === "&" && command[i + 1] === "&")) {
+      if ((ch === "|" || ch === "&") && command[i + 1] === ch) i += 1;
+      segments.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  segments.push(current);
+  return segments;
+}
+
 function segmentPrograms(command: string): string[] {
-  return command
-    .split(/\|\|?|&&|;/)
+  return splitOnShellOperators(command)
     .map((segment) => {
       const tokens = segment.trim().split(/\s+/);
       let i = 0;

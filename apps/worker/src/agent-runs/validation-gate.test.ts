@@ -36,6 +36,18 @@ test("rejects when every validation command is a structural grep/string check", 
   assert.match((verdict as { reason: string }).reason, /structural/i);
 });
 
+test("does not split on shell operators inside quoted arguments", () => {
+  const verdict = assessPatchValidation(
+    pr({
+      validationCommands: [
+        'grep -n "retry|fallback" src/worker.ts',
+        "grep -n 'a && b; c' src/worker.ts",
+      ],
+    }),
+  );
+  assert.equal(verdict.ok, false);
+});
+
 test("treats read-only git inspection as structural", () => {
   const verdict = assessPatchValidation(
     pr({ validationCommands: ["git diff --stat", "git log --oneline -5"] }),
