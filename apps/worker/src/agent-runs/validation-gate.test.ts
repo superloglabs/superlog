@@ -48,6 +48,23 @@ test("does not split on shell operators inside quoted arguments", () => {
   assert.equal(verdict.ok, false);
 });
 
+test("handles escaped quotes inside double-quoted arguments", () => {
+  // \" inside double quotes does not close the quote — the | stays quoted.
+  const verdict = assessPatchValidation(
+    pr({ validationCommands: ['grep -n "say \\"hi|bye\\"" src/worker.ts'] }),
+  );
+  assert.equal(verdict.ok, false);
+});
+
+test("backslash does not escape inside single quotes", () => {
+  // 'a\' closes at the second quote; the | after it is a real pipe between
+  // two structural commands.
+  const verdict = assessPatchValidation(
+    pr({ validationCommands: ["echo 'a\\' | grep b src/worker.ts"] }),
+  );
+  assert.equal(verdict.ok, false);
+});
+
 test("treats read-only git inspection as structural", () => {
   const verdict = assessPatchValidation(
     pr({ validationCommands: ["git diff --stat", "git log --oneline -5"] }),

@@ -78,6 +78,13 @@ function splitOnShellOperators(command: string): string[] {
   for (let i = 0; i < command.length; i += 1) {
     const ch = command[i] as string;
     if (quote) {
+      // Inside double quotes a backslash escapes the next character (so \"
+      // doesn't close the quote); inside single quotes it has no meaning.
+      if (quote === '"' && ch === "\\") {
+        current += ch + (command[i + 1] ?? "");
+        i += 1;
+        continue;
+      }
       if (ch === quote) quote = null;
       current += ch;
       continue;
