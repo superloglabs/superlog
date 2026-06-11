@@ -4,6 +4,7 @@ export {
   AGENT_RUN_PROVIDERS,
   DEFAULT_AGENT_RUN_PROVIDER,
   isAgentRunProvider,
+  resolveDefaultAgentRunProvider,
   type AgentRunProvider,
 } from "./agent-runtime.js";
 export { runMigrations } from "./migrate.js";

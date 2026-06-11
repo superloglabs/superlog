@@ -1,4 +1,9 @@
-import { db, encryptIntegrationSecret, schema } from "@superlog/db";
+import {
+  db,
+  encryptIntegrationSecret,
+  resolveDefaultAgentRunProvider,
+  schema,
+} from "@superlog/db";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
@@ -365,7 +370,7 @@ export function mountSettingsAuthed(app: Hono<any>): void {
     if (!project) return c.json({ error: "failed to create project" }, 500);
     await db
       .insert(schema.projectAutomationSettings)
-      .values({ projectId: project.id })
+      .values({ projectId: project.id, agentRunProvider: resolveDefaultAgentRunProvider() })
       .onConflictDoNothing({ target: schema.projectAutomationSettings.projectId });
     return c.json({
       project: {

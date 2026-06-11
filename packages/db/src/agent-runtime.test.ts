@@ -4,10 +4,37 @@ import {
   AGENT_RUN_PROVIDERS,
   DEFAULT_AGENT_RUN_PROVIDER,
   isAgentRunProvider,
+  resolveDefaultAgentRunProvider,
 } from "./agent-runtime.js";
 
 test("agent runtime defaults to the community provider", () => {
   assert.equal(DEFAULT_AGENT_RUN_PROVIDER, "community");
+});
+
+test("resolveDefaultAgentRunProvider falls back to community when env is unset", () => {
+  assert.equal(resolveDefaultAgentRunProvider({}), DEFAULT_AGENT_RUN_PROVIDER);
+  assert.equal(
+    resolveDefaultAgentRunProvider({ DEFAULT_AGENT_RUN_PROVIDER: "" }),
+    DEFAULT_AGENT_RUN_PROVIDER,
+  );
+});
+
+test("resolveDefaultAgentRunProvider honors a valid env override", () => {
+  assert.equal(
+    resolveDefaultAgentRunProvider({ DEFAULT_AGENT_RUN_PROVIDER: "anthropic" }),
+    "anthropic",
+  );
+  assert.equal(
+    resolveDefaultAgentRunProvider({ DEFAULT_AGENT_RUN_PROVIDER: "disabled" }),
+    "disabled",
+  );
+});
+
+test("resolveDefaultAgentRunProvider rejects invalid env values loudly", () => {
+  assert.throws(
+    () => resolveDefaultAgentRunProvider({ DEFAULT_AGENT_RUN_PROVIDER: "antropic" }),
+    /DEFAULT_AGENT_RUN_PROVIDER must be one of/,
+  );
 });
 
 test("agent runtime validation accepts public and closed-overlay providers", () => {
