@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DEFAULT_TOP_N, OTHER_LABEL, buildTopNSeries } from "./series-topn.ts";
+import { DEFAULT_TOP_N, OTHER_LABEL, buildTopNSeries, parseStepMs } from "./series-topn.ts";
 
 const count = (r: { count: number }) => r.count;
 
@@ -175,6 +175,66 @@ test("works with an arbitrary value accessor (metric series use r.value)", () =>
     ["p99", "p50"],
   );
   assert.equal(series[0]?.total, 12.5);
+});
+
+test("parseStepMs parses the API step string", () => {
+  assert.equal(parseStepMs("30 SECOND"), 30_000);
+  assert.equal(parseStepMs("5 MINUTE"), 300_000);
+  assert.equal(parseStepMs("3 HOUR"), 10_800_000);
+  assert.equal(parseStepMs("1 DAY"), 86_400_000);
+  assert.equal(parseStepMs("garbage"), null);
+  assert.equal(parseStepMs(undefined), null);
+});
+
+test("grid fill expands the bucket axis across the whole window with zeros", () => {
+  // Data only in the last two of six 1-minute buckets.
+  const rows = [
+    { bucket: "2026-06-01 00:04:00", group: "a", count: 3 },
+    { bucket: "2026-06-01 00:05:00", group: "a", count: 7 },
+  ];
+  const grid = {
+    sinceMs: Date.parse("2026-06-01T00:00:00Z"),
+    untilMs: Date.parse("2026-06-01T00:05:00Z"),
+    stepMs: 60_000,
+  };
+  const series = buildTopNSeries(rows, count, 10, grid);
+  const a = series.find((s) => s.name === "a");
+  assert.ok(a);
+  // 00:00 through 00:05 inclusive = 6 buckets, zeros where no data.
+  assert.equal(a.data.length, 6);
+  assert.deepEqual(
+    a.data.map((d) => d[1]),
+    [0, 0, 0, 0, 3, 7],
+  );
+  assert.equal(a.data[0]?.[0], Date.parse("2026-06-01T00:00:00Z"));
+  // Totals come from real data only.
+  assert.equal(a.total, 10);
+});
+
+test("grid fill aligns its start to the step and keeps off-grid data buckets", () => {
+  const rows = [{ bucket: "2026-06-01 00:02:30", group: "a", count: 1 }];
+  const grid = {
+    sinceMs: Date.parse("2026-06-01T00:00:30Z"), // mid-bucket window start
+    untilMs: Date.parse("2026-06-01T00:03:00Z"),
+    stepMs: 60_000,
+  };
+  const series = buildTopNSeries(rows, count, 10, grid);
+  const a = series.find((s) => s.name === "a");
+  assert.ok(a);
+  // Grid points 00:00..00:03 (floor-aligned) plus the off-grid 00:02:30 bucket.
+  assert.equal(a.data[0]?.[0], Date.parse("2026-06-01T00:00:00Z"));
+  assert.ok(a.data.some((d) => d[0] === Date.parse("2026-06-01T00:02:30Z") && d[1] === 1));
+});
+
+test("grid fill is skipped when it would explode the bucket count", () => {
+  const rows = [{ bucket: "2026-06-01 00:00:00", group: "a", count: 1 }];
+  const grid = {
+    sinceMs: Date.parse("2026-01-01T00:00:00Z"),
+    untilMs: Date.parse("2026-06-01T00:00:00Z"),
+    stepMs: 1_000, // ~13M buckets — defensive cap kicks in
+  };
+  const series = buildTopNSeries(rows, count, 10, grid);
+  assert.equal(series[0]?.data.length, 1);
 });
 
 test("default top-N is 10", () => {

@@ -13,6 +13,48 @@ export const DEFAULT_TOP_N = 10;
 
 export type GroupedRow = { bucket: string; group: string };
 
+/**
+ * Time grid for bar charts: every `stepMs` bucket across [sinceMs, untilMs]
+ * exists on the axis (zero-filled), so bar band width is always one server
+ * bucket and empty stretches render as empty space instead of bars stretching
+ * to fill the data extent.
+ */
+export type BucketGrid = { sinceMs: number; untilMs: number; stepMs: number };
+
+// Defensive cap: the server targets ~120 buckets per window (pickStep), so a
+// grid bigger than this means mismatched inputs — better to skip the fill
+// than to allocate millions of points.
+const MAX_GRID_POINTS = 2000;
+
+const STEP_UNIT_MS: Record<string, number> = {
+  SECOND: 1_000,
+  MINUTE: 60_000,
+  HOUR: 3_600_000,
+  DAY: 86_400_000,
+};
+
+/** Parse the API's step string ("5 MINUTE") into milliseconds. */
+export function parseStepMs(step: string | undefined): number | null {
+  if (!step) return null;
+  const m = /^(\d+)\s+(SECOND|MINUTE|HOUR|DAY)$/.exec(step.trim());
+  if (!m) return null;
+  const unit = STEP_UNIT_MS[m[2] ?? ""];
+  if (!unit) return null;
+  const ms = Number(m[1]) * unit;
+  return ms > 0 ? ms : null;
+}
+
+// All step-ladder intervals divide evenly into their parent unit, so flooring
+// to the step in epoch ms matches ClickHouse's toStartOfInterval (UTC).
+function gridBucketsMs(grid: BucketGrid): number[] | null {
+  const { sinceMs, untilMs, stepMs } = grid;
+  if (!(stepMs > 0) || !(untilMs >= sinceMs)) return null;
+  if ((untilMs - sinceMs) / stepMs > MAX_GRID_POINTS) return null;
+  const out: number[] = [];
+  for (let t = Math.floor(sinceMs / stepMs) * stepMs; t <= untilMs; t += stepMs) out.push(t);
+  return out;
+}
+
 export type ChartSeries = {
   /** Group value, or "Other" for the rolled-up remainder, "(none)" when empty. */
   name: string;
@@ -43,23 +85,27 @@ function bucketToMs(bucket: string): number {
  * exist, a single "Other" series summing the remainder per bucket.
  *
  * @param limit  max real series before rollup; values < 1 mean "no limit".
+ * @param grid   optional full-window bucket grid to zero-fill (bar charts).
  */
 export function buildTopNSeries<T extends GroupedRow>(
   rows: T[],
   valFn: (r: T) => number,
   limit: number = DEFAULT_TOP_N,
+  grid?: BucketGrid,
 ): ChartSeries[] {
   if (rows.length === 0) return [];
 
-  // Stable, sorted bucket axis shared by every series so points align.
-  const bucketSet = new Set<string>();
+  // Stable, sorted bucket axis (epoch ms) shared by every series so points
+  // align; the optional grid extends it across the whole query window.
+  const bucketSet = new Set<number>();
   const totals = new Map<string, number>();
   for (const r of rows) {
-    bucketSet.add(r.bucket);
+    bucketSet.add(bucketToMs(r.bucket));
     const g = r.group || NONE_LABEL;
     totals.set(g, (totals.get(g) ?? 0) + valFn(r));
   }
-  const buckets = [...bucketSet].sort();
+  if (grid) for (const t of gridBucketsMs(grid) ?? []) bucketSet.add(t);
+  const buckets = [...bucketSet].sort((a, b) => a - b);
   const bucketIndex = new Map(buckets.map((b, i) => [b, i]));
 
   const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([g]) => g);
@@ -77,7 +123,7 @@ export function buildTopNSeries<T extends GroupedRow>(
   for (const r of rows) {
     const g = r.group || NONE_LABEL;
     const arr = topGroups.has(g) ? points.get(g) : otherArr;
-    const i = bucketIndex.get(r.bucket);
+    const i = bucketIndex.get(bucketToMs(r.bucket));
     if (!arr || i === undefined) continue;
     arr[i] = (arr[i] ?? 0) + valFn(r);
   }
@@ -87,7 +133,7 @@ export function buildTopNSeries<T extends GroupedRow>(
     const data: [number, number][] = buckets.map((b, i) => {
       const v = arr[i] ?? 0;
       total += v;
-      return [bucketToMs(b), v];
+      return [b, v];
     });
     return { name, total, data, isOther };
   };

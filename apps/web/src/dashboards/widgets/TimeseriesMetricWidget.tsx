@@ -40,6 +40,8 @@ export function TimeseriesMetricWidget({
       <CountChart
         rows={q.data.rows}
         value={metricValue}
+        range={range}
+        step={q.data.step}
         chartType={widget.config.chartType ?? defaultChartType(widget.type)}
         limit={widget.config.limit ?? DEFAULT_TOP_N}
         showXAxis={widget.config.showXAxis ?? true}

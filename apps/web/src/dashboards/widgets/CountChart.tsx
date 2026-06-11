@@ -3,9 +3,16 @@ import type { EChartsOption, SetOptionOpts } from "echarts";
 import type { BarSeriesOption, LineSeriesOption } from "echarts/charts";
 import type * as EChartsCore from "echarts/core";
 import { forwardRef, memo, useEffect, useMemo, useRef, useState } from "react";
+import type { ExploreRange } from "../../api.ts";
 import type { ChartType, LegendPosition } from "../types.ts";
 import { echarts } from "./echarts-setup.ts";
-import { type ChartSeries, type GroupedRow, buildTopNSeries } from "./series-topn.ts";
+import {
+  type BucketGrid,
+  type ChartSeries,
+  type GroupedRow,
+  buildTopNSeries,
+  parseStepMs,
+} from "./series-topn.ts";
 
 type SeriesChartProps<T extends GroupedRow> = {
   rows: T[];
@@ -13,6 +20,14 @@ type SeriesChartProps<T extends GroupedRow> = {
   value: (row: T) => number;
   chartType: ChartType;
   limit: number;
+  /**
+   * Query window. Pins the x-axis to the selected range (instead of the data
+   * extent, which lies about sparse data) and, for bar charts, zero-fills the
+   * bucket grid so bars are always one server bucket wide.
+   */
+  range?: ExploreRange;
+  /** Server bucket step ("5 MINUTE") from the series response. */
+  step?: string;
   showXAxis?: boolean;
   showYAxis?: boolean;
   showLegend: boolean;
@@ -64,20 +79,39 @@ export function CountChart<T extends GroupedRow>({
   value,
   chartType,
   limit,
+  range,
+  step,
   showXAxis = true,
   showYAxis = false,
   showLegend,
   legendPosition,
 }: SeriesChartProps<T>) {
+  const window = useMemo(() => {
+    const sinceMs = range ? Date.parse(range.since) : Number.NaN;
+    const untilMs = range ? Date.parse(range.until) : Number.NaN;
+    if (!Number.isFinite(sinceMs) || !Number.isFinite(untilMs) || untilMs <= sinceMs) {
+      return undefined;
+    }
+    return { sinceMs, untilMs };
+  }, [range]);
+
+  // Bars only: lines connect actual samples, and zero-filling them would draw
+  // false dips wherever the bucket step is finer than the export interval.
+  const grid = useMemo<BucketGrid | undefined>(() => {
+    if (chartType !== "bar" || !window) return undefined;
+    const stepMs = parseStepMs(step);
+    return stepMs ? { ...window, stepMs } : undefined;
+  }, [chartType, window, step]);
+
   const allSeries = useMemo(
     () =>
-      buildTopNSeries(rows, value, limit).map((series, index) => ({
+      buildTopNSeries(rows, value, limit, grid).map((series, index) => ({
         ...series,
         color: series.isOther
           ? OTHER_COLOR
           : (CHART_COLORS[index % CHART_COLORS.length] ?? FIRST_CHART_COLOR),
       })),
-    [rows, value, limit],
+    [rows, value, limit, grid],
   );
   const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(() => new Set());
 
@@ -108,6 +142,8 @@ export function CountChart<T extends GroupedRow>({
       data={visibleSeries}
       type={chartType}
       height="100%"
+      xMin={window?.sinceMs}
+      xMax={window?.untilMs}
       showXAxis={showXAxis}
       showYAxis={showYAxis}
       optionUpdateBehavior={{ notMerge: true, lazyUpdate: true }}
@@ -149,6 +185,8 @@ function KumoLikeTimeseriesChart({
   data,
   type,
   height,
+  xMin,
+  xMax,
   showXAxis,
   showYAxis,
   optionUpdateBehavior,
@@ -156,6 +194,8 @@ function KumoLikeTimeseriesChart({
   data: TimeseriesData[];
   type: ChartType;
   height: number | string;
+  xMin?: number;
+  xMax?: number;
   showXAxis: boolean;
   showYAxis: boolean;
   optionUpdateBehavior?: SetOptionOpts;
@@ -194,6 +234,10 @@ function KumoLikeTimeseriesChart({
       toolbox: { show: false },
       xAxis: {
         type: "time",
+        // Pin the axis to the query window so sparse data sits in honest
+        // empty space instead of stretching to fill the chart.
+        min: xMin,
+        max: xMax,
         splitLine: { show: false },
         axisLine: { show: false },
         axisTick: { show: showXAxis },
@@ -230,7 +274,7 @@ function KumoLikeTimeseriesChart({
       },
       series: transformSeries,
     } satisfies EChartsOption;
-  }, [data, type, showXAxis, showYAxis]);
+  }, [data, type, xMin, xMax, showXAxis, showYAxis]);
 
   const events = useMemo<Partial<ChartEvents>>(
     () => ({
