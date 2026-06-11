@@ -6,6 +6,7 @@ import {
   isOrgManagementKey,
   mintApiKey,
   mintOrgApiKey,
+  resolveDefaultAgentRunProvider,
   resolveOrgApiKey,
   schema,
 } from "@superlog/db";
@@ -251,6 +252,7 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
         .insert(schema.projectAutomationSettings)
         .values({
           projectId: project.id,
+          agentRunProvider: resolveDefaultAgentRunProvider(),
           ...(body.automerge_fix_prs !== undefined
             ? { autoMergeFixPrs: body.automerge_fix_prs }
             : {}),
@@ -448,6 +450,7 @@ export function mountManagementApi(app: Hono<any>, opts: { ch: ClickHouseClient 
           .insert(schema.projectAutomationSettings)
           .values({
             projectId: project.id,
+            agentRunProvider: resolveDefaultAgentRunProvider(),
             ...(body.automerge_fix_prs !== undefined
               ? { autoMergeFixPrs: body.automerge_fix_prs }
               : {}),

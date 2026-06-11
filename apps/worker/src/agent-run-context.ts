@@ -1,8 +1,8 @@
 import {
   type AccessibleGithubInstall,
-  DEFAULT_AGENT_RUN_PROVIDER,
   db,
   listAccessibleGithubInstallsForProject,
+  resolveDefaultAgentRunProvider,
   schema,
 } from "@superlog/db";
 import { and, asc, desc, eq, inArray, isNull, ne } from "drizzle-orm";
@@ -108,7 +108,7 @@ export async function getProjectAutomation(projectId: string): Promise<{
   });
   return {
     autoInvestigateIssuesEnabled: row?.autoInvestigateIssuesEnabled ?? true,
-    agentRunProvider: row?.agentRunProvider ?? DEFAULT_AGENT_RUN_PROVIDER,
+    agentRunProvider: row?.agentRunProvider ?? resolveDefaultAgentRunProvider(),
     maxRuntimeMinutes: row?.maxRuntimeMinutes ?? 90,
     maxHumanResumeCount: row?.maxHumanResumeCount ?? 3,
     customInstructions: row?.customInstructions ?? "",

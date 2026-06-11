@@ -1,4 +1,4 @@
-import { db, schema } from "@superlog/db";
+import { db, resolveDefaultAgentRunProvider, schema } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 
 // Org context resolution backed by Better Auth's session + organization
@@ -41,7 +41,7 @@ async function ensureProjectForOrg(orgId: string): Promise<SyncedProject> {
 
   await db
     .insert(schema.projectAutomationSettings)
-    .values({ projectId: project.id })
+    .values({ projectId: project.id, agentRunProvider: resolveDefaultAgentRunProvider() })
     .onConflictDoNothing({ target: schema.projectAutomationSettings.projectId });
 
   return project;

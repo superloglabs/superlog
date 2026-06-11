@@ -4,7 +4,6 @@ import { createClient } from "@clickhouse/client";
 import { serve } from "@hono/node-server";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import {
-  DEFAULT_AGENT_RUN_PROVIDER,
   type Issue,
   confirmResolutionProposal,
   createIncidentLifecycle,
@@ -13,6 +12,7 @@ import {
   isAgentRunProvider,
   listAccessibleGithubInstallsForProject,
   mintApiKey,
+  resolveDefaultAgentRunProvider,
   resolveIncident,
   runMigrations,
   schema,
@@ -474,7 +474,7 @@ app.post("/api/me/orgs", async (c) => {
           project = createdProject;
           await tx
             .insert(schema.projectAutomationSettings)
-            .values({ projectId: project.id })
+            .values({ projectId: project.id, agentRunProvider: resolveDefaultAgentRunProvider() })
             .onConflictDoNothing({ target: schema.projectAutomationSettings.projectId });
         }
         return {
@@ -503,7 +503,7 @@ app.post("/api/me/orgs", async (c) => {
 
       await tx
         .insert(schema.projectAutomationSettings)
-        .values({ projectId: project.id })
+        .values({ projectId: project.id, agentRunProvider: resolveDefaultAgentRunProvider() })
         .onConflictDoNothing({ target: schema.projectAutomationSettings.projectId });
 
       // Promote the new org to active on every session this user has open, so the
@@ -1131,7 +1131,7 @@ async function getProjectAutomation(projectId: string): Promise<{
   });
   return {
     autoInvestigateIssuesEnabled: row?.autoInvestigateIssuesEnabled ?? true,
-    agentRunProvider: row?.agentRunProvider ?? DEFAULT_AGENT_RUN_PROVIDER,
+    agentRunProvider: row?.agentRunProvider ?? resolveDefaultAgentRunProvider(),
     maxRuntimeMinutes: row?.maxRuntimeMinutes ?? 90,
     maxHumanResumeCount: row?.maxHumanResumeCount ?? 3,
     customInstructions: row?.customInstructions ?? "",
