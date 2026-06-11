@@ -110,6 +110,14 @@ const ch = createClient({
   // stale sockets that slipped through instead of hanging 30s.
   request_timeout: 10_000,
   keep_alive: { enabled: true, idle_socket_ttl: 2_500 },
+  clickhouse_settings: {
+    // When request_timeout (or a caller's abort signal) drops the HTTP
+    // connection, make the server cancel the SELECT instead of letting it
+    // run to completion. Without this, abandoned long scans pile up until
+    // the server hits max_concurrent_queries and rejects everyone
+    // (TOO_MANY_SIMULTANEOUS_QUERIES).
+    cancel_http_readonly_queries_on_client_close: 1,
+  },
 });
 
 const tracer = trace.getTracer("@superlog/api");

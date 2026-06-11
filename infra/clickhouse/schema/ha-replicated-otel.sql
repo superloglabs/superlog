@@ -337,3 +337,48 @@ WHERE SeverityNumber >= 17
   AND LogAttributes['superlog.issue_fingerprint'] != ''
 GROUP BY project_id, fingerprint, day
 ;
+-- events_per_minute (dashboard timeseries-count fast path; see
+-- migrations/003_events_per_minute.sql for rationale + backfill notes)
+CREATE TABLE IF NOT EXISTS superlog.events_per_minute ON CLUSTER superlog_ha
+(
+    `project_id` String CODEC(ZSTD(1)),
+    `signal` LowCardinality(String) CODEC(ZSTD(1)),
+    `service` LowCardinality(String) CODEC(ZSTD(1)),
+    `severity` LowCardinality(String) CODEC(ZSTD(1)),
+    `status_code` LowCardinality(String) CODEC(ZSTD(1)),
+    `minute` DateTime CODEC(Delta(4), ZSTD(1)),
+    `c` UInt64 CODEC(Delta(8), ZSTD(1))
+)
+ENGINE = ReplicatedSummingMergeTree('/clickhouse/{cluster}/tables/{shard}/{database}/{table}', '{replica}')
+PARTITION BY toYYYYMM(minute)
+ORDER BY (project_id, signal, service, severity, status_code, minute)
+SETTINGS index_granularity = 8192
+;
+-- events_per_minute_from_traces_mv
+CREATE MATERIALIZED VIEW IF NOT EXISTS superlog.events_per_minute_from_traces_mv ON CLUSTER superlog_ha TO superlog.events_per_minute
+AS SELECT
+    ResourceAttributes['superlog.project_id'] AS project_id,
+    'traces' AS signal,
+    ServiceName AS service,
+    '' AS severity,
+    toString(StatusCode) AS status_code,
+    toStartOfMinute(Timestamp) AS minute,
+    count() AS c
+FROM superlog.otel_traces
+WHERE ResourceAttributes['superlog.project_id'] != ''
+GROUP BY project_id, signal, service, severity, status_code, minute
+;
+-- events_per_minute_from_logs_mv
+CREATE MATERIALIZED VIEW IF NOT EXISTS superlog.events_per_minute_from_logs_mv ON CLUSTER superlog_ha TO superlog.events_per_minute
+AS SELECT
+    ResourceAttributes['superlog.project_id'] AS project_id,
+    'logs' AS signal,
+    ServiceName AS service,
+    upper(SeverityText) AS severity,
+    '' AS status_code,
+    toStartOfMinute(TimestampTime) AS minute,
+    count() AS c
+FROM superlog.otel_logs
+WHERE ResourceAttributes['superlog.project_id'] != ''
+GROUP BY project_id, signal, service, severity, status_code, minute
+;

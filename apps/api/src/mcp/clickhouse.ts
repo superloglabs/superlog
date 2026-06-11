@@ -1122,6 +1122,102 @@ export function pickStep(rangeSeconds: number, targetBuckets = 120): Step {
   return STEP_LADDER[STEP_LADDER.length - 1] ?? { n: 1, unit: "DAY" };
 }
 
+// -----------------------------------------------------------------------------
+// events_per_minute rollup fast path. Count widgets over long ranges were
+// scanning the raw tables (and the ResourceAttributes map) for every row in
+// the window, which times out for high-volume projects. Queries the rollup
+// (see infra/clickhouse/migrations/003_events_per_minute.sql) can answer —
+// minute-or-coarser buckets, filters within (service, severity, status_code),
+// grouping by nothing or service — read it instead.
+//
+// Availability is probed once per client and memoized so deployments without
+// the rollup (it is not part of the collector's auto-created schema) fall
+// back to the raw scan without a per-request penalty.
+// -----------------------------------------------------------------------------
+
+const rollupAvailability = new WeakMap<ClickHouseClient, Promise<boolean>>();
+
+function rollupAvailable(ch: ClickHouseClient): Promise<boolean> {
+  let probe = rollupAvailability.get(ch);
+  if (!probe) {
+    probe = (async () => {
+      try {
+        const r = await ch.query({ query: "EXISTS TABLE events_per_minute", format: "JSONEachRow" });
+        const rows = (await r.json()) as { result: number | string }[];
+        return Number(rows[0]?.result) === 1;
+      } catch {
+        return false;
+      }
+    })();
+    rollupAvailability.set(ch, probe);
+  }
+  return probe;
+}
+
+function rollupEligible(filter: SeriesFilter, groupBy: string | undefined, step: Step): boolean {
+  if (step.unit === "SECOND") return false; // rollup resolution is one minute
+  if (filter.resourceAttrs?.length) return false;
+  if (filter.search) return false;
+  if (filter.spanName) return false;
+  if (filter.minDurationMs) return false;
+  if (groupBy && groupBy !== "service" && groupBy !== "service.name") return false;
+  return true;
+}
+
+async function countSeriesFromRollup(
+  ch: ClickHouseClient,
+  projectId: string,
+  source: SeriesSource,
+  filter: SeriesFilter,
+  groupBy: string | undefined,
+  step: Step,
+): Promise<{ bucket: string; group: string; count: number }[]> {
+  const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(filter.range);
+  const conds = [
+    "project_id = {projectId:String}",
+    "signal = {signal:String}",
+    `minute >= ${sinceExpr}`,
+    `minute <= ${untilExpr}`,
+  ];
+  if (filter.service) conds.push("service = {service:String}");
+  if (source === "logs") {
+    // The rollup stores upper(SeverityText); mirror the raw path's
+    // case-insensitive comparison.
+    if (filter.severity) conds.push("severity = upper({severity:String})");
+  } else if (filter.statusCode) {
+    conds.push("status_code = {statusCode:String}");
+  }
+  const groupExpr = groupBy ? "service" : "''";
+
+  const query = `
+    SELECT
+      toString(toStartOfInterval(minute, INTERVAL ${step.n} ${step.unit})) AS bucket,
+      ${groupExpr} AS group_key,
+      sum(c) AS c
+    FROM events_per_minute
+    WHERE ${conds.join(" AND ")}
+    GROUP BY bucket, group_key
+    ORDER BY bucket ASC
+    LIMIT 10000
+  `;
+
+  const r = await ch.query({
+    query,
+    query_params: {
+      projectId,
+      signal: source,
+      since: sinceSql,
+      until: untilSql,
+      service: filter.service ?? "",
+      severity: filter.severity ?? "",
+      statusCode: filter.statusCode ?? "",
+    },
+    format: "JSONEachRow",
+  });
+  const rows = (await r.json()) as { bucket: string; group_key: string; c: string | number }[];
+  return rows.map((row) => ({ bucket: row.bucket, group: row.group_key, count: Number(row.c) }));
+}
+
 export async function countSeries(
   ch: ClickHouseClient,
   projectId: string,
@@ -1130,6 +1226,9 @@ export async function countSeries(
   groupBy: string | undefined,
   step: Step,
 ): Promise<{ bucket: string; group: string; count: number }[]> {
+  if (rollupEligible(filter, groupBy, step) && (await rollupAvailable(ch))) {
+    return countSeriesFromRollup(ch, projectId, source, filter, groupBy, step);
+  }
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(filter.range);
   const split = splitAttrs(filter.resourceAttrs);
   const attr = attrConds(split.resource);
