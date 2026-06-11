@@ -67,6 +67,16 @@ export function agentRunErrorLogMeta(err: unknown): Record<string, string> | nul
   return Object.keys(meta).length > 0 ? meta : null;
 }
 
+// Failure log message with the reason inlined as plain words. The reason must
+// be in the message body (not only in structured attrs) because log issues
+// fingerprint on the normalized body — a constant "agent run failed" string
+// collapses every failure mode into one issue forever, so a brand-new failure
+// mode never produces a new issue/incident/investigation. Spaces instead of
+// underscores keep messageBucketFor from collapsing long enum tokens to <id>.
+export function agentRunFailureLogMessage(reason: schema.AgentRunFailureReason): string {
+  return `agent run failed: ${reason.replaceAll("_", " ")}`;
+}
+
 export async function failAgentRun(
   ctx: AgentRunContext,
   reason: schema.AgentRunFailureReason,
@@ -89,7 +99,7 @@ export async function failAgentRun(
       runtime_minutes: ctx.agentRun.cumulativeRuntimeMinutes,
       resume_count: ctx.agentRun.resumeCount,
     },
-    "agent run failed",
+    agentRunFailureLogMessage(reason),
   );
   await agentRunLifecycle.fail({
     id: ctx.agentRun.id,

@@ -1,6 +1,7 @@
 import "./env.js";
 import { createClient } from "@clickhouse/client";
 import { db } from "@superlog/db";
+import { registerAgentRunHealthMetrics } from "./agent-run-health-metrics.js";
 import { initAiUsageSink } from "./ai-usage.js";
 import { createUsageMeterTicker } from "./billing/usage-meter-ticker.js";
 import { handleIssueTransition } from "./incidents/workflow.js";
@@ -19,6 +20,7 @@ logger.info({ scope: "boot" }, "env loaded");
 await initAiUsageSink();
 
 registerTenantMetrics();
+registerAgentRunHealthMetrics();
 
 const CLICKHOUSE_URL = process.env.CLICKHOUSE_URL ?? "http://localhost:8123";
 const CLICKHOUSE_DB = process.env.CLICKHOUSE_DB ?? "superlog";

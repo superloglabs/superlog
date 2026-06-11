@@ -86,3 +86,24 @@ test("exceededWallClockBudget is independent of provider-reported activeSeconds"
     true,
   );
 });
+
+test("failure log messages split log fingerprints per failure reason", async () => {
+  const { fingerprintLog, messageBucketFor } = await import("@superlog/fingerprint");
+  const { agentRunFailureLogMessage } = await import("./status.js");
+
+  const validation = agentRunFailureLogMessage("patch_validation_failed");
+  const sync = agentRunFailureLogMessage("sync_failed");
+
+  // Human-readable, no >=20-char tokens that messageBucketFor would collapse
+  // into <id> (the raw enum `patch_validation_failed` is 23 chars and would).
+  assert.equal(validation, "agent run failed: patch validation failed");
+  assert.equal(sync, "agent run failed: sync failed");
+
+  // Different reasons must land in different issues AND different buckets —
+  // a single shared fingerprint is how the June pileup hid inside a
+  // three-week-old open incident.
+  const fp = (body: string) =>
+    fingerprintLog({ body, severity: "ERROR", service: "superlog-worker" }).hash;
+  assert.notEqual(fp(validation), fp(sync));
+  assert.notEqual(messageBucketFor(validation), messageBucketFor(sync));
+});
