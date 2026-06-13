@@ -64,6 +64,14 @@ export async function startJobRunner(deps: JobDeps): Promise<PgBoss | null> {
   const jobs = await loadJobs(deps);
   if (jobs.length === 0) return null;
 
+  // pg-boss uses pg (node-postgres) which enforces TLS certificate verification
+  // by default. When DATABASE_URL contains ssl=true/sslmode=require the pg.Pool
+  // rejects self-signed certificates in the chain. postgres.js (used by the
+  // main DB client) skips rejectUnauthorized by default; mirror that here so
+  // both clients behave consistently when the database uses a self-signed cert.
+  const sslInUrl = /[?&]sslmode=(require|prefer|verify-ca|verify-full)|[?&]ssl=true/i.test(
+    connectionString,
+  );
   const boss = new PgBoss({
     connectionString,
     schema: process.env.PGBOSS_SCHEMA || "pgboss",
@@ -71,6 +79,7 @@ export async function startJobRunner(deps: JobDeps): Promise<PgBoss | null> {
     // and the render forces this false. Local/self-host roles can CREATE, so it
     // defaults on and self-installs.
     migrate: process.env.PGBOSS_MIGRATE !== "false",
+    ...(sslInUrl && { ssl: { rejectUnauthorized: false } }),
   });
   boss.on("error", (err: Error) =>
     logger.error({ scope: "jobs.runner", err: err.message }, "pg-boss error"),
