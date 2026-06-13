@@ -123,7 +123,6 @@ Per-app `.env.example` files are the source of truth — copy each to `.env` (or
 | [`packages/db/.env.example`](packages/db/.env.example) | Local DB connection                                    |
 | [`apps/sample/.env.local.example`](apps/sample/.env.local.example) | Sample app OTel exporter config        |
 
-**Known gotcha:** issue #43 tracks a `CLICKHOUSE_PASSWORD` drift between `apps/worker/.env.example` and `docker-compose.yml` — if your worker logs `Authentication failed: password is incorrect`, that's the cause. The fix is being PR'd; until it lands, set `CLICKHOUSE_PASSWORD=` (empty) in your worker `.env` to match the bundled compose file.
 
 If a variable is missing from the per-app examples, check `apps/api/src/env.ts` or the relevant `*.test.ts` setup file before guessing.
 
