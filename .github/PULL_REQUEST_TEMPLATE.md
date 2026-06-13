@@ -35,4 +35,4 @@ Fixes #
 - [ ] Added or updated tests where it makes sense
 - [ ] Branch is up to date with `main`
 - [ ] PR title follows the area-prefix style for the area being changed (e.g. `worker: …`, `fix(slack): …`)
-- [ ] Read [CONTRIBUTING.md](../CONTRIBUTING.md) (skim counts)
+- [ ] Read [CONTRIBUTING.md](https://github.com/superloglabs/superlog/blob/main/CONTRIBUTING.md) (skim counts)
