@@ -519,24 +519,24 @@ async function chMetricsCountAcrossTables(
     "otel_metrics_summary",
     "otel_metrics_exp_histogram",
   ];
-  const counts = await Promise.all(
-    tables.map(async (t) => {
-      const r = await ch.query({
-        query: `
-          SELECT count() AS c
-          FROM ${t}
-          WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
-            AND ServiceName = {service:String}
-            AND TimeUnix >= parseDateTime64BestEffortOrZero({since:String})
-        `,
-        query_params: { projectId, service, since },
-        format: "JSONEachRow",
-      });
-      const rows = (await r.json()) as { c: string | number }[];
-      return Number(rows[0]?.c ?? 0);
-    }),
-  );
-  return { count: counts.reduce((a, b) => a + b, 0) };
+  const unionAll = tables
+    .map(
+      (t) => `
+        SELECT count() AS c
+        FROM ${t}
+        WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+          AND ServiceName = {service:String}
+          AND TimeUnix >= parseDateTime64BestEffortOrZero({since:String})
+      `,
+    )
+    .join(" UNION ALL ");
+  const r = await ch.query({
+    query: `SELECT sum(c) AS total FROM (${unionAll})`,
+    query_params: { projectId, service, since },
+    format: "JSONEachRow",
+  });
+  const rows = (await r.json()) as { total: string | number }[];
+  return { count: Number(rows[0]?.total ?? 0) };
 }
 
 async function ensureAccount(
