@@ -1097,6 +1097,7 @@ function SlackCard() {
   const install = useSlackInstallation();
   const start = useStartSlackInstall();
   const uninstall = useUninstallSlack();
+  const [connectError, setConnectError] = useState<string | null>(null);
 
   const installed = install.data?.installed === true;
 
@@ -1123,9 +1124,14 @@ function SlackCard() {
             size="sm"
             variant={installed ? "secondary" : "primary"}
             loading={start.isPending}
-            onClick={async () => {
-              const { url } = await start.mutateAsync();
-              window.location.href = url;
+            onClick={() => {
+              setConnectError(null);
+              start.mutate(undefined, {
+                onSuccess: ({ url }) => {
+                  window.location.href = url;
+                },
+                onError: (err) => setConnectError(describeIntegrationConnectError(err, "Slack")),
+              });
             }}
           >
             {installed ? "Reinstall" : "Connect Slack"}
@@ -1141,6 +1147,11 @@ function SlackCard() {
             </Btn>
           )}
         </div>
+        {connectError && (
+          <p className="text-[12px] text-danger" role="alert">
+            {connectError}
+          </p>
+        )}
       </div>
     </Tile>
   );
