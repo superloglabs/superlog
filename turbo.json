@@ -3,7 +3,7 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**"]
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
     },
     "dev": {
       "cache": false,
@@ -11,6 +11,10 @@
     },
     "typecheck": {
       "dependsOn": ["^build"]
+    },
+    "test": {
+      "env": ["BETTER_AUTH_SECRET", "DATABASE_URL"],
+      "outputs": []
     },
     "lint": {}
   }

@@ -1,6 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseIncidentPrPatchFiles, visibleIncidentPrDiffFiles } from "./incident-pr-diff-model.ts";
+
+if (typeof globalThis.navigator === "undefined") {
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {
+      maxTouchPoints: 0,
+      platform: "Linux",
+      userAgent: "node.js",
+    },
+  });
+}
+
+const { parseIncidentPrPatchFiles, visibleIncidentPrDiffFiles } = await import(
+  "./incident-pr-diff-model.ts"
+);
 
 const MULTI_FILE_PATCH = `diff --git a/apps/api/src/checkout.ts b/apps/api/src/checkout.ts
 index 4f52110..ab9e031 100644
