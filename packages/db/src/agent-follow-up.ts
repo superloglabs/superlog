@@ -325,6 +325,12 @@ export async function recordInboundInteraction(
     });
     if (seen) return { outcome: "duplicate" };
 
+    // Claim the dedupe key atomically (the unique (agentRunId, dedupeKey) index
+    // lets only one concurrent racer win). We RELEASE the claim if the enqueue
+    // then fails or is skipped, so the key is only durably consumed once the
+    // follow-up actually exists — a transient failure or a later state change
+    // can be retried instead of silently dropped.
+    let claimId: string | null = null;
     if (latestRun) {
       const [claim] = await db
         .insert(schema.incidentEvents)
@@ -342,16 +348,32 @@ export async function recordInboundInteraction(
         })
         .returning({ id: schema.incidentEvents.id });
       if (!claim) return { outcome: "duplicate" };
+      claimId = claim.id;
     }
 
-    const result = await requestFollowUpAgentRun(db, {
-      incidentId: args.incidentId,
-      trigger: args.interaction.channel,
-      interaction: args.interaction,
-      confirmed: args.confirmed,
-      now,
-    });
-    if (result.outcome === "skipped") return { outcome: "skipped", reason: result.reason };
+    const releaseClaim = async () => {
+      if (claimId) {
+        await db.delete(schema.incidentEvents).where(eq(schema.incidentEvents.id, claimId));
+      }
+    };
+
+    let result: RequestFollowUpResult;
+    try {
+      result = await requestFollowUpAgentRun(db, {
+        incidentId: args.incidentId,
+        trigger: args.interaction.channel,
+        interaction: args.interaction,
+        confirmed: args.confirmed,
+        now,
+      });
+    } catch (err) {
+      await releaseClaim();
+      throw err;
+    }
+    if (result.outcome === "skipped") {
+      await releaseClaim();
+      return { outcome: "skipped", reason: result.reason };
+    }
     return { outcome: "accepted", action: "cold_start", agentRunId: result.agentRunId };
   }
 
