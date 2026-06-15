@@ -139,6 +139,29 @@ export function createAgentRunLifecycle(db: DB) {
     },
 
     /**
+     * `complete | failed → resuming`: a human message arrived after the run
+     * finished. Reactivate so the next tick resumes the durable provider
+     * session in place (continue the same investigation, keep the repo mounted
+     * and the PR branch) rather than starting a new one. Clears the terminal
+     * stamps; the human-visible `resumed` event is emitted by the resume
+     * handler once the session actually accepts the message.
+     */
+    async reactivateForContinuation(opts: {
+      id: string;
+      currentState: AgentRunState | string;
+    }): Promise<void> {
+      assertAgentRunSourceState("reactivateForContinuation", opts.currentState, [
+        "complete",
+        "failed",
+      ]);
+      await repository.updateRun(opts.id, {
+        state: "resuming",
+        failureReason: null,
+        completedAt: null,
+      });
+    },
+
+    /**
      * `queued | repo_discovery → blocked_no_github`, when the project has
      * no GitHub install (or no accessible repos) so the agentRun
      * cannot make progress. Worker stops polling — the row is revived when
@@ -174,15 +197,15 @@ export function createAgentRunLifecycle(db: DB) {
     // shared governed path while the bulk update bypasses it.
 
     /**
-     * `awaiting_human → running`, after the managed session was resumed.
-     * Increments resumeCount. Emits `resumed`.
+     * `awaiting_human | resuming → running`, after the managed session
+     * accepted the human message. Increments resumeCount. Emits `resumed`.
      */
     async resumeRunning(opts: {
       id: string;
       currentState: AgentRunState | string;
       currentResumeCount: number;
     }): Promise<void> {
-      assertAgentRunSourceState("resumeRunning", opts.currentState, ["awaiting_human"]);
+      assertAgentRunSourceState("resumeRunning", opts.currentState, ["awaiting_human", "resuming"]);
       const nextResumeCount = opts.currentResumeCount + 1;
       await repository.updateRun(opts.id, {
         state: "running",
@@ -336,6 +359,7 @@ export function createAgentRunLifecycle(db: DB) {
         "repo_discovery",
         "running",
         "awaiting_human",
+        "resuming",
         "pr_retry_queued",
         "blocked_no_github",
       ]);

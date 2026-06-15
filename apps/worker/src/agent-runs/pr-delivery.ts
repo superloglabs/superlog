@@ -153,10 +153,12 @@ export async function completeWithPullRequest(
   // depending on the agent session (which may have expired) to re-download it.
   const resultWithPatch: AgentRunResult = { ...result, pr: { ...pr, patch, patchFileId } };
 
-  // Follow-up runs deliver onto the prior run's still-open PR: push the patch
-  // as an additional commit on the existing branch and reply on the PR
-  // instead of opening a second one.
-  if (ctx.agentRun.trigger !== "incident") {
+  // Land onto the incident's still-open PR whenever one exists: a resumed or
+  // follow-up turn pushes the patch as an additional commit on the existing
+  // branch and replies on the PR instead of opening a second one. Keyed on the
+  // open PR (not the trigger) because a resumed run keeps its original
+  // `incident` trigger yet must still update its own PR rather than duplicate it.
+  {
     const existingPr = await db.query.agentPullRequests.findFirst({
       where: and(
         eq(schema.agentPullRequests.incidentId, ctx.incident.id),

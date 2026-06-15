@@ -5,10 +5,10 @@ import {
   db,
   schema,
 } from "@superlog/db";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
-import { closeAgentPullRequestOnGithub } from "../github-app.js";
+import { closeAgentPullRequestOnGithub, postAgentPrComment } from "../github-app.js";
 import { FIXED_IN_CURRENT_CODE_COOLDOWN_MS } from "../incident-cooldown.js";
 import {
   completedNoiseReason,
@@ -29,6 +29,67 @@ import { isAlertIncident, truncateSlackText } from "./result-metadata.js";
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 const agentRunLifecycle = createAgentRunLifecycle(db);
 const incidentLifecycle = createIncidentLifecycle(db);
+
+// Channel-in = channel-out: when this turn was triggered by a PR comment, post
+// the agent's reply back onto the PR (in addition to the Slack incident thread,
+// which stays the system of record). The turn's origin is the run's trigger for
+// a cold-start follow-up, or the latest human_reply event for a resumed/steered
+// session. Best-effort — a failed PR post never blocks completion.
+export async function replyToPrOriginIfNeeded(
+  ctx: AgentRunContext,
+  replyText: string,
+): Promise<void> {
+  let isPrOrigin = ctx.agentRun.trigger === "pr_comment";
+  if (!isPrOrigin) {
+    const lastReply = await db.query.incidentEvents.findFirst({
+      where: and(
+        eq(schema.incidentEvents.agentRunId, ctx.agentRun.id),
+        eq(schema.incidentEvents.kind, "human_reply"),
+      ),
+      orderBy: [desc(schema.incidentEvents.createdAt)],
+      columns: { detail: true },
+    });
+    const origin = (lastReply?.detail as { origin?: { channel?: string } } | null)?.origin;
+    isPrOrigin = origin?.channel === "pr_comment";
+  }
+  if (!isPrOrigin) return;
+
+  const [target] = await db
+    .select({
+      prNumber: schema.agentPullRequests.prNumber,
+      repoFullName: schema.agentPullRequests.repoFullName,
+      installationId: schema.githubInstallations.installationId,
+    })
+    .from(schema.agentPullRequests)
+    .innerJoin(
+      schema.githubInstallations,
+      eq(schema.githubInstallations.id, schema.agentPullRequests.installationId),
+    )
+    .where(eq(schema.agentPullRequests.incidentId, ctx.incident.id))
+    .orderBy(desc(schema.agentPullRequests.createdAt))
+    .limit(1);
+  if (!target) return;
+
+  const result = await postAgentPrComment({
+    installationId: target.installationId,
+    repoFullName: target.repoFullName,
+    prNumber: target.prNumber,
+    body: replyText,
+  });
+  if (!result.ok) {
+    logger.warn(
+      {
+        scope: "agent_run",
+        agent_run_id: ctx.agentRun.id,
+        incident_id: ctx.incident.id,
+        repo: target.repoFullName,
+        pr_number: target.prNumber,
+        error: result.error,
+      },
+      "failed to post continuation reply to PR",
+    );
+  }
+}
 
 async function closeOpenPullRequestsForResolvedIncident(incidentId: string): Promise<void> {
   await closeIncidentOpenPullRequestsAfterResolution({
@@ -203,4 +264,5 @@ export async function completeWithoutPullRequest(
       incidentId: ctx.incident.id,
     }),
   );
+  await replyToPrOriginIfNeeded(ctx, result.summary);
 }

@@ -113,11 +113,16 @@ export {
 export { generateCodename } from "./codename.js";
 export {
   evaluateFollowUpEligibility,
+  decideInboundContinuation,
+  recordInboundInteraction,
   requestFollowUpAgentRun,
   FOLLOW_UP_MAX_AGE_DAYS,
   MAX_FOLLOW_UP_RUNS,
   type FollowUpEligibilityInput,
   type FollowUpVerdict,
+  type InboundContinuationInput,
+  type InboundContinuationVerdict,
+  type RecordInboundInteractionResult,
   type RequestFollowUpResult,
 } from "./agent-follow-up.js";
 export {

@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import {
   db,
   listAccessibleGithubInstallsForProject,
-  requestFollowUpAgentRun,
+  recordInboundInteraction,
   resolveIncident,
   schema,
   syncLoopsContactsForOrg,
@@ -785,11 +785,11 @@ function extractEligiblePrComment(
   return { body, actor, commentUrl, path, line };
 }
 
-// Review feedback on an agent PR revives the agent as a follow-up run that
-// addresses the requested changes on the existing branch. Eligibility (caps,
-// staleness, project gate) is enforced by requestFollowUpAgentRun; comments
-// arriving while a follow-up is still queued append to it, so a review burst
-// becomes one run.
+// Review feedback on an agent PR continues the SAME investigation session where
+// one survives (resume / steer, keeping the existing branch mounted), and only
+// cold-starts a fresh run when no session can be resumed. `detail.origin`
+// carries the comment so the worker routes the agent's reply back to the PR.
+// The comment URL is a stable dedupe key against GitHub webhook redelivery.
 async function maybeRequestPrCommentFollowUp(opts: {
   event: string;
   payload: WebhookPayload;
@@ -797,9 +797,8 @@ async function maybeRequestPrCommentFollowUp(opts: {
 }): Promise<void> {
   const comment = extractEligiblePrComment(opts.event, opts.payload);
   if (!comment) return;
-  const result = await requestFollowUpAgentRun(db, {
+  const result = await recordInboundInteraction(db, {
     incidentId: opts.agentPrRow.incidentId,
-    trigger: "pr_comment",
     interaction: {
       channel: "pr_comment",
       author: comment.actor?.login ?? null,
@@ -809,11 +808,14 @@ async function maybeRequestPrCommentFollowUp(opts: {
       line: comment.line,
       occurredAt: new Date().toISOString(),
     },
+    dedupeKey: comment.commentUrl
+      ? `github:${comment.commentUrl}`
+      : `github:${opts.agentPrRow.id}:${Date.now()}`,
   });
   if (result.outcome === "skipped") {
     log.info(
       { incident_id: opts.agentPrRow.incidentId, reason: result.reason },
-      "pr comment did not trigger a follow-up run",
+      "pr comment did not continue the investigation",
     );
   }
 }

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   FOLLOW_UP_MAX_AGE_DAYS,
   MAX_FOLLOW_UP_RUNS,
+  decideInboundContinuation,
   evaluateFollowUpEligibility,
 } from "./agent-follow-up.js";
 
@@ -109,4 +110,98 @@ test("skips when the active run is the original (non-follow-up) investigation", 
     input({ activeRun: { id: "run-1", state: "queued", trigger: "incident" } }),
   );
   assert.deepEqual(verdict, { action: "skip", reason: "run_active" });
+});
+
+// --- Session-continuity routing (decideInboundContinuation) ---
+//
+// The new model: an inbound message continues the SAME durable provider
+// session rather than spinning up a fresh investigation. These tests pin the
+// routing decision; the worker handles the actual resume/steer/fall-back.
+
+function continuation(overrides: Partial<Parameters<typeof decideInboundContinuation>[0]> = {}) {
+  return {
+    agentRunEnabled: true,
+    autoFollowUpEnabled: true,
+    confirmed: false,
+    latestRun: { id: "run-1", state: "complete", providerSessionId: "sess_1" },
+    ...overrides,
+  };
+}
+
+test("a completed run with a live session resumes that session (no new investigation)", () => {
+  assert.deepEqual(decideInboundContinuation(continuation()), {
+    action: "resume",
+    runId: "run-1",
+  });
+});
+
+test("a failed run with a session is still resumable", () => {
+  assert.deepEqual(
+    decideInboundContinuation(
+      continuation({ latestRun: { id: "run-2", state: "failed", providerSessionId: "sess_2" } }),
+    ),
+    { action: "resume", runId: "run-2" },
+  );
+});
+
+test("a terminal run without a session falls back to a cold-start run", () => {
+  assert.deepEqual(
+    decideInboundContinuation(
+      continuation({ latestRun: { id: "run-3", state: "complete", providerSessionId: null } }),
+    ),
+    { action: "cold_start" },
+  );
+});
+
+test("a message arriving mid-turn steers the running session instead of stacking a run", () => {
+  for (const state of ["running", "repo_discovery"]) {
+    assert.deepEqual(
+      decideInboundContinuation(
+        continuation({ latestRun: { id: "run-4", state, providerSessionId: "sess_4" } }),
+      ),
+      { action: "steer", runId: "run-4" },
+      `state=${state}`,
+    );
+  }
+});
+
+test("an awaiting-human run always delivers (worker resumes, or requeues if no session yet)", () => {
+  assert.deepEqual(
+    decideInboundContinuation(
+      continuation({ latestRun: { id: "run-5", state: "awaiting_human", providerSessionId: "s" } }),
+    ),
+    { action: "resume", runId: "run-5" },
+  );
+  assert.deepEqual(
+    decideInboundContinuation(
+      continuation({
+        latestRun: { id: "run-5", state: "awaiting_human", providerSessionId: null },
+      }),
+    ),
+    { action: "resume", runId: "run-5" },
+  );
+});
+
+test("no prior run at all has nothing to continue", () => {
+  assert.deepEqual(decideInboundContinuation(continuation({ latestRun: null })), {
+    action: "skip",
+    reason: "no_prior_run",
+  });
+});
+
+test("project gates still apply: agent runs disabled, auto-follow-up off (unless confirmed)", () => {
+  assert.deepEqual(decideInboundContinuation(continuation({ agentRunEnabled: false })), {
+    action: "skip",
+    reason: "agent_runs_disabled",
+  });
+  assert.deepEqual(decideInboundContinuation(continuation({ autoFollowUpEnabled: false })), {
+    action: "skip",
+    reason: "auto_follow_up_disabled",
+  });
+  // An explicit human confirmation (e.g. the feedback button) bypasses the
+  // auto-follow-up gate and still resumes.
+  assert.deepEqual(
+    decideInboundContinuation(continuation({ autoFollowUpEnabled: false, confirmed: true })),
+    { action: "resume", runId: "run-1" },
+  );
 });
