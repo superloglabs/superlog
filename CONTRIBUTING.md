@@ -73,7 +73,7 @@ scripts/
   worktree-*    Per-worktree port + DB isolation
   portless-*    Stack orchestration
   smoke-*.ts    Manual smoke tests (gRPC, OTLP)
-docs/           Currently only webhooks.md — more coming
+docs/           Integration & setup guides (github-app-setup.md, webhooks.md)
 ```
 
 ## Common commands
@@ -125,6 +125,8 @@ Per-app `.env.example` files are the source of truth — copy each to `.env` (or
 
 
 If a variable is missing from the per-app examples, check `apps/api/src/env.ts` or the relevant `*.test.ts` setup file before guessing.
+
+To wire up the GitHub integration end-to-end (the **Connect GitHub** flow and agent-opened PRs), follow [`docs/github-app-setup.md`](docs/github-app-setup.md) — it walks through registering a GitHub App and mapping its credentials across the API and worker.
 
 ## Code style
 
