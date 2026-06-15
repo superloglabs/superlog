@@ -65,7 +65,12 @@ export async function replyToPrOriginIfNeeded(
       schema.githubInstallations,
       eq(schema.githubInstallations.id, schema.agentPullRequests.installationId),
     )
-    .where(eq(schema.agentPullRequests.incidentId, ctx.incident.id))
+    .where(
+      and(
+        eq(schema.agentPullRequests.incidentId, ctx.incident.id),
+        eq(schema.agentPullRequests.state, "open"),
+      ),
+    )
     .orderBy(desc(schema.agentPullRequests.createdAt))
     .limit(1);
   if (!target) return;

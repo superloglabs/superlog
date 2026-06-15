@@ -1,5 +1,5 @@
 import { type AgentRunResult, db, schema } from "@superlog/db";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import { type AgentRunOutcome, recordAgentRunCompletion } from "../ai-usage.js";
@@ -236,7 +236,8 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         eq(schema.incidentEvents.kind, "human_reply"),
         isNull(schema.incidentEvents.processedAt),
       ),
-      orderBy: [desc(schema.incidentEvents.createdAt)],
+      // Oldest → newest so the steered conversation reads in chronological order.
+      orderBy: [asc(schema.incidentEvents.createdAt)],
     });
     const steeredHuman = await steerIdleRunnerWithPendingContext({
       snapshotStatus: snapshot.status,

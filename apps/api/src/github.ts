@@ -731,6 +731,9 @@ type EligiblePrComment = {
   commentUrl: string | null;
   path: string | null;
   line: number | null;
+  // Stable GitHub id of the comment/review — a deterministic dedupe key across
+  // webhook redelivery, used in preference to the URL.
+  sourceId: string | null;
 };
 
 // Shared gate for the comment-bearing PR events: real text from a real
@@ -746,11 +749,13 @@ function extractEligiblePrComment(
   let commentUrl: string | null = null;
   let path: string | null = null;
   let line: number | null = null;
+  let sourceId: string | null = null;
   if (event === "issue_comment" && payload.action === "created") {
     body = payload.comment?.body ?? null;
     actor = payload.comment?.user ?? null;
     authorAssociation = payload.comment?.author_association ?? null;
     commentUrl = payload.comment?.html_url ?? null;
+    sourceId = payload.comment?.id != null ? `issue_comment:${payload.comment.id}` : null;
   } else if (event === "pull_request_review_comment" && payload.action === "created") {
     body = payload.comment?.body ?? null;
     actor = payload.comment?.user ?? null;
@@ -758,11 +763,13 @@ function extractEligiblePrComment(
     commentUrl = payload.comment?.html_url ?? null;
     path = payload.comment?.path ?? null;
     line = payload.comment?.line ?? null;
+    sourceId = payload.comment?.id != null ? `review_comment:${payload.comment.id}` : null;
   } else if (event === "pull_request_review" && payload.action === "submitted") {
     body = payload.review?.body ?? null;
     actor = payload.review?.user ?? null;
     authorAssociation = payload.review?.author_association ?? null;
     commentUrl = payload.review?.html_url ?? null;
+    sourceId = payload.review?.id != null ? `review:${payload.review.id}` : null;
   } else {
     return null;
   }
@@ -782,7 +789,7 @@ function extractEligiblePrComment(
   ) {
     return null;
   }
-  return { body, actor, commentUrl, path, line };
+  return { body, actor, commentUrl, path, line, sourceId };
 }
 
 // Review feedback on an agent PR continues the SAME investigation session where
@@ -808,9 +815,10 @@ async function maybeRequestPrCommentFollowUp(opts: {
       line: comment.line,
       occurredAt: new Date().toISOString(),
     },
-    dedupeKey: comment.commentUrl
-      ? `github:${comment.commentUrl}`
-      : `github:${opts.agentPrRow.id}:${Date.now()}`,
+    // Deterministic across GitHub webhook redelivery: stable comment/review id
+    // first, then the comment URL. Both are stable for a given comment, so a
+    // redelivery dedupes instead of enqueuing twice.
+    dedupeKey: `github:${comment.sourceId ?? comment.commentUrl ?? `${opts.agentPrRow.id}:${comment.body}`}`,
   });
   if (result.outcome === "skipped") {
     log.info(

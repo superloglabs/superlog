@@ -171,7 +171,7 @@ async function coldStartFallback(
     existingResult: ctx.agentRun.result ?? null,
   });
 
-  await requestFollowUpAgentRun(db, {
+  const result = await requestFollowUpAgentRun(db, {
     incidentId: ctx.incident.id,
     trigger: origin?.channel === "pr_comment" ? "pr_comment" : "slack_reply",
     interaction: origin ?? {
@@ -181,6 +181,23 @@ async function coldStartFallback(
       occurredAt: new Date().toISOString(),
     },
   });
+
+  // Don't silently swallow the human's message: if the fallback couldn't
+  // enqueue (cap reached, gate off, another run already active), surface it
+  // loudly. We still mark the replies processed so the now-failed run doesn't
+  // re-attempt the dead session every tick.
+  if (result.outcome === "skipped") {
+    logger.warn(
+      {
+        scope: "agent_run",
+        agent_run_id: ctx.agentRun.id,
+        incident_id: ctx.incident.id,
+        reason: result.reason,
+        dropped_text: combined.slice(0, 500),
+      },
+      "cold-start fallback could not enqueue; human input not actioned",
+    );
+  }
 
   await markProcessed(humanReplies.map((event) => event.id));
 }

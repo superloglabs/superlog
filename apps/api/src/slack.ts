@@ -177,15 +177,16 @@ export function mountSlackPublic(app: Hono<any>): void {
     }
     if (payload.type !== "event_callback") return c.json({ ok: true });
 
-    try {
-      await handleSlackEventEnvelope(payload);
-    } catch (err) {
+    // Ack Slack immediately and process out of band: the handler does DB work
+    // and an outbound chat.postMessage, which can exceed Slack's ~3s window and
+    // trigger retries (= duplicate delivery). The handler is idempotent on the
+    // event id, so the rare retry that still arrives is deduped.
+    void handleSlackEventEnvelope(payload).catch((err) =>
       log.error(
         { err, event_type: payload.event?.type, event_id: payload.event_id },
         "slack event handler failed",
-      );
-      throw err;
-    }
+      ),
+    );
     return c.json({ ok: true });
   });
 

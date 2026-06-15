@@ -305,6 +305,19 @@ export async function recordInboundInteraction(
   if (verdict.action === "skip") return { outcome: "skipped", reason: verdict.reason };
 
   if (verdict.action === "cold_start") {
+    // Idempotency for provider/webhook retries: cold-start can append to or
+    // create a run, neither of which is guarded by the dedupe key, so a redelivery
+    // of the same message would double-enqueue. Guard with an incident-scoped
+    // marker — if we've already seen this dedupeKey on the incident, stop.
+    const seen = await db.query.incidentEvents.findFirst({
+      where: and(
+        eq(schema.incidentEvents.incidentId, args.incidentId),
+        eq(schema.incidentEvents.dedupeKey, args.dedupeKey),
+      ),
+      columns: { id: true },
+    });
+    if (seen) return { outcome: "duplicate" };
+
     const result = await requestFollowUpAgentRun(db, {
       incidentId: args.incidentId,
       trigger: args.interaction.channel,
@@ -313,6 +326,23 @@ export async function recordInboundInteraction(
       now,
     });
     if (result.outcome === "skipped") return { outcome: "skipped", reason: result.reason };
+
+    // Record a processed marker so a later redelivery hits the guard above. It's
+    // pre-processed so it never gets re-consumed as a pending human reply.
+    await db
+      .insert(schema.incidentEvents)
+      .values({
+        agentRunId: result.agentRunId,
+        incidentId: args.incidentId,
+        kind: "human_reply",
+        summary: args.interaction.text,
+        detail: { ...(args.detail ?? {}), origin: args.interaction },
+        dedupeKey: args.dedupeKey,
+        processedAt: now,
+      })
+      .onConflictDoNothing({
+        target: [schema.incidentEvents.agentRunId, schema.incidentEvents.dedupeKey],
+      });
     return { outcome: "accepted", action: "cold_start", agentRunId: result.agentRunId };
   }
 
