@@ -1079,8 +1079,19 @@ async function chMetricsCount(projectId: string): Promise<number> {
         "otel_metrics_exp_histogram",
       ];
       span.setAttribute("metrics.table_count", tables.length);
-      const counts = await Promise.all(tables.map((t) => chCount(t, "TimeUnix", projectId)));
-      const total = counts.reduce((a, b) => a + b, 0);
+      const unionAll = tables
+        .map(
+          (t) =>
+            `SELECT count() AS c FROM ${t} WHERE ResourceAttributes['superlog.project_id'] = {projectId:String} AND TimeUnix > now() - INTERVAL 1 HOUR`,
+        )
+        .join(" UNION ALL ");
+      const r = await ch.query({
+        query: `SELECT sum(c) AS total FROM (${unionAll})`,
+        query_params: { projectId },
+        format: "JSONEachRow",
+      });
+      const rows = (await r.json()) as { total: string | number }[];
+      const total = Number(rows[0]?.total ?? 0);
       span.setAttribute("metrics.total", total);
       return total;
     } catch (err) {
