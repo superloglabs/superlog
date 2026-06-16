@@ -4,7 +4,7 @@ import { asc, eq, inArray } from "drizzle-orm";
 import { loadAgentRunContext } from "../agent-run-context.js";
 import { ACTIVE_STATES as AGENT_RUN_ACTIVE_STATES } from "../agent-run.js";
 import { retryQueuedPullRequestDelivery } from "./pr-delivery.js";
-import { resumeAwaitingHumanAgentRun } from "./resume.js";
+import { resumeAgentRunFromHumanInput } from "./resume.js";
 import { startQueuedAgentRun } from "./start-run.js";
 import { syncRunningAgentRun } from "./sync.js";
 
@@ -60,8 +60,8 @@ export async function tickAgentRuns(): Promise<number> {
           await syncRunningAgentRun(ctx);
           continue;
         }
-        if (ctx.agentRun.state === "awaiting_human") {
-          await resumeAwaitingHumanAgentRun(ctx);
+        if (ctx.agentRun.state === "awaiting_human" || ctx.agentRun.state === "resuming") {
+          await resumeAgentRunFromHumanInput(ctx);
           continue;
         }
         if (ctx.agentRun.state === "pr_retry_queued") {

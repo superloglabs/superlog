@@ -210,6 +210,39 @@ export async function createGithubWriteToken(
   });
 }
 
+// Post a comment on an agent PR — used to route a continuation turn's reply
+// back to the channel it came in on (a PR comment gets a PR answer). Best-effort
+// and idempotency-free: the caller only fires this once per completed turn.
+export async function postAgentPrComment(opts: {
+  installationId: number;
+  repoFullName: string;
+  prNumber: number;
+  body: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const token = await createGithubWriteToken(opts.installationId);
+    const res = await fetch(
+      `${GITHUB_API}/repos/${opts.repoFullName}/issues/${opts.prNumber}/comments`,
+      {
+        method: "POST",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version": "2022-11-28",
+          "user-agent": "superlog-worker",
+        },
+        body: JSON.stringify({ body: opts.body }),
+      },
+    );
+    if (res.ok) return { ok: true };
+    const text = await res.text().catch(() => "");
+    return { ok: false, error: `github POST issue comment ${res.status} ${text}` };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export async function getGithubRepoInfo(
   installationId: number,
   repoFullName: string,

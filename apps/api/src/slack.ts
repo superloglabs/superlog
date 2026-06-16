@@ -3,6 +3,7 @@ import {
   confirmResolutionProposal,
   db,
   dismissResolutionProposal,
+  recordInboundInteraction,
   requestFollowUpAgentRun,
   resolveIncident,
   schema,
@@ -176,15 +177,16 @@ export function mountSlackPublic(app: Hono<any>): void {
     }
     if (payload.type !== "event_callback") return c.json({ ok: true });
 
-    try {
-      await handleSlackEventEnvelope(payload);
-    } catch (err) {
+    // Ack Slack immediately and process out of band: the handler does DB work
+    // and an outbound chat.postMessage, which can exceed Slack's ~3s window and
+    // trigger retries (= duplicate delivery). The handler is idempotent on the
+    // event id, so the rare retry that still arrives is deduped.
+    void handleSlackEventEnvelope(payload).catch((err) =>
       log.error(
         { err, event_type: payload.event?.type, event_id: payload.event_id },
         "slack event handler failed",
-      );
-      throw err;
-    }
+      ),
+    );
     return c.json({ ok: true });
   });
 
@@ -899,53 +901,52 @@ async function handleSlackEventEnvelope(payload: SlackEventEnvelope): Promise<vo
   });
   if (!incident) return;
 
-  const agentRun = await db.query.agentRuns.findFirst({
-    where: eq(schema.agentRuns.incidentId, incident.id),
-    orderBy: [desc(schema.agentRuns.createdAt)],
-  });
-  if (!agentRun) return;
-
-  if (agentRun.state === "awaiting_human") {
-    await db
-      .insert(schema.incidentEvents)
-      .values({
-        agentRunId: agentRun.id,
-        kind: "human_reply",
-        summary: event.text.trim(),
-        detail: {
-          slackEventId: payload.event_id ?? null,
-          slackUserId: event.user ?? null,
-          slackChannelId: event.channel,
-          slackThreadTs: event.thread_ts,
-          slackMessageTs: event.ts,
-        },
-        dedupeKey: payload.event_id
-          ? `slack:${payload.event_id}`
-          : `slack:${event.channel}:${event.ts}`,
-      })
-      .onConflictDoNothing({
-        target: [schema.incidentEvents.agentRunId, schema.incidentEvents.dedupeKey],
-      });
-    return;
-  }
-
-  // A reply after the latest run finished revives the agent as a follow-up
-  // run (eligibility — caps, staleness, project gate — is decided inside).
-  const result = await requestFollowUpAgentRun(db, {
+  // Talking to the investigation: continue the SAME durable session where we
+  // can (resume / steer), and only spin a fresh run when no session survives.
+  // The shared path records the message, reactivates a terminal run, or
+  // cold-starts — all channels go through it.
+  const result = await recordInboundInteraction(db, {
     incidentId: incident.id,
-    trigger: "slack_reply",
     interaction: {
       channel: "slack_reply",
       author: event.user ?? null,
       text: event.text.trim(),
       occurredAt: new Date().toISOString(),
     },
+    dedupeKey: payload.event_id
+      ? `slack:${payload.event_id}`
+      : `slack:${event.channel}:${event.ts}`,
+    detail: {
+      slackEventId: payload.event_id ?? null,
+      slackUserId: event.user ?? null,
+      slackChannelId: event.channel,
+      slackThreadTs: event.thread_ts,
+      slackMessageTs: event.ts,
+    },
   });
+
+  if (result.outcome === "duplicate") return;
   if (result.outcome === "skipped") {
     logger.info(
       { scope: "slack", incident_id: incident.id, reason: result.reason },
-      "slack reply did not trigger a follow-up run",
+      "slack reply did not continue the investigation",
     );
+    return;
+  }
+
+  // One instant acknowledgement in the originating thread so the human knows
+  // the message landed, rather than silence until the agent replies.
+  const installation = await installationForIncident({
+    pinnedId: incident.slackInstallationId,
+    teamId: payload.team_id ?? "",
+  });
+  if (installation) {
+    await postSlackThreadReply({
+      botToken: installation.botAccessToken,
+      channel: event.channel,
+      threadTs: event.thread_ts,
+      text: ":mag: On it — I'll follow up in this thread.",
+    });
   }
 }
 
@@ -1149,6 +1150,7 @@ type SlackEventEnvelope = {
   type?: string;
   challenge?: string;
   event_id?: string;
+  team_id?: string;
   event?: {
     type?: string;
     subtype?: string;

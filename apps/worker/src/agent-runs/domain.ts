@@ -3,6 +3,7 @@ export type AgentRunState =
   | "repo_discovery"
   | "running"
   | "awaiting_human"
+  | "resuming"
   | "pr_retry_queued"
   | "blocked_no_github"
   | "complete"
@@ -12,12 +13,15 @@ export type AgentRunState =
 // excluded: those rows sit dormant until a GitHub install webhook or manual
 // restart requeues them. `pr_retry_queued` is a failed run that a human asked
 // to re-deliver: the tick re-runs PR delivery from the patch already on record
-// (no re-investigation).
+// (no re-investigation). `resuming` is a previously-terminal run that a human
+// message reactivated: the tick resumes its durable provider session in place
+// (no re-investigation) — the heart of "talking to an investigation".
 export const ACTIVE_STATES: readonly AgentRunState[] = [
   "queued",
   "repo_discovery",
   "running",
   "awaiting_human",
+  "resuming",
   "pr_retry_queued",
 ] as const;
 

@@ -1,5 +1,5 @@
 import { type AgentRunResult, db, schema } from "@superlog/db";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import { type AgentRunOutcome, recordAgentRunCompletion } from "../ai-usage.js";
@@ -223,6 +223,39 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       .update(schema.agentRuns)
       .set(baseUpdate)
       .where(eq(schema.agentRuns.id, ctx.agentRun.id));
+
+    // A human message that arrived mid-turn (the run was still `running`, so it
+    // was recorded rather than reactivating a terminal run). Steer it into the
+    // live session the moment the runner is idle — even if a result just landed,
+    // so the reply continues the conversation instead of the run completing out
+    // from under it. The inbound channel already ack'd the human, so no extra
+    // thread post here.
+    const pendingHumanReplies = await db.query.incidentEvents.findMany({
+      where: and(
+        eq(schema.incidentEvents.agentRunId, ctx.agentRun.id),
+        eq(schema.incidentEvents.kind, "human_reply"),
+        isNull(schema.incidentEvents.processedAt),
+      ),
+      // Oldest → newest so the steered conversation reads in chronological order.
+      orderBy: [asc(schema.incidentEvents.createdAt)],
+    });
+    const steeredHuman = await steerIdleRunnerWithPendingContext({
+      snapshotStatus: snapshot.status,
+      pendingContextEvents: pendingHumanReplies,
+      runner,
+      sessionId,
+      incidentId: ctx.incident.id,
+      markEventsProcessed: async (ids) => {
+        await db
+          .update(schema.incidentEvents)
+          .set({ processedAt: new Date() })
+          .where(inArray(schema.incidentEvents.id, ids));
+      },
+      notifySteered: async () => {},
+    });
+    if (steeredHuman) {
+      return;
+    }
 
     if (snapshot.result) {
       if (snapshot.result.state === "complete") {
