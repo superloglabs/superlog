@@ -1,0 +1,1 @@
+CREATE INDEX "personal_access_tokens_project_idx" ON "personal_access_tokens" USING btree ("project_id");

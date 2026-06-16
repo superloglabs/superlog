@@ -1081,6 +1081,8 @@ export const personalAccessTokens = pgTable(
   },
   (t) => ({
     userIdx: index("personal_access_tokens_user_idx").on(t.userId),
+    // Supports the project_id FK (cascade on project delete) + project-scoped lookups.
+    projectIdx: index("personal_access_tokens_project_idx").on(t.projectId),
   }),
 );
 

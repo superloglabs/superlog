@@ -108,19 +108,26 @@ export function mountPersonalAccessTokens(app: Hono<any>): void {
 }
 
 // Resolve which project the token defaults to. An explicit, accessible
-// project_id wins; otherwise fall back to the caller's active org's first
-// project so the common case (one project) needs no selection.
+// project_id wins. Otherwise we only auto-pick when the caller's active org has
+// exactly one project — with several, the choice would be arbitrary, so make
+// the client pass projectId rather than silently binding to a non-deterministic
+// one.
 async function resolveProjectId(c: Context, userId: string, raw: unknown): Promise<string> {
   if (typeof raw === "string" && raw.trim()) {
-    await assertProjectAccess(userId, raw);
-    return raw;
+    const projectId = raw.trim();
+    await assertProjectAccess(userId, projectId);
+    return projectId;
   }
   const ctx = await resolveActiveOrgContext({
     userId,
     preferredOrgId: (c.var as Vars).orgId,
   }).catch(() => null);
   if (!ctx) throw new HTTPException(400, { message: "projectId is required" });
-  const project = (await listAccessibleProjects(userId)).find((p) => p.orgId === ctx.org.id);
-  if (!project) throw new HTTPException(400, { message: "no project available; pass projectId" });
-  return project.id;
+  const orgProjects = (await listAccessibleProjects(userId)).filter((p) => p.orgId === ctx.org.id);
+  const only = orgProjects[0];
+  if (!only) throw new HTTPException(400, { message: "no project available; pass projectId" });
+  if (orgProjects.length > 1) {
+    throw new HTTPException(400, { message: "multiple projects in org; pass projectId" });
+  }
+  return only.id;
 }
