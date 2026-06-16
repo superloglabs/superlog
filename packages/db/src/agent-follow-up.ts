@@ -13,7 +13,7 @@
 // Shared between the API (webhooks/interactivity) and the worker (context
 // assembly), hence it lives in the db package next to the other cross-app
 // domain logic.
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "./client.js";
 import * as schema from "./schema.js";
 import type {
@@ -344,7 +344,11 @@ export async function recordInboundInteraction(
           processedAt: now,
         })
         .onConflictDoNothing({
+          // Matches the PARTIAL unique index incident_events_dedupe_idx
+          // (WHERE agent_run_id IS NOT NULL) — Postgres only binds ON CONFLICT
+          // to a partial index when the predicate is repeated here.
           target: [schema.incidentEvents.agentRunId, schema.incidentEvents.dedupeKey],
+          where: sql`${schema.incidentEvents.agentRunId} is not null`,
         })
         .returning({ id: schema.incidentEvents.id });
       if (!claim) return { outcome: "duplicate" };
@@ -389,7 +393,11 @@ export async function recordInboundInteraction(
       dedupeKey: args.dedupeKey,
     })
     .onConflictDoNothing({
+      // Matches the PARTIAL unique index incident_events_dedupe_idx
+      // (WHERE agent_run_id IS NOT NULL); the predicate must be repeated for
+      // Postgres to bind ON CONFLICT to a partial index.
       target: [schema.incidentEvents.agentRunId, schema.incidentEvents.dedupeKey],
+      where: sql`${schema.incidentEvents.agentRunId} is not null`,
     })
     .returning({ id: schema.incidentEvents.id });
   if (!recorded) return { outcome: "duplicate" };
