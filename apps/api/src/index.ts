@@ -85,6 +85,7 @@ import {
 } from "./mcp/clickhouse.js";
 import { mountMcpAuthed, mountMcpPublic } from "./mcp/index.js";
 import { resolveActiveOrgContext, resolveMaybeActiveOrgContext } from "./org-context.js";
+import { mountPersonalAccessTokens } from "./personal-access-tokens.js";
 import { mountSettingsAuthed } from "./settings.js";
 import { normalizeSignupIntentKeyHash, normalizeSignupIntentKeyPrefix } from "./signup-intents.js";
 import { mountSlackAuthed, mountSlackPublic } from "./slack.js";
@@ -287,6 +288,7 @@ app.use("/api/*", async (c, next) => {
 });
 
 mountMcpAuthed(app);
+mountPersonalAccessTokens(app);
 mountGithubAuthed(app);
 mountLinearAuthed(app);
 mountSlackAuthed(app);

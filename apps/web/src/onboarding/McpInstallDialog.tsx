@@ -101,9 +101,16 @@ export function McpInstallDialog({ onClose }: { onClose: () => void }) {
           <CodeTabs tabs={CLIENTS} />
         </div>
 
-        <div className="border-t border-border px-[22px] py-3 text-[12px] text-subtle">
-          Using a different agent? Most MCP-aware tools accept the same{" "}
-          <code className="font-mono text-muted">https://api.superlog.sh/mcp</code> URL.
+        <div className="space-y-1 border-t border-border px-[22px] py-3 text-[12px] text-subtle">
+          <p>
+            Using a different agent? Most MCP-aware tools accept the same{" "}
+            <code className="font-mono text-muted">https://api.superlog.sh/mcp</code> URL.
+          </p>
+          <p>
+            Prefer a static token over the OAuth flow? Generate a personal access token under{" "}
+            <span className="text-muted">Settings → Project → MCP tokens</span> and pass it as an{" "}
+            <code className="font-mono text-muted">Authorization: Bearer …</code> header.
+          </p>
         </div>
       </div>
     </div>

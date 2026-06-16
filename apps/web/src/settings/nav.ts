@@ -25,6 +25,7 @@ export type ProjectSectionId =
   | "issue-filter"
   | "slack-channel"
   | "api-keys"
+  | "mcp-tokens"
   | "webhooks";
 
 export type SectionId = OrgSectionId | ProjectSectionId;
@@ -70,6 +71,7 @@ export const PROJECT_NAV_GROUPS: ReadonlyArray<NavGroup<ProjectSectionId>> = [
     label: "More",
     items: [
       { id: "api-keys", label: "API keys" },
+      { id: "mcp-tokens", label: "MCP tokens" },
       { id: "webhooks", label: "Webhooks" },
     ],
   },

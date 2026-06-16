@@ -35,6 +35,7 @@ test("project nav groups: agent pages before integrations, keys/webhooks under M
     "issue-filter",
     "slack-channel",
     "api-keys",
+    "mcp-tokens",
     "webhooks",
   ]);
   assert.equal(PROJECT_NAV_GROUPS[1]?.label, "More");

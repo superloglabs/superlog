@@ -6,6 +6,7 @@ export const ORG_MANAGEMENT_KEY_PREFIX = "sl_management_";
 const CLI_SESSION_PREFIX = "superlog_cli_";
 const MCP_ACCESS_PREFIX = "superlog_mcp_at_";
 const MCP_REFRESH_PREFIX = "superlog_mcp_rt_";
+export const PERSONAL_ACCESS_TOKEN_PREFIX = "superlog_pat_";
 const SECRET_BYTES = 32;
 
 export type GeneratedKey = {
@@ -52,6 +53,14 @@ export function generateMcpAccessToken(): GeneratedKey {
 
 export function generateMcpRefreshToken(): GeneratedKey {
   return generateToken(MCP_REFRESH_PREFIX);
+}
+
+export function generatePersonalAccessToken(): GeneratedKey {
+  return generateToken(PERSONAL_ACCESS_TOKEN_PREFIX);
+}
+
+export function isPersonalAccessToken(plaintext: string): boolean {
+  return plaintext.startsWith(PERSONAL_ACCESS_TOKEN_PREFIX);
 }
 
 export function hashToken(plaintext: string): string {

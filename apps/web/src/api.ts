@@ -405,6 +405,67 @@ export function useRevokeOrgApiKey() {
   });
 }
 
+// User-scoped personal access tokens (superlog_pat_*). An alternative to the
+// browser OAuth flow for authenticating to the MCP server — paste one as a
+// static `Authorization: Bearer` header in your agent's MCP config.
+export type McpExpiryChoice = "never" | "30d" | "90d";
+
+export type McpToken = {
+  id: string;
+  name: string;
+  tokenPrefix: string;
+  projectId: string;
+  projectName: string | null;
+  orgName: string | null;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+};
+
+export type MintedMcpToken = {
+  id: string;
+  name: string;
+  tokenPrefix: string;
+  plaintext: string;
+  projectId: string;
+  expiresAt: string | null;
+  createdAt: string;
+};
+
+export function useMcpTokens() {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["mcp-tokens"],
+    queryFn: () => fetcher<{ tokens: McpToken[] }>("/api/me/mcp-tokens"),
+  });
+}
+
+export function useCreateMcpToken() {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { name: string; projectId?: string; expiry: McpExpiryChoice }) =>
+      fetcher<{ token: MintedMcpToken }>("/api/me/mcp-tokens", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["mcp-tokens"] }),
+  });
+}
+
+export function useRevokeMcpToken() {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (tokenId: string) =>
+      fetcher<{ ok: true }>(`/api/me/mcp-tokens/${tokenId}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["mcp-tokens"] }),
+  });
+}
+
 // Mints an org-scoped GitHub install URL on behalf of the dashboard admin.
 // Same shape the management API produces, but auth-gated on the Better Auth
 // session cookie — admins don't need to mint a management key first.
