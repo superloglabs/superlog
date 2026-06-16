@@ -17,8 +17,12 @@ import type { McpConfig } from "./config.js";
 
 const log = logger.child({ scope: "mcp-oauth" });
 
-const ACCESS_TTL_SECONDS = 60 * 60;
-const REFRESH_TTL_SECONDS = 60 * 60 * 24 * 30;
+// Access tokens last ~1 month so even MCP clients that never exercise the
+// refresh-token grant (they just keep replaying the access token) stay
+// connected for a full month before re-auth. Clients that do refresh get a
+// longer-lived refresh token, so they re-auth even less often.
+export const ACCESS_TTL_SECONDS = 60 * 60 * 24 * 30;
+export const REFRESH_TTL_SECONDS = 60 * 60 * 24 * 90;
 const CODE_TTL_SECONDS = 60 * 5;
 
 type AuthorizeParams = {

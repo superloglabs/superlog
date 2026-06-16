@@ -15,14 +15,26 @@ export {
   generateMcpAccessToken,
   generateMcpRefreshToken,
   generateOrgManagementKey,
+  generatePersonalAccessToken,
   hashApiKey,
   hashCliSession,
   hashToken,
   isCliSessionToken,
   isIngestApiKey,
   isOrgManagementKey,
+  isPersonalAccessToken,
+  PERSONAL_ACCESS_TOKEN_PREFIX,
 } from "./keys.js";
 export { mintApiKey, type MintedApiKey } from "./api-keys.js";
+export {
+  isPatExpiryChoice,
+  mintPersonalAccessToken,
+  type MintedPersonalAccessToken,
+  type PatExpiryChoice,
+  resolvePatExpiry,
+  resolvePersonalAccessToken,
+  touchPersonalAccessToken,
+} from "./personal-access-tokens.js";
 export {
   mintOrgApiKey,
   resolveOrgApiKey,

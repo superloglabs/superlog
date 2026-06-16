@@ -1,10 +1,17 @@
 import type { ClickHouseClient } from "@clickhouse/client";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { db, hashToken, schema } from "@superlog/db";
+import {
+  db,
+  hashToken,
+  isPersonalAccessToken,
+  resolvePersonalAccessToken,
+  schema,
+  touchPersonalAccessToken,
+} from "@superlog/db";
 import { eq } from "drizzle-orm";
 import type { Hono } from "hono";
 import { logger } from "../logger.js";
-import { loadMcpConfig, type McpConfig } from "./config.js";
+import { type McpConfig, loadMcpConfig } from "./config.js";
 import { mountOauthDecision, mountOauthEndpoints, mountOauthMetadata } from "./oauth.js";
 import { createMcpServerForSession } from "./server.js";
 
@@ -12,6 +19,8 @@ const log = logger.child({ scope: "mcp-bearer" });
 
 type TokenContext = {
   tokenId: string;
+  /** Which table the token lives in — controls where set_active_project writes. */
+  tokenKind: "oauth" | "pat";
   projectId: string;
   userId: string;
   clientId: string;
@@ -20,6 +29,10 @@ type TokenContext = {
   allowedOrgId?: string;
   telemetryOnly?: boolean;
 };
+
+// Synthetic OAuth-client identifier reported in authInfo for personal access
+// tokens, which aren't issued against a registered OAuth client.
+const PAT_CLIENT_ID = "personal-access-token";
 
 export function mountMcpPublic<T extends Hono<any, any, any>>(app: T, ch: ClickHouseClient): void {
   const cfg = loadMcpConfig();
@@ -49,6 +62,7 @@ export function mountMcpPublic<T extends Hono<any, any, any>>(app: T, ch: ClickH
       ch,
       userId: tokenCtx.userId,
       tokenId: tokenCtx.tokenId,
+      tokenKind: tokenCtx.tokenKind,
       activeProjectId: tokenCtx.projectId,
       allowedOrgId: tokenCtx.allowedOrgId,
       telemetryOnly: tokenCtx.telemetryOnly,
@@ -84,6 +98,11 @@ async function resolveToken(
   token: string,
   cfg: McpConfig,
 ): Promise<TokenContext | { reason: string }> {
+  // Personal access tokens carry a distinct prefix and live in their own table.
+  // They authenticate the same user→project MCP session as an OAuth token, just
+  // minted manually in the UI instead of via the browser OAuth flow.
+  if (isPersonalAccessToken(token)) return resolvePat(token, cfg);
+
   const row = await db.query.mcpOauthTokens.findFirst({
     where: eq(schema.mcpOauthTokens.accessHash, hashToken(token)),
   });
@@ -99,11 +118,33 @@ async function resolveToken(
   }
   return {
     tokenId: row.id,
+    tokenKind: "oauth",
     projectId: row.projectId,
     userId: row.userId,
     clientId: row.clientId,
     scope: row.scope,
     resource: row.resource,
+    allowedOrgId: parseOrgScope(row.scope),
+    telemetryOnly: hasScopePart(row.scope, "superlog:telemetry"),
+  };
+}
+
+async function resolvePat(
+  token: string,
+  cfg: McpConfig,
+): Promise<TokenContext | { reason: string }> {
+  const row = await resolvePersonalAccessToken(token);
+  if ("reason" in row) return row;
+  // Fire-and-forget usage stamp so the UI can show "last used".
+  void touchPersonalAccessToken(row.id).catch(() => {});
+  return {
+    tokenId: row.id,
+    tokenKind: "pat",
+    projectId: row.projectId,
+    userId: row.userId,
+    clientId: PAT_CLIENT_ID,
+    scope: row.scope,
+    resource: cfg.resource,
     allowedOrgId: parseOrgScope(row.scope),
     telemetryOnly: hasScopePart(row.scope, "superlog:telemetry"),
   };

@@ -67,6 +67,8 @@ export type McpSession = {
   ch: ClickHouseClient;
   userId: string;
   tokenId: string;
+  /** Which token table backs this session — set_active_project writes there. */
+  tokenKind: "oauth" | "pat";
   /** Mutable: updated by set_active_project so subsequent calls see the new default. */
   activeProjectId: string;
   allowedOrgId?: string;
@@ -271,6 +273,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
         session.tokenId,
         session.userId,
         input.project_id,
+        session.tokenKind,
       );
       session.activeProjectId = project.id;
       return { content: [{ type: "text", text: JSON.stringify(project) }] };

@@ -470,6 +470,20 @@
       "when": 1781055868470,
       "tag": "0066_youthful_smasher",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1781579733172,
+      "tag": "0067_demonic_mac_gargan",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1781581779611,
+      "tag": "0068_sudden_the_renegades",
+      "breakpoints": true
     }
   ]
 }

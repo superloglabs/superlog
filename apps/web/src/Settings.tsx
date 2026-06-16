@@ -20,6 +20,7 @@ import {
   useCloudConnections,
   useCreateCloudConnection,
   useCreateKey,
+  useCreateMcpToken,
   useCreateOrgProject,
   useCreateWebhook,
   useDeleteCloudConnection,
@@ -35,6 +36,7 @@ import {
   useIssueFilterPreview,
   useKeys,
   useLinearInstallation,
+  useMcpTokens,
   useMe,
   useMintOrgApiKey,
   useMintOrgGithubInstallUrl,
@@ -49,6 +51,7 @@ import {
   useRemoveIntegration,
   useResetGithubCommitAuthor,
   useRevokeKey,
+  useRevokeMcpToken,
   useRevokeOrgApiKey,
   useRevokeOrgGithubInstallation,
   useRevokeOrgRepoFromProject,
@@ -84,13 +87,13 @@ import { BillingCard } from "./settings/BillingCard.tsx";
 import { OrgGeneralCard } from "./settings/OrgGeneralCard.tsx";
 import { OrgMembersCard } from "./settings/OrgMembersCard.tsx";
 import {
+  NEW_PROJECT_OPTION_VALUE,
   ORG_NAV_GROUPS,
   type OrgSectionId,
   PROJECT_NAV_GROUPS,
   type ProjectSectionId,
   type SectionId,
   type SettingsScope,
-  NEW_PROJECT_OPTION_VALUE,
   nextProjectIdAfterDelete,
   projectPickerOptions,
   resolveOrgSection,
@@ -199,7 +202,11 @@ export function Settings() {
               section={activeSection as ProjectSectionId}
               projectId={activeProjectId}
               onProjectDeleted={(nextProjectId) => {
-                navigate({ scope: "project", projectId: nextProjectId ?? null, section: "general" });
+                navigate({
+                  scope: "project",
+                  projectId: nextProjectId ?? null,
+                  section: "general",
+                });
               }}
             />
           )}
@@ -398,6 +405,14 @@ function SectionIcon({ scope, section }: { scope: SettingsScope; section: Sectio
           <path d="M15 2v6" />
           <path d="M6 8h12v4a6 6 0 0 1-12 0V8z" />
           <path d="M12 18v4" />
+        </svg>
+      );
+    case "project:mcp-tokens":
+      return (
+        <svg {...props} aria-hidden="true">
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <path d="m7 9 3 3-3 3" />
+          <path d="M13 15h4" />
         </svg>
       );
     case "project:issue-filter":
@@ -617,6 +632,15 @@ function ProjectSectionView({
           subtitle="Project-scoped ingest keys for the OpenTelemetry exporter and CLI."
         >
           <ApiKeysCard projectId={projectId} />
+        </Section>
+      );
+    case "mcp-tokens":
+      return (
+        <Section
+          title="MCP tokens"
+          subtitle="Personal access tokens for the Superlog MCP server — an alternative to the browser OAuth flow. Paste one into your agent as a static Authorization header."
+        >
+          <McpTokensCard projectId={projectId} />
         </Section>
       );
     case "webhooks":
@@ -3291,6 +3315,7 @@ function ApiKeysCard({ projectId }: { projectId: string | undefined }) {
             <div className="mb-1 flex items-center justify-between">
               <Label>Copy this now — it will not be shown again</Label>
               <button
+                type="button"
                 onClick={() => setReveal(null)}
                 className="text-[11px] text-muted hover:text-fg"
               >
@@ -3372,6 +3397,183 @@ function ApiKeysCard({ projectId }: { projectId: string | undefined }) {
   );
 }
 
+const MCP_EXPIRY_OPTIONS: DropdownOption[] = [
+  { value: "never", label: "Never" },
+  { value: "30d", label: "30 days" },
+  { value: "90d", label: "90 days" },
+];
+
+function McpTokensCard({ projectId }: { projectId: string | undefined }) {
+  const tokens = useMcpTokens();
+  const projectsQ = useOrgProjects();
+  const create = useCreateMcpToken();
+  const revoke = useRevokeMcpToken();
+
+  const projects = projectsQ.data?.projects ?? [];
+  const [name, setName] = useState("");
+  const [selectedProject, setSelectedProject] = useState<string>("");
+  const [expiry, setExpiry] = useState<"never" | "30d" | "90d">("never");
+  const [reveal, setReveal] = useState<{ plaintext: string } | null>(null);
+
+  // Default the project picker to the section's active project once known.
+  useEffect(() => {
+    if (!selectedProject && projectId) setSelectedProject(projectId);
+  }, [projectId, selectedProject]);
+
+  const projectOptions: DropdownOption[] = projects.map((p) => ({ value: p.id, label: p.name }));
+  const effectiveProject = selectedProject || projectId || projects[0]?.id || "";
+
+  const live = useMemo(
+    () => (tokens.data?.tokens ?? []).filter((t) => !t.revokedAt),
+    [tokens.data],
+  );
+
+  return (
+    <Tile>
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="min-w-[180px] flex-1">
+            <FieldLabel>Token name</FieldLabel>
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="my-laptop" />
+          </div>
+          <div className="w-44">
+            <FieldLabel>Default project</FieldLabel>
+            <Dropdown
+              value={effectiveProject}
+              onChange={setSelectedProject}
+              options={projectOptions}
+              placeholder="Select…"
+            />
+          </div>
+          <div className="w-32">
+            <FieldLabel>Expires</FieldLabel>
+            <Dropdown
+              value={expiry}
+              onChange={(v) => setExpiry(v as "never" | "30d" | "90d")}
+              options={MCP_EXPIRY_OPTIONS}
+            />
+          </div>
+          <Btn
+            size="md"
+            variant="primary"
+            disabled={!effectiveProject || create.isPending}
+            loading={create.isPending}
+            onClick={async () => {
+              if (!effectiveProject) return;
+              const res = await create.mutateAsync({
+                name: name.trim() || "MCP token",
+                projectId: effectiveProject,
+                expiry,
+              });
+              setReveal({ plaintext: res.token.plaintext });
+              setName("");
+            }}
+          >
+            Create token
+          </Btn>
+        </div>
+
+        {reveal && (
+          <div className="rounded-sm border border-accent/40 bg-accent-soft/30 p-3">
+            <div className="mb-1 flex items-center justify-between">
+              <Label>Copy this now — it will not be shown again</Label>
+              <button
+                type="button"
+                onClick={() => setReveal(null)}
+                className="text-[11px] text-muted hover:text-fg"
+              >
+                dismiss
+              </button>
+            </div>
+            <code className="block break-all font-mono text-[12.5px] text-fg">
+              {reveal.plaintext}
+            </code>
+            <p className="mt-2 text-[12px] text-muted">Add it to your agent, for example:</p>
+            <code className="mt-1 block break-all font-mono text-[12px] text-subtle">
+              claude mcp add --transport http superlog https://api.superlog.sh/mcp --header
+              "Authorization: Bearer {reveal.plaintext}"
+            </code>
+          </div>
+        )}
+
+        <div className="border-t border-border">
+          {tokens.isLoading ? (
+            <div className="py-6 text-center text-[12px] text-muted">Loading…</div>
+          ) : live.length === 0 ? (
+            <div className="py-6 text-center text-[12px] text-muted">
+              No active MCP tokens. Create one above, or connect via the browser OAuth flow instead.
+            </div>
+          ) : (
+            <table className="w-full text-[13px]">
+              <thead>
+                <tr className="border-b border-border text-left text-muted">
+                  <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.2em]">
+                    Name
+                  </th>
+                  <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.2em]">
+                    Project
+                  </th>
+                  <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.2em]">
+                    Expires
+                  </th>
+                  <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.2em]">
+                    Last used
+                  </th>
+                  <th className="py-2 font-mono text-[10px] uppercase tracking-[0.2em]" />
+                </tr>
+              </thead>
+              <tbody>
+                {live.map((t) => (
+                  <tr key={t.id} className="border-b border-border last:border-0">
+                    <td className="py-3 pr-4">
+                      <div>{t.name}</div>
+                      <div className="font-mono text-[11px] text-muted">{t.tokenPrefix}…</div>
+                    </td>
+                    <td className="py-3 pr-4 text-muted">{t.projectName ?? "—"}</td>
+                    <td className="py-3 pr-4 text-muted">
+                      {t.expiresAt ? new Date(t.expiresAt).toLocaleDateString() : "never"}
+                    </td>
+                    <td className="py-3 pr-4 text-muted">
+                      {t.lastUsedAt ? new Date(t.lastUsedAt).toLocaleString() : "never"}
+                    </td>
+                    <td className="py-3 text-right">
+                      <button
+                        type="button"
+                        title="Revoke token"
+                        aria-label="Revoke token"
+                        disabled={revoke.isPending}
+                        onClick={() => revoke.mutate(t.id)}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-40"
+                      >
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden
+                        >
+                          <path d="M3 6h18" />
+                          <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                          <path d="M19 6 18 20a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                          <path d="M10 11v6M14 11v6" />
+                        </svg>
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </Tile>
+  );
+}
+
 function OrgApiKeysCard() {
   const list = useOrgApiKeys();
   const mint = useMintOrgApiKey();
@@ -3413,6 +3615,7 @@ function OrgApiKeysCard() {
             <div className="mb-1 flex items-center justify-between">
               <Label>Copy this now — it will not be shown again</Label>
               <button
+                type="button"
                 onClick={() => setReveal(null)}
                 className="text-[11px] text-muted hover:text-fg"
               >

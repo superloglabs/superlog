@@ -1055,6 +1055,37 @@ export const cliSessions = pgTable("cli_sessions", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+// User-scoped personal access tokens. An alternative to the interactive OAuth
+// flow for authenticating to the MCP server: the user mints one in the UI and
+// pastes it into their agent as a static `Authorization: Bearer superlog_pat_…`
+// header. Bound to a single project (the MCP session's active-project default)
+// and to the minting user; `expires_at` NULL means it never expires.
+export const personalAccessTokens = pgTable(
+  "personal_access_tokens",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    tokenPrefix: text("token_prefix").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    scope: text("scope"),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    userIdx: index("personal_access_tokens_user_idx").on(t.userId),
+    // Supports the project_id FK (cascade on project delete) + project-scoped lookups.
+    projectIdx: index("personal_access_tokens_project_idx").on(t.projectId),
+  }),
+);
+
 export const mcpOauthClients = pgTable("mcp_oauth_clients", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
@@ -1720,11 +1751,7 @@ export const feedback = pgTable(
  * `account_mismatch` if the assumed identity resolves to a different account than
  * the role ARN names; `failed` if the role can't be assumed.
  */
-export type CloudConnectionStatus =
-  | "pending"
-  | "connected"
-  | "account_mismatch"
-  | "failed";
+export type CloudConnectionStatus = "pending" | "connected" | "account_mismatch" | "failed";
 
 export const cloudConnections = pgTable(
   "cloud_connections",
@@ -1825,6 +1852,7 @@ export type CliSession = typeof cliSessions.$inferSelect;
 export type McpOauthClient = typeof mcpOauthClients.$inferSelect;
 export type McpOauthCode = typeof mcpOauthCodes.$inferSelect;
 export type McpOauthToken = typeof mcpOauthTokens.$inferSelect;
+export type PersonalAccessToken = typeof personalAccessTokens.$inferSelect;
 export type SlackInstallation = typeof slackInstallations.$inferSelect;
 export type Dashboard = typeof dashboards.$inferSelect;
 export type DashboardWidget = typeof dashboardWidgets.$inferSelect;

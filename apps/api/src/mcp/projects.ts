@@ -50,10 +50,7 @@ export async function assertProjectAccess(userId: string, projectId: string): Pr
   if (!project) throw new HTTPException(404, { message: "project not found" });
 
   const membership = await db.query.orgMembers.findFirst({
-    where: and(
-      eq(schema.orgMembers.userId, userId),
-      eq(schema.orgMembers.orgId, project.orgId),
-    ),
+    where: and(eq(schema.orgMembers.userId, userId), eq(schema.orgMembers.orgId, project.orgId)),
   });
   if (!membership) throw new HTTPException(403, { message: "no access to project" });
 }
@@ -62,12 +59,20 @@ export async function setActiveProjectForToken(
   tokenId: string,
   userId: string,
   projectId: string,
+  tokenKind: "oauth" | "pat" = "oauth",
 ): Promise<AccessibleProject> {
   await assertProjectAccess(userId, projectId);
-  await db
-    .update(schema.mcpOauthTokens)
-    .set({ projectId })
-    .where(eq(schema.mcpOauthTokens.id, tokenId));
+  if (tokenKind === "pat") {
+    await db
+      .update(schema.personalAccessTokens)
+      .set({ projectId })
+      .where(eq(schema.personalAccessTokens.id, tokenId));
+  } else {
+    await db
+      .update(schema.mcpOauthTokens)
+      .set({ projectId })
+      .where(eq(schema.mcpOauthTokens.id, tokenId));
+  }
 
   const projects = await listAccessibleProjects(userId);
   const found = projects.find((p) => p.id === projectId);
