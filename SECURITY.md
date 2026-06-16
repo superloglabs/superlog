@@ -48,6 +48,13 @@ This information helps us triage your report more quickly.
   credit you in the release notes and advisory unless you prefer to remain
   anonymous.
 
+## Security Advisories
+
+After a vulnerability is fixed and disclosed, we publish a security advisory in
+the [GitHub Security Advisories](https://github.com/superloglabs/superlog/security/advisories)
+section of this repository. You can watch the repository or enable GitHub
+notifications to stay informed about new security releases.
+
 ## Scope
 
 This policy covers the open-source code in this repository. Issues in the hosted
