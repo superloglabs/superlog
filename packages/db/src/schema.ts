@@ -162,7 +162,16 @@ export type AgentRunConfidence = {
   confidence: number;
 };
 
-export type AgentRunTrigger = "incident" | "pr_comment" | "feedback" | "slack_reply";
+// "issue_joined" is a machine-originated follow-up: a new error signature joined
+// an already-investigated incident. Instead of starting a fresh investigation
+// (which produced duplicate PRs for the same root cause), it steers the existing
+// investigation — same continuation path as the human channels below.
+export type AgentRunTrigger =
+  | "incident"
+  | "pr_comment"
+  | "feedback"
+  | "slack_reply"
+  | "issue_joined";
 
 export type AgentRunFollowUpInteraction = {
   channel: Exclude<AgentRunTrigger, "incident">;

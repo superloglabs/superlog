@@ -428,5 +428,7 @@ function followUpQueuedSummary(trigger: Exclude<AgentRunTrigger, "incident">): s
       return "Follow-up investigation queued from user feedback.";
     case "slack_reply":
       return "Follow-up investigation queued from a Slack reply.";
+    case "issue_joined":
+      return "Follow-up investigation queued: a new error signature joined this incident.";
   }
 }

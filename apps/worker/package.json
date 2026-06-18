@@ -32,6 +32,8 @@
     "test:digest-domain": "tsx --test src/digest/domain.test.ts",
     "test:digest-run": "tsx --test src/digest/run.test.ts",
     "test:incident-intake": "tsx --test src/incidents/intake.test.ts",
+    "test:issue-routing": "tsx --test src/incidents/issue-routing.test.ts",
+    "test:merge-agent-run": "tsx --test src/merge-agent-run.test.ts",
     "test:incident-state": "tsx --test src/incident-state.test.ts",
     "test:managed-agent-result": "tsx --test src/managed-agent-result.test.ts",
     "test:github-app": "tsx --test src/github-app.test.ts",

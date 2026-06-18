@@ -22,14 +22,30 @@ type MergeCandidateRow = {
   representative: LinkedIncidentIssue | null;
   summary: string | null;
   proposedTitle: string | null;
+  fixTargets: string[] | null;
+  priorPrState: "open" | "closed" | "merged" | null;
 };
+
+function changedFilesFromResult(result: unknown): string[] | null {
+  const pr = (result as { pr?: { changedFiles?: unknown } | null } | null)?.pr ?? null;
+  const files = pr?.changedFiles;
+  if (!Array.isArray(files)) return null;
+  const cleaned = files.filter((f): f is string => typeof f === "string" && f.length > 0);
+  return cleaned.length > 0 ? cleaned : null;
+}
 
 async function loadMergeCandidates(
   projectId: string,
   excludeIncidentId: string,
 ): Promise<MergeCandidateRow[]> {
+  // Include resolved incidents, not just open ones: if the same root cause was
+  // already investigated and fixed (or its PR closed), a new lookalike should be
+  // recognized as a duplicate and merged in rather than spawning a fresh PR.
   const incidents = await db.query.incidents.findMany({
-    where: and(eq(schema.incidents.projectId, projectId), eq(schema.incidents.status, "open")),
+    where: and(
+      eq(schema.incidents.projectId, projectId),
+      inArray(schema.incidents.status, ["open", "resolved"]),
+    ),
     orderBy: [desc(schema.incidents.lastSeen)],
     limit: INCIDENT_GROUPING_CANDIDATE_LIMIT,
   });
@@ -61,7 +77,7 @@ async function loadMergeCandidates(
     .orderBy(desc(schema.agentRuns.startedAt));
   const summaryByIncident = new Map<
     string,
-    { summary: string | null; proposedTitle: string | null }
+    { summary: string | null; proposedTitle: string | null; fixTargets: string[] | null }
   >();
   for (const inv of agentRuns) {
     if (summaryByIncident.has(inv.incidentId)) continue;
@@ -69,8 +85,33 @@ async function loadMergeCandidates(
     summaryByIncident.set(inv.incidentId, {
       summary: r?.summary ?? null,
       proposedTitle: r?.proposedTitle ?? null,
+      fixTargets: changedFilesFromResult(inv.result),
     });
   }
+
+  // Latest PR state per candidate incident, so the judge can weigh "this
+  // incident already proposed a fix here" — including closed PRs.
+  const prs = await db
+    .select({
+      incidentId: schema.agentPullRequests.incidentId,
+      state: schema.agentPullRequests.state,
+      createdAt: schema.agentPullRequests.createdAt,
+    })
+    .from(schema.agentPullRequests)
+    .where(
+      inArray(
+        schema.agentPullRequests.incidentId,
+        others.map((i) => i.id),
+      ),
+    )
+    .orderBy(desc(schema.agentPullRequests.createdAt));
+  const prStateByIncident = new Map<string, "open" | "closed" | "merged">();
+  for (const pr of prs) {
+    if (pr.incidentId && !prStateByIncident.has(pr.incidentId)) {
+      prStateByIncident.set(pr.incidentId, pr.state as "open" | "closed" | "merged");
+    }
+  }
+
   return others.map((incident) => {
     const inv = summaryByIncident.get(incident.id);
     return {
@@ -78,6 +119,8 @@ async function loadMergeCandidates(
       representative: (linkedByIncident.get(incident.id) ?? [])[0] ?? null,
       summary: inv?.summary ?? null,
       proposedTitle: inv?.proposedTitle ?? null,
+      fixTargets: inv?.fixTargets ?? null,
+      priorPrState: prStateByIncident.get(incident.id) ?? null,
     };
   });
 }
@@ -93,6 +136,8 @@ function buildMergeCandidate(row: MergeCandidateRow): MergeCandidateIncident | n
     issueCount: row.incident.issueCount,
     proposedTitle: row.proposedTitle,
     summary: row.summary,
+    fixTargets: row.fixTargets,
+    priorPrState: row.priorPrState,
     representative: {
       exceptionType: row.representative.exceptionType,
       message: row.representative.message,
@@ -131,6 +176,10 @@ export async function tryMergeAfterAgentRun(
         issueCount: ctx.incident.issueCount,
         proposedTitle: result.proposedTitle ?? null,
         summary: result.summary,
+        // The source run just finished; its validated patch isn't a PR yet, so
+        // priorPrState is null. Its fixTargets are the files that patch changes.
+        fixTargets: changedFilesFromResult(result),
+        priorPrState: null,
         representative: {
           exceptionType: sourceRep.exceptionType,
           message: sourceRep.message,

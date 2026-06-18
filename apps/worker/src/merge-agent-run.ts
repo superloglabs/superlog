@@ -13,6 +13,15 @@ export type MergeCandidateIncident = {
   issueCount: number;
   proposedTitle: string | null;
   summary: string | null;
+  // Files the incident's investigation proposed changing (the validated patch's
+  // changed files). May already be in an open/closed/merged PR. Two incidents
+  // whose fixes touch the same files are strong evidence of one root cause —
+  // even when their surface symptoms (vendor, exception text) differ.
+  fixTargets: string[] | null;
+  // The state of the most recent PR the incident produced, if any. A closed PR
+  // is NOT a reason to ignore the incident: it still means "we already proposed
+  // this fix here", so a same-root-cause source should merge in, not re-open.
+  priorPrState: "open" | "closed" | "merged" | null;
   representative: {
     exceptionType: string;
     message: string | null;
@@ -36,6 +45,8 @@ const SYSTEM_PROMPT = [
   "  - Both summaries identify the same upstream dependency, external API, database object, or migration as the cause.",
   "  - Both summaries describe the same code path, the same misconfiguration, or the same fix.",
   "  - One incident is the canonical fault and the other is a documented downstream symptom of it (per the summaries themselves).",
+  "Fix targets are decisive evidence. Each incident may include `fixTargets`: the files the agent's validated fix would change. If the source and a candidate would change the SAME file(s) (especially the same function), treat that as strong positive evidence of one shared root cause and prefer 'merge' — even if the vendor, exception class, or error text differ (e.g. per-vendor symptoms of one shared handler bug).",
+  "A candidate's `priorPrState` tells you it already produced a PR. A 'closed' (unmerged) PR is NOT a reason to skip it: it means a fix for this root cause was already proposed there, so a same-root-cause source should merge into it rather than open a duplicate PR.",
   "Examples that do NOT justify merging:",
   "  - Same exception class but different root causes per the summaries.",
   "  - Same service, unrelated bugs.",
@@ -47,7 +58,7 @@ const SYSTEM_PROMPT = [
   '{"decision":"standalone","evidence":"<short reason or null>"}',
 ].join("\n");
 
-function buildUserMessage(input: {
+export function buildUserMessage(input: {
   projectName: string;
   source: MergeSourceIncident;
   candidates: MergeCandidateIncident[];
@@ -96,9 +107,7 @@ function parseVerdict(raw: string, candidateIds: Set<string>): MergeVerdict {
     return { decision: "standalone", evidence: null };
   }
   const evidence =
-    typeof obj.evidence === "string" && obj.evidence.trim().length > 0
-      ? obj.evidence.trim()
-      : null;
+    typeof obj.evidence === "string" && obj.evidence.trim().length > 0 ? obj.evidence.trim() : null;
   return { decision: "standalone", evidence };
 }
 

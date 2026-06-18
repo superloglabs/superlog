@@ -1,12 +1,13 @@
-import { type DB, db, schema } from "@superlog/db";
+import { type DB, db, recordInboundInteraction, schema } from "@superlog/db";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { getProjectAutomation } from "../agent-run-context.js";
-import { investigationGate } from "../billing/investigation-gate.js";
 import {
   ACTIVE_STATES as AGENT_RUN_ACTIVE_STATES,
   createAgentRunLifecycle,
   isActiveState as isActiveAgentRunState,
 } from "../agent-run.js";
+import { TERMINAL_STATES as AGENT_RUN_TERMINAL_STATES } from "../agent-runs/domain.js";
+import { investigationGate } from "../billing/investigation-gate.js";
 import { isAutoAgentRunSuppressed } from "../incident-cooldown.js";
 import { ensureIncidentForIssue } from "../incident-intake.js";
 import { buildReopenedIncidentSlackUpdate } from "../incident-slack.js";
@@ -17,6 +18,7 @@ import {
   updateIncidentMainMessage,
 } from "../infra/slack/incident-messages.js";
 import { logger } from "../logger.js";
+import { decideIssueArrivalRouting } from "./issue-routing.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 const agentRunLifecycle = createAgentRunLifecycle(db);
@@ -108,6 +110,38 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
   });
 }
 
+// Steer the incident's existing investigation with a newly-arrived error
+// signature. Routes through the same shared continuation path as human channels
+// (Slack/PR comments): resume the durable session, or cold-start a context-
+// carrying follow-up when the session is gone. Returns false when nothing was
+// actioned (no resumable run, follow-ups disabled, or the follow-up budget is
+// spent) so the caller can fall back to the normal investigate path.
+async function steerInvestigationWithNewSignature(
+  incident: schema.Incident,
+  issue: schema.Issue,
+  transition: IssueTransition,
+): Promise<boolean> {
+  const label = transition === "new" ? "New" : "Regressed";
+  const result = await recordInboundInteraction(db, {
+    incidentId: incident.id,
+    interaction: {
+      channel: "issue_joined",
+      author: null,
+      text: `${label} error signature joined this incident: ${issue.title}. If your existing analysis or open PR already covers this, no new change is needed; if it reveals a code path your fix misses, extend the existing PR rather than opening another.`,
+      occurredAt: new Date().toISOString(),
+    },
+    dedupeKey: `issue_joined:${issue.id}:${transition}`,
+  });
+  if (result.outcome === "skipped") return false;
+  if (result.outcome === "accepted") {
+    await postIncidentThreadMessage(
+      incident.id,
+      `:repeat: ${label} signal *${issue.title}* folded into this investigation.`,
+    );
+  }
+  return true;
+}
+
 export async function handleIssueTransition(
   issue: schema.Issue,
   transition: IssueTransition,
@@ -125,6 +159,31 @@ export async function handleIssueTransition(
       firstIssue: issue,
     });
   }
+
+  // If this incident has already been investigated, a new error signature should
+  // steer that investigation rather than launch a fresh one (which is what
+  // produced duplicate PRs for one root cause). Falls through to the normal
+  // investigate path when there's nothing resumable to steer.
+  const latestRun = await db.query.agentRuns.findFirst({
+    where: eq(schema.agentRuns.incidentId, incident.id),
+    orderBy: [desc(schema.agentRuns.createdAt)],
+    columns: { state: true },
+  });
+  const routing = decideIssueArrivalRouting({
+    createdIncident,
+    reopenedIncident,
+    suppressed: isAutoAgentRunSuppressed(incident, new Date()),
+    latestRunIsTerminal: latestRun
+      ? (AGENT_RUN_TERMINAL_STATES as readonly string[]).includes(latestRun.state)
+      : false,
+  });
+  if (
+    routing === "steer" &&
+    (await steerInvestigationWithNewSignature(incident, issue, transition))
+  ) {
+    return;
+  }
+
   const { agentRun, queueStatus } = await queueAgentRunIfNeeded(incident);
   if (reopenedIncident) {
     const update = buildReopenedIncidentSlackUpdate({
