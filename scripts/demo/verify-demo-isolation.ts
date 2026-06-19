@@ -26,15 +26,13 @@ const ORIGIN = process.env.WEB_ORIGIN ?? API.replace("://api.", "://");
 const DEMO_PROJECT = process.env.DEMO_PROJECT_ID;
 if (!DEMO_PROJECT) throw new Error("DEMO_PROJECT_ID is required");
 
-// This is a DEV-ONLY isolation probe against the local portless API, which
-// serves a self-signed cert. Accept that cert ONLY for loopback / *.localhost
-// targets — never for a real host — so this can't weaken a production
-// connection. The script refuses to run against a non-local API over HTTPS.
+// The local portless API serves a self-signed cert, so accept it — but ONLY for
+// loopback / *.localhost targets, never for a real host (so this can't weaken a
+// production TLS connection). Against a real host (e.g. api.superlog.sh) we do
+// nothing and let fetch verify the cert normally.
 const apiHost = new URL(API).hostname;
-const isLocalHost = apiHost === "127.0.0.1" || apiHost === "localhost" || apiHost.endsWith(".localhost");
-if (API.startsWith("https://") && !isLocalHost) {
-  throw new Error(`refusing to disable TLS verification for non-local host: ${apiHost}`);
-}
+const isLocalHost =
+  apiHost === "127.0.0.1" || apiHost === "localhost" || apiHost.endsWith(".localhost");
 if (isLocalHost) {
   // codeql[js/disabling-certificate-validation] -- localhost-only dev probe vs self-signed portless cert
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";

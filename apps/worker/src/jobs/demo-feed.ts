@@ -163,7 +163,12 @@ async function postSignal(
 }
 
 async function trimOldTelemetry(deps: JobDeps, projectId: string): Promise<void> {
-  const cutoff = `now() - INTERVAL ${RETENTION_HOURS} HOUR`;
+  // Compute the cutoff in JS and pass it as a literal. ALTER ... DELETE on a
+  // ReplicatedMergeTree (prod) rejects non-deterministic functions, so we can't
+  // use now() in the predicate — fromUnixTimestamp64Milli of a fixed value is
+  // deterministic. (otel_traces also has a 30d table TTL; otel_logs/metrics have
+  // none, so this trim is what bounds them for the demo project.)
+  const cutoffMs = Date.now() - RETENTION_HOURS * 60 * 60 * 1000;
   const tables: Array<{ table: string; tsCol: string }> = [
     { table: "otel_traces", tsCol: "Timestamp" },
     { table: "otel_logs", tsCol: "Timestamp" },
@@ -171,8 +176,8 @@ async function trimOldTelemetry(deps: JobDeps, projectId: string): Promise<void>
   ];
   for (const { table, tsCol } of tables) {
     await deps.clickhouse.command({
-      query: `ALTER TABLE ${table} DELETE WHERE ResourceAttributes['superlog.project_id'] = {projectId:String} AND ${tsCol} < ${cutoff}`,
-      query_params: { projectId },
+      query: `ALTER TABLE ${table} DELETE WHERE ResourceAttributes['superlog.project_id'] = {projectId:String} AND ${tsCol} < fromUnixTimestamp64Milli({cutoffMs:Int64})`,
+      query_params: { projectId, cutoffMs },
     });
   }
 }
