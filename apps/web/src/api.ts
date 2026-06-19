@@ -14,6 +14,10 @@ export type Me = {
   // instant real telemetry lands (hasIngested), teleporting the user to their
   // own project.
   demoMode?: boolean;
+  // The user's pinned favorite project + its org. When set, a fresh session
+  // opens these instead of the last-used org/project. Both null when nothing is
+  // pinned. Driven by the ★ in the org/project switcher.
+  favorite?: { orgId: string | null; projectId: string | null };
   // Whether billing hard-blocks are enforced. Metering runs regardless; this
   // gates the "Ingest paused" bar so we don't show it when nothing is blocked.
   billingEnforcement?: boolean;
@@ -1081,6 +1085,21 @@ export function useSetActiveProject() {
         method: "PUT",
         body: JSON.stringify({ projectId }),
       }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["me"] }),
+  });
+}
+
+// Pin a project as the favorite (opens by default on a fresh session), or pass
+// null to clear the favorite. The server pins the active org alongside it.
+export function useSetFavoriteProject() {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string | null) =>
+      fetcher<{ favorite: { orgId: string | null; projectId: string | null } }>(
+        "/api/me/favorite",
+        { method: "PUT", body: JSON.stringify({ projectId }) },
+      ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["me"] }),
   });
 }

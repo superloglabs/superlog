@@ -1,9 +1,10 @@
 import { db, schema } from "@superlog/db";
+import { autumn } from "autumn-js/better-auth";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { admin, organization } from "better-auth/plugins";
-import { autumn } from "autumn-js/better-auth";
 import { eq } from "drizzle-orm";
+import { favoriteProjectToSeed, pickActiveOrgId as pickActiveOrgIdRule } from "./active-context.js";
 import {
   orgInvitationEmailBody,
   passwordResetEmailBody,
@@ -96,15 +97,45 @@ const githubProvider =
       }
     : undefined;
 
-// Picks the org to make active for a session. Prefers an explicit override
-// (set via the org plugin's setActive API) then falls back to the user's
-// first membership. Returns null if the user has no memberships — that's an
-// error state callers can decide how to handle.
-async function pickActiveOrgId(userId: string): Promise<string | null> {
-  const membership = await db.query.orgMembers.findFirst({
+// Resolves the org + project a fresh session should open. Precedence (see
+// active-context.ts): pinned favorite > last-used > first membership. The
+// favorite project is only seeded when the chosen org is the favorite's org.
+// Returns org=null if the user has no memberships — that's a pre-org state
+// callers (e.g. /api/me) handle by routing into onboarding.
+async function resolveSessionDefaults(
+  userId: string,
+): Promise<{ orgId: string | null; projectIdToSeed: string | null }> {
+  const user = await db.query.users.findFirst({ where: eq(schema.users.id, userId) });
+  if (!user) return { orgId: null, projectIdToSeed: null };
+
+  const memberships = await db.query.orgMembers.findMany({
     where: eq(schema.orgMembers.userId, userId),
+    orderBy: (m, { asc }) => asc(m.createdAt),
+    columns: { orgId: true },
   });
-  return membership?.orgId ?? null;
+  const orgId = pickActiveOrgIdRule({
+    favoriteOrgId: user.favoriteOrgId,
+    lastUsedOrgId: user.activeOrgId,
+    memberOrgIds: memberships.map((m) => m.orgId),
+  });
+  const projectIdToSeed = favoriteProjectToSeed({
+    favoriteProjectId: user.favoriteProjectId,
+    favoriteOrgId: user.favoriteOrgId,
+    activeOrgId: orgId,
+  });
+  return { orgId, projectIdToSeed };
+}
+
+// Mirrors the session's active org onto the user row so a future fresh login
+// can reopen the org the user last worked in (the session row itself is
+// per-session). Best-effort: a mirror failure must never break the session
+// update that triggered it.
+async function mirrorLastUsedOrg(userId: string, activeOrgId: string): Promise<void> {
+  try {
+    await db.update(schema.users).set({ activeOrgId }).where(eq(schema.users.id, userId));
+  } catch (err) {
+    console.warn("[auth] failed to mirror last-used org", err);
+  }
 }
 
 export const auth = betterAuth({
@@ -210,12 +241,36 @@ export const auth = betterAuth({
     session: {
       create: {
         before: async (session) => {
-          // Seed the active org so the first request after sign-in already
-          // has org context. If the user has no memberships yet (e.g. on a
-          // bootstrap race) leave it null; callers handle that.
+          // Seed the active org so the first request after sign-in already has
+          // org context, applying favorite > last-used > first precedence. Also
+          // seed the favorite project onto the user row (the per-request
+          // resolver reads users.activeProjectId) so a fresh session opens the
+          // pinned project, not whatever was last used. If the user has no
+          // memberships yet (e.g. a bootstrap race) leave org null; callers
+          // handle that.
           if (session.activeOrganizationId) return { data: session };
-          const activeOrganizationId = await pickActiveOrgId(session.userId);
-          return { data: { ...session, activeOrganizationId } };
+          const { orgId, projectIdToSeed } = await resolveSessionDefaults(session.userId);
+          if (projectIdToSeed) {
+            await db
+              .update(schema.users)
+              .set({ activeProjectId: projectIdToSeed })
+              .where(eq(schema.users.id, session.userId));
+          }
+          return { data: { ...session, activeOrganizationId: orgId } };
+        },
+      },
+      update: {
+        after: async (session) => {
+          // setActive (and every other org switch that updates the session)
+          // routes through here with the full updated row. Mirror the active
+          // org onto the user so it survives into the next session as
+          // "last-used". Best-effort.
+          // activeOrganizationId is added by the org plugin and isn't in the
+          // base session hook type, so narrow it explicitly.
+          const activeOrgId = session.activeOrganizationId;
+          if (session?.userId && typeof activeOrgId === "string") {
+            await mirrorLastUsedOrg(session.userId, activeOrgId);
+          }
         },
       },
     },

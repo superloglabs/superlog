@@ -31,7 +31,6 @@ import { mountAlerts } from "./alerts.js";
 import { auth } from "./auth.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
-import { mountIngestFilters } from "./ingest-filters.js";
 import { mountDashboards } from "./dashboards.js";
 import {
   demoOverlay,
@@ -66,6 +65,7 @@ import {
   buildIncidentStatsWithFallback,
   spanSampleKey,
 } from "./incidents/stats.js";
+import { mountIngestFilters } from "./ingest-filters.js";
 import { mountLinearAuthed, mountLinearPublic } from "./linear.js";
 import { logger } from "./logger.js";
 import { mountManagementApi, mountOrgKeyManagementAuthed } from "./management.js";
@@ -346,6 +346,7 @@ app.get("/api/me", async (c) => {
       },
       org: null,
       project: null,
+      favorite: { orgId: user.favoriteOrgId, projectId: user.favoriteProjectId },
       billingEnforcement,
     });
   }
@@ -396,6 +397,7 @@ app.get("/api/me", async (c) => {
     },
     org: { id: org.id, name: org.name, slug: org.slug, githubSetupNeeded },
     project: { id: project.id, name: project.name, slug: project.slug, hasIngested },
+    favorite: { orgId: user.favoriteOrgId, projectId: user.favoriteProjectId },
     demoMode,
     billingEnforcement,
   });
@@ -421,6 +423,43 @@ app.put("/api/me/active-project", async (c) => {
     .where(eq(schema.users.id, user.id));
 
   return c.json({ project: { id: project.id, name: project.name, slug: project.slug } });
+});
+
+// Pin (or clear) the user's favorite project. The favorite — together with its
+// org — is what a fresh session opens, overriding last-used (see auth.ts +
+// active-context.ts). Scope is per-user-global: one favorite project, in one
+// org. `projectId: null` clears the favorite. A non-null project must belong to
+// the active org; we pin that org alongside it.
+app.put("/api/me/favorite", async (c) => {
+  const { user, org } = await resolveActiveOrgContext({
+    userId: c.var.userId,
+    preferredOrgId: c.var.orgId,
+  });
+  const body = (await c.req.json().catch(() => ({}))) as { projectId?: unknown };
+
+  if (body.projectId === null) {
+    await db
+      .update(schema.users)
+      .set({ favoriteOrgId: null, favoriteProjectId: null })
+      .where(eq(schema.users.id, user.id));
+    return c.json({ favorite: { orgId: null, projectId: null } });
+  }
+
+  const projectId = typeof body.projectId === "string" ? body.projectId : null;
+  if (!projectId)
+    throw new HTTPException(400, { message: "projectId required (or null to clear)" });
+
+  const project = await db.query.projects.findFirst({
+    where: and(eq(schema.projects.id, projectId), eq(schema.projects.orgId, org.id)),
+  });
+  if (!project) throw new HTTPException(404, { message: "project not found in active org" });
+
+  await db
+    .update(schema.users)
+    .set({ favoriteOrgId: org.id, favoriteProjectId: project.id })
+    .where(eq(schema.users.id, user.id));
+
+  return c.json({ favorite: { orgId: org.id, projectId: project.id } });
 });
 
 const ORG_NAME_MAX = 80;

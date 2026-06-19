@@ -1,7 +1,13 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { type Me, useMe, useOrgProjects, useSetActiveProject } from "./api.ts";
+import {
+  type Me,
+  useMe,
+  useOrgProjects,
+  useSetActiveProject,
+  useSetFavoriteProject,
+} from "./api.ts";
 import { authClient, useActiveOrganization, useListOrganizations } from "./auth-client.ts";
 import { ScrollArea } from "./design/scroll-area.tsx";
 
@@ -80,6 +86,7 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
   const activeOrgQuery = useActiveOrganization();
   const projects = useOrgProjects();
   const setActiveProject = useSetActiveProject();
+  const setFavoriteProject = useSetFavoriteProject();
   const qc = useQueryClient();
   const navigate = useNavigate();
 
@@ -145,6 +152,15 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
     }
     await setActiveProject.mutateAsync(projectId);
     onClose();
+  };
+
+  // The favorite is per-user-global (one project, in one org). It's only the
+  // "favorite" for rows in the org it belongs to. Clicking the ★ pins this
+  // project (server also pins the active org); clicking the filled ★ clears it.
+  const favoriteProjectId =
+    me.favorite?.orgId === me.org.id ? (me.favorite?.projectId ?? null) : null;
+  const toggleFavorite = (projectId: string) => {
+    void setFavoriteProject.mutateAsync(projectId === favoriteProjectId ? null : projectId);
   };
 
   const goBackToOrgs = () => {
@@ -295,6 +311,8 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
                   primary={p.name}
                   secondary={p.slug}
                   query={q}
+                  isFavorite={p.id === favoriteProjectId}
+                  onToggleFavorite={() => toggleFavorite(p.id)}
                 />
               ))}
             </ul>
@@ -340,6 +358,8 @@ function FilterRow({
   secondary,
   query,
   onManage,
+  isFavorite,
+  onToggleFavorite,
 }: {
   active: boolean;
   highlighted: boolean;
@@ -348,7 +368,10 @@ function FilterRow({
   secondary?: string;
   query: string;
   onManage?: () => void;
+  isFavorite?: boolean;
+  onToggleFavorite?: () => void;
 }) {
+  const hasTrailingAction = !!onManage || !!onToggleFavorite;
   return (
     <li className="group relative">
       <button
@@ -366,26 +389,65 @@ function FilterRow({
             </div>
           )}
         </div>
-        {active && !onManage && <Check />}
+        {active && !hasTrailingAction && <Check />}
       </button>
-      {onManage && (
+      {hasTrailingAction && (
         <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center gap-1.5">
           {active && <Check />}
-          <button
-            type="button"
-            aria-label={`Manage ${primary}`}
-            title="Manage organization"
-            onClick={(e) => {
-              e.stopPropagation();
-              onManage();
-            }}
-            className="pointer-events-auto flex h-6 w-6 items-center justify-center rounded-sm text-subtle opacity-0 transition hover:bg-surface-3 hover:text-fg focus:opacity-100 group-hover:opacity-100"
-          >
-            <GearIcon />
-          </button>
+          {onToggleFavorite && (
+            <button
+              type="button"
+              aria-label={isFavorite ? `Unpin ${primary} as default` : `Pin ${primary} as default`}
+              aria-pressed={isFavorite}
+              title={isFavorite ? "Default project — click to unpin" : "Set as default project"}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleFavorite();
+              }}
+              className={`pointer-events-auto flex h-6 w-6 items-center justify-center rounded-sm transition hover:bg-surface-3 hover:text-fg focus:opacity-100 ${
+                isFavorite
+                  ? "text-accent opacity-100"
+                  : "text-subtle opacity-0 group-hover:opacity-100"
+              }`}
+            >
+              <StarIcon filled={!!isFavorite} />
+            </button>
+          )}
+          {onManage && (
+            <button
+              type="button"
+              aria-label={`Manage ${primary}`}
+              title="Manage organization"
+              onClick={(e) => {
+                e.stopPropagation();
+                onManage();
+              }}
+              className="pointer-events-auto flex h-6 w-6 items-center justify-center rounded-sm text-subtle opacity-0 transition hover:bg-surface-3 hover:text-fg focus:opacity-100 group-hover:opacity-100"
+            >
+              <GearIcon />
+            </button>
+          )}
         </div>
       )}
     </li>
+  );
+}
+
+function StarIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M12 17.3 6.2 20.6l1.1-6.5L2.5 9.5l6.5-1L12 2.6l3 5.9 6.5 1-4.8 4.6 1.1 6.5z" />
+    </svg>
   );
 }
 

@@ -251,7 +251,24 @@ export const users = pgTable("users", {
   banExpires: timestamp("ban_expires", { withTimezone: true }),
   // Legacy Clerk identity, kept during cutover for export/lookup. Drop in Phase F.
   clerkId: text("clerk_id").unique(),
+  // Last-used project, persisted across sessions. Seeded to the favorite at
+  // session start (auth.ts) and overwritten whenever the user switches project.
   activeProjectId: uuid("active_project_id").references(() => projects.id, {
+    onDelete: "set null",
+  }),
+  // Last-used org, persisted across sessions. The active org otherwise lives on
+  // the session row (Better Auth); this mirrors it so a fresh login can reopen
+  // the org the user last worked in instead of resetting to their first one.
+  activeOrgId: uuid("active_org_id").references(() => orgs.id, {
+    onDelete: "set null",
+  }),
+  // Pinned "favorite" org + project. When set, a fresh session opens these
+  // regardless of what was last used. favoriteProjectId always belongs to
+  // favoriteOrgId (enforced when set via PUT /api/me/favorite).
+  favoriteOrgId: uuid("favorite_org_id").references(() => orgs.id, {
+    onDelete: "set null",
+  }),
+  favoriteProjectId: uuid("favorite_project_id").references(() => projects.id, {
     onDelete: "set null",
   }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
