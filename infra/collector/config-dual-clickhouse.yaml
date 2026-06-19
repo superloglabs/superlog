@@ -9,6 +9,18 @@ receivers:
         endpoint: 0.0.0.0:4317
         include_metadata: true
 
+  # AWS Data Firehose HTTP-endpoint ingest, fronted by the proxy. See the
+  # primary config.yaml for the rationale (one receiver per encoding,
+  # proxy-stamped x-superlog-project-id via include_metadata).
+  awsfirehose/metrics:
+    endpoint: 0.0.0.0:4433
+    encoding: otlp_v1
+    include_metadata: true
+  awsfirehose/logs:
+    endpoint: 0.0.0.0:4434
+    encoding: cwlogs
+    include_metadata: true
+
 processors:
   batch:
     timeout: 5s
@@ -108,11 +120,11 @@ service:
       processors: [transform/strip_superlog, attributes/from_metadata, groupbyattrs/project_id, batch]
       exporters: [clickhouse, clickhouse/aws]
     logs:
-      receivers: [otlp]
+      receivers: [otlp, awsfirehose/logs]
       processors: [transform/strip_superlog, attributes/from_metadata, groupbyattrs/project_id, batch]
       exporters: [clickhouse, clickhouse/aws]
     metrics:
-      receivers: [otlp]
+      receivers: [otlp, awsfirehose/metrics]
       processors: [transform/strip_superlog, attributes/from_metadata, groupbyattrs/project_id, batch]
       exporters: [clickhouse, clickhouse/aws]
   telemetry:

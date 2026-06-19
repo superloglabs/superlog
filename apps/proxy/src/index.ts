@@ -10,6 +10,14 @@ import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { createIngestEntitlementGate, signalForPath } from "./billing/ingest-entitlement.js";
 import { EmptyBodyError, PayloadTooLargeError } from "./body-capture.js";
+import {
+  FIREHOSE_ACCESS_KEY_HEADER,
+  FIREHOSE_REQUEST_ID_HEADER,
+  FIREHOSE_SOURCE_ARN_HEADER,
+  buildFirehoseUpstreamHeaders,
+  firehoseResponseBody,
+  parseAccountIdFromFirehoseArn,
+} from "./firehose.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import { IngestQueue, getIngestQueueConfig } from "./ingest-queue.js";
 import { logger } from "./logger.js";
@@ -24,6 +32,15 @@ type Variables = { projectId: string };
 const app = new Hono<{ Variables: Variables }>();
 
 const COLLECTOR_URL = process.env.COLLECTOR_URL ?? "http://localhost:4318";
+// The collector's `awsfirehose` receivers listen on their own ports — one per
+// encoding, since a receiver decodes a single format: otlp_v1 for CloudWatch
+// Metric Streams, cwlogs for the account-level Logs subscription filter.
+// Defaults target the local stack; prod points these at the collector's
+// internal endpoint.
+const FIREHOSE_METRICS_COLLECTOR_URL =
+  process.env.FIREHOSE_METRICS_COLLECTOR_URL ?? "http://localhost:4433";
+const FIREHOSE_LOGS_COLLECTOR_URL =
+  process.env.FIREHOSE_LOGS_COLLECTOR_URL ?? "http://localhost:4434";
 const PORT = Number(process.env.PORT ?? 4000);
 const ingestQueueConfig = getIngestQueueConfig(process.env);
 const ingestQueue = ingestQueueConfig ? new IngestQueue(ingestQueueConfig, logger) : null;
@@ -139,6 +156,15 @@ app.post("/v1/traces", (c) => forward(c, "/v1/traces", "resourceSpans"));
 app.post("/v1/logs", (c) => forward(c, "/v1/logs", "resourceLogs"));
 app.post("/v1/metrics", (c) => forward(c, "/v1/metrics", "resourceMetrics"));
 
+// AWS Data Firehose HTTP-endpoint ingest (CloudWatch Metric Streams + Logs).
+// Firehose authenticates with X-Amz-Firehose-Access-Key (the project's ingest
+// key) rather than the x-api-key/Bearer header the /v1/* OTLP middleware reads,
+// so these routes resolve the tenant themselves. See forwardFirehose.
+app.post("/aws/firehose/metrics", (c) =>
+  forwardFirehose(c, FIREHOSE_METRICS_COLLECTOR_URL, "metrics"),
+);
+app.post("/aws/firehose/logs", (c) => forwardFirehose(c, FIREHOSE_LOGS_COLLECTOR_URL, "logs"));
+
 app.get("/health", (c) => c.json({ ok: true }));
 
 function readNonNegativeIntEnv(value: string | undefined, fallback: number): number {
@@ -251,7 +277,10 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
         span.setAttribute("ingest.blocked", "quota_exceeded");
         logger.info({ path, projectId, signal }, "blocking ingest; org over plan quota");
         return c.json(
-          { error: "telemetry quota exceeded for this billing period; upgrade your plan to resume ingest" },
+          {
+            error:
+              "telemetry quota exceeded for this billing period; upgrade your plan to resume ingest",
+          },
           402,
         );
       }
@@ -407,6 +436,155 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
           logger.warn({ err, path, projectId }, "proxy ingest operational metric failed");
           emitOperationalMetric();
         });
+      span.end();
+    }
+  });
+}
+
+/**
+ * Resolve an ingest key to its project id, mirroring the /v1/* OTLP auth
+ * middleware (hash lookup, reject revoked). Returns null when the key is
+ * unknown or revoked. Bumps last_used_at best-effort so a project's key
+ * activity reflects Firehose ingest too — but skips the first-use Loops nudge,
+ * which the OTLP path already owns.
+ */
+async function resolveProjectIdForIngestKey(key: string): Promise<string | null> {
+  const row = await db.query.apiKeys.findFirst({
+    where: eq(schema.apiKeys.keyHash, hashApiKey(key)),
+  });
+  if (!row || row.revokedAt) return null;
+  void db
+    .update(schema.apiKeys)
+    .set({ lastUsedAt: new Date() })
+    .where(eq(schema.apiKeys.id, row.id))
+    .catch((err: unknown) => {
+      logger.warn({ err }, "failed to update last_used_at for firehose key");
+    });
+  return row.projectId;
+}
+
+/**
+ * Forward an AWS Data Firehose HTTP-endpoint batch to the collector's
+ * `awsfirehose` receiver. The proxy authenticates (X-Amz-Firehose-Access-Key →
+ * project), stamps the tenant header, forwards the required request id, and
+ * passes the collector's Firehose ack straight back — Option A from the spike:
+ * the receiver decodes the records and builds the `{requestId,timestamp}` ack
+ * itself.
+ *
+ * Firehose treats only a 200 as success; any other status is retried with
+ * back-off and, after the configured window, dropped to the customer's error
+ * bucket with the errorMessage we return. So every rejection returns a
+ * Firehose-spec body carrying the request id.
+ */
+async function forwardFirehose(
+  c: Context<{ Variables: Variables }>,
+  collectorUrl: string,
+  signal: "metrics" | "logs",
+) {
+  return tracer.startActiveSpan("ingest.firehose", async (span) => {
+    const requestId = c.req.header(FIREHOSE_REQUEST_ID_HEADER) ?? null;
+    const contentType = c.req.header("content-type") ?? "application/json";
+    const contentEncoding = c.req.header("content-encoding");
+    span.setAttribute("firehose.signal", signal);
+    span.setAttribute("firehose.has_request_id", requestId !== null);
+
+    // The source ARN's account id lets us (later) cross-check the stream against
+    // the project's cloud connection. For now record it for observability;
+    // tenancy is already pinned by the access key.
+    const sourceAccountId = parseAccountIdFromFirehoseArn(c.req.header(FIREHOSE_SOURCE_ARN_HEADER));
+    if (sourceAccountId) span.setAttribute("firehose.source_account_id", sourceAccountId);
+
+    const fail = (status: 400 | 401 | 413 | 500, message: string) => {
+      span.setAttribute("firehose.result", `error_${status}`);
+      span.setStatus({ code: SpanStatusCode.ERROR, message });
+      logger.warn({ signal, requestId, status, message }, "rejecting firehose batch");
+      return c.json(firehoseResponseBody(requestId ?? "unknown", message), status);
+    };
+
+    try {
+      // The receiver requires the request id; fail fast rather than forward a
+      // request it would 400 anyway.
+      if (!requestId) return fail(400, "missing X-Amz-Firehose-Request-Id header");
+
+      const key = c.req.header(FIREHOSE_ACCESS_KEY_HEADER);
+      if (!key) return fail(401, "missing X-Amz-Firehose-Access-Key header");
+
+      const projectId = await resolveProjectIdForIngestKey(key);
+      if (!projectId) return fail(401, "invalid api key");
+      span.setAttribute("tenant.project_id", projectId);
+
+      const upstreamHeaders = buildFirehoseUpstreamHeaders({
+        projectId,
+        requestId,
+        contentType,
+        contentEncoding,
+      });
+      if (!upstreamHeaders) return fail(400, "missing X-Amz-Firehose-Request-Id header");
+
+      await requestSemaphore.acquire();
+      try {
+        const bodyStream = requestBodyStream(c);
+        if (!bodyStream) return fail(400, "empty Firehose request body");
+
+        let bodyBuffer: Buffer;
+        try {
+          bodyBuffer = await collectStreamWithCap(bodyStream, MAX_BODY_BYTES);
+        } catch (err) {
+          // 413 is a permanent failure to Firehose (not sent to the error
+          // bucket); an empty body is a 400. Anything else rethrows → 500.
+          if (err instanceof PayloadTooLargeError) {
+            return fail(413, `request body exceeds the ${err.limitBytes}-byte limit`);
+          }
+          if (err instanceof EmptyBodyError) return fail(400, "empty Firehose request body");
+          throw err;
+        }
+
+        const res = await tracer.startActiveSpan(
+          "ingest.firehose.collector_post",
+          async (postSpan) => {
+            postSpan.setAttribute("upstream.url", collectorUrl);
+            try {
+              const r = await fetch(collectorUrl, {
+                method: "POST",
+                headers: upstreamHeaders,
+                body: bodyBuffer,
+              });
+              postSpan.setAttribute("http.response.status_code", r.status);
+              if (r.status !== 200) {
+                postSpan.setStatus({
+                  code: SpanStatusCode.ERROR,
+                  message: `collector firehose receiver returned ${r.status}`,
+                });
+              }
+              return r;
+            } catch (err) {
+              postSpan.recordException(err as Error);
+              postSpan.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+              throw err;
+            } finally {
+              postSpan.end();
+            }
+          },
+        );
+
+        span.setAttribute("http.response.status_code", res.status);
+        span.setAttribute("firehose.result", res.status === 200 ? "ok" : `collector_${res.status}`);
+        logger.info({ signal, projectId, status: res.status }, "proxied firehose batch");
+
+        // Pass the receiver's ack through verbatim — it owns the
+        // {requestId,timestamp} body and the application/json content-type.
+        const resHeaders = new Headers();
+        resHeaders.set("content-type", res.headers.get("content-type") ?? "application/json");
+        return new Response(res.body, { status: res.status, headers: resHeaders });
+      } finally {
+        requestSemaphore.release();
+      }
+    } catch (err) {
+      span.recordException(err as Error);
+      span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+      // 500 (retriable) with a Firehose-shaped body so AWS backs off and retries.
+      return c.json(firehoseResponseBody(requestId ?? "unknown", (err as Error).message), 500);
+    } finally {
       span.end();
     }
   });

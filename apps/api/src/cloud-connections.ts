@@ -1,13 +1,23 @@
 import { timingSafeEqual } from "node:crypto";
-import { db, decryptIntegrationSecret, encryptIntegrationSecret, schema } from "@superlog/db";
-import { and, eq, isNull, ne } from "drizzle-orm";
+import {
+  db,
+  decryptIntegrationSecret,
+  encryptIntegrationSecret,
+  mintApiKey,
+  schema,
+} from "@superlog/db";
+import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import {
   type StsVerifier,
   buildConnectQuickCreateUrl,
+  buildLogsStreamLaunchUrl,
+  buildMetricsStreamLaunchUrl,
+  deriveStackHealth,
   generateExternalId,
+  streamKeyName,
   verifyConnection,
 } from "./cloud-connections-service.js";
 import { createStsVerifier } from "./cloud-connections-sts.js";
@@ -38,6 +48,22 @@ export type CloudConnectConfig = {
    * so the customer falls back to pasting the role ARN.
    */
   serviceToken?: string;
+  /**
+   * Public HTTPS URL of the metrics-streaming CloudFormation template
+   * (`superlog-metrics-stream.cfn.yaml`). Optional — when unset, the
+   * metrics-stream launch route is unavailable (returns 501).
+   */
+  metricsTemplateUrl?: string;
+  /**
+   * Firehose intake URL CloudWatch metric streams deliver to — the proxy's
+   * `/aws/firehose/metrics` route on the public intake host. Required alongside
+   * `metricsTemplateUrl` for the metrics-stream launch route.
+   */
+  metricsIntakeUrl?: string;
+  /** Public HTTPS URL of the logs-streaming template (`superlog-logs-stream.cfn.yaml`). */
+  logsTemplateUrl?: string;
+  /** Firehose intake URL CloudWatch Logs deliver to — the proxy's `/aws/firehose/logs`. */
+  logsIntakeUrl?: string;
 };
 
 export function cloudConnectConfigFromEnv(
@@ -50,6 +76,10 @@ export function cloudConnectConfigFromEnv(
     superlogAccountId,
     templateUrl,
     serviceToken: env.AWS_CONNECT_SERVICE_TOKEN || undefined,
+    metricsTemplateUrl: env.AWS_METRICS_TEMPLATE_URL || undefined,
+    metricsIntakeUrl: env.AWS_FIREHOSE_METRICS_INTAKE_URL || undefined,
+    logsTemplateUrl: env.AWS_LOGS_TEMPLATE_URL || undefined,
+    logsIntakeUrl: env.AWS_FIREHOSE_LOGS_INTAKE_URL || undefined,
   };
 }
 
@@ -245,6 +275,136 @@ export function mountCloudConnectionsAuthed(
 
     const updated = await applyVerifyAndUpdate(row, parsed.data.scrapeRoleArn, sts);
     return c.json(toPublic(updated));
+  });
+
+  // Set up CloudWatch metric/log streaming for a verified connection. Mints a
+  // dedicated project ingest key (the stream authenticates with it) and returns
+  // the launch URL for the corresponding stack. POST, not GET: each call mints a
+  // key, so it must be an explicit user action, not something the UI polls.
+  const handleStreamSetup = async (
+    c: Context<{ Variables: Vars }>,
+    projectId: string,
+    id: string,
+    kind: "metrics" | "logs",
+  ) => {
+    await requireAccess(c, projectId);
+    const templateUrl = kind === "metrics" ? config?.metricsTemplateUrl : config?.logsTemplateUrl;
+    const intakeUrl = kind === "metrics" ? config?.metricsIntakeUrl : config?.logsIntakeUrl;
+    if (!templateUrl || !intakeUrl) {
+      throw new HTTPException(501, { message: `${kind} streaming is not configured` });
+    }
+
+    const row = await db.query.cloudConnections.findFirst({
+      where: and(
+        eq(schema.cloudConnections.id, id),
+        eq(schema.cloudConnections.projectId, projectId),
+        isNull(schema.cloudConnections.revokedAt),
+      ),
+    });
+    if (!row) throw new HTTPException(404, { message: "connection not found" });
+    if (row.status !== "connected") {
+      throw new HTTPException(409, { message: "connection is not verified" });
+    }
+
+    // Idempotent: reuse the stream's persisted key if setup already ran, so a
+    // re-launch ("repair") carries the *same* IngestKey instead of minting a new
+    // one each click. Only mint + store on first setup.
+    const existing = await db.query.cloudStreamKeys.findFirst({
+      where: and(
+        eq(schema.cloudStreamKeys.connectionId, row.id),
+        eq(schema.cloudStreamKeys.kind, kind),
+      ),
+    });
+
+    let ingestKey: string;
+    let keyPrefix: string;
+    if (existing) {
+      ingestKey = decryptIntegrationSecret({
+        ciphertext: existing.keyCiphertext,
+        nonce: existing.keyNonce,
+        keyVersion: existing.keyKeyVersion,
+      });
+      const keyRow = await db.query.apiKeys.findFirst({
+        where: eq(schema.apiKeys.id, existing.apiKeyId),
+      });
+      keyPrefix = keyRow?.keyPrefix ?? "";
+    } else {
+      // A dedicated ingest key per stream keeps it independently revocable and
+      // makes attribution obvious in the project's key list.
+      const minted = await mintApiKey({ projectId, name: streamKeyName(kind, row.region) });
+      const cipher = encryptIntegrationSecret(minted.plaintext);
+      await db.insert(schema.cloudStreamKeys).values({
+        connectionId: row.id,
+        kind,
+        apiKeyId: minted.id,
+        keyCiphertext: cipher.ciphertext,
+        keyNonce: cipher.nonce,
+        keyKeyVersion: cipher.keyVersion,
+      });
+      ingestKey = minted.plaintext;
+      keyPrefix = minted.keyPrefix;
+    }
+
+    const build = kind === "metrics" ? buildMetricsStreamLaunchUrl : buildLogsStreamLaunchUrl;
+    const launchUrl = build({
+      region: row.region,
+      templateUrl,
+      intakeUrl,
+      ingestKey,
+      connectionId: row.id,
+    });
+    return c.json({ launchUrl, keyPrefix });
+  };
+
+  app.post("/api/projects/:projectId/cloud-connections/:id/metrics-stream", (c) =>
+    handleStreamSetup(c, c.req.param("projectId"), c.req.param("id"), "metrics"),
+  );
+  app.post("/api/projects/:projectId/cloud-connections/:id/logs-stream", (c) =>
+    handleStreamSetup(c, c.req.param("projectId"), c.req.param("id"), "logs"),
+  );
+
+  // Reconciliation view for a connection: per-component health (connection /
+  // metric streaming / log streaming) — which pieces are in place, missing, or
+  // working. Lightweight: connection state from verify, stream state from the
+  // persisted stream keys joined to api_keys.last_used_at (the live delivery
+  // signal). No AWS calls.
+  app.get("/api/projects/:projectId/cloud-connections/:id/stack-health", async (c) => {
+    const projectId = c.req.param("projectId");
+    const id = c.req.param("id");
+    await requireAccess(c, projectId);
+    const row = await db.query.cloudConnections.findFirst({
+      where: and(
+        eq(schema.cloudConnections.id, id),
+        eq(schema.cloudConnections.projectId, projectId),
+        isNull(schema.cloudConnections.revokedAt),
+      ),
+    });
+    if (!row) throw new HTTPException(404, { message: "connection not found" });
+
+    const streamKeys = await db.query.cloudStreamKeys.findMany({
+      where: eq(schema.cloudStreamKeys.connectionId, row.id),
+    });
+    const apiKeyIds = streamKeys.map((k) => k.apiKeyId);
+    const keyRows = apiKeyIds.length
+      ? await db.query.apiKeys.findMany({ where: inArray(schema.apiKeys.id, apiKeyIds) })
+      : [];
+    const lastUsedByKeyId = new Map(keyRows.map((k) => [k.id, k.lastUsedAt]));
+
+    return c.json(
+      deriveStackHealth({
+        connection: {
+          status: row.status,
+          accountId: row.accountId,
+          region: row.region,
+          lastError: row.lastError,
+        },
+        streams: streamKeys.map((k) => ({
+          kind: k.kind,
+          lastUsedAt: lastUsedByKeyId.get(k.apiKeyId) ?? null,
+        })),
+        now: new Date(),
+      }),
+    );
   });
 
   // Zero-paste callback: the CloudFormation custom resource (via our SNS topic →

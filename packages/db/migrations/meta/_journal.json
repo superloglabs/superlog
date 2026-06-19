@@ -484,6 +484,13 @@
       "when": 1781581779611,
       "tag": "0068_sudden_the_renegades",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1781842408870,
+      "tag": "0069_brief_hellfire_club",
+      "breakpoints": true
     }
   ]
 }

@@ -846,6 +846,53 @@ export function useVerifyCloudConnection(projectId: string) {
   });
 }
 
+export type StackComponentState = "missing" | "pending" | "working" | "broken";
+export type StackComponentKey = "connection" | "metrics" | "logs";
+export type StackComponent = {
+  key: StackComponentKey;
+  label: string;
+  state: StackComponentState;
+  detail: string;
+  lastReceivedAt: string | null;
+};
+export type CloudStackHealth = { components: StackComponent[] };
+
+// Reconciliation health for a connection's stack (connection / metrics / logs).
+// Polls so the live "last received" + working/quiet signals stay fresh.
+export function useCloudStackHealth(
+  projectId: string | undefined,
+  connectionId: string | undefined,
+  enabled: boolean,
+) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["cloud-stack-health", projectId, connectionId],
+    queryFn: () =>
+      fetcher<CloudStackHealth>(
+        `/api/projects/${projectId}/cloud-connections/${connectionId}/stack-health`,
+      ),
+    enabled: !!projectId && !!connectionId && enabled,
+    refetchInterval: 15000,
+  });
+}
+
+// Set up (or idempotently re-launch) metric or log streaming: returns the
+// CloudFormation launch URL for the corresponding stack, reusing the stream's
+// persisted ingest key on repeat calls.
+export function useSetupCloudStream(projectId: string) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { connectionId: string; kind: "metrics" | "logs" }) =>
+      fetcher<{ launchUrl: string; keyPrefix: string }>(
+        `/api/projects/${projectId}/cloud-connections/${input.connectionId}/${input.kind}-stream`,
+        { method: "POST" },
+      ),
+    onSuccess: (_data, vars) =>
+      qc.invalidateQueries({ queryKey: ["cloud-stack-health", projectId, vars.connectionId] }),
+  });
+}
+
 export type CloudResourceRow = {
   id: string;
   connectionId: string;
