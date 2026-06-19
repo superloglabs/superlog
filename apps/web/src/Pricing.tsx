@@ -412,7 +412,11 @@ function ScaleSlider(props: {
           {props.formatValue(props.value)}
         </span>
       </div>
-      <div className="mt-1 flex justify-between text-[11px] text-subtle">
+      {/* Pad right by the value readout (w-[88px]) + the row's gap-3 (12px) so the
+          tick labels line up with the slider track instead of the full card width.
+          Without this the track is ~100px narrower than the ticks and they drift
+          apart — most visibly on a narrow (mobile) card. */}
+      <div className="mt-1 flex justify-between pr-[100px] text-[11px] text-subtle">
         {props.anchors.map((a) => (
           <span key={a}>{props.formatTick(a)}</span>
         ))}
