@@ -293,6 +293,24 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
     await requestSemaphore.acquire();
 
     try {
+      // Per-project source filter FIRST: if the project turned off its OTLP
+      // source for this signal, ack-drop with a 200 (the drop is the user's
+      // intent). This precedes the quota gate so a disabled source is always a
+      // clean 200, never a 402 the exporter would retry against.
+      const otlpSignal = otlpSignalForPath(path);
+      if (otlpSignal && !ingestSourceFilter.allows(projectId, "otlp", otlpSignal)) {
+        responseStatus = 200;
+        span.setAttribute("ingest.dropped", "source_filtered");
+        logger.info(
+          { path, projectId, signal: otlpSignal },
+          "dropping OTLP ingest; source disabled",
+        );
+        return new Response(new Uint8Array(0), {
+          status: 200,
+          headers: { "content-type": "application/x-protobuf" },
+        });
+      }
+
       // Free-tier hard-block: if the org has exhausted its monthly allowance for
       // this signal, drop with a non-retryable 4xx (402) so OTLP exporters stop
       // sending rather than retry-storm. Cached + fail-open, so this is a cheap
@@ -309,23 +327,6 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
           },
           402,
         );
-      }
-
-      // Per-project source filter: if the project turned off its OTLP source for
-      // this signal, ack-drop. Return 200 (success) so exporters don't retry —
-      // the drop is the user's intent, not an error.
-      const otlpSignal = otlpSignalForPath(path);
-      if (otlpSignal && !ingestSourceFilter.allows(projectId, "otlp", otlpSignal)) {
-        responseStatus = 200;
-        span.setAttribute("ingest.dropped", "source_filtered");
-        logger.info(
-          { path, projectId, signal: otlpSignal },
-          "dropping OTLP ingest; source disabled",
-        );
-        return new Response(new Uint8Array(0), {
-          status: 200,
-          headers: { "content-type": "application/x-protobuf" },
-        });
       }
 
       const upstreamHeaders: Record<string, string> = {
@@ -556,6 +557,19 @@ async function forwardFirehose(
       if (!projectId) return fail(401, "invalid api key");
       span.setAttribute("tenant.project_id", projectId);
 
+      // Per-project source filter FIRST: if the project turned off its AWS
+      // source for this signal, ack-drop with a 200 success ack so Firehose
+      // treats it as delivered and doesn't retry into the customer's error
+      // bucket. This precedes the quota gate so disabling a source always wins
+      // over a 402 — otherwise a disabled-AND-over-quota stream would retry-storm
+      // and error-bucket, the exact outcome turning the source off should avoid.
+      if (!ingestSourceFilter.allows(projectId, "aws", signal)) {
+        span.setAttribute("ingest.dropped", "source_filtered");
+        span.setAttribute("firehose.result", "dropped");
+        logger.info({ signal, projectId, requestId }, "dropping firehose batch; source disabled");
+        return c.json(firehoseResponseBody(requestId), 200);
+      }
+
       // Free-tier hard-block, same gate the OTLP path enforces — otherwise an
       // over-quota org could keep streaming CloudWatch metrics/logs through
       // Firehose. Cached + fail-open, so this is a cheap in-memory read. A 402 is
@@ -568,17 +582,6 @@ async function forwardFirehose(
           402,
           "telemetry quota exceeded for this billing period; upgrade your plan to resume ingest",
         );
-      }
-
-      // Per-project source filter: if the project turned off its AWS source for
-      // this signal, ack-drop. Return a 200 success ack (not a 4xx) so Firehose
-      // treats it as delivered and doesn't retry into the customer's error
-      // bucket — the drop is the user's intent, not a delivery failure.
-      if (!ingestSourceFilter.allows(projectId, "aws", signal)) {
-        span.setAttribute("ingest.dropped", "source_filtered");
-        span.setAttribute("firehose.result", "dropped");
-        logger.info({ signal, projectId, requestId }, "dropping firehose batch; source disabled");
-        return c.json(firehoseResponseBody(requestId), 200);
       }
 
       const upstreamHeaders = buildFirehoseUpstreamHeaders({
