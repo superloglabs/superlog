@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "test": "find src -name '*.test.ts' -print | sort | xargs tsx --test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

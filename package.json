@@ -25,6 +25,7 @@
     "demo:seed:everything": "tsx scripts/demo/seed-everything.ts",
     "lint": "biome check .",
     "format": "biome format --write .",
+    "test": "turbo run test",
     "typecheck": "turbo run typecheck"
   },
   "devDependencies": {
