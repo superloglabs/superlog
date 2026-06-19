@@ -9,6 +9,24 @@ receivers:
         endpoint: 0.0.0.0:4317
         include_metadata: true
 
+  # AWS Data Firehose HTTP-endpoint ingest, fronted by the proxy. CloudWatch
+  # Metric Streams emit OTLP 1.0 natively (encoding: otlp_v1); the account-level
+  # Logs subscription filter rides CloudWatch Logs JSON (encoding: cwlogs). A
+  # receiver decodes one encoding, so metrics and logs get one each, on
+  # separate ports the proxy routes to. include_metadata: true exposes the
+  # proxy-stamped x-superlog-project-id header to attributes/from_metadata,
+  # exactly as on the otlp receiver — the only tenancy plumbing the firehose
+  # path needs. No access_key is set: the proxy already authenticated the
+  # project's ingest key before forwarding.
+  awsfirehose/metrics:
+    endpoint: 0.0.0.0:4433
+    encoding: otlp_v1
+    include_metadata: true
+  awsfirehose/logs:
+    endpoint: 0.0.0.0:4434
+    encoding: cwlogs
+    include_metadata: true
+
 processors:
   batch:
     timeout: 5s
@@ -74,11 +92,11 @@ service:
       processors: [transform/strip_superlog, attributes/from_metadata, groupbyattrs/project_id, batch]
       exporters: [clickhouse]
     logs:
-      receivers: [otlp]
+      receivers: [otlp, awsfirehose/logs]
       processors: [transform/strip_superlog, attributes/from_metadata, groupbyattrs/project_id, batch]
       exporters: [clickhouse]
     metrics:
-      receivers: [otlp]
+      receivers: [otlp, awsfirehose/metrics]
       processors: [transform/strip_superlog, attributes/from_metadata, groupbyattrs/project_id, batch]
       exporters: [clickhouse]
   telemetry:

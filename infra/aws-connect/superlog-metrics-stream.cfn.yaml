@@ -1,0 +1,207 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Superlog AWS connect — CloudWatch metric streaming. Creates a CloudWatch
+  Metric Stream (OpenTelemetry 1.0 output) over a curated set of namespaces and
+  delivers it to Superlog through an Amazon Data Firehose HTTP endpoint. Metrics
+  are pushed from your account; Superlog authenticates the stream with your
+  project's ingest key. The metric-stream and Firehose charges are billed to
+  your AWS account — the namespace filter below is the cost lever. Add this on
+  top of the baseline scrape-role stack.
+
+Parameters:
+  IntakeUrl:
+    Type: String
+    Description: >-
+      Superlog Firehose intake URL for metric streams (an https endpoint on
+      Superlog's intake host). Provided by Superlog in the launch link.
+    AllowedPattern: "^https://[^ ]+$"
+  IngestKey:
+    Type: String
+    Description: >-
+      Your Superlog project ingest key (sl_public_…). Firehose sends it as the
+      access key so Superlog attributes the stream to your project. Not NoEcho on
+      purpose: the quick-create launch link prefills it (NoEcho params are
+      dropped), and it is a project-scoped, write-only ingest key — not an AWS
+      account credential.
+    MinLength: 8
+  ResourcePrefix:
+    Type: String
+    Description: Name prefix for the stream, Firehose, backup bucket, and roles.
+    Default: superlog-metrics
+    AllowedPattern: "^[a-z0-9-]{3,40}$"
+  ConnectionId:
+    Type: String
+    Description: Superlog connection this stack belongs to (reserved for reporting).
+    Default: ""
+
+Resources:
+  # Where Firehose spills records it could not deliver, so a transient Superlog
+  # intake outage buffers rather than drops. This is a short-lived buffer, not
+  # storage — old objects expire quickly.
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    # Retain on stack delete: CloudFormation can't delete a non-empty bucket, and
+    # failed-delivery records may still be buffered (they expire after 7 days), so
+    # deleting the stack would otherwise fail. The bucket is orphaned for you to
+    # remove once drained.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ResourcePrefix}-backup-${AWS::AccountId}-${AWS::Region}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-backups
+            Status: Enabled
+            ExpirationInDays: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  FirehoseLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/kinesisfirehose/${ResourcePrefix}"
+      RetentionInDays: 7
+
+  FirehoseLogStream:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref FirehoseLogGroup
+      LogStreamName: HttpEndpointDelivery
+
+  # Role Firehose assumes to write the S3 failure buffer and its own error logs.
+  FirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: SuperlogFirehoseDelivery
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: BackupBucketWrite
+                Effect: Allow
+                Action:
+                  - "s3:AbortMultipartUpload"
+                  - "s3:GetBucketLocation"
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                  - "s3:ListBucketMultipartUploads"
+                  - "s3:PutObject"
+                Resource:
+                  - !GetAtt BackupBucket.Arn
+                  - !Sub "${BackupBucket.Arn}/*"
+              - Sid: DeliveryErrorLogs
+                Effect: Allow
+                Action: "logs:PutLogEvents"
+                Resource: !GetAtt FirehoseLogGroup.Arn
+
+  DeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub "${ResourcePrefix}-stream"
+      DeliveryStreamType: DirectPut
+      HttpEndpointDestinationConfiguration:
+        EndpointConfiguration:
+          Url: !Ref IntakeUrl
+          Name: Superlog
+          AccessKey: !Ref IngestKey
+        # GZIP the request body to cut Firehose egress on the customer's bill;
+        # the collector's firehose receiver decompresses it.
+        RequestConfiguration:
+          ContentEncoding: GZIP
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 4
+        RetryOptions:
+          DurationInSeconds: 300
+        # Only failed records hit S3 — we never want a full second copy of every
+        # metric sitting in the customer's bucket.
+        S3BackupMode: FailedDataOnly
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref FirehoseLogGroup
+          LogStreamName: !Ref FirehoseLogStream
+        RoleARN: !GetAtt FirehoseRole.Arn
+        S3Configuration:
+          BucketARN: !GetAtt BackupBucket.Arn
+          RoleARN: !GetAtt FirehoseRole.Arn
+          CompressionFormat: GZIP
+          BufferingHints:
+            IntervalInSeconds: 300
+            SizeInMBs: 5
+
+  # Role CloudWatch Metric Streams assumes to push records into Firehose.
+  MetricStreamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: streams.metrics.cloudwatch.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: SuperlogMetricStreamToFirehose
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "firehose:PutRecord"
+                  - "firehose:PutRecordBatch"
+                Resource: !GetAtt DeliveryStream.Arn
+
+  MetricStream:
+    Type: AWS::CloudWatch::MetricStream
+    Properties:
+      Name: !Sub "${ResourcePrefix}-stream"
+      FirehoseArn: !GetAtt DeliveryStream.Arn
+      RoleArn: !GetAtt MetricStreamRole.Arn
+      # OTLP 1.0 protobuf — decoded by the collector's awsfirehose receiver with
+      # encoding: otlp_v1, no JSON/cwmetrics translation step.
+      OutputFormat: opentelemetry1.0
+      # Cost lever: stream only dashboard-relevant namespaces rather than
+      # everything in CloudWatch. Widen or narrow this list to trade coverage
+      # for the metric-stream update charge on your bill.
+      IncludeFilters:
+        - Namespace: AWS/EC2
+        - Namespace: AWS/EBS
+        - Namespace: AWS/RDS
+        - Namespace: AWS/ApplicationELB
+        - Namespace: AWS/NetworkELB
+        - Namespace: AWS/ELB
+        - Namespace: AWS/Lambda
+        - Namespace: AWS/ECS
+        - Namespace: ECS/ContainerInsights
+        - Namespace: AWS/DynamoDB
+        - Namespace: AWS/SQS
+        - Namespace: AWS/SNS
+        - Namespace: AWS/S3
+        - Namespace: AWS/ElastiCache
+        - Namespace: AWS/ApiGateway
+        - Namespace: AWS/CloudFront
+
+Outputs:
+  MetricStreamArn:
+    Description: ARN of the created CloudWatch Metric Stream.
+    Value: !GetAtt MetricStream.Arn
+  DeliveryStreamArn:
+    Description: ARN of the Firehose delivery stream.
+    Value: !GetAtt DeliveryStream.Arn
+  BackupBucketName:
+    Description: S3 bucket buffering undeliverable records.
+    Value: !Ref BackupBucket

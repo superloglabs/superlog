@@ -52,6 +52,169 @@ export function buildConnectQuickCreateUrl(input: QuickCreateUrlInput): string {
   return `${base}#/stacks/quickcreate?${frag.toString()}`;
 }
 
+export type StreamLaunchInput = {
+  /** Region the stream + Firehose are created in (regional resources). */
+  region: string;
+  /** Public HTTPS URL of the stream's CloudFormation template. */
+  templateUrl: string;
+  /** Firehose intake URL records are delivered to (a proxy /aws/firehose/* route). */
+  intakeUrl: string;
+  /** The project's `sl_public_*` ingest key the stream authenticates with. */
+  ingestKey: string;
+  /** Connection this stack belongs to (passed through for later reporting). */
+  connectionId: string;
+};
+
+/**
+ * Build the "Launch Stack" link for a streaming stack (metrics or logs). The
+ * intake URL and ingest key are stack *parameter values*, so neither the
+ * template nor this code bakes in any prod specifics. Reuses the same
+ * quick-create console-link shape as the baseline connect stack.
+ */
+function buildStreamLaunchUrl(stackName: string, input: StreamLaunchInput): string {
+  return buildConnectQuickCreateUrl({
+    region: input.region,
+    templateUrl: input.templateUrl,
+    stackName,
+    params: {
+      IntakeUrl: input.intakeUrl,
+      IngestKey: input.ingestKey,
+      ConnectionId: input.connectionId,
+    },
+  });
+}
+
+/** Launch link for `superlog-metrics-stream.cfn.yaml` (CloudWatch Metric Streams). */
+export function buildMetricsStreamLaunchUrl(input: StreamLaunchInput): string {
+  return buildStreamLaunchUrl("superlog-metrics-stream", input);
+}
+
+/** Launch link for `superlog-logs-stream.cfn.yaml` (account-level Logs subscription). */
+export function buildLogsStreamLaunchUrl(input: StreamLaunchInput): string {
+  return buildStreamLaunchUrl("superlog-logs-stream", input);
+}
+
+/**
+ * Name of the dedicated ingest key minted for a stream. Stable + regional so the
+ * streaming-status read can find the key that the setup route created — keep the
+ * two in lockstep by always going through this helper.
+ */
+export function streamKeyName(kind: "metrics" | "logs", region: string): string {
+  return `AWS ${kind === "metrics" ? "metric" : "log"} stream (${region})`;
+}
+
+// Default window for "records are still arriving". CloudWatch metric streams
+// deliver continuously for active resources, so a gap beyond this means the
+// stream has gone quiet (torn down, throttled, or no matching resources) — we
+// soften that to "no data recently" rather than a hard error to avoid alarming
+// genuinely-idle accounts.
+export const STREAM_FRESHNESS_MS = 15 * 60 * 1000;
+
+/** One reconciled piece of the AWS integration stack. */
+export type StackComponentState = "missing" | "pending" | "working" | "broken";
+export interface StackComponent {
+  key: "connection" | "metrics" | "logs";
+  label: string;
+  state: StackComponentState;
+  /** Human-readable status line (the UI may append a relative time). */
+  detail: string;
+  /** Last delivery for the stream components (ISO); null for the connection / no data. */
+  lastReceivedAt: string | null;
+}
+export interface StackHealth {
+  components: StackComponent[];
+}
+
+export interface StackHealthInput {
+  connection: {
+    status: string;
+    accountId: string | null;
+    region: string;
+    lastError: string | null;
+  };
+  /** The connection's persisted stream keys + their live delivery timestamp. */
+  streams: { kind: "metrics" | "logs"; lastUsedAt: Date | null }[];
+  now: Date;
+  freshnessMs?: number;
+}
+
+/**
+ * Reconcile the integration stack into a per-component checklist: which pieces
+ * are in place, which are missing, which are working. Lightweight by design —
+ * everything comes from the connection's verify state plus the stream keys'
+ * delivery signal, so no AWS calls are needed.
+ */
+export function deriveStackHealth(input: StackHealthInput): StackHealth {
+  const fresh = input.freshnessMs ?? STREAM_FRESHNESS_MS;
+  const conn = input.connection;
+
+  const connection: StackComponent = (() => {
+    if (conn.status === "connected") {
+      const who = conn.accountId ? `${conn.accountId} · ` : "";
+      return {
+        key: "connection",
+        label: "Account connection",
+        state: "working",
+        detail: `Connected · ${who}${conn.region}`,
+        lastReceivedAt: null,
+      };
+    }
+    if (conn.status === "pending") {
+      return {
+        key: "connection",
+        label: "Account connection",
+        state: "pending",
+        detail: "Awaiting stack deploy",
+        lastReceivedAt: null,
+      };
+    }
+    return {
+      key: "connection",
+      label: "Account connection",
+      state: "broken",
+      detail:
+        conn.lastError ??
+        (conn.status === "account_mismatch"
+          ? "Connected account doesn't match the role"
+          : "Couldn't assume the role"),
+      lastReceivedAt: null,
+    };
+  })();
+
+  const streamComponent = (kind: "metrics" | "logs", label: string): StackComponent => {
+    const s = input.streams.find((x) => x.kind === kind);
+    if (!s) {
+      return { key: kind, label, state: "missing", detail: "Not set up", lastReceivedAt: null };
+    }
+    if (!s.lastUsedAt) {
+      return {
+        key: kind,
+        label,
+        state: "pending",
+        detail: "Set up — waiting for first data",
+        lastReceivedAt: null,
+      };
+    }
+    const iso = s.lastUsedAt.toISOString();
+    const fresh_ = input.now.getTime() - s.lastUsedAt.getTime() <= fresh;
+    return {
+      key: kind,
+      label,
+      state: fresh_ ? "working" : "pending",
+      detail: fresh_ ? "Active" : "No data recently",
+      lastReceivedAt: iso,
+    };
+  };
+
+  return {
+    components: [
+      connection,
+      streamComponent("metrics", "Metric streaming"),
+      streamComponent("logs", "Log streaming"),
+    ],
+  };
+}
+
 /** Pull the 12-digit account id out of a role ARN, or null if it isn't one. */
 export function parseAccountIdFromRoleArn(arn: string): string | null {
   const m = /^arn:aws[a-z-]*:iam::(\d{12}):role\/.+$/.exec(arn);

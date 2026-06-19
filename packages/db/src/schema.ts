@@ -1845,6 +1845,41 @@ export const cloudResources = pgTable(
   }),
 );
 
+// The dedicated ingest key minted for a connection's metric/log stream, stored
+// encrypted so re-launching ("repair") reuses the *same* key instead of minting
+// a new one each time — the idempotency the reconciliation UI relies on. One row
+// per (connection, kind); the matching api_keys row carries last_used_at, which
+// is the "records actually arriving" signal.
+export const cloudStreamKeys = pgTable(
+  "cloud_stream_keys",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    connectionId: uuid("connection_id")
+      .notNull()
+      .references(() => cloudConnections.id, { onDelete: "cascade" }),
+    // "metrics" (CloudWatch Metric Streams) or "logs" (account-level subscription).
+    kind: text("kind").$type<"metrics" | "logs">().notNull(),
+    // The minted ingest key this stream authenticates with.
+    apiKeyId: uuid("api_key_id")
+      .notNull()
+      .references(() => apiKeys.id, { onDelete: "cascade" }),
+    // The key's plaintext, encrypted at rest (same scheme as the external ID), so
+    // the launch URL can re-embed it on repair without re-minting.
+    keyCiphertext: bytea("key_ciphertext").notNull(),
+    keyNonce: bytea("key_nonce").notNull(),
+    keyKeyVersion: integer("key_key_version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    connectionKindUniq: uniqueIndex("cloud_stream_keys_connection_kind_idx").on(
+      t.connectionId,
+      t.kind,
+    ),
+  }),
+);
+
+export type CloudStreamKey = typeof cloudStreamKeys.$inferSelect;
 export type Org = typeof orgs.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Project = typeof projects.$inferSelect;

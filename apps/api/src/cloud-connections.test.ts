@@ -160,6 +160,241 @@ test("verify with a matching account marks the connection connected", async () =
   assert.equal(body.scrapeRoleArn, roleArn);
 });
 
+test("metrics-stream mints an ingest key + returns a launch url for a connected conn", async () => {
+  const { org, user, project } = await seedProject();
+  const roleArn = "arn:aws:iam::210987654321:role/SuperlogScrape";
+  const app = new Hono<{ Variables: { userId: string; orgId: string | null } }>();
+  app.use("*", (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    return next();
+  });
+  mountCloudConnectionsAuthed(app, {
+    sts: okSts("210987654321"),
+    config: {
+      ...CONFIG,
+      metricsTemplateUrl: "https://cfn.example/metrics-stream.yaml",
+      metricsIntakeUrl: "https://intake.example.com/aws/firehose/metrics",
+    },
+  });
+
+  const created = await asConn(
+    await app.request(`/api/projects/${project.id}/cloud-connections`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ region: "us-west-2" }),
+    }),
+  );
+  await app.request(`/api/projects/${project.id}/cloud-connections/${created.id}/verify`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ scrapeRoleArn: roleArn }),
+  });
+
+  const res = await app.request(
+    `/api/projects/${project.id}/cloud-connections/${created.id}/metrics-stream`,
+    { method: "POST" },
+  );
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { launchUrl: string; keyPrefix: string };
+  assert.ok(body.launchUrl.includes("param_IntakeUrl="));
+  assert.ok(
+    body.launchUrl.includes(encodeURIComponent("https://intake.example.com/aws/firehose/metrics")),
+  );
+  assert.ok(body.launchUrl.includes("param_IngestKey=sl_public_"));
+  assert.match(body.keyPrefix, /^sl_public_/);
+
+  // A real, project-scoped ingest key was persisted (so the stream authenticates).
+  const keys = await db.query.apiKeys.findMany({
+    where: eq(schema.apiKeys.projectId, project.id),
+  });
+  assert.equal(keys.length, 1);
+  assert.equal(keys[0]?.name, "AWS metric stream (us-west-2)");
+});
+
+test("logs-stream mints a log-stream key + returns the logs stack launch url", async () => {
+  const { org, user, project } = await seedProject();
+  const roleArn = "arn:aws:iam::210987654321:role/SuperlogScrape";
+  const app = new Hono<{ Variables: { userId: string; orgId: string | null } }>();
+  app.use("*", (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    return next();
+  });
+  mountCloudConnectionsAuthed(app, {
+    sts: okSts("210987654321"),
+    config: {
+      ...CONFIG,
+      logsTemplateUrl: "https://cfn.example/logs-stream.yaml",
+      logsIntakeUrl: "https://intake.example.com/aws/firehose/logs",
+    },
+  });
+
+  const created = await asConn(
+    await app.request(`/api/projects/${project.id}/cloud-connections`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ region: "us-west-2" }),
+    }),
+  );
+  await app.request(`/api/projects/${project.id}/cloud-connections/${created.id}/verify`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ scrapeRoleArn: roleArn }),
+  });
+
+  const res = await app.request(
+    `/api/projects/${project.id}/cloud-connections/${created.id}/logs-stream`,
+    { method: "POST" },
+  );
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { launchUrl: string; keyPrefix: string };
+  assert.ok(
+    body.launchUrl.includes(encodeURIComponent("https://intake.example.com/aws/firehose/logs")),
+  );
+  assert.match(body.keyPrefix, /^sl_public_/);
+
+  const keys = await db.query.apiKeys.findMany({
+    where: eq(schema.apiKeys.projectId, project.id),
+  });
+  assert.equal(keys.length, 1);
+  assert.equal(keys[0]?.name, "AWS log stream (us-west-2)");
+});
+
+type Health = {
+  components: { key: string; state: string; detail: string; lastReceivedAt: string | null }[];
+};
+const comp = (h: Health, key: string) => h.components.find((c) => c.key === key);
+
+test("stack-health reflects setup, and metric-stream setup is idempotent", async () => {
+  const { org, user, project } = await seedProject();
+  const roleArn = "arn:aws:iam::210987654321:role/SuperlogScrape";
+  const app = new Hono<{ Variables: { userId: string; orgId: string | null } }>();
+  app.use("*", (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    return next();
+  });
+  mountCloudConnectionsAuthed(app, {
+    sts: okSts("210987654321"),
+    config: {
+      ...CONFIG,
+      metricsTemplateUrl: "https://cfn.example/metrics-stream.yaml",
+      metricsIntakeUrl: "https://intake.example.com/aws/firehose/metrics",
+    },
+  });
+
+  const created = await asConn(
+    await app.request(`/api/projects/${project.id}/cloud-connections`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ region: "us-west-2" }),
+    }),
+  );
+  await app.request(`/api/projects/${project.id}/cloud-connections/${created.id}/verify`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ scrapeRoleArn: roleArn }),
+  });
+
+  // Before setup: connection working, both streams missing.
+  const before = (await (
+    await app.request(`/api/projects/${project.id}/cloud-connections/${created.id}/stack-health`)
+  ).json()) as Health;
+  assert.equal(comp(before, "connection")?.state, "working");
+  assert.equal(comp(before, "metrics")?.state, "missing");
+  assert.equal(comp(before, "logs")?.state, "missing");
+
+  // Set up metric streaming → pending (set up, no data yet).
+  const first = (await (
+    await app.request(
+      `/api/projects/${project.id}/cloud-connections/${created.id}/metrics-stream`,
+      {
+        method: "POST",
+      },
+    )
+  ).json()) as { launchUrl: string; keyPrefix: string };
+
+  const after = (await (
+    await app.request(`/api/projects/${project.id}/cloud-connections/${created.id}/stack-health`)
+  ).json()) as Health;
+  assert.equal(comp(after, "metrics")?.state, "pending");
+  assert.equal(comp(after, "logs")?.state, "missing");
+
+  // Idempotent re-launch: same key reused (no sprawl), identical launch URL.
+  const second = (await (
+    await app.request(
+      `/api/projects/${project.id}/cloud-connections/${created.id}/metrics-stream`,
+      {
+        method: "POST",
+      },
+    )
+  ).json()) as { launchUrl: string; keyPrefix: string };
+  assert.equal(second.keyPrefix, first.keyPrefix);
+  assert.equal(second.launchUrl, first.launchUrl);
+  const metricKeys = await db.query.apiKeys.findMany({
+    where: and(
+      eq(schema.apiKeys.projectId, project.id),
+      eq(schema.apiKeys.name, "AWS metric stream (us-west-2)"),
+    ),
+  });
+  assert.equal(metricKeys.length, 1, "re-launch must not mint a second key");
+});
+
+test("metrics-stream is 409 until the connection is verified", async () => {
+  const { org, user, project } = await seedProject();
+  const app = new Hono<{ Variables: { userId: string; orgId: string | null } }>();
+  app.use("*", (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    return next();
+  });
+  mountCloudConnectionsAuthed(app, {
+    sts: okSts("210987654321"),
+    config: {
+      ...CONFIG,
+      metricsTemplateUrl: "https://cfn.example/metrics-stream.yaml",
+      metricsIntakeUrl: "https://intake.example.com/aws/firehose/metrics",
+    },
+  });
+
+  const created = await asConn(
+    await app.request(`/api/projects/${project.id}/cloud-connections`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ region: "us-west-2" }),
+    }),
+  );
+  const res = await app.request(
+    `/api/projects/${project.id}/cloud-connections/${created.id}/metrics-stream`,
+    { method: "POST" },
+  );
+  assert.equal(res.status, 409);
+  // No key minted on the failure path.
+  const keys = await db.query.apiKeys.findMany({
+    where: eq(schema.apiKeys.projectId, project.id),
+  });
+  assert.equal(keys.length, 0);
+});
+
+test("metrics-stream is 501 when metric streaming isn't configured", async () => {
+  const { org, user, project } = await seedProject();
+  // Base CONFIG has no metricsTemplateUrl/metricsIntakeUrl.
+  const app = appFor(user.id, org.id, okSts("210987654321"));
+  const created = await asConn(
+    await app.request(`/api/projects/${project.id}/cloud-connections`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ region: "us-west-2" }),
+    }),
+  );
+  const res = await app.request(
+    `/api/projects/${project.id}/cloud-connections/${created.id}/metrics-stream`,
+    { method: "POST" },
+  );
+  assert.equal(res.status, 501);
+});
+
 test("reconnecting a role already active in the project revokes the old row (no 500)", async () => {
   const { org, user, project } = await seedProject();
   const roleArn = "arn:aws:iam::210987654321:role/SuperlogScrapeRole";

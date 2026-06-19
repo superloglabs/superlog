@@ -14,10 +14,12 @@ import {
   type LinearTicketPolicy,
   type PrPolicy,
   type RepoBranch,
+  type StackComponent,
   type WebhookDelivery,
   type WebhookEndpoint,
   useAgentSettings,
   useCloudConnections,
+  useCloudStackHealth,
   useCreateCloudConnection,
   useCreateKey,
   useCreateMcpToken,
@@ -62,6 +64,7 @@ import {
   useSaveOrgAgentSettings,
   useSaveOrgDigest,
   useSetSlackRoute,
+  useSetupCloudStream,
   useSlackChannels,
   useSlackInstallation,
   useSlackRoute,
@@ -1543,7 +1546,12 @@ function AwsCard({ projectId }: { projectId: string | undefined }) {
         <div>{awsStatusChip(active)}</div>
 
         {active?.status === "connected" ? (
-          <div className="flex items-center gap-2">
+          <div className="space-y-3">
+            <AwsStackHealthPanel
+              projectId={projectId}
+              connectionId={active.id}
+              region={active.region}
+            />
             <Btn
               size="sm"
               variant="danger"
@@ -1644,6 +1652,98 @@ function AwsCard({ projectId }: { projectId: string | undefined }) {
         )}
       </div>
     </Tile>
+  );
+}
+
+// Dot color per reconciliation state.
+const STACK_STATE_DOT: Record<StackComponent["state"], string> = {
+  working: "bg-success",
+  pending: "bg-warning",
+  broken: "bg-danger",
+  missing: "bg-subtle",
+};
+
+// Reconciliation checklist for a connected AWS account: each piece of the stack
+// (connection / metric streaming / log streaming) shown as in-place, missing,
+// working, or broken, with a per-row action to drive it to a working state.
+// State comes from the connection's verify status + the stream keys' delivery
+// signal; "Set up"/"Re-launch" opens the (idempotent) CloudFormation stack.
+function AwsStackHealthPanel({
+  projectId,
+  connectionId,
+  region,
+}: {
+  projectId: string | undefined;
+  connectionId: string;
+  region: string;
+}) {
+  const health = useCloudStackHealth(projectId, connectionId, true);
+  const setup = useSetupCloudStream(projectId ?? "");
+
+  const components = health.data?.components ?? [];
+  const working = components.filter((c) => c.state === "working").length;
+
+  // Streams carry a last-received time we append; the connection row doesn't.
+  const detailLine = (c: StackComponent) =>
+    c.lastReceivedAt ? `${c.detail} · last received ${formatRelative(c.lastReceivedAt)}` : c.detail;
+
+  return (
+    <div className="space-y-2 rounded-md border border-subtle/40 p-3">
+      <div className="flex items-center justify-between">
+        <div className="text-[12px] font-medium">Integration stack · {region}</div>
+        {components.length > 0 && (
+          <div className="text-[11px] text-subtle">
+            {working}/{components.length} working
+          </div>
+        )}
+      </div>
+
+      {components.map((c) => {
+        const isStream = c.key === "metrics" || c.key === "logs";
+        const action = isStream
+          ? c.state === "missing"
+            ? { label: "Set up", variant: "primary" as const }
+            : { label: "Re-launch", variant: "ghost" as const }
+          : null;
+        return (
+          <div key={c.key} className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 text-[13px]">
+                <span
+                  className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${STACK_STATE_DOT[c.state]}`}
+                />
+                {c.label}
+              </div>
+              <div className={`text-[12px] ${c.state === "broken" ? "text-danger" : "text-muted"}`}>
+                {detailLine(c)}
+              </div>
+            </div>
+            {action && (
+              <Btn
+                size="sm"
+                variant={action.variant}
+                loading={setup.isPending && setup.variables?.kind === c.key}
+                onClick={async () => {
+                  const res = await setup.mutateAsync({
+                    connectionId,
+                    kind: c.key as "metrics" | "logs",
+                  });
+                  window.open(res.launchUrl, "_blank", "noopener");
+                }}
+              >
+                {action.label}
+              </Btn>
+            )}
+          </div>
+        );
+      })}
+
+      <p className="text-[11px] text-subtle">
+        Streaming runs in your AWS account (CloudWatch → Firehose); costs are billed to you.
+        “Re-launch” re-opens the same CloudFormation stack — safe to re-run — to repair it, change
+        namespaces, or tear it down.
+      </p>
+    </div>
   );
 }
 

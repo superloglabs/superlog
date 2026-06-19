@@ -1,0 +1,199 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Superlog AWS connect — CloudWatch Logs streaming. Creates an account-level
+  CloudWatch Logs subscription that forwards your log events to Superlog through
+  an Amazon Data Firehose HTTP endpoint. One account-level filter covers every
+  (current and future) log group — no per-log-group wiring. The Firehose and
+  CloudWatch Logs delivery charges are billed to your AWS account. Add this on
+  top of the baseline scrape-role stack.
+
+# Lets us build the subscription PolicyDocument JSON with Fn::ToJsonString
+# instead of hand-interpolating values into a JSON string (which can't safely
+# carry an arbitrary FilterPattern).
+Transform: AWS::LanguageExtensions
+
+Parameters:
+  IntakeUrl:
+    Type: String
+    Description: >-
+      Superlog Firehose intake URL for logs (an https endpoint on Superlog's
+      intake host). Provided by Superlog in the launch link.
+    AllowedPattern: "^https://[^ ]+$"
+  IngestKey:
+    Type: String
+    Description: >-
+      Your Superlog project ingest key (sl_public_…). Firehose sends it as the
+      access key so Superlog attributes the logs to your project. Not NoEcho on
+      purpose: the quick-create launch link prefills it (NoEcho params are
+      dropped), and it is a project-scoped, write-only ingest key.
+    MinLength: 8
+  ResourcePrefix:
+    Type: String
+    Description: Name prefix for the Firehose, backup bucket, log group, and roles.
+    Default: superlog-logs
+    AllowedPattern: "^[a-z0-9-]{3,40}$"
+  FilterPattern:
+    Type: String
+    Description: >-
+      CloudWatch Logs filter pattern. Empty string forwards everything; narrow it
+      (e.g. ?ERROR ?WARN, or a quoted phrase) to cut volume and cost. Embedded
+      safely via Fn::ToJsonString, so any valid filter pattern is accepted.
+    Default: ""
+  ConnectionId:
+    Type: String
+    Description: Superlog connection this stack belongs to (reserved for reporting).
+    Default: ""
+
+Resources:
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    # Retain on stack delete: CloudFormation can't delete a non-empty bucket, and
+    # failed-delivery records may still be buffered (they expire after 7 days), so
+    # deleting the stack would otherwise fail. The bucket is orphaned for you to
+    # remove once drained.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ResourcePrefix}-backup-${AWS::AccountId}-${AWS::Region}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-backups
+            Status: Enabled
+            ExpirationInDays: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  FirehoseLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/kinesisfirehose/${ResourcePrefix}"
+      RetentionInDays: 7
+
+  FirehoseLogStream:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref FirehoseLogGroup
+      LogStreamName: HttpEndpointDelivery
+
+  # Role Firehose assumes to write the S3 failure buffer and its own error logs.
+  FirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: SuperlogLogsFirehoseDelivery
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: BackupBucketWrite
+                Effect: Allow
+                Action:
+                  - "s3:AbortMultipartUpload"
+                  - "s3:GetBucketLocation"
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                  - "s3:ListBucketMultipartUploads"
+                  - "s3:PutObject"
+                Resource:
+                  - !GetAtt BackupBucket.Arn
+                  - !Sub "${BackupBucket.Arn}/*"
+              - Sid: DeliveryErrorLogs
+                Effect: Allow
+                Action: "logs:PutLogEvents"
+                Resource: !GetAtt FirehoseLogGroup.Arn
+
+  DeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub "${ResourcePrefix}-stream"
+      DeliveryStreamType: DirectPut
+      HttpEndpointDestinationConfiguration:
+        EndpointConfiguration:
+          Url: !Ref IntakeUrl
+          Name: Superlog
+          AccessKey: !Ref IngestKey
+        # GZIP cuts Firehose egress on the customer's bill; the collector's
+        # firehose receiver decompresses it.
+        RequestConfiguration:
+          ContentEncoding: GZIP
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 4
+        RetryOptions:
+          DurationInSeconds: 300
+        S3BackupMode: FailedDataOnly
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref FirehoseLogGroup
+          LogStreamName: !Ref FirehoseLogStream
+        RoleARN: !GetAtt FirehoseRole.Arn
+        S3Configuration:
+          BucketARN: !GetAtt BackupBucket.Arn
+          RoleARN: !GetAtt FirehoseRole.Arn
+          CompressionFormat: GZIP
+          BufferingHints:
+            IntervalInSeconds: 300
+            SizeInMBs: 5
+
+  # Role CloudWatch Logs assumes to put subscribed log events into Firehose.
+  CwlToFirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub "logs.${AWS::Region}.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: SuperlogLogsToFirehose
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "firehose:PutRecord"
+                  - "firehose:PutRecordBatch"
+                Resource: !GetAtt DeliveryStream.Arn
+
+  # One account-level subscription covers every log group, current and future.
+  # SelectionCriteria excludes the Firehose's own delivery-error log group so a
+  # delivery error can't log into a group that re-subscribes it — the classic
+  # account-level recursion trap.
+  LogsSubscription:
+    Type: AWS::Logs::AccountPolicy
+    Properties:
+      PolicyName: !Sub "${ResourcePrefix}-subscription"
+      PolicyType: SUBSCRIPTION_FILTER_POLICY
+      Scope: ALL
+      SelectionCriteria: !Sub 'LogGroupName NOT IN ["/aws/kinesisfirehose/${ResourcePrefix}"]'
+      # Built as an object and serialized by CloudFormation, so the user-supplied
+      # FilterPattern is JSON-escaped rather than interpolated into a raw string.
+      PolicyDocument:
+        Fn::ToJsonString:
+          DestinationArn: !GetAtt DeliveryStream.Arn
+          RoleArn: !GetAtt CwlToFirehoseRole.Arn
+          FilterPattern: !Ref FilterPattern
+          Distribution: Random
+
+Outputs:
+  DeliveryStreamArn:
+    Description: ARN of the Firehose delivery stream.
+    Value: !GetAtt DeliveryStream.Arn
+  BackupBucketName:
+    Description: S3 bucket buffering undeliverable records.
+    Value: !Ref BackupBucket
