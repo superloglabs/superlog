@@ -31,8 +31,13 @@ Parameters:
     Type: String
     Description: >-
       CloudWatch Logs filter pattern. Empty string forwards everything; narrow it
-      (e.g. "?ERROR ?WARN") to cut volume and cost.
+      (e.g. ?ERROR ?WARN) to cut volume and cost. Double quotes and backslashes
+      are disallowed because the pattern is embedded in the subscription policy
+      JSON — quoted-phrase patterns aren't supported here.
     Default: ""
+    # Guard the raw interpolation into PolicyDocument's JSON below: a " or \ would
+    # break the document and fail the stack.
+    AllowedPattern: '^[^"\\]*$'
   ConnectionId:
     Type: String
     Description: Superlog connection this stack belongs to (reserved for reporting).
@@ -41,6 +46,12 @@ Parameters:
 Resources:
   BackupBucket:
     Type: AWS::S3::Bucket
+    # Retain on stack delete: CloudFormation can't delete a non-empty bucket, and
+    # failed-delivery records may still be buffered (they expire after 7 days), so
+    # deleting the stack would otherwise fail. The bucket is orphaned for you to
+    # remove once drained.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Sub "${ResourcePrefix}-backup-${AWS::AccountId}-${AWS::Region}"
       LifecycleConfiguration:

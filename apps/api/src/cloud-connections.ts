@@ -306,6 +306,19 @@ export function mountCloudConnectionsAuthed(
       throw new HTTPException(409, { message: "connection is not verified" });
     }
 
+    // Decrypt a persisted stream key + look up its prefix for display.
+    const loadKey = async (sk: typeof schema.cloudStreamKeys.$inferSelect) => {
+      const ingestKey = decryptIntegrationSecret({
+        ciphertext: sk.keyCiphertext,
+        nonce: sk.keyNonce,
+        keyVersion: sk.keyKeyVersion,
+      });
+      const keyRow = await db.query.apiKeys.findFirst({
+        where: eq(schema.apiKeys.id, sk.apiKeyId),
+      });
+      return { ingestKey, keyPrefix: keyRow?.keyPrefix ?? "" };
+    };
+
     // Idempotent: reuse the stream's persisted key if setup already ran, so a
     // re-launch ("repair") carries the *same* IngestKey instead of minting a new
     // one each click. Only mint + store on first setup.
@@ -319,30 +332,47 @@ export function mountCloudConnectionsAuthed(
     let ingestKey: string;
     let keyPrefix: string;
     if (existing) {
-      ingestKey = decryptIntegrationSecret({
-        ciphertext: existing.keyCiphertext,
-        nonce: existing.keyNonce,
-        keyVersion: existing.keyKeyVersion,
-      });
-      const keyRow = await db.query.apiKeys.findFirst({
-        where: eq(schema.apiKeys.id, existing.apiKeyId),
-      });
-      keyPrefix = keyRow?.keyPrefix ?? "";
+      ({ ingestKey, keyPrefix } = await loadKey(existing));
     } else {
       // A dedicated ingest key per stream keeps it independently revocable and
-      // makes attribution obvious in the project's key list.
+      // makes attribution obvious in the project's key list. The insert is
+      // guarded against a concurrent first setup (unique connection+kind): if we
+      // lose the race we revoke the orphan key we just minted and reuse the
+      // winner's, so two parallel clicks don't 500 or leave duplicate keys.
       const minted = await mintApiKey({ projectId, name: streamKeyName(kind, row.region) });
       const cipher = encryptIntegrationSecret(minted.plaintext);
-      await db.insert(schema.cloudStreamKeys).values({
-        connectionId: row.id,
-        kind,
-        apiKeyId: minted.id,
-        keyCiphertext: cipher.ciphertext,
-        keyNonce: cipher.nonce,
-        keyKeyVersion: cipher.keyVersion,
-      });
-      ingestKey = minted.plaintext;
-      keyPrefix = minted.keyPrefix;
+      const [inserted] = await db
+        .insert(schema.cloudStreamKeys)
+        .values({
+          connectionId: row.id,
+          kind,
+          apiKeyId: minted.id,
+          keyCiphertext: cipher.ciphertext,
+          keyNonce: cipher.nonce,
+          keyKeyVersion: cipher.keyVersion,
+        })
+        .onConflictDoNothing({
+          target: [schema.cloudStreamKeys.connectionId, schema.cloudStreamKeys.kind],
+        })
+        .returning();
+
+      if (inserted) {
+        ingestKey = minted.plaintext;
+        keyPrefix = minted.keyPrefix;
+      } else {
+        await db
+          .update(schema.apiKeys)
+          .set({ revokedAt: new Date() })
+          .where(eq(schema.apiKeys.id, minted.id));
+        const winner = await db.query.cloudStreamKeys.findFirst({
+          where: and(
+            eq(schema.cloudStreamKeys.connectionId, row.id),
+            eq(schema.cloudStreamKeys.kind, kind),
+          ),
+        });
+        if (!winner) throw new HTTPException(500, { message: "failed to persist stream key" });
+        ({ ingestKey, keyPrefix } = await loadKey(winner));
+      }
     }
 
     const build = kind === "metrics" ? buildMetricsStreamLaunchUrl : buildLogsStreamLaunchUrl;

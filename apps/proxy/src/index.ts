@@ -494,7 +494,7 @@ async function forwardFirehose(
     const sourceAccountId = parseAccountIdFromFirehoseArn(c.req.header(FIREHOSE_SOURCE_ARN_HEADER));
     if (sourceAccountId) span.setAttribute("firehose.source_account_id", sourceAccountId);
 
-    const fail = (status: 400 | 401 | 413 | 500, message: string) => {
+    const fail = (status: 400 | 401 | 402 | 413 | 500, message: string) => {
       span.setAttribute("firehose.result", `error_${status}`);
       span.setStatus({ code: SpanStatusCode.ERROR, message });
       logger.warn({ signal, requestId, status, message }, "rejecting firehose batch");
@@ -512,6 +512,20 @@ async function forwardFirehose(
       const projectId = await resolveProjectIdForIngestKey(key);
       if (!projectId) return fail(401, "invalid api key");
       span.setAttribute("tenant.project_id", projectId);
+
+      // Free-tier hard-block, same gate the OTLP path enforces — otherwise an
+      // over-quota org could keep streaming CloudWatch metrics/logs through
+      // Firehose. Cached + fail-open, so this is a cheap in-memory read. A 402 is
+      // a non-2xx to Firehose, so it backs off and (after the window) drops to
+      // the customer's error bucket rather than delivering.
+      const entitlementSignal = signal === "metrics" ? "metric_points" : "logs";
+      if (ingestGate && !ingestGate.allows(projectId, entitlementSignal)) {
+        span.setAttribute("ingest.blocked", "quota_exceeded");
+        return fail(
+          402,
+          "telemetry quota exceeded for this billing period; upgrade your plan to resume ingest",
+        );
+      }
 
       const upstreamHeaders = buildFirehoseUpstreamHeaders({
         projectId,
