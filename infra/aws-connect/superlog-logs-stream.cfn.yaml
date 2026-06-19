@@ -7,6 +7,11 @@ Description: >-
   CloudWatch Logs delivery charges are billed to your AWS account. Add this on
   top of the baseline scrape-role stack.
 
+# Lets us build the subscription PolicyDocument JSON with Fn::ToJsonString
+# instead of hand-interpolating values into a JSON string (which can't safely
+# carry an arbitrary FilterPattern).
+Transform: AWS::LanguageExtensions
+
 Parameters:
   IntakeUrl:
     Type: String
@@ -31,13 +36,9 @@ Parameters:
     Type: String
     Description: >-
       CloudWatch Logs filter pattern. Empty string forwards everything; narrow it
-      (e.g. ?ERROR ?WARN) to cut volume and cost. Double quotes and backslashes
-      are disallowed because the pattern is embedded in the subscription policy
-      JSON — quoted-phrase patterns aren't supported here.
+      (e.g. ?ERROR ?WARN, or a quoted phrase) to cut volume and cost. Embedded
+      safely via Fn::ToJsonString, so any valid filter pattern is accepted.
     Default: ""
-    # Guard the raw interpolation into PolicyDocument's JSON below: a " or \ would
-    # break the document and fail the stack.
-    AllowedPattern: '^[^"\\]*$'
   ConnectionId:
     Type: String
     Description: Superlog connection this stack belongs to (reserved for reporting).
@@ -180,13 +181,14 @@ Resources:
       PolicyType: SUBSCRIPTION_FILTER_POLICY
       Scope: ALL
       SelectionCriteria: !Sub 'LogGroupName NOT IN ["/aws/kinesisfirehose/${ResourcePrefix}"]'
-      PolicyDocument: !Sub |
-        {
-          "DestinationArn": "${DeliveryStream.Arn}",
-          "RoleArn": "${CwlToFirehoseRole.Arn}",
-          "FilterPattern": "${FilterPattern}",
-          "Distribution": "Random"
-        }
+      # Built as an object and serialized by CloudFormation, so the user-supplied
+      # FilterPattern is JSON-escaped rather than interpolated into a raw string.
+      PolicyDocument:
+        Fn::ToJsonString:
+          DestinationArn: !GetAtt DeliveryStream.Arn
+          RoleArn: !GetAtt CwlToFirehoseRole.Arn
+          FilterPattern: !Ref FilterPattern
+          Distribution: Random
 
 Outputs:
   DeliveryStreamArn:
