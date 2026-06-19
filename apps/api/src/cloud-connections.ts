@@ -218,7 +218,9 @@ export function mountCloudConnectionsAuthed(
     return { project, user: ctx.user };
   };
 
-  // Decrypt a persisted stream key + look up its prefix for display.
+  // Decrypt a persisted stream key + look up its prefix for display. `revoked`
+  // is true when the underlying api key is missing or has been revoked, so the
+  // stored secret would no longer authenticate and must be re-minted.
   const loadStreamKey = async (sk: typeof schema.cloudStreamKeys.$inferSelect) => {
     const ingestKey = decryptIntegrationSecret({
       ciphertext: sk.keyCiphertext,
@@ -228,33 +230,36 @@ export function mountCloudConnectionsAuthed(
     const keyRow = await db.query.apiKeys.findFirst({
       where: eq(schema.apiKeys.id, sk.apiKeyId),
     });
-    return { ingestKey, keyPrefix: keyRow?.keyPrefix ?? "" };
+    return {
+      ingestKey,
+      keyPrefix: keyRow?.keyPrefix ?? "",
+      revoked: !keyRow || keyRow.revokedAt != null,
+    };
   };
 
-  // Idempotently get (or first-time mint) the dedicated ingest key for one
-  // signal of a connection. A dedicated key per stream keeps it independently
-  // revocable and makes attribution obvious in the key list. Reused by both the
-  // one-step connect (mints both up front) and per-signal stream setup, so a
-  // re-launch carries the *same* IngestKey instead of minting a new one each
-  // click. The insert is guarded against a concurrent first mint (unique
-  // connection+kind): if we lose the race we revoke the orphan key and reuse the
-  // winner's, so two parallel callers don't 500 or leave duplicate keys.
-  const ensureStreamKey = async (
+  // Mint a fresh ingest key, encrypt it, and point a stream-key row at it. Used
+  // for both the first-ever mint and re-minting after the prior key was revoked.
+  const mintAndStoreStreamKey = async (
+    streamKeyId: string | null,
     connectionId: string,
     projectId: string,
     region: string,
     kind: "metrics" | "logs",
   ): Promise<{ ingestKey: string; keyPrefix: string }> => {
-    const existing = await db.query.cloudStreamKeys.findFirst({
-      where: and(
-        eq(schema.cloudStreamKeys.connectionId, connectionId),
-        eq(schema.cloudStreamKeys.kind, kind),
-      ),
-    });
-    if (existing) return loadStreamKey(existing);
-
     const minted = await mintApiKey({ projectId, name: streamKeyName(kind, region) });
     const cipher = encryptIntegrationSecret(minted.plaintext);
+    if (streamKeyId) {
+      await db
+        .update(schema.cloudStreamKeys)
+        .set({
+          apiKeyId: minted.id,
+          keyCiphertext: cipher.ciphertext,
+          keyNonce: cipher.nonce,
+          keyKeyVersion: cipher.keyVersion,
+        })
+        .where(eq(schema.cloudStreamKeys.id, streamKeyId));
+      return { ingestKey: minted.plaintext, keyPrefix: minted.keyPrefix };
+    }
     const [inserted] = await db
       .insert(schema.cloudStreamKeys)
       .values({
@@ -269,9 +274,10 @@ export function mountCloudConnectionsAuthed(
         target: [schema.cloudStreamKeys.connectionId, schema.cloudStreamKeys.kind],
       })
       .returning();
-
     if (inserted) return { ingestKey: minted.plaintext, keyPrefix: minted.keyPrefix };
 
+    // Lost a concurrent first-insert race: revoke our orphan key and reuse the
+    // winner's row (re-minting it too if that one is already revoked).
     await db
       .update(schema.apiKeys)
       .set({ revokedAt: new Date() })
@@ -283,7 +289,36 @@ export function mountCloudConnectionsAuthed(
       ),
     });
     if (!winner) throw new HTTPException(500, { message: "failed to persist stream key" });
-    return loadStreamKey(winner);
+    const loaded = await loadStreamKey(winner);
+    if (!loaded.revoked) return { ingestKey: loaded.ingestKey, keyPrefix: loaded.keyPrefix };
+    return mintAndStoreStreamKey(winner.id, connectionId, projectId, region, kind);
+  };
+
+  // Idempotently get (or first-time mint) the dedicated ingest key for one
+  // signal of a connection. A dedicated key per stream keeps it independently
+  // revocable and makes attribution obvious in the key list. Reused by both the
+  // one-step connect (mints both up front) and per-signal stream setup, so a
+  // re-launch carries the *same* IngestKey instead of minting a new one each
+  // click — unless the stored key has since been revoked, in which case we
+  // re-mint in place so the launch URL never carries a dead key.
+  const ensureStreamKey = async (
+    connectionId: string,
+    projectId: string,
+    region: string,
+    kind: "metrics" | "logs",
+  ): Promise<{ ingestKey: string; keyPrefix: string }> => {
+    const existing = await db.query.cloudStreamKeys.findFirst({
+      where: and(
+        eq(schema.cloudStreamKeys.connectionId, connectionId),
+        eq(schema.cloudStreamKeys.kind, kind),
+      ),
+    });
+    if (existing) {
+      const loaded = await loadStreamKey(existing);
+      if (!loaded.revoked) return { ingestKey: loaded.ingestKey, keyPrefix: loaded.keyPrefix };
+      return mintAndStoreStreamKey(existing.id, connectionId, projectId, region, kind);
+    }
+    return mintAndStoreStreamKey(null, connectionId, projectId, region, kind);
   };
 
   app.get("/api/projects/:projectId/cloud-connections", async (c) => {

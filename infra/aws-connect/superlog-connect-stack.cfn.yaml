@@ -182,8 +182,10 @@ Resources:
     Condition: CreateMetrics
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
+    # No explicit BucketName: with DeletionPolicy Retain, a hard-coded name would
+    # be orphaned when EnableMetrics is toggled off, then collide when toggled
+    # back on. A CloudFormation-generated name keeps the stack re-enableable.
     Properties:
-      BucketName: !Sub "superlog-metrics-backup-${AWS::AccountId}-${AWS::Region}"
       LifecycleConfiguration:
         Rules:
           - Id: expire-backups
@@ -244,7 +246,9 @@ Resources:
               - Sid: DeliveryErrorLogs
                 Effect: Allow
                 Action: "logs:PutLogEvents"
-                Resource: !GetAtt MetricsFirehoseLogGroup.Arn
+                # PutLogEvents authorizes against the log *stream* ARN, not the
+                # log-group ARN, so scope to the group's streams explicitly.
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/superlog-metrics:log-stream:*"
 
   MetricsDeliveryStream:
     Type: AWS::KinesisFirehose::DeliveryStream
@@ -338,8 +342,9 @@ Resources:
     Condition: CreateLogs
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
+    # No explicit BucketName — see MetricsBackupBucket: keeps the stack
+    # re-enableable after a toggle-off retains the bucket.
     Properties:
-      BucketName: !Sub "superlog-logs-backup-${AWS::AccountId}-${AWS::Region}"
       LifecycleConfiguration:
         Rules:
           - Id: expire-backups
@@ -400,7 +405,9 @@ Resources:
               - Sid: DeliveryErrorLogs
                 Effect: Allow
                 Action: "logs:PutLogEvents"
-                Resource: !GetAtt LogsFirehoseLogGroup.Arn
+                # PutLogEvents authorizes against the log *stream* ARN, not the
+                # log-group ARN, so scope to the group's streams explicitly.
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/superlog-logs:log-stream:*"
 
   LogsDeliveryStream:
     Type: AWS::KinesisFirehose::DeliveryStream
@@ -445,6 +452,13 @@ Resources:
             Principal:
               Service: !Sub "logs.${AWS::Region}.amazonaws.com"
             Action: "sts:AssumeRole"
+            # Confused-deputy guard: only this account's CloudWatch Logs in this
+            # region may assume the role.
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref "AWS::AccountId"
+              ArnLike:
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*"
       Policies:
         - PolicyName: SuperlogLogsToFirehose
           PolicyDocument:

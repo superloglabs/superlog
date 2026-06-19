@@ -496,6 +496,68 @@ test("one-step re-launch (metrics-stream) reuses the same combined stack + keys"
   assert.equal(sk.length, 2);
 });
 
+test("re-launch re-mints a stream key whose api key was revoked", async () => {
+  const { org, user, project } = await seedProject();
+  const app = appWith(user.id, org.id, okSts("210987654321"), COMBINED_CONFIG);
+
+  const created = await asConn(
+    await app.request(`/api/projects/${project.id}/cloud-connections`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ region: "us-west-2" }),
+    }),
+  );
+  await app.request(`/api/projects/${project.id}/cloud-connections/${created.id}/verify`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ scrapeRoleArn: "arn:aws:iam::210987654321:role/SuperlogScrapeRole" }),
+  });
+
+  // Revoke the metrics signal's api key out from under the stored stream key.
+  const before = await db.query.cloudStreamKeys.findFirst({
+    where: and(
+      eq(schema.cloudStreamKeys.connectionId, created.id),
+      eq(schema.cloudStreamKeys.kind, "metrics"),
+    ),
+  });
+  assert.ok(before);
+  await db
+    .update(schema.apiKeys)
+    .set({ revokedAt: new Date() })
+    .where(eq(schema.apiKeys.id, before.apiKeyId));
+
+  // Re-launch must NOT hand back the dead key — it re-mints in place.
+  const relaunch = (await (
+    await app.request(
+      `/api/projects/${project.id}/cloud-connections/${created.id}/metrics-stream`,
+      { method: "POST" },
+    )
+  ).json()) as { launchUrl: string };
+
+  const after = await db.query.cloudStreamKeys.findFirst({
+    where: and(
+      eq(schema.cloudStreamKeys.connectionId, created.id),
+      eq(schema.cloudStreamKeys.kind, "metrics"),
+    ),
+  });
+  assert.ok(after);
+  assert.notEqual(after.apiKeyId, before.apiKeyId);
+  const newKey = await db.query.apiKeys.findFirst({
+    where: eq(schema.apiKeys.id, after.apiKeyId),
+  });
+  assert.equal(newKey?.revokedAt, null);
+  // Still one metrics row (re-minted in place, not duplicated).
+  const all = await db.query.cloudStreamKeys.findMany({
+    where: and(
+      eq(schema.cloudStreamKeys.connectionId, created.id),
+      eq(schema.cloudStreamKeys.kind, "metrics"),
+    ),
+  });
+  assert.equal(all.length, 1);
+  // Launch URL carries the live key (and not the revoked prefix).
+  assert.ok(fragOf(relaunch.launchUrl).get("param_MetricsIngestKey"));
+});
+
 test("reconnecting a role already active in the project revokes the old row (no 500)", async () => {
   const { org, user, project } = await seedProject();
   const roleArn = "arn:aws:iam::210987654321:role/SuperlogScrapeRole";
