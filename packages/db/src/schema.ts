@@ -1880,6 +1880,33 @@ export const cloudStreamKeys = pgTable(
 );
 
 export type CloudStreamKey = typeof cloudStreamKeys.$inferSelect;
+
+// Per-project ingest source filters. A row means the given (source, signal) is
+// DISABLED for the project — the proxy ack-drops that telemetry at the edge.
+// Sparse by design: no row = enabled, so a new project ingests everything.
+//   source: "otlp" (SDK/OTLP exporters) | "aws" (CloudWatch → Firehose)
+//   signal: "traces" | "logs" | "metrics"  (aws carries only logs/metrics)
+export const projectIngestFilters = pgTable(
+  "project_ingest_filters",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    source: text("source").$type<"otlp" | "aws">().notNull(),
+    signal: text("signal").$type<"traces" | "logs" | "metrics">().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    projectSourceSignalUniq: uniqueIndex("project_ingest_filters_project_source_signal_idx").on(
+      t.projectId,
+      t.source,
+      t.signal,
+    ),
+  }),
+);
+
+export type ProjectIngestFilter = typeof projectIngestFilters.$inferSelect;
 export type Org = typeof orgs.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Project = typeof projects.$inferSelect;

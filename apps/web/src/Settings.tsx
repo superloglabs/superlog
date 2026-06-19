@@ -6,6 +6,7 @@ import {
   type AutoMergePolicy,
   type CloudConnection,
   EMPTY_ISSUE_FILTER_CONFIG,
+  type IngestFilterState,
   type Integration,
   type IssueFilterClause,
   type IssueFilterConfig,
@@ -32,6 +33,7 @@ import {
   useGithubBranches,
   useGithubInstallation,
   useGrantOrgRepoToProject,
+  useIngestFilters,
   useIntegrations,
   useIssueFilterAttributeKeys,
   useIssueFilterAttributeValues,
@@ -63,6 +65,7 @@ import {
   useSaveIntegration,
   useSaveOrgAgentSettings,
   useSaveOrgDigest,
+  useSetIngestFilters,
   useSetSlackRoute,
   useSetupCloudStream,
   useSlackChannels,
@@ -589,6 +592,7 @@ function ProjectSectionView({
             <SlackCard />
             <LinearCard />
             <AwsCard projectId={projectId} />
+            <IngestSourcesCard projectId={projectId} />
           </div>
         </Section>
       );
@@ -1517,6 +1521,100 @@ const AWS_REGION_OPTIONS = AWS_REGIONS.map((r) => ({
   ),
   searchText: `${r.code} ${r.name}`,
 }));
+
+// Per-project ingest source toggles. Lets you turn a telemetry source (SDK/OTLP
+// or AWS CloudWatch) on/off per signal; the proxy ack-drops disabled telemetry
+// at the edge so it's never stored or billed. Useful to e.g. keep AWS metrics
+// but stop a noisy AWS log stream without tearing down the CloudFormation stack.
+function IngestSourceRow({
+  title,
+  hint,
+  signals,
+  state,
+  disabled,
+  onToggle,
+}: {
+  title: string;
+  hint: string;
+  signals: ReadonlyArray<{ key: string; label: string }>;
+  state: Record<string, boolean>;
+  disabled: boolean;
+  onToggle: (signal: string, next: boolean) => void;
+}) {
+  return (
+    <div className="rounded-md border border-subtle p-3">
+      <div className="text-[13px] font-medium">{title}</div>
+      <div className="mb-2 text-[12px] text-muted">{hint}</div>
+      <div className="flex flex-wrap gap-x-5 gap-y-2">
+        {signals.map((s) => (
+          <label key={s.key} className="flex items-center gap-2 text-[13px]">
+            <Toggle
+              checked={state[s.key] ?? true}
+              onChange={(next) => onToggle(s.key, next)}
+              disabled={disabled}
+            />
+            <span className={state[s.key] === false ? "text-muted" : ""}>{s.label}</span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function IngestSourcesCard({ projectId }: { projectId: string | undefined }) {
+  const filters = useIngestFilters(projectId);
+  const setFilters = useSetIngestFilters(projectId ?? "");
+  const state = filters.data;
+
+  const setSignal = (source: "otlp" | "aws", signal: string, next: boolean) => {
+    if (!state) return;
+    const updated: IngestFilterState = {
+      ...state,
+      [source]: { ...state[source], [signal]: next },
+    };
+    setFilters.mutate(updated);
+  };
+
+  return (
+    <Tile label="Ingestion">
+      <div className="space-y-3">
+        <p className="text-[13px] text-muted">
+          Choose which telemetry this project ingests. Anything turned off is dropped at the edge —
+          never stored or billed.
+        </p>
+        {!state ? (
+          <p className="text-[13px] text-muted">Loading…</p>
+        ) : (
+          <div className="space-y-2">
+            <IngestSourceRow
+              title="SDK / OTLP"
+              hint="Telemetry from your apps' OpenTelemetry exporters."
+              signals={[
+                { key: "traces", label: "Traces" },
+                { key: "logs", label: "Logs" },
+                { key: "metrics", label: "Metrics" },
+              ]}
+              state={state.otlp}
+              disabled={setFilters.isPending}
+              onToggle={(signal, next) => setSignal("otlp", signal, next)}
+            />
+            <IngestSourceRow
+              title="AWS CloudWatch"
+              hint="Metric streams + account logs delivered via the connected AWS stack."
+              signals={[
+                { key: "logs", label: "Logs" },
+                { key: "metrics", label: "Metrics" },
+              ]}
+              state={state.aws}
+              disabled={setFilters.isPending}
+              onToggle={(signal, next) => setSignal("aws", signal, next)}
+            />
+          </div>
+        )}
+      </div>
+    </Tile>
+  );
+}
 
 function AwsCard({ projectId }: { projectId: string | undefined }) {
   const connections = useCloudConnections(projectId);

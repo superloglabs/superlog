@@ -947,6 +947,35 @@ export function useDeleteCloudConnection(projectId: string) {
   });
 }
 
+// Per-project ingest source filters: turn a telemetry source (SDK/OTLP or AWS
+// CloudWatch) on/off per signal. The proxy ack-drops disabled telemetry.
+export type IngestFilterState = {
+  otlp: { traces: boolean; logs: boolean; metrics: boolean };
+  aws: { logs: boolean; metrics: boolean };
+};
+
+export function useIngestFilters(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["ingest-filters", projectId],
+    enabled: !!projectId,
+    queryFn: () => fetcher<IngestFilterState>(`/api/projects/${projectId}/ingest-filters`),
+  });
+}
+
+export function useSetIngestFilters(projectId: string) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (state: IngestFilterState) =>
+      fetcher<IngestFilterState>(`/api/projects/${projectId}/ingest-filters`, {
+        method: "PUT",
+        body: JSON.stringify(state),
+      }),
+    onSuccess: (data) => qc.setQueryData(["ingest-filters", projectId], data),
+  });
+}
+
 export type LinearInstallation =
   | { installed: false }
   | {

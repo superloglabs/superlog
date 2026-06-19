@@ -31,6 +31,7 @@ import { mountAlerts } from "./alerts.js";
 import { auth } from "./auth.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
+import { mountIngestFilters } from "./ingest-filters.js";
 import { mountDashboards } from "./dashboards.js";
 import {
   demoOverlay,
@@ -312,6 +313,7 @@ mountSettingsAuthed(app);
 mountOrgKeyManagementAuthed(app);
 mountDashboards(app);
 mountCloudConnectionsAuthed(app);
+mountIngestFilters(app);
 mountAlerts(app, { ch });
 mountWebhooks(app);
 mountFeedbackAuthed(app);

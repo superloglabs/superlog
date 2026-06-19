@@ -20,6 +20,11 @@ import {
 } from "./firehose.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import { IngestQueue, getIngestQueueConfig } from "./ingest-queue.js";
+import {
+  type TelemetrySignal,
+  createIngestSourceFilter,
+  ingestFilterKey,
+} from "./ingest-source-filter.js";
 import { logger } from "./logger.js";
 import { proxyOperationalRecorder } from "./operational-metrics.js";
 import { Semaphore } from "./semaphore.js";
@@ -48,6 +53,27 @@ const ingestQueue = ingestQueueConfig ? new IngestQueue(ingestQueueConfig, logge
 // verdict is a cached, fail-open in-memory read — never a blocking call on the
 // ingest hot path (see billing/ingest-entitlement.ts).
 const ingestGate = createIngestEntitlementGate({ lookupOrgForProject });
+
+// Per-project ingest source filters (OTLP vs AWS, per signal). Cached + fail-open
+// in-memory read, same as the entitlement gate — a project's toggle ack-drops the
+// disabled telemetry at the edge. Always on; the empty default ingests everything.
+const ingestSourceFilter = createIngestSourceFilter({
+  loadDisabled: async (projectId) => {
+    const rows = await db.query.projectIngestFilters.findMany({
+      where: eq(schema.projectIngestFilters.projectId, projectId),
+      columns: { source: true, signal: true },
+    });
+    return new Set(rows.map((r) => ingestFilterKey(r.source, r.signal)));
+  },
+});
+
+// Map an OTLP ingest path to its telemetry signal for the source filter.
+function otlpSignalForPath(path: string): TelemetrySignal | null {
+  if (path === "/v1/traces") return "traces";
+  if (path === "/v1/logs") return "logs";
+  if (path === "/v1/metrics") return "metrics";
+  return null;
+}
 
 // Bound how many ingest requests buffer/stream their bodies at once. Together
 // with the per-request body cap (INGEST_MAX_BODY_BYTES) and S3 streaming for
@@ -283,6 +309,23 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
           },
           402,
         );
+      }
+
+      // Per-project source filter: if the project turned off its OTLP source for
+      // this signal, ack-drop. Return 200 (success) so exporters don't retry —
+      // the drop is the user's intent, not an error.
+      const otlpSignal = otlpSignalForPath(path);
+      if (otlpSignal && !ingestSourceFilter.allows(projectId, "otlp", otlpSignal)) {
+        responseStatus = 200;
+        span.setAttribute("ingest.dropped", "source_filtered");
+        logger.info(
+          { path, projectId, signal: otlpSignal },
+          "dropping OTLP ingest; source disabled",
+        );
+        return new Response(new Uint8Array(0), {
+          status: 200,
+          headers: { "content-type": "application/x-protobuf" },
+        });
       }
 
       const upstreamHeaders: Record<string, string> = {
@@ -525,6 +568,17 @@ async function forwardFirehose(
           402,
           "telemetry quota exceeded for this billing period; upgrade your plan to resume ingest",
         );
+      }
+
+      // Per-project source filter: if the project turned off its AWS source for
+      // this signal, ack-drop. Return a 200 success ack (not a 4xx) so Firehose
+      // treats it as delivered and doesn't retry into the customer's error
+      // bucket — the drop is the user's intent, not a delivery failure.
+      if (!ingestSourceFilter.allows(projectId, "aws", signal)) {
+        span.setAttribute("ingest.dropped", "source_filtered");
+        span.setAttribute("firehose.result", "dropped");
+        logger.info({ signal, projectId, requestId }, "dropping firehose batch; source disabled");
+        return c.json(firehoseResponseBody(requestId), 200);
       }
 
       const upstreamHeaders = buildFirehoseUpstreamHeaders({
