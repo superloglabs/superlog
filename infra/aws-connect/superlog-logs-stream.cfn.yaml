@@ -31,7 +31,9 @@ Parameters:
     Type: String
     Description: Name prefix for the Firehose, backup bucket, log group, and roles.
     Default: superlog-logs
-    AllowedPattern: "^[a-z0-9-]{3,40}$"
+    # Bounded so "<prefix>-backup-<account>-<region>" stays within the 63-char S3
+    # bucket-name limit, and must start alphanumeric (S3 bucket-name rule).
+    AllowedPattern: "^[a-z0-9][a-z0-9-]{2,24}$"
   FilterPattern:
     Type: String
     Description: >-
@@ -113,7 +115,10 @@ Resources:
               - Sid: DeliveryErrorLogs
                 Effect: Allow
                 Action: "logs:PutLogEvents"
-                Resource: !GetAtt FirehoseLogGroup.Arn
+                # PutLogEvents authorizes against the log *stream*. (GetAtt
+                # LogGroup.Arn already ends in ":*", so this is the same scope made
+                # explicit / least-privilege.)
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/${ResourcePrefix}:log-stream:*"
 
   DeliveryStream:
     Type: AWS::KinesisFirehose::DeliveryStream
@@ -159,6 +164,13 @@ Resources:
             Principal:
               Service: !Sub "logs.${AWS::Region}.amazonaws.com"
             Action: "sts:AssumeRole"
+            # Confused-deputy guard: only this account's CloudWatch Logs in this
+            # region may assume the role.
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref "AWS::AccountId"
+              ArnLike:
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*"
       Policies:
         - PolicyName: SuperlogLogsToFirehose
           PolicyDocument:

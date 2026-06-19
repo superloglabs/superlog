@@ -596,8 +596,15 @@ async function forwardFirehose(
     } catch (err) {
       span.recordException(err as Error);
       span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+      // Keep the detailed error server-side only — the errorMessage we return is
+      // echoed by AWS into the customer's Firehose error logs / S3 error bucket,
+      // so it must not carry internal exception text (collector URLs, stack info).
+      logger.error({ err, signal, requestId }, "firehose proxy request failed");
       // 500 (retriable) with a Firehose-shaped body so AWS backs off and retries.
-      return c.json(firehoseResponseBody(requestId ?? "unknown", (err as Error).message), 500);
+      return c.json(
+        firehoseResponseBody(requestId ?? "unknown", "internal error processing firehose request"),
+        500,
+      );
     } finally {
       span.end();
     }

@@ -28,7 +28,9 @@ Parameters:
     Type: String
     Description: Name prefix for the stream, Firehose, backup bucket, and roles.
     Default: superlog-metrics
-    AllowedPattern: "^[a-z0-9-]{3,40}$"
+    # Bounded so "<prefix>-backup-<account>-<region>" stays within the 63-char S3
+    # bucket-name limit, and must start alphanumeric (S3 bucket-name rule).
+    AllowedPattern: "^[a-z0-9][a-z0-9-]{2,24}$"
   ConnectionId:
     Type: String
     Description: Superlog connection this stack belongs to (reserved for reporting).
@@ -106,7 +108,10 @@ Resources:
               - Sid: DeliveryErrorLogs
                 Effect: Allow
                 Action: "logs:PutLogEvents"
-                Resource: !GetAtt FirehoseLogGroup.Arn
+                # PutLogEvents authorizes against the log *stream*. (GetAtt
+                # LogGroup.Arn already ends in ":*", so this is the same scope made
+                # explicit / least-privilege.)
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/${ResourcePrefix}:log-stream:*"
 
   DeliveryStream:
     Type: AWS::KinesisFirehose::DeliveryStream
