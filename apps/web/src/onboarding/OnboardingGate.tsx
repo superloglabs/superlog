@@ -54,13 +54,15 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
   }, [skillMode, hasIngested]);
 
   // Teleport: once the user's own telemetry arrives, demo mode is over — drop
-  // the local opt-in so refreshes land straight on their real data.
+  // the local opt-in so refreshes land straight on their real data. Gate on
+  // `me.data` being loaded: before it resolves, `demoMode` defaults to false,
+  // and acting on that would wipe a returning explorer's opt-in on every refresh.
   useEffect(() => {
-    if (!demoMode && exploring) {
+    if (me.data && !demoMode && exploring) {
       setExploring(false);
       writeDemoExploring(false);
     }
-  }, [demoMode, exploring]);
+  }, [me.data, demoMode, exploring]);
 
   const startExploring = () => {
     setExploring(true);

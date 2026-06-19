@@ -224,7 +224,19 @@ async function main(): Promise<void> {
 
   // ── Org (NO org_members — keeps the project invisible to real users) ─────
   let org = await db.query.orgs.findFirst({ where: eq(schema.orgs.slug, DEMO.orgSlug) });
-  if (!org) {
+  if (org) {
+    // Safety guard: never seed demo data into a REAL org that merely collides on
+    // the slug. The demo org is defined by having ZERO members; any org with a
+    // member is a real tenant, so refuse rather than corrupt it.
+    const member = await db.query.orgMembers.findFirst({
+      where: eq(schema.orgMembers.orgId, org.id),
+    });
+    if (member) {
+      throw new Error(
+        `refusing to seed demo data: an org with slug "${DEMO.orgSlug}" already exists and has members — that is a real org, not the hidden demo org`,
+      );
+    }
+  } else {
     org = (
       await db.insert(schema.orgs).values({ name: DEMO.orgName, slug: DEMO.orgSlug }).returning()
     )[0];
@@ -293,61 +305,66 @@ async function main(): Promise<void> {
     });
     if (existing) continue;
 
-    const issue = (
-      await db
-        .insert(schema.issues)
-        .values({
-          projectId,
-          fingerprint,
-          kind: "span",
-          service: inc.service,
-          exceptionType: inc.exceptionType,
-          title: inc.title,
-          message: inc.agentSummary,
-          topFrame: inc.topFrame,
-          firstSeen,
-          lastSeen,
-          eventCount: inc.eventCount,
-        })
-        .returning()
-    )[0];
-    if (!issue) throw new Error(`failed to insert issue for ${inc.codename}`);
+    // Atomic: issue + incident + link commit together, so a mid-loop failure
+    // can't leave an orphan incident (no linked issue) that the codename
+    // idempotency check above would then skip forever on re-runs.
+    await db.transaction(async (tx) => {
+      const issue = (
+        await tx
+          .insert(schema.issues)
+          .values({
+            projectId,
+            fingerprint,
+            kind: "span",
+            service: inc.service,
+            exceptionType: inc.exceptionType,
+            title: inc.title,
+            message: inc.agentSummary,
+            topFrame: inc.topFrame,
+            firstSeen,
+            lastSeen,
+            eventCount: inc.eventCount,
+          })
+          .returning()
+      )[0];
+      if (!issue) throw new Error(`failed to insert issue for ${inc.codename}`);
 
-    const incidentRow = (
-      await db
-        .insert(schema.incidents)
-        .values({
-          projectId,
-          service: inc.service,
-          environment: inc.environment,
-          title: inc.title,
-          codename: inc.codename,
-          severity: inc.severity,
-          status: inc.status,
-          firstSeen,
-          lastSeen,
-          issueCount: 1,
-          agentSummary: inc.agentSummary,
-          rootCauseText: inc.rootCauseText,
-          rootCauseConfidence: 80,
-          estimatedImpactText: inc.estimatedImpactText,
-          estimatedImpactConfidence: 70,
-          ...(inc.status === "resolved"
-            ? {
-                resolvedAt: lastSeen,
-                resolvedByKind: "agent_classification" as const,
-                resolvedReasonCode: "fixed_in_current_code",
-                resolvedReasonText: "Fix deployed; no recurrence since.",
-              }
-            : {}),
-        })
-        .returning()
-    )[0];
-    if (!incidentRow) throw new Error(`failed to insert incident ${inc.codename}`);
+      const incidentRow = (
+        await tx
+          .insert(schema.incidents)
+          .values({
+            projectId,
+            service: inc.service,
+            environment: inc.environment,
+            title: inc.title,
+            codename: inc.codename,
+            severity: inc.severity,
+            status: inc.status,
+            firstSeen,
+            lastSeen,
+            issueCount: 1,
+            agentSummary: inc.agentSummary,
+            rootCauseText: inc.rootCauseText,
+            rootCauseConfidence: 80,
+            estimatedImpactText: inc.estimatedImpactText,
+            estimatedImpactConfidence: 70,
+            ...(inc.status === "resolved"
+              ? {
+                  resolvedAt: lastSeen,
+                  resolvedByKind: "agent_classification" as const,
+                  resolvedReasonCode: "fixed_in_current_code",
+                  resolvedReasonText: "Fix deployed; no recurrence since.",
+                }
+              : {}),
+          })
+          .returning()
+      )[0];
+      if (!incidentRow) throw new Error(`failed to insert incident ${inc.codename}`);
 
-    await db
-      .insert(schema.incidentIssues)
-      .values({ incidentId: incidentRow.id, issueId: issue.id });
+      await tx
+        .insert(schema.incidentIssues)
+        .values({ incidentId: incidentRow.id, issueId: issue.id });
+    });
     incidentCount++;
   }
 
