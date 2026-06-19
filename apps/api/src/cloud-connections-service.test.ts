@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
   type StsVerifier,
+  buildCombinedConnectLaunchUrl,
   buildConnectQuickCreateUrl,
   buildLogsStreamLaunchUrl,
   buildMetricsStreamLaunchUrl,
@@ -105,6 +106,67 @@ test("buildLogsStreamLaunchUrl targets the logs stack with the same params", () 
   assert.equal(frag.get("param_IntakeUrl"), "https://intake.example.com/aws/firehose/logs");
   assert.equal(frag.get("param_IngestKey"), "sl_public_xyz");
   assert.equal(frag.get("param_ConnectionId"), "conn-9");
+});
+
+test("buildCombinedConnectLaunchUrl carries scrape + both streams in one stack", () => {
+  const url = buildCombinedConnectLaunchUrl({
+    region: "us-west-2",
+    templateUrl: "https://superlog-cfn.s3.amazonaws.com/connect-stack.yaml",
+    superlogAccountId: "123456789012",
+    externalId: "ext-abc",
+    connectionId: "conn-1",
+    serviceToken: "arn:aws:sns:us-west-2:123456789012:superlog-connect",
+    metricsIntakeUrl: "https://intake.example.com/aws/firehose/metrics",
+    logsIntakeUrl: "https://intake.example.com/aws/firehose/logs",
+    metricsIngestKey: "sl_public_metrics",
+    logsIngestKey: "sl_public_logs",
+  });
+
+  const u = new URL(url);
+  assert.equal(u.host, "us-west-2.console.aws.amazon.com");
+  const frag = new URLSearchParams(u.hash.slice(u.hash.indexOf("?") + 1));
+  // One stack — same name as the baseline connect stack.
+  assert.equal(frag.get("stackName"), "superlog-connect");
+  assert.equal(frag.get("templateURL"), "https://superlog-cfn.s3.amazonaws.com/connect-stack.yaml");
+  assert.equal(frag.get("param_SuperlogAccountId"), "123456789012");
+  assert.equal(frag.get("param_ExternalId"), "ext-abc");
+  assert.equal(frag.get("param_ConnectionId"), "conn-1");
+  assert.equal(
+    frag.get("param_SuperlogServiceToken"),
+    "arn:aws:sns:us-west-2:123456789012:superlog-connect",
+  );
+  // Streaming on by default, both intake URLs + dedicated keys present.
+  assert.equal(frag.get("param_EnableMetrics"), "true");
+  assert.equal(frag.get("param_EnableLogs"), "true");
+  assert.equal(
+    frag.get("param_MetricsIntakeUrl"),
+    "https://intake.example.com/aws/firehose/metrics",
+  );
+  assert.equal(frag.get("param_LogsIntakeUrl"), "https://intake.example.com/aws/firehose/logs");
+  assert.equal(frag.get("param_MetricsIngestKey"), "sl_public_metrics");
+  assert.equal(frag.get("param_LogsIngestKey"), "sl_public_logs");
+});
+
+test("buildCombinedConnectLaunchUrl can disable a stream and pass a log filter", () => {
+  const url = buildCombinedConnectLaunchUrl({
+    region: "eu-central-1",
+    templateUrl: "https://cfn.example/connect-stack.yaml",
+    superlogAccountId: "123456789012",
+    externalId: "ext-xyz",
+    connectionId: "conn-2",
+    metricsIntakeUrl: "https://intake.example.com/aws/firehose/metrics",
+    logsIntakeUrl: "https://intake.example.com/aws/firehose/logs",
+    metricsIngestKey: "sl_public_m",
+    logsIngestKey: "sl_public_l",
+    enableMetrics: false,
+    logsFilterPattern: "?ERROR ?WARN",
+  });
+  const frag = new URLSearchParams(new URL(url).hash.slice(new URL(url).hash.indexOf("?") + 1));
+  assert.equal(frag.get("param_EnableMetrics"), "false");
+  assert.equal(frag.get("param_EnableLogs"), "true");
+  assert.equal(frag.get("param_LogsFilterPattern"), "?ERROR ?WARN");
+  // No SNS topic supplied → no zero-paste param (manual paste fallback).
+  assert.equal(frag.get("param_SuperlogServiceToken"), null);
 });
 
 test("buildMetricsStreamLaunchUrl rejects a hostname-hijacking region", () => {

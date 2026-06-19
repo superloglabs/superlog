@@ -12,6 +12,7 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import {
   type StsVerifier,
+  buildCombinedConnectLaunchUrl,
   buildConnectQuickCreateUrl,
   buildLogsStreamLaunchUrl,
   buildMetricsStreamLaunchUrl,
@@ -64,7 +65,24 @@ export type CloudConnectConfig = {
   logsTemplateUrl?: string;
   /** Firehose intake URL CloudWatch Logs deliver to — the proxy's `/aws/firehose/logs`. */
   logsIntakeUrl?: string;
+  /**
+   * Public HTTPS URL of the combined one-step template
+   * (`superlog-connect-stack.cfn.yaml`): scrape role + metric + log streaming in
+   * a single stack. When set alongside both intake URLs, "Connect AWS" provisions
+   * everything in one launch; otherwise it falls back to the scrape-role-only
+   * template and per-signal stream setup.
+   */
+  connectStackTemplateUrl?: string;
 };
+
+/** True when the one-step combined connect (scrape + both streams) is fully configured. */
+function combinedConnectReady(config: CloudConnectConfig): config is CloudConnectConfig & {
+  connectStackTemplateUrl: string;
+  metricsIntakeUrl: string;
+  logsIntakeUrl: string;
+} {
+  return Boolean(config.connectStackTemplateUrl && config.metricsIntakeUrl && config.logsIntakeUrl);
+}
 
 export function cloudConnectConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -80,6 +98,7 @@ export function cloudConnectConfigFromEnv(
     metricsIntakeUrl: env.AWS_FIREHOSE_METRICS_INTAKE_URL || undefined,
     logsTemplateUrl: env.AWS_LOGS_TEMPLATE_URL || undefined,
     logsIntakeUrl: env.AWS_FIREHOSE_LOGS_INTAKE_URL || undefined,
+    connectStackTemplateUrl: env.AWS_CONNECT_STACK_TEMPLATE_URL || undefined,
   };
 }
 
@@ -199,6 +218,74 @@ export function mountCloudConnectionsAuthed(
     return { project, user: ctx.user };
   };
 
+  // Decrypt a persisted stream key + look up its prefix for display.
+  const loadStreamKey = async (sk: typeof schema.cloudStreamKeys.$inferSelect) => {
+    const ingestKey = decryptIntegrationSecret({
+      ciphertext: sk.keyCiphertext,
+      nonce: sk.keyNonce,
+      keyVersion: sk.keyKeyVersion,
+    });
+    const keyRow = await db.query.apiKeys.findFirst({
+      where: eq(schema.apiKeys.id, sk.apiKeyId),
+    });
+    return { ingestKey, keyPrefix: keyRow?.keyPrefix ?? "" };
+  };
+
+  // Idempotently get (or first-time mint) the dedicated ingest key for one
+  // signal of a connection. A dedicated key per stream keeps it independently
+  // revocable and makes attribution obvious in the key list. Reused by both the
+  // one-step connect (mints both up front) and per-signal stream setup, so a
+  // re-launch carries the *same* IngestKey instead of minting a new one each
+  // click. The insert is guarded against a concurrent first mint (unique
+  // connection+kind): if we lose the race we revoke the orphan key and reuse the
+  // winner's, so two parallel callers don't 500 or leave duplicate keys.
+  const ensureStreamKey = async (
+    connectionId: string,
+    projectId: string,
+    region: string,
+    kind: "metrics" | "logs",
+  ): Promise<{ ingestKey: string; keyPrefix: string }> => {
+    const existing = await db.query.cloudStreamKeys.findFirst({
+      where: and(
+        eq(schema.cloudStreamKeys.connectionId, connectionId),
+        eq(schema.cloudStreamKeys.kind, kind),
+      ),
+    });
+    if (existing) return loadStreamKey(existing);
+
+    const minted = await mintApiKey({ projectId, name: streamKeyName(kind, region) });
+    const cipher = encryptIntegrationSecret(minted.plaintext);
+    const [inserted] = await db
+      .insert(schema.cloudStreamKeys)
+      .values({
+        connectionId,
+        kind,
+        apiKeyId: minted.id,
+        keyCiphertext: cipher.ciphertext,
+        keyNonce: cipher.nonce,
+        keyKeyVersion: cipher.keyVersion,
+      })
+      .onConflictDoNothing({
+        target: [schema.cloudStreamKeys.connectionId, schema.cloudStreamKeys.kind],
+      })
+      .returning();
+
+    if (inserted) return { ingestKey: minted.plaintext, keyPrefix: minted.keyPrefix };
+
+    await db
+      .update(schema.apiKeys)
+      .set({ revokedAt: new Date() })
+      .where(eq(schema.apiKeys.id, minted.id));
+    const winner = await db.query.cloudStreamKeys.findFirst({
+      where: and(
+        eq(schema.cloudStreamKeys.connectionId, connectionId),
+        eq(schema.cloudStreamKeys.kind, kind),
+      ),
+    });
+    if (!winner) throw new HTTPException(500, { message: "failed to persist stream key" });
+    return loadStreamKey(winner);
+  };
+
   app.get("/api/projects/:projectId/cloud-connections", async (c) => {
     const projectId = c.req.param("projectId");
     await requireAccess(c, projectId);
@@ -236,21 +323,43 @@ export function mountCloudConnectionsAuthed(
       .returning();
     if (!row) throw new HTTPException(500, { message: "failed to create connection" });
 
-    const params: Record<string, string> = {
-      ExternalId: externalId,
-      SuperlogAccountId: config.superlogAccountId,
-      ConnectionId: row.id,
-    };
-    // When we have an SNS topic, pass it so the template's custom resource reports
-    // the role ARN back automatically (zero-paste). Otherwise the customer pastes.
-    if (config.serviceToken) params.SuperlogServiceToken = config.serviceToken;
-
-    const launchUrl = buildConnectQuickCreateUrl({
-      region: parsed.data.region,
-      templateUrl: config.templateUrl,
-      stackName: "superlog-connect",
-      params,
-    });
+    let launchUrl: string;
+    if (combinedConnectReady(config)) {
+      // One-step connect: mint both signal keys up front and launch a single
+      // stack that creates the scrape role + metric + log streaming together.
+      const [metricsKey, logsKey] = await Promise.all([
+        ensureStreamKey(row.id, projectId, row.region, "metrics"),
+        ensureStreamKey(row.id, projectId, row.region, "logs"),
+      ]);
+      launchUrl = buildCombinedConnectLaunchUrl({
+        region: row.region,
+        templateUrl: config.connectStackTemplateUrl,
+        superlogAccountId: config.superlogAccountId,
+        externalId,
+        connectionId: row.id,
+        serviceToken: config.serviceToken,
+        metricsIntakeUrl: config.metricsIntakeUrl,
+        logsIntakeUrl: config.logsIntakeUrl,
+        metricsIngestKey: metricsKey.ingestKey,
+        logsIngestKey: logsKey.ingestKey,
+      });
+    } else {
+      // Legacy: scrape-role-only stack; streaming is set up later per signal.
+      const params: Record<string, string> = {
+        ExternalId: externalId,
+        SuperlogAccountId: config.superlogAccountId,
+        ConnectionId: row.id,
+      };
+      // When we have an SNS topic, pass it so the template's custom resource reports
+      // the role ARN back automatically (zero-paste). Otherwise the customer pastes.
+      if (config.serviceToken) params.SuperlogServiceToken = config.serviceToken;
+      launchUrl = buildConnectQuickCreateUrl({
+        region: parsed.data.region,
+        templateUrl: config.templateUrl,
+        stackName: "superlog-connect",
+        params,
+      });
+    }
     // externalId returned once so the UI can show it; it's also in the launch URL.
     return c.json({ ...toPublic(row), launchUrl, externalId });
   });
@@ -277,10 +386,12 @@ export function mountCloudConnectionsAuthed(
     return c.json(toPublic(updated));
   });
 
-  // Set up CloudWatch metric/log streaming for a verified connection. Mints a
-  // dedicated project ingest key (the stream authenticates with it) and returns
-  // the launch URL for the corresponding stack. POST, not GET: each call mints a
-  // key, so it must be an explicit user action, not something the UI polls.
+  // Set up (or re-launch) CloudWatch metric/log streaming for a verified
+  // connection. Returns the launch URL for the stack that carries this signal.
+  // In one-step (combined) mode every signal lives in the single `superlog-connect`
+  // stack, so both signals' buttons return the *same* combined launch URL — a
+  // re-launch updates that one stack rather than creating a parallel one. POST,
+  // not GET: it can mint a key, so it must be an explicit user action, not polled.
   const handleStreamSetup = async (
     c: Context<{ Variables: Vars }>,
     projectId: string,
@@ -288,9 +399,16 @@ export function mountCloudConnectionsAuthed(
     kind: "metrics" | "logs",
   ) => {
     await requireAccess(c, projectId);
-    const templateUrl = kind === "metrics" ? config?.metricsTemplateUrl : config?.logsTemplateUrl;
-    const intakeUrl = kind === "metrics" ? config?.metricsIntakeUrl : config?.logsIntakeUrl;
-    if (!templateUrl || !intakeUrl) {
+
+    // Configuration check first (independent of the specific connection): in
+    // legacy mode this signal's template + intake URL must be set, else 501.
+    // One-step mode is always "configured" once the combined template + intakes
+    // exist, so it skips this.
+    const combined = config != null && combinedConnectReady(config);
+    const legacyTemplateUrl =
+      kind === "metrics" ? config?.metricsTemplateUrl : config?.logsTemplateUrl;
+    const legacyIntakeUrl = kind === "metrics" ? config?.metricsIntakeUrl : config?.logsIntakeUrl;
+    if (!combined && (!legacyTemplateUrl || !legacyIntakeUrl)) {
       throw new HTTPException(501, { message: `${kind} streaming is not configured` });
     }
 
@@ -306,80 +424,46 @@ export function mountCloudConnectionsAuthed(
       throw new HTTPException(409, { message: "connection is not verified" });
     }
 
-    // Decrypt a persisted stream key + look up its prefix for display.
-    const loadKey = async (sk: typeof schema.cloudStreamKeys.$inferSelect) => {
-      const ingestKey = decryptIntegrationSecret({
-        ciphertext: sk.keyCiphertext,
-        nonce: sk.keyNonce,
-        keyVersion: sk.keyKeyVersion,
+    // One-step mode: re-open the single combined stack with both signals' keys.
+    if (combined && config) {
+      const externalId = decryptIntegrationSecret({
+        ciphertext: row.externalIdCiphertext,
+        nonce: row.externalIdNonce,
+        keyVersion: row.externalIdKeyVersion,
       });
-      const keyRow = await db.query.apiKeys.findFirst({
-        where: eq(schema.apiKeys.id, sk.apiKeyId),
+      const [metricsKey, logsKey] = await Promise.all([
+        ensureStreamKey(row.id, projectId, row.region, "metrics"),
+        ensureStreamKey(row.id, projectId, row.region, "logs"),
+      ]);
+      const launchUrl = buildCombinedConnectLaunchUrl({
+        region: row.region,
+        templateUrl: config.connectStackTemplateUrl,
+        superlogAccountId: config.superlogAccountId,
+        externalId,
+        connectionId: row.id,
+        serviceToken: config.serviceToken,
+        metricsIntakeUrl: config.metricsIntakeUrl,
+        logsIntakeUrl: config.logsIntakeUrl,
+        metricsIngestKey: metricsKey.ingestKey,
+        logsIngestKey: logsKey.ingestKey,
       });
-      return { ingestKey, keyPrefix: keyRow?.keyPrefix ?? "" };
-    };
-
-    // Idempotent: reuse the stream's persisted key if setup already ran, so a
-    // re-launch ("repair") carries the *same* IngestKey instead of minting a new
-    // one each click. Only mint + store on first setup.
-    const existing = await db.query.cloudStreamKeys.findFirst({
-      where: and(
-        eq(schema.cloudStreamKeys.connectionId, row.id),
-        eq(schema.cloudStreamKeys.kind, kind),
-      ),
-    });
-
-    let ingestKey: string;
-    let keyPrefix: string;
-    if (existing) {
-      ({ ingestKey, keyPrefix } = await loadKey(existing));
-    } else {
-      // A dedicated ingest key per stream keeps it independently revocable and
-      // makes attribution obvious in the project's key list. The insert is
-      // guarded against a concurrent first setup (unique connection+kind): if we
-      // lose the race we revoke the orphan key we just minted and reuse the
-      // winner's, so two parallel clicks don't 500 or leave duplicate keys.
-      const minted = await mintApiKey({ projectId, name: streamKeyName(kind, row.region) });
-      const cipher = encryptIntegrationSecret(minted.plaintext);
-      const [inserted] = await db
-        .insert(schema.cloudStreamKeys)
-        .values({
-          connectionId: row.id,
-          kind,
-          apiKeyId: minted.id,
-          keyCiphertext: cipher.ciphertext,
-          keyNonce: cipher.nonce,
-          keyKeyVersion: cipher.keyVersion,
-        })
-        .onConflictDoNothing({
-          target: [schema.cloudStreamKeys.connectionId, schema.cloudStreamKeys.kind],
-        })
-        .returning();
-
-      if (inserted) {
-        ingestKey = minted.plaintext;
-        keyPrefix = minted.keyPrefix;
-      } else {
-        await db
-          .update(schema.apiKeys)
-          .set({ revokedAt: new Date() })
-          .where(eq(schema.apiKeys.id, minted.id));
-        const winner = await db.query.cloudStreamKeys.findFirst({
-          where: and(
-            eq(schema.cloudStreamKeys.connectionId, row.id),
-            eq(schema.cloudStreamKeys.kind, kind),
-          ),
-        });
-        if (!winner) throw new HTTPException(500, { message: "failed to persist stream key" });
-        ({ ingestKey, keyPrefix } = await loadKey(winner));
-      }
+      return c.json({
+        launchUrl,
+        keyPrefix: (kind === "metrics" ? metricsKey : logsKey).keyPrefix,
+      });
     }
 
+    // Legacy: a dedicated per-signal stack. (Both URLs are non-null here — the
+    // 501 guard above already rejected the unconfigured case.)
+    if (!legacyTemplateUrl || !legacyIntakeUrl) {
+      throw new HTTPException(501, { message: `${kind} streaming is not configured` });
+    }
+    const { ingestKey, keyPrefix } = await ensureStreamKey(row.id, projectId, row.region, kind);
     const build = kind === "metrics" ? buildMetricsStreamLaunchUrl : buildLogsStreamLaunchUrl;
     const launchUrl = build({
       region: row.region,
-      templateUrl,
-      intakeUrl,
+      templateUrl: legacyTemplateUrl,
+      intakeUrl: legacyIntakeUrl,
       ingestKey,
       connectionId: row.id,
     });

@@ -67,7 +67,23 @@ async function seedProject() {
   return { org, user, project };
 }
 
-function appFor(userId: string, orgId: string, sts: StsVerifier, resourceLister?: ResourceLister) {
+// Fully-configured one-step connect: combined template + both Firehose intakes.
+const COMBINED_CONFIG: CloudConnectConfig = {
+  superlogAccountId: "123456789012",
+  templateUrl: "https://cfn.example/aws-connect.yaml",
+  connectStackTemplateUrl: "https://cfn.example/connect-stack.yaml",
+  metricsIntakeUrl: "https://intake.example.com/aws/firehose/metrics",
+  logsIntakeUrl: "https://intake.example.com/aws/firehose/logs",
+  serviceToken: "arn:aws:sns:us-west-2:123456789012:superlog-connect",
+};
+
+function appWith(
+  userId: string,
+  orgId: string,
+  sts: StsVerifier,
+  config: CloudConnectConfig,
+  resourceLister?: ResourceLister,
+) {
   const app = new Hono<{ Variables: { userId: string; orgId: string | null } }>();
   app.use("*", (c, next) => {
     c.set("userId", userId);
@@ -77,7 +93,7 @@ function appFor(userId: string, orgId: string, sts: StsVerifier, resourceLister?
   // No-op config fetcher so tests never reach real AWS Cloud Control.
   mountCloudConnectionsAuthed(app, {
     sts,
-    config: CONFIG,
+    config,
     resourceLister,
     configFetcher: {
       async get() {
@@ -87,6 +103,13 @@ function appFor(userId: string, orgId: string, sts: StsVerifier, resourceLister?
   });
   return app;
 }
+
+function appFor(userId: string, orgId: string, sts: StsVerifier, resourceLister?: ResourceLister) {
+  return appWith(userId, orgId, sts, CONFIG, resourceLister);
+}
+
+const fragOf = (url: string) =>
+  new URLSearchParams(new URL(url).hash.slice(new URL(url).hash.indexOf("?") + 1));
 
 const okSts = (accountId: string): StsVerifier => ({
   async verifyAssumeRole() {
@@ -393,6 +416,84 @@ test("metrics-stream is 501 when metric streaming isn't configured", async () =>
     { method: "POST" },
   );
   assert.equal(res.status, 501);
+});
+
+test("one-step connect launches the combined stack + mints both stream keys", async () => {
+  const { org, user, project } = await seedProject();
+  const app = appWith(user.id, org.id, okSts("210987654321"), COMBINED_CONFIG);
+
+  const created = await asConn(
+    await app.request(`/api/projects/${project.id}/cloud-connections`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ region: "us-west-2" }),
+    }),
+  );
+
+  assert.ok(created.launchUrl, "expected a launch url");
+  const frag = fragOf(created.launchUrl);
+  // One combined stack, streaming on by default, with both intakes + the SNS topic.
+  assert.equal(frag.get("templateURL"), "https://cfn.example/connect-stack.yaml");
+  assert.equal(frag.get("stackName"), "superlog-connect");
+  assert.equal(frag.get("param_EnableMetrics"), "true");
+  assert.equal(frag.get("param_EnableLogs"), "true");
+  assert.equal(
+    frag.get("param_MetricsIntakeUrl"),
+    "https://intake.example.com/aws/firehose/metrics",
+  );
+  assert.equal(frag.get("param_LogsIntakeUrl"), "https://intake.example.com/aws/firehose/logs");
+  assert.equal(
+    frag.get("param_SuperlogServiceToken"),
+    "arn:aws:sns:us-west-2:123456789012:superlog-connect",
+  );
+  // Dedicated per-signal keys, distinct, both embedded in the launch URL.
+  const mKey = frag.get("param_MetricsIngestKey");
+  const lKey = frag.get("param_LogsIngestKey");
+  assert.ok(mKey && lKey && mKey !== lKey, "expected two distinct ingest keys");
+
+  // Both stream keys persisted up front (so reconciliation tracks each signal).
+  const sk = await db.query.cloudStreamKeys.findMany({
+    where: eq(schema.cloudStreamKeys.connectionId, created.id),
+  });
+  assert.equal(sk.length, 2);
+  assert.deepEqual(sk.map((r) => r.kind).sort(), ["logs", "metrics"]);
+});
+
+test("one-step re-launch (metrics-stream) reuses the same combined stack + keys", async () => {
+  const { org, user, project } = await seedProject();
+  const app = appWith(user.id, org.id, okSts("210987654321"), COMBINED_CONFIG);
+
+  const created = await asConn(
+    await app.request(`/api/projects/${project.id}/cloud-connections`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ region: "us-west-2" }),
+    }),
+  );
+  assert.ok(created.launchUrl, "expected a launch url");
+  const keyAtConnect = fragOf(created.launchUrl).get("param_MetricsIngestKey");
+  // Verify, then "Re-launch metric streaming" → must return the SAME combined
+  // stack with the SAME key (no new key, no parallel stack).
+  await app.request(`/api/projects/${project.id}/cloud-connections/${created.id}/verify`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ scrapeRoleArn: "arn:aws:iam::210987654321:role/SuperlogScrapeRole" }),
+  });
+  const relaunch = (await (
+    await app.request(
+      `/api/projects/${project.id}/cloud-connections/${created.id}/metrics-stream`,
+      { method: "POST" },
+    )
+  ).json()) as { launchUrl: string; keyPrefix: string };
+  const frag = fragOf(relaunch.launchUrl);
+  assert.equal(frag.get("stackName"), "superlog-connect");
+  assert.equal(frag.get("param_MetricsIngestKey"), keyAtConnect);
+
+  // Still exactly two stream keys — re-launch minted nothing new.
+  const sk = await db.query.cloudStreamKeys.findMany({
+    where: eq(schema.cloudStreamKeys.connectionId, created.id),
+  });
+  assert.equal(sk.length, 2);
 });
 
 test("reconnecting a role already active in the project revokes the old row (no 500)", async () => {

@@ -1,0 +1,487 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Superlog AWS connect — one-step integration stack. Creates the read-only
+  scrape/inventory role AND (by default) CloudWatch metric streaming + an
+  account-level CloudWatch Logs subscription, all delivered to Superlog through
+  Amazon Data Firehose. Metric streaming and log streaming each toggle off via
+  the EnableMetrics / EnableLogs parameters — they incur CloudWatch Metric
+  Streams + Firehose (and, for logs, CloudWatch Logs delivery) charges on YOUR
+  AWS bill, so the namespace set and log FilterPattern below are the cost levers.
+  The scrape role itself is read-only and free.
+
+# Lets the logs subscription PolicyDocument be built with Fn::ToJsonString
+# instead of hand-interpolating the FilterPattern into a JSON string.
+Transform: AWS::LanguageExtensions
+
+Parameters:
+  # --- Connection (scrape role) ---------------------------------------------
+  SuperlogAccountId:
+    Type: String
+    Description: The Superlog AWS account allowed to assume the scrape role.
+    AllowedPattern: "^[0-9]{12}$"
+  ExternalId:
+    Type: String
+    Description: >-
+      Unique external ID Superlog presents when assuming the role (confused-deputy
+      nonce). Not NoEcho: the quick-create link drops NoEcho params and it's
+      already in the launch URL, not a password.
+    MinLength: 16
+  RoleName:
+    Type: String
+    Description: Name for the created scrape role.
+    Default: SuperlogScrapeRole
+  ConnectionId:
+    Type: String
+    Description: Superlog connection this stack completes (used by the callback).
+    Default: ""
+  SuperlogServiceToken:
+    Type: String
+    Description: >-
+      Superlog SNS topic ARN. When set, this stack reports the new role ARN back
+      to Superlog automatically (zero-paste). Leave blank to paste the ScrapeRoleArn
+      output by hand.
+    Default: ""
+
+  # --- Streaming toggles + delivery -----------------------------------------
+  EnableMetrics:
+    Type: String
+    Description: >-
+      Stream CloudWatch metrics to Superlog. "true" creates a Metric Stream +
+      Firehose (billable). Set to "false" to connect inventory only.
+    Default: "true"
+    AllowedValues: ["true", "false"]
+  EnableLogs:
+    Type: String
+    Description: >-
+      Forward CloudWatch Logs to Superlog via an account-level subscription +
+      Firehose (billable). Set to "false" to skip log streaming.
+    Default: "true"
+    AllowedValues: ["true", "false"]
+  MetricsIngestKey:
+    Type: String
+    Description: >-
+      Superlog ingest key the metric stream authenticates with (sl_public_…).
+      Provided by Superlog in the launch link. Ignored when EnableMetrics=false.
+    Default: ""
+  LogsIngestKey:
+    Type: String
+    Description: >-
+      Superlog ingest key the log subscription authenticates with (sl_public_…).
+      Provided by Superlog in the launch link. Ignored when EnableLogs=false.
+    Default: ""
+  MetricsIntakeUrl:
+    Type: String
+    Description: Superlog Firehose intake URL for metrics (https). From the launch link.
+    Default: ""
+  LogsIntakeUrl:
+    Type: String
+    Description: Superlog Firehose intake URL for logs (https). From the launch link.
+    Default: ""
+  LogsFilterPattern:
+    Type: String
+    Description: >-
+      CloudWatch Logs filter pattern. Empty forwards everything; narrow it (e.g.
+      ?ERROR ?WARN) to cut log volume and cost. Embedded safely via Fn::ToJsonString.
+    Default: ""
+
+Conditions:
+  # Auto-report only when both the SNS topic and a connection id are supplied.
+  ReportBack: !And
+    - !Not [!Equals [!Ref SuperlogServiceToken, ""]]
+    - !Not [!Equals [!Ref ConnectionId, ""]]
+  CreateMetrics: !Equals [!Ref EnableMetrics, "true"]
+  CreateLogs: !Equals [!Ref EnableLogs, "true"]
+
+Resources:
+  # ===========================================================================
+  # Connection — read-only scrape/inventory role (always created)
+  # ===========================================================================
+  ScrapeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: Read-only role Superlog assumes to inventory AWS resources.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${SuperlogAccountId}:root"
+            Action: "sts:AssumeRole"
+            Condition:
+              StringEquals:
+                "sts:ExternalId": !Ref ExternalId
+      Policies:
+        - PolicyName: SuperlogScrapeReadOnly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ResourceInventory
+                Effect: Allow
+                Action:
+                  - "tag:GetResources"
+                  - "tag:GetTagKeys"
+                  - "tag:GetTagValues"
+                Resource: "*"
+              - Sid: MetricCatalog
+                Effect: Allow
+                Action:
+                  - "cloudwatch:ListMetrics"
+                Resource: "*"
+              - Sid: ConfigRead
+                Effect: Allow
+                Action:
+                  - "cloudformation:GetResource"
+                  - "cloudformation:ListResources"
+                  - "ec2:Describe*"
+                  - "rds:Describe*"
+                  - "rds:ListTagsForResource"
+                  - "lambda:GetFunction"
+                  - "lambda:GetFunctionConfiguration"
+                  - "lambda:ListFunctions"
+                  - "elasticloadbalancing:Describe*"
+                  - "ecs:Describe*"
+                  - "ecs:List*"
+                  - "autoscaling:Describe*"
+                  - "ssm:ListAssociations"
+                  - "ssm:DescribeInstanceInformation"
+                Resource: "*"
+              - Sid: DenySensitiveReads
+                Effect: Deny
+                Action:
+                  - "secretsmanager:GetSecretValue"
+                  - "kms:Decrypt"
+                  - "kms:GenerateDataKey"
+                  - "ssm:GetParameter"
+                  - "ssm:GetParameters"
+                  - "ssm:GetParametersByPath"
+                  - "s3:GetObject"
+                  - "dynamodb:GetItem"
+                  - "dynamodb:BatchGetItem"
+                  - "dynamodb:Query"
+                  - "dynamodb:Scan"
+                Resource: "*"
+
+  RegisterWithSuperlog:
+    Type: Custom::SuperlogConnect
+    Condition: ReportBack
+    Properties:
+      ServiceToken: !Ref SuperlogServiceToken
+      RoleArn: !GetAtt ScrapeRole.Arn
+      AccountId: !Ref "AWS::AccountId"
+      Region: !Ref "AWS::Region"
+      ConnectionId: !Ref ConnectionId
+      ExternalId: !Ref ExternalId
+
+  # ===========================================================================
+  # Metric streaming — CloudWatch Metric Stream → Firehose (Condition: CreateMetrics)
+  # ===========================================================================
+  MetricsBackupBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateMetrics
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "superlog-metrics-backup-${AWS::AccountId}-${AWS::Region}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-backups
+            Status: Enabled
+            ExpirationInDays: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  MetricsFirehoseLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: CreateMetrics
+    Properties:
+      LogGroupName: "/aws/kinesisfirehose/superlog-metrics"
+      RetentionInDays: 7
+
+  MetricsFirehoseLogStream:
+    Type: AWS::Logs::LogStream
+    Condition: CreateMetrics
+    Properties:
+      LogGroupName: !Ref MetricsFirehoseLogGroup
+      LogStreamName: HttpEndpointDelivery
+
+  MetricsFirehoseRole:
+    Type: AWS::IAM::Role
+    Condition: CreateMetrics
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: SuperlogMetricsFirehoseDelivery
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: BackupBucketWrite
+                Effect: Allow
+                Action:
+                  - "s3:AbortMultipartUpload"
+                  - "s3:GetBucketLocation"
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                  - "s3:ListBucketMultipartUploads"
+                  - "s3:PutObject"
+                Resource:
+                  - !GetAtt MetricsBackupBucket.Arn
+                  - !Sub "${MetricsBackupBucket.Arn}/*"
+              - Sid: DeliveryErrorLogs
+                Effect: Allow
+                Action: "logs:PutLogEvents"
+                Resource: !GetAtt MetricsFirehoseLogGroup.Arn
+
+  MetricsDeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Condition: CreateMetrics
+    Properties:
+      DeliveryStreamName: "superlog-metrics-stream"
+      DeliveryStreamType: DirectPut
+      HttpEndpointDestinationConfiguration:
+        EndpointConfiguration:
+          Url: !Ref MetricsIntakeUrl
+          Name: Superlog
+          AccessKey: !Ref MetricsIngestKey
+        RequestConfiguration:
+          ContentEncoding: GZIP
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 4
+        RetryOptions:
+          DurationInSeconds: 300
+        S3BackupMode: FailedDataOnly
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref MetricsFirehoseLogGroup
+          LogStreamName: !Ref MetricsFirehoseLogStream
+        RoleARN: !GetAtt MetricsFirehoseRole.Arn
+        S3Configuration:
+          BucketARN: !GetAtt MetricsBackupBucket.Arn
+          RoleARN: !GetAtt MetricsFirehoseRole.Arn
+          CompressionFormat: GZIP
+          BufferingHints:
+            IntervalInSeconds: 300
+            SizeInMBs: 5
+
+  MetricStreamRole:
+    Type: AWS::IAM::Role
+    Condition: CreateMetrics
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: streams.metrics.cloudwatch.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: SuperlogMetricStreamToFirehose
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "firehose:PutRecord"
+                  - "firehose:PutRecordBatch"
+                Resource: !GetAtt MetricsDeliveryStream.Arn
+
+  MetricStream:
+    Type: AWS::CloudWatch::MetricStream
+    Condition: CreateMetrics
+    Properties:
+      Name: "superlog-metrics-stream"
+      FirehoseArn: !GetAtt MetricsDeliveryStream.Arn
+      RoleArn: !GetAtt MetricStreamRole.Arn
+      OutputFormat: opentelemetry1.0
+      # Cost lever: stream only dashboard-relevant namespaces. ECS +
+      # ECS/ContainerInsights are intentionally included (service/task metrics
+      # power the ECS dashboards) but are the highest-cardinality entries —
+      # trim them here if your account runs many tasks and the bill matters.
+      IncludeFilters:
+        - Namespace: AWS/EC2
+        - Namespace: AWS/EBS
+        - Namespace: AWS/RDS
+        - Namespace: AWS/ApplicationELB
+        - Namespace: AWS/NetworkELB
+        - Namespace: AWS/ELB
+        - Namespace: AWS/Lambda
+        - Namespace: AWS/ECS
+        - Namespace: ECS/ContainerInsights
+        - Namespace: AWS/DynamoDB
+        - Namespace: AWS/SQS
+        - Namespace: AWS/SNS
+        - Namespace: AWS/S3
+        - Namespace: AWS/ElastiCache
+        - Namespace: AWS/ApiGateway
+        - Namespace: AWS/CloudFront
+
+  # ===========================================================================
+  # Log streaming — account-level subscription → Firehose (Condition: CreateLogs)
+  # ===========================================================================
+  LogsBackupBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateLogs
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "superlog-logs-backup-${AWS::AccountId}-${AWS::Region}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-backups
+            Status: Enabled
+            ExpirationInDays: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  LogsFirehoseLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: CreateLogs
+    Properties:
+      LogGroupName: "/aws/kinesisfirehose/superlog-logs"
+      RetentionInDays: 7
+
+  LogsFirehoseLogStream:
+    Type: AWS::Logs::LogStream
+    Condition: CreateLogs
+    Properties:
+      LogGroupName: !Ref LogsFirehoseLogGroup
+      LogStreamName: HttpEndpointDelivery
+
+  LogsFirehoseRole:
+    Type: AWS::IAM::Role
+    Condition: CreateLogs
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: SuperlogLogsFirehoseDelivery
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: BackupBucketWrite
+                Effect: Allow
+                Action:
+                  - "s3:AbortMultipartUpload"
+                  - "s3:GetBucketLocation"
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                  - "s3:ListBucketMultipartUploads"
+                  - "s3:PutObject"
+                Resource:
+                  - !GetAtt LogsBackupBucket.Arn
+                  - !Sub "${LogsBackupBucket.Arn}/*"
+              - Sid: DeliveryErrorLogs
+                Effect: Allow
+                Action: "logs:PutLogEvents"
+                Resource: !GetAtt LogsFirehoseLogGroup.Arn
+
+  LogsDeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Condition: CreateLogs
+    Properties:
+      DeliveryStreamName: "superlog-logs-stream"
+      DeliveryStreamType: DirectPut
+      HttpEndpointDestinationConfiguration:
+        EndpointConfiguration:
+          Url: !Ref LogsIntakeUrl
+          Name: Superlog
+          AccessKey: !Ref LogsIngestKey
+        RequestConfiguration:
+          ContentEncoding: GZIP
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 4
+        RetryOptions:
+          DurationInSeconds: 300
+        S3BackupMode: FailedDataOnly
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref LogsFirehoseLogGroup
+          LogStreamName: !Ref LogsFirehoseLogStream
+        RoleARN: !GetAtt LogsFirehoseRole.Arn
+        S3Configuration:
+          BucketARN: !GetAtt LogsBackupBucket.Arn
+          RoleARN: !GetAtt LogsFirehoseRole.Arn
+          CompressionFormat: GZIP
+          BufferingHints:
+            IntervalInSeconds: 300
+            SizeInMBs: 5
+
+  CwlToFirehoseRole:
+    Type: AWS::IAM::Role
+    Condition: CreateLogs
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub "logs.${AWS::Region}.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: SuperlogLogsToFirehose
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "firehose:PutRecord"
+                  - "firehose:PutRecordBatch"
+                Resource: !GetAtt LogsDeliveryStream.Arn
+
+  # One account-level subscription covers every log group, current and future.
+  # SelectionCriteria excludes the Firehose's own delivery-error log group so a
+  # delivery error can't log into a group that re-subscribes it — the classic
+  # account-level recursion trap.
+  LogsSubscription:
+    Type: AWS::Logs::AccountPolicy
+    Condition: CreateLogs
+    Properties:
+      PolicyName: "superlog-logs-subscription"
+      PolicyType: SUBSCRIPTION_FILTER_POLICY
+      Scope: ALL
+      SelectionCriteria: 'LogGroupName NOT IN ["/aws/kinesisfirehose/superlog-logs"]'
+      PolicyDocument:
+        Fn::ToJsonString:
+          DestinationArn: !GetAtt LogsDeliveryStream.Arn
+          RoleArn: !GetAtt CwlToFirehoseRole.Arn
+          FilterPattern: !Ref LogsFilterPattern
+          Distribution: Random
+
+Outputs:
+  ScrapeRoleArn:
+    Description: >-
+      The scrape role ARN. With zero-paste enabled it's reported automatically;
+      otherwise copy this into Superlog to finish connecting.
+    Value: !GetAtt ScrapeRole.Arn
+  MetricStreamArn:
+    Condition: CreateMetrics
+    Description: ARN of the created CloudWatch Metric Stream.
+    Value: !GetAtt MetricStream.Arn

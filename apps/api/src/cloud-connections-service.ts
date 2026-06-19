@@ -94,6 +94,62 @@ export function buildLogsStreamLaunchUrl(input: StreamLaunchInput): string {
   return buildStreamLaunchUrl("superlog-logs-stream", input);
 }
 
+export type CombinedConnectLaunchInput = {
+  /** Region the stack (and its regional stream/Firehose resources) is created in. */
+  region: string;
+  /** Public HTTPS URL of the combined `superlog-connect-stack.cfn.yaml` template. */
+  templateUrl: string;
+  /** Superlog AWS account id allowed to assume the scrape role. */
+  superlogAccountId: string;
+  /** Confused-deputy nonce for the scrape role's trust policy. */
+  externalId: string;
+  /** Connection this stack completes (zero-paste callback + reporting). */
+  connectionId: string;
+  /** Our SNS topic ARN for zero-paste reporting. Omitted → manual role-ARN paste. */
+  serviceToken?: string;
+  /** Firehose intake URLs (proxy `/aws/firehose/*` routes). */
+  metricsIntakeUrl: string;
+  logsIntakeUrl: string;
+  /** Dedicated per-signal ingest keys the two Firehoses authenticate with. */
+  metricsIngestKey: string;
+  logsIngestKey: string;
+  /** Stream toggles — default on. Off connects inventory only / skips that signal. */
+  enableMetrics?: boolean;
+  enableLogs?: boolean;
+  /** CloudWatch Logs filter pattern (default everything). */
+  logsFilterPattern?: string;
+};
+
+/**
+ * Build the one-step "Connect AWS" launch link for the combined stack
+ * (`superlog-connect-stack.cfn.yaml`): scrape role + metric streaming + log
+ * streaming in a single CloudFormation stack named `superlog-connect`. Streaming
+ * defaults on but each signal toggles off via a parameter. Everything
+ * prod-specific (account id, intake URLs, ingest keys, SNS topic) is a parameter
+ * value, never baked into the committed template.
+ */
+export function buildCombinedConnectLaunchUrl(input: CombinedConnectLaunchInput): string {
+  const params: Record<string, string> = {
+    SuperlogAccountId: input.superlogAccountId,
+    ExternalId: input.externalId,
+    ConnectionId: input.connectionId,
+    EnableMetrics: (input.enableMetrics ?? true) ? "true" : "false",
+    EnableLogs: (input.enableLogs ?? true) ? "true" : "false",
+    MetricsIntakeUrl: input.metricsIntakeUrl,
+    LogsIntakeUrl: input.logsIntakeUrl,
+    MetricsIngestKey: input.metricsIngestKey,
+    LogsIngestKey: input.logsIngestKey,
+  };
+  if (input.serviceToken) params.SuperlogServiceToken = input.serviceToken;
+  if (input.logsFilterPattern) params.LogsFilterPattern = input.logsFilterPattern;
+  return buildConnectQuickCreateUrl({
+    region: input.region,
+    templateUrl: input.templateUrl,
+    stackName: "superlog-connect",
+    params,
+  });
+}
+
 /**
  * Name of the dedicated ingest key minted for a stream. Stable + regional so the
  * streaming-status read can find the key that the setup route created — keep the
