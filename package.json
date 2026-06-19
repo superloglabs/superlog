@@ -23,6 +23,8 @@
     "demo:seed:acme": "tsx scripts/demo/seed-acme-telemetry.ts",
     "demo:seed:rich": "tsx scripts/demo/seed-rich-telemetry.ts",
     "demo:seed:everything": "tsx scripts/demo/seed-everything.ts",
+    "demo:provision": "tsx scripts/demo/provision-demo-project.ts",
+    "demo:verify-isolation": "tsx scripts/demo/verify-demo-isolation.ts",
     "lint": "biome check .",
     "format": "biome format --write .",
     "typecheck": "turbo run typecheck"

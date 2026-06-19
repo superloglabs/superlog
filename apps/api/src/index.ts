@@ -32,6 +32,12 @@ import { auth } from "./auth.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
 import { mountDashboards } from "./dashboards.js";
+import {
+  demoOverlay,
+  demoProjectId,
+  projectHasIngested,
+  resolveEffectiveReadProjectId,
+} from "./demo.js";
 import { mountFeedbackAuthed, mountFeedbackPublic } from "./feedback.js";
 import { type GatewayVars, mountGateway } from "./gateway.js";
 import { prBaseBranchExists } from "./github-branches.js";
@@ -131,6 +137,9 @@ type Vars = {
   userId: string;
   orgId: string | null;
   impersonating?: boolean;
+  // Set by the demoOverlay middleware (apps/api/src/demo.ts): the project id
+  // reads should target this request (demo project when overlaying, else real).
+  demoReadProjectId?: string;
 } & Partial<GatewayVars>;
 const app = new Hono<{ Variables: Vars }>();
 const incidentLifecycle = createIncidentLifecycle(db);
@@ -287,6 +296,13 @@ app.use("/api/*", async (c, next) => {
   await next();
 });
 
+// Demo overlay (framework level): decides demo-vs-real per request, enforces
+// read-only on demo-overlaid resources, and rewrites the demo project id back to
+// the real one in responses so the client never sees it. No-op when
+// DEMO_PROJECT_ID is unset. The install / integration write path is never
+// blocked. See apps/api/src/demo.ts.
+app.use("/api/projects/:projectId/*", demoOverlay());
+
 mountMcpAuthed(app);
 mountPersonalAccessTokens(app);
 mountGithubAuthed(app);
@@ -359,15 +375,14 @@ app.get("/api/me", async (c) => {
   const accessibleInstalls = await listAccessibleGithubInstallsForProject(project.id);
   const githubSetupNeeded = accessibleInstalls.length === 0 && !org.githubSetupSkippedAt;
 
-  // `hasIngested` decides whether OnboardingGate shows the install wizard. Reading
-  // it from api_keys.last_used_at (set by proxy/src/index.ts on every successful
-  // auth) avoids 6 ClickHouse count() queries per page load — the previous gate
-  // derived this from /stats and was firing on every navigation forever.
-  const ingestedKey = await db.query.apiKeys.findFirst({
-    columns: { id: true },
-    where: and(eq(schema.apiKeys.projectId, project.id), isNotNull(schema.apiKeys.lastUsedAt)),
-  });
-  const hasIngested = ingestedKey !== undefined;
+  // `hasIngested` decides whether OnboardingGate shows the install wizard. It's
+  // derived from api_keys.last_used_at (set by proxy/src/index.ts on every
+  // successful auth) — no ClickHouse count() queries per page load.
+  const hasIngested = await projectHasIngested(project.id);
+  // `demoMode` is true when a shared demo project is configured and this project
+  // hasn't ingested yet, i.e. the server is serving it demo data. The web uses it
+  // to render the read-only sample-data experience + the persistent install nudge.
+  const demoMode = demoProjectId() !== undefined && !hasIngested;
 
   return c.json({
     user: {
@@ -379,6 +394,7 @@ app.get("/api/me", async (c) => {
     },
     org: { id: org.id, name: org.name, slug: org.slug, githubSetupNeeded },
     project: { id: project.id, name: project.name, slug: project.slug, hasIngested },
+    demoMode,
     billingEnforcement,
   });
 });
@@ -717,8 +733,7 @@ app.get("/api/projects/:projectId/mcp-status", async (c) => {
 });
 
 app.get("/api/projects/:projectId/stats", async (c) => {
-  const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const [traces, logs, metrics, issueRows] = await Promise.all([
     chCount("otel_traces", "Timestamp", projectId),
     chCount("otel_logs", "Timestamp", projectId),
@@ -788,8 +803,7 @@ app.post("/api/me/billing/cancel", async (c) => {
 });
 
 app.get("/api/projects/:projectId/explore/attribute-keys", async (c) => {
-  const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const { since, until } = parseRangeQuery(c);
   const rows = await listAttributeKeys(
     ch,
@@ -801,8 +815,7 @@ app.get("/api/projects/:projectId/explore/attribute-keys", async (c) => {
 });
 
 app.get("/api/projects/:projectId/explore/attribute-values", async (c) => {
-  const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const key = c.req.query("key");
   if (!key) throw new HTTPException(400, { message: "key is required" });
   const { since, until } = parseRangeQuery(c);
@@ -818,16 +831,14 @@ app.get("/api/projects/:projectId/explore/attribute-values", async (c) => {
 });
 
 app.get("/api/projects/:projectId/explore/services", async (c) => {
-  const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const { since, until } = parseRangeQuery(c);
   const services = await listServices(ch, projectId, { since, until });
   return c.json(services);
 });
 
 app.post("/api/projects/:projectId/explore/logs", async (c) => {
-  const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   return tracer.startActiveSpan("explore.query_logs", async (span) => {
     span.setAttribute("tenant.project_id", projectId);
     try {
@@ -858,8 +869,7 @@ app.post("/api/projects/:projectId/explore/logs", async (c) => {
 });
 
 app.post("/api/projects/:projectId/explore/traces", async (c) => {
-  const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const body = (await c.req.json().catch(() => ({}))) as ExploreListBody;
   const limit = clampLimit(body.limit, 100, 500);
   const rows = await queryTraces(ch, projectId, {
@@ -875,8 +885,7 @@ app.post("/api/projects/:projectId/explore/traces", async (c) => {
 });
 
 app.post("/api/projects/:projectId/explore/traces-aggregated", async (c) => {
-  const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const body = (await c.req.json().catch(() => ({}))) as ExploreListBody;
   const limit = clampLimit(body.limit, 100, 500);
   const rows = await queryTracesAggregated(ch, projectId, {
@@ -892,9 +901,8 @@ app.post("/api/projects/:projectId/explore/traces-aggregated", async (c) => {
 });
 
 app.get("/api/projects/:projectId/explore/traces/:traceId", async (c) => {
-  const projectId = c.req.param("projectId");
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const traceId = c.req.param("traceId");
-  await requireProjectAccess(c, projectId);
   if (!/^[a-fA-F0-9]{1,64}$/.test(traceId)) {
     throw new HTTPException(400, { message: "invalid trace id" });
   }
@@ -903,8 +911,7 @@ app.get("/api/projects/:projectId/explore/traces/:traceId", async (c) => {
 });
 
 app.post("/api/projects/:projectId/explore/series", async (c) => {
-  const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const body = (await c.req.json().catch(() => ({}))) as ExploreSeriesBody;
   const source: SeriesSource = body.source === "traces" ? "traces" : "logs";
   const filter = body.filter ?? {};
@@ -931,16 +938,14 @@ app.post("/api/projects/:projectId/explore/series", async (c) => {
 });
 
 app.get("/api/projects/:projectId/explore/metric-names", async (c) => {
-  const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const { since, until } = parseRangeQuery(c);
   const names = await listMetricNames(ch, projectId, { since, until });
   return c.json(names);
 });
 
 app.post("/api/projects/:projectId/explore/metric-series", async (c) => {
-  const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const body = (await c.req.json().catch(() => ({}))) as MetricSeriesBody;
   const metricName = typeof body.metricName === "string" ? body.metricName : "";
   const filter = body.filter ?? {};
@@ -968,8 +973,7 @@ app.post("/api/projects/:projectId/explore/metric-series", async (c) => {
 });
 
 app.post("/api/projects/:projectId/explore/metrics", async (c) => {
-  const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const body = (await c.req.json().catch(() => ({}))) as ExploreListBody & { metricName?: string };
   const limit = clampLimit(body.limit, 100, 500);
   const rows = await queryMetrics(ch, projectId, {
@@ -1095,10 +1099,15 @@ async function chMetricsCount(projectId: string): Promise<number> {
   });
 }
 
+// Authorizes the user for `projectId` (always their REAL project) and returns
+// the project id the READ path should query. For a project that has never
+// ingested, that's the shared demo project (server-side overlay, read-only);
+// otherwise it's the real id unchanged. Writes pass the real id and ignore the
+// return value. No-op (returns the real id, no extra query) when demo mode off.
 async function requireProjectAccess(
   c: Context<{ Variables: Vars }>,
   projectId: string,
-): Promise<void> {
+): Promise<string> {
   return tracer.startActiveSpan("project.authorize", async (span) => {
     span.setAttribute("tenant.project_id", projectId);
     span.setAttribute("superlog.user_id", c.var.userId);
@@ -1114,6 +1123,12 @@ async function requireProjectAccess(
       });
       if (project.orgId !== ctx.org.id) throw new HTTPException(403, { message: "forbidden" });
       span.setAttribute("superlog.org_id", ctx.org.id);
+      // Reuse the demoOverlay middleware's decision when present (it runs on all
+      // /api/projects/:projectId/* routes); fall back to computing it directly.
+      const readProjectId =
+        c.var.demoReadProjectId ?? (await resolveEffectiveReadProjectId(projectId)).id;
+      if (readProjectId !== projectId) span.setAttribute("superlog.demo_overlay", true);
+      return readProjectId;
     } catch (err) {
       span.recordException(err as Error);
       span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
@@ -1211,8 +1226,7 @@ async function getLatestAgentRun(incidentId: string) {
 }
 
 app.get("/api/projects/:projectId/issues", async (c) => {
-  const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const silencedParam = c.req.query("silenced") ?? "active";
   const limit = clampLimit(Number(c.req.query("limit") ?? 50), 50, 200);
   const projectFilter = eq(schema.issues.projectId, projectId);
@@ -1231,9 +1245,8 @@ app.get("/api/projects/:projectId/issues", async (c) => {
 });
 
 app.get("/api/projects/:projectId/issues/:issueId", async (c) => {
-  const projectId = c.req.param("projectId");
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const issueId = c.req.param("issueId");
-  await requireProjectAccess(c, projectId);
   const issue = await db.query.issues.findFirst({
     where: and(eq(schema.issues.id, issueId), eq(schema.issues.projectId, projectId)),
   });
@@ -1251,8 +1264,7 @@ app.get("/api/projects/:projectId/issues/:issueId", async (c) => {
 });
 
 app.post("/api/projects/:projectId/issues/lookup", async (c) => {
-  const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const body = (await c.req.json().catch(() => ({}))) as {
     kind?: "log" | "span";
     service?: string | null;
@@ -1308,9 +1320,8 @@ app.post("/api/projects/:projectId/symbolication/log", async (c) => {
 });
 
 app.get("/api/projects/:projectId/issues/:issueId/agent-run", async (c) => {
-  const projectId = c.req.param("projectId");
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const issueId = c.req.param("issueId");
-  await requireProjectAccess(c, projectId);
 
   const issue = await db.query.issues.findFirst({
     where: and(eq(schema.issues.id, issueId), eq(schema.issues.projectId, projectId)),
@@ -1778,8 +1789,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
 });
 
 app.get("/api/projects/:projectId/incidents", async (c) => {
-  const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const limit = clampLimit(Number(c.req.query("limit") ?? 50), 50, 200);
   const status = c.req.query("status");
   const incidentStatus = status && status !== "all" && isIncidentStatus(status) ? status : null;
@@ -1986,9 +1996,8 @@ async function loadIncidentsBucketStats(
 }
 
 app.get("/api/projects/:projectId/incidents/:incidentId", async (c) => {
-  const projectId = c.req.param("projectId");
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const incidentId = c.req.param("incidentId");
-  await requireProjectAccess(c, projectId);
 
   const incident = await getProjectIncident(projectId, incidentId);
   if (!incident) throw new HTTPException(404, { message: "incident not found" });
@@ -2036,9 +2045,8 @@ app.get("/api/projects/:projectId/incidents/:incidentId", async (c) => {
 });
 
 app.get("/api/projects/:projectId/incidents/:incidentId/pull-requests", async (c) => {
-  const projectId = c.req.param("projectId");
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const incidentId = c.req.param("incidentId");
-  await requireProjectAccess(c, projectId);
 
   const incident = await getProjectIncident(projectId, incidentId);
   if (!incident) throw new HTTPException(404, { message: "incident not found" });
@@ -2340,9 +2348,8 @@ async function fetchIncidentTimeseriesPairs(args: {
 
 // Daily event counts + impacted-user count for an incident's underlying telemetry.
 app.get("/api/projects/:projectId/incidents/:incidentId/stats", async (c) => {
-  const projectId = c.req.param("projectId");
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const incidentId = c.req.param("incidentId");
-  await requireProjectAccess(c, projectId);
 
   const incident = await getProjectIncident(projectId, incidentId);
   if (!incident) throw new HTTPException(404, { message: "incident not found" });
@@ -2670,9 +2677,8 @@ type PendingResolutionProposal = {
 // Back-compat: returns the same {agentRun, events} shape the web client
 // used pre-merge. The main `/incidents/:id` GET now folds this in.
 app.get("/api/projects/:projectId/incidents/:incidentId/agent-run", async (c) => {
-  const projectId = c.req.param("projectId");
+  const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const incidentId = c.req.param("incidentId");
-  await requireProjectAccess(c, projectId);
 
   const incident = await getProjectIncident(projectId, incidentId);
   if (!incident) throw new HTTPException(404, { message: "incident not found" });

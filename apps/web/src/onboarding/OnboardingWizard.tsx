@@ -58,6 +58,7 @@ export function OnboardingWizard({
   userName,
   userEmail,
   onComplete,
+  onExploreDemo,
 }: {
   mode?: Mode;
   // Null until the user has created their first org. While null, the wizard
@@ -66,6 +67,9 @@ export function OnboardingWizard({
   userName: string;
   userEmail: string;
   onComplete: () => void;
+  // Present only when a shared demo project is configured. Lets the user skip
+  // ahead and explore sample data instead of instrumenting first.
+  onExploreDemo?: () => void;
 }) {
   const [step, setStep] = useState<Step>("install");
 
@@ -126,12 +130,14 @@ export function OnboardingWizard({
               minting={createKey.isPending && !createKey.data}
               error={createKey.error ? String(createKey.error) : null}
               onNext={() => setStep("deploy")}
+              onExploreDemo={onExploreDemo}
             />
           ) : (
             <DeployStep
               eventsArrived={eventsArrived}
               onBack={() => setStep("install")}
               onDone={onComplete}
+              onExploreDemo={onExploreDemo}
             />
           )}
         </div>
@@ -413,10 +419,7 @@ export function AgentKeyStep({
             {slackSkipped ? (
               <SkippedPill icon={<SlackIcon size={13} />} label="Slack skipped" />
             ) : (
-              <StatusPill
-                icon={<SlackIcon size={13} />}
-                label={slackLabel ?? "Slack connected"}
-              />
+              <StatusPill icon={<SlackIcon size={13} />} label={slackLabel ?? "Slack connected"} />
             )}
           </div>
           <div className="px-[22px] py-[18px]">
@@ -612,11 +615,13 @@ function InstallStep({
   minting,
   error,
   onNext,
+  onExploreDemo,
 }: {
   apiKey: string | null;
   minting: boolean;
   error: string | null;
   onNext: () => void;
+  onExploreDemo?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const prompt = apiKey ? buildInstallPrompt(apiKey) : INSTALL_PROMPT;
@@ -687,7 +692,26 @@ function InstallStep({
       </div>
 
       <StepFooter onNext={onNext} nextLabel="The agent is done" />
+      <ExploreDemoLink onExploreDemo={onExploreDemo} />
     </>
+  );
+}
+
+// Subtle escape hatch shown only when a shared demo project is configured: lets
+// a new user explore sample data before instrumenting. The install wizard stays
+// the primary path; this is a secondary, lower-emphasis action.
+function ExploreDemoLink({ onExploreDemo }: { onExploreDemo?: () => void }) {
+  if (!onExploreDemo) return null;
+  return (
+    <div className="mt-3 text-right">
+      <button
+        type="button"
+        onClick={onExploreDemo}
+        className="pr-1 text-[12.5px] font-medium text-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
+      >
+        Not ready yet? Explore with sample data first →
+      </button>
+    </div>
   );
 }
 
@@ -695,10 +719,12 @@ function DeployStep({
   eventsArrived,
   onBack,
   onDone,
+  onExploreDemo,
 }: {
   eventsArrived: boolean;
   onBack: () => void;
   onDone: () => void;
+  onExploreDemo?: () => void;
 }) {
   return (
     <>
@@ -742,6 +768,7 @@ function DeployStep({
         nextLabel={eventsArrived ? "Continue" : "I've deployed"}
         nextDisabled={!eventsArrived}
       />
+      {!eventsArrived && <ExploreDemoLink onExploreDemo={onExploreDemo} />}
     </>
   );
 }

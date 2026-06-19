@@ -19,11 +19,17 @@ import {
   updateDashboardLayout,
   updateDashboardWidget,
 } from "./dashboards-service.js";
+import { resolveEffectiveReadProjectId } from "./demo.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 
-type Vars = { userId: string; orgId: string | null };
+type Vars = { userId: string; orgId: string | null; demoReadProjectId?: string };
 
 export function mountDashboards(app: Hono<{ Variables: Vars }>) {
+  // Authorizes against the real project and also returns `readProjectId` — the
+  // demo project's id when the real project hasn't ingested yet (read-only
+  // overlay), else the real id. GET handlers read from `readProjectId`; writes
+  // keep using the real `projectId` (and are blocked in demo mode by the
+  // demoReadOnly middleware in index.ts).
   const requireAccess = async (c: Context<{ Variables: Vars }>, projectId: string) => {
     const project = await db.query.projects.findFirst({
       where: eq(schema.projects.id, projectId),
@@ -34,13 +40,15 @@ export function mountDashboards(app: Hono<{ Variables: Vars }>) {
       preferredOrgId: c.var.orgId,
     });
     if (project.orgId !== ctx.org.id) throw new HTTPException(403, { message: "forbidden" });
-    return { project, user: ctx.user };
+    const readProjectId =
+      c.var.demoReadProjectId ?? (await resolveEffectiveReadProjectId(projectId)).id;
+    return { project, user: ctx.user, readProjectId };
   };
 
   app.get("/api/projects/:projectId/dashboards", async (c) => {
     const projectId = c.req.param("projectId");
-    await requireAccess(c, projectId);
-    return c.json(await listDashboardsForProject(projectId));
+    const { readProjectId } = await requireAccess(c, projectId);
+    return c.json(await listDashboardsForProject(readProjectId));
   });
 
   app.post("/api/projects/:projectId/dashboards", async (c) => {
@@ -55,8 +63,8 @@ export function mountDashboards(app: Hono<{ Variables: Vars }>) {
   app.get("/api/projects/:projectId/dashboards/:id", async (c) => {
     const projectId = c.req.param("projectId");
     const id = c.req.param("id");
-    await requireAccess(c, projectId);
-    const dashboard = await getDashboardWithWidgets(projectId, id);
+    const { readProjectId } = await requireAccess(c, projectId);
+    const dashboard = await getDashboardWithWidgets(readProjectId, id);
     if (!dashboard) throw new HTTPException(404, { message: "dashboard not found" });
     return c.json(dashboard);
   });

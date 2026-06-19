@@ -17,7 +17,9 @@ import { logger } from "./logger.js";
 // only when a real job needs more.
 export type JobDeps = {
   db: DB;
-  clickhouse: Pick<ClickHouseClient, "query">;
+  // `command` is exposed alongside `query` so jobs can run lightweight DDL/DML
+  // (e.g. the demo-feed job's ALTER … DELETE retention trim).
+  clickhouse: Pick<ClickHouseClient, "query" | "command">;
 };
 
 // The unit of work for a scheduled job: run once per fire. pg-boss owns the

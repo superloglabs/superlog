@@ -8,6 +8,12 @@ export type Me = {
   // The onboarding wizard's create-org step posts to /api/me/orgs to fix that.
   org: { id: string; name: string; slug: string; githubSetupNeeded: boolean } | null;
   project: { id: string; name: string; slug: string; hasIngested: boolean } | null;
+  // True when a shared demo project is configured and this project hasn't
+  // ingested yet — the server is serving it read-only sample data. Drives the
+  // demo-explore experience + the persistent install nudge. Flips false the
+  // instant real telemetry lands (hasIngested), teleporting the user to their
+  // own project.
+  demoMode?: boolean;
   // Whether billing hard-blocks are enforced. Metering runs regardless; this
   // gates the "Ingest paused" bar so we don't show it when nothing is blocked.
   billingEnforcement?: boolean;
