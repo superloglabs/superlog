@@ -64,7 +64,6 @@ export const REVYL_INTEGRATION: IntegrationDefinition = {
       description: "Retrieve current status and result of a previously triggered test run.",
       method: "GET",
       path: "/api/v1/tests/get_test_execution_task",
-      docs_only: true,
       input_schema: {
         type: "object",
         required: ["task_id"],
@@ -72,6 +71,7 @@ export const REVYL_INTEGRATION: IntegrationDefinition = {
         properties: { task_id: { type: "string" } },
       },
       query_template: { task_id: "{{input.task_id}}" },
+      response_filter: ["status", "message", "result", "error", "report_url", "artifacts"],
     },
     {
       name: "revyl_cancel_test_run",
@@ -132,6 +132,30 @@ export const REVYL_INTEGRATION: IntegrationDefinition = {
       },
       path_template: { workflow_id: "{{input.workflow_id}}" },
       query_template: { limit: "{{input.limit?}}" },
+    },
+    {
+      name: "revyl_list_apps",
+      description:
+        "List Revyl apps/build targets available to this org. Use before creating YAML tests so test.build.name matches an existing app name exactly.",
+      method: "GET",
+      path: "/api/v1/builds/vars",
+      input_schema: {
+        type: "object",
+        required: [],
+        additionalProperties: false,
+        properties: {
+          platform: {
+            type: "string",
+            description: "Optional platform filter, typically android or ios.",
+          },
+        },
+      },
+      query_template: {
+        page: "1",
+        page_size: "100",
+        platform: "{{input.platform?}}",
+      },
+      response_filter: ["items", "total", "page", "page_size", "has_next", "has_previous"],
     },
     {
       name: "revyl_validate_yaml",
