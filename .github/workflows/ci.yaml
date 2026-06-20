@@ -26,6 +26,8 @@ jobs:
     name: Run tests
     needs: verify
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5434/superlog
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -38,6 +40,13 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Start Postgres
+        run: |
+          docker compose up -d postgres
+          until docker compose exec -T postgres pg_isready -U postgres; do
+            echo "Waiting for Postgres to be ready..."
+            sleep 1
+          done
       - name: Run Standard Packages Tests
         run: pnpm -r --if-present test
       - name: Run Database Package Tests

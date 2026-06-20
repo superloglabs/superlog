@@ -78,7 +78,7 @@ test("merged agent PR resolves incident, cascades linked issues, and writes time
     resolvedEvents[0]?.summary,
     `Incident resolved because PR #${fixture.prNumber} was merged.`,
   );
-  assert.equal(resolvedEvents[0]?.detail?.reason, "agent_pr_merged");
+  assert.equal(resolvedEvents[0]?.detail?.reasonCode, "agent_pr_merged");
 
   const prMergedEvent = await db.query.agentPrEvents.findFirst({
     where: and(

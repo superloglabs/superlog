@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch --import ./tracing.ts src/index.ts",
     "start": "tsx --import ./tracing.ts src/index.ts",
-    "test": "tsx --test src/**/*.test.ts",
+    "test": "tsx --test \"src/**/*.test.ts\"",
     "test:mcp-clickhouse-ranges": "tsx scripts/test-mcp-clickhouse-ranges.ts",
     "typecheck": "tsc --noEmit"
   },
