@@ -158,7 +158,7 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
   // "favorite" for rows in the org it belongs to. Clicking the ★ pins this
   // project (server also pins the active org); clicking the filled ★ clears it.
   const favoriteProjectId =
-    me.favorite?.orgId === me.org.id ? (me.favorite?.projectId ?? null) : null;
+    me.favorite?.orgId === activeOrgId ? (me.favorite?.projectId ?? null) : null;
   const toggleFavorite = (projectId: string) => {
     void setFavoriteProject.mutateAsync(projectId === favoriteProjectId ? null : projectId);
   };
