@@ -1,0 +1,44 @@
+name: CI
+on: 
+  pull_request:
+    branches: ["main"] 
+jobs: 
+  verify:
+    name: Typecheck & build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: install pnpm 
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js 
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: typecheck
+        run: pnpm typecheck
+      - name: build
+        run: pnpm build
+  tests:
+    name: Run tests
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: install pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run Standard Packages Tests
+        run: pnpm -r --if-present test
+      - name: Run Database Package Tests
+        run: pnpm --filter @superlog/db exec tsx --test src/**/*.test.ts
