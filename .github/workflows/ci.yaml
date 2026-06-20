@@ -49,6 +49,6 @@ jobs:
             sleep 1
           done
       - name: Run Standard Packages Tests
-        run: pnpm -r --if-present test
+        run: pnpm -r --filter '!@superlog/db' --if-present test
       - name: Run Database Package Tests
-        run: pnpm --filter @superlog/db exec tsx --test src/*.test.ts
+        run: pnpm --filter @superlog/db test

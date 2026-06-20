@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { strict as assert } from "node:assert";
 import { after, before, test } from "node:test";
 import { closeDb, db, runMigrations, schema } from "@superlog/db";

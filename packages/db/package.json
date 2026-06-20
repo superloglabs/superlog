@@ -17,7 +17,8 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx src/seed.ts",
-    "test:migrations": "tsx --test src/migrations.test.ts"
+    "test:migrations": "tsx --test src/migrations.test.ts",
+    "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {
     "better-auth": "^1.6.11",
