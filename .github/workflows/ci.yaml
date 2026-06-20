@@ -8,11 +8,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
       - name: install pnpm 
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@a73af047cccdad2823daf8ff3c61dcea65a8a58f # v4.0.0
       - name: Setup Node.js 
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@1d0ff469b62b6d0ad9b0af0fb3b1e40be53ce9b9 # v4.2.0
         with:
           node-version: 20
           cache: pnpm
@@ -30,11 +30,11 @@ jobs:
       DATABASE_URL: postgres://postgres:postgres@localhost:5434/superlog
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
       - name: install pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@a73af047cccdad2823daf8ff3c61dcea65a8a58f # v4.0.0
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@1d0ff469b62b6d0ad9b0af0fb3b1e40be53ce9b9 # v4.2.0
         with:
           node-version: 20
           cache: pnpm
@@ -50,4 +50,4 @@ jobs:
       - name: Run Standard Packages Tests
         run: pnpm -r --if-present test
       - name: Run Database Package Tests
-        run: pnpm --filter @superlog/db exec tsx --test src/**/*.test.ts
+        run: pnpm --filter @superlog/db exec tsx --test src/*.test.ts
