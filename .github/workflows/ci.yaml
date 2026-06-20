@@ -28,6 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5434/superlog
+      BETTER_AUTH_SECRET: "a-very-long-dummy-signing-secret-for-ci-testing-purposes"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
