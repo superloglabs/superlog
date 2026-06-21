@@ -25,6 +25,7 @@
     "demo:seed:everything": "tsx scripts/demo/seed-everything.ts",
     "demo:provision": "tsx scripts/demo/provision-demo-project.ts",
     "demo:verify-isolation": "tsx scripts/demo/verify-demo-isolation.ts",
+    "test:ci-workflows": "tsx --test scripts/ci-workflow-security.test.ts",
     "lint": "biome check .",
     "format": "biome format --write .",
     "typecheck": "turbo run typecheck"
