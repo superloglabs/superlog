@@ -1,6 +1,24 @@
-import type { ClickHouseClient } from "@clickhouse/client";
+import type { ClickHouseClient, DataFormat, QueryParams, QueryResult } from "@clickhouse/client";
 
 export type TimeRange = { since?: string; until?: string };
+
+// Retry a ClickHouse query once when the socket from the keep-alive pool was
+// reset by the server (ECONNRESET).  This happens when ClickHouse or its ELB
+// closes an idle connection just as the client tries to reuse it; the stale
+// socket is evicted after the error, so the second attempt opens a fresh one.
+async function chQuery<F extends DataFormat>(
+  ch: ClickHouseClient,
+  opts: Omit<QueryParams, "format"> & { format?: F },
+): Promise<QueryResult<F>> {
+  try {
+    return await ch.query(opts);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ECONNRESET") {
+      return ch.query(opts);
+    }
+    throw err;
+  }
+}
 export type ResourceAttrFilter = {
   key: string;
   value: string;
@@ -220,7 +238,7 @@ export async function queryLogs(
     ORDER BY Timestamp DESC
     LIMIT {limit:UInt32}
   `;
-  const r = await ch.query({
+  const r = await chQuery(ch, {
     query,
     query_params: {
       projectId,
@@ -301,7 +319,7 @@ export async function queryTraces(
     ORDER BY Timestamp DESC
     LIMIT {limit:UInt32}
   `;
-  const r = await ch.query({
+  const r = await chQuery(ch, {
     query,
     query_params: {
       projectId,
@@ -397,7 +415,7 @@ export async function queryTracesAggregated(
     ORDER BY min(Timestamp) DESC
     LIMIT {limit:UInt32}
   `;
-  const r = await ch.query({
+  const r = await chQuery(ch, {
     query,
     query_params: {
       projectId,
@@ -417,63 +435,62 @@ export async function queryTracesAggregated(
 }
 
 export async function getTraceDetail(ch: ClickHouseClient, projectId: string, traceId: string) {
-  const spansQ = ch.query({
-    query: `
-      SELECT
-        toString(Timestamp) AS timestamp,
-        toString(toUnixTimestamp64Nano(Timestamp)) AS start_ns,
-        TraceId AS trace_id,
-        SpanId AS span_id,
-        ParentSpanId AS parent_span_id,
-        ServiceName AS service,
-        SpanName AS span_name,
-        SpanKind AS span_kind,
-        StatusCode AS status_code,
-        StatusMessage AS status_message,
-        toString(Duration) AS duration_ns,
-        toFloat64(Duration) / 1000000 AS duration_ms,
-        SpanAttributes AS span_attrs,
-        ResourceAttributes AS resource_attrs,
-        indexOf(Events.Name, 'exception') AS exception_event_index,
-        if(exception_event_index = 0, '', Events.Attributes[exception_event_index]['exception.type']) AS exception_type,
-        if(exception_event_index = 0, '', Events.Attributes[exception_event_index]['exception.message']) AS exception_message,
-        if(exception_event_index = 0, '', Events.Attributes[exception_event_index]['exception.stacktrace']) AS exception_stacktrace
-      FROM otel_traces
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
-        AND TraceId = {traceId:String}
-      ORDER BY Timestamp ASC, SpanId ASC
-      LIMIT 5000
-    `,
-    query_params: { projectId, traceId },
-    format: "JSONEachRow",
-  });
-
-  const logsQ = ch.query({
-    query: `
-      SELECT
-        toString(Timestamp) AS timestamp,
-        toString(toUnixTimestamp64Nano(Timestamp)) AS ts_ns,
-        ServiceName AS service,
-        SeverityText AS severity,
-        Body AS body,
-        TraceId AS trace_id,
-        SpanId AS span_id,
-        LogAttributes AS log_attrs,
-        ResourceAttributes AS resource_attrs,
-        LogAttributes['exception.type'] AS exception_type,
-        LogAttributes['exception.message'] AS exception_message,
-        LogAttributes['exception.stacktrace'] AS exception_stacktrace
-      FROM otel_logs
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
-        AND TraceId = {traceId:String}
-      ORDER BY Timestamp ASC
-      LIMIT 5000
-    `,
-    query_params: { projectId, traceId },
-    format: "JSONEachRow",
-  });
-
-  const [spansR, logsR] = await Promise.all([spansQ, logsQ]);
+  const [spansR, logsR] = await Promise.all([
+    chQuery(ch, {
+      query: `
+        SELECT
+          toString(Timestamp) AS timestamp,
+          toString(toUnixTimestamp64Nano(Timestamp)) AS start_ns,
+          TraceId AS trace_id,
+          SpanId AS span_id,
+          ParentSpanId AS parent_span_id,
+          ServiceName AS service,
+          SpanName AS span_name,
+          SpanKind AS span_kind,
+          StatusCode AS status_code,
+          StatusMessage AS status_message,
+          toString(Duration) AS duration_ns,
+          toFloat64(Duration) / 1000000 AS duration_ms,
+          SpanAttributes AS span_attrs,
+          ResourceAttributes AS resource_attrs,
+          indexOf(Events.Name, 'exception') AS exception_event_index,
+          if(exception_event_index = 0, '', Events.Attributes[exception_event_index]['exception.type']) AS exception_type,
+          if(exception_event_index = 0, '', Events.Attributes[exception_event_index]['exception.message']) AS exception_message,
+          if(exception_event_index = 0, '', Events.Attributes[exception_event_index]['exception.stacktrace']) AS exception_stacktrace
+        FROM otel_traces
+        WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+          AND TraceId = {traceId:String}
+        ORDER BY Timestamp ASC, SpanId ASC
+        LIMIT 5000
+      `,
+      query_params: { projectId, traceId },
+      format: "JSONEachRow",
+    }),
+    chQuery(ch, {
+      query: `
+        SELECT
+          toString(Timestamp) AS timestamp,
+          toString(toUnixTimestamp64Nano(Timestamp)) AS ts_ns,
+          ServiceName AS service,
+          SeverityText AS severity,
+          Body AS body,
+          TraceId AS trace_id,
+          SpanId AS span_id,
+          LogAttributes AS log_attrs,
+          ResourceAttributes AS resource_attrs,
+          LogAttributes['exception.type'] AS exception_type,
+          LogAttributes['exception.message'] AS exception_message,
+          LogAttributes['exception.stacktrace'] AS exception_stacktrace
+        FROM otel_logs
+        WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+          AND TraceId = {traceId:String}
+        ORDER BY Timestamp ASC
+        LIMIT 5000
+      `,
+      query_params: { projectId, traceId },
+      format: "JSONEachRow",
+    }),
+  ]);
   const spans = await spansR.json();
   const logs = await logsR.json();
   return { spans, logs };
@@ -531,7 +548,7 @@ export async function queryMetrics(
     `;
 
     try {
-      const r = await ch.query({
+      const r = await chQuery(ch, {
         query,
         query_params: {
           projectId,
@@ -568,7 +585,7 @@ export async function listServices(ch: ClickHouseClient, projectId: string, rang
     ORDER BY service
     LIMIT 200
   `;
-  const r = await ch.query({
+  const r = await chQuery(ch, {
     query,
     query_params: { projectId, since: sinceSql, until: untilSql },
     format: "JSONEachRow",
@@ -641,7 +658,7 @@ export async function listAttributeKeys(
     ORDER BY c DESC
     LIMIT 200
   `;
-  const r = await ch.query({
+  const r = await chQuery(ch, {
     query,
     query_params: { projectId, since: sinceSql, until: untilSql },
     format: "JSONEachRow",
@@ -712,7 +729,7 @@ export async function listAttributeValues(
     ORDER BY c DESC
     LIMIT {limit:UInt32}
   `;
-  const r = await ch.query({
+  const r = await chQuery(ch, {
     query,
     query_params: { projectId, key: keyParam, since: sinceSql, until: untilSql, limit },
     format: "JSONEachRow",
@@ -947,7 +964,7 @@ export async function listMetricNames(
   const results: MetricName[] = [];
   for (const { table, kind } of METRIC_TABLES) {
     try {
-      const r = await ch.query({
+      const r = await chQuery(ch, {
         query: `
           SELECT MetricName AS name, MetricUnit AS unit, count() AS c
           FROM ${table}
@@ -1045,7 +1062,7 @@ export async function metricSeries(
           LIMIT 10000
         `;
     try {
-      const r = await ch.query({
+      const r = await chQuery(ch, {
         query,
         query_params: {
           projectId,
@@ -1149,7 +1166,7 @@ function rollupAvailable(ch: ClickHouseClient): Promise<boolean> {
   if (!probe) {
     probe = (async () => {
       try {
-        const r = await ch.query({ query: "EXISTS TABLE events_per_minute", format: "JSONEachRow" });
+        const r = await chQuery(ch, { query: "EXISTS TABLE events_per_minute", format: "JSONEachRow" });
         const rows = (await r.json()) as { result: number | string }[];
         return Number(rows[0]?.result) === 1;
       } catch {
@@ -1234,7 +1251,7 @@ async function countSeriesFromRollup(
     LIMIT 10000
   `;
 
-  const r = await ch.query({
+  const r = await chQuery(ch, {
     query,
     query_params: {
       projectId,
@@ -1306,7 +1323,7 @@ export async function countSeries(
     LIMIT 10000
   `;
 
-  const r = await ch.query({
+  const r = await chQuery(ch, {
     query,
     query_params: {
       projectId,
@@ -1382,7 +1399,7 @@ export async function listIssueFilterAttributeKeys(
     ORDER BY c DESC
     LIMIT 200
   `;
-  const r = await ch.query({
+  const r = await chQuery(ch, {
     query,
     query_params: { projectId, since: sinceSql, until: untilSql },
     format: "JSONEachRow",
@@ -1438,7 +1455,7 @@ export async function listIssueFilterAttributeValues(
     ORDER BY c DESC
     LIMIT {limit:UInt32}
   `;
-  const r = await ch.query({
+  const r = await chQuery(ch, {
     query,
     query_params: { projectId, key, since: sinceSql, until: untilSql, limit },
     format: "JSONEachRow",
@@ -1564,7 +1581,7 @@ export async function previewIssueFilterMatches(
     ORDER BY ts DESC
     LIMIT {limit:UInt32}
   `;
-  const r = await ch.query({ query, query_params: params, format: "JSONEachRow" });
+  const r = await chQuery(ch, { query, query_params: params, format: "JSONEachRow" });
   const rows = (await r.json()) as Array<{
     kind: "log" | "span";
     ts: string;
