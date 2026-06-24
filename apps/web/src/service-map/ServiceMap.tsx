@@ -6,7 +6,6 @@ import {
   viewTopology,
 } from "@superlog/topology";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { type TopologyDoc, useGenerateTopology, useTopology } from "../api.ts";
 import { TopologyEmptyState } from "./EmptyState.tsx";
 import { EdgeLegend, TopologyCanvas } from "./TopologyCanvas.tsx";
@@ -17,7 +16,6 @@ import { EdgeLegend, TopologyCanvas } from "./TopologyCanvas.tsx";
 export function ServiceMap({ projectId }: { projectId: string }) {
   const { data, isLoading } = useTopology(projectId);
   const generate = useGenerateTopology(projectId);
-  const navigate = useNavigate();
   const [focused, setFocused] = useState<string | null>(null);
 
   const graph = data?.graph ?? null;
@@ -60,8 +58,8 @@ export function ServiceMap({ projectId }: { projectId: string }) {
       ) : empty ? (
         <TopologyEmptyState
           height={420}
-          onBuildFromTelemetry={() => generate.mutate()}
-          onConnectAws={() => navigate("/settings?scope=project&section=integrations")}
+          onBuild={() => generate.mutate()}
+          building={generate.isPending || data?.status === "generating"}
         />
       ) : (
         <>

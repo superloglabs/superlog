@@ -12,11 +12,16 @@ import { Btn } from "../design/ui.tsx";
 
 export function TopologyEmptyState({
   onConnectAws,
-  onBuildFromTelemetry,
+  onBuild,
+  building = false,
   height = 680,
 }: {
+  /** Only passed when the project has NO cloud connection — otherwise omitted. */
   onConnectAws?: () => void;
-  onBuildFromTelemetry?: () => void;
+  /** Request a build/rebuild of the map from the connected inventory + telemetry. */
+  onBuild?: () => void;
+  /** A build is in flight (worker is generating) — show progress, not the CTA. */
+  building?: boolean;
   height?: number | string;
 }) {
   return (
@@ -60,20 +65,25 @@ export function TopologyEmptyState({
           </div>
           <h2 className="text-[20px] font-semibold tracking-tight text-fg">Map your system</h2>
           <p className="mx-auto mt-2 max-w-sm text-[13.5px] leading-relaxed text-muted">
-            Build a live map of your services and infrastructure — drawn from the telemetry you
-            already send, then enriched with the resources behind it. An assistant proposes the
-            groupings and links; you adjust anything.
+            {onConnectAws
+              ? "Connect your AWS account to map the infrastructure behind your services. An assistant proposes the groupings and links; you adjust anything."
+              : "Build a live map from your connected cloud inventory and the telemetry you send. An assistant proposes the groupings and links; you adjust anything."}
           </p>
           <div className="mt-5 flex items-center justify-center gap-2.5">
-            <Btn size="md" variant="primary" onClick={onBuildFromTelemetry}>
-              Build from telemetry
-            </Btn>
-            <Btn size="md" variant="secondary" onClick={onConnectAws}>
-              Connect AWS
-            </Btn>
+            {onConnectAws ? (
+              <Btn size="md" variant="primary" onClick={onConnectAws}>
+                Connect AWS
+              </Btn>
+            ) : (
+              <Btn size="md" variant="primary" onClick={onBuild} disabled={building}>
+                {building ? "Building…" : "Generate map"}
+              </Btn>
+            )}
           </div>
           <p className="mt-3 text-[12px] text-subtle">
-            Takes a few seconds · you can edit or regenerate any time
+            {building
+              ? "Building from your infrastructure & telemetry…"
+              : "Takes a few seconds · you can edit or regenerate any time"}
           </p>
         </div>
       </div>
