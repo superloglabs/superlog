@@ -169,6 +169,7 @@ export {
   type CloseIncidentPullRequest,
   type IncidentOpenPullRequestToClose,
 } from "./incident-pr-resolution.js";
+export { resolveIncidentOrg } from "./incident-org.js";
 export {
   encryptIntegrationSecret,
   decryptIntegrationSecret,

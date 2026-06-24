@@ -7,7 +7,7 @@ import {
   schema,
   syncLoopsContactsForOrg,
 } from "@superlog/db";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
 import {
@@ -629,9 +629,10 @@ async function handleAgentPrWebhook(
     };
     if (pr.head?.sha) updates.headSha = pr.head.sha;
     if (typeof pr.title === "string") updates.title = pr.title;
-    // Decide whether this delivery is a brand-new terminal transition before we
-    // apply the update — gating on the prior state keeps webhook re-deliveries
-    // and reopen→close cycles from double-counting superlog.prs.{merged,closed}.
+    // Decide whether this delivery looks like a brand-new terminal transition
+    // from the row we read. This is only a first cut — the read is stale under
+    // concurrent deliveries, so the actual once-only guarantee comes from the
+    // conditional UPDATE below, not from this check.
     const countTransition = prTerminalTransition({
       action,
       merged: Boolean(pr.merged),
@@ -656,12 +657,29 @@ async function handleAgentPrWebhook(
       updates.state = "open";
       updates.closedAt = null;
     }
-    await db
+    // For a terminal transition, fold the prior-state predicate into the WHERE
+    // so only one of N concurrent deliveries actually flips the row. `.returning`
+    // tells us which one won; the counter is incremented exactly once off that,
+    // not off the stale read above. Non-terminal updates (reopened, push-only
+    // field writes) stay unconditional.
+    const updated = await db
       .update(schema.agentPullRequests)
       .set(updates)
-      .where(eq(schema.agentPullRequests.id, agentPrRow.id));
-    if (countTransition === "merged") await recordPrMergedMetric(agentPrRow.incidentId);
-    else if (countTransition === "closed") await recordPrClosedMetric(agentPrRow.incidentId);
+      .where(
+        countTransition
+          ? and(
+              eq(schema.agentPullRequests.id, agentPrRow.id),
+              ne(schema.agentPullRequests.state, countTransition),
+            )
+          : eq(schema.agentPullRequests.id, agentPrRow.id),
+      )
+      .returning({ id: schema.agentPullRequests.id });
+    const wonTransition = updated.length > 0;
+    if (countTransition === "merged" && wonTransition) {
+      await recordPrMergedMetric(agentPrRow.incidentId);
+    } else if (countTransition === "closed" && wonTransition) {
+      await recordPrClosedMetric(agentPrRow.incidentId);
+    }
     if (mergedResolution) {
       await resolveIncidentForMergedAgentPr({
         agentPr: agentPrRow,

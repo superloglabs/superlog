@@ -1,6 +1,5 @@
 import { metrics } from "@opentelemetry/api";
-import { db, schema } from "@superlog/db";
-import { eq } from "drizzle-orm";
+import { resolveIncidentOrg } from "@superlog/db";
 import { logger } from "./logger.js";
 
 // Per-org PR lifecycle counters, API half. PR "merged"/"closed" transitions
@@ -24,20 +23,6 @@ const prClosedCounter = meter.createCounter("superlog.prs.closed", {
   description: "Agent pull requests closed without merging, counted per org.",
   unit: "1",
 });
-
-// incident → project → org, the same path the worker's tenant-metrics.ts uses.
-async function resolveIncidentOrg(
-  incidentId: string,
-): Promise<{ id: string; name: string } | null> {
-  const rows = await db
-    .select({ id: schema.orgs.id, name: schema.orgs.name })
-    .from(schema.incidents)
-    .innerJoin(schema.projects, eq(schema.projects.id, schema.incidents.projectId))
-    .innerJoin(schema.orgs, eq(schema.orgs.id, schema.projects.orgId))
-    .where(eq(schema.incidents.id, incidentId))
-    .limit(1);
-  return rows[0] ?? null;
-}
 
 async function recordPrTerminalMetric(
   incidentId: string,
