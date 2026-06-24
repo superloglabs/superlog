@@ -20,6 +20,8 @@ import { type RepoBranch, type RepoBranchInfo, mergeRepoBranches } from "./githu
 import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolution-side-effects.js";
 import { logger } from "./logger.js";
 import { resolveActiveOrgContext } from "./org-context.js";
+import { prTerminalTransition } from "./pr-metrics-transition.js";
+import { recordPrClosedMetric, recordPrMergedMetric } from "./pr-metrics.js";
 
 const log = logger.child({ scope: "github" });
 type Vars = { userId: string; orgId: string | null };
@@ -627,6 +629,14 @@ async function handleAgentPrWebhook(
     };
     if (pr.head?.sha) updates.headSha = pr.head.sha;
     if (typeof pr.title === "string") updates.title = pr.title;
+    // Decide whether this delivery is a brand-new terminal transition before we
+    // apply the update — gating on the prior state keeps webhook re-deliveries
+    // and reopen→close cycles from double-counting superlog.prs.{merged,closed}.
+    const countTransition = prTerminalTransition({
+      action,
+      merged: Boolean(pr.merged),
+      prevState: agentPrRow.state,
+    });
     if (action === "closed") {
       if (pr.merged) {
         updates.state = "merged";
@@ -650,6 +660,8 @@ async function handleAgentPrWebhook(
       .update(schema.agentPullRequests)
       .set(updates)
       .where(eq(schema.agentPullRequests.id, agentPrRow.id));
+    if (countTransition === "merged") await recordPrMergedMetric(agentPrRow.incidentId);
+    else if (countTransition === "closed") await recordPrClosedMetric(agentPrRow.incidentId);
     if (mergedResolution) {
       await resolveIncidentForMergedAgentPr({
         agentPr: agentPrRow,

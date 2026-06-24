@@ -1,5 +1,6 @@
 import { db, schema } from "@superlog/db";
 import type { AgentRunContext } from "../agent-run-context.js";
+import { recordPrCreatedMetric } from "../pr-metrics.js";
 
 export async function recordFiledLinearTicket(
   ctx: AgentRunContext,
@@ -97,4 +98,7 @@ export async function recordOpenedAgentPullRequest(opts: {
       occurredAt: now,
     })
     .onConflictDoNothing();
+  // Only reached when the PR row was newly inserted (see `if (!row) return`
+  // above), so retries / re-deliveries don't double-count.
+  await recordPrCreatedMetric(opts.incidentId);
 }
