@@ -1924,6 +1924,37 @@ export const projectIngestFilters = pgTable(
 );
 
 export type ProjectIngestFilter = typeof projectIngestFilters.$inferSelect;
+
+// The generated service map for a project. One row per project. `graph` is the
+// deterministic topology (AWS inventory + observed telemetry edges); `enrichment`
+// is the LLM's reviewable grouping/relabel/suggested-links pass on top. The whole
+// map is regenerated wholesale by a worker job, so it's stored as JSON blobs
+// rather than normalized node/edge tables. `refreshRequestedAt > generatedAt`
+// (or a null graph) is the worker's "(re)build me" signal.
+export const projectTopologies = pgTable(
+  "project_topologies",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    // Deterministic Topology { nodes, edges, groups } from @superlog/topology.
+    graph: jsonb("graph"),
+    // TopologyEnrichment { groups, nodePatches, suggestedEdges } from the LLM pass.
+    enrichment: jsonb("enrichment"),
+    status: text("status").$type<"idle" | "generating" | "error">().default("idle").notNull(),
+    error: text("error"),
+    generatedAt: timestamp("generated_at", { withTimezone: true }),
+    refreshRequestedAt: timestamp("refresh_requested_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    projectUniq: uniqueIndex("project_topologies_project_idx").on(t.projectId),
+  }),
+);
+
+export type ProjectTopology = typeof projectTopologies.$inferSelect;
 export type Org = typeof orgs.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Project = typeof projects.$inferSelect;

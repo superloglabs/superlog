@@ -980,6 +980,39 @@ export function useSetIngestFilters(projectId: string) {
   });
 }
 
+// --- Service map / topology -------------------------------------------------
+
+export type TopologyDoc = {
+  status: "empty" | "idle" | "generating" | "error";
+  graph: import("@superlog/topology").Topology | null;
+  enrichment: import("@superlog/topology").TopologyEnrichment | null;
+  generatedAt: string | null;
+  error?: string | null;
+};
+
+export function useTopology(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["topology", projectId],
+    enabled: !!projectId,
+    queryFn: () => fetcher<TopologyDoc>(`/api/projects/${projectId}/topology`),
+    // While a build is in flight, poll so the map appears when it lands.
+    refetchInterval: (q) => (q.state.data?.status === "generating" ? 4000 : false),
+  });
+}
+
+export function useGenerateTopology(projectId: string) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      fetcher<{ status: string }>(`/api/projects/${projectId}/topology/generate`, {
+        method: "POST",
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["topology", projectId] }),
+  });
+}
+
 export type LinearInstallation =
   | { installed: false }
   | {

@@ -505,6 +505,13 @@
       "when": 1781912549129,
       "tag": "0071_good_roxanne_simpson",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1782302382240,
+      "tag": "0072_loving_magdalene",
+      "breakpoints": true
     }
   ]
 }
