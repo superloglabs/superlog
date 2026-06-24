@@ -270,6 +270,19 @@ function extractApiKey(c: Context): string | null {
   return null;
 }
 
+/**
+ * Returns true when the error originates from the client closing the TCP
+ * connection before the proxy finished responding — not a server fault.
+ * Node's HTTP server throws `Error("aborted")` (sometimes carrying
+ * `code === "ECONNRESET"`) via `abortIncoming` when `socketOnClose` fires
+ * while a request is still in flight.
+ */
+function isClientAbortError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const e = err as NodeJS.ErrnoException;
+  return e.message === "aborted" || e.code === "ECONNRESET" || e.code === "ECONNABORTED";
+}
+
 async function forward(c: Context<{ Variables: Variables }>, path: string, rootKey: string) {
   return tracer.startActiveSpan("ingest.forward", async (span) => {
     const startedAt = performance.now();
@@ -368,8 +381,10 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
               queueSpan.setAttribute("ingest.queue.storage", r.storage);
               return r;
             } catch (err) {
-              queueSpan.recordException(err as Error);
-              queueSpan.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+              if (!isClientAbortError(err)) {
+                queueSpan.recordException(err as Error);
+                queueSpan.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+              }
               throw err;
             } finally {
               queueSpan.end();
@@ -452,6 +467,19 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
 
       return new Response(res.body, { status: res.status, headers: resHeaders });
     } catch (err) {
+      // Client disconnects (ECONNRESET / "aborted") happen when the upstream OTLP
+      // exporter or load balancer closes the TCP connection while we are still
+      // processing — e.g. the exporter's own export timeout fired while a request
+      // waited for a semaphore permit, or the LB recycled an idle keep-alive socket.
+      // These are client-initiated and not server faults; recording them as ERROR
+      // spans generates false-positive incidents.  Log at warn and close the span
+      // without an ERROR status; the exporter will retry on its next export cycle.
+      if (isClientAbortError(err)) {
+        span.setAttribute("ingest.client_aborted", true);
+        logger.warn({ path, projectId }, "client disconnected during ingest forward");
+        responseStatus = 499;
+        return new Response(null, { status: 499 });
+      }
       span.recordException(err as Error);
       span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
       throw err;
