@@ -15,6 +15,7 @@ import type {
   TopologyEnrichment,
 } from "@superlog/topology";
 import { recordTokenUsage } from "../ai-usage.js";
+import { logger } from "../logger.js";
 
 const MODEL = process.env.ANTHROPIC_TOPOLOGY_MODEL ?? "claude-sonnet-4-6";
 const TONES: GroupTone[] = ["accent", "success", "warning", "neutral", "danger"];
@@ -122,13 +123,36 @@ export function parseEnrichmentToolInput(
   }
   if (rawGroups.length === 0) return null;
   const groupIds = new Set(rawGroups.map((g) => g.id));
-  // Keep a parent only when it references another proposed group and isn't a self/loop.
+  // A parent is valid only when it references another proposed group (not self).
+  const directParent = new Map<string, string | undefined>(
+    rawGroups.map((g) => [
+      g.id,
+      g.parent && g.parent !== g.id && groupIds.has(g.parent) ? g.parent : undefined,
+    ]),
+  );
+  // Cut a parent link only when walking up from it returns to the group itself —
+  // that's the back-edge of a cycle (A→B→A would otherwise orphan A and B from
+  // every rendered level). A group that merely points INTO a cycle keeps its link
+  // (the cycle gets cut at its own back-edge instead).
+  const acyclicParent = (id: string): string | undefined => {
+    const p0 = directParent.get(id);
+    if (!p0) return undefined;
+    const seen = new Set<string>();
+    let p: string | undefined = p0;
+    while (p) {
+      if (p === id) return undefined; // cycle through `id` → cut its link
+      if (seen.has(p)) return p0; // downstream cycle, not through `id` → keep link
+      seen.add(p);
+      p = directParent.get(p);
+    }
+    return p0;
+  };
   const groups: ProposedGroup[] = rawGroups.map((g) => ({
     id: g.id,
     label: g.label,
     intent: g.intent,
     tone: g.tone,
-    parent: g.parent && g.parent !== g.id && groupIds.has(g.parent) ? g.parent : undefined,
+    parent: acyclicParent(g.id),
   }));
 
   const nodePatches: NodePatch[] = [];
@@ -205,7 +229,19 @@ export async function enrichProjectTopology(
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
   const client = new Anthropic({ apiKey });
-  const { enrichment, usage } = await enrichTopologyWithClient(client, topology);
+  // Enrichment is best-effort: a transient Anthropic failure must NOT sink the
+  // build — the deterministic graph still persists, just without AI grouping.
+  let enrichment: TopologyEnrichment | null;
+  let usage: Anthropic.Messages.Usage | undefined;
+  try {
+    ({ enrichment, usage } = await enrichTopologyWithClient(client, topology));
+  } catch (err) {
+    logger.warn(
+      { projectId: ctx.projectId, err: err instanceof Error ? err.message : String(err) },
+      "topology enrichment failed — persisting deterministic graph only",
+    );
+    return null;
+  }
   if (usage) {
     try {
       await recordTokenUsage({

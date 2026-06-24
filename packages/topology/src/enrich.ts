@@ -69,7 +69,13 @@ export function applyEnrichment(
   enrichment: TopologyEnrichment,
   toggles: EnrichmentToggles = ALL_ON,
 ): Topology {
-  const t = { ...ALL_ON, ...toggles };
+  // Nullish-coalesce each toggle so an explicit `undefined` (e.g. `{rename: someVar}`
+  // where the var is unset) doesn't silently disable a capability — only `false` does.
+  const t = {
+    rename: toggles.rename ?? true,
+    regroup: toggles.regroup ?? true,
+    suggestLinks: toggles.suggestLinks ?? true,
+  };
   const patchById = new Map((enrichment.nodePatches ?? []).map((p) => [p.id, p]));
 
   const nodes = topology.nodes.map((n) => {

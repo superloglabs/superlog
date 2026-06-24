@@ -5,7 +5,7 @@ import {
   groupPath,
   viewTopology,
 } from "@superlog/topology";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { type TopologyDoc, useGenerateTopology, useTopology } from "../api.ts";
 import { TopologyEmptyState } from "./EmptyState.tsx";
@@ -30,14 +30,18 @@ export function ServiceMap({ projectId }: { projectId: string }) {
     [graph, enrichment],
   );
   const hasServices = (enriched?.groups.length ?? 0) > 0;
+  // A rebuild can change group ids; a `focused` id that no longer exists would
+  // render an empty map. Treat a stale focus as the root, and reset the state so
+  // the breadcrumb/back control don't carry it forward.
   const focusedGroup =
     focused && enriched ? enriched.groups.find((g) => g.id === focused) : undefined;
+  const focus = focused && focusedGroup ? focused : null;
+  useEffect(() => {
+    if (focused && enriched && !focusedGroup) setFocused(null);
+  }, [focused, enriched, focusedGroup]);
   // One call renders any level of the hierarchy (root, a parent service, a leaf).
-  const shown = useMemo(
-    () => (enriched ? viewTopology(enriched, focused) : null),
-    [enriched, focused],
-  );
-  const path = useMemo(() => (enriched ? groupPath(enriched, focused) : []), [enriched, focused]);
+  const shown = useMemo(() => (enriched ? viewTopology(enriched, focus) : null), [enriched, focus]);
+  const path = useMemo(() => (enriched ? groupPath(enriched, focus) : []), [enriched, focus]);
 
   const empty = !graph || enriched?.nodes.length === 0;
 
@@ -65,13 +69,13 @@ export function ServiceMap({ projectId }: { projectId: string }) {
             <MapNav
               path={path}
               intent={focusedGroup?.intent}
-              showLegend={!!focused}
+              showLegend={!!focus}
               onNavigate={setFocused}
             />
           )}
           {shown && (
             <TopologyCanvas
-              key={focused ?? "overview"}
+              key={focus ?? "overview"}
               topology={shown}
               showGroups={false}
               showDots
@@ -80,7 +84,7 @@ export function ServiceMap({ projectId }: { projectId: string }) {
               lockNodes
               onNodeOpen={(serviceId) => setFocused(serviceId)}
               frame={
-                focused && focusedGroup
+                focus && focusedGroup
                   ? {
                       label: focusedGroup.label,
                       tone: focusedGroup.tone,

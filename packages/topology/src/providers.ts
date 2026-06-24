@@ -228,7 +228,9 @@ function mergeSignals(a?: Signal[], b?: Signal[]): Signal[] {
   return [...by.entries()].map(([kind, count]) => ({ kind: kind as Signal["kind"], count }));
 }
 
-const pairKey = (from: string, to: string) => `${from}${to}`;
+// Unit-separator delimiter that can't occur in a node id, so distinct endpoint
+// pairs never collide (e.g. ("ab","c") vs ("a","bc")).
+const pairKey = (from: string, to: string) => `${from}\u001f${to}`;
 
 /**
  * Merge any number of partial topologies into one. `aliases` rewrites node ids

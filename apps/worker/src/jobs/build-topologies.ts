@@ -6,7 +6,7 @@
 
 import { schema } from "@superlog/db";
 import type { Topology } from "@superlog/topology";
-import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, exists, isNull, lt, or, sql } from "drizzle-orm";
 import type { JobDefinition, JobDeps } from "../jobs.js";
 import { logger } from "../logger.js";
 import { buildProjectTopology } from "../topology/build.js";
@@ -27,6 +27,20 @@ async function selectCandidates(db: JobDeps["db"], now: Date): Promise<string[]>
     .where(
       and(
         sql`${schema.projectTopologies.status} <> 'generating'`,
+        // Only rebuild while the project still has a connected source — a
+        // disconnected project's inventory is empty, so a rebuild is wasted work
+        // (and would crowd out connected projects on the bounded tick).
+        exists(
+          db
+            .select({ one: sql`1` })
+            .from(schema.cloudConnections)
+            .where(
+              and(
+                eq(schema.cloudConnections.projectId, schema.projectTopologies.projectId),
+                eq(schema.cloudConnections.status, "connected"),
+              ),
+            ),
+        ),
         or(
           isNull(schema.projectTopologies.generatedAt),
           sql`${schema.projectTopologies.refreshRequestedAt} > ${schema.projectTopologies.generatedAt}`,

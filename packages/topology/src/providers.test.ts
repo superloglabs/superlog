@@ -39,9 +39,11 @@ test("telemetryProvider emits observed edges + external dependency nodes", () =>
   const t = telemetryProvider(graph);
   // web (auto from edge endpoint is NOT created — only declared services), api, anthropic, postgresql
   const labels = t.nodes.map((n) => n.label).sort();
-  assert.ok(labels.includes("superlog-api"));
-  assert.ok(labels.includes("api.anthropic.com"));
-  assert.ok(labels.includes("postgresql"));
+  // exact membership (.some(===)) not .includes — the latter trips CodeQL's
+  // URL-substring rule on the host-looking label, a false positive here.
+  assert.ok(labels.some((l) => l === "superlog-api"));
+  assert.ok(labels.some((l) => l === "api.anthropic.com"));
+  assert.ok(labels.some((l) => l === "postgresql"));
   // the call edge is telemetry-sourced and labelled
   const call = t.edges.find((e) => e.kind === "calls" && e.label?.includes("calls"));
   assert.ok(call, "expected a labelled call edge");

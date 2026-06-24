@@ -36,6 +36,26 @@ test("parseEnrichmentToolInput keeps valid groups/patches/edges, drops unknown r
   assert.equal(out.suggestedEdges?.[0]?.from, "a");
 });
 
+test("parseEnrichmentToolInput breaks parent cycles so no group is orphaned", () => {
+  // A→B→A: both parents would be valid per-edge, but the cycle would hide both
+  // groups from every rendered level. The parser must drop the cyclic links.
+  const out = parseEnrichmentToolInput(
+    {
+      groups: [
+        { id: "a", label: "A", tone: "neutral", parent: "b" },
+        { id: "b", label: "B", tone: "neutral", parent: "a" },
+        { id: "c", label: "C", tone: "neutral", parent: "a" }, // acyclic child of A
+      ],
+      nodePatches: [],
+    },
+    known,
+  )!;
+  const byId = new Map(out.groups?.map((g) => [g.id, g]));
+  assert.equal(byId.get("a")?.parent, undefined); // cycle cut
+  assert.equal(byId.get("b")?.parent, undefined); // cycle cut
+  assert.equal(byId.get("c")?.parent, "a"); // healthy link preserved
+});
+
 test("parseEnrichmentToolInput defaults an invalid tone to neutral and rejects empty", () => {
   const out = parseEnrichmentToolInput(
     { groups: [{ id: "g", label: "G", tone: "rainbow" }], nodePatches: [] },

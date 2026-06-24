@@ -87,8 +87,11 @@ const lastArnSegment = (arn: string): string => {
 // Short, stable, human-ish node id — NOT the full ARN. The LLM has to echo these
 // back in its nodePatches, and it can't reliably reproduce a 90-char ARN, so a
 // full-ARN id silently breaks the whole enrichment. The ARN is preserved in meta.
+// Region-qualified so the same `service:name` in two regions (a project may have
+// several connections) can't collapse into one node; the suffix stays short enough
+// for the LLM to echo. Single-region inventories just get a stable `:region` tail.
 export const resourceId = (r: ResourceRow): string =>
-  `${r.service}:${r.name ?? lastArnSegment(r.arn)}`;
+  `${r.service}:${r.name ?? lastArnSegment(r.arn)}${r.region ? `@${r.region}` : ""}`;
 const resourceLabel = (r: ResourceRow): string => r.name ?? (lastArnSegment(r.arn) || r.service);
 
 export function resourcesToSnapshot(rows: ResourceRow[]): AwsInfraSnapshot {

@@ -31,8 +31,13 @@ const num = (v: unknown): number | undefined =>
       : undefined;
 
 // Cluster / load-balancer / etc. identifiers often arrive as ARNs; the console
-// wants the trailing name.
-const lastSegment = (s: string): string => s.split("/").pop() ?? s.split(":").pop() ?? s;
+// wants the trailing name. Slash-delimited wins (e.g. `…cluster/name`), else fall
+// back to the colon-delimited tail (e.g. a slash-less `arn:…:queue-name`).
+const lastSegment = (s: string): string => {
+  if (s.includes("/")) return s.slice(s.lastIndexOf("/") + 1);
+  if (s.includes(":")) return s.slice(s.lastIndexOf(":") + 1);
+  return s;
+};
 
 // ECS service ARN: `arn:…:service/<cluster>/<service>` (new long-ARN format).
 // Returns [cluster, service] when present.

@@ -190,7 +190,6 @@ export function viewTopology(t: Topology, focusId: string | null = null): Topolo
 
   // --- edges + boundary stubs ---------------------------------------------
   const out: TopologyNode[] = [...serviceNodes, ...directNodes];
-  const present = new Set(out.map((n) => n.id));
   const boundary = new Map<string, TopologyNode>();
   const agg = new Map<
     string,
@@ -227,7 +226,7 @@ export function viewTopology(t: Topology, focusId: string | null = null): Topolo
     // skip edges where a boundary endpoint couldn't resolve
     if (ra.kind === "boundary" && !ra.gid) continue;
     if (rb.kind === "boundary" && !rb.gid) continue;
-    const key = `${fromId} ${toId}`;
+    const key = `${fromId}\u001f${toId}`; // unit separator — ids can't contain it
     const cur = agg.get(key);
     if (!cur) agg.set(key, { from: fromId, to: toId, count: 1, source: e.source, kind: e.kind });
     else {
@@ -245,9 +244,10 @@ export function viewTopology(t: Topology, focusId: string | null = null): Topolo
       from: a.from,
       to: a.to,
       source: a.source,
-      // services collapse many links → show a count; direct resource→resource keeps its verb.
+      // A collapsed service endpoint (on EITHER side) aggregates many underlying
+      // links → show the count; a direct resource→resource edge keeps its verb.
       label:
-        present.has(a.from) && a.from.startsWith(SERVICE_PREFIX)
+        a.from.startsWith(SERVICE_PREFIX) || a.to.startsWith(SERVICE_PREFIX)
           ? `${a.count} ${a.count === 1 ? "link" : "links"}`
           : a.kind,
       kind: a.kind,
