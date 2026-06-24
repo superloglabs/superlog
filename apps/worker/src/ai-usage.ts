@@ -20,7 +20,7 @@ export type TokenUsage = {
 // Where in the worker a model call originated. These mirror the worker's own
 // feature modules (digest.ts, grouping.ts, …), so they disclose nothing the
 // file layout doesn't already.
-export type CallSite = "agent_run" | "digest" | "grouping" | "merge" | "autorecovery";
+export type CallSite = "agent_run" | "digest" | "grouping" | "merge" | "autorecovery" | "topology";
 
 export type AgentRunOutcome = "complete_with_pr" | "complete_no_pr" | "failed" | "awaiting_human";
 

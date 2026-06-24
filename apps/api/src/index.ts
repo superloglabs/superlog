@@ -32,6 +32,7 @@ import { auth } from "./auth.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
 import { mountDashboards } from "./dashboards.js";
+import { mountTopology } from "./topology.js";
 import {
   demoOverlay,
   demoProjectId,
@@ -314,6 +315,7 @@ mountOrgKeyManagementAuthed(app);
 mountDashboards(app);
 mountCloudConnectionsAuthed(app);
 mountIngestFilters(app);
+mountTopology(app);
 mountAlerts(app, { ch });
 mountWebhooks(app);
 mountFeedbackAuthed(app);

@@ -338,6 +338,9 @@ importers:
       '@radix-ui/react-scroll-area':
         specifier: ^1.2.10
         version: 1.2.10(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      '@superlog/topology':
+        specifier: workspace:*
+        version: link:../../packages/topology
       '@tanstack/react-query':
         specifier: ^5.62.8
         version: 5.100.1(react@19.2.5)
@@ -447,6 +450,9 @@ importers:
       '@superlog/fingerprint':
         specifier: workspace:*
         version: link:../../packages/fingerprint
+      '@superlog/topology':
+        specifier: workspace:*
+        version: link:../../packages/topology
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
@@ -517,6 +523,18 @@ importers:
         version: 5.9.3
 
   packages/fingerprint:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.1
+        version: 22.19.17
+      tsx:
+        specifier: ^4.19.2
+        version: 4.21.0
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
+  packages/topology:
     devDependencies:
       '@types/node':
         specifier: ^22.10.1

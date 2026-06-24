@@ -1,7 +1,8 @@
 import { useNavigate } from "react-router-dom";
 import { IncidentRow } from "./Issues.tsx";
-import { useIncidents, useMe } from "./api.ts";
+import { useCloudConnections, useIncidents, useMe } from "./api.ts";
 import { SetupTodos } from "./onboarding/SetupTodos.tsx";
+import { ServiceMap } from "./service-map/ServiceMap.tsx";
 
 const ACTIVE_INCIDENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const ACTIVE_INCIDENT_LIMIT = 5;
@@ -24,8 +25,17 @@ export function Overview() {
     <div className="flex flex-col gap-10">
       <SetupTodos projectId={projectId} />
       <ActiveIncidentsSection projectId={projectId} />
+      <ServiceMapSection projectId={projectId} />
     </div>
   );
+}
+
+// Only surface the map for projects that have connected AWS — it's meaningless
+// (and noise) without an inventory to draw from.
+function ServiceMapSection({ projectId }: { projectId: string }) {
+  const connections = useCloudConnections(projectId);
+  if (!connections.data || connections.data.length === 0) return null;
+  return <ServiceMap projectId={projectId} />;
 }
 
 function ActiveIncidentsSection({ projectId }: { projectId: string }) {
