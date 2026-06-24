@@ -15,6 +15,7 @@ import {
 import { authClient, useSession } from "../auth-client.ts";
 import { Btn, Wordmark } from "../design/ui.tsx";
 import { INSTALL_PROMPT, buildInstallPrompt } from "../installPrompt.ts";
+import { describeIntegrationConnectError } from "../integrationError.ts";
 import { getSkillOnboardingIntent } from "../skillOnboarding.ts";
 import { TruncatedKey } from "./TruncatedKey.tsx";
 import {
@@ -247,6 +248,13 @@ function AgentSetupFlow({
   // always show the install button, even for users who signed in with GitHub.
   const signedInWithGithub = false;
   const [intentId] = useState(() => getSkillOnboardingIntent());
+  // Scope the connect error to the integration it came from: the GitHub and
+  // Slack steps share this state, so tagging it prevents a failed GitHub
+  // connect from leaking its message onto the Slack step (or vice versa).
+  const [connectError, setConnectError] = useState<{
+    integration: "GitHub" | "Slack";
+    message: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!githubReady || !slackReady || !intentId || claimIntent.data || claimIntent.isPending)
@@ -267,11 +275,18 @@ function AgentSetupFlow({
         body="Choose the repositories you want Superlog to work with. At least one enabled repo is required."
         loading={githubLoading || startGithub.isPending}
         cta={signedInWithGithub ? "Grant repo access" : "Connect GitHub"}
-        onNext={() =>
+        error={connectError?.integration === "GitHub" ? connectError.message : null}
+        onNext={() => {
+          setConnectError(null);
           startGithub.mutate(undefined, {
             onSuccess: ({ url }) => window.location.assign(url),
-          })
-        }
+            onError: (err) =>
+              setConnectError({
+                integration: "GitHub",
+                message: describeIntegrationConnectError(err, "GitHub"),
+              }),
+          });
+        }}
       />
     );
   }
@@ -285,11 +300,18 @@ function AgentSetupFlow({
         body="After Slack is connected, we'll finish setup and send you back to your agent."
         loading={slackLoading || startSlack.isPending}
         cta="Connect Slack"
-        onNext={() =>
+        error={connectError?.integration === "Slack" ? connectError.message : null}
+        onNext={() => {
+          setConnectError(null);
           startSlack.mutate(undefined, {
             onSuccess: ({ url }) => window.location.assign(url),
-          })
-        }
+            onError: (err) =>
+              setConnectError({
+                integration: "Slack",
+                message: describeIntegrationConnectError(err, "Slack"),
+              }),
+          });
+        }}
         onSkip={() => setSlackSkipped(true)}
         skipLabel="Skip for now"
       />
@@ -326,6 +348,7 @@ function IntegrationStep({
   onNext,
   onSkip,
   skipLabel,
+  error,
 }: {
   icon: React.ReactNode;
   title: string;
@@ -336,6 +359,7 @@ function IntegrationStep({
   onNext: () => void;
   onSkip?: () => void;
   skipLabel?: string;
+  error?: string | null;
 }) {
   return (
     <>
@@ -351,6 +375,11 @@ function IntegrationStep({
           <p className="m-0 flex-1 text-[13.5px] leading-[1.5] text-muted">{body}</p>
         </div>
       </div>
+      {error && (
+        <p className="mt-3 text-[12px] text-danger" role="alert">
+          {error}
+        </p>
+      )}
       <StepFooter
         onNext={onNext}
         nextLabel={loading ? "Connecting..." : cta}

@@ -8,6 +8,7 @@ import {
   useStartSlackInstall,
   useStats,
 } from "../api.ts";
+import { describeIntegrationConnectError } from "../integrationError.ts";
 import { DeployDialog } from "./DeployDialog.tsx";
 import { McpInstallDialog } from "./McpInstallDialog.tsx";
 import { TodoCarousel } from "./TodoCarousel.tsx";
@@ -84,6 +85,7 @@ export function SetupTodos({ projectId }: { projectId: string }) {
 
   const [mcpOpen, setMcpOpen] = useState(false);
   const [deployOpen, setDeployOpen] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Hold off the first paint until every signal has resolved once — otherwise
   // a fully-onboarded user briefly sees all four todos (every `…Connected`
@@ -110,16 +112,20 @@ export function SetupTodos({ projectId }: { projectId: string }) {
 
   const handleAction = (t: Todo) => {
     if (t.id === "github") {
+      setActionError(null);
       startGithub.mutate(undefined, {
         onSuccess: ({ url }) => {
           window.location.assign(url);
         },
+        onError: (err) => setActionError(describeIntegrationConnectError(err, "GitHub")),
       });
     } else if (t.id === "slack") {
+      setActionError(null);
       startSlack.mutate(undefined, {
         onSuccess: ({ url }) => {
           window.location.assign(url);
         },
+        onError: (err) => setActionError(describeIntegrationConnectError(err, "Slack")),
       });
     } else if (t.id === "mcp") {
       setMcpOpen(true);
@@ -143,6 +149,11 @@ export function SetupTodos({ projectId }: { projectId: string }) {
         completed={completed}
         onAction={handleAction}
       />
+      {actionError && (
+        <p className="mt-2 text-[12px] text-danger" role="alert">
+          {actionError}
+        </p>
+      )}
       {mcpOpen && <McpInstallDialog onClose={() => setMcpOpen(false)} />}
       {deployOpen && <DeployDialog projectId={projectId} onClose={() => setDeployOpen(false)} />}
     </>

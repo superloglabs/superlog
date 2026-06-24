@@ -88,6 +88,7 @@ import {
 } from "./api";
 import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
 import { Btn, Chip, FieldLabel, Input, Label, Tile } from "./design/ui";
+import { describeIntegrationConnectError } from "./integrationError.ts";
 import { AgentMemoriesCard } from "./settings/AgentMemoriesCard.tsx";
 import { BillingCard } from "./settings/BillingCard.tsx";
 import { OrgGeneralCard } from "./settings/OrgGeneralCard.tsx";
@@ -909,6 +910,7 @@ function GithubCard() {
   const startAuthor = useStartGithubAuthorLogin();
   const resetAuthor = useResetGithubCommitAuthor();
   const updateRepoAccess = useUpdateGithubRepoAccess();
+  const [connectError, setConnectError] = useState<string | null>(null);
 
   const installed = install.data?.installed === true;
   const installations = install.data?.installed ? install.data.installations : [];
@@ -949,9 +951,14 @@ function GithubCard() {
             size="sm"
             variant={installed ? "secondary" : "primary"}
             loading={startAccess.isPending}
-            onClick={async () => {
-              const { url } = await startAccess.mutateAsync();
-              window.location.href = url;
+            onClick={() => {
+              setConnectError(null);
+              startAccess.mutate(undefined, {
+                onSuccess: ({ url }) => {
+                  window.location.href = url;
+                },
+                onError: (err) => setConnectError(describeIntegrationConnectError(err, "GitHub")),
+              });
             }}
           >
             {installed ? "Refresh access" : "Connect GitHub"}
@@ -960,14 +967,24 @@ function GithubCard() {
             size="sm"
             variant={needsInstall ? "primary" : "secondary"}
             loading={start.isPending}
-            onClick={async () => {
-              const { url } = await start.mutateAsync();
-              window.location.href = url;
+            onClick={() => {
+              setConnectError(null);
+              start.mutate(undefined, {
+                onSuccess: ({ url }) => {
+                  window.location.href = url;
+                },
+                onError: (err) => setConnectError(describeIntegrationConnectError(err, "GitHub")),
+              });
             }}
           >
             {installed ? "Add repositories" : "Install GitHub App"}
           </Btn>
         </div>
+        {connectError && (
+          <p className="text-[12px] text-danger" role="alert">
+            {connectError}
+          </p>
+        )}
         {installed && (
           <div className="space-y-2 pt-2">
             <FieldLabel>Installed accounts</FieldLabel>
@@ -1111,6 +1128,7 @@ function SlackCard() {
   const install = useSlackInstallation();
   const start = useStartSlackInstall();
   const uninstall = useUninstallSlack();
+  const [connectError, setConnectError] = useState<string | null>(null);
 
   const installed = install.data?.installed === true;
 
@@ -1137,9 +1155,14 @@ function SlackCard() {
             size="sm"
             variant={installed ? "secondary" : "primary"}
             loading={start.isPending}
-            onClick={async () => {
-              const { url } = await start.mutateAsync();
-              window.location.href = url;
+            onClick={() => {
+              setConnectError(null);
+              start.mutate(undefined, {
+                onSuccess: ({ url }) => {
+                  window.location.href = url;
+                },
+                onError: (err) => setConnectError(describeIntegrationConnectError(err, "Slack")),
+              });
             }}
           >
             {installed ? "Reinstall" : "Connect Slack"}
@@ -1155,6 +1178,11 @@ function SlackCard() {
             </Btn>
           )}
         </div>
+        {connectError && (
+          <p className="text-[12px] text-danger" role="alert">
+            {connectError}
+          </p>
+        )}
       </div>
     </Tile>
   );
