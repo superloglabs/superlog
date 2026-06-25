@@ -20,4 +20,12 @@ COPY packages/fingerprint packages/fingerprint
 ENV PORT=4000
 EXPOSE 4000
 
-CMD ["pnpm", "--filter", "@superlog/proxy", "start"]
+# Run node directly with the tsx loader rather than via `pnpm --filter … start`.
+# `pnpm run` does NOT forward SIGTERM to the node child, so the graceful-shutdown
+# handler in src/index.ts never fired on an ECS rolling deploy — the task was
+# killed mid-batch and its in-flight SQS messages stayed invisible for the full
+# visibility timeout before redelivering (the ingest-lag sawtooth that paged on
+# every deploy). Running node as the container's main process delivers SIGTERM
+# straight to the handler. Mirrors the package.json "start" script.
+WORKDIR /app/apps/proxy
+CMD ["node", "--import", "tsx", "--import", "./tracing.ts", "src/index.ts"]

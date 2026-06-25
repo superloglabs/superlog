@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --import ./tracing.ts src/index.ts",
-    "start": "tsx --import ./tracing.ts src/index.ts",
+    "start": "node --import tsx --import ./tracing.ts src/index.ts",
     "test:ingest-queue": "tsx --test src/ingest-queue.test.ts",
     "test": "tsx --test src/*.test.ts",
     "typecheck": "tsc --noEmit"
