@@ -38,6 +38,7 @@ const logsExport = {
                 { key: "retried", value: { boolValue: true } },
                 { key: "ratio", value: { doubleValue: 0.5 } },
                 { key: "tags", value: { arrayValue: { values: [{ stringValue: "a" }, { stringValue: "b" }] } } },
+                { key: "codes", value: { arrayValue: { values: [{ intValue: "1" }, { intValue: "2" }] } } },
               ],
             },
             {
@@ -90,6 +91,8 @@ test("otlpLogsToRows stringifies log attribute values like the collector Map(Str
   assert.equal(a["retried"], "true");
   assert.equal(a["ratio"], "0.5");
   assert.equal(a["tags"], '["a","b"]');
+  // nested ints serialize as numeric JSON tokens, matching the collector
+  assert.equal(a["codes"], "[1,2]");
 });
 
 test("otlpLogsToRows falls back to observedTimeUnixNano and empty trace context", () => {
@@ -173,7 +176,7 @@ test("otlpTracesToRows maps spans with collector-compatible columns", () => {
   assert.equal(r.TraceState, "rojo=00f067aa");
   assert.equal(r.ScopeName, "instr.http");
   assert.equal(r.ScopeVersion, "2.0.0");
-  assert.equal(r.Duration, 1_849_000_000); // nanoseconds
+  assert.equal(r.Duration, "1849000000"); // UInt64 nanoseconds as a string
   assert.equal(r.Timestamp, "2024-06-10 06:13:20.000000000");
 });
 

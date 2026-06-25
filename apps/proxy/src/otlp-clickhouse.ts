@@ -14,8 +14,8 @@
 //                                 x-superlog-project-id) into RESOURCE attrs
 // so: strip every superlog.* key, then stamp superlog.project_id onto resource attrs.
 //
-// Only logs are implemented in this pass (the dominant ingest signal). Traces and
-// the five metrics tables follow the same shape and are TODO.
+// Logs and traces are implemented here. The five metrics tables follow the same
+// shape and are a planned follow-up.
 
 type OtlpAnyValue = {
   stringValue?: string;
@@ -166,7 +166,9 @@ export type OtelTraceRow = {
   ScopeName: string;
   ScopeVersion: string;
   SpanAttributes: Record<string, string>;
-  Duration: number;
+  // UInt64 nanoseconds. Kept as a string so durations beyond 2^53 ns aren't
+  // rounded by JS number coercion before they reach ClickHouse.
+  Duration: string;
   StatusCode: string;
   StatusMessage: string;
   "Events.Timestamp": string[];
@@ -212,7 +214,7 @@ export function otlpTracesToRows(payload: OtlpTracesExport, projectId: string): 
           ScopeName: scopeName,
           ScopeVersion: scopeVersion,
           SpanAttributes: stripSuperlog(kvListToMap(span.attributes)),
-          Duration: Number(end > start ? end - start : 0n),
+          Duration: (end > start ? end - start : 0n).toString(),
           StatusCode: STATUS_CODES[span.status?.code ?? 0] ?? "Unset",
           StatusMessage: span.status?.message ?? "",
           "Events.Timestamp": events.map((e) => nanosToClickHouseDateTime64(e.timeUnixNano ?? 0)),
@@ -274,7 +276,11 @@ function anyValueToJson(v: OtlpAnyValue | undefined): unknown {
   if (!v) return null;
   if (v.stringValue !== undefined) return v.stringValue;
   if (v.boolValue !== undefined) return v.boolValue;
-  if (v.intValue !== undefined) return v.intValue;
+  // Nested ints serialize as numeric JSON tokens (e.g. [1,2], not ["1","2"]) to
+  // match the collector. intValue arrives as a string (OTLP/JSON int64, and the
+  // protobuf decoder's longs:String); coerce so JSON.stringify emits a number.
+  // Values beyond 2^53 can't be represented exactly in JSON either way.
+  if (v.intValue !== undefined) return typeof v.intValue === "string" ? Number(v.intValue) : v.intValue;
   if (v.doubleValue !== undefined) return v.doubleValue;
   if (v.bytesValue !== undefined) return bytesToBase64(v.bytesValue);
   if (v.arrayValue) return (v.arrayValue.values ?? []).map(anyValueToJson);

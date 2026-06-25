@@ -21,7 +21,7 @@ import { type SpillSink, captureBody } from "./body-capture.js";
 import type { IngestRowWriter } from "./clickhouse-writer.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import { proxyOperationalRecorder } from "./operational-metrics.js";
-import { decodeOtlpToRows } from "./otlp-decode.js";
+import { type DecodedRows, decodeOtlpToRows } from "./otlp-decode.js";
 
 const DEFAULT_MAX_MESSAGE_BYTES = 240_000;
 // Hard ceiling on a single ingest body. Bodies above this are rejected at the
@@ -732,13 +732,25 @@ export class IngestQueue {
       // we don't yet write directly (metrics) and bodies we can't decode return null and
       // fall through to the collector forward below, so nothing is ever dropped.
       if (this.rowWriter) {
-        const decoded = decodeOtlpToRows({
-          path: parsed.path,
-          projectId: parsed.projectId,
-          contentType: parsed.contentType,
-          contentEncoding: parsed.contentEncoding,
-          body,
-        });
+        // Decoding is best-effort: a malformed/undecodable payload returns null OR throws,
+        // and either way we fall through to the collector forward below rather than failing
+        // the message (which would churn it through retries to the DLQ). Only the INSERT is
+        // allowed to throw — a ClickHouse failure should redeliver, not drop.
+        let decoded: DecodedRows | null = null;
+        try {
+          decoded = decodeOtlpToRows({
+            path: parsed.path,
+            projectId: parsed.projectId,
+            contentType: parsed.contentType,
+            contentEncoding: parsed.contentEncoding,
+            body,
+          });
+        } catch (decodeErr) {
+          this.logger.warn(
+            { err: decodeErr, path: parsed.path, projectId: parsed.projectId },
+            "direct-write decode failed; forwarding to collector",
+          );
+        }
         if (decoded) {
           await this.rowWriter.insert(decoded.table, decoded.rows);
           proxyOperationalRecorder.recordQueueDelivery({

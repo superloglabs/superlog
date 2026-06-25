@@ -57,9 +57,13 @@ const ingestQueueConfig = getIngestQueueConfig(process.env);
 // forwarding every message through the collector. Metrics and undecodable bodies
 // still fall through to the collector. Disabled (null) otherwise.
 const ingestClickHouseConfig = getIngestClickHouseConfig(process.env);
-const ingestRowWriter = ingestClickHouseConfig
-  ? new ClickHouseIngestWriter(ingestClickHouseConfig)
-  : undefined;
+// Only build the writer when a consumer will actually run (queue configured and the
+// consumer enabled) — it's only used on the consume path, so creating/logging it for a
+// producer-only proxy would be wasted setup and a false "enabled" rollout signal.
+const ingestRowWriter =
+  ingestClickHouseConfig && ingestQueueConfig?.consumerEnabled
+    ? new ClickHouseIngestWriter(ingestClickHouseConfig)
+    : undefined;
 if (ingestRowWriter) {
   logger.info(
     { database: ingestClickHouseConfig?.database, insertQuorum: ingestClickHouseConfig?.insertQuorum },
