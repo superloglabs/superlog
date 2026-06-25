@@ -40,6 +40,8 @@ const logsExport = {
                 { key: "tags", value: { arrayValue: { values: [{ stringValue: "a" }, { stringValue: "b" }] } } },
                 { key: "codes", value: { arrayValue: { values: [{ intValue: "1" }, { intValue: "2" }] } } },
                 { key: "bigids", value: { arrayValue: { values: [{ intValue: "9007199254740993" }] } } },
+                // proxy-stamped routing key; collector strips superlog.* from log attrs too
+                { key: "superlog.issue_fingerprint", value: { stringValue: "deadbeef" } },
               ],
             },
             {
@@ -83,6 +85,13 @@ test("otlpLogsToRows strips superlog.* from resource attrs and stamps the real p
   // no stray superlog.* keys other than the stamped project id
   const superlogKeys = Object.keys(rows[0]!.ResourceAttributes).filter((k) => k.startsWith("superlog."));
   assert.deepEqual(superlogKeys, ["superlog.project_id"]);
+  // superlog.* is stripped from log record attributes too (matches the collector's
+  // transform/strip_superlog on log.attributes); project id lives only on resource attrs.
+  assert.equal(rows[0]!.LogAttributes["superlog.issue_fingerprint"], undefined);
+  assert.equal(
+    Object.keys(rows[0]!.LogAttributes).some((k) => k.startsWith("superlog.")),
+    false,
+  );
 });
 
 test("otlpLogsToRows stringifies log attribute values like the collector Map(String,String)", () => {
