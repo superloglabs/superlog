@@ -17,8 +17,10 @@ import { logger } from "./logger.js";
 // only when a real job needs more.
 export type JobDeps = {
   db: DB;
-  // `command` is exposed alongside `query` so jobs can run lightweight DDL/DML
-  // (e.g. the demo-feed job's ALTER … DELETE retention trim).
+  // `command` is exposed alongside `query` so jobs can run lightweight DDL/DML.
+  // Note: avoid per-tick ALTER … DELETE on the shared OTel tables for retention —
+  // those mutations rewrite parts and pile up under any short schedule, starving
+  // merges and reads (a "mutation storm"). Lean on table TTL instead.
   clickhouse: Pick<ClickHouseClient, "query" | "command">;
 };
 

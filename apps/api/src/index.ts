@@ -779,7 +779,10 @@ app.get("/api/projects/:projectId/stats", async (c) => {
   const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const [traces, logs, metrics, issueRows] = await Promise.all([
     chCount("otel_traces", "Timestamp", projectId),
-    chCount("otel_logs", "Timestamp", projectId),
+    // otel_logs is partitioned by toDate(TimestampTime); count on that column so
+    // the "last 1h" stat prunes to recent partitions instead of scanning every
+    // retained day (otel_traces partitions on Timestamp, so it stays as-is).
+    chCount("otel_logs", "TimestampTime", projectId),
     chMetricsCount(projectId),
     db.select({ c: count() }).from(schema.issues).where(eq(schema.issues.projectId, projectId)),
   ]);

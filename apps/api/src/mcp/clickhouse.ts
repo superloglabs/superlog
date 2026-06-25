@@ -192,6 +192,16 @@ export async function queryLogs(
     "ResourceAttributes['superlog.project_id'] = {projectId:String}",
     `Timestamp >= ${sinceExpr}`,
     `Timestamp <= ${untilExpr}`,
+    // otel_logs is partitioned by toDate(TimestampTime) and sorted by
+    // (ServiceName, TimestampTime, Timestamp). Filtering only Timestamp — a
+    // different column — gives ClickHouse nothing to prune partitions by, so it
+    // scans every retained day (incident 2026-06-25: ~12M rows for a 1h window).
+    // Bracketing TimestampTime by the same window lets the partition minmax
+    // index prune to the queried days. TimestampTime = toDateTime(Timestamp) is
+    // truncated down to the second, so pad the lower bound by 1s to never drop a
+    // sub-second row the precise Timestamp filter above keeps.
+    `TimestampTime >= (${sinceExpr}) - INTERVAL 1 SECOND`,
+    `TimestampTime <= ${untilExpr}`,
     ...attr.conds,
     ...logAttr.conds,
     ...field.conds,
@@ -417,6 +427,37 @@ export async function queryTracesAggregated(
 }
 
 export async function getTraceDetail(ch: ClickHouseClient, projectId: string, traceId: string) {
+  // otel_traces / otel_logs are partitioned by day and sorted by
+  // (ServiceName, SpanName, Timestamp), so a bare `TraceId = …` predicate can't
+  // use the primary index — it scans every partition (all retained days, every
+  // part). That's a multi-second-to-minutes full scan on a busy table, and a
+  // burst of trace-detail loads saturates the read pool and starves every other
+  // query (incident 2026-06-25: this was the lever that took prod reads down).
+  // otel_traces_trace_id_ts is sorted by TraceId, so it resolves the trace's
+  // [Start, End] window in O(log n); bounding Timestamp by it prunes the scan to
+  // the 1–2 daily partitions the trace actually lives in. coalesce() falls back
+  // to a bounded recent window if the index has no row yet (e.g. a just-ingested
+  // trace), so we never silently regress to a full scan.
+  const winStart = `coalesce(
+              (SELECT min(Start) FROM otel_traces_trace_id_ts WHERE TraceId = {traceId:String}),
+              now() - INTERVAL 6 HOUR
+            ) - INTERVAL 1 MINUTE`;
+  const winEnd = `coalesce(
+              (SELECT max(End) FROM otel_traces_trace_id_ts WHERE TraceId = {traceId:String}),
+              now()
+            ) + INTERVAL 1 MINUTE`;
+  // otel_traces is partitioned by toDate(Timestamp), so a Timestamp window prunes it.
+  const traceWindow = `
+        AND Timestamp >= ${winStart}
+        AND Timestamp <= ${winEnd}`;
+  // otel_logs is partitioned by toDate(TimestampTime), so it needs the window on
+  // TimestampTime too (the 1-minute margins above already cover the sub-second
+  // truncation, so no extra padding is needed here). Without this the logs leg
+  // of the trace view scans every retained day.
+  const logWindow = `${traceWindow}
+        AND TimestampTime >= ${winStart}
+        AND TimestampTime <= ${winEnd}`;
+
   const spansQ = ch.query({
     query: `
       SELECT
@@ -440,7 +481,7 @@ export async function getTraceDetail(ch: ClickHouseClient, projectId: string, tr
         if(exception_event_index = 0, '', Events.Attributes[exception_event_index]['exception.stacktrace']) AS exception_stacktrace
       FROM otel_traces
       WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
-        AND TraceId = {traceId:String}
+        AND TraceId = {traceId:String}${traceWindow}
       ORDER BY Timestamp ASC, SpanId ASC
       LIMIT 5000
     `,
@@ -465,7 +506,7 @@ export async function getTraceDetail(ch: ClickHouseClient, projectId: string, tr
         LogAttributes['exception.stacktrace'] AS exception_stacktrace
       FROM otel_logs
       WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
-        AND TraceId = {traceId:String}
+        AND TraceId = {traceId:String}${logWindow}
       ORDER BY Timestamp ASC
       LIMIT 5000
     `,
