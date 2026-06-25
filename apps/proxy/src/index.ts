@@ -19,6 +19,10 @@ import {
   parseAccountIdFromFirehoseArn,
 } from "./firehose.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
+import {
+  ClickHouseIngestWriter,
+  getIngestClickHouseConfig,
+} from "./clickhouse-writer.js";
 import { IngestQueue, getIngestQueueConfig } from "./ingest-queue.js";
 import {
   type TelemetrySignal,
@@ -48,7 +52,23 @@ const FIREHOSE_LOGS_COLLECTOR_URL =
   process.env.FIREHOSE_LOGS_COLLECTOR_URL ?? "http://localhost:4434";
 const PORT = Number(process.env.PORT ?? 4000);
 const ingestQueueConfig = getIngestQueueConfig(process.env);
-const ingestQueue = ingestQueueConfig ? new IngestQueue(ingestQueueConfig, logger) : null;
+// When INGEST_CLICKHOUSE_DIRECT=true, the consumer writes logs/traces straight to
+// ClickHouse (parallel synchronous quorum inserts, acked on success) instead of
+// forwarding every message through the collector. Metrics and undecodable bodies
+// still fall through to the collector. Disabled (null) otherwise.
+const ingestClickHouseConfig = getIngestClickHouseConfig(process.env);
+const ingestRowWriter = ingestClickHouseConfig
+  ? new ClickHouseIngestWriter(ingestClickHouseConfig)
+  : undefined;
+if (ingestRowWriter) {
+  logger.info(
+    { database: ingestClickHouseConfig?.database, insertQuorum: ingestClickHouseConfig?.insertQuorum },
+    "ingest direct-to-clickhouse writes enabled for logs and traces",
+  );
+}
+const ingestQueue = ingestQueueConfig
+  ? new IngestQueue(ingestQueueConfig, logger, undefined, ingestRowWriter)
+  : null;
 // Free-tier ingest hard-block. Null (disabled) without AUTUMN_SECRET_KEY. The
 // verdict is a cached, fail-open in-memory read — never a blocking call on the
 // ingest hot path (see billing/ingest-entitlement.ts).
