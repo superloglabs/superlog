@@ -267,32 +267,40 @@ export function anyValueToString(v: OtlpAnyValue | undefined): string {
   if (v.intValue !== undefined) return String(v.intValue);
   if (v.doubleValue !== undefined) return String(v.doubleValue);
   if (v.bytesValue !== undefined) return bytesToBase64(v.bytesValue);
-  if (v.arrayValue) return JSON.stringify((v.arrayValue.values ?? []).map(anyValueToJson));
-  if (v.kvlistValue) return JSON.stringify(anyValueToJson(v));
+  if (v.arrayValue || v.kvlistValue) return jsonEncodeValue(v);
   return "";
 }
 
-function anyValueToJson(v: OtlpAnyValue | undefined): unknown {
-  if (!v) return null;
-  if (v.stringValue !== undefined) return v.stringValue;
-  if (v.boolValue !== undefined) return v.boolValue;
-  // Nested ints serialize as numeric JSON tokens (e.g. [1,2], not ["1","2"]) to
-  // match the collector. intValue arrives as a string (OTLP/JSON int64, and the
-  // protobuf decoder's longs:String); coerce so JSON.stringify emits a number.
-  // Values beyond 2^53 can't be represented exactly in JSON either way.
-  if (v.intValue !== undefined) return typeof v.intValue === "string" ? Number(v.intValue) : v.intValue;
-  if (v.doubleValue !== undefined) return v.doubleValue;
-  if (v.bytesValue !== undefined) return bytesToBase64(v.bytesValue);
-  if (v.arrayValue) return (v.arrayValue.values ?? []).map(anyValueToJson);
+// Serialize a complex OTLP value (array / kvlist) to JSON for the Map(String,String)
+// column, matching the collector (pdata Value.AsString). Strings reuse JSON.stringify
+// (identical JS-style escaping to the previous implementation); the one thing JSON
+// can't express through JS is an int64 beyond 2^53, so ints are emitted as raw numeric
+// tokens straight from their digit strings rather than coerced through Number — keeping
+// full precision (e.g. [1,9007199254740993], not a rounded value).
+function jsonEncodeValue(v: OtlpAnyValue | undefined): string {
+  if (!v) return "null";
+  if (v.stringValue !== undefined) return JSON.stringify(v.stringValue);
+  if (v.boolValue !== undefined) return v.boolValue ? "true" : "false";
+  if (v.intValue !== undefined) return integerToken(v.intValue);
+  if (v.doubleValue !== undefined) return JSON.stringify(v.doubleValue);
+  if (v.bytesValue !== undefined) return JSON.stringify(bytesToBase64(v.bytesValue));
+  if (v.arrayValue) return `[${(v.arrayValue.values ?? []).map(jsonEncodeValue).join(",")}]`;
   if (v.kvlistValue) {
-    const obj: Record<string, unknown> = {};
-    for (const kv of v.kvlistValue.values ?? []) {
-      if (kv.key === undefined || kv.key === null) continue;
-      obj[kv.key] = anyValueToJson(kv.value);
-    }
-    return obj;
+    const entries = (v.kvlistValue.values ?? [])
+      .filter((kv) => kv.key !== undefined && kv.key !== null)
+      .map((kv) => `${JSON.stringify(kv.key)}:${jsonEncodeValue(kv.value)}`);
+    return `{${entries.join(",")}}`;
   }
-  return null;
+  return "null";
+}
+
+// An OTLP int64 as a raw JSON numeric token. OTLP/JSON and the protobuf decoder
+// (longs:String) deliver it as a digit string; emit verbatim so values past 2^53 keep
+// full precision. Falls back to a quoted string for anything not a plain integer
+// literal so we never emit invalid JSON.
+function integerToken(intValue: number | string): string {
+  if (typeof intValue === "number") return String(intValue);
+  return /^-?\d+$/.test(intValue) ? intValue : JSON.stringify(intValue);
 }
 
 function bytesToBase64(b: string | Uint8Array): string {

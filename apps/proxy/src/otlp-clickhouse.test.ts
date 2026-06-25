@@ -39,6 +39,7 @@ const logsExport = {
                 { key: "ratio", value: { doubleValue: 0.5 } },
                 { key: "tags", value: { arrayValue: { values: [{ stringValue: "a" }, { stringValue: "b" }] } } },
                 { key: "codes", value: { arrayValue: { values: [{ intValue: "1" }, { intValue: "2" }] } } },
+                { key: "bigids", value: { arrayValue: { values: [{ intValue: "9007199254740993" }] } } },
               ],
             },
             {
@@ -93,6 +94,8 @@ test("otlpLogsToRows stringifies log attribute values like the collector Map(Str
   assert.equal(a["tags"], '["a","b"]');
   // nested ints serialize as numeric JSON tokens, matching the collector
   assert.equal(a["codes"], "[1,2]");
+  // int64 beyond 2^53 keeps full precision (not rounded via JS Number)
+  assert.equal(a["bigids"], "[9007199254740993]");
 });
 
 test("otlpLogsToRows falls back to observedTimeUnixNano and empty trace context", () => {
