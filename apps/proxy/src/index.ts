@@ -1,5 +1,8 @@
 import "./env.js";
 import { Readable } from "node:stream";
+// Telemetry flush is owned by shutdown() below (the single SIGTERM owner), not by
+// tracing.ts, so the OTel flush can't race the ingest drain and exit early.
+import { shutdownTelemetry } from "./telemetry-shutdown.js";
 import { serve } from "@hono/node-server";
 import { type Span, SpanStatusCode, trace } from "@opentelemetry/api";
 import { hashApiKey, schema, syncLoopsContactsForProject } from "@superlog/db";
@@ -744,6 +747,10 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     if (ingestQueue) {
       await ingestQueue.stop();
     }
+    // Flush telemetry LAST, after the ingest drain. tracing.ts no longer
+    // registers its own SIGTERM handler — it used to race this one and
+    // process.exit(0) mid-drain, orphaning in-flight SQS messages.
+    await shutdownTelemetry();
   } catch (err) {
     // Exit non-zero so a failed drain is visible rather than masquerading as a
     // clean stop.
