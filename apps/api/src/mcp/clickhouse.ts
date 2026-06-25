@@ -435,12 +435,19 @@ export async function getTraceDetail(ch: ClickHouseClient, projectId: string, tr
   // query (incident 2026-06-25: this was the lever that took prod reads down).
   // otel_traces_trace_id_ts is sorted by TraceId, so it resolves the trace's
   // [Start, End] window in O(log n); bounding Timestamp by it prunes the scan to
-  // the 1–2 daily partitions the trace actually lives in. coalesce() falls back
-  // to a bounded recent window if the index has no row yet (e.g. a just-ingested
-  // trace), so we never silently regress to a full scan.
+  // the 1–2 daily partitions the trace actually lives in.
+  //
+  // Fallback when the index has no row for this trace: scan the FULL retained
+  // range (epoch → now), i.e. the old slow-but-correct full scan. A missing row
+  // is not necessarily a just-ingested trace — it can be an older trace whose
+  // index entry was never written (MV gap, or a span pre-dating the view) — so a
+  // "recent" fallback window would silently return an empty trace for real data.
+  // Correctness wins here; the table TTL already caps how far back the scan can
+  // go, and the common case (row present — the MV writes it on insert) stays
+  // tightly bounded and fast.
   const winStart = `coalesce(
               (SELECT min(Start) FROM otel_traces_trace_id_ts WHERE TraceId = {traceId:String}),
-              now() - INTERVAL 6 HOUR
+              toDateTime(0)
             ) - INTERVAL 1 MINUTE`;
   const winEnd = `coalesce(
               (SELECT max(End) FROM otel_traces_trace_id_ts WHERE TraceId = {traceId:String}),
