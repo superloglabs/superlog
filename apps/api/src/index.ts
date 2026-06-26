@@ -2819,6 +2819,78 @@ app.post("/api/projects/:projectId/incidents/:incidentId/agent-run/restart", asy
   return c.json(agentRun);
 });
 
+// Derive a concise incident title from the user's free-text brief.
+function investigationTitle(prompt: string): string {
+  const firstLine = (prompt.split("\n", 1)[0] ?? "").trim();
+  if (!firstLine) return "Manual investigation";
+  return firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine;
+}
+
+// Start a custom investigation from a user-typed prompt: create the incident
+// up-front (reusing the incident model) and queue a "manual" agent run carrying
+// the brief, which the worker threads into the agent's initial instructions.
+app.post("/api/projects/:projectId/investigations", async (c) => {
+  const projectId = c.req.param("projectId");
+  await requireProjectAccess(c, projectId);
+
+  const body = (await c.req.json().catch(() => ({}))) as {
+    prompt?: unknown;
+    service?: unknown;
+    environment?: unknown;
+  };
+  const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+  if (!prompt) throw new HTTPException(400, { message: "prompt is required" });
+  if (prompt.length > 4000) throw new HTTPException(400, { message: "prompt is too long" });
+  const service =
+    typeof body.service === "string" && body.service.trim() ? body.service.trim() : null;
+  const environment =
+    typeof body.environment === "string" && body.environment.trim()
+      ? body.environment.trim()
+      : null;
+
+  const automation = await getProjectAutomation(projectId);
+  if (!automation.agentRunEnabled) {
+    throw new HTTPException(400, { message: "incident agent_runs are disabled" });
+  }
+
+  const now = new Date();
+  const incident = await incidentLifecycle.createOpen({
+    projectId,
+    service,
+    environment,
+    title: investigationTitle(prompt),
+    firstSeen: now,
+    lastSeen: now,
+  });
+
+  const agentRun = await db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(schema.agentRuns)
+      .values({
+        incidentId: incident.id,
+        runtime: automation.agentRunProvider,
+        state: "queued",
+        trigger: "manual",
+        prompt,
+      })
+      .returning();
+    if (!created) throw new Error("failed to start investigation");
+
+    await tx.insert(schema.incidentEvents).values({
+      agentRunId: created.id,
+      kind: "agent_run_queued",
+      summary: "Investigation started from a manual prompt.",
+      detail: { prompt },
+      dedupeKey: `manual:${created.id}`,
+      processedAt: now,
+    });
+
+    return created;
+  });
+
+  return c.json({ incident, agentRun }, 201);
+});
+
 app.post("/api/projects/:projectId/incidents/:incidentId/agent-run/retry-pr", async (c) => {
   const projectId = c.req.param("projectId");
   const incidentId = c.req.param("incidentId");
