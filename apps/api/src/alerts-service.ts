@@ -1,10 +1,16 @@
 import type { ClickHouseClient } from "@clickhouse/client";
 import { db, schema } from "@superlog/db";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { logger } from "./logger.js";
-import { type ResourceAttrFilter, countSeries, metricSeries, pickStep } from "./mcp/clickhouse.js";
+import {
+  type MetricAggregation,
+  type ResourceAttrFilter,
+  countSeries,
+  metricSeries,
+  pickStep,
+} from "./mcp/clickhouse.js";
 
 const log = logger.child({ scope: "alerts" });
 
@@ -366,6 +372,227 @@ export async function previewAlert(
     },
     evaluation,
   );
+}
+
+export type AlertEpisodeIncidentSummary = {
+  id: string;
+  codename: string;
+  status: string;
+  severity: string | null;
+};
+
+export type AlertEpisodeView = {
+  id: string;
+  alertId: string;
+  groupKey: string;
+  state: "firing" | "resolved";
+  startedAt: string;
+  endedAt: string | null;
+  openObservedValue: number;
+  peakObservedValue: number;
+  lastObservedValue: number;
+  lastFiringAt: string;
+  // 1-based ordinal within the alert ("Episode #N"), oldest = 1.
+  seq: number;
+  incident: AlertEpisodeIncidentSummary | null;
+};
+
+// List an alert's episodes, newest-first, each carrying a stable 1-based
+// ordinal and a summary of the incident it produced (if any). Returns null when
+// the alert doesn't belong to the project (404 at the route layer).
+// One bucket of the evaluated signal, in the same shape the dashboard widgets'
+// CountChart consumes (`{ bucket, group, value }` with a raw ClickHouse bucket
+// string), so the alert preview reuses the same chart component.
+export type AlertSeriesRow = { bucket: string; group: string; value: number };
+
+export type AlertPreviewSeries = {
+  rows: AlertSeriesRow[];
+  // Server bucket step ("5 MINUTE") — drives CountChart's x-axis grid.
+  step: string;
+  range: { since: string; until: string };
+  threshold: number;
+  comparator: schema.AlertComparator;
+  windowMinutes: number;
+  // Human label for the plotted signal (metric name, or "<source> count").
+  label: string;
+};
+
+// The time series the alert evaluates, bucketed at the alert's own window so
+// each point is exactly one evaluation ("count over the window" / "metric agg
+// over the window"). Used by the preview graph to show the signal against the
+// threshold line over the recent past. Collapses groups to a single overview
+// series (groupBy is ignored here — per-group preview would need a series each).
+const PREVIEW_BUCKETS = 24;
+
+export async function previewAlertSeries(
+  ch: ClickHouseClient,
+  projectId: string,
+  input: AlertInput,
+): Promise<AlertPreviewSeries> {
+  validateAlertInput(input);
+  const windowMinutes = input.windowMinutes ?? 5;
+  const now = Date.now();
+  const since = new Date(now - windowMinutes * PREVIEW_BUCKETS * 60_000).toISOString();
+  const range = { since, until: new Date(now).toISOString() };
+  const step = { n: windowMinutes, unit: "MINUTE" as const };
+  const filter = alertInputToFilter(input);
+  const label = input.source === "metric" ? (input.metricName ?? "metric") : `${input.source} count`;
+
+  const byBucket = new Map<string, number>();
+  if (input.source === "metric") {
+    if (input.metricName) {
+      const rows = await metricSeries(
+        ch,
+        projectId,
+        input.metricName,
+        { range, service: filter.service, resourceAttrs: filter.resourceAttrs },
+        undefined,
+        step,
+        input.aggregation as MetricAggregation,
+      );
+      for (const r of rows) byBucket.set(r.bucket, (byBucket.get(r.bucket) ?? 0) + r.value);
+    }
+  } else {
+    const rows = await countSeries(
+      ch,
+      projectId,
+      input.source,
+      {
+        range,
+        service: filter.service,
+        resourceAttrs: filter.resourceAttrs,
+        severity: filter.severity,
+        spanName: filter.spanName,
+        statusCode: filter.statusCode,
+        minDurationMs: filter.minDurationMs,
+      },
+      undefined,
+      step,
+    );
+    for (const r of rows) byBucket.set(r.bucket, (byBucket.get(r.bucket) ?? 0) + r.count);
+  }
+
+  const rows: AlertSeriesRow[] = [...byBucket.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([bucket, value]) => ({ bucket, group: label, value }));
+
+  return {
+    rows,
+    step: `${step.n} ${step.unit}`,
+    range,
+    threshold: input.threshold,
+    comparator: input.comparator,
+    windowMinutes,
+    label,
+  };
+}
+
+export async function listAlertEpisodes(
+  projectId: string,
+  alertId: string,
+): Promise<AlertEpisodeView[] | null> {
+  const alert = await db.query.alerts.findFirst({
+    where: and(eq(schema.alerts.id, alertId), eq(schema.alerts.projectId, projectId)),
+    columns: { id: true },
+  });
+  if (!alert) return null;
+
+  // Fetch oldest-first so the ordinal is stable regardless of how many we show.
+  const rows = await db.query.alertEpisodes.findMany({
+    where: eq(schema.alertEpisodes.alertId, alertId),
+    orderBy: [asc(schema.alertEpisodes.startedAt)],
+  });
+  if (rows.length === 0) return [];
+
+  const incidentIds = [
+    ...new Set(rows.map((r) => r.incidentId).filter((id): id is string => id !== null)),
+  ];
+  const incidents = incidentIds.length
+    ? await db.query.incidents.findMany({
+        where: inArray(schema.incidents.id, incidentIds),
+        columns: { id: true, codename: true, status: true, severity: true },
+      })
+    : [];
+  const incMap = new Map(incidents.map((i) => [i.id, i]));
+
+  const views = rows.map((r, i): AlertEpisodeView => {
+    const inc = r.incidentId ? incMap.get(r.incidentId) : undefined;
+    return {
+      id: r.id,
+      alertId: r.alertId,
+      groupKey: r.groupKey,
+      state: r.state,
+      startedAt: r.startedAt.toISOString(),
+      endedAt: r.endedAt ? r.endedAt.toISOString() : null,
+      openObservedValue: r.openObservedValue,
+      peakObservedValue: r.peakObservedValue,
+      lastObservedValue: r.lastObservedValue,
+      lastFiringAt: r.lastFiringAt.toISOString(),
+      seq: i + 1,
+      incident: inc
+        ? { id: inc.id, codename: inc.codename, status: inc.status, severity: inc.severity }
+        : null,
+    };
+  });
+  return views.reverse();
+}
+
+export type IncidentAlertEpisodeView = {
+  id: string;
+  alertId: string;
+  alertName: string;
+  groupKey: string;
+  state: "firing" | "resolved";
+  startedAt: string;
+  endedAt: string | null;
+  peakObservedValue: number;
+  seq: number;
+};
+
+// The alert episodes that triggered a given incident, for the incident detail
+// "Triggered by" back-link. Computes each episode's per-alert ordinal so the UI
+// can render "alert X · Episode #N".
+export async function loadIncidentAlertEpisodes(
+  incidentId: string,
+): Promise<IncidentAlertEpisodeView[]> {
+  const linked = await db.query.alertEpisodes.findMany({
+    where: eq(schema.alertEpisodes.incidentId, incidentId),
+    orderBy: [desc(schema.alertEpisodes.startedAt)],
+  });
+  if (linked.length === 0) return [];
+
+  const alertIds = [...new Set(linked.map((r) => r.alertId))];
+  const alertRows = await db.query.alerts.findMany({
+    where: inArray(schema.alerts.id, alertIds),
+    columns: { id: true, name: true },
+  });
+  const nameMap = new Map(alertRows.map((a) => [a.id, a.name]));
+
+  // Build the per-alert ordinal map from all episodes of the involved alerts.
+  const allForAlerts = await db.query.alertEpisodes.findMany({
+    where: inArray(schema.alertEpisodes.alertId, alertIds),
+    columns: { id: true, alertId: true, startedAt: true },
+    orderBy: [asc(schema.alertEpisodes.startedAt)],
+  });
+  const seqMap = new Map<string, number>();
+  const counters = new Map<string, number>();
+  for (const e of allForAlerts) {
+    const n = (counters.get(e.alertId) ?? 0) + 1;
+    counters.set(e.alertId, n);
+    seqMap.set(e.id, n);
+  }
+
+  return linked.map((r) => ({
+    id: r.id,
+    alertId: r.alertId,
+    alertName: nameMap.get(r.alertId) ?? "alert",
+    groupKey: r.groupKey,
+    state: r.state,
+    startedAt: r.startedAt.toISOString(),
+    endedAt: r.endedAt ? r.endedAt.toISOString() : null,
+    peakObservedValue: r.peakObservedValue,
+    seq: seqMap.get(r.id) ?? 1,
+  }));
 }
 
 export async function testAlertById(

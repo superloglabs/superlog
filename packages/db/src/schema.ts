@@ -1719,6 +1719,55 @@ export const alertFirings = pgTable(
   }),
 );
 
+// One row per *contiguous* activation of an alert — an "episode". Where
+// `alert_firings` is the raw per-evaluation-tick log, an episode collapses the
+// run of consecutive `firing` ticks (for a given alert + groupKey) into a
+// single record: it opens on the `new_firing` transition and closes on
+// `recovered`. Each episode points at the issue it raised and the incident /
+// agent runs that issue produced, and the incident links back via
+// `incident_id`. The partial unique index guarantees at most one open episode
+// per (alert, group) at a time.
+//
+// Episode rows are written best-effort by the alert evaluation loop: a failure
+// to open/close an episode must never block the paging-critical issue/incident
+// path, so they're decoupled from `recordFiring`/`markEvaluated`.
+export const alertEpisodes = pgTable(
+  "alert_episodes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    alertId: uuid("alert_id")
+      .notNull()
+      .references(() => alerts.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    groupKey: text("group_key").notNull().default(""),
+    state: text("state").$type<"firing" | "resolved">().notNull().default("firing"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+    // Observed aggregate value at the moment the episode opened.
+    openObservedValue: doublePrecision("open_observed_value").notNull(),
+    // Most-severe value seen across the episode (max for `gt` alerts, min for
+    // `lt`), maintained on each still-firing tick.
+    peakObservedValue: doublePrecision("peak_observed_value").notNull(),
+    // Value from the latest tick within the episode.
+    lastObservedValue: doublePrecision("last_observed_value").notNull(),
+    // Timestamp of the latest firing tick (advances while the episode is open).
+    lastFiringAt: timestamp("last_firing_at", { withTimezone: true }).notNull(),
+    issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
+    incidentId: uuid("incident_id").references(() => incidents.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    alertStartedIdx: index("alert_episodes_alert_started_idx").on(t.alertId, t.startedAt),
+    incidentIdx: index("alert_episodes_incident_idx").on(t.incidentId),
+    openUniq: uniqueIndex("alert_episodes_open_uniq")
+      .on(t.alertId, t.groupKey)
+      .where(sql`state = 'firing'`),
+  }),
+);
+
 // User-submitted feedback. One table for every surface (in-app dialog on
 // incidents/issues, link in our agent-opened PRs, non-bot review comments
 // on those PRs, and the "Give feedback" button on Slack incident threads).
@@ -1986,6 +2035,7 @@ export type OrgIntegrationSecret = typeof orgIntegrationSecrets.$inferSelect;
 export type SourceMapArtifact = typeof sourceMapArtifacts.$inferSelect;
 export type Alert = typeof alerts.$inferSelect;
 export type AlertFiring = typeof alertFirings.$inferSelect;
+export type AlertEpisode = typeof alertEpisodes.$inferSelect;
 export type AgentPullRequest = typeof agentPullRequests.$inferSelect;
 export type AgentPrEvent = typeof agentPrEvents.$inferSelect;
 export type AgentLinearTicket = typeof agentLinearTickets.$inferSelect;

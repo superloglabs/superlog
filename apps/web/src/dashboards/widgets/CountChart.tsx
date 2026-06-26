@@ -32,6 +32,9 @@ type SeriesChartProps<T extends GroupedRow> = {
   showYAxis?: boolean;
   showLegend: boolean;
   legendPosition: LegendPosition;
+  /** Optional horizontal reference line (e.g. an alert threshold). */
+  threshold?: number;
+  thresholdLabel?: string;
 };
 
 type TimeseriesData = ChartSeries & {
@@ -60,6 +63,7 @@ const FIRST_CHART_COLOR = "#4290F0";
 const OTHER_COLOR = "#878787";
 const AXIS_LABEL_COLOR = "rgba(138, 138, 143, 0.5)";
 const GRID_LINE_COLOR = "rgba(255, 255, 255, 0.07)";
+const THRESHOLD_COLOR = "#E8649D";
 
 const defaultNumberFormat = new Intl.NumberFormat(undefined, {
   maximumFractionDigits: 3,
@@ -85,6 +89,8 @@ export function CountChart<T extends GroupedRow>({
   showYAxis = false,
   showLegend,
   legendPosition,
+  threshold,
+  thresholdLabel,
 }: SeriesChartProps<T>) {
   const window = useMemo(() => {
     const sinceMs = range ? Date.parse(range.since) : Number.NaN;
@@ -146,6 +152,8 @@ export function CountChart<T extends GroupedRow>({
       xMax={window?.untilMs}
       showXAxis={showXAxis}
       showYAxis={showYAxis}
+      threshold={threshold}
+      thresholdLabel={thresholdLabel}
       optionUpdateBehavior={{ notMerge: true, lazyUpdate: true }}
     />
   );
@@ -189,6 +197,8 @@ function KumoLikeTimeseriesChart({
   xMax,
   showXAxis,
   showYAxis,
+  threshold,
+  thresholdLabel,
   optionUpdateBehavior,
 }: {
   data: TimeseriesData[];
@@ -198,6 +208,8 @@ function KumoLikeTimeseriesChart({
   xMax?: number;
   showXAxis: boolean;
   showYAxis: boolean;
+  threshold?: number;
+  thresholdLabel?: string;
   optionUpdateBehavior?: SetOptionOpts;
 }) {
   const chartRef = useRef<EChartsCore.ECharts | null>(null);
@@ -221,6 +233,27 @@ function KumoLikeTimeseriesChart({
         emphasis: { focus: "series" },
         ...seriesType,
       });
+    }
+
+    // Dashed horizontal reference line (e.g. an alert threshold). Attached to
+    // the first series, or a dummy line series when there's no data yet so the
+    // threshold still renders.
+    if (threshold != null && Number.isFinite(threshold)) {
+      const markLine = {
+        silent: true,
+        symbol: "none" as const,
+        data: [{ yAxis: threshold }],
+        lineStyle: { type: "dashed" as const, color: THRESHOLD_COLOR, width: 1 },
+        label: {
+          show: true,
+          position: "insideEndTop" as const,
+          formatter: thresholdLabel ?? `threshold ${formatDefaultValue(threshold)}`,
+          color: THRESHOLD_COLOR,
+          fontSize: 10,
+        },
+      };
+      if (transformSeries[0]) transformSeries[0].markLine = markLine;
+      else transformSeries.push({ type: "line", data: [], markLine });
     }
 
     return {
@@ -274,7 +307,7 @@ function KumoLikeTimeseriesChart({
       },
       series: transformSeries,
     } satisfies EChartsOption;
-  }, [data, type, xMin, xMax, showXAxis, showYAxis]);
+  }, [data, type, xMin, xMax, showXAxis, showYAxis, threshold, thresholdLabel]);
 
   const events = useMemo<Partial<ChartEvents>>(
     () => ({

@@ -28,6 +28,30 @@ export type FiringRecord = {
   issueId: string | null;
 };
 
+export type EpisodeOpenInput = {
+  alertId: string;
+  projectId: string;
+  groupKey: string;
+  startedAt: Date;
+  observedValue: number;
+  issueId: string | null;
+  incidentId: string | null;
+};
+
+export type EpisodeTouchInput = {
+  alertId: string;
+  groupKey: string;
+  observedValue: number;
+  comparator: schema.AlertComparator;
+  evaluatedAt: Date;
+};
+
+export type EpisodeCloseInput = {
+  alertId: string;
+  groupKey: string;
+  endedAt: Date;
+};
+
 export function createAlertRepository(db: DB) {
   return {
     async listDueAlerts(opts: { limit?: number } = {}): Promise<schema.Alert[]> {
@@ -133,6 +157,88 @@ export function createAlertRepository(db: DB) {
         evaluatedAt: record.evaluatedAt,
         issueId: record.issueId,
       });
+    },
+
+    // Resolve the incident an alert issue is currently linked to (if any), so a
+    // freshly-opened episode can point straight at it. `incident_issues` is
+    // 1:1 per issue (unique index on issue_id).
+    async findIncidentIdForIssue(issueId: string): Promise<string | null> {
+      const link = await db.query.incidentIssues.findFirst({
+        where: eq(schema.incidentIssues.issueId, issueId),
+        columns: { incidentId: true },
+      });
+      return link?.incidentId ?? null;
+    },
+
+    // Open a new episode for an alert+group. `ON CONFLICT` (against the partial
+    // unique index over open episodes) makes this idempotent if a previous
+    // episode was somehow left open — it folds into that row rather than
+    // violating the at-most-one-open invariant.
+    async openEpisode(input: EpisodeOpenInput): Promise<void> {
+      await db
+        .insert(schema.alertEpisodes)
+        .values({
+          alertId: input.alertId,
+          projectId: input.projectId,
+          groupKey: input.groupKey,
+          state: "firing",
+          startedAt: input.startedAt,
+          openObservedValue: input.observedValue,
+          peakObservedValue: input.observedValue,
+          lastObservedValue: input.observedValue,
+          lastFiringAt: input.startedAt,
+          issueId: input.issueId,
+          incidentId: input.incidentId,
+        })
+        .onConflictDoUpdate({
+          target: [schema.alertEpisodes.alertId, schema.alertEpisodes.groupKey],
+          targetWhere: sql`state = 'firing'`,
+          set: {
+            lastObservedValue: input.observedValue,
+            lastFiringAt: input.startedAt,
+            issueId: input.issueId,
+            incidentId: input.incidentId,
+            updatedAt: new Date(),
+          },
+        });
+    },
+
+    // Advance an open episode on a still-firing tick: update the latest value,
+    // the most-severe value seen so far, and the last-firing timestamp.
+    async touchOpenEpisode(input: EpisodeTouchInput): Promise<void> {
+      const peakExpr =
+        input.comparator === "gt"
+          ? sql`GREATEST(${schema.alertEpisodes.peakObservedValue}, ${input.observedValue})`
+          : sql`LEAST(${schema.alertEpisodes.peakObservedValue}, ${input.observedValue})`;
+      await db
+        .update(schema.alertEpisodes)
+        .set({
+          peakObservedValue: peakExpr,
+          lastObservedValue: input.observedValue,
+          lastFiringAt: input.evaluatedAt,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(schema.alertEpisodes.alertId, input.alertId),
+            eq(schema.alertEpisodes.groupKey, input.groupKey),
+            eq(schema.alertEpisodes.state, "firing"),
+          ),
+        );
+    },
+
+    // Close the open episode for an alert+group on recovery.
+    async closeOpenEpisode(input: EpisodeCloseInput): Promise<void> {
+      await db
+        .update(schema.alertEpisodes)
+        .set({ state: "resolved", endedAt: input.endedAt, updatedAt: new Date() })
+        .where(
+          and(
+            eq(schema.alertEpisodes.alertId, input.alertId),
+            eq(schema.alertEpisodes.groupKey, input.groupKey),
+            eq(schema.alertEpisodes.state, "firing"),
+          ),
+        );
     },
 
     async markEvaluated(alertId: string, evaluatedAt: Date): Promise<void> {

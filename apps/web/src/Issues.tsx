@@ -19,6 +19,7 @@ import {
   type AgentRun,
   type AgentRunEventActor,
   type Incident,
+  type IncidentAlertEpisode,
   type IncidentEvent,
   type IncidentListItem,
   type IncidentPullRequest,
@@ -839,7 +840,7 @@ function IncidentDrawerBody({
       </div>
     );
   }
-  const { incident, issues, agentRun, agentRuns, timeline } = q.data;
+  const { incident, issues, agentRun, agentRuns, timeline, alertEpisodes } = q.data;
   const statusAction = getIncidentStatusAction(incident.status);
 
   function handleToggleStatus() {
@@ -863,6 +864,7 @@ function IncidentDrawerBody({
       issues={issues}
       agentRun={agentRun}
       agentRuns={agentRuns}
+      alertEpisodes={alertEpisodes}
       pendingResolutionProposal={q.data.pendingResolutionProposal ?? null}
       events={timeline}
       eventsLoading={false}
@@ -1307,11 +1309,50 @@ function ActivitySparkline({ buckets }: { buckets: { day: string; count: number 
   );
 }
 
+// "Triggered by" back-link: an alert-raised incident points back at the
+// episode(s) of the alert that opened it, so you can hop from the incident to
+// the alert rule and its full activation history. Rendered with the same tile
+// markup as the issues list below it.
+function TriggeredByAlertEpisodes({ episodes }: { episodes: IncidentAlertEpisode[] }) {
+  return (
+    <ul className="divide-y divide-border border border-border">
+      {episodes.map((ep) => {
+        const firing = ep.state === "firing";
+        return (
+          <li key={ep.id} className="px-3 py-2">
+            <Link
+              to={`/alerts/${ep.alertId}`}
+              className="block w-full min-w-0 overflow-hidden text-left transition-colors hover:text-muted"
+            >
+              <div className="mb-0.5 flex items-center gap-2">
+                <Chip tone="accent">alert</Chip>
+                <span className="font-mono text-[11px] text-muted">Episode #{ep.seq}</span>
+                <span className="inline-flex items-center gap-1.5 text-[11px] text-muted">
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${firing ? "bg-danger" : "bg-subtle"}`}
+                    aria-hidden
+                  />
+                  {firing ? "Firing" : "Resolved"}
+                </span>
+              </div>
+              <p className="truncate text-[12px] text-fg">
+                {ep.alertName}
+                {ep.groupKey ? ` · ${ep.groupKey}` : ""}
+              </p>
+            </Link>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 export function IncidentDetailContent({
   incident,
   issues,
   agentRun,
   agentRuns = [],
+  alertEpisodes = [],
   pendingResolutionProposal,
   events,
   eventsLoading,
@@ -1332,6 +1373,7 @@ export function IncidentDetailContent({
   issues: Issue[];
   agentRun: AgentRun | null;
   agentRuns?: AgentRun[];
+  alertEpisodes?: IncidentAlertEpisode[];
   pendingResolutionProposal?: PendingResolutionProposal | null;
   events: IncidentEvent[];
   eventsLoading: boolean;
@@ -1399,6 +1441,13 @@ export function IncidentDetailContent({
               <MetaInline label="Last seen" value={fmtRelative(incident.lastSeen)} />
             </div>
           </div>
+
+          {alertEpisodes.length > 0 && (
+            <div className="space-y-3">
+              <SectionHeading>Triggered by</SectionHeading>
+              <TriggeredByAlertEpisodes episodes={alertEpisodes} />
+            </div>
+          )}
 
           <IncidentActivityPanel projectId={incident.projectId} incidentId={incident.id} />
 

@@ -28,6 +28,7 @@ import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { nanoid } from "nanoid";
 import { mountAlerts } from "./alerts.js";
+import { loadIncidentAlertEpisodes } from "./alerts-service.js";
 import { auth } from "./auth.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
@@ -2075,9 +2076,10 @@ app.get("/api/projects/:projectId/incidents/:incidentId", async (c) => {
   // source of truth; the timeline + agent-run history ride along on the
   // same GET so the detail panel renders in one round trip.
   const latestAgentRun = agentRuns[0] ?? null;
-  const [timeline, pendingProposalMap] = await Promise.all([
+  const [timeline, pendingProposalMap, alertEpisodes] = await Promise.all([
     latestAgentRun ? loadIncidentTimeline(incident.id, latestAgentRun.id) : Promise.resolve([]),
     loadPendingResolutionProposals([incident.id]),
+    loadIncidentAlertEpisodes(incident.id),
   ]);
 
   return c.json({
@@ -2086,6 +2088,7 @@ app.get("/api/projects/:projectId/incidents/:incidentId", async (c) => {
     agentRun: latestAgentRun,
     agentRuns,
     timeline,
+    alertEpisodes,
     pendingResolutionProposal: pendingProposalMap.get(incident.id) ?? null,
   });
 });

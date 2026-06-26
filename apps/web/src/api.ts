@@ -1839,7 +1839,22 @@ export type IncidentDetail = {
   // Timeline events scoped to the latest run, plus PR/Linear ticket events.
   // Empty array when there is no agent run yet.
   timeline: IncidentEvent[];
+  // Alert episodes that triggered this incident, for the "Triggered by"
+  // back-link. Empty for incidents not raised by an alert.
+  alertEpisodes: IncidentAlertEpisode[];
   pendingResolutionProposal: PendingResolutionProposal | null;
+};
+
+export type IncidentAlertEpisode = {
+  id: string;
+  alertId: string;
+  alertName: string;
+  groupKey: string;
+  state: "firing" | "resolved";
+  startedAt: string;
+  endedAt: string | null;
+  peakObservedValue: number;
+  seq: number;
 };
 
 export type IncidentPullRequest = {
