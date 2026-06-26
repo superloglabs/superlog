@@ -87,6 +87,43 @@ export function createAutorecoveryMetricsRepository(getCh: () => Promise<ClickHo
         return { totalSpans: 0, perHour: [], lookbackHours: hours, service: null };
       }
       const ch = await getCh();
+      // Prefer the events_per_minute rollup. A service's total span count by
+      // hour is exactly sum(c) over the (project, signal='traces', service)
+      // cells. The raw otel_traces scan instead reads every span in the window:
+      // for a high-volume service over a multi-day lookback that is 100M+ rows
+      // (~100s per query), and the autorecovery agent fires this tool for many
+      // candidates per tick. Those scans saturated the ClickHouse read pool,
+      // which timed out the rest of the worker's sequential tick — including
+      // the agent-run queue, leaving investigations stuck in 'queued'. The
+      // rollup answers the same count from ~10k pre-aggregated rows in
+      // milliseconds. Fall back to the raw scan only where the rollup isn't
+      // deployed (it is not part of the collector's auto-created schema — see
+      // infra/clickhouse/migrations/003_events_per_minute.sql).
+      if (await rollupAvailable(ch)) {
+        const result = await ch.query({
+          query: `
+            SELECT
+              toString(toStartOfHour(minute)) AS hour,
+              toUInt64(sum(c)) AS count
+            FROM events_per_minute
+            WHERE project_id = {project_id:String}
+              AND signal = 'traces'
+              AND service = {service:String}
+              AND minute >= toStartOfHour(now() - INTERVAL {hours:UInt32} HOUR)
+            GROUP BY hour
+            ORDER BY hour ASC
+          `,
+          query_params: {
+            project_id: incident.projectId,
+            service: incident.service,
+            hours,
+          },
+          format: "JSONEachRow",
+        });
+        const rows = (await result.json()) as ActivityBucket[];
+        const totalSpans = rows.reduce((acc, r) => acc + Number(r.count), 0);
+        return { totalSpans, perHour: rows, lookbackHours: hours, service: incident.service };
+      }
       const result = await ch.query({
         query: `
           SELECT
@@ -111,6 +148,34 @@ export function createAutorecoveryMetricsRepository(getCh: () => Promise<ClickHo
       return { totalSpans, perHour: rows, lookbackHours: hours, service: incident.service };
     },
   };
+}
+
+// Probe whether the events_per_minute rollup exists, memoized per client so the
+// common (rollup-present) path costs one EXISTS check per process. Mirrors the
+// API read path (apps/api/src/mcp/clickhouse.ts). A failed probe drops the memo
+// and reports absent, so a transient ClickHouse blip falls back to the raw scan
+// for that call without pinning the slow path until restart.
+const rollupAvailability = new WeakMap<ClickHouseClient, Promise<boolean>>();
+
+function rollupAvailable(ch: ClickHouseClient): Promise<boolean> {
+  let probe = rollupAvailability.get(ch);
+  if (!probe) {
+    probe = (async () => {
+      try {
+        const r = await ch.query({
+          query: "EXISTS TABLE events_per_minute",
+          format: "JSONEachRow",
+        });
+        const rows = (await r.json()) as { result: number | string }[];
+        return Number(rows[0]?.result) === 1;
+      } catch {
+        rollupAvailability.delete(ch);
+        return false;
+      }
+    })();
+    rollupAvailability.set(ch, probe);
+  }
+  return probe;
 }
 
 let cachedClient: ClickHouseClient | null = null;

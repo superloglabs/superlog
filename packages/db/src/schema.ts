@@ -59,7 +59,11 @@ export type AgentRunFailureReason =
   | "missing_session_for_resume"
   | "github_repo_discovery_failed"
   | "github_repo_token_failed"
-  | "unsupported_provider";
+  | "unsupported_provider"
+  // The run's incident or project no longer exists, so its context can never
+  // load and it can never make progress — reaped from the tick rather than
+  // left to rotate through the active set forever.
+  | "context_unavailable";
 
 export type AgentRunFailureCategory = "agent" | "deliverable" | "infra";
 
