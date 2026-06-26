@@ -572,7 +572,7 @@ export async function loadIncidentAlertEpisodes(
   const allForAlerts = await db.query.alertEpisodes.findMany({
     where: inArray(schema.alertEpisodes.alertId, alertIds),
     columns: { id: true, alertId: true, startedAt: true },
-    orderBy: [asc(schema.alertEpisodes.startedAt)],
+    orderBy: [asc(schema.alertEpisodes.startedAt), asc(schema.alertEpisodes.id)],
   });
   const seqMap = new Map<string, number>();
   const counters = new Map<string, number>();

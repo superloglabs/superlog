@@ -170,14 +170,25 @@ export function createAlertRepository(db: DB) {
       return link?.incidentId ?? null;
     },
 
-    // Open a new episode for an alert+group. `ON CONFLICT` (against the partial
-    // unique index over open episodes) makes this idempotent if a previous
-    // episode was somehow left open — it folds into that row rather than
-    // violating the at-most-one-open invariant.
+    // Open a fresh episode for an alert+group. Episode writes are best-effort,
+    // so a previous recovery's `closeOpenEpisode` may have failed and left a
+    // stale open row. Defensively close any such row first (bounded at its last
+    // firing tick) inside one transaction, then insert — so a new activation
+    // always starts a distinct episode instead of merging into the stale one,
+    // and the at-most-one-open invariant holds.
     async openEpisode(input: EpisodeOpenInput): Promise<void> {
-      await db
-        .insert(schema.alertEpisodes)
-        .values({
+      await db.transaction(async (tx) => {
+        await tx
+          .update(schema.alertEpisodes)
+          .set({ state: "resolved", endedAt: sql`last_firing_at`, updatedAt: new Date() })
+          .where(
+            and(
+              eq(schema.alertEpisodes.alertId, input.alertId),
+              eq(schema.alertEpisodes.groupKey, input.groupKey),
+              eq(schema.alertEpisodes.state, "firing"),
+            ),
+          );
+        await tx.insert(schema.alertEpisodes).values({
           alertId: input.alertId,
           projectId: input.projectId,
           groupKey: input.groupKey,
@@ -189,18 +200,8 @@ export function createAlertRepository(db: DB) {
           lastFiringAt: input.startedAt,
           issueId: input.issueId,
           incidentId: input.incidentId,
-        })
-        .onConflictDoUpdate({
-          target: [schema.alertEpisodes.alertId, schema.alertEpisodes.groupKey],
-          targetWhere: sql`state = 'firing'`,
-          set: {
-            lastObservedValue: input.observedValue,
-            lastFiringAt: input.startedAt,
-            issueId: input.issueId,
-            incidentId: input.incidentId,
-            updatedAt: new Date(),
-          },
         });
+      });
     },
 
     // Advance an open episode on a still-firing tick: update the latest value,
