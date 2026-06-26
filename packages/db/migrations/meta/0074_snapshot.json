@@ -1,6 +1,6 @@
 {
-  "id": "b2f122b5-0548-4f3f-9766-f696e4a0a61b",
-  "prevId": "b29122f7-1fdf-43e5-b317-814039e0987a",
+  "id": "fa6e1745-320a-4582-95b5-bf4b012d3aa4",
+  "prevId": "b2f122b5-0548-4f3f-9766-f696e4a0a61b",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1096,6 +1096,12 @@
         "trigger_detail": {
           "name": "trigger_detail",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "prompt": {
+          "name": "prompt",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },

@@ -27,12 +27,12 @@ import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { nanoid } from "nanoid";
+import { loadIncidentAlertEpisodes } from "./alerts-service.js";
 import { mountAlerts } from "./alerts.js";
 import { auth } from "./auth.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
 import { mountDashboards } from "./dashboards.js";
-import { mountTopology } from "./topology.js";
 import {
   demoOverlay,
   demoProjectId,
@@ -93,6 +93,7 @@ import {
 } from "./mcp/clickhouse.js";
 import { mountMcpAuthed, mountMcpPublic } from "./mcp/index.js";
 import { resolveActiveOrgContext, resolveMaybeActiveOrgContext } from "./org-context.js";
+import { ORG_NAME_MAX, createOrgWithDefaults, mountOrgCrud } from "./orgs.js";
 import { mountPersonalAccessTokens } from "./personal-access-tokens.js";
 import { mountSettingsAuthed } from "./settings.js";
 import { normalizeSignupIntentKeyHash, normalizeSignupIntentKeyPrefix } from "./signup-intents.js";
@@ -101,6 +102,7 @@ import { sourceMapObjectStoreFromEnv } from "./sourcemaps.js";
 import { userIsStaff } from "./staff.js";
 import { symbolicateIssueSample, symbolicateTelemetrySample } from "./symbolication.js";
 import { buildSystemCapabilities } from "./system-capabilities.js";
+import { mountTopology } from "./topology.js";
 import { mountWebhooks } from "./webhooks.js";
 
 const PORT = Number(process.env.PORT ?? 4100);
@@ -315,6 +317,7 @@ mountOrgKeyManagementAuthed(app);
 mountDashboards(app);
 mountCloudConnectionsAuthed(app);
 mountIngestFilters(app);
+mountOrgCrud(app);
 mountTopology(app);
 mountAlerts(app, { ch });
 mountWebhooks(app);
@@ -464,27 +467,6 @@ app.put("/api/me/favorite", async (c) => {
   return c.json({ favorite: { orgId: org.id, projectId: project.id } });
 });
 
-const ORG_NAME_MAX = 80;
-
-function slugifyOrgName(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
-}
-
-async function uniqueOrgSlug(client: Pick<typeof db, "query">, base: string): Promise<string> {
-  const seed = base || "org";
-  let candidate = seed;
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const existing = await client.query.orgs.findFirst({ where: eq(schema.orgs.slug, candidate) });
-    if (!existing) return candidate;
-    candidate = `${seed.slice(0, 32)}-${nanoid(6).toLowerCase()}`;
-  }
-  return `${seed.slice(0, 20)}-${nanoid(12).toLowerCase()}`;
-}
-
 // First-org creation. Called by the onboarding wizard's create-org step for
 // users that signed up but don't have a membership yet. Idempotent on retry:
 // if the user already has an org, returns it instead of creating a duplicate.
@@ -558,25 +540,7 @@ app.post("/api/me/orgs", async (c) => {
         };
       }
 
-      const slug = await uniqueOrgSlug(tx, slugifyOrgName(rawName));
-      const [org] = await tx.insert(schema.orgs).values({ name: rawName, slug }).returning();
-      if (!org) throw new HTTPException(500, { message: "failed to create org" });
-
-      await tx
-        .insert(schema.orgMembers)
-        .values({ orgId: org.id, userId, role: "owner" })
-        .onConflictDoNothing({ target: [schema.orgMembers.orgId, schema.orgMembers.userId] });
-
-      const [project] = await tx
-        .insert(schema.projects)
-        .values({ orgId: org.id, name: "Default", slug: "default" })
-        .returning();
-      if (!project) throw new HTTPException(500, { message: "failed to create default project" });
-
-      await tx
-        .insert(schema.projectAutomationSettings)
-        .values({ projectId: project.id, agentRunProvider: resolveDefaultAgentRunProvider() })
-        .onConflictDoNothing({ target: schema.projectAutomationSettings.projectId });
+      const { org, project } = await createOrgWithDefaults(tx, { userId, name: rawName });
 
       // Promote the new org to active on every session this user has open, so the
       // next /api/me call returns it without requiring a sign-out/sign-in round trip.
@@ -2075,9 +2039,10 @@ app.get("/api/projects/:projectId/incidents/:incidentId", async (c) => {
   // source of truth; the timeline + agent-run history ride along on the
   // same GET so the detail panel renders in one round trip.
   const latestAgentRun = agentRuns[0] ?? null;
-  const [timeline, pendingProposalMap] = await Promise.all([
+  const [timeline, pendingProposalMap, alertEpisodes] = await Promise.all([
     latestAgentRun ? loadIncidentTimeline(incident.id, latestAgentRun.id) : Promise.resolve([]),
     loadPendingResolutionProposals([incident.id]),
+    loadIncidentAlertEpisodes(incident.id),
   ]);
 
   return c.json({
@@ -2086,6 +2051,7 @@ app.get("/api/projects/:projectId/incidents/:incidentId", async (c) => {
     agentRun: latestAgentRun,
     agentRuns,
     timeline,
+    alertEpisodes,
     pendingResolutionProposal: pendingProposalMap.get(incident.id) ?? null,
   });
 });
@@ -2240,6 +2206,17 @@ const INCIDENT_USERS_CAP = 200;
 
 // Bulk fetch distinct user IDs per (kind, service, exception_type) across a project.
 // Caller maps the returned tuples back to incidents and Set-unions per-incident.
+// WHERE fragment selecting otel_exceptions rows for the given incident
+// (service, exception_type) pairs, per signal kind. Empty input arrays make the
+// arrayZip empty, so that kind's clause matches nothing — callers don't need to
+// special-case empty inputs. Used by the incident-list aggregates below;
+// reads the exception-only projection (migrations/004_otel_exceptions.sql)
+// instead of full ARRAY JOIN Events scans of otel_traces.
+const INCIDENT_EXCEPTION_PAIR_WHERE = `(
+        (kind = 'span' AND (service, exception_type) IN arrayZip({spanServices:Array(String)}, {spanExcTypes:Array(String)}))
+        OR (kind = 'log' AND (service, exception_type) IN arrayZip({logServices:Array(String)}, {logExcTypes:Array(String)}))
+      )`;
+
 async function fetchIncidentUserIdsByPair(args: {
   projectId: string;
   spanServices: string[];
@@ -2251,44 +2228,16 @@ async function fetchIncidentUserIdsByPair(args: {
   const { projectId, spanServices, spanExcTypes, logServices, logExcTypes, windowDays } = args;
   if (spanServices.length === 0 && logServices.length === 0) return [];
 
-  const spanWhere =
-    spanServices.length === 0
-      ? "0"
-      : `(coalesce(ServiceName, ''), coalesce(event_attrs['exception.type'], '')) IN arrayZip({spanServices:Array(String)}, {spanExcTypes:Array(String)})`;
-  const logWhere =
-    logServices.length === 0
-      ? "0"
-      : `(coalesce(ServiceName, ''), coalesce(LogAttributes['exception.type'], '')) IN arrayZip({logServices:Array(String)}, {logExcTypes:Array(String)})`;
-
   const query = `
-    SELECT 'span' AS kind,
-      coalesce(ServiceName, '') AS svc,
-      coalesce(event_attrs['exception.type'], '') AS et,
-      groupUniqArray(${INCIDENT_USERS_CAP})(nullIf(coalesce(SpanAttributes['user.id'], ResourceAttributes['user.id']), '')) AS users
-    FROM (
-      SELECT Timestamp, ServiceName, SpanAttributes, ResourceAttributes, Events.Name, Events.Attributes
-      FROM otel_traces
-      WHERE Timestamp > now() - INTERVAL {days:UInt32} DAY
-        AND ResourceAttributes['superlog.project_id'] = {projectId:String}
-        AND has({spanServices:Array(String)}, coalesce(ServiceName, ''))
-        AND has(Events.Name, 'exception')
-    )
-    ARRAY JOIN Events.Name AS event_name, Events.Attributes AS event_attrs
-    WHERE event_name = 'exception'
-      AND ${spanWhere}
-    GROUP BY svc, et
-    UNION ALL
-    SELECT 'log' AS kind,
-      coalesce(ServiceName, '') AS svc,
-      coalesce(LogAttributes['exception.type'], '') AS et,
-      groupUniqArray(${INCIDENT_USERS_CAP})(nullIf(coalesce(LogAttributes['user.id'], ResourceAttributes['user.id']), '')) AS users
-    FROM otel_logs
-    WHERE Timestamp > now() - INTERVAL {days:UInt32} DAY
-      AND ResourceAttributes['superlog.project_id'] = {projectId:String}
-      AND SeverityNumber >= 17
-      AND has({logServices:Array(String)}, coalesce(ServiceName, ''))
-      AND ${logWhere}
-    GROUP BY svc, et
+    SELECT kind,
+      service AS svc,
+      exception_type AS et,
+      groupUniqArray(${INCIDENT_USERS_CAP})(nullIf(user_id, '')) AS users
+    FROM otel_exceptions
+    WHERE project_id = {projectId:String}
+      AND Timestamp > now() - INTERVAL {days:UInt32} DAY
+      AND ${INCIDENT_EXCEPTION_PAIR_WHERE}
+    GROUP BY kind, svc, et
   `;
 
   const res = await ch.query({
@@ -2328,46 +2277,17 @@ async function fetchIncidentTimeseriesPairs(args: {
   const { projectId, spanServices, spanExcTypes, logServices, logExcTypes, windowDays } = args;
   if (spanServices.length === 0 && logServices.length === 0) return [];
 
-  const spanWhere =
-    spanServices.length === 0
-      ? "0"
-      : `(coalesce(ServiceName, ''), coalesce(event_attrs['exception.type'], '')) IN arrayZip({spanServices:Array(String)}, {spanExcTypes:Array(String)})`;
-  const logWhere =
-    logServices.length === 0
-      ? "0"
-      : `(coalesce(ServiceName, ''), coalesce(LogAttributes['exception.type'], '')) IN arrayZip({logServices:Array(String)}, {logExcTypes:Array(String)})`;
-
   const query = `
-    SELECT 'span' AS kind,
-      coalesce(ServiceName, '') AS svc,
-      coalesce(event_attrs['exception.type'], '') AS et,
+    SELECT kind,
+      service AS svc,
+      exception_type AS et,
       toString(toDate(Timestamp)) AS day,
       count() AS c
-    FROM (
-      SELECT Timestamp, ServiceName, Events.Name, Events.Attributes
-      FROM otel_traces
-      WHERE Timestamp > now() - INTERVAL {days:UInt32} DAY
-        AND ResourceAttributes['superlog.project_id'] = {projectId:String}
-        AND has({spanServices:Array(String)}, coalesce(ServiceName, ''))
-        AND has(Events.Name, 'exception')
-    )
-    ARRAY JOIN Events.Name AS event_name, Events.Attributes AS event_attrs
-    WHERE event_name = 'exception'
-      AND ${spanWhere}
-    GROUP BY svc, et, day
-    UNION ALL
-    SELECT 'log' AS kind,
-      coalesce(ServiceName, '') AS svc,
-      coalesce(LogAttributes['exception.type'], '') AS et,
-      toString(toDate(Timestamp)) AS day,
-      count() AS c
-    FROM otel_logs
-    WHERE Timestamp > now() - INTERVAL {days:UInt32} DAY
-      AND ResourceAttributes['superlog.project_id'] = {projectId:String}
-      AND SeverityNumber >= 17
-      AND has({logServices:Array(String)}, coalesce(ServiceName, ''))
-      AND ${logWhere}
-    GROUP BY svc, et, day
+    FROM otel_exceptions
+    WHERE project_id = {projectId:String}
+      AND Timestamp > now() - INTERVAL {days:UInt32} DAY
+      AND ${INCIDENT_EXCEPTION_PAIR_WHERE}
+    GROUP BY kind, svc, et, day
   `;
 
   const res = await ch.query({

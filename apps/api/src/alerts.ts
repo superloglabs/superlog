@@ -8,8 +8,10 @@ import {
   createAlertRecord,
   deleteAlertRecord,
   getAlertWithFirings,
+  listAlertEpisodes,
   listAlertsForProject,
   previewAlert,
+  previewAlertSeries,
   testAlertById,
   updateAlertRecord,
 } from "./alerts-service.js";
@@ -57,6 +59,15 @@ export function mountAlerts(app: Hono<{ Variables: Vars }>, opts: { ch: ClickHou
     return c.json(alert);
   });
 
+  app.get("/api/projects/:projectId/alerts/:id/episodes", async (c) => {
+    const projectId = c.req.param("projectId");
+    const id = c.req.param("id");
+    await requireAccess(c, projectId);
+    const episodes = await listAlertEpisodes(projectId, id);
+    if (episodes === null) throw new HTTPException(404, { message: "alert not found" });
+    return c.json(episodes);
+  });
+
   app.patch("/api/projects/:projectId/alerts/:id", async (c) => {
     const projectId = c.req.param("projectId");
     const id = c.req.param("id");
@@ -84,6 +95,15 @@ export function mountAlerts(app: Hono<{ Variables: Vars }>, opts: { ch: ClickHou
     const parsed = alertInputSchema.safeParse(body);
     if (!parsed.success) throw new HTTPException(400, { message: "invalid body" });
     return c.json(await previewAlert(opts.ch, projectId, parsed.data));
+  });
+
+  app.post("/api/projects/:projectId/alerts/preview-series", async (c) => {
+    const projectId = c.req.param("projectId");
+    await requireAccess(c, projectId);
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = alertInputSchema.safeParse(body);
+    if (!parsed.success) throw new HTTPException(400, { message: "invalid body" });
+    return c.json(await previewAlertSeries(opts.ch, projectId, parsed.data));
   });
 
   app.post("/api/projects/:projectId/alerts/:id/test", async (c) => {

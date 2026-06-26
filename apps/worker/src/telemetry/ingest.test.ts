@@ -81,6 +81,10 @@ test("span ingestion processes every row for a selected timestamp", async () => 
 
   assert.equal(await ingestor.tickSpans(), 2);
   assert.match(calls[0]?.query ?? "", /GROUP BY Timestamp/);
+  // Reads the exception-only projection, not ARRAY JOIN Events over otel_traces.
+  assert.match(calls[0]?.query ?? "", /FROM otel_exceptions/);
+  assert.match(calls[0]?.query ?? "", /kind = 'span'/);
+  assert.doesNotMatch(calls[0]?.query ?? "", /ARRAY JOIN/);
   assert.equal("cursorKey0" in (calls[0]?.query_params ?? {}), false);
   assert.equal(calls[0]?.query_params?.cursorTs, "2026-05-23 10:00:00.000");
   assert.equal(state.get("fingerprint")?.cursor.toISOString(), "2026-05-23T10:00:00.000Z");
@@ -115,6 +119,9 @@ test("log ingestion processes every row for a selected timestamp", async () => {
 
   assert.equal(await ingestor.tickLogs(), 2);
   assert.match(calls[0]?.query ?? "", /GROUP BY Timestamp/);
+  // Reads the exception-only projection (kind='log'), not a full otel_logs scan.
+  assert.match(calls[0]?.query ?? "", /FROM otel_exceptions/);
+  assert.match(calls[0]?.query ?? "", /kind = 'log'/);
   assert.equal("cursorKey0" in (calls[0]?.query_params ?? {}), false);
   assert.equal(calls[0]?.query_params?.cursorTs, "2026-05-23 10:00:00.000");
   assert.equal(state.get("fingerprint-logs")?.cursor.toISOString(), "2026-05-23T10:00:00.000Z");

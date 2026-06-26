@@ -382,3 +382,81 @@ FROM superlog.otel_logs
 WHERE ResourceAttributes['superlog.project_id'] != ''
 GROUP BY project_id, signal, service, severity, status_code, minute
 ;
+-- otel_exceptions (exception-only projection; see migrations/004_otel_exceptions.sql
+-- for rationale + backfill notes). One row per exception event so the Issues
+-- feature + worker exception-ingest stop full ARRAY JOIN Events scans of otel_traces.
+CREATE TABLE IF NOT EXISTS superlog.otel_exceptions ON CLUSTER superlog_ha
+(
+    `project_id` String CODEC(ZSTD(1)),
+    `Timestamp` DateTime64(9) CODEC(Delta(8), ZSTD(1)),
+    `kind` LowCardinality(String) CODEC(ZSTD(1)),
+    `service` LowCardinality(String) CODEC(ZSTD(1)),
+    `span_name` LowCardinality(String) CODEC(ZSTD(1)),
+    `trace_id` String CODEC(ZSTD(1)),
+    `span_id` String CODEC(ZSTD(1)),
+    `exception_type` LowCardinality(String) CODEC(ZSTD(1)),
+    `exception_message` String CODEC(ZSTD(1)),
+    `exception_stacktrace` String CODEC(ZSTD(1)),
+    `fingerprint` String CODEC(ZSTD(1)),
+    `user_id` String CODEC(ZSTD(1)),
+    `resource_attrs` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    `attrs` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    `body` String CODEC(ZSTD(1)),
+    `severity` LowCardinality(String) CODEC(ZSTD(1)),
+    `severity_number` UInt8 CODEC(ZSTD(1)),
+    INDEX idx_exc_project_id project_id TYPE set(0) GRANULARITY 4
+)
+ENGINE = ReplicatedMergeTree('/clickhouse/{cluster}/tables/{shard}/{database}/{table}', '{replica}')
+PARTITION BY toDate(Timestamp)
+ORDER BY (project_id, service, exception_type, Timestamp)
+SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
+;
+-- otel_exceptions_from_traces_mv
+CREATE MATERIALIZED VIEW IF NOT EXISTS superlog.otel_exceptions_from_traces_mv ON CLUSTER superlog_ha TO superlog.otel_exceptions
+AS SELECT
+    ResourceAttributes['superlog.project_id'] AS project_id,
+    Timestamp,
+    'span' AS kind,
+    ServiceName AS service,
+    SpanName AS span_name,
+    TraceId AS trace_id,
+    SpanId AS span_id,
+    event_attrs['exception.type'] AS exception_type,
+    event_attrs['exception.message'] AS exception_message,
+    event_attrs['exception.stacktrace'] AS exception_stacktrace,
+    event_attrs['superlog.issue_fingerprint'] AS fingerprint,
+    if(SpanAttributes['user.id'] != '', SpanAttributes['user.id'], ResourceAttributes['user.id']) AS user_id,
+    ResourceAttributes AS resource_attrs,
+    SpanAttributes AS attrs,
+    '' AS body,
+    '' AS severity,
+    toUInt8(0) AS severity_number
+FROM superlog.otel_traces
+ARRAY JOIN Events.Name AS event_name, Events.Attributes AS event_attrs
+WHERE event_name = 'exception'
+  AND ResourceAttributes['superlog.project_id'] != ''
+;
+-- otel_exceptions_from_logs_mv
+CREATE MATERIALIZED VIEW IF NOT EXISTS superlog.otel_exceptions_from_logs_mv ON CLUSTER superlog_ha TO superlog.otel_exceptions
+AS SELECT
+    ResourceAttributes['superlog.project_id'] AS project_id,
+    Timestamp,
+    'log' AS kind,
+    ServiceName AS service,
+    '' AS span_name,
+    TraceId AS trace_id,
+    SpanId AS span_id,
+    LogAttributes['exception.type'] AS exception_type,
+    LogAttributes['exception.message'] AS exception_message,
+    LogAttributes['exception.stacktrace'] AS exception_stacktrace,
+    LogAttributes['superlog.issue_fingerprint'] AS fingerprint,
+    if(LogAttributes['user.id'] != '', LogAttributes['user.id'], ResourceAttributes['user.id']) AS user_id,
+    ResourceAttributes AS resource_attrs,
+    LogAttributes AS attrs,
+    Body AS body,
+    SeverityText AS severity,
+    toUInt8(SeverityNumber) AS severity_number
+FROM superlog.otel_logs
+WHERE SeverityNumber >= 17
+  AND ResourceAttributes['superlog.project_id'] != ''
+;

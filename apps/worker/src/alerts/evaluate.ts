@@ -76,6 +76,17 @@ async function processEvaluation(
       "alert firing",
     );
     issueId = await upsertAndNotify(alert, evalResult, evaluatedAt, deps);
+    await openEpisodeBestEffort(alert, evalResult, evaluatedAt, issueId, deps);
+  } else if (transition === "still_firing") {
+    await runEpisodeBestEffort(alert, evalResult.groupKey, deps, () =>
+      deps.repo.touchOpenEpisode({
+        alertId: alert.id,
+        groupKey: evalResult.groupKey,
+        observedValue: evalResult.value,
+        comparator: alert.comparator,
+        evaluatedAt,
+      }),
+    );
   } else if (transition === "recovered") {
     deps.logger.info(
       {
@@ -88,6 +99,13 @@ async function processEvaluation(
       },
       "alert recovered",
     );
+    await runEpisodeBestEffort(alert, evalResult.groupKey, deps, () =>
+      deps.repo.closeOpenEpisode({
+        alertId: alert.id,
+        groupKey: evalResult.groupKey,
+        endedAt: evaluatedAt,
+      }),
+    );
   }
 
   await deps.repo.recordFiring({
@@ -97,6 +115,52 @@ async function processEvaluation(
     observedValue: evalResult.value,
     evaluatedAt,
     issueId,
+  });
+}
+
+// Episodes are a secondary, read-side record of a contiguous activation. They
+// must never break the paging-critical issue/incident path or the
+// recordFiring/markEvaluated invariant, so every episode write is best-effort:
+// a failure is logged and swallowed rather than propagated.
+async function runEpisodeBestEffort(
+  alert: schema.Alert,
+  groupKey: string,
+  deps: EvaluateAlertDeps,
+  op: () => Promise<void>,
+): Promise<void> {
+  try {
+    await op();
+  } catch (err) {
+    deps.logger.error(
+      { err, alert_id: alert.id, project_id: alert.projectId, group_key: groupKey },
+      "alert episode update failed",
+    );
+  }
+}
+
+// Open a fresh episode for a new firing, pointing it at the issue just raised
+// and the incident that issue resolves to (created/linked synchronously inside
+// upsertAndNotify before we get here).
+async function openEpisodeBestEffort(
+  alert: schema.Alert,
+  evalResult: EvaluationResult,
+  evaluatedAt: Date,
+  issueId: string,
+  deps: EvaluateAlertDeps,
+): Promise<void> {
+  await runEpisodeBestEffort(alert, evalResult.groupKey, deps, async () => {
+    const incidentId = await deps.repo.findIncidentIdForIssue(issueId);
+    await deps.repo.openEpisode({
+      alertId: alert.id,
+      projectId: alert.projectId,
+      groupKey: evalResult.groupKey,
+      startedAt: evaluatedAt,
+      observedValue: evalResult.value,
+      comparator: alert.comparator,
+      evaluationIntervalSeconds: alert.evaluationIntervalSeconds,
+      issueId,
+      incidentId,
+    });
   });
 }
 

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   ORG_NAV_GROUPS,
   PROJECT_NAV_GROUPS,
+  nextOrgIdAfterDelete,
   nextProjectIdAfterDelete,
   projectPickerOptions,
   resolveOrgSection,
@@ -92,4 +93,13 @@ test("project deletion selects a neighboring project for the URL", () => {
   assert.equal(nextProjectIdAfterDelete(projects, "p3"), "p2");
   assert.equal(nextProjectIdAfterDelete(projects, "p1"), "p2");
   assert.equal(nextProjectIdAfterDelete([{ id: "p1", name: "One" }], "p1"), undefined);
+});
+
+test("nextOrgIdAfterDelete picks the neighbour at the same position", () => {
+  const orgs = [{ id: "o1" }, { id: "o2" }, { id: "o3" }];
+  assert.equal(nextOrgIdAfterDelete(orgs, "o2"), "o3");
+  assert.equal(nextOrgIdAfterDelete(orgs, "o3"), "o2");
+  assert.equal(nextOrgIdAfterDelete(orgs, "o1"), "o2");
+  assert.equal(nextOrgIdAfterDelete([{ id: "o1" }], "o1"), undefined);
+  assert.equal(nextOrgIdAfterDelete(orgs, "missing"), "o1");
 });

@@ -128,6 +128,32 @@ export function useCreateMyFirstOrg() {
   });
 }
 
+// Create an additional organization (the caller already has one). Callers
+// switch the active org to the new one and then invalidate ["me"] /
+// ["org-projects"] — so invalidation lives at the call site (after setActive),
+// not here, to avoid a premature refetch against the old active org.
+export function useCreateOrg() {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: (name: string) =>
+      fetcher<{
+        org: { id: string; name: string; slug: string };
+        project: { id: string; name: string; slug: string };
+      }>("/api/orgs", { method: "POST", body: JSON.stringify({ name }) }),
+  });
+}
+
+// Delete an organization (owner-only, and never the caller's last org — both
+// enforced server-side). Callers setActive() to a remaining org first and then
+// invalidate the org-scoped queries, so invalidation lives at the call site.
+export function useDeleteOrg() {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: (orgId: string) =>
+      fetcher<{ ok: true }>(`/api/orgs/${orgId}`, { method: "DELETE" }),
+  });
+}
+
 export type SignupIntentClaim = {
   id: string | null;
   keyPrefix: string;
@@ -1839,7 +1865,22 @@ export type IncidentDetail = {
   // Timeline events scoped to the latest run, plus PR/Linear ticket events.
   // Empty array when there is no agent run yet.
   timeline: IncidentEvent[];
+  // Alert episodes that triggered this incident, for the "Triggered by"
+  // back-link. Empty for incidents not raised by an alert.
+  alertEpisodes: IncidentAlertEpisode[];
   pendingResolutionProposal: PendingResolutionProposal | null;
+};
+
+export type IncidentAlertEpisode = {
+  id: string;
+  alertId: string;
+  alertName: string;
+  groupKey: string;
+  state: "firing" | "resolved";
+  startedAt: string;
+  endedAt: string | null;
+  peakObservedValue: number;
+  seq: number;
 };
 
 export type IncidentPullRequest = {

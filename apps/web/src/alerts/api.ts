@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Alert,
   AlertCreateBody,
+  AlertEpisode,
+  AlertPreviewSeries,
   AlertTestResult,
   AlertWithFirings,
 } from "./types.ts";
@@ -37,6 +39,15 @@ export function useAlert(projectId: string | undefined, id: string | undefined) 
   return useQuery({
     queryKey: ["alert", projectId, id],
     queryFn: () => fetcher<AlertWithFirings>(`/api/projects/${projectId}/alerts/${id}`),
+    enabled: !!projectId && !!id,
+  });
+}
+
+export function useAlertEpisodes(projectId: string | undefined, id: string | undefined) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["alert-episodes", projectId, id],
+    queryFn: () => fetcher<AlertEpisode[]>(`/api/projects/${projectId}/alerts/${id}/episodes`),
     enabled: !!projectId && !!id,
   });
 }
@@ -87,6 +98,17 @@ export function usePreviewAlert(projectId: string) {
   return useMutation({
     mutationFn: (body: AlertCreateBody) =>
       fetcher<AlertTestResult>(`/api/projects/${projectId}/alerts/preview`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+  });
+}
+
+export function usePreviewAlertSeries(projectId: string) {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: (body: AlertCreateBody) =>
+      fetcher<AlertPreviewSeries>(`/api/projects/${projectId}/alerts/preview-series`, {
         method: "POST",
         body: JSON.stringify(body),
       }),
