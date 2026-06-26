@@ -34,6 +34,10 @@ export type EpisodeOpenInput = {
   groupKey: string;
   startedAt: Date;
   observedValue: number;
+  comparator: schema.AlertComparator;
+  // Used to tell a missed-close stale open (recovery left a multi-interval gap)
+  // apart from a concurrent duplicate new_firing (no gap).
+  evaluationIntervalSeconds: number;
   issueId: string | null;
   incidentId: string | null;
 };
@@ -170,30 +174,31 @@ export function createAlertRepository(db: DB) {
       return link?.incidentId ?? null;
     },
 
-    // Open a fresh episode for an alert+group. Episode writes are best-effort,
-    // so a previous recovery's `closeOpenEpisode` may have failed and left a
-    // stale open row. Defensively close any such *stale* row first (bounded at
-    // its last firing tick) inside one transaction, then insert — so a new
-    // activation starts a distinct episode instead of merging into the stale
-    // one. The `last_firing_at < startedAt` guard means we only close opens
-    // from an earlier activation; a concurrent same-activation open (equal/
-    // later last-firing) is left intact and our redundant insert simply hits
-    // the partial-unique index and rolls back, so an activation can't be
-    // fragmented into zero-length episodes.
+    // Open (or continue) the episode for an alert+group as a single atomic
+    // upsert against the partial-unique index over open rows. Because there is
+    // never more than one open row per (alert, group), this can't fragment one
+    // activation into multiple episodes — even under multiple concurrent worker
+    // tasks all classifying the same `new_firing`; the extras just fold into
+    // the one open row.
+    //
+    // A continuously-firing alert advances `last_firing_at` every evaluation
+    // interval, so an open row that hasn't fired for several intervals means
+    // the alert recovered in between and a best-effort `closeOpenEpisode` was
+    // missed. That gap is what distinguishes a stale open (restart this row as
+    // a fresh activation) from a same-activation tick or a concurrent duplicate
+    // new_firing (keep the original start; never fragment).
     async openEpisode(input: EpisodeOpenInput): Promise<void> {
-      await db.transaction(async (tx) => {
-        await tx
-          .update(schema.alertEpisodes)
-          .set({ state: "resolved", endedAt: sql`last_firing_at`, updatedAt: new Date() })
-          .where(
-            and(
-              eq(schema.alertEpisodes.alertId, input.alertId),
-              eq(schema.alertEpisodes.groupKey, input.groupKey),
-              eq(schema.alertEpisodes.state, "firing"),
-              lt(schema.alertEpisodes.lastFiringAt, input.startedAt),
-            ),
-          );
-        await tx.insert(schema.alertEpisodes).values({
+      const staleCutoff = new Date(
+        input.startedAt.getTime() - Math.max(input.evaluationIntervalSeconds * 3, 60) * 1000,
+      ).toISOString();
+      const isStale = sql`${schema.alertEpisodes.lastFiringAt} < ${staleCutoff}::timestamptz`;
+      const mergedPeak =
+        input.comparator === "gt"
+          ? sql`GREATEST(${schema.alertEpisodes.peakObservedValue}, excluded.peak_observed_value)`
+          : sql`LEAST(${schema.alertEpisodes.peakObservedValue}, excluded.peak_observed_value)`;
+      await db
+        .insert(schema.alertEpisodes)
+        .values({
           alertId: input.alertId,
           projectId: input.projectId,
           groupKey: input.groupKey,
@@ -205,8 +210,23 @@ export function createAlertRepository(db: DB) {
           lastFiringAt: input.startedAt,
           issueId: input.issueId,
           incidentId: input.incidentId,
+        })
+        .onConflictDoUpdate({
+          target: [schema.alertEpisodes.alertId, schema.alertEpisodes.groupKey],
+          targetWhere: sql`state = 'firing'`,
+          set: {
+            // Stale open → restart in place as the new activation; otherwise
+            // keep the existing activation's start and accumulate.
+            startedAt: sql`CASE WHEN ${isStale} THEN excluded.started_at ELSE ${schema.alertEpisodes.startedAt} END`,
+            openObservedValue: sql`CASE WHEN ${isStale} THEN excluded.open_observed_value ELSE ${schema.alertEpisodes.openObservedValue} END`,
+            peakObservedValue: sql`CASE WHEN ${isStale} THEN excluded.peak_observed_value ELSE ${mergedPeak} END`,
+            lastObservedValue: sql`excluded.last_observed_value`,
+            lastFiringAt: sql`excluded.last_firing_at`,
+            issueId: sql`excluded.issue_id`,
+            incidentId: sql`excluded.incident_id`,
+            updatedAt: new Date(),
+          },
         });
-      });
     },
 
     // Advance an open episode on a still-firing tick: update the latest value,

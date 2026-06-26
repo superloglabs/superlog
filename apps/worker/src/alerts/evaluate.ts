@@ -156,6 +156,8 @@ async function openEpisodeBestEffort(
       groupKey: evalResult.groupKey,
       startedAt: evaluatedAt,
       observedValue: evalResult.value,
+      comparator: alert.comparator,
+      evaluationIntervalSeconds: alert.evaluationIntervalSeconds,
       issueId,
       incidentId,
     });
