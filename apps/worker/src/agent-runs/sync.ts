@@ -4,6 +4,7 @@ import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import { type AgentRunOutcome, recordAgentRunCompletion } from "../ai-usage.js";
 import { investigationGate } from "../billing/investigation-gate.js";
+import { usageNotifier } from "../billing/usage-notifier-ticker.js";
 import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
 import { postIncidentThreadMessage } from "../infra/slack/incident-messages.js";
 import { type ResolvedIntegration, loadEnabledIntegrationsForOrg } from "../integrations.js";
@@ -373,6 +374,9 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         // recordInvestigation never throws (see investigation-gate.ts).
         if (outcome === "complete_with_pr" || outcome === "complete_no_pr") {
           await investigationGate.recordInvestigation(ctx.project.orgId);
+          // Re-check usage after consuming a credit so investigation 50/85/100%
+          // thresholds fire promptly. Fire-and-forget; the notifier dedupes.
+          void usageNotifier?.notify(ctx.project.orgId);
         }
       };
 

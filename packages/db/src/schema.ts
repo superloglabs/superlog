@@ -1065,6 +1065,37 @@ export const workerState = pgTable("worker_state", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+// Per-org dedup ledger for usage-limit notifications. One row per
+// (org, billing period, threshold step) that has already fired, so the worker
+// notifier sends each 50/85/100% notice at most once per period. The unique
+// index makes the claim atomic: insert ... onConflictDoNothing().returning()
+// tells the notifier whether THIS call won the step (→ send) or lost (→ skip).
+export const usageNotifications = pgTable(
+  "usage_notifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    // Billing-period start as "YYYY-MM-DD" (period.ts periodKey) — resets the
+    // dedup window each cycle so notifications can fire again next period.
+    periodKey: text("period_key").notNull(),
+    // 50 | 85 | 100.
+    threshold: integer("threshold").notNull(),
+    // Which metered feature drove the watermark when this step fired (spans /
+    // logs / metric_points / investigations) — recorded for observability.
+    feature: text("feature").notNull(),
+    notifiedAt: timestamp("notified_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    orgPeriodThresholdUniq: uniqueIndex("usage_notifications_org_period_threshold_idx").on(
+      t.orgId,
+      t.periodKey,
+      t.threshold,
+    ),
+  }),
+);
+
 export const cliSessions = pgTable("cli_sessions", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id")

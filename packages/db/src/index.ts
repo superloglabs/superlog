@@ -191,10 +191,14 @@ export type {
   LinearWebhook,
 } from "./linear.js";
 export {
+  DEFAULT_LOOPS_USAGE_EVENT,
   DEFAULT_LOOPS_WELCOME_EVENT,
   buildLoopsContactPayload,
+  buildLoopsUsageThresholdPayload,
   buildLoopsWelcomeEventPayload,
   fetchLoopsLifecycleForUserProject,
+  fetchOrgMemberContacts,
+  sendLoopsUsageThresholdEvent,
   sendLoopsWelcomeFlow,
   syncLoopsContactForUserProject,
   syncLoopsContactsForOrg,
@@ -204,6 +208,8 @@ export {
 export type {
   LoopsContactPayload,
   LoopsLifecycle,
+  LoopsUsageThresholdEventPayload,
+  LoopsUsageThresholdInput,
   LoopsWelcomeEventPayload,
   LoopsWelcomeFlowInput,
   SendLoopsResult,

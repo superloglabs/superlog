@@ -8,6 +8,7 @@ import {
 } from "../agent-run.js";
 import { TERMINAL_STATES as AGENT_RUN_TERMINAL_STATES } from "../agent-runs/domain.js";
 import { investigationGate } from "../billing/investigation-gate.js";
+import { usageNotifier } from "../billing/usage-notifier-ticker.js";
 import { isAutoAgentRunSuppressed } from "../incident-cooldown.js";
 import { ensureIncidentForIssue } from "../incident-intake.js";
 import { buildReopenedIncidentSlackUpdate } from "../incident-slack.js";
@@ -81,6 +82,11 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
       { scope: "agent_run", incidentId: incident.id, orgId: project.orgId },
       "skipping auto-agent run; org is out of investigation credits",
     );
+    // Blocked because the org hit its investigation cap → fire the upgrade
+    // nudge (email + Slack). Deduped per period, so one notice, not one per
+    // blocked incident. The per-incident "not started" Slack line is added
+    // separately by the caller. Fire-and-forget.
+    void usageNotifier?.notify(project.orgId);
     return { agentRun: null, queueStatus: "no_credits" };
   }
 

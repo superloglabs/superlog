@@ -49,6 +49,9 @@ export type UsageMeterDeps = {
   setCursor: (name: string, at: Date) => Promise<void>;
   now: () => Date;
   windowMs: number;
+  // Optional hook: called once per org that produced usage this tick, so the
+  // usage-limit notifier can evaluate recently-active orgs. Best-effort.
+  onOrgMetered?: (orgId: string) => void;
 };
 
 // One metering pass over all three signals. Returns the number of (org, signal)
@@ -61,11 +64,7 @@ export async function meterTelemetryUsageTick(deps: UsageMeterDeps): Promise<num
     const until = new Date(Math.min(cursor.getTime() + deps.windowMs, deps.now().getTime()));
     if (until.getTime() <= cursor.getTime()) continue; // nothing new to scan yet
 
-    const perProject = await deps.countByProject(
-      signal,
-      cursor.toISOString(),
-      until.toISOString(),
-    );
+    const perProject = await deps.countByProject(signal, cursor.toISOString(), until.toISOString());
     // Persist the cursor BEFORE issuing the non-idempotent track() calls. track()
     // is additive, so a setCursor failure AFTER tracking would replay this window
     // next tick and double-charge. Advancing first makes it strictly at-most-once:
@@ -74,6 +73,9 @@ export async function meterTelemetryUsageTick(deps: UsageMeterDeps): Promise<num
     if (perProject.size > 0) {
       const orgMap = await deps.resolveOrgIds([...perProject.keys()]);
       for (const [orgId, value] of aggregateByOrg(perProject, orgMap)) {
+        // Flag this org for a usage-limit notification check regardless of
+        // whether the track() below succeeds — the notifier reads live balances.
+        deps.onOrgMetered?.(orgId);
         try {
           await deps.track(orgId, SIGNAL_FEATURE_IDS[signal], value);
           reported += 1;

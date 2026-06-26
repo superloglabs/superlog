@@ -36,6 +36,41 @@ async function fetchSlackTarget(projectId: string): Promise<SlackTarget | null> 
   };
 }
 
+// All distinct connected Slack channels across an org's projects, for org-level
+// (not incident-level) notifications like usage-limit warnings. Slack installs
+// are per-project, so an org with several connected projects may have several
+// channels; we post once per distinct channel. Picks the most recently installed
+// row per channel for its bot token.
+export async function fetchSlackTargetsForOrg(orgId: string): Promise<SlackTarget[]> {
+  const rows = await db.execute<{
+    installation_id: string;
+    channel_id: string;
+    bot_access_token: string;
+  }>(sql`
+    SELECT DISTINCT ON (si.channel_id)
+           si.id AS installation_id,
+           si.channel_id,
+           si.bot_access_token
+    FROM slack_installations si
+    JOIN projects p ON p.id = si.project_id
+    WHERE p.org_id = ${orgId}
+      AND si.channel_id IS NOT NULL
+      AND si.revoked_at IS NULL
+    ORDER BY si.channel_id, si.installed_at DESC NULLS LAST
+  `);
+  return (
+    rows as unknown as Array<{
+      installation_id: string;
+      channel_id: string;
+      bot_access_token: string;
+    }>
+  ).map((row) => ({
+    installationId: row.installation_id,
+    channelId: row.channel_id,
+    botToken: row.bot_access_token,
+  }));
+}
+
 async function fetchSlackTargetForIncident(
   incident: Pick<schema.Incident, "projectId" | "slackChannelId" | "slackInstallationId">,
 ): Promise<SlackTarget | null> {
