@@ -120,3 +120,17 @@ export function nextProjectIdAfterDelete(
   if (deletedIndex < 0) return remaining[0]?.id;
   return remaining[Math.min(deletedIndex, remaining.length - 1)]?.id;
 }
+
+// Which org to switch to after deleting one — pick the neighbour at the same
+// position, mirroring nextProjectIdAfterDelete. Returns undefined only if no
+// orgs remain (which the delete endpoint forbids, but keep the UI defensive).
+export function nextOrgIdAfterDelete(
+  orgs: ReadonlyArray<{ id: string }>,
+  deletedOrgId: string,
+): string | undefined {
+  const deletedIndex = orgs.findIndex((o) => o.id === deletedOrgId);
+  const remaining = orgs.filter((o) => o.id !== deletedOrgId);
+  if (remaining.length === 0) return undefined;
+  if (deletedIndex < 0) return remaining[0]?.id;
+  return remaining[Math.min(deletedIndex, remaining.length - 1)]?.id;
+}

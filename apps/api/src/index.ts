@@ -27,13 +27,12 @@ import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { nanoid } from "nanoid";
-import { mountAlerts } from "./alerts.js";
 import { loadIncidentAlertEpisodes } from "./alerts-service.js";
+import { mountAlerts } from "./alerts.js";
 import { auth } from "./auth.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
 import { mountDashboards } from "./dashboards.js";
-import { mountTopology } from "./topology.js";
 import {
   demoOverlay,
   demoProjectId,
@@ -94,6 +93,7 @@ import {
 } from "./mcp/clickhouse.js";
 import { mountMcpAuthed, mountMcpPublic } from "./mcp/index.js";
 import { resolveActiveOrgContext, resolveMaybeActiveOrgContext } from "./org-context.js";
+import { ORG_NAME_MAX, createOrgWithDefaults, mountOrgCrud } from "./orgs.js";
 import { mountPersonalAccessTokens } from "./personal-access-tokens.js";
 import { mountSettingsAuthed } from "./settings.js";
 import { normalizeSignupIntentKeyHash, normalizeSignupIntentKeyPrefix } from "./signup-intents.js";
@@ -102,6 +102,7 @@ import { sourceMapObjectStoreFromEnv } from "./sourcemaps.js";
 import { userIsStaff } from "./staff.js";
 import { symbolicateIssueSample, symbolicateTelemetrySample } from "./symbolication.js";
 import { buildSystemCapabilities } from "./system-capabilities.js";
+import { mountTopology } from "./topology.js";
 import { mountWebhooks } from "./webhooks.js";
 
 const PORT = Number(process.env.PORT ?? 4100);
@@ -316,6 +317,7 @@ mountOrgKeyManagementAuthed(app);
 mountDashboards(app);
 mountCloudConnectionsAuthed(app);
 mountIngestFilters(app);
+mountOrgCrud(app);
 mountTopology(app);
 mountAlerts(app, { ch });
 mountWebhooks(app);
@@ -465,27 +467,6 @@ app.put("/api/me/favorite", async (c) => {
   return c.json({ favorite: { orgId: org.id, projectId: project.id } });
 });
 
-const ORG_NAME_MAX = 80;
-
-function slugifyOrgName(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
-}
-
-async function uniqueOrgSlug(client: Pick<typeof db, "query">, base: string): Promise<string> {
-  const seed = base || "org";
-  let candidate = seed;
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const existing = await client.query.orgs.findFirst({ where: eq(schema.orgs.slug, candidate) });
-    if (!existing) return candidate;
-    candidate = `${seed.slice(0, 32)}-${nanoid(6).toLowerCase()}`;
-  }
-  return `${seed.slice(0, 20)}-${nanoid(12).toLowerCase()}`;
-}
-
 // First-org creation. Called by the onboarding wizard's create-org step for
 // users that signed up but don't have a membership yet. Idempotent on retry:
 // if the user already has an org, returns it instead of creating a duplicate.
@@ -559,25 +540,7 @@ app.post("/api/me/orgs", async (c) => {
         };
       }
 
-      const slug = await uniqueOrgSlug(tx, slugifyOrgName(rawName));
-      const [org] = await tx.insert(schema.orgs).values({ name: rawName, slug }).returning();
-      if (!org) throw new HTTPException(500, { message: "failed to create org" });
-
-      await tx
-        .insert(schema.orgMembers)
-        .values({ orgId: org.id, userId, role: "owner" })
-        .onConflictDoNothing({ target: [schema.orgMembers.orgId, schema.orgMembers.userId] });
-
-      const [project] = await tx
-        .insert(schema.projects)
-        .values({ orgId: org.id, name: "Default", slug: "default" })
-        .returning();
-      if (!project) throw new HTTPException(500, { message: "failed to create default project" });
-
-      await tx
-        .insert(schema.projectAutomationSettings)
-        .values({ projectId: project.id, agentRunProvider: resolveDefaultAgentRunProvider() })
-        .onConflictDoNothing({ target: schema.projectAutomationSettings.projectId });
+      const { org, project } = await createOrgWithDefaults(tx, { userId, name: rawName });
 
       // Promote the new org to active on every session this user has open, so the
       // next /api/me call returns it without requiring a sign-out/sign-in round trip.

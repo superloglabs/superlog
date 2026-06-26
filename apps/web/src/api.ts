@@ -128,6 +128,39 @@ export function useCreateMyFirstOrg() {
   });
 }
 
+// Create an additional organization (the caller already has one). The settings
+// UI switches the active org to the new one after this resolves.
+export function useCreateOrg() {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) =>
+      fetcher<{
+        org: { id: string; name: string; slug: string };
+        project: { id: string; name: string; slug: string };
+      }>("/api/orgs", { method: "POST", body: JSON.stringify({ name }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["me"] });
+      qc.invalidateQueries({ queryKey: ["org-projects"] });
+    },
+  });
+}
+
+// Delete an organization (owner-only, and never the caller's last org — both
+// enforced server-side). The caller should setActive() to a remaining org first.
+export function useDeleteOrg() {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (orgId: string) =>
+      fetcher<{ ok: true }>(`/api/orgs/${orgId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["me"] });
+      qc.invalidateQueries({ queryKey: ["org-projects"] });
+    },
+  });
+}
+
 export type SignupIntentClaim = {
   id: string | null;
   keyPrefix: string;
