@@ -133,17 +133,24 @@ export function mountOrgCrud(app: Hono<{ Variables: Vars }>) {
     const orgId = c.req.param("orgId");
 
     const result = await db.transaction(async (tx) => {
-      // Lock *every* membership this user has, up front, and decide from the
-      // locked set. This serializes concurrent deletes by the same user, so two
-      // requests deleting two different orgs can't both pass the last-org guard
-      // and leave the user with zero orgs. Locking only the target org row
-      // wouldn't help — deletes of different orgs take non-conflicting locks.
-      // The unique (org_id, user_id) index means one row per org the caller is in.
+      // Serialize this user's concurrent org mutations on their `users` row —
+      // the same lock the create path takes. The last-org guard only concerns
+      // the acting user, so one consistent per-user lock both enforces it (two
+      // tabs deleting two different orgs can't both pass and leave zero orgs)
+      // and avoids deadlocks: locking many org_members rows instead would let
+      // two owners each deleting an org the other also belongs to lock each
+      // other's membership rows in opposite order during the cascade.
+      await tx
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(eq(schema.users.id, userId))
+        .for("update");
+
+      // One row per org the caller belongs to (unique (org_id, user_id) index).
       const memberships = await tx
         .select({ orgId: schema.orgMembers.orgId, role: schema.orgMembers.role })
         .from(schema.orgMembers)
-        .where(eq(schema.orgMembers.userId, userId))
-        .for("update");
+        .where(eq(schema.orgMembers.userId, userId));
 
       const membership = memberships.find((m) => m.orgId === orgId);
       // Don't leak the existence of orgs the caller can't see.
