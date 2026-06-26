@@ -135,6 +135,10 @@ test("queryServiceTraffic reads the events_per_minute rollup, summing trace coun
   assert.doesNotMatch(q.query, /FROM otel_traces/);
   assert.match(q.query, /signal = 'traces'/);
   assert.match(q.query, /sum\(c\)/);
+  // Lower bound rounds to the rollup's minute granularity, not the hour —
+  // rounding to the hour would over-count the earliest bucket by up to ~59min
+  // and skew the traffic signal vs the raw path's exact bound.
+  assert.match(q.query, /minute >= toStartOfMinute\(/);
   // Service traffic is the "is the operation still being exercised" signal —
   // it must NOT be narrowed by exception type, otherwise a recovered error
   // path would look like a traffic dropout.

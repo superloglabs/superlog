@@ -109,7 +109,13 @@ export function createAutorecoveryMetricsRepository(getCh: () => Promise<ClickHo
             WHERE project_id = {project_id:String}
               AND signal = 'traces'
               AND service = {service:String}
-              AND minute >= toStartOfHour(now() - INTERVAL {hours:UInt32} HOUR)
+              -- Round the lower bound down to the rollup's minute granularity
+              -- (the finest it stores) to mirror the raw path's exact
+              -- now() - INTERVAL hours HOUR bound. Rounding to the hour instead
+              -- would pull up to ~59 extra minutes into the earliest bucket and
+              -- inflate the traffic signal. Matches the API read path
+              -- (countSeriesFromRollup in apps/api/src/mcp/clickhouse.ts).
+              AND minute >= toStartOfMinute(now() - INTERVAL {hours:UInt32} HOUR)
             GROUP BY hour
             ORDER BY hour ASC
           `,
