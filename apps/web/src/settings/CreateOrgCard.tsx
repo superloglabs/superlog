@@ -4,21 +4,10 @@ import { useNavigate } from "react-router-dom";
 import { useCreateOrg } from "../api.ts";
 import { authClient } from "../auth-client.ts";
 import { Btn, Input } from "../design/ui.tsx";
+import { fetchErrorMessage } from "./orgErrors.ts";
 import { SettingsCard, SettingsCardFooter, SettingsRow } from "./rows.tsx";
 
 const ORG_NAME_MAX = 80;
-
-function errorMessage(err: unknown): string {
-  // useFetcher throws `Error("<status>: <body>")`; the body is JSON {error}.
-  const raw = err instanceof Error ? err.message : String(err);
-  const match = raw.match(/^\d+:\s*(.*)$/s);
-  const payload = match?.[1] ?? raw;
-  try {
-    const parsed = JSON.parse(payload) as { error?: string };
-    if (parsed.error) return parsed.error;
-  } catch {}
-  return payload || "Failed to create organization";
-}
 
 export function CreateOrgCard() {
   const [name, setName] = useState("");
@@ -47,7 +36,7 @@ export function CreateOrgCard() {
         setName("");
         navigate("/");
       },
-      onError: (err) => setError(errorMessage(err)),
+      onError: (err) => setError(fetchErrorMessage(err, "Failed to create organization")),
     });
   };
 

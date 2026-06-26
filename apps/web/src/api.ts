@@ -128,36 +128,29 @@ export function useCreateMyFirstOrg() {
   });
 }
 
-// Create an additional organization (the caller already has one). The settings
-// UI switches the active org to the new one after this resolves.
+// Create an additional organization (the caller already has one). Callers
+// switch the active org to the new one and then invalidate ["me"] /
+// ["org-projects"] — so invalidation lives at the call site (after setActive),
+// not here, to avoid a premature refetch against the old active org.
 export function useCreateOrg() {
   const fetcher = useFetcher();
-  const qc = useQueryClient();
   return useMutation({
     mutationFn: (name: string) =>
       fetcher<{
         org: { id: string; name: string; slug: string };
         project: { id: string; name: string; slug: string };
       }>("/api/orgs", { method: "POST", body: JSON.stringify({ name }) }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["me"] });
-      qc.invalidateQueries({ queryKey: ["org-projects"] });
-    },
   });
 }
 
 // Delete an organization (owner-only, and never the caller's last org — both
-// enforced server-side). The caller should setActive() to a remaining org first.
+// enforced server-side). Callers setActive() to a remaining org first and then
+// invalidate the org-scoped queries, so invalidation lives at the call site.
 export function useDeleteOrg() {
   const fetcher = useFetcher();
-  const qc = useQueryClient();
   return useMutation({
     mutationFn: (orgId: string) =>
       fetcher<{ ok: true }>(`/api/orgs/${orgId}`, { method: "DELETE" }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["me"] });
-      qc.invalidateQueries({ queryKey: ["org-projects"] });
-    },
   });
 }
 

@@ -5,19 +5,8 @@ import { useDeleteOrg, useMe } from "../api.ts";
 import { authClient, useListOrganizations } from "../auth-client.ts";
 import { Btn, Input } from "../design/ui.tsx";
 import { nextOrgIdAfterDelete } from "./nav.ts";
+import { fetchErrorMessage } from "./orgErrors.ts";
 import { SettingsCard, SettingsCardFooter, SettingsRow } from "./rows.tsx";
-
-function errorMessage(err: unknown): string {
-  // useFetcher throws `Error("<status>: <body>")`; the body is JSON {error}.
-  const raw = err instanceof Error ? err.message : String(err);
-  const match = raw.match(/^\d+:\s*(.*)$/s);
-  const payload = match?.[1] ?? raw;
-  try {
-    const parsed = JSON.parse(payload) as { error?: string };
-    if (parsed.error) return parsed.error;
-  } catch {}
-  return payload || "Failed to delete organization";
-}
 
 export function OrgDangerCard() {
   const me = useMe();
@@ -71,7 +60,7 @@ export function OrgDangerCard() {
         ]);
         navigate("/");
       },
-      onError: (err) => setError(errorMessage(err)),
+      onError: (err) => setError(fetchErrorMessage(err, "Failed to delete organization")),
     });
   };
 

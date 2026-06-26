@@ -1,5 +1,5 @@
 import { db, resolveDefaultAgentRunProvider, schema } from "@superlog/db";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { nanoid } from "nanoid";
@@ -8,6 +8,15 @@ type Vars = { userId: string; orgId: string | null };
 
 // The transaction handle drizzle passes to `db.transaction(async (tx) => …)`.
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+// Postgres unique-constraint violation. drizzle/postgres-js surfaces the raw
+// SQLSTATE either directly on the error or on its `cause`.
+function isUniqueViolation(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const direct = (err as { code?: unknown }).code;
+  const nested = (err as { cause?: { code?: unknown } }).cause?.code;
+  return direct === "23505" || nested === "23505";
+}
 
 export const ORG_NAME_MAX = 80;
 
@@ -44,8 +53,29 @@ export async function createOrgWithDefaults(
   org: typeof schema.orgs.$inferSelect;
   project: typeof schema.projects.$inferSelect;
 }> {
-  const slug = await uniqueOrgSlug(tx, slugifyOrgName(input.name));
-  const [org] = await tx.insert(schema.orgs).values({ name: input.name, slug }).returning();
+  // uniqueOrgSlug pre-checks for a free slug, but two concurrent creates can
+  // still pick the same slug between the check and the insert. Retry on the
+  // resulting unique-violation with a fresh suffixed slug, each attempt inside
+  // a SAVEPOINT (nested tx) so a failed insert rolls back just that attempt
+  // instead of poisoning the whole org-creation transaction.
+  const base = slugifyOrgName(input.name) || "org";
+  let org: typeof schema.orgs.$inferSelect | undefined;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const slug =
+      attempt === 0
+        ? await uniqueOrgSlug(tx, base)
+        : `${base.slice(0, 32)}-${nanoid(6).toLowerCase()}`;
+    try {
+      org = await tx.transaction(async (sp) => {
+        const [row] = await sp.insert(schema.orgs).values({ name: input.name, slug }).returning();
+        return row;
+      });
+      break;
+    } catch (err) {
+      if (isUniqueViolation(err) && attempt < 4) continue;
+      throw err;
+    }
+  }
   if (!org) throw new HTTPException(500, { message: "failed to create org" });
 
   await tx
@@ -103,17 +133,19 @@ export function mountOrgCrud(app: Hono<{ Variables: Vars }>) {
     const orgId = c.req.param("orgId");
 
     const result = await db.transaction(async (tx) => {
-      // Lock the org row so a concurrent delete/rename serializes behind us.
-      const [org] = await tx
-        .select({ id: schema.orgs.id })
-        .from(schema.orgs)
-        .where(eq(schema.orgs.id, orgId))
+      // Lock *every* membership this user has, up front, and decide from the
+      // locked set. This serializes concurrent deletes by the same user, so two
+      // requests deleting two different orgs can't both pass the last-org guard
+      // and leave the user with zero orgs. Locking only the target org row
+      // wouldn't help — deletes of different orgs take non-conflicting locks.
+      // The unique (org_id, user_id) index means one row per org the caller is in.
+      const memberships = await tx
+        .select({ orgId: schema.orgMembers.orgId, role: schema.orgMembers.role })
+        .from(schema.orgMembers)
+        .where(eq(schema.orgMembers.userId, userId))
         .for("update");
-      if (!org) return { status: 404 as const, body: { error: "organization not found" } };
 
-      const membership = await tx.query.orgMembers.findFirst({
-        where: and(eq(schema.orgMembers.orgId, orgId), eq(schema.orgMembers.userId, userId)),
-      });
+      const membership = memberships.find((m) => m.orgId === orgId);
       // Don't leak the existence of orgs the caller can't see.
       if (!membership) return { status: 404 as const, body: { error: "organization not found" } };
       if (membership.role !== "owner") {
@@ -122,14 +154,8 @@ export function mountOrgCrud(app: Hono<{ Variables: Vars }>) {
           body: { error: "only an owner can delete an organization" },
         };
       }
-
       // Every user keeps at least one org — mirror the "cannot delete the last
-      // project in an org" guard. The unique (org_id, user_id) index means the
-      // row count equals the number of distinct orgs the caller belongs to.
-      const memberships = await tx
-        .select({ orgId: schema.orgMembers.orgId })
-        .from(schema.orgMembers)
-        .where(eq(schema.orgMembers.userId, userId));
+      // project in an org" guard.
       if (memberships.length <= 1) {
         return {
           status: 409 as const,

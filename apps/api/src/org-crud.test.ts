@@ -99,6 +99,27 @@ test("POST /api/orgs creates a new owner org with a Default project", async () =
   assert.ok(settings, "default project should have automation settings");
 });
 
+test("POST /api/orgs with a duplicate name succeeds with a distinct slug", async () => {
+  const user = await seedUser();
+  const app = appFor(user.id, null);
+  const name = "Dup Name Co";
+  const create = async () => {
+    const res = await app.request("/api/orgs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { org: { id: string; slug: string } };
+    orgIds.push(body.org.id);
+    return body.org;
+  };
+  const first = await create();
+  const second = await create();
+  assert.notEqual(first.id, second.id);
+  assert.notEqual(first.slug, second.slug, "second org must get a unique slug, not a 500");
+});
+
 test("POST /api/orgs rejects an empty name", async () => {
   const user = await seedUser();
   const app = appFor(user.id, null);
