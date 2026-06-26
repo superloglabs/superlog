@@ -172,10 +172,14 @@ export function createAlertRepository(db: DB) {
 
     // Open a fresh episode for an alert+group. Episode writes are best-effort,
     // so a previous recovery's `closeOpenEpisode` may have failed and left a
-    // stale open row. Defensively close any such row first (bounded at its last
-    // firing tick) inside one transaction, then insert — so a new activation
-    // always starts a distinct episode instead of merging into the stale one,
-    // and the at-most-one-open invariant holds.
+    // stale open row. Defensively close any such *stale* row first (bounded at
+    // its last firing tick) inside one transaction, then insert — so a new
+    // activation starts a distinct episode instead of merging into the stale
+    // one. The `last_firing_at < startedAt` guard means we only close opens
+    // from an earlier activation; a concurrent same-activation open (equal/
+    // later last-firing) is left intact and our redundant insert simply hits
+    // the partial-unique index and rolls back, so an activation can't be
+    // fragmented into zero-length episodes.
     async openEpisode(input: EpisodeOpenInput): Promise<void> {
       await db.transaction(async (tx) => {
         await tx
@@ -186,6 +190,7 @@ export function createAlertRepository(db: DB) {
               eq(schema.alertEpisodes.alertId, input.alertId),
               eq(schema.alertEpisodes.groupKey, input.groupKey),
               eq(schema.alertEpisodes.state, "firing"),
+              lt(schema.alertEpisodes.lastFiringAt, input.startedAt),
             ),
           );
         await tx.insert(schema.alertEpisodes).values({
