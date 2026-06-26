@@ -9,6 +9,7 @@ import {
   createIncidentLifecycle,
   db,
   dismissResolutionProposal,
+  generateCodename,
   isAgentRunProvider,
   listAccessibleGithubInstallsForProject,
   mintApiKey,
@@ -2774,16 +2775,39 @@ app.post("/api/projects/:projectId/investigations", async (c) => {
   }
 
   const now = new Date();
-  const incident = await incidentLifecycle.createOpen({
-    projectId,
-    service,
-    environment,
-    title: investigationTitle(prompt),
-    firstSeen: now,
-    lastSeen: now,
-  });
+  // Incident + initial run are created in one transaction so a partial failure
+  // can't leave an orphan manual incident. The unique (project_id, codename)
+  // index can collide; each codename attempt runs in a savepoint so a collision
+  // rolls back just that attempt, not the whole transaction.
+  const { incident, agentRun } = await db.transaction(async (tx) => {
+    let incident: typeof schema.incidents.$inferSelect | null = null;
+    for (let attempt = 0; attempt < 6 && !incident; attempt++) {
+      const codename = generateCodename();
+      try {
+        incident = await tx.transaction(async (sp) => {
+          const [row] = await sp
+            .insert(schema.incidents)
+            .values({
+              projectId,
+              service,
+              environment,
+              title: investigationTitle(prompt),
+              codename,
+              status: "open",
+              firstSeen: now,
+              lastSeen: now,
+              issueCount: 0,
+            })
+            .returning();
+          return row ?? null;
+        });
+      } catch (err) {
+        const anyErr = err as { code?: string; cause?: { code?: string } } | null;
+        if ((anyErr?.code ?? anyErr?.cause?.code) !== "23505") throw err;
+      }
+    }
+    if (!incident) throw new Error("failed to allocate a unique incident codename");
 
-  const agentRun = await db.transaction(async (tx) => {
     const [created] = await tx
       .insert(schema.agentRuns)
       .values({
@@ -2805,7 +2829,7 @@ app.post("/api/projects/:projectId/investigations", async (c) => {
       processedAt: now,
     });
 
-    return created;
+    return { incident, agentRun: created };
   });
 
   return c.json({ incident, agentRun }, 201);

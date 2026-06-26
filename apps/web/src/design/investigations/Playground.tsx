@@ -1080,24 +1080,8 @@ function RealFullPage() {
           <div className="mt-5 grid gap-4 md:grid-cols-2">
             <div>
               <MetaLabel>Evidence · cited</MetaLabel>
-              <div className="mt-2 overflow-hidden rounded-lg border border-border">
-                <div className="flex items-center justify-between border-b border-border px-3 py-2">
-                  <span className="text-[12px] font-medium text-fg">auth.signin.failures</span>
-                  <Chip tone="warning">flat = 2</Chip>
-                </div>
-                <div className="px-3 py-2">
-                  <WidgetChart
-                    rows={SIGNIN_ROWS}
-                    chartType="line"
-                    height={100}
-                    compact
-                    range={REAL_WINDOW}
-                    step="1 MINUTE"
-                  />
-                </div>
-                <div className="border-t border-border px-3 py-1.5 font-mono text-[10px] text-muted">
-                  02:45 – 03:05 UTC
-                </div>
+              <div className="mt-2">
+                <SigninCitedWidget />
               </div>
             </div>
             <div className="flex flex-col gap-4">

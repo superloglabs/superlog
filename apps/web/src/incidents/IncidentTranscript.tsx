@@ -2,7 +2,7 @@ import { type ReactNode, useState } from "react";
 import type { IncidentEvent } from "../api.ts";
 import { CountChart } from "../dashboards/widgets/CountChart.tsx";
 import { DEFAULT_TOP_N } from "../dashboards/widgets/series-topn.ts";
-import { Btn, Chip, type ChipTone } from "../design/ui.tsx";
+import { Chip, type ChipTone } from "../design/ui.tsx";
 import { LogsTable, TracesTable } from "../Explore.tsx";
 import {
   type TelemetryKind,
@@ -298,13 +298,12 @@ export function TelemetryQueryWidget({
           <span className="font-mono">recorded result</span>
         )}
         {!empty && <span className="text-subtle">· {count} rows</span>}
-        <span className="ml-auto">
-          <a href="/explore">
-            <Btn variant="ghost" size="sm">
-              Open in Explore
-            </Btn>
-          </a>
-        </span>
+        <a
+          href="/explore"
+          className="ml-auto inline-flex h-7 items-center rounded-md px-2.5 text-[12px] font-medium text-fg transition-colors hover:bg-surface-2"
+        >
+          Open in Explore
+        </a>
       </div>
     </div>
   );
@@ -413,8 +412,8 @@ function EditEntry({ item }: { item: Extract<TranscriptItem, { type: "tool" }> }
         ? item.input.content
         : "";
   const lines: { t: "add" | "del"; text: string }[] = [
-    ...oldStr.split("\n").map((text) => ({ t: "del" as const, text })),
-    ...newStr.split("\n").map((text) => ({ t: "add" as const, text })),
+    ...(oldStr ? oldStr.split("\n").map((text) => ({ t: "del" as const, text })) : []),
+    ...(newStr ? newStr.split("\n").map((text) => ({ t: "add" as const, text })) : []),
   ].slice(0, 18);
   return (
     <div>
