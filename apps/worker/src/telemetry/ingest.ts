@@ -431,18 +431,22 @@ async function loadBacklogStats(opts: {
   };
 }
 
+// Backlog stats + the tick fetches below read otel_exceptions (the
+// exception-only projection, see migrations/004_otel_exceptions.sql) instead of
+// ARRAY JOIN-scanning otel_traces / full-scanning otel_logs. Membership in
+// otel_exceptions already mirrors the old predicates (span `exception` events;
+// logs SeverityNumber>=17), so the `kind` filter is the only scope needed.
 function spanBacklogStatsQuery(): string {
   return `
     SELECT
       count() AS pending_rows,
       toString(min(Timestamp)) AS oldest_pending_ts,
       toString(max(Timestamp)) AS latest_pending_ts
-    FROM otel_traces
-    ARRAY JOIN Events.Name AS event_name
-    WHERE Timestamp > parseDateTime64BestEffort({cursorTs:String}, 6)
+    FROM otel_exceptions
+    WHERE kind = 'span'
+      AND Timestamp > parseDateTime64BestEffort({cursorTs:String}, 6)
       AND Timestamp <= parseDateTime64BestEffort({untilTs:String}, 6)
-      AND event_name = 'exception'
-      AND ResourceAttributes['superlog.project_id'] != ''
+      AND project_id != ''
   `;
 }
 
@@ -452,11 +456,11 @@ function logBacklogStatsQuery(): string {
       count() AS pending_rows,
       toString(min(Timestamp)) AS oldest_pending_ts,
       toString(max(Timestamp)) AS latest_pending_ts
-    FROM otel_logs
-    WHERE Timestamp > parseDateTime64BestEffort({cursorTs:String}, 6)
+    FROM otel_exceptions
+    WHERE kind = 'log'
+      AND Timestamp > parseDateTime64BestEffort({cursorTs:String}, 6)
       AND Timestamp <= parseDateTime64BestEffort({untilTs:String}, 6)
-      AND SeverityNumber >= 17
-      AND ResourceAttributes['superlog.project_id'] != ''
+      AND project_id != ''
   `;
 }
 
@@ -480,12 +484,11 @@ async function tickSpans(opts: {
         query: `
       WITH selected_timestamps AS (
         SELECT Timestamp
-        FROM otel_traces
-        ARRAY JOIN Events.Name AS event_name
-        WHERE Timestamp > parseDateTime64BestEffort({cursorTs:String}, 6)
+        FROM otel_exceptions
+        WHERE kind = 'span'
+          AND Timestamp > parseDateTime64BestEffort({cursorTs:String}, 6)
           AND Timestamp <= parseDateTime64BestEffort({untilTs:String}, 6)
-          AND event_name = 'exception'
-          AND ResourceAttributes['superlog.project_id'] != ''
+          AND project_id != ''
         GROUP BY Timestamp
         ORDER BY Timestamp ASC
         LIMIT {limit:UInt32}
@@ -497,30 +500,15 @@ async function tickSpans(opts: {
         span_name,
         trace_id,
         span_id,
-        span_attrs,
+        attrs AS span_attrs,
         resource_attrs,
-        exc_type,
-        exc_message,
-        exc_stack
-      FROM (
-        SELECT
-          Timestamp,
-          ResourceAttributes['superlog.project_id'] AS project_id,
-          ServiceName AS service,
-          SpanName AS span_name,
-          TraceId AS trace_id,
-          SpanId AS span_id,
-          SpanAttributes AS span_attrs,
-          ResourceAttributes AS resource_attrs,
-          event_attrs['exception.type'] AS exc_type,
-          event_attrs['exception.message'] AS exc_message,
-          event_attrs['exception.stacktrace'] AS exc_stack
-        FROM otel_traces
-        ARRAY JOIN Events.Name AS event_name, Events.Attributes AS event_attrs
-        WHERE event_name = 'exception'
-          AND ResourceAttributes['superlog.project_id'] != ''
-          AND Timestamp IN (SELECT Timestamp FROM selected_timestamps)
-      )
+        exception_type AS exc_type,
+        exception_message AS exc_message,
+        exception_stacktrace AS exc_stack
+      FROM otel_exceptions
+      WHERE kind = 'span'
+        AND project_id != ''
+        AND Timestamp IN (SELECT Timestamp FROM selected_timestamps)
       ORDER BY Timestamp ASC, project_id ASC, service ASC, trace_id ASC, span_id ASC, exc_type ASC, exc_message ASC, exc_stack ASC
     `,
         query_params: { ...cursorWindow, limit: opts.batchSize },
@@ -650,11 +638,11 @@ async function tickLogs(opts: {
         query: `
       WITH selected_timestamps AS (
         SELECT Timestamp
-        FROM otel_logs
-        WHERE Timestamp > parseDateTime64BestEffort({cursorTs:String}, 6)
+        FROM otel_exceptions
+        WHERE kind = 'log'
+          AND Timestamp > parseDateTime64BestEffort({cursorTs:String}, 6)
           AND Timestamp <= parseDateTime64BestEffort({untilTs:String}, 6)
-          AND SeverityNumber >= 17
-          AND ResourceAttributes['superlog.project_id'] != ''
+          AND project_id != ''
         GROUP BY Timestamp
         ORDER BY Timestamp ASC
         LIMIT {limit:UInt32}
@@ -668,31 +656,15 @@ async function tickLogs(opts: {
         body,
         trace_id,
         span_id,
-        log_attrs,
+        attrs AS log_attrs,
         resource_attrs,
-        exc_type,
-        exc_stack
-      FROM (
-        SELECT
-          Timestamp,
-          ResourceAttributes['superlog.project_id'] AS project_id,
-          ServiceName AS service,
-          SeverityText AS severity,
-          toUInt8(SeverityNumber) AS severity_number,
-          leftPad(toString(toUInt8(SeverityNumber)), 3, '0') AS severity_number_key,
-          Body AS body,
-          TraceId AS trace_id,
-          SpanId AS span_id,
-          LogAttributes AS log_attrs,
-          ResourceAttributes AS resource_attrs,
-          LogAttributes['exception.type'] AS exc_type,
-          LogAttributes['exception.stacktrace'] AS exc_stack
-        FROM otel_logs
-        WHERE SeverityNumber >= 17
-          AND ResourceAttributes['superlog.project_id'] != ''
-          AND Timestamp IN (SELECT Timestamp FROM selected_timestamps)
-      )
-      ORDER BY Timestamp ASC, project_id ASC, service ASC, trace_id ASC, span_id ASC, severity_number_key ASC, severity ASC, body ASC, exc_type ASC, exc_stack ASC
+        exception_type AS exc_type,
+        exception_stacktrace AS exc_stack
+      FROM otel_exceptions
+      WHERE kind = 'log'
+        AND project_id != ''
+        AND Timestamp IN (SELECT Timestamp FROM selected_timestamps)
+      ORDER BY Timestamp ASC, project_id ASC, service ASC, trace_id ASC, span_id ASC, leftPad(toString(severity_number), 3, '0') ASC, severity ASC, body ASC, exc_type ASC, exc_stack ASC
     `,
         query_params: { ...cursorWindow, limit: opts.batchSize },
         format: "JSONEachRow",

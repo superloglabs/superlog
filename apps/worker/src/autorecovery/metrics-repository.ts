@@ -48,18 +48,21 @@ export function createAutorecoveryMetricsRepository(getCh: () => Promise<ClickHo
         return { totalEvents: 0, perHour: [], lookbackHours: hours };
       }
       const ch = await getCh();
+      // Reads the exception-only projection (otel_exceptions) instead of
+      // ARRAY JOIN Events over otel_traces — same trace-exception counts, but a
+      // small indexed table rather than a full multi-day scan of every span's
+      // events. kind = 'span' preserves the original otel_traces-only scope.
       const result = await ch.query({
         query: `
           SELECT
             toString(toStartOfHour(Timestamp)) AS hour,
             toUInt64(count()) AS count
-          FROM otel_traces
-          ARRAY JOIN Events AS event
-          WHERE ResourceAttributes['superlog.project_id'] = {project_id:String}
-            AND event.Name = 'exception'
-            AND event.Attributes['exception.type'] IN {exception_types:Array(String)}
+          FROM otel_exceptions
+          WHERE project_id = {project_id:String}
+            AND kind = 'span'
+            AND exception_type IN {exception_types:Array(String)}
             AND Timestamp >= now() - INTERVAL {hours:UInt32} HOUR
-            ${incident.service ? "AND ServiceName = {service:String}" : ""}
+            ${incident.service ? "AND service = {service:String}" : ""}
           GROUP BY hour
           ORDER BY hour ASC
         `,

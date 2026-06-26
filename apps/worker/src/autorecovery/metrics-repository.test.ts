@@ -55,9 +55,13 @@ test("queryIncidentActivity filters by the candidate's issue exception types", a
   // The query must scope by the actual issue signatures, not just project+service.
   // Without this filter, a project-wide spike in unrelated exceptions (e.g.
   // ECONNREFUSED storm) would be attributed to this incident.
-  assert.match(q.query, /exception\.type/i);
   assert.match(q.query, /\{exception_types:Array\(String\)\}/);
   assert.deepEqual(q.params.exception_types, ["APIError"]);
+  // Reads the exception-only projection, not a full ARRAY JOIN Events scan of
+  // otel_traces; kind='span' preserves the old otel_traces-only scope.
+  assert.match(q.query, /FROM otel_exceptions/);
+  assert.match(q.query, /kind = 'span'/);
+  assert.doesNotMatch(q.query, /ARRAY JOIN/);
 });
 
 test("queryIncidentActivity collapses duplicate exception types and filters by service", async () => {

@@ -2240,6 +2240,17 @@ const INCIDENT_USERS_CAP = 200;
 
 // Bulk fetch distinct user IDs per (kind, service, exception_type) across a project.
 // Caller maps the returned tuples back to incidents and Set-unions per-incident.
+// WHERE fragment selecting otel_exceptions rows for the given incident
+// (service, exception_type) pairs, per signal kind. Empty input arrays make the
+// arrayZip empty, so that kind's clause matches nothing — callers don't need to
+// special-case empty inputs. Used by the incident-list aggregates below;
+// reads the exception-only projection (migrations/004_otel_exceptions.sql)
+// instead of full ARRAY JOIN Events scans of otel_traces.
+const INCIDENT_EXCEPTION_PAIR_WHERE = `(
+        (kind = 'span' AND (service, exception_type) IN arrayZip({spanServices:Array(String)}, {spanExcTypes:Array(String)}))
+        OR (kind = 'log' AND (service, exception_type) IN arrayZip({logServices:Array(String)}, {logExcTypes:Array(String)}))
+      )`;
+
 async function fetchIncidentUserIdsByPair(args: {
   projectId: string;
   spanServices: string[];
@@ -2251,44 +2262,16 @@ async function fetchIncidentUserIdsByPair(args: {
   const { projectId, spanServices, spanExcTypes, logServices, logExcTypes, windowDays } = args;
   if (spanServices.length === 0 && logServices.length === 0) return [];
 
-  const spanWhere =
-    spanServices.length === 0
-      ? "0"
-      : `(coalesce(ServiceName, ''), coalesce(event_attrs['exception.type'], '')) IN arrayZip({spanServices:Array(String)}, {spanExcTypes:Array(String)})`;
-  const logWhere =
-    logServices.length === 0
-      ? "0"
-      : `(coalesce(ServiceName, ''), coalesce(LogAttributes['exception.type'], '')) IN arrayZip({logServices:Array(String)}, {logExcTypes:Array(String)})`;
-
   const query = `
-    SELECT 'span' AS kind,
-      coalesce(ServiceName, '') AS svc,
-      coalesce(event_attrs['exception.type'], '') AS et,
-      groupUniqArray(${INCIDENT_USERS_CAP})(nullIf(coalesce(SpanAttributes['user.id'], ResourceAttributes['user.id']), '')) AS users
-    FROM (
-      SELECT Timestamp, ServiceName, SpanAttributes, ResourceAttributes, Events.Name, Events.Attributes
-      FROM otel_traces
-      WHERE Timestamp > now() - INTERVAL {days:UInt32} DAY
-        AND ResourceAttributes['superlog.project_id'] = {projectId:String}
-        AND has({spanServices:Array(String)}, coalesce(ServiceName, ''))
-        AND has(Events.Name, 'exception')
-    )
-    ARRAY JOIN Events.Name AS event_name, Events.Attributes AS event_attrs
-    WHERE event_name = 'exception'
-      AND ${spanWhere}
-    GROUP BY svc, et
-    UNION ALL
-    SELECT 'log' AS kind,
-      coalesce(ServiceName, '') AS svc,
-      coalesce(LogAttributes['exception.type'], '') AS et,
-      groupUniqArray(${INCIDENT_USERS_CAP})(nullIf(coalesce(LogAttributes['user.id'], ResourceAttributes['user.id']), '')) AS users
-    FROM otel_logs
-    WHERE Timestamp > now() - INTERVAL {days:UInt32} DAY
-      AND ResourceAttributes['superlog.project_id'] = {projectId:String}
-      AND SeverityNumber >= 17
-      AND has({logServices:Array(String)}, coalesce(ServiceName, ''))
-      AND ${logWhere}
-    GROUP BY svc, et
+    SELECT kind,
+      service AS svc,
+      exception_type AS et,
+      groupUniqArray(${INCIDENT_USERS_CAP})(nullIf(user_id, '')) AS users
+    FROM otel_exceptions
+    WHERE project_id = {projectId:String}
+      AND Timestamp > now() - INTERVAL {days:UInt32} DAY
+      AND ${INCIDENT_EXCEPTION_PAIR_WHERE}
+    GROUP BY kind, svc, et
   `;
 
   const res = await ch.query({
@@ -2328,46 +2311,17 @@ async function fetchIncidentTimeseriesPairs(args: {
   const { projectId, spanServices, spanExcTypes, logServices, logExcTypes, windowDays } = args;
   if (spanServices.length === 0 && logServices.length === 0) return [];
 
-  const spanWhere =
-    spanServices.length === 0
-      ? "0"
-      : `(coalesce(ServiceName, ''), coalesce(event_attrs['exception.type'], '')) IN arrayZip({spanServices:Array(String)}, {spanExcTypes:Array(String)})`;
-  const logWhere =
-    logServices.length === 0
-      ? "0"
-      : `(coalesce(ServiceName, ''), coalesce(LogAttributes['exception.type'], '')) IN arrayZip({logServices:Array(String)}, {logExcTypes:Array(String)})`;
-
   const query = `
-    SELECT 'span' AS kind,
-      coalesce(ServiceName, '') AS svc,
-      coalesce(event_attrs['exception.type'], '') AS et,
+    SELECT kind,
+      service AS svc,
+      exception_type AS et,
       toString(toDate(Timestamp)) AS day,
       count() AS c
-    FROM (
-      SELECT Timestamp, ServiceName, Events.Name, Events.Attributes
-      FROM otel_traces
-      WHERE Timestamp > now() - INTERVAL {days:UInt32} DAY
-        AND ResourceAttributes['superlog.project_id'] = {projectId:String}
-        AND has({spanServices:Array(String)}, coalesce(ServiceName, ''))
-        AND has(Events.Name, 'exception')
-    )
-    ARRAY JOIN Events.Name AS event_name, Events.Attributes AS event_attrs
-    WHERE event_name = 'exception'
-      AND ${spanWhere}
-    GROUP BY svc, et, day
-    UNION ALL
-    SELECT 'log' AS kind,
-      coalesce(ServiceName, '') AS svc,
-      coalesce(LogAttributes['exception.type'], '') AS et,
-      toString(toDate(Timestamp)) AS day,
-      count() AS c
-    FROM otel_logs
-    WHERE Timestamp > now() - INTERVAL {days:UInt32} DAY
-      AND ResourceAttributes['superlog.project_id'] = {projectId:String}
-      AND SeverityNumber >= 17
-      AND has({logServices:Array(String)}, coalesce(ServiceName, ''))
-      AND ${logWhere}
-    GROUP BY svc, et, day
+    FROM otel_exceptions
+    WHERE project_id = {projectId:String}
+      AND Timestamp > now() - INTERVAL {days:UInt32} DAY
+      AND ${INCIDENT_EXCEPTION_PAIR_WHERE}
+    GROUP BY kind, svc, et, day
   `;
 
   const res = await ch.query({
