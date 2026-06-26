@@ -500,7 +500,7 @@ export async function listAlertEpisodes(
   // Fetch oldest-first so the ordinal is stable regardless of how many we show.
   const rows = await db.query.alertEpisodes.findMany({
     where: eq(schema.alertEpisodes.alertId, alertId),
-    orderBy: [asc(schema.alertEpisodes.startedAt)],
+    orderBy: [asc(schema.alertEpisodes.startedAt), asc(schema.alertEpisodes.id)],
   });
   if (rows.length === 0) return [];
 
