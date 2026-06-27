@@ -75,7 +75,20 @@ export async function meterTelemetryUsageTick(deps: UsageMeterDeps): Promise<num
       for (const [orgId, value] of aggregateByOrg(perProject, orgMap)) {
         // Flag this org for a usage-limit notification check regardless of
         // whether the track() below succeeds — the notifier reads live balances.
-        deps.onOrgMetered?.(orgId);
+        // Guarded independently: a hook error must never break metering.
+        try {
+          deps.onOrgMetered?.(orgId);
+        } catch (err) {
+          logger.error(
+            {
+              scope: "billing.usage",
+              signal,
+              orgId,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "onOrgMetered hook failed; continuing to meter",
+          );
+        }
         try {
           await deps.track(orgId, SIGNAL_FEATURE_IDS[signal], value);
           reported += 1;

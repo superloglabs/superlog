@@ -48,6 +48,13 @@ test("pct is floored and clamped to >= 0; enforcement is stringified", () => {
   assert.equal(p.eventProperties.enforcement, "true");
 });
 
+test("a negative pct is clamped to 0", () => {
+  const p = buildLoopsUsageThresholdPayload({ ...base, pct: -5 });
+  assert.equal(p.eventProperties.pct, "0");
+});
+
 test("a custom event name containing ':' is rejected (Loops constraint)", () => {
-  assert.throws(() => buildLoopsUsageThresholdPayload(base, "bad:name"));
+  assert.throws(() => buildLoopsUsageThresholdPayload(base, "bad:name"), {
+    message: /cannot contain/,
+  });
 });

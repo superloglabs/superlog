@@ -56,7 +56,7 @@ export async function fetchSlackTargetsForOrg(orgId: string): Promise<SlackTarge
     WHERE p.org_id = ${orgId}
       AND si.channel_id IS NOT NULL
       AND si.revoked_at IS NULL
-    ORDER BY si.channel_id, si.installed_at DESC NULLS LAST
+    ORDER BY si.channel_id, coalesce(si.installed_at, si.created_at) DESC, si.id DESC
   `);
   return (
     rows as unknown as Array<{
