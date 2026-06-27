@@ -41,10 +41,20 @@ function Analytics({ children }: { children: ReactNode }) {
 const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
 
 if (window.location.pathname.startsWith("/design")) {
+  // The storybook composes real app components (e.g. IncidentRow), some of which
+  // call react-query hooks. useQuery calls useQueryClient() unconditionally —
+  // even when `enabled: false` — so a provider must wrap the storybook too, or
+  // any such page throws "No QueryClient set". Queries that do fire just fail
+  // gracefully against the unauthenticated /design origin.
+  const designQueryClient = new QueryClient({
+    defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } },
+  });
   root.render(
     <React.StrictMode>
       <BrowserRouter>
-        <DesignLanguage />
+        <QueryClientProvider client={designQueryClient}>
+          <DesignLanguage />
+        </QueryClientProvider>
       </BrowserRouter>
     </React.StrictMode>,
   );

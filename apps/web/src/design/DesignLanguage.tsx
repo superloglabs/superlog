@@ -17,6 +17,7 @@ import {
 import type { AgentRun, Incident, IncidentEvent, IncidentListItem, Issue } from "../api.ts";
 import { AgentKeyStep } from "../onboarding/OnboardingWizard.tsx";
 import { RANGE_PRESETS, RangePicker, type RangeSelection } from "./RangePicker.tsx";
+import { InvestigationsPlayground } from "./investigations/Playground.tsx";
 import { OrgSwitcherPlayground } from "./org-switcher/Playground.tsx";
 import { ServiceMapPlayground } from "./service-map/Playground.tsx";
 import { SuperlogOnboardingPlayground } from "./superlog-onboarding/Playground.tsx";
@@ -52,6 +53,7 @@ export function DesignLanguage() {
       <Route path="/design/agent-congrats" element={<AgentCongratsPlayground />} />
       <Route path="/design/org-switcher" element={<OrgSwitcherPlayground />} />
       <Route path="/design/service-map" element={<ServiceMapPlayground />} />
+      <Route path="/design/investigations" element={<InvestigationsPlayground />} />
       <Route path="*" element={<MainStorybook />} />
     </Routes>
   );
@@ -176,6 +178,20 @@ function PagesBento() {
         <h3 className="mt-3 text-[20px] font-semibold tracking-tight text-fg">Explore</h3>
         <p className="mt-1 text-[13px] text-muted">
           Filter bar, grouped timeseries, logs / traces / metrics list.
+        </p>
+      </a>
+      <a
+        href="/design/investigations"
+        className="col-span-12 block border border-border p-5 transition-colors hover:border-border-strong md:col-span-6"
+      >
+        <div className="flex items-baseline justify-between">
+          <Label>prompt · transcript · widgets</Label>
+          <Arrow />
+        </div>
+        <h3 className="mt-3 text-[20px] font-semibold tracking-tight text-fg">Investigations</h3>
+        <p className="mt-1 text-[13px] text-muted">
+          Start a custom agent run from a prompt, read the transcript, and see its telemetry queries
+          rendered as widgets — in the summary too.
         </p>
       </a>
       <a

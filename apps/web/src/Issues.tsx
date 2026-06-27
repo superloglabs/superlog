@@ -13,6 +13,10 @@ import {
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { type EvidenceLinkContext, EvidenceMarkdown } from "./EvidenceMarkdown.tsx";
 import { FeedbackTrigger } from "./FeedbackDialog.tsx";
+import {
+  CollapsibleIncidentTranscript,
+  IncidentSummaryTelemetry,
+} from "./incidents/IncidentTranscript.tsx";
 import { LogDrawer } from "./LogDetail.tsx";
 import { TraceDrawer } from "./TraceDetail.tsx";
 import {
@@ -40,6 +44,7 @@ import {
   useMe,
   useMergeIncidentPullRequest,
   useRestartAgentRun,
+  useStartInvestigation,
   useRetryPrDelivery,
   useSilenceIssue,
   useUnsilenceIssue,
@@ -610,6 +615,7 @@ function groupIncidents(rows: IncidentListItem[]): IncidentGroup[] {
 
 function IncidentsTab({ projectId }: { projectId: string }) {
   const [status, setStatus] = useState<IncidentStatus>("open");
+  const [newInvestigationOpen, setNewInvestigationOpen] = useState(false);
   const { id: selectedId, openItem, closeItem } = useNav();
   const incidents = useIncidents(projectId, status);
 
@@ -651,11 +657,26 @@ function IncidentsTab({ projectId }: { projectId: string }) {
             </button>
           ))}
         </div>
-        {incidents.data && (
-          <span className="text-[12px] text-muted">
-            {incidents.data.length} incident{incidents.data.length !== 1 ? "s" : ""}
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {incidents.data && (
+            <span className="text-[12px] text-muted">
+              {incidents.data.length} incident{incidents.data.length !== 1 ? "s" : ""}
+            </span>
+          )}
+          <Btn variant="primary" size="sm" onClick={() => setNewInvestigationOpen(true)}>
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.4"
+              strokeLinecap="round"
+            >
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            New investigation
+          </Btn>
+        </div>
       </div>
 
       {incidents.isLoading && <div className="text-[13px] text-muted">Loading…</div>}
@@ -701,6 +722,92 @@ function IncidentsTab({ projectId }: { projectId: string }) {
           onViewIssue={(issueId) => openItem(issueId, "issues")}
         />
       )}
+
+      {newInvestigationOpen && (
+        <NewInvestigationModal
+          projectId={projectId}
+          onClose={() => setNewInvestigationOpen(false)}
+          onStarted={(incidentId) => {
+            setNewInvestigationOpen(false);
+            selectIncident(incidentId);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Modal to start a custom investigation from a typed prompt — the entry point
+// for "something feels off but nothing alerted". Creates the incident + a queued
+// manual agent run, then opens the new incident.
+function NewInvestigationModal({
+  projectId,
+  onClose,
+  onStarted,
+}: {
+  projectId: string;
+  onClose: () => void;
+  onStarted: (incidentId: string) => void;
+}) {
+  const [prompt, setPrompt] = useState("");
+  const start = useStartInvestigation(projectId);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  function submit() {
+    const p = prompt.trim();
+    if (!p || start.isPending) return;
+    start.mutate(
+      { prompt: p },
+      { onSuccess: (res) => onStarted(res.incident.id) },
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+      <button type="button" aria-label="Close" className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative w-full max-w-[540px] overflow-hidden rounded-xl border border-border-strong bg-surface shadow-2xl">
+        <div className="px-5 pt-5">
+          <h2 className="text-[17px] font-semibold tracking-tight text-fg">New investigation</h2>
+          <p className="mt-1.5 text-[13px] leading-relaxed text-muted">
+            Describe what feels wrong. The agent queries your telemetry — traces, logs and metrics —
+            and reports back, even if nothing alerted.
+          </p>
+        </div>
+        <div className="px-5 py-4">
+          <textarea
+            autoFocus
+            rows={4}
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="e.g. Checkout feels slow for some users in the last hour, but no incident fired. Can you check whether there's elevated latency or errors on the checkout path?"
+            className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-[14px] leading-relaxed text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none"
+          />
+          <p className="mt-2 text-[12px] text-muted">
+            The agent decides which signals to pull and over what window — each query shows up in the
+            transcript.
+          </p>
+          {start.error && (
+            <p className="mt-2 text-[12px] text-danger">
+              Couldn't start: {String(start.error).replace(/^Error:\s*/, "")}
+            </p>
+          )}
+        </div>
+        <div className="flex justify-end gap-2 border-t border-border bg-surface px-5 py-3.5">
+          <Btn variant="ghost" onClick={onClose}>
+            Cancel
+          </Btn>
+          <Btn variant="primary" onClick={submit} loading={start.isPending} disabled={!prompt.trim()}>
+            Start investigation
+          </Btn>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1368,6 +1475,8 @@ export function IncidentDetailContent({
   updatingIncident,
   restartingAgentRun = false,
   retryingPrDelivery = false,
+  summaryTelemetry,
+  transcript,
 }: {
   incident: Incident;
   issues: Issue[];
@@ -1389,9 +1498,31 @@ export function IncidentDetailContent({
   updatingIncident: boolean;
   restartingAgentRun?: boolean;
   retryingPrDelivery?: boolean;
+  /** Telemetry widgets the agent quoted in its summary, rendered inside the Summary section. */
+  summaryTelemetry?: ReactNode;
+  /** The agent's conversation, rendered as its own Transcript section. When set,
+   *  the agent's `agent.*` events are dropped from the timeline (lifecycle-only). */
+  transcript?: ReactNode;
 }) {
   const [detailTab, setDetailTab] = useState<"incident" | "pr">("incident");
   const statusAction = getIncidentStatusAction(incident.status);
+
+  // The agent's conversation renders as a Transcript section (self-rendered from
+  // events, or an explicit override) — and is then dropped from the timeline.
+  const hasAgentConvo = events.some(
+    (e) =>
+      e.kind === "agent.message" ||
+      e.kind === "agent.tool_use" ||
+      e.kind === "agent.mcp_tool_use" ||
+      e.kind === "agent.custom_tool_use",
+  );
+  const transcriptNode =
+    transcript ??
+    (hasAgentConvo ? (
+      <div className="mt-8">
+        <CollapsibleIncidentTranscript events={events} />
+      </div>
+    ) : null);
 
   return (
     <div className="space-y-8 p-4">
@@ -1480,13 +1611,17 @@ export function IncidentDetailContent({
             onRetryPrDelivery={onRetryPrDelivery}
             restarting={restartingAgentRun}
             retryingPrDelivery={retryingPrDelivery}
+            summaryTelemetry={summaryTelemetry}
           />
 
-          <div className="mt-8 border-t border-border pt-6">
+          {transcriptNode}
+
+          <div className={transcriptNode ? "mt-8" : "mt-8 border-t border-border pt-6"}>
             <IncidentTimeline
               events={events}
               eventsError={eventsError}
               eventsLoading={eventsLoading}
+              excludeAgentMessages={!!transcriptNode}
             />
           </div>
 
@@ -1693,6 +1828,7 @@ export function AgentRunView({
   onRetryPrDelivery,
   restarting = false,
   retryingPrDelivery = false,
+  summaryTelemetry,
 }: {
   incident: Incident;
   agentRun: AgentRun | null;
@@ -1704,6 +1840,7 @@ export function AgentRunView({
   onRetryPrDelivery?: () => void;
   restarting?: boolean;
   retryingPrDelivery?: boolean;
+  summaryTelemetry?: ReactNode;
 }) {
   if (!agentRun) {
     return (
@@ -1747,6 +1884,7 @@ export function AgentRunView({
           <Clamp3>
             <p className="text-[12.5px] leading-relaxed text-fg">{summary}</p>
           </Clamp3>
+          {summaryTelemetry ?? <IncidentSummaryTelemetry events={events} />}
         </div>
       )}
       {resolutionClassification && typeof resolutionClassification === "object" && (
@@ -1809,7 +1947,9 @@ export function AgentRunView({
             </Btn>
           )}
         </div>
-        <AgentRunMeta agentRun={agentRun} />
+        {(agentRun.selectedRepoFullName || agentRun.selectedBaseBranch) && (
+          <AgentRunMeta agentRun={agentRun} />
+        )}
       </div>
       <AgentRunDeliverables agentRun={agentRun} />
       {agentRun.failureReason && (
@@ -1909,20 +2049,27 @@ export function IncidentTimeline({
   events,
   eventsError,
   eventsLoading,
+  excludeAgentMessages = false,
 }: {
   events: IncidentEvent[];
   eventsError: Error | null;
   eventsLoading: boolean;
+  /** When the agent's conversation is shown in a separate Transcript section,
+   *  drop its `agent.*` events here so the timeline is lifecycle-only. */
+  excludeAgentMessages?: boolean;
 }) {
+  const shown = excludeAgentMessages
+    ? events.filter((e) => !e.kind.startsWith("agent."))
+    : events;
   return (
     <div className="space-y-3">
       <SectionHeading>Timeline</SectionHeading>
       {eventsLoading && <p className="text-[12px] text-muted">loading…</p>}
       {eventsError && <p className="text-[12px] text-danger">failed: {String(eventsError)}</p>}
-      {!eventsLoading && !eventsError && events.length === 0 && (
+      {!eventsLoading && !eventsError && shown.length === 0 && (
         <p className="text-[12px] text-muted">No activity yet.</p>
       )}
-      {events.length > 0 && <TimelineView events={events} />}
+      {shown.length > 0 && <TimelineView events={shown} />}
     </div>
   );
 }

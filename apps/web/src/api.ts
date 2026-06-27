@@ -2014,6 +2014,23 @@ export function useRestartAgentRun(projectId: string) {
   });
 }
 
+// Start a custom investigation from a user-typed prompt. Creates the incident +
+// a queued "manual" agent run; returns both so the caller can open the incident.
+export function useStartInvestigation(projectId: string) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { prompt: string; service?: string | null; environment?: string | null }) =>
+      fetcher<{ incident: Incident; agentRun: AgentRun }>(
+        `/api/projects/${projectId}/investigations`,
+        { method: "POST", body: JSON.stringify(body) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["incidents", projectId] });
+    },
+  });
+}
+
 export function useRetryPrDelivery(projectId: string) {
   const fetcher = useFetcher();
   const qc = useQueryClient();

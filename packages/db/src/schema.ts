@@ -172,13 +172,26 @@ export type AgentRunConfidence = {
 // investigation — same continuation path as the human channels below.
 export type AgentRunTrigger =
   | "incident"
+  | "manual"
   | "pr_comment"
   | "feedback"
   | "slack_reply"
   | "issue_joined";
 
+// Triggers that start an *initial* investigation (vs. a follow-up revived by a
+// human interaction after a prior run): "incident" (auto, from telemetry) and
+// "manual" (a user-started investigation from a typed prompt).
+export const INITIAL_AGENT_RUN_TRIGGERS: readonly AgentRunTrigger[] = ["incident", "manual"];
+
+export function isFollowUpTrigger(trigger: AgentRunTrigger): boolean {
+  return !INITIAL_AGENT_RUN_TRIGGERS.includes(trigger);
+}
+
+// Follow-up runs are revived by an inbound interaction on one of these channels.
+export type AgentRunFollowUpTrigger = Exclude<AgentRunTrigger, "incident" | "manual">;
+
 export type AgentRunFollowUpInteraction = {
-  channel: Exclude<AgentRunTrigger, "incident">;
+  channel: AgentRunFollowUpTrigger;
   author: string | null;
   text: string;
   // PR comments: the comment URL and, for review comments, the file/line.
@@ -783,6 +796,9 @@ export const agentRuns = pgTable(
     // interactions accumulate while the run is still queued (e.g. a PR
     // review burst becomes one run, not one per comment).
     triggerDetail: jsonb("trigger_detail").$type<AgentRunTriggerDetail>(),
+    // The user's free-text brief for a manual ("manual" trigger) investigation,
+    // injected into the agent's initial prompt. Null for auto incident runs.
+    prompt: text("prompt"),
     providerSessionId: text("provider_session_id"),
     providerThreadId: text("provider_thread_id"),
     providerSessionStatus: text("provider_session_status"),
