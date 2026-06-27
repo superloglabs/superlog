@@ -84,35 +84,68 @@ export async function mergeIncidentsInTx(
 
 export type IncidentLifecycle = ReturnType<typeof createIncidentLifecycle>;
 
+export type CreateOpenIncidentOpts = {
+  projectId: string;
+  service: string | null;
+  environment?: string | null;
+  title: string;
+  firstSeen: Date;
+  lastSeen: Date;
+};
+
+// Single source of truth for opening an incident: the Postgres unique index on
+// (project_id, codename) protects against races, so retry a handful of random
+// codenames. Each attempt runs in a savepoint (nested transaction) so a
+// collision rolls back just that insert — not the caller's transaction.
+async function allocateOpenIncidentInTx(
+  tx: Tx,
+  opts: CreateOpenIncidentOpts,
+): Promise<schema.Incident> {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const codename = generateCodename();
+    try {
+      const created = await tx.transaction((sp) =>
+        sp
+          .insert(schema.incidents)
+          .values({
+            projectId: opts.projectId,
+            service: opts.service,
+            environment: opts.environment ?? null,
+            title: opts.title,
+            codename,
+            status: "open",
+            firstSeen: opts.firstSeen,
+            lastSeen: opts.lastSeen,
+            issueCount: 0,
+          })
+          .returning(),
+      );
+      if (created[0]) return created[0];
+    } catch (err) {
+      // drizzle-orm wraps postgres errors in DrizzleQueryError; the original
+      // postgres error (with its .code) is stored on .cause. 23505 =
+      // unique_violation; anything else is a real failure.
+      const anyErr = err as { code?: string; cause?: { code?: string } } | null;
+      if ((anyErr?.code ?? anyErr?.cause?.code) !== "23505") throw err;
+    }
+  }
+  throw new Error("failed to allocate a unique incident codename after 6 attempts");
+}
+
 export function createIncidentLifecycle(database: DB = db) {
   const repository = createIncidentRepository(database);
 
   return {
-    async createOpen(opts: {
-      projectId: string;
-      service: string | null;
-      environment?: string | null;
-      title: string;
-      firstSeen: Date;
-      lastSeen: Date;
-    }): Promise<schema.Incident> {
-      // Postgres unique index on (project_id, codename) protects against races.
-      // Retry a handful of times before giving up on randomness.
-      for (let attempt = 0; attempt < 6; attempt++) {
-        const codename = generateCodename();
-        try {
-          const created = await repository.createOpenIncident({ ...opts, codename });
-          if (created[0]) return created[0];
-        } catch (err) {
-          // drizzle-orm wraps postgres errors in DrizzleQueryError; the original
-          // postgres error (with its .code) is stored on .cause.
-          const anyErr = err as { code?: string; cause?: { code?: string } } | null;
-          const code = anyErr?.code ?? anyErr?.cause?.code;
-          // 23505 = unique_violation. Anything else is a real failure.
-          if (code !== "23505") throw err;
-        }
-      }
-      throw new Error("failed to allocate a unique incident codename after 6 attempts");
+    // Open an incident in its own transaction.
+    async createOpen(opts: CreateOpenIncidentOpts): Promise<schema.Incident> {
+      return database.transaction((tx) => allocateOpenIncidentInTx(tx, opts));
+    },
+
+    // Same allocation, but joins a caller's transaction so the incident and
+    // whatever else the caller writes (e.g. an initial agent run) commit
+    // atomically — no orphan incident on partial failure.
+    createOpenInTx(tx: Tx, opts: CreateOpenIncidentOpts): Promise<schema.Incident> {
+      return allocateOpenIncidentInTx(tx, opts);
     },
 
     async resolve(input: ResolveIncidentInput): Promise<ResolveIncidentResult> {
