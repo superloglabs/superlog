@@ -526,6 +526,13 @@
       "when": 1782494638991,
       "tag": "0074_quiet_wolf_cub",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1782588617395,
+      "tag": "0075_fast_madelyne_pryor",
+      "breakpoints": true
     }
   ]
 }

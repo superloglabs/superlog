@@ -11,15 +11,19 @@ import {
 } from "../design/RangePicker.tsx";
 import { Btn, Label, Tile } from "../design/ui.tsx";
 import { AddWidget } from "./AddWidget.tsx";
+import { VariableBar, VariablesManager } from "./Variables.tsx";
 import { WidgetForm } from "./WidgetForm.tsx";
 import {
   useDashboard,
   useDeleteWidget,
   useRenameDashboard,
+  useSetVariables,
   useUpdateLayout,
   useUpdateWidget,
 } from "./api.ts";
-import { type Widget, type WidgetLayout } from "./types.ts";
+import type { DashboardVariable, Widget, WidgetLayout } from "./types.ts";
+import { VariableValuesProvider } from "./variables-context.tsx";
+import { defaultVariableValues } from "./variables.ts";
 import { formFromWidget } from "./widget-config.ts";
 import { WidgetBody } from "./widgets/WidgetBody.tsx";
 
@@ -44,6 +48,9 @@ const GRID_CONFIG = {
 };
 const DRAG_CONFIG = { handle: ".dashboard-widget-handle" };
 const DEFAULT_RANGE_SELECTION: RangeSelection = { seconds: 60 * 60, label: "Last 1h" };
+// Stable empty reference so the variable-seeding effect doesn't re-run every
+// render while the dashboard is still loading.
+const EMPTY_VARIABLES: DashboardVariable[] = [];
 
 export function DashboardView() {
   const me = useMe();
@@ -80,7 +87,24 @@ function DashboardViewInner({
   );
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [adding, setAdding] = useState(false);
+  const [managingVars, setManagingVars] = useState(false);
+  const [varValues, setVarValues] = useState<Record<string, string>>({});
   const range = useMemo(() => rangeFromSeconds(selection.seconds, nowTick), [selection, nowTick]);
+  const setVariables = useSetVariables(projectId, dashboardId);
+
+  const variables: DashboardVariable[] = dashboard.data?.variables ?? EMPTY_VARIABLES;
+
+  // Re-seed selections whenever the variable definitions change: keep the
+  // viewer's existing pick for variables that still exist, default newly-added
+  // ones, and drop removed ones.
+  useEffect(() => {
+    const defaults = defaultVariableValues(variables);
+    setVarValues((prev) => {
+      const next: Record<string, string> = {};
+      for (const v of variables) next[v.name] = prev[v.name] ?? defaults[v.name] ?? "";
+      return next;
+    });
+  }, [variables]);
 
   const applySelection = (next: RangeSelection) => {
     setSelection(next);
@@ -121,6 +145,16 @@ function DashboardViewInner({
         </div>
       </section>
 
+      <section>
+        <VariableBar
+          variables={variables}
+          values={varValues}
+          onChange={(name, value) => setVarValues((prev) => ({ ...prev, [name]: value }))}
+          onManage={() => setManagingVars(true)}
+          canManage
+        />
+      </section>
+
       {widgets.length === 0 ? (
         <Tile>
           <div className="py-12 text-center">
@@ -133,12 +167,15 @@ function DashboardViewInner({
           </div>
         </Tile>
       ) : (
-        <WidgetGrid
-          projectId={projectId}
-          dashboardId={dashboardId}
-          range={range}
-          widgets={widgets}
-        />
+        <VariableValuesProvider value={varValues}>
+          <WidgetGrid
+            projectId={projectId}
+            dashboardId={dashboardId}
+            range={range}
+            widgets={widgets}
+            variables={variables}
+          />
+        </VariableValuesProvider>
       )}
 
       {adding && (
@@ -146,7 +183,19 @@ function DashboardViewInner({
           projectId={projectId}
           dashboardId={dashboardId}
           range={range}
+          variables={variables}
           onClose={() => setAdding(false)}
+        />
+      )}
+
+      {managingVars && (
+        <VariablesManager
+          initial={variables}
+          saving={setVariables.isPending}
+          onSave={async (next) => {
+            await setVariables.mutateAsync({ name, variables: next });
+          }}
+          onClose={() => setManagingVars(false)}
         />
       )}
     </div>
@@ -292,11 +341,13 @@ function WidgetGrid({
   dashboardId,
   range,
   widgets,
+  variables,
 }: {
   projectId: string;
   dashboardId: string;
   range: ExploreRange;
   widgets: Widget[];
+  variables: DashboardVariable[];
 }) {
   // Destructure `mutate` so the callback's dep is stable — the mutation
   // object itself changes identity on every idle→pending→success transition.
@@ -372,6 +423,7 @@ function WidgetGrid({
                 dashboardId={dashboardId}
                 range={range}
                 widget={w}
+                variables={variables}
               />
             </div>
           ))}
@@ -386,11 +438,13 @@ function WidgetTile({
   dashboardId,
   range,
   widget,
+  variables,
 }: {
   projectId: string;
   dashboardId: string;
   range: ExploreRange;
   widget: Widget;
+  variables: DashboardVariable[];
 }) {
   const remove = useDeleteWidget(projectId, dashboardId);
   const [editing, setEditing] = useState(false);
@@ -424,6 +478,7 @@ function WidgetTile({
           dashboardId={dashboardId}
           range={range}
           widget={widget}
+          variables={variables}
           onClose={() => setEditing(false)}
         />
       )}
@@ -436,12 +491,14 @@ function EditWidget({
   dashboardId,
   range,
   widget,
+  variables,
   onClose,
 }: {
   projectId: string;
   dashboardId: string;
   range: ExploreRange;
   widget: Widget;
+  variables: DashboardVariable[];
   onClose: () => void;
 }) {
   const update = useUpdateWidget(projectId, dashboardId);
@@ -452,6 +509,7 @@ function EditWidget({
       mode="edit"
       initial={formFromWidget(widget)}
       existingTitle={widget.title}
+      variables={variables}
       submitting={update.isPending}
       onClose={onClose}
       onSubmit={async ({ type, config, title }) => {

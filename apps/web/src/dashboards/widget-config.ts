@@ -1,5 +1,5 @@
 import type { MetricAggregation, ResourceAttr } from "../api.ts";
-import { type ChartType, type LegendPosition, type Widget, type WidgetConfig, type WidgetType } from "./types.ts";
+import type { ChartType, LegendPosition, Widget, WidgetConfig, WidgetType } from "./types.ts";
 import { DEFAULT_TOP_N } from "./widgets/series-topn.ts";
 import type { WidgetUnit } from "./widgets/widget-format.ts";
 

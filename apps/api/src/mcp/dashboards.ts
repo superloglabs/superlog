@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   addDashboardWidget,
   createDashboard,
+  dashboardVariablesSchema,
   dashboardWidgetConfigSchema,
   dashboardWidgetLayoutSchema,
   dashboardWidgetTypeSchema,
@@ -11,6 +12,7 @@ import {
   deleteDashboardWidget,
   getDashboardWithWidgets,
   listDashboardsForProject,
+  setDashboardVariables,
   updateDashboard,
   updateDashboardWidget,
 } from "../dashboards-service.js";
@@ -23,6 +25,23 @@ const projectIdSchema = z
   .describe(
     "Project to operate on. Defaults to the session's active project. Use list_projects to discover ids.",
   );
+
+// Shared, agent-facing explanation of the template-variable model. Used on both
+// the `variables` parameter and the set_dashboard_variables tool so an agent
+// learns the $name reference convention wherever it first lands.
+const variablesDoc =
+  "Dashboard template variables — a named picklist that drives widget filters. " +
+  "Each entry is { name, options[], defaultValue?, label?, attributeKey? }. " +
+  'A widget filter references a variable by putting the token "$name" (or "${name}") ' +
+  'in a filter value — e.g. resourceAttrs: [{ key: "deployment.environment", value: "$env" }]. ' +
+  "At view time the dashboard shows a dropdown per variable and substitutes the selected " +
+  "option into every filter that references it, so one variable can drive filters across many " +
+  "widgets on any attribute key. `options` is the selectable list (empty = free-form); " +
+  "`defaultValue` must be one of `options` when `options` is non-empty; `attributeKey` is " +
+  "optional and only powers a one-click 'filter by this variable' shortcut in the web editor. " +
+  "Variable names must start with a letter and contain only letters, digits, or underscores.";
+
+const variablesSchema = dashboardVariablesSchema.describe(variablesDoc);
 
 const text = (v: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(v) }] });
 
@@ -65,15 +84,23 @@ export function registerDashboardTools(
     "create_dashboard",
     {
       title: "Create dashboard",
-      description: "Create an empty dashboard. Slug is generated from the name.",
+      description:
+        "Create a dashboard. Slug is generated from the name. Optionally seed template " +
+        "variables (see `variables`) so widget filters can reference them with $name.",
       inputSchema: {
         project_id: projectIdSchema,
         name: z.string().min(1).max(120),
+        variables: variablesSchema.optional(),
       },
     },
     async (input) => {
       const projectId = await resolve(input.project_id);
-      return text(await createDashboard(projectId, session.userId, { name: input.name }));
+      return text(
+        await createDashboard(projectId, session.userId, {
+          name: input.name,
+          variables: input.variables,
+        }),
+      );
     },
   );
 
@@ -91,6 +118,25 @@ export function registerDashboardTools(
     async (input) => {
       const projectId = await resolve(input.project_id);
       const updated = await updateDashboard(projectId, input.id, { name: input.name });
+      if (!updated) throw new HTTPException(404, { message: "dashboard not found" });
+      return text(updated);
+    },
+  );
+
+  server.registerTool(
+    "set_dashboard_variables",
+    {
+      title: "Set dashboard variables",
+      description: `Replace a dashboard's template-variable list. Pass the FULL set you want to keep — this overwrites the existing list (read the current one with get_dashboard first). Variables let one dropdown drive filters across many widgets: define a variable here, then point widget filters at it with value:"$name". ${variablesDoc}`,
+      inputSchema: {
+        project_id: projectIdSchema,
+        id: z.string().uuid(),
+        variables: variablesSchema,
+      },
+    },
+    async (input) => {
+      const projectId = await resolve(input.project_id);
+      const updated = await setDashboardVariables(projectId, input.id, input.variables);
       if (!updated) throw new HTTPException(404, { message: "dashboard not found" });
       return text(updated);
     },
@@ -118,7 +164,10 @@ export function registerDashboardTools(
         "Append a widget to a dashboard. Widget types: timeseries_count, timeseries_metric, trace_table, log_table, markdown. " +
         "Omit `layout` to use the standard size for the type — recommended. The grid is 12 columns wide, so x is 0-11 and w is 1-12; " +
         "the standard sizes are w:6 h:4 for timeseries charts (half-width), w:12 h:6 for trace_table/log_table (full-width), and " +
-        "w:4 h:5 for markdown. Only pass `layout` when you deliberately want a non-standard size or position.",
+        "w:4 h:5 for markdown. Only pass `layout` when you deliberately want a non-standard size or position. " +
+        'A filter value may reference a dashboard variable with the token "$name" (or "${name}") — e.g. ' +
+        'config.filter.resourceAttrs: [{ key: "deployment.environment", value: "$env" }] — which is substituted ' +
+        "with the viewer's selected option at view time. Define variables with set_dashboard_variables (or create_dashboard).",
       inputSchema: {
         project_id: projectIdSchema,
         dashboard_id: z.string().uuid(),
@@ -149,7 +198,9 @@ export function registerDashboardTools(
     "update_dashboard_widget",
     {
       title: "Update dashboard widget",
-      description: "Patch a widget's title, config, or layout.",
+      description:
+        "Patch a widget's title, config, or layout. As with add_dashboard_widget, a filter " +
+        'value may reference a dashboard variable with the token "$name" (or "${name}").',
       inputSchema: {
         project_id: projectIdSchema,
         dashboard_id: z.string().uuid(),

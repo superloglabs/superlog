@@ -70,8 +70,61 @@ export function defaultWidgetLayout(type: DashboardWidgetType): DashboardWidgetL
   }
 }
 
-export const dashboardCreateSchema = z.object({ name: z.string().min(1).max(120) });
-export const dashboardUpdateSchema = z.object({ name: z.string().min(1).max(120) });
+// A dashboard-level template variable. Widget filters reference it from a
+// `resourceAttrs[].value` using the token `$name` (or `${name}`); the dashboard
+// substitutes the selected option at view time. `options` is the picklist shown
+// in the variable bar. `attributeKey` is an optional convenience that lets the
+// widget editor offer a one-click filter on that attribute — the variable can
+// still be referenced from any filter via `$name`.
+const dashboardVariableSchema = z.object({
+  name: z
+    .string()
+    .regex(
+      /^[a-zA-Z][a-zA-Z0-9_]*$/,
+      "name must start with a letter and contain only letters, digits, or underscores",
+    )
+    .max(60),
+  label: z.string().max(120).optional(),
+  options: z.array(z.string().max(500)).max(200),
+  defaultValue: z.string().max(500).optional(),
+  attributeKey: z.string().max(200).optional(),
+});
+
+export const dashboardVariablesSchema = z
+  .array(dashboardVariableSchema)
+  .max(50)
+  .superRefine((vars, ctx) => {
+    const seen = new Set<string>();
+    for (const v of vars) {
+      if (seen.has(v.name)) {
+        ctx.addIssue({ code: "custom", message: `duplicate variable name: ${v.name}` });
+      }
+      seen.add(v.name);
+      // An empty options list means the value is free-form, so any default is
+      // allowed; otherwise the default has to be a selectable option.
+      if (
+        v.defaultValue !== undefined &&
+        v.options.length > 0 &&
+        !v.options.includes(v.defaultValue)
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          message: `defaultValue "${v.defaultValue}" is not one of the options for variable "${v.name}"`,
+        });
+      }
+    }
+  });
+
+export const dashboardCreateSchema = z.object({
+  name: z.string().min(1).max(120),
+  variables: dashboardVariablesSchema.optional(),
+});
+export const dashboardUpdateSchema = z.object({
+  name: z.string().min(1).max(120),
+  variables: dashboardVariablesSchema.optional(),
+});
+
+export type DashboardVariableInput = z.infer<typeof dashboardVariableSchema>;
 
 export const dashboardWidgetCreateSchema = z.object({
   type: dashboardWidgetTypeSchema,
@@ -140,7 +193,13 @@ export async function createDashboard(
   }
   const inserted = await db
     .insert(schema.dashboards)
-    .values({ projectId, name: input.name, slug, createdBy: userId })
+    .values({
+      projectId,
+      name: input.name,
+      slug,
+      createdBy: userId,
+      ...(input.variables !== undefined ? { variables: input.variables } : {}),
+    })
     .returning();
   const row = inserted[0];
   if (!row) throw new Error("dashboards insert returned no rows");
@@ -154,7 +213,24 @@ export async function updateDashboard(
 ): Promise<schema.Dashboard | null> {
   const updated = await db
     .update(schema.dashboards)
-    .set({ name: input.name, updatedAt: new Date() })
+    .set({
+      name: input.name,
+      ...(input.variables !== undefined ? { variables: input.variables } : {}),
+      updatedAt: new Date(),
+    })
+    .where(and(eq(schema.dashboards.id, id), eq(schema.dashboards.projectId, projectId)))
+    .returning();
+  return updated[0] ?? null;
+}
+
+export async function setDashboardVariables(
+  projectId: string,
+  id: string,
+  variables: DashboardVariableInput[],
+): Promise<schema.Dashboard | null> {
+  const updated = await db
+    .update(schema.dashboards)
+    .set({ variables, updatedAt: new Date() })
     .where(and(eq(schema.dashboards.id, id), eq(schema.dashboards.projectId, projectId)))
     .returning();
   return updated[0] ?? null;

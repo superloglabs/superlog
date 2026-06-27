@@ -5,12 +5,15 @@ import { type ExploreRange, METRIC_AGGREGATIONS } from "../api.ts";
 import { Btn, Chip, Input, Label, PillToggle, Tile } from "../design/ui.tsx";
 import { SettingsCard, SettingsRow } from "../settings/rows.tsx";
 import {
+  type DashboardVariable,
   type Widget,
   type WidgetConfig,
   type WidgetType,
   defaultChartType,
   defaultLayoutFor,
 } from "./types.ts";
+import { VariableValuesProvider } from "./variables-context.tsx";
+import { defaultVariableValues } from "./variables.ts";
 import {
   type WidgetFormState,
   buildWidgetConfig,
@@ -26,6 +29,7 @@ export function WidgetForm({
   mode,
   initial,
   existingTitle,
+  variables = [],
   submitting,
   onSubmit,
   onClose,
@@ -38,6 +42,8 @@ export function WidgetForm({
   // independently renamable from the widget header) instead of being
   // regenerated from the form.
   existingTitle?: string;
+  // Dashboard variables available to reference from a filter value as `$name`.
+  variables?: DashboardVariable[];
   submitting: boolean;
   onSubmit: (result: {
     type: WidgetType;
@@ -72,6 +78,10 @@ export function WidgetForm({
   }, [onClose]);
 
   const config = useMemo(() => buildWidgetConfig(form), [form]);
+  // Resolve variable references in the preview using their default selections,
+  // so a filter like `$env` previews against its default rather than the
+  // literal token.
+  const previewVarValues = useMemo(() => defaultVariableValues(variables), [variables]);
   const generatedTitle = useMemo(
     () =>
       generateTitle({
@@ -323,6 +333,32 @@ export function WidgetForm({
                       )}
                     </div>
                   </div>
+                  {variables.length > 0 && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span className="text-[11px] font-medium text-muted">use variable</span>
+                      {variables.map((v) => {
+                        const key = v.attributeKey || v.name;
+                        const value = `$${v.name}`;
+                        const already = form.attrs.some((a) => a.key === key && a.value === value);
+                        return (
+                          <button
+                            type="button"
+                            key={v.name}
+                            disabled={already}
+                            title={`filter ${key} by $${v.name}`}
+                            onClick={() => update({ attrs: [...form.attrs, { key, value }] })}
+                            className="disabled:opacity-40"
+                          >
+                            <Chip tone="accent">
+                              <span className="opacity-70">{key}</span>
+                              <span>=</span>
+                              <span>${v.name}</span>
+                            </Chip>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </SettingsRow>
               </SettingsCard>
             )}
@@ -436,7 +472,9 @@ export function WidgetForm({
                   write a note to preview
                 </div>
               ) : (
-                <WidgetBody projectId={projectId} range={range} widget={previewWidget} />
+                <VariableValuesProvider value={previewVarValues}>
+                  <WidgetBody projectId={projectId} range={range} widget={previewWidget} />
+                </VariableValuesProvider>
               )}
             </div>
           </div>

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { Widget } from "./types.ts";
 import {
   buildWidgetConfig,
   emptyWidgetForm,
@@ -7,7 +8,6 @@ import {
   generateTitle,
   widgetTypeFor,
 } from "./widget-config.ts";
-import type { Widget } from "./types.ts";
 
 function widget(partial: Partial<Widget>): Widget {
   return {

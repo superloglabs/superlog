@@ -1,6 +1,7 @@
 import { type ExploreRange, type MetricSeriesRow, useExploreMetricSeries } from "../../api.ts";
 import type { Widget } from "../types.ts";
 import { defaultChartType, widgetFilterToExplore } from "../types.ts";
+import { useVariableValues } from "../variables-context.tsx";
 import { CountChart } from "./CountChart.tsx";
 import { DEFAULT_TOP_N } from "./series-topn.ts";
 import { WidgetEmpty, WidgetLoading } from "./shared.tsx";
@@ -17,7 +18,7 @@ export function TimeseriesMetricWidget({
   range: ExploreRange;
   widget: Widget;
 }) {
-  const filter = widgetFilterToExplore(widget.config, range);
+  const filter = widgetFilterToExplore(widget.config, range, useVariableValues());
   const q = useExploreMetricSeries(
     projectId,
     widget.config.metricName || undefined,

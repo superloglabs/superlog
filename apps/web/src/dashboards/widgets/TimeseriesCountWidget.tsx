@@ -1,6 +1,7 @@
 import { type ExploreRange, type SeriesRow, useExploreSeries } from "../../api.ts";
 import type { Widget } from "../types.ts";
 import { defaultChartType, widgetFilterToExplore } from "../types.ts";
+import { useVariableValues } from "../variables-context.tsx";
 import { CountChart } from "./CountChart.tsx";
 import { DEFAULT_TOP_N } from "./series-topn.ts";
 import { WidgetEmpty, WidgetLoading } from "./shared.tsx";
@@ -18,7 +19,7 @@ export function TimeseriesCountWidget({
   widget: Widget;
 }) {
   const source = widget.config.source === "traces" ? "traces" : "logs";
-  const filter = widgetFilterToExplore(widget.config, range);
+  const filter = widgetFilterToExplore(widget.config, range, useVariableValues());
   const q = useExploreSeries(projectId, source, filter, widget.config.groupBy || undefined);
 
   if (q.isLoading) return <WidgetLoading />;

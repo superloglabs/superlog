@@ -1349,6 +1349,21 @@ export type DashboardWidgetLayout = {
   h: number;
 };
 
+// A dashboard-level template variable. Filters reference it from a widget's
+// `resourceAttrs[].value` with the token `$name` (or `${name}`); at view time
+// the dashboard substitutes the currently-selected option before querying.
+// `options` is the configurable picklist shown in the dashboard's variable bar.
+// `attributeKey`, when set, is a convenience that lets the widget editor offer a
+// one-click "filter by this variable" on that attribute — the variable can
+// still be referenced from a filter on any key via `$name`.
+export type DashboardVariable = {
+  name: string;
+  label?: string;
+  options: string[];
+  defaultValue?: string;
+  attributeKey?: string;
+};
+
 export const dashboards = pgTable(
   "dashboards",
   {
@@ -1358,6 +1373,7 @@ export const dashboards = pgTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     slug: text("slug").notNull(),
+    variables: jsonb("variables").$type<DashboardVariable[]>().notNull().default(sql`'[]'::jsonb`),
     createdBy: uuid("created_by")
       .notNull()
       .references(() => users.id),
