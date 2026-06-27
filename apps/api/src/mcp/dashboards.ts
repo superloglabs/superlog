@@ -116,9 +116,9 @@ export function registerDashboardTools(
       title: "Add dashboard widget",
       description:
         "Append a widget to a dashboard. Widget types: timeseries_count, timeseries_metric, trace_table, log_table, markdown. " +
-        "Omit `layout` to use the standard size for the type — recommended. The grid is 12 columns wide; the standard sizes are " +
-        "w:6 h:4 for timeseries charts (half-width), w:12 h:6 for trace_table/log_table (full-width), and w:4 h:5 for markdown. " +
-        "Only pass `layout` when you deliberately want a non-standard size or position.",
+        "Omit `layout` to use the standard size for the type — recommended. The grid is 12 columns wide, so x is 0-11 and w is 1-12; " +
+        "the standard sizes are w:6 h:4 for timeseries charts (half-width), w:12 h:6 for trace_table/log_table (full-width), and " +
+        "w:4 h:5 for markdown. Only pass `layout` when you deliberately want a non-standard size or position.",
       inputSchema: {
         project_id: projectIdSchema,
         dashboard_id: z.string().uuid(),
@@ -128,7 +128,7 @@ export function registerDashboardTools(
         layout: dashboardWidgetLayoutSchema
           .optional()
           .describe(
-            "Grid placement {x,y,w,h} on a 12-column grid. Omit to use the standard size for the widget type.",
+            "Grid placement {x,y,w,h} on a 12-column grid (x 0-11, w 1-12). Omit to use the standard size for the widget type.",
           ),
       },
     },

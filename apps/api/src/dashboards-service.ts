@@ -33,10 +33,14 @@ export const dashboardWidgetConfigSchema = z.object({
   markdown: z.string().max(20_000).optional(),
 });
 
+// Layouts are placed on the 12-column grid the UI renders (DashboardView.tsx
+// uses cols=12), so a column index is 0..11 and a span is 1..12. Bounding the
+// schema to the grid keeps it the single source of truth — an agent that sends
+// w:48 is rejected here rather than producing a widget wider than the grid.
 export const dashboardWidgetLayoutSchema = z.object({
-  x: z.number().int().min(0).max(48),
+  x: z.number().int().min(0).max(11),
   y: z.number().int().min(0).max(100000),
-  w: z.number().int().min(1).max(48),
+  w: z.number().int().min(1).max(12),
   h: z.number().int().min(1).max(100),
 });
 
@@ -47,9 +51,22 @@ export type DashboardWidgetLayout = z.infer<typeof dashboardWidgetLayoutSchema>;
 // Kept in sync with the web's `defaultLayoutFor` (apps/web/src/dashboards/types.ts).
 // y=9999 means "append at the bottom": the grid compacts vertically on load.
 export function defaultWidgetLayout(type: DashboardWidgetType): DashboardWidgetLayout {
-  if (type === "markdown") return { x: 0, y: 9999, w: 4, h: 5 };
-  if (type === "trace_table" || type === "log_table") return { x: 0, y: 9999, w: 12, h: 6 };
-  return { x: 0, y: 9999, w: 6, h: 4 };
+  switch (type) {
+    case "markdown":
+      return { x: 0, y: 9999, w: 4, h: 5 };
+    case "trace_table":
+    case "log_table":
+      return { x: 0, y: 9999, w: 12, h: 6 };
+    case "timeseries_count":
+    case "timeseries_metric":
+      return { x: 0, y: 9999, w: 6, h: 4 };
+    default: {
+      // Exhaustiveness guard: adding a widget type to the enum without a case
+      // here is a compile error rather than a silent fall-through.
+      const _exhaustive: never = type;
+      throw new Error(`unhandled widget type: ${String(_exhaustive)}`);
+    }
+  }
 }
 
 export const dashboardCreateSchema = z.object({ name: z.string().min(1).max(120) });
