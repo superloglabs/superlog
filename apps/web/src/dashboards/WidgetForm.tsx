@@ -360,20 +360,32 @@ export function WidgetForm({
                 <SettingsRow
                   title="X-axis markers"
                   control={
-                    <Toggle checked={form.showXAxis} onChange={(v) => update({ showXAxis: v })} />
+                    <Toggle
+                      label="X-axis markers"
+                      checked={form.showXAxis}
+                      onChange={(v) => update({ showXAxis: v })}
+                    />
                   }
                 />
                 <SettingsRow
                   title="Y-axis markers"
                   control={
-                    <Toggle checked={form.showYAxis} onChange={(v) => update({ showYAxis: v })} />
+                    <Toggle
+                      label="Y-axis markers"
+                      checked={form.showYAxis}
+                      onChange={(v) => update({ showYAxis: v })}
+                    />
                   }
                 />
                 <SettingsRow
                   title="Legend"
                   description="Show a key of series names and values"
                   control={
-                    <Toggle checked={form.showLegend} onChange={(v) => update({ showLegend: v })} />
+                    <Toggle
+                      label="Legend"
+                      checked={form.showLegend}
+                      onChange={(v) => update({ showLegend: v })}
+                    />
                   }
                 />
                 {form.showLegend && (
@@ -449,12 +461,16 @@ export function WidgetForm({
   );
 }
 
-// Switch toggle matching the settings rows (see Settings.tsx Toggle).
+// Switch toggle matching the settings rows (see Settings.tsx Toggle). The row
+// title is only a visual sibling, so `label` is required to give the switch an
+// accessible name (role="switch" otherwise reads as an unnamed control).
 function Toggle({
+  label,
   checked,
   disabled = false,
   onChange,
 }: {
+  label: string;
   checked: boolean;
   disabled?: boolean;
   onChange: (v: boolean) => void;
@@ -463,6 +479,7 @@ function Toggle({
     <button
       type="button"
       role="switch"
+      aria-label={label}
       aria-checked={checked}
       disabled={disabled}
       onClick={() => onChange(!checked)}
