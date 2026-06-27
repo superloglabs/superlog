@@ -240,16 +240,23 @@ export function normalizeAgentResult(rawInput: unknown): NormalizeResult {
       reason: `invalid state: ${JSON.stringify(input.state)}`,
     };
   }
-  const summary = asString(input.summary);
+  // summary is required but we salvage rather than hard-reject when it's
+  // missing or non-string: fall back to proposedTitle (if present and a
+  // string) or a generic placeholder, and record "summary" in drops so the
+  // caller can log it. This preserves the rest of the result (state,
+  // rootCause, pr, etc.) instead of discarding the entire investigation.
+  let summary = asString(input.summary);
+  const drops: string[] = [];
   if (summary == null) {
-    return { ok: false, reason: "missing or non-string summary" };
+    drops.push("summary");
+    const titleFallback = asString(input.proposedTitle);
+    summary = titleFallback != null ? titleFallback : "(no summary provided)";
   }
 
   const result: ManagedSessionResult = {
     state: state as ManagedSessionResult["state"],
     summary,
   };
-  const drops: string[] = [];
 
   // Helper: assign a normalised value when the input had something but the
   // shape was wrong; assign null when the agent explicitly sent null.
