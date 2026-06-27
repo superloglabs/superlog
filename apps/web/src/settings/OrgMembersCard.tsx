@@ -4,6 +4,11 @@ import { useMe } from "../api.ts";
 import { authClient } from "../auth-client.ts";
 import { Btn, Chip, Input, Tile } from "../design/ui.tsx";
 
+// HTTP status returned by better-auth when the caller is not a member of the
+// queried organization (stale `me` cache race: the session already switched to
+// a new org but the cached me.data.org.id still points to the old one).
+const NOT_MEMBER_STATUS = 403;
+
 type Role = "owner" | "admin" | "member";
 const ROLES: Role[] = ["owner", "admin", "member"];
 
@@ -32,6 +37,7 @@ function inviteQueryKey(orgId: string) {
 
 export function OrgMembersCard() {
   const me = useMe();
+  const qc = useQueryClient();
   const orgId = me.data?.org?.id;
   const myUserId = me.data?.user.id;
 
@@ -40,7 +46,16 @@ export function OrgMembersCard() {
     enabled: !!orgId,
     queryFn: async () => {
       const res = await authClient.organization.listMembers({ query: { organizationId: orgId } });
-      if (res.error) throw new Error(res.error.message ?? "Failed to load members");
+      if (res.error) {
+        // 403 means the me cache is stale: the session already switched to a
+        // new org but this query fired before the ["me"] refetch completed.
+        // Invalidate me so the component re-renders with the correct orgId.
+        if (res.error.status === NOT_MEMBER_STATUS) {
+          void qc.invalidateQueries({ queryKey: ["me"] });
+          return [] as Member[];
+        }
+        throw new Error(res.error.message ?? "Failed to load members");
+      }
       return (res.data?.members ?? []) as Member[];
     },
   });
@@ -52,7 +67,14 @@ export function OrgMembersCard() {
       const res = await authClient.organization.listInvitations({
         query: { organizationId: orgId },
       });
-      if (res.error) throw new Error(res.error.message ?? "Failed to load invitations");
+      if (res.error) {
+        // Same stale-cache guard as membersQ above.
+        if (res.error.status === NOT_MEMBER_STATUS) {
+          void qc.invalidateQueries({ queryKey: ["me"] });
+          return [] as Invitation[];
+        }
+        throw new Error(res.error.message ?? "Failed to load invitations");
+      }
       return (res.data ?? []) as Invitation[];
     },
   });
