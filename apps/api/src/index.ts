@@ -67,6 +67,7 @@ import {
   spanSampleKey,
 } from "./incidents/stats.js";
 import { mountIngestFilters } from "./ingest-filters.js";
+import { sanitizeIssueFilterConfig } from "./issue-filter-service.js";
 import { mountLinearAuthed, mountLinearPublic } from "./linear.js";
 import { logger } from "./logger.js";
 import { mountManagementApi, mountOrgKeyManagementAuthed } from "./management.js";
@@ -1181,44 +1182,6 @@ async function getProjectAutomation(projectId: string): Promise<{
     autoMergeFixPrs: row?.autoMergeFixPrs ?? "never",
     autoMergeMethod: row?.autoMergeMethod ?? "squash",
     issueFilterConfig: row?.issueFilterConfig ?? schema.EMPTY_ISSUE_FILTER_CONFIG,
-  };
-}
-
-function sanitizeClauseList(input: unknown): schema.IssueFilterClause[] {
-  if (!Array.isArray(input)) return [];
-  const out: schema.IssueFilterClause[] = [];
-  const seen = new Set<string>();
-  for (const item of input) {
-    if (!item || typeof item !== "object") continue;
-    const key =
-      typeof (item as { key?: unknown }).key === "string"
-        ? (item as { key: string }).key.trim()
-        : "";
-    const value =
-      typeof (item as { value?: unknown }).value === "string"
-        ? (item as { value: string }).value.trim()
-        : "";
-    if (!key || !value) continue;
-    const dedupe = `${key.toLowerCase()}=${value}`;
-    if (seen.has(dedupe)) continue;
-    seen.add(dedupe);
-    out.push({ key: key.slice(0, 200), value: value.slice(0, 400) });
-    if (out.length >= 20) break;
-  }
-  return out;
-}
-
-function sanitizeIssueFilterConfig(
-  input: unknown,
-  fallback: schema.IssueFilterConfig,
-): schema.IssueFilterConfig {
-  if (!input || typeof input !== "object") return fallback;
-  const o = input as Partial<Record<keyof schema.IssueFilterConfig, unknown>>;
-  return {
-    includeLogs: sanitizeClauseList(o.includeLogs),
-    includeSpans: sanitizeClauseList(o.includeSpans),
-    excludeLogs: sanitizeClauseList(o.excludeLogs),
-    excludeSpans: sanitizeClauseList(o.excludeSpans),
   };
 }
 

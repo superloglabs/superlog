@@ -1,55 +1,26 @@
-import {
-  db,
-  encryptIntegrationSecret,
-  resolveDefaultAgentRunProvider,
-  schema,
-} from "@superlog/db";
+import { db, encryptIntegrationSecret, resolveDefaultAgentRunProvider, schema } from "@superlog/db";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
+import {
+  AGENT_MEMORY_BODY_MAX_LEN,
+  AGENT_MEMORY_TITLE_MAX_LEN,
+  createAgentMemory,
+  deleteAgentMemory,
+  listAgentMemories,
+  parseMemoryKind,
+  parseMemoryStatus,
+  parseMemoryText,
+  serializeAgentMemory,
+  updateAgentMemory,
+} from "./agent-memories-service.js";
 import { INTEGRATION_MANIFESTS } from "./integrations-manifest.js";
 import { resolveActiveOrgContext } from "./org-context.js";
+import { clampProjectContext } from "./project-context-service.js";
 
 type Vars = { userId: string; orgId: string | null };
 
 const ORG_INSTRUCTIONS_MAX_LEN = 8000;
-const PROJECT_CONTEXT_MAX_LEN = 8000;
-
-const AGENT_MEMORY_TITLE_MAX_LEN = 200;
-const AGENT_MEMORY_BODY_MAX_LEN = 4000;
-const AGENT_MEMORY_KINDS: schema.AgentMemoryKind[] = [
-  "feedback",
-  "terminology",
-  "infra",
-  "project",
-];
-
-function parseMemoryKind(value: unknown): schema.AgentMemoryKind | null {
-  return typeof value === "string" && (AGENT_MEMORY_KINDS as string[]).includes(value)
-    ? (value as schema.AgentMemoryKind)
-    : null;
-}
-
-function parseMemoryText(value: unknown, maxLen: number): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return null;
-  return trimmed.slice(0, maxLen);
-}
-
-function serializeAgentMemory(row: schema.AgentMemory) {
-  return {
-    id: row.id,
-    kind: row.kind,
-    projectId: row.projectId,
-    title: row.title,
-    body: row.body,
-    status: row.status,
-    source: row.sourceAgentRunId ? "agent" : row.sourceUserId ? "user" : null,
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString(),
-  };
-}
 
 const PROJECT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 const PROJECT_NAME_MAX_LEN = 80;
@@ -100,13 +71,7 @@ export function mountSettingsAuthed(app: Hono<any>): void {
   app.get("/api/org/projects/:projectId/agent-memories", async (c) => {
     const scope = await resolveProjectScope(c);
     if (!scope) return c.json({ error: "project not found" }, 404);
-    const rows = await db.query.agentMemories.findMany({
-      where: and(
-        eq(schema.agentMemories.orgId, scope.orgId),
-        eq(schema.agentMemories.projectId, scope.projectId),
-      ),
-      orderBy: [asc(schema.agentMemories.createdAt)],
-    });
+    const rows = await listAgentMemories(scope.orgId, scope.projectId);
     return c.json({ memories: rows.map(serializeAgentMemory) });
   });
 
@@ -121,17 +86,14 @@ export function mountSettingsAuthed(app: Hono<any>): void {
     if (!title) return c.json({ error: "title is required" }, 400);
     const memoryBody = parseMemoryText(body.body, AGENT_MEMORY_BODY_MAX_LEN);
     if (!memoryBody) return c.json({ error: "body is required" }, 400);
-    const [row] = await db
-      .insert(schema.agentMemories)
-      .values({
-        orgId: scope.orgId,
-        projectId: scope.projectId,
-        kind,
-        title,
-        body: memoryBody,
-        sourceUserId: scope.userId,
-      })
-      .returning();
+    const row = await createAgentMemory({
+      orgId: scope.orgId,
+      projectId: scope.projectId,
+      kind,
+      title,
+      body: memoryBody,
+      sourceUserId: scope.userId,
+    });
     if (!row) return c.json({ error: "failed to create memory" }, 500);
     return c.json({ memory: serializeAgentMemory(row) });
   });
@@ -140,7 +102,12 @@ export function mountSettingsAuthed(app: Hono<any>): void {
     const scope = await resolveProjectScope(c);
     if (!scope) return c.json({ error: "project not found" }, 404);
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-    const patch: Partial<typeof schema.agentMemories.$inferInsert> = {};
+    const patch: {
+      kind?: schema.AgentMemoryKind;
+      title?: string;
+      body?: string;
+      status?: "active" | "archived";
+    } = {};
     if (body.kind !== undefined) {
       const kind = parseMemoryKind(body.kind);
       if (!kind) return c.json({ error: "invalid kind" }, 400);
@@ -157,25 +124,14 @@ export function mountSettingsAuthed(app: Hono<any>): void {
       patch.body = memoryBody;
     }
     if (body.status !== undefined) {
-      if (body.status !== "active" && body.status !== "archived") {
-        return c.json({ error: "status must be active or archived" }, 400);
-      }
-      patch.status = body.status;
+      const status = parseMemoryStatus(body.status);
+      if (!status) return c.json({ error: "status must be active or archived" }, 400);
+      patch.status = status;
     }
     if (Object.keys(patch).length === 0) {
       return c.json({ error: "provide at least one of kind, title, body, status" }, 400);
     }
-    const [row] = await db
-      .update(schema.agentMemories)
-      .set({ ...patch, updatedAt: new Date() })
-      .where(
-        and(
-          eq(schema.agentMemories.id, c.req.param("id")),
-          eq(schema.agentMemories.orgId, scope.orgId),
-          eq(schema.agentMemories.projectId, scope.projectId),
-        ),
-      )
-      .returning();
+    const row = await updateAgentMemory(scope.orgId, scope.projectId, c.req.param("id"), patch);
     if (!row) return c.json({ error: "memory not found" }, 404);
     return c.json({ memory: serializeAgentMemory(row) });
   });
@@ -183,17 +139,8 @@ export function mountSettingsAuthed(app: Hono<any>): void {
   app.delete("/api/org/projects/:projectId/agent-memories/:id", async (c) => {
     const scope = await resolveProjectScope(c);
     if (!scope) return c.json({ error: "project not found" }, 404);
-    const [row] = await db
-      .delete(schema.agentMemories)
-      .where(
-        and(
-          eq(schema.agentMemories.id, c.req.param("id")),
-          eq(schema.agentMemories.orgId, scope.orgId),
-          eq(schema.agentMemories.projectId, scope.projectId),
-        ),
-      )
-      .returning({ id: schema.agentMemories.id });
-    if (!row) return c.json({ error: "memory not found" }, 404);
+    const ok = await deleteAgentMemory(scope.orgId, scope.projectId, c.req.param("id"));
+    if (!ok) return c.json({ error: "memory not found" }, 404);
     return c.json({ ok: true });
   });
 
@@ -362,9 +309,7 @@ export function mountSettingsAuthed(app: Hono<any>): void {
         name,
         slug: slugInput,
         projectContext:
-          typeof body.projectContext === "string"
-            ? body.projectContext.slice(0, PROJECT_CONTEXT_MAX_LEN)
-            : "",
+          typeof body.projectContext === "string" ? clampProjectContext(body.projectContext) : "",
       })
       .returning();
     if (!project) return c.json({ error: "failed to create project" }, 500);
@@ -419,7 +364,7 @@ export function mountSettingsAuthed(app: Hono<any>): void {
       }
     }
     if (typeof body.projectContext === "string") {
-      patch.projectContext = body.projectContext.slice(0, PROJECT_CONTEXT_MAX_LEN);
+      patch.projectContext = clampProjectContext(body.projectContext);
     }
     if (Object.keys(patch).length === 0) {
       return c.json({
