@@ -26,6 +26,7 @@ export const dashboardWidgetConfigSchema = z.object({
   aggregation: z.enum(["sum", "avg", "min", "max", "p95", "p99"]).optional(),
   limit: z.number().int().positive().max(500).optional(),
   chartType: z.enum(["line", "bar"]).optional(),
+  unit: z.enum(["none", "duration_ms", "duration_s", "bytes", "percent"]).optional(),
   showXAxis: z.boolean().optional(),
   showYAxis: z.boolean().optional(),
   showLegend: z.boolean().optional(),

@@ -36,6 +36,8 @@ export function TimeseriesCountWidget({
         showYAxis={widget.config.showYAxis ?? true}
         showLegend={widget.config.showLegend ?? false}
         legendPosition={widget.config.legendPosition ?? "side"}
+        unit={widget.config.unit ?? "none"}
+        legendAgg="sum"
       />
     </div>
   );

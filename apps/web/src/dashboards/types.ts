@@ -1,5 +1,6 @@
 import type { ExploreFilter, ResourceAttr } from "../api.ts";
 import type { MetricAggregation } from "../api.ts";
+import type { WidgetUnit } from "./widgets/widget-format.ts";
 
 export type WidgetType =
   | "timeseries_count"
@@ -18,6 +19,8 @@ export type WidgetConfig = {
   aggregation?: MetricAggregation;
   limit?: number;
   chartType?: ChartType;
+  /** How values are formatted on the axis, tooltip, and legend. Defaults to "none". */
+  unit?: WidgetUnit;
   showXAxis?: boolean;
   showYAxis?: boolean;
   showLegend?: boolean;

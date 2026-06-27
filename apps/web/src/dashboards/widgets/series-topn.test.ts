@@ -29,6 +29,33 @@ test("orders series by total descending", () => {
   );
 });
 
+test("values holds present buckets only, excluding cross-series zero-fill", () => {
+  // Two groups share a bucket axis: "a" has data in both buckets, "b" only in
+  // the first. "b"'s `data` is zero-filled to align the axis, but `values` must
+  // contain only the bucket it actually had — so a legend avg/min isn't dragged
+  // to zero.
+  const rows = [
+    { bucket: "2026-06-01 00:00:00", group: "a", count: 10 },
+    { bucket: "2026-06-01 00:01:00", group: "a", count: 20 },
+    { bucket: "2026-06-01 00:00:00", group: "b", count: 7 },
+  ];
+  const series = buildTopNSeries(rows, count, 10);
+  const a = series.find((s) => s.name === "a");
+  const b = series.find((s) => s.name === "b");
+  assert.ok(a && b);
+  assert.deepEqual(a.values, [10, 20]);
+  assert.deepEqual(
+    a.data.map((d) => d[1]),
+    [10, 20],
+  );
+  // b is zero-filled in the second bucket for the chart, but values has just 7.
+  assert.deepEqual(b.values, [7]);
+  assert.deepEqual(
+    b.data.map((d) => d[1]),
+    [7, 0],
+  );
+});
+
 test("rolls groups beyond the limit into a single Other series, placed last", () => {
   // 5 groups, limit 3 → top 3 + Other (sum of remaining 2).
   const rows = rowsFor(
