@@ -40,6 +40,18 @@ export const dashboardWidgetLayoutSchema = z.object({
   h: z.number().int().min(1).max(100),
 });
 
+export type DashboardWidgetType = z.infer<typeof dashboardWidgetTypeSchema>;
+export type DashboardWidgetLayout = z.infer<typeof dashboardWidgetLayoutSchema>;
+
+// The standard widget size per type, against the 12-column grid the UI renders.
+// Kept in sync with the web's `defaultLayoutFor` (apps/web/src/dashboards/types.ts).
+// y=9999 means "append at the bottom": the grid compacts vertically on load.
+export function defaultWidgetLayout(type: DashboardWidgetType): DashboardWidgetLayout {
+  if (type === "markdown") return { x: 0, y: 9999, w: 4, h: 5 };
+  if (type === "trace_table" || type === "log_table") return { x: 0, y: 9999, w: 12, h: 6 };
+  return { x: 0, y: 9999, w: 6, h: 4 };
+}
+
 export const dashboardCreateSchema = z.object({ name: z.string().min(1).max(120) });
 export const dashboardUpdateSchema = z.object({ name: z.string().min(1).max(120) });
 
@@ -47,7 +59,9 @@ export const dashboardWidgetCreateSchema = z.object({
   type: dashboardWidgetTypeSchema,
   title: z.string().min(1).max(200),
   config: dashboardWidgetConfigSchema,
-  layout: dashboardWidgetLayoutSchema,
+  // Optional: when omitted, `addDashboardWidget` applies the standard size for
+  // the widget type via `defaultWidgetLayout`.
+  layout: dashboardWidgetLayoutSchema.optional(),
 });
 
 export const dashboardWidgetUpdateSchema = z.object({
@@ -163,7 +177,7 @@ export async function addDashboardWidget(
       type: input.type,
       title: input.title,
       config: input.config,
-      layout: input.layout,
+      layout: input.layout ?? defaultWidgetLayout(input.type),
       position: nextPosition,
     })
     .returning();
