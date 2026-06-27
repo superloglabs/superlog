@@ -99,6 +99,11 @@ export function VariableBar({
 
 // ── Shared modal shell ────────────────────────────────────────────────────────
 
+// Stack of open modals so Escape only closes the topmost one — otherwise the
+// config dialog (L2) and the manager (L1) both listen on `window` and a single
+// Escape would close both at once.
+const modalStack: symbol[] = [];
+
 function Modal({
   title,
   onClose,
@@ -111,11 +116,17 @@ function Modal({
   z?: string;
 }) {
   useEffect(() => {
+    const id = Symbol("modal");
+    modalStack.push(id);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && modalStack[modalStack.length - 1] === id) onClose();
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      const idx = modalStack.lastIndexOf(id);
+      if (idx !== -1) modalStack.splice(idx, 1);
+    };
   }, [onClose]);
 
   return createPortal(
@@ -130,7 +141,12 @@ function Modal({
       <div
         role="presentation"
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
+        // Stop keys typed inside the dialog from reaching the backdrop's
+        // Enter/Space-to-close handler — but let Escape bubble to the window
+        // listener, which closes only the topmost modal.
+        onKeyDown={(e) => {
+          if (e.key !== "Escape") e.stopPropagation();
+        }}
         className="w-full max-w-2xl"
       >
         <div className="rounded-lg border border-border bg-bg p-6 shadow-2xl">

@@ -34,6 +34,12 @@ export function OptionsEditor({
                 value={val}
                 aria-label={`value ${i + 1}`}
                 onChange={(e) => onChange(values.map((v, j) => (j === i ? e.target.value : v)))}
+                // Trim on blur (not per keystroke, so values may contain interior
+                // spaces) so the stored value matches the add path's trimming.
+                onBlur={(e) => {
+                  const trimmed = e.target.value.trim();
+                  if (trimmed !== val) onChange(values.map((v, j) => (j === i ? trimmed : v)));
+                }}
               />
               <button
                 type="button"

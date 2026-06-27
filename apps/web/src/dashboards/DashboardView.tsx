@@ -95,13 +95,19 @@ function DashboardViewInner({
   const variables: DashboardVariable[] = dashboard.data?.variables ?? EMPTY_VARIABLES;
 
   // Re-seed selections whenever the variable definitions change: keep the
-  // viewer's existing pick for variables that still exist, default newly-added
-  // ones, and drop removed ones.
+  // viewer's existing pick when it's still a valid option, otherwise fall back
+  // to the default/first option; default newly-added variables and drop removed
+  // ones. (A free-form variable — no options — accepts any prior value.)
   useEffect(() => {
     const defaults = defaultVariableValues(variables);
     setVarValues((prev) => {
       const next: Record<string, string> = {};
-      for (const v of variables) next[v.name] = prev[v.name] ?? defaults[v.name] ?? "";
+      for (const v of variables) {
+        const prevValue = prev[v.name];
+        const prevStillValid =
+          prevValue != null && (v.options.length === 0 || v.options.includes(prevValue));
+        next[v.name] = prevStillValid ? prevValue : (defaults[v.name] ?? "");
+      }
       return next;
     });
   }, [variables]);
