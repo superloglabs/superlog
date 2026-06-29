@@ -1,7 +1,7 @@
 import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { DB } from "@superlog/db";
+import type { DB, schema } from "@superlog/db";
 import { createTelemetryIngestor } from "./ingest.js";
 
 type QueryCall = {
@@ -216,6 +216,122 @@ test("span ingestion rounds sub-millisecond discovery windows up to one millisec
   assert.equal(await ingestor.tickSpans(), 0);
   assert.equal(calls[0]?.query_params?.untilTs, "2026-05-23 10:00:00.001");
   assert.equal(state.get("fingerprint")?.cursor.toISOString(), "2026-05-23T10:00:00.001Z");
+});
+
+const VALID_PROJECT_ID = "11111111-1111-4111-8111-111111111111";
+
+// A fake DB whose project resolves (valid UUID) so rows reach `upsertIssue`.
+// `execute` runs `onExecute(call#)` so a test can make a specific row's upsert
+// throw — simulating the Postgres `22021` NUL-byte rejection that used to wedge
+// the whole batch.
+function fakeDbWithProject(opts: { onExecute?: (call: number) => void }): {
+  database: DB;
+  state: Map<string, { cursor: Date }>;
+  executeCalls: () => number;
+} {
+  const state = new Map<string, { cursor: Date }>();
+  state.set("fingerprint", { cursor: new Date("2026-05-23T10:00:00.000Z") });
+  state.set("fingerprint-logs", { cursor: new Date("2026-05-23T10:00:00.000Z") });
+  let calls = 0;
+  const database = {
+    query: {
+      workerState: {
+        async findFirst(args?: { where?: unknown }) {
+          const where = args?.where;
+          if (typeof where !== "function") return undefined;
+          const filter = where(
+            { name: "name" },
+            { eq: (_c: unknown, value: string) => ({ value }) },
+          ) as { value?: string };
+          return filter.value ? state.get(filter.value) : undefined;
+        },
+      },
+      projectAutomationSettings: {
+        async findMany() {
+          return [];
+        },
+      },
+      issues: {
+        async findFirst() {
+          return { id: "issue-1", projectId: VALID_PROJECT_ID } as unknown as schema.Issue;
+        },
+      },
+    },
+    select() {
+      return {
+        from() {
+          return {
+            async where() {
+              return [{ id: VALID_PROJECT_ID }];
+            },
+          };
+        },
+      };
+    },
+    async execute() {
+      calls += 1;
+      opts.onExecute?.(calls);
+      return [
+        { id: "issue-1", xmax: "0", prev_issue_id: null, prev_incident_status: null },
+      ] as unknown as never;
+    },
+    insert() {
+      return {
+        values(values: { name: string; cursor: Date }) {
+          return {
+            async onConflictDoUpdate() {
+              state.set(values.name, { cursor: values.cursor });
+            },
+          };
+        },
+      };
+    },
+  } as unknown as DB;
+  return { database, state, executeCalls: () => calls };
+}
+
+test("log ingestion isolates a failing row and still advances past it", async () => {
+  // First row's upsert throws (mimics PG 22021 NUL-byte rejection). The tick
+  // must NOT throw, must still process the second row, and must advance the
+  // cursor past the poison row so ingestion is never wedged.
+  const { database, state, executeCalls } = fakeDbWithProject({
+    onExecute: (call) => {
+      if (call === 1) throw new Error('invalid byte sequence for encoding "UTF8": 0x00');
+    },
+  });
+  const rows = [
+    { ...logRow({ traceId: "t1", spanId: "s1", body: "poison" }), project_id: VALID_PROJECT_ID },
+    {
+      ...logRow({ traceId: "t2", spanId: "s2", body: "healthy" }),
+      project_id: VALID_PROJECT_ID,
+      ts: "2026-05-23 10:00:01.000000",
+    },
+  ];
+  let callCount = 0;
+  const clickhouse = {
+    async query() {
+      const out = callCount === 0 ? rows : [];
+      callCount += 1;
+      return {
+        async json() {
+          return out;
+        },
+      };
+    },
+  };
+  const ingestor = createTelemetryIngestor({
+    clickhouse,
+    database,
+    batchSize: 2,
+    async handleIssueTransition() {},
+  });
+
+  const processed = await ingestor.tickLogs();
+  assert.equal(processed, 2);
+  // Both rows attempted (poison row did not abort the loop).
+  assert.equal(executeCalls(), 2);
+  // Cursor advanced past the poison row to the healthy row's timestamp.
+  assert.equal(state.get("fingerprint-logs")?.cursor.toISOString(), "2026-05-23T10:00:01.000Z");
 });
 
 function spanRow(opts: { traceId: string; spanId: string; message: string }) {

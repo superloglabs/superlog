@@ -28,6 +28,17 @@ const IGNORE_PATH = [
   /^webpack:\/\/\//,
 ];
 
+const NUL_BYTE = String.fromCharCode(0);
+
+// Postgres `text` and `jsonb` columns reject the NUL byte (0x00) with
+// `22021 invalid byte sequence for encoding "UTF8": 0x00`. Telemetry can carry
+// a raw NUL inside an exception message, body, or stack frame, and these
+// fingerprint outputs flow straight into the issues upsert — so strip NUL
+// before it can poison a parameter. Passes null/undefined through unchanged.
+export function stripNullBytes<T extends string | null | undefined>(value: T): T {
+  return (typeof value === "string" ? value.split(NUL_BYTE).join("") : value) as T;
+}
+
 export function fingerprint(input: {
   type: string;
   stacktrace: string | null | undefined;
@@ -43,11 +54,14 @@ export function fingerprint(input: {
   const canonical = `${type}::${messageBucket}::${normalized.join("|")}`;
   const hash = createHash("sha256").update(canonical).digest("hex").slice(0, HASH_LEN);
 
+  // The hash is hex (always safe); the human-readable fields below are persisted
+  // to Postgres, so they must be NUL-free.
+  const safeFrames = normalized.map((frame) => stripNullBytes(frame));
   return {
     hash,
-    exceptionType: type,
-    topFrame: normalized[0] ?? null,
-    normalizedFrames: normalized,
+    exceptionType: stripNullBytes(type),
+    topFrame: safeFrames[0] ?? null,
+    normalizedFrames: safeFrames,
   };
 }
 
@@ -67,7 +81,7 @@ export function fingerprintLog(input: LogFingerprintInput): Fingerprint {
 
   return {
     hash,
-    exceptionType: type,
+    exceptionType: stripNullBytes(type),
     topFrame: null,
     normalizedFrames: [],
   };
