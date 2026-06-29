@@ -63,18 +63,23 @@ export function mapAutumnFeatures(body: unknown): FeatureBalance[] {
 // still grants access is the `free` plan. Unknown/absent subscriptions → not
 // free (safer to stay silent than to warn or block a paying customer).
 //
-// Crucially, a paid plan canceled at period end keeps `status:"active"` with
-// `canceled_at` set and `expires_at` in the future — it still grants access, so
-// `canceled_at` alone must NOT drop it (doing so would let a still-paying org
-// with a parallel free subscription look Free and get warned/enforced). A
-// subscription only stops granting access once its window has actually elapsed:
-// status `expired`, or `expires_at` in the past.
+// Only count subscriptions that grant access *right now*:
+//   - status is access-granting (active / trialing / past_due). A `scheduled`
+//     future plan hasn't started, and `expired`/lapsed plans are gone — neither
+//     reflects what the org is entitled to today.
+//   - and the access window hasn't elapsed (`expires_at` in the past).
+// A paid plan canceled at period end keeps `status:"active"` with `canceled_at`
+// set and `expires_at` in the future, so it stays live and (correctly) keeps the
+// org out of the Free cohort — `canceled_at` alone must NOT drop it, otherwise a
+// still-paying org with a parallel free subscription would look Free and get
+// warned/enforced.
 const FREE_PLAN_ID = "free";
+const ACCESS_STATUSES = new Set(["active", "trialing", "past_due"]);
 export function isFreePlan(body: unknown, now: number = Date.now()): boolean {
   const subs = (body as { subscriptions?: Array<Record<string, unknown>> } | null)?.subscriptions;
   if (!Array.isArray(subs)) return false;
   const live = subs.filter((s) => {
-    if (s.status === "expired") return false;
+    if (!ACCESS_STATUSES.has(String(s.status))) return false;
     const expiresAt = typeof s.expires_at === "number" ? s.expires_at : null;
     if (expiresAt !== null && expiresAt <= now) return false;
     return true;

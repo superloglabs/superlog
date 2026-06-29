@@ -252,6 +252,19 @@ test("isFreePlan: only true when every active subscription is the free plan", ()
     }),
     true,
   );
+  // a `scheduled` future paid sub hasn't started → doesn't grant access yet, so
+  // the org is still Free today (it would otherwise be wrongly excluded).
+  assert.equal(
+    isFreePlan({
+      subscriptions: [
+        { plan_id: "free", status: "active" },
+        { plan_id: "payg", status: "scheduled" },
+      ],
+    }),
+    true,
+  );
+  // a trialing paid sub grants access → not free.
+  assert.equal(isFreePlan({ subscriptions: [{ plan_id: "payg", status: "trialing" }] }), false);
   // no active subscriptions / unknown shape → not free (stay silent)
   assert.equal(isFreePlan({ subscriptions: [] }), false);
   assert.equal(isFreePlan(null), false);
