@@ -1,0 +1,1 @@
+ALTER TABLE "project_automation_settings" ADD COLUMN "log_parse_config" jsonb DEFAULT '{"otlp":{"enabled":true,"severityKeys":["level","severity","log.level","loglevel"],"severityValueMap":{}},"aws":{"enabled":true,"severityKeys":["level","severity","log.level","loglevel"],"severityValueMap":{}}}'::jsonb NOT NULL;

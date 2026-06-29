@@ -18,6 +18,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { DEFAULT_AGENT_RUN_PROVIDER } from "./agent-runtime.js";
+import type { LogParseConfig } from "./log-severity.js";
 
 export type IssueSample = {
   kind: "span" | "log";
@@ -770,6 +771,16 @@ export const projectAutomationSettings = pgTable(
       .notNull()
       .default(
         sql`'{"includeLogs":[],"includeSpans":[],"excludeLogs":[],"excludeSpans":[]}'::jsonb`,
+      ),
+    // Per-source log severity-parsing config. See LogParseConfig / log-severity.ts.
+    // Detection pulls a level out of the log body (e.g. JSON `level`/`severity`)
+    // and maps it to an OTLP SeverityNumber, so body-only levels (notably AWS
+    // CloudWatch logs, which arrive with SeverityNumber=0) still classify.
+    logParseConfig: jsonb("log_parse_config")
+      .$type<LogParseConfig>()
+      .notNull()
+      .default(
+        sql`'{"otlp":{"enabled":true,"severityKeys":["level","severity","log.level","loglevel"],"severityValueMap":{}},"aws":{"enabled":true,"severityKeys":["level","severity","log.level","loglevel"],"severityValueMap":{}}}'::jsonb`,
       ),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),

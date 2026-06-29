@@ -169,6 +169,31 @@ function groupExprForAttribute(
   return { expr: "''", params: {} };
 }
 
+// Recent non-empty log bodies for a project, newest first. Powers the
+// "Ingest & parsing" live preview: real bodies run through severity detection
+// so the editor shows what each configured key/value mapping actually produces.
+export async function fetchRecentLogBodies(
+  ch: ClickHouseClient,
+  projectId: string,
+  limit: number,
+): Promise<string[]> {
+  const r = await ch.query({
+    query: `
+      SELECT Body AS body
+      FROM otel_logs
+      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+        AND TimestampTime >= now() - INTERVAL 24 HOUR
+        AND Body != ''
+      ORDER BY Timestamp DESC
+      LIMIT {limit:UInt32}
+    `,
+    query_params: { projectId, limit },
+    format: "JSONEachRow",
+  });
+  const rows = (await r.json()) as Array<{ body: string }>;
+  return rows.map((row) => row.body).filter((b): b is string => typeof b === "string");
+}
+
 export async function queryLogs(
   ch: ClickHouseClient,
   projectId: string,

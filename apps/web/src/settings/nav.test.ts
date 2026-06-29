@@ -34,6 +34,7 @@ test("project nav groups: agent pages before integrations, keys/webhooks under M
     "agent-memories",
     "integrations",
     "issue-filter",
+    "ingest-parsing",
     "slack-channel",
     "api-keys",
     "mcp-tokens",

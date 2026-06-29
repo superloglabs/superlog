@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePostHog } from "posthog-js/react";
 import { buildSignupEventProperties, readFirstTouchAttribution } from "./signupAttribution.ts";
 
@@ -1224,6 +1224,38 @@ export const EMPTY_ISSUE_FILTER_CONFIG: IssueFilterConfig = {
   excludeSpans: [],
 };
 
+export type SeverityLevel = "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL";
+
+export const SEVERITY_LEVELS: SeverityLevel[] = [
+  "TRACE",
+  "DEBUG",
+  "INFO",
+  "WARN",
+  "ERROR",
+  "FATAL",
+];
+
+export type LogParseSource = "otlp" | "aws";
+
+export type SourceParseConfig = {
+  enabled: boolean;
+  severityKeys: string[];
+  severityValueMap: Record<string, SeverityLevel>;
+};
+
+export type LogParseConfig = Record<LogParseSource, SourceParseConfig>;
+
+const defaultSourceParseConfig = (): SourceParseConfig => ({
+  enabled: true,
+  severityKeys: ["level", "severity", "log.level", "loglevel"],
+  severityValueMap: {},
+});
+
+export const DEFAULT_LOG_PARSE_CONFIG: LogParseConfig = {
+  otlp: defaultSourceParseConfig(),
+  aws: defaultSourceParseConfig(),
+};
+
 export type AgentSettings = {
   customInstructions: string;
   agentRunEnabled: boolean;
@@ -1234,6 +1266,7 @@ export type AgentSettings = {
   autoMergeFixPrs: AutoMergePolicy;
   autoMergeMethod: AutoMergeMethod;
   issueFilterConfig: IssueFilterConfig;
+  logParseConfig: LogParseConfig;
 };
 
 export function useAgentSettings(projectId: string | undefined) {
@@ -1309,6 +1342,41 @@ export function useIssueFilterPreview(projectId: string | undefined, config: Iss
       ),
     enabled: !!projectId,
     staleTime: 15_000,
+  });
+}
+
+export type LogParsePreviewRow = {
+  body: string;
+  detection: {
+    level: SeverityLevel;
+    severityNumber: number;
+    severityText: string;
+    matchedKey: string;
+    matchedValue: string;
+  } | null;
+};
+
+// Live preview for the Ingest & parsing editor: runs the draft source config
+// against recent real log bodies (server-sampled) and returns the severity each
+// would receive. Keyed on the config so edits re-run it.
+export function useLogParsePreview(
+  projectId: string | undefined,
+  source: LogParseSource,
+  config: SourceParseConfig,
+) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["ingest-parsing", "preview", projectId, source, config],
+    queryFn: () =>
+      fetcher<{ source: LogParseSource; rows: LogParsePreviewRow[] }>(
+        `/api/projects/${projectId}/ingest-parsing/preview`,
+        { method: "POST", body: JSON.stringify({ source, config }) },
+      ),
+    enabled: !!projectId,
+    staleTime: 15_000,
+    // Keep the prior preview rows on screen while a new config refetches, so
+    // typing in the editor doesn't collapse the card and jump the page.
+    placeholderData: keepPreviousData,
   });
 }
 

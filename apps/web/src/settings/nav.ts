@@ -23,6 +23,7 @@ export type ProjectSectionId =
   | "agent-memories"
   | "integrations"
   | "issue-filter"
+  | "ingest-parsing"
   | "slack-channel"
   | "api-keys"
   | "mcp-tokens"
@@ -64,6 +65,7 @@ export const PROJECT_NAV_GROUPS: ReadonlyArray<NavGroup<ProjectSectionId>> = [
       { id: "agent-memories", label: "Agent memories" },
       { id: "integrations", label: "Integrations" },
       { id: "issue-filter", label: "Issue filter" },
+      { id: "ingest-parsing", label: "Ingest & parsing" },
       { id: "slack-channel", label: "Slack channel" },
     ],
   },

@@ -5,6 +5,7 @@ import {
   type AutoMergeMethod,
   type AutoMergePolicy,
   type CloudConnection,
+  DEFAULT_LOG_PARSE_CONFIG,
   EMPTY_ISSUE_FILTER_CONFIG,
   type IngestFilterState,
   type Integration,
@@ -89,6 +90,7 @@ import {
 import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
 import { Btn, Chip, FieldLabel, Input, Label, Tile } from "./design/ui";
 import { AgentMemoriesCard } from "./settings/AgentMemoriesCard.tsx";
+import { IngestParsingSection } from "./settings/IngestParsingCard.tsx";
 import { BillingCard } from "./settings/BillingCard.tsx";
 import { CreateOrgCard } from "./settings/CreateOrgCard.tsx";
 import { OrgDangerCard } from "./settings/OrgDangerCard.tsx";
@@ -429,6 +431,15 @@ function SectionIcon({ scope, section }: { scope: SettingsScope; section: Sectio
           <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" />
         </svg>
       );
+    case "project:ingest-parsing":
+      return (
+        <svg {...props} aria-hidden="true">
+          <path d="M4 7h16" />
+          <path d="M4 12h10" />
+          <path d="M4 17h7" />
+          <path d="m16 14 4 3-4 3" />
+        </svg>
+      );
     case "project:slack-channel":
       return (
         <svg {...props} aria-hidden="true">
@@ -634,6 +645,8 @@ function ProjectSectionView({
           <IssueFilterCard projectId={projectId} />
         </Section>
       );
+    case "ingest-parsing":
+      return <IngestParsingSection projectId={projectId} />;
     case "slack-channel":
       return (
         <Section
@@ -1938,6 +1951,7 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
     autoMergeFixPrs: "never",
     autoMergeMethod: "squash",
     issueFilterConfig: EMPTY_ISSUE_FILTER_CONFIG,
+    logParseConfig: DEFAULT_LOG_PARSE_CONFIG,
   };
 
   const investigateOn = data.agentRunEnabled;

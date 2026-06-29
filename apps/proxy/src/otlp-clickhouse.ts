@@ -27,6 +27,8 @@ type OtlpAnyValue = {
   kvlistValue?: { values?: OtlpKeyValue[] };
 };
 
+import { detectLogSeverity, type SourceParseConfig } from "@superlog/db/log-severity";
+
 type OtlpKeyValue = { key?: string; value?: OtlpAnyValue };
 
 type OtlpLogRecord = {
@@ -80,7 +82,16 @@ export type OtelLogRow = {
 const SUPERLOG_PROJECT_ID_KEY = "superlog.project_id";
 const NANOS_PER_SECOND = 1_000_000_000n;
 
-export function otlpLogsToRows(payload: OtlpLogsExport, projectId: string): OtelLogRow[] {
+// `parseConfig`, when given, backfills severity for records the source left
+// unclassified (SeverityNumber 0) by reading the configured key out of the log
+// body — the only way body-only levels (e.g. CloudWatch JSON logs) ever reach
+// the SeverityNumber>=17 threshold the otel_exceptions view keys off. Records
+// that already carry a severity are left untouched.
+export function otlpLogsToRows(
+  payload: OtlpLogsExport,
+  projectId: string,
+  parseConfig?: SourceParseConfig,
+): OtelLogRow[] {
   const rows: OtelLogRow[] = [];
   for (const rl of payload.resourceLogs ?? []) {
     const resourceMap = kvListToMap(rl.resource?.attributes);
@@ -96,15 +107,25 @@ export function otlpLogsToRows(payload: OtlpLogsExport, projectId: string): Otel
       const scopeSchemaUrl = sl.schemaUrl ?? "";
 
       for (const lr of sl.logRecords ?? []) {
+        const body = anyValueToString(lr.body);
+        let severityText = lr.severityText ?? "";
+        let severityNumber = lr.severityNumber ?? 0;
+        if (parseConfig && severityNumber === 0) {
+          const detected = detectLogSeverity(body, parseConfig);
+          if (detected) {
+            severityText = detected.severityText;
+            severityNumber = detected.severityNumber;
+          }
+        }
         rows.push({
           Timestamp: nanosToClickHouseDateTime64(pickTime(lr.timeUnixNano, lr.observedTimeUnixNano)),
           TraceId: toHex(lr.traceId),
           SpanId: toHex(lr.spanId),
           TraceFlags: lr.flags ?? 0,
-          SeverityText: lr.severityText ?? "",
-          SeverityNumber: lr.severityNumber ?? 0,
+          SeverityText: severityText,
+          SeverityNumber: severityNumber,
           ServiceName: serviceName,
-          Body: anyValueToString(lr.body),
+          Body: body,
           ResourceSchemaUrl: resourceSchemaUrl,
           ResourceAttributes: resourceAttributes,
           ScopeSchemaUrl: scopeSchemaUrl,

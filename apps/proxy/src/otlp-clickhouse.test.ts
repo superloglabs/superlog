@@ -123,6 +123,49 @@ test("otlpLogsToRows tolerates an empty export", () => {
   assert.deepEqual(otlpLogsToRows({ resourceLogs: [] }, "proj-123"), []);
 });
 
+const parseConfig = {
+  enabled: true,
+  severityKeys: ["level", "severity"],
+  severityValueMap: {},
+};
+
+const jsonBodyExport = (bodyText: string, severityNumber = 0) => ({
+  resourceLogs: [
+    {
+      resource: { attributes: [{ key: "service.name", value: { stringValue: "checkout" } }] },
+      scopeLogs: [
+        {
+          scope: { name: "logger" },
+          logRecords: [
+            {
+              timeUnixNano: "1718000000000000000",
+              severityNumber,
+              body: { stringValue: bodyText },
+            },
+          ],
+        },
+      ],
+    },
+  ],
+});
+
+test("otlpLogsToRows backfills severity from a JSON body when the source left it unset", () => {
+  const rows = otlpLogsToRows(jsonBodyExport('{"level":"error","msg":"db down"}'), "p", parseConfig);
+  assert.equal(rows[0]!.SeverityNumber, 17);
+  assert.equal(rows[0]!.SeverityText, "ERROR");
+});
+
+test("otlpLogsToRows leaves an already-classified record untouched", () => {
+  const rows = otlpLogsToRows(jsonBodyExport('{"level":"info"}', 17), "p", parseConfig);
+  // SDK-provided ERROR (17) is kept even though the body says info
+  assert.equal(rows[0]!.SeverityNumber, 17);
+});
+
+test("otlpLogsToRows leaves severity at 0 when no config is supplied", () => {
+  const rows = otlpLogsToRows(jsonBodyExport('{"level":"error"}'), "p");
+  assert.equal(rows[0]!.SeverityNumber, 0);
+});
+
 const tracesExport = {
   resourceSpans: [
     {

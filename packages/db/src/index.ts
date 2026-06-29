@@ -210,3 +210,17 @@ export type {
   SendLoopsResult,
 } from "./loops.js";
 export { environmentFromResourceAttrs } from "./telemetry-environment.js";
+export {
+  DEFAULT_LOG_PARSE_CONFIG,
+  DEFAULT_SEVERITY_KEYS,
+  detectLogSeverity,
+  resolveLogParseConfig,
+  resolveSourceParseConfig,
+  SEVERITY_LEVELS,
+  SEVERITY_NUMBER_BY_LEVEL,
+  type LogParseConfig,
+  type LogParseSource,
+  type SeverityDetection,
+  type SeverityLevel,
+  type SourceParseConfig,
+} from "./log-severity.js";
