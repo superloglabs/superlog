@@ -61,7 +61,7 @@ export function parseAttribution(search: string, referrer: string): SignupAttrib
     }
   }
 
-  return omitEmpty({
+  return sanitize({
     source,
     utmSource: cleanParam(params.get("utm_source")),
     utmMedium: cleanParam(params.get("utm_medium")),
@@ -73,26 +73,48 @@ export function parseAttribution(search: string, referrer: string): SignupAttrib
   });
 }
 
-function omitEmpty(attr: SignupAttribution): SignupAttribution {
+const ATTRIBUTION_KEYS = [
+  "source",
+  "utmSource",
+  "utmMedium",
+  "utmCampaign",
+  "utmTerm",
+  "utmContent",
+  "referrer",
+  "referringDomain",
+  "landingPath",
+] as const;
+
+// `landingPath` is context that rides along with a real touch, not a touch in
+// its own right — it's always present (pathname is at least "/"), so counting it
+// as signal would lock in first-touch on the very first pageview and shut out a
+// later ?source=/UTM landing. Gate persistence on everything else.
+const SIGNAL_KEYS = ATTRIBUTION_KEYS.filter((k) => k !== "landingPath");
+
+/** Keep only known keys whose value is a non-empty string. */
+function sanitize(attr: SignupAttribution): SignupAttribution {
   const out: SignupAttribution = {};
-  for (const [k, v] of Object.entries(attr)) {
-    if (v !== undefined && v !== null && v !== "") out[k as keyof SignupAttribution] = v;
+  for (const key of ATTRIBUTION_KEYS) {
+    const v = attr[key];
+    if (typeof v === "string" && v !== "") out[key] = v;
   }
   return out;
 }
 
-function isEmpty(attr: SignupAttribution): boolean {
-  return Object.keys(omitEmpty(attr)).length === 0;
+function hasAttributionSignal(attr: SignupAttribution): boolean {
+  return SIGNAL_KEYS.some((k) => typeof attr[k] === "string" && attr[k] !== "");
 }
 
 /**
- * Persist attribution write-once: the first non-empty touch wins and is never
- * overwritten, so a user who lands via `?source=skill` and later navigates to a
- * plain URL keeps the original attribution.
+ * Persist attribution write-once: the first touch carrying real signal (source,
+ * UTM, or referrer) wins and is never overwritten, so a user who lands via
+ * `?source=skill` and later navigates to a plain URL keeps the original
+ * attribution. A pageview with no signal is not persisted, so it can't lock in
+ * a `landingPath`-only record and shut out a later attributed landing.
  */
 export function persistFirstTouchAttribution(storage: StorageLike, attr: SignupAttribution): void {
-  const cleaned = omitEmpty(attr);
-  if (isEmpty(cleaned)) return;
+  const cleaned = sanitize(attr);
+  if (!hasAttributionSignal(cleaned)) return;
   try {
     if (storage.getItem(FIRST_TOUCH_STORAGE_KEY)) return;
     storage.setItem(FIRST_TOUCH_STORAGE_KEY, JSON.stringify(cleaned));
@@ -106,7 +128,10 @@ export function readFirstTouchAttribution(storage: StorageLike): SignupAttributi
     const raw = storage.getItem(FIRST_TOUCH_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? (parsed as SignupAttribution) : null;
+    // Storage is user-writable; sanitize so non-string values can't leak past
+    // the Record<string, string> typing into event properties downstream.
+    if (!parsed || typeof parsed !== "object") return null;
+    return sanitize(parsed as SignupAttribution);
   } catch {
     return null;
   }

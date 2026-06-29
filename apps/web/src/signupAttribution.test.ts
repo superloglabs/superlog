@@ -73,12 +73,45 @@ test("persistFirstTouchAttribution does not write an all-empty attribution", () 
   assert.equal(store.getItem(FIRST_TOUCH_STORAGE_KEY), null);
 });
 
+test("persistFirstTouchAttribution ignores a landingPath-only touch (no signal)", () => {
+  // landingPath is always present (pathname is at least "/"), so it must not be
+  // treated as signal — otherwise the first plain pageview would lock in and shut
+  // out a later attributed landing.
+  const store = fakeStorage();
+  persistFirstTouchAttribution(store, { landingPath: "/explore" });
+  assert.equal(store.getItem(FIRST_TOUCH_STORAGE_KEY), null);
+});
+
+test("persistFirstTouchAttribution stores landingPath alongside real signal", () => {
+  const store = fakeStorage();
+  // First, an unattributed pageview — not persisted.
+  persistFirstTouchAttribution(store, { landingPath: "/" });
+  // Then a real attributed landing — persisted, carrying its landingPath.
+  persistFirstTouchAttribution(store, { source: "skill", landingPath: "/explore" });
+  const got = readFirstTouchAttribution(store);
+  assert.equal(got?.source, "skill");
+  assert.equal(got?.landingPath, "/explore");
+});
+
 test("readFirstTouchAttribution returns null on missing / corrupt JSON", () => {
   assert.equal(readFirstTouchAttribution(fakeStorage()), null);
   assert.equal(
     readFirstTouchAttribution(fakeStorage({ [FIRST_TOUCH_STORAGE_KEY]: "{not json" })),
     null,
   );
+});
+
+test("readFirstTouchAttribution drops non-string and unknown values from tampered storage", () => {
+  const store = fakeStorage({
+    [FIRST_TOUCH_STORAGE_KEY]: JSON.stringify({
+      source: "skill",
+      utmSource: 123, // wrong type
+      referrer: { nested: true }, // wrong type
+      injected: "evil", // unknown key
+    }),
+  });
+  const got = readFirstTouchAttribution(store);
+  assert.deepEqual(got, { source: "skill" });
 });
 
 test("buildSignupEventProperties emits snake_case keys and omits undefined", () => {
