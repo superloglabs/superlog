@@ -297,18 +297,9 @@ async function provisionInstallation(input: {
   const sameAccount = existing?.accountId === input.account.id ? existing : null;
   const { ingestKey, apiKeyId, minted } = await ensureIngestKey(input.projectId, sameAccount);
 
-  // Re-provisioning the same account: delete the destinations we created last
-  // time before making new ones. They authenticate with the same ingest key, so
-  // leaving them in place would double every OTLP export on each reconnect.
-  if (sameAccount?.destinations) {
-    await deleteRemoteDestinations({
-      accountId: input.account.id,
-      accessToken: input.token.accessToken,
-      destinations: sameAccount.destinations,
-      fetchImpl: input.fetchImpl,
-    });
-  }
-
+  // Create the new destinations first; we only tear down any prior same-account
+  // destinations *after* a replacement lands (see below). Deleting up front would
+  // leave the project "connected" with zero live destinations if creation fails.
   const destinations: Record<string, string> = {};
   for (const signal of CLOUDFLARE_SIGNALS) {
     const result = await createDestination({
@@ -321,13 +312,21 @@ async function provisionInstallation(input: {
       }),
       fetchImpl: input.fetchImpl,
     });
-    if (result.ok) {
-      destinations[signal] = result.slug ?? "";
+    // Only record a destination we can actually manage later: a success that
+    // carries a slug. A slug-less "success" can't be deleted on reconnect/
+    // uninstall, so treat it as a failure (skip it) rather than store an empty
+    // slug we'd later have to skip during cleanup.
+    if (result.ok && result.slug) {
+      destinations[signal] = result.slug;
     } else {
       // Don't abort the whole connect on one signal — log and continue so the
       // user still gets the signals Cloudflare accepted.
       log.warn(
-        { signal, error: result.error, project_id: input.projectId },
+        {
+          signal,
+          error: result.ok ? "missing slug" : result.error,
+          project_id: input.projectId,
+        },
         "cloudflare destination creation failed for signal",
       );
     }
@@ -403,6 +402,25 @@ async function provisionInstallation(input: {
         updatedAt: now,
       },
     });
+
+  // Same-account reconnect: now that the replacement destinations exist and are
+  // persisted, delete the ones we created last time. Doing this *after* the
+  // upsert means a failed reprovision (handled above) never strands the project
+  // without destinations. Exclude any slug that's also in the new set — if
+  // Cloudflare's create is upsert-by-name and returned the same slug, that
+  // destination is the live one and must not be deleted.
+  if (sameAccount?.destinations) {
+    const liveSlugs = new Set(Object.values(destinations));
+    const staleSlugs = Object.fromEntries(
+      Object.entries(sameAccount.destinations).filter(([, slug]) => !liveSlugs.has(slug)),
+    );
+    await deleteRemoteDestinations({
+      accountId: input.account.id,
+      accessToken: input.token.accessToken,
+      destinations: staleSlugs,
+      fetchImpl: input.fetchImpl,
+    });
+  }
 
   // Enforce a single active Cloudflare account per project: fully tear down any
   // other active install rows for this project that point at a different account
