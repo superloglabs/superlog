@@ -2995,22 +2995,30 @@ function InstructionsField({
   onSave: (v: string) => void;
 }) {
   const [draft, setDraft] = useState(value);
-  const [loaded, setLoaded] = useState(false);
+  const [syncedValue, setSyncedValue] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(value.length > 0);
 
-  // Seed the draft from the server value exactly once, and only after the
-  // settings query has resolved — seeding from the placeholder "" emitted while
-  // the query is pending would leave the field stuck empty on a cold load and
-  // let an empty Save overwrite the saved instructions.
+  // Reconcile the local draft with the server value. The draft follows the
+  // server while the editor is clean (so a cold load, a background refetch, or
+  // an edit made elsewhere is picked up) but never clobbers in-progress edits.
+  // Crucially it ignores the placeholder "" emitted while the query is pending,
+  // which previously left the field stuck empty on a cold load and let an empty
+  // Save overwrite the saved instructions.
   useEffect(() => {
-    const next = syncInstructionsDraft({ loaded, settingsLoaded, serverValue: value, expanded });
+    const next = syncInstructionsDraft({
+      settingsLoaded,
+      serverValue: value,
+      draft,
+      syncedValue,
+      expanded,
+    });
     if (!next) return;
     setDraft(next.draft);
-    setLoaded(next.loaded);
+    setSyncedValue(next.syncedValue);
     setExpanded(next.expanded);
-  }, [value, loaded, settingsLoaded, expanded]);
+  }, [value, settingsLoaded, draft, syncedValue, expanded]);
 
-  const dirty = loaded && draft !== value;
+  const dirty = syncedValue !== null && draft !== value;
 
   if (!expanded) {
     return (
