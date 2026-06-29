@@ -17,6 +17,7 @@ import { Btn, Wordmark } from "../design/ui.tsx";
 import { INSTALL_PROMPT, buildInstallPrompt } from "../installPrompt.ts";
 import { getSkillOnboardingIntent } from "../skillOnboarding.ts";
 import { AwsConnectFlow } from "./AwsConnectFlow.tsx";
+import { CloudflareConnectFlow } from "./CloudflareConnectFlow.tsx";
 import { ConnectDataChooser } from "./ConnectDataChooser.tsx";
 import { TruncatedKey } from "./TruncatedKey.tsx";
 import type { ConnectAction } from "./connectChoices.ts";
@@ -44,7 +45,7 @@ type Step = "install" | "deploy";
 type Mode = "web" | "agent";
 // Web-mode landing fork: choose a source, then either the AWS integration flow
 // or the coding-agent install/deploy flow.
-type WebView = "chooser" | "aws" | "code";
+type WebView = "chooser" | "aws" | "cloudflare" | "code";
 
 function hasEvents(stats: Stats | undefined): boolean {
   if (!stats) return false;
@@ -83,6 +84,8 @@ export function OnboardingWizard({
   const handlePick = (action: ConnectAction) => {
     if (action === "aws") {
       setWebView("aws");
+    } else if (action === "cloudflare") {
+      setWebView("cloudflare");
     } else {
       setStep("install");
       setWebView("code");
@@ -143,6 +146,13 @@ export function OnboardingWizard({
             <ConnectDataChooser onPick={handlePick} onExploreDemo={onExploreDemo} />
           ) : webView === "aws" ? (
             <AwsConnectFlow
+              projectId={projectId}
+              onBack={() => setWebView("chooser")}
+              onDone={onComplete}
+              onExploreDemo={onExploreDemo}
+            />
+          ) : webView === "cloudflare" ? (
+            <CloudflareConnectFlow
               projectId={projectId}
               onBack={() => setWebView("chooser")}
               onDone={onComplete}

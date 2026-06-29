@@ -9,7 +9,7 @@
 
 // What activating a row does. `null` => not yet available (coming soon), so the
 // row renders disabled and is not actionable.
-export type ConnectAction = "aws" | "otel" | "code";
+export type ConnectAction = "aws" | "cloudflare" | "otel" | "code";
 
 // Glyph key resolved to a neutral monochrome icon by the component. Kept as a
 // string union (not a component) so this module stays free of JSX/React.
@@ -54,6 +54,14 @@ export const CONNECT_SECTIONS: ConnectSection[] = [
         action: "aws",
       },
       {
+        id: "cloudflare",
+        title: "Cloudflare",
+        description:
+          "Authorize Cloudflare once and we set up Workers Observability destinations that stream your Workers traces, logs, and metrics in. No agent, no code.",
+        icon: "cloudflare",
+        action: "cloudflare",
+      },
+      {
         id: "otel",
         title: "OpenTelemetry / SDK",
         description: "Point any OTLP exporter at Superlog with a write-only ingest key.",
@@ -94,13 +102,6 @@ export const CONNECT_SECTIONS: ConnectSection[] = [
         title: "Kubernetes",
         description: "Coming soon",
         icon: "kubernetes",
-        action: null,
-      },
-      {
-        id: "cloudflare",
-        title: "Cloudflare",
-        description: "Coming soon",
-        icon: "cloudflare",
         action: null,
       },
       {

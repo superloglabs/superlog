@@ -36,6 +36,7 @@ test("recommended + code options are all actionable; 'more' are coming soon", ()
 
 test("connectActionFor resolves known ids and returns null for coming-soon / unknown", () => {
   assert.equal(connectActionFor("aws"), "aws");
+  assert.equal(connectActionFor("cloudflare"), "cloudflare");
   assert.equal(connectActionFor("otel"), "otel");
   assert.equal(connectActionFor("agent"), "code");
   assert.equal(connectActionFor("vercel"), null);

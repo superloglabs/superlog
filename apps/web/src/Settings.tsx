@@ -63,6 +63,7 @@ import {
   useRunOrgDigestNow,
   useSaveAgentSettings,
   useSaveIntegration,
+  useCloudflareInstallation,
   useSaveOrgAgentSettings,
   useSaveOrgDigest,
   useSetIngestFilters,
@@ -75,9 +76,11 @@ import {
   useStartGithubAuthorLogin,
   useStartGithubInstall,
   useStartLinearInstall,
+  useStartCloudflareInstall,
   useStartSlackInstall,
   useTestWebhook,
   useUninstallLinear,
+  useUninstallCloudflare,
   useUninstallSlack,
   useUpdateGithubRepoAccess,
   useUpdateOrgProject,
@@ -603,6 +606,7 @@ function ProjectSectionView({
             <GithubCard />
             <SlackCard />
             <LinearCard />
+            <CloudflareCard />
             <AwsCard projectId={projectId} />
             <IngestSourcesCard projectId={projectId} />
           </div>
@@ -1155,6 +1159,59 @@ function SlackCard() {
             }}
           >
             {installed ? "Reinstall" : "Connect Slack"}
+          </Btn>
+          {installed && (
+            <Btn
+              size="sm"
+              variant="danger"
+              loading={uninstall.isPending}
+              onClick={() => uninstall.mutate()}
+            >
+              Disconnect
+            </Btn>
+          )}
+        </div>
+      </div>
+    </Tile>
+  );
+}
+
+function CloudflareCard() {
+  const install = useCloudflareInstallation();
+  const start = useStartCloudflareInstall();
+  const uninstall = useUninstallCloudflare();
+
+  const installed = install.data?.installed === true;
+
+  return (
+    <Tile label="Cloudflare">
+      <div className="space-y-3">
+        <p className="text-[13px] text-muted">
+          Connect your Cloudflare account and we'll set up Workers Observability destinations that
+          stream your Workers traces, logs, and metrics into this project automatically.
+        </p>
+        <div>
+          {installed && install.data?.installed ? (
+            <Chip tone="success" dot>
+              {install.data.accountName ?? "Cloudflare account"}
+            </Chip>
+          ) : (
+            <Chip tone="muted" dot>
+              Not connected
+            </Chip>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Btn
+            size="sm"
+            variant={installed ? "secondary" : "primary"}
+            loading={start.isPending}
+            onClick={async () => {
+              const { url } = await start.mutateAsync();
+              window.location.href = url;
+            }}
+          >
+            {installed ? "Reconnect" : "Connect Cloudflare"}
           </Btn>
           {installed && (
             <Btn

@@ -813,6 +813,46 @@ export function useUninstallSlack() {
   });
 }
 
+export type CloudflareInstallation =
+  | { installed: false }
+  | {
+      installed: true;
+      accountId: string;
+      accountName: string | null;
+      scope: string | null;
+      destinations: Record<string, string>;
+      installedAt: string;
+    };
+
+export function useCloudflareInstallation() {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["cloudflare-installation"],
+    queryFn: () => fetcher<CloudflareInstallation>("/api/cloudflare/installation"),
+    // Poll so the card flips to "connected" after the OAuth redirect without a
+    // manual refresh (same pattern as Slack/GitHub).
+    refetchInterval: 15000,
+  });
+}
+
+export function useStartCloudflareInstall() {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: () => fetcher<{ url: string }>("/api/cloudflare/install-url", { method: "POST" }),
+  });
+}
+
+export function useUninstallCloudflare() {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => fetcher<{ ok: true }>("/api/cloudflare/uninstall", { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cloudflare-installation"] });
+    },
+  });
+}
+
 export function useSlackChannels(enabled: boolean) {
   const fetcher = useFetcher();
   return useQuery({

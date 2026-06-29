@@ -2014,6 +2014,62 @@ export const cloudStreamKeys = pgTable(
 
 export type CloudStreamKey = typeof cloudStreamKeys.$inferSelect;
 
+// A connected Cloudflare account via self-managed OAuth (GA 2026-06). One row per
+// (project, Cloudflare account). Access/refresh tokens are encrypted at rest with
+// the same AES-256-GCM scheme as the AWS-connect external ID. On connect we use
+// the granted token to create Workers Observability telemetry destinations that
+// export OTLP traces/logs/metrics to our intake authenticated by a project ingest
+// key, so the customer's Workers telemetry flows into Superlog with no copy-paste.
+export const cloudflareInstallations = pgTable(
+  "cloudflare_installations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    // The Cloudflare account the user consented to (account-scoped APIs need it).
+    accountId: text("account_id").notNull(),
+    accountName: text("account_name"),
+    // Delegated OAuth tokens, encrypted at rest. Refresh token is nullable: it's
+    // only issued when the client is registered with the `refresh_token` grant.
+    accessTokenCiphertext: bytea("access_token_ciphertext").notNull(),
+    accessTokenNonce: bytea("access_token_nonce").notNull(),
+    accessTokenKeyVersion: integer("access_token_key_version").notNull().default(1),
+    refreshTokenCiphertext: bytea("refresh_token_ciphertext"),
+    refreshTokenNonce: bytea("refresh_token_nonce"),
+    refreshTokenKeyVersion: integer("refresh_token_key_version"),
+    tokenExpiresAt: timestamp("token_expires_at", { withTimezone: true }),
+    scope: text("scope"),
+    // The ingest key the created destinations authenticate with, stored encrypted
+    // (same scheme as cloud_stream_keys) so a re-sync reuses the same key instead
+    // of minting a new one each connect.
+    apiKeyId: uuid("api_key_id").references(() => apiKeys.id, { onDelete: "set null" }),
+    ingestKeyCiphertext: bytea("ingest_key_ciphertext"),
+    ingestKeyNonce: bytea("ingest_key_nonce"),
+    ingestKeyKeyVersion: integer("ingest_key_key_version"),
+    // The Workers Observability destinations we created, keyed by signal:
+    // { traces, logs, metrics } → Cloudflare destination slug.
+    destinations: jsonb("destinations").$type<Record<string, string>>(),
+    installedByUserId: uuid("installed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    // One live install per (project, Cloudflare account); reconnecting refreshes
+    // the same row (see the upsert in apps/api/src/cloudflare.ts).
+    projectAccountUniq: uniqueIndex("cloudflare_installations_project_account_idx").on(
+      t.projectId,
+      t.accountId,
+    ),
+    projectIdx: index("cloudflare_installations_project_idx").on(t.projectId),
+  }),
+);
+
+export type CloudflareInstallation = typeof cloudflareInstallations.$inferSelect;
+
 // Per-project ingest source filters. A row means the given (source, signal) is
 // DISABLED for the project — the proxy ack-drops that telemetry at the edge.
 // Sparse by design: no row = enabled, so a new project ingests everything.
