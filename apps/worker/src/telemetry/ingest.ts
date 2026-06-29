@@ -1,7 +1,12 @@
 import { performance } from "node:perf_hooks";
 import { SpanStatusCode, metrics, trace } from "@opentelemetry/api";
 import { type DB, type IssueSample, db as defaultDb, schema } from "@superlog/db";
-import { type Fingerprint, fingerprint, fingerprintLog } from "@superlog/fingerprint";
+import {
+  type Fingerprint,
+  fingerprint,
+  fingerprintLog,
+  stripNullBytes,
+} from "@superlog/fingerprint";
 import { inArray, sql } from "drizzle-orm";
 import { logger } from "../logger.js";
 
@@ -26,6 +31,10 @@ const batchFull = meter.createCounter("superlog.worker.telemetry.batch_full", {
 const batchDurationMs = meter.createHistogram("superlog.worker.telemetry.batch_duration_ms", {
   description: "Wall-clock duration of a telemetry ingest batch.",
   unit: "ms",
+});
+const rowFailures = meter.createCounter("superlog.worker.telemetry.row_failures", {
+  description:
+    "Telemetry rows whose issue upsert threw and were skipped so the batch could make progress.",
 });
 const pendingRowsGauge = meter.createObservableGauge("superlog.worker.telemetry.pending_rows", {
   description: "Rows currently matching telemetry ingest filters after the durable cursor.",
@@ -192,6 +201,17 @@ async function existingProjectIds(database: DB, projectIds: string[]): Promise<S
     .from(schema.projects)
     .where(inArray(schema.projects.id, unique));
   return new Set(rows.map((row) => row.id));
+}
+
+// Strip NUL bytes from attribute keys/values before they are JSON-encoded into
+// the `last_sample` jsonb column — Postgres jsonb rejects 0x00 just like text.
+function sanitizeAttrs(
+  attrs: Record<string, string> | null | undefined,
+): Record<string, string> | null {
+  if (!attrs) return null;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(attrs)) out[stripNullBytes(k)] = stripNullBytes(v);
+  return out;
 }
 
 function buildIssueTitle(fp: Fingerprint, message: string | null): string {
@@ -547,51 +567,65 @@ async function tickSpans(opts: {
           nextCursor = row.ts;
           continue;
         }
+        const excMessage = stripNullBytes(row.exc_message) || null;
+        const excStack = stripNullBytes(row.exc_stack) || null;
+        const service = stripNullBytes(row.service) || null;
         const fp = fingerprint({
           type: row.exc_type,
-          stacktrace: row.exc_stack,
-          message: row.exc_message,
+          stacktrace: excStack,
+          message: excMessage,
         });
         const seenAt = chStringToDate(row.ts);
         const lastSample: IssueSample = {
           kind: "span",
-          service: row.service || null,
+          service,
           severity: null,
-          message: row.exc_message || null,
+          message: excMessage,
           body: null,
           exceptionType: fp.exceptionType,
           topFrame: fp.topFrame,
           normalizedFrames: fp.normalizedFrames,
-          stacktrace: row.exc_stack || null,
+          stacktrace: excStack,
           seenAt: seenAt.toISOString(),
           traceId: row.trace_id || null,
           spanId: row.span_id || null,
-          spanName: row.span_name || null,
-          spanAttrs: row.span_attrs ?? null,
-          resourceAttrs: row.resource_attrs ?? null,
+          spanName: stripNullBytes(row.span_name) || null,
+          spanAttrs: sanitizeAttrs(row.span_attrs),
+          resourceAttrs: sanitizeAttrs(row.resource_attrs),
         };
-        const up = await upsertIssue({
-          database: opts.database,
-          projectId: row.project_id,
-          kind: "span",
-          service: row.service || null,
-          fp,
-          message: row.exc_message || null,
-          seenAt,
-          lastSample,
-        });
-        if (up.transition !== "seen") {
-          logger.info(
-            {
-              kind: "span",
-              transition: up.transition,
-              projectId: row.project_id,
-              fingerprint: fp.hash,
-              exceptionType: fp.exceptionType,
-            },
-            "issue transition",
+        try {
+          const up = await upsertIssue({
+            database: opts.database,
+            projectId: row.project_id,
+            kind: "span",
+            service,
+            fp,
+            message: excMessage,
+            seenAt,
+            lastSample,
+          });
+          if (up.transition !== "seen") {
+            logger.info(
+              {
+                kind: "span",
+                transition: up.transition,
+                projectId: row.project_id,
+                fingerprint: fp.hash,
+                exceptionType: fp.exceptionType,
+              },
+              "issue transition",
+            );
+            await opts.handleIssueTransition(up.issue, up.transition);
+          }
+        } catch (rowErr) {
+          // Never let a single bad row wedge the cursor — a poison row (e.g. a
+          // value Postgres rejects) would otherwise re-fail every tick and stall
+          // issue ingestion for all projects. Log, count, and advance past it.
+          rowFailures.add(1, { "telemetry.kind": "span" });
+          logger.error(
+            { err: rowErr, kind: "span", projectId: row.project_id, fingerprint: fp.hash },
+            "issue upsert failed; skipping row",
           );
-          await opts.handleIssueTransition(up.issue, up.transition);
         }
         nextCursor = row.ts;
       }
@@ -702,53 +736,67 @@ async function tickLogs(opts: {
           nextCursor = row.ts;
           continue;
         }
+        const body = stripNullBytes(row.body) || null;
+        const excStack = stripNullBytes(row.exc_stack) || null;
+        const service = stripNullBytes(row.service) || null;
         const fp = fingerprintLog({
           service: row.service,
           severity: row.severity,
           body: row.body,
           exceptionType: row.exc_type || null,
-          stacktrace: row.exc_stack || null,
+          stacktrace: excStack,
         });
         const seenAt = chStringToDate(row.ts);
         const lastSample: IssueSample = {
           kind: "log",
-          service: row.service || null,
-          severity: row.severity || null,
-          message: row.body || null,
-          body: row.body || null,
+          service,
+          severity: stripNullBytes(row.severity) || null,
+          message: body,
+          body,
           exceptionType: fp.exceptionType,
           topFrame: fp.topFrame,
           normalizedFrames: fp.normalizedFrames,
-          stacktrace: row.exc_stack || null,
+          stacktrace: excStack,
           seenAt: seenAt.toISOString(),
           traceId: row.trace_id || null,
           spanId: row.span_id || null,
           severityNumber: row.severity_number ?? null,
-          logAttrs: row.log_attrs ?? null,
-          resourceAttrs: row.resource_attrs ?? null,
+          logAttrs: sanitizeAttrs(row.log_attrs),
+          resourceAttrs: sanitizeAttrs(row.resource_attrs),
         };
-        const up = await upsertIssue({
-          database: opts.database,
-          projectId: row.project_id,
-          kind: "log",
-          service: row.service || null,
-          fp,
-          message: row.body || null,
-          seenAt,
-          lastSample,
-        });
-        if (up.transition !== "seen") {
-          logger.info(
-            {
-              kind: "log",
-              transition: up.transition,
-              projectId: row.project_id,
-              fingerprint: fp.hash,
-              exceptionType: fp.exceptionType,
-            },
-            "issue transition",
+        try {
+          const up = await upsertIssue({
+            database: opts.database,
+            projectId: row.project_id,
+            kind: "log",
+            service,
+            fp,
+            message: body,
+            seenAt,
+            lastSample,
+          });
+          if (up.transition !== "seen") {
+            logger.info(
+              {
+                kind: "log",
+                transition: up.transition,
+                projectId: row.project_id,
+                fingerprint: fp.hash,
+                exceptionType: fp.exceptionType,
+              },
+              "issue transition",
+            );
+            await opts.handleIssueTransition(up.issue, up.transition);
+          }
+        } catch (rowErr) {
+          // Never let a single bad row wedge the cursor — a poison row (e.g. a
+          // value Postgres rejects) would otherwise re-fail every tick and stall
+          // issue ingestion for all projects. Log, count, and advance past it.
+          rowFailures.add(1, { "telemetry.kind": "log" });
+          logger.error(
+            { err: rowErr, kind: "log", projectId: row.project_id, fingerprint: fp.hash },
+            "issue upsert failed; skipping row",
           );
-          await opts.handleIssueTransition(up.issue, up.transition);
         }
         nextCursor = row.ts;
       }
