@@ -7,6 +7,8 @@ import {
   type Issue,
   confirmResolutionProposal,
   createIncidentLifecycle,
+  DEFAULT_LOG_PARSE_CONFIG,
+  type LogParseConfig,
   db,
   dismissResolutionProposal,
   isAgentRunProvider,
@@ -67,6 +69,11 @@ import {
   spanSampleKey,
 } from "./incidents/stats.js";
 import { mountIngestFilters } from "./ingest-filters.js";
+import {
+  previewLogParse,
+  sanitizeLogParseConfig,
+  sanitizeSourceParseConfig,
+} from "./ingest-parsing-service.js";
 import { sanitizeIssueFilterConfig } from "./issue-filter-service.js";
 import { mountLinearAuthed, mountLinearPublic } from "./linear.js";
 import { logger } from "./logger.js";
@@ -77,6 +84,7 @@ import {
   type ResourceAttrFilter,
   type SeriesSource,
   countSeries,
+  fetchRecentLogBodies,
   getTraceDetail,
   listAttributeKeys,
   listAttributeValues,
@@ -1164,6 +1172,7 @@ async function getProjectAutomation(projectId: string): Promise<{
   autoMergeFixPrs: schema.AutoMergePolicy;
   autoMergeMethod: schema.AutoMergeMethod;
   issueFilterConfig: schema.IssueFilterConfig;
+  logParseConfig: LogParseConfig;
 }> {
   const row = await db.query.projectAutomationSettings.findFirst({
     where: eq(schema.projectAutomationSettings.projectId, projectId),
@@ -1182,6 +1191,7 @@ async function getProjectAutomation(projectId: string): Promise<{
     autoMergeFixPrs: row?.autoMergeFixPrs ?? "never",
     autoMergeMethod: row?.autoMergeMethod ?? "squash",
     issueFilterConfig: row?.issueFilterConfig ?? schema.EMPTY_ISSUE_FILTER_CONFIG,
+    logParseConfig: row?.logParseConfig ?? DEFAULT_LOG_PARSE_CONFIG,
   };
 }
 
@@ -1568,6 +1578,40 @@ app.post("/api/projects/:projectId/issue-filter/preview", async (c) => {
   return c.json({ events });
 });
 
+// Live preview for the Ingest & parsing editor: run the (draft) source config
+// against real recent log bodies — or caller-supplied samples — and return the
+// severity each would be classified as. POST because the draft config is a
+// structured object.
+app.post("/api/projects/:projectId/ingest-parsing/preview", async (c) => {
+  const projectId = c.req.param("projectId");
+  // Telemetry reads go through the demo-aware read id; the config still belongs
+  // to the project the user is managing (the URL id).
+  const readProjectId = await requireProjectAccess(c, projectId);
+  const body = (await c.req.json().catch(() => ({}))) as {
+    source?: unknown;
+    config?: unknown;
+    samples?: unknown;
+  };
+  const source = body.source === "otlp" ? "otlp" : "aws";
+  const current = await getProjectAutomation(projectId);
+  const fallback = current.logParseConfig[source];
+  const sourceConfig =
+    body.config !== undefined ? sanitizeSourceParseConfig(body.config, fallback) : fallback;
+
+  // Cap both the count and the length of caller-supplied samples so a handful of
+  // huge strings can't make this endpoint expensive to parse/echo.
+  let samples: string[] = Array.isArray(body.samples)
+    ? body.samples
+        .filter((s): s is string => typeof s === "string")
+        .map((s) => s.slice(0, 10_000))
+        .slice(0, 20)
+    : [];
+  if (samples.length === 0) {
+    samples = await fetchRecentLogBodies(ch, readProjectId, 10);
+  }
+  return c.json({ source, rows: previewLogParse(samples, sourceConfig) });
+});
+
 const VALID_AGENT_POLICIES: ReadonlySet<string> = new Set(["never", "on_ready_to_pr", "always"]);
 const VALID_AUTO_MERGE_POLICIES: ReadonlySet<string> = new Set([
   "never",
@@ -1623,6 +1667,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     autoMergeFixPrs?: unknown;
     autoMergeMethod?: unknown;
     issueFilterConfig?: unknown;
+    logParseConfig?: unknown;
   };
 
   const autoInvestigateIssuesEnabled =
@@ -1685,6 +1730,10 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     body.issueFilterConfig !== undefined
       ? sanitizeIssueFilterConfig(body.issueFilterConfig, current.issueFilterConfig)
       : current.issueFilterConfig;
+  const logParseConfig =
+    body.logParseConfig !== undefined
+      ? sanitizeLogParseConfig(body.logParseConfig, current.logParseConfig)
+      : current.logParseConfig;
 
   if (!isAgentRunProvider(agentRunProvider)) {
     throw new HTTPException(400, {
@@ -1731,6 +1780,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     autoMergeFixPrs,
     autoMergeMethod,
     issueFilterConfig,
+    logParseConfig,
     updatedAt: new Date(),
   };
 
@@ -1753,6 +1803,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
         autoMergeFixPrs,
         autoMergeMethod,
         issueFilterConfig,
+        logParseConfig,
         updatedAt: new Date(),
       },
     })

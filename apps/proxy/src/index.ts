@@ -7,6 +7,7 @@ import { serve } from "@hono/node-server";
 import { type Span, SpanStatusCode, trace } from "@opentelemetry/api";
 import { hashApiKey, schema, syncLoopsContactsForProject } from "@superlog/db";
 import { db } from "@superlog/db";
+import { DEFAULT_LOG_PARSE_CONFIG } from "@superlog/db/log-severity";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -32,6 +33,7 @@ import {
   createIngestSourceFilter,
   ingestFilterKey,
 } from "./ingest-source-filter.js";
+import { createLogParseConfigCache } from "./log-parse-config-cache.js";
 import { logger } from "./logger.js";
 import { proxyOperationalRecorder } from "./operational-metrics.js";
 import { Semaphore } from "./semaphore.js";
@@ -73,8 +75,28 @@ if (ingestRowWriter) {
     "ingest direct-to-clickhouse writes enabled for logs and traces",
   );
 }
+// Per-project severity-parsing config for the direct-to-CH decode path. Cached +
+// fail-open like the source filter; reads the project's automation row. Only
+// consulted when the consumer decodes logs in-house (INGEST_CLICKHOUSE_DIRECT).
+const logParseConfigCache = createLogParseConfigCache({
+  loadConfig: async (projectId) => {
+    const row = await db.query.projectAutomationSettings.findFirst({
+      where: eq(schema.projectAutomationSettings.projectId, projectId),
+      columns: { logParseConfig: true },
+    });
+    return row?.logParseConfig ?? DEFAULT_LOG_PARSE_CONFIG;
+  },
+});
+
 const ingestQueue = ingestQueueConfig
-  ? new IngestQueue(ingestQueueConfig, logger, undefined, ingestRowWriter)
+  ? new IngestQueue(
+      ingestQueueConfig,
+      logger,
+      undefined,
+      ingestRowWriter,
+      // OTLP source config drives severity backfill on the decode path.
+      (projectId) => logParseConfigCache.get(projectId).otlp,
+    )
   : null;
 // Free-tier ingest hard-block. Null (disabled) without AUTUMN_SECRET_KEY. The
 // verdict is a cached, fail-open in-memory read — never a blocking call on the

@@ -17,6 +17,7 @@ import {
   SendMessageBatchCommand,
 } from "@aws-sdk/client-sqs";
 import { Upload } from "@aws-sdk/lib-storage";
+import type { SourceParseConfig } from "@superlog/db/log-severity";
 import { type SpillSink, captureBody } from "./body-capture.js";
 import type { IngestRowWriter } from "./clickhouse-writer.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
@@ -319,6 +320,10 @@ export class IngestQueue {
     private readonly logger: LoggerLike,
     spillSinkFactory?: SpillSinkFactory,
     private readonly rowWriter?: IngestRowWriter,
+    // Resolve the OTLP source's severity-parsing config for a project, sync and
+    // fail-open (used only on the direct-to-ClickHouse decode path). Undefined =
+    // no severity backfill.
+    private readonly parseConfigFor?: (projectId: string) => SourceParseConfig | undefined,
   ) {
     const clientConfig = config.region ? { region: config.region } : {};
     this.sqs = new SQSClient(clientConfig);
@@ -744,6 +749,7 @@ export class IngestQueue {
             contentType: parsed.contentType,
             contentEncoding: parsed.contentEncoding,
             body,
+            parseConfig: this.parseConfigFor?.(parsed.projectId),
           });
         } catch (decodeErr) {
           this.logger.warn(

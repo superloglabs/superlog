@@ -3,6 +3,8 @@ import { gunzipSync, inflateSync } from "node:zlib";
 
 import protobuf from "protobufjs";
 
+import type { SourceParseConfig } from "@superlog/db/log-severity";
+
 import {
   otlpLogsToRows,
   otlpTracesToRows,
@@ -76,6 +78,10 @@ export type DecodeInput = {
   contentType: string;
   contentEncoding?: string;
   body: Buffer;
+  // OTLP-source severity-parsing config for this project. Only used for
+  // /v1/logs: records arriving with SeverityNumber=0 get their level filled in
+  // from the body. Absent = no backfill (severity passes through as-is).
+  parseConfig?: SourceParseConfig;
 };
 
 // Decode an OTLP ingest payload into ClickHouse rows. Returns null for signals we
@@ -94,7 +100,7 @@ export function decodeOtlpToRows(input: DecodeInput): DecodedRows | null {
     const payload = json
       ? JSON.parse(body.toString("utf8"))
       : decodeProto(ExportLogsServiceRequest, body);
-    return { table: "otel_logs", rows: otlpLogsToRows(payload, input.projectId) };
+    return { table: "otel_logs", rows: otlpLogsToRows(payload, input.projectId, input.parseConfig) };
   }
 
   const payload = json

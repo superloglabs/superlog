@@ -260,7 +260,14 @@ else
   echo "==> starting portless stack"
   ./scripts/portless-stack.sh start --name "$WT_NAME"
 
-  STACK_DIR="$REPO_ROOT/tmp/portless-stacks/$WT_NAME"
+  # portless-stack.sh slugifies the --name (lowercases, maps non [a-z0-9-] to '-',
+  # strips leading/trailing '-') before deriving its stack dir. Apply the SAME
+  # transform here, or worktree dirs whose basename isn't already a clean slug
+  # (leading underscore like `_superlog-foo`, capitals, etc.) look in the wrong
+  # place and the env-file check below false-bails on an otherwise-healthy stack.
+  STACK_SLUG="$(printf '%s' "$WT_NAME" | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-+/-/g')"
+  STACK_DIR="$REPO_ROOT/tmp/portless-stacks/$STACK_SLUG"
   ENV_FILE="$STACK_DIR/env"
   if [[ ! -f "$ENV_FILE" ]]; then
     echo "expected env file at $ENV_FILE after portless start — bailing." >&2
