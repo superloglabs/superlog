@@ -12,11 +12,12 @@ import {
   currentBillingPeriod,
   periodKey as toPeriodKey,
 } from "@superlog/billing";
-import { db, fetchOrgMemberContacts, schema, sendLoopsUsageThresholdEvent } from "@superlog/db";
+import { db, fetchOrgMemberContacts, schema } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import { postSlackMessage } from "../infra/slack/api.js";
 import { fetchSlackTargetsForOrg } from "../infra/slack/incident-messages.js";
 import { logger } from "../logger.js";
+import { renderUsageEmail } from "./usage-email.js";
 import { type UsageNotifierDeps, mapAutumnFeatures, notifyOrgUsage } from "./usage-notifier.js";
 
 const log = logger.child({ scope: "billing.usage-notify" });
@@ -24,10 +25,25 @@ const log = logger.child({ scope: "billing.usage-notify" });
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 const MANAGE_BILLING_URL = `${WEB_ORIGIN}/settings?scope=org&section=billing`;
 const AUTUMN_BASE_URL = "https://api.useautumn.com/v1";
+const RESEND_API_URL = "https://api.resend.com/emails";
+const FROM_EMAIL = process.env.SUPERLOG_FROM_EMAIL ?? "Superlog <no-reply@superlog.sh>";
 const FETCH_TIMEOUT_MS = 10_000;
-// Drain on a slower cadence than the 60s telemetry meter — usage moves slowly
-// relative to a cap, and this bounds the per-tick Autumn /customers call volume.
-const DEFAULT_NOTIFIER_INTERVAL_MS = 5 * 60 * 1000;
+
+type ResendSend = (to: string, subject: string, html: string) => Promise<void>;
+
+// Minimal Resend client (raw fetch, same style as the Slack/Autumn helpers).
+// null when RESEND_API_KEY is unset — email is then skipped (Slack still posts).
+function createResendSend(apiKey: string, fetchImpl: typeof fetch): ResendSend {
+  return async (to, subject, html) => {
+    const res = await fetchImpl(RESEND_API_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ from: FROM_EMAIL, to: [to], subject, html }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`resend -> ${res.status}`);
+  };
+}
 
 const MAX_THRESHOLD = 100;
 
@@ -60,7 +76,12 @@ async function fetchAutumnBalances(
   }
 }
 
-function buildDeps(secretKey: string, fetchImpl: typeof fetch, now: () => Date): UsageNotifierDeps {
+function buildDeps(
+  secretKey: string,
+  fetchImpl: typeof fetch,
+  now: () => Date,
+  resendSend: ResendSend | null,
+): UsageNotifierDeps {
   return {
     periodKey: () => currentPeriodKey(now),
 
@@ -111,17 +132,18 @@ function buildDeps(secretKey: string, fetchImpl: typeof fetch, now: () => Date):
     fetchMembers: (orgId) => fetchOrgMemberContacts(orgId),
 
     sendUsageEvent: async (event) => {
-      await sendLoopsUsageThresholdEvent({
-        email: event.email,
-        userId: event.userId,
-        orgId: event.orgId,
+      // No Resend key configured → skip email (the Slack post still happens).
+      if (!resendSend) return;
+      const { subject, html } = renderUsageEmail({
         orgName: event.orgName,
         feature: event.feature,
         pct: event.pct,
         threshold: event.threshold,
         enforcement: event.enforcement,
         manageBillingUrl: event.manageBillingUrl,
+        balances: event.balances,
       });
+      await resendSend(event.email, subject, html);
     },
 
     postSlack: async (orgId, text) => {
@@ -146,11 +168,26 @@ export type UsageNotifier = {
 };
 
 export function createUsageNotifier(
-  opts: { secretKey?: string | null; fetchImpl?: typeof fetch; now?: () => Date } = {},
+  opts: {
+    secretKey?: string | null;
+    resendKey?: string | null;
+    enabled?: boolean;
+    fetchImpl?: typeof fetch;
+    now?: () => Date;
+  } = {},
 ): UsageNotifier | null {
+  // Dedicated on-switch, independent of metering (AUTUMN_SECRET_KEY): deploying
+  // this code is inert until USAGE_NOTIFICATIONS_ENABLED is flipped, so the
+  // ledger can be primed first and existing over-cap orgs aren't blasted on
+  // rollout. See the prime-usage-notifications script.
+  const enabled = opts.enabled ?? process.env.USAGE_NOTIFICATIONS_ENABLED === "true";
+  if (!enabled) return null;
   const secretKey = (opts.secretKey ?? process.env.AUTUMN_SECRET_KEY)?.trim();
   if (!secretKey) return null;
-  const deps = buildDeps(secretKey, opts.fetchImpl ?? fetch, opts.now ?? (() => new Date()));
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const resendKey = (opts.resendKey ?? process.env.RESEND_API_KEY)?.trim();
+  const resendSend = resendKey ? createResendSend(resendKey, fetchImpl) : null;
+  const deps = buildDeps(secretKey, fetchImpl, opts.now ?? (() => new Date()), resendSend);
   const pending = new Set<string>();
 
   const run = async (orgId: string): Promise<void> => {
@@ -180,28 +217,7 @@ export function createUsageNotifier(
 }
 
 // Process singleton: enqueued by the telemetry meter, notified directly by the
-// investigation lifecycle. null when billing is unconfigured.
+// investigation lifecycle, and drained by the `usage-notify` pg-boss job
+// (jobs/usage-notify.ts) out-of-band from the worker tick loop. null when
+// billing is unconfigured.
 export const usageNotifier: UsageNotifier | null = createUsageNotifier();
-
-// Interval-gated drainer for createWorkerTick. null when there's no notifier.
-export function createUsageNotifierTick(
-  notifier: UsageNotifier | null = usageNotifier,
-  opts: { intervalMs?: number; now?: () => number } = {},
-): (() => Promise<number>) | null {
-  if (!notifier) return null;
-  const intervalMs = opts.intervalMs ?? DEFAULT_NOTIFIER_INTERVAL_MS;
-  const nowMs = opts.now ?? Date.now;
-  let nextRunAt = 0;
-  let running = false;
-  return async () => {
-    const current = nowMs();
-    if (running || current < nextRunAt) return 0;
-    running = true;
-    nextRunAt = current + intervalMs;
-    try {
-      return await notifier.drain();
-    } finally {
-      running = false;
-    }
-  };
-}

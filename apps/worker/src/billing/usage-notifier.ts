@@ -70,6 +70,9 @@ export type UsageNotificationEvent = {
   threshold: number;
   enforcement: boolean;
   manageBillingUrl: string;
+  // Full per-feature balances so the email can render the usage table (not just
+  // the watermark-leading feature).
+  balances: FeatureBalance[];
 };
 
 export type UsageNotifierDeps = {
@@ -180,6 +183,7 @@ export async function notifyOrgUsage(
         threshold,
         enforcement: deps.enforcement,
         manageBillingUrl: deps.manageBillingUrl,
+        balances: usage.balances,
       });
     } catch (err) {
       log.error(

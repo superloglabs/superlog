@@ -1,0 +1,53 @@
+<!--
+  Source for the usage-limit notification email. Generated to usage-email-shell.generated.ts
+  via `pnpm --filter @superlog/worker build:email` (npx mjml). Placeholders ({{...}}) are
+  filled at send time by usage-email.ts. Do not hand-edit the generated .ts file.
+-->
+<mjml>
+  <mj-head>
+    <mj-font name="Inter" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" />
+    <mj-attributes>
+      <mj-all font-family="Inter Display, Inter, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" />
+      <mj-text color="#232326" font-size="15px" line-height="23px" padding="0" font-weight="400" />
+      <mj-section padding="0" />
+    </mj-attributes>
+  </mj-head>
+  <mj-body background-color="#ffffff" width="600px">
+    <mj-wrapper padding="28px 16px 32px">
+
+      <mj-section padding-bottom="26px"><mj-column>
+        <mj-image src="https://images.vialoops.com/cmowh1ofc04l30i53nid5hp2v/cmqz06roj2wy30j1a8ze0gr60.png" alt="superlog" width="150px" align="left" padding="0" />
+      </mj-column></mj-section>
+
+      <mj-section padding-bottom="26px"><mj-column>
+        <mj-text font-size="23px" font-weight="600" color="#18181b" line-height="30px" letter-spacing="-0.02em" padding-bottom="10px">{{headline}}</mj-text>
+        <mj-text color="#5b5e66" font-size="15px" line-height="23px">{{intro}}</mj-text>
+      </mj-column></mj-section>
+
+      <mj-section><mj-column>
+        <mj-text font-size="13px" color="#5b5e66" padding-bottom="8px">Usage this cycle</mj-text>
+        <mj-text>
+          <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:#f3f3f4;border-radius:14px;border-collapse:separate;">
+            {{usageRows}}
+          </table>
+        </mj-text>
+      </mj-column></mj-section>
+
+      <mj-section padding-top="33px" padding-bottom="42px"><mj-column>
+        <mj-text>
+          <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;">
+            <tr>
+              <td valign="middle" style="vertical-align:middle;font-size:15px;color:#5b5e66;line-height:22px;padding-right:18px;">{{ctaCopy}}</td>
+              <td valign="middle" style="vertical-align:middle;text-align:right;white-space:nowrap;"><a href="{{ctaUrl}}" style="display:inline-block;background:#485ae2;color:#ffffff;font-size:16px;font-weight:500;text-decoration:none;padding:6px 11px;border-radius:8px;"><span style="font-size:16px;vertical-align:-1px;">&#8593;</span>&nbsp;{{ctaLabel}}</a></td>
+            </tr>
+          </table>
+        </mj-text>
+      </mj-column></mj-section>
+
+      <mj-section><mj-column>
+        <mj-text font-size="12px" color="#9c9fa6" line-height="18px">You're getting this because your Superlog organization is on the Free plan. Manage your plan anytime in organization billing settings.</mj-text>
+      </mj-column></mj-section>
+
+    </mj-wrapper>
+  </mj-body>
+</mjml>

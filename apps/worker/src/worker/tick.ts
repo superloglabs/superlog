@@ -21,14 +21,12 @@ export type WorkerTickResult = {
   webhooks: number;
   autorecoveryProposals: number;
   usageReported: number;
-  usageNotified: number;
 };
 
 export function createWorkerTick(opts: {
   clickhouse: ClickHouseClientLike;
   telemetryIngestor: TelemetryIngestor;
   usageMeter?: (() => Promise<number>) | null;
-  usageNotifierTick?: (() => Promise<number>) | null;
 }): () => Promise<WorkerTickResult> {
   return () =>
     tracer.startActiveSpan("worker.tick", async (span) => {
@@ -72,9 +70,6 @@ export function createWorkerTick(opts: {
         const usageReported = opts.usageMeter
           ? await safe("usage_metering", opts.usageMeter, 0)
           : 0;
-        const usageNotified = opts.usageNotifierTick
-          ? await safe("usage_notify", opts.usageNotifierTick, 0)
-          : 0;
         span.setAttribute("tick.spans", spans);
         span.setAttribute("tick.logs", logs);
         span.setAttribute("tick.agent_runs", agentRuns);
@@ -83,7 +78,6 @@ export function createWorkerTick(opts: {
         span.setAttribute("tick.webhooks", webhooks);
         span.setAttribute("tick.autorecovery_proposals", autorecoveryProposals);
         span.setAttribute("tick.usage_reported", usageReported);
-        span.setAttribute("tick.usage_notified", usageNotified);
         return {
           spans,
           logs,
@@ -93,7 +87,6 @@ export function createWorkerTick(opts: {
           webhooks,
           autorecoveryProposals,
           usageReported,
-          usageNotified,
         };
       } catch (err) {
         span.recordException(err as Error);

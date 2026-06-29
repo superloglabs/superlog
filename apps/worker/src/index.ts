@@ -4,7 +4,7 @@ import { db } from "@superlog/db";
 import { registerAgentRunHealthMetrics } from "./agent-run-health-metrics.js";
 import { initAiUsageSink } from "./ai-usage.js";
 import { createUsageMeterTicker } from "./billing/usage-meter-ticker.js";
-import { createUsageNotifierTick, usageNotifier } from "./billing/usage-notifier-ticker.js";
+import { usageNotifier } from "./billing/usage-notifier-ticker.js";
 import { handleIssueTransition } from "./incidents/workflow.js";
 import { startJobRunner } from "./jobs/runner.js";
 import { logger } from "./logger.js";
@@ -49,15 +49,15 @@ registerTelemetryIngestMetrics({
   discoveryWindowMs: TELEMETRY_DISCOVERY_WINDOW_MS,
 });
 
-// The meter flags each org with usage into the notifier's queue; the notifier
-// ticker drains that queue on its own slower cadence. Both no-op without billing.
+// The meter flags each org with usage into the notifier's in-process queue; the
+// `usage-notify` pg-boss job drains it out-of-band (jobs/usage-notify.ts), so it
+// never adds to the tick loop. Both no-op without billing.
 const usageMeter = createUsageMeterTicker({
   db,
   clickhouse: ch,
   onOrgMetered: (orgId) => usageNotifier?.enqueue(orgId),
 });
-const usageNotifierTick = createUsageNotifierTick();
-const tick = createWorkerTick({ clickhouse: ch, telemetryIngestor, usageMeter, usageNotifierTick });
+const tick = createWorkerTick({ clickhouse: ch, telemetryIngestor, usageMeter });
 
 // Start the pg-boss background job runner: discovers jobs from the jobs dir and
 // schedules them on their own queues, OUTSIDE this tick loop. A runner failure

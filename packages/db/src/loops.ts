@@ -4,7 +4,6 @@ import * as schema from "./schema.js";
 
 const DEFAULT_LOOPS_API_BASE = "https://app.loops.so/api/v1";
 export const DEFAULT_LOOPS_WELCOME_EVENT = "superlogWelcome";
-export const DEFAULT_LOOPS_USAGE_EVENT = "usageThresholdReached";
 
 type LoopsFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
@@ -266,74 +265,6 @@ export async function sendLoopsWelcomeFlow(
   const payload = buildLoopsWelcomeEventPayload(
     input,
     options.eventName ?? process.env.LOOPS_WELCOME_EVENT_NAME ?? DEFAULT_LOOPS_WELCOME_EVENT,
-  );
-  return loopsRequest("/events/send", payload, options);
-}
-
-// Usage-limit notifications: the worker fires this Loops event per org member
-// when an org crosses a usage threshold (50/85/100% of a Free hard cap). A Loops
-// workflow keyed on the event sends the actual email, branching on `threshold`
-// and `enforcement`. Mirrors the welcome-event pattern above so the transport,
-// config, and not-configured fallback are shared.
-export type LoopsUsageThresholdInput = {
-  email: string;
-  userId: string;
-  orgId: string;
-  orgName: string;
-  // The metered feature driving the watermark: spans | logs | metric_points | investigations.
-  feature: string;
-  // Current highest-watermark percentage across the org's hard-capped features.
-  pct: number;
-  // Which step crossed: 50 | 85 | 100.
-  threshold: number;
-  // Whether hard-blocking is actually active (BILLING_ENFORCEMENT_ENABLED) — drives
-  // "approaching" vs "now paused" copy in the Loops template.
-  enforcement: boolean;
-  manageBillingUrl: string;
-};
-
-export type LoopsUsageThresholdEventPayload = {
-  email: string;
-  userId: string;
-  eventName: string;
-  source: string;
-  eventProperties: Record<string, string>;
-};
-
-export function buildLoopsUsageThresholdPayload(
-  input: LoopsUsageThresholdInput,
-  eventName = DEFAULT_LOOPS_USAGE_EVENT,
-): LoopsUsageThresholdEventPayload {
-  // Loops event names can't contain ':' (same rule as the welcome event).
-  if (eventName.includes(":")) {
-    throw new Error("LOOPS_USAGE_EVENT_NAME cannot contain ':'");
-  }
-  return {
-    email: input.email,
-    userId: input.userId,
-    eventName: short(eventName, DEFAULT_LOOPS_USAGE_EVENT),
-    source: "Superlog usage",
-    // Loops event properties are flat string/number/bool values; keep them strings
-    // so the workflow can branch on them deterministically.
-    eventProperties: {
-      orgId: short(input.orgId),
-      orgName: short(input.orgName),
-      feature: short(input.feature),
-      pct: String(Math.max(0, Math.floor(input.pct))),
-      threshold: String(input.threshold),
-      enforcement: input.enforcement ? "true" : "false",
-      manageBillingUrl: short(input.manageBillingUrl, "https://superlog.sh/settings"),
-    },
-  };
-}
-
-export async function sendLoopsUsageThresholdEvent(
-  input: LoopsUsageThresholdInput,
-  options: LoopsApiOptions = {},
-): Promise<SendLoopsResult> {
-  const payload = buildLoopsUsageThresholdPayload(
-    input,
-    options.eventName ?? process.env.LOOPS_USAGE_EVENT_NAME ?? DEFAULT_LOOPS_USAGE_EVENT,
   );
   return loopsRequest("/events/send", payload, options);
 }
