@@ -5,7 +5,7 @@ import {
   type Fingerprint,
   fingerprint,
   fingerprintLog,
-  stripNullBytes,
+  sanitizeForPg,
 } from "@superlog/fingerprint";
 import { inArray, sql } from "drizzle-orm";
 import { logger } from "../logger.js";
@@ -203,14 +203,15 @@ async function existingProjectIds(database: DB, projectIds: string[]): Promise<S
   return new Set(rows.map((row) => row.id));
 }
 
-// Strip NUL bytes from attribute keys/values before they are JSON-encoded into
-// the `last_sample` jsonb column — Postgres jsonb rejects 0x00 just like text.
+// Sanitize attribute keys/values (NUL bytes, lone surrogates) before they are
+// JSON-encoded into the `last_sample` jsonb column — Postgres jsonb rejects
+// both just like text.
 function sanitizeAttrs(
   attrs: Record<string, string> | null | undefined,
 ): Record<string, string> | null {
   if (!attrs) return null;
   const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(attrs)) out[stripNullBytes(k)] = stripNullBytes(v);
+  for (const [k, v] of Object.entries(attrs)) out[sanitizeForPg(k)] = sanitizeForPg(v);
   return out;
 }
 
@@ -646,9 +647,9 @@ async function tickSpans(opts: {
           skippedByFilter += 1;
           continue;
         }
-        const excMessage = stripNullBytes(row.exc_message) || null;
-        const excStack = stripNullBytes(row.exc_stack) || null;
-        const service = stripNullBytes(row.service) || null;
+        const excMessage = sanitizeForPg(row.exc_message) || null;
+        const excStack = sanitizeForPg(row.exc_stack) || null;
+        const service = sanitizeForPg(row.service) || null;
         const fp = fingerprint({
           type: row.exc_type,
           stacktrace: excStack,
@@ -668,7 +669,7 @@ async function tickSpans(opts: {
           seenAt: seenAt.toISOString(),
           traceId: row.trace_id || null,
           spanId: row.span_id || null,
-          spanName: stripNullBytes(row.span_name) || null,
+          spanName: sanitizeForPg(row.span_name) || null,
           spanAttrs: sanitizeAttrs(row.span_attrs),
           resourceAttrs: sanitizeAttrs(row.resource_attrs),
         };
@@ -794,9 +795,9 @@ async function tickLogs(opts: {
           skippedByFilter += 1;
           continue;
         }
-        const body = stripNullBytes(row.body) || null;
-        const excStack = stripNullBytes(row.exc_stack) || null;
-        const service = stripNullBytes(row.service) || null;
+        const body = sanitizeForPg(row.body) || null;
+        const excStack = sanitizeForPg(row.exc_stack) || null;
+        const service = sanitizeForPg(row.service) || null;
         const fp = fingerprintLog({
           service: row.service,
           severity: row.severity,
@@ -808,7 +809,7 @@ async function tickLogs(opts: {
         const lastSample: IssueSample = {
           kind: "log",
           service,
-          severity: stripNullBytes(row.severity) || null,
+          severity: sanitizeForPg(row.severity) || null,
           message: body,
           body,
           exceptionType: fp.exceptionType,
