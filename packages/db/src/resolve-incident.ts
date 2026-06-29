@@ -10,6 +10,35 @@ import {
   decideRegressionTransition,
 } from "./incident-state.js";
 import * as schema from "./schema.js";
+import {
+  type IncidentReopenedReason,
+  enqueueIncidentReopened,
+  enqueueIncidentResolved,
+} from "./webhook-events.js";
+
+// Outbound webhooks are a best-effort side effect of a committed lifecycle
+// transition: a delivery row is written after the transaction succeeds, and a
+// failure to enqueue must never roll back or throw out of the resolve/reopen.
+// The worker's delivery loop is the durable retry path once a row exists.
+async function emitIncidentResolved(database: DB, incidentId: string): Promise<void> {
+  try {
+    await enqueueIncidentResolved(incidentId, database);
+  } catch (err) {
+    console.error("failed to enqueue incident.resolved webhook", { incidentId, err });
+  }
+}
+
+async function emitIncidentReopened(
+  database: DB,
+  incidentId: string,
+  opts: { reason: IncidentReopenedReason; previousStatus: string | null },
+): Promise<void> {
+  try {
+    await enqueueIncidentReopened(incidentId, opts, database);
+  } catch (err) {
+    console.error("failed to enqueue incident.reopened webhook", { incidentId, err });
+  }
+}
 
 export type ResolveIncidentInput = {
   incidentId: string;
@@ -149,7 +178,11 @@ export function createIncidentLifecycle(database: DB = db) {
     },
 
     async resolve(input: ResolveIncidentInput): Promise<ResolveIncidentResult> {
-      return repository.transaction((tx) => resolveIncidentInTx(tx, input, repository));
+      const result = await repository.transaction((tx) =>
+        resolveIncidentInTx(tx, input, repository),
+      );
+      if (result.resolved) await emitIncidentResolved(database, input.incidentId);
+      return result;
     },
 
     async applyAgentRunResult(opts: {
@@ -182,6 +215,11 @@ export function createIncidentLifecycle(database: DB = db) {
           });
         }
       });
+
+      // A noise auto-close is a terminal resolve from the consumer's POV
+      // (status flips to autoresolved_noise) — emit incident.resolved so the
+      // webhook taxonomy covers every path that closes an incident.
+      if (noiseResolved) await emitIncidentResolved(database, opts.incident.id);
 
       return { updated: true, noiseResolved };
     },
@@ -230,6 +268,10 @@ export function createIncidentLifecycle(database: DB = db) {
         });
       });
 
+      await emitIncidentReopened(database, opts.incident.id, {
+        reason: "issue_regressed",
+        previousStatus: opts.incident.status,
+      });
       return { reopened: true, stayedNoise: false };
     },
 
@@ -263,6 +305,10 @@ export function createIncidentLifecycle(database: DB = db) {
           dedupeKey: `incident_reopened:manual:${opts.incident.id}:${now.getTime()}`,
           processedAt: now,
         });
+      });
+      await emitIncidentReopened(database, opts.incident.id, {
+        reason: "manual",
+        previousStatus: opts.incident.status,
       });
       return { reopened: true };
     },
@@ -405,14 +451,14 @@ function attributionPhrase(actor: ResolutionProposalActor): string {
 export async function confirmResolutionProposal(opts: {
   proposalId: string;
   actor: ResolutionProposalActor;
-}): Promise<{ ok: boolean; reason?: string; incidentId?: string }> {
+}): Promise<{ ok: boolean; reason?: string; incidentId?: string; resolved?: boolean }> {
   // Wrap the proposal flip + the incident resolve in one transaction so
   // we can't end up with a "confirmed" proposal whose incident is still
   // open (would happen if resolveIncident throws between the two writes).
   // The proposal UPDATE is conditional on `decision IS NULL` so two
   // concurrent confirm clicks can't both succeed — second caller's
   // .returning() comes back empty and we bail before resolving.
-  return db.transaction(async (tx) => {
+  const outcome = await db.transaction(async (tx) => {
     const decidedAt = new Date();
     const updated = await tx
       .update(schema.incidentResolutionProposals)
@@ -446,7 +492,7 @@ export async function confirmResolutionProposal(opts: {
       if (!existing) return { ok: false, reason: "unknown_proposal" };
       return { ok: false, reason: `already_${existing.decision}` };
     }
-    await resolveIncidentInTx(
+    const resolveResult = await resolveIncidentInTx(
       tx,
       {
         incidentId: row.incidentId,
@@ -459,8 +505,16 @@ export async function confirmResolutionProposal(opts: {
       },
       createIncidentRepository(db),
     );
-    return { ok: true, incidentId: row.incidentId };
+    // `resolved` is false when the incident was already closed by a concurrent
+    // path (manual resolve, PR merge, …) — resolveIncidentInTx is a no-op then.
+    // Only signal a resolve when this call actually flipped the status, so we
+    // don't emit a duplicate incident.updated webhook.
+    return { ok: true, incidentId: row.incidentId, resolved: resolveResult.resolved };
   });
+  if (outcome.ok && outcome.resolved && outcome.incidentId) {
+    await emitIncidentResolved(db, outcome.incidentId);
+  }
+  return outcome;
 }
 
 export async function dismissResolutionProposal(opts: {

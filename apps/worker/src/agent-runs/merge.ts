@@ -1,4 +1,4 @@
-import { type AgentRunResult, db, schema } from "@superlog/db";
+import { type AgentRunResult, db, enqueueIncidentMerged, schema } from "@superlog/db";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
@@ -235,9 +235,23 @@ async function applyMergeOutcome(opts: {
     targetIncident: target,
     evidence,
   });
-  // No webhook here: a merge means we recognized this incident as a duplicate
-  // of another, not that we finished investigating a new problem. Webhook
-  // subscribers care about completed agentRuns with findings.
+  // We deliberately do not relay a completed-investigation update for a merge
+  // (the run didn't finish investigating a new problem). Instead we emit an
+  // incident.updated with change.kind = "merged" so subscribers can follow the
+  // dedupe — the source incident folded into the survivor at mergedInto.
+  await enqueueIncidentMerged(ctx.incident.id, {
+    targetIncidentId: target.id,
+    evidence,
+  }).catch((err) =>
+    logger.error(
+      {
+        scope: "webhooks.enqueue",
+        incident_id: ctx.incident.id,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "failed to enqueue incident.updated webhook (merged)",
+    ),
+  );
 
   logger.info(
     {

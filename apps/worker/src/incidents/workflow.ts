@@ -1,4 +1,10 @@
-import { type DB, db, recordInboundInteraction, schema } from "@superlog/db";
+import {
+  type DB,
+  db,
+  enqueueIncidentCreated,
+  recordInboundInteraction,
+  schema,
+} from "@superlog/db";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { getProjectAutomation } from "../agent-run-context.js";
 import {
@@ -154,6 +160,23 @@ export async function handleIssueTransition(
 ): Promise<void> {
   const { incident, createdIncident, linkedIssue, reopenedIncident } =
     await ensureIncidentForIssue(issue);
+  // Emit the webhook as soon as we know the incident was created, before the
+  // (fallible) Slack root post. `createdIncident` is only true on the tick that
+  // actually inserts the incident; if a later step in this handler throws and
+  // the job retries, `ensureIncidentForIssue` returns createdIncident=false, so
+  // emitting after a throwing step would permanently drop the webhook.
+  if (createdIncident) {
+    await enqueueIncidentCreated(incident.id).catch((err) =>
+      logger.error(
+        {
+          scope: "webhooks.enqueue",
+          incident_id: incident.id,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "failed to enqueue incident.created webhook",
+      ),
+    );
+  }
   const project = await db.query.projects.findFirst({
     where: eq(schema.projects.id, issue.projectId),
   });

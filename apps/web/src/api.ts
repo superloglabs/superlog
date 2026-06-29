@@ -307,7 +307,7 @@ export function useCreateWebhook(projectId: string) {
   const fetcher = useFetcher();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { url: string; description?: string }) =>
+    mutationFn: (body: { url: string; description?: string; enabledEvents?: string[] }) =>
       fetcher<WebhookEndpoint>(`/api/projects/${projectId}/webhooks`, {
         method: "POST",
         body: JSON.stringify(body),
@@ -320,13 +320,20 @@ export function useUpdateWebhook(projectId: string) {
   const fetcher = useFetcher();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { id: string; url?: string; description?: string; disabled?: boolean }) =>
+    mutationFn: (vars: {
+      id: string;
+      url?: string;
+      description?: string;
+      disabled?: boolean;
+      enabledEvents?: string[];
+    }) =>
       fetcher<WebhookEndpoint>(`/api/projects/${projectId}/webhooks/${vars.id}`, {
         method: "PATCH",
         body: JSON.stringify({
           url: vars.url,
           description: vars.description,
           disabled: vars.disabled,
+          enabledEvents: vars.enabledEvents,
         }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["webhooks", projectId] }),

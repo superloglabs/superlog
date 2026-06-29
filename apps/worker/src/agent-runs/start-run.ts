@@ -1,4 +1,4 @@
-import { db } from "@superlog/db";
+import { db, enqueueAgentRunStarted } from "@superlog/db";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { listAccessibleGithubRepositories, scoreRepos } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
@@ -9,6 +9,7 @@ import {
   postIncidentThreadMessage,
   updateIncidentMainMessage,
 } from "../infra/slack/incident-messages.js";
+import { logger } from "../logger.js";
 import { buildIssueSummaryWithTrace } from "./prompt-context.js";
 import { startQueuedAgentRunWorkflow } from "./start.js";
 import {
@@ -40,6 +41,16 @@ async function notifyAgentRunStarted(
   ctx: AgentRunContext,
   repoCandidateCount: number,
 ): Promise<void> {
+  await enqueueAgentRunStarted(ctx.agentRun.id).catch((err) =>
+    logger.error(
+      {
+        scope: "webhooks.enqueue",
+        agent_run_id: ctx.agentRun.id,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "failed to enqueue incident.updated webhook (agent_started)",
+    ),
+  );
   await postIncidentThreadMessage(
     ctx.incident.id,
     `:mag: Investigation started across ${repoCandidateCount} candidate repos.`,

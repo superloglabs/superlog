@@ -25,5 +25,4 @@ CREATE TABLE "cloudflare_installations" (
 ALTER TABLE "cloudflare_installations" ADD CONSTRAINT "cloudflare_installations_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cloudflare_installations" ADD CONSTRAINT "cloudflare_installations_api_key_id_api_keys_id_fk" FOREIGN KEY ("api_key_id") REFERENCES "public"."api_keys"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cloudflare_installations" ADD CONSTRAINT "cloudflare_installations_installed_by_user_id_users_id_fk" FOREIGN KEY ("installed_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "cloudflare_installations_project_account_idx" ON "cloudflare_installations" USING btree ("project_id","account_id");--> statement-breakpoint
-CREATE INDEX "cloudflare_installations_project_idx" ON "cloudflare_installations" USING btree ("project_id");
+CREATE UNIQUE INDEX "cloudflare_installations_project_account_idx" ON "cloudflare_installations" USING btree ("project_id","account_id");

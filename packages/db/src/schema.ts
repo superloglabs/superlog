@@ -1022,9 +1022,22 @@ export const agentLinearTicketEvents = pgTable(
   }),
 );
 
-export type WebhookEventType = "agent_run.completed";
+// Outgoing-integration model: a webhook is "a message to relay", not a typed
+// state-machine event. `incident.created` maps to "post a new message / open a
+// new thread"; `incident.updated` maps to "reply in that thread / edit it".
+// Everything that used to be a distinct event (resolve, reopen, merge, agent
+// started/completed/failed/awaiting) is now an `incident.updated` carrying a
+// `change.kind` discriminator plus a render-ready `message` block.
+export type WebhookEventType = "incident.created" | "incident.updated";
 
-export const WEBHOOK_EVENT_TYPES: readonly WebhookEventType[] = ["agent_run.completed"] as const;
+export const WEBHOOK_EVENT_TYPES: readonly WebhookEventType[] = [
+  "incident.created",
+  "incident.updated",
+] as const;
+
+export function isWebhookEventType(value: unknown): value is WebhookEventType {
+  return typeof value === "string" && (WEBHOOK_EVENT_TYPES as readonly string[]).includes(value);
+}
 
 export type WebhookDeliveryStatus = "pending" | "success" | "failed";
 
@@ -1041,7 +1054,7 @@ export const webhookEndpoints = pgTable(
     enabledEvents: jsonb("enabled_events")
       .$type<WebhookEventType[]>()
       .notNull()
-      .default(sql`'["agent_run.completed"]'::jsonb`),
+      .default(sql`'["incident.created","incident.updated"]'::jsonb`),
     disabledAt: timestamp("disabled_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
@@ -2059,12 +2072,13 @@ export const cloudflareInstallations = pgTable(
   },
   (t) => ({
     // One live install per (project, Cloudflare account); reconnecting refreshes
-    // the same row (see the upsert in apps/api/src/cloudflare.ts).
+    // the same row (see the upsert in apps/api/src/cloudflare.ts). This composite
+    // unique index also serves project-scoped lookups via its left-most
+    // `project_id` prefix, so no separate single-column project index is needed.
     projectAccountUniq: uniqueIndex("cloudflare_installations_project_account_idx").on(
       t.projectId,
       t.accountId,
     ),
-    projectIdx: index("cloudflare_installations_project_idx").on(t.projectId),
   }),
 );
 

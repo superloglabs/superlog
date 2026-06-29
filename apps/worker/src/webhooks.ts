@@ -1,9 +1,17 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { schema, db as defaultDb, type DB } from "@superlog/db";
-import { and, asc, desc, eq, isNull, lte } from "drizzle-orm";
+import { type DB, db as defaultDb, schema } from "@superlog/db";
+import { and, asc, desc, eq, lte } from "drizzle-orm";
 import { logger } from "./logger.js";
 
+// Transport lives here (worker-only). Payload builders + enqueue live in
+// @superlog/db so both apps can emit events; re-export the agent-run.completed
+// enqueue for existing worker call sites that import it from "../webhooks.js".
 export { generateWebhookSecret, enqueueTestDelivery, enqueueRedelivery } from "@superlog/db";
+export {
+  enqueueAgentRunCompleted,
+  buildAgentRunCompletedPayload,
+  type AgentRunCompletedPayload,
+} from "@superlog/db";
 
 const MAX_ATTEMPTS = 8;
 const BATCH = 20;
@@ -46,208 +54,6 @@ export function verifySignature(opts: {
   const b = Buffer.from(v1);
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
-}
-
-export type AgentRunCompletedPayload = {
-  event: "agent_run.completed";
-  eventId: string;
-  occurredAt: string;
-  project: { id: string; name: string; slug: string };
-  agentRun: {
-    id: string;
-    state: string;
-    runtime: string;
-    completedAt: string | null;
-    startedAt: string | null;
-    cumulativeRuntimeMinutes: number;
-    resumeCount: number;
-    failureReason: string | null;
-    result: unknown;
-  };
-  incident: {
-    id: string;
-    title: string;
-    codename: string;
-    status: string;
-    severity: string | null;
-    service: string | null;
-    firstSeen: string;
-    lastSeen: string;
-    issueCount: number;
-    rootCauseText: string | null;
-    rootCauseConfidence: number | null;
-    estimatedImpactText: string | null;
-    estimatedImpactConfidence: number | null;
-    suggestedSeverity: string | null;
-    noiseClassification: unknown;
-    resolutionClassification: unknown;
-    findingsAgentRunId: string | null;
-  };
-  events: Array<{
-    id: string;
-    kind: string;
-    summary: string | null;
-    detail: Record<string, unknown> | null;
-    createdAt: string;
-  }>;
-  pullRequests: Array<{
-    id: string;
-    repoFullName: string;
-    prNumber: number;
-    url: string;
-    branchName: string;
-    baseBranch: string;
-    state: string;
-    title: string | null;
-    mergedAt: string | null;
-    closedAt: string | null;
-  }>;
-  linearTickets: Array<{
-    id: string;
-    workspaceId: string;
-    ticketId: string;
-    ticketIdentifier: string | null;
-    url: string | null;
-    title: string | null;
-    state: string | null;
-  }>;
-};
-
-export async function buildAgentRunCompletedPayload(
-  database: DB,
-  agentRunId: string,
-): Promise<{ projectId: string; payload: AgentRunCompletedPayload } | null> {
-  const agentRun = await database.query.agentRuns.findFirst({
-    where: eq(schema.agentRuns.id, agentRunId),
-  });
-  if (!agentRun) return null;
-  const incident = await database.query.incidents.findFirst({
-    where: eq(schema.incidents.id, agentRun.incidentId),
-  });
-  if (!incident) return null;
-  const project = await database.query.projects.findFirst({
-    where: eq(schema.projects.id, incident.projectId),
-  });
-  if (!project) return null;
-
-  const [eventRows, prRows, ticketRows] = await Promise.all([
-    database.query.incidentEvents.findMany({
-      where: eq(schema.incidentEvents.agentRunId, agentRunId),
-      orderBy: (t, { asc }) => [asc(t.createdAt)],
-    }),
-    database.query.agentPullRequests.findMany({
-      where: eq(schema.agentPullRequests.agentRunId, agentRunId),
-    }),
-    database.query.agentLinearTickets.findMany({
-      where: eq(schema.agentLinearTickets.agentRunId, agentRunId),
-    }),
-  ]);
-
-  const payload: AgentRunCompletedPayload = {
-    event: "agent_run.completed",
-    eventId: crypto.randomUUID(),
-    occurredAt: new Date().toISOString(),
-    project: { id: project.id, name: project.name, slug: project.slug },
-    agentRun: {
-      id: agentRun.id,
-      state: agentRun.state,
-      runtime: agentRun.runtime,
-      completedAt: agentRun.completedAt?.toISOString() ?? null,
-      startedAt: agentRun.startedAt?.toISOString() ?? null,
-      cumulativeRuntimeMinutes: agentRun.cumulativeRuntimeMinutes,
-      resumeCount: agentRun.resumeCount,
-      failureReason: agentRun.failureReason,
-      result: agentRun.result ?? null,
-    },
-    incident: {
-      id: incident.id,
-      title: incident.title,
-      codename: incident.codename,
-      status: incident.status,
-      severity: incident.severity ?? null,
-      service: incident.service ?? null,
-      firstSeen: incident.firstSeen.toISOString(),
-      lastSeen: incident.lastSeen.toISOString(),
-      issueCount: incident.issueCount,
-      rootCauseText: incident.rootCauseText,
-      rootCauseConfidence: incident.rootCauseConfidence,
-      estimatedImpactText: incident.estimatedImpactText,
-      estimatedImpactConfidence: incident.estimatedImpactConfidence,
-      suggestedSeverity: incident.suggestedSeverity ?? null,
-      noiseClassification: incident.noiseClassification,
-      resolutionClassification: incident.resolutionClassification,
-      findingsAgentRunId: incident.findingsAgentRunId,
-    },
-    events: eventRows.map((e) => ({
-      id: e.id,
-      kind: e.kind,
-      summary: e.summary,
-      detail: e.detail ?? null,
-      createdAt: e.createdAt.toISOString(),
-    })),
-    pullRequests: prRows.map((p) => ({
-      id: p.id,
-      repoFullName: p.repoFullName,
-      prNumber: p.prNumber,
-      url: p.url,
-      branchName: p.branchName,
-      baseBranch: p.baseBranch,
-      state: p.state,
-      title: p.title,
-      mergedAt: p.mergedAt?.toISOString() ?? null,
-      closedAt: p.closedAt?.toISOString() ?? null,
-    })),
-    linearTickets: ticketRows.map((t) => ({
-      id: t.id,
-      workspaceId: t.workspaceId,
-      ticketId: t.ticketId,
-      ticketIdentifier: t.ticketIdentifier,
-      url: t.url,
-      title: t.title,
-      state: t.state,
-    })),
-  };
-
-  return { projectId: project.id, payload };
-}
-
-/**
- * Enqueue an agent run.completed delivery row for every enabled endpoint
- * subscribed to the event in the given project. No-op if no endpoints.
- */
-export async function enqueueAgentRunCompleted(
-  agentRunId: string,
-  database: DB = defaultDb,
-): Promise<number> {
-  const built = await buildAgentRunCompletedPayload(database, agentRunId);
-  if (!built) return 0;
-  const endpoints = await database.query.webhookEndpoints.findMany({
-    where: and(
-      eq(schema.webhookEndpoints.projectId, built.projectId),
-      isNull(schema.webhookEndpoints.disabledAt),
-    ),
-  });
-  const matching = endpoints.filter((e) =>
-    (e.enabledEvents ?? []).includes("agent_run.completed"),
-  );
-  if (matching.length === 0) return 0;
-  await database.insert(schema.webhookDeliveries).values(
-    matching.map((endpoint) => ({
-      endpointId: endpoint.id,
-      eventType: "agent_run.completed" as const,
-      payload: built.payload as unknown as Record<string, unknown>,
-    })),
-  );
-  logger.info(
-    {
-      scope: "webhooks.enqueue",
-      agent_run_id: agentRunId,
-      project_id: built.projectId,
-      endpoint_count: matching.length,
-    },
-    "enqueued agent run.completed",
-  );
-  return matching.length;
 }
 
 async function attemptDelivery(
