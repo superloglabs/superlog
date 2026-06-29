@@ -285,7 +285,13 @@ function KumoLikeTimeseriesChart({
         // empty space instead of stretching to fill the chart.
         min: xMin,
         max: xMax,
-        splitLine: { show: false },
+        // Vertical gridlines at the time ticks, matching the horizontal ones, so
+        // a window with no (or sparse) data still reads as a grid all the way to
+        // the tile edge rather than a bare panel.
+        splitLine: {
+          show: true,
+          lineStyle: { type: "dashed", width: 1, color: GRID_LINE_COLOR },
+        },
         axisLine: { show: false },
         axisTick: { show: showXAxis },
         axisLabel: {
