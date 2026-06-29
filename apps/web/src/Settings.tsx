@@ -87,6 +87,7 @@ import {
   useWebhooks,
 } from "./api";
 import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
+import { syncInstructionsDraft } from "./instructions-field-state.ts";
 import { Btn, Chip, FieldLabel, Input, Label, Tile } from "./design/ui";
 import { AgentMemoriesCard } from "./settings/AgentMemoriesCard.tsx";
 import { BillingCard } from "./settings/BillingCard.tsx";
@@ -1973,7 +1974,9 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
               Linear tickets, no PRs.
             </p>
             <InstructionsField
+              key={projectId}
               value={data.customInstructions}
+              settingsLoaded={settings.isSuccess}
               disabled={!investigateOn || save.isPending}
               onSave={(v) => patch({ customInstructions: v })}
             />
@@ -2982,10 +2985,12 @@ function PolicyControls<T extends string>({
 
 function InstructionsField({
   value,
+  settingsLoaded,
   disabled,
   onSave,
 }: {
   value: string;
+  settingsLoaded: boolean;
   disabled: boolean;
   onSave: (v: string) => void;
 }) {
@@ -2993,13 +2998,17 @@ function InstructionsField({
   const [loaded, setLoaded] = useState(false);
   const [expanded, setExpanded] = useState(value.length > 0);
 
+  // Seed the draft from the server value exactly once, and only after the
+  // settings query has resolved — seeding from the placeholder "" emitted while
+  // the query is pending would leave the field stuck empty on a cold load and
+  // let an empty Save overwrite the saved instructions.
   useEffect(() => {
-    if (!loaded) {
-      setDraft(value);
-      setLoaded(true);
-      if (value.length > 0) setExpanded(true);
-    }
-  }, [value, loaded]);
+    const next = syncInstructionsDraft({ loaded, settingsLoaded, serverValue: value, expanded });
+    if (!next) return;
+    setDraft(next.draft);
+    setLoaded(next.loaded);
+    setExpanded(next.expanded);
+  }, [value, loaded, settingsLoaded, expanded]);
 
   const dirty = loaded && draft !== value;
 
