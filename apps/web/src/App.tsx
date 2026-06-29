@@ -48,6 +48,10 @@ function SignupSourceCapture() {
     }
     // Stash the full first-touch attribution (source + UTM + referrer) so the
     // PostHog signup event can report it once the user creates their first org.
+    // landingPath is passed unconditionally on purpose: persistFirstTouchAttribution
+    // only writes when there's real attribution signal (source/UTM/referrer) and
+    // treats landingPath as ride-along context, so this can't lock in a
+    // landingPath-only record on a plain pageview and shut out a later landing.
     persistFirstTouchAttribution(window.localStorage, {
       ...attr,
       landingPath: window.location.pathname,
