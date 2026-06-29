@@ -33,6 +33,7 @@ import {
   buildDestinationPayload,
   cloudflareConfigFromEnv,
   createDestination,
+  deleteDestination,
   exchangeCodeForToken,
   listAccounts,
   revokeToken,
@@ -119,6 +120,86 @@ async function ensureIngestKey(
   return { ingestKey: minted.plaintext, apiKeyId: minted.id, minted: true };
 }
 
+/**
+ * Best-effort delete the Workers Observability destinations we created under one
+ * account (by slug). Used both when re-provisioning the same account (so the new
+ * destinations don't stack on top of the old ones) and when tearing down a
+ * superseded account. Empty slugs (a create that returned no slug) are skipped.
+ */
+async function deleteRemoteDestinations(input: {
+  accountId: string;
+  accessToken: string;
+  destinations: Record<string, string> | null | undefined;
+  fetchImpl: typeof fetch;
+}): Promise<void> {
+  const slugs = Object.values(input.destinations ?? {}).filter((s) => s.length > 0);
+  for (const slug of slugs) {
+    const res = await deleteDestination({
+      accountId: input.accountId,
+      accessToken: input.accessToken,
+      slug,
+      fetchImpl: input.fetchImpl,
+    });
+    if (!res.ok) {
+      log.warn({ slug, account_id: input.accountId }, "cloudflare destination delete failed");
+    }
+  }
+}
+
+/**
+ * Fully tear down one installation row: delete its remote destinations, revoke
+ * its delegated OAuth token, revoke the ingest key its destinations authenticate
+ * with, and soft-revoke the row. Each remote step is best-effort (tokens may be
+ * expired); the ingest-key revoke is the backstop that actually stops telemetry
+ * being accepted at our intake. Shared by uninstall and account-switch supersede.
+ */
+async function teardownInstallation(
+  row: CloudflareInstallationRow,
+  deps: { config: CloudflareConnectConfig | null; fetchImpl: typeof fetch },
+): Promise<void> {
+  let accessToken: string | null = null;
+  try {
+    accessToken = decryptIntegrationSecret({
+      ciphertext: row.accessTokenCiphertext,
+      nonce: row.accessTokenNonce,
+      keyVersion: row.accessTokenKeyVersion,
+    });
+  } catch (e) {
+    log.warn({ err: e, account_id: row.accountId }, "cloudflare access token decrypt failed");
+  }
+
+  if (accessToken) {
+    await deleteRemoteDestinations({
+      accountId: row.accountId,
+      accessToken,
+      destinations: row.destinations,
+      fetchImpl: deps.fetchImpl,
+    });
+    if (deps.config) {
+      try {
+        await revokeToken({ config: deps.config, token: accessToken, fetchImpl: deps.fetchImpl });
+      } catch (e) {
+        log.warn({ err: e }, "cloudflare token revoke failed");
+      }
+    }
+  }
+
+  // Revoke the ingest API key the destinations authenticate with. Without this
+  // any destination we couldn't delete remotely keeps streaming into the
+  // project — the OAuth revoke only stops us from managing the account.
+  if (row.apiKeyId) {
+    await db
+      .update(schema.apiKeys)
+      .set({ revokedAt: new Date() })
+      .where(eq(schema.apiKeys.id, row.apiKeyId));
+  }
+
+  await db
+    .update(schema.cloudflareInstallations)
+    .set({ revokedAt: new Date(), updatedAt: new Date() })
+    .where(eq(schema.cloudflareInstallations.id, row.id));
+}
+
 export function mountCloudflarePublic(
   app: Hono<{ Variables: Vars }>,
   deps: { config?: CloudflareConnectConfig | null; fetchImpl?: typeof fetch } = {},
@@ -174,10 +255,11 @@ export function mountCloudflarePublic(
         fetchImpl,
       });
     } catch (e) {
-      // Provisioning throws when no destination could be created (we never
-      // persist a connection that can't receive telemetry — that would unlock
-      // onboarding as "connected" with nothing flowing). Surface as an error so
-      // the flow can reset rather than spin in the waiting state.
+      // Provisioning throws when it can't produce a usable connection (e.g. no
+      // destination could be created — we never persist a connection that can't
+      // receive telemetry, which would unlock onboarding as "connected" with
+      // nothing flowing). Surface as an error so the flow can reset rather than
+      // spin in the waiting state.
       log.error({ err: e, project_id: decoded.projectId }, "cloudflare provisioning failed");
       return c.redirect(`${webOrigin}/?cloudflare=error`, 302);
     }
@@ -209,7 +291,23 @@ async function provisionInstallation(input: {
   fetchImpl: typeof fetch;
 }): Promise<void> {
   const existing = (await findInstallation(input.projectId)) ?? null;
-  const { ingestKey, apiKeyId, minted } = await ensureIngestKey(input.projectId, existing);
+  // Only reuse the stored ingest key when re-provisioning the *same* account; an
+  // account switch must get a fresh key so the superseded account's key can be
+  // revoked independently (otherwise both accounts share one live key).
+  const sameAccount = existing?.accountId === input.account.id ? existing : null;
+  const { ingestKey, apiKeyId, minted } = await ensureIngestKey(input.projectId, sameAccount);
+
+  // Re-provisioning the same account: delete the destinations we created last
+  // time before making new ones. They authenticate with the same ingest key, so
+  // leaving them in place would double every OTLP export on each reconnect.
+  if (sameAccount?.destinations) {
+    await deleteRemoteDestinations({
+      accountId: input.account.id,
+      accessToken: input.token.accessToken,
+      destinations: sameAccount.destinations,
+      fetchImpl: input.fetchImpl,
+    });
+  }
 
   const destinations: Record<string, string> = {};
   for (const signal of CLOUDFLARE_SIGNALS) {
@@ -306,19 +404,21 @@ async function provisionInstallation(input: {
       },
     });
 
-  // Enforce a single active Cloudflare account per project: revoke any other
-  // active install rows for this project that point at a different account, so
-  // the by-project status/uninstall lookups stay unambiguous.
-  await db
-    .update(schema.cloudflareInstallations)
-    .set({ revokedAt: now, updatedAt: now })
-    .where(
-      and(
-        eq(schema.cloudflareInstallations.projectId, input.projectId),
-        ne(schema.cloudflareInstallations.accountId, input.account.id),
-        isNull(schema.cloudflareInstallations.revokedAt),
-      ),
-    );
+  // Enforce a single active Cloudflare account per project: fully tear down any
+  // other active install rows for this project that point at a different account
+  // (delete their remote destinations, revoke their OAuth token + ingest key,
+  // soft-revoke the row). A bare DB revoke would leave the superseded account's
+  // destinations streaming into the project with a still-valid key.
+  const superseded = await db.query.cloudflareInstallations.findMany({
+    where: and(
+      eq(schema.cloudflareInstallations.projectId, input.projectId),
+      ne(schema.cloudflareInstallations.accountId, input.account.id),
+      isNull(schema.cloudflareInstallations.revokedAt),
+    ),
+  });
+  for (const row of superseded) {
+    await teardownInstallation(row, { config: input.config, fetchImpl: input.fetchImpl });
+  }
 }
 
 export function mountCloudflareAuthed(
@@ -361,35 +461,9 @@ export function mountCloudflareAuthed(
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ ok: true });
 
-    // Best-effort remote revoke of the delegated token; never block on failure.
-    if (config) {
-      try {
-        const accessToken = decryptIntegrationSecret({
-          ciphertext: row.accessTokenCiphertext,
-          nonce: row.accessTokenNonce,
-          keyVersion: row.accessTokenKeyVersion,
-        });
-        await revokeToken({ config, token: accessToken, fetchImpl });
-      } catch (e) {
-        log.warn({ err: e }, "cloudflare token revoke failed");
-      }
-    }
-
-    // Revoke the ingest API key the Workers Observability destinations
-    // authenticate with. Without this, those destinations keep streaming
-    // telemetry into the project after "Disconnect" — the OAuth revoke only
-    // stops us from managing the account, not the already-created destinations.
-    if (row.apiKeyId) {
-      await db
-        .update(schema.apiKeys)
-        .set({ revokedAt: new Date() })
-        .where(eq(schema.apiKeys.id, row.apiKeyId));
-    }
-
-    await db
-      .update(schema.cloudflareInstallations)
-      .set({ revokedAt: new Date(), updatedAt: new Date() })
-      .where(eq(schema.cloudflareInstallations.id, row.id));
+    // Delete the remote destinations, revoke the OAuth token + ingest key, and
+    // soft-revoke the row so nothing keeps streaming after "Disconnect".
+    await teardownInstallation(row, { config, fetchImpl });
     return c.json({ ok: true });
   });
 }

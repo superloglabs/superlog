@@ -312,6 +312,34 @@ export async function createDestination(input: {
   return parseCreateDestinationResponse(json);
 }
 
+/**
+ * Delete a Workers Observability destination by slug. Best-effort (used when
+ * superseding a prior connect so we don't leave duplicate remote destinations
+ * streaming): never throws, returns whether Cloudflare accepted the delete.
+ */
+export async function deleteDestination(input: {
+  accountId: string;
+  accessToken: string;
+  slug: string;
+  fetchImpl?: FetchImpl;
+}): Promise<{ ok: boolean }> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  try {
+    const res = await fetchImpl(
+      `${CLOUDFLARE_API_BASE}/accounts/${input.accountId}/workers/observability/destinations/${encodeURIComponent(
+        input.slug,
+      )}`,
+      {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${input.accessToken}` },
+      },
+    );
+    return { ok: res.ok };
+  } catch {
+    return { ok: false };
+  }
+}
+
 /** Best-effort token revoke (used on uninstall). Never throws. */
 export async function revokeToken(input: {
   config: CloudflareConnectConfig;

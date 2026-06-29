@@ -13,10 +13,20 @@ test("system capabilities default to the open-core community edition", () => {
   });
 });
 
-test("cloudflareConnect flips on only when all three Cloudflare connector vars are set", () => {
+test("cloudflareConnect flips on only when all connector vars (incl. STATE_SIGNING_SECRET) are set", () => {
   assert.equal(
     buildSystemCapabilities({ CLOUDFLARE_CLIENT_ID: "id", CLOUDFLARE_CLIENT_SECRET: "secret" })
       .cloudflareConnect,
+    false,
+  );
+  // Connector creds present but no STATE_SIGNING_SECRET → install-url would 503,
+  // so we must not advertise it as available.
+  assert.equal(
+    buildSystemCapabilities({
+      CLOUDFLARE_CLIENT_ID: "id",
+      CLOUDFLARE_CLIENT_SECRET: "secret",
+      CLOUDFLARE_OTLP_INTAKE_URL: "https://intake.example.com",
+    }).cloudflareConnect,
     false,
   );
   assert.equal(
@@ -24,6 +34,7 @@ test("cloudflareConnect flips on only when all three Cloudflare connector vars a
       CLOUDFLARE_CLIENT_ID: "id",
       CLOUDFLARE_CLIENT_SECRET: "secret",
       CLOUDFLARE_OTLP_INTAKE_URL: "https://intake.example.com",
+      STATE_SIGNING_SECRET: "state-secret",
     }).cloudflareConnect,
     true,
   );

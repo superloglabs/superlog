@@ -6,6 +6,7 @@ import {
   buildDestinationPayload,
   cloudflareConfigFromEnv,
   createDestination,
+  deleteDestination,
   exchangeCodeForToken,
   intakeUrlForSignal,
   listAccounts,
@@ -270,4 +271,39 @@ test("createDestination hits the account-scoped destinations endpoint", async ()
   );
   assert.equal(result.ok, true);
   if (result.ok) assert.equal(result.slug, "dest-xyz");
+});
+
+test("deleteDestination DELETEs the slug-scoped endpoint and never throws", async () => {
+  let capturedUrl = "";
+  let capturedMethod = "";
+  const fakeFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    capturedUrl = String(url);
+    capturedMethod = String(init?.method ?? "");
+    return new Response(null, { status: 200 });
+  }) as unknown as typeof fetch;
+
+  const result = await deleteDestination({
+    accountId: "acct-1",
+    accessToken: "at",
+    slug: "Superlog traces",
+    fetchImpl: fakeFetch,
+  });
+  assert.equal(capturedMethod, "DELETE");
+  assert.equal(
+    capturedUrl,
+    "https://api.cloudflare.com/client/v4/accounts/acct-1/workers/observability/destinations/Superlog%20traces",
+  );
+  assert.equal(result.ok, true);
+
+  // A network throw is swallowed → { ok: false } rather than propagating.
+  const boom = (async () => {
+    throw new Error("network down");
+  }) as unknown as typeof fetch;
+  const failed = await deleteDestination({
+    accountId: "acct-1",
+    accessToken: "at",
+    slug: "x",
+    fetchImpl: boom,
+  });
+  assert.equal(failed.ok, false);
 });

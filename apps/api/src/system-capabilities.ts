@@ -22,6 +22,7 @@ type CapabilityEnv = Partial<
     | "CLOUDFLARE_CLIENT_ID"
     | "CLOUDFLARE_CLIENT_SECRET"
     | "CLOUDFLARE_OTLP_INTAKE_URL"
+    | "STATE_SIGNING_SECRET"
   >
 >;
 
@@ -30,11 +31,14 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
   const billing = parseBillingProvider(env.SUPERLOG_BILLING_PROVIDER);
   const managedAgents = env.SUPERLOG_MANAGED_AGENTS_ENABLED === "true";
   // Mirror cloudflareConfigFromEnv's required-vars check (kept inline so this
-  // module stays dependency-free); the connector self-disables without these.
+  // module stays dependency-free) AND the install-url route's STATE_SIGNING_SECRET
+  // requirement — without the latter the connector would advertise as available
+  // but `install-url` would 503. The connector self-disables without all of these.
   const cloudflareConnect = !!(
     env.CLOUDFLARE_CLIENT_ID &&
     env.CLOUDFLARE_CLIENT_SECRET &&
-    env.CLOUDFLARE_OTLP_INTAKE_URL
+    env.CLOUDFLARE_OTLP_INTAKE_URL &&
+    env.STATE_SIGNING_SECRET
   );
 
   return {
