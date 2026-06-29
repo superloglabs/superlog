@@ -232,7 +232,11 @@ export type CreateDestinationResult =
 export function parseCreateDestinationResponse(json: unknown): CreateDestinationResult {
   if (!json || typeof json !== "object") return { ok: false, error: "invalid_response" };
   const o = json as Record<string, unknown>;
-  if (o.success === false) {
+  // Require an explicit `success: true`. Cloudflare's API envelope always sets
+  // it, so treat anything else (success:false, or a malformed/partial response
+  // that omits it) as a failure — otherwise an error body could be recorded as a
+  // provisioned destination with an empty slug.
+  if (o.success !== true) {
     const errors = Array.isArray(o.errors) ? o.errors : [];
     const first = errors[0] as Record<string, unknown> | undefined;
     const msg = first && typeof first.message === "string" ? first.message : "request_failed";

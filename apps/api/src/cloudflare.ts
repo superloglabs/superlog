@@ -1,13 +1,16 @@
 // Cloudflare integration routes: a Slack-style OAuth "Connect Cloudflare" button.
 //
-// Flow:
-//   1. (authed)  POST /api/cloudflare/install-url  → signed-state authorize URL
+// Flow (the authed routes are project-scoped — installs are per project, so the
+// project must be explicit in the path rather than inferred from the caller's
+// "active" project):
+//   1. (authed)  POST /api/projects/:projectId/cloudflare/install-url
+//                → signed-state authorize URL (state carries org/project/user)
 //   2. user consents on dash.cloudflare.com
 //   3. (public)  GET  /cloudflare/oauth/callback   → exchange code, then use the
 //      granted token to create Workers Observability telemetry destinations that
 //      export OTLP traces/logs/metrics to our intake with a project ingest key.
-//   4. (authed)  GET  /api/cloudflare/installation  → connection status
-//                POST /api/cloudflare/uninstall      → revoke + forget
+//   4. (authed)  GET  /api/projects/:projectId/cloudflare/installation → status
+//                POST /api/projects/:projectId/cloudflare/uninstall → revoke
 //
 // The callback lives outside /api/* so it isn't behind the session middleware —
 // it's authenticated by the HMAC-signed `state` (see cloudflare-service.ts),
@@ -20,7 +23,7 @@ import {
   mintApiKey,
   schema,
 } from "@superlog/db";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, ne } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import {
@@ -57,25 +60,36 @@ function toPublic(row: CloudflareInstallationRow) {
   };
 }
 
-async function resolveUserOrg(
+// Resolve the project the request targets from the path param and confirm the
+// caller's active org owns it. Cloudflare installs are per-project (the table is
+// keyed by (project, account)), so the project must be explicit — inferring the
+// user's "active" project here would connect/disconnect the wrong project when
+// Settings is viewing a different one.
+async function requireProjectAccess(
   c: Context<{ Variables: Vars }>,
-): Promise<{ userId: string; orgId: string; projectId: string } | null> {
+  projectId: string,
+): Promise<{ userId: string; orgId: string; projectId: string }> {
   const userId = c.var.userId;
-  if (!userId) return null;
-  const ctx = await resolveActiveOrgContext({
-    userId,
-    preferredOrgId: c.var.orgId,
-  }).catch(() => null);
-  if (!ctx) return null;
-  return { userId: ctx.user.id, orgId: ctx.org.id, projectId: ctx.project.id };
+  if (!userId) throw new HTTPException(401, { message: "unauthenticated" });
+  const project = await db.query.projects.findFirst({
+    where: eq(schema.projects.id, projectId),
+  });
+  if (!project) throw new HTTPException(404, { message: "project not found" });
+  const ctx = await resolveActiveOrgContext({ userId, preferredOrgId: c.var.orgId });
+  if (project.orgId !== ctx.org.id) throw new HTTPException(403, { message: "forbidden" });
+  return { userId: ctx.user.id, orgId: ctx.org.id, projectId };
 }
 
+// The single active install for a project. We enforce one active Cloudflare
+// account per project at provision time (see provisionInstallation), so this is
+// unambiguous; `orderBy` is belt-and-suspenders for any legacy multi-row state.
 async function findInstallation(projectId: string) {
   return db.query.cloudflareInstallations.findFirst({
     where: and(
       eq(schema.cloudflareInstallations.projectId, projectId),
       isNull(schema.cloudflareInstallations.revokedAt),
     ),
+    orderBy: desc(schema.cloudflareInstallations.createdAt),
   });
 }
 
@@ -87,7 +101,7 @@ async function findInstallation(projectId: string) {
 async function ensureIngestKey(
   projectId: string,
   existing: CloudflareInstallationRow | null,
-): Promise<{ ingestKey: string; apiKeyId: string }> {
+): Promise<{ ingestKey: string; apiKeyId: string; minted: boolean }> {
   if (existing?.apiKeyId && existing.ingestKeyCiphertext && existing.ingestKeyNonce) {
     const keyRow = await db.query.apiKeys.findFirst({
       where: eq(schema.apiKeys.id, existing.apiKeyId),
@@ -98,11 +112,11 @@ async function ensureIngestKey(
         nonce: existing.ingestKeyNonce,
         keyVersion: existing.ingestKeyKeyVersion ?? 1,
       });
-      return { ingestKey, apiKeyId: existing.apiKeyId };
+      return { ingestKey, apiKeyId: existing.apiKeyId, minted: false };
     }
   }
   const minted = await mintApiKey({ projectId, name: "Cloudflare Workers OTLP" });
-  return { ingestKey: minted.plaintext, apiKeyId: minted.id };
+  return { ingestKey: minted.plaintext, apiKeyId: minted.id, minted: true };
 }
 
 export function mountCloudflarePublic(
@@ -160,6 +174,10 @@ export function mountCloudflarePublic(
         fetchImpl,
       });
     } catch (e) {
+      // Provisioning throws when no destination could be created (we never
+      // persist a connection that can't receive telemetry — that would unlock
+      // onboarding as "connected" with nothing flowing). Surface as an error so
+      // the flow can reset rather than spin in the waiting state.
       log.error({ err: e, project_id: decoded.projectId }, "cloudflare provisioning failed");
       return c.redirect(`${webOrigin}/?cloudflare=error`, 302);
     }
@@ -191,7 +209,7 @@ async function provisionInstallation(input: {
   fetchImpl: typeof fetch;
 }): Promise<void> {
   const existing = (await findInstallation(input.projectId)) ?? null;
-  const { ingestKey, apiKeyId } = await ensureIngestKey(input.projectId, existing);
+  const { ingestKey, apiKeyId, minted } = await ensureIngestKey(input.projectId, existing);
 
   const destinations: Record<string, string> = {};
   for (const signal of CLOUDFLARE_SIGNALS) {
@@ -215,6 +233,24 @@ async function provisionInstallation(input: {
         "cloudflare destination creation failed for signal",
       );
     }
+  }
+
+  // Every signal failed: there's nothing to ingest, so don't persist a bogus
+  // "connected" install. Clean up the freshly minted ingest key (if we minted
+  // one this run) and the now-unstored OAuth token, then surface the failure.
+  if (Object.keys(destinations).length === 0) {
+    if (minted) {
+      await db
+        .update(schema.apiKeys)
+        .set({ revokedAt: new Date() })
+        .where(eq(schema.apiKeys.id, apiKeyId));
+    }
+    await revokeToken({
+      config: input.config,
+      token: input.token.accessToken,
+      fetchImpl: input.fetchImpl,
+    });
+    throw new Error("cloudflare connect: no telemetry destinations were created");
   }
 
   const accessCipher = encryptIntegrationSecret(input.token.accessToken);
@@ -269,6 +305,20 @@ async function provisionInstallation(input: {
         updatedAt: now,
       },
     });
+
+  // Enforce a single active Cloudflare account per project: revoke any other
+  // active install rows for this project that point at a different account, so
+  // the by-project status/uninstall lookups stay unambiguous.
+  await db
+    .update(schema.cloudflareInstallations)
+    .set({ revokedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(schema.cloudflareInstallations.projectId, input.projectId),
+        ne(schema.cloudflareInstallations.accountId, input.account.id),
+        isNull(schema.cloudflareInstallations.revokedAt),
+      ),
+    );
 }
 
 export function mountCloudflareAuthed(
@@ -279,20 +329,18 @@ export function mountCloudflareAuthed(
   const fetchImpl = deps.fetchImpl ?? fetch;
   const stateSecret = process.env.STATE_SIGNING_SECRET;
 
-  app.get("/api/cloudflare/installation", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ installed: false });
+  app.get("/api/projects/:projectId/cloudflare/installation", async (c) => {
+    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ installed: false });
     return c.json(toPublic(row));
   });
 
-  app.post("/api/cloudflare/install-url", async (c) => {
+  app.post("/api/projects/:projectId/cloudflare/install-url", async (c) => {
     if (!config || !stateSecret) {
       return c.json({ error: "cloudflare not configured" }, 503);
     }
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ error: "no org for user" }, 404);
+    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
 
     const state = signState(
       { orgId: ctx.orgId, projectId: ctx.projectId, userId: ctx.userId },
@@ -308,9 +356,8 @@ export function mountCloudflareAuthed(
     return c.json({ url });
   });
 
-  app.post("/api/cloudflare/uninstall", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ error: "no org for user" }, 404);
+  app.post("/api/projects/:projectId/cloudflare/uninstall", async (c) => {
+    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ ok: true });
 
@@ -326,6 +373,17 @@ export function mountCloudflareAuthed(
       } catch (e) {
         log.warn({ err: e }, "cloudflare token revoke failed");
       }
+    }
+
+    // Revoke the ingest API key the Workers Observability destinations
+    // authenticate with. Without this, those destinations keep streaming
+    // telemetry into the project after "Disconnect" — the OAuth revoke only
+    // stops us from managing the account, not the already-created destinations.
+    if (row.apiKeyId) {
+      await db
+        .update(schema.apiKeys)
+        .set({ revokedAt: new Date() })
+        .where(eq(schema.apiKeys.id, row.apiKeyId));
     }
 
     await db

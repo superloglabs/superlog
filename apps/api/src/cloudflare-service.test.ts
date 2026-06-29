@@ -181,6 +181,16 @@ test("parseCreateDestinationResponse returns slug on success and message on fail
     parseCreateDestinationResponse({ success: false, errors: [{ message: "nope" }] }),
     { ok: false, error: "nope" },
   );
+  // A malformed/partial response that omits `success` must NOT be accepted as a
+  // provisioned destination — it's a failure, not a slug-less success.
+  assert.deepEqual(parseCreateDestinationResponse({ result: { slug: "dest-1" } }), {
+    ok: false,
+    error: "request_failed",
+  });
+  assert.deepEqual(parseCreateDestinationResponse({}), {
+    ok: false,
+    error: "request_failed",
+  });
 });
 
 test("exchangeCodeForToken posts form body to the token endpoint", async () => {
