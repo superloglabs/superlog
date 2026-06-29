@@ -164,9 +164,6 @@ export function createUsageMeterTicker(options: {
   intervalMs?: number;
   windowMs?: number;
   now?: () => number;
-  // Forwarded to the metering pass: invoked per org with usage this tick, so the
-  // usage-limit notifier can queue recently-active orgs for evaluation.
-  onOrgMetered?: (orgId: string) => void;
 }): UsageMeterTicker | null {
   const secretKey = (options.secretKey ?? process.env.AUTUMN_SECRET_KEY)?.trim();
   if (!secretKey) return null;
@@ -184,7 +181,6 @@ export function createUsageMeterTicker(options: {
     setCursor: cursors.setCursor,
     now: () => new Date(nowMs()),
     windowMs,
-    onOrgMetered: options.onOrgMetered,
   };
 
   let nextRunAt = 0;

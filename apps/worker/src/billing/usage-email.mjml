@@ -3,8 +3,9 @@
   usage-email.ts (mjml lib, once per process); the {{...}} placeholders are then
   filled per send. This .mjml is the source of truth — just edit it here.
 -->
-<mjml>
+<mjml lang="en">
   <mj-head>
+    <mj-title>Your Superlog plan usage</mj-title>
     <mj-font name="Inter" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" />
     <mj-attributes>
       <mj-all font-family="Inter Display, Inter, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" />

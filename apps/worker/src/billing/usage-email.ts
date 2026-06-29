@@ -1,7 +1,7 @@
 // Renderer for the usage-limit notification email: compiles the checked-in MJML
 // template (usage-email.mjml) to an HTML shell once, then fills it with the org's
 // usage table and the variant-specific copy. The Resend send lives in
-// usage-notifier-ticker.ts.
+// usage-notifier-infra.ts.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { FeatureBalance } from "@superlog/billing";

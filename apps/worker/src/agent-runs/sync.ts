@@ -4,7 +4,7 @@ import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import { type AgentRunOutcome, recordAgentRunCompletion } from "../ai-usage.js";
 import { investigationGate } from "../billing/investigation-gate.js";
-import { usageNotifier } from "../billing/usage-notifier-ticker.js";
+import { usageNotifier } from "../billing/usage-notifier-infra.js";
 import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
 import { postIncidentThreadMessage } from "../infra/slack/incident-messages.js";
 import { type ResolvedIntegration, loadEnabledIntegrationsForOrg } from "../integrations.js";

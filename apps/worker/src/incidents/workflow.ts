@@ -8,7 +8,7 @@ import {
 } from "../agent-run.js";
 import { TERMINAL_STATES as AGENT_RUN_TERMINAL_STATES } from "../agent-runs/domain.js";
 import { investigationGate } from "../billing/investigation-gate.js";
-import { usageNotifier } from "../billing/usage-notifier-ticker.js";
+import { usageNotifier } from "../billing/usage-notifier-infra.js";
 import { isAutoAgentRunSuppressed } from "../incident-cooldown.js";
 import { ensureIncidentForIssue } from "../incident-intake.js";
 import { buildReopenedIncidentSlackUpdate } from "../incident-slack.js";

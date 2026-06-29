@@ -1,12 +1,13 @@
 // Infrastructure for the usage-limit notifier: the Autumn balance fetch, the
-// Postgres dedup-claim + org/member lookups, the Loops email-event sender, and
-// the Slack fan-out — wired into the pure notifyOrgUsage() core. Also exposes a
-// process singleton (enqueue from the telemetry meter, notify directly from the
-// investigation lifecycle) and an interval-gated drainer for createWorkerTick.
+// Postgres dedup-claim + org/member lookups, the Resend email send, and the
+// Slack fan-out — wired into the pure notifyOrgUsage() core. Exposes a process
+// singleton with a single `notify(orgId)` entry point used by the usage-notify
+// job (per active org) and the investigation lifecycle. Stateless, so it's safe
+// across worker instances.
 //
-// Gated on AUTUMN_SECRET_KEY: with no billing provider configured there are no
-// caps to warn against, so createUsageNotifier returns null and every trigger
-// is a no-op (the `usageNotifier?.` callers below).
+// Gated on USAGE_NOTIFICATIONS_ENABLED + AUTUMN_SECRET_KEY: otherwise
+// createUsageNotifier returns null and every trigger is a no-op (the
+// `usageNotifier?.` callers below).
 import {
   type FeatureBalance,
   currentBillingPeriod,
@@ -159,12 +160,11 @@ function buildDeps(
 }
 
 export type UsageNotifier = {
-  // Queue an org for evaluation on the next drain (used by the telemetry meter).
-  enqueue: (orgId: string) => void;
-  // Evaluate one org now (used by the investigation lifecycle).
+  // Evaluate one org and fire any newly-crossed threshold notification. Called
+  // per active org by the usage-notify job, and directly by the investigation
+  // lifecycle. Stateless — no process-local queue, so it's safe across worker
+  // instances.
   notify: (orgId: string) => Promise<void>;
-  // Evaluate + clear the queued orgs; returns how many were processed.
-  drain: () => Promise<number>;
 };
 
 export function createUsageNotifier(
@@ -188,7 +188,6 @@ export function createUsageNotifier(
   const resendKey = (opts.resendKey ?? process.env.RESEND_API_KEY)?.trim();
   const resendSend = resendKey ? createResendSend(resendKey, fetchImpl) : null;
   const deps = buildDeps(secretKey, fetchImpl, opts.now ?? (() => new Date()), resendSend);
-  const pending = new Set<string>();
 
   const run = async (orgId: string): Promise<void> => {
     try {
@@ -201,23 +200,10 @@ export function createUsageNotifier(
     }
   };
 
-  return {
-    enqueue: (orgId) => {
-      pending.add(orgId);
-    },
-    notify: run,
-    drain: async () => {
-      if (pending.size === 0) return 0;
-      const orgs = [...pending];
-      pending.clear();
-      for (const orgId of orgs) await run(orgId);
-      return orgs.length;
-    },
-  };
+  return { notify: run };
 }
 
-// Process singleton: enqueued by the telemetry meter, notified directly by the
-// investigation lifecycle, and drained by the `usage-notify` pg-boss job
-// (jobs/usage-notify.ts) out-of-band from the worker tick loop. null when
-// billing is unconfigured.
+// Process singleton: used directly by the investigation lifecycle and per-org by
+// the `usage-notify` pg-boss job (which derives active orgs from ClickHouse, so
+// nothing process-local is relied on). null when billing/notifications are off.
 export const usageNotifier: UsageNotifier | null = createUsageNotifier();

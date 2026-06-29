@@ -49,6 +49,19 @@ async function main() {
   const pk = periodKey(currentBillingPeriod(new Date(), 1));
 
   if (process.argv.includes("--clear-100")) {
+    // Idempotent per period: claim a one-shot marker first. A rerun finds the
+    // marker and skips, so it can't delete 100% rows the notifier has since
+    // re-created and trigger duplicate "ingest paused" emails.
+    const markerName = `usage-notify-cleared-${pk}`;
+    const claimed = await db
+      .insert(schema.workerState)
+      .values({ name: markerName, cursor: new Date(), updatedAt: new Date() })
+      .onConflictDoNothing({ target: schema.workerState.name })
+      .returning({ name: schema.workerState.name });
+    if (claimed.length === 0) {
+      console.log(`clear-100 already ran for period ${pk}; skipping`);
+      process.exit(0);
+    }
     const deleted = await db
       .delete(schema.usageNotifications)
       .where(

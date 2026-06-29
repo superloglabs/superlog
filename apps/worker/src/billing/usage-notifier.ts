@@ -4,7 +4,7 @@
 // highest watermark across hard-capped (Free) features, and — if a new 50/85/100%
 // step has been crossed this period — fires a Loops email event to every member
 // and a Slack message to the org's connected channels. The concrete Autumn /
-// Postgres / Loops / Slack adapters live in usage-notifier-ticker.ts.
+// Postgres / Loops / Slack adapters live in usage-notifier-infra.ts.
 //
 // Everything is best-effort and fails closed-to-silent: billing notifications must
 // never break the worker tick. The dedup claim (claimThresholds) is the source of

@@ -49,9 +49,6 @@ export type UsageMeterDeps = {
   setCursor: (name: string, at: Date) => Promise<void>;
   now: () => Date;
   windowMs: number;
-  // Optional hook: called once per org that produced usage this tick, so the
-  // usage-limit notifier can evaluate recently-active orgs. Best-effort.
-  onOrgMetered?: (orgId: string) => void;
 };
 
 // One metering pass over all three signals. Returns the number of (org, signal)
@@ -73,22 +70,6 @@ export async function meterTelemetryUsageTick(deps: UsageMeterDeps): Promise<num
     if (perProject.size > 0) {
       const orgMap = await deps.resolveOrgIds([...perProject.keys()]);
       for (const [orgId, value] of aggregateByOrg(perProject, orgMap)) {
-        // Flag this org for a usage-limit notification check regardless of
-        // whether the track() below succeeds — the notifier reads live balances.
-        // Guarded independently: a hook error must never break metering.
-        try {
-          deps.onOrgMetered?.(orgId);
-        } catch (err) {
-          logger.error(
-            {
-              scope: "billing.usage",
-              signal,
-              orgId,
-              err: err instanceof Error ? err.message : String(err),
-            },
-            "onOrgMetered hook failed; continuing to meter",
-          );
-        }
         try {
           await deps.track(orgId, SIGNAL_FEATURE_IDS[signal], value);
           reported += 1;
