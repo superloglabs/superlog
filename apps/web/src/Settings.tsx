@@ -606,7 +606,7 @@ function ProjectSectionView({
             <GithubCard />
             <SlackCard />
             <LinearCard />
-            <CloudflareCard />
+            <CloudflareCard projectId={projectId} />
             <AwsCard projectId={projectId} />
             <IngestSourcesCard projectId={projectId} />
           </div>
@@ -1176,10 +1176,10 @@ function SlackCard() {
   );
 }
 
-function CloudflareCard() {
-  const install = useCloudflareInstallation();
-  const start = useStartCloudflareInstall();
-  const uninstall = useUninstallCloudflare();
+function CloudflareCard({ projectId }: { projectId: string | undefined }) {
+  const install = useCloudflareInstallation(projectId);
+  const start = useStartCloudflareInstall(projectId);
+  const uninstall = useUninstallCloudflare(projectId);
 
   const installed = install.data?.installed === true;
 
@@ -1206,6 +1206,7 @@ function CloudflareCard() {
             size="sm"
             variant={installed ? "secondary" : "primary"}
             loading={start.isPending}
+            disabled={!projectId || start.isPending}
             onClick={async () => {
               const { url } = await start.mutateAsync();
               window.location.href = url;
@@ -1218,6 +1219,7 @@ function CloudflareCard() {
               size="sm"
               variant="danger"
               loading={uninstall.isPending}
+              disabled={!projectId || uninstall.isPending}
               onClick={() => uninstall.mutate()}
             >
               Disconnect

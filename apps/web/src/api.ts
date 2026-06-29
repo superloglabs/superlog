@@ -77,6 +77,7 @@ export type SystemCapabilities = {
   managedAgents: boolean;
   ossAgents: boolean;
   cloudUpgradeLinks: boolean;
+  cloudflareConnect: boolean;
 };
 
 const SIGNUP_SOURCE_STORAGE_KEY = "superlog.signup_source";
@@ -831,31 +832,40 @@ export type CloudflareInstallation =
       installedAt: string;
     };
 
-export function useCloudflareInstallation() {
+// Cloudflare installs are per-project, so every hook is scoped by projectId —
+// the query key includes it so switching projects refetches the right state
+// instead of briefly showing another project's connected account.
+export function useCloudflareInstallation(projectId: string | undefined) {
   const fetcher = useFetcher();
   return useQuery({
-    queryKey: ["cloudflare-installation"],
-    queryFn: () => fetcher<CloudflareInstallation>("/api/cloudflare/installation"),
+    queryKey: ["cloudflare-installation", projectId],
+    queryFn: () =>
+      fetcher<CloudflareInstallation>(`/api/projects/${projectId}/cloudflare/installation`),
+    enabled: !!projectId,
     // Poll so the card flips to "connected" after the OAuth redirect without a
     // manual refresh (same pattern as Slack/GitHub).
     refetchInterval: 15000,
   });
 }
 
-export function useStartCloudflareInstall() {
+export function useStartCloudflareInstall(projectId: string | undefined) {
   const fetcher = useFetcher();
   return useMutation({
-    mutationFn: () => fetcher<{ url: string }>("/api/cloudflare/install-url", { method: "POST" }),
+    mutationFn: () =>
+      fetcher<{ url: string }>(`/api/projects/${projectId}/cloudflare/install-url`, {
+        method: "POST",
+      }),
   });
 }
 
-export function useUninstallCloudflare() {
+export function useUninstallCloudflare(projectId: string | undefined) {
   const fetcher = useFetcher();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => fetcher<{ ok: true }>("/api/cloudflare/uninstall", { method: "POST" }),
+    mutationFn: () =>
+      fetcher<{ ok: true }>(`/api/projects/${projectId}/cloudflare/uninstall`, { method: "POST" }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["cloudflare-installation"] });
+      qc.invalidateQueries({ queryKey: ["cloudflare-installation", projectId] });
     },
   });
 }
