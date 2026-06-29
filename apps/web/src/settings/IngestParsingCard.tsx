@@ -141,7 +141,10 @@ export function IngestParsingSection({ projectId }: { projectId: string | undefi
   // config into the new project and a save would clobber it.
   const loadedFor = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (loadedFor.current === projectId) return;
+    // Reload when the project changes *or* when the draft was cleared (e.g.
+    // switched away before settings loaded, then back) — otherwise the card can
+    // get stuck loading from cached settings.
+    if (loadedFor.current === projectId && draft !== null) return;
     if (!settings.data) {
       // New project, its settings haven't loaded yet — drop the stale draft.
       if (draft !== null) setDraft(null);
