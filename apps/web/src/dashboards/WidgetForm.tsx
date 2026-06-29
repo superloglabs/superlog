@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { AddFilter, GroupBySelect, MetricNamePicker } from "../Explore.tsx";
+import { type ExploreRange, METRIC_AGGREGATIONS } from "../api.ts";
+import { Btn, Chip, Input, Label, PillToggle, Tile } from "../design/ui.tsx";
+import { SettingsCard, SettingsRow } from "../settings/rows.tsx";
 import {
-  AddFilter,
-  GroupBySelect,
-  MetricNamePicker,
-  SegmentedToggle,
-} from "../Explore.tsx";
-import { METRIC_AGGREGATIONS, type ExploreRange } from "../api.ts";
-import { Btn, Chip, FieldLabel, Input, Label, Tile } from "../design/ui.tsx";
-import { type Widget, type WidgetConfig, type WidgetType, defaultChartType, defaultLayoutFor } from "./types.ts";
+  type DashboardVariable,
+  type Widget,
+  type WidgetConfig,
+  type WidgetType,
+  defaultChartType,
+  defaultLayoutFor,
+} from "./types.ts";
+import { VariableValuesProvider } from "./variables-context.tsx";
+import { defaultVariableValues } from "./variables.ts";
 import {
   type WidgetFormState,
   buildWidgetConfig,
@@ -16,6 +21,7 @@ import {
   widgetTypeFor,
 } from "./widget-config.ts";
 import { WidgetBody } from "./widgets/WidgetBody.tsx";
+import { WIDGET_UNITS, WIDGET_UNIT_LABELS } from "./widgets/widget-format.ts";
 
 export function WidgetForm({
   projectId,
@@ -23,6 +29,7 @@ export function WidgetForm({
   mode,
   initial,
   existingTitle,
+  variables = [],
   submitting,
   onSubmit,
   onClose,
@@ -35,6 +42,8 @@ export function WidgetForm({
   // independently renamable from the widget header) instead of being
   // regenerated from the form.
   existingTitle?: string;
+  // Dashboard variables available to reference from a filter value as `$name`.
+  variables?: DashboardVariable[];
   submitting: boolean;
   onSubmit: (result: {
     type: WidgetType;
@@ -69,6 +78,10 @@ export function WidgetForm({
   }, [onClose]);
 
   const config = useMemo(() => buildWidgetConfig(form), [form]);
+  // Resolve variable references in the preview using their default selections,
+  // so a filter like `$env` previews against its default rather than the
+  // literal token.
+  const previewVarValues = useMemo(() => defaultVariableValues(variables), [variables]);
   const generatedTitle = useMemo(
     () =>
       generateTitle({
@@ -157,215 +170,299 @@ export function WidgetForm({
             </button>
           </div>
 
-          <div className="flex flex-col gap-4">
-            <div>
-              <FieldLabel>kind</FieldLabel>
-              <SegmentedToggle
-                value={kind}
-                options={[
-                  { value: "chart", label: "chart" },
-                  { value: "table", label: "table" },
-                  { value: "note", label: "note" },
-                ]}
-                onChange={(v) => update({ kind: v as WidgetFormState["kind"] })}
-              />
-            </div>
+          {/* Widget kind as pill tabs, mirroring the settings tab bar. */}
+          <div className="mb-5">
+            <PillToggle
+              value={kind}
+              options={[
+                { value: "chart", label: "Chart" },
+                { value: "table", label: "Table" },
+                { value: "note", label: "Note" },
+              ]}
+              onChange={(v) => update({ kind: v as WidgetFormState["kind"] })}
+            />
+          </div>
 
+          <div className="space-y-4">
             {!isNote && (
-              <div>
-                <FieldLabel>source</FieldLabel>
-                <SegmentedToggle
-                  value={source}
-                  options={sourceOptions}
-                  onChange={(v) => update({ source: v as WidgetFormState["source"] })}
-                />
-              </div>
-            )}
-
-            {isChart && (
-              <div>
-                <FieldLabel>chart type</FieldLabel>
-                <SegmentedToggle
-                  value={form.chartType ?? defaultChartType(type)}
-                  options={[
-                    { value: "line", label: "line" },
-                    { value: "bar", label: "bar" },
-                  ]}
-                  onChange={(v) => update({ chartType: v as WidgetFormState["chartType"] })}
-                />
-              </div>
-            )}
-
-            {isMetric && (
-              <div>
-                <FieldLabel>metric</FieldLabel>
-                <MetricNamePicker
-                  projectId={projectId}
-                  range={range}
-                  value={form.metricName}
-                  onChange={(v) => update({ metricName: v })}
-                />
-              </div>
-            )}
-
-            {isMetric && (
-              <div>
-                <FieldLabel>aggregation</FieldLabel>
-                <SegmentedToggle
-                  value={form.aggregation}
-                  options={["auto", ...METRIC_AGGREGATIONS].map((a) => ({ value: a, label: a }))}
-                  onChange={(v) => update({ aggregation: v as WidgetFormState["aggregation"] })}
-                />
-              </div>
-            )}
-
-            {isChart && (
-              <div>
-                <FieldLabel>group by</FieldLabel>
-                <GroupBySelect
-                  projectId={projectId}
-                  range={range}
-                  source={source === "metric" ? undefined : source}
-                  value={form.groupBy}
-                  onChange={(g) => update({ groupBy: g })}
-                  shortcut={false}
-                  triggerLabel=""
-                />
-              </div>
-            )}
-
-            {isChart && form.groupBy && (
-              <div>
-                <FieldLabel>top series</FieldLabel>
-                <Input
-                  type="number"
-                  min={1}
-                  max={50}
-                  step={1}
-                  value={form.seriesLimit}
-                  onChange={(e) =>
-                    update({
-                      seriesLimit: Math.max(1, Math.min(50, Number(e.target.value) || 10)),
-                    })
+              <SettingsCard>
+                <SettingsRow
+                  title="Source"
+                  description="Where this widget pulls its data from"
+                  control={
+                    <PillToggle
+                      value={source}
+                      options={sourceOptions}
+                      onChange={(v) => update({ source: v as WidgetFormState["source"] })}
+                    />
                   }
                 />
-                <div className="mt-1 font-mono text-[10px] text-subtle">
-                  remaining groups roll into “Other”
-                </div>
-              </div>
-            )}
 
-            {isTable && (
-              <div>
-                <FieldLabel>row limit</FieldLabel>
-                <Input
-                  type="number"
-                  min={10}
-                  max={500}
-                  step={10}
-                  value={form.rowLimit}
-                  onChange={(e) =>
-                    update({ rowLimit: Math.max(10, Math.min(500, Number(e.target.value) || 50)) })
-                  }
-                />
-              </div>
+                {isMetric && (
+                  <SettingsRow title="Metric" description="The metric series to chart">
+                    <MetricNamePicker
+                      projectId={projectId}
+                      range={range}
+                      value={form.metricName}
+                      onChange={(v) => update({ metricName: v })}
+                    />
+                  </SettingsRow>
+                )}
+
+                {isMetric && (
+                  <SettingsRow
+                    title="Aggregation"
+                    description="How points combine within each bucket"
+                    control={
+                      <PillToggle
+                        size="sm"
+                        value={form.aggregation}
+                        options={["auto", ...METRIC_AGGREGATIONS].map((a) => ({
+                          value: a,
+                          label: a,
+                        }))}
+                        onChange={(v) =>
+                          update({ aggregation: v as WidgetFormState["aggregation"] })
+                        }
+                      />
+                    }
+                  />
+                )}
+
+                {isChart && (
+                  <SettingsRow
+                    title="Group by"
+                    description="Split into one series per attribute value"
+                    control={
+                      <div className="w-52">
+                        <GroupBySelect
+                          projectId={projectId}
+                          range={range}
+                          source={source === "metric" ? undefined : source}
+                          value={form.groupBy}
+                          onChange={(g) => update({ groupBy: g })}
+                          shortcut={false}
+                          triggerLabel=""
+                        />
+                      </div>
+                    }
+                  />
+                )}
+
+                {isChart && form.groupBy && (
+                  <SettingsRow
+                    title="Top series"
+                    description="Remaining groups roll into “Other”"
+                    control={
+                      <div className="w-24">
+                        <Input
+                          type="number"
+                          min={1}
+                          max={50}
+                          step={1}
+                          value={form.seriesLimit}
+                          onChange={(e) =>
+                            update({
+                              seriesLimit: Math.max(1, Math.min(50, Number(e.target.value) || 10)),
+                            })
+                          }
+                        />
+                      </div>
+                    }
+                  />
+                )}
+
+                {isTable && (
+                  <SettingsRow
+                    title="Row limit"
+                    description="Maximum rows shown in the table"
+                    control={
+                      <div className="w-24">
+                        <Input
+                          type="number"
+                          min={10}
+                          max={500}
+                          step={10}
+                          value={form.rowLimit}
+                          onChange={(e) =>
+                            update({
+                              rowLimit: Math.max(10, Math.min(500, Number(e.target.value) || 50)),
+                            })
+                          }
+                        />
+                      </div>
+                    }
+                  />
+                )}
+
+                <SettingsRow title="Filters" description="Limit to matching resource attributes">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {form.attrs.map((a, i) => (
+                      <button
+                        type="button"
+                        key={`${a.key}=${a.value}-${i}`}
+                        onClick={() => update({ attrs: form.attrs.filter((_, j) => j !== i) })}
+                        title="remove"
+                      >
+                        <Chip tone="accent">
+                          <span className="opacity-70">{a.key}</span>
+                          <span>=</span>
+                          <span>{a.value}</span>
+                          <span className="ml-1 opacity-60">×</span>
+                        </Chip>
+                      </button>
+                    ))}
+                    <div className="relative">
+                      <Btn variant="secondary" size="sm" onClick={() => setFilterOpen((v) => !v)}>
+                        + add filter
+                      </Btn>
+                      {filterOpen && (
+                        <AddFilter
+                          projectId={projectId}
+                          range={range}
+                          source={source === "metric" ? undefined : source}
+                          existing={form.attrs}
+                          onClose={() => setFilterOpen(false)}
+                          onPick={(f) => {
+                            if (f.kind === "attr") {
+                              update({ attrs: [...form.attrs, { key: f.key, value: f.value }] });
+                            }
+                            setFilterOpen(false);
+                          }}
+                        />
+                      )}
+                    </div>
+                  </div>
+                  {variables.length > 0 && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span className="text-[11px] font-medium text-muted">use variable</span>
+                      {variables.map((v) => {
+                        const key = v.attributeKey || v.name;
+                        const value = `$${v.name}`;
+                        const already = form.attrs.some((a) => a.key === key && a.value === value);
+                        return (
+                          <button
+                            type="button"
+                            key={v.name}
+                            disabled={already}
+                            title={`filter ${key} by $${v.name}`}
+                            onClick={() => update({ attrs: [...form.attrs, { key, value }] })}
+                            className="disabled:opacity-40"
+                          >
+                            <Chip tone="accent">
+                              <span className="opacity-70">{key}</span>
+                              <span>=</span>
+                              <span>${v.name}</span>
+                            </Chip>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </SettingsRow>
+              </SettingsCard>
             )}
 
             {isChart && (
-              <div>
-                <FieldLabel>display</FieldLabel>
-                <div className="flex flex-col gap-2">
-                  <Toggle
-                    label="x-axis markers"
-                    checked={form.showXAxis}
-                    onChange={(v) => update({ showXAxis: v })}
-                  />
-                  <Toggle
-                    label="y-axis markers"
-                    checked={form.showYAxis}
-                    onChange={(v) => update({ showYAxis: v })}
-                  />
-                  <Toggle
-                    label="legend"
-                    checked={form.showLegend}
-                    onChange={(v) => update({ showLegend: v })}
-                  />
-                  {form.showLegend && (
-                    <div className="pt-1">
-                      <SegmentedToggle
+              <SettingsCard>
+                <SettingsRow
+                  title="Chart type"
+                  control={
+                    <PillToggle
+                      value={form.chartType ?? defaultChartType(type)}
+                      options={[
+                        { value: "line", label: "Line" },
+                        { value: "bar", label: "Bar" },
+                      ]}
+                      onChange={(v) => update({ chartType: v as WidgetFormState["chartType"] })}
+                    />
+                  }
+                />
+                <SettingsRow
+                  title="Value unit"
+                  description="Scales axis, tooltip & legend (e.g. 15000 ms → 15s)"
+                  control={
+                    <PillToggle
+                      size="sm"
+                      value={form.unit}
+                      options={WIDGET_UNITS.map((u) => ({
+                        value: u,
+                        label: WIDGET_UNIT_LABELS[u],
+                      }))}
+                      onChange={(v) => update({ unit: v as WidgetFormState["unit"] })}
+                    />
+                  }
+                />
+                <SettingsRow
+                  title="X-axis markers"
+                  control={
+                    <Toggle
+                      label="X-axis markers"
+                      checked={form.showXAxis}
+                      onChange={(v) => update({ showXAxis: v })}
+                    />
+                  }
+                />
+                <SettingsRow
+                  title="Y-axis markers"
+                  control={
+                    <Toggle
+                      label="Y-axis markers"
+                      checked={form.showYAxis}
+                      onChange={(v) => update({ showYAxis: v })}
+                    />
+                  }
+                />
+                <SettingsRow
+                  title="Legend"
+                  description="Show a key of series names and values"
+                  control={
+                    <Toggle
+                      label="Legend"
+                      checked={form.showLegend}
+                      onChange={(v) => update({ showLegend: v })}
+                    />
+                  }
+                />
+                {form.showLegend && (
+                  <SettingsRow
+                    title="Legend position"
+                    control={
+                      <PillToggle
                         value={form.legendPosition}
                         options={[
-                          { value: "side", label: "side" },
-                          { value: "bottom", label: "bottom" },
+                          { value: "side", label: "Side" },
+                          { value: "bottom", label: "Bottom" },
                         ]}
                         onChange={(v) =>
                           update({ legendPosition: v as WidgetFormState["legendPosition"] })
                         }
                       />
-                    </div>
-                  )}
-                </div>
-              </div>
+                    }
+                  />
+                )}
+              </SettingsCard>
             )}
 
             {isNote && (
-              <div>
-                <FieldLabel>markdown</FieldLabel>
-                <textarea
-                  value={form.markdown}
-                  onChange={(e) => update({ markdown: e.target.value })}
-                  className="min-h-40 w-full resize-y rounded-sm border border-border bg-surface-2 px-3 py-2 font-mono text-[12px] leading-relaxed text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none"
-                />
-              </div>
-            )}
-
-            {!isNote && (
-              <div>
-                <FieldLabel>filters</FieldLabel>
-                <div className="flex flex-wrap items-center gap-2">
-                  {form.attrs.map((a, i) => (
-                    <button
-                      type="button"
-                      key={`${a.key}=${a.value}-${i}`}
-                      onClick={() => update({ attrs: form.attrs.filter((_, j) => j !== i) })}
-                      title="remove"
-                    >
-                      <Chip tone="accent">
-                        <span className="opacity-70">{a.key}</span>
-                        <span>=</span>
-                        <span>{a.value}</span>
-                        <span className="ml-1 opacity-60">×</span>
-                      </Chip>
-                    </button>
-                  ))}
-                  <div className="relative">
-                    <Btn variant="secondary" size="sm" onClick={() => setFilterOpen((v) => !v)}>
-                      + add filter
-                    </Btn>
-                    {filterOpen && (
-                      <AddFilter
-                        projectId={projectId}
-                        range={range}
-                        source={source === "metric" ? undefined : source}
-                        existing={form.attrs}
-                        onClose={() => setFilterOpen(false)}
-                        onPick={(f) => {
-                          if (f.kind === "attr") {
-                            update({ attrs: [...form.attrs, { key: f.key, value: f.value }] });
-                          }
-                          setFilterOpen(false);
-                        }}
-                      />
-                    )}
-                  </div>
-                </div>
-              </div>
+              <SettingsCard>
+                <SettingsRow
+                  title="Markdown"
+                  description="Rendered with headings, bullets, and inline code"
+                >
+                  <textarea
+                    value={form.markdown}
+                    onChange={(e) => update({ markdown: e.target.value })}
+                    className="min-h-40 w-full resize-y rounded-lg border border-border bg-surface-2 px-3 py-2 font-mono text-[12px] leading-relaxed text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none"
+                  />
+                </SettingsRow>
+              </SettingsCard>
             )}
           </div>
 
-          <div className="mt-6 border-t border-border pt-5">
+          <div className="mt-6">
             <Label>preview</Label>
-            <div className="mt-3 h-[260px] border border-border bg-surface-1 p-4">
+            <div className="mt-3 h-[260px] rounded-lg border border-border bg-surface-1 p-4">
               {isMetric && !form.metricName ? (
                 <div className="flex h-full items-center justify-center font-mono text-[11px] text-subtle">
                   pick a metric to preview
@@ -375,21 +472,23 @@ export function WidgetForm({
                   write a note to preview
                 </div>
               ) : (
-                <WidgetBody projectId={projectId} range={range} widget={previewWidget} />
+                <VariableValuesProvider value={previewVarValues}>
+                  <WidgetBody projectId={projectId} range={range} widget={previewWidget} />
+                </VariableValuesProvider>
               )}
             </div>
           </div>
 
-          <div className="mt-6 flex items-center justify-end gap-3 border-t border-border pt-4">
-            {error && (
-              <span className="mr-auto font-mono text-[11px] text-danger" role="alert">
-                {error}
-              </span>
-            )}
-            <Btn variant="ghost" onClick={onClose}>
+          {error && (
+            <div className="mt-4 text-[12px] text-danger" role="alert">
+              {error}
+            </div>
+          )}
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <Btn variant="ghost" size="sm" onClick={onClose}>
               cancel
             </Btn>
-            <Btn onClick={submit} loading={submitting} disabled={disabled}>
+            <Btn size="sm" onClick={submit} loading={submitting} disabled={disabled}>
               {mode === "edit" ? "save changes" : "add widget"}
             </Btn>
           </div>
@@ -400,24 +499,37 @@ export function WidgetForm({
   );
 }
 
+// Switch toggle matching the settings rows (see Settings.tsx Toggle). The row
+// title is only a visual sibling, so `label` is required to give the switch an
+// accessible name (role="switch" otherwise reads as an unnamed control).
 function Toggle({
   label,
   checked,
+  disabled = false,
   onChange,
 }: {
   label: string;
   checked: boolean;
+  disabled?: boolean;
   onChange: (v: boolean) => void;
 }) {
   return (
-    <label className="flex cursor-pointer items-center justify-between font-mono text-[11px] text-muted hover:text-fg">
-      <span>{label}</span>
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="h-3.5 w-3.5 cursor-pointer accent-accent"
+    <button
+      type="button"
+      role="switch"
+      aria-label={label}
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors ${
+        checked ? "border-accent bg-accent" : "border-border bg-surface-3"
+      } ${disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}
+    >
+      <span
+        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-accent-ink transition-transform ${
+          checked ? "translate-x-[18px]" : "translate-x-[2px]"
+        }`}
       />
-    </label>
+    </button>
   );
 }

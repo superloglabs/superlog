@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   DashboardSummary,
+  DashboardVariable,
   DashboardWithWidgets,
   Widget,
   WidgetConfig,
@@ -38,8 +39,7 @@ export function useDashboard(projectId: string | undefined, id: string | undefin
   const fetcher = useFetcher();
   return useQuery({
     queryKey: ["dashboard", projectId, id],
-    queryFn: () =>
-      fetcher<DashboardWithWidgets>(`/api/projects/${projectId}/dashboards/${id}`),
+    queryFn: () => fetcher<DashboardWithWidgets>(`/api/projects/${projectId}/dashboards/${id}`),
     enabled: !!projectId && !!id,
   });
 }
@@ -85,6 +85,24 @@ export function useRenameDashboard(projectId: string) {
   });
 }
 
+export function useSetVariables(projectId: string, dashboardId: string) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    // The dashboard PATCH route accepts name + an optional variables list; we
+    // send both so the rename schema is satisfied while replacing variables.
+    mutationFn: ({ name, variables }: { name: string; variables: DashboardVariable[] }) =>
+      fetcher<DashboardSummary>(`/api/projects/${projectId}/dashboards/${dashboardId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name, variables }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["dashboard", projectId, dashboardId] });
+      qc.invalidateQueries({ queryKey: ["dashboards", projectId] });
+    },
+  });
+}
+
 export function useCreateWidget(projectId: string, dashboardId: string) {
   const fetcher = useFetcher();
   const qc = useQueryClient();
@@ -99,8 +117,7 @@ export function useCreateWidget(projectId: string, dashboardId: string) {
         method: "POST",
         body: JSON.stringify(input),
       }),
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ["dashboard", projectId, dashboardId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["dashboard", projectId, dashboardId] }),
   });
 }
 
@@ -118,12 +135,11 @@ export function useUpdateWidget(projectId: string, dashboardId: string) {
       config?: WidgetConfig;
       layout?: WidgetLayout;
     }) =>
-      fetcher<Widget>(
-        `/api/projects/${projectId}/dashboards/${dashboardId}/widgets/${id}`,
-        { method: "PATCH", body: JSON.stringify(patch) },
-      ),
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ["dashboard", projectId, dashboardId] }),
+      fetcher<Widget>(`/api/projects/${projectId}/dashboards/${dashboardId}/widgets/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["dashboard", projectId, dashboardId] }),
   });
 }
 
@@ -132,12 +148,10 @@ export function useDeleteWidget(projectId: string, dashboardId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      fetcher<{ ok: true }>(
-        `/api/projects/${projectId}/dashboards/${dashboardId}/widgets/${id}`,
-        { method: "DELETE" },
-      ),
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ["dashboard", projectId, dashboardId] }),
+      fetcher<{ ok: true }>(`/api/projects/${projectId}/dashboards/${dashboardId}/widgets/${id}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["dashboard", projectId, dashboardId] }),
   });
 }
 
@@ -146,11 +160,10 @@ export function useUpdateLayout(projectId: string, dashboardId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (widgets: { id: string; layout: WidgetLayout }[]) =>
-      fetcher<{ ok: true }>(
-        `/api/projects/${projectId}/dashboards/${dashboardId}/layout`,
-        { method: "PATCH", body: JSON.stringify({ widgets }) },
-      ),
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ["dashboard", projectId, dashboardId] }),
+      fetcher<{ ok: true }>(`/api/projects/${projectId}/dashboards/${dashboardId}/layout`, {
+        method: "PATCH",
+        body: JSON.stringify({ widgets }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["dashboard", projectId, dashboardId] }),
   });
 }

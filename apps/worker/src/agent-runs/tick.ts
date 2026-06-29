@@ -2,13 +2,17 @@ import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { db, schema } from "@superlog/db";
 import { asc, eq, inArray } from "drizzle-orm";
 import { loadAgentRunContext } from "../agent-run-context.js";
-import { ACTIVE_STATES as AGENT_RUN_ACTIVE_STATES } from "../agent-run.js";
+import {
+  ACTIVE_STATES as AGENT_RUN_ACTIVE_STATES,
+  createAgentRunLifecycle,
+} from "../agent-run.js";
 import { retryQueuedPullRequestDelivery } from "./pr-delivery.js";
 import { resumeAgentRunFromHumanInput } from "./resume.js";
 import { startQueuedAgentRun } from "./start-run.js";
 import { syncRunningAgentRun } from "./sync.js";
 
 const tracer = trace.getTracer("@superlog/worker");
+const lifecycle = createAgentRunLifecycle(db);
 const AGENT_RUN_BATCH_SIZE = parsePositiveInt(
   process.env.AGENT_RUN_BATCH_SIZE ?? process.env.INVESTIGATION_BATCH_SIZE,
   20,
@@ -50,7 +54,23 @@ export async function tickAgentRuns(): Promise<number> {
           .set({ updatedAt: new Date() })
           .where(eq(schema.agentRuns.id, agentRun.id));
         const ctx = await loadAgentRunContext(agentRun);
-        if (!ctx) continue;
+        if (!ctx) {
+          // loadAgentRunContext returns null only when the run's incident or
+          // project row is gone (deleted) — a permanent condition; transient
+          // DB errors throw and are handled by the surrounding span. Such a
+          // run can never make progress, so failing here is the only way it
+          // leaves an active state. Skipping it (the old behaviour) left it
+          // rotating through the asc(updatedAt) batch forever as dead weight
+          // that crowds out runnable work.
+          await lifecycle.fail({
+            id: agentRun.id,
+            currentState: agentRun.state,
+            reason: "context_unavailable",
+            summary: "Investigation's incident or project no longer exists.",
+            category: "infra",
+          });
+          continue;
+        }
         processed += 1;
         if (ctx.agentRun.state === "queued" || ctx.agentRun.state === "repo_discovery") {
           await startQueuedAgentRun(ctx);

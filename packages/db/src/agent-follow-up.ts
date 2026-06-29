@@ -16,8 +16,10 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "./client.js";
 import * as schema from "./schema.js";
+import { isFollowUpTrigger } from "./schema.js";
 import type {
   AgentRunFollowUpInteraction,
+  AgentRunFollowUpTrigger,
   AgentRunTrigger,
   AgentRunTriggerDetail,
 } from "./schema.js";
@@ -127,7 +129,7 @@ export function evaluateFollowUpEligibility(input: FollowUpEligibilityInput): Fo
     // review still lands in the queued run instead of being dropped.
     // Anything past queued is already talking to a session — don't stack a
     // second run behind it.
-    if (input.activeRun.state === "queued" && input.activeRun.trigger !== "incident") {
+    if (input.activeRun.state === "queued" && isFollowUpTrigger(input.activeRun.trigger)) {
       return { action: "append", runId: input.activeRun.id };
     }
     return { action: "skip", reason: "run_active" };
@@ -158,7 +160,7 @@ export async function requestFollowUpAgentRun(
   db: DB,
   args: {
     incidentId: string;
-    trigger: Exclude<AgentRunTrigger, "incident">;
+    trigger: AgentRunFollowUpTrigger;
     interaction: AgentRunFollowUpInteraction;
     confirmed?: boolean;
     now?: Date;
@@ -192,7 +194,7 @@ export async function requestFollowUpAgentRun(
   const activeRun =
     runs.find((run) => run.state === "queued" || EXECUTING_STATES.includes(run.state)) ?? null;
   const priorRun = runs.find((run) => TERMINAL_PRIOR_STATES.has(run.state)) ?? null;
-  const followUpCount = runs.filter((run) => run.trigger !== "incident").length;
+  const followUpCount = runs.filter((run) => isFollowUpTrigger(run.trigger)).length;
 
   const verdict = evaluateFollowUpEligibility({
     agentRunEnabled: automation?.agentRunEnabled ?? true,
@@ -420,7 +422,7 @@ export async function recordInboundInteraction(
   return { outcome: "accepted", action: verdict.action };
 }
 
-function followUpQueuedSummary(trigger: Exclude<AgentRunTrigger, "incident">): string {
+function followUpQueuedSummary(trigger: AgentRunFollowUpTrigger): string {
   switch (trigger) {
     case "pr_comment":
       return "Follow-up investigation queued from a pull request comment.";

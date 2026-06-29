@@ -58,10 +58,16 @@ function gridBucketsMs(grid: BucketGrid): number[] | null {
 export type ChartSeries = {
   /** Group value, or "Other" for the rolled-up remainder, "(none)" when empty. */
   name: string;
-  /** Sum of every point in this series — drives ordering and the legend value. */
+  /** Sum of every point in this series — drives top-N ordering. */
   total: number;
   /** `[timestamp_ms, value]` tuples, one per bucket, ascending by time. */
   data: [number, number][];
+  /**
+   * Per-bucket values for buckets this series actually has data in — the
+   * cross-series zero-fill in `data` is excluded. Drives the legend headline so
+   * summaries like avg/min reflect the real distribution, not padded zeros.
+   */
+  values: number[];
   /** True only for the synthetic rolled-up remainder series. */
   isOther: boolean;
 };
@@ -116,36 +122,54 @@ export function buildTopNSeries<T extends GroupedRow>(
   // Accumulate per-bucket values, zero-filled, so lines/bars don't gap. The
   // rollup remainder lives in its own accumulator (not the points map) so a
   // real group literally named "Other" can't collide with the synthetic series.
+  // `seen` tracks which buckets each series actually has a row in, so the chart
+  // can zero-fill `data` for alignment while the legend summary (`values`) skips
+  // those padded buckets.
   const points = new Map<string, number[]>();
-  for (const g of topGroups) points.set(g, new Array(buckets.length).fill(0));
+  const seen = new Map<string, boolean[]>();
+  for (const g of topGroups) {
+    points.set(g, new Array(buckets.length).fill(0));
+    seen.set(g, new Array(buckets.length).fill(false));
+  }
   const otherArr = hasOther ? new Array<number>(buckets.length).fill(0) : null;
+  const otherSeen = hasOther ? new Array<boolean>(buckets.length).fill(false) : null;
 
   for (const r of rows) {
     const g = r.group || NONE_LABEL;
-    const arr = topGroups.has(g) ? points.get(g) : otherArr;
+    const inTop = topGroups.has(g);
+    const arr = inTop ? points.get(g) : otherArr;
+    const seenArr = inTop ? seen.get(g) : otherSeen;
     const i = bucketIndex.get(bucketToMs(r.bucket));
-    if (!arr || i === undefined) continue;
+    if (!arr || !seenArr || i === undefined) continue;
     arr[i] = (arr[i] ?? 0) + valFn(r);
+    seenArr[i] = true;
   }
 
-  const toSeries = (name: string, arr: number[], isOther: boolean): ChartSeries => {
+  const toSeries = (
+    name: string,
+    arr: number[],
+    seenArr: boolean[],
+    isOther: boolean,
+  ): ChartSeries => {
     let total = 0;
+    const values: number[] = [];
     const data: [number, number][] = buckets.map((b, i) => {
       const v = arr[i] ?? 0;
       total += v;
+      if (seenArr[i]) values.push(v);
       return [b, v];
     });
-    return { name, total, data, isOther };
+    return { name, total, data, values, isOther };
   };
 
   // Real series in rank order, "Other" always last.
   const series = ranked
     .filter((g) => topGroups.has(g))
-    .map((g) => toSeries(g, points.get(g) ?? [], false));
-  if (otherArr) {
+    .map((g) => toSeries(g, points.get(g) ?? [], seen.get(g) ?? [], false));
+  if (otherArr && otherSeen) {
     // The rollup name must be unique among the real series — visibility,
     // legend, and tooltip dedup are all keyed by name (see CountChart).
-    series.push(toSeries(uniqueOtherName(topGroups), otherArr, true));
+    series.push(toSeries(uniqueOtherName(topGroups), otherArr, otherSeen, true));
   }
   return series;
 }

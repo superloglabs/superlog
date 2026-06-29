@@ -18,8 +18,10 @@ import {
 } from "@aws-sdk/client-sqs";
 import { Upload } from "@aws-sdk/lib-storage";
 import { type SpillSink, captureBody } from "./body-capture.js";
+import type { IngestRowWriter } from "./clickhouse-writer.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import { proxyOperationalRecorder } from "./operational-metrics.js";
+import { type DecodedRows, decodeOtlpToRows } from "./otlp-decode.js";
 
 const DEFAULT_MAX_MESSAGE_BYTES = 240_000;
 // Hard ceiling on a single ingest body. Bodies above this are rejected at the
@@ -316,6 +318,7 @@ export class IngestQueue {
     private readonly config: IngestQueueConfig,
     private readonly logger: LoggerLike,
     spillSinkFactory?: SpillSinkFactory,
+    private readonly rowWriter?: IngestRowWriter,
   ) {
     const clientConfig = config.region ? { region: config.region } : {};
     this.sqs = new SQSClient(clientConfig);
@@ -722,6 +725,63 @@ export class IngestQueue {
         },
         this.logger,
       );
+
+      // Direct-to-ClickHouse path (INGEST_CLICKHOUSE_DIRECT). Map the OTLP body to rows
+      // and INSERT synchronously with quorum; the message is deleted only if the insert
+      // succeeds (a throw falls through to the catch and the message redelivers). Signals
+      // we don't yet write directly (metrics) and bodies we can't decode return null and
+      // fall through to the collector forward below, so nothing is ever dropped.
+      if (this.rowWriter) {
+        // Decoding is best-effort: a malformed/undecodable payload returns null OR throws,
+        // and either way we fall through to the collector forward below rather than failing
+        // the message (which would churn it through retries to the DLQ). Only the INSERT is
+        // allowed to throw — a ClickHouse failure should redeliver, not drop.
+        let decoded: DecodedRows | null = null;
+        try {
+          decoded = decodeOtlpToRows({
+            path: parsed.path,
+            projectId: parsed.projectId,
+            contentType: parsed.contentType,
+            contentEncoding: parsed.contentEncoding,
+            body,
+          });
+        } catch (decodeErr) {
+          this.logger.warn(
+            { err: decodeErr, path: parsed.path, projectId: parsed.projectId },
+            "direct-write decode failed; forwarding to collector",
+          );
+        }
+        if (decoded) {
+          await this.rowWriter.insert(decoded.table, decoded.rows);
+          proxyOperationalRecorder.recordQueueDelivery({
+            path: parsed.path,
+            projectId: parsed.projectId,
+            storage: parsed.body.storage,
+            outcome: "delivered",
+            durationMs: performance.now() - startedAt,
+            ageMs: ageMs(parsed.receivedAt),
+          });
+          this.logger.info(
+            {
+              path: parsed.path,
+              projectId: parsed.projectId,
+              storage: parsed.body.storage,
+              target: "clickhouse",
+              rows: decoded.rows.length,
+            },
+            "delivered queued ingest payload",
+          );
+          return {
+            message,
+            shouldDelete: true,
+            s3Cleanup:
+              parsed.body.storage === "s3"
+                ? { bucket: parsed.body.bucket, key: parsed.body.key }
+                : undefined,
+          };
+        }
+      }
+
       const headers: Record<string, string> = {
         "content-type": parsed.contentType,
         "x-superlog-project-id": parsed.projectId,

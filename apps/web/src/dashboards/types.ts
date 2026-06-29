@@ -1,5 +1,7 @@
 import type { ExploreFilter, ResourceAttr } from "../api.ts";
 import type { MetricAggregation } from "../api.ts";
+import { resolveAttrsWithVariables } from "./variables.ts";
+import type { WidgetUnit } from "./widgets/widget-format.ts";
 
 export type WidgetType =
   | "timeseries_count"
@@ -18,6 +20,8 @@ export type WidgetConfig = {
   aggregation?: MetricAggregation;
   limit?: number;
   chartType?: ChartType;
+  /** How values are formatted on the axis, tooltip, and legend. Defaults to "none". */
+  unit?: WidgetUnit;
   showXAxis?: boolean;
   showYAxis?: boolean;
   showLegend?: boolean;
@@ -32,6 +36,17 @@ export function defaultChartType(type: WidgetType): ChartType {
 }
 
 export type WidgetLayout = { x: number; y: number; w: number; h: number };
+
+// A dashboard-level template variable. Widget filters reference it from a
+// resourceAttr value with the token `$name` (or `${name}`); the dashboard
+// substitutes the selected option at view time. See ./variables.ts.
+export type DashboardVariable = {
+  name: string;
+  label?: string;
+  options: string[];
+  defaultValue?: string;
+  attributeKey?: string;
+};
 
 export type Widget = {
   id: string;
@@ -50,6 +65,7 @@ export type DashboardSummary = {
   projectId: string;
   name: string;
   slug: string;
+  variables: DashboardVariable[];
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -60,10 +76,11 @@ export type DashboardWithWidgets = DashboardSummary & { widgets: Widget[] };
 export function widgetFilterToExplore(
   config: WidgetConfig,
   range: { since: string; until: string },
+  variableValues: Record<string, string> = {},
 ): ExploreFilter {
   return {
     range,
-    resourceAttrs: config.filter.resourceAttrs,
+    resourceAttrs: resolveAttrsWithVariables(config.filter.resourceAttrs, variableValues),
   };
 }
 

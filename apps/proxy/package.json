@@ -6,14 +6,16 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --import ./tracing.ts src/index.ts",
-    "start": "tsx --import ./tracing.ts src/index.ts",
+    "start": "node --import tsx --import ./tracing.ts src/index.ts",
     "test:ingest-queue": "tsx --test src/ingest-queue.test.ts",
+    "test": "tsx --test src/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1053.0",
     "@aws-sdk/client-sqs": "^3.1053.0",
     "@aws-sdk/lib-storage": "3.1053.0",
+    "@clickhouse/client": "^1.9.0",
     "@hono/node-server": "^1.13.7",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/api-logs": "^0.215.0",
@@ -32,7 +34,8 @@
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.6.12",
-    "pino": "^10.3.1"
+    "pino": "^10.3.1",
+    "protobufjs": "^7.4.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",

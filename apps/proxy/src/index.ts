@@ -1,5 +1,8 @@
 import "./env.js";
 import { Readable } from "node:stream";
+// Telemetry flush is owned by shutdown() below (the single SIGTERM owner), not by
+// tracing.ts, so the OTel flush can't race the ingest drain and exit early.
+import { shutdownTelemetry } from "./telemetry-shutdown.js";
 import { serve } from "@hono/node-server";
 import { type Span, SpanStatusCode, trace } from "@opentelemetry/api";
 import { hashApiKey, schema, syncLoopsContactsForProject } from "@superlog/db";
@@ -19,6 +22,10 @@ import {
   parseAccountIdFromFirehoseArn,
 } from "./firehose.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
+import {
+  ClickHouseIngestWriter,
+  getIngestClickHouseConfig,
+} from "./clickhouse-writer.js";
 import { IngestQueue, getIngestQueueConfig } from "./ingest-queue.js";
 import {
   type TelemetrySignal,
@@ -48,7 +55,27 @@ const FIREHOSE_LOGS_COLLECTOR_URL =
   process.env.FIREHOSE_LOGS_COLLECTOR_URL ?? "http://localhost:4434";
 const PORT = Number(process.env.PORT ?? 4000);
 const ingestQueueConfig = getIngestQueueConfig(process.env);
-const ingestQueue = ingestQueueConfig ? new IngestQueue(ingestQueueConfig, logger) : null;
+// When INGEST_CLICKHOUSE_DIRECT=true, the consumer writes logs/traces straight to
+// ClickHouse (parallel synchronous quorum inserts, acked on success) instead of
+// forwarding every message through the collector. Metrics and undecodable bodies
+// still fall through to the collector. Disabled (null) otherwise.
+const ingestClickHouseConfig = getIngestClickHouseConfig(process.env);
+// Only build the writer when a consumer will actually run (queue configured and the
+// consumer enabled) — it's only used on the consume path, so creating/logging it for a
+// producer-only proxy would be wasted setup and a false "enabled" rollout signal.
+const ingestRowWriter =
+  ingestClickHouseConfig && ingestQueueConfig?.consumerEnabled
+    ? new ClickHouseIngestWriter(ingestClickHouseConfig)
+    : undefined;
+if (ingestRowWriter) {
+  logger.info(
+    { database: ingestClickHouseConfig?.database, insertQuorum: ingestClickHouseConfig?.insertQuorum },
+    "ingest direct-to-clickhouse writes enabled for logs and traces",
+  );
+}
+const ingestQueue = ingestQueueConfig
+  ? new IngestQueue(ingestQueueConfig, logger, undefined, ingestRowWriter)
+  : null;
 // Free-tier ingest hard-block. Null (disabled) without AUTUMN_SECRET_KEY. The
 // verdict is a cached, fail-open in-memory read — never a blocking call on the
 // ingest hot path (see billing/ingest-entitlement.ts).
@@ -720,6 +747,10 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     if (ingestQueue) {
       await ingestQueue.stop();
     }
+    // Flush telemetry LAST, after the ingest drain. tracing.ts no longer
+    // registers its own SIGTERM handler — it used to race this one and
+    // process.exit(0) mid-drain, orphaning in-flight SQS messages.
+    await shutdownTelemetry();
   } catch (err) {
     // Exit non-zero so a failed drain is visible rather than masquerading as a
     // clean stop.

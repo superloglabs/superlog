@@ -28,6 +28,34 @@ export type FiringRecord = {
   issueId: string | null;
 };
 
+export type EpisodeOpenInput = {
+  alertId: string;
+  projectId: string;
+  groupKey: string;
+  startedAt: Date;
+  observedValue: number;
+  comparator: schema.AlertComparator;
+  // Used to tell a missed-close stale open (recovery left a multi-interval gap)
+  // apart from a concurrent duplicate new_firing (no gap).
+  evaluationIntervalSeconds: number;
+  issueId: string | null;
+  incidentId: string | null;
+};
+
+export type EpisodeTouchInput = {
+  alertId: string;
+  groupKey: string;
+  observedValue: number;
+  comparator: schema.AlertComparator;
+  evaluatedAt: Date;
+};
+
+export type EpisodeCloseInput = {
+  alertId: string;
+  groupKey: string;
+  endedAt: Date;
+};
+
 export function createAlertRepository(db: DB) {
   return {
     async listDueAlerts(opts: { limit?: number } = {}): Promise<schema.Alert[]> {
@@ -133,6 +161,110 @@ export function createAlertRepository(db: DB) {
         evaluatedAt: record.evaluatedAt,
         issueId: record.issueId,
       });
+    },
+
+    // Resolve the incident an alert issue is currently linked to (if any), so a
+    // freshly-opened episode can point straight at it. `incident_issues` is
+    // 1:1 per issue (unique index on issue_id).
+    async findIncidentIdForIssue(issueId: string): Promise<string | null> {
+      const link = await db.query.incidentIssues.findFirst({
+        where: eq(schema.incidentIssues.issueId, issueId),
+        columns: { incidentId: true },
+      });
+      return link?.incidentId ?? null;
+    },
+
+    // Open (or continue) the episode for an alert+group as a single atomic
+    // upsert against the partial-unique index over open rows. Because there is
+    // never more than one open row per (alert, group), this can't fragment one
+    // activation into multiple episodes — even under multiple concurrent worker
+    // tasks all classifying the same `new_firing`; the extras just fold into
+    // the one open row.
+    //
+    // A continuously-firing alert advances `last_firing_at` every evaluation
+    // interval, so an open row that hasn't fired for several intervals means
+    // the alert recovered in between and a best-effort `closeOpenEpisode` was
+    // missed. That gap is what distinguishes a stale open (restart this row as
+    // a fresh activation) from a same-activation tick or a concurrent duplicate
+    // new_firing (keep the original start; never fragment).
+    async openEpisode(input: EpisodeOpenInput): Promise<void> {
+      const staleCutoff = new Date(
+        input.startedAt.getTime() - Math.max(input.evaluationIntervalSeconds * 3, 60) * 1000,
+      ).toISOString();
+      const isStale = sql`${schema.alertEpisodes.lastFiringAt} < ${staleCutoff}::timestamptz`;
+      const mergedPeak =
+        input.comparator === "gt"
+          ? sql`GREATEST(${schema.alertEpisodes.peakObservedValue}, excluded.peak_observed_value)`
+          : sql`LEAST(${schema.alertEpisodes.peakObservedValue}, excluded.peak_observed_value)`;
+      await db
+        .insert(schema.alertEpisodes)
+        .values({
+          alertId: input.alertId,
+          projectId: input.projectId,
+          groupKey: input.groupKey,
+          state: "firing",
+          startedAt: input.startedAt,
+          openObservedValue: input.observedValue,
+          peakObservedValue: input.observedValue,
+          lastObservedValue: input.observedValue,
+          lastFiringAt: input.startedAt,
+          issueId: input.issueId,
+          incidentId: input.incidentId,
+        })
+        .onConflictDoUpdate({
+          target: [schema.alertEpisodes.alertId, schema.alertEpisodes.groupKey],
+          targetWhere: sql`state = 'firing'`,
+          set: {
+            // Stale open → restart in place as the new activation; otherwise
+            // keep the existing activation's start and accumulate.
+            startedAt: sql`CASE WHEN ${isStale} THEN excluded.started_at ELSE ${schema.alertEpisodes.startedAt} END`,
+            openObservedValue: sql`CASE WHEN ${isStale} THEN excluded.open_observed_value ELSE ${schema.alertEpisodes.openObservedValue} END`,
+            peakObservedValue: sql`CASE WHEN ${isStale} THEN excluded.peak_observed_value ELSE ${mergedPeak} END`,
+            lastObservedValue: sql`excluded.last_observed_value`,
+            lastFiringAt: sql`excluded.last_firing_at`,
+            issueId: sql`excluded.issue_id`,
+            incidentId: sql`excluded.incident_id`,
+            updatedAt: new Date(),
+          },
+        });
+    },
+
+    // Advance an open episode on a still-firing tick: update the latest value,
+    // the most-severe value seen so far, and the last-firing timestamp.
+    async touchOpenEpisode(input: EpisodeTouchInput): Promise<void> {
+      const peakExpr =
+        input.comparator === "gt"
+          ? sql`GREATEST(${schema.alertEpisodes.peakObservedValue}, ${input.observedValue})`
+          : sql`LEAST(${schema.alertEpisodes.peakObservedValue}, ${input.observedValue})`;
+      await db
+        .update(schema.alertEpisodes)
+        .set({
+          peakObservedValue: peakExpr,
+          lastObservedValue: input.observedValue,
+          lastFiringAt: input.evaluatedAt,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(schema.alertEpisodes.alertId, input.alertId),
+            eq(schema.alertEpisodes.groupKey, input.groupKey),
+            eq(schema.alertEpisodes.state, "firing"),
+          ),
+        );
+    },
+
+    // Close the open episode for an alert+group on recovery.
+    async closeOpenEpisode(input: EpisodeCloseInput): Promise<void> {
+      await db
+        .update(schema.alertEpisodes)
+        .set({ state: "resolved", endedAt: input.endedAt, updatedAt: new Date() })
+        .where(
+          and(
+            eq(schema.alertEpisodes.alertId, input.alertId),
+            eq(schema.alertEpisodes.groupKey, input.groupKey),
+            eq(schema.alertEpisodes.state, "firing"),
+          ),
+        );
     },
 
     async markEvaluated(alertId: string, evaluatedAt: Date): Promise<void> {

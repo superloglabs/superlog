@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -455,6 +455,34 @@ function gitApplyError(args: string[], result: GitResult, patch: string): Error 
   return new Error(`${formatGitCommand(args)} failed: ${detail}`);
 }
 
+// Applies an agent-authored patch into a checked-out repo.
+//
+// Uses `git apply --3way`: the agent diffs its patch against the base commit it
+// cloned, but by delivery time the base branch may have moved — including edits
+// to the very context lines the hunk relies on. Plain `git apply` has zero
+// tolerance for that and fails with "patch does not apply". `--3way`
+// reconstructs the agent's original file from the pre-image blob recorded in
+// the diff's `index <sha>..<sha>` line and 3-way merges the change in, so a
+// non-overlapping drift still lands. A genuine, overlapping content conflict
+// still exits non-zero (leaving conflict markers in the throwaway workdir) — we
+// surface it as a failure rather than push conflict-marked files.
+//
+// `env` must carry the GitHub auth header: with a blobless partial clone the
+// pre-image blob is not present locally, so `--3way` lazily fetches it from the
+// `origin` promisor remote during apply — an unauthenticated fetch would 404.
+export async function applyAgentPatch(opts: {
+  repoDir: string;
+  patchPath: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const applyArgs = ["apply", "--3way", "--index", "--whitespace=nowarn", opts.patchPath];
+  const result = await runGit(applyArgs, { cwd: opts.repoDir, env: opts.env });
+  if (result.code !== 0) {
+    const patchBody = await readFile(opts.patchPath, "utf8").catch(() => "");
+    throw gitApplyError(applyArgs, result, patchBody);
+  }
+}
+
 async function cloneRepositoryAtBaseBranch(opts: {
   repoFullName: string;
   repoDir: string;
@@ -466,8 +494,12 @@ async function cloneRepositoryAtBaseBranch(opts: {
     ensureGitOk(
       [
         "clone",
-        "--depth",
-        "1",
+        // Blobless partial clone: skip downloading file contents up front and
+        // fetch only the blobs we actually touch on demand. This keeps `git
+        // apply --3way` able to reconstruct the agent's pre-image blob (so it
+        // can merge across base-branch drift) without paying a full-history
+        // download per delivery. `--depth 1` would omit those blobs entirely.
+        "--filter=blob:none",
         "--branch",
         branch,
         `https://github.com/${opts.repoFullName}.git`,
@@ -583,11 +615,7 @@ export async function applyPatchAndOpenPr(opts: {
     const patchPath = path.join(workdir, "superlog.patch");
     const patchBody = normalizeAgentPatch(opts.patch);
     await writeFile(patchPath, patchBody, "utf8");
-    const applyArgs = ["apply", "--index", "--whitespace=nowarn", patchPath];
-    const applyResult = await runGit(applyArgs, { cwd: repoDir });
-    if (applyResult.code !== 0) {
-      throw gitApplyError(applyArgs, applyResult, patchBody);
-    }
+    await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv });
 
     // The agent validates its own patch inside its session sandbox (running
     // the project's build/tests/repro as it sees fit) and reports the outcome
@@ -698,8 +726,10 @@ export async function pushPatchToExistingAgentPr(opts: {
     await ensureGitOk(
       [
         "clone",
-        "--depth",
-        "1",
+        // Blobless partial clone — see cloneRepositoryAtBaseBranch: lets the
+        // `--3way` apply below fetch the agent's pre-image blobs on demand so a
+        // follow-up patch still lands if the PR branch moved.
+        "--filter=blob:none",
         "--branch",
         opts.branchName,
         `https://github.com/${opts.repoFullName}.git`,
@@ -717,11 +747,7 @@ export async function pushPatchToExistingAgentPr(opts: {
     const patchPath = path.join(workdir, "superlog.patch");
     const patchBody = normalizeAgentPatch(opts.patch);
     await writeFile(patchPath, patchBody, "utf8");
-    const applyArgs = ["apply", "--index", "--whitespace=nowarn", patchPath];
-    const applyResult = await runGit(applyArgs, { cwd: repoDir });
-    if (applyResult.code !== 0) {
-      throw gitApplyError(applyArgs, applyResult, patchBody);
-    }
+    await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv });
     const status = await ensureGitOk(["status", "--porcelain"], { cwd: repoDir });
     if (!status.stdout.trim()) {
       throw new Error("patch produced no working tree changes");

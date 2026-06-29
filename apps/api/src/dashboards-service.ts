@@ -26,6 +26,7 @@ export const dashboardWidgetConfigSchema = z.object({
   aggregation: z.enum(["sum", "avg", "min", "max", "p95", "p99"]).optional(),
   limit: z.number().int().positive().max(500).optional(),
   chartType: z.enum(["line", "bar"]).optional(),
+  unit: z.enum(["none", "duration_ms", "duration_s", "bytes", "percent"]).optional(),
   showXAxis: z.boolean().optional(),
   showYAxis: z.boolean().optional(),
   showLegend: z.boolean().optional(),
@@ -33,21 +34,105 @@ export const dashboardWidgetConfigSchema = z.object({
   markdown: z.string().max(20_000).optional(),
 });
 
+// Layouts are placed on the 12-column grid the UI renders (DashboardView.tsx
+// uses cols=12), so a column index is 0..11 and a span is 1..12. Bounding the
+// schema to the grid keeps it the single source of truth — an agent that sends
+// w:48 is rejected here rather than producing a widget wider than the grid.
 export const dashboardWidgetLayoutSchema = z.object({
-  x: z.number().int().min(0).max(48),
+  x: z.number().int().min(0).max(11),
   y: z.number().int().min(0).max(100000),
-  w: z.number().int().min(1).max(48),
+  w: z.number().int().min(1).max(12),
   h: z.number().int().min(1).max(100),
 });
 
-export const dashboardCreateSchema = z.object({ name: z.string().min(1).max(120) });
-export const dashboardUpdateSchema = z.object({ name: z.string().min(1).max(120) });
+export type DashboardWidgetType = z.infer<typeof dashboardWidgetTypeSchema>;
+export type DashboardWidgetLayout = z.infer<typeof dashboardWidgetLayoutSchema>;
+
+// The standard widget size per type, against the 12-column grid the UI renders.
+// Kept in sync with the web's `defaultLayoutFor` (apps/web/src/dashboards/types.ts).
+// y=9999 means "append at the bottom": the grid compacts vertically on load.
+export function defaultWidgetLayout(type: DashboardWidgetType): DashboardWidgetLayout {
+  switch (type) {
+    case "markdown":
+      return { x: 0, y: 9999, w: 4, h: 5 };
+    case "trace_table":
+    case "log_table":
+      return { x: 0, y: 9999, w: 12, h: 6 };
+    case "timeseries_count":
+    case "timeseries_metric":
+      return { x: 0, y: 9999, w: 6, h: 4 };
+    default: {
+      // Exhaustiveness guard: adding a widget type to the enum without a case
+      // here is a compile error rather than a silent fall-through.
+      const _exhaustive: never = type;
+      throw new Error(`unhandled widget type: ${String(_exhaustive)}`);
+    }
+  }
+}
+
+// A dashboard-level template variable. Widget filters reference it from a
+// `resourceAttrs[].value` using the token `$name` (or `${name}`); the dashboard
+// substitutes the selected option at view time. `options` is the picklist shown
+// in the variable bar. `attributeKey` is an optional convenience that lets the
+// widget editor offer a one-click filter on that attribute — the variable can
+// still be referenced from any filter via `$name`.
+const dashboardVariableSchema = z.object({
+  name: z
+    .string()
+    .regex(
+      /^[a-zA-Z][a-zA-Z0-9_]*$/,
+      "name must start with a letter and contain only letters, digits, or underscores",
+    )
+    .max(60),
+  label: z.string().max(120).optional(),
+  options: z.array(z.string().max(500)).max(200),
+  defaultValue: z.string().max(500).optional(),
+  attributeKey: z.string().max(200).optional(),
+});
+
+export const dashboardVariablesSchema = z
+  .array(dashboardVariableSchema)
+  .max(50)
+  .superRefine((vars, ctx) => {
+    const seen = new Set<string>();
+    for (const v of vars) {
+      if (seen.has(v.name)) {
+        ctx.addIssue({ code: "custom", message: `duplicate variable name: ${v.name}` });
+      }
+      seen.add(v.name);
+      // An empty options list means the value is free-form, so any default is
+      // allowed; otherwise the default has to be a selectable option.
+      if (
+        v.defaultValue !== undefined &&
+        v.options.length > 0 &&
+        !v.options.includes(v.defaultValue)
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          message: `defaultValue "${v.defaultValue}" is not one of the options for variable "${v.name}"`,
+        });
+      }
+    }
+  });
+
+export const dashboardCreateSchema = z.object({
+  name: z.string().min(1).max(120),
+  variables: dashboardVariablesSchema.optional(),
+});
+export const dashboardUpdateSchema = z.object({
+  name: z.string().min(1).max(120),
+  variables: dashboardVariablesSchema.optional(),
+});
+
+export type DashboardVariableInput = z.infer<typeof dashboardVariableSchema>;
 
 export const dashboardWidgetCreateSchema = z.object({
   type: dashboardWidgetTypeSchema,
   title: z.string().min(1).max(200),
   config: dashboardWidgetConfigSchema,
-  layout: dashboardWidgetLayoutSchema,
+  // Optional: when omitted, `addDashboardWidget` applies the standard size for
+  // the widget type via `defaultWidgetLayout`.
+  layout: dashboardWidgetLayoutSchema.optional(),
 });
 
 export const dashboardWidgetUpdateSchema = z.object({
@@ -108,7 +193,13 @@ export async function createDashboard(
   }
   const inserted = await db
     .insert(schema.dashboards)
-    .values({ projectId, name: input.name, slug, createdBy: userId })
+    .values({
+      projectId,
+      name: input.name,
+      slug,
+      createdBy: userId,
+      ...(input.variables !== undefined ? { variables: input.variables } : {}),
+    })
     .returning();
   const row = inserted[0];
   if (!row) throw new Error("dashboards insert returned no rows");
@@ -122,7 +213,24 @@ export async function updateDashboard(
 ): Promise<schema.Dashboard | null> {
   const updated = await db
     .update(schema.dashboards)
-    .set({ name: input.name, updatedAt: new Date() })
+    .set({
+      name: input.name,
+      ...(input.variables !== undefined ? { variables: input.variables } : {}),
+      updatedAt: new Date(),
+    })
+    .where(and(eq(schema.dashboards.id, id), eq(schema.dashboards.projectId, projectId)))
+    .returning();
+  return updated[0] ?? null;
+}
+
+export async function setDashboardVariables(
+  projectId: string,
+  id: string,
+  variables: DashboardVariableInput[],
+): Promise<schema.Dashboard | null> {
+  const updated = await db
+    .update(schema.dashboards)
+    .set({ variables, updatedAt: new Date() })
     .where(and(eq(schema.dashboards.id, id), eq(schema.dashboards.projectId, projectId)))
     .returning();
   return updated[0] ?? null;
@@ -163,7 +271,7 @@ export async function addDashboardWidget(
       type: input.type,
       title: input.title,
       config: input.config,
-      layout: input.layout,
+      layout: input.layout ?? defaultWidgetLayout(input.type),
       position: nextPosition,
     })
     .returning();

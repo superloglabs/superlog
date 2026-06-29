@@ -24,6 +24,17 @@ export function compare(
   return comparator === "gt" ? value > threshold : value < threshold;
 }
 
+// The "worst" of two observed values for an alert's comparator direction:
+// `gt` alerts breach harder as the value climbs (keep the max), `lt` alerts
+// breach harder as it drops (keep the min). Used to track an episode's peak.
+export function moreSevereValue(
+  prev: number,
+  next: number,
+  comparator: schema.AlertComparator,
+): number {
+  return comparator === "gt" ? Math.max(prev, next) : Math.min(prev, next);
+}
+
 export function alertFingerprint(alertId: string, groupKey: string): string {
   return groupKey ? `alert:${alertId}:${groupKey}` : `alert:${alertId}`;
 }

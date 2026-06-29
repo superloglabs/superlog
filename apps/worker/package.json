@@ -28,6 +28,7 @@
     "test:alerts-evaluate": "tsx --test src/alerts/evaluate.test.ts",
     "test:autorecovery-domain": "tsx --test src/autorecovery/domain.test.ts",
     "test:autorecovery-agent": "tsx --test src/autorecovery/agent.test.ts",
+    "test:autorecovery-metrics": "tsx --test src/autorecovery/metrics-repository.test.ts",
     "test:autorecovery-tick": "tsx --test src/autorecovery/tick.test.ts",
     "test:grouping-domain": "tsx --test src/grouping/domain.test.ts",
     "test:grouping-candidate-search": "tsx --test src/grouping/candidate-search.test.ts",

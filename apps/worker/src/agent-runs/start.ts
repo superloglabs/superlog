@@ -234,6 +234,7 @@ async function startRunnerSession(
         githubConnected: ctx.githubInstalls.length > 0,
         telemetryInvestigationHint: TELEMETRY_INVESTIGATION_HINT,
         customInstructions: ctx.customInstructions,
+        customPrompt: ctx.agentRun.prompt ?? null,
         memories: ctx.memories.map((memory) => ({
           id: memory.id,
           kind: memory.kind,

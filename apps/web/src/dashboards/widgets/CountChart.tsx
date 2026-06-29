@@ -13,6 +13,7 @@ import {
   buildTopNSeries,
   parseStepMs,
 } from "./series-topn.ts";
+import { type SummaryAgg, type WidgetUnit, formatValue, summarizeSeries } from "./widget-format.ts";
 
 type SeriesChartProps<T extends GroupedRow> = {
   rows: T[];
@@ -32,6 +33,17 @@ type SeriesChartProps<T extends GroupedRow> = {
   showYAxis?: boolean;
   showLegend: boolean;
   legendPosition: LegendPosition;
+  /** How to render values on the axis, in the tooltip, and in the legend. */
+  unit?: WidgetUnit;
+  /**
+   * Aggregation the legend headline mirrors: "sum" for count widgets, the
+   * widget's own aggregation for metric widgets (the window total of per-bucket
+   * sums is meaningless for a gauge metric, so the headline matches the chart).
+   */
+  legendAgg?: SummaryAgg;
+  /** Optional horizontal reference line (e.g. an alert threshold). */
+  threshold?: number;
+  thresholdLabel?: string;
 };
 
 type TimeseriesData = ChartSeries & {
@@ -60,10 +72,7 @@ const FIRST_CHART_COLOR = "#4290F0";
 const OTHER_COLOR = "#878787";
 const AXIS_LABEL_COLOR = "rgba(138, 138, 143, 0.5)";
 const GRID_LINE_COLOR = "rgba(255, 255, 255, 0.07)";
-
-const defaultNumberFormat = new Intl.NumberFormat(undefined, {
-  maximumFractionDigits: 3,
-});
+const THRESHOLD_COLOR = "#E8649D";
 
 const timestampFormat = new Intl.DateTimeFormat(undefined, {
   month: "short",
@@ -85,6 +94,10 @@ export function CountChart<T extends GroupedRow>({
   showYAxis = false,
   showLegend,
   legendPosition,
+  unit = "none",
+  legendAgg = "sum",
+  threshold,
+  thresholdLabel,
 }: SeriesChartProps<T>) {
   const window = useMemo(() => {
     const sinceMs = range ? Date.parse(range.since) : Number.NaN;
@@ -146,6 +159,9 @@ export function CountChart<T extends GroupedRow>({
       xMax={window?.untilMs}
       showXAxis={showXAxis}
       showYAxis={showYAxis}
+      unit={unit}
+      threshold={threshold}
+      thresholdLabel={thresholdLabel}
       optionUpdateBehavior={{ notMerge: true, lazyUpdate: true }}
     />
   );
@@ -163,19 +179,23 @@ export function CountChart<T extends GroupedRow>({
           hiddenSeries={hiddenSeries}
           onToggleSeries={toggleSeries}
           position="bottom"
+          unit={unit}
+          legendAgg={legendAgg}
         />
       </div>
     );
   }
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_150px]">
+    <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_180px]">
       <div className="min-h-0 min-w-0">{chart}</div>
       <SeriesLegend
         series={allSeries}
         hiddenSeries={hiddenSeries}
         onToggleSeries={toggleSeries}
         position="side"
+        unit={unit}
+        legendAgg={legendAgg}
       />
     </div>
   );
@@ -189,6 +209,9 @@ function KumoLikeTimeseriesChart({
   xMax,
   showXAxis,
   showYAxis,
+  unit,
+  threshold,
+  thresholdLabel,
   optionUpdateBehavior,
 }: {
   data: TimeseriesData[];
@@ -198,6 +221,9 @@ function KumoLikeTimeseriesChart({
   xMax?: number;
   showXAxis: boolean;
   showYAxis: boolean;
+  unit: WidgetUnit;
+  threshold?: number;
+  thresholdLabel?: string;
   optionUpdateBehavior?: SetOptionOpts;
 }) {
   const chartRef = useRef<EChartsCore.ECharts | null>(null);
@@ -221,6 +247,27 @@ function KumoLikeTimeseriesChart({
         emphasis: { focus: "series" },
         ...seriesType,
       });
+    }
+
+    // Dashed horizontal reference line (e.g. an alert threshold). Attached to
+    // the first series, or a dummy line series when there's no data yet so the
+    // threshold still renders.
+    if (threshold != null && Number.isFinite(threshold)) {
+      const markLine = {
+        silent: true,
+        symbol: "none" as const,
+        data: [{ yAxis: threshold }],
+        lineStyle: { type: "dashed" as const, color: THRESHOLD_COLOR, width: 1 },
+        label: {
+          show: true,
+          position: "insideEndTop" as const,
+          formatter: thresholdLabel ?? `threshold ${formatValue(threshold, unit)}`,
+          color: THRESHOLD_COLOR,
+          fontSize: 10,
+        },
+      };
+      if (transformSeries[0]) transformSeries[0].markLine = markLine;
+      else transformSeries.push({ type: "line", data: [], markLine });
     }
 
     return {
@@ -258,7 +305,7 @@ function KumoLikeTimeseriesChart({
           color: AXIS_LABEL_COLOR,
           fontSize: 11,
           margin: 10,
-          formatter: (value: number) => formatDefaultValue(value),
+          formatter: (value: number) => formatValue(value, unit),
         },
         splitLine: {
           show: true,
@@ -274,7 +321,7 @@ function KumoLikeTimeseriesChart({
       },
       series: transformSeries,
     } satisfies EChartsOption;
-  }, [data, type, xMin, xMax, showXAxis, showYAxis]);
+  }, [data, type, xMin, xMax, showXAxis, showYAxis, unit, threshold, thresholdLabel]);
 
   const events = useMemo<Partial<ChartEvents>>(
     () => ({
@@ -334,7 +381,7 @@ function KumoLikeTimeseriesChart({
             collisionPadding={8}
           >
             <TooltipPrimitive.Popup className="rounded-lg border border-border-strong bg-surface px-2 py-2 text-fg shadow-2xl shadow-black/30">
-              <TooltipContent state={tooltipState} />
+              <TooltipContent state={tooltipState} unit={unit} />
             </TooltipPrimitive.Popup>
           </TooltipPrimitive.Positioner>
         </TooltipPrimitive.Portal>
@@ -447,7 +494,13 @@ const Chart = forwardRef<
 
 Chart.displayName = "Chart";
 
-const TooltipContent = memo(function TooltipContent({ state }: { state: TooltipState }) {
+const TooltipContent = memo(function TooltipContent({
+  state,
+  unit,
+}: {
+  state: TooltipState;
+  unit: WidgetUnit;
+}) {
   const { ts, rows, hiddenCount } = state;
   return (
     <>
@@ -464,7 +517,7 @@ const TooltipContent = memo(function TooltipContent({ state }: { state: TooltipS
             </span>
           </div>
           <span className="shrink-0 text-xs font-semibold text-fg">
-            {formatDefaultValue(row.value)}
+            {formatValue(row.value, unit)}
           </span>
         </div>
       ))}
@@ -478,11 +531,15 @@ function SeriesLegend({
   hiddenSeries,
   onToggleSeries,
   position,
+  unit,
+  legendAgg,
 }: {
   series: TimeseriesData[];
   hiddenSeries: Set<string>;
   onToggleSeries: (name: string) => void;
   position: LegendPosition;
+  unit: WidgetUnit;
+  legendAgg: SummaryAgg;
 }) {
   const isBottom = position === "bottom";
   return (
@@ -528,7 +585,7 @@ function SeriesLegend({
                   inactive && "text-subtle line-through opacity-60",
                 )}
               >
-                {formatDefaultValue(item.total)}
+                {formatValue(summarizeSeries(item.values, legendAgg), unit)}
               </span>
             </button>
           );
@@ -575,11 +632,6 @@ function getAxisPointerTimestamp(params: unknown): number | undefined {
   const axesInfo = (params as { axesInfo?: Array<{ value?: unknown }> }).axesInfo;
   const value = axesInfo?.[0]?.value;
   return typeof value === "number" ? value : undefined;
-}
-
-function formatDefaultValue(value: number): string {
-  if (Number.isInteger(value)) return String(value);
-  return defaultNumberFormat.format(value);
 }
 
 function formatTimestamp(value: number): string {

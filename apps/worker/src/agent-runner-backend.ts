@@ -72,6 +72,9 @@ export type AgentRunnerStartInput = {
   githubConnected: boolean;
   telemetryInvestigationHint: string;
   customInstructions: string;
+  // The user's free-text brief for a manually-started investigation. Null for
+  // ordinary auto incident runs; injected into the agent's initial prompt.
+  customPrompt: string | null;
   // Durable cross-run facts (terminology, infra, feedback lessons) saved by
   // earlier runs or by users. Injected into the initial prompt in full.
   memories: AgentRunnerMemory[];

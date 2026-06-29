@@ -112,6 +112,15 @@ test("skips when the active run is the original (non-follow-up) investigation", 
   assert.deepEqual(verdict, { action: "skip", reason: "run_active" });
 });
 
+test("treats a queued manual investigation as initial — skips, does not append", () => {
+  // A user-started ("manual") run is an initial investigation like "incident":
+  // an inbound interaction while it's queued must not stack onto it.
+  const verdict = evaluateFollowUpEligibility(
+    input({ activeRun: { id: "run-1", state: "queued", trigger: "manual" } }),
+  );
+  assert.deepEqual(verdict, { action: "skip", reason: "run_active" });
+});
+
 // --- Session-continuity routing (decideInboundContinuation) ---
 //
 // The new model: an inbound message continues the SAME durable provider

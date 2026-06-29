@@ -48,6 +48,7 @@ import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
+import { setTelemetryShutdown } from "./src/telemetry-shutdown.js";
 
 if (process.env.OTEL_DIAG_DEBUG === "1") {
   diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.INFO);
@@ -134,10 +135,10 @@ if (telemetryEnabled) {
     }
   };
 
-  process.once("SIGTERM", () => {
-    void shutdown().finally(() => process.exit(0));
-  });
-  process.once("SIGINT", () => {
-    void shutdown().finally(() => process.exit(0));
-  });
+  // Do NOT register a SIGTERM/SIGINT handler here. The app's shutdown sequence
+  // (apps/proxy/src/index.ts) owns the signals and invokes this flush AFTER it
+  // drains in-flight ingest work. A second handler here used to process.exit(0)
+  // as soon as the OTel flush finished, killing the process before the slower
+  // SQS drain completed — orphaning in-flight messages on every deploy.
+  setTelemetryShutdown(shutdown);
 }

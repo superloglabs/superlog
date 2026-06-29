@@ -481,6 +481,30 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
     }
   } catch (err) {
     if (isTransientError(err)) {
+      // A run whose provider session has gone permanently unreachable (e.g. a
+      // session abandoned across a deploy, or one Anthropic has since reaped)
+      // throws a transient-shaped error — timeout / connection reset / 5xx —
+      // on EVERY collect(). Left alone it retries forever and sits in
+      // `running` indefinitely (weeks, in prod), holding a slot in the active
+      // set that the tick rotates through on every pass. The wall-clock
+      // backstop above can't catch these: it lives past the collect() call
+      // that's throwing. So apply the same budget here — once a run has blown
+      // its wall-clock budget, stop retrying transient failures and reap it.
+      if (
+        exceededWallClockBudget({
+          startedAt: ctx.agentRun.startedAt,
+          now: new Date(),
+          maxRuntimeMinutes: ctx.automation.maxRuntimeMinutes,
+        })
+      ) {
+        await failAgentRun(
+          ctx,
+          "wall_clock_timeout",
+          "Investigation exceeded its wall-clock budget while its managed session stayed unreachable.",
+          { err },
+        );
+        return;
+      }
       logger.error(
         {
           err,

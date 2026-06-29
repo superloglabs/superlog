@@ -1,6 +1,7 @@
 import type { MetricAggregation, ResourceAttr } from "../api.ts";
-import { type ChartType, type LegendPosition, type Widget, type WidgetConfig, type WidgetType } from "./types.ts";
+import type { ChartType, LegendPosition, Widget, WidgetConfig, WidgetType } from "./types.ts";
 import { DEFAULT_TOP_N } from "./widgets/series-topn.ts";
+import type { WidgetUnit } from "./widgets/widget-format.ts";
 
 export type WidgetKind = "chart" | "table" | "note";
 export type WidgetDataSource = "metric" | "traces" | "logs";
@@ -22,6 +23,7 @@ export type WidgetFormState = {
   attrs: ResourceAttr[];
   chartType?: ChartType;
   aggregation: MetricAggregation | "auto";
+  unit: WidgetUnit;
   showXAxis: boolean;
   showYAxis: boolean;
   showLegend: boolean;
@@ -40,6 +42,7 @@ export function emptyWidgetForm(): WidgetFormState {
     attrs: [],
     chartType: undefined,
     aggregation: "auto",
+    unit: "none",
     showXAxis: true,
     showYAxis: true,
     showLegend: false,
@@ -123,6 +126,7 @@ export function formFromWidget(widget: Widget): WidgetFormState {
     attrs: c.filter?.resourceAttrs ?? [],
     chartType: c.chartType,
     aggregation: c.aggregation ?? "auto",
+    unit: c.unit ?? "none",
     showXAxis: c.showXAxis ?? base.showXAxis,
     showYAxis: c.showYAxis ?? base.showYAxis,
     showLegend: c.showLegend ?? base.showLegend,
@@ -151,6 +155,7 @@ export function buildWidgetConfig(form: WidgetFormState): WidgetConfig {
   set("aggregation", isMetric && form.aggregation !== "auto" ? form.aggregation : undefined);
   set("limit", isTable ? form.rowLimit : grouped ? form.seriesLimit : undefined);
   set("chartType", isChart ? form.chartType : undefined);
+  set("unit", isChart && form.unit !== "none" ? form.unit : undefined);
   set("showXAxis", isChart ? form.showXAxis : undefined);
   set("showYAxis", isChart ? form.showYAxis : undefined);
   set("showLegend", isChart ? form.showLegend : undefined);

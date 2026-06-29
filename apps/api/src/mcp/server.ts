@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { registerAgentConfigTools } from "./agent-config.js";
 import { registerAlertTools } from "./alerts.js";
 import { listServices, queryLogs, queryMetrics, queryTraces } from "./clickhouse.js";
 import { registerDashboardTools } from "./dashboards.js";
@@ -75,8 +76,28 @@ export type McpSession = {
   telemetryOnly?: boolean;
 };
 
+// Advisory guidance surfaced to compatible MCP clients in the initialize
+// response. It's a nudge, not a guarantee — the connecting agent decides
+// whether to act on it — but most first-party clients inject it into context,
+// so it's where we steer the agent toward recording durable learnings.
+const SERVER_INSTRUCTIONS = [
+  "Superlog is an observability + investigation platform. Beyond querying telemetry (logs/traces/metrics) and incidents, you can tune how this project investigates issues.",
+  "",
+  "Record memories as you learn. When you uncover something that would help future investigations — a root-cause pattern, an infra/architecture fact, a domain term, or a correction about how to investigate — call create_agent_memory so it's injected into later runs. Prefer a short title + a specific, reusable body over a one-off incident narrative. Check list_agent_memories first to avoid duplicates, and update_agent_memory (status='archived') to retire stale ones.",
+  "",
+  "Capture system-level facts in the project context. For durable facts that apply to every investigation (architecture, conventions, key services), read get_project_context and append via set_project_context (it replaces the whole field, so edit the returned text).",
+  "",
+  "Tune the issue filter to control noise. When the user describes recurring noise or wants investigations scoped to certain services/routes, use get_issue_filter / preview_issue_filter / update_issue_filter — excludes drop matching events, non-empty includes restrict to matching events. Always preview before saving.",
+].join("\n");
+
 export function createMcpServerForSession(session: McpSession): McpServer {
-  const server = new McpServer({ name: "superlog", version: "0.1.0" });
+  // Telemetry-only sessions don't get the agent-config / alert / dashboard /
+  // incident tools, so the guidance below (which is all about them) would
+  // advertise tools that aren't registered. Omit instructions in that case.
+  const server = new McpServer(
+    { name: "superlog", version: "0.1.0" },
+    session.telemetryOnly ? undefined : { instructions: SERVER_INSTRUCTIONS },
+  );
 
   const assertTokenScope = async (projectId: string): Promise<void> => {
     if (!session.allowedOrgId) return;
@@ -284,6 +305,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
     registerAlertTools(server, session, session.ch);
     registerDashboardTools(server, session);
     registerIncidentTools(server, session);
+    registerAgentConfigTools(server, session, session.ch);
   }
 
   return server;

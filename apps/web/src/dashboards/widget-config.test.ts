@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { Widget } from "./types.ts";
 import {
   buildWidgetConfig,
   emptyWidgetForm,
@@ -7,7 +8,6 @@ import {
   generateTitle,
   widgetTypeFor,
 } from "./widget-config.ts";
-import type { Widget } from "./types.ts";
 
 function widget(partial: Partial<Widget>): Widget {
   return {
@@ -81,6 +81,34 @@ test("round-trips a fully specified metric widget config", () => {
     },
   });
   assert.deepEqual(buildWidgetConfig(formFromWidget(w)), w.config);
+});
+
+test("round-trips a metric widget with a unit", () => {
+  const w = widget({
+    type: "timeseries_metric",
+    config: {
+      filter: {},
+      metricName: "ingest.latency",
+      aggregation: "avg",
+      unit: "duration_ms",
+      chartType: "line",
+      showXAxis: true,
+      showYAxis: true,
+      showLegend: true,
+      legendPosition: "side",
+    },
+  });
+  assert.deepEqual(buildWidgetConfig(formFromWidget(w)), w.config);
+});
+
+test("unit 'none' is omitted from config", () => {
+  const form = {
+    ...emptyWidgetForm(),
+    kind: "chart" as const,
+    source: "logs" as const,
+    unit: "none" as const,
+  };
+  assert.equal(buildWidgetConfig(form).unit, undefined);
 });
 
 test("round-trips a markdown note", () => {

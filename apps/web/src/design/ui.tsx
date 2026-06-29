@@ -173,6 +173,43 @@ export function Chip({
   );
 }
 
+// Rounded-pill segmented toggle. The selected option gets a raised pill;
+// the rest are muted text on the shared track. Sans, no caps.
+export function PillToggle({
+  value,
+  options,
+  onChange,
+  size = "md",
+}: {
+  value: string;
+  options: { value: string; label: ReactNode }[];
+  onChange: (v: string) => void;
+  size?: "sm" | "md";
+}) {
+  const pad = size === "sm" ? "px-2.5 py-0.5 text-[12px]" : "px-3 py-1 text-[12.5px]";
+  return (
+    <div role="radiogroup" className="inline-flex items-center gap-1">
+      {options.map((o) => {
+        const active = o.value === value;
+        return (
+          <button
+            key={o.value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            onClick={() => onChange(o.value)}
+            className={`rounded-full ${pad} transition-colors ${
+              active ? "bg-surface-3 text-fg shadow-sm" : "text-muted hover:text-fg"
+            }`}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Inputs
 // ---------------------------------------------------------------------------

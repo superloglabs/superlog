@@ -90,6 +90,8 @@ import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
 import { Btn, Chip, FieldLabel, Input, Label, Tile } from "./design/ui";
 import { AgentMemoriesCard } from "./settings/AgentMemoriesCard.tsx";
 import { BillingCard } from "./settings/BillingCard.tsx";
+import { CreateOrgCard } from "./settings/CreateOrgCard.tsx";
+import { OrgDangerCard } from "./settings/OrgDangerCard.tsx";
 import { OrgGeneralCard } from "./settings/OrgGeneralCard.tsx";
 import { OrgMembersCard } from "./settings/OrgMembersCard.tsx";
 import {
@@ -517,6 +519,15 @@ function OrgSectionView({ section }: { section: OrgSectionId }) {
             subtitle="A short Slack recap of the top 3 pending bug-fix PRs, ranked by an LLM."
           >
             <WeeklyDigestCard />
+          </Section>
+          <Section
+            title="Create organization"
+            subtitle="Spin up another organization — useful for separating teams, clients, or environments."
+          >
+            <CreateOrgCard />
+          </Section>
+          <Section title="Danger zone" subtitle="Irreversible actions for this organization.">
+            <OrgDangerCard />
           </Section>
         </div>
       );

@@ -1,0 +1,1 @@
+ALTER TABLE "dashboards" ADD COLUMN "variables" jsonb DEFAULT '[]'::jsonb NOT NULL;

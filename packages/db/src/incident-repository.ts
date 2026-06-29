@@ -22,31 +22,6 @@ export function createIncidentRepository(database: DB) {
       return database.transaction(fn);
     },
 
-    createOpenIncident(opts: {
-      projectId: string;
-      service: string | null;
-      environment?: string | null;
-      title: string;
-      codename: string;
-      firstSeen: Date;
-      lastSeen: Date;
-    }): Promise<schema.Incident[]> {
-      return database
-        .insert(schema.incidents)
-        .values({
-          projectId: opts.projectId,
-          service: opts.service,
-          environment: opts.environment ?? null,
-          title: opts.title,
-          codename: opts.codename,
-          status: "open",
-          firstSeen: opts.firstSeen,
-          lastSeen: opts.lastSeen,
-          issueCount: 0,
-        })
-        .returning();
-    },
-
     async updateIncident(incidentId: string, updates: Partial<schema.Incident>): Promise<void> {
       await database
         .update(schema.incidents)

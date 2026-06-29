@@ -10,6 +10,7 @@ import {
   compare,
   deriveEvaluations,
   evaluationRange,
+  moreSevereValue,
   serviceFromGroup,
 } from "./domain.js";
 
@@ -18,6 +19,15 @@ test("compare honours gt and lt comparators", () => {
   assert.equal(compare(4, "gt", 4), false);
   assert.equal(compare(3, "lt", 4), true);
   assert.equal(compare(4, "lt", 4), false);
+});
+
+test("moreSevereValue keeps the worst value per comparator direction", () => {
+  // gt alerts get worse as the value climbs → keep the max
+  assert.equal(moreSevereValue(10, 25, "gt"), 25);
+  assert.equal(moreSevereValue(25, 10, "gt"), 25);
+  // lt alerts get worse as the value drops → keep the min
+  assert.equal(moreSevereValue(10, 3, "lt"), 3);
+  assert.equal(moreSevereValue(3, 10, "lt"), 3);
 });
 
 test("alertFingerprint includes group key only when present", () => {

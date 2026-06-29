@@ -1,9 +1,24 @@
 import { strict as assert } from "node:assert";
-import { test } from "node:test";
+import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { IngestQueue, type IngestQueueConfig, getIngestQueueConfig } from "./ingest-queue.js";
 
 const noopLogger = { info: () => {}, warn: () => {}, error: () => {} };
+
+// The producer's micro-batch flush timer is unref()'d (see IngestQueue.sendToQueue)
+// so a producer-only proxy never stays alive just for a pending flush. In prod the
+// HTTP server keeps the event loop alive and the timer fires; under the bare test
+// runner there is no other handle, so the loop would drain before the unref'd timer
+// fires and the enqueue() promises would never settle ("Promise resolution is still
+// pending but the event loop has already resolved"). A single ref'd keepalive for the
+// duration of the suite reproduces prod's "loop stays alive" condition.
+let suiteKeepAlive: NodeJS.Timeout;
+before(() => {
+  suiteKeepAlive = setInterval(() => {}, 60_000);
+});
+after(() => {
+  clearInterval(suiteKeepAlive);
+});
 
 function buildConfig(overrides: Partial<IngestQueueConfig> = {}): IngestQueueConfig {
   return {
