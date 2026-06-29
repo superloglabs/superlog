@@ -451,7 +451,7 @@ function attributionPhrase(actor: ResolutionProposalActor): string {
 export async function confirmResolutionProposal(opts: {
   proposalId: string;
   actor: ResolutionProposalActor;
-}): Promise<{ ok: boolean; reason?: string; incidentId?: string }> {
+}): Promise<{ ok: boolean; reason?: string; incidentId?: string; resolved?: boolean }> {
   // Wrap the proposal flip + the incident resolve in one transaction so
   // we can't end up with a "confirmed" proposal whose incident is still
   // open (would happen if resolveIncident throws between the two writes).
