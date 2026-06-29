@@ -291,28 +291,99 @@ async function loadIssueFiltersForProjects(
   return out;
 }
 
-async function upsertIssue(row: {
-  database: DB;
+type PendingIssue = {
   projectId: string;
   kind: "span" | "log";
   service: string | null;
   fp: Fingerprint;
   message: string | null;
-  seenAt: Date;
+  firstSeen: Date;
+  lastSeen: Date;
   lastSample: IssueSample;
-}): Promise<{ transition: Transition; issue: schema.Issue }> {
-  return tracer.startActiveSpan("issue.fingerprint", async (span) => {
-    span.setAttribute("issue.kind", row.kind);
-    span.setAttribute("issue.fingerprint", row.fp.hash);
-    span.setAttribute("issue.exception_type", row.fp.exceptionType);
-    if (row.service) span.setAttribute("issue.service", row.service);
-    span.setAttribute("issue.project_id", row.projectId);
+  eventCount: number;
+};
+
+// Collapse rows that share a (project, fingerprint) into one pending upsert.
+// A single exception storm emits thousands of rows that all map to one issue,
+// so instead of one Postgres round-trip per row we accumulate the count in
+// memory and issue one upsert per distinct fingerprint per batch. We keep the
+// newest row's sample (and its message/service) and the min/max seen times.
+function accumulateIssue(groups: Map<string, PendingIssue>, candidate: PendingIssue): void {
+  const key = `${candidate.projectId}::${candidate.fp.hash}`;
+  const existing = groups.get(key);
+  if (!existing) {
+    groups.set(key, candidate);
+    return;
+  }
+  existing.eventCount += candidate.eventCount;
+  if (candidate.firstSeen < existing.firstSeen) existing.firstSeen = candidate.firstSeen;
+  if (candidate.lastSeen >= existing.lastSeen) {
+    existing.lastSeen = candidate.lastSeen;
+    existing.lastSample = candidate.lastSample;
+    existing.message = candidate.message ?? existing.message;
+    existing.service = candidate.service ?? existing.service;
+  }
+}
+
+// Upsert every accumulated group, isolating each one so a single failing group
+// (e.g. a value Postgres rejects) is logged + counted and skipped rather than
+// wedging the cursor for the whole batch.
+async function flushIssueGroups(
+  database: DB,
+  groups: Map<string, PendingIssue>,
+  handleIssueTransition: IssueTransitionHandler,
+): Promise<void> {
+  for (const group of groups.values()) {
     try {
-      const title = buildIssueTitle(row.fp, row.message);
-      const seenAtIso = row.seenAt.toISOString();
-      const normalizedFrames = JSON.stringify(row.fp.normalizedFrames);
-      const lastSample = JSON.stringify(row.lastSample);
-      const result = await row.database.execute<{
+      const up = await upsertIssue(database, group);
+      if (up.transition !== "seen" && up.issue) {
+        logger.info(
+          {
+            kind: group.kind,
+            transition: up.transition,
+            projectId: group.projectId,
+            fingerprint: group.fp.hash,
+            exceptionType: group.fp.exceptionType,
+            events: group.eventCount,
+          },
+          "issue transition",
+        );
+        await handleIssueTransition(up.issue, up.transition);
+      }
+    } catch (err) {
+      rowFailures.add(group.eventCount, { "telemetry.kind": group.kind });
+      logger.error(
+        {
+          err,
+          kind: group.kind,
+          projectId: group.projectId,
+          fingerprint: group.fp.hash,
+          events: group.eventCount,
+        },
+        "issue upsert failed; skipping rows",
+      );
+    }
+  }
+}
+
+async function upsertIssue(
+  database: DB,
+  group: PendingIssue,
+): Promise<{ transition: Transition; issue: schema.Issue | null }> {
+  return tracer.startActiveSpan("issue.fingerprint", async (span) => {
+    span.setAttribute("issue.kind", group.kind);
+    span.setAttribute("issue.fingerprint", group.fp.hash);
+    span.setAttribute("issue.exception_type", group.fp.exceptionType);
+    if (group.service) span.setAttribute("issue.service", group.service);
+    span.setAttribute("issue.project_id", group.projectId);
+    span.setAttribute("issue.event_count", group.eventCount);
+    try {
+      const title = buildIssueTitle(group.fp, group.message);
+      const firstSeenIso = group.firstSeen.toISOString();
+      const lastSeenIso = group.lastSeen.toISOString();
+      const normalizedFrames = JSON.stringify(group.fp.normalizedFrames);
+      const lastSample = JSON.stringify(group.lastSample);
+      const result = await database.execute<{
         id: string;
         xmax: string;
         prev_issue_id: string | null;
@@ -323,8 +394,8 @@ async function upsertIssue(row: {
       FROM issues i
       LEFT JOIN incident_issues ii ON ii.issue_id = i.id
       LEFT JOIN incidents inc ON inc.id = ii.incident_id
-      WHERE i.project_id = ${row.projectId}
-        AND i.fingerprint = ${row.fp.hash}
+      WHERE i.project_id = ${group.projectId}
+        AND i.fingerprint = ${group.fp.hash}
         AND i.silenced_at IS NULL
     ),
     up AS (
@@ -333,14 +404,14 @@ async function upsertIssue(row: {
         title, message, top_frame, normalized_frames, last_sample,
         first_seen, last_seen, event_count
       ) VALUES (
-        ${row.projectId}, ${row.fp.hash}, ${row.kind}, ${row.service}, ${row.fp.exceptionType},
-        ${title}, ${row.message}, ${row.fp.topFrame}, ${normalizedFrames}::jsonb, ${lastSample}::jsonb,
-        ${seenAtIso}::timestamptz, ${seenAtIso}::timestamptz, 1
+        ${group.projectId}, ${group.fp.hash}, ${group.kind}, ${group.service}, ${group.fp.exceptionType},
+        ${title}, ${group.message}, ${group.fp.topFrame}, ${normalizedFrames}::jsonb, ${lastSample}::jsonb,
+        ${firstSeenIso}::timestamptz, ${lastSeenIso}::timestamptz, ${group.eventCount}
       )
       ON CONFLICT (project_id, fingerprint) WHERE silenced_at IS NULL DO UPDATE SET
         last_seen = GREATEST(issues.last_seen, EXCLUDED.last_seen),
         first_seen = LEAST(issues.first_seen, EXCLUDED.first_seen),
-        event_count = issues.event_count + 1,
+        event_count = issues.event_count + ${group.eventCount},
         message = COALESCE(EXCLUDED.message, issues.message),
         service = COALESCE(EXCLUDED.service, issues.service),
         top_frame = COALESCE(EXCLUDED.top_frame, issues.top_frame),
@@ -362,15 +433,21 @@ async function upsertIssue(row: {
           prev_incident_status: string | null;
         }>
       )[0];
-      const issue = await row.database.query.issues.findFirst({
-        where: (issues, { eq }) => eq(issues.id, raw?.id ?? ""),
-      });
-      if (!issue) throw new Error("failed to load issue after upsert");
       const transition = computeTransition(
         raw?.prev_issue_id ?? null,
         raw?.prev_incident_status ?? null,
       );
       span.setAttribute("issue.transition", transition);
+      // Only reload the full row when a downstream handler needs it (new or
+      // regressed). The common "seen" path skips a second query per group.
+      let issue: schema.Issue | null = null;
+      if (transition !== "seen") {
+        issue =
+          (await database.query.issues.findFirst({
+            where: (issues, { eq }) => eq(issues.id, raw?.id ?? ""),
+          })) ?? null;
+        if (!issue) throw new Error("failed to load issue after upsert");
+      }
       return { transition, issue };
     } catch (err) {
       span.recordException(err as Error);
@@ -553,18 +630,20 @@ async function tickSpans(opts: {
         opts.database,
         rows.map((row) => row.project_id),
       );
+      const groups = new Map<string, PendingIssue>();
       let skippedUnknownProjects = 0;
       let skippedByFilter = 0;
       for (const row of rows) {
+        // Advance past every selected row up front (even skipped/failed ones) so
+        // the batch can never wedge the cursor; the upserts happen afterward.
+        nextCursor = row.ts;
         if (!validProjectIds.has(row.project_id)) {
           skippedUnknownProjects += 1;
-          nextCursor = row.ts;
           continue;
         }
         const filter = issueFilters.get(row.project_id) ?? schema.EMPTY_ISSUE_FILTER_CONFIG;
         if (!eventPassesIssueFilter("span", filter, [row.resource_attrs, row.span_attrs])) {
           skippedByFilter += 1;
-          nextCursor = row.ts;
           continue;
         }
         const excMessage = stripNullBytes(row.exc_message) || null;
@@ -593,42 +672,19 @@ async function tickSpans(opts: {
           spanAttrs: sanitizeAttrs(row.span_attrs),
           resourceAttrs: sanitizeAttrs(row.resource_attrs),
         };
-        try {
-          const up = await upsertIssue({
-            database: opts.database,
-            projectId: row.project_id,
-            kind: "span",
-            service,
-            fp,
-            message: excMessage,
-            seenAt,
-            lastSample,
-          });
-          if (up.transition !== "seen") {
-            logger.info(
-              {
-                kind: "span",
-                transition: up.transition,
-                projectId: row.project_id,
-                fingerprint: fp.hash,
-                exceptionType: fp.exceptionType,
-              },
-              "issue transition",
-            );
-            await opts.handleIssueTransition(up.issue, up.transition);
-          }
-        } catch (rowErr) {
-          // Never let a single bad row wedge the cursor — a poison row (e.g. a
-          // value Postgres rejects) would otherwise re-fail every tick and stall
-          // issue ingestion for all projects. Log, count, and advance past it.
-          rowFailures.add(1, { "telemetry.kind": "span" });
-          logger.error(
-            { err: rowErr, kind: "span", projectId: row.project_id, fingerprint: fp.hash },
-            "issue upsert failed; skipping row",
-          );
-        }
-        nextCursor = row.ts;
+        accumulateIssue(groups, {
+          projectId: row.project_id,
+          kind: "span",
+          service,
+          fp,
+          message: excMessage,
+          firstSeen: seenAt,
+          lastSeen: seenAt,
+          lastSample,
+          eventCount: 1,
+        });
       }
+      await flushIssueGroups(opts.database, groups, opts.handleIssueTransition);
       logSkippedEvents("span", skippedUnknownProjects, skippedByFilter);
       if (selectedTimestampCount < opts.batchSize) nextCursor = cursorWindow.untilTs;
       await setCursor(opts.database, SPAN_CURSOR, nextCursor);
@@ -722,18 +778,20 @@ async function tickLogs(opts: {
         opts.database,
         rows.map((row) => row.project_id),
       );
+      const groups = new Map<string, PendingIssue>();
       let skippedUnknownProjects = 0;
       let skippedByFilter = 0;
       for (const row of rows) {
+        // Advance past every selected row up front (even skipped/failed ones) so
+        // the batch can never wedge the cursor; the upserts happen afterward.
+        nextCursor = row.ts;
         if (!validProjectIds.has(row.project_id)) {
           skippedUnknownProjects += 1;
-          nextCursor = row.ts;
           continue;
         }
         const filter = issueFilters.get(row.project_id) ?? schema.EMPTY_ISSUE_FILTER_CONFIG;
         if (!eventPassesIssueFilter("log", filter, [row.resource_attrs, row.log_attrs])) {
           skippedByFilter += 1;
-          nextCursor = row.ts;
           continue;
         }
         const body = stripNullBytes(row.body) || null;
@@ -764,42 +822,19 @@ async function tickLogs(opts: {
           logAttrs: sanitizeAttrs(row.log_attrs),
           resourceAttrs: sanitizeAttrs(row.resource_attrs),
         };
-        try {
-          const up = await upsertIssue({
-            database: opts.database,
-            projectId: row.project_id,
-            kind: "log",
-            service,
-            fp,
-            message: body,
-            seenAt,
-            lastSample,
-          });
-          if (up.transition !== "seen") {
-            logger.info(
-              {
-                kind: "log",
-                transition: up.transition,
-                projectId: row.project_id,
-                fingerprint: fp.hash,
-                exceptionType: fp.exceptionType,
-              },
-              "issue transition",
-            );
-            await opts.handleIssueTransition(up.issue, up.transition);
-          }
-        } catch (rowErr) {
-          // Never let a single bad row wedge the cursor — a poison row (e.g. a
-          // value Postgres rejects) would otherwise re-fail every tick and stall
-          // issue ingestion for all projects. Log, count, and advance past it.
-          rowFailures.add(1, { "telemetry.kind": "log" });
-          logger.error(
-            { err: rowErr, kind: "log", projectId: row.project_id, fingerprint: fp.hash },
-            "issue upsert failed; skipping row",
-          );
-        }
-        nextCursor = row.ts;
+        accumulateIssue(groups, {
+          projectId: row.project_id,
+          kind: "log",
+          service,
+          fp,
+          message: body,
+          firstSeen: seenAt,
+          lastSeen: seenAt,
+          lastSample,
+          eventCount: 1,
+        });
       }
+      await flushIssueGroups(opts.database, groups, opts.handleIssueTransition);
       logSkippedEvents("log", skippedUnknownProjects, skippedByFilter);
       if (selectedTimestampCount < opts.batchSize) nextCursor = cursorWindow.untilTs;
       await setCursor(opts.database, LOG_CURSOR, nextCursor);
