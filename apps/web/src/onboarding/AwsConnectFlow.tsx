@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   type StackComponent,
   useCloudConnections,
@@ -103,8 +103,18 @@ export function AwsConnectFlow({
     connection?.id,
     connection?.status === "connected",
   );
+  // Latch on first delivery. `awsStreamFlowing` reads stack-health "working",
+  // which is a rolling recency window (a stream goes quiet → back to non-working
+  // after ~15 min). The onboarding milestone is whether the first AWS events
+  // *ever* arrived, so once we've seen the stream flow we keep the flow unlocked
+  // instead of regressing to "Waiting for data…".
+  const [everFlowed, setEverFlowed] = useState(false);
   const streamFlowing = awsStreamFlowing(stackHealth.data?.components);
-  const phase = awsPhase({ connection, streamFlowing });
+  useEffect(() => {
+    if (streamFlowing) setEverFlowed(true);
+  }, [streamFlowing]);
+  const flowing = streamFlowing || everFlowed;
+  const phase = awsPhase({ connection, streamFlowing: flowing });
 
   const connect = () => {
     if (!isValidRegion(region) || create.isPending) return;
@@ -158,7 +168,7 @@ export function AwsConnectFlow({
       {(phase === "connected" || phase === "flowing") && connection && (
         <ConnectedPanel
           components={stackHealth.data?.components ?? []}
-          streamFlowing={streamFlowing}
+          streamFlowing={flowing}
           region={connection.region}
           accountId={connection.accountId}
           resourceCount={resources.data?.length ?? 0}
