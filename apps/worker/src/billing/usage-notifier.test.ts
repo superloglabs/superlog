@@ -213,12 +213,41 @@ test("isFreePlan: only true when every active subscription is the free plan", ()
     }),
     false,
   );
-  // canceled/expired paid sub is ignored; remaining active free → free
+  // canceled-at-period-end paid sub still grants access (canceled_at set,
+  // expires_at in the future) → NOT free, even alongside a free sub. This is the
+  // cubic P1: don't drop a paid sub just because canceled_at is present.
+  assert.equal(
+    isFreePlan(
+      {
+        subscriptions: [
+          { plan_id: "free", status: "active" },
+          { plan_id: "payg", status: "active", canceled_at: 1000, expires_at: 5000 },
+        ],
+      },
+      2000, // now < expires_at → paid access still live
+    ),
+    false,
+  );
+  // genuinely-lapsed paid sub (expires_at in the past) is ignored; remaining
+  // active free → free.
+  assert.equal(
+    isFreePlan(
+      {
+        subscriptions: [
+          { plan_id: "free", status: "active" },
+          { plan_id: "payg", status: "active", canceled_at: 1000, expires_at: 5000 },
+        ],
+      },
+      9000, // now > expires_at → paid access has lapsed
+    ),
+    true,
+  );
+  // status `expired` paid sub is ignored regardless of timestamps.
   assert.equal(
     isFreePlan({
       subscriptions: [
         { plan_id: "free", status: "active" },
-        { plan_id: "payg", status: "active", canceled_at: 123 },
+        { plan_id: "payg", status: "expired" },
       ],
     }),
     true,

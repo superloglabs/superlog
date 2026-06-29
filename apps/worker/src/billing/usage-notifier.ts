@@ -59,15 +59,27 @@ export function mapAutumnFeatures(body: unknown): FeatureBalance[] {
 // Usage-limit warnings + enforcement apply to the FREE plan only. A paying tier
 // (grandfathered / payg / packs / internal) can still have a hard-capped feature
 // with no overage — so "has a hard cap" is NOT the same as "Free". Gate on the
-// org's actual active Autumn subscription instead: free iff every active
-// subscription is the `free` plan. Unknown/absent subscriptions → not free
-// (safer to stay silent than to warn or block a paying customer).
+// org's actual Autumn subscriptions instead: free iff every subscription that
+// still grants access is the `free` plan. Unknown/absent subscriptions → not
+// free (safer to stay silent than to warn or block a paying customer).
+//
+// Crucially, a paid plan canceled at period end keeps `status:"active"` with
+// `canceled_at` set and `expires_at` in the future — it still grants access, so
+// `canceled_at` alone must NOT drop it (doing so would let a still-paying org
+// with a parallel free subscription look Free and get warned/enforced). A
+// subscription only stops granting access once its window has actually elapsed:
+// status `expired`, or `expires_at` in the past.
 const FREE_PLAN_ID = "free";
-export function isFreePlan(body: unknown): boolean {
+export function isFreePlan(body: unknown, now: number = Date.now()): boolean {
   const subs = (body as { subscriptions?: Array<Record<string, unknown>> } | null)?.subscriptions;
   if (!Array.isArray(subs)) return false;
-  const active = subs.filter((s) => s.status === "active" && !s.canceled_at && !s.expires_at);
-  return active.length > 0 && active.every((s) => s.plan_id === FREE_PLAN_ID);
+  const live = subs.filter((s) => {
+    if (s.status === "expired") return false;
+    const expiresAt = typeof s.expires_at === "number" ? s.expires_at : null;
+    if (expiresAt !== null && expiresAt <= now) return false;
+    return true;
+  });
+  return live.length > 0 && live.every((s) => s.plan_id === FREE_PLAN_ID);
 }
 
 // Structured payload handed to the Loops event sender (the email copy lives in a
