@@ -299,11 +299,17 @@ test("log ingestion isolates a failing row and still advances past it", async ()
       if (call === 1) throw new Error('invalid byte sequence for encoding "UTF8": 0x00');
     },
   });
+  // Distinct exc_type => distinct fingerprints => two separate upsert groups.
   const rows = [
-    { ...logRow({ traceId: "t1", spanId: "s1", body: "poison" }), project_id: VALID_PROJECT_ID },
+    {
+      ...logRow({ traceId: "t1", spanId: "s1", body: "poison" }),
+      project_id: VALID_PROJECT_ID,
+      exc_type: "PoisonError",
+    },
     {
       ...logRow({ traceId: "t2", spanId: "s2", body: "healthy" }),
       project_id: VALID_PROJECT_ID,
+      exc_type: "HealthyError",
       ts: "2026-05-23 10:00:01.000000",
     },
   ];
@@ -328,10 +334,50 @@ test("log ingestion isolates a failing row and still advances past it", async ()
 
   const processed = await ingestor.tickLogs();
   assert.equal(processed, 2);
-  // Both rows attempted (poison row did not abort the loop).
+  // Both groups attempted (the poison group did not abort the flush).
   assert.equal(executeCalls(), 2);
   // Cursor advanced past the poison row to the healthy row's timestamp.
   assert.equal(state.get("fingerprint-logs")?.cursor.toISOString(), "2026-05-23T10:00:01.000Z");
+});
+
+test("log ingestion collapses same-fingerprint rows into a single upsert", async () => {
+  // An exception storm: many rows, one fingerprint. Must be ONE upsert, not N.
+  const { database, state, executeCalls } = fakeDbWithProject({});
+  const rows = [
+    { ...logRow({ traceId: "t1", spanId: "s1", body: "boom" }), project_id: VALID_PROJECT_ID },
+    {
+      ...logRow({ traceId: "t2", spanId: "s2", body: "boom" }),
+      project_id: VALID_PROJECT_ID,
+      ts: "2026-05-23 10:00:01.000000",
+    },
+    {
+      ...logRow({ traceId: "t3", spanId: "s3", body: "boom" }),
+      project_id: VALID_PROJECT_ID,
+      ts: "2026-05-23 10:00:02.000000",
+    },
+  ];
+  let callCount = 0;
+  const clickhouse = {
+    async query() {
+      const out = callCount === 0 ? rows : [];
+      callCount += 1;
+      return {
+        async json() {
+          return out;
+        },
+      };
+    },
+  };
+  const ingestor = createTelemetryIngestor({
+    clickhouse,
+    database,
+    batchSize: 10,
+    async handleIssueTransition() {},
+  });
+
+  assert.equal(await ingestor.tickLogs(), 3);
+  // Three rows, one fingerprint => exactly one upsert round-trip.
+  assert.equal(executeCalls(), 1);
 });
 
 function spanRow(opts: { traceId: string; spanId: string; message: string }) {
