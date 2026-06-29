@@ -48,7 +48,7 @@ async function notifyAgentRunStarted(
         agent_run_id: ctx.agentRun.id,
         err: err instanceof Error ? err.message : String(err),
       },
-      "failed to enqueue agent_run.started webhook",
+      "failed to enqueue incident.updated webhook (agent_started)",
     ),
   );
   await postIncidentThreadMessage(

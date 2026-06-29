@@ -235,10 +235,10 @@ async function applyMergeOutcome(opts: {
     targetIncident: target,
     evidence,
   });
-  // We deliberately do not fire agent_run.completed for a merge (the run
-  // didn't finish investigating a new problem). Instead we emit a dedicated
-  // incident.merged so subscribers can follow the dedupe — the source incident
-  // folded into the survivor at mergedInto.
+  // We deliberately do not relay a completed-investigation update for a merge
+  // (the run didn't finish investigating a new problem). Instead we emit an
+  // incident.updated with change.kind = "merged" so subscribers can follow the
+  // dedupe — the source incident folded into the survivor at mergedInto.
   await enqueueIncidentMerged(ctx.incident.id, {
     targetIncidentId: target.id,
     evidence,
@@ -249,7 +249,7 @@ async function applyMergeOutcome(opts: {
         incident_id: ctx.incident.id,
         err: err instanceof Error ? err.message : String(err),
       },
-      "failed to enqueue incident.merged webhook",
+      "failed to enqueue incident.updated webhook (merged)",
     ),
   );
 

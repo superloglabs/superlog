@@ -142,6 +142,52 @@ test("incident.updated resolved renders the noise auto-close path", () => {
   assert.equal(p.message.body, "Auto-closed as noise.");
 });
 
+test("incident.updated resolved fills the resolution block from noise columns", () => {
+  // The noise auto-close path stamps noiseResolvedAt / noiseReason instead of
+  // the resolved* columns; the payload must fall back to those rather than
+  // emitting an all-null resolution block.
+  const p = buildIncidentUpdatedPayload(
+    fakeIncident({
+      status: "autoresolved_noise",
+      noiseResolvedAt: new Date("2026-05-11T13:05:00.000Z"),
+      noiseReason: "cosmetic_log_only",
+    }),
+    fakeProject(),
+    { kind: "resolved" },
+  );
+  assert.deepEqual(p.change.resolution, {
+    kind: "autoresolved_noise",
+    reasonCode: "cosmetic_log_only",
+    reasonText: null,
+    resolvedAt: "2026-05-11T13:05:00.000Z",
+    status: "autoresolved_noise",
+  });
+});
+
+test("incident.updated resolved without a reason renders a bare message", () => {
+  const p = buildIncidentUpdatedPayload(
+    fakeIncident({ status: "resolved", resolvedAt: new Date("2026-05-11T13:00:00.000Z") }),
+    fakeProject(),
+    { kind: "resolved" },
+  );
+  assert.equal(p.message.body, "Resolved.");
+});
+
+test("incident.updated agent_completed without a PR omits the PR clause", () => {
+  const run = fakeAgentRun({
+    state: "complete",
+    completedAt: new Date("2026-05-11T12:34:00.000Z"),
+    result: { summary: "no code change needed" } as unknown as schema.AgentRun["result"],
+  });
+  const p = buildIncidentUpdatedPayload(
+    fakeIncident(),
+    fakeProject(),
+    { kind: "agent_completed" },
+    { agentRun: serializeAgentRun(run), events: [], pullRequests: [], linearTickets: [] },
+  );
+  assert.equal(p.message.body, "Investigation complete: no code change needed");
+});
+
 test("incident.updated reopened carries the reason + message", () => {
   const p = buildIncidentUpdatedPayload(fakeIncident(), fakeProject(), {
     kind: "reopened",

@@ -4668,10 +4668,24 @@ function WebhookEndpointRow({
   const del = useDeleteWebhook(projectId);
   const rotate = useRotateWebhookSecret(projectId);
   const disabled = !!endpoint.disabledAt;
-  const [draftEvents, setDraftEvents] = useState<string[]>(endpoint.enabledEvents ?? []);
+  const serverEvents = endpoint.enabledEvents ?? [];
+  const serverEventsKey = serverEvents.join("\u0000");
+  const [draftEvents, setDraftEvents] = useState<string[]>(serverEvents);
+  // Re-sync the local draft whenever the server value actually changes (after a
+  // save, or a background refetch / concurrent edit), so the picker can't show
+  // stale selections and "Save events" can't clobber newer server state. We key
+  // off a serialized signature and only reset on change, so the initial render
+  // and unrelated re-renders leave an in-progress edit untouched.
+  const lastSyncedRef = useRef(serverEventsKey);
+  useEffect(() => {
+    if (lastSyncedRef.current !== serverEventsKey) {
+      lastSyncedRef.current = serverEventsKey;
+      setDraftEvents(serverEvents);
+    }
+  }, [serverEventsKey, serverEvents]);
   const eventsDirty =
-    draftEvents.length !== (endpoint.enabledEvents ?? []).length ||
-    draftEvents.some((e) => !(endpoint.enabledEvents ?? []).includes(e));
+    draftEvents.length !== serverEvents.length ||
+    draftEvents.some((e) => !serverEvents.includes(e));
 
   return (
     <li className="py-3">

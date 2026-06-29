@@ -122,7 +122,7 @@ export async function failAgentRun(
         agent_run_id: ctx.agentRun.id,
         err: err instanceof Error ? err.message : String(err),
       },
-      "failed to enqueue agent_run.failed webhook",
+      "failed to enqueue incident.updated webhook (agent_failed)",
     ),
   );
   const emoji =
@@ -168,7 +168,7 @@ export async function moveAgentRunToAwaitingHuman(
         agent_run_id: ctx.agentRun.id,
         err: err instanceof Error ? err.message : String(err),
       },
-      "failed to enqueue agent_run.awaiting_input webhook",
+      "failed to enqueue incident.updated webhook (agent_awaiting_input)",
     ),
   );
   await postIncidentThreadMessage(ctx.incident.id, `:speech_balloon: ${summary}\n${question}`);
@@ -212,7 +212,7 @@ export async function moveAgentRunToBlockedNoGithub(
         agent_run_id: ctx.agentRun.id,
         err: err instanceof Error ? err.message : String(err),
       },
-      "failed to enqueue agent_run.awaiting_input webhook",
+      "failed to enqueue incident.updated webhook (agent_awaiting_input)",
     ),
   );
   const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;

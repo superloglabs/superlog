@@ -349,18 +349,25 @@ function changeBody(
   change: IncidentChange,
 ): Record<string, unknown> & { kind: IncidentChangeKind } {
   switch (change.kind) {
-    case "resolved":
+    case "resolved": {
+      // The noise auto-close path flips status to `autoresolved_noise` and
+      // stamps `noiseResolvedAt` / `noiseReason` rather than the `resolved*`
+      // columns, so fall back to those for that terminal-resolve case instead
+      // of emitting an all-null resolution block.
+      const isNoise = incident.status === "autoresolved_noise";
       return {
         kind: "resolved",
         resolution: {
-          kind: incident.resolvedByKind ?? null,
-          reasonCode: incident.resolvedReasonCode ?? null,
+          kind: incident.resolvedByKind ?? (isNoise ? "autoresolved_noise" : null),
+          reasonCode:
+            incident.resolvedReasonCode ?? (isNoise ? (incident.noiseReason ?? null) : null),
           reasonText: incident.resolvedReasonText ?? null,
-          resolvedAt: iso(incident.resolvedAt),
+          resolvedAt: iso(incident.resolvedAt) ?? (isNoise ? iso(incident.noiseResolvedAt) : null),
           // Status disambiguates a plain resolve from a noise auto-close.
           status: incident.status,
         },
       };
+    }
     case "reopened":
       return {
         kind: "reopened",

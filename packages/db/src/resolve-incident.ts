@@ -492,7 +492,7 @@ export async function confirmResolutionProposal(opts: {
       if (!existing) return { ok: false, reason: "unknown_proposal" };
       return { ok: false, reason: `already_${existing.decision}` };
     }
-    await resolveIncidentInTx(
+    const resolveResult = await resolveIncidentInTx(
       tx,
       {
         incidentId: row.incidentId,
@@ -505,9 +505,15 @@ export async function confirmResolutionProposal(opts: {
       },
       createIncidentRepository(db),
     );
-    return { ok: true, incidentId: row.incidentId };
+    // `resolved` is false when the incident was already closed by a concurrent
+    // path (manual resolve, PR merge, …) — resolveIncidentInTx is a no-op then.
+    // Only signal a resolve when this call actually flipped the status, so we
+    // don't emit a duplicate incident.updated webhook.
+    return { ok: true, incidentId: row.incidentId, resolved: resolveResult.resolved };
   });
-  if (outcome.ok && outcome.incidentId) await emitIncidentResolved(db, outcome.incidentId);
+  if (outcome.ok && outcome.resolved && outcome.incidentId) {
+    await emitIncidentResolved(db, outcome.incidentId);
+  }
   return outcome;
 }
 
