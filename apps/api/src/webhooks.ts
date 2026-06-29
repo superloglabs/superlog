@@ -1,8 +1,10 @@
 import {
+  WEBHOOK_EVENT_TYPES,
   db,
   enqueueRedelivery,
   enqueueTestDelivery,
   generateWebhookSecret,
+  isWebhookEventType,
   schema,
 } from "@superlog/db";
 import { and, desc, eq } from "drizzle-orm";
@@ -12,6 +14,25 @@ import { HTTPException } from "hono/http-exception";
 import { resolveActiveOrgContext } from "./org-context.js";
 
 type Vars = { userId: string; orgId: string | null };
+
+// Validate a caller-supplied `enabledEvents`. Returns the deduped, known events
+// (preserving the canonical order) or throws 400 on an unknown / empty list.
+function parseEnabledEvents(raw: unknown): schema.WebhookEventType[] {
+  if (!Array.isArray(raw)) {
+    throw new HTTPException(400, { message: "enabledEvents must be an array" });
+  }
+  const requested = new Set<string>();
+  for (const value of raw) {
+    if (!isWebhookEventType(value)) {
+      throw new HTTPException(400, { message: `unknown event type: ${String(value)}` });
+    }
+    requested.add(value);
+  }
+  if (requested.size === 0) {
+    throw new HTTPException(400, { message: "enabledEvents must include at least one event" });
+  }
+  return WEBHOOK_EVENT_TYPES.filter((event) => requested.has(event));
+}
 
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
 export function mountWebhooks(app: Hono<any>): void {
@@ -54,6 +75,7 @@ export function mountWebhooks(app: Hono<any>): void {
     const body = (await c.req.json().catch(() => ({}))) as {
       url?: unknown;
       description?: unknown;
+      enabledEvents?: unknown;
     };
     const url = typeof body.url === "string" ? body.url.trim() : "";
     if (!url) throw new HTTPException(400, { message: "url required" });
@@ -67,10 +89,14 @@ export function mountWebhooks(app: Hono<any>): void {
     }
     const description =
       typeof body.description === "string" ? body.description.slice(0, 500) : null;
+    // Omitting enabledEvents falls back to the column default (so existing
+    // clients keep working); an explicit list is validated against the catalog.
+    const enabledEvents =
+      body.enabledEvents === undefined ? undefined : parseEnabledEvents(body.enabledEvents);
     const secret = generateWebhookSecret();
     const [row] = await db
       .insert(schema.webhookEndpoints)
-      .values({ projectId, url, description, secret })
+      .values({ projectId, url, description, secret, ...(enabledEvents ? { enabledEvents } : {}) })
       .returning();
     if (!row) throw new HTTPException(500, { message: "failed to create endpoint" });
     return c.json({
@@ -93,6 +119,7 @@ export function mountWebhooks(app: Hono<any>): void {
       url?: unknown;
       description?: unknown;
       disabled?: unknown;
+      enabledEvents?: unknown;
     };
     const patch: Partial<typeof schema.webhookEndpoints.$inferInsert> = { updatedAt: new Date() };
     if (typeof body.url === "string") {
@@ -106,6 +133,8 @@ export function mountWebhooks(app: Hono<any>): void {
     }
     if (typeof body.description === "string") patch.description = body.description.slice(0, 500);
     if (typeof body.disabled === "boolean") patch.disabledAt = body.disabled ? new Date() : null;
+    if (body.enabledEvents !== undefined)
+      patch.enabledEvents = parseEnabledEvents(body.enabledEvents);
     const [row] = await db
       .update(schema.webhookEndpoints)
       .set(patch)

@@ -1,4 +1,10 @@
-import { type AgentRunResult, db, schema } from "@superlog/db";
+import {
+  type AgentRunResult,
+  db,
+  enqueueAgentRunAwaitingInput,
+  enqueueAgentRunFailed,
+  schema,
+} from "@superlog/db";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import {
@@ -109,6 +115,16 @@ export async function failAgentRun(
     category,
     existingResult: detail?.existingResult ?? null,
   });
+  await enqueueAgentRunFailed(ctx.agentRun.id).catch((err) =>
+    logger.error(
+      {
+        scope: "webhooks.enqueue",
+        agent_run_id: ctx.agentRun.id,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "failed to enqueue agent_run.failed webhook",
+    ),
+  );
   const emoji =
     category === "agent" ? ":mag:" : category === "deliverable" ? ":x:" : ":rotating_light:";
   await postIncidentThreadMessage(ctx.incident.id, `${emoji} ${summary}`);
@@ -141,6 +157,20 @@ export async function moveAgentRunToAwaitingHuman(
     summary,
     question,
   });
+  await enqueueAgentRunAwaitingInput(ctx.agentRun.id, {
+    reason: "repository_selection",
+    summary,
+    question,
+  }).catch((err) =>
+    logger.error(
+      {
+        scope: "webhooks.enqueue",
+        agent_run_id: ctx.agentRun.id,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "failed to enqueue agent_run.awaiting_input webhook",
+    ),
+  );
   await postIncidentThreadMessage(ctx.incident.id, `:speech_balloon: ${summary}\n${question}`);
   const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
   await updateIncidentMainMessage(
@@ -171,6 +201,20 @@ export async function moveAgentRunToBlockedNoGithub(
     summary,
     reason,
   });
+  await enqueueAgentRunAwaitingInput(ctx.agentRun.id, {
+    reason,
+    summary,
+    question: null,
+  }).catch((err) =>
+    logger.error(
+      {
+        scope: "webhooks.enqueue",
+        agent_run_id: ctx.agentRun.id,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "failed to enqueue agent_run.awaiting_input webhook",
+    ),
+  );
   const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
   const installUrl = `${WEB_ORIGIN}/settings?tab=github`;
   const tagline = "Connect a GitHub repo so we can investigate.";

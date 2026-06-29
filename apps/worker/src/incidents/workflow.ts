@@ -1,4 +1,10 @@
-import { type DB, db, recordInboundInteraction, schema } from "@superlog/db";
+import {
+  type DB,
+  db,
+  enqueueIncidentCreated,
+  recordInboundInteraction,
+  schema,
+} from "@superlog/db";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { getProjectAutomation } from "../agent-run-context.js";
 import {
@@ -164,6 +170,18 @@ export async function handleIssueTransition(
       projectName: project.name,
       firstIssue: issue,
     });
+  }
+  if (createdIncident) {
+    await enqueueIncidentCreated(incident.id).catch((err) =>
+      logger.error(
+        {
+          scope: "webhooks.enqueue",
+          incident_id: incident.id,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "failed to enqueue incident.created webhook",
+      ),
+    );
   }
 
   // If this incident has already been investigated, a new error signature should

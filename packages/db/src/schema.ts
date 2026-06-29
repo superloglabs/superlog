@@ -1022,9 +1022,22 @@ export const agentLinearTicketEvents = pgTable(
   }),
 );
 
-export type WebhookEventType = "agent_run.completed";
+// Outgoing-integration model: a webhook is "a message to relay", not a typed
+// state-machine event. `incident.created` maps to "post a new message / open a
+// new thread"; `incident.updated` maps to "reply in that thread / edit it".
+// Everything that used to be a distinct event (resolve, reopen, merge, agent
+// started/completed/failed/awaiting) is now an `incident.updated` carrying a
+// `change.kind` discriminator plus a render-ready `message` block.
+export type WebhookEventType = "incident.created" | "incident.updated";
 
-export const WEBHOOK_EVENT_TYPES: readonly WebhookEventType[] = ["agent_run.completed"] as const;
+export const WEBHOOK_EVENT_TYPES: readonly WebhookEventType[] = [
+  "incident.created",
+  "incident.updated",
+] as const;
+
+export function isWebhookEventType(value: unknown): value is WebhookEventType {
+  return typeof value === "string" && (WEBHOOK_EVENT_TYPES as readonly string[]).includes(value);
+}
 
 export type WebhookDeliveryStatus = "pending" | "success" | "failed";
 
@@ -1041,7 +1054,7 @@ export const webhookEndpoints = pgTable(
     enabledEvents: jsonb("enabled_events")
       .$type<WebhookEventType[]>()
       .notNull()
-      .default(sql`'["agent_run.completed"]'::jsonb`),
+      .default(sql`'["incident.created","incident.updated"]'::jsonb`),
     disabledAt: timestamp("disabled_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),

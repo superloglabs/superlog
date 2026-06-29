@@ -1,0 +1,1 @@
+ALTER TABLE "webhook_endpoints" ALTER COLUMN "enabled_events" SET DEFAULT '["incident.created","incident.updated"]'::jsonb;

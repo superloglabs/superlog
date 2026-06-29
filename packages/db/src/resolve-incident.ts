@@ -10,6 +10,35 @@ import {
   decideRegressionTransition,
 } from "./incident-state.js";
 import * as schema from "./schema.js";
+import {
+  type IncidentReopenedReason,
+  enqueueIncidentReopened,
+  enqueueIncidentResolved,
+} from "./webhook-events.js";
+
+// Outbound webhooks are a best-effort side effect of a committed lifecycle
+// transition: a delivery row is written after the transaction succeeds, and a
+// failure to enqueue must never roll back or throw out of the resolve/reopen.
+// The worker's delivery loop is the durable retry path once a row exists.
+async function emitIncidentResolved(database: DB, incidentId: string): Promise<void> {
+  try {
+    await enqueueIncidentResolved(incidentId, database);
+  } catch (err) {
+    console.error("failed to enqueue incident.resolved webhook", { incidentId, err });
+  }
+}
+
+async function emitIncidentReopened(
+  database: DB,
+  incidentId: string,
+  opts: { reason: IncidentReopenedReason; previousStatus: string | null },
+): Promise<void> {
+  try {
+    await enqueueIncidentReopened(incidentId, opts, database);
+  } catch (err) {
+    console.error("failed to enqueue incident.reopened webhook", { incidentId, err });
+  }
+}
 
 export type ResolveIncidentInput = {
   incidentId: string;
@@ -149,7 +178,11 @@ export function createIncidentLifecycle(database: DB = db) {
     },
 
     async resolve(input: ResolveIncidentInput): Promise<ResolveIncidentResult> {
-      return repository.transaction((tx) => resolveIncidentInTx(tx, input, repository));
+      const result = await repository.transaction((tx) =>
+        resolveIncidentInTx(tx, input, repository),
+      );
+      if (result.resolved) await emitIncidentResolved(database, input.incidentId);
+      return result;
     },
 
     async applyAgentRunResult(opts: {
@@ -182,6 +215,11 @@ export function createIncidentLifecycle(database: DB = db) {
           });
         }
       });
+
+      // A noise auto-close is a terminal resolve from the consumer's POV
+      // (status flips to autoresolved_noise) — emit incident.resolved so the
+      // webhook taxonomy covers every path that closes an incident.
+      if (noiseResolved) await emitIncidentResolved(database, opts.incident.id);
 
       return { updated: true, noiseResolved };
     },
@@ -230,6 +268,10 @@ export function createIncidentLifecycle(database: DB = db) {
         });
       });
 
+      await emitIncidentReopened(database, opts.incident.id, {
+        reason: "issue_regressed",
+        previousStatus: opts.incident.status,
+      });
       return { reopened: true, stayedNoise: false };
     },
 
@@ -263,6 +305,10 @@ export function createIncidentLifecycle(database: DB = db) {
           dedupeKey: `incident_reopened:manual:${opts.incident.id}:${now.getTime()}`,
           processedAt: now,
         });
+      });
+      await emitIncidentReopened(database, opts.incident.id, {
+        reason: "manual",
+        previousStatus: opts.incident.status,
       });
       return { reopened: true };
     },
@@ -412,7 +458,7 @@ export async function confirmResolutionProposal(opts: {
   // The proposal UPDATE is conditional on `decision IS NULL` so two
   // concurrent confirm clicks can't both succeed — second caller's
   // .returning() comes back empty and we bail before resolving.
-  return db.transaction(async (tx) => {
+  const outcome = await db.transaction(async (tx) => {
     const decidedAt = new Date();
     const updated = await tx
       .update(schema.incidentResolutionProposals)
@@ -461,6 +507,8 @@ export async function confirmResolutionProposal(opts: {
     );
     return { ok: true, incidentId: row.incidentId };
   });
+  if (outcome.ok && outcome.incidentId) await emitIncidentResolved(db, outcome.incidentId);
+  return outcome;
 }
 
 export async function dismissResolutionProposal(opts: {

@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { db as defaultDb, type DB } from "./client.js";
+import { type DB, db as defaultDb } from "./client.js";
 import * as schema from "./schema.js";
 
 /**
@@ -19,19 +19,27 @@ export async function enqueueTestDelivery(
     where: eq(schema.webhookEndpoints.id, endpointId),
   });
   if (!endpoint) return null;
+  // Stamp the test with whatever event the endpoint subscribes to first, so the
+  // Superlog-Event header looks realistic. Falls back to incident.created. The
+  // body is a stub — transport + signature only. `message` mirrors the
+  // { title, body } render-ready block real events carry.
+  const eventType: schema.WebhookEventType = endpoint.enabledEvents?.[0] ?? "incident.created";
   const payload = {
-    event: "agent_run.completed",
+    event: eventType,
     eventId: crypto.randomUUID(),
     occurredAt: new Date().toISOString(),
     test: true,
-    message: "This is a test webhook delivery from Superlog.",
+    message: {
+      title: "Test webhook",
+      body: "This is a test webhook delivery from Superlog.",
+    },
     project: { id: endpoint.projectId },
   };
   const [row] = await database
     .insert(schema.webhookDeliveries)
     .values({
       endpointId: endpoint.id,
-      eventType: "agent_run.completed",
+      eventType,
       payload: payload as Record<string, unknown>,
     })
     .returning();

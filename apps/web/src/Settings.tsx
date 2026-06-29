@@ -4151,11 +4151,59 @@ function OrgGithubInstallRow({
   );
 }
 
+// The full webhook event catalog, mirrored from the backend
+// WEBHOOK_EVENT_TYPES. Each entry is shown as a selectable subscription in the
+// create form and the per-endpoint editor.
+const WEBHOOK_EVENTS: ReadonlyArray<{ id: string; label: string }> = [
+  {
+    id: "incident.created",
+    label: "A new incident is opened — post a new message / open a thread",
+  },
+  {
+    id: "incident.updated",
+    label:
+      "Anything else happens on an incident — resolved, reopened, merged, or an investigation started / finished / failed / needs input. Reply in the thread. See change.kind.",
+  },
+];
+
+const WEBHOOK_EVENT_IDS = WEBHOOK_EVENTS.map((e) => e.id);
+
+function WebhookEventPicker({
+  selected,
+  onChange,
+}: {
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const toggle = (id: string) => {
+    onChange(selected.includes(id) ? selected.filter((e) => e !== id) : [...selected, id]);
+  };
+  return (
+    <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2">
+      {WEBHOOK_EVENTS.map((event) => (
+        <label key={event.id} className="flex cursor-pointer items-start gap-2 text-[12px] text-fg">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={selected.includes(event.id)}
+            onChange={() => toggle(event.id)}
+          />
+          <span>
+            <code className="font-mono text-[11.5px] text-fg">{event.id}</code>
+            <span className="block text-[11px] text-muted">{event.label}</span>
+          </span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 function WebhooksCard({ projectId }: { projectId: string | undefined }) {
   const list = useWebhooks(projectId);
   const create = useCreateWebhook(projectId ?? "");
   const [url, setUrl] = useState("");
   const [description, setDescription] = useState("");
+  const [events, setEvents] = useState<string[]>(WEBHOOK_EVENT_IDS);
   const [reveal, setReveal] = useState<{ id: string; secret: string } | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [schemaOpen, setSchemaOpen] = useState(false);
@@ -4167,15 +4215,16 @@ function WebhooksCard({ projectId }: { projectId: string | undefined }) {
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <p className="text-[12px] text-muted">
-            One event today: <code className="font-mono text-fg">agent_run.completed</code>. Fires
-            when an agent run finishes with findings.
+            Get an HTTP POST whenever an incident or investigation changes state — created,
+            resolved, merged, and the full agent-run lifecycle. Pick which events each endpoint
+            receives.
           </p>
           <button
             type="button"
             onClick={() => setSchemaOpen(true)}
             className="font-mono text-[11px] uppercase tracking-[0.2em] text-muted hover:text-fg"
           >
-            view payload
+            view payloads
           </button>
         </div>
         <div className="flex flex-wrap items-end gap-3">
@@ -4198,20 +4247,22 @@ function WebhooksCard({ projectId }: { projectId: string | undefined }) {
           <Btn
             size="md"
             variant="primary"
-            disabled={!projectId || !url.trim() || create.isPending}
+            disabled={!projectId || !url.trim() || events.length === 0 || create.isPending}
             loading={create.isPending}
             onClick={async () => {
-              if (!projectId || !url.trim()) return;
+              if (!projectId || !url.trim() || events.length === 0) return;
               try {
                 const created = await create.mutateAsync({
                   url: url.trim(),
                   description: description.trim() || undefined,
+                  enabledEvents: events,
                 });
                 if (created.secret) {
                   setReveal({ id: created.id, secret: created.secret });
                 }
                 setUrl("");
                 setDescription("");
+                setEvents(WEBHOOK_EVENT_IDS);
               } catch (err) {
                 alert(err instanceof Error ? err.message : String(err));
               }
@@ -4219,6 +4270,11 @@ function WebhooksCard({ projectId }: { projectId: string | undefined }) {
           >
             Add endpoint
           </Btn>
+        </div>
+
+        <div>
+          <FieldLabel>Events</FieldLabel>
+          <WebhookEventPicker selected={events} onChange={setEvents} />
         </div>
 
         {reveal && (
@@ -4264,20 +4320,25 @@ function WebhooksCard({ projectId }: { projectId: string | undefined }) {
   );
 }
 
-const AGENT_RUN_COMPLETED_EXAMPLE = `{
-  "event": "agent_run.completed",
+const INCIDENT_UPDATED_EXAMPLE = `{
+  "event": "incident.updated",                      // the only update event
   "eventId": "5f0a6b6e-...",                       // UUID, unique per event
   "occurredAt": "2026-05-11T12:34:56.000Z",        // when we built the payload
   "project": { "id": "uuid", "name": "Default", "slug": "default" },
-  "agentRun": {
+  "message": {                                      // render-ready text for relays (Telegram/email/SMS)
+    "title": "TypeError in /api/orders",
+    "body": "Investigation complete: missing null check. Opened PR: https://github.com/acme/orders/pull/4271"
+  },
+  "change": { "kind": "agent_completed" },          // what happened — drives how you render the reply
+  "agentRun": {                                     // present for agent_* changes
     "id": "uuid",
-    "state": "complete",                            // always "complete" for this event
-    "runtime": "anthropic",                         // agent runtime that ran the agent run
+    "state": "complete",
+    "runtime": "anthropic",
     "completedAt": "2026-05-11T12:34:56.000Z",
     "startedAt": "2026-05-11T12:20:00.000Z",
     "cumulativeRuntimeMinutes": 14,
     "resumeCount": 0,
-    "failureReason": null,                          // null for this event (failures don't fire it)
+    "failureReason": null,
     "result": {
       // Shape is the agent's AgentRunResult. Treat unknown fields as additive.
       "state": "complete",
@@ -4357,73 +4418,56 @@ const AGENT_RUN_COMPLETED_EXAMPLE = `{
   ]
 }`;
 
-const IMPLEMENT_PROMPT = `I want to add a webhook receiver for Superlog's \`agent_run.completed\` event to my app.
+const IMPLEMENT_PROMPT = `I want to add a Superlog webhook receiver to my app. Superlog sends just two events:
+- \`incident.created\` — a new incident opened. Relay it as a NEW message / open a new thread.
+- \`incident.updated\` — anything else happened on an incident. Relay it as a REPLY in that thread (or edit). Look at \`change.kind\` to decide what to say.
+
+Both payloads carry a render-ready \`message: { title, body }\` so a simple relay can forward text without understanding the rest of the schema, plus structured \`incident\` / \`agentRun\` / \`change\` for richer handling.
 
 Endpoint requirements:
 - Accept POST at a route I choose (e.g. /webhooks/superlog). Read the **raw** request body before any JSON parsing — the signature is computed over the raw bytes.
 - Headers to handle:
   - \`Superlog-Signature\`: \`t=<unix-ts>,v1=<hex-hmac-sha256>\`. Verify with \`HMAC_SHA256(secret, "<t>.<rawBody>")\` and compare in constant time. Reject if \`|now - t| > 300\` seconds.
-  - \`Superlog-Event\`: e.g. \`agent_run.completed\`.
+  - \`Superlog-Event\`: \`incident.created\` or \`incident.updated\`.
   - \`Superlog-Delivery\`: a UUID that is **stable across retries**. Use it as an idempotency key — if you've already processed it, return 200 without re-running side effects.
 - The signing secret comes from env var \`SUPERLOG_WEBHOOK_SECRET\` (starts with \`whsec_\`).
 - Respond 2xx within 10 seconds. Do any slow work (DB writes, downstream calls) async / after the response. Non-2xx and timeouts are retried with backoff before attempts 2-8: 30s, 1m, 2m, 5m, 15m, 1h, 6h. After 8 failed attempts the sender gives up.
 - On signature failure return 401. On replay (already-seen delivery id) return 200.
 
-Payload shape (\`agent_run.completed\`):
+Payload shape:
 \`\`\`json
 {
-  "event": "agent_run.completed",
+  "event": "incident.updated",                 // or "incident.created"
   "eventId": "uuid",
   "occurredAt": "ISO-8601",
   "project": { "id": "uuid", "name": "...", "slug": "..." },
-  "agentRun": {
-    "id": "uuid",
-    "state": "complete",
-    "runtime": "anthropic",
-    "completedAt": "ISO-8601", "startedAt": "ISO-8601",
-    "cumulativeRuntimeMinutes": 14, "resumeCount": 0,
-    "failureReason": null,
-    "result": {
-      "state": "complete",
-      "summary": "...",
-      "rootCauseConfidence": "high",
-      "rootCause": { "text": "...", "confidence": 9 },
-      "estimatedImpact": { "text": "...", "confidence": 7 },
-      "severity": "SEV-2",
-      "pr": {
-        "selectedRepoFullName": "owner/repo", "branchName": "...", "baseBranch": "main",
-        "openStatus": "opened", "url": "https://github.com/...", "patch": "...",
-        "validationPassed": true
-      },
-      "linearTicket": { "id": "...", "url": "https://linear.app/...", "createdByAgent": true },
-      "noiseClassification": null,
-      "resolutionClassification": null
-    }
-  },
+  "message": { "title": "...", "body": "..." },  // render-ready; forward verbatim if you want
   "incident": {
     "id": "uuid", "title": "...", "codename": "...",
-    "status": "open",
-    "severity": "SEV-2",
+    "status": "open",                            // "open" | "resolved" | "autoresolved_noise" | "merged"
+    "severity": "SEV-2",                         // "SEV-1" | "SEV-2" | "SEV-3" | null
     "service": "...",
     "firstSeen": "ISO-8601", "lastSeen": "ISO-8601", "issueCount": 14
   },
-  "events": [ { "id": "uuid", "kind": "...", "summary": "...", "detail": {}, "createdAt": "ISO-8601" } ],
-  "pullRequests": [ { "id": "uuid", "repoFullName": "owner/repo", "prNumber": 1, "url": "...", "branchName": "...", "baseBranch": "main", "state": "open", "title": "...", "mergedAt": null, "closedAt": null } ],
-  "linearTickets": [ { "id": "uuid", "workspaceId": "...", "ticketId": "...", "ticketIdentifier": "ENG-1", "url": "...", "title": "...", "state": "..." } ]
+  // --- only on incident.updated ---
+  "change": { "kind": "agent_completed" },       // resolved | reopened | merged | agent_started |
+                                                 //   agent_completed | agent_failed | agent_awaiting_input
+  "agentRun": { "id": "uuid", "state": "complete", "result": { /* AgentRunResult */ } }, // agent_* changes
+  "events": [ { "id": "uuid", "kind": "...", "summary": "...", "detail": {}, "createdAt": "ISO-8601" } ], // agent_completed
+  "pullRequests": [ { "id": "uuid", "repoFullName": "owner/repo", "prNumber": 1, "url": "...", "state": "open" } ], // agent_completed
+  "linearTickets": [ { "id": "uuid", "ticketIdentifier": "ENG-1", "url": "...", "state": "..." } ] // agent_completed
 }
 \`\`\`
 
 Notes:
-- \`agentRun.state\` is always \`"complete"\` for this event.
-- \`incident.severity\` and \`result.severity\` are \`"SEV-1" | "SEV-2" | "SEV-3" | null\`.
-- \`result.rootCauseConfidence\` is \`"high" | "medium" | "low" | null\`. The \`rootCause\` / \`estimatedImpact\` objects carry a separate 0-10 numeric \`confidence\`.
-- \`result.pr\` is present only when a PR was opened. \`result.noiseClassification\` / \`resolutionClassification\` are set when the agent run concluded without a PR. Unknown future fields may appear — treat additively.
-- \`pullRequests\` and \`linearTickets\` arrays may be empty.
+- \`change.kind\` discriminates the update. For \`resolved\` it adds a \`resolution\` object; \`reopened\` adds \`reason\`/\`previousStatus\`; \`merged\` adds \`mergedInto\`/\`evidence\`; \`agent_awaiting_input\` adds \`reason\`/\`summary\`/\`question\`.
+- \`agentRun\`, \`events\`, \`pullRequests\`, \`linearTickets\` only appear on agent-related updates (\`events\`/\`pullRequests\`/\`linearTickets\` only on \`agent_completed\`).
+- Unknown future fields may appear — treat additively.
 
 What to build:
 1. The route handler with raw-body access and signature verification.
 2. An idempotency store keyed on \`Superlog-Delivery\` (use whatever the codebase already uses — Redis, Postgres, in-memory for dev).
-3. A typed payload + a stub handler function the rest of the app can call. For now, just log the agent run summary, PR URL, and Linear ticket URL.
+3. A typed payload + a stub handler that switches on \`event\` and \`change.kind\`. For now, just relay \`message.title\` / \`message.body\` to the destination (log it).
 4. A unit test that posts a valid signed request and a tampered request, asserting 200 and 401 respectively.
 
 Match the framework, language, and conventions already in this repo. Don't add new dependencies if the standard library covers it (\`crypto\` / \`hmac\` is enough for verification).`;
@@ -4461,10 +4505,8 @@ function WebhookSchemaModal({ onClose }: { onClose: () => void }) {
         <Tile className="bg-bg shadow-2xl">
           <div className="mb-5 flex items-center justify-between">
             <div>
-              <Label>webhook payload</Label>
-              <div className="mt-1 font-mono text-[16px] font-medium text-fg">
-                agent_run.completed
-              </div>
+              <Label>webhook payloads</Label>
+              <div className="mt-1 text-[16px] font-medium text-fg">Event reference</div>
             </div>
             <button
               type="button"
@@ -4477,13 +4519,39 @@ function WebhookSchemaModal({ onClose }: { onClose: () => void }) {
 
           <div className="space-y-5">
             <section>
+              <h3 className="mb-2 text-[13px] font-medium text-fg">Events</h3>
+              <p className="mb-2 text-[12px] text-muted">
+                Think of a webhook as a message to relay. <code>incident.created</code> means "post
+                a new message / open a thread"; <code>incident.updated</code> means "reply in that
+                thread / edit it". Every payload shares the envelope{" "}
+                <code>{`{ event, eventId, occurredAt, project, incident, message }`}</code> — where{" "}
+                <code>message</code> is render-ready <code>{`{ title, body }`}</code> text. Updates
+                add a <code>change.kind</code> (and an <code>agentRun</code> for investigation
+                changes); the example below shows the richest one.
+              </p>
+              <ul className="divide-y divide-border rounded-sm border border-border">
+                {WEBHOOK_EVENTS.map((event) => (
+                  <li
+                    key={event.id}
+                    className="flex flex-col gap-0.5 px-3 py-2 sm:flex-row sm:items-baseline sm:gap-3"
+                  >
+                    <code className="font-mono text-[12px] text-fg sm:w-[200px] sm:shrink-0">
+                      {event.id}
+                    </code>
+                    <span className="text-[12px] text-muted">{event.label}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+
+            <section>
               <h3 className="mb-2 text-[13px] font-medium text-fg">Headers</h3>
               <div className="rounded-sm border border-border bg-surface-2 p-3 font-mono text-[12px]">
                 <div>
                   <span className="text-muted">Content-Type:</span> application/json
                 </div>
                 <div>
-                  <span className="text-muted">Superlog-Event:</span> agent_run.completed
+                  <span className="text-muted">Superlog-Event:</span> incident.updated
                 </div>
                 <div>
                   <span className="text-muted">Superlog-Delivery:</span> &lt;uuid, stable across
@@ -4499,7 +4567,7 @@ function WebhookSchemaModal({ onClose }: { onClose: () => void }) {
             <section>
               <h3 className="mb-2 text-[13px] font-medium text-fg">Example body</h3>
               <pre className="max-h-[400px] overflow-auto rounded-sm border border-border bg-surface-2 p-3 font-mono text-[11.5px] leading-[1.55] text-fg">
-                {AGENT_RUN_COMPLETED_EXAMPLE}
+                {INCIDENT_UPDATED_EXAMPLE}
               </pre>
             </section>
 
@@ -4600,6 +4668,10 @@ function WebhookEndpointRow({
   const del = useDeleteWebhook(projectId);
   const rotate = useRotateWebhookSecret(projectId);
   const disabled = !!endpoint.disabledAt;
+  const [draftEvents, setDraftEvents] = useState<string[]>(endpoint.enabledEvents ?? []);
+  const eventsDirty =
+    draftEvents.length !== (endpoint.enabledEvents ?? []).length ||
+    draftEvents.some((e) => !(endpoint.enabledEvents ?? []).includes(e));
 
   return (
     <li className="py-3">
@@ -4659,7 +4731,32 @@ function WebhookEndpointRow({
           </Btn>
         </div>
       </div>
-      {expanded && <WebhookDeliveriesPanel projectId={projectId} endpointId={endpoint.id} />}
+      {expanded && (
+        <>
+          <div className="mt-3 rounded-sm border border-border bg-surface-2 p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <Label>Subscribed events</Label>
+              <Btn
+                size="sm"
+                variant="ghost"
+                disabled={!eventsDirty || draftEvents.length === 0 || update.isPending}
+                loading={update.isPending}
+                onClick={async () => {
+                  try {
+                    await update.mutateAsync({ id: endpoint.id, enabledEvents: draftEvents });
+                  } catch (err) {
+                    alert(err instanceof Error ? err.message : String(err));
+                  }
+                }}
+              >
+                Save events
+              </Btn>
+            </div>
+            <WebhookEventPicker selected={draftEvents} onChange={setDraftEvents} />
+          </div>
+          <WebhookDeliveriesPanel projectId={projectId} endpointId={endpoint.id} />
+        </>
+      )}
     </li>
   );
 }
