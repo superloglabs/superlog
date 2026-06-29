@@ -1584,7 +1584,9 @@ app.post("/api/projects/:projectId/issue-filter/preview", async (c) => {
 // structured object.
 app.post("/api/projects/:projectId/ingest-parsing/preview", async (c) => {
   const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  // Telemetry reads go through the demo-aware read id; the config still belongs
+  // to the project the user is managing (the URL id).
+  const readProjectId = await requireProjectAccess(c, projectId);
   const body = (await c.req.json().catch(() => ({}))) as {
     source?: unknown;
     config?: unknown;
@@ -1596,11 +1598,16 @@ app.post("/api/projects/:projectId/ingest-parsing/preview", async (c) => {
   const sourceConfig =
     body.config !== undefined ? sanitizeSourceParseConfig(body.config, fallback) : fallback;
 
+  // Cap both the count and the length of caller-supplied samples so a handful of
+  // huge strings can't make this endpoint expensive to parse/echo.
   let samples: string[] = Array.isArray(body.samples)
-    ? body.samples.filter((s): s is string => typeof s === "string").slice(0, 20)
+    ? body.samples
+        .filter((s): s is string => typeof s === "string")
+        .map((s) => s.slice(0, 10_000))
+        .slice(0, 20)
     : [];
   if (samples.length === 0) {
-    samples = await fetchRecentLogBodies(ch, projectId, 10);
+    samples = await fetchRecentLogBodies(ch, readProjectId, 10);
   }
   return c.json({ source, rows: previewLogParse(samples, sourceConfig) });
 });

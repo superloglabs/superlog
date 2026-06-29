@@ -148,10 +148,11 @@ export function resolveSourceParseConfig(
   if (!config) return base;
   return {
     enabled: typeof config.enabled === "boolean" ? config.enabled : base.enabled,
-    severityKeys:
-      Array.isArray(config.severityKeys) && config.severityKeys.length > 0
-        ? config.severityKeys.filter((k): k is string => typeof k === "string")
-        : base.severityKeys,
+    // Honour an explicitly-empty list (cleared every key = detection off for the
+    // source); only fall back to defaults when the field is absent / not an array.
+    severityKeys: Array.isArray(config.severityKeys)
+      ? config.severityKeys.filter((k): k is string => typeof k === "string")
+      : base.severityKeys,
     severityValueMap:
       config.severityValueMap && typeof config.severityValueMap === "object"
         ? { ...config.severityValueMap }

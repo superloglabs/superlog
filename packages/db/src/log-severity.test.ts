@@ -136,5 +136,10 @@ test("resolveSourceParseConfig fills missing fields from defaults", () => {
   const partial = resolveSourceParseConfig({ enabled: false } as Partial<SourceParseConfig>, "otlp");
   assert.equal(partial.enabled, false);
   assert.deepEqual(partial.severityKeys, DEFAULT_SEVERITY_KEYS);
+
+  // An explicitly-empty list is preserved (clearing all keys turns body-level
+  // detection off) rather than silently reverting to defaults.
+  const cleared = resolveSourceParseConfig({ severityKeys: [] }, "aws");
+  assert.deepEqual(cleared.severityKeys, []);
   assert.deepEqual(partial.severityValueMap, {});
 });

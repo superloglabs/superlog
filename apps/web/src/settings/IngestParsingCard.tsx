@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   type IngestFilterState,
   type LogParseConfig,
@@ -112,6 +112,20 @@ const draftToConfig = (d: Draft): LogParseConfig => ({
   otlp: sourceDraftToConfig(d.otlp),
 });
 
+// Stable serialization for the dirty check. Key order *is* significant (drag to
+// reorder), but value-map order is not — and jsonb round-trips can reorder it —
+// so sort the mappings before comparing to avoid a spuriously-dirty state.
+const canonicalDraft = (d: Draft): string => {
+  const norm = (s: SourceDraft) => ({
+    enabled: s.enabled,
+    keys: s.keys,
+    mappings: [...s.mappings].sort(
+      (a, b) => a.raw.localeCompare(b.raw) || a.level.localeCompare(b.level),
+    ),
+  });
+  return JSON.stringify({ aws: norm(d.aws), otlp: norm(d.otlp) });
+};
+
 // ---------------------------------------------------------------------------
 
 export function IngestParsingSection({ projectId }: { projectId: string | undefined }) {
@@ -121,14 +135,27 @@ export function IngestParsingSection({ projectId }: { projectId: string | undefi
   const [source, setSource] = useState<LogParseSource | null>(null);
   const [stage, setStage] = useState<Stage>("receive");
 
-  // Load once; keep editing locally until saved (mirrors IssueFilterCard).
+  // (Re)load the draft whenever the active project changes; otherwise keep
+  // editing locally until saved (mirrors IssueFilterCard). Without the
+  // projectId guard, switching projects would carry the previous project's
+  // config into the new project and a save would clobber it.
+  const loadedFor = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (!draft && settings.data) setDraft(toDraft(settings.data.logParseConfig));
-  }, [settings.data, draft]);
+    if (loadedFor.current === projectId) return;
+    if (!settings.data) {
+      // New project, its settings haven't loaded yet — drop the stale draft.
+      if (draft !== null) setDraft(null);
+      return;
+    }
+    setDraft(toDraft(settings.data.logParseConfig));
+    loadedFor.current = projectId;
+    setSource(null);
+    setStage("receive");
+  }, [projectId, settings.data, draft]);
 
   const remote = settings.data ? toDraft(settings.data.logParseConfig) : null;
   const dirty = useMemo(
-    () => (draft && remote ? JSON.stringify(draft) !== JSON.stringify(remote) : false),
+    () => (draft && remote ? canonicalDraft(draft) !== canonicalDraft(remote) : false),
     [draft, remote],
   );
 
