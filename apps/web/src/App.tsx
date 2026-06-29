@@ -27,6 +27,7 @@ import { DashboardsList } from "./dashboards/DashboardsList.tsx";
 import { AppShell, ThemeToggle, Wordmark } from "./design/ui.tsx";
 import { McpInstallPill } from "./onboarding/McpInstallPill.tsx";
 import { OnboardingGate } from "./onboarding/OnboardingGate.tsx";
+import { parseAttribution, persistFirstTouchAttribution } from "./signupAttribution.ts";
 import { startSkillOnboarding } from "./skillOnboarding.ts";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4100";
@@ -34,17 +35,27 @@ const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4100";
 function SignupSourceCapture() {
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    const raw = params.get("source");
-    if (!raw) return;
-    const source = raw.trim().toLowerCase();
-    if (!/^[a-z0-9_-]{1,32}$/.test(source)) return;
-    try {
-      const existing = window.localStorage.getItem("superlog.signup_source");
-      if (!existing) window.localStorage.setItem("superlog.signup_source", source);
-    } catch {
-      /* ignore */
+    const attr = parseAttribution(window.location.search, document.referrer);
+    // The `?source=` tag is also forwarded to /api/me as a header and persisted
+    // on orgs.signup_source, so keep its dedicated key untouched (see api.ts).
+    if (attr.source) {
+      try {
+        const existing = window.localStorage.getItem("superlog.signup_source");
+        if (!existing) window.localStorage.setItem("superlog.signup_source", attr.source);
+      } catch {
+        /* ignore */
+      }
     }
+    // Stash the full first-touch attribution (source + UTM + referrer) so the
+    // PostHog signup event can report it once the user creates their first org.
+    // landingPath is passed unconditionally on purpose: persistFirstTouchAttribution
+    // only writes when there's real attribution signal (source/UTM/referrer) and
+    // treats landingPath as ride-along context, so this can't lock in a
+    // landingPath-only record on a plain pageview and shut out a later landing.
+    persistFirstTouchAttribution(window.localStorage, {
+      ...attr,
+      landingPath: window.location.pathname,
+    });
   }, []);
   return null;
 }
