@@ -1,7 +1,7 @@
 <!--
-  Source for the usage-limit notification email. Generated to usage-email-shell.generated.ts
-  via `pnpm --filter @superlog/worker build:email` (npx mjml). Placeholders ({{...}}) are
-  filled at send time by usage-email.ts. Do not hand-edit the generated .ts file.
+  Usage-limit notification email template. Compiled to HTML at runtime by
+  usage-email.ts (mjml lib, once per process); the {{...}} placeholders are then
+  filled per send. This .mjml is the source of truth — just edit it here.
 -->
 <mjml>
   <mj-head>

@@ -1,14 +1,29 @@
-// Pure renderer for the usage-limit notification email: fills the generated MJML
-// shell (usage-email-shell.generated.ts) with the org's usage table and the
-// variant-specific copy. No I/O — unit-tested in usage-email.test.ts. The Resend
-// send itself lives in usage-notifier-ticker.ts.
+// Renderer for the usage-limit notification email: compiles the checked-in MJML
+// template (usage-email.mjml) to an HTML shell once, then fills it with the org's
+// usage table and the variant-specific copy. The Resend send lives in
+// usage-notifier-ticker.ts.
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { FeatureBalance } from "@superlog/billing";
-import { USAGE_EMAIL_SHELL } from "./usage-email-shell.generated.js";
+import mjml2html from "mjml";
 import { USAGE_FEATURE_IDS, featureLabel } from "./usage-notifier.js";
 
 const COBALT = "#485ae2";
 const RED = "#d63840";
 const MUTED = "#9c9fa6";
+
+// Compile usage-email.mjml → HTML once (lazily), keeping the {{placeholders}}
+// intact for per-send interpolation. The template is static, so one compile per
+// process is plenty.
+let shellCache: string | null = null;
+function shell(): string {
+  if (shellCache !== null) return shellCache;
+  const src = readFileSync(fileURLToPath(new URL("./usage-email.mjml", import.meta.url)), "utf8");
+  // @types/mjml types the result as a Promise, but mjml2html is synchronous.
+  const { html } = mjml2html(src, { validationLevel: "soft" }) as unknown as { html: string };
+  shellCache = html;
+  return html;
+}
 
 function esc(value: string): string {
   return value
@@ -108,7 +123,8 @@ function variantCopy(input: UsageEmailInput): VariantCopy {
 
 export function renderUsageEmail(input: UsageEmailInput): { subject: string; html: string } {
   const copy = variantCopy(input);
-  const html = USAGE_EMAIL_SHELL.replace("{{headline}}", esc(copy.headline))
+  const html = shell()
+    .replace("{{headline}}", esc(copy.headline))
     .replace("{{intro}}", copy.intro)
     .replace("{{usageRows}}", usageRowsHtml(input.balances, input.feature))
     .replace("{{ctaCopy}}", esc(copy.ctaCopy))

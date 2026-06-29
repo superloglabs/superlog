@@ -5,7 +5,6 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "build:email": "node scripts/build-usage-email.mjs",
     "dev": "tsx watch --import ./tracing.ts src/index.ts",
     "start": "tsx --import ./tracing.ts src/index.ts",
     "backfill:issue-activity-daily": "tsx scripts/backfill-issue-activity-daily.ts",
@@ -64,6 +63,7 @@
     "@superlog/topology": "workspace:*",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
+    "mjml": "^4.15.3",
     "pg-boss": "^12.0.0",
     "pino": "^10.3.1"
   },
@@ -72,6 +72,7 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.2.17",
+    "@types/mjml": "^4.7.4",
     "@types/node": "^22.10.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
