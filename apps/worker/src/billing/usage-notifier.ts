@@ -56,6 +56,20 @@ export function mapAutumnFeatures(body: unknown): FeatureBalance[] {
   return out;
 }
 
+// Usage-limit warnings + enforcement apply to the FREE plan only. A paying tier
+// (grandfathered / payg / packs / internal) can still have a hard-capped feature
+// with no overage — so "has a hard cap" is NOT the same as "Free". Gate on the
+// org's actual active Autumn subscription instead: free iff every active
+// subscription is the `free` plan. Unknown/absent subscriptions → not free
+// (safer to stay silent than to warn or block a paying customer).
+const FREE_PLAN_ID = "free";
+export function isFreePlan(body: unknown): boolean {
+  const subs = (body as { subscriptions?: Array<Record<string, unknown>> } | null)?.subscriptions;
+  if (!Array.isArray(subs)) return false;
+  const active = subs.filter((s) => s.status === "active" && !s.canceled_at && !s.expires_at);
+  return active.length > 0 && active.every((s) => s.plan_id === FREE_PLAN_ID);
+}
+
 // Structured payload handed to the Loops event sender (the email copy lives in a
 // Loops workflow keyed on `threshold` / `enforcement`, not in this repo).
 export type UsageNotificationEvent = {

@@ -8,18 +8,19 @@
 // Gated on USAGE_NOTIFICATIONS_ENABLED + AUTUMN_SECRET_KEY: otherwise
 // createUsageNotifier returns null and every trigger is a no-op (the
 // `usageNotifier?.` callers below).
-import {
-  type FeatureBalance,
-  currentBillingPeriod,
-  periodKey as toPeriodKey,
-} from "@superlog/billing";
+import { currentBillingPeriod, periodKey as toPeriodKey } from "@superlog/billing";
 import { db, fetchOrgMemberContacts, schema } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import { postSlackMessage } from "../infra/slack/api.js";
 import { fetchSlackTargetsForOrg } from "../infra/slack/incident-messages.js";
 import { logger } from "../logger.js";
 import { renderUsageEmail } from "./usage-email.js";
-import { type UsageNotifierDeps, mapAutumnFeatures, notifyOrgUsage } from "./usage-notifier.js";
+import {
+  type UsageNotifierDeps,
+  isFreePlan,
+  mapAutumnFeatures,
+  notifyOrgUsage,
+} from "./usage-notifier.js";
 
 const log = logger.child({ scope: "billing.usage-notify" });
 
@@ -55,11 +56,11 @@ function currentPeriodKey(now: () => Date): string {
   return toPeriodKey(currentBillingPeriod(now(), 1));
 }
 
-async function fetchAutumnBalances(
+async function fetchAutumnCustomer(
   secretKey: string,
   orgId: string,
   fetchImpl: typeof fetch,
-): Promise<FeatureBalance[] | null> {
+): Promise<unknown | null> {
   try {
     const res = await fetchImpl(`${AUTUMN_BASE_URL}/customers/${encodeURIComponent(orgId)}`, {
       headers: { Authorization: `Bearer ${secretKey}` },
@@ -67,11 +68,11 @@ async function fetchAutumnBalances(
     });
     // 404 = org not provisioned yet; any non-2xx → skip (fail open, no warning).
     if (!res.ok) return null;
-    return mapAutumnFeatures(await res.json());
+    return await res.json();
   } catch (err) {
     log.warn(
       { orgId, err: err instanceof Error ? err.message : String(err) },
-      "autumn balance fetch failed; skipping usage notification",
+      "autumn customer fetch failed; skipping usage notification",
     );
     return null;
   }
@@ -102,8 +103,12 @@ function buildDeps(
     },
 
     fetchOrgUsage: async (orgId) => {
-      const balances = await fetchAutumnBalances(secretKey, orgId, fetchImpl);
-      if (!balances) return null;
+      const customer = await fetchAutumnCustomer(secretKey, orgId, fetchImpl);
+      if (!customer) return null;
+      // Free plan only — never warn/enforce a paying org, even if one of their
+      // features is hard-capped without overage (e.g. a grandfathered plan).
+      if (!isFreePlan(customer)) return null;
+      const balances = mapAutumnFeatures(customer);
       const rows = await db
         .select({ name: schema.orgs.name })
         .from(schema.orgs)

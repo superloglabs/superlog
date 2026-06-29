@@ -5,6 +5,7 @@ import {
   type UsageNotificationEvent,
   type UsageNotifierDeps,
   buildUsageSlackText,
+  isFreePlan,
   mapAutumnFeatures,
   notifyOrgUsage,
 } from "./usage-notifier.js";
@@ -191,6 +192,41 @@ test("mapAutumnFeatures tolerates a missing/empty balances object", () => {
   assert.deepEqual(mapAutumnFeatures(null), []);
   assert.deepEqual(mapAutumnFeatures({}), []);
   assert.deepEqual(mapAutumnFeatures({ balances: {} }), []);
+});
+
+test("isFreePlan: only true when every active subscription is the free plan", () => {
+  // Free org (auto-enabled free subscription)
+  assert.equal(isFreePlan({ subscriptions: [{ plan_id: "free", status: "active" }] }), true);
+  // Paying org (grandfathered) — the Trellis case: hard-capped feature but NOT free
+  assert.equal(
+    isFreePlan({ subscriptions: [{ plan_id: "grandfathered", status: "active" }] }),
+    false,
+  );
+  assert.equal(isFreePlan({ subscriptions: [{ plan_id: "payg", status: "active" }] }), false);
+  // free + a paid add-on → not free
+  assert.equal(
+    isFreePlan({
+      subscriptions: [
+        { plan_id: "free", status: "active" },
+        { plan_id: "pack_150", status: "active" },
+      ],
+    }),
+    false,
+  );
+  // canceled/expired paid sub is ignored; remaining active free → free
+  assert.equal(
+    isFreePlan({
+      subscriptions: [
+        { plan_id: "free", status: "active" },
+        { plan_id: "payg", status: "active", canceled_at: 123 },
+      ],
+    }),
+    true,
+  );
+  // no active subscriptions / unknown shape → not free (stay silent)
+  assert.equal(isFreePlan({ subscriptions: [] }), false);
+  assert.equal(isFreePlan(null), false);
+  assert.equal(isFreePlan({}), false);
 });
 
 test("100% Slack copy differs by enforcement + feature", () => {
