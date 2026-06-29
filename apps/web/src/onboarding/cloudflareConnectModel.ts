@@ -48,7 +48,7 @@ export function cloudflareOutcomeMessage(outcome: CloudflareOutcome): string | n
     case "denied":
       return "Cloudflare authorization was declined. Reconnect to try again.";
     case "error":
-      return "We couldn't finish connecting Cloudflare — no telemetry destinations were created. Reconnect to try again.";
+      return "We couldn't finish connecting Cloudflare. Reconnect to try again.";
     default:
       return null;
   }
