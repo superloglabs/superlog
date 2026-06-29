@@ -35,24 +35,22 @@ function num(value: unknown): number {
 }
 
 // Map an Autumn `GET /v1/customers/{id}` response body to our FeatureBalance[].
-// Pure + defensive: Autumn's REST balance field names are read with fallbacks
-// (the exact shape should be confirmed against a live response — see the verify
-// step). A feature missing from the response is simply skipped.
+// Confirmed against a live response: balances live under `balances`, keyed by
+// feature_id, each `{ granted, usage, unlimited, overage_allowed, ... }`. A
+// feature missing from the response is simply skipped.
 export function mapAutumnFeatures(body: unknown): FeatureBalance[] {
-  const features = (body as { features?: Record<string, unknown> } | null)?.features;
-  if (!features || typeof features !== "object") return [];
+  const balances = (body as { balances?: Record<string, unknown> } | null)?.balances;
+  if (!balances || typeof balances !== "object") return [];
   const out: FeatureBalance[] = [];
   for (const featureId of USAGE_FEATURE_IDS) {
-    const f = (features as Record<string, Record<string, unknown>>)[featureId];
-    if (!f || typeof f !== "object") continue;
-    const granted = num(f.included_usage ?? f.included ?? f.allowance ?? f.granted ?? f.limit);
-    const usage = num(f.usage ?? f.used);
+    const b = (balances as Record<string, Record<string, unknown>>)[featureId];
+    if (!b || typeof b !== "object") continue;
     out.push({
       featureId,
-      usage,
-      granted,
-      overageAllowed: f.overage_allowed === true || f.overageAllowed === true,
-      unlimited: f.unlimited === true,
+      usage: num(b.usage),
+      granted: num(b.granted),
+      overageAllowed: b.overage_allowed === true,
+      unlimited: b.unlimited === true,
     });
   }
   return out;

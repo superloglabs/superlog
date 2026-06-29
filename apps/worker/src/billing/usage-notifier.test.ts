@@ -146,17 +146,31 @@ test("a billing-provider error (null usage) is a silent no-op", async () => {
   assert.equal(h.events.length, 0);
 });
 
-test("mapAutumnFeatures reads granted/usage/flags and skips missing features", () => {
+test("mapAutumnFeatures reads granted/usage/flags from balances, skips missing", () => {
+  // Shape from a live Autumn GET /v1/customers/{id}: balances keyed by feature_id.
   const balances = mapAutumnFeatures({
-    features: {
+    balances: {
       spans: {
-        included_usage: 1_000_000,
+        feature_id: "spans",
+        granted: 1_000_000,
         usage: 500_000,
         overage_allowed: false,
         unlimited: false,
       },
-      logs: { included: 5_000_000, used: 100, overageAllowed: true },
-      investigations: { unlimited: true, usage: 3 },
+      logs: {
+        feature_id: "logs",
+        granted: 5_000_000,
+        usage: 100,
+        overage_allowed: true,
+        unlimited: false,
+      },
+      investigations: {
+        feature_id: "investigations",
+        granted: 0,
+        usage: 3,
+        overage_allowed: false,
+        unlimited: true,
+      },
       // metric_points omitted → skipped
     },
   });
@@ -173,10 +187,10 @@ test("mapAutumnFeatures reads granted/usage/flags and skips missing features", (
   ]);
 });
 
-test("mapAutumnFeatures tolerates a missing/empty features object", () => {
+test("mapAutumnFeatures tolerates a missing/empty balances object", () => {
   assert.deepEqual(mapAutumnFeatures(null), []);
   assert.deepEqual(mapAutumnFeatures({}), []);
-  assert.deepEqual(mapAutumnFeatures({ features: {} }), []);
+  assert.deepEqual(mapAutumnFeatures({ balances: {} }), []);
 });
 
 test("100% Slack copy differs by enforcement + feature", () => {
