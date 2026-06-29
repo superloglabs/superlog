@@ -1,9 +1,10 @@
+import { useSystemCapabilities } from "../api.ts";
 import {
-  CONNECT_SECTIONS,
   type ConnectAction,
   type ConnectIcon,
   type ConnectOption,
   type ConnectSection,
+  connectSectionsFor,
 } from "./connectChoices.ts";
 import {
   AgentSparkIcon,
@@ -130,6 +131,12 @@ export function ConnectDataChooser({
   onPick: (action: ConnectAction) => void;
   onExploreDemo?: () => void;
 }) {
+  // Gate connectors that need server-side config. Until capabilities load we
+  // treat Cloudflare as unavailable so we never offer a click that would 503.
+  const capabilities = useSystemCapabilities();
+  const sections = connectSectionsFor({
+    cloudflare: capabilities.data?.cloudflareConnect ?? false,
+  });
   return (
     <>
       <div className="mb-7">
@@ -143,7 +150,7 @@ export function ConnectDataChooser({
       </div>
 
       <div className="flex flex-col gap-7">
-        {CONNECT_SECTIONS.map((section) => (
+        {sections.map((section) => (
           <Section key={section.id} section={section} onPick={onPick} />
         ))}
       </div>

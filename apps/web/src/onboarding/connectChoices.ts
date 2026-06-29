@@ -115,6 +115,27 @@ export const CONNECT_SECTIONS: ConnectSection[] = [
   },
 ];
 
+// Runtime availability for connectors that depend on server-side config. The
+// backend self-disables the Cloudflare connector when its OAuth client / OTLP
+// intake env isn't set (see system-capabilities), so the chooser must not offer
+// a click that would 503 — it renders the tile as "coming soon" until the API
+// reports the connector is configured.
+export type ConnectAvailability = {
+  cloudflare: boolean;
+};
+
+export function connectSectionsFor(availability: ConnectAvailability): ConnectSection[] {
+  if (availability.cloudflare) return CONNECT_SECTIONS;
+  return CONNECT_SECTIONS.map((section) => ({
+    ...section,
+    options: section.options.map((option) =>
+      option.id === "cloudflare"
+        ? { ...option, action: null, description: "Coming soon", badge: undefined }
+        : option,
+    ),
+  }));
+}
+
 export function isComingSoon(option: ConnectOption): boolean {
   return option.action === null;
 }

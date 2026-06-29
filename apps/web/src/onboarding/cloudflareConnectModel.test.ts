@@ -3,8 +3,10 @@ import test from "node:test";
 import {
   type CloudflarePhase,
   canContinueCloudflare,
+  cloudflareOutcomeMessage,
   cloudflarePhase,
   cloudflareStatusText,
+  parseCloudflareOutcome,
 } from "./cloudflareConnectModel.ts";
 
 test("phase starts at 'start' before the consent screen is opened", () => {
@@ -35,4 +37,20 @@ test("status text reflects phase and whether events have arrived", () => {
     cloudflareStatusText("connected", true),
     cloudflareStatusText("connected", false),
   );
+});
+
+test("parseCloudflareOutcome only accepts the known callback values", () => {
+  assert.equal(parseCloudflareOutcome("installed"), "installed");
+  assert.equal(parseCloudflareOutcome("denied"), "denied");
+  assert.equal(parseCloudflareOutcome("error"), "error");
+  assert.equal(parseCloudflareOutcome("bogus"), null);
+  assert.equal(parseCloudflareOutcome(null), null);
+  assert.equal(parseCloudflareOutcome(undefined), null);
+});
+
+test("only failure outcomes produce a user-facing message", () => {
+  assert.equal(typeof cloudflareOutcomeMessage("denied"), "string");
+  assert.equal(typeof cloudflareOutcomeMessage("error"), "string");
+  assert.equal(cloudflareOutcomeMessage("installed"), null);
+  assert.equal(cloudflareOutcomeMessage(null), null);
 });

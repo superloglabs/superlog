@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   type Stats,
   useCloudflareInstallation,
@@ -9,8 +10,10 @@ import { Btn } from "../design/ui.tsx";
 import {
   type CloudflarePhase,
   canContinueCloudflare,
+  cloudflareOutcomeMessage,
   cloudflarePhase,
   cloudflareStatusText,
+  parseCloudflareOutcome,
 } from "./cloudflareConnectModel.ts";
 import { CheckIcon, ExternalLinkIcon, SpinnerIcon } from "./icons.tsx";
 import {
@@ -54,10 +57,29 @@ export function CloudflareConnectFlow({
   // from the "start" call-to-action to the "connecting" waiting state while the
   // installation poll (every 15s) catches the round-trip landing.
   const [launched, setLaunched] = useState(false);
+  // A failure surfaced by the OAuth callback redirect (`?cloudflare=denied|error`).
+  const [outcomeError, setOutcomeError] = useState<string | null>(null);
 
-  const install = useCloudflareInstallation();
-  const start = useStartCloudflareInstall();
+  const install = useCloudflareInstallation(projectId);
+  const start = useStartCloudflareInstall(projectId);
   const stats = useStats(projectId, { poll: true });
+
+  // The callback redirects back to the app with `?cloudflare=...`. When the
+  // consent was opened in the same tab (popup blocked), a denial/error lands
+  // here — surface it and drop back out of the waiting state instead of spinning
+  // forever. Strip the param so a refresh doesn't re-trigger it.
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const outcome = parseCloudflareOutcome(searchParams.get("cloudflare"));
+    if (!outcome) return;
+    if (outcome === "denied" || outcome === "error") {
+      setLaunched(false);
+      setOutcomeError(cloudflareOutcomeMessage(outcome));
+    }
+    const next = new URLSearchParams(searchParams);
+    next.delete("cloudflare");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const installed = install.data?.installed === true;
   const phase = cloudflarePhase({ installed, launched });
@@ -65,6 +87,7 @@ export function CloudflareConnectFlow({
 
   const connect = () => {
     if (start.isPending) return;
+    setOutcomeError(null);
     start.mutate(undefined, {
       onSuccess: ({ url }) => {
         setLaunched(true);
@@ -83,7 +106,7 @@ export function CloudflareConnectFlow({
         <StartPanel
           onConnect={connect}
           pending={start.isPending}
-          error={start.error ? String(start.error) : null}
+          error={outcomeError ?? (start.error ? String(start.error) : null)}
         />
       )}
 

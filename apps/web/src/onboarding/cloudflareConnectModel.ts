@@ -31,6 +31,29 @@ export function canContinueCloudflare(phase: CloudflarePhase): boolean {
   return phase === "connected";
 }
 
+// The OAuth callback redirects back with `?cloudflare=installed|denied|error`.
+// `installed` is handled by the install poll flipping to "connected"; the other
+// two are terminal failures the flow must surface (and reset out of the waiting
+// state) rather than spin forever.
+export type CloudflareOutcome = "installed" | "denied" | "error" | null;
+
+export function parseCloudflareOutcome(value: string | null | undefined): CloudflareOutcome {
+  if (value === "installed" || value === "denied" || value === "error") return value;
+  return null;
+}
+
+/** User-facing message for a failure outcome (null when not a failure). */
+export function cloudflareOutcomeMessage(outcome: CloudflareOutcome): string | null {
+  switch (outcome) {
+    case "denied":
+      return "Cloudflare authorization was declined. Reconnect to try again.";
+    case "error":
+      return "We couldn't finish connecting Cloudflare — no telemetry destinations were created. Reconnect to try again.";
+    default:
+      return null;
+  }
+}
+
 /** Status text for the small banner in the "connecting" / "connected" states. */
 export function cloudflareStatusText(phase: CloudflarePhase, eventsArrived: boolean): string {
   switch (phase) {
