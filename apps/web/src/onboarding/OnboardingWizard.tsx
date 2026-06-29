@@ -16,16 +16,18 @@ import { authClient, useSession } from "../auth-client.ts";
 import { Btn, Wordmark } from "../design/ui.tsx";
 import { INSTALL_PROMPT, buildInstallPrompt } from "../installPrompt.ts";
 import { getSkillOnboardingIntent } from "../skillOnboarding.ts";
+import { AwsConnectFlow } from "./AwsConnectFlow.tsx";
+import { ConnectDataChooser } from "./ConnectDataChooser.tsx";
 import { TruncatedKey } from "./TruncatedKey.tsx";
+import type { ConnectAction } from "./connectChoices.ts";
+import { CheckIcon, CopyIcon, GithubIcon, SlackIcon, SpinnerIcon } from "./icons.tsx";
 import {
-  ArrowIcon,
-  ArrowLeftIcon,
-  CheckIcon,
-  CopyIcon,
-  GithubIcon,
-  SlackIcon,
-  SpinnerIcon,
-} from "./icons.tsx";
+  ExploreDemoLink,
+  SOFT_LINE,
+  STRONG_LINE,
+  StepFooter,
+  StepHeader,
+} from "./wizardChrome.tsx";
 
 // Standalone fullscreen wizard shown to new users before they reach the
 // dashboard. Mirrors the playground's Onboarding (dots variant):
@@ -40,12 +42,9 @@ import {
 
 type Step = "install" | "deploy";
 type Mode = "web" | "agent";
-
-// Hairlines matching the playground's --sl-line / --sl-line-2 tokens. Host's
-// `border-border` (#24272e) reads as a boxed line on top of the dark canvas;
-// the playground uses translucent whites for the soft elevation effect.
-const SOFT_LINE = "border-[rgba(255,255,255,0.07)]";
-const STRONG_LINE = "border-[rgba(255,255,255,0.12)]";
+// Web-mode landing fork: choose a source, then either the AWS integration flow
+// or the coding-agent install/deploy flow.
+type WebView = "chooser" | "aws" | "code";
 
 function hasEvents(stats: Stats | undefined): boolean {
   if (!stats) return false;
@@ -72,22 +71,38 @@ export function OnboardingWizard({
   onExploreDemo?: () => void;
 }) {
   const [step, setStep] = useState<Step>("install");
+  const [webView, setWebView] = useState<WebView>("chooser");
 
   const createKey = useCreateKey(projectId ?? "");
   const github = useGithubInstallation();
   const slack = useSlackInstallation();
 
-  // Mint exactly once per mount, and only after we have a project to mint
-  // into. The ref guard makes the mint a strict per-mount one-shot,
-  // independent of mutation state identity or polling re-renders.
+  // Route a chooser selection to the matching flow. OpenTelemetry/SDK shares the
+  // coding-agent install flow (both hand back an SDK + ingest key); AWS gets its
+  // own no-code integration flow.
+  const handlePick = (action: ConnectAction) => {
+    if (action === "aws") {
+      setWebView("aws");
+    } else {
+      setStep("install");
+      setWebView("code");
+    }
+  };
+
+  // Mint exactly once per mount, and only after we have a project to mint into
+  // *and* the user has chosen the code/SDK path — the no-code AWS integration
+  // never uses an ingest key, so minting on chooser entry would leave an unused
+  // key on the project. The ref guard makes the mint a strict per-mount
+  // one-shot, independent of mutation state identity or polling re-renders.
   const minted = useRef(false);
   useEffect(() => {
     if (mode !== "web") return;
+    if (webView !== "code") return;
     if (!projectId) return;
     if (minted.current) return;
     minted.current = true;
     createKey.mutate("Setup install");
-  }, [mode, projectId, createKey.mutate]);
+  }, [mode, webView, projectId, createKey.mutate]);
 
   const stats = useStats(projectId ?? undefined, { poll: true });
   const eventsArrived = hasEvents(stats.data);
@@ -124,11 +139,21 @@ export function OnboardingWizard({
               slackLoading={slack.isLoading}
               onDone={onComplete}
             />
+          ) : webView === "chooser" ? (
+            <ConnectDataChooser onPick={handlePick} onExploreDemo={onExploreDemo} />
+          ) : webView === "aws" ? (
+            <AwsConnectFlow
+              projectId={projectId}
+              onBack={() => setWebView("chooser")}
+              onDone={onComplete}
+              onExploreDemo={onExploreDemo}
+            />
           ) : step === "install" ? (
             <InstallStep
               apiKey={createKey.data?.plaintext ?? null}
               minting={createKey.isPending && !createKey.data}
               error={createKey.error ? String(createKey.error) : null}
+              onBack={() => setWebView("chooser")}
               onNext={() => setStep("deploy")}
               onExploreDemo={onExploreDemo}
             />
@@ -545,81 +570,18 @@ function SkippedPill({ icon, label }: { icon: React.ReactNode; label: string }) 
   );
 }
 
-function StepHeader({ title, sub }: { title: string; sub: React.ReactNode }) {
-  return (
-    <div className="mb-7">
-      <h1 className="m-0 text-[32px] font-semibold leading-[1.1] tracking-[-0.025em] text-fg">
-        {title}
-      </h1>
-      <div className="mt-2.5 max-w-[540px] text-[14px] text-muted">{sub}</div>
-    </div>
-  );
-}
-
-function StepFooter({
-  onBack,
-  onNext,
-  nextLabel,
-  nextDisabled,
-  onSkip,
-  skipLabel,
-}: {
-  onBack?: () => void;
-  onNext: () => void;
-  nextLabel: string;
-  nextDisabled?: boolean;
-  onSkip?: () => void;
-  skipLabel?: string;
-}) {
-  return (
-    <div className={`mt-9 flex items-center justify-between gap-2 border-t pt-5 ${SOFT_LINE}`}>
-      <div>
-        {onBack && (
-          <button
-            type="button"
-            onClick={onBack}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-medium text-muted transition-colors hover:text-fg"
-          >
-            <ArrowLeftIcon />
-            Back
-          </button>
-        )}
-      </div>
-      <div className="flex items-center gap-2">
-        {onSkip && (
-          <button
-            type="button"
-            onClick={onSkip}
-            className="inline-flex items-center px-3 py-1.5 text-[13px] font-medium text-muted transition-colors hover:text-fg"
-          >
-            {skipLabel ?? "Skip"}
-          </button>
-        )}
-        <Btn
-          variant="primary"
-          size="md"
-          onClick={onNext}
-          disabled={nextDisabled}
-          className="!h-[36px] !rounded-[8px] !px-[14px] !text-[13px]"
-        >
-          {nextLabel}
-          <ArrowIcon />
-        </Btn>
-      </div>
-    </div>
-  );
-}
-
 function InstallStep({
   apiKey,
   minting,
   error,
+  onBack,
   onNext,
   onExploreDemo,
 }: {
   apiKey: string | null;
   minting: boolean;
   error: string | null;
+  onBack?: () => void;
   onNext: () => void;
   onExploreDemo?: () => void;
 }) {
@@ -691,27 +653,9 @@ function InstallStep({
         </div>
       </div>
 
-      <StepFooter onNext={onNext} nextLabel="The agent is done" />
+      <StepFooter onBack={onBack} onNext={onNext} nextLabel="The agent is done" />
       <ExploreDemoLink onExploreDemo={onExploreDemo} />
     </>
-  );
-}
-
-// Subtle escape hatch shown only when a shared demo project is configured: lets
-// a new user explore sample data before instrumenting. The install wizard stays
-// the primary path; this is a secondary, lower-emphasis action.
-function ExploreDemoLink({ onExploreDemo }: { onExploreDemo?: () => void }) {
-  if (!onExploreDemo) return null;
-  return (
-    <div className="mt-3 text-right">
-      <button
-        type="button"
-        onClick={onExploreDemo}
-        className="pr-1 text-[12.5px] font-medium text-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
-      >
-        Not ready yet? Explore with sample data first →
-      </button>
-    </div>
   );
 }
 

@@ -176,3 +176,189 @@ export function CheckIcon({ size = 14, className }: IconProps) {
     </svg>
   );
 }
+
+export function ChevronRightIcon({ size = 16, className }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="m6 4 4 4-4 4" />
+    </svg>
+  );
+}
+
+export function ExternalLinkIcon({ size = 13, className }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M8 2h4v4M12 2 6.5 7.5M11 8.5V11a1.5 1.5 0 0 1-1.5 1.5h-6A1.5 1.5 0 0 1 2 11V5a1.5 1.5 0 0 1 1.5-1.5H6" />
+    </svg>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Connect-source glyphs. Neutral monochrome line icons (currentColor) so no
+// per-integration brand color competes for attention on the chooser.
+// ---------------------------------------------------------------------------
+
+// AWS — a stack of server racks. Deliberately distinct from a cloud so it
+// doesn't read the same as the Cloudflare glyph (design open decision).
+export function AwsIcon({ size = 18, className }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 18 18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="2.5" y="2.5" width="13" height="4.5" rx="1.2" />
+      <rect x="2.5" y="11" width="13" height="4.5" rx="1.2" />
+      <path d="M5 4.75h.01M5 13.25h.01M12.5 4.75h.5M12.5 13.25h.5" />
+    </svg>
+  );
+}
+
+// OpenTelemetry / SDK — a hexagon mark.
+export function OtelIcon({ size = 18, className }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 18 18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M9 1.8 15.2 5.4v7.2L9 16.2 2.8 12.6V5.4Z" />
+      <circle cx="9" cy="9" r="2.4" />
+    </svg>
+  );
+}
+
+// Coding agent — a sparkle.
+export function AgentSparkIcon({ size = 18, className }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 18 18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M9 2.2c.4 2.9 1.9 4.4 4.8 4.8-2.9.4-4.4 1.9-4.8 4.8-.4-2.9-1.9-4.4-4.8-4.8C7.1 6.6 8.6 5.1 9 2.2Z" />
+      <path d="M13.7 11.4c.2 1.3.9 2 2.1 2.2-1.2.2-1.9.9-2.1 2.2-.2-1.3-.9-2-2.1-2.2 1.2-.2 1.9-.9 2.1-2.2Z" />
+    </svg>
+  );
+}
+
+export function VercelIcon({ size = 18, className }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 18 18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M9 3.5 15.5 14.5h-13Z" />
+    </svg>
+  );
+}
+
+export function KubernetesIcon({ size = 18, className }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 18 18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M9 1.9 15 4.8l-1.5 6.5L9 16.1 4.5 11.3 3 4.8Z" />
+      <circle cx="9" cy="8.6" r="2.1" />
+    </svg>
+  );
+}
+
+// Cloudflare — a cloud outline (intentionally cloud-shaped, unlike the AWS rack).
+export function CloudflareIcon({ size = 18, className }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 18 18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M5.2 13h7.3a2.6 2.6 0 0 0 .3-5.18A3.8 3.8 0 0 0 5.5 7.2 3 3 0 0 0 5.2 13Z" />
+    </svg>
+  );
+}
+
+export function GithubActionsIcon({ size = 18, className }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 18 18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <circle cx="9" cy="9" r="6.3" />
+      <path d="m7.2 6.6 3.4 2.4-3.4 2.4Z" />
+    </svg>
+  );
+}
