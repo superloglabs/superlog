@@ -21,7 +21,13 @@ import { ConnectDataChooser } from "./ConnectDataChooser.tsx";
 import { TruncatedKey } from "./TruncatedKey.tsx";
 import type { ConnectAction } from "./connectChoices.ts";
 import { CheckIcon, CopyIcon, GithubIcon, SlackIcon, SpinnerIcon } from "./icons.tsx";
-import { SOFT_LINE, STRONG_LINE, StepFooter, StepHeader } from "./wizardChrome.tsx";
+import {
+  ExploreDemoLink,
+  SOFT_LINE,
+  STRONG_LINE,
+  StepFooter,
+  StepHeader,
+} from "./wizardChrome.tsx";
 
 // Standalone fullscreen wizard shown to new users before they reach the
 // dashboard. Mirrors the playground's Onboarding (dots variant):
@@ -83,17 +89,20 @@ export function OnboardingWizard({
     }
   };
 
-  // Mint exactly once per mount, and only after we have a project to mint
-  // into. The ref guard makes the mint a strict per-mount one-shot,
-  // independent of mutation state identity or polling re-renders.
+  // Mint exactly once per mount, and only after we have a project to mint into
+  // *and* the user has chosen the code/SDK path — the no-code AWS integration
+  // never uses an ingest key, so minting on chooser entry would leave an unused
+  // key on the project. The ref guard makes the mint a strict per-mount
+  // one-shot, independent of mutation state identity or polling re-renders.
   const minted = useRef(false);
   useEffect(() => {
     if (mode !== "web") return;
+    if (webView !== "code") return;
     if (!projectId) return;
     if (minted.current) return;
     minted.current = true;
     createKey.mutate("Setup install");
-  }, [mode, projectId, createKey.mutate]);
+  }, [mode, webView, projectId, createKey.mutate]);
 
   const stats = useStats(projectId ?? undefined, { poll: true });
   const eventsArrived = hasEvents(stats.data);
@@ -131,12 +140,13 @@ export function OnboardingWizard({
               onDone={onComplete}
             />
           ) : webView === "chooser" ? (
-            <ConnectDataChooser onPick={handlePick} />
+            <ConnectDataChooser onPick={handlePick} onExploreDemo={onExploreDemo} />
           ) : webView === "aws" ? (
             <AwsConnectFlow
               projectId={projectId}
               onBack={() => setWebView("chooser")}
               onDone={onComplete}
+              onExploreDemo={onExploreDemo}
             />
           ) : step === "install" ? (
             <InstallStep
@@ -646,24 +656,6 @@ function InstallStep({
       <StepFooter onBack={onBack} onNext={onNext} nextLabel="The agent is done" />
       <ExploreDemoLink onExploreDemo={onExploreDemo} />
     </>
-  );
-}
-
-// Subtle escape hatch shown only when a shared demo project is configured: lets
-// a new user explore sample data before instrumenting. The install wizard stays
-// the primary path; this is a secondary, lower-emphasis action.
-function ExploreDemoLink({ onExploreDemo }: { onExploreDemo?: () => void }) {
-  if (!onExploreDemo) return null;
-  return (
-    <div className="mt-3 text-right">
-      <button
-        type="button"
-        onClick={onExploreDemo}
-        className="pr-1 text-[12.5px] font-medium text-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
-      >
-        Not ready yet? Explore with sample data first →
-      </button>
-    </div>
   );
 }
 

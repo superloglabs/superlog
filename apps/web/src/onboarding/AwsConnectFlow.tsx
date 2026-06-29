@@ -1,21 +1,19 @@
 import { useState } from "react";
 import {
   type StackComponent,
-  type Stats,
   useCloudConnections,
   useCloudResources,
   useCloudStackHealth,
   useCreateCloudConnection,
-  useStats,
   useSyncCloudConnection,
   useVerifyCloudConnection,
 } from "../api.ts";
+import { AWS_REGIONS, DEFAULT_AWS_REGION } from "../awsRegions.ts";
 import { Btn } from "../design/ui.tsx";
 import {
-  AWS_REGIONS,
-  DEFAULT_AWS_REGION,
   activeConnection,
   awsPhase,
+  awsStreamFlowing,
   canContinueAws,
   connectionStatusText,
   isValidRegion,
@@ -30,16 +28,18 @@ import {
   StepHeader,
 } from "./wizardChrome.tsx";
 
-function hasEvents(stats: Stats | undefined): boolean {
-  if (!stats) return false;
-  return stats.traces + stats.logs + stats.metrics > 0;
-}
-
 // Open the CloudFormation console in a new tab, falling back to a same-tab
-// navigation if the popup was blocked.
+// navigation if the popup was blocked. We can't pass "noopener" to window.open
+// because that forces it to return null, which would make every launch also
+// navigate the current tab via the fallback. Instead open normally, then sever
+// the opener reference ourselves for the same security guarantee.
 function openLaunch(url: string) {
-  const win = window.open(url, "_blank", "noopener,noreferrer");
-  if (!win) window.location.assign(url);
+  const win = window.open(url, "_blank");
+  if (win) {
+    win.opener = null;
+  } else {
+    window.location.assign(url);
+  }
 }
 
 const TONE_DOT: Record<ReturnType<typeof stackComponentTone>, string> = {
@@ -93,17 +93,18 @@ export function AwsConnectFlow({
   const verify = useVerifyCloudConnection(projectId);
   const sync = useSyncCloudConnection(projectId);
   const resources = useCloudResources(projectId);
-  const stats = useStats(projectId, { poll: true });
 
   const connection = activeConnection(connections.data);
-  const eventsArrived = hasEvents(stats.data);
-  const phase = awsPhase({ connection, eventsArrived });
-
+  // Poll stack health once the role is verified so we can tell when *this*
+  // connection's CloudWatch streams actually deliver — distinct from any
+  // pre-existing project telemetry.
   const stackHealth = useCloudStackHealth(
     projectId,
     connection?.id,
-    phase === "connected" || phase === "flowing",
+    connection?.status === "connected",
   );
+  const streamFlowing = awsStreamFlowing(stackHealth.data?.components);
+  const phase = awsPhase({ connection, streamFlowing });
 
   const connect = () => {
     if (!isValidRegion(region) || create.isPending) return;
@@ -157,7 +158,7 @@ export function AwsConnectFlow({
       {(phase === "connected" || phase === "flowing") && connection && (
         <ConnectedPanel
           components={stackHealth.data?.components ?? []}
-          eventsArrived={eventsArrived}
+          streamFlowing={streamFlowing}
           region={connection.region}
           accountId={connection.accountId}
           resourceCount={resources.data?.length ?? 0}
@@ -233,8 +234,8 @@ function StartPanel({
             className="h-9 w-full appearance-none rounded-[10px] border border-[rgba(255,255,255,0.12)] bg-[#0f1014] pl-3 pr-8 font-mono text-[13px] text-fg outline-none transition-colors focus:border-[#8C98F0] disabled:opacity-60"
           >
             {AWS_REGIONS.map((r) => (
-              <option key={r} value={r}>
-                {r}
+              <option key={r.code} value={r.code}>
+                {r.code} · {r.name}
               </option>
             ))}
           </select>
@@ -364,7 +365,7 @@ function LaunchingPanel({
 
 function ConnectedPanel({
   components,
-  eventsArrived,
+  streamFlowing,
   region,
   accountId,
   resourceCount,
@@ -372,7 +373,7 @@ function ConnectedPanel({
   rescanning,
 }: {
   components: StackComponent[];
-  eventsArrived: boolean;
+  streamFlowing: boolean;
   region: string;
   accountId: string | null;
   resourceCount: number;
@@ -381,12 +382,12 @@ function ConnectedPanel({
 }) {
   return (
     <div className="flex flex-col gap-4">
-      <div className={`overflow-hidden rounded-[14px] border bg-[#0a0a0c] ${SOFT_LINE}`}>
+      <div className={`overflow-hidden rounded-[14px] border bg-surface ${SOFT_LINE}`}>
         <div
           className={`flex items-center justify-between gap-2 border-b px-[18px] py-[10px] ${SOFT_LINE}`}
         >
-          <span className="text-[11px] uppercase tracking-[0.08em] text-subtle">
-            {accountId ? `account ${accountId}` : "aws"} · {region}
+          <span className="font-mono text-[12px] text-muted">
+            {accountId ? `Account ${accountId}` : "AWS"} · {region}
           </span>
           <button
             type="button"
@@ -415,7 +416,7 @@ function ConnectedPanel({
         )}
       </div>
 
-      {eventsArrived ? (
+      {streamFlowing ? (
         <div className="flex items-center gap-2.5 rounded-[10px] border border-[rgba(65,209,149,0.35)] bg-[rgba(65,209,149,0.06)] px-4 py-3">
           <span className="text-success">
             <CheckIcon size={14} />

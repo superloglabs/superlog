@@ -1,31 +1,16 @@
 // Pure logic for the AWS connect onboarding flow, split out from the component
 // so the phase/state mapping is unit-testable. Types are imported `type`-only so
 // nothing from api.ts (React Query, browser globals) is pulled in at runtime.
-import type { CloudConnection, CloudConnectionStatus, StackComponentState } from "../api.ts";
-
-// Regions offered in the picker. The launch URL interpolates the region into the
-// CloudFormation console hostname, so it must satisfy the API's validation
-// (see `createSchema` in cloud-connections.ts).
-export const AWS_REGIONS = [
-  "us-east-1",
-  "us-east-2",
-  "us-west-1",
-  "us-west-2",
-  "eu-west-1",
-  "eu-west-2",
-  "eu-central-1",
-  "ap-south-1",
-  "ap-southeast-1",
-  "ap-southeast-2",
-  "ap-northeast-1",
-  "sa-east-1",
-] as const;
-
-export type AwsRegion = (typeof AWS_REGIONS)[number];
-export const DEFAULT_AWS_REGION: AwsRegion = "us-east-1";
+import type {
+  CloudConnection,
+  CloudConnectionStatus,
+  StackComponent,
+  StackComponentState,
+} from "../api.ts";
 
 // Mirror of the API's region guard (`/^[a-z0-9-]{1,32}$/`). Validated client-side
-// so a malformed custom region never produces a redirecting launch URL.
+// so a malformed custom region never produces a redirecting launch URL. The
+// offered region list lives in ../awsRegions.ts (shared with settings).
 const REGION_RE = /^[a-z0-9-]{1,32}$/;
 export function isValidRegion(region: string): boolean {
   return REGION_RE.test(region);
@@ -37,17 +22,31 @@ export function isValidRegion(region: string): boolean {
 //   launching  — connection exists but isn't verified; the CloudFormation stack
 //                is deploying (or the user still needs to paste the role ARN).
 //   connected  — role verified; waiting for the first events to stream in.
-//   flowing    — events have arrived; onboarding can complete.
+//   flowing    — this connection's CloudWatch stream has delivered; complete.
 export type AwsPhase = "start" | "launching" | "connected" | "flowing";
 
 export function awsPhase(input: {
   connection: Pick<CloudConnection, "status"> | null;
-  eventsArrived: boolean;
+  streamFlowing: boolean;
 }): AwsPhase {
-  const { connection, eventsArrived } = input;
+  const { connection, streamFlowing } = input;
   if (!connection) return "start";
   if (connection.status !== "connected") return "launching";
-  return eventsArrived ? "flowing" : "connected";
+  return streamFlowing ? "flowing" : "connected";
+}
+
+// Whether *this AWS connection* has actually delivered telemetry, derived from
+// its own stack-health stream components — not project-wide stats. Using project
+// stats would let pre-existing agent/SDK data unlock the flow before the AWS
+// CloudWatch stream has sent anything. A metric or log stream in `working` state
+// means its dedicated ingest key was used recently (real Firehose delivery).
+export function awsStreamFlowing(
+  components: Pick<StackComponent, "key" | "state">[] | undefined,
+): boolean {
+  return (
+    components?.some((c) => (c.key === "metrics" || c.key === "logs") && c.state === "working") ??
+    false
+  );
 }
 
 // "Continue" only unlocks once real telemetry is flowing — same poll-to-unblock
