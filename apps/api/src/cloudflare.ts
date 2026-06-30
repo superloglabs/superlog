@@ -313,6 +313,36 @@ async function provisionInstallation(input: {
   const sameAccount = existing?.accountId === input.account.id ? existing : null;
   const { ingestKey, apiKeyId, minted } = await ensureIngestKey(input.projectId, sameAccount);
 
+  // Undo everything this run created that isn't safely persisted to an install
+  // row: the new remote destinations (minus any slug the prior same-account row
+  // still owns — an upsert-by-name create that returned the same slug is the live
+  // one that row depends on), a freshly minted ingest key, and the just-exchanged
+  // OAuth grant. Called on *every* pre-commit failure path so a connect never
+  // leaves an orphaned destination/key/grant behind. Best-effort throughout.
+  const rollback = async (created: Record<string, string>): Promise<void> => {
+    const priorSlugs = new Set(Object.values(sameAccount?.destinations ?? {}));
+    const orphaned = Object.fromEntries(
+      Object.entries(created).filter(([, slug]) => !priorSlugs.has(slug)),
+    );
+    await deleteRemoteDestinations({
+      accountId: input.account.id,
+      accessToken: input.token.accessToken,
+      destinations: orphaned,
+      fetchImpl: input.fetchImpl,
+    });
+    if (minted) {
+      await db
+        .update(schema.apiKeys)
+        .set({ revokedAt: new Date() })
+        .where(eq(schema.apiKeys.id, apiKeyId));
+    }
+    await revokeToken({
+      config: input.config,
+      token: input.token.accessToken,
+      fetchImpl: input.fetchImpl,
+    });
+  };
+
   // Create the new destinations first; we only tear down any prior same-account
   // destinations *after* a replacement lands (see below). Deleting up front would
   // leave the project "connected" with zero live destinations if creation fails.
@@ -349,33 +379,30 @@ async function provisionInstallation(input: {
   }
 
   // Every signal failed: there's nothing to ingest, so don't persist a bogus
-  // "connected" install. Clean up the freshly minted ingest key (if we minted
-  // one this run) and the now-unstored OAuth token, then surface the failure.
+  // "connected" install — roll back and surface the failure.
   if (Object.keys(destinations).length === 0) {
-    if (minted) {
-      await db
-        .update(schema.apiKeys)
-        .set({ revokedAt: new Date() })
-        .where(eq(schema.apiKeys.id, apiKeyId));
-    }
-    await revokeToken({
-      config: input.config,
-      token: input.token.accessToken,
-      fetchImpl: input.fetchImpl,
-    });
+    await rollback(destinations);
     throw new Error("cloudflare connect: no telemetry destinations were created");
   }
 
-  const accessCipher = encryptIntegrationSecret(input.token.accessToken);
-  const refreshCipher = input.token.refreshToken
-    ? encryptIntegrationSecret(input.token.refreshToken)
-    : null;
-  const ingestCipher = encryptIntegrationSecret(ingestKey);
-  const tokenExpiresAt =
-    input.token.expiresIn != null ? new Date(Date.now() + input.token.expiresIn * 1000) : null;
-  const now = new Date();
-
+  // Encrypt + persist as one unit. Encryption is inside the boundary too: if it
+  // throws (e.g. a misconfigured secrets key) the destinations/key/grant created
+  // above are still rolled back. On a same-account reconnect we merge the prior
+  // slugs under the new ones so a signal whose recreate *failed* keeps its
+  // existing destination in the row instead of being dropped.
   try {
+    const accessCipher = encryptIntegrationSecret(input.token.accessToken);
+    const refreshCipher = input.token.refreshToken
+      ? encryptIntegrationSecret(input.token.refreshToken)
+      : null;
+    const ingestCipher = encryptIntegrationSecret(ingestKey);
+    const tokenExpiresAt =
+      input.token.expiresIn != null ? new Date(Date.now() + input.token.expiresIn * 1000) : null;
+    const now = new Date();
+    const persistedDestinations = sameAccount?.destinations
+      ? { ...sameAccount.destinations, ...destinations }
+      : destinations;
+
     await db
       .insert(schema.cloudflareInstallations)
       .values({
@@ -394,7 +421,7 @@ async function provisionInstallation(input: {
         ingestKeyCiphertext: ingestCipher.ciphertext,
         ingestKeyNonce: ingestCipher.nonce,
         ingestKeyKeyVersion: ingestCipher.keyVersion,
-        destinations,
+        destinations: persistedDestinations,
         installedByUserId: input.userId,
       })
       .onConflictDoUpdate({
@@ -416,69 +443,56 @@ async function provisionInstallation(input: {
           ingestKeyCiphertext: ingestCipher.ciphertext,
           ingestKeyNonce: ingestCipher.nonce,
           ingestKeyKeyVersion: ingestCipher.keyVersion,
-          destinations,
+          destinations: persistedDestinations,
           installedByUserId: input.userId,
           revokedAt: null,
           updatedAt: now,
         },
       });
   } catch (e) {
-    // The destinations are already live on Cloudflare but we failed to record
-    // them. Tear down what this run created so we don't strand orphaned remote
-    // destinations exporting with an untracked ingest key. Keep any slug the
-    // prior same-account install still references (an upsert-by-name create that
-    // returned the same slug is the live one that row depends on), and only
-    // revoke the ingest key if we minted a fresh one this run.
-    const priorSlugs = new Set(Object.values(sameAccount?.destinations ?? {}));
-    const orphaned = Object.fromEntries(
-      Object.entries(destinations).filter(([, slug]) => !priorSlugs.has(slug)),
-    );
-    await deleteRemoteDestinations({
-      accountId: input.account.id,
-      accessToken: input.token.accessToken,
-      destinations: orphaned,
-      fetchImpl: input.fetchImpl,
-    });
-    if (minted) {
-      await db
-        .update(schema.apiKeys)
-        .set({ revokedAt: new Date() })
-        .where(eq(schema.apiKeys.id, apiKeyId));
-    }
+    await rollback(destinations);
     throw e;
   }
 
-  // Same-account reconnect: now that the replacement destinations exist and are
-  // persisted, delete the ones we created last time. Doing this *after* the
-  // upsert means a failed reprovision (handled above) never strands the project
-  // without destinations. `staleDestinationSlugs` only targets prior slugs for
-  // signals that actually got a replacement this run (a signal whose recreate
-  // failed keeps its old destination) and never a slug that's still live (an
-  // upsert-by-name create that returned the same slug).
-  if (sameAccount?.destinations) {
-    const staleSlugs = staleDestinationSlugs(sameAccount.destinations, destinations);
-    await deleteRemoteDestinations({
-      accountId: input.account.id,
-      accessToken: input.token.accessToken,
-      destinations: staleSlugs,
-      fetchImpl: input.fetchImpl,
-    });
-  }
+  // The install row is now committed and correct for this account. The remaining
+  // cleanup is best-effort housekeeping: a failure here must NOT turn an
+  // already-persisted connect into an error redirect, so we log and swallow.
+  try {
+    // Same-account reconnect: delete the prior destinations we just replaced.
+    // `staleDestinationSlugs` only targets prior slugs for signals that actually
+    // got a replacement this run (a signal whose recreate failed keeps its old
+    // destination, which we merged back into the row above) and never a slug
+    // that's still live (an upsert-by-name create that returned the same slug).
+    if (sameAccount?.destinations) {
+      const staleSlugs = staleDestinationSlugs(sameAccount.destinations, destinations);
+      await deleteRemoteDestinations({
+        accountId: input.account.id,
+        accessToken: input.token.accessToken,
+        destinations: staleSlugs,
+        fetchImpl: input.fetchImpl,
+      });
+    }
 
-  // Enforce a single active Cloudflare account per project: fully tear down any
-  // other active install rows for this project that point at a different account
-  // (delete their remote destinations, revoke their OAuth token + ingest key,
-  // soft-revoke the row). A bare DB revoke would leave the superseded account's
-  // destinations streaming into the project with a still-valid key.
-  const superseded = await db.query.cloudflareInstallations.findMany({
-    where: and(
-      eq(schema.cloudflareInstallations.projectId, input.projectId),
-      ne(schema.cloudflareInstallations.accountId, input.account.id),
-      isNull(schema.cloudflareInstallations.revokedAt),
-    ),
-  });
-  for (const row of superseded) {
-    await teardownInstallation(row, { config: input.config, fetchImpl: input.fetchImpl });
+    // Enforce a single active Cloudflare account per project: fully tear down any
+    // other active install rows for this project that point at a different
+    // account (delete their remote destinations, revoke their OAuth token +
+    // ingest key, soft-revoke the row). A bare DB revoke would leave the
+    // superseded account's destinations streaming in with a still-valid key.
+    const superseded = await db.query.cloudflareInstallations.findMany({
+      where: and(
+        eq(schema.cloudflareInstallations.projectId, input.projectId),
+        ne(schema.cloudflareInstallations.accountId, input.account.id),
+        isNull(schema.cloudflareInstallations.revokedAt),
+      ),
+    });
+    for (const row of superseded) {
+      await teardownInstallation(row, { config: input.config, fetchImpl: input.fetchImpl });
+    }
+  } catch (e) {
+    log.warn(
+      { err: e, project_id: input.projectId },
+      "cloudflare post-connect cleanup failed (connection persisted)",
+    );
   }
 }
 
