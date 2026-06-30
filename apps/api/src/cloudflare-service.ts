@@ -21,18 +21,23 @@ export const CLOUDFLARE_OAUTH_TOKEN_URL = "https://dash.cloudflare.com/oauth2/to
 export const CLOUDFLARE_OAUTH_REVOKE_URL = "https://dash.cloudflare.com/oauth2/revoke";
 export const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 
-// Cloudflare OAuth scope identifiers mirror API-token permission names
-// (dot-delimited). These defaults cover what the connector needs: read the
-// account list (to resolve the account id the destination APIs are scoped to)
-// and manage Workers Observability telemetry destinations. They're best-effort —
-// confirm the exact identifiers via `GET /client/v4/oauth/scopes` when
-// registering the client and override with CLOUDFLARE_OAUTH_SCOPES if they
-// differ. `offline_access` is added/removed automatically by Cloudflare based on
-// the client's grant types, so we don't list it here.
+// Cloudflare OAuth scope identifiers (dot-delimited, mirroring API-token
+// permission names — verified against `GET /client/v4/oauth/scopes`). The
+// connector needs to:
+//   - account-settings.read            list the account (resolve the account id)
+//   - workers-observability(.write)    create the telemetry destinations
+//   - workers-observability-telemetry.write   (destinations live under this perm)
+//   - workers-scripts.read/.write      read each Worker's observability config
+//                                      and wire our destinations into it
+// Override with CLOUDFLARE_OAUTH_SCOPES if a deployment's client differs.
+// `offline_access` is added/removed automatically by Cloudflare based on the
+// client's grant types, so we don't list it here.
 export const DEFAULT_CLOUDFLARE_OAUTH_SCOPES = [
-  "account.read",
-  "workers-observability.read",
+  "account-settings.read",
   "workers-observability.write",
+  "workers-observability-telemetry.write",
+  "workers-scripts.read",
+  "workers-scripts.write",
 ];
 
 export type CloudflareSignal = "traces" | "logs" | "metrics";
@@ -306,6 +311,71 @@ export function staleDestinationSlugs(
 }
 
 // ---------------------------------------------------------------------------
+// Worker observability wiring
+//
+// Creating a destination is not enough: a Worker only exports to a destination
+// when its own `observability` config enables the signal and lists the
+// destination by name. So on connect we read each Worker's settings and merge our
+// destination slugs in.
+// ---------------------------------------------------------------------------
+
+export type WorkerObservabilitySignal = {
+  enabled?: boolean;
+  destinations?: string[];
+  [k: string]: unknown;
+};
+export type WorkerObservability = {
+  enabled?: boolean;
+  logs?: WorkerObservabilitySignal;
+  traces?: WorkerObservabilitySignal;
+  [k: string]: unknown;
+};
+
+/** signal → the Worker `observability` sub-key it maps to (metrics isn't a Worker signal). */
+const WORKER_OBSERVABILITY_SIGNALS = ["logs", "traces"] as const;
+
+/**
+ * Merge our destination slugs into a Worker's existing observability config so it
+ * exports the matching signals to our intake. Additive and idempotent: turns on
+ * observability and each wired signal, and appends our slug to that signal's
+ * `destinations` without dropping the Worker's existing destinations, sampling
+ * rates, or any other fields. Returns the updated config, or `null` when the
+ * Worker is already wired (nothing to change) so the caller can skip the PATCH.
+ *
+ * `slugs` maps our signal name (traces/logs) to the destination slug we created;
+ * metrics is omitted because Workers Observability has no per-Worker metrics
+ * signal.
+ */
+export function wireObservabilityDestinations(
+  current: WorkerObservability | null | undefined,
+  slugs: { traces?: string; logs?: string },
+): WorkerObservability | null {
+  const next: WorkerObservability = current ? { ...current } : {};
+  let changed = false;
+  if (next.enabled !== true) {
+    next.enabled = true;
+    changed = true;
+  }
+  for (const signal of WORKER_OBSERVABILITY_SIGNALS) {
+    const slug = slugs[signal];
+    if (!slug) continue;
+    const sig: WorkerObservabilitySignal = { ...(next[signal] ?? {}) };
+    const destinations = Array.isArray(sig.destinations) ? [...sig.destinations] : [];
+    if (sig.enabled !== true) {
+      sig.enabled = true;
+      changed = true;
+    }
+    if (!destinations.includes(slug)) {
+      destinations.push(slug);
+      changed = true;
+    }
+    sig.destinations = destinations;
+    next[signal] = sig;
+  }
+  return changed ? next : null;
+}
+
+// ---------------------------------------------------------------------------
 // HTTP wrappers (injectable fetch)
 // ---------------------------------------------------------------------------
 
@@ -412,5 +482,91 @@ export async function revokeToken(input: {
     });
   } catch {
     // best-effort
+  }
+}
+
+/** Parse `GET /workers/scripts` → list of script (Worker) ids. */
+export function parseScriptsResponse(json: unknown): string[] {
+  if (!json || typeof json !== "object") return [];
+  const result = (json as Record<string, unknown>).result;
+  if (!Array.isArray(result)) return [];
+  const ids: string[] = [];
+  for (const item of result) {
+    const id = item && typeof item === "object" ? (item as Record<string, unknown>).id : null;
+    if (typeof id === "string" && id) ids.push(id);
+  }
+  return ids;
+}
+
+/** List the Worker script ids in an account. Returns [] on any failure. */
+export async function listScripts(
+  accountId: string,
+  accessToken: string,
+  fetchImpl: FetchImpl = fetch,
+): Promise<string[]> {
+  const res = await fetchImpl(`${CLOUDFLARE_API_BASE}/accounts/${accountId}/workers/scripts`, {
+    headers: { authorization: `Bearer ${accessToken}` },
+  });
+  const json = await res.json().catch(() => null);
+  return parseScriptsResponse(json);
+}
+
+/** Read one Worker's `observability` config (null when unset/unavailable). */
+export async function getScriptObservability(input: {
+  accountId: string;
+  script: string;
+  accessToken: string;
+  fetchImpl?: FetchImpl;
+}): Promise<WorkerObservability | null> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const res = await fetchImpl(
+    `${CLOUDFLARE_API_BASE}/accounts/${input.accountId}/workers/scripts/${encodeURIComponent(
+      input.script,
+    )}/settings`,
+    { headers: { authorization: `Bearer ${input.accessToken}` } },
+  );
+  const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  const result = json?.result as Record<string, unknown> | undefined;
+  const obs = result?.observability;
+  return obs && typeof obs === "object" ? (obs as WorkerObservability) : null;
+}
+
+/**
+ * PATCH a Worker's settings to set its `observability` config. The settings
+ * endpoint only accepts `multipart/form-data` with a JSON `settings` part (not a
+ * JSON body), so we build a FormData and let fetch set the multipart boundary.
+ */
+export async function updateScriptObservability(input: {
+  accountId: string;
+  script: string;
+  observability: WorkerObservability;
+  accessToken: string;
+  fetchImpl?: FetchImpl;
+}): Promise<{ ok: boolean; error?: string }> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const form = new FormData();
+  form.append(
+    "settings",
+    new Blob([JSON.stringify({ observability: input.observability })], {
+      type: "application/json",
+    }),
+    "settings.json",
+  );
+  try {
+    const res = await fetchImpl(
+      `${CLOUDFLARE_API_BASE}/accounts/${input.accountId}/workers/scripts/${encodeURIComponent(
+        input.script,
+      )}/settings`,
+      {
+        method: "PATCH",
+        headers: { authorization: `Bearer ${input.accessToken}` },
+        body: form,
+      },
+    );
+    const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    if (json?.success === true) return { ok: true };
+    return { ok: false, error: extractCreateError(json ?? {}) };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "request_failed" };
   }
 }
