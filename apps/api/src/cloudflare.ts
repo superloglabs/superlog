@@ -243,6 +243,9 @@ export function mountCloudflarePublic(
     const account = accounts[0];
     if (!account) {
       log.error("cloudflare connect: no accessible account on the granted token");
+      // We exchanged the code but won't use the grant — revoke it so the token
+      // doesn't stay live at Cloudflare after we abort. Best-effort.
+      await revokeToken({ config, token: token.accessToken, fetchImpl });
       return c.redirect(`${webOrigin}/?cloudflare=error`, 302);
     }
     // Cloudflare's OAuth consent is account-scoped — the user picks which account
@@ -254,6 +257,7 @@ export function mountCloudflarePublic(
         { count: accounts.length, project_id: decoded.projectId },
         "cloudflare connect: token grants multiple accounts; refusing to guess",
       );
+      await revokeToken({ config, token: token.accessToken, fetchImpl });
       return c.redirect(`${webOrigin}/?cloudflare=error`, 302);
     }
 
