@@ -106,6 +106,8 @@ export function intakeUrlForSignal(base: string, signal: CloudflareSignal): stri
 export type DestinationPayload = {
   name: string;
   enabled: boolean;
+  /** Skip Cloudflare's synthetic preflight check to the destination URL. */
+  skipPreflightCheck: boolean;
   configuration: {
     type: "logpush";
     logpushDataset: string;
@@ -118,6 +120,14 @@ export type DestinationPayload = {
  * Build the Workers Observability destination payload for one signal: a Logpush
  * destination with the matching `opentelemetry-*` dataset, pointed at our intake
  * and authenticated with the project's ingest key via `x-api-key`.
+ *
+ * `skipPreflightCheck` is set to true because Cloudflare's preflight fires a
+ * synthetic HTTP request to the destination URL before the destination is
+ * created. Our OTLP intake expects protobuf/JSON telemetry payloads with a
+ * valid `x-api-key`, so a bare Cloudflare preflight probe is always rejected
+ * with a 4xx — causing the create to return 400 even though the destination
+ * and key are perfectly valid. Skipping the preflight is safe here because we
+ * control both the key (just minted and committed to the DB) and the intake URL.
  */
 export function buildDestinationPayload(input: {
   signal: CloudflareSignal;
@@ -128,6 +138,7 @@ export function buildDestinationPayload(input: {
   return {
     name: `Superlog ${input.signal}`,
     enabled: true,
+    skipPreflightCheck: true,
     configuration: {
       type: "logpush",
       logpushDataset: sig.dataset,
@@ -226,7 +237,7 @@ export function parseAccountsResponse(json: unknown): CloudflareAccount[] {
 
 export type CreateDestinationResult =
   | { ok: true; slug: string | null }
-  | { ok: false; error: string };
+  | { ok: false; error: string; cfErrors?: unknown[] };
 
 /** Parse the create-destination response → `{ success, result: { slug } }`. */
 export function parseCreateDestinationResponse(json: unknown): CreateDestinationResult {
@@ -240,6 +251,7 @@ export function parseCreateDestinationResponse(json: unknown): CreateDestination
     const errors = Array.isArray(o.errors) ? o.errors : [];
     const first = errors[0] as Record<string, unknown> | undefined;
     const msg = first && typeof first.message === "string" ? first.message : "request_failed";
+    if (errors.length > 0) return { ok: false, error: msg, cfErrors: errors };
     return { ok: false, error: msg };
   }
   const result = o.result;

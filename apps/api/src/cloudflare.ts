@@ -371,6 +371,7 @@ async function provisionInstallation(input: {
         {
           signal,
           error: result.ok ? "missing slug" : result.error,
+          cf_errors: !result.ok ? result.cfErrors : undefined,
           project_id: input.projectId,
         },
         "cloudflare destination creation failed for signal",

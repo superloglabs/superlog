@@ -94,6 +94,11 @@ test("buildDestinationPayload builds a Logpush OTLP destination with the ingest 
   });
   assert.equal(payload.enabled, true);
   assert.equal(payload.name, "Superlog logs");
+  // skipPreflightCheck must be true — Cloudflare's synthetic probe to our OTLP
+  // intake is always rejected because our intake requires a valid key and a real
+  // telemetry payload, so the preflight returns 4xx and Cloudflare refuses to
+  // create the destination.
+  assert.equal(payload.skipPreflightCheck, true);
   assert.equal(payload.configuration.type, "logpush");
   assert.equal(payload.configuration.logpushDataset, "opentelemetry-logs");
   assert.equal(payload.configuration.url, "https://intake.example.com/v1/logs");
@@ -199,9 +204,17 @@ test("parseCreateDestinationResponse returns slug on success and message on fail
     ok: true,
     slug: null,
   });
+  // Error with a Cloudflare message string is surfaced; cfErrors carries the
+  // raw array for structured logging.
   assert.deepEqual(
     parseCreateDestinationResponse({ success: false, errors: [{ message: "nope" }] }),
-    { ok: false, error: "nope" },
+    { ok: false, error: "nope", cfErrors: [{ message: "nope" }] },
+  );
+  // Error without a `message` property falls back to "request_failed"; the raw
+  // errors array is still included so callers can log it for diagnosis.
+  assert.deepEqual(
+    parseCreateDestinationResponse({ success: false, errors: [{ code: 10000 }] }),
+    { ok: false, error: "request_failed", cfErrors: [{ code: 10000 }] },
   );
   // A malformed/partial response that omits `success` must NOT be accepted as a
   // provisioned destination — it's a failure, not a slug-less success.
