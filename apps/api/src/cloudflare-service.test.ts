@@ -8,14 +8,17 @@ import {
   createDestination,
   deleteDestination,
   exchangeCodeForToken,
+  getScriptObservability,
   intakeUrlForSignal,
   listAccounts,
   parseAccountsResponse,
   parseCreateDestinationResponse,
+  parseScriptsResponse,
   parseTokenResponse,
   signState,
   staleDestinationSlugs,
   verifyState,
+  wireObservabilityDestinations,
 } from "./cloudflare-service.js";
 
 const SECRET = "test-state-secret";
@@ -33,9 +36,11 @@ test("cloudflareConfigFromEnv returns null until required vars are set", () => {
   assert.equal(cfg.intakeBaseUrl, "https://intake.example.com");
   assert.equal(cfg.redirectUri, "http://localhost:4100/cloudflare/oauth/callback");
   assert.deepEqual(cfg.scopes, [
-    "account.read",
-    "workers-observability.read",
+    "account-settings.read",
     "workers-observability.write",
+    "workers-observability-telemetry.write",
+    "workers-scripts.read",
+    "workers-scripts.write",
   ]);
 });
 
@@ -192,6 +197,79 @@ test("staleDestinationSlugs only deletes prior slugs for signals that got a repl
 
   // Cloudflare returned the same slug (upsert-by-name) → it's the live one, keep it.
   assert.deepEqual(staleDestinationSlugs({ traces: "same" }, { traces: "same" }), {});
+});
+
+test("getScriptObservability throws on a failed read but returns null when genuinely unset", async () => {
+  const obs = { enabled: true, logs: { enabled: true, destinations: ["d"] } };
+  const respond = (status: number, body: unknown) =>
+    (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
+  const call = (fetchImpl: typeof fetch) =>
+    getScriptObservability({ accountId: "a", script: "w", accessToken: "t", fetchImpl });
+
+  assert.deepEqual(await call(respond(200, { success: true, result: { observability: obs } })), obs);
+  // success + no observability → genuinely fresh Worker.
+  assert.equal(await call(respond(200, { success: true, result: {} })), null);
+  // A failed read must THROW — never resolve to null (which would make the caller
+  // PATCH a minimal config and clobber the Worker's real observability).
+  await assert.rejects(() => call(respond(403, { success: false, errors: [{ message: "nope" }] })));
+});
+
+test("parseScriptsResponse pulls script ids and ignores malformed rows", () => {
+  assert.deepEqual(
+    parseScriptsResponse({ result: [{ id: "worker-a" }, { id: "worker-b" }, {}, "x"] }),
+    ["worker-a", "worker-b"],
+  );
+  assert.deepEqual(parseScriptsResponse(null), []);
+});
+
+test("wireObservabilityDestinations is additive + idempotent and skips when already wired", () => {
+  // Fresh Worker (no observability) → enable everything, add both destinations.
+  assert.deepEqual(
+    wireObservabilityDestinations(null, { traces: "superlog-traces", logs: "superlog-logs" }),
+    {
+      enabled: true,
+      logs: { enabled: true, destinations: ["superlog-logs"] },
+      traces: { enabled: true, destinations: ["superlog-traces"] },
+    },
+  );
+
+  // Existing config: keep other destinations + fields, append ours, enable traces.
+  assert.deepEqual(
+    wireObservabilityDestinations(
+      {
+        enabled: true,
+        head_sampling_rate: 1,
+        logs: { enabled: true, persist: true, destinations: ["other-dest"] },
+        traces: { enabled: false, head_sampling_rate: 1 },
+      },
+      { traces: "superlog-traces", logs: "superlog-logs" },
+    ),
+    {
+      enabled: true,
+      head_sampling_rate: 1,
+      logs: { enabled: true, persist: true, destinations: ["other-dest", "superlog-logs"] },
+      traces: { enabled: true, head_sampling_rate: 1, destinations: ["superlog-traces"] },
+    },
+  );
+
+  // Already wired → null (no PATCH needed).
+  assert.equal(
+    wireObservabilityDestinations(
+      {
+        enabled: true,
+        logs: { enabled: true, destinations: ["superlog-logs"] },
+        traces: { enabled: true, destinations: ["superlog-traces"] },
+      },
+      { traces: "superlog-traces", logs: "superlog-logs" },
+    ),
+    null,
+  );
+
+  // Only the signals we pass a slug for are touched.
+  assert.deepEqual(wireObservabilityDestinations(null, { logs: "superlog-logs" }), {
+    enabled: true,
+    logs: { enabled: true, destinations: ["superlog-logs"] },
+  });
 });
 
 test("parseCreateDestinationResponse returns slug on success and message on failure", () => {
