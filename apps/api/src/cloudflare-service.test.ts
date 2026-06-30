@@ -8,6 +8,7 @@ import {
   createDestination,
   deleteDestination,
   exchangeCodeForToken,
+  getScriptObservability,
   intakeUrlForSignal,
   listAccounts,
   parseAccountsResponse,
@@ -196,6 +197,21 @@ test("staleDestinationSlugs only deletes prior slugs for signals that got a repl
 
   // Cloudflare returned the same slug (upsert-by-name) → it's the live one, keep it.
   assert.deepEqual(staleDestinationSlugs({ traces: "same" }, { traces: "same" }), {});
+});
+
+test("getScriptObservability throws on a failed read but returns null when genuinely unset", async () => {
+  const obs = { enabled: true, logs: { enabled: true, destinations: ["d"] } };
+  const respond = (status: number, body: unknown) =>
+    (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
+  const call = (fetchImpl: typeof fetch) =>
+    getScriptObservability({ accountId: "a", script: "w", accessToken: "t", fetchImpl });
+
+  assert.deepEqual(await call(respond(200, { success: true, result: { observability: obs } })), obs);
+  // success + no observability → genuinely fresh Worker.
+  assert.equal(await call(respond(200, { success: true, result: {} })), null);
+  // A failed read must THROW — never resolve to null (which would make the caller
+  // PATCH a minimal config and clobber the Worker's real observability).
+  await assert.rejects(() => call(respond(403, { success: false, errors: [{ message: "nope" }] })));
 });
 
 test("parseScriptsResponse pulls script ids and ignores malformed rows", () => {

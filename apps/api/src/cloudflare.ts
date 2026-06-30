@@ -437,11 +437,17 @@ async function provisionInstallation(input: {
     throw new Error("cloudflare connect: no telemetry destinations were created");
   }
 
+  // On a same-account reconnect, merge the prior slugs under the new ones so a
+  // signal whose recreate *failed* keeps its existing destination. This is the
+  // set we both persist and wire Workers to, so Workers point at retained slugs
+  // (not just the ones created this run).
+  const persistedDestinations = sameAccount?.destinations
+    ? { ...sameAccount.destinations, ...destinations }
+    : destinations;
+
   // Encrypt + persist as one unit. Encryption is inside the boundary too: if it
   // throws (e.g. a misconfigured secrets key) the destinations/key/grant created
-  // above are still rolled back. On a same-account reconnect we merge the prior
-  // slugs under the new ones so a signal whose recreate *failed* keeps its
-  // existing destination in the row instead of being dropped.
+  // above are still rolled back.
   try {
     const accessCipher = encryptIntegrationSecret(input.token.accessToken);
     const refreshCipher = input.token.refreshToken
@@ -451,9 +457,6 @@ async function provisionInstallation(input: {
     const tokenExpiresAt =
       input.token.expiresIn != null ? new Date(Date.now() + input.token.expiresIn * 1000) : null;
     const now = new Date();
-    const persistedDestinations = sameAccount?.destinations
-      ? { ...sameAccount.destinations, ...destinations }
-      : destinations;
 
     await db
       .insert(schema.cloudflareInstallations)
@@ -541,13 +544,15 @@ async function provisionInstallation(input: {
       await teardownInstallation(row, { config: input.config, fetchImpl: input.fetchImpl });
     }
 
-    // Wire the account's Workers to the destinations we just created — without
-    // this the destinations exist but no Worker exports to them, so no telemetry
-    // ever flows (the connect looks done but the project stays empty).
+    // Wire the account's Workers to the destinations — without this the
+    // destinations exist but no Worker exports to them, so no telemetry ever
+    // flows (the connect looks done but the project stays empty). Use the merged
+    // set so Workers are wired to slugs we retained from a prior connect too, not
+    // just the ones created this run.
     await wireAccountWorkers({
       accountId: input.account.id,
       accessToken: input.token.accessToken,
-      destinations,
+      destinations: persistedDestinations,
       fetchImpl: input.fetchImpl,
     });
   } catch (e) {

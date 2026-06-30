@@ -511,7 +511,13 @@ export async function listScripts(
   return parseScriptsResponse(json);
 }
 
-/** Read one Worker's `observability` config (null when unset/unavailable). */
+/**
+ * Read one Worker's `observability` config. Returns `null` only on a *successful*
+ * read where observability is unset (a genuinely fresh Worker). A failed read
+ * (non-OK HTTP or `success !== true`) THROWS — the caller must not treat that as
+ * "fresh" and PATCH a minimal config, which would clobber an existing
+ * observability block we simply couldn't read.
+ */
 export async function getScriptObservability(input: {
   accountId: string;
   script: string;
@@ -526,7 +532,10 @@ export async function getScriptObservability(input: {
     { headers: { authorization: `Bearer ${input.accessToken}` } },
   );
   const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-  const result = json?.result as Record<string, unknown> | undefined;
+  if (!res.ok || !json || json.success !== true) {
+    throw new Error(`cloudflare: read worker settings failed (status ${res.status})`);
+  }
+  const result = json.result as Record<string, unknown> | undefined;
   const obs = result?.observability;
   return obs && typeof obs === "object" ? (obs as WorkerObservability) : null;
 }
