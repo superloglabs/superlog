@@ -14,6 +14,7 @@ import {
   parseCreateDestinationResponse,
   parseTokenResponse,
   signState,
+  staleDestinationSlugs,
   verifyState,
 } from "./cloudflare-service.js";
 
@@ -167,6 +168,26 @@ test("parseAccountsResponse pulls id/name pairs and ignores malformed rows", () 
     { id: "acct-2", name: "" },
   ]);
   assert.deepEqual(parseAccountsResponse(null), []);
+});
+
+test("staleDestinationSlugs only deletes prior slugs for signals that got a replacement", () => {
+  // No prior install → nothing to clean up.
+  assert.deepEqual(staleDestinationSlugs(null, { traces: "new-1" }), {});
+
+  // Every signal recreated with a new slug → all prior slugs are stale.
+  assert.deepEqual(
+    staleDestinationSlugs({ traces: "old-t", logs: "old-l" }, { traces: "new-t", logs: "new-l" }),
+    { traces: "old-t", logs: "old-l" },
+  );
+
+  // `logs` failed to recreate (absent from current) → its prior slug is KEPT so
+  // that signal keeps streaming; only the replaced `traces` slug is stale.
+  assert.deepEqual(staleDestinationSlugs({ traces: "old-t", logs: "old-l" }, { traces: "new-t" }), {
+    traces: "old-t",
+  });
+
+  // Cloudflare returned the same slug (upsert-by-name) → it's the live one, keep it.
+  assert.deepEqual(staleDestinationSlugs({ traces: "same" }, { traces: "same" }), {});
 });
 
 test("parseCreateDestinationResponse returns slug on success and message on failure", () => {

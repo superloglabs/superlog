@@ -38,6 +38,7 @@ import {
   listAccounts,
   revokeToken,
   signState,
+  staleDestinationSlugs,
   verifyState,
 } from "./cloudflare-service.js";
 import { logger } from "./logger.js";
@@ -244,6 +245,17 @@ export function mountCloudflarePublic(
       log.error("cloudflare connect: no accessible account on the granted token");
       return c.redirect(`${webOrigin}/?cloudflare=error`, 302);
     }
+    // Cloudflare's OAuth consent is account-scoped — the user picks which account
+    // to grant — so the granted token normally resolves to a single account. If a
+    // token ever resolves to more than one we can't know which the user meant, so
+    // bail rather than silently streaming telemetry from an arbitrary account.
+    if (accounts.length > 1) {
+      log.error(
+        { count: accounts.length, project_id: decoded.projectId },
+        "cloudflare connect: token grants multiple accounts; refusing to guess",
+      );
+      return c.redirect(`${webOrigin}/?cloudflare=error`, 302);
+    }
 
     try {
       await provisionInstallation({
@@ -359,30 +371,12 @@ async function provisionInstallation(input: {
     input.token.expiresIn != null ? new Date(Date.now() + input.token.expiresIn * 1000) : null;
   const now = new Date();
 
-  await db
-    .insert(schema.cloudflareInstallations)
-    .values({
-      projectId: input.projectId,
-      accountId: input.account.id,
-      accountName: input.account.name || null,
-      accessTokenCiphertext: accessCipher.ciphertext,
-      accessTokenNonce: accessCipher.nonce,
-      accessTokenKeyVersion: accessCipher.keyVersion,
-      refreshTokenCiphertext: refreshCipher?.ciphertext ?? null,
-      refreshTokenNonce: refreshCipher?.nonce ?? null,
-      refreshTokenKeyVersion: refreshCipher?.keyVersion ?? null,
-      tokenExpiresAt,
-      scope: input.token.scope,
-      apiKeyId,
-      ingestKeyCiphertext: ingestCipher.ciphertext,
-      ingestKeyNonce: ingestCipher.nonce,
-      ingestKeyKeyVersion: ingestCipher.keyVersion,
-      destinations,
-      installedByUserId: input.userId,
-    })
-    .onConflictDoUpdate({
-      target: [schema.cloudflareInstallations.projectId, schema.cloudflareInstallations.accountId],
-      set: {
+  try {
+    await db
+      .insert(schema.cloudflareInstallations)
+      .values({
+        projectId: input.projectId,
+        accountId: input.account.id,
         accountName: input.account.name || null,
         accessTokenCiphertext: accessCipher.ciphertext,
         accessTokenNonce: accessCipher.nonce,
@@ -398,22 +392,67 @@ async function provisionInstallation(input: {
         ingestKeyKeyVersion: ingestCipher.keyVersion,
         destinations,
         installedByUserId: input.userId,
-        revokedAt: null,
-        updatedAt: now,
-      },
+      })
+      .onConflictDoUpdate({
+        target: [
+          schema.cloudflareInstallations.projectId,
+          schema.cloudflareInstallations.accountId,
+        ],
+        set: {
+          accountName: input.account.name || null,
+          accessTokenCiphertext: accessCipher.ciphertext,
+          accessTokenNonce: accessCipher.nonce,
+          accessTokenKeyVersion: accessCipher.keyVersion,
+          refreshTokenCiphertext: refreshCipher?.ciphertext ?? null,
+          refreshTokenNonce: refreshCipher?.nonce ?? null,
+          refreshTokenKeyVersion: refreshCipher?.keyVersion ?? null,
+          tokenExpiresAt,
+          scope: input.token.scope,
+          apiKeyId,
+          ingestKeyCiphertext: ingestCipher.ciphertext,
+          ingestKeyNonce: ingestCipher.nonce,
+          ingestKeyKeyVersion: ingestCipher.keyVersion,
+          destinations,
+          installedByUserId: input.userId,
+          revokedAt: null,
+          updatedAt: now,
+        },
+      });
+  } catch (e) {
+    // The destinations are already live on Cloudflare but we failed to record
+    // them. Tear down what this run created so we don't strand orphaned remote
+    // destinations exporting with an untracked ingest key. Keep any slug the
+    // prior same-account install still references (an upsert-by-name create that
+    // returned the same slug is the live one that row depends on), and only
+    // revoke the ingest key if we minted a fresh one this run.
+    const priorSlugs = new Set(Object.values(sameAccount?.destinations ?? {}));
+    const orphaned = Object.fromEntries(
+      Object.entries(destinations).filter(([, slug]) => !priorSlugs.has(slug)),
+    );
+    await deleteRemoteDestinations({
+      accountId: input.account.id,
+      accessToken: input.token.accessToken,
+      destinations: orphaned,
+      fetchImpl: input.fetchImpl,
     });
+    if (minted) {
+      await db
+        .update(schema.apiKeys)
+        .set({ revokedAt: new Date() })
+        .where(eq(schema.apiKeys.id, apiKeyId));
+    }
+    throw e;
+  }
 
   // Same-account reconnect: now that the replacement destinations exist and are
   // persisted, delete the ones we created last time. Doing this *after* the
   // upsert means a failed reprovision (handled above) never strands the project
-  // without destinations. Exclude any slug that's also in the new set — if
-  // Cloudflare's create is upsert-by-name and returned the same slug, that
-  // destination is the live one and must not be deleted.
+  // without destinations. `staleDestinationSlugs` only targets prior slugs for
+  // signals that actually got a replacement this run (a signal whose recreate
+  // failed keeps its old destination) and never a slug that's still live (an
+  // upsert-by-name create that returned the same slug).
   if (sameAccount?.destinations) {
-    const liveSlugs = new Set(Object.values(destinations));
-    const staleSlugs = Object.fromEntries(
-      Object.entries(sameAccount.destinations).filter(([, slug]) => !liveSlugs.has(slug)),
-    );
+    const staleSlugs = staleDestinationSlugs(sameAccount.destinations, destinations);
     await deleteRemoteDestinations({
       accountId: input.account.id,
       accessToken: input.token.accessToken,

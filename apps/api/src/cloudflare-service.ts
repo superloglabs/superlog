@@ -252,6 +252,29 @@ export function parseCreateDestinationResponse(json: unknown): CreateDestination
   return { ok: true, slug };
 }
 
+/**
+ * Given the prior same-account destinations and the ones we just (re)created,
+ * return the prior slugs that are now stale and should be deleted remotely.
+ *
+ * Two guards keep a partial reconnect from dropping working telemetry:
+ *  - Only signals that actually got a fresh destination this run (`signal in
+ *    current`) are eligible — a signal whose recreate FAILED keeps its prior
+ *    destination, since deleting it would leave that signal with nothing.
+ *  - A prior slug that's still present in the new set is kept (Cloudflare's
+ *    create can be upsert-by-name and return the same slug — that's the live
+ *    destination, not a stale duplicate).
+ */
+export function staleDestinationSlugs(
+  previous: Record<string, string> | null | undefined,
+  current: Record<string, string>,
+): Record<string, string> {
+  if (!previous) return {};
+  const liveSlugs = new Set(Object.values(current));
+  return Object.fromEntries(
+    Object.entries(previous).filter(([signal, slug]) => signal in current && !liveSlugs.has(slug)),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // HTTP wrappers (injectable fetch)
 // ---------------------------------------------------------------------------
