@@ -5,6 +5,7 @@ import {
   describeCollectorFailure,
   encodeIngestMessage,
   getIngestQueueConfig,
+  ingestLaneForContentLength,
   isPermanentCollectorFailure,
   isPoisonMessageError,
   parseIngestMessage,
@@ -177,4 +178,47 @@ test("queueDeliveryMetricFromParsedMessage ignores malformed parsed payloads", (
     ),
     null,
   );
+});
+
+// Lane routing: small requests buffer-and-inline (the fast lane); only bodies
+// over the inline threshold stream to S3 (the slow, multi-second upload lane).
+// Routing on Content-Length keeps a slow oversize upload from head-of-line
+// blocking a tiny request behind the same admission permit.
+test("ingestLaneForContentLength routes by the inline threshold", () => {
+  const threshold = 175_000;
+  // A body at or under the threshold buffers inline → fast lane.
+  assert.equal(ingestLaneForContentLength(0, threshold), "buffer");
+  assert.equal(ingestLaneForContentLength(1, threshold), "buffer");
+  assert.equal(ingestLaneForContentLength(threshold, threshold), "buffer");
+  // Strictly over the threshold spills to S3 → upload lane.
+  assert.equal(ingestLaneForContentLength(threshold + 1, threshold), "upload");
+  assert.equal(ingestLaneForContentLength(40 * 1024 * 1024, threshold), "upload");
+});
+
+test("ingestLaneForContentLength defaults to the buffer lane when size is unknown or invalid", () => {
+  const threshold = 175_000;
+  // No Content-Length header (chunked) → buffer lane; captureBody promotes to a
+  // spill if it actually crosses the threshold while streaming.
+  assert.equal(ingestLaneForContentLength(undefined, threshold), "buffer");
+  assert.equal(ingestLaneForContentLength(Number.NaN, threshold), "buffer");
+  assert.equal(ingestLaneForContentLength(-1, threshold), "buffer");
+});
+
+test("getIngestQueueConfig reads bounded S3/SQS socket pools", () => {
+  const base = { INGEST_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123/superlog-test-ingest" };
+
+  // Defaults: the S3 pool is generous enough that oversize uploads don't queue
+  // at the socket layer below the upload-lane permit cap.
+  const defaults = getIngestQueueConfig(base);
+  assert.equal(defaults?.s3MaxSockets, 128);
+  assert.equal(defaults?.sqsMaxSockets, 64);
+
+  // Overridable via env.
+  const tuned = getIngestQueueConfig({
+    ...base,
+    INGEST_S3_MAX_SOCKETS: "256",
+    INGEST_SQS_MAX_SOCKETS: "96",
+  });
+  assert.equal(tuned?.s3MaxSockets, 256);
+  assert.equal(tuned?.sqsMaxSockets, 96);
 });

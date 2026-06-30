@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { Agent as HttpsAgent } from "node:https";
 import { PassThrough } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
@@ -17,6 +18,7 @@ import {
   SendMessageBatchCommand,
 } from "@aws-sdk/client-sqs";
 import { Upload } from "@aws-sdk/lib-storage";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { type SpillSink, captureBody } from "./body-capture.js";
 import type { IngestRowWriter } from "./clickhouse-writer.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
@@ -34,6 +36,15 @@ const INLINE_ENVELOPE_SLACK_BYTES = 1_024;
 // One S3 multipart part held in memory at a time per spilling upload, so a
 // large body costs ~PART_SIZE of RSS regardless of its total size.
 const SPILL_PART_SIZE_BYTES = 5 * 1024 * 1024;
+// Per-origin socket caps for the AWS SDK HTTP clients. @smithy/node-http-handler
+// defaults to 50 sockets per origin; under an oversize-payload burst that pool
+// can become a hidden bottleneck *tighter* than the upload-lane permit cap, so
+// uploads serialize at the socket layer and hold their admission permit longer.
+// We size the S3 pool generously (above the upload-lane permit count) so the
+// explicit semaphore — not an invisible socket queue — is the single point of
+// backpressure. SQS sends are coalesced into batches, so a smaller pool suffices.
+const DEFAULT_S3_MAX_SOCKETS = 128;
+const DEFAULT_SQS_MAX_SOCKETS = 64;
 const DEFAULT_WAIT_TIME_SECONDS = 20;
 const DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 120;
 const DEFAULT_BATCH_SIZE = 10;
@@ -68,7 +79,33 @@ export type IngestQueueConfig = {
   batchSize: number;
   consumerConcurrency: number;
   sendLingerMs: number;
+  s3MaxSockets: number;
+  sqsMaxSockets: number;
 };
+
+/**
+ * Which admission lane a request belongs in, decided from its declared
+ * `Content-Length`. A body at or under the inline threshold buffers in memory
+ * and ships inline — cheap and fast (the "buffer" lane). A larger body streams
+ * to S3 via a multi-second multipart upload (the "upload" lane). Keeping the two
+ * in separate permit pools stops a slow oversize upload from head-of-line
+ * blocking a tiny request waiting for the same admission permit.
+ *
+ * Unknown or invalid sizes (no Content-Length / chunked transfer) default to the
+ * buffer lane; `captureBody` still promotes such a body to an S3 spill if it
+ * actually crosses the threshold while streaming, so correctness never depends
+ * on the header being present — only the lane assignment does.
+ */
+export function ingestLaneForContentLength(
+  declaredContentLengthBytes: number | undefined,
+  inlineThresholdBytes: number,
+): "buffer" | "upload" {
+  if (declaredContentLengthBytes === undefined) return "buffer";
+  if (!Number.isFinite(declaredContentLengthBytes) || declaredContentLengthBytes < 0) {
+    return "buffer";
+  }
+  return declaredContentLengthBytes > inlineThresholdBytes ? "upload" : "buffer";
+}
 
 export type IngestQueueInput = {
   path: string;
@@ -151,6 +188,8 @@ export function getIngestQueueConfig(env: NodeJS.ProcessEnv): IngestQueueConfig 
       32,
     ),
     sendLingerMs: readNonNegativeInt(env.INGEST_QUEUE_SEND_LINGER_MS, DEFAULT_SEND_LINGER_MS),
+    s3MaxSockets: readPositiveInt(env.INGEST_S3_MAX_SOCKETS, DEFAULT_S3_MAX_SOCKETS),
+    sqsMaxSockets: readPositiveInt(env.INGEST_SQS_MAX_SOCKETS, DEFAULT_SQS_MAX_SOCKETS),
   };
 }
 
@@ -311,7 +350,9 @@ export class IngestQueue {
   // Raw-byte threshold below which a body's base64 inline envelope still fits
   // within maxMessageBytes. Bodies at or under this are buffered in memory and
   // sent inline; larger ones stream to S3. Derived from the SQS message budget.
-  private readonly inlineRawThreshold: number;
+  // Public so the request edge can route by Content-Length into the matching
+  // admission lane (see {@link laneForContentLength}).
+  readonly inlineRawThreshold: number;
   private readonly spillSinkFactory: SpillSinkFactory;
 
   constructor(
@@ -321,8 +362,22 @@ export class IngestQueue {
     private readonly rowWriter?: IngestRowWriter,
   ) {
     const clientConfig = config.region ? { region: config.region } : {};
-    this.sqs = new SQSClient(clientConfig);
-    this.s3 = new S3Client(clientConfig);
+    // Explicit, generously-sized socket pools so oversize S3 uploads don't queue
+    // at the default 50-socket-per-origin layer (which would hold their admission
+    // permit longer and starve the buffer lane). The semaphores are the intended
+    // backpressure point, not the SDK's hidden socket cap.
+    this.sqs = new SQSClient({
+      ...clientConfig,
+      requestHandler: new NodeHttpHandler({
+        httpsAgent: new HttpsAgent({ keepAlive: true, maxSockets: config.sqsMaxSockets }),
+      }),
+    });
+    this.s3 = new S3Client({
+      ...clientConfig,
+      requestHandler: new NodeHttpHandler({
+        httpsAgent: new HttpsAgent({ keepAlive: true, maxSockets: config.s3MaxSockets }),
+      }),
+    });
     this.inlineRawThreshold = Math.max(
       0,
       Math.floor(((config.maxMessageBytes - INLINE_ENVELOPE_SLACK_BYTES) * 3) / 4),
@@ -337,6 +392,13 @@ export class IngestQueue {
         }
         return this.createS3SpillSink(bucket, key, contentType);
       });
+  }
+
+  /** The admission lane a request with this declared `Content-Length` belongs in,
+   *  using this queue's configured inline threshold. See
+   *  {@link ingestLaneForContentLength}. */
+  laneForContentLength(declaredContentLengthBytes: number | undefined): "buffer" | "upload" {
+    return ingestLaneForContentLength(declaredContentLengthBytes, this.inlineRawThreshold);
   }
 
   async enqueue(input: IngestQueueInput): Promise<"inline" | "s3"> {

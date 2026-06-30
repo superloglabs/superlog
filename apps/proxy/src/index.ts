@@ -4,7 +4,7 @@ import { Readable } from "node:stream";
 // tracing.ts, so the OTel flush can't race the ingest drain and exit early.
 import { shutdownTelemetry } from "./telemetry-shutdown.js";
 import { serve } from "@hono/node-server";
-import { type Span, SpanStatusCode, trace } from "@opentelemetry/api";
+import { type Span, SpanStatusCode, metrics, trace } from "@opentelemetry/api";
 import { hashApiKey, schema, syncLoopsContactsForProject } from "@superlog/db";
 import { db } from "@superlog/db";
 import { eq } from "drizzle-orm";
@@ -102,20 +102,59 @@ function otlpSignalForPath(path: string): TelemetrySignal | null {
   return null;
 }
 
-// Bound how many ingest requests buffer/stream their bodies at once. Together
-// with the per-request body cap (INGEST_MAX_BODY_BYTES) and S3 streaming for
-// large bodies, this makes the proxy's memory a provable constant — roughly
-// `permits × max_bytes_held_per_request` — so a burst can never OOM-kill the
-// task (exit 137, the 2026-05-31 incident). Excess requests WAIT for a permit
-// (backpressure) rather than being rejected; the body is only read once a permit
-// is held, so waiters cost ~nothing. Default 64; tune via
-// INGEST_MAX_INFLIGHT_REQUESTS, or set to 0 to disable.
+// Admission control is split into two lanes so a slow request can't head-of-line
+// block a fast one waiting for the same permit. The body is only read once a
+// permit is held, so each lane's memory is a provable constant (permits ×
+// max-bytes-held) — a burst can never OOM-kill the task (exit 137, the
+// 2026-05-31 incident). Excess requests WAIT for a permit (backpressure) rather
+// than being rejected; waiters cost ~nothing (just a socket + pending promise).
+//
+//  - BUFFER lane: small bodies that buffer in memory and ship inline (the common
+//    fast path), plus the direct-mode + Firehose paths that fully buffer. Memory
+//    ≈ permits × max-bytes-held.
+//  - UPLOAD lane: oversize bodies that stream to S3 via a multi-second multipart
+//    upload. These held a permit far longer than their memory cost justified
+//    (one 5 MiB part), so under an oversize burst they used to starve the buffer
+//    lane and stall small, latency-sensitive requests past their client timeout.
+//    A separate pool isolates that slow work. Memory ≈ permits × part.
+//
+// The request edge routes by Content-Length (ingestQueue.laneForContentLength).
+// Default 64 each; tune via INGEST_MAX_INFLIGHT_REQUESTS / INGEST_MAX_INFLIGHT_UPLOADS,
+// or set to 0 to disable a lane's limiter.
 const DEFAULT_MAX_INFLIGHT_REQUESTS = 64;
+const DEFAULT_MAX_INFLIGHT_UPLOADS = 64;
 const MAX_INFLIGHT_REQUESTS = readNonNegativeIntEnv(
   process.env.INGEST_MAX_INFLIGHT_REQUESTS,
   DEFAULT_MAX_INFLIGHT_REQUESTS,
 );
-const requestSemaphore = new Semaphore(MAX_INFLIGHT_REQUESTS);
+const MAX_INFLIGHT_UPLOADS = readNonNegativeIntEnv(
+  process.env.INGEST_MAX_INFLIGHT_UPLOADS,
+  DEFAULT_MAX_INFLIGHT_UPLOADS,
+);
+const bufferSemaphore = new Semaphore(MAX_INFLIGHT_REQUESTS);
+const uploadSemaphore = new Semaphore(MAX_INFLIGHT_UPLOADS);
+const ingestLaneSemaphores = { buffer: bufferSemaphore, upload: uploadSemaphore } as const;
+
+// Per-lane admission gauges, so an oversize burst that drains the upload lane and
+// backs up its waiter queue is visible instead of inferred. available_permits
+// hitting 0 with a rising queue_depth on a lane = that lane is the bottleneck.
+const ingestMeter = metrics.getMeter("@superlog/proxy");
+ingestMeter
+  .createObservableGauge("superlog.proxy.ingest.admission.available_permits", {
+    description: "Free admission permits per ingest lane (0 = lane saturated).",
+  })
+  .addCallback((observer) => {
+    observer.observe(bufferSemaphore.availablePermits, { "ingest.lane": "buffer" });
+    observer.observe(uploadSemaphore.availablePermits, { "ingest.lane": "upload" });
+  });
+ingestMeter
+  .createObservableGauge("superlog.proxy.ingest.admission.queue_depth", {
+    description: "Requests waiting for an admission permit per ingest lane (backpressure depth).",
+  })
+  .addCallback((observer) => {
+    observer.observe(bufferSemaphore.queueLength, { "ingest.lane": "buffer" });
+    observer.observe(uploadSemaphore.queueLength, { "ingest.lane": "upload" });
+  });
 
 // Hard per-request body ceiling for the no-queue (direct) path. The queue path
 // enforces its own copy via IngestQueueConfig.maxBodyBytes; both read the same
@@ -307,17 +346,30 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
     let requestBytes = 0;
     let storage: "direct" | "inline" | "s3" = "direct";
 
+    // Route into the matching admission lane by declared body size, so a slow
+    // oversize S3 upload can't head-of-line block a tiny request. Unknown size
+    // (no Content-Length) defaults to the buffer lane; if such a body actually
+    // spills, captureBody still handles it correctly — only the lane differs.
+    // Direct mode (no queue, no S3) always uses the buffer lane.
+    const declaredContentLength = Number.parseInt(c.req.header("content-length") ?? "", 10);
+    const lane = ingestQueue
+      ? ingestQueue.laneForContentLength(
+          Number.isNaN(declaredContentLength) ? undefined : declaredContentLength,
+        )
+      : "buffer";
+    span.setAttribute("ingest.lane", lane);
+
     span.setAttribute("otlp.path", path);
     span.setAttribute("otlp.root_key", rootKey);
     span.setAttribute("tenant.project_id", projectId);
     span.setAttribute("http.request.content_type", contentType);
     if (contentEncoding) span.setAttribute("http.request.content_encoding", contentEncoding);
 
-    // Wait for a concurrency permit before touching the body. Excess requests
-    // queue here cheaply (just a pending promise + their socket) instead of being
-    // rejected — backpressure, not shedding. The body is only read once a permit
-    // is held, so memory stays bounded by `permits × max-bytes-per-request`.
-    await requestSemaphore.acquire();
+    // Wait for a permit in this request's lane before touching the body. Excess
+    // requests queue here cheaply (just a pending promise + their socket) instead
+    // of being rejected — backpressure, not shedding. The body is only read once a
+    // permit is held, so memory stays bounded by `permits × max-bytes-per-request`.
+    await ingestLaneSemaphores[lane].acquire();
 
     try {
       // Per-project source filter FIRST: if the project turned off its OTLP
@@ -483,10 +535,10 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
       span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
       throw err;
     } finally {
-      // Release the permit once the body is fully read and forwarded. Released on
-      // every path (success, 4xx, throw) so a failing request can't leak permits
-      // and wedge the proxy into permanent backpressure.
-      requestSemaphore.release();
+      // Release the lane's permit once the body is fully read and forwarded.
+      // Released on every path (success, 4xx, throw) so a failing request can't
+      // leak permits and wedge the proxy into permanent backpressure.
+      ingestLaneSemaphores[lane].release();
 
       const durationMs = performance.now() - startedAt;
       const emitOperationalMetric = (org?: { orgId: string; orgName: string } | null) => {
@@ -499,6 +551,7 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
           durationMs,
           requestBytes,
           storage,
+          lane,
         });
       };
       void lookupOrgForProject(projectId)
@@ -619,7 +672,9 @@ async function forwardFirehose(
       });
       if (!upstreamHeaders) return fail(400, "missing X-Amz-Firehose-Request-Id header");
 
-      await requestSemaphore.acquire();
+      // Firehose batches fully buffer (no S3 spill), so they belong in the
+      // buffer lane alongside the other memory-bounded buffered paths.
+      await bufferSemaphore.acquire();
       try {
         const bodyStream = requestBodyStream(c);
         if (!bodyStream) return fail(400, "empty Firehose request body");
@@ -675,7 +730,7 @@ async function forwardFirehose(
         resHeaders.set("content-type", res.headers.get("content-type") ?? "application/json");
         return new Response(res.body, { status: res.status, headers: resHeaders });
       } finally {
-        requestSemaphore.release();
+        bufferSemaphore.release();
       }
     } catch (err) {
       span.recordException(err as Error);

@@ -17,6 +17,8 @@ const config: IngestQueueConfig = {
   batchSize: 1,
   consumerConcurrency: 1,
   sendLingerMs: 0,
+  s3MaxSockets: 128,
+  sqsMaxSockets: 64,
 };
 
 const inlineBody = encodeIngestMessage(

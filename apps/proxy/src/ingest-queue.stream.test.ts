@@ -1,7 +1,21 @@
 import { strict as assert } from "node:assert";
-import { test } from "node:test";
+import { after, before, test } from "node:test";
 import { PayloadTooLargeError, type SpillSink } from "./body-capture.js";
 import { IngestQueue, type IngestQueueConfig, type SpillSinkFactory } from "./ingest-queue.js";
+
+// The producer's micro-batch flush timer is unref()'d (see IngestQueue.sendToQueue),
+// so under the bare test runner the event loop can drain before the timer fires and
+// an enqueue() promise would never settle ("Promise resolution is still pending but
+// the event loop has already resolved"). Whether it drains in time depends on
+// incidental module-load timing, so pin prod's "the HTTP server keeps the loop alive"
+// condition with a single ref'd keepalive for the suite. Mirrors ingest-queue.batch.test.ts.
+let suiteKeepAlive: NodeJS.Timeout;
+before(() => {
+  suiteKeepAlive = setInterval(() => {}, 60_000);
+});
+after(() => {
+  clearInterval(suiteKeepAlive);
+});
 
 class FakeSqs {
   sent: string[] = [];
@@ -54,6 +68,8 @@ function buildQueue(overrides: Partial<IngestQueueConfig> = {}): {
     batchSize: 10,
     consumerConcurrency: 4,
     sendLingerMs: 0,
+    s3MaxSockets: 128,
+    sqsMaxSockets: 64,
     ...overrides,
   };
   const sinks: RecordingSink[] = [];

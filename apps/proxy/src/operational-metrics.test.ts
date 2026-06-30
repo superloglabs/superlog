@@ -22,6 +22,7 @@ test("createProxyOperationalRecorder records ingest requests by org, project, si
     durationMs: 18,
     requestBytes: 2048,
     storage: "s3",
+    lane: "upload",
   });
 
   assert.deepEqual(requests, [
@@ -35,6 +36,7 @@ test("createProxyOperationalRecorder records ingest requests by org, project, si
         "http.response.status_code": 200,
         "http.response.status_class": "2xx",
         "ingest.queue.storage": "s3",
+        "ingest.lane": "upload",
       },
     },
   ]);
@@ -93,6 +95,7 @@ test("recordIngestRequest can emit without org enrichment", () => {
     durationMs: 5,
     requestBytes: 0,
     storage: "direct",
+    lane: "buffer",
   });
 
   assert.deepEqual(requests, [
@@ -104,6 +107,7 @@ test("recordIngestRequest can emit without org enrichment", () => {
         "http.response.status_code": 500,
         "http.response.status_class": "5xx",
         "ingest.queue.storage": "direct",
+        "ingest.lane": "buffer",
       },
     },
   ]);

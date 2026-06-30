@@ -228,6 +228,9 @@ importers:
       '@opentelemetry/semantic-conventions':
         specifier: ^1.40.0
         version: 1.40.0
+      '@smithy/node-http-handler':
+        specifier: ^4.7.4
+        version: 4.7.7
       '@superlog/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -6111,7 +6114,7 @@ snapshots:
       '@aws-sdk/types': 3.973.9
       '@smithy/core': 3.24.4
       '@smithy/fetch-http-handler': 5.4.4
-      '@smithy/node-http-handler': 4.7.4
+      '@smithy/node-http-handler': 4.7.7
       '@smithy/types': 4.14.2
       tslib: 2.8.1
 
@@ -6178,7 +6181,7 @@ snapshots:
       '@aws-sdk/types': 3.973.9
       '@smithy/core': 3.24.4
       '@smithy/fetch-http-handler': 5.4.4
-      '@smithy/node-http-handler': 4.7.4
+      '@smithy/node-http-handler': 4.7.7
       '@smithy/types': 4.14.2
       tslib: 2.8.1
 
@@ -6399,7 +6402,7 @@ snapshots:
       '@aws-sdk/types': 3.973.9
       '@smithy/core': 3.24.4
       '@smithy/fetch-http-handler': 5.4.4
-      '@smithy/node-http-handler': 4.7.4
+      '@smithy/node-http-handler': 4.7.7
       '@smithy/types': 4.14.2
       tslib: 2.8.1
 

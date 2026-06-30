@@ -33,6 +33,8 @@ function buildConfig(overrides: Partial<IngestQueueConfig> = {}): IngestQueueCon
     batchSize: 10,
     consumerConcurrency: 1,
     sendLingerMs: 5,
+    s3MaxSockets: 128,
+    sqsMaxSockets: 64,
     ...overrides,
   };
 }

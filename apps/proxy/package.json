@@ -29,6 +29,7 @@
     "@opentelemetry/sdk-metrics": "^2.7.0",
     "@opentelemetry/sdk-node": "^0.215.0",
     "@opentelemetry/semantic-conventions": "^1.40.0",
+    "@smithy/node-http-handler": "^4.7.4",
     "@superlog/db": "workspace:*",
     "@superlog/fingerprint": "workspace:*",
     "dotenv": "^17.4.2",

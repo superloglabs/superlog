@@ -28,6 +28,7 @@ export type IngestRequestMetricInput = {
   durationMs: number;
   requestBytes: number;
   storage: "direct" | "inline" | "s3";
+  lane: "buffer" | "upload";
 };
 
 export type QueueDeliveryMetricInput = {
@@ -71,6 +72,7 @@ export function createProxyOperationalRecorder(instruments: ProxyOperationalInst
         "http.response.status_code": input.statusCode,
         "http.response.status_class": statusClass(input.statusCode),
         "ingest.queue.storage": input.storage,
+        "ingest.lane": input.lane,
       };
       instruments.ingestRequests?.add(1, attrs);
       instruments.ingestDurationMs?.record(input.durationMs, attrs);
