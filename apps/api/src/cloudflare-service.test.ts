@@ -93,7 +93,11 @@ test("buildDestinationPayload builds a Logpush OTLP destination with the ingest 
     ingestKey: "sl_public_abc123",
   });
   assert.equal(payload.enabled, true);
-  assert.equal(payload.name, "Superlog logs");
+  // Cloudflare requires the name to match ^[a-z0-9-]+$ — a display string like
+  // "Superlog logs" is rejected with a ZodError.
+  assert.equal(payload.name, "superlog-logs");
+  assert.match(payload.name, /^[a-z0-9-]+$/);
+  assert.equal(payload.skipPreflightCheck, true);
   assert.equal(payload.configuration.type, "logpush");
   assert.equal(payload.configuration.logpushDataset, "opentelemetry-logs");
   assert.equal(payload.configuration.url, "https://intake.example.com/v1/logs");
@@ -202,6 +206,18 @@ test("parseCreateDestinationResponse returns slug on success and message on fail
   assert.deepEqual(
     parseCreateDestinationResponse({ success: false, errors: [{ message: "nope" }] }),
     { ok: false, error: "nope" },
+  );
+  // Request-body validation failures come back as a ZodError, not the standard
+  // envelope — surface the issue message instead of a generic "request_failed".
+  assert.deepEqual(
+    parseCreateDestinationResponse({
+      success: false,
+      error: {
+        name: "ZodError",
+        issues: [{ message: "The destination name must contain only lowercase letters…" }],
+      },
+    }),
+    { ok: false, error: "The destination name must contain only lowercase letters…" },
   );
   // A malformed/partial response that omits `success` must NOT be accepted as a
   // provisioned destination — it's a failure, not a slug-less success.

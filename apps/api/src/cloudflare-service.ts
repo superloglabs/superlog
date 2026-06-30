@@ -106,6 +106,11 @@ export function intakeUrlForSignal(base: string, signal: CloudflareSignal): stri
 export type DestinationPayload = {
   name: string;
   enabled: boolean;
+  // Skip Cloudflare's create-time reachability probe. The probe is a Logpush-style
+  // test request against the destination URL; our intake speaks OTLP and rejects
+  // it, which fails the create even though the real OTLP export path works. We own
+  // the intake and mint the key here, so the probe adds nothing but a failure mode.
+  skipPreflightCheck: boolean;
   configuration: {
     type: "logpush";
     logpushDataset: string;
@@ -118,6 +123,9 @@ export type DestinationPayload = {
  * Build the Workers Observability destination payload for one signal: a Logpush
  * destination with the matching `opentelemetry-*` dataset, pointed at our intake
  * and authenticated with the project's ingest key via `x-api-key`.
+ *
+ * The destination `name` must match Cloudflare's `^[a-z0-9-]+$` rule (lowercase
+ * letters, numbers, hyphens), so it's `superlog-<signal>` — not a display string.
  */
 export function buildDestinationPayload(input: {
   signal: CloudflareSignal;
@@ -126,8 +134,9 @@ export function buildDestinationPayload(input: {
 }): DestinationPayload {
   const sig = CLOUDFLARE_OTLP_SIGNALS[input.signal];
   return {
-    name: `Superlog ${input.signal}`,
+    name: `superlog-${input.signal}`,
     enabled: true,
+    skipPreflightCheck: true,
     configuration: {
       type: "logpush",
       logpushDataset: sig.dataset,
@@ -228,6 +237,30 @@ export type CreateDestinationResult =
   | { ok: true; slug: string | null }
   | { ok: false; error: string };
 
+/**
+ * Pull a human-readable error out of a failed create-destination response.
+ * Cloudflare uses two shapes here: the standard envelope `{errors:[{message}]}`,
+ * and — for request-body validation — a Zod error `{error:{name, issues:[{message,
+ * path}]}}` (mirrored as `_error`). We surface both so a validation failure (e.g.
+ * an invalid destination name) isn't flattened to a generic "request_failed".
+ */
+function extractCreateError(o: Record<string, unknown>): string {
+  const errors = Array.isArray(o.errors) ? o.errors : [];
+  const first = errors[0] as Record<string, unknown> | undefined;
+  if (first && typeof first.message === "string") return first.message;
+
+  const zod = (o.error ?? o._error) as Record<string, unknown> | undefined;
+  if (zod && typeof zod === "object") {
+    const issues = Array.isArray(zod.issues) ? zod.issues : [];
+    const msgs = issues
+      .map((i) => (i as Record<string, unknown>)?.message)
+      .filter((m): m is string => typeof m === "string");
+    if (msgs.length > 0) return msgs.join("; ");
+    if (typeof zod.name === "string") return zod.name;
+  }
+  return "request_failed";
+}
+
 /** Parse the create-destination response → `{ success, result: { slug } }`. */
 export function parseCreateDestinationResponse(json: unknown): CreateDestinationResult {
   if (!json || typeof json !== "object") return { ok: false, error: "invalid_response" };
@@ -237,10 +270,7 @@ export function parseCreateDestinationResponse(json: unknown): CreateDestination
   // that omits it) as a failure — otherwise an error body could be recorded as a
   // provisioned destination with an empty slug.
   if (o.success !== true) {
-    const errors = Array.isArray(o.errors) ? o.errors : [];
-    const first = errors[0] as Record<string, unknown> | undefined;
-    const msg = first && typeof first.message === "string" ? first.message : "request_failed";
-    return { ok: false, error: msg };
+    return { ok: false, error: extractCreateError(o) };
   }
   const result = o.result;
   const slug =
