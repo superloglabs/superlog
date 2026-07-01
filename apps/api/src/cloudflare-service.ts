@@ -2,7 +2,7 @@
 // integration. Cloudflare shipped self-managed OAuth for all developers in
 // 2026-06, so we can offer a Slack-style "Connect Cloudflare" button: the user
 // consents, and we use the granted token to create Workers Observability
-// "telemetry destinations" that export OTLP traces/logs/metrics straight to our
+// "telemetry destinations" that export OTLP traces/logs straight to our
 // intake — no copy-paste API tokens.
 //
 // OAuth endpoints (from Cloudflare's "Integrate your OAuth client" docs):
@@ -52,7 +52,13 @@ export const CLOUDFLARE_OTLP_SIGNALS: Record<CloudflareSignal, { dataset: string
     metrics: { dataset: "opentelemetry-metrics", path: "/v1/metrics" },
   };
 
-export const CLOUDFLARE_SIGNALS: CloudflareSignal[] = ["traces", "logs", "metrics"];
+// Signals we actually provision a destination for. Metrics is intentionally
+// excluded: Workers Observability exports only traces and logs over OTLP —
+// metrics export "is not yet supported" (no `observability.metrics` config key,
+// and the create API rejects an `opentelemetry-metrics` destination with a
+// Bad Request). The `metrics` mapping above is kept so this is a one-line
+// re-enable once Cloudflare ships metrics export.
+export const CLOUDFLARE_SIGNALS: CloudflareSignal[] = ["traces", "logs"];
 
 export type CloudflareConnectConfig = {
   clientId: string;
@@ -125,21 +131,41 @@ export type DestinationPayload = {
 };
 
 /**
+ * A destination name is per Cloudflare *account*, so it must also identify the
+ * Superlog project — otherwise a second project connecting the same account
+ * upserts-by-name over the first project's destination (hijacking its ingest
+ * key) and the two projects become mutually exclusive. We derive a short,
+ * regex-safe token from the project id so each project gets its own destination
+ * (`superlog-<token>-<signal>`) and a Worker can fan out to several projects.
+ */
+export function projectDestinationToken(projectId: string): string {
+  return projectId
+    .replace(/[^a-z0-9]/gi, "")
+    .slice(0, 12)
+    .toLowerCase();
+}
+
+export function destinationName(projectId: string, signal: CloudflareSignal): string {
+  return `superlog-${projectDestinationToken(projectId)}-${signal}`;
+}
+
+/**
  * Build the Workers Observability destination payload for one signal: a Logpush
  * destination with the matching `opentelemetry-*` dataset, pointed at our intake
  * and authenticated with the project's ingest key via `x-api-key`.
  *
- * The destination `name` must match Cloudflare's `^[a-z0-9-]+$` rule (lowercase
- * letters, numbers, hyphens), so it's `superlog-<signal>` — not a display string.
+ * The destination `name` is `superlog-<projectToken>-<signal>` — project-scoped
+ * (see destinationName) and matching Cloudflare's `^[a-z0-9-]+$` rule.
  */
 export function buildDestinationPayload(input: {
   signal: CloudflareSignal;
   intakeBaseUrl: string;
   ingestKey: string;
+  projectId: string;
 }): DestinationPayload {
   const sig = CLOUDFLARE_OTLP_SIGNALS[input.signal];
   return {
-    name: `superlog-${input.signal}`,
+    name: destinationName(input.projectId, input.signal),
     enabled: true,
     skipPreflightCheck: true,
     configuration: {

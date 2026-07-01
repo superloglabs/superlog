@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
   CLOUDFLARE_OAUTH_AUTHORIZE_URL,
+  CLOUDFLARE_SIGNALS,
   buildAuthorizeUrl,
   buildDestinationPayload,
   cloudflareConfigFromEnv,
@@ -15,6 +16,7 @@ import {
   parseCreateDestinationResponse,
   parseScriptsResponse,
   parseTokenResponse,
+  projectDestinationToken,
   signState,
   staleDestinationSlugs,
   verifyState,
@@ -91,22 +93,38 @@ test("intakeUrlForSignal maps each signal to the OTLP path", () => {
   );
 });
 
-test("buildDestinationPayload builds a Logpush OTLP destination with the ingest key header", () => {
+test("buildDestinationPayload builds a project-scoped Logpush OTLP destination", () => {
   const payload = buildDestinationPayload({
     signal: "logs",
     intakeBaseUrl: "https://intake.example.com",
     ingestKey: "sl_public_abc123",
+    projectId: "aa49a851-b727-4014-bbff-571dc282613c",
   });
   assert.equal(payload.enabled, true);
-  // Cloudflare requires the name to match ^[a-z0-9-]+$ — a display string like
-  // "Superlog logs" is rejected with a ZodError.
-  assert.equal(payload.name, "superlog-logs");
+  // Name is project-scoped so two projects on one Cloudflare account don't collide
+  // (upsert-by-name would otherwise hijack each other's destination). Must also
+  // match Cloudflare's ^[a-z0-9-]+$ rule.
+  assert.equal(payload.name, "superlog-aa49a851b727-logs");
   assert.match(payload.name, /^[a-z0-9-]+$/);
   assert.equal(payload.skipPreflightCheck, true);
   assert.equal(payload.configuration.type, "logpush");
   assert.equal(payload.configuration.logpushDataset, "opentelemetry-logs");
   assert.equal(payload.configuration.url, "https://intake.example.com/v1/logs");
   assert.equal(payload.configuration.headers["x-api-key"], "sl_public_abc123");
+});
+
+test("projectDestinationToken is a short regex-safe per-project token", () => {
+  assert.equal(projectDestinationToken("aa49a851-b727-4014-bbff-571dc282613c"), "aa49a851b727");
+  assert.match(projectDestinationToken("aa49a851-b727-4014-bbff-571dc282613c"), /^[a-z0-9]+$/);
+  // Distinct projects → distinct tokens (so distinct destination names).
+  assert.notEqual(
+    projectDestinationToken("aa49a851-b727-4014-bbff-571dc282613c"),
+    projectDestinationToken("1b480fe1-c652-4c2c-b4d2-593d278124f9"),
+  );
+});
+
+test("CLOUDFLARE_SIGNALS excludes metrics (Workers Observability exports only traces + logs)", () => {
+  assert.deepEqual(CLOUDFLARE_SIGNALS, ["traces", "logs"]);
 });
 
 test("signState/verifyState round-trips and rejects tampering + expiry", () => {
@@ -206,7 +224,10 @@ test("getScriptObservability throws on a failed read but returns null when genui
   const call = (fetchImpl: typeof fetch) =>
     getScriptObservability({ accountId: "a", script: "w", accessToken: "t", fetchImpl });
 
-  assert.deepEqual(await call(respond(200, { success: true, result: { observability: obs } })), obs);
+  assert.deepEqual(
+    await call(respond(200, { success: true, result: { observability: obs } })),
+    obs,
+  );
   // success + no observability → genuinely fresh Worker.
   assert.equal(await call(respond(200, { success: true, result: {} })), null);
   // A failed read must THROW — never resolve to null (which would make the caller
@@ -376,6 +397,7 @@ test("createDestination hits the account-scoped destinations endpoint", async ()
       signal: "traces",
       intakeBaseUrl: "https://intake.example.com",
       ingestKey: "sl_public_x",
+      projectId: "aa49a851-b727-4014-bbff-571dc282613c",
     }),
     fetchImpl: fakeFetch,
   });

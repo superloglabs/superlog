@@ -407,6 +407,7 @@ async function provisionInstallation(input: {
         signal,
         intakeBaseUrl: input.config.intakeBaseUrl,
         ingestKey,
+        projectId: input.projectId,
       }),
       fetchImpl: input.fetchImpl,
     });
