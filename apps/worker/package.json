@@ -42,6 +42,9 @@
     "test:managed-agent-result": "tsx --test src/managed-agent-result.test.ts",
     "test:github-app": "tsx --test src/github-app.test.ts",
     "test:autorecovery-repository": "tsx --test src/autorecovery/repository.integration.test.ts",
+    "test:agent-runs-domain": "tsx --test src/agent-runs/domain.test.ts",
+    "test:digest-policy": "tsx --test src/digest/policy.test.ts",
+    "test:incident-result-policy": "tsx --test src/incident-result-policy.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
