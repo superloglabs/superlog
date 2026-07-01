@@ -22,6 +22,7 @@ import { AlertEdit } from "./alerts/AlertEdit.tsx";
 import { AlertsList } from "./alerts/AlertsList.tsx";
 import { useMe } from "./api.ts";
 import { authClient, useSession } from "./auth-client.ts";
+import { signalAtHardCap } from "./billing.ts";
 import { DashboardView } from "./dashboards/DashboardView.tsx";
 import { DashboardsList } from "./dashboards/DashboardsList.tsx";
 import { AppShell, ThemeToggle, Wordmark } from "./design/ui.tsx";
@@ -170,10 +171,9 @@ function AuthenticatedApp() {
     me.data?.billingEnforcement === true &&
     // Only the telemetry signals gate ingest. Investigation credits running out
     // doesn't pause ingest, so it must not trigger the "Ingest paused" bar.
-    ["spans", "logs", "metric_points"].some((f) => {
-      const b = check({ featureId: f }).balance;
-      return !!b && !b.unlimited && b.granted > 0 && !b.overageAllowed && b.usage >= b.granted;
-    });
+    // signalAtHardCap swallows autumn-js check() throwing on a not-yet-hydrated
+    // customer (e.g. a brand-new org) so billing state can't black-screen the app.
+    ["spans", "logs", "metric_points"].some((f) => signalAtHardCap(check, f));
   const showTopBar = impersonating || billingPaused;
   // The banner is fixed-positioned so it doesn't shove the page below it (the
   // fixed nav can't be pushed by document flow anyway). Instead, every piece

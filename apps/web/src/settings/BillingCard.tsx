@@ -2,6 +2,7 @@ import { useAggregateEvents, useCustomer } from "autumn-js/react";
 import { useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useCancelBilling } from "../api.ts";
+import { signalAtHardCap } from "../billing.ts";
 import { Btn } from "../design/ui.tsx";
 
 // Autumn plan ids → display names (must match autumn.config.ts / pricing.ts).
@@ -109,14 +110,23 @@ export function BillingCard() {
   const scheduledName = scheduledSub ? (PLAN_NAMES[scheduledSub.planId] ?? scheduledSub.planId) : null;
   const scheduledAtMs = scheduledSub?.startedAt ?? activeSub?.currentPeriodEnd ?? null;
 
-  const balanceOf = (featureId: string) => check({ featureId }).balance;
+  // check() reads customer.flags[featureId] unguarded in autumn-js, so it throws
+  // on a not-yet-hydrated customer (e.g. a brand-new org). Fail open to a null
+  // balance so the billing page renders "—" meters instead of white-screening.
+  const balanceOf = (featureId: string): Balance => {
+    try {
+      return check({ featureId }).balance;
+    } catch {
+      return null;
+    }
+  };
 
   // True when any hard-capped signal (Free tier) is exhausted — ingest/usage is
-  // paused, so we surface the upgrade CTA.
-  const atLimit = ["investigations", "spans", "logs", "metric_points"].some((f) => {
-    const b = balanceOf(f);
-    return !!b && !b.unlimited && b.granted > 0 && !b.overageAllowed && b.usage >= b.granted;
-  });
+  // paused, so we surface the upgrade CTA. signalAtHardCap guards against
+  // autumn-js check() throwing on a not-yet-hydrated customer (see billing.ts).
+  const atLimit = ["investigations", "spans", "logs", "metric_points"].some((f) =>
+    signalAtHardCap(check, f),
+  );
 
   // Estimated current bill: plan base fee + this period's metered usage beyond
   // what the plan includes (granted). On paid plans telemetry has granted 0 (all
