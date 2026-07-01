@@ -19,6 +19,7 @@ type InviteDetails = {
 type LoadState =
   | { kind: "loading" }
   | { kind: "ready"; invite: InviteDetails }
+  | { kind: "wrong-account" }
   | { kind: "error"; message: string };
 
 export function AcceptInvitation() {
@@ -43,10 +44,10 @@ export function AcceptInvitation() {
     return <Landing initialAuthMode="sign-up" />;
   }
 
-  return <AcceptInvitationInner id={id} userEmail={session.data.user.email} />;
+  return <AcceptInvitationInner id={id} />;
 }
 
-function AcceptInvitationInner({ id, userEmail }: { id: string; userEmail: string }) {
+function AcceptInvitationInner({ id }: { id: string }) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [action, setAction] = useState<"idle" | "accepting" | "rejecting" | "accepted" | "rejected">(
     "idle",
@@ -60,7 +61,11 @@ function AcceptInvitationInner({ id, userEmail }: { id: string; userEmail: strin
       const res = await authClient.organization.getInvitation({ query: { id } });
       if (cancelled) return;
       if (res.error) {
-        setState({ kind: "error", message: res.error.message ?? "Invitation not found or expired." });
+        if (res.error.message === "You are not the recipient of the invitation") {
+          setState({ kind: "wrong-account" });
+        } else {
+          setState({ kind: "error", message: res.error.message ?? "Invitation not found or expired." });
+        }
         return;
       }
       const data = res.data as unknown as InviteDetails;
@@ -92,8 +97,28 @@ function AcceptInvitationInner({ id, userEmail }: { id: string; userEmail: strin
     );
   }
 
+  if (state.kind === "wrong-account") {
+    const signOut = async () => {
+      await authClient.signOut();
+    };
+    return (
+      <CenteredShell>
+        <Wordmark />
+        <p className="mt-6 text-[13px] text-warning">
+          This invitation was sent to a different email address. Sign out and sign in with the
+          invited address to accept it.
+        </p>
+        <div className="mt-4 flex items-center gap-3">
+          <Btn onClick={signOut}>Sign out</Btn>
+          <Link to="/" className="text-[12px] text-muted underline">
+            Back to Superlog
+          </Link>
+        </div>
+      </CenteredShell>
+    );
+  }
+
   const invite = state.invite;
-  const wrongAccount = invite.email.toLowerCase() !== userEmail.toLowerCase();
 
   if (action === "accepted") {
     return <Navigate to="/" replace />;
@@ -158,15 +183,9 @@ function AcceptInvitationInner({ id, userEmail }: { id: string; userEmail: strin
           You've been invited to join <strong className="text-fg">{invite.organizationName}</strong>{" "}
           as <strong className="text-fg">{invite.role}</strong>.
         </p>
-        {wrongAccount && (
-          <p className="mt-3 text-[12px] text-warning">
-            This invite was sent to {invite.email}, but you're signed in as {userEmail}. Sign out and
-            sign in with the invited address to accept.
-          </p>
-        )}
         {actionError && <p className="mt-3 text-[12px] text-danger">{actionError}</p>}
         <div className="mt-5 flex items-center gap-2">
-          <Btn onClick={accept} loading={action === "accepting"} disabled={wrongAccount || action !== "idle"}>
+          <Btn onClick={accept} loading={action === "accepting"} disabled={action !== "idle"}>
             Accept
           </Btn>
           <Btn variant="ghost" onClick={reject} loading={action === "rejecting"} disabled={action !== "idle"}>
