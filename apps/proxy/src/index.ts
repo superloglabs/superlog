@@ -32,6 +32,7 @@ import {
   createIngestSourceFilter,
   ingestFilterKey,
 } from "./ingest-source-filter.js";
+import { authKeyCache } from "./auth-key-cache.js";
 import { logger } from "./logger.js";
 import { proxyOperationalRecorder } from "./operational-metrics.js";
 import { Semaphore } from "./semaphore.js";
@@ -207,31 +208,45 @@ app.use("/v1/*", async (c, next) => {
         );
       }
 
-      const row = await db.query.apiKeys.findFirst({
-        where: eq(schema.apiKeys.keyHash, hashApiKey(key)),
-      });
-      if (!row || row.revokedAt) {
-        span.setAttribute("auth.result", "invalid_key");
-        span.setStatus({ code: SpanStatusCode.ERROR, message: "invalid api key" });
-        return c.json({ error: "invalid api key" }, 401);
+      const keyHash = hashApiKey(key);
+      const cached = authKeyCache.get(keyHash);
+      let projectId: string;
+
+      if (cached !== null) {
+        // Cache hit — skip Postgres entirely. Bounded revocation lag ≤ 60 s is
+        // acceptable; only valid keys are cached so revocations take effect on
+        // the next DB read (when the cached entry expires).
+        span.setAttribute("auth.cache", "hit");
+        projectId = cached;
+      } else {
+        const row = await db.query.apiKeys.findFirst({
+          where: eq(schema.apiKeys.keyHash, keyHash),
+        });
+        if (!row || row.revokedAt) {
+          span.setAttribute("auth.result", "invalid_key");
+          span.setStatus({ code: SpanStatusCode.ERROR, message: "invalid api key" });
+          return c.json({ error: "invalid api key" }, 401);
+        }
+        projectId = row.projectId;
+        authKeyCache.set(keyHash, projectId);
+        const isFirstUse = row.lastUsedAt === null;
+        void db
+          .update(schema.apiKeys)
+          .set({ lastUsedAt: new Date() })
+          .where(eq(schema.apiKeys.id, row.id))
+          .then(() => {
+            // Loops only needs the lifecycle nudge when telemetrySet flips false→true, i.e. on the
+            // first ingest for this key. Firing on every request hammers the Loops rate limit.
+            if (isFirstUse) return syncLoopsContactsForProject({ projectId: row.projectId });
+          })
+          .catch((err: unknown) => {
+            logger.error({ err }, "failed to update last_used_at or sync loops contact");
+          });
       }
 
       span.setAttribute("auth.result", "ok");
-      span.setAttribute("tenant.project_id", row.projectId);
-      c.set("projectId", row.projectId);
-      const isFirstUse = row.lastUsedAt === null;
-      void db
-        .update(schema.apiKeys)
-        .set({ lastUsedAt: new Date() })
-        .where(eq(schema.apiKeys.id, row.id))
-        .then(() => {
-          // Loops only needs the lifecycle nudge when telemetrySet flips false→true, i.e. on the
-          // first ingest for this key. Firing on every request hammers the Loops rate limit.
-          if (isFirstUse) return syncLoopsContactsForProject({ projectId: row.projectId });
-        })
-        .catch((err: unknown) => {
-          logger.error({ err }, "failed to update last_used_at or sync loops contact");
-        });
+      span.setAttribute("tenant.project_id", projectId);
+      c.set("projectId", projectId);
 
       await next();
     } catch (err) {
