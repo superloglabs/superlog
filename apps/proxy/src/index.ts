@@ -190,11 +190,20 @@ app.use(
 // the key hash, the api_keys read, and the last_used_at write the auth
 // middleware does per request, so a client looping empty exports can't burn CPU
 // on the ingest fleet and drive it unhealthy. Registered after cors() so the
-// 400 still carries CORS headers for browser SDKs. cors()
-// answers OPTIONS preflights itself and never calls next(), so this only sees
-// real requests; the POST check keeps it scoped to ingest regardless.
+// 400 still carries CORS headers for browser SDKs. cors() answers OPTIONS
+// preflights itself and never calls next(), so this only sees real requests;
+// the POST check keeps it scoped to ingest regardless.
+//
+// Test keys are exempt: the auth middleware answers their empty smoke-test
+// probes with a 200 short-circuit (no DB), and recognising one is a cheap
+// header/prefix check — so let them through and keep that behavior identical
+// whether or not the probe declares a Content-Length.
 app.use("/v1/*", async (c, next) => {
-  if (c.req.method === "POST" && isDeclaredEmptyBody(c.req.header("content-length"))) {
+  if (
+    c.req.method === "POST" &&
+    isDeclaredEmptyBody(c.req.header("content-length")) &&
+    !isTestKey(extractApiKey(c))
+  ) {
     emptyBodyRejections.add(1, {
       "otlp.signal": otlpSignalForPath(new URL(c.req.url).pathname) ?? "unknown",
     });
@@ -213,7 +222,7 @@ app.use("/v1/*", async (c, next) => {
         return c.json({ error: "missing api key" }, 401);
       }
 
-      if (key === "SUPERLOG_TEST" || key.startsWith("superlog_test_")) {
+      if (isTestKey(key)) {
         span.setAttribute("auth.result", "test_key");
         const path = new URL(c.req.url).pathname;
         if (path === "/v1/traces" || path === "/v1/logs" || path === "/v1/metrics") {
@@ -367,6 +376,13 @@ function extractApiKey(c: Context): string | null {
   return null;
 }
 
+/** The smoke-test credentials the auth middleware answers with a 200 short-circuit
+ *  (no DB). Kept in one place so the pre-auth empty-body guard and the auth check
+ *  can't drift on what counts as a test key. */
+function isTestKey(key: string | null): boolean {
+  return key === "SUPERLOG_TEST" || (key?.startsWith("superlog_test_") ?? false);
+}
+
 async function forward(c: Context<{ Variables: Variables }>, path: string, rootKey: string) {
   return tracer.startActiveSpan("ingest.forward", async (span) => {
     const startedAt = performance.now();
@@ -455,7 +471,7 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
         responseStatus = 400;
         span.setAttribute("ingest.empty_body", true);
         logger.warn({ path, projectId }, "dropping OTLP request with no body");
-        return c.json({ error: "empty OTLP request body; no records to ingest" }, 400);
+        return c.json({ error: EMPTY_BODY_ERROR_MESSAGE }, 400);
       }
 
       // Issue-fingerprint stamping deserializes the whole payload, so in queue mode it runs
