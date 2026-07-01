@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "test": "tsx --test src/*.test.ts src/*/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -38,8 +39,10 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-grid-layout": "^2.2.3",
+    "react-markdown": "^9.0.1",
     "react-router-dom": "^7.14.2",
     "recharts": "^3.8.1",
+    "remark-gfm": "^4.0.0",
     "shiki": "^4.0.2"
   },
   "devDependencies": {

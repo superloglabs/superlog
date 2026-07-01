@@ -120,6 +120,18 @@ function TopNav({
               GitHub
             </a>
             <a
+              href="/changelog"
+              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
+            >
+              Changelog
+            </a>
+            <a
+              href="/roadmap"
+              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
+            >
+              Roadmap
+            </a>
+            <a
               href="/pricing"
               className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
             >
@@ -798,6 +810,18 @@ function Footer() {
                 className="text-[14px] font-medium text-muted transition-colors hover:text-fg"
               >
                 Pricing
+              </a>
+              <a
+                href="/changelog"
+                className="text-[14px] font-medium text-muted transition-colors hover:text-fg"
+              >
+                Changelog
+              </a>
+              <a
+                href="/roadmap"
+                className="text-[14px] font-medium text-muted transition-colors hover:text-fg"
+              >
+                Roadmap
               </a>
               <a
                 href="/tos"
