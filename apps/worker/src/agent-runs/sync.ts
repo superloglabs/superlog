@@ -118,6 +118,7 @@ export function mobileRegressionRepairPrompt(): string {
   return [
     "Your previous result proposed a mobile PR while Revyl is enabled, but it did not include a `mobileRegressionTest` decision.",
     "Do not resubmit the final result until you repair this omission.",
+    "If you create a Revyl test, first call `revyl_list_apps` with the target platform and choose a listed app name. The YAML must include `test.build.name` matching that app name exactly.",
     'If the fix can be covered by a reliable mobile user flow, author the Revyl YAML, call `revyl_validate_yaml`, then call `revyl_create_test_from_yaml`, and resubmit with `mobileRegressionTest.status="created"` plus the returned `testId`.',
     'If it cannot be represented as a reliable mobile user flow, resubmit with `mobileRegressionTest.status="skipped"` and a concrete `reason`.',
     'Use `mobileRegressionTest.status="not_applicable"` only for backend-only, noise-only, development-only, or non-mobile incidents, and include a concrete `reason`.',
