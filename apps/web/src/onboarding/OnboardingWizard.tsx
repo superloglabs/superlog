@@ -11,17 +11,16 @@ import {
   useStartSlackInstall,
 } from "../api.ts";
 import { authClient, useSession } from "../auth-client.ts";
-import { Btn, Wordmark } from "../design/ui.tsx";
-import { INSTALL_PROMPT, buildInstallPrompt } from "../installPrompt.ts";
+import { Wordmark } from "../design/ui.tsx";
 import { getSkillOnboardingIntent } from "../skillOnboarding.ts";
 import { AwsConnectFlow } from "./AwsConnectFlow.tsx";
 import { CloudflareConnectFlow } from "./CloudflareConnectFlow.tsx";
 import { ConnectDataChooser } from "./ConnectDataChooser.tsx";
-import { TruncatedKey } from "./TruncatedKey.tsx";
 import type { ConnectAction } from "./connectChoices.ts";
-import { CheckIcon, CopyIcon, GithubIcon, SlackIcon, SpinnerIcon } from "./icons.tsx";
+import { CheckIcon, GithubIcon, SlackIcon, SpinnerIcon } from "./icons.tsx";
 import {
   ExploreDemoLink,
+  InstallPromptCard,
   SOFT_LINE,
   STRONG_LINE,
   StepFooter,
@@ -34,16 +33,17 @@ import {
 //   Body:   centered, max-w 640. Title + subtitle, step content, footer.
 //   Footer: border-top, Skip and CTA right-aligned together.
 //
-// Two steps:
-//   1. Install — copy a self-contained agent prompt with a fresh API key.
-//   2. Deploy  — poll for first telemetry, advance once it arrives.
+// Steps:
+//   1. Connect — pick a lane: the AWS / Cloudflare no-code integrations, or
+//      "I'm hosted elsewhere", which opens the coding-agent prompt.
+//   2. Install — copy a self-contained agent prompt with a fresh API key.
+//   3. Deploy  — poll for first telemetry, advance once it arrives.
 // Completion calls onComplete; the gate only allows it after telemetry arrives.
 
-type Step = "install" | "deploy";
 type Mode = "web" | "agent";
-// Web-mode landing fork: choose a source, then either the AWS integration flow
-// or the coding-agent install/deploy flow.
-type WebView = "chooser" | "aws" | "cloudflare" | "code";
+// Web-mode landing fork: choose a source, then either a no-code integration
+// flow (AWS / Cloudflare) or the coding-agent install → deploy flow.
+type WebView = "chooser" | "aws" | "cloudflare" | "code" | "deploy";
 
 // The Cloudflare OAuth callback redirects back to the app with `?cloudflare=...`.
 // When that lands we want to drop straight into the Cloudflare flow (which reads
@@ -79,32 +79,31 @@ export function OnboardingWizard({
   // ahead and explore sample data instead of instrumenting first.
   onExploreDemo?: () => void;
 }) {
-  const [step, setStep] = useState<Step>("install");
   const [webView, setWebView] = useState<WebView>(initialWebView);
 
   const createKey = useCreateKey(projectId ?? "");
   const github = useGithubInstallation();
   const slack = useSlackInstallation();
 
-  // Route a chooser selection to the matching flow. OpenTelemetry/SDK shares the
-  // coding-agent install flow (both hand back an SDK + ingest key); AWS gets its
-  // own no-code integration flow.
+  // Route a chooser selection to the matching view. AWS / Cloudflare get their
+  // no-code integration flows; "I'm hosted elsewhere" (action "code") opens the
+  // coding-agent install prompt.
   const handlePick = (action: ConnectAction) => {
     if (action === "aws") {
       setWebView("aws");
     } else if (action === "cloudflare") {
       setWebView("cloudflare");
     } else {
-      setStep("install");
       setWebView("code");
     }
   };
 
   // Mint exactly once per mount, and only after we have a project to mint into
-  // *and* the user has chosen the code/SDK path — the no-code AWS integration
-  // never uses an ingest key, so minting on chooser entry would leave an unused
-  // key on the project. The ref guard makes the mint a strict per-mount
-  // one-shot, independent of mutation state identity or polling re-renders.
+  // *and* the user has chosen the coding-agent path — the no-code AWS /
+  // Cloudflare integrations never use an ingest key, so minting on chooser
+  // entry would leave an unused key on the project. The ref guard makes the
+  // mint a strict per-mount one-shot, independent of mutation state identity or
+  // polling re-renders.
   const minted = useRef(false);
   useEffect(() => {
     if (mode !== "web") return;
@@ -166,19 +165,19 @@ export function OnboardingWizard({
               onDone={onComplete}
               onExploreDemo={onExploreDemo}
             />
-          ) : step === "install" ? (
+          ) : webView === "code" ? (
             <InstallStep
               apiKey={createKey.data?.plaintext ?? null}
               minting={createKey.isPending && !createKey.data}
               error={createKey.error ? String(createKey.error) : null}
               onBack={() => setWebView("chooser")}
-              onNext={() => setStep("deploy")}
+              onNext={() => setWebView("deploy")}
               onExploreDemo={onExploreDemo}
             />
           ) : (
             <DeployStep
               eventsArrived={eventsArrived}
-              onBack={() => setStep("install")}
+              onBack={() => setWebView("code")}
               onDone={onComplete}
               onExploreDemo={onExploreDemo}
             />
@@ -603,19 +602,6 @@ function InstallStep({
   onNext: () => void;
   onExploreDemo?: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
-  const prompt = apiKey ? buildInstallPrompt(apiKey) : INSTALL_PROMPT;
-
-  const copy = () => {
-    try {
-      navigator.clipboard?.writeText(prompt);
-    } catch {
-      /* clipboard unavailable */
-    }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1600);
-  };
-
   return (
     <>
       <StepHeader
@@ -623,53 +609,7 @@ function InstallStep({
         sub="Paste this prompt in Cursor, Claude Code, Codex, or any agent. It runs the install skill end-to-end — adds the SDK, instruments your code, opens a PR."
       />
 
-      <div className={`overflow-hidden rounded-[14px] border bg-[#0a0a0c] ${SOFT_LINE}`}>
-        <div
-          className={`flex items-center justify-between gap-2.5 border-b px-[18px] py-[8px] ${SOFT_LINE}`}
-        >
-          <div className="flex items-center gap-2.5">
-            <span className="flex gap-1.5">
-              <span className="h-[10px] w-[10px] rounded-full bg-[#3b3b3e]" />
-              <span className="h-[10px] w-[10px] rounded-full bg-[#3b3b3e]" />
-              <span className="h-[10px] w-[10px] rounded-full bg-[#3b3b3e]" />
-            </span>
-            <span className="ml-2 text-[11px] uppercase tracking-[0.08em] text-subtle">
-              coding agent
-            </span>
-          </div>
-          <Btn
-            variant="primary"
-            size="sm"
-            onClick={copy}
-            disabled={!apiKey}
-            className="!h-[26px] !rounded-[8px] !px-[10px]"
-          >
-            {copied ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
-            {copied ? "Copied" : "Copy"}
-          </Btn>
-        </div>
-        <div className="px-[22px] py-[18px]">
-          <div className="text-[13.5px] leading-[1.5] text-fg">
-            <p className="m-0 break-words">{INSTALL_PROMPT}</p>
-            {minting ? (
-              <p className="m-0 mt-1 inline-flex items-center gap-2 text-muted">
-                <SpinnerIcon size={13} /> Provisioning your API key…
-              </p>
-            ) : error ? (
-              <p className="m-0 mt-1 text-danger">{error}</p>
-            ) : apiKey ? (
-              <p className="m-0 mt-1 whitespace-nowrap">
-                Use API key{" "}
-                <TruncatedKey value={apiKey} className="font-mono text-[12px] text-[#8C98F0]" />.
-              </p>
-            ) : null}
-          </div>
-          <p className="mt-2.5 text-[11.5px] leading-[1.5] text-subtle">
-            The key is write-only — it can only ingest events, not read them — and you can rotate it
-            any time from settings. Safe to drop straight into your agent.
-          </p>
-        </div>
-      </div>
+      <InstallPromptCard apiKey={apiKey} minting={minting} error={error} />
 
       <StepFooter onBack={onBack} onNext={onNext} nextLabel="The agent is done" />
       <ExploreDemoLink onExploreDemo={onExploreDemo} />

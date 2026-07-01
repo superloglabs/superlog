@@ -16,39 +16,45 @@ function findOption(sections: ReturnType<typeof connectSectionsFor>, id: string)
   return undefined;
 }
 
-test("integration-first: the primary option is a no-code integration (AWS), not the coding agent", () => {
+test("the chooser offers exactly three lanes: AWS, Cloudflare, and 'I'm hosted elsewhere'", () => {
+  const ids = CONNECT_SECTIONS.flatMap((s) => s.options.map((o) => o.id));
+  assert.deepEqual(ids, ["aws", "cloudflare", "elsewhere"]);
+});
+
+test("there is no coming-soon grid", () => {
+  assert.equal(
+    CONNECT_SECTIONS.find((s) => s.id === "more"),
+    undefined,
+    "no 'more integrations' coming-soon grid",
+  );
+});
+
+test("the 'hosted elsewhere' lane routes to the coding-agent prompt (action 'code')", () => {
+  const elsewhere = findOption(CONNECT_SECTIONS, "elsewhere");
+  assert.ok(elsewhere);
+  assert.equal(elsewhere.action, "code");
+});
+
+test("integration-first: the primary option is a no-code integration (AWS)", () => {
   const primary = primaryConnectOption();
   assert.equal(primary.id, "aws");
   assert.equal(primary.action, "aws");
 });
 
-test("the recommended section is listed before the coding-agent section", () => {
-  const recommendedIdx = CONNECT_SECTIONS.findIndex((s) => s.id === "recommended");
-  const codeIdx = CONNECT_SECTIONS.findIndex((s) => s.id === "code");
-  assert.ok(recommendedIdx >= 0 && codeIdx >= 0);
-  assert.ok(recommendedIdx < codeIdx, "recommended integrations come first");
-});
-
-test("recommended + code options are all actionable; 'more' are coming soon", () => {
-  for (const section of CONNECT_SECTIONS) {
+test("every lane is actionable when its connector is configured", () => {
+  const sections = connectSectionsFor({ cloudflare: true });
+  for (const section of sections) {
     for (const option of section.options) {
-      if (section.id === "more") {
-        assert.equal(option.action, null, `${option.id} should be coming soon`);
-        assert.equal(isComingSoon(option), true);
-      } else {
-        assert.notEqual(option.action, null, `${option.id} should be actionable`);
-        assert.equal(isComingSoon(option), false);
-      }
+      assert.notEqual(option.action, null, `${option.id} should be actionable`);
+      assert.equal(isComingSoon(option), false);
     }
   }
 });
 
-test("connectActionFor resolves known ids and returns null for coming-soon / unknown", () => {
+test("connectActionFor resolves known ids and returns null for unknown", () => {
   assert.equal(connectActionFor("aws"), "aws");
   assert.equal(connectActionFor("cloudflare"), "cloudflare");
-  assert.equal(connectActionFor("otel"), "otel");
-  assert.equal(connectActionFor("agent"), "code");
-  assert.equal(connectActionFor("vercel"), null);
+  assert.equal(connectActionFor("elsewhere"), "code");
   assert.equal(connectActionFor("does-not-exist"), null);
 });
 
@@ -58,8 +64,9 @@ test("connectSectionsFor disables Cloudflare when the connector isn't configured
   assert.ok(cloudflare);
   assert.equal(cloudflare.action, null, "cloudflare should not be actionable when unavailable");
   assert.equal(isComingSoon(cloudflare), true);
-  // Other options are untouched.
+  // Other lanes are untouched.
   assert.equal(findOption(gated, "aws")?.action, "aws");
+  assert.equal(findOption(gated, "elsewhere")?.action, "code");
 });
 
 test("connectSectionsFor leaves Cloudflare actionable when configured", () => {

@@ -6,31 +6,19 @@ import {
   type ConnectSection,
   connectSectionsFor,
 } from "./connectChoices.ts";
-import {
-  AgentSparkIcon,
-  AwsIcon,
-  ChevronRightIcon,
-  CloudflareIcon,
-  GithubActionsIcon,
-  KubernetesIcon,
-  OtelIcon,
-  VercelIcon,
-} from "./icons.tsx";
+import { AwsIcon, ChevronRightIcon, CloudflareIcon, TerminalIcon } from "./icons.tsx";
 import { ExploreDemoLink, SOFT_LINE } from "./wizardChrome.tsx";
 
-// The path chooser: a flat, low-color list (modeled on a Plugins page) that
-// forks new users between no-code integrations (AWS first — integration-first)
-// and the coding-agent skill. See design.md.
+// The path chooser: a flat, low-color list (modeled on a Plugins page). Three
+// peer lanes — the no-code integrations (AWS, Cloudflare, integration-first)
+// and the "I'm hosted elsewhere" fallback, which routes to the coding-agent
+// prompt. See design.md.
 
 function ConnectGlyph({ icon }: { icon: ConnectIcon }) {
   const map: Record<ConnectIcon, typeof AwsIcon> = {
     aws: AwsIcon,
-    otel: OtelIcon,
-    agent: AgentSparkIcon,
-    vercel: VercelIcon,
-    kubernetes: KubernetesIcon,
     cloudflare: CloudflareIcon,
-    githubActions: GithubActionsIcon,
+    terminal: TerminalIcon,
   };
   const Glyph = map[icon];
   return <Glyph size={18} />;
@@ -77,20 +65,6 @@ function ListRow({
   );
 }
 
-function GridTile({ option }: { option: ConnectOption }) {
-  return (
-    <div
-      className={`flex items-center gap-3 rounded-[12px] border bg-surface px-3.5 py-3 ${SOFT_LINE}`}
-    >
-      <IconTile icon={option.icon} />
-      <span className="min-w-0">
-        <span className="block text-[13px] font-medium text-fg">{option.title}</span>
-        <span className="block text-[11.5px] text-subtle">{option.description}</span>
-      </span>
-    </div>
-  );
-}
-
 function SectionLabel({ children }: { children: string }) {
   return <div className="mb-2.5 text-[13px] font-medium text-muted">{children}</div>;
 }
@@ -104,22 +78,14 @@ function Section({
 }) {
   return (
     <div>
-      <SectionLabel>{section.label}</SectionLabel>
-      {section.variant === "grid" ? (
-        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-          {section.options.map((option) => (
-            <GridTile key={option.id} option={option} />
-          ))}
-        </div>
-      ) : (
-        <div
-          className={`divide-y divide-[rgba(255,255,255,0.07)] overflow-hidden rounded-[14px] border bg-surface ${SOFT_LINE}`}
-        >
-          {section.options.map((option) => (
-            <ListRow key={option.id} option={option} onPick={onPick} />
-          ))}
-        </div>
-      )}
+      {section.label ? <SectionLabel>{section.label}</SectionLabel> : null}
+      <div
+        className={`divide-y divide-[rgba(255,255,255,0.07)] overflow-hidden rounded-[14px] border bg-surface ${SOFT_LINE}`}
+      >
+        {section.options.map((option) => (
+          <ListRow key={option.id} option={option} onPick={onPick} />
+        ))}
+      </div>
     </div>
   );
 }

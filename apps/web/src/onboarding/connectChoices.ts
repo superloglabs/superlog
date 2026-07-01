@@ -4,23 +4,17 @@
 //
 // Design principle (see design.md): integration-first. A connected, no-code
 // integration beats hand-written instrumentation for time-to-value, so the
-// recommended no-code sources come first and the coding-agent path is the
-// secondary option.
+// no-code integrations (AWS, Cloudflare) come first and the "I'm hosted
+// elsewhere" fallback — which routes to the coding-agent prompt — comes last.
 
 // What activating a row does. `null` => not yet available (coming soon), so the
-// row renders disabled and is not actionable.
-export type ConnectAction = "aws" | "cloudflare" | "otel" | "code";
+// row renders disabled and is not actionable. "code" opens the coding-agent
+// prompt (paste into Cursor / Claude Code / Codex).
+export type ConnectAction = "aws" | "cloudflare" | "code";
 
 // Glyph key resolved to a neutral monochrome icon by the component. Kept as a
 // string union (not a component) so this module stays free of JSX/React.
-export type ConnectIcon =
-  | "aws"
-  | "otel"
-  | "agent"
-  | "vercel"
-  | "kubernetes"
-  | "cloudflare"
-  | "githubActions";
+export type ConnectIcon = "aws" | "cloudflare" | "terminal";
 
 export type ConnectOption = {
   id: string;
@@ -41,8 +35,9 @@ export type ConnectSection = {
 
 export const CONNECT_SECTIONS: ConnectSection[] = [
   {
-    id: "recommended",
-    label: "Recommended · no code",
+    id: "sources",
+    // No section label — the three lanes read as peers under the page subtitle.
+    label: "",
     variant: "list",
     options: [
       {
@@ -62,54 +57,12 @@ export const CONNECT_SECTIONS: ConnectSection[] = [
         action: "cloudflare",
       },
       {
-        id: "otel",
-        title: "OpenTelemetry / SDK",
-        description: "Point any OTLP exporter at Superlog with a write-only ingest key.",
-        icon: "otel",
-        action: "otel",
-      },
-    ],
-  },
-  {
-    id: "code",
-    label: "Or instrument with code",
-    variant: "list",
-    options: [
-      {
-        id: "agent",
-        title: "Use your coding agent",
+        id: "elsewhere",
+        title: "I'm hosted elsewhere",
         description:
-          "Paste a prompt into Cursor, Claude Code, or Codex — it installs the SDK, instruments your app, and opens a PR.",
-        icon: "agent",
+          "Vercel, Fly, a VM, your laptop — anywhere. Paste a prompt into Cursor, Claude Code, or Codex and it installs the SDK, instruments your app, and opens a PR.",
+        icon: "terminal",
         action: "code",
-      },
-    ],
-  },
-  {
-    id: "more",
-    label: "More integrations",
-    variant: "grid",
-    options: [
-      {
-        id: "vercel",
-        title: "Vercel",
-        description: "Coming soon",
-        icon: "vercel",
-        action: null,
-      },
-      {
-        id: "kubernetes",
-        title: "Kubernetes",
-        description: "Coming soon",
-        icon: "kubernetes",
-        action: null,
-      },
-      {
-        id: "github-actions",
-        title: "GitHub Actions",
-        description: "Coming soon",
-        icon: "githubActions",
-        action: null,
       },
     ],
   },

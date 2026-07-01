@@ -1,6 +1,8 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { Btn } from "../design/ui.tsx";
-import { ArrowIcon, ArrowLeftIcon } from "./icons.tsx";
+import { INSTALL_PROMPT, buildInstallPrompt } from "../installPrompt.ts";
+import { TruncatedKey } from "./TruncatedKey.tsx";
+import { ArrowIcon, ArrowLeftIcon, CheckIcon, CopyIcon, SpinnerIcon } from "./icons.tsx";
 
 // Shared chrome for the onboarding wizard steps, extracted so the install /
 // deploy flow and the new "Connect your data" views render identical headers,
@@ -72,6 +74,83 @@ export function StepFooter({
           {nextLabel}
           <ArrowIcon />
         </Btn>
+      </div>
+    </div>
+  );
+}
+
+// The copyable coding-agent prompt, terminal-styled. Shared so the "Connect
+// your data" chooser can render it inline and the deploy dialog can reuse the
+// same block. The `apiKey` is minted by the caller and baked into the copied
+// text; the key is write-only, so it's safe to surface directly.
+export function InstallPromptCard({
+  apiKey,
+  minting,
+  error,
+}: {
+  apiKey: string | null;
+  minting: boolean;
+  error: string | null;
+}) {
+  const [copied, setCopied] = useState(false);
+  const prompt = apiKey ? buildInstallPrompt(apiKey) : INSTALL_PROMPT;
+
+  const copy = () => {
+    try {
+      navigator.clipboard?.writeText(prompt);
+    } catch {
+      /* clipboard unavailable */
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1600);
+  };
+
+  return (
+    <div className={`overflow-hidden rounded-[14px] border bg-[#0a0a0c] ${SOFT_LINE}`}>
+      <div
+        className={`flex items-center justify-between gap-2.5 border-b px-[18px] py-[8px] ${SOFT_LINE}`}
+      >
+        <div className="flex items-center gap-2.5">
+          <span className="flex gap-1.5">
+            <span className="h-[10px] w-[10px] rounded-full bg-[#3b3b3e]" />
+            <span className="h-[10px] w-[10px] rounded-full bg-[#3b3b3e]" />
+            <span className="h-[10px] w-[10px] rounded-full bg-[#3b3b3e]" />
+          </span>
+          <span className="ml-2 text-[11px] uppercase tracking-[0.08em] text-subtle">
+            coding agent
+          </span>
+        </div>
+        <Btn
+          variant="primary"
+          size="sm"
+          onClick={copy}
+          disabled={!apiKey}
+          className="!h-[26px] !rounded-[8px] !px-[10px]"
+        >
+          {copied ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
+          {copied ? "Copied" : "Copy"}
+        </Btn>
+      </div>
+      <div className="px-[22px] py-[18px]">
+        <div className="text-[13.5px] leading-[1.5] text-fg">
+          <p className="m-0 break-words">{INSTALL_PROMPT}</p>
+          {minting ? (
+            <p className="m-0 mt-1 inline-flex items-center gap-2 text-muted">
+              <SpinnerIcon size={13} /> Provisioning your API key…
+            </p>
+          ) : error ? (
+            <p className="m-0 mt-1 text-danger">{error}</p>
+          ) : apiKey ? (
+            <p className="m-0 mt-1 whitespace-nowrap">
+              Use API key{" "}
+              <TruncatedKey value={apiKey} className="font-mono text-[12px] text-[#8C98F0]" />.
+            </p>
+          ) : null}
+        </div>
+        <p className="mt-2.5 text-[11.5px] leading-[1.5] text-subtle">
+          The key is write-only — it can only ingest events, not read them — and you can rotate it
+          any time from settings. Safe to drop straight into your agent.
+        </p>
       </div>
     </div>
   );
