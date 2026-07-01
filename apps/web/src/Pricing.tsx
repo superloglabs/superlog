@@ -1,3 +1,4 @@
+import { usePostHog } from "posthog-js/react";
 import { useEffect, useState } from "react";
 import { AuthForm } from "./AuthForm.tsx";
 import { Btn, Label, Tile, Wordmark } from "./design/ui.tsx";
@@ -97,10 +98,13 @@ export function Pricing() {
     return null;
   });
 
+  const posthog = usePostHog();
   const openSignIn = () => {
+    posthog?.capture("sign_in_clicked", { surface: "pricing" });
     setAuthMode("sign-in");
   };
   const openSignUp = () => {
+    posthog?.capture("sign_up_clicked", { surface: "pricing" });
     setAuthMode("sign-up");
   };
 
