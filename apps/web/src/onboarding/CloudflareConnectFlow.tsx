@@ -1,11 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import {
-  type Stats,
-  useCloudflareInstallation,
-  useStartCloudflareInstall,
-  useStats,
-} from "../api.ts";
+import { useCloudflareInstallation, useStartCloudflareInstall } from "../api.ts";
 import { Btn } from "../design/ui.tsx";
 import {
   type CloudflarePhase,
@@ -37,18 +32,18 @@ function openConsent(url: string) {
   }
 }
 
-function hasEvents(stats: Stats | undefined): boolean {
-  if (!stats) return false;
-  return stats.traces + stats.logs + stats.metrics > 0;
-}
-
 export function CloudflareConnectFlow({
   projectId,
+  eventsArrived,
   onBack,
   onDone,
   onExploreDemo,
 }: {
   projectId: string;
+  // Whether the real project has ingested telemetry yet (from the parent's
+  // `me.project.hasIngested`). NOT derived from the stats endpoint, which is
+  // demo-overlaid for un-ingested projects and would falsely report events.
+  eventsArrived: boolean;
   onBack: () => void;
   onDone: () => void;
   onExploreDemo?: () => void;
@@ -62,7 +57,6 @@ export function CloudflareConnectFlow({
 
   const install = useCloudflareInstallation(projectId);
   const start = useStartCloudflareInstall(projectId);
-  const stats = useStats(projectId, { poll: true });
 
   // The callback redirects back to the app with `?cloudflare=...`. When the
   // consent was opened in the same tab (popup blocked), a denial/error lands
@@ -83,7 +77,6 @@ export function CloudflareConnectFlow({
 
   const installed = install.data?.installed === true;
   const phase = cloudflarePhase({ installed, launched });
-  const eventsArrived = hasEvents(stats.data);
 
   const connect = () => {
     if (start.isPending) return;

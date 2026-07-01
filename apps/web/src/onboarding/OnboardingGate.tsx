@@ -88,6 +88,7 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
       <OnboardingWizard
         mode={skillMode ? "agent" : "web"}
         projectId={null}
+        hasIngested={hasIngested}
         userName={me.data.user.name}
         userEmail={me.data.user.email}
         onComplete={() => {
@@ -103,6 +104,7 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
       <OnboardingWizard
         mode="agent"
         projectId={me.data.project.id}
+        hasIngested={hasIngested}
         userName={me.data.user.name}
         userEmail={me.data.user.email}
         onComplete={() => {
@@ -131,6 +133,7 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
   return (
     <OnboardingWizard
       projectId={me.data.project.id}
+      hasIngested={hasIngested}
       userName={me.data.user.name}
       userEmail={me.data.user.email}
       onComplete={() => {

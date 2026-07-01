@@ -134,6 +134,12 @@ export function useMe() {
       clearPendingSignupSource();
       return me;
     },
+    // Poll while the active project hasn't ingested yet, then stop. This is what
+    // makes the onboarding gate teleport off the install wizard / demo data the
+    // instant real telemetry lands (hasIngested is derived from the ingest key's
+    // last_used_at), and the onboarding flows key their "first events" state off
+    // the same field. Post-ingest (the common case) there's no polling.
+    refetchInterval: (query) => (query.state.data?.project?.hasIngested ? false : 10_000),
   });
 }
 

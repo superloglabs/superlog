@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { OrgProjectSwitcher } from "../OrgProjectSwitcher.tsx";
 import {
   type GithubInstallation,
-  type Stats,
   useClaimSignupIntent,
   useCreateKey,
   useCreateMyFirstOrg,
@@ -10,7 +9,6 @@ import {
   useSlackInstallation,
   useStartGithubInstall,
   useStartSlackInstall,
-  useStats,
 } from "../api.ts";
 import { authClient, useSession } from "../auth-client.ts";
 import { Btn, Wordmark } from "../design/ui.tsx";
@@ -47,14 +45,19 @@ type Mode = "web" | "agent";
 // or the coding-agent install/deploy flow.
 type WebView = "chooser" | "aws" | "cloudflare" | "code";
 
-function hasEvents(stats: Stats | undefined): boolean {
-  if (!stats) return false;
-  return stats.traces + stats.logs + stats.metrics > 0;
+// The Cloudflare OAuth callback redirects back to the app with `?cloudflare=...`.
+// When that lands we want to drop straight into the Cloudflare flow (which reads
+// the outcome + install status), not the chooser — otherwise the user is bounced
+// back to "Connect your data" and has to click Cloudflare again to see progress.
+function initialWebView(): WebView {
+  if (typeof window === "undefined") return "chooser";
+  return new URLSearchParams(window.location.search).has("cloudflare") ? "cloudflare" : "chooser";
 }
 
 export function OnboardingWizard({
   mode = "web",
   projectId,
+  hasIngested,
   userName,
   userEmail,
   onComplete,
@@ -64,6 +67,11 @@ export function OnboardingWizard({
   // Null until the user has created their first org. While null, the wizard
   // only renders the create-org step regardless of `mode`.
   projectId: string | null;
+  // Whether the *real* project has ingested telemetry (from the ingest key's
+  // last_used_at). This is the honest "events arrived" signal — unlike the stats
+  // endpoint, which is demo-overlaid for un-ingested projects and would otherwise
+  // make the wizard claim "first events received" while showing demo data.
+  hasIngested: boolean;
   userName: string;
   userEmail: string;
   onComplete: () => void;
@@ -72,7 +80,7 @@ export function OnboardingWizard({
   onExploreDemo?: () => void;
 }) {
   const [step, setStep] = useState<Step>("install");
-  const [webView, setWebView] = useState<WebView>("chooser");
+  const [webView, setWebView] = useState<WebView>(initialWebView);
 
   const createKey = useCreateKey(projectId ?? "");
   const github = useGithubInstallation();
@@ -107,8 +115,7 @@ export function OnboardingWizard({
     createKey.mutate("Setup install");
   }, [mode, webView, projectId, createKey.mutate]);
 
-  const stats = useStats(projectId ?? undefined, { poll: true });
-  const eventsArrived = hasEvents(stats.data);
+  const eventsArrived = hasIngested;
 
   return (
     <div className="min-h-screen bg-bg font-sans text-fg">
@@ -154,6 +161,7 @@ export function OnboardingWizard({
           ) : webView === "cloudflare" ? (
             <CloudflareConnectFlow
               projectId={projectId}
+              eventsArrived={eventsArrived}
               onBack={() => setWebView("chooser")}
               onDone={onComplete}
               onExploreDemo={onExploreDemo}
