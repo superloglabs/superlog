@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AuthForm } from "./AuthForm.tsx";
 import { Btn, Chip, Label, Tile, Wordmark } from "./design/ui.tsx";
 import { INSTALL_PROMPT } from "./installPrompt.ts";
-import { LANDING_GITHUB_REPO_URL } from "./landingLinks.ts";
+import { LANDING_DOCS_URL, LANDING_GITHUB_REPO_URL } from "./landingLinks.ts";
 
 // ---------------------------------------------------------------------------
 // Landing — /
@@ -118,6 +118,14 @@ function TopNav({
             >
               <GitHubIcon />
               GitHub
+            </a>
+            <a
+              href={LANDING_DOCS_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
+            >
+              Docs
             </a>
             <a
               href="/pricing"
@@ -793,6 +801,14 @@ function Footer() {
           <h3 className="text-[13px] font-semibold text-subtle">Product</h3>
           <div className="mt-5">
             <div className="flex flex-col items-center gap-3 md:items-start">
+              <a
+                href={LANDING_DOCS_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="text-[14px] font-medium text-muted transition-colors hover:text-fg"
+              >
+                Docs
+              </a>
               <a
                 href="/pricing"
                 className="text-[14px] font-medium text-muted transition-colors hover:text-fg"
