@@ -206,14 +206,16 @@ test("queryLogs filters by field.severity_number via a string-cast column", asyn
   assert.equal(capture.params?.fattr_v_0, "9");
 });
 
-// queryTracesAggregated probes `EXISTS TABLE otel_traces_recent` and
-// `EXISTS TABLE otel_traces_summary` before every call, then either runs the
-// two-step fast path or falls back to the raw otel_traces scan. This fake
-// answers both EXISTS probes with a fixed result and captures the second (real)
-// query so tests can assert which path was taken.
+// queryTracesAggregated first probes `EXISTS TABLE otel_traces_recent` /
+// `otel_traces_summary`, then runs a coverage probe (`count() AS c` over the
+// recent index older than the window start), and only then either runs the
+// two-step fast path or falls back to the raw otel_traces scan. This fake answers
+// the EXISTS probes and the coverage probe with fixed results and captures the
+// final (real) query so tests can assert which path was taken.
 function fakeClickhouseWithSummary(
   capture: { query?: string; params?: Record<string, unknown> },
   derivedTablesExist: boolean,
+  windowCovered = true,
 ) {
   return {
     async query(input: { query: string; query_params?: Record<string, unknown> }) {
@@ -221,6 +223,13 @@ function fakeClickhouseWithSummary(
         return {
           async json() {
             return [{ result: derivedTablesExist ? 1 : 0 }];
+          },
+        };
+      }
+      if (/count\(\) AS c/i.test(input.query)) {
+        return {
+          async json() {
+            return [{ c: windowCovered ? 1 : 0 }];
           },
         };
       }
@@ -235,7 +244,7 @@ function fakeClickhouseWithSummary(
   } as unknown as ClickHouseClient;
 }
 
-test("queryTracesAggregated runs the two-step fast path when the derived tables exist and no filter is set", async () => {
+test("queryTracesAggregated runs the two-step fast path when the derived tables exist, cover the window, and no filter is set", async () => {
   const capture: { query?: string; params?: Record<string, unknown> } = {};
 
   await queryTracesAggregated(fakeClickhouseWithSummary(capture, true), "project-1", {
@@ -295,6 +304,21 @@ test("queryTracesAggregated falls back to the raw scan when the derived tables a
 
   assert.match(capture.query ?? "", /FROM otel_traces\b/);
   assert.doesNotMatch(capture.query ?? "", /otel_traces_summary/);
+});
+
+test("queryTracesAggregated falls back to the raw scan when the rollup does not yet cover the window", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  // Tables exist, but the recent index has no row older than the window start
+  // (e.g. before the historical backfill runs) — using the fast path would
+  // silently truncate the list to post-migration data, so fall back to raw.
+  await queryTracesAggregated(fakeClickhouseWithSummary(capture, true, false), "project-1", {
+    range: { since: "now() - INTERVAL 24 HOUR", until: "now()" },
+    limit: 100,
+  });
+
+  assert.match(capture.query ?? "", /FROM otel_traces\b/);
+  assert.doesNotMatch(capture.query ?? "", /recent_ids/);
 });
 
 test("queryTraces filters by field.span_id, ignoring non-applicable field keys", async () => {
