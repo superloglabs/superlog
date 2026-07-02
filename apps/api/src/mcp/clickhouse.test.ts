@@ -10,6 +10,7 @@ import {
   queryLogs,
   queryMetrics,
   queryTraces,
+  queryTracesAggregated,
 } from "./clickhouse.js";
 
 function fakeClickhouse(capture: { query?: string; params?: Record<string, unknown> }) {
@@ -205,6 +206,97 @@ test("queryLogs filters by field.severity_number via a string-cast column", asyn
   assert.equal(capture.params?.fattr_v_0, "9");
 });
 
+// queryTracesAggregated probes `EXISTS TABLE otel_traces_recent` and
+// `EXISTS TABLE otel_traces_summary` before every call, then either runs the
+// two-step fast path or falls back to the raw otel_traces scan. This fake
+// answers both EXISTS probes with a fixed result and captures the second (real)
+// query so tests can assert which path was taken.
+function fakeClickhouseWithSummary(
+  capture: { query?: string; params?: Record<string, unknown> },
+  derivedTablesExist: boolean,
+) {
+  return {
+    async query(input: { query: string; query_params?: Record<string, unknown> }) {
+      if (/EXISTS TABLE/i.test(input.query)) {
+        return {
+          async json() {
+            return [{ result: derivedTablesExist ? 1 : 0 }];
+          },
+        };
+      }
+      capture.query = input.query;
+      capture.params = input.query_params;
+      return {
+        async json() {
+          return [];
+        },
+      };
+    },
+  } as unknown as ClickHouseClient;
+}
+
+test("queryTracesAggregated runs the two-step fast path when the derived tables exist and no filter is set", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await queryTracesAggregated(fakeClickhouseWithSummary(capture, true), "project-1", {
+    range: { since: "now() - INTERVAL 24 HOUR", until: "now()" },
+    limit: 100,
+  });
+
+  // Step 1: recent-trace-id index. Step 2: per-trace stats from the summary.
+  assert.match(capture.query ?? "", /WITH recent_ids AS/);
+  assert.match(capture.query ?? "", /FROM otel_traces_recent/);
+  assert.match(capture.query ?? "", /FROM otel_traces_summary/);
+  assert.match(capture.query ?? "", /trace_id IN \(recent_ids\)/);
+  assert.match(capture.query ?? "", /argMinMerge\(root_span_name\)/);
+  assert.match(capture.query ?? "", /uniqExactMerge\(services\)/);
+  // The bare raw-scan table must not appear (otel_traces_recent/_summary are ok).
+  assert.doesNotMatch(capture.query ?? "", /FROM otel_traces\b/);
+  assert.equal(capture.params?.projectId, "project-1");
+  assert.equal(capture.params?.limit, 100);
+});
+
+test("queryTracesAggregated falls back to the raw scan when a minDuration floor is set", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await queryTracesAggregated(fakeClickhouseWithSummary(capture, true), "project-1", {
+    range: { since: "now() - INTERVAL 24 HOUR", until: "now()" },
+    minDurationMs: 250,
+    limit: 100,
+  });
+
+  // A duration floor can exclude more traces than the recent window holds, so it
+  // needs the raw table rather than the recent-then-summary fast path.
+  assert.match(capture.query ?? "", /FROM otel_traces\b/);
+  assert.doesNotMatch(capture.query ?? "", /recent_ids/);
+});
+
+test("queryTracesAggregated falls back to the raw scan when a span-level filter is set", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await queryTracesAggregated(fakeClickhouseWithSummary(capture, true), "project-1", {
+    range: { since: "now() - INTERVAL 24 HOUR", until: "now()" },
+    service: "svc-web",
+    limit: 100,
+  });
+
+  // A service filter selects traces by their spans; the summary can't answer it.
+  assert.match(capture.query ?? "", /FROM otel_traces\b/);
+  assert.doesNotMatch(capture.query ?? "", /otel_traces_summary/);
+});
+
+test("queryTracesAggregated falls back to the raw scan when the derived tables are absent", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await queryTracesAggregated(fakeClickhouseWithSummary(capture, false), "project-1", {
+    range: { since: "now() - INTERVAL 24 HOUR", until: "now()" },
+    limit: 100,
+  });
+
+  assert.match(capture.query ?? "", /FROM otel_traces\b/);
+  assert.doesNotMatch(capture.query ?? "", /otel_traces_summary/);
+});
+
 test("queryTraces filters by field.span_id, ignoring non-applicable field keys", async () => {
   const capture: { query?: string; params?: Record<string, unknown> } = {};
 
@@ -374,10 +466,17 @@ const HOUR_RANGE = { since: "now() - INTERVAL 24 HOUR", until: "now()" };
 test("countSeries reads the events_per_minute rollup for unfiltered minute-step queries", async () => {
   const capture: { query?: string; params?: Record<string, unknown> } = {};
 
-  await countSeries(fakeClickhouseRollup(capture), "project-1", "traces", { range: HOUR_RANGE }, undefined, {
-    n: 15,
-    unit: "MINUTE",
-  });
+  await countSeries(
+    fakeClickhouseRollup(capture),
+    "project-1",
+    "traces",
+    { range: HOUR_RANGE },
+    undefined,
+    {
+      n: 15,
+      unit: "MINUTE",
+    },
+  );
 
   assert.match(capture.query ?? "", /FROM events_per_minute/);
   assert.match(capture.query ?? "", /sum\(c\)/);
@@ -413,11 +512,17 @@ test("countSeries re-probes rollup availability after a failed probe", async () 
   } as unknown as ClickHouseClient;
 
   // first call: probe fails -> raw scan
-  await countSeries(ch, "project-1", "traces", { range: HOUR_RANGE }, undefined, { n: 15, unit: "MINUTE" });
+  await countSeries(ch, "project-1", "traces", { range: HOUR_RANGE }, undefined, {
+    n: 15,
+    unit: "MINUTE",
+  });
   assert.match(capture.query ?? "", /FROM otel_traces/);
 
   // second call on the same client: probe retried -> rollup
-  await countSeries(ch, "project-1", "traces", { range: HOUR_RANGE }, undefined, { n: 15, unit: "MINUTE" });
+  await countSeries(ch, "project-1", "traces", { range: HOUR_RANGE }, undefined, {
+    n: 15,
+    unit: "MINUTE",
+  });
   assert.equal(probes, 2);
   assert.match(capture.query ?? "", /FROM events_per_minute/);
 });
@@ -425,10 +530,17 @@ test("countSeries re-probes rollup availability after a failed probe", async () 
 test("countSeries rollup path supports grouping by service", async () => {
   const capture: { query?: string; params?: Record<string, unknown> } = {};
 
-  await countSeries(fakeClickhouseRollup(capture), "project-1", "logs", { range: HOUR_RANGE }, "service.name", {
-    n: 1,
-    unit: "HOUR",
-  });
+  await countSeries(
+    fakeClickhouseRollup(capture),
+    "project-1",
+    "logs",
+    { range: HOUR_RANGE },
+    "service.name",
+    {
+      n: 1,
+      unit: "HOUR",
+    },
+  );
 
   assert.match(capture.query ?? "", /FROM events_per_minute/);
   assert.match(capture.query ?? "", /service AS group_key/);
@@ -463,13 +575,17 @@ test("countSeries rollup path covers service, severity and status filters", asyn
 });
 
 test("countSeries falls back to the raw table for filters the rollup cannot answer", async () => {
-  const cases: { source: "logs" | "traces"; filter: Record<string, unknown>; groupBy?: string }[] = [
-    { source: "traces", filter: { range: HOUR_RANGE, resourceAttrs: [{ key: "env", value: "prod", op: "eq" }] } },
-    { source: "logs", filter: { range: HOUR_RANGE, search: "boom" } },
-    { source: "traces", filter: { range: HOUR_RANGE, spanName: "GET /" } },
-    { source: "traces", filter: { range: HOUR_RANGE, minDurationMs: 250 } },
-    { source: "traces", filter: { range: HOUR_RANGE }, groupBy: "attr:http.route" },
-  ];
+  const cases: { source: "logs" | "traces"; filter: Record<string, unknown>; groupBy?: string }[] =
+    [
+      {
+        source: "traces",
+        filter: { range: HOUR_RANGE, resourceAttrs: [{ key: "env", value: "prod", op: "eq" }] },
+      },
+      { source: "logs", filter: { range: HOUR_RANGE, search: "boom" } },
+      { source: "traces", filter: { range: HOUR_RANGE, spanName: "GET /" } },
+      { source: "traces", filter: { range: HOUR_RANGE, minDurationMs: 250 } },
+      { source: "traces", filter: { range: HOUR_RANGE }, groupBy: "attr:http.route" },
+    ];
   for (const c of cases) {
     const capture: { query?: string; params?: Record<string, unknown> } = {};
     await countSeries(fakeClickhouseRollup(capture), "project-1", c.source, c.filter, c.groupBy, {
@@ -487,10 +603,17 @@ test("countSeries falls back to the raw table for filters the rollup cannot answ
 test("countSeries falls back to the raw table for sub-minute steps", async () => {
   const capture: { query?: string; params?: Record<string, unknown> } = {};
 
-  await countSeries(fakeClickhouseRollup(capture), "project-1", "traces", { range: HOUR_RANGE }, undefined, {
-    n: 30,
-    unit: "SECOND",
-  });
+  await countSeries(
+    fakeClickhouseRollup(capture),
+    "project-1",
+    "traces",
+    { range: HOUR_RANGE },
+    undefined,
+    {
+      n: 30,
+      unit: "SECOND",
+    },
+  );
 
   assert.match(capture.query ?? "", /FROM otel_traces/);
 });
@@ -532,7 +655,10 @@ test("countSeries maps negated service.name filters onto ServiceName too", async
     fakeClickhouse(neqCapture),
     "project-1",
     "traces",
-    { range: HOUR_RANGE, resourceAttrs: [{ key: "resource.service.name", value: "worker", op: "neq" }] },
+    {
+      range: HOUR_RANGE,
+      resourceAttrs: [{ key: "resource.service.name", value: "worker", op: "neq" }],
+    },
     undefined,
     { n: 1, unit: "MINUTE" },
   );
@@ -543,11 +669,17 @@ test("countSeries maps negated service.name filters onto ServiceName too", async
     fakeClickhouse(ncCapture),
     "project-1",
     "traces",
-    { range: HOUR_RANGE, resourceAttrs: [{ key: "service.name", value: "work", op: "not_contains" }] },
+    {
+      range: HOUR_RANGE,
+      resourceAttrs: [{ key: "service.name", value: "work", op: "not_contains" }],
+    },
     undefined,
     { n: 1, unit: "MINUTE" },
   );
-  assert.match(ncCapture.query ?? "", /positionCaseInsensitive\(ServiceName, \{attr_v_0:String\}\) = 0/);
+  assert.match(
+    ncCapture.query ?? "",
+    /positionCaseInsensitive\(ServiceName, \{attr_v_0:String\}\) = 0/,
+  );
 });
 
 test("queryLogs maps a service.name resource filter to the ServiceName column", async () => {

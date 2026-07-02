@@ -460,3 +460,67 @@ FROM superlog.otel_logs
 WHERE SeverityNumber >= 17
   AND ResourceAttributes['superlog.project_id'] != ''
 ;
+-- otel_traces_recent + otel_traces_summary (trace-list fast path; see
+-- migrations/005_otel_traces_summary.sql for rationale + backfill notes). The
+-- recent index gives the N most recently started trace_ids per project via a
+-- bounded time-ordered scan; the summary supplies per-trace stats for those ids.
+CREATE TABLE IF NOT EXISTS superlog.otel_traces_recent ON CLUSTER superlog_ha
+(
+    `project_id` String CODEC(ZSTD(1)),
+    `ts` DateTime64(9) CODEC(Delta(8), ZSTD(1)),
+    `trace_id` String CODEC(ZSTD(1))
+)
+ENGINE = ReplicatedMergeTree('/clickhouse/{cluster}/tables/{shard}/{database}/{table}', '{replica}')
+PARTITION BY toDate(ts)
+ORDER BY (project_id, ts)
+SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
+;
+-- otel_traces_recent_mv
+CREATE MATERIALIZED VIEW IF NOT EXISTS superlog.otel_traces_recent_mv ON CLUSTER superlog_ha
+TO superlog.otel_traces_recent
+AS SELECT
+    ResourceAttributes['superlog.project_id'] AS project_id,
+    Timestamp AS ts,
+    TraceId AS trace_id
+FROM superlog.otel_traces
+WHERE ResourceAttributes['superlog.project_id'] != '' AND TraceId != ''
+;
+-- otel_traces_summary
+CREATE TABLE IF NOT EXISTS superlog.otel_traces_summary ON CLUSTER superlog_ha
+(
+    `project_id` String CODEC(ZSTD(1)),
+    `trace_id` String CODEC(ZSTD(1)),
+    `start` SimpleAggregateFunction(min, DateTime64(9)) CODEC(ZSTD(1)),
+    `start_unix_nano` SimpleAggregateFunction(min, Int64) CODEC(ZSTD(1)),
+    `end_unix_nano` SimpleAggregateFunction(max, Int64) CODEC(ZSTD(1)),
+    `span_count` SimpleAggregateFunction(sum, UInt64) CODEC(ZSTD(1)),
+    `error_count` SimpleAggregateFunction(sum, UInt64) CODEC(ZSTD(1)),
+    `root_span_name` AggregateFunction(argMin, LowCardinality(String), DateTime64(9)),
+    `root_service` AggregateFunction(argMin, LowCardinality(String), DateTime64(9)),
+    `root_status_code` AggregateFunction(argMin, LowCardinality(String), DateTime64(9)),
+    `services` AggregateFunction(uniqExact, LowCardinality(String))
+)
+ENGINE = ReplicatedAggregatingMergeTree('/clickhouse/{cluster}/tables/{shard}/{database}/{table}', '{replica}')
+PARTITION BY toDate(start)
+ORDER BY (project_id, trace_id)
+SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
+;
+-- otel_traces_summary_mv
+CREATE MATERIALIZED VIEW IF NOT EXISTS superlog.otel_traces_summary_mv ON CLUSTER superlog_ha
+TO superlog.otel_traces_summary
+AS SELECT
+    ResourceAttributes['superlog.project_id'] AS project_id,
+    TraceId AS trace_id,
+    min(Timestamp) AS start,
+    min(toUnixTimestamp64Nano(Timestamp)) AS start_unix_nano,
+    max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) AS end_unix_nano,
+    count() AS span_count,
+    countIf(StatusCode = 'STATUS_CODE_ERROR') AS error_count,
+    argMinState(SpanName, Timestamp) AS root_span_name,
+    argMinState(ServiceName, Timestamp) AS root_service,
+    argMinState(StatusCode, Timestamp) AS root_status_code,
+    uniqExactState(ServiceName) AS services
+FROM superlog.otel_traces
+WHERE ResourceAttributes['superlog.project_id'] != '' AND TraceId != ''
+GROUP BY project_id, trace_id
+;

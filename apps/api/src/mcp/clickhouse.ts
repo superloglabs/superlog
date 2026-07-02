@@ -331,19 +331,108 @@ export async function queryTraces(
   return r.json();
 }
 
+type TracesAggregatedParams = {
+  range?: TimeRange;
+  service?: string;
+  spanName?: string;
+  statusCode?: string;
+  minDurationMs?: number;
+  resourceAttrs?: ResourceAttrFilter[];
+  limit: number;
+};
+
+// How many of the newest spans the recent-index step reverse-scans to find the
+// most recently started traces. Far more than any page needs (a high-volume
+// project fits thousands of traces in these spans; a small one has fewer total),
+// so the true newest traces are always covered, while the bound keeps the scan a
+// few granules regardless of how big the window nominally is.
+const TRACE_RECENT_SCAN_CAP = 50_000;
+
+// The trace-summary fast path holds one aggregate-state row per trace with no
+// per-span dimensions, and picks "recent" from a span-only time index — so it
+// can only answer the unfiltered trace list (the default view, and the one that
+// times out on the raw scan for high-volume projects). Any span-selecting filter
+// — service, span name, status code, an attribute predicate — or a duration
+// floor (which could exclude more traces than the recent window holds) needs the
+// raw table.
+function traceSummaryEligible(params: TracesAggregatedParams): boolean {
+  if (params.service) return false;
+  if (params.spanName) return false;
+  if (params.statusCode) return false;
+  if (params.minDurationMs) return false;
+  if (params.resourceAttrs?.length) return false;
+  return true;
+}
+
+// Two-step read: (1) otel_traces_recent, a plain time-ordered span index, gives
+// the most recently started trace_ids via a bounded reverse scan + GROUP BY;
+// (2) otel_traces_summary supplies the displayed stats for just those trace_ids.
+// Neither step scans the whole per-project window, so it stays ~1s where the raw
+// GROUP BY over raw otel_traces is 15-60s. Output columns match the raw
+// queryTracesAggregated query exactly so callers are unaffected.
+async function queryTracesAggregatedFromSummary(
+  ch: ClickHouseClient,
+  projectId: string,
+  params: TracesAggregatedParams,
+) {
+  const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(params.range);
+  const query = `
+    WITH recent_ids AS (
+      SELECT trace_id
+      FROM (
+        SELECT ts, trace_id
+        FROM otel_traces_recent
+        WHERE project_id = {projectId:String}
+          AND ts >= ${sinceExpr}
+          AND ts <= ${untilExpr}
+        ORDER BY ts DESC
+        LIMIT ${TRACE_RECENT_SCAN_CAP}
+      )
+      GROUP BY trace_id
+      ORDER BY min(ts) DESC
+      LIMIT {limit:UInt32}
+    )
+    SELECT
+      trace_id,
+      toString(min(start)) AS start_time,
+      argMinMerge(root_span_name) AS root_span_name,
+      argMinMerge(root_service) AS root_service,
+      argMinMerge(root_status_code) AS root_status_code,
+      sum(span_count) AS span_count,
+      sum(error_count) AS error_count,
+      uniqExactMerge(services) AS service_count,
+      toFloat64(max(end_unix_nano) - min(start_unix_nano)) / 1000000 AS duration_ms
+    FROM otel_traces_summary
+    WHERE project_id = {projectId:String}
+      AND trace_id IN (recent_ids)
+      AND start >= ${sinceExpr}
+      AND start <= ${untilExpr}
+    GROUP BY project_id, trace_id
+    ORDER BY start_time DESC
+    LIMIT {limit:UInt32}
+  `;
+  const r = await ch.query({
+    query,
+    query_params: { projectId, since: sinceSql, until: untilSql, limit: params.limit },
+    format: "JSONEachRow",
+  });
+  return r.json();
+}
+
 export async function queryTracesAggregated(
   ch: ClickHouseClient,
   projectId: string,
-  params: {
-    range?: TimeRange;
-    service?: string;
-    spanName?: string;
-    statusCode?: string;
-    minDurationMs?: number;
-    resourceAttrs?: ResourceAttrFilter[];
-    limit: number;
-  },
+  params: TracesAggregatedParams,
 ) {
+  // Both derived tables must exist; either missing (e.g. local dev, or before the
+  // migration lands) falls back to the raw scan.
+  if (
+    traceSummaryEligible(params) &&
+    (await tableExists(ch, "otel_traces_recent")) &&
+    (await tableExists(ch, "otel_traces_summary"))
+  ) {
+    return queryTracesAggregatedFromSummary(ch, projectId, params);
+  }
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(params.range);
   const split = splitAttrs(params.resourceAttrs);
   const attr = attrConds(split.resource);
@@ -1081,7 +1170,7 @@ export async function metricSeries(
               conds,
               sinceExpr,
             })
-        : `
+          : `
           SELECT
             toString(toStartOfInterval(TimeUnix, INTERVAL ${step.n} ${step.unit})) AS bucket,
             ${groupExpr} AS group_key,
@@ -1190,27 +1279,41 @@ export function pickStep(rangeSeconds: number, targetBuckets = 120): Step {
 // back to the raw scan without a per-request penalty.
 // -----------------------------------------------------------------------------
 
-const rollupAvailability = new WeakMap<ClickHouseClient, Promise<boolean>>();
+const tableExistsMemo = new WeakMap<ClickHouseClient, Map<string, Promise<boolean>>>();
 
-function rollupAvailable(ch: ClickHouseClient): Promise<boolean> {
-  let probe = rollupAvailability.get(ch);
+// Memoized `EXISTS TABLE <name>` probe, per client + table. Derived tables
+// (events_per_minute, otel_traces_summary, …) are not part of the collector's
+// auto-created schema, so deployments without them must fall back to the raw
+// scan without a per-request penalty. `table` is always a hardcoded literal
+// here — never interpolate user input into this.
+function tableExists(ch: ClickHouseClient, table: string): Promise<boolean> {
+  let byTable = tableExistsMemo.get(ch);
+  if (!byTable) {
+    byTable = new Map();
+    tableExistsMemo.set(ch, byTable);
+  }
+  let probe = byTable.get(table);
   if (!probe) {
     probe = (async () => {
       try {
-        const r = await ch.query({ query: "EXISTS TABLE events_per_minute", format: "JSONEachRow" });
+        const r = await ch.query({ query: `EXISTS TABLE ${table}`, format: "JSONEachRow" });
         const rows = (await r.json()) as { result: number | string }[];
         return Number(rows[0]?.result) === 1;
       } catch {
         // A failed probe (e.g. ClickHouse briefly unreachable) says nothing
-        // about whether the rollup exists — drop the memo so the next call
+        // about whether the table exists — drop the memo so the next call
         // re-probes instead of pinning the raw path until restart.
-        rollupAvailability.delete(ch);
+        byTable?.delete(table);
         return false;
       }
     })();
-    rollupAvailability.set(ch, probe);
+    byTable.set(table, probe);
   }
   return probe;
+}
+
+function rollupAvailable(ch: ClickHouseClient): Promise<boolean> {
+  return tableExists(ch, "events_per_minute");
 }
 
 // A widget that filters on the service.name resource attribute (instead of
