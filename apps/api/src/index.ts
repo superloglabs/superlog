@@ -33,6 +33,7 @@ import { auth } from "./auth.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
 import { mountCloudflareAuthed, mountCloudflarePublic } from "./cloudflare.js";
+import { mountVercelAuthed, mountVercelPublic } from "./vercel.js";
 import { mountDashboards } from "./dashboards.js";
 import {
   demoOverlay,
@@ -279,6 +280,7 @@ mountLinearPublic(app);
 mountMcpPublic(app, ch);
 mountSlackPublic(app);
 mountCloudflarePublic(app);
+mountVercelPublic(app);
 mountFeedbackPublic(app);
 // Management API (org-key auth, /api/v1/*) registers its own middleware
 // before the session middleware below — the session middleware skips
@@ -316,6 +318,7 @@ mountGithubAuthed(app);
 mountLinearAuthed(app);
 mountSlackAuthed(app);
 mountCloudflareAuthed(app);
+mountVercelAuthed(app);
 mountSettingsAuthed(app);
 mountOrgKeyManagementAuthed(app);
 mountDashboards(app);

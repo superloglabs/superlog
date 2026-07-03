@@ -4,17 +4,17 @@
 //
 // Design principle (see design.md): integration-first. A connected, no-code
 // integration beats hand-written instrumentation for time-to-value, so the
-// no-code integrations (AWS, Cloudflare) come first and the "I'm hosted
+// no-code integrations (AWS, Cloudflare, Vercel) come first and the "I'm hosted
 // elsewhere" fallback — which routes to the coding-agent prompt — comes last.
 
 // What activating a row does. `null` => not yet available (coming soon), so the
 // row renders disabled and is not actionable. "code" opens the coding-agent
 // prompt (paste into Cursor / Claude Code / Codex).
-export type ConnectAction = "aws" | "cloudflare" | "code";
+export type ConnectAction = "aws" | "cloudflare" | "vercel" | "code";
 
 // Glyph key resolved to a neutral monochrome icon by the component. Kept as a
 // string union (not a component) so this module stays free of JSX/React.
-export type ConnectIcon = "aws" | "cloudflare" | "terminal";
+export type ConnectIcon = "aws" | "cloudflare" | "vercel" | "terminal";
 
 export type ConnectOption = {
   id: string;
@@ -57,10 +57,18 @@ export const CONNECT_SECTIONS: ConnectSection[] = [
         action: "cloudflare",
       },
       {
+        id: "vercel",
+        title: "Vercel",
+        description:
+          "Install the Superlog integration once and we set up trace and log drains that stream your deployments' telemetry in. No agent, no code.",
+        icon: "vercel",
+        action: "vercel",
+      },
+      {
         id: "elsewhere",
         title: "I'm hosted elsewhere",
         description:
-          "Vercel, Fly, a VM, your laptop — anywhere. Paste a prompt into Cursor, Claude Code, or Codex and it installs the SDK, instruments your app, and opens a PR.",
+          "Fly, Render, a VM, your laptop — anywhere. Paste a prompt into Cursor, Claude Code, or Codex and it installs the SDK, instruments your app, and opens a PR.",
         icon: "terminal",
         action: "code",
       },
@@ -69,20 +77,24 @@ export const CONNECT_SECTIONS: ConnectSection[] = [
 ];
 
 // Runtime availability for connectors that depend on server-side config. The
-// backend self-disables the Cloudflare connector when its OAuth client / OTLP
-// intake env isn't set (see system-capabilities), so the chooser must not offer
-// a click that would 503 — it renders the tile as "coming soon" until the API
-// reports the connector is configured.
+// backend self-disables the Cloudflare / Vercel connectors when their OAuth
+// client / OTLP intake env isn't set (see system-capabilities), so the chooser
+// must not offer a click that would 503 — it renders the tile as "coming soon"
+// until the API reports the connector is configured.
 export type ConnectAvailability = {
   cloudflare: boolean;
+  vercel: boolean;
 };
 
 export function connectSectionsFor(availability: ConnectAvailability): ConnectSection[] {
-  if (availability.cloudflare) return CONNECT_SECTIONS;
+  const unavailable = new Set<string>();
+  if (!availability.cloudflare) unavailable.add("cloudflare");
+  if (!availability.vercel) unavailable.add("vercel");
+  if (unavailable.size === 0) return CONNECT_SECTIONS;
   return CONNECT_SECTIONS.map((section) => ({
     ...section,
     options: section.options.map((option) =>
-      option.id === "cloudflare"
+      unavailable.has(option.id)
         ? { ...option, action: null, description: "Coming soon", badge: undefined }
         : option,
     ),

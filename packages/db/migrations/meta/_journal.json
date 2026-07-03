@@ -554,6 +554,13 @@
       "when": 1782760770343,
       "tag": "0078_slippery_steel_serpent",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1783087922400,
+      "tag": "0079_chemical_santa_claus",
+      "breakpoints": true
     }
   ]
 }

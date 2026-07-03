@@ -16,6 +16,7 @@ import { getSkillOnboardingIntent } from "../skillOnboarding.ts";
 import { AwsConnectFlow } from "./AwsConnectFlow.tsx";
 import { CloudflareConnectFlow } from "./CloudflareConnectFlow.tsx";
 import { ConnectDataChooser } from "./ConnectDataChooser.tsx";
+import { VercelConnectFlow } from "./VercelConnectFlow.tsx";
 import type { ConnectAction } from "./connectChoices.ts";
 import { CheckIcon, GithubIcon, SlackIcon, SpinnerIcon } from "./icons.tsx";
 import {
@@ -42,16 +43,20 @@ import {
 
 type Mode = "web" | "agent";
 // Web-mode landing fork: choose a source, then either a no-code integration
-// flow (AWS / Cloudflare) or the coding-agent install → deploy flow.
-type WebView = "chooser" | "aws" | "cloudflare" | "code" | "deploy";
+// flow (AWS / Cloudflare / Vercel) or the coding-agent install → deploy flow.
+type WebView = "chooser" | "aws" | "cloudflare" | "vercel" | "code" | "deploy";
 
-// The Cloudflare OAuth callback redirects back to the app with `?cloudflare=...`.
-// When that lands we want to drop straight into the Cloudflare flow (which reads
-// the outcome + install status), not the chooser — otherwise the user is bounced
-// back to "Connect your data" and has to click Cloudflare again to see progress.
+// The Cloudflare / Vercel OAuth callbacks redirect back to the app with
+// `?cloudflare=...` / `?vercel=...`. When that lands we want to drop straight
+// into the matching flow (which reads the outcome + install status), not the
+// chooser — otherwise the user is bounced back to "Connect your data" and has
+// to click the integration again to see progress.
 function initialWebView(): WebView {
   if (typeof window === "undefined") return "chooser";
-  return new URLSearchParams(window.location.search).has("cloudflare") ? "cloudflare" : "chooser";
+  const params = new URLSearchParams(window.location.search);
+  if (params.has("cloudflare")) return "cloudflare";
+  if (params.has("vercel")) return "vercel";
+  return "chooser";
 }
 
 export function OnboardingWizard({
@@ -85,14 +90,16 @@ export function OnboardingWizard({
   const github = useGithubInstallation();
   const slack = useSlackInstallation();
 
-  // Route a chooser selection to the matching view. AWS / Cloudflare get their
-  // no-code integration flows; "I'm hosted elsewhere" (action "code") opens the
-  // coding-agent install prompt.
+  // Route a chooser selection to the matching view. AWS / Cloudflare / Vercel
+  // get their no-code integration flows; "I'm hosted elsewhere" (action "code")
+  // opens the coding-agent install prompt.
   const handlePick = (action: ConnectAction) => {
     if (action === "aws") {
       setWebView("aws");
     } else if (action === "cloudflare") {
       setWebView("cloudflare");
+    } else if (action === "vercel") {
+      setWebView("vercel");
     } else {
       setWebView("code");
     }
@@ -159,6 +166,14 @@ export function OnboardingWizard({
             />
           ) : webView === "cloudflare" ? (
             <CloudflareConnectFlow
+              projectId={projectId}
+              eventsArrived={eventsArrived}
+              onBack={() => setWebView("chooser")}
+              onDone={onComplete}
+              onExploreDemo={onExploreDemo}
+            />
+          ) : webView === "vercel" ? (
+            <VercelConnectFlow
               projectId={projectId}
               eventsArrived={eventsArrived}
               onBack={() => setWebView("chooser")}

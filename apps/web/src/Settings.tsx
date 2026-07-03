@@ -78,13 +78,16 @@ import {
   useStartLinearInstall,
   useStartCloudflareInstall,
   useStartSlackInstall,
+  useStartVercelInstall,
   useTestWebhook,
   useUninstallLinear,
   useUninstallCloudflare,
   useUninstallSlack,
+  useUninstallVercel,
   useUpdateGithubRepoAccess,
   useUpdateOrgProject,
   useUpdateWebhook,
+  useVercelInstallation,
   useVerifyCloudConnection,
   useWebhookDeliveries,
   useWebhooks,
@@ -607,6 +610,7 @@ function ProjectSectionView({
             <SlackCard />
             <LinearCard />
             <CloudflareCard projectId={projectId} />
+            <VercelCard projectId={projectId} />
             <AwsCard projectId={projectId} />
             <IngestSourcesCard projectId={projectId} />
           </div>
@@ -1231,6 +1235,61 @@ function CloudflareCard({ projectId }: { projectId: string | undefined }) {
   );
 }
 
+function VercelCard({ projectId }: { projectId: string | undefined }) {
+  const install = useVercelInstallation(projectId);
+  const start = useStartVercelInstall(projectId);
+  const uninstall = useUninstallVercel(projectId);
+
+  const installed = install.data?.installed === true;
+
+  return (
+    <Tile label="Vercel">
+      <div className="space-y-3">
+        <p className="text-[13px] text-muted">
+          Install the Superlog integration on your Vercel team and we'll set up trace and log drains
+          that stream your deployments' telemetry into this project automatically.
+        </p>
+        <div>
+          {installed && install.data?.installed ? (
+            <Chip tone="success" dot>
+              {install.data.teamName ?? "Vercel team"}
+            </Chip>
+          ) : (
+            <Chip tone="muted" dot>
+              Not connected
+            </Chip>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Btn
+            size="sm"
+            variant={installed ? "secondary" : "primary"}
+            loading={start.isPending}
+            disabled={!projectId || start.isPending}
+            onClick={async () => {
+              const { url } = await start.mutateAsync();
+              window.location.href = url;
+            }}
+          >
+            {installed ? "Reconnect" : "Connect Vercel"}
+          </Btn>
+          {installed && (
+            <Btn
+              size="sm"
+              variant="danger"
+              loading={uninstall.isPending}
+              disabled={!projectId || uninstall.isPending}
+              onClick={() => uninstall.mutate()}
+            >
+              Disconnect
+            </Btn>
+          )}
+        </div>
+      </div>
+    </Tile>
+  );
+}
+
 function SlackRoutingCard({ projectId }: { projectId: string | undefined }) {
   const install = useSlackInstallation();
   const installed = install.data?.installed === true;
@@ -1557,10 +1616,9 @@ const AWS_REGION_OPTIONS = AWS_REGIONS.map((r) => ({
   searchText: `${r.code} ${r.name}`,
 }));
 
-// Per-project ingest source toggles. Lets you turn a telemetry source (SDK/OTLP
-// or AWS CloudWatch) on/off per signal; the proxy ack-drops disabled telemetry
-// at the edge so it's never stored or billed. Useful to e.g. keep AWS metrics
-// but stop a noisy AWS log stream without tearing down the CloudFormation stack.
+// Per-project ingest source toggles. Lets you turn a telemetry source (SDK/OTLP,
+// AWS CloudWatch, or Vercel Drains) on/off per signal; the proxy ack-drops
+// disabled telemetry at the edge so it's never stored or billed.
 function IngestSourceRow({
   title,
   hint,
@@ -1601,7 +1659,7 @@ function IngestSourcesCard({ projectId }: { projectId: string | undefined }) {
   const setFilters = useSetIngestFilters(projectId ?? "");
   const state = filters.data;
 
-  const setSignal = (source: "otlp" | "aws", signal: string, next: boolean) => {
+  const setSignal = (source: "otlp" | "aws" | "vercel", signal: string, next: boolean) => {
     if (!state) return;
     const updated: IngestFilterState = {
       ...state,
@@ -1643,6 +1701,17 @@ function IngestSourcesCard({ projectId }: { projectId: string | undefined }) {
               state={state.aws}
               disabled={setFilters.isPending}
               onToggle={(signal, next) => setSignal("aws", signal, next)}
+            />
+            <IngestSourceRow
+              title="Vercel Drains"
+              hint="Trace and log drains created by the connected Vercel integration."
+              signals={[
+                { key: "traces", label: "Traces" },
+                { key: "logs", label: "Logs" },
+              ]}
+              state={state.vercel}
+              disabled={setFilters.isPending}
+              onToggle={(signal, next) => setSignal("vercel", signal, next)}
             />
           </div>
         )}

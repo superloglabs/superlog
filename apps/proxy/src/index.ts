@@ -29,6 +29,7 @@ import {
 } from "./clickhouse-writer.js";
 import { IngestQueue, getIngestQueueConfig } from "./ingest-queue.js";
 import {
+  type IngestSource,
   type TelemetrySignal,
   createIngestSourceFilter,
   ingestFilterKey,
@@ -37,6 +38,7 @@ import { logger } from "./logger.js";
 import { proxyOperationalRecorder } from "./operational-metrics.js";
 import { Semaphore } from "./semaphore.js";
 import { lookupOrgForProject, recordIngestRequest } from "./tenant-metrics.js";
+import { parseVercelLogDrainBody, vercelLogsToOtlp } from "./vercel-log-drain.js";
 
 const tracer = trace.getTracer("@superlog/proxy");
 
@@ -212,7 +214,7 @@ app.use("/v1/*", async (c, next) => {
   return next();
 });
 
-app.use("/v1/*", async (c, next) => {
+async function validateIngestKey(c: Context<{ Variables: Variables }>, next: () => Promise<void>) {
   return tracer.startActiveSpan("auth.validate", async (span) => {
     try {
       const key = extractApiKey(c);
@@ -225,7 +227,13 @@ app.use("/v1/*", async (c, next) => {
       if (isTestKey(key)) {
         span.setAttribute("auth.result", "test_key");
         const path = new URL(c.req.url).pathname;
-        if (path === "/v1/traces" || path === "/v1/logs" || path === "/v1/metrics") {
+        if (
+          path === "/v1/traces" ||
+          path === "/v1/logs" ||
+          path === "/v1/metrics" ||
+          path === "/vercel/drains/traces" ||
+          path === "/vercel/drains/logs"
+        ) {
           logger.info({ path }, "test key short-circuit");
           return new Response(new Uint8Array(0), {
             status: 200,
@@ -282,11 +290,29 @@ app.use("/v1/*", async (c, next) => {
       span.end();
     }
   });
-});
+}
+
+app.use("/v1/*", validateIngestKey);
+app.use("/vercel/drains/*", validateIngestKey);
 
 app.post("/v1/traces", (c) => forward(c, "/v1/traces", "resourceSpans"));
 app.post("/v1/logs", (c) => forward(c, "/v1/logs", "resourceLogs"));
 app.post("/v1/metrics", (c) => forward(c, "/v1/metrics", "resourceMetrics"));
+
+app.post("/vercel/drains/traces", (c) =>
+  forward(c, "/v1/traces", "resourceSpans", { source: "vercel" }),
+);
+app.post("/vercel/drains/logs", (c) =>
+  forward(c, "/v1/logs", "resourceLogs", {
+    source: "vercel",
+    bodyTransform: (body, contentType) => ({
+      body: Buffer.from(
+        JSON.stringify(vercelLogsToOtlp(parseVercelLogDrainBody(body, contentType))),
+      ),
+      contentType: "application/json",
+    }),
+  }),
+);
 
 // AWS Data Firehose HTTP-endpoint ingest (CloudWatch Metric Streams + Logs).
 // Firehose authenticates with X-Amz-Firehose-Access-Key (the project's ingest
@@ -383,15 +409,30 @@ function isTestKey(key: string | null): boolean {
   return key === "SUPERLOG_TEST" || (key?.startsWith("superlog_test_") ?? false);
 }
 
-async function forward(c: Context<{ Variables: Variables }>, path: string, rootKey: string) {
+type ForwardOptions = {
+  source?: IngestSource;
+  bodyTransform?: (
+    body: Buffer,
+    contentType: string,
+  ) => { body: Buffer; contentType: string; contentEncoding?: string };
+};
+
+async function forward(
+  c: Context<{ Variables: Variables }>,
+  path: string,
+  rootKey: string,
+  opts: ForwardOptions = {},
+) {
   return tracer.startActiveSpan("ingest.forward", async (span) => {
     const startedAt = performance.now();
     const projectId = c.var.projectId;
-    const contentType = c.req.header("content-type") ?? "application/x-protobuf";
-    const contentEncoding = c.req.header("content-encoding");
+    const source = opts.source ?? "otlp";
+    let contentType = c.req.header("content-type") ?? "application/x-protobuf";
+    let contentEncoding = c.req.header("content-encoding");
     let responseStatus = 500;
     let requestBytes = 0;
     let storage: "direct" | "inline" | "s3" = "direct";
+    let prebufferedBody: Buffer | null = null;
 
     // Route into the matching admission lane by declared body size, so a slow
     // oversize S3 upload can't head-of-line block a tiny request. Unknown size
@@ -424,12 +465,12 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
       // intent). This precedes the quota gate so a disabled source is always a
       // clean 200, never a 402 the exporter would retry against.
       const otlpSignal = otlpSignalForPath(path);
-      if (otlpSignal && !ingestSourceFilter.allows(projectId, "otlp", otlpSignal)) {
+      if (otlpSignal && !ingestSourceFilter.allows(projectId, source, otlpSignal)) {
         responseStatus = 200;
         span.setAttribute("ingest.dropped", "source_filtered");
         logger.info(
-          { path, projectId, signal: otlpSignal },
-          "dropping OTLP ingest; source disabled",
+          { path, projectId, source, signal: otlpSignal },
+          "dropping ingest; source disabled",
         );
         return new Response(new Uint8Array(0), {
           status: 200,
@@ -455,12 +496,6 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
         );
       }
 
-      const upstreamHeaders: Record<string, string> = {
-        "content-type": contentType,
-        "x-superlog-project-id": projectId,
-      };
-      if (contentEncoding) upstreamHeaders["content-encoding"] = contentEncoding;
-
       // Counter is best-effort — never block the ingest hot path on a metric or DB lookup.
       void recordIngestRequest(path, projectId).catch((err: unknown) => {
         logger.warn({ err, path, projectId }, "tenant counter increment failed");
@@ -473,6 +508,33 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
         logger.warn({ path, projectId }, "dropping OTLP request with no body");
         return c.json({ error: EMPTY_BODY_ERROR_MESSAGE }, 400);
       }
+
+      if (opts.bodyTransform) {
+        try {
+          const original = await collectStreamWithCap(bodyStream, MAX_BODY_BYTES);
+          const transformed = opts.bodyTransform(original, contentType);
+          prebufferedBody = transformed.body;
+          contentType = transformed.contentType;
+          contentEncoding = transformed.contentEncoding;
+          requestBytes = prebufferedBody.byteLength;
+        } catch (err) {
+          const handled = handleIngestBodyError(err, c, span, path, projectId);
+          if (handled) {
+            responseStatus = handled.status;
+            return handled.response;
+          }
+          responseStatus = 400;
+          span.setAttribute("ingest.invalid_body", true);
+          logger.warn({ err, path, projectId, source }, "dropping invalid ingest request body");
+          return c.json({ error: "invalid ingest request body" }, 400);
+        }
+      }
+
+      const upstreamHeaders: Record<string, string> = {
+        "content-type": contentType,
+        "x-superlog-project-id": projectId,
+      };
+      if (contentEncoding) upstreamHeaders["content-encoding"] = contentEncoding;
 
       // Issue-fingerprint stamping deserializes the whole payload, so in queue mode it runs
       // on the consumer (ingest-queue.ts) right before the collector POST — not here on the
@@ -489,7 +551,7 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
                 projectId,
                 contentType,
                 contentEncoding,
-                body: bodyStream,
+                body: prebufferedBody ? Readable.from([prebufferedBody]) : bodyStream,
               });
               queueSpan.setAttribute("ingest.queue.storage", r.storage);
               return r;
@@ -528,7 +590,7 @@ async function forward(c: Context<{ Variables: Variables }>, path: string, rootK
       // `permits × MAX_BODY_BYTES`; operators on small boxes should size those envs down.
       let bodyBuffer: Buffer;
       try {
-        bodyBuffer = await collectStreamWithCap(bodyStream, MAX_BODY_BYTES);
+        bodyBuffer = prebufferedBody ?? (await collectStreamWithCap(bodyStream, MAX_BODY_BYTES));
       } catch (err) {
         const handled = handleIngestBodyError(err, c, span, path, projectId);
         if (handled) {

@@ -6,11 +6,11 @@ import {
   type ConnectSection,
   connectSectionsFor,
 } from "./connectChoices.ts";
-import { AwsIcon, ChevronRightIcon, CloudflareIcon, TerminalIcon } from "./icons.tsx";
+import { AwsIcon, ChevronRightIcon, CloudflareIcon, TerminalIcon, VercelIcon } from "./icons.tsx";
 import { ExploreDemoLink, SOFT_LINE } from "./wizardChrome.tsx";
 
-// The path chooser: a flat, low-color list (modeled on a Plugins page). Three
-// peer lanes — the no-code integrations (AWS, Cloudflare, integration-first)
+// The path chooser: a flat, low-color list (modeled on a Plugins page). Peer
+// lanes — the no-code integrations (AWS, Cloudflare, Vercel, integration-first)
 // and the "I'm hosted elsewhere" fallback, which routes to the coding-agent
 // prompt. See design.md.
 
@@ -18,6 +18,7 @@ function ConnectGlyph({ icon }: { icon: ConnectIcon }) {
   const map: Record<ConnectIcon, typeof AwsIcon> = {
     aws: AwsIcon,
     cloudflare: CloudflareIcon,
+    vercel: VercelIcon,
     terminal: TerminalIcon,
   };
   const Glyph = map[icon];
@@ -98,10 +99,11 @@ export function ConnectDataChooser({
   onExploreDemo?: () => void;
 }) {
   // Gate connectors that need server-side config. Until capabilities load we
-  // treat Cloudflare as unavailable so we never offer a click that would 503.
+  // treat them as unavailable so we never offer a click that would 503.
   const capabilities = useSystemCapabilities();
   const sections = connectSectionsFor({
     cloudflare: capabilities.data?.cloudflareConnect ?? false,
+    vercel: capabilities.data?.vercelConnect ?? false,
   });
   return (
     <>
