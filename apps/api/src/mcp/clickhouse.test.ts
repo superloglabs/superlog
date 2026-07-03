@@ -306,6 +306,47 @@ test("queryTracesAggregated falls back to the raw scan when the derived tables a
   assert.doesNotMatch(capture.query ?? "", /otel_traces_summary/);
 });
 
+test("queryTracesAggregated re-probes and picks up the rollup after the tables appear (no stale 'absent' cache)", async () => {
+  // A negative EXISTS result must not be cached forever: the derived tables are
+  // created by a migration that can land after the process boots. `state` flips
+  // from absent to present between the two calls on the SAME client.
+  const state = { present: false };
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+  const ch = {
+    async query(input: { query: string; query_params?: Record<string, unknown> }) {
+      if (/EXISTS TABLE/i.test(input.query)) {
+        return {
+          async json() {
+            return [{ result: state.present ? 1 : 0 }];
+          },
+        };
+      }
+      if (/count\(\) AS c/i.test(input.query)) {
+        return {
+          async json() {
+            return [{ c: 1 }];
+          },
+        };
+      }
+      capture.query = input.query;
+      capture.params = input.query_params;
+      return {
+        async json() {
+          return [];
+        },
+      };
+    },
+  } as unknown as ClickHouseClient;
+
+  const filter = { range: { since: "now() - INTERVAL 24 HOUR", until: "now()" }, limit: 100 };
+  await queryTracesAggregated(ch, "project-1", filter);
+  assert.match(capture.query ?? "", /FROM otel_traces\b/); // absent → raw
+
+  state.present = true;
+  await queryTracesAggregated(ch, "project-1", filter);
+  assert.match(capture.query ?? "", /recent_ids/); // now present → fast path
+});
+
 test("queryTracesAggregated falls back to the raw scan when the rollup does not yet cover the window", async () => {
   const capture: { query?: string; params?: Record<string, unknown> } = {};
 

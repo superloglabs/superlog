@@ -1335,34 +1335,44 @@ export function pickStep(rangeSeconds: number, targetBuckets = 120): Step {
 
 const tableExistsMemo = new WeakMap<ClickHouseClient, Map<string, Promise<boolean>>>();
 
-// Memoized `EXISTS TABLE <name>` probe, per client + table. Derived tables
+// `EXISTS TABLE <name>` probe, per client + table. Derived tables
 // (events_per_minute, otel_traces_summary, …) are not part of the collector's
 // auto-created schema, so deployments without them must fall back to the raw
 // scan without a per-request penalty. `table` is always a hardcoded literal
 // here — never interpolate user input into this.
+//
+// Only a positive result is cached (a table won't disappear from under a
+// running process). A negative or errored probe is NOT cached: it's evicted once
+// it resolves so the next call re-probes. This matters because these tables are
+// created by a manual migration that can land AFTER the app boots — caching
+// "absent" forever would pin the process to the raw scan until it restarts, even
+// though the fast path became available. The probe is a cheap metadata lookup,
+// and concurrent callers still share the one in-flight promise.
 function tableExists(ch: ClickHouseClient, table: string): Promise<boolean> {
   let byTable = tableExistsMemo.get(ch);
   if (!byTable) {
     byTable = new Map();
     tableExistsMemo.set(ch, byTable);
   }
-  let probe = byTable.get(table);
-  if (!probe) {
-    probe = (async () => {
-      try {
-        const r = await ch.query({ query: `EXISTS TABLE ${table}`, format: "JSONEachRow" });
-        const rows = (await r.json()) as { result: number | string }[];
-        return Number(rows[0]?.result) === 1;
-      } catch {
-        // A failed probe (e.g. ClickHouse briefly unreachable) says nothing
-        // about whether the table exists — drop the memo so the next call
-        // re-probes instead of pinning the raw path until restart.
-        byTable?.delete(table);
-        return false;
-      }
-    })();
-    byTable.set(table, probe);
-  }
+  const cached = byTable.get(table);
+  if (cached) return cached;
+  const probe = (async () => {
+    try {
+      const r = await ch.query({ query: `EXISTS TABLE ${table}`, format: "JSONEachRow" });
+      const rows = (await r.json()) as { result: number | string }[];
+      return Number(rows[0]?.result) === 1;
+    } catch {
+      return false;
+    }
+  })();
+  byTable.set(table, probe);
+  // Keep only a cached `true`; drop `false`/errored probes so a later call
+  // re-checks (self-heals once the migration lands).
+  probe
+    .then((exists) => {
+      if (!exists) byTable?.delete(table);
+    })
+    .catch(() => byTable?.delete(table));
   return probe;
 }
 
