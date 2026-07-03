@@ -11,6 +11,9 @@ export type SystemCapabilities = {
   // environment (OAuth client + OTLP intake). The web uses this to gate the
   // Cloudflare onboarding option instead of offering a click that would 503.
   cloudflareConnect: boolean;
+  // Same gate for the Vercel connector (OAuth client + integration slug +
+  // OTLP intake).
+  vercelConnect: boolean;
 };
 
 type CapabilityEnv = Partial<
@@ -22,6 +25,10 @@ type CapabilityEnv = Partial<
     | "CLOUDFLARE_CLIENT_ID"
     | "CLOUDFLARE_CLIENT_SECRET"
     | "CLOUDFLARE_OTLP_INTAKE_URL"
+    | "VERCEL_CLIENT_ID"
+    | "VERCEL_CLIENT_SECRET"
+    | "VERCEL_INTEGRATION_SLUG"
+    | "VERCEL_OTLP_INTAKE_URL"
     | "STATE_SIGNING_SECRET"
   >
 >;
@@ -40,6 +47,15 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
     env.CLOUDFLARE_OTLP_INTAKE_URL &&
     env.STATE_SIGNING_SECRET
   );
+  // Mirrors vercelConfigFromEnv's required-vars check plus the install-url
+  // route's STATE_SIGNING_SECRET requirement, same as the Cloudflare gate.
+  const vercelConnect = !!(
+    env.VERCEL_CLIENT_ID &&
+    env.VERCEL_CLIENT_SECRET &&
+    env.VERCEL_INTEGRATION_SLUG &&
+    env.VERCEL_OTLP_INTAKE_URL &&
+    env.STATE_SIGNING_SECRET
+  );
 
   return {
     edition,
@@ -48,6 +64,7 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
     ossAgents: true,
     cloudUpgradeLinks: edition === "community",
     cloudflareConnect,
+    vercelConnect,
   };
 }
 

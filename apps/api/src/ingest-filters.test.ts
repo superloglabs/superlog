@@ -64,6 +64,7 @@ test("defaults to everything enabled (no rows)", async () => {
   assert.deepEqual(await getState(app, project.id), {
     otlp: { traces: true, logs: true, metrics: true },
     aws: { logs: true, metrics: true },
+    vercel: { traces: true, logs: true },
   });
 });
 
@@ -74,6 +75,7 @@ test("PUT disables a pair, persists one sparse row, and reflects in GET", async 
   const desired: IngestFilterState = {
     otlp: { traces: true, logs: true, metrics: true },
     aws: { logs: false, metrics: true },
+    vercel: { traces: true, logs: true },
   };
   const res = await app.request(`/api/projects/${project.id}/ingest-filters`, {
     method: "PUT",
@@ -111,10 +113,12 @@ test("PUT is a full replace — re-enabling clears the row", async () => {
   await put({
     otlp: { traces: false, logs: true, metrics: true },
     aws: { logs: false, metrics: true },
+    vercel: { traces: true, logs: true },
   });
   await put({
     otlp: { traces: true, logs: true, metrics: true },
     aws: { logs: true, metrics: true },
+    vercel: { traces: true, logs: true },
   });
   const rows = await db.query.projectIngestFilters.findMany({
     where: eq(schema.projectIngestFilters.projectId, project.id),

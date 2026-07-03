@@ -78,6 +78,7 @@ export type SystemCapabilities = {
   ossAgents: boolean;
   cloudUpgradeLinks: boolean;
   cloudflareConnect: boolean;
+  vercelConnect: boolean;
 };
 
 const SIGNUP_SOURCE_STORAGE_KEY = "superlog.signup_source";
@@ -876,6 +877,54 @@ export function useUninstallCloudflare(projectId: string | undefined) {
   });
 }
 
+export type VercelInstallation =
+  | { installed: false }
+  | {
+      installed: true;
+      teamId: string;
+      teamName: string | null;
+      configurationId: string;
+      drains: Record<string, string>;
+      installedAt: string;
+    };
+
+// Vercel installs are per-project, so every hook is scoped by projectId — the
+// query key includes it so switching projects refetches the right state instead
+// of briefly showing another project's connected team.
+export function useVercelInstallation(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["vercel-installation", projectId],
+    queryFn: () => fetcher<VercelInstallation>(`/api/projects/${projectId}/vercel/installation`),
+    enabled: !!projectId,
+    // Poll so the card flips to "connected" after the OAuth redirect without a
+    // manual refresh (same pattern as Slack/GitHub/Cloudflare).
+    refetchInterval: 15000,
+  });
+}
+
+export function useStartVercelInstall(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: () =>
+      fetcher<{ url: string }>(`/api/projects/${projectId}/vercel/install-url`, {
+        method: "POST",
+      }),
+  });
+}
+
+export function useUninstallVercel(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      fetcher<{ ok: true }>(`/api/projects/${projectId}/vercel/uninstall`, { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["vercel-installation", projectId] });
+    },
+  });
+}
+
 export function useSlackChannels(enabled: boolean) {
   const fetcher = useFetcher();
   return useQuery({
@@ -1074,11 +1123,12 @@ export function useDeleteCloudConnection(projectId: string) {
   });
 }
 
-// Per-project ingest source filters: turn a telemetry source (SDK/OTLP or AWS
-// CloudWatch) on/off per signal. The proxy ack-drops disabled telemetry.
+// Per-project ingest source filters: turn a telemetry source (SDK/OTLP, AWS
+// CloudWatch, or Vercel Drains) on/off per signal. The proxy ack-drops disabled telemetry.
 export type IngestFilterState = {
   otlp: { traces: boolean; logs: boolean; metrics: boolean };
   aws: { logs: boolean; metrics: boolean };
+  vercel: { traces: boolean; logs: boolean };
 };
 
 export function useIngestFilters(projectId: string | undefined) {

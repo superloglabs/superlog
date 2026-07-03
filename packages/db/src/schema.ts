@@ -2084,11 +2084,67 @@ export const cloudflareInstallations = pgTable(
 
 export type CloudflareInstallation = typeof cloudflareInstallations.$inferSelect;
 
+// A connected Vercel account via a connectable-account integration install.
+// One row per (project, integration configuration) — Vercel issues a
+// configuration id (`icfg_…`) per install and the long-lived OAuth token is
+// scoped to it. On connect we use the token to create a Drain that streams the
+// team's deployments' OTLP traces to our intake authenticated by a project
+// ingest key, so the customer's Vercel telemetry flows into Superlog with no
+// copy-paste. Tokens/keys are encrypted at rest with the same AES-256-GCM
+// scheme as the Cloudflare connector.
+export const vercelInstallations = pgTable(
+  "vercel_installations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    // The integration configuration the token is scoped to (`icfg_…`).
+    configurationId: text("configuration_id").notNull(),
+    // Null for personal-account installs; team installs need it as `?teamId=`
+    // on every API call.
+    teamId: text("team_id"),
+    teamName: text("team_name"),
+    // Long-lived delegated OAuth token, encrypted at rest (Vercel integration
+    // tokens have no refresh token / expiry).
+    accessTokenCiphertext: bytea("access_token_ciphertext").notNull(),
+    accessTokenNonce: bytea("access_token_nonce").notNull(),
+    accessTokenKeyVersion: integer("access_token_key_version").notNull().default(1),
+    // The ingest key the created drain authenticates with, stored encrypted so
+    // a re-sync reuses the same key instead of minting a new one each connect.
+    apiKeyId: uuid("api_key_id").references(() => apiKeys.id, { onDelete: "set null" }),
+    ingestKeyCiphertext: bytea("ingest_key_ciphertext"),
+    ingestKeyNonce: bytea("ingest_key_nonce"),
+    ingestKeyKeyVersion: integer("ingest_key_key_version"),
+    // The Drains we created, keyed by signal: { traces, logs } → Vercel drain id.
+    drains: jsonb("drains").$type<Record<string, string>>(),
+    installedByUserId: uuid("installed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    // One live install per (project, configuration); a replayed callback for the
+    // same configuration refreshes the row (see the upsert in
+    // apps/api/src/vercel.ts). Also serves project-scoped lookups via its
+    // left-most `project_id` prefix.
+    projectConfigurationUniq: uniqueIndex("vercel_installations_project_configuration_idx").on(
+      t.projectId,
+      t.configurationId,
+    ),
+  }),
+);
+
+export type VercelInstallation = typeof vercelInstallations.$inferSelect;
+
 // Per-project ingest source filters. A row means the given (source, signal) is
 // DISABLED for the project — the proxy ack-drops that telemetry at the edge.
 // Sparse by design: no row = enabled, so a new project ingests everything.
-//   source: "otlp" (SDK/OTLP exporters) | "aws" (CloudWatch → Firehose)
-//   signal: "traces" | "logs" | "metrics"  (aws carries only logs/metrics)
+//   source: "otlp" (SDK/OTLP exporters) | "aws" (CloudWatch → Firehose) |
+//           "vercel" (Vercel Drains)
+//   signal: "traces" | "logs" | "metrics"
 export const projectIngestFilters = pgTable(
   "project_ingest_filters",
   {
@@ -2096,7 +2152,7 @@ export const projectIngestFilters = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    source: text("source").$type<"otlp" | "aws">().notNull(),
+    source: text("source").$type<"otlp" | "aws" | "vercel">().notNull(),
     signal: text("signal").$type<"traces" | "logs" | "metrics">().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
