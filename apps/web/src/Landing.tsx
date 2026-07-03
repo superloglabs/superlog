@@ -809,6 +809,12 @@ function Footer() {
               >
                 Terms of Service
               </a>
+              <a
+                href="/privacy"
+                className="text-[14px] font-medium text-muted transition-colors hover:text-fg"
+              >
+                Privacy Policy
+              </a>
             </div>
           </div>
         </div>
