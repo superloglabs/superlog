@@ -504,7 +504,10 @@ CREATE TABLE IF NOT EXISTS superlog.otel_traces_summary ON CLUSTER superlog_ha
 ENGINE = ReplicatedAggregatingMergeTree('/clickhouse/{cluster}/tables/{shard}/{database}/{table}', '{replica}')
 PARTITION BY toDate(start)
 ORDER BY (project_id, trace_id)
-TTL toDateTime(start) + toIntervalDay(30)
+-- Anchored on the trace's last span (end), not its start, so the summary row
+-- outlives the last otel_traces_recent row for the same trace (a trace whose
+-- spans span days would otherwise lose its stats while recent still has it).
+TTL toDateTime(fromUnixTimestamp64Nano(end_unix_nano)) + toIntervalDay(30)
 SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
 ;
 -- otel_traces_summary_mv
