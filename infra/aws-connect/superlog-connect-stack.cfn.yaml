@@ -197,7 +197,10 @@ Resources:
                 Action:
                   - "logs:CreateLogStream"
                   - "logs:PutLogEvents"
-                Resource: !GetAtt SuperlogCallbackLogGroup.Arn
+                # Streams live *under* the log group, so scope to the group's
+                # child resources (:log-stream:*), not the bare group ARN — else
+                # the function can't create/write its own log stream.
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/superlog-connect-cb-${ConnectionId}:log-stream:*"
 
   SuperlogCallbackFunction:
     Type: AWS::Lambda::Function
@@ -244,9 +247,13 @@ Resources:
             });
           }
 
-          // PUT the custom-resource result to CloudFormation's pre-signed S3 URL.
-          // The URL comes straight from the CFN invocation event (not attacker
-          // input); the pre-signed PUT must carry an empty content-type.
+          // PUT the custom-resource result to CloudFormation's pre-signed S3 URL,
+          // retrying a few times. The URL comes straight from the CFN invocation
+          // event (not attacker input); the pre-signed PUT must carry an empty
+          // content-type. S3 returns 2xx on success, so a non-2xx (e.g. an expired
+          // URL) means CloudFormation never saw the signal — retry, and if every
+          // attempt fails, throw so the caller can surface it rather than silently
+          // leaving the stack to hang until timeout.
           async function signalCfn(event, status, reason) {
             const body = JSON.stringify({
               Status: status,
@@ -258,10 +265,21 @@ Resources:
               LogicalResourceId: event.LogicalResourceId,
               Data: {},
             });
-            await httpRequest("PUT", event.ResponseURL, body, {
-              "content-type": "",
-              "content-length": Buffer.byteLength(body),
-            });
+            let lastErr;
+            for (let attempt = 1; attempt <= 3; attempt++) {
+              try {
+                const res = await httpRequest("PUT", event.ResponseURL, body, {
+                  "content-type": "",
+                  "content-length": Buffer.byteLength(body),
+                });
+                if (res.status >= 200 && res.status < 300) return;
+                lastErr = new Error("CFN response PUT returned HTTP " + res.status);
+              } catch (err) {
+                lastErr = err;
+              }
+              console.error("CFN signal attempt " + attempt + " failed", lastErr);
+            }
+            throw lastErr;
           }
 
           exports.handler = async (event) => {
@@ -292,6 +310,11 @@ Resources:
               console.error("handler error (continuing)", err);
             }
             // Always signal so the stack never hangs waiting on the response URL.
+            // signalCfn retries internally; if every attempt fails it throws, which
+            // fails the invocation loudly (and gives Lambda's async retry one more
+            // shot). We never swallow — the only way to tell CloudFormation "done"
+            // is a successful PUT, so reporting a success we didn't deliver would be
+            // worse than erroring.
             await signalCfn(
               event,
               "SUCCESS",
