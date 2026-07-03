@@ -473,6 +473,7 @@ CREATE TABLE IF NOT EXISTS superlog.otel_traces_recent ON CLUSTER superlog_ha
 ENGINE = ReplicatedMergeTree('/clickhouse/{cluster}/tables/{shard}/{database}/{table}', '{replica}')
 PARTITION BY toDate(ts)
 ORDER BY (project_id, ts)
+TTL toDateTime(ts) + toIntervalDay(30)
 SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
 ;
 -- otel_traces_recent_mv
@@ -503,6 +504,7 @@ CREATE TABLE IF NOT EXISTS superlog.otel_traces_summary ON CLUSTER superlog_ha
 ENGINE = ReplicatedAggregatingMergeTree('/clickhouse/{cluster}/tables/{shard}/{database}/{table}', '{replica}')
 PARTITION BY toDate(start)
 ORDER BY (project_id, trace_id)
+TTL toDateTime(start) + toIntervalDay(30)
 SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
 ;
 -- otel_traces_summary_mv
