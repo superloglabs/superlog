@@ -74,7 +74,7 @@ const COMBINED_CONFIG: CloudConnectConfig = {
   connectStackTemplateUrl: "https://cfn.example/connect-stack.yaml",
   metricsIntakeUrl: "https://intake.example.com/aws/firehose/metrics",
   logsIntakeUrl: "https://intake.example.com/aws/firehose/logs",
-  serviceToken: "arn:aws:sns:us-west-2:123456789012:superlog-connect",
+  callbackUrl: "https://api.example.com/api/cloud-connections/callback",
 };
 
 function appWith(
@@ -432,7 +432,7 @@ test("one-step connect launches the combined stack + mints both stream keys", as
 
   assert.ok(created.launchUrl, "expected a launch url");
   const frag = fragOf(created.launchUrl);
-  // One combined stack, streaming on by default, with both intakes + the SNS topic.
+  // One combined stack, streaming on by default, with both intakes + the callback URL.
   assert.equal(frag.get("templateURL"), "https://cfn.example/connect-stack.yaml");
   assert.equal(frag.get("stackName"), "superlog-connect");
   assert.equal(frag.get("param_EnableMetrics"), "true");
@@ -443,8 +443,8 @@ test("one-step connect launches the combined stack + mints both stream keys", as
   );
   assert.equal(frag.get("param_LogsIntakeUrl"), "https://intake.example.com/aws/firehose/logs");
   assert.equal(
-    frag.get("param_SuperlogServiceToken"),
-    "arn:aws:sns:us-west-2:123456789012:superlog-connect",
+    frag.get("param_SuperlogCallbackUrl"),
+    "https://api.example.com/api/cloud-connections/callback",
   );
   // Dedicated per-signal keys, distinct, both embedded in the launch URL.
   const mKey = frag.get("param_MetricsIngestKey");
@@ -647,7 +647,7 @@ test("a user cannot create a connection on another org's project", async () => {
   assert.equal(res.status, 403);
 });
 
-// --- zero-paste callback (CloudFormation custom resource → SNS → bridge) -------
+// --- zero-paste callback (CloudFormation custom resource → in-stack Lambda) ----
 
 test("callback with the right connectionId + externalId connects (no session)", async () => {
   const { org, user, project } = await seedProject();

@@ -26,18 +26,18 @@ Parameters:
     Type: String
     Description: Superlog connection this stack completes (used by the callback).
     Default: ""
-  SuperlogServiceToken:
+  SuperlogCallbackUrl:
     Type: String
     Description: >-
-      Superlog SNS topic ARN. When set, this stack reports the new role ARN back
-      to Superlog automatically (zero-paste). Leave blank to instead copy the
-      ScrapeRoleArn output into Superlog by hand.
+      Superlog callback URL. When set, this stack creates a small Lambda that
+      reports the new role ARN back to Superlog automatically (zero-paste). Leave
+      blank to instead copy the ScrapeRoleArn output into Superlog by hand.
     Default: ""
 
 Conditions:
-  # Auto-report only when both the SNS topic and a connection id are supplied.
+  # Auto-report only when both the callback URL and a connection id are supplied.
   ReportBack: !And
-    - !Not [!Equals [!Ref SuperlogServiceToken, ""]]
+    - !Not [!Equals [!Ref SuperlogCallbackUrl, ""]]
     - !Not [!Equals [!Ref ConnectionId, ""]]
 
 Resources:
@@ -121,16 +121,147 @@ Resources:
                   - "dynamodb:Scan"
                 Resource: "*"
 
-  # Zero-paste reporting. CloudFormation publishes this custom resource's request
-  # (including RoleArn below + a response URL) to Superlog's SNS topic; Superlog's
-  # bridge records the role ARN, verifies it, and signals success back to CFN. No
-  # Lambda or outbound internet runs in this account — only a message to an SNS
-  # topic. Skipped entirely when SuperlogServiceToken is blank (manual flow).
+  # Zero-paste reporting. A tiny in-stack Lambda POSTs the freshly-created role ARN
+  # to Superlog and signals CloudFormation. It runs in *this* account and region,
+  # so zero-paste works no matter where the stack is launched. The function makes a
+  # single outbound HTTPS call to SuperlogCallbackUrl (passed at launch); its code
+  # is inline below so a security reviewer can read exactly what it does. The whole
+  # block is skipped when SuperlogCallbackUrl is blank (manual paste flow).
+  SuperlogCallbackLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: ReportBack
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/superlog-connect-cb-${ConnectionId}"
+      RetentionInDays: 7
+
+  SuperlogCallbackFunctionRole:
+    Type: AWS::IAM::Role
+    Condition: ReportBack
+    Properties:
+      Description: Execution role for the Superlog connect callback function (logging only).
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: WriteOwnLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: !GetAtt SuperlogCallbackLogGroup.Arn
+
+  SuperlogCallbackFunction:
+    Type: AWS::Lambda::Function
+    Condition: ReportBack
+    DependsOn: SuperlogCallbackLogGroup
+    Properties:
+      FunctionName: !Sub "superlog-connect-cb-${ConnectionId}"
+      Description: Reports the scrape role ARN back to Superlog and signals CloudFormation.
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt SuperlogCallbackFunctionRole.Arn
+      Environment:
+        Variables:
+          CALLBACK_URL: !Ref SuperlogCallbackUrl
+      Code:
+        ZipFile: |
+          const https = require("node:https");
+          const CALLBACK_URL = process.env.CALLBACK_URL;
+          const TIMEOUT_MS = 8000;
+
+          function httpRequest(method, urlStr, body, headers) {
+            return new Promise((resolve, reject) => {
+              const u = new URL(urlStr);
+              const req = https.request(
+                {
+                  method,
+                  hostname: u.hostname,
+                  path: u.pathname + u.search,
+                  port: 443,
+                  headers,
+                  timeout: TIMEOUT_MS,
+                },
+                (res) => {
+                  let data = "";
+                  res.on("data", (d) => { data += d; });
+                  res.on("end", () => resolve({ status: res.statusCode, body: data }));
+                },
+              );
+              req.on("timeout", () => req.destroy(new Error("request timed out")));
+              req.on("error", reject);
+              if (body) req.write(body);
+              req.end();
+            });
+          }
+
+          // PUT the custom-resource result to CloudFormation's pre-signed S3 URL.
+          // The URL comes straight from the CFN invocation event (not attacker
+          // input); the pre-signed PUT must carry an empty content-type.
+          async function signalCfn(event, status, reason) {
+            const body = JSON.stringify({
+              Status: status,
+              Reason: reason,
+              PhysicalResourceId:
+                event.PhysicalResourceId || event.LogicalResourceId || "superlog-connect",
+              StackId: event.StackId,
+              RequestId: event.RequestId,
+              LogicalResourceId: event.LogicalResourceId,
+              Data: {},
+            });
+            await httpRequest("PUT", event.ResponseURL, body, {
+              "content-type": "",
+              "content-length": Buffer.byteLength(body),
+            });
+          }
+
+          exports.handler = async (event) => {
+            try {
+              // Report the role on create/update. Best-effort: a callback failure
+              // must NOT roll back the stack — we still signal SUCCESS and the
+              // connection reconciles via the manual paste path.
+              if (event.RequestType !== "Delete") {
+                const p = event.ResourceProperties || {};
+                try {
+                  const res = await httpRequest(
+                    "POST",
+                    CALLBACK_URL,
+                    JSON.stringify({
+                      connectionId: p.ConnectionId,
+                      externalId: p.ExternalId,
+                      roleArn: p.RoleArn,
+                      accountId: p.AccountId,
+                    }),
+                    { "content-type": "application/json" },
+                  );
+                  console.log("superlog callback status", res.status);
+                } catch (err) {
+                  console.error("superlog callback failed (continuing)", err);
+                }
+              }
+            } catch (err) {
+              console.error("handler error (continuing)", err);
+            }
+            // Always signal so the stack never hangs waiting on the response URL.
+            await signalCfn(
+              event,
+              "SUCCESS",
+              event.RequestType === "Delete" ? "delete acknowledged" : "registered with Superlog",
+            );
+          };
+
   RegisterWithSuperlog:
     Type: Custom::SuperlogConnect
     Condition: ReportBack
     Properties:
-      ServiceToken: !Ref SuperlogServiceToken
+      ServiceToken: !GetAtt SuperlogCallbackFunction.Arn
       RoleArn: !GetAtt ScrapeRole.Arn
       AccountId: !Ref "AWS::AccountId"
       Region: !Ref "AWS::Region"

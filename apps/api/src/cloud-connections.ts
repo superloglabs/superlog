@@ -43,12 +43,13 @@ export type CloudConnectConfig = {
   /** Public HTTPS URL of the CloudFormation template. */
   templateUrl: string;
   /**
-   * Our SNS topic ARN, used as the custom-resource `ServiceToken` for zero-paste
-   * connect (the stack reports its role ARN back to us via SNS). Optional — when
-   * unset, the launch URL omits it and the template's custom resource is skipped,
-   * so the customer falls back to pasting the role ARN.
+   * Superlog callback URL passed to the stack for zero-paste connect. The
+   * template stands up a small in-stack Lambda that POSTs the freshly-created
+   * role ARN here (and signals CloudFormation), so it works in any region.
+   * Optional — when unset, the launch URL omits it and the reporting resources
+   * are skipped, so the customer falls back to pasting the role ARN.
    */
-  serviceToken?: string;
+  callbackUrl?: string;
   /**
    * Public HTTPS URL of the metrics-streaming CloudFormation template
    * (`superlog-metrics-stream.cfn.yaml`). Optional — when unset, the
@@ -93,7 +94,7 @@ export function cloudConnectConfigFromEnv(
   return {
     superlogAccountId,
     templateUrl,
-    serviceToken: env.AWS_CONNECT_SERVICE_TOKEN || undefined,
+    callbackUrl: env.AWS_CONNECT_CALLBACK_URL || undefined,
     metricsTemplateUrl: env.AWS_METRICS_TEMPLATE_URL || undefined,
     metricsIntakeUrl: env.AWS_FIREHOSE_METRICS_INTAKE_URL || undefined,
     logsTemplateUrl: env.AWS_LOGS_TEMPLATE_URL || undefined,
@@ -372,7 +373,7 @@ export function mountCloudConnectionsAuthed(
         superlogAccountId: config.superlogAccountId,
         externalId,
         connectionId: row.id,
-        serviceToken: config.serviceToken,
+        callbackUrl: config.callbackUrl,
         metricsIntakeUrl: config.metricsIntakeUrl,
         logsIntakeUrl: config.logsIntakeUrl,
         metricsIngestKey: metricsKey.ingestKey,
@@ -385,9 +386,10 @@ export function mountCloudConnectionsAuthed(
         SuperlogAccountId: config.superlogAccountId,
         ConnectionId: row.id,
       };
-      // When we have an SNS topic, pass it so the template's custom resource reports
-      // the role ARN back automatically (zero-paste). Otherwise the customer pastes.
-      if (config.serviceToken) params.SuperlogServiceToken = config.serviceToken;
+      // When we have a callback URL, pass it so the template's in-stack Lambda
+      // reports the role ARN back automatically (zero-paste). Otherwise the
+      // customer pastes.
+      if (config.callbackUrl) params.SuperlogCallbackUrl = config.callbackUrl;
       launchUrl = buildConnectQuickCreateUrl({
         region: parsed.data.region,
         templateUrl: config.templateUrl,
@@ -476,7 +478,7 @@ export function mountCloudConnectionsAuthed(
         superlogAccountId: config.superlogAccountId,
         externalId,
         connectionId: row.id,
-        serviceToken: config.serviceToken,
+        callbackUrl: config.callbackUrl,
         metricsIntakeUrl: config.metricsIntakeUrl,
         logsIntakeUrl: config.logsIntakeUrl,
         metricsIngestKey: metricsKey.ingestKey,
@@ -556,11 +558,12 @@ export function mountCloudConnectionsAuthed(
     );
   });
 
-  // Zero-paste callback: the CloudFormation custom resource (via our SNS topic →
-  // bridge) reports the freshly-created role ARN. No session — authenticated by
-  // connectionId + a constant-time match on the stored external ID. AssumeRole is
-  // still the real trust gate (a forged ARN we can't assume just stays `failed`).
-  // NOTE: the path is allowlisted in index.ts's session middleware.
+  // Zero-paste callback: the stack's in-stack Lambda (behind a CloudFormation
+  // custom resource) reports the freshly-created role ARN. No session —
+  // authenticated by connectionId + a constant-time match on the stored external
+  // ID. AssumeRole is still the real trust gate (a forged ARN we can't assume
+  // just stays `failed`). NOTE: the path is allowlisted in index.ts's session
+  // middleware.
   app.post("/api/cloud-connections/callback", async (c) => {
     const parsed = callbackSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) throw new HTTPException(400, { message: "invalid body" });

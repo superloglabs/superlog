@@ -115,7 +115,7 @@ test("buildCombinedConnectLaunchUrl carries scrape + both streams in one stack",
     superlogAccountId: "123456789012",
     externalId: "ext-abc",
     connectionId: "conn-1",
-    serviceToken: "arn:aws:sns:us-west-2:123456789012:superlog-connect",
+    callbackUrl: "https://api.example.com/api/cloud-connections/callback",
     metricsIntakeUrl: "https://intake.example.com/aws/firehose/metrics",
     logsIntakeUrl: "https://intake.example.com/aws/firehose/logs",
     metricsIngestKey: "sl_public_metrics",
@@ -132,8 +132,8 @@ test("buildCombinedConnectLaunchUrl carries scrape + both streams in one stack",
   assert.equal(frag.get("param_ExternalId"), "ext-abc");
   assert.equal(frag.get("param_ConnectionId"), "conn-1");
   assert.equal(
-    frag.get("param_SuperlogServiceToken"),
-    "arn:aws:sns:us-west-2:123456789012:superlog-connect",
+    frag.get("param_SuperlogCallbackUrl"),
+    "https://api.example.com/api/cloud-connections/callback",
   );
   // Streaming on by default, both intake URLs + dedicated keys present.
   assert.equal(frag.get("param_EnableMetrics"), "true");
@@ -165,8 +165,8 @@ test("buildCombinedConnectLaunchUrl can disable a stream and pass a log filter",
   assert.equal(frag.get("param_EnableMetrics"), "false");
   assert.equal(frag.get("param_EnableLogs"), "true");
   assert.equal(frag.get("param_LogsFilterPattern"), "?ERROR ?WARN");
-  // No SNS topic supplied → no zero-paste param (manual paste fallback).
-  assert.equal(frag.get("param_SuperlogServiceToken"), null);
+  // No callback URL supplied → no zero-paste param (manual paste fallback).
+  assert.equal(frag.get("param_SuperlogCallbackUrl"), null);
 });
 
 test("buildMetricsStreamLaunchUrl rejects a hostname-hijacking region", () => {

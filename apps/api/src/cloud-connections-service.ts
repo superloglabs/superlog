@@ -105,8 +105,12 @@ export type CombinedConnectLaunchInput = {
   externalId: string;
   /** Connection this stack completes (zero-paste callback + reporting). */
   connectionId: string;
-  /** Our SNS topic ARN for zero-paste reporting. Omitted → manual role-ARN paste. */
-  serviceToken?: string;
+  /**
+   * Superlog callback URL the stack's in-stack Lambda reports its role ARN to
+   * (zero-paste). Omitted → the reporting resources are skipped and the customer
+   * pastes the role ARN by hand.
+   */
+  callbackUrl?: string;
   /** Firehose intake URLs (proxy `/aws/firehose/*` routes). */
   metricsIntakeUrl: string;
   logsIntakeUrl: string;
@@ -125,8 +129,8 @@ export type CombinedConnectLaunchInput = {
  * (`superlog-connect-stack.cfn.yaml`): scrape role + metric streaming + log
  * streaming in a single CloudFormation stack named `superlog-connect`. Streaming
  * defaults on but each signal toggles off via a parameter. Everything
- * prod-specific (account id, intake URLs, ingest keys, SNS topic) is a parameter
- * value, never baked into the committed template.
+ * prod-specific (account id, intake URLs, ingest keys, callback URL) is a
+ * parameter value, never baked into the committed template.
  */
 export function buildCombinedConnectLaunchUrl(input: CombinedConnectLaunchInput): string {
   const params: Record<string, string> = {
@@ -140,7 +144,7 @@ export function buildCombinedConnectLaunchUrl(input: CombinedConnectLaunchInput)
     MetricsIngestKey: input.metricsIngestKey,
     LogsIngestKey: input.logsIngestKey,
   };
-  if (input.serviceToken) params.SuperlogServiceToken = input.serviceToken;
+  if (input.callbackUrl) params.SuperlogCallbackUrl = input.callbackUrl;
   if (input.logsFilterPattern) params.LogsFilterPattern = input.logsFilterPattern;
   return buildConnectQuickCreateUrl({
     region: input.region,
