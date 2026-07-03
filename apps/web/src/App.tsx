@@ -15,6 +15,7 @@ import { OrgProjectSwitcher } from "./OrgProjectSwitcher.tsx";
 import { Overview } from "./Overview.tsx";
 import { PrFeedback } from "./PrFeedback.tsx";
 import { Pricing } from "./Pricing.tsx";
+import { PrivacyPolicy } from "./PrivacyPolicy.tsx";
 import { ResetPassword } from "./ResetPassword.tsx";
 import { Settings } from "./Settings.tsx";
 import { TermsOfService } from "./TermsOfService.tsx";
@@ -126,6 +127,7 @@ export function App() {
         <Route path="/accept-invitation" element={<AcceptInvitation />} />
         <Route path="/oauth/consent" element={<OauthConsent />} />
         <Route path="/pricing" element={<Pricing />} />
+        <Route path="/privacy" element={<PrivacyPolicy />} />
         <Route path="/tos" element={<TermsOfService />} />
         <Route path="/signup" element={<SignupRoute />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
