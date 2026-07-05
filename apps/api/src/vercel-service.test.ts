@@ -6,6 +6,7 @@ import {
   buildDrainPayload,
   buildInstallUrl,
   classifyDrainProvisioningFailure,
+  connectResultPath,
   createDrain,
   deleteConfiguration,
   deleteDrain,
@@ -67,6 +68,22 @@ test("classifyDrainProvisioningFailure detects Vercel plan-gated drains", () => 
     "drains_unavailable",
   );
   assert.equal(classifyDrainProvisioningFailure(["Not authorized"]), "error");
+});
+
+test("connectResultPath lands every outcome on the dedicated result page", () => {
+  assert.equal(connectResultPath("installed"), "/connect/vercel?vercel=installed");
+  assert.equal(
+    connectResultPath("drains_unavailable"),
+    "/connect/vercel?vercel=drains_unavailable",
+  );
+  assert.equal(connectResultPath("denied"), "/connect/vercel?vercel=denied");
+});
+
+test("the oauth callback never redirects to bare `/` (where the outcome is invisible)", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("./vercel.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /\/\?vercel=/);
+  assert.match(source, /connectResultPath/);
 });
 
 test("drainName is project-scoped so two projects on one team don't collide", () => {

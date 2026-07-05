@@ -29,9 +29,10 @@ export function canContinueVercel(phase: VercelPhase): boolean {
   return phase === "connected";
 }
 
-// The OAuth callback redirects back with `?vercel=installed|denied|error|...`.
-// `installed` is handled by the install poll flipping to "connected"; failure
-// outcomes reset out of the waiting state rather than spin forever.
+// The OAuth callback lands on the /connect/vercel result page, whose
+// "Back to Superlog" link carries `?vercel=installed|denied|error|...` back to
+// `/`. `installed` is handled by the install poll flipping to "connected";
+// failure outcomes reset out of the waiting state rather than spin forever.
 export type VercelOutcome = "installed" | "denied" | "error" | "drains_unavailable" | null;
 
 export function parseVercelOutcome(value: string | null | undefined): VercelOutcome {

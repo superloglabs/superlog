@@ -35,6 +35,7 @@ import {
   buildDrainPayload,
   buildInstallUrl,
   classifyDrainProvisioningFailure,
+  connectResultPath,
   createDrain,
   deleteConfiguration,
   deleteDrain,
@@ -231,22 +232,22 @@ export function mountVercelPublic(
     const err = c.req.query("error");
     if (err) {
       log.warn({ error: err }, "vercel oauth callback denied");
-      return c.redirect(`${webOrigin}/?vercel=denied`, 302);
+      return c.redirect(`${webOrigin}${connectResultPath("denied")}`, 302);
     }
     const code = c.req.query("code");
     const state = c.req.query("state") ?? "";
-    if (!code) return c.redirect(`${webOrigin}/?vercel=error`, 302);
+    if (!code) return c.redirect(`${webOrigin}${connectResultPath("error")}`, 302);
 
     const decoded = verifyState(state, stateSecret);
     if (!decoded) {
       log.warn("vercel oauth callback rejected: invalid or expired state");
-      return c.redirect(`${webOrigin}/?vercel=error`, 302);
+      return c.redirect(`${webOrigin}${connectResultPath("error")}`, 302);
     }
 
     const token = await exchangeCodeForToken({ config, code, fetchImpl });
     if (!token.ok) {
       log.error({ error: token.error }, "vercel token exchange failed");
-      return c.redirect(`${webOrigin}/?vercel=error`, 302);
+      return c.redirect(`${webOrigin}${connectResultPath("error")}`, 302);
     }
 
     try {
@@ -265,14 +266,14 @@ export function mountVercelPublic(
       // spin in the waiting state.
       log.error({ err: e, project_id: decoded.projectId }, "vercel provisioning failed");
       const outcome = e instanceof VercelProvisioningError ? e.outcome : "error";
-      return c.redirect(`${webOrigin}/?vercel=${outcome}`, 302);
+      return c.redirect(`${webOrigin}${connectResultPath(outcome)}`, 302);
     }
 
     log.info(
       { project_id: decoded.projectId, team_id: token.teamId },
       "vercel connected and drain provisioned",
     );
-    return c.redirect(`${webOrigin}/?vercel=installed`, 302);
+    return c.redirect(`${webOrigin}${connectResultPath("installed")}`, 302);
   });
 }
 

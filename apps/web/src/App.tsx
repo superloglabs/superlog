@@ -19,6 +19,7 @@ import { PrivacyPolicy } from "./PrivacyPolicy.tsx";
 import { ResetPassword } from "./ResetPassword.tsx";
 import { Settings } from "./Settings.tsx";
 import { TermsOfService } from "./TermsOfService.tsx";
+import { VercelCallback } from "./VercelCallback.tsx";
 import { AlertEdit } from "./alerts/AlertEdit.tsx";
 import { AlertsList } from "./alerts/AlertsList.tsx";
 import { useMe } from "./api.ts";
@@ -134,6 +135,10 @@ export function App() {
         <Route path="/reset-password" element={<ResetPassword />} />
         {/* Public, no-auth feedback link reached from agent-opened PR descriptions. */}
         <Route path="/feedback/pr/:owner/:repo/:number" element={<PrFeedback />} />
+        {/* Landing target of the Vercel OAuth callback — public so the result
+            shows even when the callback lands in a fresh, gated, or logged-out
+            tab (the install opens via window.open). */}
+        <Route path="/connect/vercel" element={<VercelCallback />} />
         <Route path="*" element={<AuthenticatedApp />} />
       </Routes>
     </>

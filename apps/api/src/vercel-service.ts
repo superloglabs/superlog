@@ -61,6 +61,17 @@ export function classifyDrainProvisioningFailure(errors: string[]): VercelConnec
   return "error";
 }
 
+/**
+ * Web path the OAuth callback redirects to. Always the dedicated result page —
+ * the callback usually lands in a fresh tab (the install opens via
+ * window.open), so redirecting to `/` with a query param renders whatever `/`
+ * shows and the outcome goes unseen unless the onboarding wizard happens to be
+ * mounted there.
+ */
+export function connectResultPath(outcome: string): string {
+  return `/connect/vercel?vercel=${encodeURIComponent(outcome)}`;
+}
+
 export type VercelConnectConfig = {
   clientId: string;
   clientSecret: string;
