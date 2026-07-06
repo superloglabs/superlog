@@ -1714,7 +1714,10 @@ export type Issue = {
   topFrame: string | null;
   firstSeen: string;
   lastSeen: string;
+  status: "open" | "silenced" | "under_observation" | "resolved";
   silencedAt: string | null;
+  escalationTrigger: { kind: "rate"; perMinute: number } | { kind: "count"; count: number } | null;
+  observationStartedAt: string | null;
   eventCount: number;
   groupingState: "grouped" | "pending" | "standalone" | "failed";
   groupingSource: "heuristic" | "llm" | "manual" | null;
@@ -2228,10 +2231,14 @@ export function useUpdateIncident(projectId: string) {
   const fetcher = useFetcher();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { incidentId: string; status: "open" | "resolved" }) =>
+    mutationFn: (vars: {
+      incidentId: string;
+      status: "open" | "resolved";
+      resolution?: "problem_resolved" | "not_an_issue";
+    }) =>
       fetcher<Incident>(`/api/projects/${projectId}/incidents/${vars.incidentId}`, {
         method: "PATCH",
-        body: JSON.stringify({ status: vars.status }),
+        body: JSON.stringify({ status: vars.status, resolution: vars.resolution }),
       }),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["incidents", projectId] });

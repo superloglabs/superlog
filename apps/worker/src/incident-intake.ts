@@ -3,15 +3,16 @@
 // grouping client and re-exports the existing public surface.
 import { createIncidentLifecycle, db, type schema } from "@superlog/db";
 import { analyzeIssueGrouping } from "./grouping.js";
-import type { EnsureIncidentForIssueResult } from "./incidents/intake.js";
+import type { EnsureIncidentForIssueResult, IssueIntakeTransition } from "./incidents/intake.js";
 import { ensureIncidentForIssueWorkflow } from "./incidents/intake.js";
 import {
   findIncident,
-  findIncidentIssueLink,
+  findLatestIncidentIssueLink,
   findOpenIncidentCandidates,
   findProject,
   linkIssueToIncident,
   loadLinkedIncidentIssues,
+  touchIncidentLastSeen,
   updateIssueGrouping,
 } from "./issues/repository.js";
 import { logger } from "./logger.js";
@@ -19,20 +20,22 @@ import { logger } from "./logger.js";
 const incidentLifecycle = createIncidentLifecycle(db);
 
 export type { LinkedIncidentIssue } from "./issues/domain.js";
-export type { EnsureIncidentForIssueResult } from "./incidents/intake.js";
+export type { EnsureIncidentForIssueResult, IssueIntakeTransition } from "./incidents/intake.js";
 export { loadLinkedIncidentIssues } from "./issues/repository.js";
 
 export async function ensureIncidentForIssue(
   issue: schema.Issue,
+  transition: IssueIntakeTransition,
 ): Promise<EnsureIncidentForIssueResult> {
-  return ensureIncidentForIssueWorkflow(issue, {
+  return ensureIncidentForIssueWorkflow(issue, transition, {
     repo: {
-      findIncidentIssueLink,
+      findLatestIncidentIssueLink,
       findIncident,
       findOpenIncidentCandidates,
       loadLinkedIncidentIssues,
       findProject,
       linkIssueToIncident,
+      touchIncidentLastSeen,
       updateIssueGrouping,
     },
     lifecycle: incidentLifecycle,

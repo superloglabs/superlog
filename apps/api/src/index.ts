@@ -4,7 +4,10 @@ import { createClient } from "@clickhouse/client";
 import { serve } from "@hono/node-server";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import {
+  ISSUE_STATUSES,
   type Issue,
+  buildIssueReopenPatch,
+  buildIssueSilencePatch,
   confirmResolutionProposal,
   createIncidentLifecycle,
   db,
@@ -33,7 +36,6 @@ import { auth } from "./auth.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
 import { mountCloudflareAuthed, mountCloudflarePublic } from "./cloudflare.js";
-import { mountVercelAuthed, mountVercelPublic } from "./vercel.js";
 import { mountDashboards } from "./dashboards.js";
 import {
   demoOverlay,
@@ -47,7 +49,6 @@ import { prBaseBranchExists } from "./github-branches.js";
 import {
   closeAgentPullRequestOnGithub,
   listProjectRepoBranches,
-  mergeGithubPullRequest,
   mountGithubAuthed,
   mountGithubAuthorOAuth,
   mountGithubPublic,
@@ -98,6 +99,11 @@ import { mountMcpAuthed, mountMcpPublic } from "./mcp/index.js";
 import { resolveActiveOrgContext, resolveMaybeActiveOrgContext } from "./org-context.js";
 import { ORG_NAME_MAX, createOrgWithDefaults, mountOrgCrud } from "./orgs.js";
 import { mountPersonalAccessTokens } from "./personal-access-tokens.js";
+import {
+  type ManualMergeMethod,
+  VALID_MANUAL_MERGE_METHODS,
+  mergeAgentPullRequestAndResolveIncident,
+} from "./pr-merge-service.js";
 import { mountSettingsAuthed } from "./settings.js";
 import { normalizeSignupIntentKeyHash, normalizeSignupIntentKeyPrefix } from "./signup-intents.js";
 import { mountSlackAuthed, mountSlackPublic } from "./slack.js";
@@ -106,6 +112,7 @@ import { userIsStaff } from "./staff.js";
 import { symbolicateIssueSample, symbolicateTelemetrySample } from "./symbolication.js";
 import { buildSystemCapabilities } from "./system-capabilities.js";
 import { mountTopology } from "./topology.js";
+import { mountVercelAuthed, mountVercelPublic } from "./vercel.js";
 import { mountWebhooks } from "./webhooks.js";
 
 const PORT = Number(process.env.PORT ?? 4100);
@@ -1206,15 +1213,31 @@ async function getLatestAgentRun(incidentId: string) {
 
 app.get("/api/projects/:projectId/issues", async (c) => {
   const projectId = await requireProjectAccess(c, c.req.param("projectId"));
-  const silencedParam = c.req.query("silenced") ?? "active";
   const limit = clampLimit(Number(c.req.query("limit") ?? 50), 50, 200);
   const projectFilter = eq(schema.issues.projectId, projectId);
-  const where =
-    silencedParam === "all"
-      ? projectFilter
-      : silencedParam === "silenced"
-        ? and(projectFilter, isNotNull(schema.issues.silencedAt))
-        : and(projectFilter, isNull(schema.issues.silencedAt));
+  // `status` supersedes the legacy `silenced` param: one of the IssueStatus
+  // values, or "all". The legacy values map onto statuses ("active" = not
+  // silenced) so existing clients keep working.
+  const statusParam = c.req.query("status");
+  const silencedParam = c.req.query("silenced") ?? "active";
+  let where = projectFilter;
+  if (statusParam && statusParam !== "all") {
+    if (!(ISSUE_STATUSES as readonly string[]).includes(statusParam)) {
+      throw new HTTPException(400, {
+        message: `status must be one of ${ISSUE_STATUSES.join(", ")}, or 'all'`,
+      });
+    }
+    where = and(projectFilter, eq(schema.issues.status, statusParam as schema.IssueStatus))!;
+  } else if (!statusParam && silencedParam !== "all") {
+    // Legacy "active" maps to statuses needing attention. Resolved issues are
+    // excluded — before issue statuses existed, "active" meant "not silenced"
+    // because resolution didn't touch issues at all; now it would leave every
+    // problem-resolved issue in the Active tab forever.
+    where =
+      silencedParam === "silenced"
+        ? and(projectFilter, eq(schema.issues.status, "silenced"))!
+        : and(projectFilter, inArray(schema.issues.status, ["open", "under_observation"]))!;
+  }
   const rows = await db.query.issues.findMany({
     where,
     orderBy: [desc(schema.issues.lastSeen)],
@@ -1327,10 +1350,22 @@ app.patch("/api/projects/:projectId/incidents/:incidentId", async (c) => {
   const projectId = c.req.param("projectId");
   const incidentId = c.req.param("incidentId");
   await requireProjectAccess(c, projectId);
-  const body = (await c.req.json().catch(() => ({}))) as { status?: string };
+  const body = (await c.req.json().catch(() => ({}))) as {
+    status?: string;
+    resolution?: string;
+  };
   const status = body.status;
   if (status !== "open" && status !== "resolved") {
     throw new HTTPException(400, { message: "status must be 'open' or 'resolved'" });
+  }
+  // "problem_resolved" (default) marks the incident's issues resolved so a
+  // recurrence opens a fresh chained incident; "not_an_issue" silences them so
+  // future occurrences are suppressed entirely.
+  const resolution = body.resolution ?? "problem_resolved";
+  if (status === "resolved" && resolution !== "problem_resolved" && resolution !== "not_an_issue") {
+    throw new HTTPException(400, {
+      message: "resolution must be 'problem_resolved' or 'not_an_issue'",
+    });
   }
   const existing = await db.query.incidents.findFirst({
     where: and(eq(schema.incidents.id, incidentId), eq(schema.incidents.projectId, projectId)),
@@ -1343,9 +1378,13 @@ app.patch("/api/projects/:projectId/incidents/:incidentId", async (c) => {
     await resolveIncident({
       incidentId,
       kind: "dashboard_manual",
-      reasonCode: "dashboard_manual",
-      reasonText: `Resolved from the dashboard by user ${c.var.userId}.`,
+      reasonCode: resolution,
+      reasonText:
+        resolution === "not_an_issue"
+          ? `Marked not-an-issue from the dashboard by user ${c.var.userId}.`
+          : `Resolved from the dashboard by user ${c.var.userId}.`,
       resolvedByUserId: c.var.userId,
+      issueOutcome: resolution === "not_an_issue" ? { kind: "silence" } : { kind: "resolve" },
     });
     if (shouldRunResolvedIncidentSideEffects({ requestedStatus: status, incidentExists: true })) {
       await runResolvedIncidentSideEffectsForIncident({
@@ -1465,12 +1504,12 @@ app.post("/api/projects/:projectId/issues/:issueId/silence", async (c) => {
     try {
       const updated = await db
         .update(schema.issues)
-        .set({ silencedAt: new Date() })
+        .set(buildIssueSilencePatch())
         .where(
           and(
             eq(schema.issues.id, issueId),
             eq(schema.issues.projectId, projectId),
-            isNull(schema.issues.silencedAt),
+            ne(schema.issues.status, "silenced"),
           ),
         )
         .returning();
@@ -1502,22 +1541,12 @@ app.post("/api/projects/:projectId/issues/:issueId/unsilence", async (c) => {
     where: and(eq(schema.issues.id, issueId), eq(schema.issues.projectId, projectId)),
   });
   if (!existing) throw new HTTPException(404, { message: "issue not found" });
-  if (!existing.silencedAt) return c.json(existing);
-  const conflict = await db.query.issues.findFirst({
-    where: and(
-      eq(schema.issues.projectId, projectId),
-      eq(schema.issues.fingerprint, existing.fingerprint),
-      isNull(schema.issues.silencedAt),
-    ),
-  });
-  if (conflict) {
-    throw new HTTPException(409, {
-      message: "another active issue already exists for this fingerprint",
-    });
-  }
+  if (existing.status !== "silenced") return c.json(existing);
+  // Unsilencing returns the issue to `open` (fingerprints are fully unique
+  // now, so there is no other row to conflict with).
   const updated = await db
     .update(schema.issues)
-    .set({ silencedAt: null })
+    .set(buildIssueReopenPatch())
     .where(and(eq(schema.issues.id, issueId), eq(schema.issues.projectId, projectId)))
     .returning();
   return c.json(updated[0] ?? existing);
@@ -2045,8 +2074,6 @@ app.get("/api/projects/:projectId/incidents/:incidentId/pull-requests", async (c
   return c.json(buildIncidentPullRequestViews(prs, agentRuns));
 });
 
-const VALID_MANUAL_MERGE_METHODS = new Set(["squash", "merge", "rebase"]);
-
 app.post("/api/projects/:projectId/incidents/:incidentId/pull-requests/:prId/merge", async (c) => {
   const projectId = c.req.param("projectId");
   const incidentId = c.req.param("incidentId");
@@ -2063,73 +2090,26 @@ app.post("/api/projects/:projectId/incidents/:incidentId/pull-requests/:prId/mer
     ),
   });
   if (!pr) throw new HTTPException(404, { message: "pull request not found" });
-  if (pr.state !== "open") {
-    throw new HTTPException(409, { message: `pull request is already ${pr.state}` });
-  }
-
-  const installation = await db.query.githubInstallations.findFirst({
-    where: eq(schema.githubInstallations.id, pr.installationId),
-  });
-  if (!installation || installation.revokedAt) {
-    throw new HTTPException(409, { message: "github installation is unavailable" });
-  }
 
   const body = (await c.req.json().catch(() => ({}))) as { method?: unknown };
   const method =
     typeof body.method === "string" && VALID_MANUAL_MERGE_METHODS.has(body.method)
-      ? (body.method as "squash" | "merge" | "rebase")
+      ? (body.method as ManualMergeMethod)
       : "squash";
 
-  const merged = await mergeGithubPullRequest({
-    installationId: installation.installationId,
-    repoFullName: pr.repoFullName,
-    prNumber: pr.prNumber,
+  const outcome = await mergeAgentPullRequestAndResolveIncident({
+    pr,
     method,
+    source: "dashboard",
   });
-
-  const now = new Date();
-  const [updatedPr] = await db
-    .update(schema.agentPullRequests)
-    .set({
-      state: "merged",
-      mergedAt: now,
-      closedAt: now,
-      headSha: merged.sha ?? pr.headSha,
-      lastSyncedAt: now,
-      updatedAt: now,
-    })
-    .where(eq(schema.agentPullRequests.id, pr.id))
-    .returning();
-
-  await db
-    .insert(schema.agentPrEvents)
-    .values({
-      agentPrId: pr.id,
-      kind: "pr_merged",
-      summary: `PR #${pr.prNumber} merged from dashboard`,
-      payload: { method, sha: merged.sha, prUrl: pr.url, repoFullName: pr.repoFullName },
-      providerEventId: `dashboard_merge:${pr.id}`,
-      occurredAt: now,
-    })
-    .onConflictDoNothing();
-
-  await resolveIncident({
-    incidentId: pr.incidentId,
-    kind: "agent_pr_merged",
-    reasonCode: "agent_pr_merged",
-    reasonText: `Resolved because agent PR #${pr.prNumber} (${pr.repoFullName}) was merged.`,
-    agentRunId: pr.agentRunId,
-    eventSummary: `Incident resolved because PR #${pr.prNumber} was merged.`,
-    eventDetail: {
-      agentPrId: pr.id,
-      repoFullName: pr.repoFullName,
-      prNumber: pr.prNumber,
-      prUrl: pr.url,
-      mergedByLogin: null,
-    },
-    eventDedupeKey: `incident_resolved:agent_pr:${pr.id}`,
-    resolvedAt: now,
-  });
+  if (!outcome.ok) {
+    throw new HTTPException(409, {
+      message:
+        outcome.reason === "pr_not_open"
+          ? `pull request is already ${pr.state}`
+          : "github installation is unavailable",
+    });
+  }
 
   const agentRun = await db.query.agentRuns.findFirst({
     where: eq(schema.agentRuns.id, pr.agentRunId),
@@ -2137,10 +2117,8 @@ app.post("/api/projects/:projectId/incidents/:incidentId/pull-requests/:prId/mer
 
   return c.json({
     ok: true,
-    sha: merged.sha,
-    pullRequest: updatedPr
-      ? (buildIncidentPullRequestViews([updatedPr], agentRun ? [agentRun] : [])[0] ?? null)
-      : null,
+    sha: outcome.sha,
+    pullRequest: buildIncidentPullRequestViews([outcome.pr], agentRun ? [agentRun] : [])[0] ?? null,
   });
 });
 

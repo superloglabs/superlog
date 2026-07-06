@@ -117,7 +117,24 @@ export type AgentRunMobileRegressionTest =
     };
 
 export type IncidentSeverity = "SEV-1" | "SEV-2" | "SEV-3";
+// "autoresolved_noise" is legacy: noise verdicts now silence the linked issues
+// and resolve the incident plainly. Rows written by pre-cutover workers are
+// migrated to "resolved"; readers must still treat any straggler as closed.
 export type IncidentStatus = "open" | "resolved" | "autoresolved_noise" | "merged";
+
+// Issue lifecycle. `open` issues drive incidents; `silenced` and
+// `under_observation` suppress incident creation while occurrences keep
+// accumulating on the same row; `resolved` issues re-open and start a NEW
+// incident (chained via incidents.previous_incident_id) on recurrence.
+export type IssueStatus = "open" | "silenced" | "under_observation" | "resolved";
+
+// Escalation trigger for `under_observation` issues. `rate` fires when the
+// issue's events over the trailing 5-minute window average >= perMinute;
+// `count` fires when event_count has grown by >= count since observation began
+// (baseline in issues.observation_baseline_event_count).
+export type IssueEscalationTrigger =
+  | { kind: "rate"; perMinute: number }
+  | { kind: "count"; count: number };
 
 export type IncidentNoiseReason =
   | "cosmetic_log_only"
@@ -126,9 +143,18 @@ export type IncidentNoiseReason =
   | "expected_third_party"
   | "confusing_log_no_impact";
 
+// What to do with the incident's issues once a noise verdict lands. Silence
+// suppresses future occurrences outright; observe suppresses until the
+// escalation trigger trips (see IssueEscalationTrigger). Absent action means
+// silence — the safe default for "intended behaviour / no impact".
+export type IncidentNoiseAction =
+  | { kind: "silence" }
+  | { kind: "observe"; trigger: IssueEscalationTrigger };
+
 export type IncidentNoiseClassification = {
   reason: IncidentNoiseReason;
   evidence: string;
+  action?: IncidentNoiseAction | null;
 };
 
 export type IncidentResolutionReason =
@@ -506,7 +532,28 @@ export const issues = pgTable(
     lastSample: jsonb("last_sample").$type<IssueSample>(),
     firstSeen: timestamp("first_seen", { withTimezone: true }).notNull(),
     lastSeen: timestamp("last_seen", { withTimezone: true }).notNull(),
+    // Lifecycle state; see IssueStatus. Ingest suppresses incident work for
+    // silenced/under_observation issues while still bumping counters, so the
+    // row keeps recording occurrences for reporting and trigger evaluation.
+    status: text("status").$type<IssueStatus>().notNull().default("open"),
+    // Timestamp of the most recent silence; kept alongside `status` so the UI
+    // can say "silenced 3 weeks ago" and unsilence audits have a marker.
     silencedAt: timestamp("silenced_at", { withTimezone: true }),
+    // Set while status='under_observation'. The trigger is required by the
+    // domain (an observation without a trigger can never escalate); the
+    // baseline anchors `count` triggers to growth since observation began.
+    escalationTrigger: jsonb("escalation_trigger").$type<IssueEscalationTrigger>(),
+    observationStartedAt: timestamp("observation_started_at", { withTimezone: true }),
+    observationBaselineEventCount: bigint("observation_baseline_event_count", {
+      mode: "number",
+    }),
+    // Rate-trigger bookkeeping: the sweep fires a `rate` trigger off the
+    // event_count delta since the previous evaluation, so it needs the last
+    // counter + timestamp it saw. Null until the sweep's first pass.
+    observationLastEvaluatedAt: timestamp("observation_last_evaluated_at", {
+      withTimezone: true,
+    }),
+    observationLastEventCount: bigint("observation_last_event_count", { mode: "number" }),
     lastAlertedAt: timestamp("last_alerted_at", { withTimezone: true }),
     slackMessageTs: text("slack_message_ts"),
     eventCount: bigint("event_count", { mode: "number" }).notNull().default(0),
@@ -520,12 +567,19 @@ export const issues = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    uniq: uniqueIndex("issues_project_fingerprint_idx")
-      .on(t.projectId, t.fingerprint)
-      .where(sql`silenced_at IS NULL`),
+    // Full uniqueness (no silenced carve-out): an occurrence of a silenced or
+    // observed fingerprint must land on the existing row and be suppressed
+    // there, never spawn a fresh issue. Duplicates that predate this rule are
+    // collapsed by the 0081 data migration.
+    uniq: uniqueIndex("issues_project_fingerprint_idx").on(t.projectId, t.fingerprint),
     groupingStateIdx: index("issues_grouping_state_idx")
       .on(t.projectId, t.groupingState)
       .where(sql`grouping_state IN ('pending', 'failed')`),
+    // Observation sweep scan: only under_observation rows are ever evaluated.
+    observationIdx: index("issues_observation_idx")
+      .on(t.projectId, t.observationStartedAt)
+      .where(sql`status = 'under_observation'`),
+    statusIdx: index("issues_project_status_idx").on(t.projectId, t.status),
   }),
 );
 
@@ -558,6 +612,13 @@ export const incidents = pgTable(
       onDelete: "set null",
     }),
     mergedAt: timestamp("merged_at", { withTimezone: true }),
+    // Recurrence chain: when a resolved issue recurs (or an escalation trigger
+    // fires), we open a NEW incident rather than reopening the old one, and
+    // point it at its predecessor here. Agent runs on the new incident get the
+    // predecessors' findings injected as context.
+    previousIncidentId: uuid("previous_incident_id").references((): AnyPgColumn => incidents.id, {
+      onDelete: "set null",
+    }),
     firstSeen: timestamp("first_seen", { withTimezone: true }).notNull(),
     lastSeen: timestamp("last_seen", { withTimezone: true }).notNull(),
     issueCount: integer("issue_count").notNull().default(1),
@@ -660,8 +721,12 @@ export const incidentIssues = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    incidentIssueUniq: uniqueIndex("incident_issues_issue_idx").on(t.issueId),
+    // An issue accumulates one link per incident it has driven over its life
+    // (recurrence opens a new incident and appends a new link). The latest
+    // link by created_at is the issue's *current* incident.
+    incidentIssuePairUniq: uniqueIndex("incident_issues_pair_idx").on(t.incidentId, t.issueId),
     incidentLookupIdx: index("incident_issues_incident_idx").on(t.incidentId),
+    issueLookupIdx: index("incident_issues_issue_lookup_idx").on(t.issueId, t.createdAt),
   }),
 );
 

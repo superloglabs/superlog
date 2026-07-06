@@ -1019,7 +1019,7 @@ function RealDrawer() {
           eventsError={null}
           onClose={() => {}}
           onViewIssue={() => {}}
-          onToggleStatus={() => {}}
+          onStatusAction={() => {}}
           updatingIncident={false}
           summaryTelemetry={
             <div className="pt-1">
@@ -1144,7 +1144,7 @@ function DrawerSurface() {
           eventsError={null}
           onClose={() => {}}
           onViewIssue={() => {}}
-          onToggleStatus={() => {}}
+          onStatusAction={() => {}}
           updatingIncident={false}
           summaryTelemetry={
             <div className="pt-1">

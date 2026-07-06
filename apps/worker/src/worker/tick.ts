@@ -5,6 +5,7 @@ import { tickAutorecovery } from "../autorecovery.js";
 import { tickDigests } from "../digest.js";
 import { handleIssueTransition } from "../incidents/workflow.js";
 import { logger } from "../logger.js";
+import { tickObservedIssues } from "../observation.js";
 import type { TelemetryIngestor } from "../telemetry/ingest.js";
 import { tickWebhooks } from "../webhooks.js";
 
@@ -20,6 +21,7 @@ export type WorkerTickResult = {
   digests: number;
   webhooks: number;
   autorecoveryProposals: number;
+  observedEscalations: number;
   usageReported: number;
 };
 
@@ -67,6 +69,11 @@ export function createWorkerTick(opts: {
         const digests = await safe("digests", tickDigests, 0);
         const webhooks = await safe("webhooks", tickWebhooks, 0);
         const autorecoveryProposals = await safe("autorecovery", tickAutorecovery, 0);
+        const observedEscalations = await safe(
+          "observation",
+          () => tickObservedIssues(handleIssueTransition),
+          0,
+        );
         const usageReported = opts.usageMeter
           ? await safe("usage_metering", opts.usageMeter, 0)
           : 0;
@@ -77,6 +84,7 @@ export function createWorkerTick(opts: {
         span.setAttribute("tick.digests", digests);
         span.setAttribute("tick.webhooks", webhooks);
         span.setAttribute("tick.autorecovery_proposals", autorecoveryProposals);
+        span.setAttribute("tick.observed_escalations", observedEscalations);
         span.setAttribute("tick.usage_reported", usageReported);
         return {
           spans,
@@ -86,6 +94,7 @@ export function createWorkerTick(opts: {
           digests,
           webhooks,
           autorecoveryProposals,
+          observedEscalations,
           usageReported,
         };
       } catch (err) {

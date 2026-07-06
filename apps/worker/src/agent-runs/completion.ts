@@ -1,5 +1,6 @@
 import {
   type AgentRunResult,
+  type ResolveIssueOutcome,
   closeIncidentOpenPullRequestsAfterResolution,
   createIncidentLifecycle,
   db,
@@ -122,6 +123,34 @@ async function closeOpenPullRequestsForResolvedIncident(incidentId: string): Pro
   });
 }
 
+// A noise verdict resolves the incident plainly and applies the verdict's
+// action to the linked issues: silence (default) suppresses future
+// occurrences; observe suppresses until the escalation trigger trips.
+async function resolveIncidentAsNoise(
+  ctx: AgentRunContext,
+  result: AgentRunResult,
+  noiseReason: schema.IncidentNoiseReason,
+): Promise<{ resolved: boolean; resolvedIssueCount: number }> {
+  const action = result.noiseClassification?.action ?? null;
+  const issueOutcome: ResolveIssueOutcome =
+    action?.kind === "observe" ? { kind: "observe", trigger: action.trigger } : { kind: "silence" };
+  return incidentLifecycle.resolve({
+    incidentId: ctx.incident.id,
+    kind: "agent_classification",
+    reasonCode: noiseReason,
+    reasonText: result.noiseClassification?.evidence?.trim() ?? null,
+    agentRunId: ctx.agentRun.id,
+    eventSummary: "Incident resolved because the agent run classified it as noise.",
+    eventDetail: {
+      noiseReason,
+      evidence: result.noiseClassification?.evidence ?? null,
+      issueOutcome: issueOutcome.kind,
+    },
+    eventDedupeKey: `incident_resolved:agent_run:${ctx.agentRun.id}:noise`,
+    issueOutcome,
+  });
+}
+
 async function resolveIncidentFromAgentRunConclusion(
   ctx: AgentRunContext,
   result: AgentRunResult,
@@ -164,6 +193,11 @@ export async function completeWithoutPullRequest(
 ): Promise<void> {
   const noiseReason = completedNoiseReason(result);
   const resolutionReason = noiseReason ? null : completedResolutionReason(result);
+  // Set once the noise verdict was actually recorded against an open incident
+  // (applyAgentRunResult ignores verdicts on already-closed incidents) — the
+  // "marked as noise" messaging below must not claim a state change that
+  // never happened.
+  let noiseApplied = false;
   await agentRunLifecycle.completeWithoutPullRequest({
     id: ctx.agentRun.id,
     currentState: ctx.agentRun.state,
@@ -200,8 +234,16 @@ export async function completeWithoutPullRequest(
       where: eq(schema.incidents.id, ctx.incident.id),
     });
     if (refreshed) ctx.incident = refreshed;
-  } else if (metadataOutcome.noiseResolved) {
-    await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
+  } else if (noiseReason && metadataOutcome.noiseResolved) {
+    noiseApplied = true;
+    const { resolved } = await resolveIncidentAsNoise(ctx, result, noiseReason);
+    if (resolved) {
+      await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
+    }
+    const refreshed = await db.query.incidents.findFirst({
+      where: eq(schema.incidents.id, ctx.incident.id),
+    });
+    if (refreshed) ctx.incident = refreshed;
   }
   logger.info(
     {
@@ -216,7 +258,7 @@ export async function completeWithoutPullRequest(
     "agent run complete",
   );
   const ticket = result.linearTicket;
-  if (noiseReason) {
+  if (noiseReason && noiseApplied) {
     const label = noiseReasonLabel(noiseReason);
     const evidence = result.noiseClassification?.evidence?.trim();
     const target = isAlertIncident(ctx) ? "alert" : "incident";
@@ -240,23 +282,25 @@ export async function completeWithoutPullRequest(
     await postIncidentThreadMessage(ctx.incident.id, `${badge} ${result.summary}`);
   }
   const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
-  const status = noiseReason
-    ? `${isAlertIncident(ctx) ? "Alert" : "Incident"} marked as noise - ${noiseReasonLabel(noiseReason)}`
-    : resolutionReason
-      ? `Incident resolved - ${resolutionReasonLabel(resolutionReason)}`
-      : ticket
-        ? `Investigation complete · Linear ${ticket.id}`
-        : "Investigation complete";
-  const text = noiseReason
-    ? `:no_bell: ${ctx.incident.title} — ${isAlertIncident(ctx) ? "Alert" : "Incident"} marked as noise`
-    : resolutionReason
-      ? `:white_check_mark: ${ctx.incident.title} — Incident resolved`
-      : `:white_check_mark: ${ctx.incident.title} — Investigation complete`;
+  const status =
+    noiseReason && noiseApplied
+      ? `${isAlertIncident(ctx) ? "Alert" : "Incident"} marked as noise - ${noiseReasonLabel(noiseReason)}`
+      : resolutionReason
+        ? `Incident resolved - ${resolutionReasonLabel(resolutionReason)}`
+        : ticket
+          ? `Investigation complete · Linear ${ticket.id}`
+          : "Investigation complete";
+  const text =
+    noiseReason && noiseApplied
+      ? `:no_bell: ${ctx.incident.title} — ${isAlertIncident(ctx) ? "Alert" : "Incident"} marked as noise`
+      : resolutionReason
+        ? `:white_check_mark: ${ctx.incident.title} — Incident resolved`
+        : `:white_check_mark: ${ctx.incident.title} — Investigation complete`;
   await updateIncidentMainMessage(
     ctx.incident.id,
     text,
     incidentBlocks({
-      emoji: noiseReason ? "no_bell" : "white_check_mark",
+      emoji: noiseReason && noiseApplied ? "no_bell" : "white_check_mark",
       status,
       title: ctx.incident.title,
       tagline: truncateSlackText(result.summary),

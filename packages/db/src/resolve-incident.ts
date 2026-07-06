@@ -6,12 +6,17 @@ import {
   assertIncidentSourceState,
   buildAgentRunIncidentPatch,
   buildManualReopenPatch,
-  buildRegressionReopenPatch,
-  decideRegressionTransition,
 } from "./incident-state.js";
+import {
+  buildIssueObservePatch,
+  buildIssueReopenPatch,
+  buildIssueResolvePatch,
+  buildIssueSilencePatch,
+} from "./issue-state.js";
 import * as schema from "./schema.js";
 import {
   type IncidentReopenedReason,
+  enqueueIncidentCreated,
   enqueueIncidentReopened,
   enqueueIncidentResolved,
 } from "./webhook-events.js";
@@ -39,6 +44,20 @@ async function emitIncidentReopened(
     console.error("failed to enqueue incident.reopened webhook", { incidentId, err });
   }
 }
+
+// What happens to the incident's issues when the incident resolves. Every
+// resolve carries one of these; the default is "resolve" (the "Problem
+// resolved" semantics — the underlying error signature is considered fixed and
+// will open a fresh incident if it recurs).
+export type ResolveIssueOutcome =
+  | { kind: "resolve" }
+  // "Not an issue": the signature is noise; suppress future occurrences.
+  | { kind: "silence" }
+  // Noise, but worth watching: suppress until the escalation trigger trips.
+  | { kind: "observe"; trigger: schema.IssueEscalationTrigger }
+  // Caller manages issue state itself (e.g. a merge, where the surviving
+  // incident keeps the issues live).
+  | { kind: "none" };
 
 export type ResolveIncidentInput = {
   incidentId: string;
@@ -76,6 +95,9 @@ export type ResolveIncidentInput = {
   // Other resolvers leave it null and the helper actively clears any prior
   // cooldown so a recurrence triggers a fresh investigation.
   autoInvestigateSuppressedUntil?: Date | null;
+  // Disposition applied to the incident's current issues. Defaults to
+  // { kind: "resolve" }.
+  issueOutcome?: ResolveIssueOutcome;
 };
 
 export type ResolveIncidentResult = {
@@ -90,11 +112,6 @@ export type ResolveIncidentResult = {
 export type ApplyAgentRunResultOutcome = {
   updated: boolean;
   noiseResolved: boolean;
-};
-
-export type ReopenIncidentResult = {
-  reopened: boolean;
-  stayedNoise: boolean;
 };
 
 export async function mergeIncidentsInTx(
@@ -224,55 +241,95 @@ export function createIncidentLifecycle(database: DB = db) {
       return { updated: true, noiseResolved };
     },
 
-    async reopenFromIssueRegression(opts: {
-      incident: schema.Incident;
+    // A resolved issue recurred, or an under-observation issue's escalation
+    // trigger fired: open a NEW incident chained to the predecessor, put the
+    // issue back to `open`, and append a fresh incident_issues link (the
+    // issue's link history is how "current incident" is derived). The old
+    // incident keeps its findings and stays closed — its timeline records
+    // where the story continued.
+    async openRecurrence(opts: {
+      previousIncident: schema.Incident;
       issue: schema.Issue;
-      latestAgentRunId?: string | null;
-    }): Promise<ReopenIncidentResult> {
-      const decision = decideRegressionTransition(opts.incident.status);
-      if (decision.kind === "touch_active" || decision.kind === "stay_noise") {
-        await repository.updateIncident(opts.incident.id, {
-          status: decision.status,
+      origin: "resolved_issue_recurred" | "escalation_trigger";
+      environment?: string | null;
+      now?: Date;
+    }): Promise<schema.Incident> {
+      const now = opts.now ?? new Date();
+      const created = await repository.transaction(async (tx) => {
+        const incident = await allocateOpenIncidentInTx(tx, {
+          projectId: opts.issue.projectId,
+          service: opts.issue.service ?? opts.previousIncident.service,
+          environment: opts.environment ?? opts.previousIncident.environment,
+          title: opts.issue.title,
+          firstSeen: opts.issue.lastSeen,
           lastSeen: opts.issue.lastSeen,
         });
-        return { reopened: false, stayedNoise: decision.kind === "stay_noise" };
-      }
-
-      await repository.transaction(async (tx) => {
-        const now = new Date();
-        let latestAgentRunId = opts.latestAgentRunId ?? null;
-        if (opts.latestAgentRunId === undefined) {
-          const latestAgentRun = await repository.findLatestAgentRunIdInTx(tx, opts.incident.id);
-          latestAgentRunId = latestAgentRun?.id ?? null;
-        }
         await repository.updateIncidentInTx(
           tx,
-          opts.incident.id,
-          buildRegressionReopenPatch(opts.issue),
+          incident.id,
+          { previousIncidentId: opts.previousIncident.id, issueCount: 1 },
           now,
         );
+        await repository.updateIssueInTx(tx, opts.issue.id, buildIssueReopenPatch());
+        await tx
+          .insert(schema.incidentIssues)
+          .values({ incidentId: incident.id, issueId: opts.issue.id })
+          .onConflictDoNothing();
 
         await repository.insertEventInTx(tx, {
-          agentRunId: latestAgentRunId,
-          incidentId: opts.incident.id,
-          kind: "incident_reopened",
-          summary: `Incident reopened because linked issue regressed: ${opts.issue.title}`,
+          incidentId: incident.id,
+          kind: "incident_opened_from_recurrence",
+          summary:
+            opts.origin === "escalation_trigger"
+              ? `Escalation trigger fired for observed issue: ${opts.issue.title}`
+              : `Resolved issue recurred: ${opts.issue.title}`,
           detail: {
-            reason: "issue_regressed",
+            origin: opts.origin,
+            previousIncidentId: opts.previousIncident.id,
             issueId: opts.issue.id,
             issueTitle: opts.issue.title,
-            previousIncidentStatus: opts.incident.status,
           },
-          dedupeKey: `incident_reopened:issue:${opts.issue.id}:${opts.issue.lastSeen.getTime()}`,
+          dedupeKey: `incident_opened_from_recurrence:${opts.issue.id}:${now.getTime()}`,
           processedAt: now,
         });
+        await repository.insertEventInTx(tx, {
+          incidentId: incident.id,
+          kind: "issue_reopened",
+          summary: `Issue back to open: ${opts.issue.title}`,
+          detail: { issueId: opts.issue.id, origin: opts.origin },
+          dedupeKey: `issue_reopened:${opts.issue.id}:${now.getTime()}`,
+          processedAt: now,
+        });
+        // Leave a pointer on the predecessor's timeline too, so someone
+        // reading the closed incident sees where the story continued.
+        await repository.insertEventInTx(tx, {
+          incidentId: opts.previousIncident.id,
+          kind: "issue_recurred",
+          summary: `Linked issue recurred; investigation continued in a new incident.`,
+          detail: {
+            issueId: opts.issue.id,
+            issueTitle: opts.issue.title,
+            newIncidentId: incident.id,
+            origin: opts.origin,
+          },
+          dedupeKey: `issue_recurred:${opts.issue.id}:${now.getTime()}`,
+          processedAt: now,
+        });
+        return incident;
       });
-
-      await emitIncidentReopened(database, opts.incident.id, {
-        reason: "issue_regressed",
-        previousStatus: opts.incident.status,
-      });
-      return { reopened: true, stayedNoise: false };
+      try {
+        await enqueueIncidentCreated(created.id, database);
+      } catch (err) {
+        console.error("failed to enqueue incident.created webhook", {
+          incidentId: created.id,
+          err,
+        });
+      }
+      return (
+        (await database.query.incidents.findFirst({
+          where: eq(schema.incidents.id, created.id),
+        })) ?? created
+      );
     },
 
     async reopenManually(opts: {
@@ -353,8 +410,54 @@ async function resolveIncidentInTx(
   });
   if (!didResolve) return { resolved: false, resolvedIssueCount: 0 };
 
-  const links = await repository.listIncidentIssueLinksInTx(tx, input.incidentId);
-  const resolvedIssueCount = links.length;
+  // Cascade the issue disposition. Only issues whose *current* incident is
+  // this one are touched — an issue that already recurred into a newer
+  // incident belongs to that investigation.
+  const outcome: ResolveIssueOutcome = input.issueOutcome ?? { kind: "resolve" };
+  let resolvedIssueCount = 0;
+  if (outcome.kind !== "none") {
+    const issues = await repository.listCurrentIssuesForIncidentInTx(tx, input.incidentId);
+    resolvedIssueCount = issues.length;
+    for (const issue of issues) {
+      const patch =
+        outcome.kind === "silence"
+          ? buildIssueSilencePatch(resolvedAt)
+          : outcome.kind === "observe"
+            ? buildIssueObservePatch({
+                trigger: outcome.trigger,
+                baselineEventCount: issue.eventCount,
+                now: resolvedAt,
+              })
+            : buildIssueResolvePatch();
+      await repository.updateIssueInTx(tx, issue.id, patch);
+      const eventKind =
+        outcome.kind === "silence"
+          ? "issue_silenced"
+          : outcome.kind === "observe"
+            ? "issue_observed"
+            : "issue_resolved";
+      await repository.insertEventInTx(tx, {
+        agentRunId: input.agentRunId ?? null,
+        incidentId: input.incidentId,
+        kind: eventKind,
+        summary:
+          outcome.kind === "silence"
+            ? `Issue silenced: ${issue.title}`
+            : outcome.kind === "observe"
+              ? `Issue placed under observation: ${issue.title}`
+              : `Issue resolved: ${issue.title}`,
+        detail: {
+          issueId: issue.id,
+          issueTitle: issue.title,
+          ...(outcome.kind === "observe"
+            ? { trigger: outcome.trigger, baselineEventCount: issue.eventCount }
+            : {}),
+        },
+        dedupeKey: `${eventKind}:${issue.id}:${resolvedAt.getTime()}`,
+        processedAt: resolvedAt,
+      });
+    }
+  }
 
   // Always emit an incident_resolved event keyed on incident_id so the
   // dashboard timeline can render it for every resolve path (PR merge,
@@ -382,32 +485,6 @@ async function resolveIncidentInTx(
   });
 
   return { resolved: true, resolvedIssueCount };
-}
-
-export type ReopenIncidentInput = {
-  incidentId: string;
-  lastSeen: Date;
-};
-
-// Counterpart to resolveIncident: when a previously-resolved incident sees a
-// recurring event, flip it back to `open` and null out all the resolution
-// columns so the next resolve writes fresh truth. The caller is responsible
-// for any side effects (events, Slack updates) — this is the DB-side cleanup.
-export async function clearIncidentResolution(input: ReopenIncidentInput): Promise<void> {
-  await db
-    .update(schema.incidents)
-    .set({
-      status: "open",
-      lastSeen: input.lastSeen,
-      resolvedAt: null,
-      resolvedByKind: null,
-      resolvedByUserId: null,
-      resolvedBySlackUserId: null,
-      resolvedReasonCode: null,
-      resolvedReasonText: null,
-      updatedAt: new Date(),
-    })
-    .where(eq(schema.incidents.id, input.incidentId));
 }
 
 // State machine for sweep-agent resolution proposals. Lives in the db

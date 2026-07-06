@@ -94,11 +94,19 @@ type BacklogStatsRow = {
   latest_pending_ts: string | null;
 };
 
-type Transition = "new" | "regressed" | "seen";
+// Transition of a fingerprint occurrence, decided by the existing issue's
+// lifecycle status (see issue-state.ts):
+//   new        — no issue row existed
+//   recurred   — the issue was `resolved`; a NEW incident gets opened, chained
+//                to the predecessor
+//   suppressed — the issue is `silenced` or `under_observation`; counters
+//                moved, no incident work
+//   seen       — the issue is `open`; nothing to do beyond the counter bump
+type Transition = "new" | "recurred" | "suppressed" | "seen";
 
 export type IssueTransitionHandler = (
   issue: schema.Issue,
-  transition: Exclude<Transition, "seen">,
+  transition: "new" | "recurred",
 ) => Promise<void>;
 
 export type TelemetryIngestor = {
@@ -176,12 +184,21 @@ export function registerTelemetryIngestMetrics(opts: {
   );
 }
 
+// `inserted` (xmax = 0 on the RETURNING row) means the upsert genuinely
+// created a new issue row — that is always a "new" transition, even if a
+// stale `prev` row was visible (pre-0082 schema, where the partial unique
+// index lets a silenced fingerprint spawn a fresh row; without this check
+// that new row would be classified "suppressed" and never get an incident).
 function computeTransition(
   prevIssueId: string | null,
-  prevIncidentStatus: string | null,
+  prevIssueStatus: string | null,
+  inserted: boolean,
 ): Transition {
-  if (prevIssueId === null) return "new";
-  if (prevIncidentStatus === "resolved" || prevIncidentStatus === "merged") return "regressed";
+  if (inserted || prevIssueId === null) return "new";
+  if (prevIssueStatus === "silenced" || prevIssueStatus === "under_observation") {
+    return "suppressed";
+  }
+  if (prevIssueStatus === "resolved") return "recurred";
   return "seen";
 }
 
@@ -336,7 +353,7 @@ async function flushIssueGroups(
   for (const group of groups.values()) {
     try {
       const up = await upsertIssue(database, group);
-      if (up.transition !== "seen" && up.issue) {
+      if ((up.transition === "new" || up.transition === "recurred") && up.issue) {
         logger.info(
           {
             kind: group.kind,
@@ -387,16 +404,15 @@ async function upsertIssue(
         id: string;
         xmax: string;
         prev_issue_id: string | null;
-        prev_incident_status: string | null;
+        prev_issue_status: string | null;
       }>(sql`
     WITH prev AS (
-      SELECT i.id AS issue_id, inc.status AS incident_status
+      SELECT i.id AS issue_id, i.status AS issue_status
       FROM issues i
-      LEFT JOIN incident_issues ii ON ii.issue_id = i.id
-      LEFT JOIN incidents inc ON inc.id = ii.incident_id
       WHERE i.project_id = ${group.projectId}
         AND i.fingerprint = ${group.fp.hash}
-        AND i.silenced_at IS NULL
+      ORDER BY (i.silenced_at IS NULL) DESC, i.last_seen DESC
+      LIMIT 1
     ),
     up AS (
       INSERT INTO issues (
@@ -408,6 +424,11 @@ async function upsertIssue(
         ${title}, ${group.message}, ${group.fp.topFrame}, ${normalizedFrames}::jsonb, ${lastSample}::jsonb,
         ${firstSeenIso}::timestamptz, ${lastSeenIso}::timestamptz, ${group.eventCount}
       )
+      -- The WHERE clause is arbiter-index *inference*, not conflict filtering:
+      -- it matches the legacy partial unique index (pre-0082 schema) and is
+      -- trivially implied by the full unique index that replaces it, so this
+      -- one statement works on both sides of the migration window. Post-0082
+      -- every duplicate fingerprint conflicts, silenced or not.
       ON CONFLICT (project_id, fingerprint) WHERE silenced_at IS NULL DO UPDATE SET
         last_seen = GREATEST(issues.last_seen, EXCLUDED.last_seen),
         first_seen = LEAST(issues.first_seen, EXCLUDED.first_seen),
@@ -423,25 +444,28 @@ async function upsertIssue(
       (SELECT id::text FROM up) AS id,
       (SELECT xmax::text FROM up) AS xmax,
       (SELECT issue_id::text FROM prev) AS prev_issue_id,
-      (SELECT incident_status FROM prev) AS prev_incident_status
+      (SELECT issue_status FROM prev) AS prev_issue_status
   `);
       const raw = (
         result as unknown as Array<{
           id: string;
           xmax: string;
           prev_issue_id: string | null;
-          prev_incident_status: string | null;
+          prev_issue_status: string | null;
         }>
       )[0];
       const transition = computeTransition(
         raw?.prev_issue_id ?? null,
-        raw?.prev_incident_status ?? null,
+        raw?.prev_issue_status ?? null,
+        raw?.xmax === "0",
       );
       span.setAttribute("issue.transition", transition);
       // Only reload the full row when a downstream handler needs it (new or
-      // regressed). The common "seen" path skips a second query per group.
+      // recurred). The "seen" and "suppressed" paths skip the second query —
+      // suppressed occurrences bump counters on the row and deliberately do
+      // nothing else.
       let issue: schema.Issue | null = null;
-      if (transition !== "seen") {
+      if (transition === "new" || transition === "recurred") {
         issue =
           (await database.query.issues.findFirst({
             where: (issues, { eq }) => eq(issues.id, raw?.id ?? ""),

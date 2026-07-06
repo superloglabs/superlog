@@ -13,11 +13,9 @@
 export type IssueArrivalAction = "investigate" | "steer";
 
 export type IssueArrivalRoutingInput = {
-  // A brand-new incident was opened for this issue — there is nothing to steer.
+  // A brand-new incident was opened for this issue (including recurrence
+  // incidents chained to a predecessor) — there is nothing to steer.
   createdIncident: boolean;
-  // A previously-resolved incident regressed. Keep the existing reopen behavior
-  // (fresh look + reopen messaging) rather than steering.
-  reopenedIncident: boolean;
   // The incident's auto-investigation is on a `fixed_in_current_code` cooldown.
   // Route to the normal investigate path, which no-ops under suppression — we
   // must not bypass that guard by steering.
@@ -29,7 +27,7 @@ export type IssueArrivalRoutingInput = {
 };
 
 export function decideIssueArrivalRouting(input: IssueArrivalRoutingInput): IssueArrivalAction {
-  if (input.createdIncident || input.reopenedIncident) return "investigate";
+  if (input.createdIncident) return "investigate";
   if (!input.latestRunIsTerminal) return "investigate";
   if (input.suppressed) return "investigate";
   return "steer";

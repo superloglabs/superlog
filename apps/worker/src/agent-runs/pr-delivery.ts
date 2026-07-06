@@ -492,6 +492,7 @@ export async function completeWithPullRequest(
       ],
       incidentId: ctx.incident.id,
       showResolveButton: true,
+      showMergePrButton: true,
     }),
   ).catch((err) =>
     logger.error(

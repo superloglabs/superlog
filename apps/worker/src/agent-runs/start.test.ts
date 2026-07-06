@@ -243,6 +243,7 @@ function makeContext(opts: { githubInstalled?: boolean } = {}): AgentRunContext 
     issueRows: [],
     memories: [],
     followUp: null,
+    predecessors: [],
   };
 }
 

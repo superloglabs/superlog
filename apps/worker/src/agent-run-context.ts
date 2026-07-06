@@ -8,7 +8,10 @@ import {
 import { and, asc, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import { listActiveAgentMemories } from "./agent-memory-tools.js";
 import { buildAgentRunInstructions } from "./agent-run-instructions.js";
-import type { AgentRunnerFollowUp } from "./agent-runner-backend.js";
+import type {
+  AgentRunnerFollowUp,
+  AgentRunnerPredecessorIncident,
+} from "./agent-runner-backend.js";
 import { listInstallationRepositories } from "./infra/github/repositories.js";
 import { logger } from "./logger.js";
 
@@ -49,7 +52,56 @@ export type AgentRunContext = {
   // Set for follow-up runs (trigger != incident): the prior run's distilled
   // context plus the interaction(s) that revived the agent.
   followUp: AgentRunnerFollowUp | null;
+  // Closed incidents this one descends from (recurrence/escalation chain via
+  // previous_incident_id), newest first, capped at PREDECESSOR_CHAIN_LIMIT.
+  predecessors: AgentRunnerPredecessorIncident[];
 };
+
+// How many predecessor incidents to summarize into a new run's context. The
+// chain can be long for a stubbornly recurring signature; the most recent
+// investigations carry the relevant findings.
+export const PREDECESSOR_CHAIN_LIMIT = 3;
+
+// Walk the previous_incident_id chain and load a compact summary of each
+// predecessor: resolution, agent findings, handoff notes, and PR links.
+export async function loadPredecessorIncidents(
+  incident: schema.Incident,
+): Promise<AgentRunnerPredecessorIncident[]> {
+  const out: AgentRunnerPredecessorIncident[] = [];
+  const seen = new Set<string>([incident.id]);
+  let cursor = incident.previousIncidentId;
+  while (cursor && out.length < PREDECESSOR_CHAIN_LIMIT && !seen.has(cursor)) {
+    seen.add(cursor);
+    const prev = await db.query.incidents.findFirst({
+      where: eq(schema.incidents.id, cursor),
+    });
+    if (!prev) break;
+    const findingsRun = prev.findingsAgentRunId
+      ? await db.query.agentRuns.findFirst({
+          where: eq(schema.agentRuns.id, prev.findingsAgentRunId),
+          columns: { result: true },
+        })
+      : null;
+    const prs = await db.query.agentPullRequests.findMany({
+      where: eq(schema.agentPullRequests.incidentId, prev.id),
+      columns: { url: true },
+    });
+    out.push({
+      incidentId: prev.id,
+      title: prev.title,
+      codename: prev.codename,
+      resolvedAt: prev.resolvedAt?.toISOString() ?? null,
+      resolvedReasonCode: prev.resolvedReasonCode,
+      resolvedReasonText: prev.resolvedReasonText,
+      agentSummary: prev.agentSummary,
+      rootCauseText: prev.rootCauseText,
+      handoffNotes: findingsRun?.result?.handoffNotes ?? null,
+      prUrls: prs.map((pr) => pr.url).filter((url): url is string => !!url),
+    });
+    cursor = prev.previousIncidentId;
+  }
+  return out;
+}
 
 const FOLLOW_UP_TIMELINE_MAX_LINES = 20;
 
@@ -190,6 +242,7 @@ export async function loadAgentRunContext(
       events,
     });
   }
+  const predecessors = await loadPredecessorIncidents(incident);
   return {
     agentRun,
     incident,
@@ -207,6 +260,7 @@ export async function loadAgentRunContext(
     issueRows,
     memories,
     followUp,
+    predecessors,
   };
 }
 

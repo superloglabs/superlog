@@ -8,13 +8,9 @@ export type EvaluationResult = {
   firing: boolean;
 };
 
-export type FiringTransition =
-  | "new_firing"
-  | "recovered"
-  | "still_firing"
-  | "still_ok";
+export type FiringTransition = "new_firing" | "recovered" | "still_firing" | "still_ok";
 
-export type IssueTransition = "new" | "regressed" | "seen";
+export type IssueTransition = "new" | "recurred" | "suppressed" | "seen";
 
 export function compare(
   value: number,
@@ -39,10 +35,7 @@ export function alertFingerprint(alertId: string, groupKey: string): string {
   return groupKey ? `alert:${alertId}:${groupKey}` : `alert:${alertId}`;
 }
 
-export function serviceFromGroup(
-  groupBy: string | null,
-  groupKey: string,
-): string | null {
+export function serviceFromGroup(groupBy: string | null, groupKey: string): string | null {
   if (groupBy !== "service.name" && groupBy !== "service") return null;
   return groupKey || null;
 }
@@ -63,10 +56,7 @@ export function buildIssueTitle(
 // result per group key; otherwise we collapse to a single result whose value
 // is either the sum or the across-group average.
 export function deriveEvaluations(
-  alert: Pick<
-    schema.Alert,
-    "groupMode" | "groupBy" | "aggregation" | "comparator" | "threshold"
-  >,
+  alert: Pick<schema.Alert, "groupMode" | "groupBy" | "aggregation" | "comparator" | "threshold">,
   groups: ReadonlyMap<string, number>,
 ): EvaluationResult[] {
   if (alert.groupMode === "per_group" && alert.groupBy) {
@@ -110,12 +100,16 @@ export function classifyFiringTransition(
 
 export function classifyIssueTransition(
   prevIssueId: string | null,
-  prevIncidentStatus: string | null,
+  prevIssueStatus: string | null,
+  inserted = false,
 ): IssueTransition {
-  if (prevIssueId === null) return "new";
-  if (prevIncidentStatus === "resolved" || prevIncidentStatus === "merged") {
-    return "regressed";
+  // A genuinely inserted row is always new — see telemetry/ingest.ts for the
+  // pre-0082 migration-window case where `prev` can show a stale silenced row.
+  if (inserted || prevIssueId === null) return "new";
+  if (prevIssueStatus === "silenced" || prevIssueStatus === "under_observation") {
+    return "suppressed";
   }
+  if (prevIssueStatus === "resolved") return "recurred";
   return "seen";
 }
 

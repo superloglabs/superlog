@@ -115,6 +115,9 @@ export function incidentBlocks(opts: {
   buttons: Array<{ text: string; url: string; actionId: string }>;
   incidentId?: string;
   showResolveButton?: boolean;
+  // Adds a "Merge PR" action button (merge_pr:<incidentId>) — set on the
+  // PR-ready root message so the client can land the fix from Slack.
+  showMergePrButton?: boolean;
 }): unknown[] {
   const lines = [`:${opts.emoji}: *${opts.status}*`, `*${opts.title}*`];
   if (opts.tagline) lines.push(`_${opts.tagline}_`);
@@ -133,19 +136,50 @@ export function incidentBlocks(opts: {
     action_id: btn.actionId,
   }));
   if (opts.incidentId) {
+    if (opts.showMergePrButton) {
+      elements.push({
+        type: "button",
+        text: { type: "plain_text", text: "🔀 Merge PR", emoji: true },
+        style: "primary",
+        action_id: `merge_pr:${opts.incidentId}`,
+        confirm: {
+          title: { type: "plain_text", text: "Merge the agent's PR" },
+          text: {
+            type: "mrkdwn",
+            text: "Squash-merges the agent's open PR on GitHub and resolves this incident.",
+          },
+          confirm: { type: "plain_text", text: "Merge" },
+          deny: { type: "plain_text", text: "Cancel" },
+        },
+      });
+    }
     if (opts.showResolveButton) {
       elements.push({
         type: "button",
-        text: { type: "plain_text", text: "✅ Resolve", emoji: true },
-        style: "primary",
+        text: { type: "plain_text", text: "✅ Problem resolved", emoji: true },
+        style: opts.showMergePrButton ? undefined : "primary",
         action_id: `resolve_incident:${opts.incidentId}`,
         confirm: {
-          title: { type: "plain_text", text: "Resolve incident" },
+          title: { type: "plain_text", text: "Problem resolved" },
           text: {
             type: "mrkdwn",
-            text: "Marks this incident as resolved and closes its linked issues. If the underlying error reappears, the incident will re-open automatically.",
+            text: "Marks this incident and its issues as resolved. If the underlying error recurs, a new incident opens with this investigation's findings attached.",
           },
           confirm: { type: "plain_text", text: "Resolve" },
+          deny: { type: "plain_text", text: "Cancel" },
+        },
+      });
+      elements.push({
+        type: "button",
+        text: { type: "plain_text", text: "🔕 Not an issue", emoji: true },
+        action_id: `not_an_issue:${opts.incidentId}`,
+        confirm: {
+          title: { type: "plain_text", text: "Not an issue" },
+          text: {
+            type: "mrkdwn",
+            text: "Resolves this incident and silences its issues — future occurrences will not open incidents.",
+          },
+          confirm: { type: "plain_text", text: "Silence" },
           deny: { type: "plain_text", text: "Cancel" },
         },
       });

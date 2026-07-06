@@ -242,6 +242,7 @@ async function startRunnerSession(
           body: memory.body,
         })),
         followUp: ctx.followUp,
+        predecessors: ctx.predecessors,
       });
       llmSpan.setAttribute("agent_run.session_id", result.sessionId);
       return result;

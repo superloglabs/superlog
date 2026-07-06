@@ -561,6 +561,34 @@
       "when": 1783087922400,
       "tag": "0079_chemical_santa_claus",
       "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1783344947611,
+      "tag": "0080_careful_scorpion",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1783344972501,
+      "tag": "0081_issue_lifecycle_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1783345087986,
+      "tag": "0082_issues_fingerprint_full_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1783346803119,
+      "tag": "0083_observation_evaluation_bookkeeping",
+      "breakpoints": true
     }
   ]
 }

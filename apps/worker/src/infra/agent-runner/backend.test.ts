@@ -64,6 +64,7 @@ test("getAgentRunnerBackend returns the default community backend", async () => 
       customPrompt: null,
       memories: [],
       followUp: null,
+      predecessors: [],
     });
     const snapshot = await backend.collect(session.sessionId);
 
@@ -113,6 +114,7 @@ test("getAgentRunnerBackend returns a built-in disabled backend for community in
         customPrompt: null,
         memories: [],
         followUp: null,
+        predecessors: [],
       }),
     /disabled/,
   );

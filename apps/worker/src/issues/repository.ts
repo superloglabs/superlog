@@ -86,12 +86,25 @@ export async function findProject(projectId: string): Promise<schema.Project | u
   });
 }
 
-export async function findIncidentIssueLink(
+// An issue accumulates one incident_issues link per incident it has driven
+// (recurrence appends a new link); the newest link is its current incident.
+export async function findLatestIncidentIssueLink(
   issueId: string,
 ): Promise<schema.IncidentIssue | undefined> {
   return db.query.incidentIssues.findFirst({
     where: eq(schema.incidentIssues.issueId, issueId),
+    orderBy: [desc(schema.incidentIssues.createdAt), desc(schema.incidentIssues.id)],
   });
+}
+
+export async function touchIncidentLastSeen(incidentId: string, lastSeen: Date): Promise<void> {
+  await db
+    .update(schema.incidents)
+    .set({
+      lastSeen: sql`GREATEST(${schema.incidents.lastSeen}, ${lastSeen.toISOString()}::timestamptz)`,
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.incidents.id, incidentId));
 }
 
 export async function findIncident(incidentId: string): Promise<schema.Incident | undefined> {

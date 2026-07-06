@@ -7,7 +7,6 @@ import {
   INCIDENT_CLOSED_STATES,
   buildAgentRunIncidentPatch,
   createIncidentLifecycle,
-  decideRegressionTransition,
   isActiveIncidentState,
   mergeIncidentsInTx,
   schema,
@@ -27,6 +26,7 @@ function recordingDb(
     insertReturningRow?: Record<string, unknown>;
     updateReturningRows?: Record<string, unknown>[];
     incidentIssueLinks?: schema.IncidentIssue[];
+    currentIssues?: Array<Record<string, unknown>>;
   } = {},
 ): {
   db: DB;
@@ -64,6 +64,14 @@ function recordingDb(
   const db = {
     insert: insertChain,
     update: updateChain,
+    delete(_table: unknown) {
+      return { async where() {} };
+    },
+    // Raw SQL surface used by listCurrentIssuesForIncidentInTx and the merge
+    // repoint. Return the current issues' ids so the resolve cascade runs.
+    async execute() {
+      return (opts.currentIssues ?? []).map((issue) => ({ id: issue.id }));
+    },
     query: {
       agentRuns: {
         async findFirst() {
@@ -73,6 +81,11 @@ function recordingDb(
       incidentIssues: {
         async findMany() {
           return opts.incidentIssueLinks ?? [];
+        },
+      },
+      issues: {
+        async findMany() {
+          return opts.currentIssues ?? [];
         },
       },
     },
@@ -104,6 +117,24 @@ function incidentUpdates(calls: RecordedCall[]): Record<string, unknown>[] {
         c.op === "update.where" && c.table === schema.incidents,
     )
     .map((call) => call.values);
+}
+
+function eventsOfKind(calls: RecordedCall[], kind: string): Record<string, unknown>[] {
+  return calls
+    .filter(
+      (c): c is Extract<RecordedCall, { op: "insert.onConflictDoNothing" }> =>
+        c.op === "insert.onConflictDoNothing" && c.table === schema.incidentEvents,
+    )
+    .map((c) => c.values)
+    .filter((v) => v.kind === kind);
+}
+
+function eventOfKind(calls: RecordedCall[], kind: string): Record<string, unknown> {
+  const events = eventsOfKind(calls, kind);
+  assert.equal(events.length, 1, `expected exactly one ${kind} event`);
+  const event = events[0];
+  assert.ok(event);
+  return event;
 }
 
 function eventInsert(calls: RecordedCall[]): Record<string, unknown> {
@@ -166,7 +197,7 @@ test("createOpen creates a new open incident", async () => {
   assert.equal(insert.values.issueCount, 0);
 });
 
-test("pure incident domain maps agent noise results to autoresolved_noise patch", () => {
+test("pure incident domain records the noise verdict without closing the incident itself", () => {
   const now = new Date(1_234);
   const patch = buildAgentRunIncidentPatch({
     incident: makeIncident("open"),
@@ -186,7 +217,10 @@ test("pure incident domain maps agent noise results to autoresolved_noise patch"
 
   assert.equal(patch.noiseResolved, true);
   assert.equal(patch.noiseReason, "confusing_log_no_impact");
-  assert.equal(patch.updates.status, "autoresolved_noise");
+  // The status flip now happens via resolveIncident (with the issue outcome
+  // applied to linked issues), not through this patch.
+  assert.equal(patch.updates.status, undefined);
+  assert.equal(patch.updates.noiseReason, "confusing_log_no_impact");
   assert.equal(patch.updates.title, "Noisy error");
   assert.equal(patch.updates.noiseResolvedAt, now);
 });
@@ -257,22 +291,7 @@ test("agent resolution classification is recognized for the resolve path", () =>
   );
 });
 
-test("pure incident domain keeps noise recurrence closed but reopens resolved regressions", () => {
-  assert.deepEqual(decideRegressionTransition("autoresolved_noise"), {
-    kind: "stay_noise",
-    status: "autoresolved_noise",
-  });
-  assert.deepEqual(decideRegressionTransition("resolved"), {
-    kind: "reopen",
-    from: "resolved",
-  });
-  assert.deepEqual(decideRegressionTransition("merged"), {
-    kind: "reopen",
-    from: "merged",
-  });
-});
-
-test("agent noise result marks an open incident as autoresolved_noise and records an event", async () => {
+test("agent noise result records the verdict and noise event but leaves status to the resolve path", async () => {
   const { db, calls } = recordingDb();
   const lifecycle = createIncidentLifecycle(db);
 
@@ -293,7 +312,7 @@ test("agent noise result marks an open incident as autoresolved_noise and record
 
   assert.deepEqual(outcome, { updated: true, noiseResolved: true });
   const update = lastIncidentUpdate(calls);
-  assert.equal(update.status, "autoresolved_noise");
+  assert.equal(update.status, undefined);
   assert.equal(update.title, "False-positive error log");
   assert.equal(update.agentSummary, "The signal is noisy.");
   assert.equal(update.noiseReason, "confusing_log_no_impact");
@@ -333,10 +352,10 @@ test("resolve closes only open incidents, cascades linked issue count, and emits
   const resolvedAt = new Date(3_000);
   const { db, calls } = recordingDb({
     updateReturningRows: [{ id: "inc-1" }],
-    incidentIssueLinks: [
-      { incidentId: "inc-1", issueId: "issue-1" },
-      { incidentId: "inc-1", issueId: "issue-2" },
-    ] as schema.IncidentIssue[],
+    currentIssues: [
+      { id: "issue-1", title: "boom one", eventCount: 3 },
+      { id: "issue-2", title: "boom two", eventCount: 5 },
+    ],
   });
   const lifecycle = createIncidentLifecycle(db);
 
@@ -357,10 +376,42 @@ test("resolve closes only open incidents, cascades linked issue count, and emits
   assert.equal(update.resolvedAt, resolvedAt);
   assert.equal(update.resolvedByKind, "agent_classification");
   assert.equal(update.resolvedReasonCode, "upstream_recovered");
-  const event = eventInsert(calls);
-  assert.equal(event.kind, "incident_resolved");
-  assert.equal(event.agentRunId, "run-1");
-  assert.equal((event.detail as Record<string, unknown>).resolvedIssueCount, 2);
+  const resolvedEvent = eventOfKind(calls, "incident_resolved");
+  assert.equal(resolvedEvent.agentRunId, "run-1");
+  assert.equal((resolvedEvent.detail as Record<string, unknown>).resolvedIssueCount, 2);
+  // Every issue in the default outcome gets marked resolved with its own event.
+  const issueUpdates = calls.filter(
+    (c): c is Extract<RecordedCall, { op: "update.where" }> =>
+      c.op === "update.where" && c.table === schema.issues,
+  );
+  assert.equal(issueUpdates.length, 2);
+  assert.equal(issueUpdates[0]?.values.status, "resolved");
+  assert.equal(eventsOfKind(calls, "issue_resolved").length, 2);
+});
+
+test("resolve with a silence outcome silences the current issues", async () => {
+  const { db, calls } = recordingDb({
+    updateReturningRows: [{ id: "inc-1" }],
+    currentIssues: [{ id: "issue-1", title: "boom", eventCount: 3 }],
+  });
+  const lifecycle = createIncidentLifecycle(db);
+
+  await lifecycle.resolve({
+    incidentId: "inc-1",
+    kind: "dashboard_manual",
+    reasonCode: "not_an_issue",
+    reasonText: null,
+    issueOutcome: { kind: "silence" },
+  });
+
+  const issueUpdate = calls.find(
+    (c): c is Extract<RecordedCall, { op: "update.where" }> =>
+      c.op === "update.where" && c.table === schema.issues,
+  );
+  assert.ok(issueUpdate);
+  assert.equal(issueUpdate.values.status, "silenced");
+  assert.ok(issueUpdate.values.silencedAt);
+  assert.equal(eventsOfKind(calls, "issue_silenced").length, 1);
 });
 
 test("resolve is idempotent when the incident is no longer open", async () => {
@@ -424,66 +475,6 @@ test("merge rejects closed source or target incidents before writing", async () 
         targetIncident: makeIncident("autoresolved_noise"),
       }),
     /mergeIncidentsInTx: cannot transition incident from "autoresolved_noise"/,
-  );
-});
-
-test("resolved incident regression reopens and clears stale resolution metadata", async () => {
-  const { db, calls } = recordingDb({ latestAgentRunId: "run-latest" });
-  const lifecycle = createIncidentLifecycle(db);
-
-  const result = await lifecycle.reopenFromIssueRegression({
-    incident: makeIncident("resolved"),
-    issue: makeIssue(),
-  });
-
-  assert.deepEqual(result, { reopened: true, stayedNoise: false });
-  const update = lastIncidentUpdate(calls);
-  assert.equal(update.status, "open");
-  assert.equal(update.resolvedAt, null);
-  assert.equal(update.resolvedByKind, null);
-  assert.equal(update.autoInvestigateSuppressedUntil, null);
-  const event = eventInsert(calls);
-  assert.equal(event.kind, "incident_reopened");
-  assert.equal(event.agentRunId, "run-latest");
-});
-
-test("merged incident regression reopens and clears stale merge resolution metadata", async () => {
-  const { db, calls } = recordingDb({ latestAgentRunId: "run-latest" });
-  const lifecycle = createIncidentLifecycle(db);
-
-  const result = await lifecycle.reopenFromIssueRegression({
-    incident: makeIncident("merged"),
-    issue: makeIssue(),
-  });
-
-  assert.deepEqual(result, { reopened: true, stayedNoise: false });
-  const update = lastIncidentUpdate(calls);
-  assert.equal(update.status, "open");
-  assert.equal(update.resolvedAt, null);
-  assert.equal(update.resolvedReasonCode, null);
-  assert.equal(update.mergedIntoId, null);
-  assert.equal(update.mergedAt, null);
-  assert.equal(update.autoInvestigateSuppressedUntil, null);
-  const event = eventInsert(calls);
-  assert.equal(event.kind, "incident_reopened");
-  assert.equal((event.detail as Record<string, unknown>).previousIncidentStatus, "merged");
-});
-
-test("noise recurrence updates lastSeen without reopening", async () => {
-  const { db, calls } = recordingDb();
-  const lifecycle = createIncidentLifecycle(db);
-
-  const result = await lifecycle.reopenFromIssueRegression({
-    incident: makeIncident("autoresolved_noise"),
-    issue: makeIssue(),
-  });
-
-  assert.deepEqual(result, { reopened: false, stayedNoise: true });
-  assert.equal(lastIncidentUpdate(calls).status, "autoresolved_noise");
-  assert.equal(
-    calls.filter((c) => c.op === "insert.onConflictDoNothing").length,
-    0,
-    "noise recurrences should not emit reopen events",
   );
 });
 

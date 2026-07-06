@@ -984,7 +984,10 @@ const ISSUE_FIXTURES: Issue[] = [
       "at ChargeService.create (src/billing/charge.ts:84:11)\nat POST /api/checkout (src/routes/checkout.ts:42:5)",
     firstSeen: "2026-04-24T07:12:00.000Z",
     lastSeen: "2026-04-24T09:34:12.000Z",
+    status: "open",
     silencedAt: null,
+    escalationTrigger: null,
+    observationStartedAt: null,
     groupingState: "grouped",
     groupingSource: "heuristic",
     groupingReason: null,
@@ -1018,7 +1021,10 @@ const ISSUE_FIXTURES: Issue[] = [
       "at CartService.total (src/cart/cart.ts:129:22)\nat GET /api/cart (src/routes/cart.ts:18:3)",
     firstSeen: "2026-04-24T08:03:44.000Z",
     lastSeen: "2026-04-24T09:31:55.000Z",
+    status: "open",
     silencedAt: null,
+    escalationTrigger: null,
+    observationStartedAt: null,
     groupingState: "grouped",
     groupingSource: "heuristic",
     groupingReason: null,
@@ -1038,7 +1044,10 @@ const ISSUE_FIXTURES: Issue[] = [
     topFrame: "at RedisClient.connect (node_modules/ioredis/built/Redis.ts:213:9)",
     firstSeen: "2026-04-24T09:15:00.000Z",
     lastSeen: "2026-04-24T09:28:40.000Z",
+    status: "open",
     silencedAt: null,
+    escalationTrigger: null,
+    observationStartedAt: null,
     groupingState: "grouped",
     groupingSource: "heuristic",
     groupingReason: null,
@@ -1058,7 +1067,10 @@ const ISSUE_FIXTURES: Issue[] = [
     topFrame: null,
     firstSeen: "2026-04-23T14:00:00.000Z",
     lastSeen: "2026-04-23T17:42:18.000Z",
+    status: "open",
     silencedAt: null,
+    escalationTrigger: null,
+    observationStartedAt: null,
     groupingState: "grouped",
     groupingSource: "heuristic",
     groupingReason: null,
@@ -1275,7 +1287,7 @@ function IncidentsTabMock({
             eventsError={null}
             onClose={() => onSelect(null)}
             onViewIssue={() => {}}
-            onToggleStatus={() => {}}
+            onStatusAction={() => {}}
             updatingIncident={false}
           />
         </DrawerShell>
