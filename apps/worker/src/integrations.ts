@@ -136,7 +136,7 @@ export const REVYL_INTEGRATION: IntegrationDefinition = {
     {
       name: "revyl_validate_yaml",
       description:
-        "Pre-flight a YAML test definition before creating it. Returns is_valid + per-line messages.",
+        "Pre-flight a Revyl YAML test definition before creating it. Returns is_valid + per-line messages. The YAML must include a top-level `build` section with a `name` field (e.g. `build:\\n  name: my-app`) — Revyl will reject any YAML that omits this.",
       method: "POST",
       path: "/api/v1/tests/yaml/validate-yaml",
       input_schema: {
@@ -157,7 +157,7 @@ export const REVYL_INTEGRATION: IntegrationDefinition = {
     {
       name: "revyl_create_test_from_yaml",
       description:
-        "Create a new Revyl test from a YAML definition. Use AFTER revyl_validate_yaml passes. The worker auto-tags the test with superlog_incident_id and superlog_session_id.",
+        "Create a new Revyl test from a YAML definition. ALWAYS call revyl_validate_yaml first and only proceed if it returns is_valid=true. The YAML must include a top-level `build` section with a `name` field (e.g. `build:\\n  name: my-app`) — the API returns 422 without it. The worker auto-tags the test with superlog_incident_id and superlog_session_id.",
       method: "POST",
       path: "/api/v1/tests/yaml/from-yaml",
       rate_limit_per_session: 3,
