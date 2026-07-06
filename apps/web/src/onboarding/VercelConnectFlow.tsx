@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useStartVercelInstall, useVercelInstallation } from "../api.ts";
 import { Btn } from "../design/ui.tsx";
-import { CheckIcon, ExternalLinkIcon, SpinnerIcon } from "./icons.tsx";
+import { CheckIcon, ExternalLinkIcon, InfoIcon, SpinnerIcon } from "./icons.tsx";
 import {
+  VERCEL_PLAN_REQUIREMENT,
   type VercelPhase,
   canContinueVercel,
   parseVercelOutcome,
@@ -167,8 +168,15 @@ function StartPanel({
         <p className="m-0 text-[13px] leading-[1.55] text-muted">
           We never ask for an API token. Vercel's OAuth grants a scoped, revocable token that we use
           only to create and manage the drains — you can disconnect any time from settings.
-          Drains require a Vercel Pro or Enterprise plan.
         </p>
+      </div>
+      <div
+        className={`flex items-center gap-2.5 border-b px-[22px] py-[12px] ${SOFT_LINE} bg-[rgba(255,255,255,0.02)]`}
+      >
+        <span className="text-[#8C98F0]">
+          <InfoIcon size={13} />
+        </span>
+        <p className="m-0 text-[12.5px] leading-[1.5] text-fg">{VERCEL_PLAN_REQUIREMENT}</p>
       </div>
       <div className="flex items-center justify-between gap-3 px-[22px] py-[16px]">
         <span className="text-[12.5px] text-muted">

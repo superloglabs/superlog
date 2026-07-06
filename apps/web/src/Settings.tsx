@@ -95,6 +95,8 @@ import {
 import { AWS_REGIONS } from "./awsRegions.ts";
 import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
 import { Btn, Chip, FieldLabel, Input, Label, Tile } from "./design/ui";
+import { InfoIcon } from "./onboarding/icons.tsx";
+import { VERCEL_PLAN_REQUIREMENT } from "./onboarding/vercelConnectModel.ts";
 import { AgentMemoriesCard } from "./settings/AgentMemoriesCard.tsx";
 import { BillingCard } from "./settings/BillingCard.tsx";
 import { CreateOrgCard } from "./settings/CreateOrgCard.tsx";
@@ -1249,6 +1251,12 @@ function VercelCard({ projectId }: { projectId: string | undefined }) {
           Install the Superlog integration on your Vercel team and we'll set up trace and log drains
           that stream your deployments' telemetry into this project automatically.
         </p>
+        <div className="flex items-center gap-2 text-[12.5px]">
+          <span className="text-[#8C98F0]">
+            <InfoIcon size={13} />
+          </span>
+          <span className="text-fg">{VERCEL_PLAN_REQUIREMENT}</span>
+        </div>
         <div>
           {installed && install.data?.installed ? (
             <Chip tone="success" dot>

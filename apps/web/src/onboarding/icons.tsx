@@ -177,6 +177,26 @@ export function CheckIcon({ size = 14, className }: IconProps) {
   );
 }
 
+export function InfoIcon({ size = 14, className }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <circle cx="7" cy="7" r="5.6" />
+      <path d="M7 6.4v3" />
+      <circle cx="7" cy="4.4" r="0.2" fill="currentColor" />
+    </svg>
+  );
+}
+
 export function ChevronRightIcon({ size = 16, className }: IconProps) {
   return (
     <svg
