@@ -64,7 +64,38 @@ SET event_count = i.event_count + losses.extra_events,
 FROM losses
 WHERE i.id = losses.survivor_id;--> statement-breakpoint
 
--- 2b. Repoint loser incident links to the survivor so incident history keeps
+-- 2b. If multiple loser issue rows from the same duplicate group are linked to
+-- the same incident, they would all update to the same (incident_id, survivor)
+-- pair and violate incident_issues_pair_idx. Keep one link for that target; the
+-- rest are redundant because the loser issue rows are about to be deleted.
+WITH ranked AS (
+  SELECT id, project_id, fingerprint,
+         row_number() OVER (
+           PARTITION BY project_id, fingerprint
+           ORDER BY (silenced_at IS NULL) DESC, last_seen DESC, created_at DESC
+         ) AS rn
+  FROM issues
+),
+pairs AS (
+  SELECT l.id AS loser_id, s.id AS survivor_id
+  FROM ranked l
+  JOIN ranked s
+    ON s.project_id = l.project_id AND s.fingerprint = l.fingerprint AND s.rn = 1
+  WHERE l.rn > 1
+),
+ranked_links AS (
+  SELECT ii.id,
+         row_number() OVER (
+           PARTITION BY ii.incident_id, p.survivor_id
+           ORDER BY ii.created_at DESC, ii.id DESC
+         ) AS rn
+  FROM incident_issues ii
+  JOIN pairs p ON p.loser_id = ii.issue_id
+)
+DELETE FROM incident_issues
+WHERE id IN (SELECT id FROM ranked_links WHERE rn > 1);--> statement-breakpoint
+
+-- 2c. Repoint loser incident links to the survivor so incident history keeps
 -- an issue row, skipping incidents already linked to the survivor.
 WITH ranked AS (
   SELECT id, project_id, fingerprint,
@@ -90,7 +121,7 @@ WHERE ii.issue_id = p.loser_id
     WHERE x.incident_id = ii.incident_id AND x.issue_id = p.survivor_id
   );--> statement-breakpoint
 
--- 2c. Delete loser rows (cascades any incident_issues links that could not be
+-- 2d. Delete loser rows (cascades any incident_issues links that could not be
 -- repointed because the survivor already covered that incident).
 WITH ranked AS (
   SELECT id,

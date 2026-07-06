@@ -97,9 +97,19 @@ async function insertIncidentRaw(
   return one(rowsOf<{ id: string }>(result));
 }
 
-async function linkRaw(db: RawDb, incidentId: string, issueId: string): Promise<void> {
+async function linkRaw(
+  db: RawDb,
+  incidentId: string,
+  issueId: string,
+  createdAt?: Date,
+): Promise<void> {
   await db.execute(sql`
-    INSERT INTO incident_issues (incident_id, issue_id) VALUES (${incidentId}, ${issueId})
+    INSERT INTO incident_issues (incident_id, issue_id, created_at)
+    VALUES (
+      ${incidentId},
+      ${issueId},
+      COALESCE(${createdAt ? createdAt.toISOString() : null}::timestamptz, now())
+    )
   `);
 }
 
@@ -241,6 +251,15 @@ test("issue lifecycle backfill migrates prod-shaped data and the unique index la
     });
     await linkRaw(db, sharedIncident.id, dupMid.id);
     await linkRaw(db, sharedIncident.id, dupActive.id);
+    const loserOnlyIncident = await insertIncidentRaw(db, {
+      projectId: project.id,
+      title: "loser-only incident",
+      status: "open",
+      firstSeen: now,
+      lastSeen: now,
+    });
+    await linkRaw(db, loserOnlyIncident.id, dupOld.id, earlier);
+    await linkRaw(db, loserOnlyIncident.id, dupMid.id, now);
 
     // --- Apply the backfill (0081) and the full unique index (0082+) ---
     await migrate(db, { migrationsFolder: MIGRATIONS });
@@ -260,11 +279,20 @@ test("issue lifecycle backfill migrates prod-shaped data and the unique index la
 
     // The repointable loser link now points at the survivor; the shared
     // incident kept a single link to the survivor (duplicate cascaded away).
+    // The loser-only incident had two loser links and no survivor link before
+    // the backfill; it must also end up with exactly one survivor link.
     const survivorLinks = await db.query.incidentIssues.findMany({
       where: (t, { eq: eqOp }) => eqOp(t.issueId, dupActive.id),
     });
     const linkedIncidentIds = survivorLinks.map((l) => l.incidentId).sort();
-    assert.deepEqual(linkedIncidentIds, [dupIncident.id, sharedIncident.id].sort());
+    assert.deepEqual(
+      linkedIncidentIds,
+      [dupIncident.id, loserOnlyIncident.id, sharedIncident.id].sort(),
+    );
+    const loserOnlySurvivorLink = one(
+      survivorLinks.filter((l) => l.incidentId === loserOnlyIncident.id),
+    );
+    assert.equal(loserOnlySurvivorLink.createdAt.toISOString(), now.toISOString());
 
     // Status backfill.
     const byId = async (id: string) =>
