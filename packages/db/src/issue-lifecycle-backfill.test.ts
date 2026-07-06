@@ -18,6 +18,12 @@ import * as schema from "./schema.js";
 // (silenced duplicates, noise incidents, resolved incidents), then applies the
 // rest of the ledger and asserts the outcome.
 
+function one<T>(rows: T[]): T {
+  const row = rows[0];
+  assert.ok(row, "expected a row");
+  return row;
+}
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS = path.resolve(HERE, "../migrations");
 const CUTOFF_TAG = "0081_issue_lifecycle_backfill";
@@ -40,14 +46,18 @@ test("issue lifecycle backfill migrates prod-shaped data and the unique index la
     await migrate(db, { migrationsFolder: partial });
 
     // --- Fixtures at the pre-backfill schema ---
-    const [org] = await db
+    const org = one(
+      await db
       .insert(schema.orgs)
       .values({ name: "Acme", slug: "acme" })
-      .returning();
-    const [project] = await db
+      .returning(),
+    );
+    const project = one(
+      await db
       .insert(schema.projects)
       .values({ orgId: org.id, name: "Default", slug: "default" })
-      .returning();
+      .returning(),
+    );
     const now = new Date("2026-07-01T00:00:00Z");
     const earlier = new Date("2026-06-01T00:00:00Z");
     const baseIssue = {
@@ -61,7 +71,8 @@ test("issue lifecycle backfill migrates prod-shaped data and the unique index la
 
     // Duplicate-fingerprint group: two silenced generations + one active row
     // (the shape the old partial unique index produced on prod).
-    const [dupOld] = await db
+    const dupOld = one(
+      await db
       .insert(schema.issues)
       .values({
         ...baseIssue,
@@ -71,22 +82,30 @@ test("issue lifecycle backfill migrates prod-shaped data and the unique index la
         silencedAt: earlier,
         eventCount: 10,
       })
-      .returning();
-    const [dupMid] = await db
+      .returning(),
+    );
+    const dupMid = one(
+      await db
       .insert(schema.issues)
       .values({ ...baseIssue, fingerprint: "fp-dup", silencedAt: now, eventCount: 5 })
-      .returning();
-    const [dupActive] = await db
+      .returning(),
+    );
+    const dupActive = one(
+      await db
       .insert(schema.issues)
       .values({ ...baseIssue, fingerprint: "fp-dup", eventCount: 2 })
-      .returning();
+      .returning(),
+    );
 
     // Issue linked to a noise-closed incident.
-    const [noiseIssue] = await db
+    const noiseIssue = one(
+      await db
       .insert(schema.issues)
       .values({ ...baseIssue, fingerprint: "fp-noise", eventCount: 7 })
-      .returning();
-    const [noiseIncident] = await db
+      .returning(),
+    );
+    const noiseIncident = one(
+      await db
       .insert(schema.incidents)
       .values({
         projectId: project.id,
@@ -98,17 +117,21 @@ test("issue lifecycle backfill migrates prod-shaped data and the unique index la
         firstSeen: earlier,
         lastSeen: now,
       })
-      .returning();
+      .returning(),
+    );
     await db
       .insert(schema.incidentIssues)
       .values({ incidentId: noiseIncident.id, issueId: noiseIssue.id });
 
     // Issue linked to a resolved incident.
-    const [resolvedIssue] = await db
+    const resolvedIssue = one(
+      await db
       .insert(schema.issues)
       .values({ ...baseIssue, fingerprint: "fp-resolved" })
-      .returning();
-    const [resolvedIncident] = await db
+      .returning(),
+    );
+    const resolvedIncident = one(
+      await db
       .insert(schema.incidents)
       .values({
         projectId: project.id,
@@ -119,17 +142,21 @@ test("issue lifecycle backfill migrates prod-shaped data and the unique index la
         firstSeen: earlier,
         lastSeen: earlier,
       })
-      .returning();
+      .returning(),
+    );
     await db
       .insert(schema.incidentIssues)
       .values({ incidentId: resolvedIncident.id, issueId: resolvedIssue.id });
 
     // Issue linked to an open incident, and an unlinked issue — both stay open.
-    const [openIssue] = await db
+    const openIssue = one(
+      await db
       .insert(schema.issues)
       .values({ ...baseIssue, fingerprint: "fp-open" })
-      .returning();
-    const [openIncident] = await db
+      .returning(),
+    );
+    const openIncident = one(
+      await db
       .insert(schema.incidents)
       .values({
         projectId: project.id,
@@ -138,19 +165,23 @@ test("issue lifecycle backfill migrates prod-shaped data and the unique index la
         firstSeen: now,
         lastSeen: now,
       })
-      .returning();
+      .returning(),
+    );
     await db
       .insert(schema.incidentIssues)
       .values({ incidentId: openIncident.id, issueId: openIssue.id });
-    const [unlinkedIssue] = await db
+    const unlinkedIssue = one(
+      await db
       .insert(schema.issues)
       .values({ ...baseIssue, fingerprint: "fp-unlinked" })
-      .returning();
+      .returning(),
+    );
 
     // Loser duplicates carry incident links too: one to its own noise incident
     // (repointable) and one to an incident the survivor will also cover after
     // the survivor's own link is added (exercises the skip-then-cascade path).
-    const [dupIncident] = await db
+    const dupIncident = one(
+      await db
       .insert(schema.incidents)
       .values({
         projectId: project.id,
@@ -161,9 +192,11 @@ test("issue lifecycle backfill migrates prod-shaped data and the unique index la
         firstSeen: earlier,
         lastSeen: earlier,
       })
-      .returning();
+      .returning(),
+    );
     await db.insert(schema.incidentIssues).values({ incidentId: dupIncident.id, issueId: dupOld.id });
-    const [sharedIncident] = await db
+    const sharedIncident = one(
+      await db
       .insert(schema.incidents)
       .values({
         projectId: project.id,
@@ -172,7 +205,8 @@ test("issue lifecycle backfill migrates prod-shaped data and the unique index la
         firstSeen: now,
         lastSeen: now,
       })
-      .returning();
+      .returning(),
+    );
     await db
       .insert(schema.incidentIssues)
       .values({ incidentId: sharedIncident.id, issueId: dupMid.id });
@@ -189,11 +223,12 @@ test("issue lifecycle backfill migrates prod-shaped data and the unique index la
         andOp(eqOp(issues.projectId, project.id), eqOp(issues.fingerprint, "fp-dup")),
     });
     assert.equal(dupRows.length, 1);
-    assert.equal(dupRows[0].id, dupActive.id);
-    assert.equal(dupRows[0].eventCount, 17);
-    assert.equal(dupRows[0].firstSeen.toISOString(), earlier.toISOString());
+    const survivor = one(dupRows);
+    assert.equal(survivor.id, dupActive.id);
+    assert.equal(survivor.eventCount, 17);
+    assert.equal(survivor.firstSeen.toISOString(), earlier.toISOString());
     // Survivor was the active row → stays open.
-    assert.equal(dupRows[0].status, "open");
+    assert.equal(survivor.status, "open");
 
     // The repointable loser link now points at the survivor; the shared
     // incident kept a single link to the survivor (duplicate cascaded away).

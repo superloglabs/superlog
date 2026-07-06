@@ -174,15 +174,24 @@ export {
   isActiveIncidentState,
   buildAgentRunIncidentPatch,
   buildManualReopenPatch,
-  buildRegressionReopenPatch,
-  decideRegressionTransition,
   INCIDENT_ACTIVE_STATES,
   INCIDENT_CLOSED_STATES,
   type AgentRunIncidentPatch,
-  type RegressionDecision,
 } from "./incident-state.js";
 export {
-  clearIncidentResolution,
+  buildIssueObservePatch,
+  buildIssueReopenPatch,
+  buildIssueResolvePatch,
+  buildIssueSilencePatch,
+  decideOccurrenceAction,
+  escalationTriggerFired,
+  ISSUE_STATUSES,
+  OBSERVATION_RATE_WINDOW_MINUTES,
+  parseEscalationTrigger,
+  type EscalationEvaluationInput,
+  type IssueOccurrenceAction,
+} from "./issue-state.js";
+export {
   confirmResolutionProposal,
   createIncidentLifecycle,
   dismissResolutionProposal,
@@ -190,11 +199,10 @@ export {
   resolveIncident,
   type ApplyAgentRunResultOutcome,
   type IncidentLifecycle,
-  type ReopenIncidentInput,
-  type ReopenIncidentResult,
   type ResolutionProposalActor,
   type ResolveIncidentInput,
   type ResolveIncidentResult,
+  type ResolveIssueOutcome,
 } from "./resolve-incident.js";
 export {
   closeIncidentOpenPullRequestsAfterResolution,

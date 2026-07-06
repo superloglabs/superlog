@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "./client.js";
 import * as schema from "./schema.js";
 
@@ -103,6 +103,42 @@ export function createIncidentRepository(database: DB) {
       });
     },
 
+    // Issues whose *current* incident is this one. An issue accumulates one
+    // link per incident over its life (recurrence appends a new link), so
+    // "current" means the newest link by created_at. Resolution side effects
+    // must only touch these — an issue that has already recurred into a newer
+    // incident belongs to that investigation, not to this closing one.
+    async listCurrentIssuesForIncidentInTx(tx: Tx, incidentId: string): Promise<schema.Issue[]> {
+      const result = await tx.execute<Record<string, unknown>>(sql`
+        SELECT i.id
+        FROM issues i
+        JOIN incident_issues ii ON ii.issue_id = i.id AND ii.incident_id = ${incidentId}
+        JOIN LATERAL (
+          SELECT cur.incident_id
+          FROM incident_issues cur
+          WHERE cur.issue_id = i.id
+          ORDER BY cur.created_at DESC, cur.id DESC
+          LIMIT 1
+        ) latest ON latest.incident_id = ${incidentId}
+      `);
+      // postgres-js returns the row array directly; pglite (tests) wraps it
+      // in { rows }. Normalize so the repository works on both drivers.
+      const rows = Array.isArray(result)
+        ? (result as unknown as Array<{ id: string }>)
+        : ((result as unknown as { rows: Array<{ id: string }> }).rows ?? []);
+      const ids = rows.map((r) => r.id);
+      if (ids.length === 0) return [];
+      return tx.query.issues.findMany({ where: inArray(schema.issues.id, ids) });
+    },
+
+    async updateIssueInTx(
+      tx: Tx,
+      issueId: string,
+      updates: Partial<schema.Issue>,
+    ): Promise<void> {
+      await tx.update(schema.issues).set(updates).where(eq(schema.issues.id, issueId));
+    },
+
     async mergeOpenIncidentsInTx(
       tx: Tx,
       opts: {
@@ -116,9 +152,20 @@ export function createIncidentRepository(database: DB) {
           ? opts.sourceIncident.lastSeen
           : opts.targetIncident.lastSeen;
 
+      // Repoint the source's issue links to the target, skipping issues the
+      // target already links (the pair-unique index would reject those), then
+      // drop any leftover duplicates.
+      await tx.execute(sql`
+        UPDATE incident_issues ii
+        SET incident_id = ${opts.targetIncident.id}
+        WHERE ii.incident_id = ${opts.sourceIncident.id}
+          AND NOT EXISTS (
+            SELECT 1 FROM incident_issues x
+            WHERE x.incident_id = ${opts.targetIncident.id} AND x.issue_id = ii.issue_id
+          )
+      `);
       await tx
-        .update(schema.incidentIssues)
-        .set({ incidentId: opts.targetIncident.id })
+        .delete(schema.incidentIssues)
         .where(eq(schema.incidentIssues.incidentId, opts.sourceIncident.id));
       await tx
         .update(schema.incidents)

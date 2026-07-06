@@ -67,48 +67,23 @@ export function buildAgentRunIncidentPatch(opts: {
     updates.findingsAgentRunId = opts.agentRunId;
   }
 
+  // A noise verdict no longer gets its own incident status: the caller
+  // resolves the incident plainly (resolveIncident with the noise reason as
+  // the reason code) and applies the verdict's action to the linked issues —
+  // silence or observe. The noise columns stay as the record of the verdict.
+  // Recurrence of a resolved issue opens a NEW incident (chained via
+  // previous_incident_id) rather than reopening this one, so nothing here
+  // needs a reopen-on-regression carve-out anymore.
   const noiseReason =
     result.state === "complete" && opts.incident.status === "open"
       ? (result.noiseClassification?.reason ?? null)
       : null;
   if (noiseReason) {
-    updates.status = "autoresolved_noise";
     updates.noiseReason = noiseReason;
     updates.noiseResolvedAt = opts.now ?? new Date();
   }
 
   return { updates, noiseReason, noiseResolved: !!noiseReason };
-}
-
-export type RegressionDecision =
-  | { kind: "touch_active"; status: "open" }
-  | { kind: "stay_noise"; status: "autoresolved_noise" }
-  | { kind: "reopen"; from: "resolved" | "merged" };
-
-export function decideRegressionTransition(
-  status: schema.IncidentStatus | string,
-): RegressionDecision {
-  if (status === "open") return { kind: "touch_active", status };
-  if (status === "autoresolved_noise") return { kind: "stay_noise", status };
-  if (status === "resolved" || status === "merged") return { kind: "reopen", from: status };
-  assertIncidentSourceState("reopenFromIssueRegression", status, ["resolved", "merged"]);
-  throw new Error("unreachable incident regression transition");
-}
-
-export function buildRegressionReopenPatch(issue: schema.Issue): Partial<schema.Incident> {
-  return {
-    status: "open",
-    lastSeen: issue.lastSeen,
-    resolvedAt: null,
-    resolvedByKind: null,
-    resolvedByUserId: null,
-    resolvedBySlackUserId: null,
-    resolvedReasonCode: null,
-    resolvedReasonText: null,
-    mergedIntoId: null,
-    mergedAt: null,
-    autoInvestigateSuppressedUntil: null,
-  };
 }
 
 export function buildManualReopenPatch(): Partial<schema.Incident> {
