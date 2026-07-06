@@ -19,7 +19,7 @@ When an **Issue** is created, it starts as `open`. An `open` **Issue** should tr
     - An `escalation trigger` can be:
         - a rate of errors (errors per minute)
         - an absolute count of events
-    - Reoccurences of the Issue `under observation` do not cause anything until the `escalation trigger` trips.
+    - Occurrences of the Issue `under observation` do not cause anything until the `escalation trigger` trips.
 - An **Issue** can be `resolved`. New occurrences of the same error will trigger an **Incident**. The investigations of the recurring issue will be able to consult previous findings if necessary.
 
 
