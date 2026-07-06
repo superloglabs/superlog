@@ -7,13 +7,13 @@ In this document, we'll maintain a description of what Superlog needs to do.
 
 Whenever a client sends us a new error trace or error log, we'll fingerprint them into **Issues**.
 
-Repeated ocurrences of the same error log or trace count as one **Issue**.
+Repeated occurrences of the same error log or trace count as one **Issue**.
 
 ## Issue states
 
 When an **Issue** is created, it starts as `open`. An `open` **Issue** should trigger an **Incident**. 
 
-- An **Issue** can be `silenced`, in which case any new ocurrences will not start new **Incidents**.
+- An **Issue** can be `silenced`, in which case any new occurrences will not start new **Incidents**.
 - An **Issue** can be `under observation`. An **Issue** in `under observation` must have an `escalation trigger`.
     - If an `escalation trigger` fires, the **Issue** becomes `open` again and triggers a new **Incident**.
     - An `escalation trigger` can be:
@@ -24,7 +24,7 @@ When an **Issue** is created, it starts as `open`. An `open` **Issue** should tr
 
 # Incident 
 
-On any new `open` **Issue**, or on new ocurrences of a `resolved` **Issue**, Superlog opens a new **Incident**.
+On any new `open` **Issue**, or on new occurrences of a `resolved` **Issue**, Superlog opens a new **Incident**.
 
 An **Incident** starts a new **Agent Run**. During an **Agent Run** an LLM will examine the error, all relevant telemetry, code and infrastructure in order to understand the issue and resolve it. 
 
@@ -79,7 +79,7 @@ the Superlog agent must attempt to resolve the issue. The resolution is a multi-
 - Modifying the source code of the observed system and opening Pull Requests 
     - Responding to comments on these PRs to adjust them
     - Waiting for PRs to be merged
-    - Merging these PRs if instructed to by the Client (e.g. by a button on the PR messsage on Slack)
+    - Merging these PRs if instructed to by the Client (e.g. by a button on the PR message on Slack)
     - Opening subsequent PRs
 - Opening Approval prompts 
 
@@ -114,11 +114,11 @@ There are two ways to store memory in Superlog: comments and project memory
 Issues and Incidents have associated Comments. Humans and Agents can add Comments that are visible to the Agent Run investigating the Incident.
 
 ## Project memory
-Every Project has a list of Memories that can be added by humans and Agents. A Memory is a dated free-form text. All Project memories are are visible to the Agent Run investigating the Incident. Agents can add new Memories during investigations and in response to PR comments, Slack messages and other interactions with users.
+Every Project has a list of Memories that can be added by humans and Agents. A Memory is a dated free-form text. All Project memories are visible to the Agent Run investigating the Incident. Agents can add new Memories during investigations and in response to PR comments, Slack messages and other interactions with users.
 
-### Approval propmt
+### Approval prompt
 
-An Approval prompt is a way for our agent to perform an agent in the client's infrastructure, databases and other systems with the user's approval. When Superlog has access to the customer's infrastructure, for example, their AWS account, Superlog must always send Approval Prompts before taking action. 
+An Approval prompt is a way for our agent to make changes in the client's infrastructure, databases and other systems with the user's approval. When Superlog has access to the customer's infrastructure, for example, their AWS account, Superlog must always send Approval Prompts before taking action. 
 
 # Weekly update
 
