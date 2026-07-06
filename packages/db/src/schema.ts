@@ -143,9 +143,18 @@ export type IncidentNoiseReason =
   | "expected_third_party"
   | "confusing_log_no_impact";
 
+// What to do with the incident's issues once a noise verdict lands. Silence
+// suppresses future occurrences outright; observe suppresses until the
+// escalation trigger trips (see IssueEscalationTrigger). Absent action means
+// silence — the safe default for "intended behaviour / no impact".
+export type IncidentNoiseAction =
+  | { kind: "silence" }
+  | { kind: "observe"; trigger: IssueEscalationTrigger };
+
 export type IncidentNoiseClassification = {
   reason: IncidentNoiseReason;
   evidence: string;
+  action?: IncidentNoiseAction | null;
 };
 
 export type IncidentResolutionReason =

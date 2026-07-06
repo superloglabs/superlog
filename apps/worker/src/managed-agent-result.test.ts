@@ -1,3 +1,4 @@
+import "./agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { normalizeAgentResult } from "./managed-agent-result.js";
@@ -412,6 +413,40 @@ test("drops noiseClassification with unknown reason", () => {
   if (!r.ok) return;
   assert.equal(r.result.noiseClassification, undefined);
   assert.deepEqual(r.drops, ["noiseClassification"]);
+});
+
+test("keeps a valid observe action with its escalation trigger", () => {
+  const r = normalizeAgentResult({
+    state: "complete",
+    summary: "x",
+    noiseClassification: {
+      reason: "expected_third_party",
+      evidence: "vendor flake",
+      action: { kind: "observe", trigger: { kind: "rate", perMinute: 5 } },
+    },
+  });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.deepEqual(r.result.noiseClassification?.action, {
+    kind: "observe",
+    trigger: { kind: "rate", perMinute: 5 },
+  });
+});
+
+test("degrades a malformed observe action to null (silence) without dropping the verdict", () => {
+  const r = normalizeAgentResult({
+    state: "complete",
+    summary: "x",
+    noiseClassification: {
+      reason: "expected_third_party",
+      evidence: "vendor flake",
+      action: { kind: "observe", trigger: { kind: "rate", perMinute: -3 } },
+    },
+  });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.equal(r.result.noiseClassification?.reason, "expected_third_party");
+  assert.equal(r.result.noiseClassification?.action, null);
 });
 
 test("drops linearTicket missing required createdByAgent", () => {

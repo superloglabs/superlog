@@ -1,5 +1,6 @@
 import {
   type AgentRunResult,
+  type ResolveIssueOutcome,
   closeIncidentOpenPullRequestsAfterResolution,
   createIncidentLifecycle,
   db,
@@ -122,6 +123,36 @@ async function closeOpenPullRequestsForResolvedIncident(incidentId: string): Pro
   });
 }
 
+// A noise verdict resolves the incident plainly and applies the verdict's
+// action to the linked issues: silence (default) suppresses future
+// occurrences; observe suppresses until the escalation trigger trips.
+async function resolveIncidentAsNoise(
+  ctx: AgentRunContext,
+  result: AgentRunResult,
+  noiseReason: schema.IncidentNoiseReason,
+): Promise<{ resolved: boolean; resolvedIssueCount: number }> {
+  const action = result.noiseClassification?.action ?? null;
+  const issueOutcome: ResolveIssueOutcome =
+    action?.kind === "observe"
+      ? { kind: "observe", trigger: action.trigger }
+      : { kind: "silence" };
+  return incidentLifecycle.resolve({
+    incidentId: ctx.incident.id,
+    kind: "agent_classification",
+    reasonCode: noiseReason,
+    reasonText: result.noiseClassification?.evidence?.trim() ?? null,
+    agentRunId: ctx.agentRun.id,
+    eventSummary: "Incident resolved because the agent run classified it as noise.",
+    eventDetail: {
+      noiseReason,
+      evidence: result.noiseClassification?.evidence ?? null,
+      issueOutcome: issueOutcome.kind,
+    },
+    eventDedupeKey: `incident_resolved:agent_run:${ctx.agentRun.id}:noise`,
+    issueOutcome,
+  });
+}
+
 async function resolveIncidentFromAgentRunConclusion(
   ctx: AgentRunContext,
   result: AgentRunResult,
@@ -200,8 +231,15 @@ export async function completeWithoutPullRequest(
       where: eq(schema.incidents.id, ctx.incident.id),
     });
     if (refreshed) ctx.incident = refreshed;
-  } else if (metadataOutcome.noiseResolved) {
-    await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
+  } else if (noiseReason && metadataOutcome.noiseResolved) {
+    const { resolved } = await resolveIncidentAsNoise(ctx, result, noiseReason);
+    if (resolved) {
+      await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
+    }
+    const refreshed = await db.query.incidents.findFirst({
+      where: eq(schema.incidents.id, ctx.incident.id),
+    });
+    if (refreshed) ctx.incident = refreshed;
   }
   logger.info(
     {

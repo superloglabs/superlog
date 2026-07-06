@@ -23,9 +23,11 @@ import type {
   AgentRunMobileRegressionTest,
   AgentRunPr,
   AgentRunResult,
+  IncidentNoiseAction,
   IncidentNoiseClassification,
   IncidentResolutionClassification,
 } from "@superlog/db";
+import { parseEscalationTrigger } from "@superlog/db";
 
 type AgentFailureReason = "agent_no_findings" | "patch_validation_failed";
 type ManagedSessionResult = Omit<AgentRunResult, "failureReason"> & {
@@ -91,13 +93,31 @@ function asConfidence(v: unknown): { text: string; confidence: number } | null {
   return { text, confidence: clamped };
 }
 
+// The verdict's `action` decides what happens to the incident's issues:
+// silence (default) or observe with an escalation trigger. A malformed
+// action degrades to null (silence) rather than invalidating the verdict —
+// a bad trigger shouldn't turn a correct noise call into an open incident.
+function asNoiseAction(v: unknown): IncidentNoiseAction | null {
+  if (!isRecord(v)) return null;
+  if (v.kind === "silence") return { kind: "silence" };
+  if (v.kind === "observe") {
+    const trigger = parseEscalationTrigger(v.trigger);
+    if (trigger) return { kind: "observe", trigger };
+  }
+  return null;
+}
+
 function asNoiseClassification(v: unknown): IncidentNoiseClassification | null {
   if (!isRecord(v)) return null;
   const reason = asString(v.reason);
   const evidence = asString(v.evidence);
   if (reason == null || evidence == null) return null;
   if (!NOISE_REASONS.has(reason)) return null;
-  return { reason: reason as IncidentNoiseClassification["reason"], evidence };
+  return {
+    reason: reason as IncidentNoiseClassification["reason"],
+    evidence,
+    action: asNoiseAction(v.action),
+  };
 }
 
 function asResolutionClassification(v: unknown): IncidentResolutionClassification | null {
