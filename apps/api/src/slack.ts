@@ -20,6 +20,7 @@ import { closeAgentPullRequestOnGithub } from "./github.js";
 import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolution-side-effects.js";
 import { logger } from "./logger.js";
 import { resolveActiveOrgContext } from "./org-context.js";
+import { mergeAgentPullRequestAndResolveIncident } from "./pr-merge-service.js";
 
 const log = logger.child({ scope: "slack" });
 
@@ -229,8 +230,10 @@ export function mountSlackPublic(app: Hono<any>): void {
 // Recognized action_ids (all encoded by the worker's incidentBlocks builder
 // or the sweep proposal posting):
 //   - `give_feedback:<incident-uuid>` → opens a feedback modal
-//   - `resolve_incident:<incident-uuid>` → flips the incident to resolved
-//     attributed to the Slack user who clicked
+//   - `resolve_incident:<incident-uuid>` → "Problem resolved": incident
+//     resolved, issues resolved (recurrence opens a new chained incident)
+//   - `not_an_issue:<incident-uuid>` → incident resolved, issues silenced
+//   - `merge_pr:<incident-uuid>` → merges the incident's latest open agent PR
 async function handleSlackBlockActions(payload: SlackInteractivityPayload): Promise<void> {
   const action = payload.actions?.[0];
   if (!action) return;
@@ -238,7 +241,19 @@ async function handleSlackBlockActions(payload: SlackInteractivityPayload): Prom
 
   if (actionId.startsWith("resolve_incident:")) {
     const incidentId = actionId.slice("resolve_incident:".length);
-    if (incidentId) await handleSlackResolveIncident(incidentId, payload);
+    if (incidentId) await handleSlackResolveIncident(incidentId, payload, "problem_resolved");
+    return;
+  }
+
+  if (actionId.startsWith("not_an_issue:")) {
+    const incidentId = actionId.slice("not_an_issue:".length);
+    if (incidentId) await handleSlackResolveIncident(incidentId, payload, "not_an_issue");
+    return;
+  }
+
+  if (actionId.startsWith("merge_pr:")) {
+    const incidentId = actionId.slice("merge_pr:".length);
+    if (incidentId) await handleSlackMergePr(incidentId, payload);
     return;
   }
 
@@ -343,6 +358,7 @@ async function handleSlackBlockActions(payload: SlackInteractivityPayload): Prom
 async function handleSlackResolveIncident(
   incidentId: string,
   payload: SlackInteractivityPayload,
+  resolution: "problem_resolved" | "not_an_issue",
 ): Promise<void> {
   const incident = await db.query.incidents.findFirst({
     where: eq(schema.incidents.id, incidentId),
@@ -367,9 +383,13 @@ async function handleSlackResolveIncident(
   const { resolved } = await resolveIncident({
     incidentId,
     kind: "slack_manual",
-    reasonCode: "slack_manual",
-    reasonText: `Resolved from Slack by ${slackUserName ?? slackUserId ?? "unknown user"}.`,
+    reasonCode: resolution,
+    reasonText:
+      resolution === "not_an_issue"
+        ? `Marked not-an-issue from Slack by ${slackUserName ?? slackUserId ?? "unknown user"}.`
+        : `Resolved from Slack by ${slackUserName ?? slackUserId ?? "unknown user"}.`,
     resolvedBySlackUserId: slackUserId,
+    issueOutcome: resolution === "not_an_issue" ? { kind: "silence" } : { kind: "resolve" },
     // No investigation context here — the incident may or may not have one;
     // the resolved_* columns on incidents are the audit-of-record for manual
     // resolves. Skip the investigation event to avoid coupling to a possibly-
@@ -395,8 +415,86 @@ async function handleSlackResolveIncident(
       botToken: installation.botAccessToken,
       channel: incident.slackChannelId,
       threadTs: incident.slackThreadTs,
-      text: `:white_check_mark: Incident resolved by ${attribution}. If the underlying error reappears it will re-open automatically.`,
+      text:
+        resolution === "not_an_issue"
+          ? `:no_bell: Marked not-an-issue by ${attribution}. The linked issues are silenced; future occurrences will not open incidents.`
+          : `:white_check_mark: Incident resolved by ${attribution}. If the underlying error reappears, a new incident will open with this investigation's findings attached.`,
     });
+  }
+}
+
+// Handle a `merge_pr:<incidentId>` click: merge the incident's most recent
+// open agent PR (squash) and resolve the incident as agent_pr_merged. The
+// button carries a client-side confirm dialog; anyone in the channel can
+// click it, matching the resolve buttons.
+async function handleSlackMergePr(
+  incidentId: string,
+  payload: SlackInteractivityPayload,
+): Promise<void> {
+  const incident = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.id, incidentId),
+  });
+  if (!incident) {
+    log.warn({ incidentId }, "merge_pr click for unknown incident");
+    return;
+  }
+  const pr = await db.query.agentPullRequests.findFirst({
+    where: and(
+      eq(schema.agentPullRequests.incidentId, incidentId),
+      eq(schema.agentPullRequests.state, "open"),
+    ),
+    orderBy: [desc(schema.agentPullRequests.createdAt)],
+  });
+  const slackUserId = payload.user?.id ?? null;
+  const slackUserName = payload.user?.name ?? null;
+  const attribution = slackUserId ? `<@${slackUserId}>` : (slackUserName ?? "a teammate");
+
+  const installation = await installationForIncident({
+    pinnedId: incident.slackInstallationId,
+    teamId: payload.team?.id ?? "",
+  });
+  const reply = async (text: string) => {
+    if (!installation || !incident.slackChannelId || !incident.slackThreadTs) return;
+    await postSlackThreadReply({
+      botToken: installation.botAccessToken,
+      channel: incident.slackChannelId,
+      threadTs: incident.slackThreadTs,
+      text,
+    });
+  };
+
+  if (!pr) {
+    log.info({ incidentId }, "merge_pr click but no open agent PR");
+    await reply(":warning: No open agent PR to merge for this incident.");
+    return;
+  }
+
+  try {
+    const outcome = await mergeAgentPullRequestAndResolveIncident({
+      pr,
+      method: "squash",
+      source: `slack:${slackUserId ?? slackUserName ?? "unknown"}`,
+    });
+    if (!outcome.ok) {
+      await reply(
+        outcome.reason === "pr_not_open"
+          ? `:warning: PR #${pr.prNumber} is already ${pr.state}.`
+          : ":warning: Could not merge — the GitHub installation is unavailable.",
+      );
+      return;
+    }
+    await runSlackResolvedIncidentSideEffects(incidentId);
+    await reply(
+      `:twisted_rightwards_arrows: PR #${pr.prNumber} merged by ${attribution} — incident resolved.`,
+    );
+  } catch (err) {
+    log.warn(
+      { incidentId, pr_id: pr.id, err: err instanceof Error ? err.message : String(err) },
+      "merge_pr click failed",
+    );
+    await reply(
+      `:warning: Merging PR #${pr.prNumber} failed — check branch protections or merge it on GitHub.`,
+    );
   }
 }
 

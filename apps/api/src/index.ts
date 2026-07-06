@@ -4,8 +4,8 @@ import { createClient } from "@clickhouse/client";
 import { serve } from "@hono/node-server";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import {
-  type Issue,
   ISSUE_STATUSES,
+  type Issue,
   buildIssueReopenPatch,
   buildIssueSilencePatch,
   confirmResolutionProposal,
@@ -36,7 +36,6 @@ import { auth } from "./auth.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
 import { mountCloudflareAuthed, mountCloudflarePublic } from "./cloudflare.js";
-import { mountVercelAuthed, mountVercelPublic } from "./vercel.js";
 import { mountDashboards } from "./dashboards.js";
 import {
   demoOverlay,
@@ -50,7 +49,6 @@ import { prBaseBranchExists } from "./github-branches.js";
 import {
   closeAgentPullRequestOnGithub,
   listProjectRepoBranches,
-  mergeGithubPullRequest,
   mountGithubAuthed,
   mountGithubAuthorOAuth,
   mountGithubPublic,
@@ -101,6 +99,11 @@ import { mountMcpAuthed, mountMcpPublic } from "./mcp/index.js";
 import { resolveActiveOrgContext, resolveMaybeActiveOrgContext } from "./org-context.js";
 import { ORG_NAME_MAX, createOrgWithDefaults, mountOrgCrud } from "./orgs.js";
 import { mountPersonalAccessTokens } from "./personal-access-tokens.js";
+import {
+  type ManualMergeMethod,
+  VALID_MANUAL_MERGE_METHODS,
+  mergeAgentPullRequestAndResolveIncident,
+} from "./pr-merge-service.js";
 import { mountSettingsAuthed } from "./settings.js";
 import { normalizeSignupIntentKeyHash, normalizeSignupIntentKeyPrefix } from "./signup-intents.js";
 import { mountSlackAuthed, mountSlackPublic } from "./slack.js";
@@ -109,6 +112,7 @@ import { userIsStaff } from "./staff.js";
 import { symbolicateIssueSample, symbolicateTelemetrySample } from "./symbolication.js";
 import { buildSystemCapabilities } from "./system-capabilities.js";
 import { mountTopology } from "./topology.js";
+import { mountVercelAuthed, mountVercelPublic } from "./vercel.js";
 import { mountWebhooks } from "./webhooks.js";
 
 const PORT = Number(process.env.PORT ?? 4100);
@@ -2066,8 +2070,6 @@ app.get("/api/projects/:projectId/incidents/:incidentId/pull-requests", async (c
   return c.json(buildIncidentPullRequestViews(prs, agentRuns));
 });
 
-const VALID_MANUAL_MERGE_METHODS = new Set(["squash", "merge", "rebase"]);
-
 app.post("/api/projects/:projectId/incidents/:incidentId/pull-requests/:prId/merge", async (c) => {
   const projectId = c.req.param("projectId");
   const incidentId = c.req.param("incidentId");
@@ -2084,73 +2086,26 @@ app.post("/api/projects/:projectId/incidents/:incidentId/pull-requests/:prId/mer
     ),
   });
   if (!pr) throw new HTTPException(404, { message: "pull request not found" });
-  if (pr.state !== "open") {
-    throw new HTTPException(409, { message: `pull request is already ${pr.state}` });
-  }
-
-  const installation = await db.query.githubInstallations.findFirst({
-    where: eq(schema.githubInstallations.id, pr.installationId),
-  });
-  if (!installation || installation.revokedAt) {
-    throw new HTTPException(409, { message: "github installation is unavailable" });
-  }
 
   const body = (await c.req.json().catch(() => ({}))) as { method?: unknown };
   const method =
     typeof body.method === "string" && VALID_MANUAL_MERGE_METHODS.has(body.method)
-      ? (body.method as "squash" | "merge" | "rebase")
+      ? (body.method as ManualMergeMethod)
       : "squash";
 
-  const merged = await mergeGithubPullRequest({
-    installationId: installation.installationId,
-    repoFullName: pr.repoFullName,
-    prNumber: pr.prNumber,
+  const outcome = await mergeAgentPullRequestAndResolveIncident({
+    pr,
     method,
+    source: "dashboard",
   });
-
-  const now = new Date();
-  const [updatedPr] = await db
-    .update(schema.agentPullRequests)
-    .set({
-      state: "merged",
-      mergedAt: now,
-      closedAt: now,
-      headSha: merged.sha ?? pr.headSha,
-      lastSyncedAt: now,
-      updatedAt: now,
-    })
-    .where(eq(schema.agentPullRequests.id, pr.id))
-    .returning();
-
-  await db
-    .insert(schema.agentPrEvents)
-    .values({
-      agentPrId: pr.id,
-      kind: "pr_merged",
-      summary: `PR #${pr.prNumber} merged from dashboard`,
-      payload: { method, sha: merged.sha, prUrl: pr.url, repoFullName: pr.repoFullName },
-      providerEventId: `dashboard_merge:${pr.id}`,
-      occurredAt: now,
-    })
-    .onConflictDoNothing();
-
-  await resolveIncident({
-    incidentId: pr.incidentId,
-    kind: "agent_pr_merged",
-    reasonCode: "agent_pr_merged",
-    reasonText: `Resolved because agent PR #${pr.prNumber} (${pr.repoFullName}) was merged.`,
-    agentRunId: pr.agentRunId,
-    eventSummary: `Incident resolved because PR #${pr.prNumber} was merged.`,
-    eventDetail: {
-      agentPrId: pr.id,
-      repoFullName: pr.repoFullName,
-      prNumber: pr.prNumber,
-      prUrl: pr.url,
-      mergedByLogin: null,
-    },
-    eventDedupeKey: `incident_resolved:agent_pr:${pr.id}`,
-    resolvedAt: now,
-  });
+  if (!outcome.ok) {
+    throw new HTTPException(409, {
+      message:
+        outcome.reason === "pr_not_open"
+          ? `pull request is already ${pr.state}`
+          : "github installation is unavailable",
+    });
+  }
 
   const agentRun = await db.query.agentRuns.findFirst({
     where: eq(schema.agentRuns.id, pr.agentRunId),
@@ -2158,10 +2113,8 @@ app.post("/api/projects/:projectId/incidents/:incidentId/pull-requests/:prId/mer
 
   return c.json({
     ok: true,
-    sha: merged.sha,
-    pullRequest: updatedPr
-      ? (buildIncidentPullRequestViews([updatedPr], agentRun ? [agentRun] : [])[0] ?? null)
-      : null,
+    sha: outcome.sha,
+    pullRequest: buildIncidentPullRequestViews([outcome.pr], agentRun ? [agentRun] : [])[0] ?? null,
   });
 });
 

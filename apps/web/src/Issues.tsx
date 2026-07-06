@@ -1,9 +1,9 @@
 import { ChartIncreaseIcon, CheckmarkCircle02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  lazy,
   type ReactNode,
   Suspense,
+  lazy,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -13,10 +13,6 @@ import {
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { type EvidenceLinkContext, EvidenceMarkdown } from "./EvidenceMarkdown.tsx";
 import { FeedbackTrigger } from "./FeedbackDialog.tsx";
-import {
-  CollapsibleIncidentTranscript,
-  IncidentSummaryTelemetry,
-} from "./incidents/IncidentTranscript.tsx";
 import { LogDrawer } from "./LogDetail.tsx";
 import { TraceDrawer } from "./TraceDetail.tsx";
 import {
@@ -44,14 +40,18 @@ import {
   useMe,
   useMergeIncidentPullRequest,
   useRestartAgentRun,
-  useStartInvestigation,
   useRetryPrDelivery,
   useSilenceIssue,
+  useStartInvestigation,
   useUnsilenceIssue,
   useUpdateIncident,
 } from "./api.ts";
 import { Btn, Chip } from "./design/ui.tsx";
-import { getIncidentStatusAction } from "./incident-status-action.ts";
+import { type IncidentStatusAction, getIncidentStatusActions } from "./incident-status-action.ts";
+import {
+  CollapsibleIncidentTranscript,
+  IncidentSummaryTelemetry,
+} from "./incidents/IncidentTranscript.tsx";
 import { getIssueIncidentLinkState } from "./issue-incident-link-state.ts";
 
 const IncidentPrDiffView = lazy(() => import("./IncidentPrDiffView.tsx"));
@@ -297,7 +297,7 @@ export function IssueRow({
         <div className="min-w-0 flex-1">
           <div className="mb-1 flex items-center gap-2">
             <KindChip issue={issue} />
-            {issue.silencedAt && <Chip tone="neutral">silenced</Chip>}
+            <IssueStatusChip issue={issue} />
             <GroupingChip state={issue.groupingState} />
             <span className="font-mono text-[11px] text-muted">{issue.exceptionType}</span>
             <ServiceEnv service={issue.service} environment={issueEnvironment(issue)} />
@@ -410,7 +410,7 @@ function IssueDetailContent({
               <KindChip issue={issue} />
             </>
           )}
-          {silenced && <Chip tone="neutral">silenced</Chip>}
+          <IssueStatusChip issue={issue} />
           <GroupingChip state={issue.groupingState} />
         </div>
         {issue.topFrame && (
@@ -763,15 +763,17 @@ function NewInvestigationModal({
   function submit() {
     const p = prompt.trim();
     if (!p || start.isPending) return;
-    start.mutate(
-      { prompt: p },
-      { onSuccess: (res) => onStarted(res.incident.id) },
-    );
+    start.mutate({ prompt: p }, { onSuccess: (res) => onStarted(res.incident.id) });
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
-      <button type="button" aria-label="Close" className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <button
+        type="button"
+        aria-label="Close"
+        className="absolute inset-0 bg-black/60"
+        onClick={onClose}
+      />
       <div className="relative w-full max-w-[540px] overflow-hidden rounded-xl border border-border-strong bg-surface shadow-2xl">
         <div className="px-5 pt-5">
           <h2 className="text-[17px] font-semibold tracking-tight text-fg">New investigation</h2>
@@ -790,8 +792,8 @@ function NewInvestigationModal({
             className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-[14px] leading-relaxed text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none"
           />
           <p className="mt-2 text-[12px] text-muted">
-            The agent decides which signals to pull and over what window — each query shows up in the
-            transcript.
+            The agent decides which signals to pull and over what window — each query shows up in
+            the transcript.
           </p>
           {start.error && (
             <p className="mt-2 text-[12px] text-danger">
@@ -803,7 +805,12 @@ function NewInvestigationModal({
           <Btn variant="ghost" onClick={onClose}>
             Cancel
           </Btn>
-          <Btn variant="primary" onClick={submit} loading={start.isPending} disabled={!prompt.trim()}>
+          <Btn
+            variant="primary"
+            onClick={submit}
+            loading={start.isPending}
+            disabled={!prompt.trim()}
+          >
             Start investigation
           </Btn>
         </div>
@@ -948,12 +955,12 @@ function IncidentDrawerBody({
     );
   }
   const { incident, issues, agentRun, agentRuns, timeline, alertEpisodes } = q.data;
-  const statusAction = getIncidentStatusAction(incident.status);
 
-  function handleToggleStatus() {
+  function handleStatusAction(action: IncidentStatusAction) {
     updateIncident.mutate({
       incidentId: incident.id,
-      status: statusAction.targetStatus,
+      status: action.targetStatus,
+      resolution: action.resolution,
     });
   }
 
@@ -978,7 +985,7 @@ function IncidentDrawerBody({
       eventsError={null}
       onClose={onClose}
       onViewIssue={onViewIssue}
-      onToggleStatus={handleToggleStatus}
+      onStatusAction={handleStatusAction}
       onRestartAgentRun={handleRestartAgentRun}
       onRetryPrDelivery={handleRetryPrDelivery}
       onDecideProposal={(proposalId, decision) =>
@@ -1466,7 +1473,7 @@ export function IncidentDetailContent({
   eventsError,
   onClose,
   onViewIssue,
-  onToggleStatus,
+  onStatusAction,
   onRestartAgentRun,
   onRetryPrDelivery,
   onDecideProposal,
@@ -1489,7 +1496,7 @@ export function IncidentDetailContent({
   eventsError: Error | null;
   onClose: () => void;
   onViewIssue: (issueId: string) => void;
-  onToggleStatus: () => void;
+  onStatusAction: (action: IncidentStatusAction) => void;
   onRestartAgentRun?: () => void;
   onRetryPrDelivery?: () => void;
   onDecideProposal?: (proposalId: string, decision: "confirm" | "dismiss") => void;
@@ -1505,7 +1512,7 @@ export function IncidentDetailContent({
   transcript?: ReactNode;
 }) {
   const [detailTab, setDetailTab] = useState<"incident" | "pr">("incident");
-  const statusAction = getIncidentStatusAction(incident.status);
+  const statusActions = getIncidentStatusActions(incident.status);
 
   // The agent's conversation renders as a Transcript section (self-rendered from
   // events, or an explicit override) — and is then dropped from the timeline.
@@ -1625,15 +1632,20 @@ export function IncidentDetailContent({
             />
           </div>
 
-          <Btn
-            variant={statusAction.variant}
-            size="sm"
-            onClick={onToggleStatus}
-            loading={updatingIncident}
-            className="w-full justify-center"
-          >
-            {statusAction.label}
-          </Btn>
+          <div className="flex gap-2">
+            {statusActions.map((action) => (
+              <Btn
+                key={action.label}
+                variant={action.variant}
+                size="sm"
+                onClick={() => onStatusAction(action)}
+                loading={updatingIncident}
+                className="w-full justify-center"
+              >
+                {action.label}
+              </Btn>
+            ))}
+          </div>
           {updateIncidentError && (
             <p className="rounded-sm border border-danger/40 bg-danger/10 px-3 py-2 text-[12px] text-danger">
               Status update failed: {String(updateIncidentError)}
@@ -2058,9 +2070,7 @@ export function IncidentTimeline({
    *  drop its `agent.*` events here so the timeline is lifecycle-only. */
   excludeAgentMessages?: boolean;
 }) {
-  const shown = excludeAgentMessages
-    ? events.filter((e) => !e.kind.startsWith("agent."))
-    : events;
+  const shown = excludeAgentMessages ? events.filter((e) => !e.kind.startsWith("agent.")) : events;
   return (
     <div className="space-y-3">
       <SectionHeading>Timeline</SectionHeading>
@@ -3157,6 +3167,22 @@ function ServiceEnv({
   const parts = [service, environment].filter((part): part is string => Boolean(part));
   if (parts.length === 0) return null;
   return <span className="font-mono text-[11px] text-subtle">{parts.join(" | ")}</span>;
+}
+
+function IssueStatusChip({ issue }: { issue: Issue }) {
+  if (issue.status === "silenced") return <Chip tone="neutral">silenced</Chip>;
+  if (issue.status === "resolved") return <Chip tone="success">resolved</Chip>;
+  if (issue.status === "under_observation") {
+    const trigger = issue.escalationTrigger;
+    const label =
+      trigger?.kind === "rate"
+        ? `observing · >${trigger.perMinute}/min`
+        : trigger?.kind === "count"
+          ? `observing · +${trigger.count} events`
+          : "observing";
+    return <Chip tone="warning">{label}</Chip>;
+  }
+  return null;
 }
 
 function GroupingChip({ state }: { state: Issue["groupingState"] }) {
