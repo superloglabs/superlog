@@ -2,7 +2,7 @@
 // logic). Mirrors alerts.ts: the tick passes handleIssueTransition so the
 // sweep escalates through the same incident-intake path as ingest.
 import { db, schema } from "@superlog/db";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { runObservationSweep } from "./issues/observation-sweep.js";
 import { logger } from "./logger.js";
 
@@ -13,7 +13,10 @@ export async function tickObservedIssues(
     async listUnderObservation(limit) {
       return db.query.issues.findMany({
         where: eq(schema.issues.status, "under_observation"),
-        orderBy: (issues, { asc }) => [asc(issues.observationLastEvaluatedAt)],
+        // NULLS FIRST: never-evaluated observations (fresh verdicts) must be
+        // picked up before re-evaluations, or a backlog larger than the tick
+        // limit would starve them forever (Postgres ASC puts NULLs last).
+        orderBy: [sql`${schema.issues.observationLastEvaluatedAt} ASC NULLS FIRST`],
         limit,
       });
     },

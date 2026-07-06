@@ -101,6 +101,8 @@ export function createAlertRepository(db: DB) {
           FROM issues i
           WHERE i.project_id = ${input.projectId}
             AND i.fingerprint = ${input.fingerprint}
+          ORDER BY (i.silenced_at IS NULL) DESC, i.last_seen DESC
+          LIMIT 1
         ),
         up AS (
           INSERT INTO issues (
@@ -112,7 +114,10 @@ export function createAlertRepository(db: DB) {
             ${input.title}, ${input.title}, NULL, '[]'::jsonb, ${JSON.stringify(input.lastSample)}::jsonb,
             ${seenAtIso}::timestamptz, ${seenAtIso}::timestamptz, 1
           )
-          ON CONFLICT (project_id, fingerprint) DO UPDATE SET
+          -- See telemetry/ingest.ts: the WHERE clause keeps arbiter-index
+          -- inference working on both the legacy partial unique index and the
+          -- full unique index that replaces it in 0082.
+          ON CONFLICT (project_id, fingerprint) WHERE silenced_at IS NULL DO UPDATE SET
             last_seen = GREATEST(issues.last_seen, EXCLUDED.last_seen),
             event_count = issues.event_count + 1,
             title = EXCLUDED.title,

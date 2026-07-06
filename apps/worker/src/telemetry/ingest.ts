@@ -402,6 +402,8 @@ async function upsertIssue(
       FROM issues i
       WHERE i.project_id = ${group.projectId}
         AND i.fingerprint = ${group.fp.hash}
+      ORDER BY (i.silenced_at IS NULL) DESC, i.last_seen DESC
+      LIMIT 1
     ),
     up AS (
       INSERT INTO issues (
@@ -413,7 +415,12 @@ async function upsertIssue(
         ${title}, ${group.message}, ${group.fp.topFrame}, ${normalizedFrames}::jsonb, ${lastSample}::jsonb,
         ${firstSeenIso}::timestamptz, ${lastSeenIso}::timestamptz, ${group.eventCount}
       )
-      ON CONFLICT (project_id, fingerprint) DO UPDATE SET
+      -- The WHERE clause is arbiter-index *inference*, not conflict filtering:
+      -- it matches the legacy partial unique index (pre-0082 schema) and is
+      -- trivially implied by the full unique index that replaces it, so this
+      -- one statement works on both sides of the migration window. Post-0082
+      -- every duplicate fingerprint conflicts, silenced or not.
+      ON CONFLICT (project_id, fingerprint) WHERE silenced_at IS NULL DO UPDATE SET
         last_seen = GREATEST(issues.last_seen, EXCLUDED.last_seen),
         first_seen = LEAST(issues.first_seen, EXCLUDED.first_seen),
         event_count = issues.event_count + ${group.eventCount},

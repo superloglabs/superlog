@@ -1229,10 +1229,14 @@ app.get("/api/projects/:projectId/issues", async (c) => {
     }
     where = and(projectFilter, eq(schema.issues.status, statusParam as schema.IssueStatus))!;
   } else if (!statusParam && silencedParam !== "all") {
+    // Legacy "active" maps to statuses needing attention. Resolved issues are
+    // excluded — before issue statuses existed, "active" meant "not silenced"
+    // because resolution didn't touch issues at all; now it would leave every
+    // problem-resolved issue in the Active tab forever.
     where =
       silencedParam === "silenced"
         ? and(projectFilter, eq(schema.issues.status, "silenced"))!
-        : and(projectFilter, ne(schema.issues.status, "silenced"))!;
+        : and(projectFilter, inArray(schema.issues.status, ["open", "under_observation"]))!;
   }
   const rows = await db.query.issues.findMany({
     where,
