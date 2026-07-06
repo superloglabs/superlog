@@ -94,6 +94,7 @@ import {
 } from "./api";
 import { AWS_REGIONS } from "./awsRegions.ts";
 import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
+import { syncInstructionsDraft } from "./instructions-field-state.ts";
 import { Btn, Chip, FieldLabel, Input, Label, Tile } from "./design/ui";
 import { InfoIcon } from "./onboarding/icons.tsx";
 import { VERCEL_PLAN_REQUIREMENT } from "./onboarding/vercelConnectModel.ts";
@@ -2094,7 +2095,9 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
               Linear tickets, no PRs.
             </p>
             <InstructionsField
+              key={projectId}
               value={data.customInstructions}
+              settingsLoaded={settings.isSuccess}
               disabled={!investigateOn || save.isPending}
               onSave={(v) => patch({ customInstructions: v })}
             />
@@ -3103,26 +3106,40 @@ function PolicyControls<T extends string>({
 
 function InstructionsField({
   value,
+  settingsLoaded,
   disabled,
   onSave,
 }: {
   value: string;
+  settingsLoaded: boolean;
   disabled: boolean;
   onSave: (v: string) => void;
 }) {
   const [draft, setDraft] = useState(value);
-  const [loaded, setLoaded] = useState(false);
+  const [syncedValue, setSyncedValue] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(value.length > 0);
 
+  // Reconcile the local draft with the server value. The draft follows the
+  // server while the editor is clean (so a cold load, a background refetch, or
+  // an edit made elsewhere is picked up) but never clobbers in-progress edits.
+  // Crucially it ignores the placeholder "" emitted while the query is pending,
+  // which previously left the field stuck empty on a cold load and let an empty
+  // Save overwrite the saved instructions.
   useEffect(() => {
-    if (!loaded) {
-      setDraft(value);
-      setLoaded(true);
-      if (value.length > 0) setExpanded(true);
-    }
-  }, [value, loaded]);
+    const next = syncInstructionsDraft({
+      settingsLoaded,
+      serverValue: value,
+      draft,
+      syncedValue,
+      expanded,
+    });
+    if (!next) return;
+    setDraft(next.draft);
+    setSyncedValue(next.syncedValue);
+    setExpanded(next.expanded);
+  }, [value, settingsLoaded, draft, syncedValue, expanded]);
 
-  const dirty = loaded && draft !== value;
+  const dirty = syncedValue !== null && draft !== value;
 
   if (!expanded) {
     return (
