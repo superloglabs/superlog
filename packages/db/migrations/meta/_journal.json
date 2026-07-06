@@ -561,6 +561,13 @@
       "when": 1783087922400,
       "tag": "0079_chemical_santa_claus",
       "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1783344947611,
+      "tag": "0080_careful_scorpion",
+      "breakpoints": true
     }
   ]
 }
