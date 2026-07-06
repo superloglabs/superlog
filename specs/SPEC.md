@@ -15,11 +15,12 @@ When an **Issue** is created, it starts as `open`. An `open` **Issue** should tr
 
 - An **Issue** can be `silenced`, in which case any new occurrences will not start new **Incidents**.
 - An **Issue** can be `under observation`. An **Issue** in `under observation` must have an `escalation trigger`.
-    - If an `escalation trigger` fires, the **Issue** becomes `open` again and triggers a new **Incident**.
+    - If an `escalation trigger` fires, the **Issue** becomes `open` again and triggers a new **Incident**. The new Incident has access to previously gathered context. 
     - An `escalation trigger` can be:
         - a rate of errors (errors per minute)
         - an absolute count of events
-- An **Issue** can be `resolved`. New occurences of the same error will trigger an **Incident**. 
+    - Reoccurences of the Issue `under observation` do not cause anything until the `escalation trigger` trips.
+- An **Issue** can be `resolved`. New occurences of the same error will trigger an **Incident**. The investigations of the reoccuring issue will be able to consult previous findings if necessary.
 
 
 # Incident 
@@ -83,15 +84,20 @@ the Superlog agent must attempt to resolve the issue. The resolution is a multi-
     - Opening subsequent PRs
 - Opening Approval prompts 
 
+### Approval prompt
+
+An Approval prompt is a way for our agent to make changes in the client's infrastructure, databases and other systems with the user's approval. When Superlog has access to the customer's infrastructure, for example, their AWS account, Superlog must always send Approval Prompts before taking action. 
+
+
 ### Non-noise Incident states 
 
 An Incident can be `open` (during the execution of the Agent Run).
 
 #### Resolution by the agent
 
-Once the agent has performed all the actions necessary to mitigate the issue at hand, it can set the incident as `resolved`. For example, when the user merges the PR that the agent has proposed, and it was the only action necessary to resolve the issue, the agent should `resolve` the incident.
+Once the agent has performed all the actions necessary to mitigate the issue at hand, it can set the Incident as `resolved`. For example, when the user merges the PR that the agent has proposed, and it was the only action necessary to resolve the issue, the agent should `resolve` the Incident.
 
-If another PR or action is necessary, the agent should perform these actions and not close the PR.
+If another PR or action is necessary, the agent should perform these actions and not resolve the Incident.
 
 If the client closes the PR and it is obvious from the context that the issue is actually noise, the agent should `resolve` the Incident and `silence` the related issues or put them `under observation`.
 
@@ -115,10 +121,6 @@ Issues and Incidents have associated Comments. Humans and Agents can add Comment
 
 ## Project memory
 Every Project has a list of Memories that can be added by humans and Agents. A Memory is a dated free-form text. All Project memories are visible to the Agent Run investigating the Incident. Agents can add new Memories during investigations and in response to PR comments, Slack messages and other interactions with users.
-
-### Approval prompt
-
-An Approval prompt is a way for our agent to make changes in the client's infrastructure, databases and other systems with the user's approval. When Superlog has access to the customer's infrastructure, for example, their AWS account, Superlog must always send Approval Prompts before taking action. 
 
 # Weekly update
 
