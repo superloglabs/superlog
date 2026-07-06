@@ -4,7 +4,7 @@ import { decideIssueArrivalRouting } from "./issue-routing.js";
 
 const base = {
   createdIncident: false,
-    suppressed: false,
+  suppressed: false,
   latestRunIsTerminal: true,
 };
 

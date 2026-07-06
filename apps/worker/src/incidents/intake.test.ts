@@ -108,7 +108,9 @@ function makeLifecycle(opts: {
 }): IntakeLifecycle {
   return {
     async openRecurrence(input) {
-      opts.calls.push(`openRecurrence:${input.previousIncident.id}<-${input.issue.id}:${input.origin}`);
+      opts.calls.push(
+        `openRecurrence:${input.previousIncident.id}<-${input.issue.id}:${input.origin}`,
+      );
       return (
         opts.recurrenceIncident ??
         makeIncident({

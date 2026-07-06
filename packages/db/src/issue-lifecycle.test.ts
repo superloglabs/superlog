@@ -188,13 +188,11 @@ test("resolving an old incident does not touch issues that recurred into a newer
         })
         .returning(),
     );
-    await db
-      .insert(schema.incidentIssues)
-      .values({
-        incidentId: newer.id,
-        issueId: issue.id,
-        createdAt: new Date(Date.now() + 1000),
-      });
+    await db.insert(schema.incidentIssues).values({
+      incidentId: newer.id,
+      issueId: issue.id,
+      createdAt: new Date(Date.now() + 1000),
+    });
 
     const result = await createIncidentLifecycle(db).resolve({
       incidentId: incident.id,

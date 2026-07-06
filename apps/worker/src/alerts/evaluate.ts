@@ -1,5 +1,9 @@
 import type { schema } from "@superlog/db";
 import {
+  type EvaluationRange,
+  type EvaluationResult,
+  type FiringState,
+  type IssueTransition,
   alertFingerprint,
   buildAlertIssueSample,
   buildIssueTitle,
@@ -7,10 +11,6 @@ import {
   classifyIssueTransition,
   deriveEvaluations,
   evaluationRange,
-  type EvaluationRange,
-  type EvaluationResult,
-  type FiringState,
-  type IssueTransition,
   serviceFromGroup,
 } from "./domain.js";
 import type { AlertRepository } from "./repository.js";
@@ -24,10 +24,7 @@ export type AlertLogger = {
 export type EvaluateAlertDeps = {
   repo: AlertRepository;
   aggregate(alert: schema.Alert, range: EvaluationRange): Promise<Map<string, number>>;
-  handleIssueTransition(
-    issue: schema.Issue,
-    transition: "new" | "recurred",
-  ): Promise<void>;
+  handleIssueTransition(issue: schema.Issue, transition: "new" | "recurred"): Promise<void>;
   logger: AlertLogger;
   now(): Date;
 };

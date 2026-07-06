@@ -133,9 +133,7 @@ async function resolveIncidentAsNoise(
 ): Promise<{ resolved: boolean; resolvedIssueCount: number }> {
   const action = result.noiseClassification?.action ?? null;
   const issueOutcome: ResolveIssueOutcome =
-    action?.kind === "observe"
-      ? { kind: "observe", trigger: action.trigger }
-      : { kind: "silence" };
+    action?.kind === "observe" ? { kind: "observe", trigger: action.trigger } : { kind: "silence" };
   return incidentLifecycle.resolve({
     incidentId: ctx.incident.id,
     kind: "agent_classification",

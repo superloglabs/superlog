@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { schema } from "@superlog/db";
-import {
-  type EvaluateAlertDeps,
-  evaluateAlertWorkflow,
-  runAlertsTick,
-} from "./evaluate.js";
+import { type EvaluateAlertDeps, evaluateAlertWorkflow, runAlertsTick } from "./evaluate.js";
 import type {
   AlertIssueUpsertInput,
   AlertIssueUpsertResult,
@@ -72,7 +68,9 @@ function makeRepoFake(opts: {
       );
     },
     async recordFiring(record) {
-      opts.calls.push(`recordFiring:${record.groupKey || "*"}:${record.state}:${record.issueId ?? "null"}`);
+      opts.calls.push(
+        `recordFiring:${record.groupKey || "*"}:${record.state}:${record.issueId ?? "null"}`,
+      );
       opts.capturedFirings?.push(record);
     },
     async findIncidentIdForIssue(issueId) {
@@ -347,10 +345,7 @@ test("evaluateAlertWorkflow: per_group mode evaluates each group independently",
     },
   });
 
-  await evaluateAlertWorkflow(
-    makeAlert({ groupMode: "per_group", groupBy: "service.name" }),
-    deps,
-  );
+  await evaluateAlertWorkflow(makeAlert({ groupMode: "per_group", groupBy: "service.name" }), deps);
 
   const states = Object.fromEntries(firings.map((f) => [f.groupKey, f.state]));
   assert.deepEqual(states, { api: "firing", worker: "ok" });

@@ -114,7 +114,7 @@ test("getAgentRunnerBackend returns a built-in disabled backend for community in
         customPrompt: null,
         memories: [],
         followUp: null,
-      predecessors: [],
+        predecessors: [],
       }),
     /disabled/,
   );

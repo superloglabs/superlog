@@ -77,10 +77,7 @@ export function createAlertRepository(db: DB) {
         .limit(opts.limit ?? 100);
     },
 
-    async getLatestFiringState(
-      alertId: string,
-      groupKey: string,
-    ): Promise<FiringState | null> {
+    async getLatestFiringState(alertId: string, groupKey: string): Promise<FiringState | null> {
       const row = await db.query.alertFirings.findFirst({
         where: and(
           eq(schema.alertFirings.alertId, alertId),

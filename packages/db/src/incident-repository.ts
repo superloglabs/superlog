@@ -131,11 +131,7 @@ export function createIncidentRepository(database: DB) {
       return tx.query.issues.findMany({ where: inArray(schema.issues.id, ids) });
     },
 
-    async updateIssueInTx(
-      tx: Tx,
-      issueId: string,
-      updates: Partial<schema.Issue>,
-    ): Promise<void> {
+    async updateIssueInTx(tx: Tx, issueId: string, updates: Partial<schema.Issue>): Promise<void> {
       await tx.update(schema.issues).set(updates).where(eq(schema.issues.id, issueId));
     },
 

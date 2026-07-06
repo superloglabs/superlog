@@ -8,11 +8,7 @@ export type EvaluationResult = {
   firing: boolean;
 };
 
-export type FiringTransition =
-  | "new_firing"
-  | "recovered"
-  | "still_firing"
-  | "still_ok";
+export type FiringTransition = "new_firing" | "recovered" | "still_firing" | "still_ok";
 
 export type IssueTransition = "new" | "recurred" | "suppressed" | "seen";
 
@@ -39,10 +35,7 @@ export function alertFingerprint(alertId: string, groupKey: string): string {
   return groupKey ? `alert:${alertId}:${groupKey}` : `alert:${alertId}`;
 }
 
-export function serviceFromGroup(
-  groupBy: string | null,
-  groupKey: string,
-): string | null {
+export function serviceFromGroup(groupBy: string | null, groupKey: string): string | null {
   if (groupBy !== "service.name" && groupBy !== "service") return null;
   return groupKey || null;
 }
@@ -63,10 +56,7 @@ export function buildIssueTitle(
 // result per group key; otherwise we collapse to a single result whose value
 // is either the sum or the across-group average.
 export function deriveEvaluations(
-  alert: Pick<
-    schema.Alert,
-    "groupMode" | "groupBy" | "aggregation" | "comparator" | "threshold"
-  >,
+  alert: Pick<schema.Alert, "groupMode" | "groupBy" | "aggregation" | "comparator" | "threshold">,
   groups: ReadonlyMap<string, number>,
 ): EvaluationResult[] {
   if (alert.groupMode === "per_group" && alert.groupBy) {
