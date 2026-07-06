@@ -90,6 +90,7 @@ test("buildMetricsStreamLaunchUrl carries intake URL, ingest key, and connection
   assert.equal(frag.get("param_IntakeUrl"), "https://intake.example.com/aws/firehose/metrics");
   assert.equal(frag.get("param_IngestKey"), "sl_public_abc123");
   assert.equal(frag.get("param_ConnectionId"), "conn-7");
+  assert.equal(frag.get("param_ResourcePrefix"), "superlog-metrics-conn7");
 });
 
 test("buildLogsStreamLaunchUrl targets the logs stack with the same params", () => {
@@ -106,6 +107,7 @@ test("buildLogsStreamLaunchUrl targets the logs stack with the same params", () 
   assert.equal(frag.get("param_IntakeUrl"), "https://intake.example.com/aws/firehose/logs");
   assert.equal(frag.get("param_IngestKey"), "sl_public_xyz");
   assert.equal(frag.get("param_ConnectionId"), "conn-9");
+  assert.equal(frag.get("param_ResourcePrefix"), "superlog-logs-conn9");
 });
 
 test("buildCombinedConnectLaunchUrl carries scrape + both streams in one stack", () => {
@@ -131,6 +133,7 @@ test("buildCombinedConnectLaunchUrl carries scrape + both streams in one stack",
   assert.equal(frag.get("param_SuperlogAccountId"), "123456789012");
   assert.equal(frag.get("param_ExternalId"), "ext-abc");
   assert.equal(frag.get("param_ConnectionId"), "conn-1");
+  assert.equal(frag.get("param_RoleName"), "SuperlogScrapeRole-conn1");
   assert.equal(
     frag.get("param_SuperlogCallbackUrl"),
     "https://api.example.com/api/cloud-connections/callback",
@@ -145,6 +148,8 @@ test("buildCombinedConnectLaunchUrl carries scrape + both streams in one stack",
   assert.equal(frag.get("param_LogsIntakeUrl"), "https://intake.example.com/aws/firehose/logs");
   assert.equal(frag.get("param_MetricsIngestKey"), "sl_public_metrics");
   assert.equal(frag.get("param_LogsIngestKey"), "sl_public_logs");
+  assert.equal(frag.get("param_MetricsResourcePrefix"), "superlog-metrics-conn1");
+  assert.equal(frag.get("param_LogsResourcePrefix"), "superlog-logs-conn1");
 });
 
 test("buildCombinedConnectLaunchUrl can disable a stream and pass a log filter", () => {

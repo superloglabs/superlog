@@ -83,6 +83,16 @@ Parameters:
       CloudWatch Logs filter pattern. Empty forwards everything; narrow it (e.g.
       ?ERROR ?WARN) to cut log volume and cost. Embedded safely via Fn::ToJsonString.
     Default: ""
+  MetricsResourcePrefix:
+    Type: String
+    Description: Name prefix for metric-stream resources. Supplied by Superlog to avoid name collisions across connections.
+    Default: superlog-metrics
+    AllowedPattern: "^[a-z0-9][a-z0-9-]{2,24}$"
+  LogsResourcePrefix:
+    Type: String
+    Description: Name prefix for log-stream resources. Supplied by Superlog to avoid name collisions across connections.
+    Default: superlog-logs
+    AllowedPattern: "^[a-z0-9][a-z0-9-]{2,24}$"
 
 Conditions:
   # Auto-report only when both the callback URL and a connection id are supplied.
@@ -364,7 +374,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Condition: CreateMetrics
     Properties:
-      LogGroupName: "/aws/kinesisfirehose/superlog-metrics"
+      LogGroupName: !Sub "/aws/kinesisfirehose/${MetricsResourcePrefix}"
       RetentionInDays: 7
 
   MetricsFirehoseLogStream:
@@ -407,13 +417,13 @@ Resources:
                 Action: "logs:PutLogEvents"
                 # PutLogEvents authorizes against the log *stream* ARN, not the
                 # log-group ARN, so scope to the group's streams explicitly.
-                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/superlog-metrics:log-stream:*"
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/${MetricsResourcePrefix}:log-stream:*"
 
   MetricsDeliveryStream:
     Type: AWS::KinesisFirehose::DeliveryStream
     Condition: CreateMetrics
     Properties:
-      DeliveryStreamName: "superlog-metrics-stream"
+      DeliveryStreamName: !Sub "${MetricsResourcePrefix}-stream"
       DeliveryStreamType: DirectPut
       HttpEndpointDestinationConfiguration:
         EndpointConfiguration:
@@ -467,7 +477,7 @@ Resources:
     Type: AWS::CloudWatch::MetricStream
     Condition: CreateMetrics
     Properties:
-      Name: "superlog-metrics-stream"
+      Name: !Sub "${MetricsResourcePrefix}-stream"
       FirehoseArn: !GetAtt MetricsDeliveryStream.Arn
       RoleArn: !GetAtt MetricStreamRole.Arn
       OutputFormat: opentelemetry1.0
@@ -523,7 +533,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Condition: CreateLogs
     Properties:
-      LogGroupName: "/aws/kinesisfirehose/superlog-logs"
+      LogGroupName: !Sub "/aws/kinesisfirehose/${LogsResourcePrefix}"
       RetentionInDays: 7
 
   LogsFirehoseLogStream:
@@ -566,13 +576,13 @@ Resources:
                 Action: "logs:PutLogEvents"
                 # PutLogEvents authorizes against the log *stream* ARN, not the
                 # log-group ARN, so scope to the group's streams explicitly.
-                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/superlog-logs:log-stream:*"
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/${LogsResourcePrefix}:log-stream:*"
 
   LogsDeliveryStream:
     Type: AWS::KinesisFirehose::DeliveryStream
     Condition: CreateLogs
     Properties:
-      DeliveryStreamName: "superlog-logs-stream"
+      DeliveryStreamName: !Sub "${LogsResourcePrefix}-stream"
       DeliveryStreamType: DirectPut
       HttpEndpointDestinationConfiguration:
         EndpointConfiguration:
@@ -637,10 +647,10 @@ Resources:
     Type: AWS::Logs::AccountPolicy
     Condition: CreateLogs
     Properties:
-      PolicyName: "superlog-logs-subscription"
+      PolicyName: !Sub "${LogsResourcePrefix}-subscription"
       PolicyType: SUBSCRIPTION_FILTER_POLICY
       Scope: ALL
-      SelectionCriteria: 'LogGroupName NOT IN ["/aws/kinesisfirehose/superlog-logs"]'
+      SelectionCriteria: !Sub 'LogGroupName NOT IN ["/aws/kinesisfirehose/${LogsResourcePrefix}"]'
       PolicyDocument:
         Fn::ToJsonString:
           DestinationArn: !GetAtt LogsDeliveryStream.Arn
