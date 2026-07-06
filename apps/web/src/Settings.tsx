@@ -92,6 +92,7 @@ import {
 import { AWS_REGIONS } from "./awsRegions.ts";
 import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
 import { Btn, Chip, FieldLabel, Input, Label, Tile } from "./design/ui";
+import { McpInstallPanel } from "./onboarding/McpInstallDialog.tsx";
 import { AgentMemoriesCard } from "./settings/AgentMemoriesCard.tsx";
 import { BillingCard } from "./settings/BillingCard.tsx";
 import { CreateOrgCard } from "./settings/CreateOrgCard.tsx";
@@ -419,6 +420,14 @@ function SectionIcon({ scope, section }: { scope: SettingsScope; section: Sectio
           <path d="M12 18v4" />
         </svg>
       );
+    case "project:mcp-install":
+      return (
+        <svg {...props} aria-hidden="true">
+          <path d="M12 3v12" />
+          <path d="m8 11 4 4 4-4" />
+          <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+        </svg>
+      );
     case "project:mcp-tokens":
       return (
         <svg {...props} aria-hidden="true">
@@ -655,6 +664,17 @@ function ProjectSectionView({
           subtitle="Project-scoped ingest keys for the OpenTelemetry exporter and CLI."
         >
           <ApiKeysCard projectId={projectId} />
+        </Section>
+      );
+    case "mcp-install":
+      return (
+        <Section
+          title="Install MCP server"
+          subtitle="Connect an MCP-aware agent to Superlog. Pick your agent below — the first connect runs a browser OAuth flow, no token required."
+        >
+          <Tile>
+            <McpInstallPanel />
+          </Tile>
         </Section>
       );
     case "mcp-tokens":

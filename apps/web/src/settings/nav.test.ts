@@ -11,7 +11,7 @@ import {
   shouldShowProjectPicker,
 } from "./nav.ts";
 
-test("org nav groups: main group then More group, weekly digest folded into general", () => {
+test("org nav: single flat group, weekly digest folded into general", () => {
   const ids: string[] = ORG_NAV_GROUPS.flatMap((g) => g.items.map((i) => i.id));
   assert.deepEqual(ids, [
     "general",
@@ -21,12 +21,12 @@ test("org nav groups: main group then More group, weekly digest folded into gene
     "mgmt-keys",
     "github-install",
   ]);
+  assert.equal(ORG_NAV_GROUPS.length, 1);
   assert.equal(ORG_NAV_GROUPS[0]?.label, undefined);
-  assert.equal(ORG_NAV_GROUPS[1]?.label, "More");
   assert.ok(!ids.includes("weekly-digest"));
 });
 
-test("project nav groups: agent pages before integrations, keys/webhooks under More", () => {
+test("project nav: single flat group, Install MCP sits next to MCP tokens", () => {
   const ids = PROJECT_NAV_GROUPS.flatMap((g) => g.items.map((i) => i.id));
   assert.deepEqual(ids, [
     "general",
@@ -36,10 +36,12 @@ test("project nav groups: agent pages before integrations, keys/webhooks under M
     "issue-filter",
     "slack-channel",
     "api-keys",
+    "mcp-install",
     "mcp-tokens",
     "webhooks",
   ]);
-  assert.equal(PROJECT_NAV_GROUPS[1]?.label, "More");
+  assert.equal(PROJECT_NAV_GROUPS.length, 1);
+  assert.equal(PROJECT_NAV_GROUPS[0]?.label, undefined);
 });
 
 test("every org nav id resolves to itself", () => {
