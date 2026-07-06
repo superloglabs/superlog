@@ -28,6 +28,81 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS = path.resolve(HERE, "../migrations");
 const CUTOFF_TAG = "0081_issue_lifecycle_backfill";
 
+// Fixture inserts use raw SQL rather than the drizzle schema: the seeding
+// happens against the historical schema (just before the backfill), while
+// schema.ts describes the current one — later migrations add columns that a
+// schema-driven INSERT would reference before they exist.
+type RawDb = { query: unknown } & {
+  execute(q: unknown): Promise<unknown>;
+};
+
+function rowsOf<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  return ((result as { rows?: T[] }).rows ?? []) as T[];
+}
+
+async function insertIssueRaw(
+  db: RawDb,
+  values: {
+    projectId: string;
+    fingerprint: string;
+    firstSeen: Date;
+    lastSeen: Date;
+    silencedAt?: Date | null;
+    eventCount?: number;
+  },
+): Promise<{ id: string }> {
+  const result = await db.execute(sql`
+    INSERT INTO issues (project_id, fingerprint, kind, exception_type, title,
+                        first_seen, last_seen, silenced_at, event_count)
+    VALUES (${values.projectId}, ${values.fingerprint}, 'log', 'Error', 'boom',
+            ${values.firstSeen.toISOString()}::timestamptz,
+            ${values.lastSeen.toISOString()}::timestamptz,
+            ${values.silencedAt ? values.silencedAt.toISOString() : null}::timestamptz,
+            ${values.eventCount ?? 1})
+    RETURNING id
+  `);
+  return one(rowsOf<{ id: string }>(result));
+}
+
+async function insertIncidentRaw(
+  db: RawDb,
+  values: {
+    projectId: string;
+    title: string;
+    status: string;
+    firstSeen: Date;
+    lastSeen: Date;
+    noiseReason?: string | null;
+    noiseResolvedAt?: Date | null;
+    noiseClassification?: Record<string, unknown> | null;
+    resolvedAt?: Date | null;
+    resolvedByKind?: string | null;
+  },
+): Promise<{ id: string }> {
+  const result = await db.execute(sql`
+    INSERT INTO incidents (project_id, title, status, first_seen, last_seen,
+                           noise_reason, noise_resolved_at, noise_classification,
+                           resolved_at, resolved_by_kind)
+    VALUES (${values.projectId}, ${values.title}, ${values.status},
+            ${values.firstSeen.toISOString()}::timestamptz,
+            ${values.lastSeen.toISOString()}::timestamptz,
+            ${values.noiseReason ?? null},
+            ${values.noiseResolvedAt ? values.noiseResolvedAt.toISOString() : null}::timestamptz,
+            ${values.noiseClassification ? JSON.stringify(values.noiseClassification) : null}::jsonb,
+            ${values.resolvedAt ? values.resolvedAt.toISOString() : null}::timestamptz,
+            ${values.resolvedByKind ?? null})
+    RETURNING id
+  `);
+  return one(rowsOf<{ id: string }>(result));
+}
+
+async function linkRaw(db: RawDb, incidentId: string, issueId: string): Promise<void> {
+  await db.execute(sql`
+    INSERT INTO incident_issues (incident_id, issue_id) VALUES (${incidentId}, ${issueId})
+  `);
+}
+
 function migrationsFolderBefore(tag: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), "superlog-migrations-"));
   cpSync(MIGRATIONS, dir, { recursive: true });
@@ -57,161 +132,115 @@ test("issue lifecycle backfill migrates prod-shaped data and the unique index la
     );
     const now = new Date("2026-07-01T00:00:00Z");
     const earlier = new Date("2026-06-01T00:00:00Z");
-    const baseIssue = {
-      projectId: project.id,
-      kind: "log" as const,
-      exceptionType: "Error",
-      title: "boom",
-      firstSeen: now,
-      lastSeen: now,
-    };
 
     // Duplicate-fingerprint group: two silenced generations + one active row
     // (the shape the old partial unique index produced on prod).
-    const dupOld = one(
-      await db
-        .insert(schema.issues)
-        .values({
-          ...baseIssue,
-          fingerprint: "fp-dup",
-          firstSeen: earlier,
-          lastSeen: earlier,
-          silencedAt: earlier,
-          eventCount: 10,
-        })
-        .returning(),
-    );
-    const dupMid = one(
-      await db
-        .insert(schema.issues)
-        .values({ ...baseIssue, fingerprint: "fp-dup", silencedAt: now, eventCount: 5 })
-        .returning(),
-    );
-    const dupActive = one(
-      await db
-        .insert(schema.issues)
-        .values({ ...baseIssue, fingerprint: "fp-dup", eventCount: 2 })
-        .returning(),
-    );
+    const dupOld = await insertIssueRaw(db, {
+      projectId: project.id,
+      fingerprint: "fp-dup",
+      firstSeen: earlier,
+      lastSeen: earlier,
+      silencedAt: earlier,
+      eventCount: 10,
+    });
+    const dupMid = await insertIssueRaw(db, {
+      projectId: project.id,
+      fingerprint: "fp-dup",
+      firstSeen: now,
+      lastSeen: now,
+      silencedAt: now,
+      eventCount: 5,
+    });
+    const dupActive = await insertIssueRaw(db, {
+      projectId: project.id,
+      fingerprint: "fp-dup",
+      firstSeen: now,
+      lastSeen: now,
+      eventCount: 2,
+    });
 
     // Issue linked to a noise-closed incident.
-    const noiseIssue = one(
-      await db
-        .insert(schema.issues)
-        .values({ ...baseIssue, fingerprint: "fp-noise", eventCount: 7 })
-        .returning(),
-    );
-    const noiseIncident = one(
-      await db
-        .insert(schema.incidents)
-        .values({
-          projectId: project.id,
-          title: "noise incident",
-          status: "autoresolved_noise",
-          noiseReason: "expected_third_party",
-          noiseResolvedAt: earlier,
-          noiseClassification: { reason: "expected_third_party", evidence: "third party flake" },
-          firstSeen: earlier,
-          lastSeen: now,
-        })
-        .returning(),
-    );
-    await db
-      .insert(schema.incidentIssues)
-      .values({ incidentId: noiseIncident.id, issueId: noiseIssue.id });
+    const noiseIssue = await insertIssueRaw(db, {
+      projectId: project.id,
+      fingerprint: "fp-noise",
+      firstSeen: now,
+      lastSeen: now,
+      eventCount: 7,
+    });
+    const noiseIncident = await insertIncidentRaw(db, {
+      projectId: project.id,
+      title: "noise incident",
+      status: "autoresolved_noise",
+      noiseReason: "expected_third_party",
+      noiseResolvedAt: earlier,
+      noiseClassification: { reason: "expected_third_party", evidence: "third party flake" },
+      firstSeen: earlier,
+      lastSeen: now,
+    });
+    await linkRaw(db, noiseIncident.id, noiseIssue.id);
 
     // Issue linked to a resolved incident.
-    const resolvedIssue = one(
-      await db
-        .insert(schema.issues)
-        .values({ ...baseIssue, fingerprint: "fp-resolved" })
-        .returning(),
-    );
-    const resolvedIncident = one(
-      await db
-        .insert(schema.incidents)
-        .values({
-          projectId: project.id,
-          title: "fixed incident",
-          status: "resolved",
-          resolvedAt: earlier,
-          resolvedByKind: "agent_pr_merged",
-          firstSeen: earlier,
-          lastSeen: earlier,
-        })
-        .returning(),
-    );
-    await db
-      .insert(schema.incidentIssues)
-      .values({ incidentId: resolvedIncident.id, issueId: resolvedIssue.id });
+    const resolvedIssue = await insertIssueRaw(db, {
+      projectId: project.id,
+      fingerprint: "fp-resolved",
+      firstSeen: now,
+      lastSeen: now,
+    });
+    const resolvedIncident = await insertIncidentRaw(db, {
+      projectId: project.id,
+      title: "fixed incident",
+      status: "resolved",
+      resolvedAt: earlier,
+      resolvedByKind: "agent_pr_merged",
+      firstSeen: earlier,
+      lastSeen: earlier,
+    });
+    await linkRaw(db, resolvedIncident.id, resolvedIssue.id);
 
     // Issue linked to an open incident, and an unlinked issue — both stay open.
-    const openIssue = one(
-      await db
-        .insert(schema.issues)
-        .values({ ...baseIssue, fingerprint: "fp-open" })
-        .returning(),
-    );
-    const openIncident = one(
-      await db
-        .insert(schema.incidents)
-        .values({
-          projectId: project.id,
-          title: "live incident",
-          status: "open",
-          firstSeen: now,
-          lastSeen: now,
-        })
-        .returning(),
-    );
-    await db
-      .insert(schema.incidentIssues)
-      .values({ incidentId: openIncident.id, issueId: openIssue.id });
-    const unlinkedIssue = one(
-      await db
-        .insert(schema.issues)
-        .values({ ...baseIssue, fingerprint: "fp-unlinked" })
-        .returning(),
-    );
+    const openIssue = await insertIssueRaw(db, {
+      projectId: project.id,
+      fingerprint: "fp-open",
+      firstSeen: now,
+      lastSeen: now,
+    });
+    const openIncident = await insertIncidentRaw(db, {
+      projectId: project.id,
+      title: "live incident",
+      status: "open",
+      firstSeen: now,
+      lastSeen: now,
+    });
+    await linkRaw(db, openIncident.id, openIssue.id);
+    const unlinkedIssue = await insertIssueRaw(db, {
+      projectId: project.id,
+      fingerprint: "fp-unlinked",
+      firstSeen: now,
+      lastSeen: now,
+    });
 
     // Loser duplicates carry incident links too: one to its own noise incident
     // (repointable) and one to an incident the survivor will also cover after
     // the survivor's own link is added (exercises the skip-then-cascade path).
-    const dupIncident = one(
-      await db
-        .insert(schema.incidents)
-        .values({
-          projectId: project.id,
-          title: "dup incident",
-          status: "autoresolved_noise",
-          noiseReason: "confusing_log_no_impact",
-          noiseResolvedAt: earlier,
-          firstSeen: earlier,
-          lastSeen: earlier,
-        })
-        .returning(),
-    );
-    await db
-      .insert(schema.incidentIssues)
-      .values({ incidentId: dupIncident.id, issueId: dupOld.id });
-    const sharedIncident = one(
-      await db
-        .insert(schema.incidents)
-        .values({
-          projectId: project.id,
-          title: "shared incident",
-          status: "open",
-          firstSeen: now,
-          lastSeen: now,
-        })
-        .returning(),
-    );
-    await db
-      .insert(schema.incidentIssues)
-      .values({ incidentId: sharedIncident.id, issueId: dupMid.id });
-    await db
-      .insert(schema.incidentIssues)
-      .values({ incidentId: sharedIncident.id, issueId: dupActive.id });
+    const dupIncident = await insertIncidentRaw(db, {
+      projectId: project.id,
+      title: "dup incident",
+      status: "autoresolved_noise",
+      noiseReason: "confusing_log_no_impact",
+      noiseResolvedAt: earlier,
+      firstSeen: earlier,
+      lastSeen: earlier,
+    });
+    await linkRaw(db, dupIncident.id, dupOld.id);
+    const sharedIncident = await insertIncidentRaw(db, {
+      projectId: project.id,
+      title: "shared incident",
+      status: "open",
+      firstSeen: now,
+      lastSeen: now,
+    });
+    await linkRaw(db, sharedIncident.id, dupMid.id);
+    await linkRaw(db, sharedIncident.id, dupActive.id);
 
     // --- Apply the backfill (0081) and the full unique index (0082+) ---
     await migrate(db, { migrationsFolder: MIGRATIONS });
@@ -265,7 +294,15 @@ test("issue lifecycle backfill migrates prod-shaped data and the unique index la
     // fingerprint (silenced or not) must now be rejected.
     let uniqueViolation: unknown = null;
     try {
-      await db.insert(schema.issues).values({ ...baseIssue, fingerprint: "fp-noise" });
+      await db.insert(schema.issues).values({
+        projectId: project.id,
+        kind: "log",
+        exceptionType: "Error",
+        title: "boom",
+        firstSeen: now,
+        lastSeen: now,
+        fingerprint: "fp-noise",
+      });
     } catch (err) {
       uniqueViolation = err;
     }
