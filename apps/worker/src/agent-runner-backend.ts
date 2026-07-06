@@ -35,6 +35,22 @@ export type AgentRunnerMemory = {
   body: string;
 };
 
+// A closed incident this run's incident descends from (recurrence /
+// escalation chain via incidents.previous_incident_id, newest first). Gives
+// the new investigation the prior findings without re-deriving them.
+export type AgentRunnerPredecessorIncident = {
+  incidentId: string;
+  title: string;
+  codename: string;
+  resolvedAt: string | null;
+  resolvedReasonCode: string | null;
+  resolvedReasonText: string | null;
+  agentSummary: string | null;
+  rootCauseText: string | null;
+  handoffNotes: string | null;
+  prUrls: string[];
+};
+
 // Context for a follow-up run revived by a human interaction after a prior
 // investigation finished. The prior session is gone; this block plus the PR
 // branch and project memories is everything the new session inherits.
@@ -80,6 +96,9 @@ export type AgentRunnerStartInput = {
   memories: AgentRunnerMemory[];
   // Null for ordinary incident-triggered investigations.
   followUp: AgentRunnerFollowUp | null;
+  // Closed incidents this one descends from (recurrence/escalation chain),
+  // newest first, capped. Empty for first-time incidents.
+  predecessors: AgentRunnerPredecessorIncident[];
 };
 
 export type AgentRunnerSnapshot = {
