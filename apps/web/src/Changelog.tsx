@@ -1,4 +1,6 @@
-import changelogRaw from "./content/CHANGELOG.md?raw";
+// Content lives at the repo root as the canonical CHANGELOG.md; Vite inlines it
+// at build time. See the update-changelog skill for the entry format.
+import changelogRaw from "../../../CHANGELOG.md?raw";
 import { Markdown } from "./content/Markdown.tsx";
 import { PublicShell } from "./content/PublicShell.tsx";
 import { type ChangelogEntry, parseChangelog } from "./content/parseChangelog.ts";
@@ -26,16 +28,14 @@ function Entry({ entry }: { entry: ChangelogEntry }) {
     <article className="grid gap-4 border-t border-border pt-8 first:border-t-0 first:pt-0 md:grid-cols-[160px_1fr]">
       <div className="flex flex-col gap-3">
         {entry.date && (
-          <time className="font-mono text-[11px] uppercase tracking-[0.16em] text-subtle">
-            {formatDate(entry.date)}
-          </time>
+          <time className="text-[13px] font-medium text-subtle">{formatDate(entry.date)}</time>
         )}
         {entry.tags.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {entry.tags.map((tag) => (
               <span
                 key={tag}
-                className="w-max rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-muted"
+                className="w-max rounded-full border border-border px-2 py-0.5 text-[11px] font-medium text-muted"
               >
                 {tag}
               </span>

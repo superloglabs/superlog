@@ -60,9 +60,7 @@ export function PublicShell({
 
       <main className="mx-auto w-full max-w-[1080px] px-4 py-14 md:px-8 md:py-20">
         <div className="max-w-[780px]">
-          {eyebrow && (
-            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-subtle">{eyebrow}</p>
-          )}
+          {eyebrow && <p className="text-[13px] font-medium text-subtle">{eyebrow}</p>}
           <h1
             className="mt-5 text-[2.25rem] leading-tight tracking-tight text-fg md:text-[3.25rem]"
             style={{ fontWeight: 450 }}

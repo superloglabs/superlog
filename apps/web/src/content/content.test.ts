@@ -9,7 +9,7 @@ import { parseRoadmap } from "./parseRoadmap.ts";
 // date). These are the actual files the pages import via `?raw`.
 
 test("CHANGELOG.md parses into dated, titled entries", async () => {
-  const raw = await readFile(new URL("./CHANGELOG.md", import.meta.url), "utf8");
+  const raw = await readFile(new URL("../../../../CHANGELOG.md", import.meta.url), "utf8");
   const entries = parseChangelog(raw);
   assert.ok(entries.length > 0, "expected at least one changelog entry");
   for (const entry of entries) {
@@ -20,14 +20,14 @@ test("CHANGELOG.md parses into dated, titled entries", async () => {
 });
 
 test("changelog entries are ordered newest-first", async () => {
-  const raw = await readFile(new URL("./CHANGELOG.md", import.meta.url), "utf8");
+  const raw = await readFile(new URL("../../../../CHANGELOG.md", import.meta.url), "utf8");
   const dates = parseChangelog(raw).map((e) => e.date);
   const sorted = [...dates].sort().reverse();
   assert.deepEqual(dates, sorted, "changelog entries must be newest-first");
 });
 
 test("ROADMAP.md parses into non-empty status columns", async () => {
-  const raw = await readFile(new URL("./ROADMAP.md", import.meta.url), "utf8");
+  const raw = await readFile(new URL("../../../../ROADMAP.md", import.meta.url), "utf8");
   const sections = parseRoadmap(raw);
   assert.ok(sections.length > 0, "expected at least one roadmap section");
   assert.ok(

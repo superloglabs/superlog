@@ -1,6 +1,7 @@
 import { Markdown } from "./content/Markdown.tsx";
 import { PublicShell } from "./content/PublicShell.tsx";
-import roadmapRaw from "./content/ROADMAP.md?raw";
+// Canonical ROADMAP.md at the repo root; Vite inlines it at build time.
+import roadmapRaw from "../../../ROADMAP.md?raw";
 import { parseRoadmap } from "./content/parseRoadmap.ts";
 
 const SECTIONS = parseRoadmap(roadmapRaw);
@@ -18,7 +19,7 @@ export function Roadmap() {
             key={section.status}
             className="grid gap-4 border-t border-border pt-8 first:border-t-0 first:pt-0 md:grid-cols-[160px_1fr]"
           >
-            <h2 className="font-mono text-[11px] uppercase tracking-[0.16em] text-subtle">
+            <h2 className="text-[13px] font-semibold tracking-tight text-subtle">
               {section.status}
             </h2>
             {section.items.length > 0 ? (
