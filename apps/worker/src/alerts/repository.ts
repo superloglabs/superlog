@@ -17,6 +17,9 @@ export type AlertIssueUpsertResult = {
   issue: schema.Issue;
   prevIssueId: string | null;
   prevIssueStatus: string | null;
+  // True when the upsert inserted a fresh row (xmax = 0) rather than
+  // updating an existing one — always a "new" transition.
+  inserted: boolean;
 };
 
 export type FiringRecord = {
@@ -148,6 +151,7 @@ export function createAlertRepository(db: DB) {
         issue,
         prevIssueId: raw?.prev_issue_id ?? null,
         prevIssueStatus: raw?.prev_issue_status ?? null,
+        inserted: raw?.xmax === "0",
       };
     },
 

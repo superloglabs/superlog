@@ -101,8 +101,11 @@ export function classifyFiringTransition(
 export function classifyIssueTransition(
   prevIssueId: string | null,
   prevIssueStatus: string | null,
+  inserted = false,
 ): IssueTransition {
-  if (prevIssueId === null) return "new";
+  // A genuinely inserted row is always new — see telemetry/ingest.ts for the
+  // pre-0082 migration-window case where `prev` can show a stale silenced row.
+  if (inserted || prevIssueId === null) return "new";
   if (prevIssueStatus === "silenced" || prevIssueStatus === "under_observation") {
     return "suppressed";
   }

@@ -193,6 +193,7 @@ async function upsertAndNotify(
   const issueTransition: IssueTransition = classifyIssueTransition(
     upsert.prevIssueId,
     upsert.prevIssueStatus,
+    upsert.inserted,
   );
   if (issueTransition === "new" || issueTransition === "recurred") {
     await deps.handleIssueTransition(upsert.issue, issueTransition);

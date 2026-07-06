@@ -64,6 +64,7 @@ function makeRepoFake(opts: {
           issue: { id: "issue-1", title: input.title } as schema.Issue,
           prevIssueId: null,
           prevIssueStatus: null,
+          inserted: true,
         }
       );
     },
@@ -221,6 +222,7 @@ test("evaluateAlertWorkflow: recurred transition fires handler with 'recurred'",
       issue: { id: "issue-2" } as schema.Issue,
       prevIssueId: "issue-2",
       prevIssueStatus: "resolved",
+      inserted: false,
     },
   });
   const deps = makeDeps({ calls, repo });
@@ -238,6 +240,7 @@ test("evaluateAlertWorkflow: silenced issue suppresses the handler entirely", as
       issue: { id: "issue-4" } as schema.Issue,
       prevIssueId: "issue-4",
       prevIssueStatus: "silenced",
+      inserted: false,
     },
   });
   const deps = makeDeps({ calls, repo });
@@ -255,6 +258,7 @@ test("evaluateAlertWorkflow: 'seen' transition does not notify but still records
       issue: { id: "issue-3" } as schema.Issue,
       prevIssueId: "issue-3",
       prevIssueStatus: "open",
+      inserted: false,
     },
   });
   const deps = makeDeps({ calls, repo });

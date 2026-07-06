@@ -184,8 +184,17 @@ export function registerTelemetryIngestMetrics(opts: {
   );
 }
 
-function computeTransition(prevIssueId: string | null, prevIssueStatus: string | null): Transition {
-  if (prevIssueId === null) return "new";
+// `inserted` (xmax = 0 on the RETURNING row) means the upsert genuinely
+// created a new issue row — that is always a "new" transition, even if a
+// stale `prev` row was visible (pre-0082 schema, where the partial unique
+// index lets a silenced fingerprint spawn a fresh row; without this check
+// that new row would be classified "suppressed" and never get an incident).
+function computeTransition(
+  prevIssueId: string | null,
+  prevIssueStatus: string | null,
+  inserted: boolean,
+): Transition {
+  if (inserted || prevIssueId === null) return "new";
   if (prevIssueStatus === "silenced" || prevIssueStatus === "under_observation") {
     return "suppressed";
   }
@@ -448,6 +457,7 @@ async function upsertIssue(
       const transition = computeTransition(
         raw?.prev_issue_id ?? null,
         raw?.prev_issue_status ?? null,
+        raw?.xmax === "0",
       );
       span.setAttribute("issue.transition", transition);
       // Only reload the full row when a downstream handler needs it (new or

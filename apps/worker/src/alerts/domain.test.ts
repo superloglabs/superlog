@@ -151,6 +151,9 @@ test("classifyIssueTransition distinguishes new, recurred, suppressed, seen", ()
   assert.equal(classifyIssueTransition("iss-1", "under_observation"), "suppressed");
   assert.equal(classifyIssueTransition("iss-1", "open"), "seen");
   assert.equal(classifyIssueTransition("iss-1", null), "seen");
+  // A real INSERT is always new, even when a stale prev row was visible
+  // (pre-0082 schema: silenced row invisible to the partial unique index).
+  assert.equal(classifyIssueTransition("iss-1", "silenced", true), "new");
 });
 
 test("buildAlertIssueSample carries service only for service-grouped alerts", () => {
