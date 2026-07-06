@@ -12,6 +12,7 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import {
   type StsVerifier,
+  awsConnectScrapeRoleName,
   buildCombinedConnectLaunchUrl,
   buildConnectQuickCreateUrl,
   buildLogsStreamLaunchUrl,
@@ -385,6 +386,7 @@ export function mountCloudConnectionsAuthed(
         ExternalId: externalId,
         SuperlogAccountId: config.superlogAccountId,
         ConnectionId: row.id,
+        RoleName: awsConnectScrapeRoleName(row.id),
       };
       // When we have a callback URL, pass it so the template's in-stack Lambda
       // reports the role ARN back automatically (zero-paste). Otherwise the

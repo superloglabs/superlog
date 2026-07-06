@@ -10,6 +10,19 @@ export function generateExternalId(): string {
   return randomBytes(32).toString("base64url");
 }
 
+function connectionResourceSuffix(connectionId: string): string {
+  const compact = connectionId.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return (compact || "default").slice(0, 7);
+}
+
+function streamResourcePrefix(kind: "metrics" | "logs", connectionId: string): string {
+  return `superlog-${kind}-${connectionResourceSuffix(connectionId)}`;
+}
+
+export function awsConnectScrapeRoleName(connectionId: string): string {
+  return `SuperlogScrapeRole-${connectionResourceSuffix(connectionId)}`;
+}
+
 export type QuickCreateUrlInput = {
   /** Region the stack is created in. Metric streams / Firehose are regional. */
   region: string;
@@ -80,6 +93,10 @@ function buildStreamLaunchUrl(stackName: string, input: StreamLaunchInput): stri
       IntakeUrl: input.intakeUrl,
       IngestKey: input.ingestKey,
       ConnectionId: input.connectionId,
+      ResourcePrefix: streamResourcePrefix(
+        stackName === "superlog-metrics-stream" ? "metrics" : "logs",
+        input.connectionId,
+      ),
     },
   });
 }
@@ -137,8 +154,11 @@ export function buildCombinedConnectLaunchUrl(input: CombinedConnectLaunchInput)
     SuperlogAccountId: input.superlogAccountId,
     ExternalId: input.externalId,
     ConnectionId: input.connectionId,
+    RoleName: awsConnectScrapeRoleName(input.connectionId),
     EnableMetrics: (input.enableMetrics ?? true) ? "true" : "false",
     EnableLogs: (input.enableLogs ?? true) ? "true" : "false",
+    MetricsResourcePrefix: streamResourcePrefix("metrics", input.connectionId),
+    LogsResourcePrefix: streamResourcePrefix("logs", input.connectionId),
     MetricsIntakeUrl: input.metricsIntakeUrl,
     LogsIntakeUrl: input.logsIntakeUrl,
     MetricsIngestKey: input.metricsIngestKey,

@@ -25,6 +25,7 @@ export type ProjectSectionId =
   | "issue-filter"
   | "slack-channel"
   | "api-keys"
+  | "mcp-install"
   | "mcp-tokens"
   | "webhooks";
 
@@ -45,11 +46,6 @@ export const ORG_NAV_GROUPS: ReadonlyArray<NavGroup<OrgSectionId>> = [
       { id: "members", label: "Members" },
       { id: "billing", label: "Billing" },
       { id: "agent-guidance", label: "Agent guidance" },
-    ],
-  },
-  {
-    label: "More",
-    items: [
       { id: "mgmt-keys", label: "API keys" },
       { id: "github-install", label: "GitHub" },
     ],
@@ -65,12 +61,8 @@ export const PROJECT_NAV_GROUPS: ReadonlyArray<NavGroup<ProjectSectionId>> = [
       { id: "integrations", label: "Integrations" },
       { id: "issue-filter", label: "Issue filter" },
       { id: "slack-channel", label: "Slack channel" },
-    ],
-  },
-  {
-    label: "More",
-    items: [
       { id: "api-keys", label: "API keys" },
+      { id: "mcp-install", label: "Install MCP" },
       { id: "mcp-tokens", label: "MCP tokens" },
       { id: "webhooks", label: "Webhooks" },
     ],

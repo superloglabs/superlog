@@ -32,6 +32,29 @@ codex mcp login superlog`,
   },
 ];
 
+/**
+ * The install instructions on their own — client tabs plus the follow-up
+ * notes. Rendered inline in Settings and inside {@link McpInstallDialog}.
+ */
+export function McpInstallPanel() {
+  return (
+    <div className="space-y-4">
+      <CodeTabs tabs={CLIENTS} />
+      <div className="space-y-1 text-[12px] text-subtle">
+        <p>
+          Using a different agent? Most MCP-aware tools accept the same{" "}
+          <code className="font-mono text-muted">https://api.superlog.sh/mcp</code> URL.
+        </p>
+        <p>
+          Prefer a static token over the OAuth flow? Generate a personal access token under{" "}
+          <span className="text-muted">Settings → Project → MCP tokens</span> and pass it as an{" "}
+          <code className="font-mono text-muted">Authorization: Bearer …</code> header.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export function McpInstallDialog({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -98,19 +121,7 @@ export function McpInstallDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="px-[22px] py-[18px]">
-          <CodeTabs tabs={CLIENTS} />
-        </div>
-
-        <div className="space-y-1 border-t border-border px-[22px] py-3 text-[12px] text-subtle">
-          <p>
-            Using a different agent? Most MCP-aware tools accept the same{" "}
-            <code className="font-mono text-muted">https://api.superlog.sh/mcp</code> URL.
-          </p>
-          <p>
-            Prefer a static token over the OAuth flow? Generate a personal access token under{" "}
-            <span className="text-muted">Settings → Project → MCP tokens</span> and pass it as an{" "}
-            <code className="font-mono text-muted">Authorization: Bearer …</code> header.
-          </p>
+          <McpInstallPanel />
         </div>
       </div>
     </div>
