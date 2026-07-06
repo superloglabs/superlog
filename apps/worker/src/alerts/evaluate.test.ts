@@ -67,7 +67,7 @@ function makeRepoFake(opts: {
         opts.upsertResult ?? {
           issue: { id: "issue-1", title: input.title } as schema.Issue,
           prevIssueId: null,
-          prevIncidentStatus: null,
+          prevIssueStatus: null,
         }
       );
     },
@@ -215,21 +215,38 @@ test("evaluateAlertWorkflow: still-ok records nothing extra", async () => {
   ]);
 });
 
-test("evaluateAlertWorkflow: regressed transition fires handler with 'regressed'", async () => {
+test("evaluateAlertWorkflow: recurred transition fires handler with 'recurred'", async () => {
   const calls: string[] = [];
   const repo = makeRepoFake({
     calls,
     upsertResult: {
       issue: { id: "issue-2" } as schema.Issue,
       prevIssueId: "issue-2",
-      prevIncidentStatus: "resolved",
+      prevIssueStatus: "resolved",
     },
   });
   const deps = makeDeps({ calls, repo });
 
   await evaluateAlertWorkflow(makeAlert(), deps);
 
-  assert.ok(calls.includes("handleIssueTransition:issue-2:regressed"));
+  assert.ok(calls.includes("handleIssueTransition:issue-2:recurred"));
+});
+
+test("evaluateAlertWorkflow: silenced issue suppresses the handler entirely", async () => {
+  const calls: string[] = [];
+  const repo = makeRepoFake({
+    calls,
+    upsertResult: {
+      issue: { id: "issue-4" } as schema.Issue,
+      prevIssueId: "issue-4",
+      prevIssueStatus: "silenced",
+    },
+  });
+  const deps = makeDeps({ calls, repo });
+
+  await evaluateAlertWorkflow(makeAlert(), deps);
+
+  assert.ok(!calls.some((c) => c.startsWith("handleIssueTransition")));
 });
 
 test("evaluateAlertWorkflow: 'seen' transition does not notify but still records firing", async () => {
@@ -239,7 +256,7 @@ test("evaluateAlertWorkflow: 'seen' transition does not notify but still records
     upsertResult: {
       issue: { id: "issue-3" } as schema.Issue,
       prevIssueId: "issue-3",
-      prevIncidentStatus: "open",
+      prevIssueStatus: "open",
     },
   });
   const deps = makeDeps({ calls, repo });

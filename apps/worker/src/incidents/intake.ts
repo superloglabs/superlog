@@ -26,8 +26,11 @@ export type IntakeLogger = {
 };
 
 export type IntakeRepository = {
-  findIncidentIssueLink(issueId: string): Promise<schema.IncidentIssue | undefined>;
+  // Newest incident_issues link — an issue keeps one link per incident it has
+  // driven over its life, so the latest link is its current incident.
+  findLatestIncidentIssueLink(issueId: string): Promise<schema.IncidentIssue | undefined>;
   findIncident(incidentId: string): Promise<schema.Incident | undefined>;
+  touchIncidentLastSeen(incidentId: string, lastSeen: Date): Promise<void>;
   findOpenIncidentCandidates(
     issue: schema.Issue,
     opts: { filterService: boolean },
@@ -50,10 +53,12 @@ export type IntakeRepository = {
 };
 
 export type IntakeLifecycle = {
-  reopenFromIssueRegression(opts: {
-    incident: schema.Incident;
+  openRecurrence(opts: {
+    previousIncident: schema.Incident;
     issue: schema.Issue;
-  }): Promise<{ reopened: boolean }>;
+    origin: "resolved_issue_recurred" | "escalation_trigger";
+    environment?: string | null;
+  }): Promise<schema.Incident>;
   createOpen(opts: {
     projectId: string;
     service: string | null;
@@ -79,11 +84,15 @@ export type IntakeDeps = {
   logger: IntakeLogger;
 };
 
+export type IssueIntakeTransition = "new" | "recurred";
+
 export type EnsureIncidentForIssueResult = {
   incident: schema.Incident;
   createdIncident: boolean;
   linkedIssue: boolean;
-  reopenedIncident: boolean;
+  // The incident was opened because a resolved issue recurred (chained to its
+  // predecessor via previous_incident_id).
+  recurrenceIncident: boolean;
 };
 
 type Grouping = {
@@ -95,19 +104,51 @@ type Grouping = {
 
 export async function ensureIncidentForIssueWorkflow(
   issue: schema.Issue,
+  transition: IssueIntakeTransition,
   deps: IntakeDeps,
 ): Promise<EnsureIncidentForIssueResult> {
-  const existingLink = await deps.repo.findIncidentIssueLink(issue.id);
+  const existingLink = await deps.repo.findLatestIncidentIssueLink(issue.id);
+
+  if (transition === "recurred" && existingLink) {
+    const previous = await deps.repo.findIncident(existingLink.incidentId);
+    if (previous) {
+      // Retry-idempotency: if a prior attempt already opened the recurrence
+      // incident, the latest link points at an open incident — reuse it.
+      if (previous.status === "open") {
+        return {
+          incident: previous,
+          createdIncident: false,
+          linkedIssue: false,
+          recurrenceIncident: false,
+        };
+      }
+      const incident = await deps.lifecycle.openRecurrence({
+        previousIncident: previous,
+        issue,
+        origin: "resolved_issue_recurred",
+        environment: environmentFromResourceAttrs(issue.lastSample?.resourceAttrs),
+      });
+      await deps.repo.updateIssueGrouping(issue.id, {
+        state: "standalone",
+        source: "heuristic",
+        reason: "Recurrence of a resolved issue; chained to its previous incident.",
+      });
+      return { incident, createdIncident: true, linkedIssue: true, recurrenceIncident: true };
+    }
+  }
+
   if (existingLink) {
     const incident = await deps.repo.findIncident(existingLink.incidentId);
     if (incident) {
-      const reopen = await deps.lifecycle.reopenFromIssueRegression({ incident, issue });
+      if (incident.status === "open") {
+        await deps.repo.touchIncidentLastSeen(incident.id, issue.lastSeen);
+      }
       const freshIncident = (await deps.repo.findIncident(incident.id)) ?? incident;
       return {
         incident: freshIncident,
         createdIncident: false,
         linkedIssue: false,
-        reopenedIncident: reopen.reopened,
+        recurrenceIncident: false,
       };
     }
   }
@@ -131,7 +172,7 @@ export async function ensureIncidentForIssueWorkflow(
   const linkedIssue = await deps.repo.linkIssueToIncident({ incident, issue });
   await markIssueGrouping(issue.id, grouping, deps.repo);
   const freshIncident = (await deps.repo.findIncident(incident.id)) ?? incident;
-  return { incident: freshIncident, createdIncident, linkedIssue, reopenedIncident: false };
+  return { incident: freshIncident, createdIncident, linkedIssue, recurrenceIncident: false };
 }
 
 async function findMatchingIncident(issue: schema.Issue, deps: IntakeDeps): Promise<Grouping> {

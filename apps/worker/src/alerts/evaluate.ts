@@ -26,7 +26,7 @@ export type EvaluateAlertDeps = {
   aggregate(alert: schema.Alert, range: EvaluationRange): Promise<Map<string, number>>;
   handleIssueTransition(
     issue: schema.Issue,
-    transition: "new" | "regressed",
+    transition: "new" | "recurred",
   ): Promise<void>;
   logger: AlertLogger;
   now(): Date;
@@ -195,9 +195,9 @@ async function upsertAndNotify(
   });
   const issueTransition: IssueTransition = classifyIssueTransition(
     upsert.prevIssueId,
-    upsert.prevIncidentStatus,
+    upsert.prevIssueStatus,
   );
-  if (issueTransition === "new" || issueTransition === "regressed") {
+  if (issueTransition === "new" || issueTransition === "recurred") {
     await deps.handleIssueTransition(upsert.issue, issueTransition);
   }
   return upsert.issue.id;

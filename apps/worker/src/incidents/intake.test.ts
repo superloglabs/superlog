@@ -64,9 +64,12 @@ function makeRepo(opts: {
 }): IntakeRepository {
   const incidentById = opts.incidentById ?? new Map<string, schema.Incident>();
   return {
-    async findIncidentIssueLink(issueId) {
-      opts.calls.push(`findIncidentIssueLink:${issueId}`);
+    async findLatestIncidentIssueLink(issueId: string) {
+      opts.calls.push(`findLatestIncidentIssueLink:${issueId}`);
       return opts.existingLink as schema.IncidentIssue | undefined;
+    },
+    async touchIncidentLastSeen(incidentId: string, _lastSeen: Date) {
+      opts.calls.push(`touchIncidentLastSeen:${incidentId}`);
     },
     async findIncident(incidentId) {
       opts.calls.push(`findIncident:${incidentId}`);
@@ -100,13 +103,19 @@ function makeRepo(opts: {
 
 function makeLifecycle(opts: {
   calls: string[];
-  reopened?: boolean;
+  recurrenceIncident?: schema.Incident;
   createdIncident?: schema.Incident;
 }): IntakeLifecycle {
   return {
-    async reopenFromIssueRegression(input) {
-      opts.calls.push(`reopen:${input.incident.id}<-${input.issue.id}`);
-      return { reopened: opts.reopened ?? false };
+    async openRecurrence(input) {
+      opts.calls.push(`openRecurrence:${input.previousIncident.id}<-${input.issue.id}:${input.origin}`);
+      return (
+        opts.recurrenceIncident ??
+        makeIncident({
+          id: "inc-recurrence",
+          previousIncidentId: input.previousIncident.id,
+        })
+      );
     },
     async createOpen(input) {
       opts.calls.push(
@@ -139,7 +148,7 @@ function makeDeps(overrides: {
   };
 }
 
-test("intake: existing link reopens incident and returns it unchanged", async () => {
+test("intake: existing link touches the open incident and returns it unchanged", async () => {
   const calls: string[] = [];
   const existing = makeIncident({ id: "inc-old" });
   const repo = makeRepo({
@@ -147,16 +156,61 @@ test("intake: existing link reopens incident and returns it unchanged", async ()
     existingLink: { issueId: "iss-new", incidentId: "inc-old" },
     incidentById: new Map([["inc-old", existing]]),
   });
-  const lifecycle = makeLifecycle({ calls, reopened: true });
+  const lifecycle = makeLifecycle({ calls });
   const result = await ensureIncidentForIssueWorkflow(
     makeIssue(),
+    "new",
     makeDeps({ repo, lifecycle, calls }),
   );
   assert.equal(result.createdIncident, false);
   assert.equal(result.linkedIssue, false);
-  assert.equal(result.reopenedIncident, true);
+  assert.equal(result.recurrenceIncident, false);
   assert.equal(result.incident.id, "inc-old");
-  assert.ok(calls.includes("reopen:inc-old<-iss-new"));
+  assert.ok(calls.includes("touchIncidentLastSeen:inc-old"));
+});
+
+test("intake: recurred issue opens a new incident chained to its previous one", async () => {
+  const calls: string[] = [];
+  const previous = makeIncident({ id: "inc-prev", status: "resolved" });
+  const repo = makeRepo({
+    calls,
+    existingLink: { issueId: "iss-new", incidentId: "inc-prev" },
+    incidentById: new Map([["inc-prev", previous]]),
+  });
+  const lifecycle = makeLifecycle({ calls });
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue({ status: "resolved" } as Partial<schema.Issue>),
+    "recurred",
+    makeDeps({ repo, lifecycle, calls }),
+  );
+  assert.equal(result.createdIncident, true);
+  assert.equal(result.recurrenceIncident, true);
+  assert.equal(result.incident.id, "inc-recurrence");
+  assert.equal(result.incident.previousIncidentId, "inc-prev");
+  assert.ok(calls.includes("openRecurrence:inc-prev<-iss-new:resolved_issue_recurred"));
+  assert.ok(
+    calls.some((c) => c.startsWith("updateIssueGrouping:iss-new:standalone:heuristic:Recurrence")),
+  );
+});
+
+test("intake: recurred issue whose latest link is already open reuses it (retry idempotency)", async () => {
+  const calls: string[] = [];
+  const alreadyOpen = makeIncident({ id: "inc-open", status: "open" });
+  const repo = makeRepo({
+    calls,
+    existingLink: { issueId: "iss-new", incidentId: "inc-open" },
+    incidentById: new Map([["inc-open", alreadyOpen]]),
+  });
+  const lifecycle = makeLifecycle({ calls });
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue(),
+    "recurred",
+    makeDeps({ repo, lifecycle, calls }),
+  );
+  assert.equal(result.createdIncident, false);
+  assert.equal(result.recurrenceIncident, false);
+  assert.equal(result.incident.id, "inc-open");
+  assert.ok(!calls.some((c) => c.startsWith("openRecurrence:")));
 });
 
 test("intake: heuristic match links to existing incident as 'grouped'", async () => {
@@ -188,7 +242,11 @@ test("intake: heuristic match links to existing incident as 'grouped'", async ()
   const issue = makeIssue({
     normalizedFrames: ["db.query", "pool.acquire", "handler.process"],
   });
-  const result = await ensureIncidentForIssueWorkflow(issue, makeDeps({ repo, lifecycle, calls }));
+  const result = await ensureIncidentForIssueWorkflow(
+    issue,
+    "new",
+    makeDeps({ repo, lifecycle, calls }),
+  );
   assert.equal(result.createdIncident, false);
   assert.equal(result.linkedIssue, true);
   assert.equal(result.incident.id, "inc-match");
@@ -205,6 +263,7 @@ test("intake: alert issue with no heuristic match opens fresh incident, skips LL
   const lifecycle = makeLifecycle({ calls, createdIncident: newInc });
   const result = await ensureIncidentForIssueWorkflow(
     makeIssue({ kind: "alert" }),
+    "new",
     makeDeps({ repo, lifecycle, calls }),
   );
   assert.equal(result.createdIncident, true);
@@ -241,7 +300,11 @@ test("intake: fresh incident captures environment from the issue's resource attr
       resourceAttrs: { "deployment.environment.name": "production" },
     },
   });
-  const result = await ensureIncidentForIssueWorkflow(issue, makeDeps({ repo, lifecycle, calls }));
+  const result = await ensureIncidentForIssueWorkflow(
+    issue,
+    "new",
+    makeDeps({ repo, lifecycle, calls }),
+  );
   assert.equal(result.createdIncident, true);
   assert.equal(result.incident.environment, "production");
   assert.ok(calls.some((c) => c.startsWith("createOpen:proj-1:") && c.endsWith(":env=production")));
@@ -281,6 +344,7 @@ test("intake: LLM 'join' verdict links to the chosen incident", async () => {
   const lifecycle = makeLifecycle({ calls });
   const result = await ensureIncidentForIssueWorkflow(
     makeIssue(),
+    "new",
     makeDeps({
       repo,
       lifecycle,
@@ -329,6 +393,7 @@ test("intake: LLM 'join' verdict with unknown id falls back to standalone (and o
   const lifecycle = makeLifecycle({ calls, createdIncident: newInc });
   const result = await ensureIncidentForIssueWorkflow(
     makeIssue(),
+    "new",
     makeDeps({
       repo,
       lifecycle,
@@ -369,6 +434,7 @@ test("intake: LLM error logs a warning and marks issue 'failed'", async () => {
   const lifecycle = makeLifecycle({ calls, createdIncident: newInc });
   await ensureIncidentForIssueWorkflow(
     makeIssue(),
+    "new",
     makeDeps({
       repo,
       lifecycle,

@@ -144,10 +144,11 @@ test("classifyFiringTransition covers all combinations", () => {
   assert.equal(classifyFiringTransition(null, false), "still_ok");
 });
 
-test("classifyIssueTransition distinguishes new, regressed, seen", () => {
+test("classifyIssueTransition distinguishes new, recurred, suppressed, seen", () => {
   assert.equal(classifyIssueTransition(null, null), "new");
-  assert.equal(classifyIssueTransition("iss-1", "resolved"), "regressed");
-  assert.equal(classifyIssueTransition("iss-1", "merged"), "regressed");
+  assert.equal(classifyIssueTransition("iss-1", "resolved"), "recurred");
+  assert.equal(classifyIssueTransition("iss-1", "silenced"), "suppressed");
+  assert.equal(classifyIssueTransition("iss-1", "under_observation"), "suppressed");
   assert.equal(classifyIssueTransition("iss-1", "open"), "seen");
   assert.equal(classifyIssueTransition("iss-1", null), "seen");
 });

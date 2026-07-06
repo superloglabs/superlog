@@ -17,19 +17,16 @@ import { investigationGate } from "../billing/investigation-gate.js";
 import { usageNotifier } from "../billing/usage-notifier-infra.js";
 import { isAutoAgentRunSuppressed } from "../incident-cooldown.js";
 import { ensureIncidentForIssue } from "../incident-intake.js";
-import { buildReopenedIncidentSlackUpdate } from "../incident-slack.js";
 import {
-  incidentBlocks,
   postIncidentRootMessage,
   postIncidentThreadMessage,
-  updateIncidentMainMessage,
 } from "../infra/slack/incident-messages.js";
 import { logger } from "../logger.js";
 import { decideIssueArrivalRouting } from "./issue-routing.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 const agentRunLifecycle = createAgentRunLifecycle(db);
-export type IssueTransition = "new" | "regressed";
+export type IssueTransition = "new" | "recurred";
 
 export type ReopenedIncidentQueueStatus =
   | "queued"
@@ -133,7 +130,7 @@ async function steerInvestigationWithNewSignature(
   issue: schema.Issue,
   transition: IssueTransition,
 ): Promise<boolean> {
-  const label = transition === "new" ? "New" : "Regressed";
+  const label = transition === "new" ? "New" : "Recurred";
   const result = await recordInboundInteraction(db, {
     incidentId: incident.id,
     interaction: {
@@ -158,8 +155,8 @@ export async function handleIssueTransition(
   issue: schema.Issue,
   transition: IssueTransition,
 ): Promise<void> {
-  const { incident, createdIncident, linkedIssue, reopenedIncident } =
-    await ensureIncidentForIssue(issue);
+  const { incident, createdIncident, linkedIssue, recurrenceIncident } =
+    await ensureIncidentForIssue(issue, transition);
   // Emit the webhook as soon as we know the incident was created, before the
   // (fallible) Slack root post. `createdIncident` is only true on the tick that
   // actually inserts the incident; if a later step in this handler throws and
@@ -187,6 +184,12 @@ export async function handleIssueTransition(
       projectName: project.name,
       firstIssue: issue,
     });
+    if (recurrenceIncident) {
+      await postIncidentThreadMessage(
+        incident.id,
+        ":repeat: A previously resolved issue recurred — this incident continues from the earlier investigation, whose findings are available to the new run.",
+      );
+    }
   }
 
   // If this incident has already been investigated, a new error signature should
@@ -200,7 +203,6 @@ export async function handleIssueTransition(
   });
   const routing = decideIssueArrivalRouting({
     createdIncident,
-    reopenedIncident,
     suppressed: isAutoAgentRunSuppressed(incident, new Date()),
     latestRunIsTerminal: latestRun
       ? (AGENT_RUN_TERMINAL_STATES as readonly string[]).includes(latestRun.state)
@@ -214,30 +216,7 @@ export async function handleIssueTransition(
   }
 
   const { agentRun, queueStatus } = await queueAgentRunIfNeeded(incident);
-  if (reopenedIncident) {
-    const update = buildReopenedIncidentSlackUpdate({
-      issueTitle: issue.title,
-      queueStatus,
-    });
-    await postIncidentThreadMessage(incident.id, update.threadSummary);
-    if (project) {
-      const incidentUrl = `${WEB_ORIGIN}/incidents/${incident.id}`;
-      await updateIncidentMainMessage(
-        incident.id,
-        `:rotating_light: ${incident.title} — ${update.rootStatus}`,
-        incidentBlocks({
-          emoji: "rotating_light",
-          status: update.rootStatus,
-          title: incident.title,
-          tagline: update.rootTagline,
-          projectName: project.name,
-          service: incident.service,
-          buttons: [{ text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" }],
-          incidentId: incident.id,
-        }),
-      );
-    }
-  } else if (queueStatus === "queued") {
+  if (queueStatus === "queued") {
     await postIncidentThreadMessage(incident.id, ":mag: Investigation queued.");
   } else if (queueStatus === "no_credits") {
     await postIncidentThreadMessage(

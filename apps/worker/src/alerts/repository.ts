@@ -16,7 +16,7 @@ export type AlertIssueUpsertInput = {
 export type AlertIssueUpsertResult = {
   issue: schema.Issue;
   prevIssueId: string | null;
-  prevIncidentStatus: string | null;
+  prevIssueStatus: string | null;
 };
 
 export type FiringRecord = {
@@ -97,16 +97,13 @@ export function createAlertRepository(db: DB) {
         id: string;
         xmax: string;
         prev_issue_id: string | null;
-        prev_incident_status: string | null;
+        prev_issue_status: string | null;
       }>(sql`
         WITH prev AS (
-          SELECT i.id AS issue_id, inc.status AS incident_status
+          SELECT i.id AS issue_id, i.status AS issue_status
           FROM issues i
-          LEFT JOIN incident_issues ii ON ii.issue_id = i.id
-          LEFT JOIN incidents inc ON inc.id = ii.incident_id
           WHERE i.project_id = ${input.projectId}
             AND i.fingerprint = ${input.fingerprint}
-            AND i.silenced_at IS NULL
         ),
         up AS (
           INSERT INTO issues (
@@ -118,7 +115,7 @@ export function createAlertRepository(db: DB) {
             ${input.title}, ${input.title}, NULL, '[]'::jsonb, ${JSON.stringify(input.lastSample)}::jsonb,
             ${seenAtIso}::timestamptz, ${seenAtIso}::timestamptz, 1
           )
-          ON CONFLICT (project_id, fingerprint) WHERE silenced_at IS NULL DO UPDATE SET
+          ON CONFLICT (project_id, fingerprint) DO UPDATE SET
             last_seen = GREATEST(issues.last_seen, EXCLUDED.last_seen),
             event_count = issues.event_count + 1,
             title = EXCLUDED.title,
@@ -131,14 +128,14 @@ export function createAlertRepository(db: DB) {
           (SELECT id::text FROM up) AS id,
           (SELECT xmax::text FROM up) AS xmax,
           (SELECT issue_id::text FROM prev) AS prev_issue_id,
-          (SELECT incident_status FROM prev) AS prev_incident_status
+          (SELECT issue_status FROM prev) AS prev_issue_status
       `);
       const raw = (
         result as unknown as Array<{
           id: string;
           xmax: string;
           prev_issue_id: string | null;
-          prev_incident_status: string | null;
+          prev_issue_status: string | null;
         }>
       )[0];
       const issue = await db.query.issues.findFirst({
@@ -148,7 +145,7 @@ export function createAlertRepository(db: DB) {
       return {
         issue,
         prevIssueId: raw?.prev_issue_id ?? null,
-        prevIncidentStatus: raw?.prev_incident_status ?? null,
+        prevIssueStatus: raw?.prev_issue_status ?? null,
       };
     },
 
@@ -164,11 +161,12 @@ export function createAlertRepository(db: DB) {
     },
 
     // Resolve the incident an alert issue is currently linked to (if any), so a
-    // freshly-opened episode can point straight at it. `incident_issues` is
-    // 1:1 per issue (unique index on issue_id).
+    // freshly-opened episode can point straight at it. An issue keeps one link
+    // per incident it has driven; the newest link is its current incident.
     async findIncidentIdForIssue(issueId: string): Promise<string | null> {
       const link = await db.query.incidentIssues.findFirst({
         where: eq(schema.incidentIssues.issueId, issueId),
+        orderBy: [desc(schema.incidentIssues.createdAt)],
         columns: { incidentId: true },
       });
       return link?.incidentId ?? null;

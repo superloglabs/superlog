@@ -9,7 +9,7 @@ const log = logger.child({ scope: "alerts" });
 
 export async function tickAlerts(
   ch: ClickHouseClient,
-  handleIssueTransition: (issue: schema.Issue, transition: "new" | "regressed") => Promise<void>,
+  handleIssueTransition: (issue: schema.Issue, transition: "new" | "recurred") => Promise<void>,
 ): Promise<number> {
   const repo = createAlertRepository(db);
   const metrics = createAlertMetricsRepository(ch);

@@ -25,6 +25,7 @@ test("ACTIVE_STATES + DORMANT_STATES + TERMINAL_STATES partition the AgentRunSta
     "awaiting_human",
     "pr_retry_queued",
     "blocked_no_github",
+    "resuming",
     "complete",
     "failed",
   ];
@@ -110,6 +111,13 @@ function recordingDb(opts: { insertReturningRow?: Record<string, unknown> } = {}
   const db = {
     insert: insertChain,
     update: updateChain,
+    delete(_table: unknown) {
+      return { async where() {} };
+    },
+    // Raw SQL surface used by the merge's link repoint; returns no rows.
+    async execute() {
+      return [];
+    },
     async transaction(fn: (tx: unknown) => Promise<void>) {
       calls.push({ op: "transaction.begin" });
       await fn(db);
@@ -380,16 +388,15 @@ test("completeViaMerge runs a transaction touching all four tables and emits one
   const tablesTouched = inTx
     .filter((c) => c.op === "update.where")
     .map((c) => (c as { table: unknown }).table);
-  assert.deepEqual(
-    new Set(tablesTouched),
-    new Set([schema.agentRuns, schema.incidentIssues, schema.incidents]),
-  );
+  // The incident_issues repoint happens via raw SQL (pair-unique-safe update
+  // + delete), so drizzle-level updates cover agent_runs and incidents only.
+  assert.deepEqual(new Set(tablesTouched), new Set([schema.agentRuns, schema.incidents]));
   // Two updates on schema.incidents (source mark + target counter bump) plus
-  // one each on the other two tables = 4 writes.
+  // the agent_runs completion = 3 drizzle writes.
   assert.equal(
     inTx.filter((c) => c.op === "update.where").length,
-    4,
-    "merge tx writes all four planned updates",
+    3,
+    "merge tx writes all three planned drizzle updates",
   );
   // The merged_into_incident event happens after the tx, not inside it.
   const event = eventInsertValues(calls);

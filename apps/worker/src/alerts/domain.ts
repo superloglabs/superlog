@@ -14,7 +14,7 @@ export type FiringTransition =
   | "still_firing"
   | "still_ok";
 
-export type IssueTransition = "new" | "regressed" | "seen";
+export type IssueTransition = "new" | "recurred" | "suppressed" | "seen";
 
 export function compare(
   value: number,
@@ -110,12 +110,13 @@ export function classifyFiringTransition(
 
 export function classifyIssueTransition(
   prevIssueId: string | null,
-  prevIncidentStatus: string | null,
+  prevIssueStatus: string | null,
 ): IssueTransition {
   if (prevIssueId === null) return "new";
-  if (prevIncidentStatus === "resolved" || prevIncidentStatus === "merged") {
-    return "regressed";
+  if (prevIssueStatus === "silenced" || prevIssueStatus === "under_observation") {
+    return "suppressed";
   }
+  if (prevIssueStatus === "resolved") return "recurred";
   return "seen";
 }
 
