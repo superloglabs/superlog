@@ -35,7 +35,9 @@ An **Incident** starts a new **Agent Run**. During an **Agent Run** an LLM will 
 
 ## Issue grouping
 
-TBD
+Issue fingerprinting is, unfortunately, never exhaustive. We must be resilient to duplicate noisy issues. That is why, whenever a new Issue starts a new Incident, we must first compare the Issue to all currently open Incidents. 
+
+If the Issue is not a separate problem, but another manifestation of a root cause of another Incident, we should add this Issue to the Issues of that Incident. 
 
 
 ## Issue is Noise 
@@ -109,10 +111,10 @@ Humans and agents can add notes on various Superlog entities in order to:
 There are two ways to store memory in Superlog: comments and project memory
 
 ## Comments
-1. 
-
+Issues and Incidents have associated Comments. Humans and Agents can add Comments that are visible to the Agent Run investigating the Incident.
 
 ## Project memory
+Every Project has a list of Memories that can be added by humans and Agents. A Memory is a dated free-form text. All Project memories are are visible to the Agent Run investigating the Incident. Agents can add new Memories during investigations and in response to PR comments, Slack messages and other interactions with users.
 
 ### Approval propmt
 
@@ -122,10 +124,6 @@ An Approval prompt is a way for our agent to perform an agent in the client's in
 
 Once per week, Superlog must send to the connected Slack channel an update containing a global review of all issues, including the number of issues counted as noise. 
 
-
-# TBD
-- Incident auto-close?
-- PR close -> issue reoccurs -> 
 
 # Changelog
 
