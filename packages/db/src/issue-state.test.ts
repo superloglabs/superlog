@@ -40,18 +40,59 @@ test("count trigger fires on growth since the observation baseline", () => {
   const base = {
     trigger: { kind: "count", count: 50 } as const,
     baselineEventCount: 100,
-    eventsInRateWindow: 0,
+    eventsSinceLastEvaluation: 0,
+    minutesSinceLastEvaluation: 1,
   };
   assert.equal(escalationTriggerFired({ ...base, currentEventCount: 149 }), false);
   assert.equal(escalationTriggerFired({ ...base, currentEventCount: 150 }), true);
 });
 
-test("rate trigger fires on the trailing 5-minute window", () => {
+test("rate trigger fires on the per-minute average since the last evaluation", () => {
   const base = {
     trigger: { kind: "rate", perMinute: 4 } as const,
     baselineEventCount: 0,
     currentEventCount: 10_000,
   };
-  assert.equal(escalationTriggerFired({ ...base, eventsInRateWindow: 19 }), false);
-  assert.equal(escalationTriggerFired({ ...base, eventsInRateWindow: 20 }), true);
+  // Below the window: never fires, regardless of burst size.
+  assert.equal(
+    escalationTriggerFired({
+      ...base,
+      eventsSinceLastEvaluation: 500,
+      minutesSinceLastEvaluation: 2,
+    }),
+    false,
+  );
+  assert.equal(
+    escalationTriggerFired({
+      ...base,
+      eventsSinceLastEvaluation: 19,
+      minutesSinceLastEvaluation: 5,
+    }),
+    false,
+  );
+  assert.equal(
+    escalationTriggerFired({
+      ...base,
+      eventsSinceLastEvaluation: 20,
+      minutesSinceLastEvaluation: 5,
+    }),
+    true,
+  );
+  // Longer gaps (worker downtime) average over the elapsed time.
+  assert.equal(
+    escalationTriggerFired({
+      ...base,
+      eventsSinceLastEvaluation: 39,
+      minutesSinceLastEvaluation: 10,
+    }),
+    false,
+  );
+  assert.equal(
+    escalationTriggerFired({
+      ...base,
+      eventsSinceLastEvaluation: 40,
+      minutesSinceLastEvaluation: 10,
+    }),
+    true,
+  );
 });

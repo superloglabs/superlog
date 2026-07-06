@@ -26,7 +26,7 @@ import { decideIssueArrivalRouting } from "./issue-routing.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 const agentRunLifecycle = createAgentRunLifecycle(db);
-export type IssueTransition = "new" | "recurred";
+export type IssueTransition = "new" | "recurred" | "escalated";
 
 export type ReopenedIncidentQueueStatus =
   | "queued"
@@ -130,7 +130,8 @@ async function steerInvestigationWithNewSignature(
   issue: schema.Issue,
   transition: IssueTransition,
 ): Promise<boolean> {
-  const label = transition === "new" ? "New" : "Recurred";
+  const label =
+    transition === "new" ? "New" : transition === "escalated" ? "Escalated" : "Recurred";
   const result = await recordInboundInteraction(db, {
     incidentId: incident.id,
     interaction: {
@@ -187,7 +188,9 @@ export async function handleIssueTransition(
     if (recurrenceIncident) {
       await postIncidentThreadMessage(
         incident.id,
-        ":repeat: A previously resolved issue recurred — this incident continues from the earlier investigation, whose findings are available to the new run.",
+        transition === "escalated"
+          ? ":rotating_light: An issue under observation tripped its escalation trigger — this incident continues from the earlier investigation, whose findings are available to the new run."
+          : ":repeat: A previously resolved issue recurred — this incident continues from the earlier investigation, whose findings are available to the new run.",
       );
     }
   }

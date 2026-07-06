@@ -114,14 +114,21 @@ export type EscalationEvaluationInput = {
   currentEventCount: number;
   // issues.observation_baseline_event_count captured when observation began.
   baselineEventCount: number;
-  // Events attributed to this issue over the trailing rate window (ClickHouse
-  // count over OBSERVATION_RATE_WINDOW_MINUTES). Only consulted for `rate`.
-  eventsInRateWindow: number;
+  // For `rate`: event_count delta and elapsed minutes since the previous
+  // sweep evaluation (issues.observation_last_*). Ingest keeps bumping the
+  // counter for suppressed occurrences, so the delta is the occurrence count.
+  eventsSinceLastEvaluation: number;
+  minutesSinceLastEvaluation: number;
 };
 
 export function escalationTriggerFired(input: EscalationEvaluationInput): boolean {
   if (input.trigger.kind === "count") {
     return input.currentEventCount - input.baselineEventCount >= input.trigger.count;
   }
-  return input.eventsInRateWindow >= input.trigger.perMinute * OBSERVATION_RATE_WINDOW_MINUTES;
+  // Rate triggers only fire once at least a full window has elapsed, so a
+  // couple of events seconds apart can't fake a per-minute rate.
+  if (input.minutesSinceLastEvaluation < OBSERVATION_RATE_WINDOW_MINUTES) return false;
+  return (
+    input.eventsSinceLastEvaluation / input.minutesSinceLastEvaluation >= input.trigger.perMinute
+  );
 }

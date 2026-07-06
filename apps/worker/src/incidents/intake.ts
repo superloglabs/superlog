@@ -84,7 +84,7 @@ export type IntakeDeps = {
   logger: IntakeLogger;
 };
 
-export type IssueIntakeTransition = "new" | "recurred";
+export type IssueIntakeTransition = "new" | "recurred" | "escalated";
 
 export type EnsureIncidentForIssueResult = {
   incident: schema.Incident;
@@ -109,7 +109,7 @@ export async function ensureIncidentForIssueWorkflow(
 ): Promise<EnsureIncidentForIssueResult> {
   const existingLink = await deps.repo.findLatestIncidentIssueLink(issue.id);
 
-  if (transition === "recurred" && existingLink) {
+  if ((transition === "recurred" || transition === "escalated") && existingLink) {
     const previous = await deps.repo.findIncident(existingLink.incidentId);
     if (previous) {
       // Retry-idempotency: if a prior attempt already opened the recurrence
@@ -125,13 +125,16 @@ export async function ensureIncidentForIssueWorkflow(
       const incident = await deps.lifecycle.openRecurrence({
         previousIncident: previous,
         issue,
-        origin: "resolved_issue_recurred",
+        origin: transition === "escalated" ? "escalation_trigger" : "resolved_issue_recurred",
         environment: environmentFromResourceAttrs(issue.lastSample?.resourceAttrs),
       });
       await deps.repo.updateIssueGrouping(issue.id, {
         state: "standalone",
         source: "heuristic",
-        reason: "Recurrence of a resolved issue; chained to its previous incident.",
+        reason:
+          transition === "escalated"
+            ? "Escalation trigger fired for an observed issue; chained to its previous incident."
+            : "Recurrence of a resolved issue; chained to its previous incident.",
       });
       return { incident, createdIncident: true, linkedIssue: true, recurrenceIncident: true };
     }

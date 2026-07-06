@@ -547,6 +547,13 @@ export const issues = pgTable(
     observationBaselineEventCount: bigint("observation_baseline_event_count", {
       mode: "number",
     }),
+    // Rate-trigger bookkeeping: the sweep fires a `rate` trigger off the
+    // event_count delta since the previous evaluation, so it needs the last
+    // counter + timestamp it saw. Null until the sweep's first pass.
+    observationLastEvaluatedAt: timestamp("observation_last_evaluated_at", {
+      withTimezone: true,
+    }),
+    observationLastEventCount: bigint("observation_last_event_count", { mode: "number" }),
     lastAlertedAt: timestamp("last_alerted_at", { withTimezone: true }),
     slackMessageTs: text("slack_message_ts"),
     eventCount: bigint("event_count", { mode: "number" }).notNull().default(0),
