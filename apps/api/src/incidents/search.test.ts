@@ -105,6 +105,7 @@ function baseIncident(): Incident {
     resolvedReasonText: null,
     resolvedAt: null,
     mergedIntoId: null,
+      previousIncidentId: null,
     createdAt: new Date("2026-05-24T00:00:00.000Z"),
     updatedAt: new Date("2026-05-24T00:00:00.000Z"),
   };

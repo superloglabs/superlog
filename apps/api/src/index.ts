@@ -5,6 +5,9 @@ import { serve } from "@hono/node-server";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import {
   type Issue,
+  ISSUE_STATUSES,
+  buildIssueReopenPatch,
+  buildIssueSilencePatch,
   confirmResolutionProposal,
   createIncidentLifecycle,
   db,
@@ -1206,15 +1209,27 @@ async function getLatestAgentRun(incidentId: string) {
 
 app.get("/api/projects/:projectId/issues", async (c) => {
   const projectId = await requireProjectAccess(c, c.req.param("projectId"));
-  const silencedParam = c.req.query("silenced") ?? "active";
   const limit = clampLimit(Number(c.req.query("limit") ?? 50), 50, 200);
   const projectFilter = eq(schema.issues.projectId, projectId);
-  const where =
-    silencedParam === "all"
-      ? projectFilter
-      : silencedParam === "silenced"
-        ? and(projectFilter, isNotNull(schema.issues.silencedAt))
-        : and(projectFilter, isNull(schema.issues.silencedAt));
+  // `status` supersedes the legacy `silenced` param: one of the IssueStatus
+  // values, or "all". The legacy values map onto statuses ("active" = not
+  // silenced) so existing clients keep working.
+  const statusParam = c.req.query("status");
+  const silencedParam = c.req.query("silenced") ?? "active";
+  let where = projectFilter;
+  if (statusParam && statusParam !== "all") {
+    if (!(ISSUE_STATUSES as readonly string[]).includes(statusParam)) {
+      throw new HTTPException(400, {
+        message: `status must be one of ${ISSUE_STATUSES.join(", ")}, or 'all'`,
+      });
+    }
+    where = and(projectFilter, eq(schema.issues.status, statusParam as schema.IssueStatus))!;
+  } else if (!statusParam && silencedParam !== "all") {
+    where =
+      silencedParam === "silenced"
+        ? and(projectFilter, eq(schema.issues.status, "silenced"))!
+        : and(projectFilter, ne(schema.issues.status, "silenced"))!;
+  }
   const rows = await db.query.issues.findMany({
     where,
     orderBy: [desc(schema.issues.lastSeen)],
@@ -1327,10 +1342,22 @@ app.patch("/api/projects/:projectId/incidents/:incidentId", async (c) => {
   const projectId = c.req.param("projectId");
   const incidentId = c.req.param("incidentId");
   await requireProjectAccess(c, projectId);
-  const body = (await c.req.json().catch(() => ({}))) as { status?: string };
+  const body = (await c.req.json().catch(() => ({}))) as {
+    status?: string;
+    resolution?: string;
+  };
   const status = body.status;
   if (status !== "open" && status !== "resolved") {
     throw new HTTPException(400, { message: "status must be 'open' or 'resolved'" });
+  }
+  // "problem_resolved" (default) marks the incident's issues resolved so a
+  // recurrence opens a fresh chained incident; "not_an_issue" silences them so
+  // future occurrences are suppressed entirely.
+  const resolution = body.resolution ?? "problem_resolved";
+  if (status === "resolved" && resolution !== "problem_resolved" && resolution !== "not_an_issue") {
+    throw new HTTPException(400, {
+      message: "resolution must be 'problem_resolved' or 'not_an_issue'",
+    });
   }
   const existing = await db.query.incidents.findFirst({
     where: and(eq(schema.incidents.id, incidentId), eq(schema.incidents.projectId, projectId)),
@@ -1343,9 +1370,13 @@ app.patch("/api/projects/:projectId/incidents/:incidentId", async (c) => {
     await resolveIncident({
       incidentId,
       kind: "dashboard_manual",
-      reasonCode: "dashboard_manual",
-      reasonText: `Resolved from the dashboard by user ${c.var.userId}.`,
+      reasonCode: resolution,
+      reasonText:
+        resolution === "not_an_issue"
+          ? `Marked not-an-issue from the dashboard by user ${c.var.userId}.`
+          : `Resolved from the dashboard by user ${c.var.userId}.`,
       resolvedByUserId: c.var.userId,
+      issueOutcome: resolution === "not_an_issue" ? { kind: "silence" } : { kind: "resolve" },
     });
     if (shouldRunResolvedIncidentSideEffects({ requestedStatus: status, incidentExists: true })) {
       await runResolvedIncidentSideEffectsForIncident({
@@ -1465,12 +1496,12 @@ app.post("/api/projects/:projectId/issues/:issueId/silence", async (c) => {
     try {
       const updated = await db
         .update(schema.issues)
-        .set({ silencedAt: new Date() })
+        .set(buildIssueSilencePatch())
         .where(
           and(
             eq(schema.issues.id, issueId),
             eq(schema.issues.projectId, projectId),
-            isNull(schema.issues.silencedAt),
+            ne(schema.issues.status, "silenced"),
           ),
         )
         .returning();
@@ -1502,22 +1533,12 @@ app.post("/api/projects/:projectId/issues/:issueId/unsilence", async (c) => {
     where: and(eq(schema.issues.id, issueId), eq(schema.issues.projectId, projectId)),
   });
   if (!existing) throw new HTTPException(404, { message: "issue not found" });
-  if (!existing.silencedAt) return c.json(existing);
-  const conflict = await db.query.issues.findFirst({
-    where: and(
-      eq(schema.issues.projectId, projectId),
-      eq(schema.issues.fingerprint, existing.fingerprint),
-      isNull(schema.issues.silencedAt),
-    ),
-  });
-  if (conflict) {
-    throw new HTTPException(409, {
-      message: "another active issue already exists for this fingerprint",
-    });
-  }
+  if (existing.status !== "silenced") return c.json(existing);
+  // Unsilencing returns the issue to `open` (fingerprints are fully unique
+  // now, so there is no other row to conflict with).
   const updated = await db
     .update(schema.issues)
-    .set({ silencedAt: null })
+    .set(buildIssueReopenPatch())
     .where(and(eq(schema.issues.id, issueId), eq(schema.issues.projectId, projectId)))
     .returning();
   return c.json(updated[0] ?? existing);
