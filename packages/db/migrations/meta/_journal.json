@@ -568,6 +568,20 @@
       "when": 1783344947611,
       "tag": "0080_careful_scorpion",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1783344972501,
+      "tag": "0081_issue_lifecycle_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1783345087986,
+      "tag": "0082_issues_fingerprint_full_unique",
+      "breakpoints": true
     }
   ]
 }

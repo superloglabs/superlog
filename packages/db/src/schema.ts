@@ -551,9 +551,11 @@ export const issues = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    uniq: uniqueIndex("issues_project_fingerprint_idx")
-      .on(t.projectId, t.fingerprint)
-      .where(sql`silenced_at IS NULL`),
+    // Full uniqueness (no silenced carve-out): an occurrence of a silenced or
+    // observed fingerprint must land on the existing row and be suppressed
+    // there, never spawn a fresh issue. Duplicates that predate this rule are
+    // collapsed by the 0081 data migration.
+    uniq: uniqueIndex("issues_project_fingerprint_idx").on(t.projectId, t.fingerprint),
     groupingStateIdx: index("issues_grouping_state_idx")
       .on(t.projectId, t.groupingState)
       .where(sql`grouping_state IN ('pending', 'failed')`),
