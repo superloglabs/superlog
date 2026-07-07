@@ -38,6 +38,54 @@ test("exposes all eight tools with API-safe schemas", () => {
   }
 });
 
+// The load-bearing guidance that moved out of the runner's system prompt into
+// tool descriptions. Losing any of these regressed real agent behavior before
+// (structural-only validation, behavior-changing "equivalent" refactors), so
+// pin them here.
+test("propose_pr description carries the validation ladder and refactor-equivalence rules", () => {
+  const proposePr = OUTCOME_TOOL_DEFINITIONS.find((d) => d.name === "propose_pr");
+  assert.ok(proposePr);
+  const text = proposePr?.description ?? "";
+  assert.ok(text.includes("Validation ladder"));
+  assert.ok(text.includes("Structural checks"));
+  assert.ok(text.includes("are NOT validation"));
+  assert.ok(text.includes("behaviorally identical"));
+  assert.ok(text.includes("first-wins vs last-wins"));
+  assert.ok(text.includes("regression test"));
+  assert.ok(text.includes("/mnt/session/outputs/superlog.patch"));
+  const validationPassed = proposePr?.input_schema.properties.validationPassed as {
+    description?: string;
+  };
+  assert.ok(validationPassed.description?.includes("honest false is acceptable"));
+});
+
+test("noise-outcome descriptions carry the per-reason evidentiary bars", () => {
+  for (const name of ["silence_as_noise", "place_under_observation"]) {
+    const def = OUTCOME_TOOL_DEFINITIONS.find((d) => d.name === name);
+    const text = def?.description ?? "";
+    for (const reason of [
+      "cosmetic_log_only",
+      "lifecycle_signal",
+      "self_telemetry",
+      "expected_third_party",
+      "confusing_log_no_impact",
+    ]) {
+      assert.ok(text.includes(reason), `${name} missing ${reason}`);
+    }
+  }
+  const silence = OUTCOME_TOOL_DEFINITIONS.find((d) => d.name === "silence_as_noise");
+  assert.ok(silence?.description.includes("the bar is high"));
+  assert.ok(silence?.description.includes("Do NOT propose code changes"));
+});
+
+test("report_failure description reserves no_findings and redirects external causes", () => {
+  const def = OUTCOME_TOOL_DEFINITIONS.find((d) => d.name === "report_failure");
+  const text = def?.description ?? "";
+  assert.ok(text.includes("RESERVED"));
+  assert.ok(text.includes("complete_investigation"));
+  assert.ok(text.includes("ask_human"));
+});
+
 test("marks exactly seven tools terminal", () => {
   assert.equal(TERMINAL_OUTCOME_TOOL_NAMES.length, 7);
   assert.ok(!(TERMINAL_OUTCOME_TOOL_NAMES as readonly string[]).includes(REPORT_FINDINGS_TOOL_NAME));
