@@ -253,7 +253,7 @@ const NOISE_REASON_GUIDE =
 
 const SILENCE_AS_NOISE_DEFINITION: OutcomeToolDefinition = {
   name: "silence_as_noise",
-  description: `Terminal: the error is proven noise — the operation it describes either succeeded or has no user/business impact. The incident resolves and its issues are silenced: recurrences stop paging permanently, so the bar is high. You must quote the success path, the no-op contract, or the third-party contract clause; if you cannot prove it, use place_under_observation instead. Do NOT propose code changes to downgrade/log-catch false-positive errors — silencing is the correct action, not a PR. ${NOISE_REASON_GUIDE}`,
+  description: `Terminal: the error is proven noise — the operation it describes either succeeded or has no user/business impact. The incident resolves and its issues are silenced: recurrences stop paging permanently, so the bar is high. You must quote the success path, the no-op contract, or the third-party contract clause; if you cannot prove it, use place_under_observation instead. Do NOT propose code changes to make the false positive quieter — downgrading log levels, catching/suppressing expected errors, or changing span statuses / recordException calls for expected conditions. Silencing is the correct action, not a PR, even when the noisy signal comes from the application's own instrumentation. ${NOISE_REASON_GUIDE}`,
   input_schema: {
     type: "object",
     properties: {
