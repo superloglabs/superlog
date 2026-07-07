@@ -9,6 +9,7 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY apps/api/package.json apps/api/
 COPY packages/db/package.json packages/db/
 COPY packages/fingerprint/package.json packages/fingerprint/
+COPY packages/net-guard/package.json packages/net-guard/
 
 RUN pnpm install --frozen-lockfile --filter @superlog/api...
 
@@ -16,6 +17,7 @@ COPY tsconfig.base.json ./
 COPY apps/api apps/api
 COPY packages/db packages/db
 COPY packages/fingerprint packages/fingerprint
+COPY packages/net-guard packages/net-guard
 
 ENV PORT=4100
 EXPOSE 4100
