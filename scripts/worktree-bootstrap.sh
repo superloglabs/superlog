@@ -189,10 +189,24 @@ if [[ "$SKIP_LINK" -eq 0 ]]; then
 fi
 
 if [[ ! -e apps/api/.env ]]; then
-  echo "==> apps/api/.env missing; writing dev-only BETTER_AUTH_SECRET fallback"
+  echo "==> apps/api/.env missing; writing dev-only secret fallbacks"
+  # STATE_SIGNING_SECRET signs connector OAuth `state` (Cloudflare / Vercel /
+  # Railway); AGENT_SECRETS_KEY encrypts integration secrets at rest. Without
+  # them every connector callback 503s or dies at the encrypt step, so a fresh
+  # worktree can't exercise any connect flow. Dev-only values — prod supplies
+  # real ones.
   cat > apps/api/.env <<EOF
 BETTER_AUTH_SECRET=${WT_NAME}-local-dev-better-auth-secret
+STATE_SIGNING_SECRET=${WT_NAME}-local-dev-state-signing-secret
+AGENT_SECRETS_KEY=$(openssl rand -base64 32)
 EOF
+fi
+
+# The worker decrypts the same integration secrets (e.g. the Railway puller's
+# tokens), so it needs the same AGENT_SECRETS_KEY the api encrypted with.
+if [[ ! -e apps/worker/.env && -e apps/api/.env ]] && grep -q '^AGENT_SECRETS_KEY=' apps/api/.env; then
+  grep '^AGENT_SECRETS_KEY=' apps/api/.env > apps/worker/.env
+  echo "  wrote apps/worker/.env (AGENT_SECRETS_KEY shared with api)"
 fi
 
 # -----------------------------------------------------------------------------
