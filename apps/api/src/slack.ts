@@ -355,6 +355,28 @@ async function handleSlackBlockActions(payload: SlackInteractivityPayload): Prom
 // The user can always reopen via recurrence; what we don't want is the DB
 // saying open while Slack thinks resolved (or vice-versa) on a transient
 // failure.
+// Defence-in-depth tenant guard for incident-scoped Slack button clicks. The
+// interactivity payload is authenticated by the app signing secret and Slack
+// only signs action_ids from a workspace's own messages, so an ordinary user
+// can't forge a foreign incident id here. But the resolve/decide helpers mutate
+// by bare id with no project predicate, so this asserts that the workspace that
+// sent the click actually owns the pinned installation for the target before we
+// mutate — a click can only ever act within its own workspace. Returns false
+// (caller bails) on a cross-workspace mismatch. Unpinned/legacy rows fall through
+// to the existing team-scoped fallback, so they're unchanged.
+async function clickWorkspaceOwnsPin(
+  pinnedInstallationId: string | null,
+  payloadTeamId: string | null | undefined,
+): Promise<boolean> {
+  if (!pinnedInstallationId) return true;
+  const pinned = await db.query.slackInstallations.findFirst({
+    where: eq(schema.slackInstallations.id, pinnedInstallationId),
+    columns: { teamId: true },
+  });
+  if (!pinned) return true;
+  return Boolean(payloadTeamId) && pinned.teamId === payloadTeamId;
+}
+
 async function handleSlackResolveIncident(
   incidentId: string,
   payload: SlackInteractivityPayload,
@@ -365,6 +387,13 @@ async function handleSlackResolveIncident(
   });
   if (!incident) {
     log.warn({ incidentId }, "resolve_incident click for unknown incident");
+    return;
+  }
+  if (!(await clickWorkspaceOwnsPin(incident.slackInstallationId, payload.team?.id))) {
+    log.warn(
+      { incidentId, team_id: payload.team?.id },
+      "resolve_incident click from a workspace that does not own the incident; ignoring",
+    );
     return;
   }
   if (resolveSlackResolveClickDisposition(incident.status) === "refresh_side_effects") {
@@ -526,6 +555,19 @@ async function handleProposalDecision(
   const slackUserId = payload.user?.id ?? null;
   const slackUserName = payload.user?.name ?? null;
   const actor = { slackUserId, displayName: slackUserName };
+  // Tenant guard before mutating: the proposal is decided by bare id, so verify
+  // the clicking workspace owns the proposal's pinned installation first.
+  const target = await db.query.incidentResolutionProposals.findFirst({
+    where: eq(schema.incidentResolutionProposals.id, proposalId),
+    columns: { slackInstallationId: true },
+  });
+  if (target && !(await clickWorkspaceOwnsPin(target.slackInstallationId, payload.team?.id))) {
+    log.warn(
+      { proposalId, team_id: payload.team?.id },
+      "proposal decision from a workspace that does not own the proposal; ignoring",
+    );
+    return;
+  }
   const result =
     decision === "confirm"
       ? await confirmResolutionProposal({ proposalId, actor })
