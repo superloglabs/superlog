@@ -321,6 +321,9 @@ export async function runRailwayPullOnce(deps: RailwayPullerDeps): Promise<Railw
         headers: { "content-type": "application/json", "x-api-key": ingestKey },
         body: JSON.stringify(payload),
       });
+      if (!res.ok) {
+        deps.log.warn({ url, status: res.status }, "railway intake forward rejected");
+      }
       return res.ok;
     } catch (err) {
       deps.log.warn(
