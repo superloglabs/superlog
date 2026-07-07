@@ -305,42 +305,34 @@ export function AgentSparkIcon({ size = 18, className }: IconProps) {
   );
 }
 
+// Vercel — the official mark (a solid triangle), monochrome via currentColor.
 export function VercelIcon({ size = 18, className }: IconProps) {
   return (
     <svg
       width={size}
       height={size}
-      viewBox="0 0 18 18"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinejoin="round"
+      viewBox="0 0 24 24"
+      fill="currentColor"
       className={className}
       aria-hidden="true"
     >
-      <path d="M9 3.5 15.5 14.5h-13Z" />
+      <path d="m12 1.608 12 20.784H0Z" />
     </svg>
   );
 }
 
+// Railway — the official mark (Simple Icons, CC0), monochrome via currentColor.
 export function RailwayIcon({ size = 18, className }: IconProps) {
   return (
     <svg
       width={size}
       height={size}
-      viewBox="0 0 18 18"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
+      viewBox="0 0 24 24"
+      fill="currentColor"
       className={className}
       aria-hidden="true"
     >
-      {/* Simplified Railway mark: a rail curving through a window. */}
-      <path d="M2.5 7.5h6.8a2.6 2.6 0 0 1 2.6 2.6v5.4" />
-      <path d="M2.9 11h3.4" />
-      <path d="M4 14h2.6" />
-      <path d="M2.7 4.5h7.2a5.6 5.6 0 0 1 5.6 5.6v5.4" />
+      <path d="M.113 10.27A13.026 13.026 0 000 11.48h18.23c-.064-.125-.15-.237-.235-.347-3.117-4.027-4.793-3.677-7.19-3.78-.8-.034-1.34-.048-4.524-.048-1.704 0-3.555.005-5.358.01-.234.63-.459 1.24-.567 1.737h9.342v1.216H.113v.002zm18.26 2.426H.009c.02.326.05.645.094.961h16.955c.754 0 1.179-.429 1.315-.96zm-17.318 4.28s2.81 6.902 10.93 7.024c4.855 0 9.027-2.883 10.92-7.024H1.056zM11.988 0C7.5 0 3.593 2.466 1.531 6.108l4.75-.005v-.002c3.71 0 3.849.016 4.573.047l.448.016c1.563.052 3.485.22 4.996 1.364.82.621 2.007 1.99 2.712 2.965.654.902.842 1.94.396 2.934-.408.914-1.289 1.458-2.353 1.458H.391s.099.42.249.886h22.748A12.026 12.026 0 0024 12.005C24 5.377 18.621 0 11.988 0z" />
     </svg>
   );
 }
@@ -365,22 +357,18 @@ export function KubernetesIcon({ size = 18, className }: IconProps) {
   );
 }
 
-// Cloudflare — a cloud outline (intentionally cloud-shaped, unlike the AWS rack).
+// Cloudflare — the official mark (Simple Icons, CC0), monochrome via currentColor.
 export function CloudflareIcon({ size = 18, className }: IconProps) {
   return (
     <svg
       width={size}
       height={size}
-      viewBox="0 0 18 18"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
+      viewBox="0 0 24 24"
+      fill="currentColor"
       className={className}
       aria-hidden="true"
     >
-      <path d="M5.2 13h7.3a2.6 2.6 0 0 0 .3-5.18A3.8 3.8 0 0 0 5.5 7.2 3 3 0 0 0 5.2 13Z" />
+      <path d="M16.5088 16.8447c.1475-.5068.0908-.9707-.1553-1.3154-.2246-.3164-.6045-.499-1.0615-.5205l-8.6592-.1123a.1559.1559 0 0 1-.1333-.0713c-.0283-.042-.0351-.0986-.021-.1553.0278-.084.1123-.1484.2036-.1562l8.7359-.1123c1.0351-.0489 2.1601-.8868 2.5537-1.9136l.499-1.3013c.0215-.0561.0293-.1128.0147-.168-.5625-2.5463-2.835-4.4453-5.5499-4.4453-2.5039 0-4.6284 1.6177-5.3876 3.8614-.4927-.3658-1.1187-.5625-1.794-.499-1.2026.119-2.1665 1.083-2.2861 2.2856-.0283.31-.0069.6128.0635.894C1.5683 13.171 0 14.7754 0 16.752c0 .1748.0142.3515.0352.5273.0141.083.0844.1475.1689.1475h15.9814c.0909 0 .1758-.0645.2032-.1553l.12-.4268zm2.7568-5.5634c-.0771 0-.1611 0-.2383.0112-.0566 0-.1054.0415-.127.0976l-.3378 1.1744c-.1475.5068-.0918.9707.1543 1.3164.2256.3164.6055.498 1.0625.5195l1.8437.1133c.0557 0 .1055.0263.1329.0703.0283.043.0351.1074.0214.1562-.0283.084-.1132.1485-.204.1553l-1.921.1123c-1.041.0488-2.1582.8867-2.5527 1.914l-.1406.3585c-.0283.0713.0215.1416.0986.1416h6.5977c.0771 0 .1474-.0489.169-.126.1122-.4082.1757-.837.1757-1.2803 0-2.6025-2.125-4.727-4.7344-4.727" />
     </svg>
   );
 }
