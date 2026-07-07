@@ -3,8 +3,6 @@ import type {
   AgentRunFollowUpInteraction,
   AgentRunResult,
   AgentRunTrigger,
-  LinearTicketInstruction,
-  LinearTicketPolicy,
   PrPolicy,
 } from "@superlog/db";
 
@@ -80,9 +78,6 @@ export type AgentRunnerStartInput = {
   issueSummaries: AgentRunnerIssueSummary[];
   repoCandidates: AgentRunnerRepoCandidate[];
   mcpResource: string | null;
-  linearInstallationId: string | null;
-  linearTicketPolicy: LinearTicketPolicy;
-  linearTicketInstructions: LinearTicketInstruction[];
   prPolicy: PrPolicy;
   prBaseBranch: string | null;
   githubConnected: boolean;

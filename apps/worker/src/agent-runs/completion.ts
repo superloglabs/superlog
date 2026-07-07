@@ -25,6 +25,7 @@ import {
 import { logger } from "../logger.js";
 import { enqueueAgentRunCompleted } from "../webhooks.js";
 import { recordFiledLinearTicket } from "./deliverable-records.js";
+import { deliverLinearTicket } from "./linear-delivery.js";
 import { isAlertIncident, truncateSlackText } from "./result-metadata.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
@@ -224,7 +225,17 @@ export async function completeWithoutPullRequest(
       "failed to enqueue agent run.completed webhook",
     ),
   );
-  await recordFiledLinearTicket(ctx, result.linearTicket);
+  // The platform files/updates the Linear ticket deterministically from the
+  // run's findings (after the metadata pass, so the ticket carries the
+  // agent-proposed title). The agent no longer self-reports ticket ids.
+  const deliveredTicket = await deliverLinearTicket(ctx, result, { prUrl: null });
+  if (deliveredTicket) {
+    await recordFiledLinearTicket(ctx, {
+      id: deliveredTicket.id,
+      url: deliveredTicket.url,
+      createdByAgent: deliveredTicket.created,
+    });
+  }
   if (resolutionReason) {
     const { resolved } = await resolveIncidentFromAgentRunConclusion(ctx, result, resolutionReason);
     if (resolved) {
@@ -252,12 +263,12 @@ export async function completeWithoutPullRequest(
       incident_id: ctx.incident.id,
       session_id: sessionId,
       runtime_minutes: runtimeMinutes,
-      has_ticket: !!result.linearTicket,
+      has_ticket: !!deliveredTicket,
       resolved_by_agent: !!resolutionReason,
     },
     "agent run complete",
   );
-  const ticket = result.linearTicket;
+  const ticket = deliveredTicket;
   if (noiseReason && noiseApplied) {
     const label = noiseReasonLabel(noiseReason);
     const evidence = result.noiseClassification?.evidence?.trim();

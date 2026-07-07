@@ -1,5 +1,9 @@
-// Validates and normalises the raw `input` of an agent's
-// submit_agent_run_result tool call into a ManagedSessionResult.
+// DEPRECATED legacy path: validates the raw `input` of an agent's
+// submit_agent_run_result tool call — the single crammed outcome tool that
+// per-outcome tools (see agent-outcome-tools.ts) replaced. Kept so
+// collectors can still finish sessions created against agents with the old
+// toolset (in-flight runs and resumed awaiting_human sessions). Remove
+// together with the collector's legacy branch once those drain.
 //
 // Why this exists: the tool's `input_schema` is declared on the
 // Anthropic SDK call but isn't enforced server-side for custom tools, so a

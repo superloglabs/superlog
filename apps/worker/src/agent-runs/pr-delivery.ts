@@ -23,6 +23,7 @@ import {
 import { logger } from "../logger.js";
 import { enqueueAgentRunCompleted } from "../webhooks.js";
 import { recordFiledLinearTicket, recordOpenedAgentPullRequest } from "./deliverable-records.js";
+import { deliverLinearTicket } from "./linear-delivery.js";
 import { buildPrBody, buildPrTitle } from "./pr-copy.js";
 import { summarizePrOpenFailure } from "./pr-open-failure.js";
 import { failAgentRun } from "./status.js";
@@ -49,6 +50,36 @@ function buildFollowUpPrComment(ctx: AgentRunContext, result: AgentRunResult): s
   const validation = result.pr?.validationSummary;
   if (validation) lines.push("", `Validation: ${validation}`);
   return lines.join("\n");
+}
+
+// Files/updates the incident's Linear ticket from the run result (platform-
+// side, deterministic) and records it. Best-effort: PR delivery never fails
+// on ticket problems.
+async function deliverAndRecordLinearTicket(
+  ctx: AgentRunContext,
+  result: AgentRunResult,
+  prUrl: string,
+): Promise<void> {
+  try {
+    const ticket = await deliverLinearTicket(ctx, result, { prUrl });
+    if (ticket) {
+      await recordFiledLinearTicket(ctx, {
+        id: ticket.id,
+        url: ticket.url,
+        createdByAgent: ticket.created,
+      });
+    }
+  } catch (err) {
+    logger.error(
+      {
+        scope: "agent_run.pr_delivery",
+        agent_run_id: ctx.agentRun.id,
+        incident_id: ctx.incident.id,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "failed to deliver/record Linear ticket",
+    );
+  }
 }
 
 async function notifyFollowUpPrUpdated(ctx: AgentRunContext, prUrl: string): Promise<void> {
@@ -248,17 +279,7 @@ export async function completeWithPullRequest(
           "failed to enqueue agent run.completed webhook",
         ),
       );
-      await recordFiledLinearTicket(ctx, result.linearTicket).catch((err) =>
-        logger.error(
-          {
-            scope: "agent_run.pr_delivery",
-            agent_run_id: ctx.agentRun.id,
-            incident_id: ctx.incident.id,
-            err: err instanceof Error ? err.message : String(err),
-          },
-          "failed to record filed Linear ticket",
-        ),
-      );
+      await deliverAndRecordLinearTicket(ctx, result, existingPr.url);
       await notifyFollowUpPrUpdated(ctx, existingPr.url).catch((err) =>
         logger.warn(
           {
@@ -439,17 +460,7 @@ export async function completeWithPullRequest(
       ).catch(() => {});
     }
   }
-  await recordFiledLinearTicket(ctx, result.linearTicket).catch((err) =>
-    logger.error(
-      {
-        scope: "agent_run.pr_delivery",
-        agent_run_id: ctx.agentRun.id,
-        incident_id: ctx.incident.id,
-        err: err instanceof Error ? err.message : String(err),
-      },
-      "failed to record filed Linear ticket",
-    ),
-  );
+  await deliverAndRecordLinearTicket(ctx, result, opened.prUrl);
   logger.info(
     {
       scope: "agent_run",

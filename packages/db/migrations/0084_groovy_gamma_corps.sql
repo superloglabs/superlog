@@ -1,0 +1,1 @@
+ALTER TABLE "project_automation_settings" ADD COLUMN "linear_default_team_id" text;

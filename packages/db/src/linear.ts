@@ -170,6 +170,95 @@ export async function deleteLinearWebhook(args: {
   }).catch(() => undefined);
 }
 
+async function linearGraphql<T>(
+  accessToken: string,
+  query: string,
+  variables: Record<string, unknown>,
+  label: string,
+): Promise<T> {
+  const res = await fetch(GRAPHQL_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`linear ${label} failed: ${res.status} ${text}`);
+  }
+  const json = (await res.json()) as { data?: T; errors?: { message: string }[] };
+  if (!json.data) {
+    throw new Error(`linear ${label} returned no data: ${JSON.stringify(json.errors ?? json)}`);
+  }
+  return json.data;
+}
+
+export type LinearTeam = { id: string; key: string; name: string };
+
+export async function listLinearTeams(accessToken: string): Promise<LinearTeam[]> {
+  const data = await linearGraphql<{ teams: { nodes: LinearTeam[] } }>(
+    accessToken,
+    "query { teams(first: 50) { nodes { id key name } } }",
+    {},
+    "teams query",
+  );
+  return data.teams.nodes;
+}
+
+export type LinearIssueRef = { id: string; identifier: string; url: string };
+
+export async function searchLinearIssues(
+  accessToken: string,
+  term: string,
+): Promise<LinearIssueRef[]> {
+  const data = await linearGraphql<{ searchIssues: { nodes: LinearIssueRef[] } }>(
+    accessToken,
+    "query($term: String!) { searchIssues(term: $term, first: 5) { nodes { id identifier url } } }",
+    { term },
+    "searchIssues query",
+  );
+  return data.searchIssues.nodes;
+}
+
+export async function createLinearIssue(args: {
+  accessToken: string;
+  teamId: string;
+  title: string;
+  description: string;
+}): Promise<LinearIssueRef> {
+  const data = await linearGraphql<{
+    issueCreate: { success?: boolean; issue?: LinearIssueRef };
+  }>(
+    args.accessToken,
+    "mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier url } } }",
+    { input: { teamId: args.teamId, title: args.title, description: args.description } },
+    "issueCreate",
+  );
+  const issue = data.issueCreate.issue;
+  if (!data.issueCreate.success || !issue?.id) {
+    throw new Error(`linear issueCreate returned no issue: ${JSON.stringify(data)}`);
+  }
+  return issue;
+}
+
+export async function createLinearComment(args: {
+  accessToken: string;
+  issueId: string;
+  body: string;
+}): Promise<void> {
+  const data = await linearGraphql<{ commentCreate: { success?: boolean } }>(
+    args.accessToken,
+    "mutation($input: CommentCreateInput!) { commentCreate(input: $input) { success } }",
+    { input: { issueId: args.issueId, body: args.body } },
+    "commentCreate",
+  );
+  if (!data.commentCreate.success) {
+    throw new Error(`linear commentCreate did not succeed: ${JSON.stringify(data)}`);
+  }
+}
+
 /**
  * Returns a usable access token for the installation, refreshing in place if it's
  * within REFRESH_GRACE_MS of expiry. Persists rotated refresh tokens.
