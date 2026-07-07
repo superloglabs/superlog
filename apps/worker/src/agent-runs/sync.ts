@@ -504,7 +504,17 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         .onConflictDoNothing()
         .returning({ id: schema.incidentEvents.id });
       if (claimed.length > 0) {
-        await runner.steer(sessionId, terminalOutcomeNudgePrompt());
+        try {
+          await runner.steer(sessionId, terminalOutcomeNudgePrompt());
+        } catch (err) {
+          // Release the claim so a later tick can retry the nudge — a
+          // transient steer failure must not permanently spend the one-shot.
+          await db
+            .delete(schema.incidentEvents)
+            .where(eq(schema.incidentEvents.id, claimed[0].id))
+            .catch(() => undefined);
+          throw err;
+        }
         logger.info(
           {
             agent_run_id: ctx.agentRun.id,

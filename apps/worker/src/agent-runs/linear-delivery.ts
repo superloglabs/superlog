@@ -229,11 +229,24 @@ export async function deliverLinearTicket(
 ): Promise<DeliveredLinearTicket | null> {
   // The run may have retitled the incident (applyAgentRunResult) after ctx
   // was loaded; reload so the ticket carries the current title in every
-  // caller path, not just the ones that refresh ctx themselves.
-  const refreshed = await db.query.incidents.findFirst({
-    where: eq(schema.incidents.id, ctx.incident.id),
-  });
-  if (refreshed) ctx.incident = refreshed;
+  // caller path, not just the ones that refresh ctx themselves. Best-effort
+  // like the rest of delivery: a failed reload falls back to the stale title
+  // rather than blocking completion.
+  try {
+    const refreshed = await db.query.incidents.findFirst({
+      where: eq(schema.incidents.id, ctx.incident.id),
+    });
+    if (refreshed) ctx.incident = refreshed;
+  } catch (err) {
+    logger.warn(
+      {
+        scope: "agent_run.linear_delivery",
+        incident_id: ctx.incident.id,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "incident refresh before ticket delivery failed; using the loaded title",
+    );
+  }
   const install = ctx.linearInstall;
   const logFields = {
     scope: "agent_run.linear_delivery",

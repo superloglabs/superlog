@@ -302,7 +302,9 @@ export async function completeWithoutPullRequest(
     if (evidence) lines.push(`Evidence: ${truncateSlackText(evidence, 1800)}`);
     await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
   } else {
-    const badge = ticket ? `:ticket: Filed ${ticket.identifier}: ${ticket.url}` : ":memo:";
+    const badge = ticket
+      ? `:ticket: Filed ${ticket.identifier}${ticket.url ? `: ${ticket.url}` : ""}`
+      : ":memo:";
     await postIncidentThreadMessage(ctx.incident.id, `${badge} ${result.summary}`);
   }
   const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
