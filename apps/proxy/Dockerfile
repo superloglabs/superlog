@@ -7,15 +7,12 @@ RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY apps/proxy/package.json apps/proxy/
-COPY packages/db/package.json packages/db/
-COPY packages/fingerprint/package.json packages/fingerprint/
+COPY packages packages
 
 RUN pnpm install --frozen-lockfile --filter @superlog/proxy...
 
 COPY tsconfig.base.json ./
 COPY apps/proxy apps/proxy
-COPY packages/db packages/db
-COPY packages/fingerprint packages/fingerprint
 
 ENV PORT=4000
 EXPOSE 4000
@@ -27,5 +24,7 @@ EXPOSE 4000
 # visibility timeout before redelivering (the ingest-lag sawtooth that paged on
 # every deploy). Running node as the container's main process delivers SIGTERM
 # straight to the handler. Mirrors the package.json "start" script.
+RUN pnpm --filter @superlog/proxy typecheck
+
 WORKDIR /app/apps/proxy
 CMD ["node", "--import", "tsx", "--import", "./tracing.ts", "src/index.ts"]
