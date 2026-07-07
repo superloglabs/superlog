@@ -14,7 +14,10 @@ test("landing navbar uses the public Superlog docs URL", () => {
 test("landing top nav renders a Docs link wired to the docs URL", async () => {
   const source = await readFile(new URL("./Landing.tsx", import.meta.url), "utf8");
 
-  assert.match(source, /href=\{LANDING_DOCS_URL\}[\s\S]*?Docs\s*<\/a>/);
+  assert.match(
+    source,
+    /href=\{LANDING_DOCS_URL\}[\s\S]*?target="_blank"[\s\S]*?rel="noreferrer"[\s\S]*?Docs\s*<\/a>/,
+  );
 });
 
 test("landing top nav renders a GitHub link wired to the repository URL", async () => {
@@ -22,7 +25,7 @@ test("landing top nav renders a GitHub link wired to the repository URL", async 
 
   assert.match(
     source,
-    /href=\{LANDING_GITHUB_REPO_URL\}[\s\S]*<GitHubIcon \/>[\s\S]*GitHub\s*<\/a>/,
+    /href=\{LANDING_GITHUB_REPO_URL\}[\s\S]*?target="_blank"[\s\S]*?rel="noreferrer"[\s\S]*?<GitHubIcon \/>[\s\S]*?GitHub\s*<\/a>/,
   );
 });
 
