@@ -177,6 +177,7 @@ export {
   isActiveIncidentState,
   buildAgentRunIncidentPatch,
   buildManualReopenPatch,
+  IllegalIncidentTransitionError,
   INCIDENT_ACTIVE_STATES,
   INCIDENT_CLOSED_STATES,
   type AgentRunIncidentPatch,

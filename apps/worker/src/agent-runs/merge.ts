@@ -1,4 +1,11 @@
-import { type AgentRunResult, db, enqueueIncidentMerged, schema } from "@superlog/db";
+import {
+  type AgentRunResult,
+  IllegalIncidentTransitionError,
+  db,
+  enqueueIncidentMerged,
+  isActiveIncidentState,
+  schema,
+} from "@superlog/db";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
@@ -25,6 +32,23 @@ type MergeCandidateRow = {
   fixTargets: string[] | null;
   priorPrState: "open" | "closed" | "merged" | null;
 };
+
+/**
+ * A merge folds an open source incident into an open survivor. `mergeIncidentsInTx`
+ * enforces open→open (see incident-state), but the merge judge is deliberately
+ * shown resolved incidents as candidates (loadMergeCandidates) so a fresh
+ * lookalike of an already-fixed root cause can be recognized. Guard here so a
+ * verdict targeting a non-open incident — or a source that was resolved while the
+ * run was in flight — is declined gracefully instead of throwing
+ * `IllegalIncidentTransitionError`, which the sync loop reports as `sync_failed`
+ * and which permanently kills the investigation.
+ */
+export function isMergeableIncidentPair(
+  source: Pick<schema.Incident, "status">,
+  target: Pick<schema.Incident, "status">,
+): boolean {
+  return isActiveIncidentState(source.status) && isActiveIncidentState(target.status);
+}
 
 function changedFilesFromResult(result: unknown): string[] | null {
   const pr = (result as { pr?: { changedFiles?: unknown } | null } | null)?.pr ?? null;
@@ -206,14 +230,51 @@ export async function tryMergeAfterAgentRun(
   const targetRow = candidateRows.find((r) => r.incident.id === verdict.targetIncidentId);
   if (!targetRow) return false;
 
-  await applyMergeOutcome({
-    ctx,
-    result,
-    target: targetRow.incident,
-    evidence: verdict.evidence,
-    sessionId,
-    runtimeMinutes,
-  });
+  if (!isMergeableIncidentPair(ctx.incident, targetRow.incident)) {
+    logger.info(
+      {
+        scope: "agent_run.merge",
+        agent_run_id: ctx.agentRun.id,
+        source_incident_id: ctx.incident.id,
+        source_status: ctx.incident.status,
+        target_incident_id: targetRow.incident.id,
+        target_status: targetRow.incident.status,
+      },
+      "merge judge chose a non-open incident; completing standalone instead of merging",
+    );
+    return false;
+  }
+
+  try {
+    await applyMergeOutcome({
+      ctx,
+      result,
+      target: targetRow.incident,
+      evidence: verdict.evidence,
+      sessionId,
+      runtimeMinutes,
+    });
+  } catch (err) {
+    // Belt-and-suspenders for the TOCTOU race: the source or target can be
+    // resolved between candidate load and the merge transaction. The merge is
+    // atomic and its state assertion runs before any write, so a rejected merge
+    // leaves the run `running` — fall through to standalone completion instead
+    // of letting this surface as a `sync_failed`.
+    if (err instanceof IllegalIncidentTransitionError) {
+      logger.warn(
+        {
+          scope: "agent_run.merge",
+          agent_run_id: ctx.agentRun.id,
+          source_incident_id: ctx.incident.id,
+          target_incident_id: targetRow.incident.id,
+          err: err.message,
+        },
+        "incident state changed under the merge; completing standalone",
+      );
+      return false;
+    }
+    throw err;
+  }
   return true;
 }
 

@@ -23,6 +23,7 @@
     "test:agent-run-start": "tsx --test src/agent-runs/start.test.ts",
     "test:agent-run-status": "tsx --test src/agent-runs/status.test.ts",
     "test:agent-run-sync": "tsx --test src/agent-runs/sync.test.ts",
+    "test:agent-run-merge": "tsx --test src/agent-runs/merge.test.ts",
     "test:issue-domain": "tsx --test src/issues/domain.test.ts",
     "test:alerts-domain": "tsx --test src/alerts/domain.test.ts",
     "test:alerts-evaluate": "tsx --test src/alerts/evaluate.test.ts",
