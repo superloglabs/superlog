@@ -245,10 +245,19 @@ export function mountWebhooks(app: Hono<any>): void {
     const id = c.req.param("id");
     const deliveryId = c.req.param("deliveryId");
     await requireProjectAccess(c, projectId);
+    // Scope the endpoint to projectId so a caller can't read a delivery under
+    // another project's endpoint by guessing its id + deliveryId.
+    const endpoint = await db.query.webhookEndpoints.findFirst({
+      where: and(
+        eq(schema.webhookEndpoints.id, id),
+        eq(schema.webhookEndpoints.projectId, projectId),
+      ),
+    });
+    if (!endpoint) throw new HTTPException(404, { message: "endpoint not found" });
     const delivery = await db.query.webhookDeliveries.findFirst({
       where: eq(schema.webhookDeliveries.id, deliveryId),
     });
-    if (!delivery || delivery.endpointId !== id) {
+    if (!delivery || delivery.endpointId !== endpoint.id) {
       throw new HTTPException(404, { message: "delivery not found" });
     }
     return c.json(toDeliveryView(delivery));
@@ -259,10 +268,19 @@ export function mountWebhooks(app: Hono<any>): void {
     const id = c.req.param("id");
     const deliveryId = c.req.param("deliveryId");
     await requireProjectAccess(c, projectId);
+    // Scope the endpoint to projectId so a caller can't redeliver under another
+    // project's endpoint by guessing its id + deliveryId.
+    const endpoint = await db.query.webhookEndpoints.findFirst({
+      where: and(
+        eq(schema.webhookEndpoints.id, id),
+        eq(schema.webhookEndpoints.projectId, projectId),
+      ),
+    });
+    if (!endpoint) throw new HTTPException(404, { message: "endpoint not found" });
     const original = await db.query.webhookDeliveries.findFirst({
       where: eq(schema.webhookDeliveries.id, deliveryId),
     });
-    if (!original || original.endpointId !== id) {
+    if (!original || original.endpointId !== endpoint.id) {
       throw new HTTPException(404, { message: "delivery not found" });
     }
     const fresh = await enqueueRedelivery(deliveryId);

@@ -69,6 +69,11 @@ describe("isBlockedAddress — IPv6", () => {
     "::ffff:127.0.0.1", // v4-mapped loopback
     "::ffff:169.254.169.254", // v4-mapped metadata
     "::ffff:10.0.0.1", // v4-mapped private
+    "2001::1", // Teredo 2001::/32
+    "2001:2::1", // benchmarking 2001:2::/48
+    "2002:c0a8:0101::1", // 6to4 2002::/16 wrapping 192.168.1.1
+    "3fff::1", // documentation 3fff::/20
+    "3fff:0fff::1", // documentation 3fff::/20 upper edge
   ];
   for (const ip of blocked) {
     it(`blocks ${ip}`, () => assert.equal(isBlockedAddress(ip), true));

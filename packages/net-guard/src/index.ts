@@ -152,7 +152,15 @@ export function isBlockedIpv6(ip: string): boolean {
   if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 ULA
   if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
   if ((first & 0xff00) === 0xff00) return true; // ff00::/8 multicast
-  if (first === 0x2001 && g[1] === 0x0db8) return true; // 2001:db8::/32 documentation
+
+  // Special-purpose prefixes that fall inside global-unicast 2000::/3 but are
+  // not globally reachable (or can tunnel to arbitrary/internal v4).
+  const g1 = g[1] ?? 0;
+  if (first === 0x2001 && g1 === 0x0000) return true; // 2001::/32 Teredo
+  if (first === 0x2001 && g1 === 0x0002 && (g[2] ?? 0) === 0x0000) return true; // 2001:2::/48 benchmarking
+  if (first === 0x2001 && g1 === 0x0db8) return true; // 2001:db8::/32 documentation
+  if (first === 0x2002) return true; // 2002::/16 6to4 (embeds arbitrary v4)
+  if (first === 0x3fff && (g1 & 0xf000) === 0x0000) return true; // 3fff::/20 documentation
 
   // Default-deny: only allow global-unicast 2000::/3.
   if ((first & 0xe000) !== 0x2000) return true;
@@ -168,9 +176,23 @@ export function isBlockedAddress(ip: string): boolean {
   return true; // not a bare IP → fail closed
 }
 
-function lookupAll(host: string): Promise<{ address: string; family: number }[]> {
+function lookupAll(
+  host: string,
+  signal?: AbortSignal,
+): Promise<{ address: string; family: number }[]> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new WebhookDestinationError("destination lookup aborted"));
+      return;
+    }
+    // node:dns lookup can't be cancelled, but the caller's timeout signal must
+    // still bound how long we wait — otherwise a stalled resolver blocks the
+    // delivery past its request timeout. Stop waiting on abort; the in-flight
+    // lookup drains harmlessly.
+    const onAbort = () => reject(new WebhookDestinationError("destination lookup aborted"));
+    signal?.addEventListener("abort", onAbort, { once: true });
     lookup(host, { all: true }, (err, addresses) => {
+      signal?.removeEventListener("abort", onAbort);
       if (err) reject(err);
       else resolve(addresses);
     });
@@ -181,7 +203,7 @@ function lookupAll(host: string): Promise<{ address: string; family: number }[]>
 // host and reject if any resolved address is non-public. Throws
 // WebhookDestinationError on any violation. Used for fail-fast validation when a
 // webhook is created/updated; the delivery dispatcher re-validates and pins.
-export async function assertPublicWebhookUrl(raw: string): Promise<void> {
+export async function assertPublicWebhookUrl(raw: string, signal?: AbortSignal): Promise<void> {
   let u: URL;
   try {
     u = new URL(raw);
@@ -205,7 +227,7 @@ export async function assertPublicWebhookUrl(raw: string): Promise<void> {
   }
   let addresses: { address: string }[];
   try {
-    addresses = await lookupAll(host);
+    addresses = await lookupAll(host, signal);
   } catch {
     throw new WebhookDestinationError("could not resolve destination host");
   }
@@ -269,7 +291,7 @@ export type WebhookFetchInit = {
 // are never followed — a 3xx is returned as-is (and treated as a non-2xx
 // failure by the caller) so a redirect can't bounce us to an internal host.
 export async function webhookFetch(url: string, init: WebhookFetchInit): Promise<Response> {
-  await assertPublicWebhookUrl(url);
+  await assertPublicWebhookUrl(url, init.signal);
   const res = await undiciFetch(url, {
     method: init.method,
     headers: init.headers,
