@@ -2217,11 +2217,85 @@ export const vercelInstallations = pgTable(
 
 export type VercelInstallation = typeof vercelInstallations.$inferSelect;
 
+// A connected Railway account via "Login with Railway" OAuth. One row per
+// (project, Railway user) — Railway has no per-grant id, so the OIDC `sub` of
+// the consenting user is the stable install key; a re-consent by the same user
+// refreshes the row. Unlike the Vercel/Cloudflare connectors there is nothing
+// to provision on Railway's side: Railway has no drains, so a worker-side
+// puller reads logs (GraphQL subscription/query) and metrics (query) from the
+// granted projects and forwards them to our intake authenticated by the
+// project ingest key. Access tokens live 1h; the rotating refresh token is
+// re-persisted on every refresh. Tokens/keys are encrypted at rest with the
+// same AES-256-GCM scheme as the Cloudflare connector.
+export const railwayInstallations = pgTable(
+  "railway_installations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    // OIDC `sub` of the Railway user who consented — the stable install key.
+    railwayUserId: text("railway_user_id").notNull(),
+    // Snapshot of what the grant can see (from `externalWorkspaces`), refreshed
+    // by the puller: workspaces and the granted projects with their
+    // environments. Display + pull-planning only, never authorization.
+    grantedProjects: jsonb("granted_projects").$type<
+      Array<{
+        id: string;
+        name: string;
+        workspaceId: string | null;
+        workspaceName: string | null;
+      }>
+    >(),
+    // Delegated OAuth tokens, encrypted at rest. Railway access tokens expire
+    // after ~1h; refresh tokens rotate on every use (the puller persists the
+    // replacement immediately). Refresh token nullable: consent without
+    // `offline_access` yields none and the install degrades at expiry.
+    accessTokenCiphertext: bytea("access_token_ciphertext").notNull(),
+    accessTokenNonce: bytea("access_token_nonce").notNull(),
+    accessTokenKeyVersion: integer("access_token_key_version").notNull().default(1),
+    refreshTokenCiphertext: bytea("refresh_token_ciphertext"),
+    refreshTokenNonce: bytea("refresh_token_nonce"),
+    refreshTokenKeyVersion: integer("refresh_token_key_version"),
+    tokenExpiresAt: timestamp("token_expires_at", { withTimezone: true }),
+    scope: text("scope"),
+    // The ingest key the puller forwards telemetry with, stored encrypted so a
+    // re-connect reuses the same key instead of minting a new one.
+    apiKeyId: uuid("api_key_id").references(() => apiKeys.id, { onDelete: "set null" }),
+    ingestKeyCiphertext: bytea("ingest_key_ciphertext"),
+    ingestKeyNonce: bytea("ingest_key_nonce"),
+    ingestKeyKeyVersion: integer("ingest_key_key_version"),
+    // Puller checkpoint: Railway environment id → RFC3339 timestamp of the last
+    // forwarded log line, so restarts resume without gaps or duplicates.
+    logCursor: jsonb("log_cursor").$type<Record<string, string>>(),
+    // Puller checkpoint for metrics: Railway service id → epoch seconds of the
+    // last forwarded sample.
+    metricsCursor: jsonb("metrics_cursor").$type<Record<string, number>>(),
+    installedByUserId: uuid("installed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    // One live install per (project, Railway user); a re-consent refreshes the
+    // row (see the upsert in apps/api/src/railway.ts). Also serves
+    // project-scoped lookups via its left-most `project_id` prefix.
+    projectUserUniq: uniqueIndex("railway_installations_project_user_idx").on(
+      t.projectId,
+      t.railwayUserId,
+    ),
+  }),
+);
+
+export type RailwayInstallation = typeof railwayInstallations.$inferSelect;
+
 // Per-project ingest source filters. A row means the given (source, signal) is
 // DISABLED for the project — the proxy ack-drops that telemetry at the edge.
 // Sparse by design: no row = enabled, so a new project ingests everything.
 //   source: "otlp" (SDK/OTLP exporters) | "aws" (CloudWatch → Firehose) |
-//           "vercel" (Vercel Drains)
+//           "vercel" (Vercel Drains) | "railway" (Railway API puller)
 //   signal: "traces" | "logs" | "metrics"
 export const projectIngestFilters = pgTable(
   "project_ingest_filters",
@@ -2230,7 +2304,7 @@ export const projectIngestFilters = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    source: text("source").$type<"otlp" | "aws" | "vercel">().notNull(),
+    source: text("source").$type<"otlp" | "aws" | "vercel" | "railway">().notNull(),
     signal: text("signal").$type<"traces" | "logs" | "metrics">().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
