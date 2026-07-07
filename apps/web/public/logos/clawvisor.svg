@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="sg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#312e81"/>
+    </linearGradient>
+    <linearGradient id="cg" x1="0" y1="0" x2=".3" y2="1">
+      <stop offset="0%" stop-color="#fde68a"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+    <filter id="gl">
+      <feGaussianBlur stdDeviation="1.5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="shield">
+      <path d="M64 10 L110 28 L110 60 C110 88 89 110 64 120 C39 110 18 88 18 60 L18 28 Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- Shield -->
+  <path d="M64 10 L110 28 L110 60 C110 88 89 110 64 120 C39 110 18 88 18 60 L18 28 Z"
+        fill="url(#sg)" stroke="#a5b4fc" stroke-width="2"/>
+
+  <!-- Claw slashes — clipped to shield, diagonal top-left to bottom-right -->
+  <g clip-path="url(#shield)" filter="url(#gl)">
+    <path d="M22 18 C36 46, 42 72, 38 116"
+          fill="none" stroke="url(#cg)" stroke-width="9"
+          stroke-linecap="round"/>
+    <path d="M46 12 C58 44, 62 74, 56 122"
+          fill="none" stroke="url(#cg)" stroke-width="10"
+          stroke-linecap="round"/>
+    <path d="M70 14 C80 44, 82 74, 76 120"
+          fill="none" stroke="url(#cg)" stroke-width="9"
+          stroke-linecap="round"/>
+  </g>
+
+  <!-- Bright edge on shield to separate from dark backgrounds -->
+  <path d="M64 10 L110 28 L110 60 C110 88 89 110 64 120 C39 110 18 88 18 60 L18 28 Z"
+        fill="none" stroke="#c7d2fe" stroke-width="1.5" opacity="0.3"/>
+</svg>

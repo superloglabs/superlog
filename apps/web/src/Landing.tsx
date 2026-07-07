@@ -30,6 +30,7 @@ export function Landing({ initialAuthMode }: { initialAuthMode?: AuthMode } = {}
 
       <main className="relative">
         <Hero />
+        <ClientLogos />
 
         <div className="mx-auto w-full max-w-[1400px] px-0 pb-24 md:px-8 xl:px-12">
           <Section
@@ -190,6 +191,76 @@ function Hero() {
             <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(8,9,11,0.72),rgba(8,9,11,0.08)_64%),linear-gradient(90deg,rgba(8,9,11,0.54),rgba(8,9,11,0.06)_56%,rgba(8,9,11,0.42))]" />
           </div>
           <CodingAgentWindow />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Client logos — seamless white-logo marquee under the hero
+// ---------------------------------------------------------------------------
+
+// Client logos. Brand marks live in apps/web/public/logos and get forced to one
+// monochrome white (brightness-0 invert) so the row reads as a single elegant
+// set instead of a jumble of brand colors. `icon: true` appends the company name
+// beside a bare mark so it's legible; entries with no `src` are typeset until a
+// clean transparent/mono asset lands.
+const CLIENT_LOGOS: { name: string; src?: string; icon?: boolean; label?: string }[] = [
+  { name: "Plato", src: "/logos/plato.svg" },
+  { name: "LightSprint", src: "/logos/lightsprint.png" },
+  { name: "Datost", src: "/logos/datost.svg", icon: true },
+  { name: "Clawvisor", src: "/logos/clawvisor.svg", icon: true },
+  { name: "Kinect", src: "/logos/kinect.svg", icon: true },
+  { name: "Nautilus", src: "/logos/nautilus.png" },
+  { name: "Linzumi", src: "/logos/linzumi.svg", icon: true },
+  { name: "Juno", src: "/logos/juno.png", icon: true, label: "juno" },
+  { name: "Akkari", src: "/logos/akkari.svg", icon: true },
+  { name: "Trellis", src: "/logos/trellis.svg", icon: true },
+  { name: "Hedge", label: "hedge." },
+  { name: "Prism", src: "/logos/prism.svg", icon: true },
+];
+
+function ClientLogos() {
+  return (
+    <section aria-label="Trusted by teams" className="relative mt-12 md:mt-16">
+      <div className="mx-auto w-full max-w-[1400px] px-4 md:px-8 xl:px-12">
+        <p className="mb-6 text-center text-[11px] font-medium uppercase tracking-[0.2em] text-subtle md:mb-8 md:text-[12px]">
+          Trusted by teams at
+        </p>
+        <div className="marquee-fade overflow-hidden py-2">
+          <ul className="marquee-track flex w-max items-center">
+            {[0, 1].map((copy) =>
+              CLIENT_LOGOS.map((logo) => (
+                <li
+                  key={`${copy}-${logo.name}`}
+                  aria-hidden={copy === 1 || undefined}
+                  title={logo.name}
+                  className="flex shrink-0 items-center gap-2.5 pr-14 opacity-60 transition-opacity duration-300 hover:opacity-100 md:pr-24"
+                >
+                  {logo.src && (
+                    <img
+                      src={logo.src}
+                      alt={logo.name}
+                      loading="lazy"
+                      draggable={false}
+                      className="h-6 w-auto max-w-[160px] object-contain brightness-0 invert md:h-7"
+                    />
+                  )}
+                  {logo.icon && (
+                    <span className="whitespace-nowrap text-[17px] font-medium tracking-tight text-fg md:text-[19px]">
+                      {logo.label ?? logo.name}
+                    </span>
+                  )}
+                  {!logo.src && (
+                    <span className="whitespace-nowrap text-[19px] font-semibold tracking-tight text-fg md:text-[21px]">
+                      {logo.label ?? logo.name}
+                    </span>
+                  )}
+                </li>
+              )),
+            )}
+          </ul>
         </div>
       </div>
     </section>

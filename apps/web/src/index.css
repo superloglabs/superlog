@@ -616,3 +616,47 @@ body {
     opacity: 0;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Client logo marquee — seamless left-to-right drift under the hero.
+   The track holds two identical logo sets; sliding the pair right by exactly
+   one set (translateX -50% -> 0) loops with no visible seam. Uniform per-item
+   right padding (not flex gap) keeps both halves the same width.
+   --------------------------------------------------------------------------- */
+@keyframes superlog-marquee {
+  from {
+    transform: translate3d(-50%, 0, 0);
+  }
+  to {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.marquee-track {
+  animation: superlog-marquee 46s linear infinite;
+  will-change: transform;
+}
+
+/* Hovering the band pauses the drift so a logo can be read. */
+.marquee-fade:hover .marquee-track {
+  animation-play-state: paused;
+}
+
+/* Feather both edges to transparent so logos glide in and out of the band. */
+.marquee-fade {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 9%,
+    #000 91%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(to right, transparent 0, #000 9%, #000 91%, transparent 100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marquee-track {
+    animation: none;
+    transform: none;
+  }
+}
