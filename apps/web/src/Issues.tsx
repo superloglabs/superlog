@@ -1,4 +1,8 @@
-import { ChartIncreaseIcon, CheckmarkCircle02Icon } from "@hugeicons/core-free-icons";
+import {
+  ChartIncreaseIcon,
+  CheckmarkCircle02Icon,
+  ClipboardCopyIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
@@ -52,6 +56,10 @@ import {
   CollapsibleIncidentTranscript,
   IncidentSummaryTelemetry,
 } from "./incidents/IncidentTranscript.tsx";
+import {
+  type IncidentMetaRow,
+  buildIncidentDetailMeta,
+} from "./incidents/incident-detail-view-model.ts";
 import { getIssueIncidentLinkState } from "./issue-incident-link-state.ts";
 
 const IncidentPrDiffView = lazy(() => import("./IncidentPrDiffView.tsx"));
@@ -125,7 +133,13 @@ export function Issues() {
 
 function IssuesShell({ projectId }: { projectId: string }) {
   const tab = useTab();
+  const params = useParams<{ id?: string }>();
   const labels: Record<Tab, string> = { incidents: "Incidents", issues: "Issues" };
+
+  if (tab === "incidents" && params.id) {
+    return <IncidentsTab projectId={projectId} />;
+  }
+
   return (
     <div>
       <div className="mb-6 flex items-center gap-1">
@@ -636,6 +650,17 @@ function IncidentsTab({ projectId }: { projectId: string }) {
     else openItem(id, "incidents");
   }
 
+  if (selectedId) {
+    return (
+      <IncidentDetailPage
+        projectId={projectId}
+        incidentId={selectedId}
+        onClose={() => selectIncident(null)}
+        onViewIssue={(issueId) => openItem(issueId, "issues")}
+      />
+    );
+  }
+
   return (
     <div>
       <div className="mb-4 flex items-center justify-between">
@@ -712,15 +737,6 @@ function IncidentsTab({ projectId }: { projectId: string }) {
             </section>
           ))}
         </div>
-      )}
-
-      {selectedId && (
-        <IncidentDrawer
-          projectId={projectId}
-          incidentId={selectedId}
-          onClose={() => selectIncident(null)}
-          onViewIssue={(issueId) => openItem(issueId, "issues")}
-        />
       )}
 
       {newInvestigationOpen && (
@@ -882,7 +898,7 @@ export function IncidentRow({
   );
 }
 
-function IncidentDrawer({
+function IncidentDetailPage({
   projectId,
   incidentId,
   onClose,
@@ -893,37 +909,19 @@ function IncidentDrawer({
   onClose: () => void;
   onViewIssue: (issueId: string) => void;
 }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
-    <div className="fixed inset-x-0 bottom-0 top-[var(--impersonation-h,0px)] z-50">
-      <button
-        type="button"
-        aria-label="close"
-        className="absolute inset-0 bg-black/60"
-        onClick={onClose}
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg">
+      <IncidentDetailBody
+        projectId={projectId}
+        incidentId={incidentId}
+        onClose={onClose}
+        onViewIssue={onViewIssue}
       />
-      <aside className="absolute inset-y-0 right-0 flex w-full max-w-[720px] flex-col border-l border-border bg-bg shadow-2xl">
-        <div className="flex-1 overflow-y-auto">
-          <IncidentDrawerBody
-            projectId={projectId}
-            incidentId={incidentId}
-            onClose={onClose}
-            onViewIssue={onViewIssue}
-          />
-        </div>
-      </aside>
     </div>
   );
 }
 
-function IncidentDrawerBody({
+function IncidentDetailBody({
   projectId,
   incidentId,
   onClose,
@@ -1110,10 +1108,12 @@ function CopyAgentPromptButton({
   incident,
   issues,
   agentRun,
+  className = "",
 }: {
   incident: Incident;
   issues: Issue[];
   agentRun: AgentRun | null;
+  className?: string;
 }) {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState(false);
@@ -1135,10 +1135,18 @@ function CopyAgentPromptButton({
     <button
       type="button"
       onClick={handleCopy}
-      className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-[12px] text-fg transition-colors hover:border-border-strong"
+      className={`inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-[12px] text-fg transition-colors hover:border-border-strong ${className}`}
       title="Copy a ready-to-paste prompt that briefs an agent on this incident and points it at the Superlog MCP."
     >
-      <span aria-hidden>{error ? "⚠" : copied ? "✓" : "📋"}</span>
+      {error ? (
+        <span className="grid h-3.5 w-3.5 place-items-center text-[10px] leading-none" aria-hidden>
+          !
+        </span>
+      ) : copied ? (
+        <HugeiconsIcon icon={CheckmarkCircle02Icon} size={14} aria-hidden />
+      ) : (
+        <HugeiconsIcon icon={ClipboardCopyIcon} size={14} aria-hidden />
+      )}
       {error ? "Copy failed" : copied ? "Copied" : "Copy agent prompt"}
     </button>
   );
@@ -1511,8 +1519,24 @@ export function IncidentDetailContent({
    *  the agent's `agent.*` events are dropped from the timeline (lifecycle-only). */
   transcript?: ReactNode;
 }) {
-  const [detailTab, setDetailTab] = useState<"incident" | "pr">("incident");
+  const [detailTab, setDetailTab] = useState<IncidentDetailTab>("activity");
   const statusActions = getIncidentStatusActions(incident.status);
+  const problemResolvedAction =
+    statusActions.find((action) => action.label === "Problem resolved") ?? null;
+  const notAnIssueAction = statusActions.find((action) => action.label === "Not an issue") ?? null;
+  const otherStatusActions = statusActions.filter(
+    (action) => action.label !== "Problem resolved" && action.label !== "Not an issue",
+  );
+  const detailMeta = buildIncidentDetailMeta({
+    incident,
+    issueCount: issues.length || incident.issueCount,
+    agentRunState: agentRun?.state ?? null,
+    pendingRecovery: !!pendingResolutionProposal,
+  });
+  const sidebarSummary =
+    incident.agentSummary ??
+    agentRun?.result?.summary ??
+    "No investigation summary has been recorded yet.";
 
   // The agent's conversation renders as a Transcript section (self-rendered from
   // events, or an explicit override) — and is then dropped from the timeline.
@@ -1532,147 +1556,244 @@ export function IncidentDetailContent({
     ) : null);
 
   return (
-    <div className="space-y-8 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <StatusChip status={incident.status} pendingResolution={!!pendingResolutionProposal} />
-            {incident.severity && <SeverityChip severity={incident.severity} />}
-            {incident.codename && (
-              <span className="font-mono text-[11px] text-muted">{incident.codename}</span>
-            )}
-          </div>
-          <h2 className="text-[15px] font-semibold leading-snug text-fg">{incident.title}</h2>
-        </div>
+    <div className="flex min-h-0 flex-1 flex-col bg-bg text-fg">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-bg px-5 py-3">
+        <span className="text-[13px] text-muted">Incidents</span>
+        <span className="text-subtle">›</span>
+        <span className="min-w-0 flex-1 truncate text-[13px] text-fg">
+          {incident.title}
+        </span>
         <div className="flex shrink-0 items-center gap-3">
-          <CopyAgentPromptButton incident={incident} issues={issues} agentRun={agentRun} />
-          <FeedbackTrigger kind="incident" refId={incident.id} projectId={incident.projectId} />
+          {notAnIssueAction && (
+            <Btn
+              variant={notAnIssueAction.variant}
+              size="sm"
+              onClick={() => onStatusAction(notAnIssueAction)}
+              loading={updatingIncident}
+            >
+              {notAnIssueAction.label}
+            </Btn>
+          )}
+          {problemResolvedAction && (
+            <Btn
+              variant={problemResolvedAction.variant}
+              size="sm"
+              onClick={() => onStatusAction(problemResolvedAction)}
+              loading={updatingIncident}
+            >
+              {problemResolvedAction.label}
+            </Btn>
+          )}
           <button
             onClick={onClose}
             className="text-muted transition-colors hover:text-fg"
             aria-label="close"
           >
-            <svg
-              className="h-4 w-4"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path d="M18 6 6 18M6 6l12 12" />
-            </svg>
+            <CloseIcon />
           </button>
         </div>
       </div>
 
-      <IncidentDetailTabs active={detailTab} onChange={setDetailTab} />
+      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[390px_minmax(0,1fr)]">
+        <aside className="flex min-w-0 flex-col border-b border-border bg-bg lg:border-b-0 lg:border-r">
+          <div className="px-7 pb-7 pt-7">
+            <div className="font-mono text-[11px] text-subtle">#{incident.codename}</div>
+            <h2 className="mt-2 break-words text-[20px] font-semibold leading-[1.1] tracking-tight text-fg">
+              {incident.title}
+            </h2>
+            <p className="mt-4 break-words text-[12px] leading-5 text-muted">{sidebarSummary}</p>
 
-      {detailTab === "incident" ? (
-        <>
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-              <MetaInline label="Service" value={incident.service ?? "—"} />
-              <MetaInline label="Environment" value={incident.environment ?? "—"} />
+            <div className="mt-7 grid gap-3.5">
+              <IncidentSidebarMetaRows rows={detailMeta} />
             </div>
-            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-              <MetaInline label="First seen" value={fmtRelative(incident.firstSeen)} />
-              <MetaInline label="Last seen" value={fmtRelative(incident.lastSeen)} />
+
+            <div className="mt-7 grid gap-2">
+              <CopyAgentPromptButton
+                incident={incident}
+                issues={issues}
+                agentRun={agentRun}
+                className="w-full justify-center"
+              />
+              <FeedbackTrigger
+                kind="incident"
+                refId={incident.id}
+                projectId={incident.projectId}
+                className="w-full justify-center"
+              />
+              {otherStatusActions.map((action) => (
+                <Btn
+                  key={action.label}
+                  variant={action.variant}
+                  size="sm"
+                  onClick={() => onStatusAction(action)}
+                  loading={updatingIncident}
+                  className="w-full justify-center"
+                >
+                  {action.label}
+                </Btn>
+              ))}
             </div>
-          </div>
-
-          {alertEpisodes.length > 0 && (
-            <div className="space-y-3">
-              <SectionHeading>Triggered by</SectionHeading>
-              <TriggeredByAlertEpisodes episodes={alertEpisodes} />
-            </div>
-          )}
-
-          <IncidentActivityPanel projectId={incident.projectId} incidentId={incident.id} />
-
-          {pendingResolutionProposal && onDecideProposal && (
-            <ResolutionProposalBanner
-              proposal={pendingResolutionProposal}
-              onConfirm={() => onDecideProposal(pendingResolutionProposal.id, "confirm")}
-              onDismiss={() => onDecideProposal(pendingResolutionProposal.id, "dismiss")}
-              deciding={!!decidingProposal}
-            />
-          )}
-
-          <div className="space-y-3">
-            <SectionHeading>Issues in this incident</SectionHeading>
-            {issues.length === 0 ? (
-              <p className="text-[12px] text-muted">none</p>
-            ) : (
-              <IssueList issues={issues} onViewIssue={onViewIssue} />
+            {updateIncidentError && (
+              <p className="mt-3 rounded-sm border border-danger/40 bg-danger/10 px-3 py-2 text-[12px] text-danger">
+                Status update failed: {String(updateIncidentError)}
+              </p>
             )}
           </div>
+        </aside>
 
-          <AgentRunView
-            incident={incident}
-            agentRun={agentRun}
-            agentRuns={agentRuns}
-            events={events}
-            eventsError={eventsError}
-            eventsLoading={eventsLoading}
-            onRestart={onRestartAgentRun}
-            onRetryPrDelivery={onRetryPrDelivery}
-            restarting={restartingAgentRun}
-            retryingPrDelivery={retryingPrDelivery}
-            summaryTelemetry={summaryTelemetry}
-          />
+        <div className="min-w-0 bg-bg">
+          <IncidentDetailTabs active={detailTab} onChange={setDetailTab} />
 
-          {transcriptNode}
+          <div className="px-6 py-6 lg:px-8">
+            {detailTab === "activity" && (
+              <div className="space-y-8">
+                <IncidentActivityPanel projectId={incident.projectId} incidentId={incident.id} />
 
-          <div className={transcriptNode ? "mt-8" : "mt-8 border-t border-border pt-6"}>
-            <IncidentTimeline
-              events={events}
-              eventsError={eventsError}
-              eventsLoading={eventsLoading}
-              excludeAgentMessages={!!transcriptNode}
-            />
+                {transcriptNode}
+
+                <div className={transcriptNode ? "mt-8" : "mt-8 border-t border-border pt-6"}>
+                  <IncidentTimeline
+                    events={events}
+                    eventsError={eventsError}
+                    eventsLoading={eventsLoading}
+                    excludeAgentMessages={!!transcriptNode}
+                  />
+                </div>
+              </div>
+            )}
+
+            {detailTab === "findings" && (
+              <div className="space-y-8">
+                {alertEpisodes.length > 0 && (
+                  <div className="space-y-3">
+                    <SectionHeading>Triggered by</SectionHeading>
+                    <TriggeredByAlertEpisodes episodes={alertEpisodes} />
+                  </div>
+                )}
+
+                {pendingResolutionProposal && onDecideProposal && (
+                  <ResolutionProposalBanner
+                    proposal={pendingResolutionProposal}
+                    onConfirm={() => onDecideProposal(pendingResolutionProposal.id, "confirm")}
+                    onDismiss={() => onDecideProposal(pendingResolutionProposal.id, "dismiss")}
+                    deciding={!!decidingProposal}
+                  />
+                )}
+
+                <div className="space-y-3">
+                  <SectionHeading>Issues in this incident</SectionHeading>
+                  {issues.length === 0 ? (
+                    <p className="text-[12px] text-muted">none</p>
+                  ) : (
+                    <IssueList issues={issues} onViewIssue={onViewIssue} />
+                  )}
+                </div>
+
+                <AgentRunView
+                  incident={incident}
+                  agentRun={agentRun}
+                  agentRuns={agentRuns}
+                  events={events}
+                  eventsError={eventsError}
+                  eventsLoading={eventsLoading}
+                  onRestart={onRestartAgentRun}
+                  onRetryPrDelivery={onRetryPrDelivery}
+                  restarting={restartingAgentRun}
+                  retryingPrDelivery={retryingPrDelivery}
+                  summaryTelemetry={summaryTelemetry}
+                />
+              </div>
+            )}
+
+            {detailTab === "pr" && (
+              <IncidentPullRequestPanel projectId={incident.projectId} incidentId={incident.id} />
+            )}
           </div>
-
-          <div className="flex gap-2">
-            {statusActions.map((action) => (
-              <Btn
-                key={action.label}
-                variant={action.variant}
-                size="sm"
-                onClick={() => onStatusAction(action)}
-                loading={updatingIncident}
-                className="w-full justify-center"
-              >
-                {action.label}
-              </Btn>
-            ))}
-          </div>
-          {updateIncidentError && (
-            <p className="rounded-sm border border-danger/40 bg-danger/10 px-3 py-2 text-[12px] text-danger">
-              Status update failed: {String(updateIncidentError)}
-            </p>
-          )}
-        </>
-      ) : (
-        <IncidentPullRequestPanel projectId={incident.projectId} incidentId={incident.id} />
-      )}
+        </div>
+      </div>
     </div>
   );
 }
+
+function CloseIcon() {
+  return (
+    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
+function IncidentSidebarMetaRows({ rows }: { rows: IncidentMetaRow[] }) {
+  return (
+    <>
+      {rows.map((row) => (
+        <div
+          key={`${row.label}-${row.value}`}
+          className="grid grid-cols-[132px_minmax(0,1fr)] items-start gap-3 text-[13px]"
+        >
+          <div className="text-muted">{row.label}</div>
+          <div className="flex min-w-0 items-center gap-2 text-fg">
+            <IncidentMetaIcon row={row} />
+            <span className="min-w-0 break-words">{row.value}</span>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function IncidentMetaIcon({ row }: { row: IncidentMetaRow }) {
+  if (row.kind === "priority") return <PriorityBars />;
+  if (row.kind === "status") return <StatusDot />;
+  if (row.kind === "environment") return <EnvironmentDot />;
+  if (row.kind === "findings") return <FindingsDot />;
+  if (row.kind === "agent") return <AgentDot />;
+  return null;
+}
+
+function PriorityBars() {
+  return (
+    <span className="flex h-4 w-4 shrink-0 items-end gap-[2px] text-muted" aria-hidden>
+      <span className="h-1.5 w-[3px] bg-current" />
+      <span className="h-2.5 w-[3px] bg-current" />
+      <span className="h-4 w-[3px] bg-current" />
+    </span>
+  );
+}
+
+function StatusDot() {
+  return <span className="h-2 w-2 shrink-0 rounded-full bg-accent" aria-hidden />;
+}
+
+function EnvironmentDot() {
+  return <span className="h-2 w-2 shrink-0 rounded-full bg-success" aria-hidden />;
+}
+
+function FindingsDot() {
+  return <span className="h-2 w-2 shrink-0 rounded-full bg-warning" aria-hidden />;
+}
+
+function AgentDot() {
+  return <span className="h-2 w-2 shrink-0 rounded-full bg-accent" aria-hidden />;
+}
+
+type IncidentDetailTab = "activity" | "findings" | "pr";
 
 function IncidentDetailTabs({
   active,
   onChange,
 }: {
-  active: "incident" | "pr";
-  onChange: (tab: "incident" | "pr") => void;
+  active: IncidentDetailTab;
+  onChange: (tab: IncidentDetailTab) => void;
 }) {
-  const tabs: { id: "incident" | "pr"; label: string }[] = [
-    { id: "incident", label: "Incident" },
+  const tabs: { id: IncidentDetailTab; label: string }[] = [
+    { id: "activity", label: "Activity" },
+    { id: "findings", label: "Findings" },
     { id: "pr", label: "PR" },
   ];
   return (
-    <div className="-mx-4 border-b border-border px-4">
-      <div className="flex gap-9">
+    <div className="border-b border-border bg-bg px-6 lg:px-8">
+      <div className="flex h-16 flex-wrap items-end gap-2 pb-3">
         {tabs.map((tab) => {
           const selected = active === tab.id;
           return (
@@ -1680,14 +1801,13 @@ function IncidentDetailTabs({
               key={tab.id}
               type="button"
               onClick={() => onChange(tab.id)}
-              className={`relative h-11 text-[14px] font-medium transition-colors ${
-                selected ? "text-fg" : "text-muted hover:text-fg"
+              className={`rounded-lg border px-3.5 py-1.5 text-[13px] font-semibold transition-colors ${
+                selected
+                  ? "border-border-strong bg-surface-2 text-fg"
+                  : "border-border bg-surface text-muted hover:text-fg"
               }`}
             >
               {tab.label}
-              {selected && (
-                <span className="absolute inset-x-0 bottom-0 h-[3px] bg-fg" aria-hidden />
-              )}
             </button>
           );
         })}

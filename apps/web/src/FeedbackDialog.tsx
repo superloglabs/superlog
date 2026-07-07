@@ -1,3 +1,5 @@
+import { ChatFeedback01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { useSubmitFeedback } from "./api.ts";
 import { Btn } from "./design/ui.tsx";
@@ -15,11 +17,13 @@ export function FeedbackTrigger({
   refId,
   projectId,
   label = "Give feedback",
+  className = "",
 }: {
   kind: "incident" | "issue";
   refId: string;
   projectId?: string;
   label?: string;
+  className?: string;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -27,9 +31,9 @@ export function FeedbackTrigger({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-[12px] text-fg transition-colors hover:border-border-strong"
+        className={`inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-[12px] text-fg transition-colors hover:border-border-strong ${className}`}
       >
-        <span aria-hidden>💬</span>
+        <HugeiconsIcon icon={ChatFeedback01Icon} size={14} aria-hidden />
         {label}
       </button>
       {open && (

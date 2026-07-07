@@ -5,7 +5,7 @@ export type IncidentStatusAction = {
   // resolved (recurrence opens a new chained incident); not_an_issue silences
   // them (future occurrences are suppressed).
   resolution?: "problem_resolved" | "not_an_issue";
-  variant: "secondary" | "ghost";
+  variant: "primary" | "secondary" | "ghost";
 };
 
 export function getIncidentStatusActions(status: string): IncidentStatusAction[] {
@@ -15,13 +15,13 @@ export function getIncidentStatusActions(status: string): IncidentStatusAction[]
         label: "Problem resolved",
         targetStatus: "resolved",
         resolution: "problem_resolved",
-        variant: "secondary",
+        variant: "primary",
       },
       {
         label: "Not an issue",
         targetStatus: "resolved",
         resolution: "not_an_issue",
-        variant: "ghost",
+        variant: "secondary",
       },
     ];
   }

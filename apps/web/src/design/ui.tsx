@@ -372,18 +372,14 @@ export function AppShell({
   children: ReactNode;
 }) {
   return (
-    // min-h subtracts the impersonation banner height so the page doesn't
-    // overflow by the banner's height (the banner is position:fixed, so it
-    // adds nothing to flow but still occupies viewport space the shell can't
-    // claim). Falls back to 0 for non-impersonating sessions.
-    <div className="relative min-h-[calc(100vh-var(--impersonation-h,0px))] bg-bg font-sans text-fg">
+    <div className="relative flex min-h-0 flex-1 flex-col bg-bg font-sans text-fg">
       {nav && (
-        <header className="fixed inset-x-0 top-[var(--impersonation-h,0px)] z-30 bg-bg">
+        <header className="shrink-0 bg-bg">
           <div className="px-6">{nav}</div>
           <div className="h-px bg-border" />
         </header>
       )}
-      <main className="relative">{children}</main>
+      <main className="relative flex min-h-0 flex-1 flex-col">{children}</main>
     </div>
   );
 }

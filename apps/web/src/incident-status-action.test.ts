@@ -8,13 +8,13 @@ test("open incidents offer problem-resolved and not-an-issue", () => {
       label: "Problem resolved",
       targetStatus: "resolved",
       resolution: "problem_resolved",
-      variant: "secondary",
+      variant: "primary",
     },
     {
       label: "Not an issue",
       targetStatus: "resolved",
       resolution: "not_an_issue",
-      variant: "ghost",
+      variant: "secondary",
     },
   ]);
 });

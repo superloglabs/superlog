@@ -181,48 +181,35 @@ function AuthenticatedApp() {
     // signalAtHardCap swallows autumn-js check() throwing on a not-yet-hydrated
     // customer (e.g. a brand-new org) so billing state can't black-screen the app.
     ["spans", "logs", "metric_points"].some((f) => signalAtHardCap(check, f));
-  const showTopBar = impersonating || billingPaused;
-  // The banner is fixed-positioned so it doesn't shove the page below it (the
-  // fixed nav can't be pushed by document flow anyway). Instead, every piece
-  // of chrome that pins to the top reads --impersonation-h and shifts down by
-  // exactly the banner's height, and the top padding on RouteContainer grows
-  // to match. Setting it on the root keeps everything in sync without
-  // threading a prop through AppShell, which is shared with Landing.
-  useEffect(() => {
-    const root = document.documentElement;
-    if (showTopBar) root.style.setProperty("--impersonation-h", "1.75rem");
-    else root.style.removeProperty("--impersonation-h");
-    return () => {
-      root.style.removeProperty("--impersonation-h");
-    };
-  }, [showTopBar]);
   if (isPending) return null;
   if (!data) return <Landing />;
   return (
     <OnboardingGate>
-      {impersonating ? (
-        <ImpersonationBar email={data.user.email} />
-      ) : (
-        billingPaused && <BillingLimitBar />
-      )}
-      <AppShell nav={<TopNav />}>
-        <RouteContainer>
-          <Routes>
-            <Route path="/explore/*" element={<Explore />} />
-            <Route path="/incidents" element={<Issues />} />
-            <Route path="/incidents/:id" element={<Issues />} />
-            <Route path="/issues" element={<Issues />} />
-            <Route path="/issues/:id" element={<Issues />} />
-            <Route path="/alerts" element={<AlertsList />} />
-            <Route path="/alerts/new" element={<AlertEdit />} />
-            <Route path="/alerts/:id" element={<AlertEdit />} />
-            <Route path="/dashboards" element={<DashboardsList />} />
-            <Route path="/dashboards/:id" element={<DashboardView />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="*" element={<Overview />} />
-          </Routes>
-        </RouteContainer>
-      </AppShell>
+      <div className="flex min-h-screen flex-col bg-bg">
+        {impersonating ? (
+          <ImpersonationBar email={data.user.email} />
+        ) : (
+          billingPaused && <BillingLimitBar />
+        )}
+        <AppShell nav={<TopNav />}>
+          <RouteContainer>
+            <Routes>
+              <Route path="/explore/*" element={<Explore />} />
+              <Route path="/incidents" element={<Issues />} />
+              <Route path="/incidents/:id" element={<Issues />} />
+              <Route path="/issues" element={<Issues />} />
+              <Route path="/issues/:id" element={<Issues />} />
+              <Route path="/alerts" element={<AlertsList />} />
+              <Route path="/alerts/new" element={<AlertEdit />} />
+              <Route path="/alerts/:id" element={<AlertEdit />} />
+              <Route path="/dashboards" element={<DashboardsList />} />
+              <Route path="/dashboards/:id" element={<DashboardView />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="*" element={<Overview />} />
+            </Routes>
+          </RouteContainer>
+        </AppShell>
+      </div>
       <CommandPalette />
       <McpInstallPill />
     </OnboardingGate>
@@ -259,7 +246,7 @@ function useGlobalKeybinds(enabled: boolean) {
 
 function ImpersonationBar({ email }: { email: string }) {
   return (
-    <div className="fixed inset-x-0 top-0 z-[60] flex h-7 w-full items-center justify-center gap-3 bg-amber-500 px-3 font-mono text-[11px] text-black">
+    <div className="flex h-7 w-full items-center justify-center gap-3 bg-amber-500 px-3 font-mono text-[11px] text-black">
       <span className="uppercase tracking-[0.2em]">impersonating</span>
       <span className="font-medium">{email}</span>
       <span className="opacity-70">·</span>
@@ -280,7 +267,7 @@ function ImpersonationBar({ email }: { email: string }) {
 
 function BillingLimitBar() {
   return (
-    <div className="fixed inset-x-0 top-0 z-[60] flex h-7 w-full items-center justify-center gap-2 bg-danger px-3 text-[11px] text-white">
+    <div className="flex h-7 w-full items-center justify-center gap-2 bg-danger px-3 text-[11px] text-white">
       <span className="font-semibold">Ingest paused</span>
       <span className="opacity-90">You’ve hit your Free plan limits.</span>
       <Link
@@ -295,10 +282,14 @@ function BillingLimitBar() {
 
 function RouteContainer({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
+  const incidentDetail = /^\/incidents\/[^/]+/.test(pathname);
   const wide = pathname.startsWith("/dashboards/");
+  if (incidentDetail) {
+    return <div className="flex min-h-0 flex-1 flex-col">{children}</div>;
+  }
   return (
     <div
-      className={`mx-auto px-6 pb-24 pt-[calc(6rem+var(--impersonation-h,0px))] ${wide ? "max-w-[2400px]" : "max-w-6xl"}`}
+      className={`mx-auto w-full px-6 pb-24 pt-6 ${wide ? "max-w-[2400px]" : "max-w-6xl"}`}
     >
       {children}
     </div>

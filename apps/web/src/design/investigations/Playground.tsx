@@ -13,6 +13,12 @@ import type {
 import { CountChart } from "../../dashboards/widgets/CountChart.tsx";
 import { DEFAULT_TOP_N } from "../../dashboards/widgets/series-topn.ts";
 import { Btn, Chip, type ChipTone, Tile } from "../ui.tsx";
+import {
+  CLOUDFLARE_PREFLIGHT_DETAIL,
+  type ReferenceActivityItem,
+  buildReferenceActivity,
+  referenceIncidentStats,
+} from "./incident-detail-reference-model.ts";
 
 // ---------------------------------------------------------------------------
 // Investigations playground — /design/investigations
@@ -30,10 +36,10 @@ import { Btn, Chip, type ChipTone, Tile } from "../ui.tsx";
 // data is mock. See /design/issues for the same pattern on the incident list.
 // ---------------------------------------------------------------------------
 
-type Surface = "list" | "full" | "drawer" | "real";
+type Surface = "detail" | "list" | "full" | "drawer" | "real";
 
 export function InvestigationsPlayground() {
-  const [surface, setSurface] = useState<Surface>("list");
+  const [surface, setSurface] = useState<Surface>("detail");
   const [modalOpen, setModalOpen] = useState(false);
 
   return (
@@ -41,6 +47,7 @@ export function InvestigationsPlayground() {
       <SubpageNav crumb="Investigations" />
       <SurfaceToolbar active={surface} onChange={setSurface} />
       <main className="mx-auto max-w-6xl px-6 pb-24 pt-8">
+        {surface === "detail" && <ReferenceIncidentDetailSurface />}
         {surface === "list" && <ListSurface onNew={() => setModalOpen(true)} onOpen={setSurface} />}
         {surface === "full" && <FullInvestigationSurface />}
         {surface === "drawer" && <DrawerSurface />}
@@ -85,6 +92,7 @@ function SubpageNav({ crumb }: { crumb: string }) {
 
 function SurfaceToolbar({ active, onChange }: { active: Surface; onChange: (s: Surface) => void }) {
   const options: { id: Surface; label: string }[] = [
+    { id: "detail", label: "Incident detail" },
     { id: "list", label: "Incident list" },
     { id: "full", label: "Full investigation" },
     { id: "drawer", label: "In-context drawer" },
@@ -300,6 +308,356 @@ function Segmented({ options }: { options: string[] }) {
         </button>
       ))}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Reference incident detail — local mockup from incident 285160df...
+// ---------------------------------------------------------------------------
+
+function ReferenceIncidentDetailSurface() {
+  const detail = CLOUDFLARE_PREFLIGHT_DETAIL;
+  const stats = referenceIncidentStats(detail);
+  const activity = buildReferenceActivity(detail);
+
+  return (
+    <div>
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <div className="text-[12px] text-muted">Reference redesign</div>
+          <h1 className="mt-1 text-[24px] font-semibold tracking-tight text-fg">
+            Incident detail mockup
+          </h1>
+        </div>
+        <div className="font-mono text-[11px] text-subtle">{detail.incident.id}</div>
+      </div>
+
+      <div className="max-w-full min-w-0 overflow-hidden rounded-xl border border-border bg-surface text-fg shadow-[0_24px_70px_-42px_rgba(0,0,0,0.65)]">
+        <div className="flex h-12 min-w-0 items-center gap-2 border-b border-border bg-surface px-5">
+          <div className="grid h-4 w-4 place-items-center rounded border border-border-strong text-[10px] text-muted">
+            I
+          </div>
+          <span className="text-[14px] font-medium text-muted">Incidents</span>
+          <span className="text-subtle">›</span>
+          <span className="min-w-0 truncate text-[14px] font-semibold text-fg">
+            {detail.incident.title}
+          </span>
+          <div className="ml-auto hidden items-center gap-1.5 sm:flex">
+            {["AS", "AK", "JS"].map((initials) => (
+              <span
+                key={initials}
+                className="grid h-7 w-7 place-items-center rounded-full border-2 border-surface bg-surface-2 text-[10px] font-semibold text-muted"
+              >
+                {initials}
+              </span>
+            ))}
+            <button
+              type="button"
+              className="ml-1 grid h-7 w-7 place-items-center rounded-full border border-dashed border-border-strong text-[18px] leading-none text-muted"
+              aria-label="Add collaborator"
+            >
+              +
+            </button>
+          </div>
+        </div>
+
+        <div className="grid min-h-[760px] min-w-0 grid-cols-1 lg:grid-cols-[390px_minmax(0,1fr)]">
+          <aside className="min-w-0 border-b border-border lg:flex lg:flex-col lg:border-b-0 lg:border-r">
+            <div className="px-7 pb-8 pt-8">
+              <div className="grid h-[74px] w-[74px] place-items-center rounded-xl bg-warning/15 text-[24px] font-bold text-warning">
+                CF
+              </div>
+              <div className="mt-7 font-mono text-[13px] text-subtle">
+                #{detail.incident.codename}
+              </div>
+              <h2 className="mt-2 break-words text-[26px] font-semibold leading-[1.08] tracking-tight text-fg sm:text-[29px]">
+                {detail.incident.title}
+              </h2>
+              <p className="mt-5 break-words text-[15px] leading-6 text-muted">
+                {detail.incident.agentSummary}
+              </p>
+
+              <div className="mt-8 grid gap-4">
+                <ReferenceMetaRow label="Title" value={detail.incident.title} stackOnSmall />
+                <ReferenceMetaRow
+                  label="Priority"
+                  value={detail.incident.severity}
+                  icon={<TinyBars />}
+                />
+                <ReferenceMetaRow
+                  label="Assignee"
+                  value="Integration owner"
+                  icon={<AvatarDot label="IO" />}
+                />
+                <ReferenceMetaRow label="Status" value="Active" icon={<ReferenceStatusGlyph />} />
+                <ReferenceMetaRow
+                  label="Surface"
+                  value="Cloudflare Workers"
+                  icon={<CloudGlyph />}
+                />
+                <ReferenceMetaRow label="" value={detail.incident.service} icon={<ApiGlyph />} />
+              </div>
+            </div>
+
+            <div className="mt-auto border-t border-border px-7 py-7">
+              <div className="grid gap-4">
+                <ReferenceMetaRow label="Regression" value="Yes" icon={<RefreshGlyph />} />
+                <ReferenceMetaRow label="First detection" value={stats.firstDetectionLabel} />
+                <ReferenceMetaRow label="Latest detection" value={stats.latestDetectionLabel} />
+                <ReferenceMetaRow label="Duration" value={stats.durationLabel} />
+                <ReferenceMetaRow label="Findings" value={stats.issueCountLabel} chevron />
+              </div>
+            </div>
+          </aside>
+
+          <section className="min-w-0 bg-surface">
+            <div className="flex h-auto min-w-0 flex-wrap items-end gap-2 border-b border-border px-5 py-3 sm:h-[72px] sm:px-7 sm:pb-3 sm:pt-0">
+              {["Activity", "Sessions", "Findings"].map((label) => (
+                <button
+                  key={label}
+                  type="button"
+                  className={
+                    label === "Activity"
+                      ? "rounded-lg border border-border-strong bg-surface-2 px-4 py-2 text-[14px] font-semibold text-fg"
+                      : "rounded-lg border border-border bg-surface px-4 py-2 text-[14px] font-semibold text-muted"
+                  }
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="px-5 py-7 sm:px-8 sm:py-8">
+              <div className="relative pl-9">
+                <div className="absolute bottom-7 left-[15px] top-3 w-px bg-border" />
+                {activity.map((item) => (
+                  <ReferenceActivityEntry key={`${item.kind}-${item.timeLabel}`} item={item} />
+                ))}
+              </div>
+
+              <div className="ml-9 mt-7 rounded-xl border border-border bg-surface-2 px-5 py-4 shadow-[0_14px_28px_-24px_rgba(0,0,0,0.65)]">
+                <div className="mb-2 flex items-center gap-2 text-[14px] font-semibold text-muted">
+                  <AvatarDot label="SL" muted />
+                  Agent summary
+                  <span className="text-[13px] font-normal text-subtle">· 17:01 UTC</span>
+                </div>
+                <p className="break-words text-[15px] leading-6 text-fg">
+                  {detail.incident.rootCauseText}
+                </p>
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  <div className="rounded-lg border border-border bg-surface px-4 py-3">
+                    <div className="text-[12px] font-semibold text-muted">Impact</div>
+                    <p className="mt-1 text-[14px] leading-5 text-fg">
+                      {detail.incident.estimatedImpactText}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-surface px-4 py-3">
+                    <div className="text-[12px] font-semibold text-muted">Sample event</div>
+                    <p className="mt-1 break-all font-mono text-[12px] leading-5 text-fg">
+                      trace {detail.issue.traceId}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReferenceMetaRow({
+  label,
+  value,
+  icon,
+  chevron = false,
+  stackOnSmall = false,
+}: {
+  label: string;
+  value: string;
+  icon?: ReactNode;
+  chevron?: boolean;
+  stackOnSmall?: boolean;
+}) {
+  return (
+    <div
+      className={`grid items-start gap-3 text-[15px] ${
+        stackOnSmall
+          ? "grid-cols-1 sm:grid-cols-[138px_minmax(0,1fr)]"
+          : "grid-cols-[138px_minmax(0,1fr)]"
+      }`}
+    >
+      <div className="text-muted">{label}</div>
+      <div className="flex min-w-0 items-center gap-2 text-fg">
+        {icon}
+        <span className="min-w-0 break-words">{value}</span>
+        {chevron && <span className="text-subtle">›</span>}
+      </div>
+    </div>
+  );
+}
+
+function ReferenceActivityEntry({ item }: { item: ReferenceActivityItem }) {
+  return (
+    <div className="relative pb-7">
+      <span className="absolute -left-[34px] top-1 grid h-[20px] w-[20px] place-items-center rounded-full bg-surface">
+        <ReferenceActivityIcon kind={item.kind} />
+      </span>
+      <div className="flex flex-wrap items-baseline gap-2">
+        <span className="text-[15px] font-medium text-muted">{item.label}</span>
+        <span className="text-subtle">·</span>
+        <span className="text-[14px] text-subtle">{item.timeLabel}</span>
+      </div>
+      <p className="mt-2 max-w-[82ch] text-[16px] leading-6 text-fg">{item.body}</p>
+      {item.code && <ReferenceCodeDiff code={item.code} />}
+    </div>
+  );
+}
+
+function ReferenceCodeDiff({ code }: { code: NonNullable<ReferenceActivityItem["code"]> }) {
+  return (
+    <div className="mt-5 max-w-[820px] overflow-hidden rounded-lg border border-border bg-surface-2">
+      <div className="flex items-center gap-2 border-b border-border px-4 py-3 text-[14px] text-muted">
+        <GithubGlyph />
+        <span className="font-mono">{code.file}</span>
+      </div>
+      <div className="overflow-x-auto py-3 font-mono text-[14px] leading-6">
+        {code.context.slice(0, 2).map((line, index) => (
+          <ReferenceCodeLine key={`ctx-a-${line}`} lineNo={136 + index} text={line} />
+        ))}
+        {code.removed.map((line, index) => (
+          <ReferenceCodeLine key={`del-${line}`} lineNo={138 + index} text={line} tone="del" />
+        ))}
+        {code.added.map((line, index) => (
+          <ReferenceCodeLine key={`add-${line}`} lineNo={138 + index} text={line} tone="add" />
+        ))}
+        {code.context.slice(2).map((line, index) => (
+          <ReferenceCodeLine key={`ctx-b-${line}`} lineNo={141 + index} text={line} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ReferenceCodeLine({
+  lineNo,
+  text,
+  tone,
+}: {
+  lineNo: number;
+  text: string;
+  tone?: "add" | "del";
+}) {
+  const bg = tone === "add" ? "bg-success/10" : tone === "del" ? "bg-danger/10" : "";
+  const accent = tone === "add" ? "text-success" : tone === "del" ? "text-danger" : "text-subtle";
+  return (
+    <div
+      className={`grid grid-cols-[38px_24px_minmax(0,1fr)] px-2 sm:grid-cols-[46px_28px_minmax(0,1fr)] sm:px-3 ${bg}`}
+    >
+      <span className="select-none text-right text-subtle">{lineNo}</span>
+      <span className={`select-none text-center ${accent}`}>
+        {tone === "add" ? "+" : tone === "del" ? "-" : ""}
+      </span>
+      <span
+        className={tone === "add" ? "text-success" : tone === "del" ? "text-danger" : "text-muted"}
+      >
+        {text}
+      </span>
+    </div>
+  );
+}
+
+function ReferenceActivityIcon({ kind }: { kind: ReferenceActivityItem["kind"] }) {
+  const color =
+    kind === "finding" || kind === "status"
+      ? "var(--color-accent)"
+      : kind === "fix"
+        ? "var(--color-success)"
+        : "var(--color-subtle)";
+  return (
+    <span className="relative grid h-[12px] w-[12px] place-items-center">
+      <span className="absolute h-[5px] w-[5px] rounded-full" style={{ backgroundColor: color }} />
+      {(kind === "finding" || kind === "status") && (
+        <span className="h-[12px] w-[12px] rounded-full border border-accent" />
+      )}
+    </span>
+  );
+}
+
+function AvatarDot({ label, muted = false }: { label: string; muted?: boolean }) {
+  return (
+    <span
+      className={`grid h-6 w-6 shrink-0 place-items-center rounded-full text-[9px] font-semibold ${
+        muted ? "bg-surface-3 text-muted" : "bg-fg text-bg"
+      }`}
+    >
+      {label}
+    </span>
+  );
+}
+
+function TinyBars() {
+  return (
+    <span className="flex h-5 w-5 shrink-0 items-end gap-[2px] text-muted" aria-hidden>
+      <span className="h-1.5 w-[3px] bg-current" />
+      <span className="h-3 w-[3px] bg-current" />
+      <span className="h-5 w-[3px] bg-current" />
+    </span>
+  );
+}
+
+function ReferenceStatusGlyph() {
+  return (
+    <span className="relative grid h-5 w-5 shrink-0 place-items-center" aria-hidden>
+      <span className="h-2 w-2 rounded-full bg-accent" />
+      <span className="absolute h-4 w-4 rounded-full border border-accent" />
+    </span>
+  );
+}
+
+function RefreshGlyph() {
+  return (
+    <svg
+      className="h-5 w-5 shrink-0 text-danger"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+    >
+      <path d="M20 12a8 8 0 0 1-14 5" />
+      <path d="M4 12a8 8 0 0 1 14-5" />
+      <path d="M18 3v4h-4M6 21v-4h4" />
+    </svg>
+  );
+}
+
+function CloudGlyph() {
+  return (
+    <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[#f38020] text-[9px] font-bold text-white">
+      CF
+    </span>
+  );
+}
+
+function ApiGlyph() {
+  return (
+    <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-fg text-[9px] font-bold text-bg">
+      API
+    </span>
+  );
+}
+
+function GithubGlyph() {
+  return (
+    <svg
+      className="h-4 w-4 shrink-0 text-muted"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden
+    >
+      <path d="M12 .7a11.3 11.3 0 0 0-3.6 22c.6.1.8-.2.8-.5v-2c-3.3.7-4-1.4-4-1.4-.6-1.3-1.4-1.7-1.4-1.7-1.1-.8.1-.8.1-.8 1.2.1 1.9 1.3 1.9 1.3 1.1 1.9 2.9 1.3 3.6 1 .1-.8.4-1.3.8-1.6-2.6-.3-5.4-1.3-5.4-5.6 0-1.2.4-2.2 1.2-3-.1-.3-.5-1.5.1-3 0 0 1-.3 3.1 1.1.9-.3 1.9-.4 2.8-.4 1 0 1.9.1 2.8.4 2.1-1.4 3.1-1.1 3.1-1.1.6 1.5.2 2.7.1 3 .8.8 1.2 1.8 1.2 3 0 4.4-2.8 5.3-5.4 5.6.4.4.8 1.1.8 2.2v3.7c0 .3.2.6.8.5A11.3 11.3 0 0 0 12 .7Z" />
+    </svg>
   );
 }
 
