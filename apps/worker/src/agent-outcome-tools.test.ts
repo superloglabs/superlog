@@ -26,7 +26,7 @@ test("exposes all eight tools with API-safe schemas", () => {
   assert.equal(OUTCOME_TOOL_NAMES.length, 8);
   assert.equal(OUTCOME_TOOL_DEFINITIONS.length, 8);
   for (const def of OUTCOME_TOOL_DEFINITIONS) {
-    // The Managed-Agents API 400s on any top-level composition keyword
+    // Some runner APIs reject any top-level composition keyword
     // (allOf/oneOf/if...), which would block every run at agent-create time.
     assert.deepEqual(Object.keys(def.input_schema).sort(), ["properties", "required", "type"]);
     assert.equal(def.input_schema.type, "object");
