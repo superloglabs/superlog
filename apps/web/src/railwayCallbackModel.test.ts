@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { railwayCallbackView } from "./railwayCallbackModel.ts";
 
-test("installed renders a success view that opens the app cleanly", () => {
+test("installed carries the outcome back so the wizard resumes the Railway flow", () => {
   const view = railwayCallbackView("installed");
   assert.equal(view.tone, "success");
-  assert.equal(view.backHref, "/");
+  // The wizard reads `?railway=` on `/` to drop into the flow's connected
+  // panel (waiting for first events) instead of the integration chooser.
+  assert.equal(view.backHref, "/?railway=installed");
   assert.match(view.body, /pulling logs and infra metrics/i);
 });
 

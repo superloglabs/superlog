@@ -30,7 +30,9 @@ export function vercelCallbackView(raw: string | null | undefined): VercelCallba
         tone: "success",
         title: "Vercel connected",
         body: "The trace and log drains are set up. Telemetry will appear in Superlog as your deployments serve traffic — you can close this tab.",
-        backHref: "/",
+        // Carry the outcome so the onboarding wizard drops into the Vercel
+        // flow's connected panel instead of bouncing back to the chooser.
+        backHref: "/?vercel=installed",
         backLabel: "Open Superlog",
       };
     case "drains_unavailable":

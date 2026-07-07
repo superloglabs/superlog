@@ -3,11 +3,13 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { vercelCallbackView } from "./vercelCallbackModel.ts";
 
-test("installed renders a success view that links home", () => {
+test("installed carries the outcome back so the wizard resumes the Vercel flow", () => {
   const view = vercelCallbackView("installed");
   assert.equal(view.tone, "success");
   assert.match(view.title, /connected/i);
-  assert.equal(view.backHref, "/");
+  // The wizard reads `?vercel=` on `/` to drop into the flow's connected
+  // panel instead of the integration chooser.
+  assert.equal(view.backHref, "/?vercel=installed");
 });
 
 test("drains_unavailable spells out the Pro/Enterprise plan requirement", () => {

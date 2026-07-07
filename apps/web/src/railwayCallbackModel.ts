@@ -25,7 +25,10 @@ export function railwayCallbackView(raw: string | null | undefined): RailwayCall
         tone: "success",
         title: "Railway connected",
         body: "We're pulling logs and infra metrics from the Railway projects you shared. First events typically appear in Superlog within a minute — you can close this tab.",
-        backHref: "/",
+        // Carry the outcome so the onboarding wizard drops into the Railway
+        // flow's connected panel (which waits for first events) instead of
+        // bouncing back to the integration chooser.
+        backHref: "/?railway=installed",
         backLabel: "Open Superlog",
       };
     case "no_projects":
