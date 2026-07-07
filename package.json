@@ -33,7 +33,7 @@
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.91.0",
     "@biomejs/biome": "^1.9.4",
-    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/grpc-js": "^1.14.4",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/exporter-trace-otlp-grpc": "^0.215.0",
@@ -49,5 +49,16 @@
     "turbo": "^2.3.0",
     "typescript": "^5.7.2",
     "zod": "^4.4.3"
+  },
+  "pnpm": {
+    "overrides": {
+      "protobufjs@7": "^7.6.1",
+      "protobufjs@8": "^8.7.0",
+      "@grpc/grpc-js": "^1.14.4",
+      "fast-uri": "^3.1.3",
+      "hono": "^4.12.28",
+      "react-router": "^7.15.0",
+      "react-router-dom": "^7.15.0"
+    }
   }
 }
