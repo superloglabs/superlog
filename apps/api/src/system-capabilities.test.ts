@@ -11,7 +11,24 @@ test("system capabilities default to the open-core community edition", () => {
     cloudUpgradeLinks: true,
     cloudflareConnect: false,
     vercelConnect: false,
+    railwayConnect: false,
   });
+});
+
+test("railwayConnect flips on only when client creds + STATE_SIGNING_SECRET are set", () => {
+  assert.equal(
+    buildSystemCapabilities({ RAILWAY_CLIENT_ID: "id", RAILWAY_CLIENT_SECRET: "secret" })
+      .railwayConnect,
+    false,
+  );
+  assert.equal(
+    buildSystemCapabilities({
+      RAILWAY_CLIENT_ID: "id",
+      RAILWAY_CLIENT_SECRET: "secret",
+      STATE_SIGNING_SECRET: "s",
+    }).railwayConnect,
+    true,
+  );
 });
 
 test("cloudflareConnect flips on only when all connector vars (incl. STATE_SIGNING_SECRET) are set", () => {
@@ -56,6 +73,7 @@ test("system capabilities expose cloud billing and managed agents when explicitl
       cloudUpgradeLinks: false,
       cloudflareConnect: false,
       vercelConnect: false,
+      railwayConnect: false,
     },
   );
 });

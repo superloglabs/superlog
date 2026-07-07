@@ -112,6 +112,7 @@ import { userIsStaff } from "./staff.js";
 import { symbolicateIssueSample, symbolicateTelemetrySample } from "./symbolication.js";
 import { buildSystemCapabilities } from "./system-capabilities.js";
 import { mountTopology } from "./topology.js";
+import { mountRailwayAuthed, mountRailwayPublic } from "./railway.js";
 import { mountVercelAuthed, mountVercelPublic } from "./vercel.js";
 import { mountWebhooks } from "./webhooks.js";
 
@@ -288,6 +289,7 @@ mountMcpPublic(app, ch);
 mountSlackPublic(app);
 mountCloudflarePublic(app);
 mountVercelPublic(app);
+mountRailwayPublic(app);
 mountFeedbackPublic(app);
 // Management API (org-key auth, /api/v1/*) registers its own middleware
 // before the session middleware below — the session middleware skips
@@ -326,6 +328,7 @@ mountLinearAuthed(app);
 mountSlackAuthed(app);
 mountCloudflareAuthed(app);
 mountVercelAuthed(app);
+mountRailwayAuthed(app);
 mountSettingsAuthed(app);
 mountOrgKeyManagementAuthed(app);
 mountDashboards(app);

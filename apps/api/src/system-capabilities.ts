@@ -14,6 +14,9 @@ export type SystemCapabilities = {
   // Same gate for the Vercel connector (OAuth client + integration slug +
   // OTLP intake).
   vercelConnect: boolean;
+  // Same gate for the Railway connector (OAuth client only — telemetry is
+  // pulled by the worker, so there's no intake URL to configure here).
+  railwayConnect: boolean;
 };
 
 type CapabilityEnv = Partial<
@@ -29,6 +32,8 @@ type CapabilityEnv = Partial<
     | "VERCEL_CLIENT_SECRET"
     | "VERCEL_INTEGRATION_SLUG"
     | "VERCEL_OTLP_INTAKE_URL"
+    | "RAILWAY_CLIENT_ID"
+    | "RAILWAY_CLIENT_SECRET"
     | "STATE_SIGNING_SECRET"
   >
 >;
@@ -56,6 +61,12 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
     env.VERCEL_OTLP_INTAKE_URL &&
     env.STATE_SIGNING_SECRET
   );
+  // Mirrors railwayConfigFromEnv's required-vars check plus STATE_SIGNING_SECRET.
+  const railwayConnect = !!(
+    env.RAILWAY_CLIENT_ID &&
+    env.RAILWAY_CLIENT_SECRET &&
+    env.STATE_SIGNING_SECRET
+  );
 
   return {
     edition,
@@ -65,6 +76,7 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
     cloudUpgradeLinks: edition === "community",
     cloudflareConnect,
     vercelConnect,
+    railwayConnect,
   };
 }
 
