@@ -8,7 +8,7 @@ type AuthMode = "sign-in" | "sign-up" | null;
 // Where the "Contact us" / "Talk to us about Enterprise" links route. Enterprise
 // is a contact-sales plan, so its CTA books a discovery call instead of opening
 // the sign-up modal.
-const ENTERPRISE_CONTACT_URL = "https://cal.com/pulsent/superlog-discovery";
+const ENTERPRISE_CONTACT_URL = "https://cal.com/superlog/yc";
 
 // Pay-as-you-go unit prices. Source of truth: packages/billing/src/pricing.ts —
 // keep in sync if those change.

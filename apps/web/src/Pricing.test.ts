@@ -18,5 +18,5 @@ test("Enterprise plan links its CTA to the discovery call URL", () => {
   // Self-serve packs open the sign-up modal; Enterprise instead routes to the
   // booking link, so the plan must carry an explicit contact href.
   assert.match(source, /href:\s*ENTERPRISE_CONTACT_URL/);
-  assert.match(source, /ENTERPRISE_CONTACT_URL\s*=\s*"https:\/\/cal\.com\/pulsent\/superlog-discovery"/);
+  assert.match(source, /ENTERPRISE_CONTACT_URL\s*=\s*"https:\/\/cal\.com\/superlog\/yc"/);
 });
