@@ -41,6 +41,13 @@ export type OutcomeToolDefinition = {
 
 export const REPORT_FINDINGS_TOOL_NAME = "report_findings";
 
+// Opening sentence of the worker's idle terminal-outcome nudge. Shared so
+// collectors can recognize the nudge in a session's user.message stream and
+// treat it as a poke (never a turn reset): a nudge that lands milliseconds
+// after the model's own terminal call must not invalidate that call.
+export const TERMINAL_NUDGE_MARKER =
+  "You ended your turn without calling a terminal outcome tool";
+
 export const TERMINAL_OUTCOME_TOOL_NAMES = [
   "propose_pr",
   "silence_as_noise",
