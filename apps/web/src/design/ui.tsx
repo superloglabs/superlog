@@ -1,9 +1,14 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 // ---------------------------------------------------------------------------
-// Shared primitives used across the app and the /design storybook.
+// Canonical shared primitives — used across the app and the /design sheet.
 // Dark canvas · cobalt accent · soft corners (6px buttons, 10px inputs,
-// 10-12px cards) · bento grids.
+// 10-12px cards).
+//
+// Rules + catalog: apps/web/DESIGN.md. Live reference: /design
+// (DesignLanguage.tsx). Changing a primitive here? Update its panel on the
+// /design sheet too — the sheet is how we catch drift. No mono caps: labels are
+// capitalized sans (Label/FieldLabel below are legacy mono-caps, being retired).
 // ---------------------------------------------------------------------------
 
 export function ShortcutKey({
@@ -200,6 +205,44 @@ export function PillToggle({
             onClick={() => onChange(o.value)}
             className={`rounded-full ${pad} transition-colors ${
               active ? "bg-surface-3 text-fg shadow-sm" : "text-muted hover:text-fg"
+            }`}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Tab bar. Capitalized sans labels with no outer track — only the active tab
+// gets a soft raised pill (surface-2 fill + hairline border); the rest are
+// muted text that brightens on hover.
+export function Tabs<T extends string>({
+  value,
+  options,
+  onChange,
+  size = "md",
+}: {
+  value: T;
+  options: { value: T; label: ReactNode }[];
+  onChange: (v: T) => void;
+  size?: "sm" | "md";
+}) {
+  const pad = size === "sm" ? "px-2.5 py-1 text-[11px]" : "px-3 py-1 text-[12px]";
+  return (
+    <div role="tablist" className="inline-flex items-center gap-1">
+      {options.map((o) => {
+        const active = o.value === value;
+        return (
+          <button
+            key={o.value}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(o.value)}
+            className={`rounded-full font-medium tracking-tight transition-colors ${pad} ${
+              active ? "bg-surface-3 text-fg" : "text-muted hover:text-fg"
             }`}
           >
             {o.label}
