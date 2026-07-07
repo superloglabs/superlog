@@ -8,7 +8,7 @@ import {
   ingestFilterStateSchema,
 } from "./ingest-filters-service.js";
 
-test("allIngestFilterPairs covers otlp×3 + aws×2 + vercel×2", () => {
+test("allIngestFilterPairs covers otlp×3 + aws×2 + vercel×2 + railway×2", () => {
   const pairs = allIngestFilterPairs()
     .map((p) => ingestFilterKey(p.source, p.signal))
     .sort();
@@ -18,6 +18,8 @@ test("allIngestFilterPairs covers otlp×3 + aws×2 + vercel×2", () => {
     "otlp:logs",
     "otlp:metrics",
     "otlp:traces",
+    "railway:logs",
+    "railway:metrics",
     "vercel:logs",
     "vercel:traces",
   ]);
@@ -28,6 +30,7 @@ test("empty disabled set → everything enabled", () => {
     otlp: { traces: true, logs: true, metrics: true },
     aws: { logs: true, metrics: true },
     vercel: { traces: true, logs: true },
+    railway: { logs: true, metrics: true },
   });
 });
 
@@ -56,6 +59,8 @@ test("state schema rejects unknown source/signal keys", () => {
       otlp: { traces: true, logs: true, metrics: true },
       aws: { logs: true, metrics: true },
       vercel: { traces: true, logs: true },
+      railway: { logs: true, metrics: true },
+    railway: { logs: true, metrics: true },
     }).success,
     true,
   );
@@ -65,6 +70,8 @@ test("state schema rejects unknown source/signal keys", () => {
       otlp: { traces: true, logs: true, metrics: true },
       aws: { logs: true, metrics: true, traces: true },
       vercel: { traces: true, logs: true },
+      railway: { logs: true, metrics: true },
+    railway: { logs: true, metrics: true },
     }).success,
     false,
   );
@@ -74,6 +81,8 @@ test("state schema rejects unknown source/signal keys", () => {
       otlp: { traces: true, logs: true },
       aws: { logs: true, metrics: true },
       vercel: { traces: true, logs: true },
+      railway: { logs: true, metrics: true },
+    railway: { logs: true, metrics: true },
     }).success,
     false,
   );

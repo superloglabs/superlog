@@ -65,6 +65,7 @@ test("defaults to everything enabled (no rows)", async () => {
     otlp: { traces: true, logs: true, metrics: true },
     aws: { logs: true, metrics: true },
     vercel: { traces: true, logs: true },
+    railway: { logs: true, metrics: true },
   });
 });
 
@@ -76,6 +77,7 @@ test("PUT disables a pair, persists one sparse row, and reflects in GET", async 
     otlp: { traces: true, logs: true, metrics: true },
     aws: { logs: false, metrics: true },
     vercel: { traces: true, logs: true },
+    railway: { logs: true, metrics: true },
   };
   const res = await app.request(`/api/projects/${project.id}/ingest-filters`, {
     method: "PUT",
@@ -114,11 +116,13 @@ test("PUT is a full replace — re-enabling clears the row", async () => {
     otlp: { traces: false, logs: true, metrics: true },
     aws: { logs: false, metrics: true },
     vercel: { traces: true, logs: true },
+    railway: { logs: true, metrics: true },
   });
   await put({
     otlp: { traces: true, logs: true, metrics: true },
     aws: { logs: true, metrics: true },
     vercel: { traces: true, logs: true },
+    railway: { logs: true, metrics: true },
   });
   const rows = await db.query.projectIngestFilters.findMany({
     where: eq(schema.projectIngestFilters.projectId, project.id),
