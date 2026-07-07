@@ -503,7 +503,8 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         })
         .onConflictDoNothing()
         .returning({ id: schema.incidentEvents.id });
-      if (claimed.length > 0) {
+      const claimedRow = claimed[0];
+      if (claimedRow) {
         try {
           await runner.steer(sessionId, terminalOutcomeNudgePrompt());
         } catch (err) {
@@ -511,7 +512,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           // transient steer failure must not permanently spend the one-shot.
           await db
             .delete(schema.incidentEvents)
-            .where(eq(schema.incidentEvents.id, claimed[0].id))
+            .where(eq(schema.incidentEvents.id, claimedRow.id))
             .catch(() => undefined);
           throw err;
         }
