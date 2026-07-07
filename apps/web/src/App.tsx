@@ -31,6 +31,7 @@ import { DashboardsList } from "./dashboards/DashboardsList.tsx";
 import { AppShell, ThemeToggle, Wordmark } from "./design/ui.tsx";
 import { McpInstallPill } from "./onboarding/McpInstallPill.tsx";
 import { OnboardingGate } from "./onboarding/OnboardingGate.tsx";
+import { externalOAuthCallbackForwardUrl } from "./oauthCallbackForwarding.ts";
 import { parseAttribution, persistFirstTouchAttribution } from "./signupAttribution.ts";
 import { startSkillOnboarding } from "./skillOnboarding.ts";
 
@@ -70,6 +71,15 @@ function GithubInstallCallbackForwarder() {
     const params = new URLSearchParams(window.location.search);
     if (!params.has("installation_id") || !params.has("state")) return;
     window.location.replace(`${API_URL}/github/install/callback${window.location.search}`);
+  }, []);
+  return null;
+}
+
+function ExternalOAuthCallbackForwarder() {
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = externalOAuthCallbackForwardUrl(window.location, API_URL);
+    if (url) window.location.replace(url);
   }, []);
   return null;
 }
@@ -122,6 +132,7 @@ export function App() {
     <>
       <SignupSourceCapture />
       <GithubInstallCallbackForwarder />
+      <ExternalOAuthCallbackForwarder />
       <PostHogUserSync />
       <ActiveOrgSync />
       <Routes>
