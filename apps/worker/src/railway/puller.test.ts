@@ -177,7 +177,7 @@ test("forwards fresh logs to the intake with the ingest key and advances the cur
     now: () => NOW,
     fetchImpl: fakeFetch({ logs: [LOG_LINE], forwarded }),
     metricsIntervalSeconds: 999999,
-    metricsPollState: new Map([["inst-1:svc-1", Math.floor(NOW.getTime() / 1000)]]),
+    metricsPollState: new Map([["inst-1:env-1:svc-1", Math.floor(NOW.getTime() / 1000)]]),
   });
 
   assert.equal(stats.logsForwarded, 1);
@@ -202,7 +202,7 @@ test("seeds the log cursor on first pull so history isn't re-read", async () => 
     now: () => NOW,
     fetchImpl: fakeFetch({ logs: [LOG_LINE], forwarded }),
     metricsIntervalSeconds: 999999,
-    metricsPollState: new Map([["inst-1:svc-1", Math.floor(NOW.getTime() / 1000)]]),
+    metricsPollState: new Map([["inst-1:env-1:svc-1", Math.floor(NOW.getTime() / 1000)]]),
   });
   // Seed batch is forwarded once, and the cursor lands on its max timestamp.
   assert.equal(forwarded.length, 1);
@@ -222,7 +222,7 @@ test("does not advance the cursor when the intake rejects the batch", async () =
     now: () => NOW,
     fetchImpl: fakeFetch({ logs: [LOG_LINE], forwarded, intakeStatus: 503 }),
     metricsIntervalSeconds: 999999,
-    metricsPollState: new Map([["inst-1:svc-1", Math.floor(NOW.getTime() / 1000)]]),
+    metricsPollState: new Map([["inst-1:env-1:svc-1", Math.floor(NOW.getTime() / 1000)]]),
   });
   assert.ok(stats.errors >= 1);
   assert.equal(calls.cursors.length, 0, "cursor must not advance past unforwarded logs");
@@ -241,7 +241,7 @@ test("refreshes an expiring token and persists the rotated refresh token first",
     now: () => NOW,
     fetchImpl: fakeFetch({ logs: [], forwarded }),
     metricsIntervalSeconds: 999999,
-    metricsPollState: new Map([["inst-1:svc-1", Math.floor(NOW.getTime() / 1000)]]),
+    metricsPollState: new Map([["inst-1:env-1:svc-1", Math.floor(NOW.getTime() / 1000)]]),
   });
   assert.equal(calls.tokens.length, 1);
   assert.equal(at(calls.tokens, 0).accessToken, "at-new");
@@ -297,7 +297,7 @@ test("polls metrics on the interval, forwards gauges, and advances the sample cu
   const metric = at(at(at(metricsPost.payload.resourceMetrics, 0).scopeMetrics, 0).metrics, 0);
   assert.equal(metric.name, "railway.cpu.usage");
   assert.equal(at(metric.gauge.dataPoints, 0).asDouble, 0.5);
-  assert.equal(at(calls.cursors, calls.cursors.length - 1).metricsCursor["svc-1"], nowSec - 60);
+  assert.equal(at(calls.cursors, calls.cursors.length - 1).metricsCursor["env-1:svc-1"], nowSec - 60);
 
   // A second pass inside the interval must not poll metrics again.
   const forwardedBefore = forwarded.length;
@@ -308,7 +308,7 @@ test("polls metrics on the interval, forwards gauges, and advances the sample cu
     log: LOGGER,
     now: () => new Date(NOW.getTime() + 60 * 1000),
     fetchImpl: fakeFetch({ logs: [], metrics: [], forwarded }),
-    metricsPollState: new Map([["inst-1:svc-1", nowSec]]),
+    metricsPollState: new Map([["inst-1:env-1:svc-1", nowSec]]),
   });
   assert.equal(
     forwarded.filter((f) => f.url.endsWith("/railway/pull/metrics")).length,

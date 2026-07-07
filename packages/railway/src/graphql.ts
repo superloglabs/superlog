@@ -234,9 +234,39 @@ export async function fetchEnvironmentLogs(input: {
         },
   });
   if (!result.ok) return { ok: false, error: result.error };
+  const raw = Array.isArray(result.data.environmentLogs) ? result.data.environmentLogs : [];
   return {
     ok: true,
-    logs: Array.isArray(result.data.environmentLogs) ? result.data.environmentLogs : [],
+    logs: raw.map(normalizeLog).filter((log): log is RailwayLog => log !== null),
+  };
+}
+
+// environmentLogs is undocumented API surface — normalize each item instead of
+// trusting the cast, so one malformed record can't abort the pull for a whole
+// installation downstream (e.g. `log.attributes.map` throwing).
+function normalizeLog(value: unknown): RailwayLog | null {
+  if (!value || typeof value !== "object") return null;
+  const o = value as Record<string, unknown>;
+  if (typeof o.timestamp !== "string" || !o.timestamp) return null;
+  const tags =
+    o.tags && typeof o.tags === "object" && !Array.isArray(o.tags)
+      ? (o.tags as RailwayLog["tags"])
+      : null;
+  const attributes = Array.isArray(o.attributes)
+    ? o.attributes.filter(
+        (a): a is { key: string; value: string } =>
+          !!a &&
+          typeof a === "object" &&
+          typeof (a as { key?: unknown }).key === "string" &&
+          typeof (a as { value?: unknown }).value === "string",
+      )
+    : [];
+  return {
+    timestamp: o.timestamp,
+    severity: typeof o.severity === "string" ? o.severity : null,
+    message: typeof o.message === "string" ? o.message : "",
+    tags,
+    attributes,
   };
 }
 

@@ -138,14 +138,19 @@ async function ensureIngestKey(
  * the ingest key stops our intake accepting anything the puller would
  * forward, and the soft-revoke stops the puller reading Railway at all.
  */
-async function teardownInstallation(row: RailwayInstallationRow): Promise<void> {
+type DbExecutor = Pick<typeof db, "update">;
+
+async function teardownInstallation(
+  row: RailwayInstallationRow,
+  executor: DbExecutor = db,
+): Promise<void> {
   if (row.apiKeyId) {
-    await db
+    await executor
       .update(schema.apiKeys)
       .set({ revokedAt: new Date() })
       .where(eq(schema.apiKeys.id, row.apiKeyId));
   }
-  await db
+  await executor
     .update(schema.railwayInstallations)
     .set({ revokedAt: new Date(), updatedAt: new Date() })
     .where(eq(schema.railwayInstallations.id, row.id));
@@ -273,29 +278,16 @@ async function provisionInstallation(input: {
       ? new Date(now.getTime() + input.token.expiresInSeconds * 1000)
       : null;
 
-    await db
-      .insert(schema.railwayInstallations)
-      .values({
-        projectId: input.projectId,
-        railwayUserId,
-        grantedProjects: granted.projects,
-        accessTokenCiphertext: accessCipher.ciphertext,
-        accessTokenNonce: accessCipher.nonce,
-        accessTokenKeyVersion: accessCipher.keyVersion,
-        refreshTokenCiphertext: refreshCipher?.ciphertext ?? null,
-        refreshTokenNonce: refreshCipher?.nonce ?? null,
-        refreshTokenKeyVersion: refreshCipher?.keyVersion ?? null,
-        tokenExpiresAt,
-        scope: input.token.scope,
-        apiKeyId,
-        ingestKeyCiphertext: ingestCipher.ciphertext,
-        ingestKeyNonce: ingestCipher.nonce,
-        ingestKeyKeyVersion: ingestCipher.keyVersion,
-        installedByUserId: input.userId,
-      })
-      .onConflictDoUpdate({
-        target: [schema.railwayInstallations.projectId, schema.railwayInstallations.railwayUserId],
-        set: {
+    // One transaction for the upsert AND the supersede of other active rows,
+    // so "a project has exactly one active install" holds even across a crash
+    // between the two writes or two concurrent connects — the superseded
+    // install can't keep pulling with a live ingest key.
+    await db.transaction(async (tx) => {
+      await tx
+        .insert(schema.railwayInstallations)
+        .values({
+          projectId: input.projectId,
+          railwayUserId,
           grantedProjects: granted.projects,
           accessTokenCiphertext: accessCipher.ciphertext,
           accessTokenNonce: accessCipher.nonce,
@@ -310,14 +302,53 @@ async function provisionInstallation(input: {
           ingestKeyNonce: ingestCipher.nonce,
           ingestKeyKeyVersion: ingestCipher.keyVersion,
           installedByUserId: input.userId,
-          // A re-consent resurrects a previously revoked install and resets
-          // the puller's checkpoints (the old cursor may be far in the past).
-          logCursor: null,
-          metricsCursor: null,
-          revokedAt: null,
-          updatedAt: now,
-        },
-      });
+        })
+        .onConflictDoUpdate({
+          target: [
+            schema.railwayInstallations.projectId,
+            schema.railwayInstallations.railwayUserId,
+          ],
+          set: {
+            grantedProjects: granted.projects,
+            accessTokenCiphertext: accessCipher.ciphertext,
+            accessTokenNonce: accessCipher.nonce,
+            accessTokenKeyVersion: accessCipher.keyVersion,
+            refreshTokenCiphertext: refreshCipher?.ciphertext ?? null,
+            refreshTokenNonce: refreshCipher?.nonce ?? null,
+            refreshTokenKeyVersion: refreshCipher?.keyVersion ?? null,
+            tokenExpiresAt,
+            scope: input.token.scope,
+            apiKeyId,
+            ingestKeyCiphertext: ingestCipher.ciphertext,
+            ingestKeyNonce: ingestCipher.nonce,
+            ingestKeyKeyVersion: ingestCipher.keyVersion,
+            installedByUserId: input.userId,
+            // A re-consent resurrects a previously revoked install and resets
+            // the puller's checkpoints (the old cursor may be far in the past).
+            logCursor: null,
+            metricsCursor: null,
+            revokedAt: null,
+            updatedAt: now,
+          },
+        });
+
+      // Enforce a single active install per project inside the same
+      // transaction: soft-revoke rows keyed to a different Railway user and
+      // revoke their ingest keys.
+      const superseded = await tx
+        .select()
+        .from(schema.railwayInstallations)
+        .where(
+          and(
+            eq(schema.railwayInstallations.projectId, input.projectId),
+            ne(schema.railwayInstallations.railwayUserId, railwayUserId),
+            isNull(schema.railwayInstallations.revokedAt),
+          ),
+        );
+      for (const row of superseded) {
+        await teardownInstallation(row, tx);
+      }
+    });
   } catch (e) {
     // Roll back a key we minted for this connect; a reused key predates the
     // failure and stays.
@@ -328,27 +359,6 @@ async function provisionInstallation(input: {
         .where(eq(schema.apiKeys.id, apiKeyId));
     }
     throw e;
-  }
-
-  // Enforce a single active install per project: soft-revoke rows keyed to a
-  // different Railway user. Best-effort — never turns a persisted connect into
-  // an error redirect.
-  try {
-    const superseded = await db.query.railwayInstallations.findMany({
-      where: and(
-        eq(schema.railwayInstallations.projectId, input.projectId),
-        ne(schema.railwayInstallations.railwayUserId, railwayUserId),
-        isNull(schema.railwayInstallations.revokedAt),
-      ),
-    });
-    for (const row of superseded) {
-      await teardownInstallation(row);
-    }
-  } catch (e) {
-    log.warn(
-      { err: e, project_id: input.projectId },
-      "railway post-connect cleanup failed (connection persisted)",
-    );
   }
 }
 

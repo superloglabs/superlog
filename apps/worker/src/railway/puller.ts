@@ -255,13 +255,18 @@ export async function runRailwayPullOnce(deps: RailwayPullerDeps): Promise<Railw
 
         // --- Metrics --------------------------------------------------------
         for (const service of inventory.services) {
-          const pollKey = `${installation.id}:${service.id}`;
+          // Metrics are read per (environment, service) — a service deployed
+          // to several environments has independent series, so both the poll
+          // clock and the sample cursor must be keyed by the pair or the
+          // second environment starves / dedupes against the first.
+          const envServiceKey = `${environment.id}:${service.id}`;
+          const pollKey = `${installation.id}:${envServiceKey}`;
           const nowSec = Math.floor(now().getTime() / 1000);
           const lastPoll = pollState.get(pollKey) ?? 0;
           if (nowSec - lastPoll < metricsInterval) continue;
           pollState.set(pollKey, nowSec);
 
-          const lastSample = metricsCursor[service.id];
+          const lastSample = metricsCursor[envServiceKey];
           const startSec = lastSample
             ? Math.max(lastSample + 1, nowSec - METRICS_MAX_LOOKBACK_S)
             : nowSec - METRICS_FIRST_LOOKBACK_S;
@@ -288,7 +293,7 @@ export async function runRailwayPullOnce(deps: RailwayPullerDeps): Promise<Railw
           }
           const freshResults = filterMetricsAfterCursor(
             metricsCursor,
-            service.id,
+            envServiceKey,
             metricsRead.results,
           );
           const points = freshResults.reduce((n, r) => n + r.values.length, 0);
@@ -302,7 +307,7 @@ export async function runRailwayPullOnce(deps: RailwayPullerDeps): Promise<Railw
             stats.errors += 1;
             continue;
           }
-          metricsCursor = advanceMetricsCursor(metricsCursor, service.id, freshResults);
+          metricsCursor = advanceMetricsCursor(metricsCursor, envServiceKey, freshResults);
           cursorsDirty = true;
           stats.metricPointsForwarded += points;
         }

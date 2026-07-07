@@ -203,10 +203,22 @@ EOF
 fi
 
 # The worker decrypts the same integration secrets (e.g. the Railway puller's
-# tokens), so it needs the same AGENT_SECRETS_KEY the api encrypted with.
-if [[ ! -e apps/worker/.env && -e apps/api/.env ]] && grep -q '^AGENT_SECRETS_KEY=' apps/api/.env; then
-  grep '^AGENT_SECRETS_KEY=' apps/api/.env > apps/worker/.env
-  echo "  wrote apps/worker/.env (AGENT_SECRETS_KEY shared with api)"
+# tokens), so it needs the same AGENT_SECRETS_KEY the api encrypted with. Kept
+# in sync on every run (not just first write) so a regenerated apps/api/.env
+# can't leave the worker holding a stale key.
+if [[ -e apps/api/.env ]] && grep -q '^AGENT_SECRETS_KEY=' apps/api/.env; then
+  api_agent_key_line=$(grep '^AGENT_SECRETS_KEY=' apps/api/.env | head -1)
+  if [[ ! -e apps/worker/.env ]]; then
+    printf '%s\n' "$api_agent_key_line" > apps/worker/.env
+    echo "  wrote apps/worker/.env (AGENT_SECRETS_KEY shared with api)"
+  elif ! grep -qxF "$api_agent_key_line" apps/worker/.env; then
+    worker_env_tmp=$(mktemp)
+    grep -v '^AGENT_SECRETS_KEY=' apps/worker/.env > "$worker_env_tmp" || true
+    printf '%s\n' "$api_agent_key_line" >> "$worker_env_tmp"
+    cat "$worker_env_tmp" > apps/worker/.env
+    rm -f "$worker_env_tmp"
+    echo "  synced AGENT_SECRETS_KEY into apps/worker/.env (matched to api)"
+  fi
 fi
 
 # -----------------------------------------------------------------------------

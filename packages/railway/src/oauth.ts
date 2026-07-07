@@ -43,7 +43,9 @@ export function railwayConfigFromEnv(
   return {
     clientId,
     clientSecret,
-    redirectUri: env.RAILWAY_OAUTH_REDIRECT_URL ?? "http://localhost:4100/railway/oauth/callback",
+    // `||` so a blank value (e.g. an uncommented `.env.example` line) falls
+    // back too, not just an unset one.
+    redirectUri: env.RAILWAY_OAUTH_REDIRECT_URL || "http://localhost:4100/railway/oauth/callback",
   };
 }
 

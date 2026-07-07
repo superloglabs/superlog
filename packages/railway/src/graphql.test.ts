@@ -111,6 +111,50 @@ test("fetchEnvironmentLogs paginates forward from the cursor", async () => {
   assert.equal(body.variables.afterLimit, 500);
 });
 
+test("fetchEnvironmentLogs reads backwards from the anchor when no cursor exists (first pull)", async () => {
+  const result = await fetchEnvironmentLogs({
+    accessToken: "tok",
+    environmentId: "env-1",
+    anchorDate: "2026-07-07T15:00:00.000Z",
+    limit: 500,
+    fetchImpl: gqlResponder({ environmentLogs: [] }),
+  });
+  assert.ok(result.ok);
+  const body = gqlResponder.lastBody as { query: string; variables: Record<string, unknown> };
+  assert.match(body.query, /anchorDate/);
+  assert.match(body.query, /beforeLimit/);
+  assert.equal(body.variables.anchorDate, "2026-07-07T15:00:00.000Z");
+  assert.equal(body.variables.beforeLimit, 500);
+  assert.equal(body.variables.afterDate, undefined);
+});
+
+test("fetchEnvironmentLogs drops malformed records instead of aborting the batch", async () => {
+  const result = await fetchEnvironmentLogs({
+    accessToken: "tok",
+    environmentId: "env-1",
+    afterDate: "2026-07-07T14:00:00Z",
+    limit: 100,
+    fetchImpl: gqlResponder({
+      environmentLogs: [
+        // attributes missing entirely; tags is a string — both normalized.
+        { timestamp: "2026-07-07T14:01:00Z", severity: "info", message: "ok", tags: "bogus" },
+        // no timestamp → dropped.
+        { severity: "info", message: "no-ts" },
+        null,
+      ],
+    }),
+  });
+  assert.ok(result.ok);
+  assert.equal(result.logs.length, 1);
+  assert.deepEqual(result.logs[0], {
+    timestamp: "2026-07-07T14:01:00Z",
+    severity: "info",
+    message: "ok",
+    tags: null,
+    attributes: [],
+  });
+});
+
 test("fetchServiceMetrics requests the infra measurements", async () => {
   const result = await fetchServiceMetrics({
     accessToken: "tok",

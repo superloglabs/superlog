@@ -35,6 +35,7 @@ type CapabilityEnv = Partial<
     | "RAILWAY_CLIENT_ID"
     | "RAILWAY_CLIENT_SECRET"
     | "STATE_SIGNING_SECRET"
+    | "AGENT_SECRETS_KEY"
   >
 >;
 
@@ -46,11 +47,15 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
   // module stays dependency-free) AND the install-url route's STATE_SIGNING_SECRET
   // requirement — without the latter the connector would advertise as available
   // but `install-url` would 503. The connector self-disables without all of these.
+  // All three OAuth connectors also need AGENT_SECRETS_KEY — provisioning
+  // encrypts the granted tokens/ingest keys at rest and throws without it, so
+  // advertising the connector would offer a connect that can never complete.
   const cloudflareConnect = !!(
     env.CLOUDFLARE_CLIENT_ID &&
     env.CLOUDFLARE_CLIENT_SECRET &&
     env.CLOUDFLARE_OTLP_INTAKE_URL &&
-    env.STATE_SIGNING_SECRET
+    env.STATE_SIGNING_SECRET &&
+    env.AGENT_SECRETS_KEY
   );
   // Mirrors vercelConfigFromEnv's required-vars check plus the install-url
   // route's STATE_SIGNING_SECRET requirement, same as the Cloudflare gate.
@@ -59,13 +64,15 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
     env.VERCEL_CLIENT_SECRET &&
     env.VERCEL_INTEGRATION_SLUG &&
     env.VERCEL_OTLP_INTAKE_URL &&
-    env.STATE_SIGNING_SECRET
+    env.STATE_SIGNING_SECRET &&
+    env.AGENT_SECRETS_KEY
   );
   // Mirrors railwayConfigFromEnv's required-vars check plus STATE_SIGNING_SECRET.
   const railwayConnect = !!(
     env.RAILWAY_CLIENT_ID &&
     env.RAILWAY_CLIENT_SECRET &&
-    env.STATE_SIGNING_SECRET
+    env.STATE_SIGNING_SECRET &&
+    env.AGENT_SECRETS_KEY
   );
 
   return {
