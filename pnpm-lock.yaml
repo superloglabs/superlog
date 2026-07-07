@@ -471,6 +471,9 @@ importers:
       '@superlog/net-guard':
         specifier: workspace:*
         version: link:../../packages/net-guard
+      '@superlog/railway':
+        specifier: workspace:*
+        version: link:../../packages/railway
       '@superlog/topology':
         specifier: workspace:*
         version: link:../../packages/topology
