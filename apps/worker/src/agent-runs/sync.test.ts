@@ -38,7 +38,7 @@ test("steerIdleRunnerWithPendingContext steers idle sessions with joined context
     },
   });
 
-  assert.equal(didSteer, true);
+  assert.equal(didSteer, "steered");
   assert.deepEqual(steered, [
     { sessionId: "session-1", message: "Issue A joined.\nIssue B joined." },
   ]);
@@ -66,7 +66,7 @@ test("steerIdleRunnerWithPendingContext waits unless the runner is idle with pen
       snapshotStatus: "running",
       pendingContextEvents: [{ id: "evt-1", summary: "Issue joined." }],
     }),
-    false,
+    "not_applicable",
   );
   assert.equal(
     await steerIdleRunnerWithPendingContext({
@@ -74,7 +74,7 @@ test("steerIdleRunnerWithPendingContext waits unless the runner is idle with pen
       snapshotStatus: "idle",
       pendingContextEvents: [],
     }),
-    false,
+    "not_applicable",
   );
   assert.equal(steerCount, 0);
 });
@@ -96,7 +96,7 @@ test("steerIdleRunnerWithPendingContext sends a fallback delta when summaries ar
     async notifySteered() {},
   });
 
-  assert.equal(didSteer, true);
+  assert.equal(didSteer, "steered");
   assert.equal(message, "New issues joined the incident.");
 });
 
@@ -349,6 +349,6 @@ test("steerIdleRunnerWithPendingContext skips (and keeps events pending) on a bu
       throw new Error("must not notify when the steer was skipped");
     },
   });
-  assert.equal(steered, false);
+  assert.equal(steered, "busy");
   assert.deepEqual(processed, []);
 });

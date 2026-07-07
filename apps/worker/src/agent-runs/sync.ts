@@ -39,6 +39,12 @@ export function isSessionBusyError(err: unknown): boolean {
   return msg.includes("waiting on responses to events");
 }
 
+// "steered": the delta was delivered and the caller must stop this tick.
+// "busy": the session rejected the steer mid-flight; events stay pending and
+// the caller must ALSO stop this tick — proceeding could complete the run out
+// from under a pending human reply. "not_applicable": nothing to steer.
+export type IdleSteerOutcome = "steered" | "busy" | "not_applicable";
+
 export async function steerIdleRunnerWithPendingContext(opts: {
   snapshotStatus: string;
   pendingContextEvents: PendingContextEvent[];
@@ -47,9 +53,9 @@ export async function steerIdleRunnerWithPendingContext(opts: {
   incidentId: string;
   markEventsProcessed(ids: string[]): Promise<void>;
   notifySteered(incidentId: string): Promise<void>;
-}): Promise<boolean> {
+}): Promise<IdleSteerOutcome> {
   if (opts.snapshotStatus !== "idle" || opts.pendingContextEvents.length === 0) {
-    return false;
+    return "not_applicable";
   }
   const delta = opts.pendingContextEvents
     .map((event) => event.summary)
@@ -61,13 +67,13 @@ export async function steerIdleRunnerWithPendingContext(opts: {
     if (isSessionBusyError(err)) {
       // Model is mid-tool-call despite the idle status; leave the events
       // unprocessed so the next tick retries the steer.
-      return false;
+      return "busy";
     }
     throw err;
   }
   await opts.markEventsProcessed(opts.pendingContextEvents.map((event) => event.id));
   await opts.notifySteered(opts.incidentId);
-  return true;
+  return "steered";
 }
 
 const MOBILE_FILE_PREFIXES = ["app/", "ios/", "android/", "components/", "screens/"];
@@ -271,7 +277,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       // Oldest → newest so the steered conversation reads in chronological order.
       orderBy: [asc(schema.incidentEvents.createdAt)],
     });
-    const steeredHuman = await steerIdleRunnerWithPendingContext({
+    const steeredHumanOutcome = await steerIdleRunnerWithPendingContext({
       snapshotStatus: snapshot.status,
       pendingContextEvents: pendingHumanReplies,
       runner,
@@ -285,7 +291,10 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       },
       notifySteered: async () => {},
     });
-    if (steeredHuman) {
+    if (steeredHumanOutcome !== "not_applicable") {
+      // Steered: the reply is in the session, wait for its turn. Busy: the
+      // reply is still pending — do NOT fall through to completion, or the
+      // run would finish out from under it; retry next tick.
       return;
     }
 
@@ -485,7 +494,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       ),
       orderBy: [desc(schema.incidentEvents.createdAt)],
     });
-    const steered = await steerIdleRunnerWithPendingContext({
+    const steeredContextOutcome = await steerIdleRunnerWithPendingContext({
       snapshotStatus: snapshot.status,
       pendingContextEvents,
       runner,
@@ -504,7 +513,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         );
       },
     });
-    if (steered) {
+    if (steeredContextOutcome !== "not_applicable") {
       return;
     }
 
