@@ -31,8 +31,11 @@ export function incidentMarker(incidentId: string): string {
 }
 
 export type DeliveredLinearTicket = {
-  // Linear's human identifier, e.g. TEAM-123.
-  id: string;
+  // Linear's issue UUID — what agent_linear_tickets.ticket_id stores and what
+  // webhook payloads match on (payload.data.id).
+  ticketId: string;
+  // Human identifier for display, e.g. ENG-42.
+  identifier: string;
   url: string | null;
   // True when this delivery created the ticket (vs commented on an existing one).
   created: boolean;
@@ -67,6 +70,8 @@ function followUpComment(result: AgentRunResult, prUrl: string | null): string {
   return lines.join("\n");
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function isRevokedTokenError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return /invalid_grant|revoked|unauthorized|401/i.test(msg);
@@ -87,7 +92,11 @@ export function linearDeliveryAllowed(
 }
 
 export type LinearDeliveryDeps = {
-  findKnownTicket(): Promise<{ ticketId: string; url: string | null } | null>;
+  findKnownTicket(): Promise<{
+    ticketId: string;
+    identifier: string | null;
+    url: string | null;
+  } | null>;
   searchIssues(term: string): Promise<LinearIssueRef[]>;
   createIssue(args: { teamId: string; title: string; description: string }): Promise<LinearIssueRef>;
   createComment(args: { issueId: string; body: string }): Promise<void>;
@@ -116,17 +125,42 @@ export async function deliverLinearTicketWithDeps(
   try {
     const known = await deps.findKnownTicket();
     if (known) {
+      // New rows store the Linear issue UUID and can be commented directly;
+      // legacy agent-filed rows may hold the human identifier instead, which
+      // needs a search to resolve to the UUID.
+      if (UUID_RE.test(known.ticketId)) {
+        await deps.createComment({
+          issueId: known.ticketId,
+          body: followUpComment(result, args.prUrl),
+        });
+        return {
+          ticketId: known.ticketId,
+          identifier: known.identifier ?? known.ticketId,
+          url: known.url,
+          created: false,
+        };
+      }
       const [found] = await deps.searchIssues(known.ticketId);
       if (found) {
         await deps.createComment({ issueId: found.id, body: followUpComment(result, args.prUrl) });
-        return { id: known.ticketId, url: known.url ?? found.url, created: false };
+        return {
+          ticketId: found.id,
+          identifier: found.identifier,
+          url: known.url ?? found.url,
+          created: false,
+        };
       }
     }
 
     const [existing] = await deps.searchIssues(incidentMarker(args.incidentId));
     if (existing) {
       await deps.createComment({ issueId: existing.id, body: followUpComment(result, args.prUrl) });
-      return { id: existing.identifier, url: existing.url, created: false };
+      return {
+        ticketId: existing.id,
+        identifier: existing.identifier,
+        url: existing.url,
+        created: false,
+      };
     }
 
     let teamId = args.defaultTeamId;
@@ -152,7 +186,7 @@ export async function deliverLinearTicketWithDeps(
         args.prUrl,
       ),
     });
-    return { id: issue.identifier, url: issue.url, created: true };
+    return { ticketId: issue.id, identifier: issue.identifier, url: issue.url, created: true };
   } catch (err) {
     if (isRevokedTokenError(err)) {
       await deps
@@ -193,6 +227,13 @@ export async function deliverLinearTicket(
   result: AgentRunResult,
   opts: { prUrl: string | null },
 ): Promise<DeliveredLinearTicket | null> {
+  // The run may have retitled the incident (applyAgentRunResult) after ctx
+  // was loaded; reload so the ticket carries the current title in every
+  // caller path, not just the ones that refresh ctx themselves.
+  const refreshed = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.id, ctx.incident.id),
+  });
+  if (refreshed) ctx.incident = refreshed;
   const install = ctx.linearInstall;
   const logFields = {
     scope: "agent_run.linear_delivery",
@@ -216,7 +257,9 @@ export async function deliverLinearTicket(
         const row = await db.query.agentLinearTickets.findFirst({
           where: eq(schema.agentLinearTickets.incidentId, ctx.incident.id),
         });
-        return row ? { ticketId: row.ticketId, url: row.url } : null;
+        return row
+          ? { ticketId: row.ticketId, identifier: row.ticketIdentifier, url: row.url }
+          : null;
       },
       searchIssues: async (term) => searchLinearIssues(await resolveTokenOnce(), term),
       createIssue: async (args) => createLinearIssue({ accessToken: await resolveTokenOnce(), ...args }),

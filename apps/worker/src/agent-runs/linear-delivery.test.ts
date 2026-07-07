@@ -90,7 +90,8 @@ test("creates a ticket with the incident marker when nothing exists", async () =
   const deps = makeDeps();
   const ticket = await deliverLinearTicketWithDeps(BASE_ARGS, RESULT, deps);
   assert.deepEqual(ticket, {
-    id: "ENG-42",
+    ticketId: "issue-uuid",
+    identifier: "ENG-42",
     url: "https://linear.app/eng/issue/ENG-42",
     created: true,
   });
@@ -108,16 +109,41 @@ test("uses the configured default team without listing teams", async () => {
   assert.equal((deps.calls.createIssue[0] as { teamId: string }).teamId, "team-9");
 });
 
-test("comments on the known recorded ticket instead of creating", async () => {
+test("comments directly on a known UUID ticket without searching", async () => {
   const deps = makeDeps({
-    findKnownTicket: async () => ({ ticketId: "ENG-7", url: "https://linear.app/eng/issue/ENG-7" }),
+    findKnownTicket: async () => ({
+      ticketId: "0b6e7f7e-6f3a-4b8e-9a4e-2d1c3b4a5f6e",
+      identifier: "ENG-7",
+      url: "https://linear.app/eng/issue/ENG-7",
+    }),
+  });
+  const ticket = await deliverLinearTicketWithDeps(BASE_ARGS, RESULT, deps);
+  assert.deepEqual(ticket, {
+    ticketId: "0b6e7f7e-6f3a-4b8e-9a4e-2d1c3b4a5f6e",
+    identifier: "ENG-7",
+    url: "https://linear.app/eng/issue/ENG-7",
+    created: false,
+  });
+  assert.equal(deps.calls.searchIssues.length, 0);
+  assert.equal(deps.calls.createIssue.length, 0);
+  assert.equal(deps.calls.createComment.length, 1);
+});
+
+test("resolves a legacy identifier-keyed known ticket via search", async () => {
+  const deps = makeDeps({
+    findKnownTicket: async () => ({
+      ticketId: "ENG-7",
+      identifier: null,
+      url: "https://linear.app/eng/issue/ENG-7",
+    }),
     searchIssues: async () => [
       { id: "issue-7", identifier: "ENG-7", url: "https://linear.app/eng/issue/ENG-7" },
     ],
   });
   const ticket = await deliverLinearTicketWithDeps(BASE_ARGS, RESULT, deps);
   assert.deepEqual(ticket, {
-    id: "ENG-7",
+    ticketId: "issue-7",
+    identifier: "ENG-7",
     url: "https://linear.app/eng/issue/ENG-7",
     created: false,
   });
@@ -133,7 +159,12 @@ test("dedupes against a marker-matching ticket found via search", async () => {
         : [],
   });
   const ticket = await deliverLinearTicketWithDeps(BASE_ARGS, RESULT, deps);
-  assert.deepEqual(ticket, { id: "OPS-3", url: "https://linear.app/ops/issue/OPS-3", created: false });
+  assert.deepEqual(ticket, {
+    ticketId: "issue-3",
+    identifier: "OPS-3",
+    url: "https://linear.app/ops/issue/OPS-3",
+    created: false,
+  });
   assert.equal(deps.calls.createIssue.length, 0);
 });
 

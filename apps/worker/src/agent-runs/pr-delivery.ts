@@ -63,11 +63,19 @@ async function deliverAndRecordLinearTicket(
   try {
     const ticket = await deliverLinearTicket(ctx, result, { prUrl });
     if (ticket) {
-      await recordFiledLinearTicket(ctx, {
-        id: ticket.id,
-        url: ticket.url,
-        createdByAgent: ticket.created,
-      });
+      await recordFiledLinearTicket(
+        ctx,
+        {
+          id: ticket.ticketId,
+          url: ticket.url,
+          createdByAgent: ticket.created,
+        },
+        { identifier: ticket.identifier },
+      );
+    } else if (result.linearTicket) {
+      // Legacy in-flight run finishing on the old contract: preserve its
+      // self-reported ticket link.
+      await recordFiledLinearTicket(ctx, result.linearTicket);
     }
   } catch (err) {
     logger.error(

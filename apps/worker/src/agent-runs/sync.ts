@@ -486,22 +486,25 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
     // this turn. Nudge once per session; if it still won't conclude, the
     // budget backstops above reap the run.
     if (snapshot.status === "idle" && !snapshot.result) {
+      // Claim the marker BEFORE steering: concurrent sync passes would
+      // otherwise both read no-marker and double-steer. The partial unique
+      // index on (agent_run_id, provider_event_id) makes exactly one insert
+      // win. If the steer then fails, the one-shot nudge is spent — the
+      // wall-clock/runtime backstops still own the run.
       const nudgeEventId = `terminal_nudge:${sessionId}`;
-      const alreadyNudged = await db.query.incidentEvents.findFirst({
-        where: and(
-          eq(schema.incidentEvents.agentRunId, ctx.agentRun.id),
-          eq(schema.incidentEvents.providerEventId, nudgeEventId),
-        ),
-        columns: { id: true },
-      });
-      if (!alreadyNudged) {
-        await runner.steer(sessionId, terminalOutcomeNudgePrompt());
-        await agentRunLifecycle.appendAgentEvent({
+      const claimed = await db
+        .insert(schema.incidentEvents)
+        .values({
           agentRunId: ctx.agentRun.id,
           kind: "terminal_nudge",
           summary: "Nudged the agent to end its turn with a terminal outcome tool.",
           providerEventId: nudgeEventId,
-        });
+          processedAt: new Date(),
+        })
+        .onConflictDoNothing()
+        .returning({ id: schema.incidentEvents.id });
+      if (claimed.length > 0) {
+        await runner.steer(sessionId, terminalOutcomeNudgePrompt());
         logger.info(
           {
             agent_run_id: ctx.agentRun.id,

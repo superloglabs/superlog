@@ -107,7 +107,7 @@ export type AgentRunFindings = {
 const REPORT_FINDINGS_DEFINITION: OutcomeToolDefinition = {
   name: REPORT_FINDINGS_TOOL_NAME,
   description:
-    "Record what the investigation found. Call this before any completing outcome tool; call it again to revise — each defined field overwrites the previous value, omitted fields are kept. This is not a terminal tool: after reporting findings you must still end the run with exactly one outcome tool.",
+    "Record what the investigation found. Call this before any completing outcome tool; call it again to revise — include `summary` on every call (repeat the current one when it hasn't changed); every other field overwrites its previous value when provided and is kept when omitted. This is not a terminal tool: after reporting findings you must still end the run with exactly one outcome tool.",
   input_schema: {
     type: "object",
     properties: {

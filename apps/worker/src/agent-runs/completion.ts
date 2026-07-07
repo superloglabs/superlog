@@ -227,15 +227,28 @@ export async function completeWithoutPullRequest(
   );
   // The platform files/updates the Linear ticket deterministically from the
   // run's findings (after the metadata pass, so the ticket carries the
-  // agent-proposed title). The agent no longer self-reports ticket ids.
+  // agent-proposed title). The agent no longer self-reports ticket ids —
+  // except legacy in-flight runs finishing on the old contract, whose
+  // self-reported ticket link is preserved below.
   const deliveredTicket = await deliverLinearTicket(ctx, result, { prUrl: null });
   if (deliveredTicket) {
-    await recordFiledLinearTicket(ctx, {
-      id: deliveredTicket.id,
-      url: deliveredTicket.url,
-      createdByAgent: deliveredTicket.created,
-    });
+    await recordFiledLinearTicket(
+      ctx,
+      {
+        id: deliveredTicket.ticketId,
+        url: deliveredTicket.url,
+        createdByAgent: deliveredTicket.created,
+      },
+      { identifier: deliveredTicket.identifier },
+    );
+  } else if (result.linearTicket) {
+    await recordFiledLinearTicket(ctx, result.linearTicket);
   }
+  const ticketDisplay = deliveredTicket
+    ? { identifier: deliveredTicket.identifier, url: deliveredTicket.url }
+    : result.linearTicket
+      ? { identifier: result.linearTicket.id, url: result.linearTicket.url ?? null }
+      : null;
   if (resolutionReason) {
     const { resolved } = await resolveIncidentFromAgentRunConclusion(ctx, result, resolutionReason);
     if (resolved) {
@@ -263,12 +276,12 @@ export async function completeWithoutPullRequest(
       incident_id: ctx.incident.id,
       session_id: sessionId,
       runtime_minutes: runtimeMinutes,
-      has_ticket: !!deliveredTicket,
+      has_ticket: !!ticketDisplay,
       resolved_by_agent: !!resolutionReason,
     },
     "agent run complete",
   );
-  const ticket = deliveredTicket;
+  const ticket = ticketDisplay;
   if (noiseReason && noiseApplied) {
     const label = noiseReasonLabel(noiseReason);
     const evidence = result.noiseClassification?.evidence?.trim();
@@ -289,7 +302,7 @@ export async function completeWithoutPullRequest(
     if (evidence) lines.push(`Evidence: ${truncateSlackText(evidence, 1800)}`);
     await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
   } else {
-    const badge = ticket ? `:ticket: Filed ${ticket.id}: ${ticket.url}` : ":memo:";
+    const badge = ticket ? `:ticket: Filed ${ticket.identifier}: ${ticket.url}` : ":memo:";
     await postIncidentThreadMessage(ctx.incident.id, `${badge} ${result.summary}`);
   }
   const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
@@ -299,7 +312,7 @@ export async function completeWithoutPullRequest(
       : resolutionReason
         ? `Incident resolved - ${resolutionReasonLabel(resolutionReason)}`
         : ticket
-          ? `Investigation complete · Linear ${ticket.id}`
+          ? `Investigation complete · Linear ${ticket.identifier}`
           : "Investigation complete";
   const text =
     noiseReason && noiseApplied

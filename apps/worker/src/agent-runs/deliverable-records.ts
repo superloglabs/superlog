@@ -5,6 +5,7 @@ import { recordPrCreatedMetric } from "../pr-metrics.js";
 export async function recordFiledLinearTicket(
   ctx: AgentRunContext,
   ticket: schema.AgentRunLinearTicket | null | undefined,
+  opts: { identifier?: string | null } = {},
 ): Promise<void> {
   if (!ticket?.id) return;
   if (!ctx.linearInstall) return;
@@ -17,6 +18,7 @@ export async function recordFiledLinearTicket(
       installationId: ctx.linearInstall.id,
       workspaceId: ctx.linearInstall.workspaceId,
       ticketId: ticket.id,
+      ticketIdentifier: opts.identifier ?? null,
       url: ticket.url ?? null,
       lastSyncedAt: now,
     })
@@ -31,7 +33,7 @@ export async function recordFiledLinearTicket(
     .values({
       agentLinearTicketId: row.id,
       kind: "ticket_filed",
-      summary: `Filed Linear ticket ${ticket.id}`,
+      summary: `Filed Linear ticket ${opts.identifier ?? ticket.id}`,
       payload: { url: ticket.url ?? null, createdByAgent: ticket.createdByAgent },
       providerEventId: `ticket_filed:${ctx.linearInstall.workspaceId}:${ticket.id}`,
       occurredAt: now,
