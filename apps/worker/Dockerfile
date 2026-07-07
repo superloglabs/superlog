@@ -12,14 +12,13 @@ RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY apps/worker/package.json apps/worker/
-COPY packages/db/package.json packages/db/
-COPY packages/fingerprint/package.json packages/fingerprint/
+COPY packages packages
 
 RUN pnpm install --frozen-lockfile --filter @superlog/worker...
 
 COPY tsconfig.base.json ./
 COPY apps/worker apps/worker
-COPY packages/db packages/db
-COPY packages/fingerprint packages/fingerprint
+
+RUN pnpm --filter @superlog/worker typecheck
 
 CMD ["pnpm", "--filter", "@superlog/worker", "start"]
