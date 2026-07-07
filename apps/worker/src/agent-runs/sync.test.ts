@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   mobileRegressionGateState,
   mobileRegressionGateTerminatedSummary,
+  isSessionBusyError,
   mobileRegressionRepairPrompt,
   terminalOutcomeNudgePrompt,
   needsMobileRegressionRepair,
@@ -315,4 +316,39 @@ test("terminalOutcomeNudgePrompt names every terminal outcome tool", () => {
     assert.ok(prompt.includes(name), `missing ${name}`);
   }
   assert.match(prompt, /exactly ONE/);
+});
+
+test("isSessionBusyError matches the mid-flight steer rejection only", () => {
+  assert.equal(
+    isSessionBusyError(
+      new Error(
+        '400 {"type":"error","error":{"type":"invalid_request_error","message":"Invalid user.message event at events[0]: waiting on responses to events [sevt_x]; only `user.custom_tool_result` may be sent"}}',
+      ),
+    ),
+    true,
+  );
+  assert.equal(isSessionBusyError(new Error("read ECONNRESET")), false);
+});
+
+test("steerIdleRunnerWithPendingContext skips (and keeps events pending) on a busy session", async () => {
+  const processed: string[][] = [];
+  const steered = await steerIdleRunnerWithPendingContext({
+    snapshotStatus: "idle",
+    pendingContextEvents: [{ id: "evt-1", summary: "Issue A joined." }],
+    runner: {
+      async steer() {
+        throw new Error("400 ... waiting on responses to events [sevt_1] ...");
+      },
+    },
+    sessionId: "session-1",
+    incidentId: "inc-1",
+    async markEventsProcessed(ids) {
+      processed.push(ids);
+    },
+    async notifySteered() {
+      throw new Error("must not notify when the steer was skipped");
+    },
+  });
+  assert.equal(steered, false);
+  assert.deepEqual(processed, []);
 });

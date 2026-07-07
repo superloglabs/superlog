@@ -27,6 +27,18 @@ export type PendingContextEvent = {
   summary: string | null;
 };
 
+// A session can report "idle" while the model is actually mid-flight: the
+// collector acks a tool call, the model immediately issues its next one, and
+// a user.message steer sent in the same tick 400s with "waiting on responses
+// to events [...]". That race is inherent to steering from a poller — the
+// only correct handling is to skip this tick and retry on the next, when the
+// session is genuinely quiescent. Treating the 400 as fatal killed real runs
+// with `sync_failed`.
+export function isSessionBusyError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes("waiting on responses to events");
+}
+
 export async function steerIdleRunnerWithPendingContext(opts: {
   snapshotStatus: string;
   pendingContextEvents: PendingContextEvent[];
@@ -43,7 +55,16 @@ export async function steerIdleRunnerWithPendingContext(opts: {
     .map((event) => event.summary)
     .filter((value): value is string => !!value)
     .join("\n");
-  await opts.runner.steer(opts.sessionId, delta || "New issues joined the incident.");
+  try {
+    await opts.runner.steer(opts.sessionId, delta || "New issues joined the incident.");
+  } catch (err) {
+    if (isSessionBusyError(err)) {
+      // Model is mid-tool-call despite the idle status; leave the events
+      // unprocessed so the next tick retries the steer.
+      return false;
+    }
+    throw err;
+  }
   await opts.markEventsProcessed(opts.pendingContextEvents.map((event) => event.id));
   await opts.notifySteered(opts.incidentId);
   return true;
@@ -332,7 +353,12 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           }
 
           if (snapshot.status === "idle") {
-            await runner.steer(sessionId, mobileRegressionRepairPrompt());
+            try {
+              await runner.steer(sessionId, mobileRegressionRepairPrompt());
+            } catch (err) {
+              if (isSessionBusyError(err)) return;
+              throw err;
+            }
             logger.info(
               {
                 agent_run_id: ctx.agentRun.id,
@@ -525,6 +551,12 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
               .delete(schema.incidentEvents)
               .where(eq(schema.incidentEvents.id, claimedRow.id))
               .catch(() => undefined);
+            if (isSessionBusyError(err)) {
+              // The model is still working (it produced a tool call between
+              // our collect pass and this steer) — not idle-stuck at all.
+              // Skip; the next tick re-evaluates.
+              return;
+            }
             throw err;
           }
         }
