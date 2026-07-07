@@ -160,7 +160,7 @@ export function isBlockedIpv6(ip: string): boolean {
   if (first === 0x2001 && g1 === 0x0002 && (g[2] ?? 0) === 0x0000) return true; // 2001:2::/48 benchmarking
   if (first === 0x2001 && g1 === 0x0db8) return true; // 2001:db8::/32 documentation
   if (first === 0x2002) return true; // 2002::/16 6to4 (embeds arbitrary v4)
-  if (first === 0x3fff && (g1 & 0xf000) === 0x0000) return true; // 3fff::/20 documentation
+  if (first === 0x3fff && (g1 & 0xf000) === 0x0000) return true; // 3fff::/20 IETF Protocol Assignments / 6bone
 
   // Default-deny: only allow global-unicast 2000::/3.
   if ((first & 0xe000) !== 0x2000) return true;
