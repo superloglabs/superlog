@@ -4760,7 +4760,9 @@ function WebhookSchemaModal({ onClose }: { onClose: () => void }) {
                   <code>lastError = "endpoint disabled"</code>.
                 </li>
                 <li>
-                  Response bodies are captured and stored truncated to 2 KiB in the deliveries log.
+                  Deliveries record only the outcome (status + HTTP response code). Destinations
+                  must be public http(s) endpoints — private, loopback, and link-local addresses are
+                  rejected — and the upstream response body is never stored or shown.
                 </li>
               </ul>
             </section>
@@ -4987,12 +4989,6 @@ function DeliveryRow({
         <tr>
           <td colSpan={6} className="bg-surface-1 py-2 pr-3">
             <div className="space-y-1 font-mono text-[11px] text-muted">
-              {delivery.lastError && <div>error: {delivery.lastError}</div>}
-              {delivery.lastResponseBody && (
-                <div>
-                  body: <span className="break-all">{delivery.lastResponseBody}</span>
-                </div>
-              )}
               <div>next attempt: {new Date(delivery.nextAttemptAt).toLocaleString()}</div>
               {delivery.deliveredAt && (
                 <div>delivered: {new Date(delivery.deliveredAt).toLocaleString()}</div>

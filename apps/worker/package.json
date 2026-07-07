@@ -62,6 +62,7 @@
     "@superlog/billing": "workspace:*",
     "@superlog/db": "workspace:*",
     "@superlog/fingerprint": "workspace:*",
+    "@superlog/net-guard": "workspace:*",
     "@superlog/topology": "workspace:*",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",

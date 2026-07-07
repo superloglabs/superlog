@@ -296,8 +296,6 @@ export type WebhookDelivery = {
   nextAttemptAt: string;
   lastAttemptAt: string | null;
   lastResponseStatus: number | null;
-  lastResponseBody: string | null;
-  lastError: string | null;
   deliveredAt: string | null;
   createdAt: string;
 };

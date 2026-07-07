@@ -35,6 +35,7 @@
     "@scalar/hono-api-reference": "^0.10.19",
     "@superlog/db": "workspace:*",
     "@superlog/fingerprint": "workspace:*",
+    "@superlog/net-guard": "workspace:*",
     "autumn-js": "^1.2.27",
     "better-auth": "^1.6.11",
     "dotenv": "^17.4.2",

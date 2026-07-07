@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { type DB, db as defaultDb, schema } from "@superlog/db";
+import { webhookFetch } from "@superlog/net-guard";
 import { and, asc, desc, eq, lte } from "drizzle-orm";
 import { logger } from "./logger.js";
 
@@ -16,7 +17,6 @@ export {
 const MAX_ATTEMPTS = 8;
 const BATCH = 20;
 const REQUEST_TIMEOUT_MS = 10_000;
-const RESPONSE_BODY_TRUNC = 2048;
 
 export function backoffDelayMs(attempt: number): number {
   // 30s, 1m, 2m, 5m, 15m, 1h, 6h, 24h — caller bumps `attempt` before lookup.
@@ -68,14 +68,19 @@ async function attemptDelivery(
   const now = new Date();
 
   let status: number | null = null;
-  let responseText: string | null = null;
   let errorMessage: string | null = null;
 
   try {
+    // webhookFetch is SSRF-guarded: it rejects non-public destinations and pins
+    // the connection to a validated IP, so a delivery to an internal host fails
+    // here with an error instead of proxying the request.
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
-      const res = await fetch(endpoint.url, {
+      // Response body is deliberately not read or stored — we only need whether
+      // delivery succeeded, and reflecting an internal response back to the
+      // tenant would defeat the point of the egress guard.
+      const res = await webhookFetch(endpoint.url, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -88,8 +93,6 @@ async function attemptDelivery(
         signal: controller.signal,
       });
       status = res.status;
-      const text = await res.text().catch(() => "");
-      responseText = text.length > RESPONSE_BODY_TRUNC ? text.slice(0, RESPONSE_BODY_TRUNC) : text;
     } finally {
       clearTimeout(timer);
     }
@@ -107,7 +110,7 @@ async function attemptDelivery(
         lastAttemptAt: now,
         deliveredAt: now,
         lastResponseStatus: status,
-        lastResponseBody: responseText,
+        lastResponseBody: null,
         lastError: null,
       })
       .where(eq(schema.webhookDeliveries.id, delivery.id));
@@ -123,7 +126,7 @@ async function attemptDelivery(
       attemptCount,
       lastAttemptAt: now,
       lastResponseStatus: status,
-      lastResponseBody: responseText,
+      lastResponseBody: null,
       lastError: errorMessage,
       nextAttemptAt,
     })

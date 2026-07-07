@@ -7,6 +7,7 @@ import {
   isWebhookEventType,
   schema,
 } from "@superlog/db";
+import { WebhookDestinationError, assertPublicWebhookUrl } from "@superlog/net-guard";
 import { and, desc, eq } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
@@ -32,6 +33,37 @@ function parseEnabledEvents(raw: unknown): schema.WebhookEventType[] {
     throw new HTTPException(400, { message: "enabledEvents must include at least one event" });
   }
   return WEBHOOK_EVENT_TYPES.filter((event) => requested.has(event));
+}
+
+// Reject a destination that isn't a public http(s) endpoint (SSRF guard). The
+// worker re-validates and pins the connection at delivery time; this is the
+// fail-fast check so a bad URL is rejected at create/update instead of silently
+// failing every delivery.
+async function assertWebhookUrl(url: string): Promise<void> {
+  try {
+    await assertPublicWebhookUrl(url);
+  } catch (err) {
+    if (err instanceof WebhookDestinationError) {
+      throw new HTTPException(400, { message: err.message });
+    }
+    throw err;
+  }
+}
+
+// Tenant-facing shape of a delivery record. Excludes lastResponseBody and
+// lastError — those hold raw upstream response content and are never returned.
+function toDeliveryView(d: schema.WebhookDelivery) {
+  return {
+    id: d.id,
+    eventType: d.eventType,
+    status: d.status,
+    attemptCount: d.attemptCount,
+    nextAttemptAt: d.nextAttemptAt,
+    lastAttemptAt: d.lastAttemptAt,
+    lastResponseStatus: d.lastResponseStatus,
+    deliveredAt: d.deliveredAt,
+    createdAt: d.createdAt,
+  };
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
@@ -79,14 +111,7 @@ export function mountWebhooks(app: Hono<any>): void {
     };
     const url = typeof body.url === "string" ? body.url.trim() : "";
     if (!url) throw new HTTPException(400, { message: "url required" });
-    try {
-      const parsed = new URL(url);
-      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-        throw new Error("invalid protocol");
-      }
-    } catch {
-      throw new HTTPException(400, { message: "url must be a valid http(s) URL" });
-    }
+    await assertWebhookUrl(url);
     const description =
       typeof body.description === "string" ? body.description.slice(0, 500) : null;
     // Omitting enabledEvents falls back to the column default (so existing
@@ -124,11 +149,7 @@ export function mountWebhooks(app: Hono<any>): void {
     const patch: Partial<typeof schema.webhookEndpoints.$inferInsert> = { updatedAt: new Date() };
     if (typeof body.url === "string") {
       const url = body.url.trim();
-      try {
-        new URL(url);
-      } catch {
-        throw new HTTPException(400, { message: "invalid url" });
-      }
+      await assertWebhookUrl(url);
       patch.url = url;
     }
     if (typeof body.description === "string") patch.description = body.description.slice(0, 500);
@@ -213,21 +234,10 @@ export function mountWebhooks(app: Hono<any>): void {
       orderBy: [desc(schema.webhookDeliveries.createdAt)],
       limit: 50,
     });
-    return c.json(
-      rows.map((d) => ({
-        id: d.id,
-        eventType: d.eventType,
-        status: d.status,
-        attemptCount: d.attemptCount,
-        nextAttemptAt: d.nextAttemptAt,
-        lastAttemptAt: d.lastAttemptAt,
-        lastResponseStatus: d.lastResponseStatus,
-        lastResponseBody: d.lastResponseBody,
-        lastError: d.lastError,
-        deliveredAt: d.deliveredAt,
-        createdAt: d.createdAt,
-      })),
-    );
+    // Only the delivery outcome is exposed — never the raw upstream response
+    // body or connection error, which would turn deliveries into a read side
+    // channel for whatever the worker reached.
+    return c.json(rows.map(toDeliveryView));
   });
 
   app.get("/api/projects/:projectId/webhooks/:id/deliveries/:deliveryId", async (c) => {
@@ -241,7 +251,7 @@ export function mountWebhooks(app: Hono<any>): void {
     if (!delivery || delivery.endpointId !== id) {
       throw new HTTPException(404, { message: "delivery not found" });
     }
-    return c.json(delivery);
+    return c.json(toDeliveryView(delivery));
   });
 
   app.post("/api/projects/:projectId/webhooks/:id/deliveries/:deliveryId/redeliver", async (c) => {
