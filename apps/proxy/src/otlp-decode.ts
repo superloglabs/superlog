@@ -70,12 +70,22 @@ export type DecodedRows =
   | { table: "otel_logs"; rows: OtelLogRow[] }
   | { table: "otel_traces"; rows: OtelTraceRow[] };
 
+// Cap on the decompressed size of a compressed ingest body. Without it,
+// gunzipSync/inflateSync expand a highly-compressible "zip bomb" (gzip reaches
+// ~1000x) to tens of GB synchronously, blocking the event loop and OOM-killing
+// the consumer — a single valid key could take down the fleet. 256 MiB is well
+// above any legitimate OTLP batch (bodies are already capped at 64 MiB
+// compressed) while refusing the pathological case. Overridable per-call.
+export const DEFAULT_MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024;
+
 export type DecodeInput = {
   path: string;
   projectId: string;
   contentType: string;
   contentEncoding?: string;
   body: Buffer;
+  /** Cap on decompressed body size; defaults to DEFAULT_MAX_DECOMPRESSED_BYTES. */
+  maxDecompressedBytes?: number;
 };
 
 // Decode an OTLP ingest payload into ClickHouse rows. Returns null for signals we
@@ -88,7 +98,11 @@ export function decodeOtlpToRows(input: DecodeInput): DecodedRows | null {
   const protobufContent = input.contentType.toLowerCase().includes("protobuf");
   if (!json && !protobufContent) return null;
 
-  const body = decompress(input.body, input.contentEncoding);
+  const body = decompress(
+    input.body,
+    input.contentEncoding,
+    input.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES,
+  );
 
   if (input.path === "/v1/logs") {
     const payload = json
@@ -110,10 +124,14 @@ function decodeProto(type: any, body: Buffer): unknown {
   return type.toObject(type.decode(body), PROTO_TO_OBJECT_OPTS);
 }
 
-function decompress(body: Buffer, encoding?: string): Buffer {
+// Bounded decompression. maxOutputLength makes zlib throw
+// RangeError[ERR_BUFFER_TOO_LARGE] instead of allocating past the cap, so a
+// decompression bomb fails fast; decodeOtlpToRows callers already treat a decode
+// throw as best-effort (log + forward to collector), so it degrades, not crashes.
+function decompress(body: Buffer, encoding: string | undefined, maxOutputLength: number): Buffer {
   if (!encoding) return body;
   const enc = encoding.toLowerCase();
-  if (enc === "gzip") return gunzipSync(body);
-  if (enc === "deflate") return inflateSync(body);
+  if (enc === "gzip") return gunzipSync(body, { maxOutputLength });
+  if (enc === "deflate") return inflateSync(body, { maxOutputLength });
   return body;
 }
