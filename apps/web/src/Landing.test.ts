@@ -44,7 +44,13 @@ test("client-logo marquee is a masked, animated, duplicated track", async () => 
 test("marquee animation is defined in CSS and disabled under reduced motion", async () => {
   const css = await readFile(new URL("./index.css", import.meta.url), "utf8");
   assert.match(css, /@keyframes superlog-marquee/);
-  assert.match(css, /prefers-reduced-motion[\s\S]*\.marquee-track\s*\{[\s\S]*animation:\s*none/);
+  // Pin the guard INSIDE a reduced-motion media block — the marquee rule must be
+  // that block's own content, not merely appear somewhere after the phrase (which
+  // a greedy match could satisfy by spanning an unrelated earlier media block).
+  assert.match(
+    css,
+    /@media \(prefers-reduced-motion: reduce\) \{\s*\.marquee-track \{\s*animation:\s*none/,
+  );
 });
 
 test("client-logo marquee bundles real, white-filtered brand logos", async () => {
