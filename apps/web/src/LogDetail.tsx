@@ -34,7 +34,7 @@ export function LogDrawer({
   if (!log) return null;
 
   return (
-    <div className="fixed inset-x-0 bottom-0 top-[var(--impersonation-h,0px)] z-50">
+    <div className="absolute inset-0">
       <button
         type="button"
         aria-label="close"

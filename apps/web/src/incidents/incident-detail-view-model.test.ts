@@ -72,3 +72,19 @@ test("buildIncidentDetailMeta returns one sidebar row list without duplicating t
     ],
   );
 });
+
+test("buildIncidentDetailMeta formats midnight UTC with hour zero", () => {
+  const meta = buildIncidentDetailMeta({
+    incident: {
+      ...incident,
+      firstSeen: "2026-06-30T00:05:00.000Z",
+      lastSeen: "2026-06-30T00:06:00.000Z",
+    },
+    issueCount: 1,
+    agentRunState: "complete",
+    pendingRecovery: false,
+  });
+
+  assert.equal(meta.find((row) => row.label === "First detection")?.value, "Jun 30, 00:05 UTC");
+  assert.equal(meta.find((row) => row.label === "Latest detection")?.value, "Jun 30, 00:06 UTC");
+});

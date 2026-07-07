@@ -63,8 +63,8 @@ function formatIncidentUtc(iso: string): string {
   const day = new Intl.DateTimeFormat("en-US", { day: "numeric", timeZone: "UTC" }).format(date);
   const time = new Intl.DateTimeFormat("en-US", {
     hour: "2-digit",
+    hourCycle: "h23",
     minute: "2-digit",
-    hour12: false,
     timeZone: "UTC",
   }).format(date);
   return `${month} ${day}, ${time} UTC`;

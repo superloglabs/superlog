@@ -141,7 +141,7 @@ function IssuesShell({ projectId }: { projectId: string }) {
   }
 
   return (
-    <div>
+    <div className="relative">
       <div className="mb-6 flex items-center gap-1">
         {(["incidents", "issues"] as const).map((t) => (
           <Link
@@ -354,7 +354,7 @@ export function IssueDrawer(props: IssueDetailProps) {
   }, [props.onClose]);
 
   return (
-    <div className="fixed inset-x-0 bottom-0 top-[var(--impersonation-h,0px)] z-50">
+    <div className="absolute inset-0">
       <button
         type="button"
         aria-label="close"
@@ -662,7 +662,7 @@ function IncidentsTab({ projectId }: { projectId: string }) {
   }
 
   return (
-    <div>
+    <div className="relative">
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-1">
           {tabs.map((t) => (
@@ -1641,10 +1641,10 @@ export function IncidentDetailContent({
           </div>
         </aside>
 
-        <div className="min-w-0 bg-bg">
+        <div className="flex min-h-0 min-w-0 flex-col bg-bg">
           <IncidentDetailTabs active={detailTab} onChange={setDetailTab} />
 
-          <div className="px-6 py-6 lg:px-8">
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 lg:px-8">
             {detailTab === "activity" && (
               <div className="space-y-8">
                 <IncidentActivityPanel projectId={incident.projectId} incidentId={incident.id} />

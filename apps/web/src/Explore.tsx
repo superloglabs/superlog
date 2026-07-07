@@ -282,7 +282,7 @@ function ExploreInner({ projectId }: { projectId: string }) {
   );
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="relative flex flex-col gap-6">
       <section className="flex flex-wrap items-center justify-between gap-4">
         <ExploreTabs />
         {/* Resources are inventory, not time-ranged telemetry — no range picker. */}
