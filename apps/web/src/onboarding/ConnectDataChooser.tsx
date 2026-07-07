@@ -6,7 +6,14 @@ import {
   type ConnectSection,
   connectSectionsFor,
 } from "./connectChoices.ts";
-import { AwsIcon, ChevronRightIcon, CloudflareIcon, TerminalIcon, VercelIcon } from "./icons.tsx";
+import {
+  AwsIcon,
+  ChevronRightIcon,
+  CloudflareIcon,
+  RailwayIcon,
+  TerminalIcon,
+  VercelIcon,
+} from "./icons.tsx";
 import { ExploreDemoLink, SOFT_LINE } from "./wizardChrome.tsx";
 
 // The path chooser: a flat, low-color list (modeled on a Plugins page). Peer
@@ -19,6 +26,7 @@ function ConnectGlyph({ icon }: { icon: ConnectIcon }) {
     aws: AwsIcon,
     cloudflare: CloudflareIcon,
     vercel: VercelIcon,
+    railway: RailwayIcon,
     terminal: TerminalIcon,
   };
   const Glyph = map[icon];
@@ -104,6 +112,7 @@ export function ConnectDataChooser({
   const sections = connectSectionsFor({
     cloudflare: capabilities.data?.cloudflareConnect ?? false,
     vercel: capabilities.data?.vercelConnect ?? false,
+    railway: capabilities.data?.railwayConnect ?? false,
   });
   return (
     <>

@@ -16,6 +16,7 @@ import { Overview } from "./Overview.tsx";
 import { PrFeedback } from "./PrFeedback.tsx";
 import { Pricing } from "./Pricing.tsx";
 import { PrivacyPolicy } from "./PrivacyPolicy.tsx";
+import { RailwayCallback } from "./RailwayCallback.tsx";
 import { ResetPassword } from "./ResetPassword.tsx";
 import { Settings } from "./Settings.tsx";
 import { TermsOfService } from "./TermsOfService.tsx";
@@ -139,6 +140,7 @@ export function App() {
             shows even when the callback lands in a fresh, gated, or logged-out
             tab (the install opens via window.open). */}
         <Route path="/connect/vercel" element={<VercelCallback />} />
+        <Route path="/connect/railway" element={<RailwayCallback />} />
         <Route path="*" element={<AuthenticatedApp />} />
       </Routes>
     </>
@@ -288,9 +290,7 @@ function RouteContainer({ children }: { children: ReactNode }) {
     return <div className="flex min-h-0 flex-1 flex-col">{children}</div>;
   }
   return (
-    <div
-      className={`mx-auto w-full px-6 pb-24 pt-6 ${wide ? "max-w-[2400px]" : "max-w-6xl"}`}
-    >
+    <div className={`mx-auto w-full px-6 pb-24 pt-6 ${wide ? "max-w-[2400px]" : "max-w-6xl"}`}>
       {children}
     </div>
   );

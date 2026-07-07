@@ -247,10 +247,7 @@ async function provisionInstallation(input: {
     fetchImpl: input.fetchImpl,
   });
   if (!granted.ok) {
-    throw new RailwayProvisioningError(
-      `railway grant discovery failed: ${granted.error}`,
-      "error",
-    );
+    throw new RailwayProvisioningError(`railway grant discovery failed: ${granted.error}`, "error");
   }
   if (granted.projects.length === 0) {
     throw new RailwayProvisioningError("railway grant has no projects", "no_projects");
@@ -263,10 +260,7 @@ async function provisionInstallation(input: {
       isNull(schema.railwayInstallations.revokedAt),
     ),
   });
-  const { ingestKey, apiKeyId, minted } = await ensureIngestKey(
-    input.projectId,
-    existing ?? null,
-  );
+  const { ingestKey, apiKeyId, minted } = await ensureIngestKey(input.projectId, existing ?? null);
 
   try {
     const accessCipher = encryptIntegrationSecret(input.token.accessToken);
@@ -300,10 +294,7 @@ async function provisionInstallation(input: {
         installedByUserId: input.userId,
       })
       .onConflictDoUpdate({
-        target: [
-          schema.railwayInstallations.projectId,
-          schema.railwayInstallations.railwayUserId,
-        ],
+        target: [schema.railwayInstallations.projectId, schema.railwayInstallations.railwayUserId],
         set: {
           grantedProjects: granted.projects,
           accessTokenCiphertext: accessCipher.ciphertext,

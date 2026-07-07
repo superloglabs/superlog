@@ -43,8 +43,7 @@ export function railwayConfigFromEnv(
   return {
     clientId,
     clientSecret,
-    redirectUri:
-      env.RAILWAY_OAUTH_REDIRECT_URL ?? "http://localhost:4100/railway/oauth/callback",
+    redirectUri: env.RAILWAY_OAUTH_REDIRECT_URL ?? "http://localhost:4100/railway/oauth/callback",
   };
 }
 

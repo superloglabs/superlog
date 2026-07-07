@@ -36,10 +36,9 @@ test("railwayGraphQL sends a bearer-authed POST and surfaces Not Authorized", as
     accessToken: "tok",
     query: "query { projects { edges { node { id } } } }",
     fetchImpl: (async () =>
-      new Response(
-        JSON.stringify({ errors: [{ message: "Not Authorized" }], data: null }),
-        { status: 200 },
-      )) as typeof fetch,
+      new Response(JSON.stringify({ errors: [{ message: "Not Authorized" }], data: null }), {
+        status: 200,
+      })) as typeof fetch,
   });
   assert.ok(!denied.ok);
   assert.equal(denied.notAuthorized, true);

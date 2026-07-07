@@ -37,7 +37,11 @@ export async function railwayGraphQL<T = unknown>(input: {
       body: JSON.stringify({ query: input.query, variables: input.variables ?? {} }),
     });
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "fetch_failed", notAuthorized: false };
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "fetch_failed",
+      notAuthorized: false,
+    };
   }
   const json = (await res.json().catch(() => null)) as {
     data?: T | null;
@@ -83,7 +87,7 @@ export async function fetchGrantedProjects(input: {
     }>;
   }>({
     ...input,
-    query: `query { externalWorkspaces { id name projects { id name } } }`,
+    query: "query { externalWorkspaces { id name projects { id name } } }",
   });
   if (!result.ok) return { ok: false, error: result.error };
   const workspaces = Array.isArray(result.data.externalWorkspaces)
@@ -154,7 +158,7 @@ export async function fetchViewer(input: {
 > {
   const result = await railwayGraphQL<{
     me: { id?: unknown; name?: unknown; email?: unknown } | null;
-  }>({ ...input, query: `query { me { id name email } }` });
+  }>({ ...input, query: "query { me { id name email } }" });
   if (!result.ok) return { ok: false, error: result.error };
   const me = result.data.me;
   if (typeof me?.id !== "string" || !me.id) return { ok: false, error: "no_viewer" };

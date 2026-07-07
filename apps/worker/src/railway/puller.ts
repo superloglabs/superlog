@@ -211,16 +211,18 @@ export async function runRailwayPullOnce(deps: RailwayPullerDeps): Promise<Railw
         const logsRead = await fetchEnvironmentLogs({
           accessToken,
           environmentId: environment.id,
-          ...(cursorTs
-            ? { afterDate: cursorTs }
-            : { anchorDate: now().toISOString() }),
+          ...(cursorTs ? { afterDate: cursorTs } : { anchorDate: now().toISOString() }),
           limit: logBatchLimit,
           fetchImpl,
         });
         if (!logsRead.ok) {
           stats.errors += 1;
           deps.log.warn(
-            { installation_id: installation.id, environment_id: environment.id, error: logsRead.error },
+            {
+              installation_id: installation.id,
+              environment_id: environment.id,
+              error: logsRead.error,
+            },
             "railway log read failed",
           );
         } else {
@@ -275,12 +277,20 @@ export async function runRailwayPullOnce(deps: RailwayPullerDeps): Promise<Railw
           if (!metricsRead.ok) {
             stats.errors += 1;
             deps.log.warn(
-              { installation_id: installation.id, service_id: service.id, error: metricsRead.error },
+              {
+                installation_id: installation.id,
+                service_id: service.id,
+                error: metricsRead.error,
+              },
               "railway metrics read failed",
             );
             continue;
           }
-          const freshResults = filterMetricsAfterCursor(metricsCursor, service.id, metricsRead.results);
+          const freshResults = filterMetricsAfterCursor(
+            metricsCursor,
+            service.id,
+            metricsRead.results,
+          );
           const points = freshResults.reduce((n, r) => n + r.values.length, 0);
           if (points === 0) continue;
           const forwarded = await forwardOtlp(

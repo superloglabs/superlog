@@ -60,7 +60,6 @@ test("state schema rejects unknown source/signal keys", () => {
       aws: { logs: true, metrics: true },
       vercel: { traces: true, logs: true },
       railway: { logs: true, metrics: true },
-    railway: { logs: true, metrics: true },
     }).success,
     true,
   );
@@ -71,7 +70,6 @@ test("state schema rejects unknown source/signal keys", () => {
       aws: { logs: true, metrics: true, traces: true },
       vercel: { traces: true, logs: true },
       railway: { logs: true, metrics: true },
-    railway: { logs: true, metrics: true },
     }).success,
     false,
   );
@@ -82,7 +80,6 @@ test("state schema rejects unknown source/signal keys", () => {
       aws: { logs: true, metrics: true },
       vercel: { traces: true, logs: true },
       railway: { logs: true, metrics: true },
-    railway: { logs: true, metrics: true },
     }).success,
     false,
   );

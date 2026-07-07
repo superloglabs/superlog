@@ -104,6 +104,7 @@ import {
   VALID_MANUAL_MERGE_METHODS,
   mergeAgentPullRequestAndResolveIncident,
 } from "./pr-merge-service.js";
+import { mountRailwayAuthed, mountRailwayPublic } from "./railway.js";
 import { mountSettingsAuthed } from "./settings.js";
 import { normalizeSignupIntentKeyHash, normalizeSignupIntentKeyPrefix } from "./signup-intents.js";
 import { mountSlackAuthed, mountSlackPublic } from "./slack.js";
@@ -112,7 +113,6 @@ import { userIsStaff } from "./staff.js";
 import { symbolicateIssueSample, symbolicateTelemetrySample } from "./symbolication.js";
 import { buildSystemCapabilities } from "./system-capabilities.js";
 import { mountTopology } from "./topology.js";
-import { mountRailwayAuthed, mountRailwayPublic } from "./railway.js";
 import { mountVercelAuthed, mountVercelPublic } from "./vercel.js";
 import { mountWebhooks } from "./webhooks.js";
 

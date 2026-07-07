@@ -21,6 +21,7 @@ import {
   useAgentSettings,
   useCloudConnections,
   useCloudStackHealth,
+  useCloudflareInstallation,
   useCreateCloudConnection,
   useCreateKey,
   useCreateMcpToken,
@@ -51,6 +52,7 @@ import {
   useOrgGithubInstallRepos,
   useOrgGithubInstallations,
   useOrgProjects,
+  useRailwayInstallation,
   useRedeliverWebhook,
   useRemoveIntegration,
   useResetGithubCommitAuthor,
@@ -63,7 +65,6 @@ import {
   useRunOrgDigestNow,
   useSaveAgentSettings,
   useSaveIntegration,
-  useCloudflareInstallation,
   useSaveOrgAgentSettings,
   useSaveOrgDigest,
   useSetIngestFilters,
@@ -72,16 +73,18 @@ import {
   useSlackChannels,
   useSlackInstallation,
   useSlackRoute,
+  useStartCloudflareInstall,
   useStartGithubAccessLogin,
   useStartGithubAuthorLogin,
   useStartGithubInstall,
   useStartLinearInstall,
-  useStartCloudflareInstall,
+  useStartRailwayInstall,
   useStartSlackInstall,
   useStartVercelInstall,
   useTestWebhook,
-  useUninstallLinear,
   useUninstallCloudflare,
+  useUninstallLinear,
+  useUninstallRailway,
   useUninstallSlack,
   useUninstallVercel,
   useUpdateGithubRepoAccess,
@@ -95,9 +98,9 @@ import {
 import { AWS_REGIONS } from "./awsRegions.ts";
 import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
 import { Btn, Chip, FieldLabel, Input, Label, Tile } from "./design/ui";
+import { McpInstallPanel } from "./onboarding/McpInstallDialog.tsx";
 import { InfoIcon } from "./onboarding/icons.tsx";
 import { VERCEL_PLAN_REQUIREMENT } from "./onboarding/vercelConnectModel.ts";
-import { McpInstallPanel } from "./onboarding/McpInstallDialog.tsx";
 import { AgentMemoriesCard } from "./settings/AgentMemoriesCard.tsx";
 import { BillingCard } from "./settings/BillingCard.tsx";
 import { CreateOrgCard } from "./settings/CreateOrgCard.tsx";
@@ -622,6 +625,7 @@ function ProjectSectionView({
             <LinearCard />
             <CloudflareCard projectId={projectId} />
             <VercelCard projectId={projectId} />
+            <RailwayCard projectId={projectId} />
             <AwsCard projectId={projectId} />
             <IngestSourcesCard projectId={projectId} />
           </div>
@@ -1318,6 +1322,62 @@ function VercelCard({ projectId }: { projectId: string | undefined }) {
   );
 }
 
+function RailwayCard({ projectId }: { projectId: string | undefined }) {
+  const install = useRailwayInstallation(projectId);
+  const start = useStartRailwayInstall(projectId);
+  const uninstall = useUninstallRailway(projectId);
+
+  const installed = install.data?.installed === true;
+  const grantedCount = install.data?.installed ? install.data.grantedProjects.length : 0;
+
+  return (
+    <Tile label="Railway">
+      <div className="space-y-3">
+        <p className="text-[13px] text-muted">
+          Authorize Railway and pick the projects to share — we pull your services' logs and infra
+          metrics from Railway's API into this project automatically. Read-only, revocable any time.
+        </p>
+        <div>
+          {installed ? (
+            <Chip tone="success" dot>
+              {grantedCount === 1 ? "1 Railway project" : `${grantedCount} Railway projects`}
+            </Chip>
+          ) : (
+            <Chip tone="muted" dot>
+              Not connected
+            </Chip>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Btn
+            size="sm"
+            variant={installed ? "secondary" : "primary"}
+            loading={start.isPending}
+            disabled={!projectId || start.isPending}
+            onClick={async () => {
+              const { url } = await start.mutateAsync();
+              window.location.href = url;
+            }}
+          >
+            {installed ? "Reconnect" : "Connect Railway"}
+          </Btn>
+          {installed && (
+            <Btn
+              size="sm"
+              variant="danger"
+              loading={uninstall.isPending}
+              disabled={!projectId || uninstall.isPending}
+              onClick={() => uninstall.mutate()}
+            >
+              Disconnect
+            </Btn>
+          )}
+        </div>
+      </div>
+    </Tile>
+  );
+}
+
 function SlackRoutingCard({ projectId }: { projectId: string | undefined }) {
   const install = useSlackInstallation();
   const installed = install.data?.installed === true;
@@ -1687,7 +1747,11 @@ function IngestSourcesCard({ projectId }: { projectId: string | undefined }) {
   const setFilters = useSetIngestFilters(projectId ?? "");
   const state = filters.data;
 
-  const setSignal = (source: "otlp" | "aws" | "vercel", signal: string, next: boolean) => {
+  const setSignal = (
+    source: "otlp" | "aws" | "vercel" | "railway",
+    signal: string,
+    next: boolean,
+  ) => {
     if (!state) return;
     const updated: IngestFilterState = {
       ...state,
@@ -1740,6 +1804,17 @@ function IngestSourcesCard({ projectId }: { projectId: string | undefined }) {
               state={state.vercel}
               disabled={setFilters.isPending}
               onToggle={(signal, next) => setSignal("vercel", signal, next)}
+            />
+            <IngestSourceRow
+              title="Railway"
+              hint="Logs and infra metrics pulled from the connected Railway projects."
+              signals={[
+                { key: "logs", label: "Logs" },
+                { key: "metrics", label: "Metrics" },
+              ]}
+              state={state.railway}
+              disabled={setFilters.isPending}
+              onToggle={(signal, next) => setSignal("railway", signal, next)}
             />
           </div>
         )}

@@ -323,6 +323,28 @@ export function VercelIcon({ size = 18, className }: IconProps) {
   );
 }
 
+export function RailwayIcon({ size = 18, className }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 18 18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      className={className}
+      aria-hidden="true"
+    >
+      {/* Simplified Railway mark: a rail curving through a window. */}
+      <path d="M2.5 7.5h6.8a2.6 2.6 0 0 1 2.6 2.6v5.4" />
+      <path d="M2.9 11h3.4" />
+      <path d="M4 14h2.6" />
+      <path d="M2.7 4.5h7.2a5.6 5.6 0 0 1 5.6 5.6v5.4" />
+    </svg>
+  );
+}
+
 export function KubernetesIcon({ size = 18, className }: IconProps) {
   return (
     <svg

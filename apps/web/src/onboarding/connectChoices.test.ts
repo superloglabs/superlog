@@ -16,9 +16,9 @@ function findOption(sections: ReturnType<typeof connectSectionsFor>, id: string)
   return undefined;
 }
 
-test("the chooser offers exactly four lanes: AWS, Cloudflare, Vercel, and 'I'm hosted elsewhere'", () => {
+test("the chooser offers exactly five lanes: AWS, Cloudflare, Vercel, Railway, and 'I'm hosted elsewhere'", () => {
   const ids = CONNECT_SECTIONS.flatMap((s) => s.options.map((o) => o.id));
-  assert.deepEqual(ids, ["aws", "cloudflare", "vercel", "elsewhere"]);
+  assert.deepEqual(ids, ["aws", "cloudflare", "vercel", "railway", "elsewhere"]);
 });
 
 test("there is no coming-soon grid", () => {
@@ -42,7 +42,7 @@ test("integration-first: the primary option is a no-code integration (AWS)", () 
 });
 
 test("every lane is actionable when its connectors are configured", () => {
-  const sections = connectSectionsFor({ cloudflare: true, vercel: true });
+  const sections = connectSectionsFor({ cloudflare: true, vercel: true, railway: true });
   for (const section of sections) {
     for (const option of section.options) {
       assert.notEqual(option.action, null, `${option.id} should be actionable`);
@@ -55,12 +55,13 @@ test("connectActionFor resolves known ids and returns null for unknown", () => {
   assert.equal(connectActionFor("aws"), "aws");
   assert.equal(connectActionFor("cloudflare"), "cloudflare");
   assert.equal(connectActionFor("vercel"), "vercel");
+  assert.equal(connectActionFor("railway"), "railway");
   assert.equal(connectActionFor("elsewhere"), "code");
   assert.equal(connectActionFor("does-not-exist"), null);
 });
 
 test("connectSectionsFor disables Cloudflare when the connector isn't configured", () => {
-  const gated = connectSectionsFor({ cloudflare: false, vercel: true });
+  const gated = connectSectionsFor({ cloudflare: false, vercel: true, railway: true });
   const cloudflare = findOption(gated, "cloudflare");
   assert.ok(cloudflare);
   assert.equal(cloudflare.action, null, "cloudflare should not be actionable when unavailable");
@@ -72,7 +73,7 @@ test("connectSectionsFor disables Cloudflare when the connector isn't configured
 });
 
 test("connectSectionsFor disables Vercel when the connector isn't configured", () => {
-  const gated = connectSectionsFor({ cloudflare: true, vercel: false });
+  const gated = connectSectionsFor({ cloudflare: true, vercel: false, railway: true });
   const vercel = findOption(gated, "vercel");
   assert.ok(vercel);
   assert.equal(vercel.action, null, "vercel should not be actionable when unavailable");
@@ -83,10 +84,23 @@ test("connectSectionsFor disables Vercel when the connector isn't configured", (
   assert.equal(findOption(gated, "elsewhere")?.action, "code");
 });
 
+test("connectSectionsFor disables Railway when the connector isn't configured", () => {
+  const gated = connectSectionsFor({ cloudflare: true, vercel: true, railway: false });
+  const railway = findOption(gated, "railway");
+  assert.ok(railway);
+  assert.equal(railway.action, null, "railway should not be actionable when unavailable");
+  assert.equal(isComingSoon(railway), true);
+  // Other lanes are untouched.
+  assert.equal(findOption(gated, "aws")?.action, "aws");
+  assert.equal(findOption(gated, "vercel")?.action, "vercel");
+  assert.equal(findOption(gated, "elsewhere")?.action, "code");
+});
+
 test("connectSectionsFor leaves configured connectors actionable", () => {
-  const enabled = connectSectionsFor({ cloudflare: true, vercel: true });
+  const enabled = connectSectionsFor({ cloudflare: true, vercel: true, railway: true });
   assert.equal(findOption(enabled, "cloudflare")?.action, "cloudflare");
   assert.equal(findOption(enabled, "vercel")?.action, "vercel");
+  assert.equal(findOption(enabled, "railway")?.action, "railway");
 });
 
 test("every option id is unique", () => {

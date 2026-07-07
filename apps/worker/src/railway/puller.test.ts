@@ -1,9 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import {
-  RAILWAY_GRAPHQL_URL,
-  RAILWAY_OAUTH_TOKEN_URL,
-} from "@superlog/railway";
+import { RAILWAY_GRAPHQL_URL, RAILWAY_OAUTH_TOKEN_URL } from "@superlog/railway";
 import {
   type RailwayPullerInstallation,
   type RailwayPullerStore,
@@ -35,11 +32,18 @@ function installation(
 
 type StoreCalls = {
   tokens: Array<{ id: string; accessToken: string; refreshToken: string | null }>;
-  cursors: Array<{ id: string; logCursor: Record<string, string>; metricsCursor: Record<string, number> }>;
+  cursors: Array<{
+    id: string;
+    logCursor: Record<string, string>;
+    metricsCursor: Record<string, number>;
+  }>;
   granted: number;
 };
 
-function fakeStore(rows: RailwayPullerInstallation[]): { store: RailwayPullerStore; calls: StoreCalls } {
+function fakeStore(rows: RailwayPullerInstallation[]): {
+  store: RailwayPullerStore;
+  calls: StoreCalls;
+} {
   const calls: StoreCalls = { tokens: [], cursors: [], granted: 0 };
   return {
     calls,
@@ -48,7 +52,11 @@ function fakeStore(rows: RailwayPullerInstallation[]): { store: RailwayPullerSto
         return rows;
       },
       async saveTokens(id, tokens) {
-        calls.tokens.push({ id, accessToken: tokens.accessToken, refreshToken: tokens.refreshToken });
+        calls.tokens.push({
+          id,
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken,
+        });
       },
       async saveGrantedProjects() {
         calls.granted += 1;
@@ -60,7 +68,29 @@ function fakeStore(rows: RailwayPullerInstallation[]): { store: RailwayPullerSto
   };
 }
 
-type Forwarded = Array<{ url: string; apiKey: string | null; payload: any }>;
+type ForwardedPayload = {
+  resourceLogs?: Array<{
+    scopeLogs: Array<{ logRecords: Array<{ body: { stringValue?: string } }> }>;
+  }>;
+  resourceMetrics?: Array<{
+    scopeMetrics: Array<{
+      metrics: Array<{
+        name: string;
+        unit: string;
+        gauge: { dataPoints: Array<{ timeUnixNano: string; asDouble: number }> };
+      }>;
+    }>;
+  }>;
+};
+
+type Forwarded = Array<{ url: string; apiKey: string | null; payload: ForwardedPayload }>;
+
+// Index into an array with narrowing (strict indexing forbids bare [0]).
+function at<T>(items: readonly T[] | undefined, index: number): T {
+  const item = items?.[index];
+  assert.ok(item !== undefined, `expected item at index ${index}`);
+  return item;
+}
 
 /**
  * Fake fetch that routes token / GraphQL / intake requests. GraphQL responses
@@ -153,12 +183,12 @@ test("forwards fresh logs to the intake with the ingest key and advances the cur
   assert.equal(stats.logsForwarded, 1);
   assert.equal(stats.errors, 0);
   assert.equal(forwarded.length, 1);
-  assert.equal(forwarded[0]!.url, "https://intake.test/railway/pull/logs");
-  assert.equal(forwarded[0]!.apiKey, "sl_public_test");
-  const record = forwarded[0]!.payload.resourceLogs[0].scopeLogs[0].logRecords[0];
+  assert.equal(at(forwarded, 0).url, "https://intake.test/railway/pull/logs");
+  assert.equal(at(forwarded, 0).apiKey, "sl_public_test");
+  const record = at(at(at(at(forwarded, 0).payload.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
   assert.equal(record.body.stringValue, "hello");
   assert.equal(calls.cursors.length, 1);
-  assert.equal(calls.cursors[0]!.logCursor["env-1"], "2026-07-07T14:59:59.5Z");
+  assert.equal(at(calls.cursors, 0).logCursor["env-1"], "2026-07-07T14:59:59.5Z");
 });
 
 test("seeds the log cursor on first pull so history isn't re-read", async () => {
@@ -176,7 +206,7 @@ test("seeds the log cursor on first pull so history isn't re-read", async () => 
   });
   // Seed batch is forwarded once, and the cursor lands on its max timestamp.
   assert.equal(forwarded.length, 1);
-  assert.equal(calls.cursors[0]!.logCursor["env-1"], "2026-07-07T14:59:59.5Z");
+  assert.equal(at(calls.cursors, 0).logCursor["env-1"], "2026-07-07T14:59:59.5Z");
 });
 
 test("does not advance the cursor when the intake rejects the batch", async () => {
@@ -214,8 +244,8 @@ test("refreshes an expiring token and persists the rotated refresh token first",
     metricsPollState: new Map([["inst-1:svc-1", Math.floor(NOW.getTime() / 1000)]]),
   });
   assert.equal(calls.tokens.length, 1);
-  assert.equal(calls.tokens[0]!.accessToken, "at-new");
-  assert.equal(calls.tokens[0]!.refreshToken, "rt-new");
+  assert.equal(at(calls.tokens, 0).accessToken, "at-new");
+  assert.equal(at(calls.tokens, 0).refreshToken, "rt-new");
 });
 
 test("skips an installation whose token expired with no refresh token", async () => {
@@ -264,10 +294,10 @@ test("polls metrics on the interval, forwards gauges, and advances the sample cu
   assert.equal(stats.metricPointsForwarded, 1);
   const metricsPost = forwarded.find((f) => f.url.endsWith("/railway/pull/metrics"));
   assert.ok(metricsPost);
-  const metric = metricsPost.payload.resourceMetrics[0].scopeMetrics[0].metrics[0];
+  const metric = at(at(at(metricsPost.payload.resourceMetrics, 0).scopeMetrics, 0).metrics, 0);
   assert.equal(metric.name, "railway.cpu.usage");
-  assert.equal(metric.gauge.dataPoints[0].asDouble, 0.5);
-  assert.equal(calls.cursors.at(-1)!.metricsCursor["svc-1"], nowSec - 60);
+  assert.equal(at(metric.gauge.dataPoints, 0).asDouble, 0.5);
+  assert.equal(at(calls.cursors, calls.cursors.length - 1).metricsCursor["svc-1"], nowSec - 60);
 
   // A second pass inside the interval must not poll metrics again.
   const forwardedBefore = forwarded.length;

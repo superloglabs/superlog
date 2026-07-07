@@ -74,7 +74,7 @@ export function rfc3339ToNanos(timestamp: string): bigint | null {
   const ms = Date.parse(`${base}${zone}`);
   if (!Number.isFinite(ms)) return null;
   const nanosFraction = BigInt((fraction ?? "").padEnd(9, "0") || "0");
-  return BigInt(ms) * 1_000_000n - (BigInt(ms % 1000) * 1_000_000n) + nanosFraction;
+  return BigInt(ms) * 1_000_000n - BigInt(ms % 1000) * 1_000_000n + nanosFraction;
 }
 
 // Strip ANSI color/control sequences Railway passes through from app stdout.
@@ -148,7 +148,8 @@ export function railwayMetricsToOtlp(
   results: RailwayMetricsResult[],
   ctx: RailwayNameContext & { serviceId?: string },
 ): RailwayOtlpMetricsExport {
-  const serviceId = ctx.serviceId ?? results.find((r) => r.tags?.serviceId)?.tags?.serviceId ?? null;
+  const serviceId =
+    ctx.serviceId ?? results.find((r) => r.tags?.serviceId)?.tags?.serviceId ?? null;
   const serviceName = (serviceId && ctx.serviceNamesById[serviceId]) || "railway";
   const metrics = results
     .map((result) => {

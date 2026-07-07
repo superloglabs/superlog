@@ -10,11 +10,11 @@
 // What activating a row does. `null` => not yet available (coming soon), so the
 // row renders disabled and is not actionable. "code" opens the coding-agent
 // prompt (paste into Cursor / Claude Code / Codex).
-export type ConnectAction = "aws" | "cloudflare" | "vercel" | "code";
+export type ConnectAction = "aws" | "cloudflare" | "vercel" | "railway" | "code";
 
 // Glyph key resolved to a neutral monochrome icon by the component. Kept as a
 // string union (not a component) so this module stays free of JSX/React.
-export type ConnectIcon = "aws" | "cloudflare" | "vercel" | "terminal";
+export type ConnectIcon = "aws" | "cloudflare" | "vercel" | "railway" | "terminal";
 
 export type ConnectOption = {
   id: string;
@@ -65,6 +65,14 @@ export const CONNECT_SECTIONS: ConnectSection[] = [
         action: "vercel",
       },
       {
+        id: "railway",
+        title: "Railway",
+        description:
+          "Authorize Railway once and pick the projects to share — we pull your services' logs and infra metrics from Railway's API. No agent, no code.",
+        icon: "railway",
+        action: "railway",
+      },
+      {
         id: "elsewhere",
         title: "I'm hosted elsewhere",
         description:
@@ -84,12 +92,14 @@ export const CONNECT_SECTIONS: ConnectSection[] = [
 export type ConnectAvailability = {
   cloudflare: boolean;
   vercel: boolean;
+  railway: boolean;
 };
 
 export function connectSectionsFor(availability: ConnectAvailability): ConnectSection[] {
   const unavailable = new Set<string>();
   if (!availability.cloudflare) unavailable.add("cloudflare");
   if (!availability.vercel) unavailable.add("vercel");
+  if (!availability.railway) unavailable.add("railway");
   if (unavailable.size === 0) return CONNECT_SECTIONS;
   return CONNECT_SECTIONS.map((section) => ({
     ...section,

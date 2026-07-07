@@ -79,6 +79,7 @@ export type SystemCapabilities = {
   cloudUpgradeLinks: boolean;
   cloudflareConnect: boolean;
   vercelConnect: boolean;
+  railwayConnect: boolean;
 };
 
 const SIGNUP_SOURCE_STORAGE_KEY = "superlog.signup_source";
@@ -923,6 +924,56 @@ export function useUninstallVercel(projectId: string | undefined) {
   });
 }
 
+export type RailwayInstallation =
+  | { installed: false }
+  | {
+      installed: true;
+      railwayUserId: string;
+      grantedProjects: Array<{
+        id: string;
+        name: string;
+        workspaceId: string | null;
+        workspaceName: string | null;
+      }>;
+      scope: string | null;
+      installedAt: string;
+    };
+
+// Railway installs are per-project, same scoping discipline as Vercel.
+export function useRailwayInstallation(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["railway-installation", projectId],
+    queryFn: () => fetcher<RailwayInstallation>(`/api/projects/${projectId}/railway/installation`),
+    enabled: !!projectId,
+    // Poll so the card flips to "connected" after the OAuth redirect without a
+    // manual refresh (same pattern as Slack/GitHub/Cloudflare/Vercel).
+    refetchInterval: 15000,
+  });
+}
+
+export function useStartRailwayInstall(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: () =>
+      fetcher<{ url: string }>(`/api/projects/${projectId}/railway/install-url`, {
+        method: "POST",
+      }),
+  });
+}
+
+export function useUninstallRailway(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      fetcher<{ ok: true }>(`/api/projects/${projectId}/railway/uninstall`, { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["railway-installation", projectId] });
+    },
+  });
+}
+
 export function useSlackChannels(enabled: boolean) {
   const fetcher = useFetcher();
   return useQuery({
@@ -1122,11 +1173,13 @@ export function useDeleteCloudConnection(projectId: string) {
 }
 
 // Per-project ingest source filters: turn a telemetry source (SDK/OTLP, AWS
-// CloudWatch, or Vercel Drains) on/off per signal. The proxy ack-drops disabled telemetry.
+// CloudWatch, Vercel Drains, or the Railway puller) on/off per signal. The
+// proxy ack-drops disabled telemetry.
 export type IngestFilterState = {
   otlp: { traces: boolean; logs: boolean; metrics: boolean };
   aws: { logs: boolean; metrics: boolean };
   vercel: { traces: boolean; logs: boolean };
+  railway: { logs: boolean; metrics: boolean };
 };
 
 export function useIngestFilters(projectId: string | undefined) {

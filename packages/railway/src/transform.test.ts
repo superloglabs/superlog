@@ -10,6 +10,13 @@ import {
   rfc3339ToNanos,
 } from "./transform.js";
 
+// Index into an array with narrowing (strict indexing forbids bare [0]).
+function at<T>(items: readonly T[] | undefined, index: number): T {
+  const item = items?.[index];
+  assert.ok(item !== undefined, `expected item at index ${index}`);
+  return item;
+}
+
 const NAMES = {
   serviceNamesById: { "svc-1": "blackbird-app" },
   projectName: "blackbird",
@@ -42,7 +49,7 @@ test("rfc3339ToNanos keeps sub-millisecond precision", () => {
 test("railwayLogsToOtlp maps a Railway log line to an OTLP log record", () => {
   const out = railwayLogsToOtlp([LOG], NAMES);
   assert.equal(out.resourceLogs.length, 1);
-  const rl = out.resourceLogs[0]!;
+  const rl = at(out.resourceLogs, 0);
   const resourceAttrs = Object.fromEntries(
     rl.resource.attributes.map((a) => [a.key, a.value.stringValue]),
   );
@@ -51,7 +58,7 @@ test("railwayLogsToOtlp maps a Railway log line to an OTLP log record", () => {
   assert.equal(resourceAttrs["railway.project_name"], "blackbird");
   assert.equal(resourceAttrs["railway.environment_name"], "production");
 
-  const record = rl.scopeLogs[0]!.logRecords[0]!;
+  const record = at(at(rl.scopeLogs, 0).logRecords, 0);
   assert.equal(record.timeUnixNano, "1783433431058154105");
   assert.equal(record.severityText, "INFO");
   assert.equal(record.severityNumber, 9);
@@ -67,7 +74,7 @@ test("railwayLogsToOtlp falls back to a railway service name when unmapped", () 
     NAMES,
   );
   const attrs = Object.fromEntries(
-    out.resourceLogs[0]!.resource.attributes.map((a) => [a.key, a.value.stringValue]),
+    at(out.resourceLogs, 0).resource.attributes.map((a) => [a.key, a.value.stringValue]),
   );
   assert.equal(attrs["service.name"], "railway");
 });
@@ -104,22 +111,22 @@ test("railwayMetricsToOtlp maps measurements to gauges with railway names", () =
     NAMES,
   );
   assert.equal(out.resourceMetrics.length, 1);
-  const rm = out.resourceMetrics[0]!;
+  const rm = at(out.resourceMetrics, 0);
   const resourceAttrs = Object.fromEntries(
     rm.resource.attributes.map((a) => [a.key, a.value.stringValue]),
   );
   assert.equal(resourceAttrs["service.name"], "blackbird-app");
   assert.equal(resourceAttrs["telemetry.source"], "railway");
 
-  const metrics = rm.scopeMetrics[0]!.metrics;
+  const metrics = at(rm.scopeMetrics, 0).metrics;
   assert.deepEqual(
     metrics.map((m) => m.name),
     ["railway.cpu.usage", "railway.memory.usage"],
   );
-  const cpu = metrics[0]!;
+  const cpu = at(metrics, 0);
   assert.equal(cpu.unit, "{vCPU}");
-  assert.equal(cpu.gauge.dataPoints[0]!.timeUnixNano, "1783436400000000000");
-  assert.equal(cpu.gauge.dataPoints[0]!.asDouble, 0.25);
+  assert.equal(at(cpu.gauge.dataPoints, 0).timeUnixNano, "1783436400000000000");
+  assert.equal(at(cpu.gauge.dataPoints, 0).asDouble, 0.25);
 });
 
 test("metrics cursor drops already-forwarded samples per service", () => {
@@ -134,7 +141,7 @@ test("metrics cursor drops already-forwarded samples per service", () => {
     },
   ];
   const filtered = filterMetricsAfterCursor({ "svc-1": 100 }, "svc-1", results);
-  assert.deepEqual(filtered[0]!.values, [{ ts: 200, value: 2 }]);
+  assert.deepEqual(at(filtered, 0).values, [{ ts: 200, value: 2 }]);
 
   const cursor = advanceMetricsCursor({ "svc-1": 100 }, "svc-1", results);
   assert.equal(cursor["svc-1"], 200);
