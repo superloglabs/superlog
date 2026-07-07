@@ -43,6 +43,7 @@ export type AgentRunContext = {
   customInstructions: string;
   linearTicketPolicy: schema.LinearTicketPolicy;
   linearTicketInstructions: schema.LinearTicketInstruction[];
+  linearDefaultTeamId: string | null;
   prPolicy: schema.PrPolicy;
   prBaseBranch: string | null;
   autoMergeFixPrs: schema.AutoMergePolicy;
@@ -149,6 +150,7 @@ export async function getProjectAutomation(projectId: string): Promise<{
   agentRunEnabled: boolean;
   linearTicketPolicy: schema.LinearTicketPolicy;
   linearTicketInstructions: schema.LinearTicketInstruction[];
+  linearDefaultTeamId: string | null;
   prPolicy: schema.PrPolicy;
   prBaseBranch: string | null;
   autoMergeFixPrs: schema.AutoMergePolicy;
@@ -167,6 +169,7 @@ export async function getProjectAutomation(projectId: string): Promise<{
     agentRunEnabled: row?.agentRunEnabled ?? true,
     linearTicketPolicy: row?.linearTicketPolicy ?? "on_ready_to_pr",
     linearTicketInstructions: row?.linearTicketInstructions ?? [],
+    linearDefaultTeamId: row?.linearDefaultTeamId ?? null,
     prPolicy: row?.prPolicy ?? "on_ready_to_pr",
     prBaseBranch: schema.normalizePrBaseBranch(row?.prBaseBranch),
     autoMergeFixPrs: row?.autoMergeFixPrs ?? "never",
@@ -253,6 +256,7 @@ export async function loadAgentRunContext(
     customInstructions,
     linearTicketPolicy: automation.linearTicketPolicy,
     linearTicketInstructions: automation.linearTicketInstructions,
+    linearDefaultTeamId: automation.linearDefaultTeamId,
     prPolicy: automation.prPolicy,
     prBaseBranch: automation.prBaseBranch,
     autoMergeFixPrs: automation.autoMergeFixPrs,

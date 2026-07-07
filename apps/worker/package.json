@@ -41,6 +41,8 @@
     "test:merge-agent-run": "tsx --test src/merge-agent-run.test.ts",
     "test:incident-state": "tsx --test src/incident-state.test.ts",
     "test:managed-agent-result": "tsx --test src/managed-agent-result.test.ts",
+    "test:agent-outcome-tools": "tsx --test src/agent-outcome-tools.test.ts",
+    "test:linear-delivery": "tsx --test src/agent-runs/linear-delivery.test.ts",
     "test:github-app": "tsx --test src/github-app.test.ts",
     "test:autorecovery-repository": "tsx --test src/autorecovery/repository.integration.test.ts",
     "typecheck": "tsc --noEmit"

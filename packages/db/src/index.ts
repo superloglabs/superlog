@@ -229,11 +229,17 @@ export {
   revokeLinearToken,
   createLinearWebhook,
   deleteLinearWebhook,
+  listLinearTeams,
+  searchLinearIssues,
+  createLinearIssue,
+  createLinearComment,
 } from "./linear.js";
 export type {
   LinearTokenResponse,
   LinearViewer,
   LinearWebhook,
+  LinearTeam,
+  LinearIssueRef,
 } from "./linear.js";
 export {
   DEFAULT_LOOPS_WELCOME_EVENT,

@@ -5,6 +5,7 @@ import {
   mobileRegressionGateState,
   mobileRegressionGateTerminatedSummary,
   mobileRegressionRepairPrompt,
+  terminalOutcomeNudgePrompt,
   needsMobileRegressionRepair,
   steerIdleRunnerWithPendingContext,
 } from "./sync.js";
@@ -294,8 +295,24 @@ test("mobileRegressionGateTerminatedSummary explains terminal repair failures", 
 
 test("mobileRegressionRepairPrompt tells the agent exactly how to repair the result", () => {
   const prompt = mobileRegressionRepairPrompt();
-  assert.match(prompt, /mobileRegressionTest/);
+  assert.match(prompt, /mobileTestStatus/);
+  assert.match(prompt, /propose_pr/);
   assert.match(prompt, /revyl_validate_yaml/);
   assert.match(prompt, /revyl_create_test_from_yaml/);
-  assert.match(prompt, /Do not resubmit/);
+});
+
+test("terminalOutcomeNudgePrompt names every terminal outcome tool", () => {
+  const prompt = terminalOutcomeNudgePrompt();
+  for (const name of [
+    "propose_pr",
+    "silence_as_noise",
+    "place_under_observation",
+    "mark_already_resolved",
+    "complete_investigation",
+    "ask_human",
+    "report_failure",
+  ]) {
+    assert.ok(prompt.includes(name), `missing ${name}`);
+  }
+  assert.match(prompt, /exactly ONE/);
 });

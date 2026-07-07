@@ -116,11 +116,21 @@ export function mobileRegressionGateTerminatedSummary(
 
 export function mobileRegressionRepairPrompt(): string {
   return [
-    "Your previous result proposed a mobile PR while Revyl is enabled, but it did not include a `mobileRegressionTest` decision.",
-    "Do not resubmit the final result until you repair this omission.",
-    'If the fix can be covered by a reliable mobile user flow, author the Revyl YAML, call `revyl_validate_yaml`, then call `revyl_create_test_from_yaml`, and resubmit with `mobileRegressionTest.status="created"` plus the returned `testId`.',
-    'If it cannot be represented as a reliable mobile user flow, resubmit with `mobileRegressionTest.status="skipped"` and a concrete `reason`.',
-    'Use `mobileRegressionTest.status="not_applicable"` only for backend-only, noise-only, development-only, or non-mobile incidents, and include a concrete `reason`.',
+    "Your previous result proposed a mobile PR while Revyl is enabled, but it did not include a mobile regression test decision.",
+    "Repair this omission by calling `propose_pr` again with the same PR fields plus the missing mobile fields.",
+    'If the fix can be covered by a reliable mobile user flow, author the Revyl YAML, call `revyl_validate_yaml`, then call `revyl_create_test_from_yaml`, and call `propose_pr` again with `mobileTestStatus="created"` plus the returned test id as `mobileTestId`.',
+    'If it cannot be represented as a reliable mobile user flow, call `propose_pr` again with `mobileTestStatus="skipped"` and a concrete `mobileTestReason`.',
+    'Use `mobileTestStatus="not_applicable"` only for backend-only, noise-only, development-only, or non-mobile incidents, and include a concrete `mobileTestReason`.',
+  ].join("\n");
+}
+
+// Steered into a session that went idle without calling any terminal outcome
+// tool (e.g. the model wrote a chat message instead of a tool call). Fired at
+// most once per session; the runtime/wall-clock budgets stay the hard floor.
+export function terminalOutcomeNudgePrompt(): string {
+  return [
+    "You ended your turn without calling a terminal outcome tool, so your investigation has no recorded result.",
+    "Call `report_findings` now if you have findings to record, then end your turn by calling exactly ONE terminal outcome tool: `propose_pr`, `silence_as_noise`, `place_under_observation`, `mark_already_resolved`, `complete_investigation`, `ask_human`, or `report_failure`.",
   ].join("\n");
 }
 
@@ -470,6 +480,65 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
     });
     if (steered) {
       return;
+    }
+
+    // Idle with no result = the model never called a terminal outcome tool
+    // this turn. Nudge once per session; if it still won't conclude, the
+    // budget backstops above reap the run.
+    if (snapshot.status === "idle" && !snapshot.result) {
+      // Claim the marker BEFORE steering: concurrent sync passes would
+      // otherwise both read no-marker and double-steer. The partial unique
+      // index on (agent_run_id, provider_event_id) makes exactly one insert
+      // win. If the steer then fails, the one-shot nudge is spent — the
+      // wall-clock/runtime backstops still own the run.
+      const nudgeEventId = `terminal_nudge:${sessionId}`;
+      const claimed = await db
+        .insert(schema.incidentEvents)
+        .values({
+          agentRunId: ctx.agentRun.id,
+          kind: "terminal_nudge",
+          summary: "Nudged the agent to end its turn with a terminal outcome tool.",
+          providerEventId: nudgeEventId,
+          processedAt: new Date(),
+        })
+        .onConflictDoNothing()
+        .returning({ id: schema.incidentEvents.id });
+      const claimedRow = claimed[0];
+      if (claimedRow) {
+        // An ambiguous failure on a previous attempt (e.g. a timeout after
+        // the message was enqueued) released the claim even though the nudge
+        // landed. The delivered nudge is visible in the session's own event
+        // stream, so a retry can detect it and keep the claim without
+        // steering a duplicate.
+        const nudgeMarker = terminalOutcomeNudgePrompt().split("\n")[0] ?? "";
+        const nudgeAlreadyDelivered = snapshot.events.some(
+          (event) =>
+            event.type === "user.message" && !!event.summary && event.summary.includes(nudgeMarker),
+        );
+        if (!nudgeAlreadyDelivered) {
+          try {
+            await runner.steer(sessionId, terminalOutcomeNudgePrompt());
+          } catch (err) {
+            // Release the claim so a later tick can retry the nudge — a
+            // transient steer failure must not permanently spend the one-shot.
+            await db
+              .delete(schema.incidentEvents)
+              .where(eq(schema.incidentEvents.id, claimedRow.id))
+              .catch(() => undefined);
+            throw err;
+          }
+        }
+        logger.info(
+          {
+            agent_run_id: ctx.agentRun.id,
+            incident_id: ctx.incident.id,
+            provider_session_id: sessionId,
+            redelivery_skipped: nudgeAlreadyDelivered,
+          },
+          "steered idle agent to call a terminal outcome tool",
+        );
+        return;
+      }
     }
 
     if (snapshot.status === "terminated" && !snapshot.result) {

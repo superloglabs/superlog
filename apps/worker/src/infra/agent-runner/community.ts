@@ -27,7 +27,6 @@ export const communityRunnerBackend: AgentRunnerBackend = {
         state: "complete",
         summary: buildCommunitySummary(input.title, input.service, input.issueSummaries),
         pr: null,
-        linearTicket: null,
         estimatedImpact: null,
         rootCause: null,
         rootCauseConfidence: null,
