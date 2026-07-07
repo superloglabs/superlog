@@ -505,22 +505,35 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         .returning({ id: schema.incidentEvents.id });
       const claimedRow = claimed[0];
       if (claimedRow) {
-        try {
-          await runner.steer(sessionId, terminalOutcomeNudgePrompt());
-        } catch (err) {
-          // Release the claim so a later tick can retry the nudge — a
-          // transient steer failure must not permanently spend the one-shot.
-          await db
-            .delete(schema.incidentEvents)
-            .where(eq(schema.incidentEvents.id, claimedRow.id))
-            .catch(() => undefined);
-          throw err;
+        // An ambiguous failure on a previous attempt (e.g. a timeout after
+        // the message was enqueued) released the claim even though the nudge
+        // landed. The delivered nudge is visible in the session's own event
+        // stream, so a retry can detect it and keep the claim without
+        // steering a duplicate.
+        const nudgeMarker = terminalOutcomeNudgePrompt().split("\n")[0] ?? "";
+        const nudgeAlreadyDelivered = snapshot.events.some(
+          (event) =>
+            event.type === "user.message" && !!event.summary && event.summary.includes(nudgeMarker),
+        );
+        if (!nudgeAlreadyDelivered) {
+          try {
+            await runner.steer(sessionId, terminalOutcomeNudgePrompt());
+          } catch (err) {
+            // Release the claim so a later tick can retry the nudge — a
+            // transient steer failure must not permanently spend the one-shot.
+            await db
+              .delete(schema.incidentEvents)
+              .where(eq(schema.incidentEvents.id, claimedRow.id))
+              .catch(() => undefined);
+            throw err;
+          }
         }
         logger.info(
           {
             agent_run_id: ctx.agentRun.id,
             incident_id: ctx.incident.id,
             provider_session_id: sessionId,
+            redelivery_skipped: nudgeAlreadyDelivered,
           },
           "steered idle agent to call a terminal outcome tool",
         );
