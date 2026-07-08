@@ -17,7 +17,6 @@
 // split.
 
 import type {
-  AgentRunFailureReason,
   AgentRunMobileRegressionTest,
   AgentRunPr,
   AgentRunResult,
@@ -46,12 +45,16 @@ export const TERMINAL_OUTCOME_TOOL_NAMES = [
   "silence_as_noise",
   "place_under_observation",
   "mark_already_resolved",
-  "complete_investigation",
   "ask_human",
-  "report_failure",
 ] as const;
 
 export type TerminalOutcomeToolName = (typeof TERMINAL_OUTCOME_TOOL_NAMES)[number];
+
+// Terminal tools retired from the contract. Sessions created against the old
+// toolset can outlive a deploy (awaiting_human resumes days later), so a call
+// to one of these must be error-acked with redirect guidance — not routed to
+// the unknown-tool path, which hard-fails the run.
+export const RETIRED_OUTCOME_TOOL_NAMES = ["complete_investigation", "report_failure"] as const;
 
 export const OUTCOME_TOOL_NAMES = [
   REPORT_FINDINGS_TOOL_NAME,
@@ -74,15 +77,7 @@ const RESOLUTION_REASONS: IncidentResolutionReason[] = [
 
 const SEVERITIES: IncidentSeverity[] = ["SEV-1", "SEV-2", "SEV-3"];
 
-const DISPOSITIONS = [
-  "diagnosed_needs_code_change",
-  "diagnosed_external_cause",
-  "informational",
-] as const;
-
 const ESCALATE_ON = ["events_per_minute", "additional_events"] as const;
-
-const FAILURE_REASONS = ["no_findings", "patch_validation_failed"] as const;
 
 const MOBILE_TEST_STATUSES = ["created", "skipped", "not_applicable"] as const;
 
@@ -130,7 +125,7 @@ const REPORT_FINDINGS_DEFINITION: OutcomeToolDefinition = {
         minimum: 0,
         maximum: 10,
         description:
-          "0-10. 10 = every claim backed by a verbatim quote from a file read this session AND you observed/reproduced the failure; 7-9 = quote-backed, reproduction inferred; 4-6 = code path identified, mechanism is hypothesis; 1-3 = speculative; 0 = no evidence (prefer report_failure then).",
+          "0-10. 10 = every claim backed by a verbatim quote from a file read this session AND you observed/reproduced the failure; 7-9 = quote-backed, reproduction inferred; 4-6 = code path identified, mechanism is hypothesis; 1-3 = speculative; 0 = no evidence (prefer ask_human then).",
       },
       estimatedImpact: {
         type: "string",
@@ -322,39 +317,12 @@ const MARK_ALREADY_RESOLVED_DEFINITION: OutcomeToolDefinition = {
   },
 };
 
-export type CompleteInvestigationPayload = {
-  disposition: (typeof DISPOSITIONS)[number];
-  recommendedAction?: string;
-};
-
-const COMPLETE_INVESTIGATION_DEFINITION: OutcomeToolDefinition = {
-  name: "complete_investigation",
-  description:
-    "Terminal: you diagnosed the problem but the remediation is not yours to make — no patch, no noise verdict, no resolution claim. The incident stays open with your findings recorded for the humans who must act. Use this when the failing code lives outside the mounted repos (third-party library defect, external API contract), when the customer must act (raise a provider quota, change a region, update env/config), or when a human decision is needed between remediation paths. NEVER use report_failure for a diagnosis you actually made — that throws the diagnosis away.",
-  input_schema: {
-    type: "object",
-    properties: {
-      disposition: {
-        type: "string",
-        enum: DISPOSITIONS,
-        description:
-          "diagnosed_needs_code_change = a code fix is warranted but was not produced this run (policy or missing access). diagnosed_external_cause = the cause is outside the mounted repos and the customer/provider must act. informational = findings recorded, no action required.",
-      },
-      recommendedAction: {
-        type: "string",
-        description: "One sentence: the concrete next step a human should take.",
-      },
-    },
-    required: ["disposition"],
-  },
-};
-
 export type AskHumanPayload = { question: string };
 
 const ASK_HUMAN_DEFINITION: OutcomeToolDefinition = {
   name: "ask_human",
   description:
-    "Terminal: you need specific missing context to continue; the run pauses until a human replies, then resumes with your session intact. Ask for the specific thing you need (expected behavior, a suspected owner, a recent deploy, a repro hint) and include the best leads you checked. Wrong-repo escape hatch: if telemetry names a concrete code artifact (file path, function, exception class, endpoint) that is genuinely absent from every mounted repo at HEAD and across remote branches, use this tool — quote the missing artifact, name the repos you searched, and ask which repo owns the code. Do not use report_failure for that case: more repos exist than were mounted into this session.",
+    "Terminal: a human must act or answer before this investigation can conclude; the run pauses until they reply, then resumes with your session intact. This is the outcome whenever you cannot land on a patch, a noise verdict, or a resolution claim — an investigation never ends with findings merely filed away. Use it when: (1) you need specific missing context (expected behavior, a suspected owner, a recent deploy, a repro hint) — ask for the specific thing and include the best leads you checked; (2) you diagnosed the problem but the remediation is not yours to make (third-party library defect, provider quota, config the customer owns, or a decision needed between remediation paths) — state the diagnosis, then ask the concrete question whose answer unblocks action, naming the options if there are several; (3) you genuinely could not locate the failing code path — say what you searched and ask for the pointer you are missing; (4) telemetry names a concrete code artifact (file path, function, exception class, endpoint) absent from every mounted repo at HEAD and across remote branches — quote the missing artifact, name the repos you searched, and ask which repo owns the code (more repos exist than were mounted into this session). Never fabricate a question to avoid a harder outcome you have the evidence for.",
   input_schema: {
     type: "object",
     properties: {
@@ -367,35 +335,13 @@ const ASK_HUMAN_DEFINITION: OutcomeToolDefinition = {
   },
 };
 
-export type ReportFailurePayload = { reason: (typeof FAILURE_REASONS)[number]; detail: string };
-
-const REPORT_FAILURE_DEFINITION: OutcomeToolDefinition = {
-  name: "report_failure",
-  description:
-    "Terminal: the run itself failed. no_findings is RESERVED for 'I searched the application and genuinely cannot locate the failing code path' — NOT for 'I found the path but it lives in a third-party library or external system' (that is complete_investigation or silence_as_noise) and NOT for 'the artifact is missing from every mounted repo' (that is ask_human). Do not infer code structure from memory of similar codebases — an honest no_findings beats guessing. patch_validation_failed = you produced a patch but your own validation of it failed.",
-  input_schema: {
-    type: "object",
-    properties: {
-      reason: { type: "string", enum: FAILURE_REASONS, description: "Why the run failed." },
-      detail: {
-        type: "string",
-        description:
-          "For no_findings, start with 'Insufficient evidence:' and list the specific files/regions you searched and could not locate or read. For patch_validation_failed, what validation ran and how it failed.",
-      },
-    },
-    required: ["reason", "detail"],
-  },
-};
-
 export const OUTCOME_TOOL_DEFINITIONS: OutcomeToolDefinition[] = [
   REPORT_FINDINGS_DEFINITION,
   PROPOSE_PR_DEFINITION,
   SILENCE_AS_NOISE_DEFINITION,
   PLACE_UNDER_OBSERVATION_DEFINITION,
   MARK_ALREADY_RESOLVED_DEFINITION,
-  COMPLETE_INVESTIGATION_DEFINITION,
   ASK_HUMAN_DEFINITION,
-  REPORT_FAILURE_DEFINITION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -407,9 +353,7 @@ export type TerminalOutcome =
   | { name: "silence_as_noise"; payload: SilenceAsNoisePayload }
   | { name: "place_under_observation"; payload: PlaceUnderObservationPayload }
   | { name: "mark_already_resolved"; payload: MarkAlreadyResolvedPayload }
-  | { name: "complete_investigation"; payload: CompleteInvestigationPayload }
-  | { name: "ask_human"; payload: AskHumanPayload }
-  | { name: "report_failure"; payload: ReportFailurePayload };
+  | { name: "ask_human"; payload: AskHumanPayload };
 
 export type ValidateOutcome =
   | { ok: true; tool: "report_findings"; payload: AgentRunFindings }
@@ -423,7 +367,6 @@ const FINDINGS_REQUIRED = new Set<string>([
   "silence_as_noise",
   "place_under_observation",
   "mark_already_resolved",
-  "complete_investigation",
 ]);
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -499,6 +442,14 @@ export function validateOutcomeToolInput(
   rawInput: unknown,
   ctx: { hasFindings: boolean },
 ): ValidateOutcome {
+  if ((RETIRED_OUTCOME_TOOL_NAMES as readonly string[]).includes(name)) {
+    return {
+      ok: false,
+      errors: [
+        `\`${name}\` is no longer available. End the run with exactly one of: \`propose_pr\`, \`silence_as_noise\`, \`place_under_observation\`, \`mark_already_resolved\`, or \`ask_human\`. If the remediation is not yours to make, or you cannot locate the failing code path, call \`ask_human\` with your findings and the specific question that unblocks action.`,
+      ],
+    };
+  }
   if (!(OUTCOME_TOOL_NAMES as readonly string[]).includes(name)) {
     return { ok: false, errors: [`Unknown outcome tool \`${name}\`.`] };
   }
@@ -639,35 +590,10 @@ export function validateOutcomeToolInput(
       };
     }
 
-    case "complete_investigation": {
-      const disposition = requiredEnum(errors, input, "disposition", DISPOSITIONS);
-      const recommendedAction = optionalString(errors, input, "recommendedAction");
-      if (errors.length > 0) return { ok: false, errors };
-      const payload: CompleteInvestigationPayload = {
-        disposition: disposition as CompleteInvestigationPayload["disposition"],
-      };
-      if (recommendedAction) payload.recommendedAction = recommendedAction;
-      return { ok: true, tool: "complete_investigation", payload };
-    }
-
     case "ask_human": {
       const question = pushRequiredString(errors, input, "question");
       if (errors.length > 0) return { ok: false, errors };
       return { ok: true, tool: "ask_human", payload: { question: question as string } };
-    }
-
-    case "report_failure": {
-      const reason = requiredEnum(errors, input, "reason", FAILURE_REASONS);
-      const detail = pushRequiredString(errors, input, "detail");
-      if (errors.length > 0) return { ok: false, errors };
-      return {
-        ok: true,
-        tool: "report_failure",
-        payload: {
-          reason: reason as ReportFailurePayload["reason"],
-          detail: detail as string,
-        },
-      };
     }
 
     default:
@@ -738,19 +664,9 @@ export function assembleAgentRunResult(args: {
 }): AgentRunResult {
   const { findings, terminal } = args;
 
-  const fallbackSummary =
-    terminal.name === "ask_human"
-      ? terminal.payload.question
-      : terminal.name === "report_failure"
-        ? terminal.payload.detail
-        : "";
+  const fallbackSummary = terminal.name === "ask_human" ? terminal.payload.question : "";
   const result: AgentRunResult = {
-    state:
-      terminal.name === "ask_human"
-        ? "awaiting_human"
-        : terminal.name === "report_failure"
-          ? "failed"
-          : "complete",
+    state: terminal.name === "ask_human" ? "awaiting_human" : "complete",
     summary: findings?.summary ?? fallbackSummary,
   };
   if (findings) applyFindings(result, findings);
@@ -796,20 +712,8 @@ export function assembleAgentRunResult(args: {
         evidence: terminal.payload.evidence,
       };
       break;
-    case "complete_investigation":
-      result.disposition = terminal.payload.disposition;
-      if (terminal.payload.recommendedAction) {
-        result.recommendedAction = terminal.payload.recommendedAction;
-      }
-      break;
     case "ask_human":
       result.question = terminal.payload.question;
-      break;
-    case "report_failure":
-      result.failureReason =
-        terminal.payload.reason === "no_findings"
-          ? ("agent_no_findings" as AgentRunFailureReason)
-          : ("patch_validation_failed" as AgentRunFailureReason);
       break;
   }
 

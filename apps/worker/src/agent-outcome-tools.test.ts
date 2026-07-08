@@ -22,9 +22,9 @@ const FINDINGS: AgentRunFindings = {
   handoffNotes: "Checked the vendor API timeout config; it is not the cause.",
 };
 
-test("exposes all eight tools with API-safe schemas", () => {
-  assert.equal(OUTCOME_TOOL_NAMES.length, 8);
-  assert.equal(OUTCOME_TOOL_DEFINITIONS.length, 8);
+test("exposes all six tools with API-safe schemas", () => {
+  assert.equal(OUTCOME_TOOL_NAMES.length, 6);
+  assert.equal(OUTCOME_TOOL_DEFINITIONS.length, 6);
   for (const def of OUTCOME_TOOL_DEFINITIONS) {
     // Some runner APIs reject any top-level composition keyword
     // (allOf/oneOf/if...), which would block every run at agent-create time.
@@ -78,17 +78,25 @@ test("noise-outcome descriptions carry the per-reason evidentiary bars", () => {
   assert.ok(silence?.description.includes("Do NOT propose code changes"));
 });
 
-test("report_failure description reserves no_findings and redirects external causes", () => {
-  const def = OUTCOME_TOOL_DEFINITIONS.find((d) => d.name === "report_failure");
-  const text = def?.description ?? "";
-  assert.ok(text.includes("RESERVED"));
-  assert.ok(text.includes("complete_investigation"));
-  assert.ok(text.includes("ask_human"));
+test("marks exactly five tools terminal", () => {
+  assert.equal(TERMINAL_OUTCOME_TOOL_NAMES.length, 5);
+  assert.ok(!(TERMINAL_OUTCOME_TOOL_NAMES as readonly string[]).includes(REPORT_FINDINGS_TOOL_NAME));
 });
 
-test("marks exactly seven tools terminal", () => {
-  assert.equal(TERMINAL_OUTCOME_TOOL_NAMES.length, 7);
-  assert.ok(!(TERMINAL_OUTCOME_TOOL_NAMES as readonly string[]).includes(REPORT_FINDINGS_TOOL_NAME));
+// Sessions created against the old toolset can resume days later (e.g. from
+// awaiting_human) and still call a retired tool. The validator must reject
+// the call with redirect guidance so the model re-lands on a live outcome —
+// falling through to the unknown-tool path would hard-fail the run instead.
+test("rejects retired terminal tools with redirect guidance", () => {
+  for (const name of ["complete_investigation", "report_failure"]) {
+    const v = validateOutcomeToolInput(name, { disposition: "informational" }, { hasFindings: true });
+    assert.equal(v.ok, false, name);
+    if (!v.ok) {
+      const text = v.errors.join(" ");
+      assert.ok(text.includes("ask_human"), name);
+      assert.ok(text.includes("propose_pr"), name);
+    }
+  }
 });
 
 test("accepts a full report_findings payload", () => {
@@ -140,7 +148,6 @@ test("requires findings before complete-family terminals", () => {
   const cases: Array<[string, Record<string, unknown>]> = [
     ["silence_as_noise", { reason: "cosmetic_log_only", evidence: "e" }],
     ["mark_already_resolved", { reason: "upstream_recovered", evidence: "e" }],
-    ["complete_investigation", { disposition: "informational" }],
     [
       "place_under_observation",
       { reason: "cosmetic_log_only", evidence: "e", escalateOn: "additional_events", threshold: 10 },
@@ -166,17 +173,9 @@ test("requires findings before complete-family terminals", () => {
   }
 });
 
-test("allows ask_human and report_failure without findings", () => {
+test("allows ask_human without findings", () => {
   assert.equal(
     validateOutcomeToolInput("ask_human", { question: "which repo owns api-gw?" }, { hasFindings: false }).ok,
-    true,
-  );
-  assert.equal(
-    validateOutcomeToolInput(
-      "report_failure",
-      { reason: "no_findings", detail: "Insufficient evidence: searched services/*" },
-      { hasFindings: false },
-    ).ok,
     true,
   );
 });
@@ -364,15 +363,17 @@ test("assembles propose_pr into an AgentRunPr with pending openStatus", () => {
 test("derives the legacy rootCauseConfidence bucket from the numeric confidence", () => {
   const result = assembleAgentRunResult({
     findings: FINDINGS,
-    terminal: { name: "complete_investigation", payload: { disposition: "diagnosed_external_cause" } },
+    terminal: {
+      name: "mark_already_resolved",
+      payload: { reason: "transient_condition_cleared", evidence: "e" },
+    },
   });
   assert.deepEqual(result.rootCause, { text: FINDINGS.rootCause, confidence: 9 });
   assert.equal(result.rootCauseConfidence, "high");
   assert.deepEqual(result.estimatedImpact, { text: FINDINGS.estimatedImpact, confidence: 7 });
-  assert.equal(result.disposition, "diagnosed_external_cause");
 });
 
-test("falls back to the question/detail as summary when findings are absent", () => {
+test("falls back to the question as summary when findings are absent", () => {
   const ask = assembleAgentRunResult({
     findings: null,
     terminal: { name: "ask_human", payload: { question: "Which repo owns api-gw?" } },
@@ -380,27 +381,4 @@ test("falls back to the question/detail as summary when findings are absent", ()
   assert.equal(ask.state, "awaiting_human");
   assert.equal(ask.question, "Which repo owns api-gw?");
   assert.equal(ask.summary, "Which repo owns api-gw?");
-
-  const fail = assembleAgentRunResult({
-    findings: null,
-    terminal: {
-      name: "report_failure",
-      payload: { reason: "no_findings", detail: "Insufficient evidence: searched services/*" },
-    },
-  });
-  assert.equal(fail.state, "failed");
-  assert.equal(fail.failureReason, "agent_no_findings");
-  assert.ok(fail.summary.includes("Insufficient evidence"));
-});
-
-test("maps patch_validation_failed reason through verbatim", () => {
-  const fail = assembleAgentRunResult({
-    findings: FINDINGS,
-    terminal: {
-      name: "report_failure",
-      payload: { reason: "patch_validation_failed", detail: "repro still fails after patch" },
-    },
-  });
-  assert.equal(fail.failureReason, "patch_validation_failed");
-  assert.equal(fail.summary, FINDINGS.summary);
 });

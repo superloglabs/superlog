@@ -331,9 +331,7 @@ test("terminalOutcomeNudgePrompt names every terminal outcome tool", () => {
     "silence_as_noise",
     "place_under_observation",
     "mark_already_resolved",
-    "complete_investigation",
     "ask_human",
-    "report_failure",
   ]) {
     assert.ok(prompt.includes(name), `missing ${name}`);
   }

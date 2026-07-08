@@ -197,14 +197,13 @@ test("skips delivery when the workspace has no teams", async () => {
   assert.equal(deps.calls.createIssue.length, 0);
 });
 
-test("ticket description includes PR link and recommended action when present", () => {
+test("ticket description includes PR link when present", () => {
   const desc = ticketDescription(
     { incidentId: "inc-1", incidentTitle: "t" },
-    { ...RESULT, recommendedAction: "Raise the provider quota." },
+    RESULT,
     "https://github.com/acme/shop/pull/12",
   );
   assert.ok(desc.includes("Proposed fix: https://github.com/acme/shop/pull/12"));
-  assert.ok(desc.includes("## Recommended action"));
   assert.ok(desc.includes(incidentMarker("inc-1")));
 });
 

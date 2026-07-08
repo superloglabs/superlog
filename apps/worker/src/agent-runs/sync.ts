@@ -172,7 +172,7 @@ export function shouldDeferSteering(snapshot: {
 export function terminalOutcomeNudgePrompt(): string {
   return [
     "You ended your turn without calling a terminal outcome tool, so your investigation has no recorded result.",
-    "Call `report_findings` now if you have findings to record, then end your turn by calling exactly ONE terminal outcome tool: `propose_pr`, `silence_as_noise`, `place_under_observation`, `mark_already_resolved`, `complete_investigation`, `ask_human`, or `report_failure`.",
+    "Call `report_findings` now if you have findings to record, then end your turn by calling exactly ONE terminal outcome tool: `propose_pr`, `silence_as_noise`, `place_under_observation`, `mark_already_resolved`, or `ask_human`.",
   ].join("\n");
 }
 

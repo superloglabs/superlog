@@ -54,9 +54,6 @@ export function ticketDescription(
     lines.push("", "## Impact", result.estimatedImpact.text);
   }
   if (result.severity) lines.push("", `Severity: ${result.severity}`);
-  if (result.recommendedAction) {
-    lines.push("", "## Recommended action", result.recommendedAction);
-  }
   if (prUrl) lines.push("", `Proposed fix: ${prUrl}`);
   lines.push("", `[Incident on Superlog](${WEB_ORIGIN}/incidents/${args.incidentId})`);
   lines.push("", incidentMarker(args.incidentId));

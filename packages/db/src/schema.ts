@@ -258,12 +258,6 @@ export type AgentRunResult = {
   mobileRegressionTest?: AgentRunMobileRegressionTest | null;
   noiseClassification?: IncidentNoiseClassification | null;
   resolutionClassification?: IncidentResolutionClassification | null;
-  // How a findings-only completion left the incident: a code change is still
-  // warranted, the cause is external to the mounted repos, or purely
-  // informational. Set by runs that conclude without a PR or classification.
-  disposition?: "diagnosed_needs_code_change" | "diagnosed_external_cause" | "informational" | null;
-  // One-sentence next step for a human, paired with `disposition`.
-  recommendedAction?: string | null;
 };
 
 export const orgs = pgTable("orgs", {
