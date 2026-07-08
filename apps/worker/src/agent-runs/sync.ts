@@ -1,5 +1,6 @@
 import { type AgentRunResult, db, schema } from "@superlog/db";
 import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { TERMINAL_NUDGE_MARKER } from "../agent-outcome-tools.js";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import { type AgentRunOutcome, recordAgentRunCompletion } from "../ai-usage.js";
@@ -156,7 +157,7 @@ export function mobileRegressionRepairPrompt(): string {
 // most once per session; the runtime/wall-clock budgets stay the hard floor.
 export function terminalOutcomeNudgePrompt(): string {
   return [
-    "You ended your turn without calling a terminal outcome tool, so your investigation has no recorded result.",
+    `${TERMINAL_NUDGE_MARKER}, so your investigation has no recorded result.`,
     "Call `report_findings` now if you have findings to record, then end your turn by calling exactly ONE terminal outcome tool: `propose_pr`, `silence_as_noise`, `place_under_observation`, `mark_already_resolved`, `complete_investigation`, `ask_human`, or `report_failure`.",
   ].join("\n");
 }
