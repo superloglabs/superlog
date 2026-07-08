@@ -125,8 +125,10 @@ const deps: AgentChatWorkflowDeps = {
 };
 
 // How long another dispatcher's unposted claim is trusted before we assume
-// it crashed mid-post and take the reply over. Long enough for a slow Slack
-// round-trip, short enough that a wedged reply recovers within a few ticks.
+// it crashed mid-post and take the reply over. Safe because the chat post
+// itself is aborted at CHAT_POST_TIMEOUT_MS (chat-messages.ts), far below
+// this window — by the time a claim looks stale, no original post can still
+// be in flight, so the takeover can't race a slow post into a duplicate.
 const OUTBOUND_CLAIM_TAKEOVER_MS = 2 * 60 * 1000;
 
 // Deliver one reply at most once across concurrent dispatchers and provider

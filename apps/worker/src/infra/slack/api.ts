@@ -35,6 +35,10 @@ export async function postSlackMessage(opts: {
   text: string;
   blocks?: unknown[];
   threadTs?: string | null;
+  // Bounds the whole request. Callers whose retry logic assumes a post can't
+  // still be in flight after some window (the chat reply claim takeover)
+  // MUST set this well below that window; fetch has no default timeout.
+  timeoutMs?: number;
 }): Promise<SlackPostMessageResponse | null> {
   try {
     const res = await fetch("https://slack.com/api/chat.postMessage", {
@@ -49,6 +53,7 @@ export async function postSlackMessage(opts: {
         text: opts.text,
         ...(opts.blocks ? { blocks: opts.blocks } : {}),
       }),
+      ...(opts.timeoutMs ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
     });
     const data = (await res.json()) as SlackPostMessageResponse;
     if (!data.ok && data.error && REVOKE_ERRORS.has(data.error)) {

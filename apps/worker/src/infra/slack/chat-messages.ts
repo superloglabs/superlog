@@ -8,6 +8,11 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { ChatDeliveryUnavailableError } from "../../agent-chats/workflow.js";
 import { type SlackTarget, postSlackMessage } from "./api.js";
 
+// The reply-claim takeover (agent-chats/tick.ts) assumes no post can still
+// be in flight once a claim is old enough to steal; this bound is what makes
+// that true, so keep it far below OUTBOUND_CLAIM_TAKEOVER_MS.
+const CHAT_POST_TIMEOUT_MS = 30 * 1000;
+
 // Returns the posted message's ts (callers use it as the durable
 // proof-of-delivery marker).
 export async function postAgentChatMessage(chat: AgentChat, text: string): Promise<string> {
@@ -21,11 +26,17 @@ export async function postAgentChatMessage(chat: AgentChat, text: string): Promi
     target,
     text,
     threadTs: chat.slackThreadTs,
+    timeoutMs: CHAT_POST_TIMEOUT_MS,
   });
   if (!res?.ok) {
     throw new Error(`slack chat post failed: ${res?.error ?? "network_error"}`);
   }
-  return res.ts ?? "posted";
+  if (!res.ts) {
+    // chat.postMessage returns ts on success; a missing one would corrupt
+    // the proof-of-delivery marker with a non-timestamp value.
+    throw new Error("slack chat post succeeded without a message ts");
+  }
+  return res.ts;
 }
 
 async function resolveChatSlackTarget(chat: AgentChat): Promise<SlackTarget | null> {
