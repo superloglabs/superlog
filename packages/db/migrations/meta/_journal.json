@@ -603,6 +603,13 @@
       "when": 1783437015070,
       "tag": "0085_numerous_warlock",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1783497473032,
+      "tag": "0086_shocking_owl",
+      "breakpoints": true
     }
   ]
 }

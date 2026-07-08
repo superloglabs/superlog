@@ -231,6 +231,13 @@ export type AgentRunTriggerDetail = {
   interactions: AgentRunFollowUpInteraction[];
 };
 
+// Lifecycle of a Slack Q&A chat (one row per Slack thread / DM channel).
+// queued: an unanswered inbound message is waiting for the worker (covers
+// both "no session yet" and "idle session to resume"). running: the session
+// is working a turn. idle: answered, waiting for the next human message.
+// failed: the last turn failed; a new inbound message re-queues it.
+export type AgentChatState = "queued" | "running" | "idle" | "failed";
+
 export type AgentRunResult = {
   state: "complete" | "awaiting_human" | "failed";
   summary: string;
@@ -814,6 +821,10 @@ export const projectAutomationSettings = pgTable(
     // replies after a prior run completed (feedback-triggered follow-ups
     // are always confirm-gated regardless).
     autoFollowUpEnabled: boolean("auto_follow_up_enabled").notNull().default(true),
+    // Gate for Slack Q&A chats (@-mentions / DMs). Independent of
+    // agentRunEnabled: a project can allow questions without allowing
+    // auto-investigations, and vice versa.
+    chatEnabled: boolean("chat_enabled").notNull().default(true),
     linearTicketPolicy: text("linear_ticket_policy")
       .$type<"never" | "on_ready_to_pr" | "always">()
       .notNull()
@@ -965,6 +976,94 @@ export const incidentEvents = pgTable(
       "incident_events_parentage_check",
       sql`agent_run_id IS NOT NULL OR incident_id IS NOT NULL`,
     ),
+  }),
+);
+
+// A Slack Q&A conversation with the agent, started by mentioning the bot in a
+// channel (or messaging it in a DM) — deliberately NOT an incident and NOT an
+// agent_run: the investigation pipeline (PR delivery, noise verdicts, incident
+// anchoring) is incident-shaped end to end, while a chat is just a durable
+// provider session that answers questions about the project's code and
+// telemetry. One row per conversation; the (channel, thread) anchor is how
+// inbound Slack events find it, mirroring incidents_slack_thread_idx.
+export const agentChats = pgTable(
+  "agent_chats",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    // Pinned at creation so replies keep working when the project's Slack
+    // route changes later; nulled if the installation row is deleted (the
+    // team-wide fallback lookup still works via slackTeamId).
+    slackInstallationId: uuid("slack_installation_id").references(
+      (): AnyPgColumn => slackInstallations.id,
+      { onDelete: "set null" },
+    ),
+    slackTeamId: text("slack_team_id").notNull(),
+    slackChannelId: text("slack_channel_id").notNull(),
+    // Thread anchor. NULL for DM chats: a DM channel is one continuous
+    // conversation with no thread anchoring, so the channel id alone is the
+    // key and replies post to the channel root.
+    slackThreadTs: text("slack_thread_ts"),
+    createdBySlackUserId: text("created_by_slack_user_id"),
+    // First question, truncated — display/debug label only.
+    title: text("title"),
+    runtime: text("runtime").notNull().default(DEFAULT_AGENT_RUN_PROVIDER),
+    state: text("state").$type<AgentChatState>().notNull().default("queued"),
+    providerSessionId: text("provider_session_id"),
+    providerSessionStatus: text("provider_session_status"),
+    failureReason: text("failure_reason"),
+    // Sum of the provider session's active seconds, folded in per sync.
+    // Chats have no per-project runtime setting; the worker enforces a
+    // constant cap so one thread can't burn unbounded compute.
+    cumulativeActiveSeconds: integer("cumulative_active_seconds").notNull().default(0),
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    // Channel-thread lookup for inbound events. Postgres unique indexes treat
+    // NULLs as distinct, so DM chats (NULL thread) get their own per-channel
+    // partial index instead of relying on the composite one.
+    threadUniq: uniqueIndex("agent_chats_thread_idx")
+      .on(t.slackChannelId, t.slackThreadTs)
+      .where(sql`slack_thread_ts IS NOT NULL`),
+    dmChannelUniq: uniqueIndex("agent_chats_dm_channel_idx")
+      .on(t.slackChannelId)
+      .where(sql`slack_thread_ts IS NULL`),
+    providerSessionUniq: uniqueIndex("agent_chats_provider_session_idx").on(t.providerSessionId),
+    // The worker tick scans active chats oldest-updated first.
+    stateIdx: index("agent_chats_state_idx").on(t.state, t.updatedAt),
+  }),
+);
+
+// Inbound queue for a chat: one row per human Slack message, deduped on the
+// Slack event/message id so Events API retries (and the app_mention +
+// message double delivery for one mention) can't double-feed the session.
+// `processedAt` is stamped when the worker delivers the text into the
+// provider session (resume/steer) — the same pending-marker pattern as
+// incident_events.human_reply.
+export const agentChatMessages = pgTable(
+  "agent_chat_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    chatId: uuid("chat_id")
+      .notNull()
+      .references(() => agentChats.id, { onDelete: "cascade" }),
+    authorSlackUserId: text("author_slack_user_id"),
+    text: text("text").notNull(),
+    slackMessageTs: text("slack_message_ts"),
+    dedupeKey: text("dedupe_key").notNull(),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    dedupeUniq: uniqueIndex("agent_chat_messages_dedupe_idx").on(t.chatId, t.dedupeKey),
+    pendingIdx: index("agent_chat_messages_pending_idx")
+      .on(t.chatId, t.createdAt)
+      .where(sql`processed_at IS NULL`),
   }),
 );
 
@@ -1431,9 +1530,17 @@ export const slackInstallations = pgTable(
     // at query time rather than stamping every legacy row with the same
     // migration timestamp. Every write below sets it explicitly.
     installedAt: timestamp("installed_at", { withTimezone: true }),
+    // When a workspace is connected to several Superlog projects, a bot
+    // mention outside any project's routed channel is ambiguous. This flags
+    // the one project that answers those; the partial unique index enforces
+    // at most one default per workspace.
+    isDefaultChatProject: boolean("is_default_chat_project").notNull().default(false),
   },
   (t) => ({
     projectTeamUniq: uniqueIndex("slack_installations_project_team_idx").on(t.projectId, t.teamId),
+    defaultChatProjectUniq: uniqueIndex("slack_installations_default_chat_idx")
+      .on(t.teamId)
+      .where(sql`is_default_chat_project`),
   }),
 );
 
@@ -2360,6 +2467,8 @@ export type IncidentIssue = typeof incidentIssues.$inferSelect;
 export type IncidentResolutionProposal = typeof incidentResolutionProposals.$inferSelect;
 export type ProjectAutomationSetting = typeof projectAutomationSettings.$inferSelect;
 export type AgentRun = typeof agentRuns.$inferSelect;
+export type AgentChat = typeof agentChats.$inferSelect;
+export type AgentChatMessage = typeof agentChatMessages.$inferSelect;
 export type IncidentEvent = typeof incidentEvents.$inferSelect;
 export type CliSession = typeof cliSessions.$inferSelect;
 export type McpOauthClient = typeof mcpOauthClients.$inferSelect;
