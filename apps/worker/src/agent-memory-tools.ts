@@ -120,6 +120,21 @@ export async function resolveAgentMemoryToolContext(args: {
   return { orgId: args.orgId, projectId: incident.projectId, agentRunId: run?.id ?? null };
 }
 
+// Chat sessions are project-scoped directly (no incident). Same tenant guard:
+// null when the project does not belong to args.orgId, so a mismatched
+// dispatch can never persist a memory that mixes tenants.
+export async function resolveChatAgentMemoryToolContext(args: {
+  orgId: string;
+  projectId: string;
+}): Promise<AgentMemoryToolContext | null> {
+  const project = await db.query.projects.findFirst({
+    where: and(eq(schema.projects.id, args.projectId), eq(schema.projects.orgId, args.orgId)),
+    columns: { id: true },
+  });
+  if (!project) return null;
+  return { orgId: args.orgId, projectId: args.projectId, agentRunId: null };
+}
+
 export type AgentMemoryToolDeps = {
   insertMemory(values: NewAgentMemory): Promise<{ id: string }>;
   // Scoped by project (not just org) so a run can only touch the memories of
