@@ -2366,6 +2366,14 @@ function ExploreSignalDetailDrawerSkeleton({
   source: TelemetrySource;
   onClose: () => void;
 }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
     <div className="fixed inset-0 z-50">
       <button
@@ -2375,6 +2383,14 @@ function ExploreSignalDetailDrawerSkeleton({
         onClick={onClose}
       />
       <aside className="absolute inset-y-0 right-0 flex w-full max-w-[720px] flex-col border-l border-border bg-bg shadow-2xl">
+        <button
+          type="button"
+          onClick={onClose}
+          title="close (esc)"
+          className="absolute right-4 top-4 z-10 rounded-sm border border-border bg-bg px-2 py-1 font-mono text-[11px] text-muted hover:text-fg"
+        >
+          ✕
+        </button>
         <div className="flex-1 overflow-y-auto">
           <ExploreSignalDetailSkeleton source={source} />
         </div>
