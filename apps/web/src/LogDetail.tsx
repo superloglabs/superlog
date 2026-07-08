@@ -34,7 +34,7 @@ export function LogDrawer({
   if (!log) return null;
 
   return (
-    <div className="absolute inset-0">
+    <div className="fixed inset-0 z-50">
       <button
         type="button"
         aria-label="close"
