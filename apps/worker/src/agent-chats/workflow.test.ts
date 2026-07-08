@@ -139,7 +139,12 @@ function makeHarness(opts: {
     },
     async listRepoCandidates() {
       return [
-        { fullName: "acme/app", cloneUrl: "https://github.com/acme/app", installationToken: "t", score: 0 },
+        {
+          fullName: "acme/app",
+          cloneUrl: "https://github.com/acme/app",
+          installationToken: "t",
+          score: 0,
+        },
       ];
     },
     mcpResource: "https://api.example.com/mcp",

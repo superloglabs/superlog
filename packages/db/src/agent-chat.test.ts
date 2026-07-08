@@ -28,7 +28,10 @@ test("mentionsBot is false for a null bot user id", () => {
 });
 
 test("stripBotMention removes the bot token and tidies whitespace", () => {
-  assert.equal(stripBotMention("<@U0BOT> what broke last night?", "U0BOT"), "what broke last night?");
+  assert.equal(
+    stripBotMention("<@U0BOT> what broke last night?", "U0BOT"),
+    "what broke last night?",
+  );
   assert.equal(stripBotMention("hey <@U0BOT|superlog>   what's up", "U0BOT"), "hey what's up");
 });
 

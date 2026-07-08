@@ -83,8 +83,7 @@ function preferFlaggedThenRecent(rows: ChatInstallationCandidate[]): ChatInstall
     ? rows.filter((r) => r.isDefaultChatProject)
     : rows;
   const sorted = [...pool].sort(
-    (a, b) =>
-      (b.installedAt ?? b.createdAt).getTime() - (a.installedAt ?? a.createdAt).getTime(),
+    (a, b) => (b.installedAt ?? b.createdAt).getTime() - (a.installedAt ?? a.createdAt).getTime(),
   );
   const winner = sorted[0];
   if (!winner) throw new Error("preferFlaggedThenRecent called with no rows");
@@ -226,7 +225,10 @@ export async function recordInboundChatMessage(
       .update(schema.agentChats)
       .set({ state: "queued", failureReason: null, updatedAt: now })
       .where(
-        and(eq(schema.agentChats.id, chat.id), inArray(schema.agentChats.state, ["idle", "failed"])),
+        and(
+          eq(schema.agentChats.id, chat.id),
+          inArray(schema.agentChats.state, ["idle", "failed"]),
+        ),
       );
   } else {
     await db
