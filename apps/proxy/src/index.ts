@@ -12,7 +12,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { createIngestEntitlementGate, signalForPath } from "./billing/ingest-entitlement.js";
-import { EmptyBodyError, PayloadTooLargeError } from "./body-capture.js";
+import { EmptyBodyError, PayloadTooLargeError, isExpectedBodyError } from "./body-capture.js";
 import { EMPTY_BODY_ERROR_MESSAGE, isDeclaredEmptyBody } from "./empty-body-guard.js";
 import {
   FIREHOSE_ACCESS_KEY_HEADER,
@@ -567,8 +567,17 @@ async function forward(
               queueSpan.setAttribute("ingest.queue.storage", r.storage);
               return r;
             } catch (err) {
-              queueSpan.recordException(err as Error);
-              queueSpan.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+              // Expected 4xx rejections (empty / oversized body) are handled
+              // by handleIngestBodyError below; marking this span ERROR for
+              // them creates false-positive incidents for requests the proxy
+              // rejected as designed.
+              if (!isExpectedBodyError(err)) {
+                queueSpan.recordException(err as Error);
+                queueSpan.setStatus({
+                  code: SpanStatusCode.ERROR,
+                  message: (err as Error).message,
+                });
+              }
               throw err;
             } finally {
               queueSpan.end();

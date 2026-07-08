@@ -58,6 +58,14 @@ export class EmptyBodyError extends Error {
   }
 }
 
+// The two rejections above are expected client errors: handleIngestBodyError
+// maps them to 413/400 and the request lifecycle completes normally. Spans
+// that see them must not record an exception or set ERROR status — an ERROR
+// span for an operation working as designed creates false-positive incidents.
+export function isExpectedBodyError(err: unknown): boolean {
+  return err instanceof PayloadTooLargeError || err instanceof EmptyBodyError;
+}
+
 export async function captureBody(
   source: AsyncIterable<Uint8Array>,
   opts: CaptureOptions,
