@@ -7,7 +7,7 @@ import {
   markChatMessagesProcessed,
   schema,
 } from "@superlog/db";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { listActiveAgentMemories } from "../agent-memory-tools.js";
 import { listAccessibleGithubRepositories } from "../agent-run-context.js";
 import type { AgentRunnerRepoCandidate } from "../agent-runner-backend.js";
@@ -105,37 +105,7 @@ const deps: AgentChatWorkflowDeps = {
       await postAgentChatMessage(chat, text);
       return;
     }
-    // Idempotency across dispatch retries: a reply that posted but whose
-    // provider ack failed is re-dispatched with the same id. Claim a marker
-    // row first (unique on chatId+dedupeKey); a conflict means an earlier
-    // pass already posted this reply, so just let the caller re-ack. The
-    // claim is released on post failure so a transient Slack error retries
-    // instead of silently dropping the reply. processedAt is pre-set so the
-    // marker never surfaces as a pending inbound message.
-    const [claim] = await db
-      .insert(schema.agentChatMessages)
-      .values({
-        chatId: chat.id,
-        authorSlackUserId: null,
-        text,
-        slackMessageTs: null,
-        dedupeKey: `outbound:${dedupeId}`,
-        processedAt: new Date(),
-      })
-      .onConflictDoNothing({
-        target: [schema.agentChatMessages.chatId, schema.agentChatMessages.dedupeKey],
-      })
-      .returning({ id: schema.agentChatMessages.id });
-    if (!claim) return;
-    try {
-      await postAgentChatMessage(chat, text);
-    } catch (err) {
-      await db
-        .delete(schema.agentChatMessages)
-        .where(eq(schema.agentChatMessages.id, claim.id))
-        .catch(() => {});
-      throw err;
-    }
+    await postReplyExactlyOnce(chat, text, dedupeId, 0);
   },
   async meterTurn(chat, snapshot) {
     const project = await db.query.projects.findFirst({
@@ -152,6 +122,90 @@ const deps: AgentChatWorkflowDeps = {
     });
   },
 };
+
+// How long another dispatcher's unposted claim is trusted before we assume
+// it crashed mid-post and take the reply over. Long enough for a slow Slack
+// round-trip, short enough that a wedged reply recovers within a few ticks.
+const OUTBOUND_CLAIM_TAKEOVER_MS = 2 * 60 * 1000;
+
+// Deliver one reply at most once across concurrent dispatchers and provider
+// ack retries. The claim row (unique on chatId + `outbound:<replyId>`) has
+// two states: in-flight (slackMessageTs NULL) and posted (slackMessageTs
+// set after the Slack call succeeds). Returning normally means "safe to ack
+// the provider tool call"; a conflict with an in-flight claim throws instead,
+// because delivery by the other worker is not yet KNOWN to have happened —
+// acking there could silently lose the reply if that worker's post fails.
+// Stale in-flight claims (crash between post and marker write, or before the
+// post) are taken over after a timeout, so a wedged reply retries rather
+// than blocking the session forever. processedAt is pre-set so outbound
+// markers never surface as pending inbound messages.
+async function postReplyExactlyOnce(
+  chat: schema.AgentChat,
+  text: string,
+  replyId: string,
+  attempt: number,
+): Promise<void> {
+  const dedupeKey = `outbound:${replyId}`;
+  const [claim] = await db
+    .insert(schema.agentChatMessages)
+    .values({
+      chatId: chat.id,
+      authorSlackUserId: null,
+      text,
+      slackMessageTs: null,
+      dedupeKey,
+      processedAt: new Date(),
+    })
+    .onConflictDoNothing({
+      target: [schema.agentChatMessages.chatId, schema.agentChatMessages.dedupeKey],
+    })
+    .returning({ id: schema.agentChatMessages.id });
+
+  if (!claim) {
+    const existing = await db.query.agentChatMessages.findFirst({
+      where: and(
+        eq(schema.agentChatMessages.chatId, chat.id),
+        eq(schema.agentChatMessages.dedupeKey, dedupeKey),
+      ),
+    });
+    // Posted by an earlier pass or another worker — done, safe to ack.
+    if (existing?.slackMessageTs) return;
+    if (existing && Date.now() - existing.createdAt.getTime() < OUTBOUND_CLAIM_TAKEOVER_MS) {
+      throw new Error("chat reply delivery in flight by another dispatcher; retrying next tick");
+    }
+    if (existing) {
+      // Stale in-flight claim: the owner crashed. Release it (guarded on
+      // still-unposted so a racing completion wins) and retry the claim.
+      await db
+        .delete(schema.agentChatMessages)
+        .where(
+          and(
+            eq(schema.agentChatMessages.id, existing.id),
+            isNull(schema.agentChatMessages.slackMessageTs),
+          ),
+        );
+    }
+    if (attempt >= 2) {
+      throw new Error("chat reply claim contention; retrying next tick");
+    }
+    return postReplyExactlyOnce(chat, text, replyId, attempt + 1);
+  }
+
+  let postedTs: string;
+  try {
+    postedTs = await postAgentChatMessage(chat, text);
+  } catch (err) {
+    await db
+      .delete(schema.agentChatMessages)
+      .where(eq(schema.agentChatMessages.id, claim.id))
+      .catch(() => {});
+    throw err;
+  }
+  await db
+    .update(schema.agentChatMessages)
+    .set({ slackMessageTs: postedTs })
+    .where(eq(schema.agentChatMessages.id, claim.id));
+}
 
 export async function tickAgentChats(): Promise<number> {
   return tracer.startActiveSpan("agent_chats.tick", async (span) => {

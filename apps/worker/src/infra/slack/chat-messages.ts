@@ -6,9 +6,11 @@
 import { type AgentChat, db, schema } from "@superlog/db";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { ChatDeliveryUnavailableError } from "../../agent-chats/workflow.js";
-import { postSlackMessage, type SlackTarget } from "./api.js";
+import { type SlackTarget, postSlackMessage } from "./api.js";
 
-export async function postAgentChatMessage(chat: AgentChat, text: string): Promise<void> {
+// Returns the posted message's ts (callers use it as the durable
+// proof-of-delivery marker).
+export async function postAgentChatMessage(chat: AgentChat, text: string): Promise<string> {
   const target = await resolveChatSlackTarget(chat);
   if (!target) {
     throw new ChatDeliveryUnavailableError(
@@ -23,6 +25,7 @@ export async function postAgentChatMessage(chat: AgentChat, text: string): Promi
   if (!res?.ok) {
     throw new Error(`slack chat post failed: ${res?.error ?? "network_error"}`);
   }
+  return res.ts ?? "posted";
 }
 
 async function resolveChatSlackTarget(chat: AgentChat): Promise<SlackTarget | null> {
