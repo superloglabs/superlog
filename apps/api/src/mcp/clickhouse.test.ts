@@ -486,7 +486,10 @@ function fakeClickhouseMetricNamesRollup(
   capture: { query?: string; params?: Record<string, unknown> },
   rollupExists = true,
   windowCovered = true,
-  rows: { kind: string; name: string; unit: string; c: number }[] = [],
+  // Mirrors the real ClickHouse response: the rollup query aliases `sum(c) AS
+  // total`, so rows come back keyed by `total`, which is what
+  // listMetricNamesFromRollup sorts on within a kind.
+  rows: { kind: string; name: string; unit: string; total: number }[] = [],
 ) {
   return {
     async query(input: { query: string; query_params?: Record<string, unknown> }) {
@@ -519,10 +522,15 @@ test("listMetricNames reads the metric_names_per_hour rollup instead of scanning
   const capture: { query?: string; params?: Record<string, unknown> } = {};
 
   const names = await listMetricNames(
+    // Two "sum" names with differing totals so the within-kind frequency sort
+    // (Number(b.total) - Number(a.total)) is actually exercised, not just the
+    // primary kind ordering. ClickHouse can return them in any order, so seed
+    // them low-then-high to prove the sort flips them.
     fakeClickhouseMetricNamesRollup(capture, true, true, [
-      { kind: "sum", name: "http.requests", unit: "1", c: 500 },
-      { kind: "gauge", name: "process.memory", unit: "By", c: 100 },
-      { kind: "bogus", name: "ignored", unit: "", c: 1 },
+      { kind: "sum", name: "http.retries", unit: "1", total: 12 },
+      { kind: "sum", name: "http.requests", unit: "1", total: 500 },
+      { kind: "gauge", name: "process.memory", unit: "By", total: 100 },
+      { kind: "bogus", name: "ignored", unit: "", total: 1 },
     ]),
     "project-1",
     { since: "now() - INTERVAL 24 HOUR", until: "now()" },
@@ -534,10 +542,12 @@ test("listMetricNames reads the metric_names_per_hour rollup instead of scanning
   assert.match(capture.query ?? "", /hour >= toStartOfHour\(/);
   assert.doesNotMatch(capture.query ?? "", /FROM otel_metrics/);
   assert.equal(capture.params?.projectId, "project-1");
-  // rows come back in METRIC_TABLES kind order; unknown kinds are dropped
+  // Rows come back in METRIC_TABLES kind order; within a kind, most frequent
+  // first (http.requests before http.retries); unknown kinds are dropped.
   assert.deepEqual(names, [
     { name: "process.memory", kind: "gauge", unit: "By" },
     { name: "http.requests", kind: "sum", unit: "1" },
+    { name: "http.retries", kind: "sum", unit: "1" },
   ]);
 });
 
