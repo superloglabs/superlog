@@ -447,12 +447,15 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
 
       if (snapshot.result.state === "complete") {
         const pr = snapshot.result.pr ?? null;
-        const merged = await tryMergeAfterAgentRun(
-          ctx,
-          snapshot.result,
-          sessionId,
-          nextRuntimeMinutes,
-        );
+        // Unvalidated patches skip merge analysis: before the validation gate
+        // was removed these runs failed before dedupe ever ran, so letting
+        // the merge swallow them now would hide exactly the patches the
+        // warning-flagged PR path exists to surface. Validated results keep
+        // the existing dedupe semantics.
+        const merged =
+          pr?.validationPassed === false
+            ? false
+            : await tryMergeAfterAgentRun(ctx, snapshot.result, sessionId, nextRuntimeMinutes);
         if (merged) {
           // tryMergeAfterAgentRun commits the terminal state itself; if
           // it succeeds, the agentRun is complete (the merged-incident
