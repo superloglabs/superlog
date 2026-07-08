@@ -151,6 +151,21 @@ export function mobileRegressionRepairPrompt(): string {
   ].join("\n");
 }
 
+// A collect pass that just sent custom_tool_result acks has unblocked the
+// model: the snapshot's "idle" status predates those acks, so the agent is
+// about to resume with the tool results. A steer (human reply, context delta,
+// or the terminal nudge) sent into that window is queued behind the open turn
+// and delivered AFTER the model's next event — which can be its terminal
+// outcome call, whose turn would then be reset out from under it. Defer all
+// steering to the next tick, when the session state has settled. A result
+// means the run is concluding; the completion paths below own it.
+export function shouldDeferSteering(snapshot: {
+  result: unknown;
+  sentToolAckCount?: number;
+}): boolean {
+  return !snapshot.result && (snapshot.sentToolAckCount ?? 0) > 0;
+}
+
 // Steered into a session that went idle without calling any terminal outcome
 // tool (e.g. the model wrote a chat message instead of a tool call). Fired at
 // most once per session; the runtime/wall-clock budgets stay the hard floor.
@@ -261,6 +276,14 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       .update(schema.agentRuns)
       .set(baseUpdate)
       .where(eq(schema.agentRuns.id, ctx.agentRun.id));
+
+    if (shouldDeferSteering(snapshot)) {
+      // This pass acked tool calls (e.g. report_findings) and the model is
+      // resuming; the idle status is stale. Steering now races the model's
+      // next event — retry every steer on the next tick instead. The budget
+      // checks above already ran, so a run can't hide here indefinitely.
+      return;
+    }
 
     // A human message that arrived mid-turn (the run was still `running`, so it
     // was recorded rather than reactivating a terminal run). Steer it into the

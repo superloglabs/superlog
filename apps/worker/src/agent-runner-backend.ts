@@ -112,6 +112,12 @@ export type AgentRunnerSnapshot = {
   // with an error result so the session can leave requires_action; sync.ts
   // then fails the run with `unknown_custom_tool` so we can audit them later.
   unknownCustomTools: Array<{ toolUseId: string; name: string }>;
+  // How many custom_tool_result acks this collect pass sent. When > 0 the
+  // `status` above is stale — it was captured before the acks went out and
+  // the model is about to resume with the tool results. sync.ts uses this to
+  // defer steering for a tick (see shouldDeferSteering). Optional so runners
+  // without a collect-time ack step are unaffected.
+  sentToolAckCount?: number;
   latestMessage: string | null;
   modelUsage: {
     inputTokens: number;

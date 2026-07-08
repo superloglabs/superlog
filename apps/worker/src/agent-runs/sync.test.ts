@@ -2,13 +2,14 @@ import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  isSessionBusyError,
   mobileRegressionGateState,
   mobileRegressionGateTerminatedSummary,
-  isSessionBusyError,
   mobileRegressionRepairPrompt,
-  terminalOutcomeNudgePrompt,
   needsMobileRegressionRepair,
+  shouldDeferSteering,
   steerIdleRunnerWithPendingContext,
+  terminalOutcomeNudgePrompt,
 } from "./sync.js";
 
 test("steerIdleRunnerWithPendingContext steers idle sessions with joined context deltas", async () => {
@@ -300,6 +301,27 @@ test("mobileRegressionRepairPrompt tells the agent exactly how to repair the res
   assert.match(prompt, /propose_pr/);
   assert.match(prompt, /revyl_validate_yaml/);
   assert.match(prompt, /revyl_create_test_from_yaml/);
+});
+
+test("shouldDeferSteering defers when collect just acked tool calls and there is no result", () => {
+  // The snapshot's status was captured before the acks went out, so "idle"
+  // is stale — the model is about to resume with the tool results. A steer
+  // sent now is delivered AFTER the model's next event, which can be its
+  // terminal outcome call; the turn reset on that message would discard it.
+  assert.equal(shouldDeferSteering({ result: null, sentToolAckCount: 1 }), true);
+  assert.equal(shouldDeferSteering({ result: null, sentToolAckCount: 3 }), true);
+});
+
+test("shouldDeferSteering does not defer settled or concluded snapshots", () => {
+  // No acks sent: the idle status is genuine, steers are safe.
+  assert.equal(shouldDeferSteering({ result: null, sentToolAckCount: 0 }), false);
+  // Runners that never report the field keep today's behaviour.
+  assert.equal(shouldDeferSteering({ result: null }), false);
+  // A result landed: the run is concluding; the completion path owns it.
+  assert.equal(
+    shouldDeferSteering({ result: { state: "complete", summary: "x" }, sentToolAckCount: 1 }),
+    false,
+  );
 });
 
 test("terminalOutcomeNudgePrompt names every terminal outcome tool", () => {
