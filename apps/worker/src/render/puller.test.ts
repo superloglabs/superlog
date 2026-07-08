@@ -161,7 +161,7 @@ test("first pass seeds logs backward, forwards fresh telemetry, persists cursors
   assert.ok(!logCall?.url.includes("resource=srv-2"));
 
   // Log + metric exports hit the intake with the ingest key.
-  const intakeCalls = calls.filter((c) => c.url.startsWith("http://intake.test"));
+  const intakeCalls = calls.filter((c) => new URL(c.url).origin === "http://intake.test");
   assert.deepEqual(
     intakeCalls.map((c) => c.url),
     ["http://intake.test/render/pull/logs", "http://intake.test/render/pull/metrics"],
@@ -210,7 +210,7 @@ test("cursor pass reads forward with pagination and dedupes already-seen lines",
   // the cursor was fully deduped so no metrics export happened.
   assert.equal(stats.logsForwarded, 1);
   assert.equal(stats.metricPointsForwarded, 0);
-  const intakeCalls = calls.filter((c) => c.url.startsWith("http://intake.test"));
+  const intakeCalls = calls.filter((c) => new URL(c.url).origin === "http://intake.test");
   assert.equal(intakeCalls.length, 1);
 
   const cursors = state.savedCursors[0];
