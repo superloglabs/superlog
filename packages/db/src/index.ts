@@ -174,6 +174,23 @@ export {
   type RequestFollowUpResult,
 } from "./agent-follow-up.js";
 export {
+  decideChatInbound,
+  findChatByAnchor,
+  listActiveAgentChats,
+  listPendingChatMessages,
+  markChatMessagesProcessed,
+  mentionsBot,
+  recordInboundChatMessage,
+  resolveChatInstallation,
+  stripBotMention,
+  type ChatInboundInput,
+  type ChatInboundVerdict,
+  type ChatInstallationCandidate,
+  type ChatInstallationResolution,
+  type RecordInboundChatMessageArgs,
+  type RecordInboundChatMessageResult,
+} from "./agent-chat.js";
+export {
   isActiveIncidentState,
   buildAgentRunIncidentPatch,
   buildManualReopenPatch,
