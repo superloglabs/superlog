@@ -44,6 +44,13 @@ export type RenderPullerInstallation = {
   services: RenderService[];
   logCursor: RenderLogCursor;
   metricsCursor: Record<string, number>;
+  // True when the workspace's push stream for the signal points at our intake
+  // (see the api's provisionStreams) — Render delivers it directly and the
+  // puller must not double-ingest. Polling remains the fallback for conflict
+  // (slot taken by another destination) and unavailable (e.g. metrics streams
+  // are plan-gated) signals.
+  logStreamActive: boolean;
+  metricsStreamActive: boolean;
 };
 
 export type RenderPullerStore = {
@@ -207,15 +214,18 @@ export async function runRenderPullOnce(deps: RenderPullerDeps): Promise<RenderP
     let cursorsDirty = false;
 
     // --- Logs ---------------------------------------------------------------
-    // One query covers every resource in a region (Render requires the batch
-    // to share owner + region), so the request count stays flat as services
-    // grow: pages consumed ≤ regions × logPageBudget per pass.
+    // Only when the workspace's log stream isn't pushing to us. One query
+    // covers every resource in a region (Render requires the batch to share
+    // owner + region), so the request count stays flat as services grow:
+    // pages consumed ≤ regions × logPageBudget per pass.
     const byRegion = new Map<string, RenderService[]>();
-    for (const service of active) {
-      const region = service.region ?? "unknown";
-      const group = byRegion.get(region);
-      if (group) group.push(service);
-      else byRegion.set(region, [service]);
+    if (!installation.logStreamActive) {
+      for (const service of active) {
+        const region = service.region ?? "unknown";
+        const group = byRegion.get(region);
+        if (group) group.push(service);
+        else byRegion.set(region, [service]);
+      }
     }
 
     for (const [region, group] of byRegion) {
@@ -312,7 +322,7 @@ export async function runRenderPullOnce(deps: RenderPullerDeps): Promise<RenderP
     // let a fast instance advance past a lagging one and drop its points.
     const nowSec = Math.floor(now().getTime() / 1000);
     const lastPoll = pollState.get(installation.id) ?? 0;
-    if (nowSec - lastPoll >= metricsInterval) {
+    if (!installation.metricsStreamActive && nowSec - lastPoll >= metricsInterval) {
       pollState.set(installation.id, nowSec);
       const startTime = new Date((nowSec - METRICS_LOOKBACK_S) * 1000).toISOString();
       const endTime = now().toISOString();

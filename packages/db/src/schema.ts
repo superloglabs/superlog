@@ -2458,6 +2458,23 @@ export const renderInstallations = pgTable(
     // Puller checkpoint for metrics: series identity (resource + kind +
     // distinguishing labels) → epoch seconds of the last forwarded sample.
     metricsCursor: jsonb("metrics_cursor").$type<Record<string, number>>(),
+    // Push-stream provisioning state, one per signal. A Render workspace has
+    // exactly ONE log stream and ONE metrics stream destination, so connect
+    // provisions them to our intake only when the slot is free (or already
+    // ours): "provisioned" = Render pushes this signal and the puller skips
+    // it; "conflict" = a foreign destination occupies the slot (we never
+    // steal it — polling fallback); "unavailable" = plan-gated or rejected
+    // (polling fallback). Null = pre-streams install (polling).
+    logStream: jsonb("log_stream_state").$type<{
+      status: "provisioned" | "conflict" | "unavailable";
+      endpoint: string | null;
+      detail: string | null;
+    }>(),
+    metricsStream: jsonb("metrics_stream_state").$type<{
+      status: "provisioned" | "conflict" | "unavailable";
+      endpoint: string | null;
+      detail: string | null;
+    }>(),
     installedByUserId: uuid("installed_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),

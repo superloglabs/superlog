@@ -76,7 +76,7 @@ export const CONNECT_SECTIONS: ConnectSection[] = [
         id: "render",
         title: "Render",
         description:
-          "Paste a Render API key once and pick the workspace to share — we pull your services' logs and infra metrics from Render's API. No agent, no code.",
+          "Paste a Render API key once and pick the workspace to share — Render streams your services' logs and infra metrics straight in. No agent, no code.",
         icon: "render",
         action: "render",
       },

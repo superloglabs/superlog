@@ -60,6 +60,8 @@ function createStore(db: JobDeps["db"]): RenderPullerStore {
             services: row.services ?? [],
             logCursor: row.logCursor ?? {},
             metricsCursor: row.metricsCursor ?? {},
+            logStreamActive: row.logStream?.status === "provisioned",
+            metricsStreamActive: row.metricsStream?.status === "provisioned",
           });
         } catch (err) {
           // A row whose secrets can't be decrypted (e.g. key rotation gone

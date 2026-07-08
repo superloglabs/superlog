@@ -1428,9 +1428,9 @@ function RenderCard({ projectId }: { projectId: string | undefined }) {
     <Tile label="Render">
       <div className="space-y-3">
         <p className="text-[13px] text-muted">
-          Paste a Render API key and pick the workspace to share — we pull your services' logs and
-          infra metrics from Render's API into this project automatically. The key is stored
-          encrypted; revoke it in Render at any time.
+          Paste a Render API key and pick the workspace to share — we set up Render's log and
+          metrics streams to push your services' telemetry into this project (with API polling as
+          fallback). The key is stored encrypted; revoke it in Render at any time.
         </p>
         <div>
           {installed ? (

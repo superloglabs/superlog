@@ -56,6 +56,6 @@ export function renderStatusText(phase: RenderPhase, eventsArrived: boolean): st
     default:
       return eventsArrived
         ? "Connected — telemetry from Render is arriving."
-        : "Connected — we're pulling logs and metrics from your Render services. First events typically appear within a minute.";
+        : "Connected — Render is sending logs and metrics from your services. First events typically appear within a minute.";
   }
 }

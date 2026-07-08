@@ -4,9 +4,13 @@ import {
   type FetchImpl,
   fetchLogs,
   fetchMetrics,
+  fetchOwnerLogStream,
+  fetchOwnerMetricsStream,
   fetchOwners,
   fetchServices,
   seriesResourceId,
+  updateOwnerLogStream,
+  upsertOwnerMetricsStream,
 } from "./client.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -172,4 +176,68 @@ test("network failure surfaces as an error, not a throw", async () => {
   });
   assert.ok(!result.ok);
   assert.equal(result.error, "ECONNRESET");
+});
+
+test("fetchOwnerLogStream treats 404 as no stream configured", async () => {
+  const { impl } = fetchStub([jsonResponse({ message: "not found" }, 404)]);
+  const result = await fetchOwnerLogStream({ apiKey: "k", ownerId: "tea-1", fetchImpl: impl });
+  assert.ok(result.ok);
+  assert.equal(result.stream, null);
+});
+
+test("updateOwnerLogStream PUTs a send-mode stream with the token", async () => {
+  const captured: Array<{ url: string; init: RequestInit }> = [];
+  const impl: FetchImpl = async (input, init) => {
+    captured.push({ url: String(input), init: init ?? {} });
+    return jsonResponse({ endpoint: "https://intake.test/render/stream/logs", preview: "send" });
+  };
+  const result = await updateOwnerLogStream({
+    apiKey: "k",
+    ownerId: "tea-1",
+    endpoint: "https://intake.test/render/stream/logs",
+    token: "sl_public_x",
+    fetchImpl: impl,
+  });
+  assert.ok(result.ok);
+  const call = captured[0];
+  assert.ok(call?.url.endsWith("/v1/logs/streams/owner/tea-1"));
+  assert.equal(call?.init.method, "PUT");
+  assert.deepEqual(JSON.parse(String(call?.init.body)), {
+    preview: "send",
+    endpoint: "https://intake.test/render/stream/logs",
+    token: "sl_public_x",
+  });
+});
+
+test("upsertOwnerMetricsStream PUTs a CUSTOM provider destination", async () => {
+  const captured: Array<{ url: string; init: RequestInit }> = [];
+  const impl: FetchImpl = async (input, init) => {
+    captured.push({ url: String(input), init: init ?? {} });
+    return jsonResponse({ ownerId: "tea-1", provider: "CUSTOM", url: "https://intake.test/render/stream/metrics" });
+  };
+  const result = await upsertOwnerMetricsStream({
+    apiKey: "k",
+    ownerId: "tea-1",
+    url: "https://intake.test/render/stream/metrics",
+    token: "sl_public_x",
+    fetchImpl: impl,
+  });
+  assert.ok(result.ok);
+  const call = captured[0];
+  assert.ok(call?.url.endsWith("/v1/metrics-stream/tea-1"));
+  assert.equal(call?.init.method, "PUT");
+  assert.deepEqual(JSON.parse(String(call?.init.body)), {
+    provider: "CUSTOM",
+    url: "https://intake.test/render/stream/metrics",
+    token: "sl_public_x",
+  });
+});
+
+test("fetchOwnerMetricsStream returns the configured destination", async () => {
+  const { impl } = fetchStub([
+    jsonResponse({ ownerId: "tea-1", provider: "DATADOG", url: "https://dd.example.com" }),
+  ]);
+  const result = await fetchOwnerMetricsStream({ apiKey: "k", ownerId: "tea-1", fetchImpl: impl });
+  assert.ok(result.ok);
+  assert.deepEqual(result.stream, { provider: "DATADOG", url: "https://dd.example.com" });
 });

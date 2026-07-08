@@ -29,9 +29,11 @@ export type RenderResult<T> =
   | { ok: true; data: T }
   | { ok: false; error: string; status: number | null; unauthorized: boolean };
 
-async function renderGet<T = unknown>(input: {
+async function renderRequest<T = unknown>(input: {
   apiKey: string;
   path: string;
+  method?: string;
+  body?: unknown;
   query?: URLSearchParams;
   fetchImpl?: FetchImpl;
 }): Promise<RenderResult<T>> {
@@ -41,7 +43,13 @@ async function renderGet<T = unknown>(input: {
   let res: Response;
   try {
     res = await fetchImpl(url, {
-      headers: { accept: "application/json", authorization: `Bearer ${input.apiKey}` },
+      method: input.method ?? "GET",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${input.apiKey}`,
+        ...(input.body !== undefined ? { "content-type": "application/json" } : {}),
+      },
+      ...(input.body !== undefined ? { body: JSON.stringify(input.body) } : {}),
     });
   } catch (e) {
     return {
@@ -66,9 +74,8 @@ async function renderGet<T = unknown>(input: {
       unauthorized: res.status === 401 || res.status === 403,
     };
   }
-  if (json === null) {
-    return { ok: false, error: `status_${res.status}`, status: res.status, unauthorized: false };
-  }
+  // Some write endpoints answer with an empty body (e.g. DELETE → 204);
+  // an OK status with no JSON is still a success.
   return { ok: true, data: json as T };
 }
 
@@ -99,7 +106,7 @@ export async function fetchOwners(input: {
   for (let page = 0; page < 10; page++) {
     const query = new URLSearchParams({ limit: "100" });
     if (cursor) query.set("cursor", cursor);
-    const result = await renderGet<Array<{ owner?: unknown; cursor?: unknown }>>({
+    const result = await renderRequest<Array<{ owner?: unknown; cursor?: unknown }>>({
       apiKey: input.apiKey,
       path: "/owners",
       query,
@@ -153,7 +160,7 @@ export async function fetchServices(input: {
   for (let page = 0; page < 20; page++) {
     const query = new URLSearchParams({ ownerId: input.ownerId, limit: "100" });
     if (cursor) query.set("cursor", cursor);
-    const result = await renderGet<Array<{ service?: unknown; cursor?: unknown }>>({
+    const result = await renderRequest<Array<{ service?: unknown; cursor?: unknown }>>({
       apiKey: input.apiKey,
       path: "/services",
       query,
@@ -237,7 +244,7 @@ export async function fetchLogs(input: {
   if (input.startTime) query.set("startTime", input.startTime);
   if (input.endTime) query.set("endTime", input.endTime);
   if (input.direction) query.set("direction", input.direction);
-  const result = await renderGet<{
+  const result = await renderRequest<{
     logs?: unknown;
     hasMore?: unknown;
     nextStartTime?: unknown;
@@ -320,7 +327,7 @@ export async function fetchMetrics(input: {
     resolutionSeconds: String(input.resolutionSeconds),
   });
   for (const resource of input.resources) query.append("resource", resource);
-  const result = await renderGet<unknown[]>({
+  const result = await renderRequest<unknown[]>({
     apiKey: input.apiKey,
     path: `/metrics/${input.kind}`,
     query,
@@ -370,4 +377,160 @@ export function seriesResourceId(series: RenderMetricSeries): string | null {
     if (label?.value) return label.value;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry streams (push). A workspace has ONE log stream and ONE metrics
+// stream destination — the connector must never silently overwrite a
+// destination it doesn't own, so provisioning reads the current setting first
+// (see apps/api's provisioning flow).
+//  - Log streams push JSON over HTTPS (or RFC5424 syslog; we register HTTPS).
+//  - Metrics streams push OTLP JSON with the token as a bearer header
+//    (provider CUSTOM). Pro-plan workspaces and up only.
+// ---------------------------------------------------------------------------
+
+export type RenderLogStreamSetting = {
+  endpoint: string | null;
+  /** "send" streams logs; "drop" disables the stream without deleting it. */
+  preview: string | null;
+};
+
+export async function fetchOwnerLogStream(input: {
+  apiKey: string;
+  ownerId: string;
+  fetchImpl?: FetchImpl;
+}): Promise<
+  | { ok: true; stream: RenderLogStreamSetting | null }
+  | { ok: false; error: string; unauthorized: boolean }
+> {
+  const result = await renderRequest<{ endpoint?: unknown; preview?: unknown }>({
+    apiKey: input.apiKey,
+    path: `/logs/streams/owner/${encodeURIComponent(input.ownerId)}`,
+    fetchImpl: input.fetchImpl,
+  });
+  if (!result.ok) {
+    // No stream configured yet reads as absent, not as an error.
+    if (result.status === 404) return { ok: true, stream: null };
+    return { ok: false, error: result.error, unauthorized: result.unauthorized };
+  }
+  const o = result.data;
+  if (!o || typeof o !== "object") return { ok: true, stream: null };
+  return {
+    ok: true,
+    stream: {
+      endpoint: typeof o.endpoint === "string" && o.endpoint ? o.endpoint : null,
+      preview: typeof o.preview === "string" && o.preview ? o.preview : null,
+    },
+  };
+}
+
+export async function updateOwnerLogStream(input: {
+  apiKey: string;
+  ownerId: string;
+  endpoint: string;
+  token: string;
+  fetchImpl?: FetchImpl;
+}): Promise<{ ok: true } | { ok: false; error: string; unauthorized: boolean }> {
+  const result = await renderRequest({
+    apiKey: input.apiKey,
+    path: `/logs/streams/owner/${encodeURIComponent(input.ownerId)}`,
+    method: "PUT",
+    body: { preview: "send", endpoint: input.endpoint, token: input.token },
+    fetchImpl: input.fetchImpl,
+  });
+  if (!result.ok) return { ok: false, error: result.error, unauthorized: result.unauthorized };
+  return { ok: true };
+}
+
+export async function deleteOwnerLogStream(input: {
+  apiKey: string;
+  ownerId: string;
+  fetchImpl?: FetchImpl;
+}): Promise<{ ok: true } | { ok: false; error: string; unauthorized: boolean }> {
+  const result = await renderRequest({
+    apiKey: input.apiKey,
+    path: `/logs/streams/owner/${encodeURIComponent(input.ownerId)}`,
+    method: "DELETE",
+    fetchImpl: input.fetchImpl,
+  });
+  if (!result.ok && result.status !== 404) {
+    return { ok: false, error: result.error, unauthorized: result.unauthorized };
+  }
+  return { ok: true };
+}
+
+export type RenderMetricsStreamSetting = {
+  provider: string | null;
+  url: string | null;
+};
+
+export async function fetchOwnerMetricsStream(input: {
+  apiKey: string;
+  ownerId: string;
+  fetchImpl?: FetchImpl;
+}): Promise<
+  | { ok: true; stream: RenderMetricsStreamSetting | null }
+  | { ok: false; error: string; unauthorized: boolean }
+> {
+  const result = await renderRequest<{ provider?: unknown; url?: unknown }>({
+    apiKey: input.apiKey,
+    path: `/metrics-stream/${encodeURIComponent(input.ownerId)}`,
+    fetchImpl: input.fetchImpl,
+  });
+  if (!result.ok) {
+    if (result.status === 404) return { ok: true, stream: null };
+    return { ok: false, error: result.error, unauthorized: result.unauthorized };
+  }
+  const o = result.data;
+  if (!o || typeof o !== "object") return { ok: true, stream: null };
+  const url = typeof o.url === "string" && o.url ? o.url : null;
+  if (!url) return { ok: true, stream: null };
+  return {
+    ok: true,
+    stream: { provider: typeof o.provider === "string" ? o.provider : null, url },
+  };
+}
+
+export async function upsertOwnerMetricsStream(input: {
+  apiKey: string;
+  ownerId: string;
+  url: string;
+  token: string;
+  fetchImpl?: FetchImpl;
+}): Promise<
+  { ok: true } | { ok: false; error: string; unauthorized: boolean; status: number | null }
+> {
+  const result = await renderRequest({
+    apiKey: input.apiKey,
+    path: `/metrics-stream/${encodeURIComponent(input.ownerId)}`,
+    method: "PUT",
+    body: { provider: "CUSTOM", url: input.url, token: input.token },
+    fetchImpl: input.fetchImpl,
+  });
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error,
+      unauthorized: result.unauthorized,
+      status: result.status,
+    };
+  }
+  return { ok: true };
+}
+
+export async function deleteOwnerMetricsStream(input: {
+  apiKey: string;
+  ownerId: string;
+  fetchImpl?: FetchImpl;
+}): Promise<{ ok: true } | { ok: false; error: string; unauthorized: boolean }> {
+  const result = await renderRequest({
+    apiKey: input.apiKey,
+    path: `/metrics-stream/${encodeURIComponent(input.ownerId)}`,
+    method: "DELETE",
+    fetchImpl: input.fetchImpl,
+  });
+  if (!result.ok && result.status !== 404) {
+    return { ok: false, error: result.error, unauthorized: result.unauthorized };
+  }
+  return { ok: true };
 }

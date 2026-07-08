@@ -983,6 +983,12 @@ export type RenderServiceSummary = {
   suspended: boolean;
 };
 
+export type RenderStreamState = {
+  status: "provisioned" | "conflict" | "unavailable";
+  endpoint: string | null;
+  detail: string | null;
+} | null;
+
 export type RenderInstallation =
   | { installed: false }
   | {
@@ -990,6 +996,11 @@ export type RenderInstallation =
       ownerId: string;
       ownerName: string | null;
       services: RenderServiceSummary[];
+      // How each signal arrives: "provisioned" = Render pushes it to our
+      // intake (log/metrics stream); anything else = the worker polls
+      // Render's API as a fallback.
+      logStream: RenderStreamState;
+      metricsStream: RenderStreamState;
       installedAt: string;
     };
 

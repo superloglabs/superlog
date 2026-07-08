@@ -27,7 +27,16 @@ import {
   mintApiKey,
   schema,
 } from "@superlog/db";
-import { fetchOwners, fetchServices } from "@superlog/render";
+import {
+  deleteOwnerLogStream,
+  deleteOwnerMetricsStream,
+  fetchOwnerLogStream,
+  fetchOwnerMetricsStream,
+  fetchOwners,
+  fetchServices,
+  updateOwnerLogStream,
+  upsertOwnerMetricsStream,
+} from "@superlog/render";
 import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -40,6 +49,22 @@ type Vars = { userId: string; orgId: string | null };
 
 type RenderInstallationRow = typeof schema.renderInstallations.$inferSelect;
 
+type StreamState = {
+  status: "provisioned" | "conflict" | "unavailable";
+  endpoint: string | null;
+  detail: string | null;
+};
+
+/**
+ * Public intake origin Render's streams push to (prod:
+ * https://intake.superlog.sh). Unset → streams can't be provisioned and the
+ * connector runs on API polling alone.
+ */
+function streamIntakeBaseUrl(env: NodeJS.ProcessEnv = process.env): string | null {
+  const base = env.RENDER_STREAM_INTAKE_URL;
+  return base ? base.replace(/\/+$/, "") : null;
+}
+
 /** Public shape — never leaks the API key ciphertext. */
 function toPublic(row: RenderInstallationRow) {
   return {
@@ -47,6 +72,8 @@ function toPublic(row: RenderInstallationRow) {
     ownerId: row.renderOwnerId,
     ownerName: row.renderOwnerName,
     services: row.services ?? [],
+    logStream: row.logStream ?? null,
+    metricsStream: row.metricsStream ?? null,
     installedAt: row.createdAt,
   };
 }
@@ -108,12 +135,135 @@ async function ensureIngestKey(
 }
 
 /**
- * Tear down one installation row. There is nothing to delete on Render's side
- * (the user's API key stays theirs — they can revoke it from Render's
- * dashboard); revoking the ingest key stops our intake accepting anything the
- * puller would forward, and the soft-revoke stops the puller reading Render at
- * all. The stored Render key ciphertext stays on the revoked row, unreadable
- * without AGENT_SECRETS_KEY and unused once revoked.
+ * Provision the workspace's push streams to our intake. A workspace has
+ * exactly ONE log stream and ONE metrics stream destination, so each slot is
+ * read first and a foreign destination is never overwritten — that signal
+ * falls back to API polling instead ("conflict"). Metrics streams are also
+ * plan-gated by Render (Pro+), which surfaces here as "unavailable". Both
+ * outcomes are non-fatal: the install works either way, just via polling.
+ */
+async function provisionStreams(input: {
+  apiKey: string;
+  ownerId: string;
+  ingestKey: string;
+  fetchImpl: typeof fetch;
+}): Promise<{ logStream: StreamState; metricsStream: StreamState }> {
+  const base = streamIntakeBaseUrl();
+  if (!base) {
+    const detail = "stream intake url not configured";
+    return {
+      logStream: { status: "unavailable", endpoint: null, detail },
+      metricsStream: { status: "unavailable", endpoint: null, detail },
+    };
+  }
+
+  let logStream: StreamState;
+  const logsEndpoint = `${base}/render/stream/logs`;
+  const currentLogs = await fetchOwnerLogStream({
+    apiKey: input.apiKey,
+    ownerId: input.ownerId,
+    fetchImpl: input.fetchImpl,
+  });
+  if (!currentLogs.ok) {
+    logStream = { status: "unavailable", endpoint: null, detail: currentLogs.error };
+  } else if (currentLogs.stream?.endpoint && !currentLogs.stream.endpoint.startsWith(base)) {
+    logStream = {
+      status: "conflict",
+      endpoint: currentLogs.stream.endpoint,
+      detail: "workspace already streams logs to another destination",
+    };
+  } else {
+    const updated = await updateOwnerLogStream({
+      apiKey: input.apiKey,
+      ownerId: input.ownerId,
+      endpoint: logsEndpoint,
+      token: input.ingestKey,
+      fetchImpl: input.fetchImpl,
+    });
+    logStream = updated.ok
+      ? { status: "provisioned", endpoint: logsEndpoint, detail: null }
+      : { status: "unavailable", endpoint: null, detail: updated.error };
+  }
+
+  let metricsStream: StreamState;
+  const metricsEndpoint = `${base}/render/stream/metrics`;
+  const currentMetrics = await fetchOwnerMetricsStream({
+    apiKey: input.apiKey,
+    ownerId: input.ownerId,
+    fetchImpl: input.fetchImpl,
+  });
+  if (!currentMetrics.ok) {
+    metricsStream = { status: "unavailable", endpoint: null, detail: currentMetrics.error };
+  } else if (currentMetrics.stream?.url && !currentMetrics.stream.url.startsWith(base)) {
+    metricsStream = {
+      status: "conflict",
+      endpoint: currentMetrics.stream.url,
+      detail: "workspace already streams metrics to another destination",
+    };
+  } else {
+    const updated = await upsertOwnerMetricsStream({
+      apiKey: input.apiKey,
+      ownerId: input.ownerId,
+      url: metricsEndpoint,
+      token: input.ingestKey,
+      fetchImpl: input.fetchImpl,
+    });
+    metricsStream = updated.ok
+      ? { status: "provisioned", endpoint: metricsEndpoint, detail: null }
+      : { status: "unavailable", endpoint: null, detail: updated.error };
+  }
+
+  return { logStream, metricsStream };
+}
+
+/**
+ * Best-effort removal of streams we provisioned. Reads each slot first and
+ * only deletes a destination that still points at our intake — a customer who
+ * re-pointed the stream at another provider keeps their setting.
+ */
+async function teardownStreams(row: RenderInstallationRow, fetchImpl: typeof fetch): Promise<void> {
+  const base = streamIntakeBaseUrl();
+  if (!base) return;
+  let apiKey: string;
+  try {
+    apiKey = decryptIntegrationSecret({
+      ciphertext: row.renderApiKeyCiphertext,
+      nonce: row.renderApiKeyNonce,
+      keyVersion: row.renderApiKeyKeyVersion,
+    });
+  } catch {
+    return;
+  }
+  const ownerId = row.renderOwnerId;
+  try {
+    if (row.logStream?.status === "provisioned") {
+      const current = await fetchOwnerLogStream({ apiKey, ownerId, fetchImpl });
+      if (current.ok && current.stream?.endpoint?.startsWith(base)) {
+        await deleteOwnerLogStream({ apiKey, ownerId, fetchImpl });
+      }
+    }
+    if (row.metricsStream?.status === "provisioned") {
+      const current = await fetchOwnerMetricsStream({ apiKey, ownerId, fetchImpl });
+      if (current.ok && current.stream?.url?.startsWith(base)) {
+        await deleteOwnerMetricsStream({ apiKey, ownerId, fetchImpl });
+      }
+    }
+  } catch (e) {
+    log.warn(
+      { installation_id: row.id, err: e instanceof Error ? e.message : String(e) },
+      "render stream teardown failed (best-effort)",
+    );
+  }
+}
+
+/**
+ * Tear down one installation row. Revoking the ingest key stops our intake
+ * accepting anything Render (or the puller) would forward, and the
+ * soft-revoke stops the puller reading Render at all. Stream removal on
+ * Render's side is separate and best-effort (teardownStreams) — the user can
+ * also revoke the API key from Render's dashboard. The stored Render key
+ * ciphertext stays on the revoked row, unreadable without AGENT_SECRETS_KEY
+ * and unused once revoked.
  */
 type DbExecutor = Pick<typeof db, "update">;
 
@@ -219,6 +369,7 @@ export function mountRenderAuthed(
     });
     const { ingestKey, apiKeyId, minted } = await ensureIngestKey(ctx.projectId, existing ?? null);
 
+    let superseded: RenderInstallationRow[] = [];
     try {
       const keyCipher = encryptIntegrationSecret(apiKey);
       const ingestCipher = encryptIntegrationSecret(ingestKey);
@@ -287,7 +438,7 @@ export function mountRenderAuthed(
         // Enforce a single active install per project inside the same
         // transaction: soft-revoke rows keyed to a different workspace and
         // revoke their ingest keys.
-        const superseded = await tx
+        const rows = await tx
           .select()
           .from(schema.renderInstallations)
           .where(
@@ -297,9 +448,10 @@ export function mountRenderAuthed(
               isNull(schema.renderInstallations.revokedAt),
             ),
           );
-        for (const row of superseded) {
+        for (const row of rows) {
           await teardownInstallation(row, tx);
         }
+        superseded = rows;
       });
     } catch (e) {
       // Roll back a key we minted for this connect; a reused key predates the
@@ -313,8 +465,38 @@ export function mountRenderAuthed(
       throw e;
     }
 
+    // Remote IO stays out of the transaction: point the workspace's push
+    // streams at our intake now that the install is durable, and best-effort
+    // remove streams the superseded installs had provisioned (different
+    // workspaces, so no overlap with the streams just created).
+    for (const row of superseded) {
+      await teardownStreams(row, fetchImpl);
+    }
+    const streams = await provisionStreams({
+      apiKey,
+      ownerId: owner.id,
+      ingestKey,
+      fetchImpl,
+    });
+    await db
+      .update(schema.renderInstallations)
+      .set({ logStream: streams.logStream, metricsStream: streams.metricsStream })
+      .where(
+        and(
+          eq(schema.renderInstallations.projectId, ctx.projectId),
+          eq(schema.renderInstallations.renderOwnerId, owner.id),
+          isNull(schema.renderInstallations.revokedAt),
+        ),
+      );
+
     log.info(
-      { project_id: ctx.projectId, owner_id: owner.id, services: services.services.length },
+      {
+        project_id: ctx.projectId,
+        owner_id: owner.id,
+        services: services.services.length,
+        log_stream: streams.logStream.status,
+        metrics_stream: streams.metricsStream.status,
+      },
       "render connected",
     );
     const row = await findInstallation(ctx.projectId);
@@ -325,6 +507,9 @@ export function mountRenderAuthed(
     const ctx = await requireProjectAccess(c, c.req.param("projectId"));
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ ok: true });
+    // Deprovision on Render's side while the stored key is still ours to use,
+    // then revoke locally.
+    await teardownStreams(row, fetchImpl);
     await teardownInstallation(row);
     return c.json({ ok: true });
   });

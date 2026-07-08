@@ -16,6 +16,8 @@ const require = createRequire(import.meta.url);
 const otlpRoot = require("@opentelemetry/otlp-transformer/build/esm/generated/root.js");
 const ExportTraceServiceRequest =
   otlpRoot.opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest;
+const ExportMetricsServiceRequest =
+  otlpRoot.opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest;
 
 // Logs protobuf: the transformer's bundled root only includes trace + metrics, so we
 // decode logs with a minimal inline descriptor. Field numbers follow the OTLP logs.proto
@@ -101,6 +103,23 @@ export function decodeOtlpToRows(input: DecodeInput): DecodedRows | null {
     ? JSON.parse(body.toString("utf8"))
     : decodeProto(ExportTraceServiceRequest, body);
   return { table: "otel_traces", rows: otlpTracesToRows(payload, input.projectId) };
+}
+
+// Decode an OTLP metrics export request (JSON or protobuf, possibly
+// compressed) into its OTLP-JSON object shape. Used by ingest routes that
+// must rewrite a metrics payload before forwarding (e.g. the Render
+// metrics-stream route stamps telemetry.source). Unknown content types are
+// treated as protobuf — that's OTLP/HTTP's default encoding.
+export function decodeOtlpMetricsPayload(input: {
+  contentType: string;
+  contentEncoding?: string;
+  body: Buffer;
+}): unknown {
+  const body = decompress(input.body, input.contentEncoding);
+  if (input.contentType.toLowerCase().includes("json")) {
+    return JSON.parse(body.toString("utf8"));
+  }
+  return decodeProto(ExportMetricsServiceRequest, body);
 }
 
 // The proto reflection types (protobufjs Type / the otlp-transformer root) are

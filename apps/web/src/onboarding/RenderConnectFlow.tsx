@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   type RenderOwner,
+  type RenderStreamState,
   useConnectRender,
   useRenderInstallation,
   useRenderOwners,
@@ -131,6 +132,8 @@ export function RenderConnectFlow({
         <ConnectedPanel
           ownerName={installedData.ownerName}
           services={installedData.services}
+          logStream={installedData.logStream}
+          metricsStream={installedData.metricsStream}
           statusText={renderStatusText(phase, eventsArrived)}
           eventsArrived={eventsArrived}
         />
@@ -152,7 +155,7 @@ function headerForPhase(phase: "start" | "pick" | "connected"): { title: string;
     case "start":
       return {
         title: "Connect Render",
-        sub: "Paste a Render API key and pick the workspace to share. We pull your services' logs and infra metrics from Render's API — no agent, no code changes.",
+        sub: "Paste a Render API key and pick the workspace to share. We set up Render's log and metrics streams to push your services' telemetry straight to Superlog — no agent, no code changes.",
       };
     case "pick":
       return {
@@ -162,7 +165,7 @@ function headerForPhase(phase: "start" | "pick" | "connected"): { title: string;
     default:
       return {
         title: "You're connected",
-        sub: "We're pulling logs and metrics from your Render services. First events typically appear within a minute.",
+        sub: "Render is sending logs and metrics from your services. First events typically appear within a minute.",
       };
   }
 }
@@ -297,14 +300,27 @@ function PickPanel({
   );
 }
 
+// One line per signal: streamed (Render pushes) vs polled (our fallback).
+function deliveryText(signal: "Logs" | "Metrics", stream: RenderStreamState): string {
+  if (stream?.status === "provisioned") return `${signal}: streamed by Render in real time.`;
+  if (stream?.status === "conflict") {
+    return `${signal}: polled — your workspace already streams to another destination.`;
+  }
+  return `${signal}: polled from Render's API.`;
+}
+
 function ConnectedPanel({
   ownerName,
   services,
+  logStream,
+  metricsStream,
   statusText,
   eventsArrived,
 }: {
   ownerName: string | null;
   services: Array<{ id: string; name: string; type: string; suspended: boolean }>;
+  logStream: RenderStreamState;
+  metricsStream: RenderStreamState;
   statusText: string;
   eventsArrived: boolean;
 }) {
@@ -317,6 +333,9 @@ function ConnectedPanel({
             {ownerName ? `${ownerName} — ` : ""}
             {active.length === 1 ? "1 Render service" : `${active.length} Render services`}
           </span>
+        </div>
+        <div className={`border-b px-[18px] py-[10px] text-[12px] text-muted ${SOFT_LINE}`}>
+          {deliveryText("Logs", logStream)} {deliveryText("Metrics", metricsStream)}
         </div>
         <div className="divide-y divide-[rgba(255,255,255,0.07)]">
           {active.length === 0 ? (

@@ -36,6 +36,9 @@ import {
 } from "./ingest-source-filter.js";
 import { logger } from "./logger.js";
 import { proxyOperationalRecorder } from "./operational-metrics.js";
+import { decodeOtlpMetricsPayload } from "./otlp-decode.js";
+import { parseRenderLogStreamBody, renderStreamLogsToOtlp } from "./render-log-stream.js";
+import { stampRenderStreamMetrics } from "./render-metrics-stream.js";
 import { Semaphore } from "./semaphore.js";
 import { lookupOrgForProject, recordIngestRequest } from "./tenant-metrics.js";
 import { parseVercelLogDrainBody, vercelLogsToOtlp } from "./vercel-log-drain.js";
@@ -296,6 +299,7 @@ app.use("/v1/*", validateIngestKey);
 app.use("/vercel/drains/*", validateIngestKey);
 app.use("/railway/pull/*", validateIngestKey);
 app.use("/render/pull/*", validateIngestKey);
+app.use("/render/stream/*", validateIngestKey);
 
 app.post("/v1/traces", (c) => forward(c, "/v1/traces", "resourceSpans"));
 app.post("/v1/logs", (c) => forward(c, "/v1/logs", "resourceLogs"));
@@ -333,6 +337,44 @@ app.post("/render/pull/logs", (c) => forward(c, "/v1/logs", "resourceLogs", { so
 app.post("/render/pull/metrics", (c) =>
   forward(c, "/v1/metrics", "resourceMetrics", { source: "render" }),
 );
+
+// Render stream ingest: Render pushes directly here (no puller in the path).
+// The connector registers these URLs as the workspace's Log Stream (HTTPS
+// JSON payloads, transformed below) and Metrics Stream (standard OTLP —
+// provider CUSTOM sends the token as a bearer header). Authenticated by the
+// installation's ingest key like every other ingest route.
+app.post("/render/stream/logs", (c) =>
+  forward(c, "/v1/logs", "resourceLogs", {
+    source: "render",
+    bodyTransform: (body, contentType) => ({
+      body: Buffer.from(
+        JSON.stringify(renderStreamLogsToOtlp(parseRenderLogStreamBody(body, contentType))),
+      ),
+      contentType: "application/json",
+    }),
+  }),
+);
+// Metrics arrive as standard OTLP/HTTP (JSON or protobuf, possibly gzipped)
+// produced by Render itself, so telemetry.source has to be stamped here —
+// decode, stamp, re-emit as JSON for the collector.
+const forwardRenderStreamMetrics = (c: Context<{ Variables: Variables }>) =>
+  forward(c, "/v1/metrics", "resourceMetrics", {
+    source: "render",
+    bodyTransform: (body, contentType, contentEncoding) => ({
+      body: Buffer.from(
+        JSON.stringify(
+          stampRenderStreamMetrics(
+            decodeOtlpMetricsPayload({ body, contentType, contentEncoding }),
+          ),
+        ),
+      ),
+      contentType: "application/json",
+    }),
+  });
+app.post("/render/stream/metrics", forwardRenderStreamMetrics);
+// Standard OTLP exporters append the signal path to a configured base
+// endpoint; accept that form too so the registered URL works either way.
+app.post("/render/stream/metrics/v1/metrics", forwardRenderStreamMetrics);
 
 // AWS Data Firehose HTTP-endpoint ingest (CloudWatch Metric Streams + Logs).
 // Firehose authenticates with X-Amz-Firehose-Access-Key (the project's ingest
@@ -419,6 +461,14 @@ function extractApiKey(c: Context): string | null {
   if (header) return header;
   const auth = c.req.header("authorization");
   if (auth?.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
+  // Render stream destinations take a single "token" whose delivery header
+  // isn't under our control — the stream routes also accept it as a query
+  // param so the registered URL can carry it if the header form ever changes.
+  const path = new URL(c.req.url).pathname;
+  if (path.startsWith("/render/stream/")) {
+    const token = c.req.query("token");
+    if (token) return token;
+  }
   return null;
 }
 
@@ -434,6 +484,7 @@ type ForwardOptions = {
   bodyTransform?: (
     body: Buffer,
     contentType: string,
+    contentEncoding?: string,
   ) => { body: Buffer; contentType: string; contentEncoding?: string };
 };
 
@@ -532,7 +583,7 @@ async function forward(
       if (opts.bodyTransform) {
         try {
           const original = await collectStreamWithCap(bodyStream, MAX_BODY_BYTES);
-          const transformed = opts.bodyTransform(original, contentType);
+          const transformed = opts.bodyTransform(original, contentType, contentEncoding);
           prebufferedBody = transformed.body;
           contentType = transformed.contentType;
           contentEncoding = transformed.contentEncoding;

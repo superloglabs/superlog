@@ -26,6 +26,8 @@ function installation(overrides: Partial<RenderPullerInstallation> = {}): Render
     services: [],
     logCursor: {},
     metricsCursor: {},
+    logStreamActive: false,
+    metricsStreamActive: false,
     ...overrides,
   };
 }
@@ -247,6 +249,31 @@ test("metrics polls are gated by the interval clock", async () => {
     metricsPollState: pollState,
   });
   assert.ok(!second.calls.some((c) => c.url.includes("/v1/metrics/")));
+});
+
+test("provisioned streams suppress polling for their signal", async () => {
+  const { store, state } = makeStore([
+    installation({ logStreamActive: true, metricsStreamActive: true }),
+  ]);
+  const { impl, calls } = makeFetch();
+
+  const stats = await runRenderPullOnce({
+    store,
+    intakeBaseUrl: "http://intake.test",
+    log: silentLog,
+    fetchImpl: impl,
+    now: () => NOW,
+    metricsPollState: new Map(),
+  });
+
+  // Inventory still refreshes (cheap, keeps the snapshot + revocation checks
+  // alive), but no log or metric reads and nothing forwarded.
+  assert.ok(calls.some((c) => c.url.includes("/v1/services")));
+  assert.ok(!calls.some((c) => c.url.includes("/v1/logs")));
+  assert.ok(!calls.some((c) => c.url.includes("/v1/metrics/")));
+  assert.equal(stats.logsForwarded, 0);
+  assert.equal(stats.metricPointsForwarded, 0);
+  assert.equal(state.savedCursors.length, 0);
 });
 
 test("a persistently rejected key is soft-revoked after three passes", async () => {
