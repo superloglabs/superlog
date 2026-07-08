@@ -6,6 +6,7 @@ import {
   fieldColumnExpr,
   listAttributeKeys,
   listAttributeValues,
+  listMetricNames,
   metricSeries,
   queryLogs,
   queryMetrics,
@@ -457,6 +458,187 @@ test("queryTraces returns resource attributes and flattened exception fields", a
   assert.match(capture.query ?? "", /AS exception_type/);
   assert.match(capture.query ?? "", /AS exception_message/);
   assert.match(capture.query ?? "", /AS exception_stacktrace/);
+});
+
+// Tracks how many queries are in flight at once so tests can assert that a
+// fan-out across the four metric tables actually runs concurrently instead of
+// awaiting each table before starting the next.
+function fakeClickhouseConcurrent(state: { inFlight: number; maxInFlight: number }) {
+  return {
+    async query() {
+      state.inFlight += 1;
+      state.maxInFlight = Math.max(state.maxInFlight, state.inFlight);
+      await new Promise((resolve) => setImmediate(resolve));
+      state.inFlight -= 1;
+      return {
+        async json() {
+          return [];
+        },
+      };
+    },
+  } as unknown as ClickHouseClient;
+}
+
+// Like fakeClickhouseWithSummary, but for the metric-names rollup: answers the
+// EXISTS probe and the coverage probe, captures the real query, and returns
+// canned rollup rows so kind mapping / ordering can be asserted.
+function fakeClickhouseMetricNamesRollup(
+  capture: { query?: string; params?: Record<string, unknown> },
+  rollupExists = true,
+  windowCovered = true,
+  rows: { kind: string; name: string; unit: string; c: number }[] = [],
+) {
+  return {
+    async query(input: { query: string; query_params?: Record<string, unknown> }) {
+      if (/^EXISTS TABLE/i.test(input.query.trim())) {
+        return {
+          async json() {
+            return [{ result: rollupExists ? 1 : 0 }];
+          },
+        };
+      }
+      if (/count\(\) AS c/i.test(input.query) && /FROM \(/.test(input.query)) {
+        return {
+          async json() {
+            return [{ c: windowCovered ? 1 : 0 }];
+          },
+        };
+      }
+      capture.query = input.query;
+      capture.params = input.query_params;
+      return {
+        async json() {
+          return rows;
+        },
+      };
+    },
+  } as unknown as ClickHouseClient;
+}
+
+test("listMetricNames reads the metric_names_per_hour rollup instead of scanning the raw tables", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  const names = await listMetricNames(
+    fakeClickhouseMetricNamesRollup(capture, true, true, [
+      { kind: "sum", name: "http.requests", unit: "1", c: 500 },
+      { kind: "gauge", name: "process.memory", unit: "By", c: 100 },
+      { kind: "bogus", name: "ignored", unit: "", c: 1 },
+    ]),
+    "project-1",
+    { since: "now() - INTERVAL 24 HOUR", until: "now()" },
+  );
+
+  assert.match(capture.query ?? "", /FROM metric_names_per_hour/);
+  assert.match(capture.query ?? "", /sum\(c\)/);
+  // the partial first hour rounds down to its cell boundary so it is included
+  assert.match(capture.query ?? "", /hour >= toStartOfHour\(/);
+  assert.doesNotMatch(capture.query ?? "", /FROM otel_metrics/);
+  assert.equal(capture.params?.projectId, "project-1");
+  // rows come back in METRIC_TABLES kind order; unknown kinds are dropped
+  assert.deepEqual(names, [
+    { name: "process.memory", kind: "gauge", unit: "By" },
+    { name: "http.requests", kind: "sum", unit: "1" },
+  ]);
+});
+
+test("listMetricNames falls back to the raw tables when the rollup is absent", async () => {
+  const queries: string[] = [];
+
+  await listMetricNames(
+    {
+      async query(input: { query: string }) {
+        if (/^EXISTS TABLE/i.test(input.query.trim())) {
+          return {
+            async json() {
+              return [{ result: 0 }];
+            },
+          };
+        }
+        queries.push(input.query);
+        return {
+          async json() {
+            return [];
+          },
+        };
+      },
+    } as unknown as ClickHouseClient,
+    "project-1",
+    { since: "now() - INTERVAL 24 HOUR", until: "now()" },
+  );
+
+  assert.equal(queries.length, 4);
+  for (const q of queries) assert.match(q, /FROM otel_metrics_/);
+});
+
+test("listMetricNames falls back to the raw tables when the rollup does not cover the window", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await listMetricNames(
+    fakeClickhouseMetricNamesRollup(capture, true, false),
+    "project-1",
+    { since: "now() - INTERVAL 24 HOUR", until: "now()" },
+  );
+
+  assert.match(capture.query ?? "", /FROM otel_metrics_/);
+  assert.doesNotMatch(capture.query ?? "", /FROM metric_names_per_hour/);
+});
+
+test("listMetricNames raw fallback queries the four metric tables concurrently", async () => {
+  const state = { inFlight: 0, maxInFlight: 0 };
+
+  await listMetricNames(
+    {
+      async query(input: { query: string }) {
+        if (/^EXISTS TABLE/i.test(input.query.trim())) {
+          return {
+            async json() {
+              return [{ result: 0 }];
+            },
+          };
+        }
+        state.inFlight += 1;
+        state.maxInFlight = Math.max(state.maxInFlight, state.inFlight);
+        await new Promise((resolve) => setImmediate(resolve));
+        state.inFlight -= 1;
+        return {
+          async json() {
+            return [];
+          },
+        };
+      },
+    } as unknown as ClickHouseClient,
+    "project-1",
+    { since: "now() - INTERVAL 24 HOUR", until: "now()" },
+  );
+
+  assert.equal(state.maxInFlight, 4);
+});
+
+test("queryMetrics queries the four metric tables concurrently", async () => {
+  const state = { inFlight: 0, maxInFlight: 0 };
+
+  await queryMetrics(fakeClickhouseConcurrent(state), "project-1", {
+    range: { since: "now() - INTERVAL 1 HOUR", until: "now()" },
+    limit: 100,
+  });
+
+  assert.equal(state.maxInFlight, 4);
+});
+
+test("metricSeries queries the metric tables concurrently", async () => {
+  const state = { inFlight: 0, maxInFlight: 0 };
+
+  await metricSeries(
+    fakeClickhouseConcurrent(state),
+    "project-1",
+    "http.server.duration",
+    { range: { since: "now() - INTERVAL 1 HOUR", until: "now()" } },
+    undefined,
+    { n: 1, unit: "MINUTE" },
+    "avg",
+  );
+
+  assert.equal(state.maxInFlight, 4);
 });
 
 test("queryMetrics returns data-point attributes for every metric kind", async () => {
