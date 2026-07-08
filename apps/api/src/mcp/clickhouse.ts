@@ -683,29 +683,29 @@ export async function queryMetrics(
 ) {
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(params.range);
   const attr = attrConds(params.resourceAttrs);
-  const results: Record<string, unknown>[] = [];
 
-  for (const { table, kind } of METRIC_TABLES) {
-    const conds: string[] = [
-      "ResourceAttributes['superlog.project_id'] = {projectId:String}",
-      `TimeUnix >= ${sinceExpr}`,
-      `TimeUnix <= ${untilExpr}`,
-      ...attr.conds,
-    ];
-    if (params.metricName) conds.push("MetricName = {metricName:String}");
-    if (params.service) conds.push("ResourceAttributes['service.name'] = {service:String}");
+  const perTable = await Promise.all(
+    METRIC_TABLES.map(async ({ table, kind }): Promise<Record<string, unknown>[]> => {
+      const conds: string[] = [
+        "ResourceAttributes['superlog.project_id'] = {projectId:String}",
+        `TimeUnix >= ${sinceExpr}`,
+        `TimeUnix <= ${untilExpr}`,
+        ...attr.conds,
+      ];
+      if (params.metricName) conds.push("MetricName = {metricName:String}");
+      if (params.service) conds.push("ResourceAttributes['service.name'] = {service:String}");
 
-    // Histograms/summaries have no scalar Value; surface the rolled-up
-    // Count/Sum (and Min/Max for histograms) so a point conveys more than just
-    // "an observation happened". Min/Max don't exist on the summary table.
-    const valueExpr =
-      kind === "histogram"
-        ? "NULL AS value, Count AS count, Sum AS sum, Min AS min, Max AS max"
-        : kind === "summary"
-          ? "NULL AS value, Count AS count, Sum AS sum, NULL AS min, NULL AS max"
-          : "Value AS value, NULL AS count, NULL AS sum, NULL AS min, NULL AS max";
+      // Histograms/summaries have no scalar Value; surface the rolled-up
+      // Count/Sum (and Min/Max for histograms) so a point conveys more than just
+      // "an observation happened". Min/Max don't exist on the summary table.
+      const valueExpr =
+        kind === "histogram"
+          ? "NULL AS value, Count AS count, Sum AS sum, Min AS min, Max AS max"
+          : kind === "summary"
+            ? "NULL AS value, Count AS count, Sum AS sum, NULL AS min, NULL AS max"
+            : "Value AS value, NULL AS count, NULL AS sum, NULL AS min, NULL AS max";
 
-    const query = `
+      const query = `
       SELECT
         '${kind}' AS kind,
         toString(TimeUnix) AS timestamp,
@@ -721,28 +721,30 @@ export async function queryMetrics(
       LIMIT {limit:UInt32}
     `;
 
-    try {
-      const r = await ch.query({
-        query,
-        query_params: {
-          projectId,
-          since: sinceSql,
-          until: untilSql,
-          metricName: params.metricName ?? "",
-          service: params.service ?? "",
-          limit: params.limit,
-          ...attr.params,
-        },
-        format: "JSONEachRow",
-      });
-      const rows = (await r.json()) as Record<string, unknown>[];
-      results.push(...rows);
-    } catch (err) {
-      // metric tables may not exist if no metrics of this kind have been ingested yet
-      if (!(err instanceof Error && /UNKNOWN_TABLE|doesn't exist/i.test(err.message))) throw err;
-    }
-  }
+      try {
+        const r = await ch.query({
+          query,
+          query_params: {
+            projectId,
+            since: sinceSql,
+            until: untilSql,
+            metricName: params.metricName ?? "",
+            service: params.service ?? "",
+            limit: params.limit,
+            ...attr.params,
+          },
+          format: "JSONEachRow",
+        });
+        return (await r.json()) as Record<string, unknown>[];
+      } catch (err) {
+        // metric tables may not exist if no metrics of this kind have been ingested yet
+        if (!(err instanceof Error && /UNKNOWN_TABLE|doesn't exist/i.test(err.message))) throw err;
+        return [];
+      }
+    }),
+  );
 
+  const results = perTable.flat();
   results.sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
   return results.slice(0, params.limit);
 }
@@ -1129,17 +1131,110 @@ function cumulativeMonotonicSumQuery(args: {
   `;
 }
 
+// Same shape as traceRollupCoversWindow: the MVs only populate the rollup from
+// their creation forward, so until the backfill reaches back past the window
+// start for this project, the fast path would silently hide names that only
+// occur earlier in the window. A brand-new project with no history before the
+// window falls back too, which is fine — it is low-volume and the raw scan is
+// fast there.
+async function metricNamesRollupCoversWindow(
+  ch: ClickHouseClient,
+  projectId: string,
+  sinceExpr: string,
+  sinceSql: string,
+): Promise<boolean> {
+  const r = await ch.query({
+    query: `
+      SELECT count() AS c
+      FROM (
+        SELECT 1
+        FROM metric_names_per_hour
+        WHERE project_id = {projectId:String} AND hour < ${sinceExpr}
+        LIMIT 1
+      )
+    `,
+    query_params: { projectId, since: sinceSql },
+    format: "JSONEachRow",
+  });
+  const rows = (await r.json()) as { c: string | number }[];
+  return Number(rows[0]?.c ?? 0) > 0;
+}
+
+const METRIC_KIND_SET = new Set<string>(METRIC_TABLES.map((t) => t.kind));
+const METRIC_KIND_ORDER = new Map<string, number>(METRIC_TABLES.map((t, i) => [t.kind, i]));
+
+// Single read over the (project, kind, name, unit, hour) summing rollup —
+// milliseconds at any range where the raw per-table GROUP BYs read millions of
+// map-column rows. The partial first hour rounds down to its cell boundary so
+// names from it are included rather than dropped.
+async function listMetricNamesFromRollup(
+  ch: ClickHouseClient,
+  projectId: string,
+  sinceExpr: string,
+  untilExpr: string,
+  sinceSql: string,
+  untilSql: string,
+): Promise<MetricName[]> {
+  const r = await ch.query({
+    query: `
+      SELECT kind, name, unit, sum(c) AS total
+      FROM metric_names_per_hour
+      WHERE project_id = {projectId:String}
+        AND hour >= toStartOfHour(${sinceExpr})
+        AND hour <= ${untilExpr}
+      GROUP BY kind, name, unit
+      ORDER BY total DESC
+      LIMIT 200 BY kind
+    `,
+    query_params: { projectId, since: sinceSql, until: untilSql },
+    format: "JSONEachRow",
+  });
+  const rows = (await r.json()) as {
+    kind: string;
+    name: string;
+    unit: string;
+    total: string | number;
+  }[];
+  // Match the raw path's output order: tables in METRIC_TABLES order, most
+  // frequent names first within each. Unknown kinds can't be routed to a
+  // series query, so drop them.
+  return rows
+    .filter((row) => METRIC_KIND_SET.has(row.kind))
+    .sort(
+      (a, b) =>
+        (METRIC_KIND_ORDER.get(a.kind) ?? 0) - (METRIC_KIND_ORDER.get(b.kind) ?? 0) ||
+        Number(b.total) - Number(a.total),
+    )
+    .map((row) => ({ name: row.name, kind: row.kind as MetricKind, unit: row.unit }));
+}
+
 export async function listMetricNames(
   ch: ClickHouseClient,
   projectId: string,
   range?: TimeRange,
 ): Promise<MetricName[]> {
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(range);
-  const results: MetricName[] = [];
-  for (const { table, kind } of METRIC_TABLES) {
-    try {
-      const r = await ch.query({
-        query: `
+
+  // Fast path: the picker only needs distinct MetricName/MetricUnit pairs, but
+  // on the raw tables the project filter is a ResourceAttributes map lookup
+  // that no primary-key or partition pruning helps with — on high-volume
+  // projects each per-table GROUP BY reads millions of rows (~0.5 GiB of map
+  // column) and the four scans added up to 10s+ picker loads. Row-capped
+  // sampling (à la ATTRIBUTE_KEY_SCAN_ROW_CAP) is not an option: the raw
+  // tables sort by (ServiceName, MetricName, ...), so a capped scan
+  // systematically drops metrics late in the sort order. The rollup answers
+  // exactly, in milliseconds; anything without it falls back to the raw scan.
+  if (await tableExists(ch, "metric_names_per_hour")) {
+    if (await metricNamesRollupCoversWindow(ch, projectId, sinceExpr, sinceSql)) {
+      return listMetricNamesFromRollup(ch, projectId, sinceExpr, untilExpr, sinceSql, untilSql);
+    }
+  }
+
+  const perTable = await Promise.all(
+    METRIC_TABLES.map(async ({ table, kind }): Promise<MetricName[]> => {
+      try {
+        const r = await ch.query({
+          query: `
           SELECT MetricName AS name, MetricUnit AS unit, count() AS c
           FROM ${table}
           WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
@@ -1149,16 +1244,18 @@ export async function listMetricNames(
           ORDER BY c DESC
           LIMIT 200
         `,
-        query_params: { projectId, since: sinceSql, until: untilSql },
-        format: "JSONEachRow",
-      });
-      const rows = (await r.json()) as { name: string; unit: string; c: string | number }[];
-      for (const row of rows) results.push({ name: row.name, kind, unit: row.unit });
-    } catch (err) {
-      if (!(err instanceof Error && /UNKNOWN_TABLE|doesn't exist/i.test(err.message))) throw err;
-    }
-  }
-  return results;
+          query_params: { projectId, since: sinceSql, until: untilSql },
+          format: "JSONEachRow",
+        });
+        const rows = (await r.json()) as { name: string; unit: string; c: string | number }[];
+        return rows.map((row) => ({ name: row.name, kind, unit: row.unit }));
+      } catch (err) {
+        if (!(err instanceof Error && /UNKNOWN_TABLE|doesn't exist/i.test(err.message))) throw err;
+        return [];
+      }
+    }),
+  );
+  return perTable.flat();
 }
 
 export type MetricSeriesFilter = {
@@ -1195,36 +1292,36 @@ export async function metricSeries(
     groupParams.groupKey = groupBy;
   }
 
-  const results: MetricSeriesRow[] = [];
-  for (const { table, kind } of METRIC_TABLES) {
-    const valueExpr = aggregation ? AGG_EXPR[aggregation][kind] : DEFAULT_AGG_EXPR[kind];
-    if (!valueExpr) continue;
-    const conds: string[] = [
-      "ResourceAttributes['superlog.project_id'] = {projectId:String}",
-      `TimeUnix >= ${sinceExpr}`,
-      `TimeUnix <= ${untilExpr}`,
-      "MetricName = {metricName:String}",
-      ...attr.conds,
-    ];
-    if (filter.service) conds.push("ServiceName = {service:String}");
-    const query =
-      kind === "histogram" && (aggregation === "p95" || aggregation === "p99")
-        ? histogramQuantileQuery({
-            table,
-            step,
-            groupExpr,
-            conds,
-            q: aggregation === "p95" ? 0.95 : 0.99,
-          })
-        : kind === "sum" && (!aggregation || aggregation === "sum")
-          ? cumulativeMonotonicSumQuery({
+  const perTable = await Promise.all(
+    METRIC_TABLES.map(async ({ table, kind }): Promise<MetricSeriesRow[]> => {
+      const valueExpr = aggregation ? AGG_EXPR[aggregation][kind] : DEFAULT_AGG_EXPR[kind];
+      if (!valueExpr) return [];
+      const conds: string[] = [
+        "ResourceAttributes['superlog.project_id'] = {projectId:String}",
+        `TimeUnix >= ${sinceExpr}`,
+        `TimeUnix <= ${untilExpr}`,
+        "MetricName = {metricName:String}",
+        ...attr.conds,
+      ];
+      if (filter.service) conds.push("ServiceName = {service:String}");
+      const query =
+        kind === "histogram" && (aggregation === "p95" || aggregation === "p99")
+          ? histogramQuantileQuery({
               table,
               step,
               groupExpr,
               conds,
-              sinceExpr,
+              q: aggregation === "p95" ? 0.95 : 0.99,
             })
-          : `
+          : kind === "sum" && (!aggregation || aggregation === "sum")
+            ? cumulativeMonotonicSumQuery({
+                table,
+                step,
+                groupExpr,
+                conds,
+                sinceExpr,
+              })
+            : `
           SELECT
             toString(toStartOfInterval(TimeUnix, INTERVAL ${step.n} ${step.unit})) AS bucket,
             ${groupExpr} AS group_key,
@@ -1235,41 +1332,46 @@ export async function metricSeries(
           ORDER BY bucket ASC
           LIMIT 10000
         `;
-    try {
-      const r = await ch.query({
-        query,
-        query_params: {
-          projectId,
-          since: sinceSql,
-          until: untilSql,
-          metricName,
-          service: filter.service ?? "",
-          ...attr.params,
-          ...groupParams,
-        },
-        format: "JSONEachRow",
-      });
-      const rows = (await r.json()) as {
-        bucket: string;
-        group_key: string;
-        v: string | number | null;
-      }[];
-      for (const row of rows) {
-        if (row.v === null) continue;
-        const value = Number(row.v);
-        if (!Number.isFinite(value)) continue;
-        results.push({ bucket: row.bucket, group: row.group_key, value });
-      }
-    } catch (err) {
-      if (
-        !(
-          err instanceof Error &&
-          /UNKNOWN_TABLE|UNKNOWN_IDENTIFIER|doesn't exist/i.test(err.message)
+      try {
+        const r = await ch.query({
+          query,
+          query_params: {
+            projectId,
+            since: sinceSql,
+            until: untilSql,
+            metricName,
+            service: filter.service ?? "",
+            ...attr.params,
+            ...groupParams,
+          },
+          format: "JSONEachRow",
+        });
+        const rows = (await r.json()) as {
+          bucket: string;
+          group_key: string;
+          v: string | number | null;
+        }[];
+        const parsed: MetricSeriesRow[] = [];
+        for (const row of rows) {
+          if (row.v === null) continue;
+          const value = Number(row.v);
+          if (!Number.isFinite(value)) continue;
+          parsed.push({ bucket: row.bucket, group: row.group_key, value });
+        }
+        return parsed;
+      } catch (err) {
+        if (
+          !(
+            err instanceof Error &&
+            /UNKNOWN_TABLE|UNKNOWN_IDENTIFIER|doesn't exist/i.test(err.message)
+          )
         )
-      )
-        throw err;
-    }
-  }
+          throw err;
+        return [];
+      }
+    }),
+  );
+  const results = perTable.flat();
   results.sort((a, b) => a.bucket.localeCompare(b.bucket));
   return results;
 }
