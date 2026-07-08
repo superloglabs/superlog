@@ -11,6 +11,8 @@ type PrCopyResult = {
 type PrCopyPr = {
   title?: string | null;
   body?: string | null;
+  validationPassed?: boolean;
+  validationSummary?: string | null;
 };
 
 function withSuperlogPrefix(title: string): string {
@@ -45,7 +47,22 @@ export function buildPrBody(opts: {
       "",
       `[Incident on Superlog](${opts.incidentUrl})`,
     ].join("\n");
-  return withLinearReference(base, opts.result.linearTicket);
+  return withLinearReference(withValidationCaveat(base, opts.pr), opts.result.linearTicket);
+}
+
+// Unvalidated patches still ship for human review, but the reviewer must see
+// that at a glance: prepend a caveat block carrying the agent's own account
+// of what it could and couldn't run.
+function withValidationCaveat(body: string, pr: PrCopyPr): string {
+  if (pr.validationPassed !== false) return body;
+  const summary = pr.validationSummary?.trim();
+  return [
+    "> [!WARNING]",
+    "> **Validation did not pass in the investigation sandbox.** Review with care.",
+    ...(summary ? summary.split("\n").map((line) => `> ${line}`) : []),
+    "",
+    body,
+  ].join("\n");
 }
 
 // Deterministically stitch the filed Linear ticket into the PR body so the

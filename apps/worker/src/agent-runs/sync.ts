@@ -447,19 +447,15 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
 
       if (snapshot.result.state === "complete") {
         const pr = snapshot.result.pr ?? null;
-        if (pr && pr.validationPassed === false) {
-          await failAgentRun(ctx, "patch_validation_failed", snapshot.result.summary, {
-            existingResult: snapshot.result,
-          });
-          await meterAgentRun("failed");
-          return;
-        }
-        const merged = await tryMergeAfterAgentRun(
-          ctx,
-          snapshot.result,
-          sessionId,
-          nextRuntimeMinutes,
-        );
+        // Unvalidated patches skip merge analysis: before the validation gate
+        // was removed these runs failed before dedupe ever ran, so letting
+        // the merge swallow them now would hide exactly the patches the
+        // warning-flagged PR path exists to surface. Validated results keep
+        // the existing dedupe semantics.
+        const merged =
+          pr?.validationPassed === false
+            ? false
+            : await tryMergeAfterAgentRun(ctx, snapshot.result, sessionId, nextRuntimeMinutes);
         if (merged) {
           // tryMergeAfterAgentRun commits the terminal state itself; if
           // it succeeds, the agentRun is complete (the merged-incident
@@ -470,11 +466,13 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           );
           return;
         }
-        const shouldOpenPr =
-          !!pr &&
-          pr.validationPassed === true &&
-          pr.openStatus === "pending" &&
-          ctx.prPolicy !== "never";
+        // A patch always ships as a PR (policy permitting) — validation state
+        // is reviewer information rendered into the PR body, not a gate. The
+        // model keeps report_failure for "I executed my validation and the
+        // patch is actually broken"; second-guessing an offered patch into a
+        // failed run buried good fixes whose tests simply couldn't run in the
+        // sandbox (no DATABASE_URL, private registries, ...).
+        const shouldOpenPr = !!pr && pr.openStatus === "pending" && ctx.prPolicy !== "never";
         if (shouldOpenPr && pr) {
           await completeWithPullRequest(ctx, snapshot.result, pr, sessionId, nextRuntimeMinutes);
           await meterAgentRun("complete_with_pr");
