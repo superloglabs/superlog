@@ -173,11 +173,14 @@ export type AgentRunnerBackend = {
   // tool). `onReply` posts the reply text to the chat's channel — the worker
   // owns Slack delivery; the backend only surfaces the calls and acks them
   // (error-acks when onReply throws, so the agent knows delivery failed).
+  // `replyId` is stable across dispatch retries of the same tool call (the
+  // provider tool-use id): if a reply posted but its ack failed, the retry
+  // passes the same id and the worker's dedupe skips the re-post.
   dispatchChatToolCalls(input: {
     sessionId: string;
     orgId: string;
     projectId: string;
     chatId: string;
-    onReply(text: string): Promise<void>;
+    onReply(text: string, replyId: string): Promise<void>;
   }): Promise<AgentChatDispatchResult>;
 };

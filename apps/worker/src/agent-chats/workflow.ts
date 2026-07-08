@@ -72,7 +72,11 @@ export type AgentChatWorkflowDeps = {
   ): Promise<boolean>;
   // Posts to the chat's Slack thread; throws (ChatDeliveryUnavailableError
   // when no target exists) so tool acks and retries see the failure.
-  postReply(chat: AgentChat, text: string): Promise<void>;
+  // `dedupeId`, when set, must make the post idempotent across retries — a
+  // reply whose provider ack failed is re-dispatched with the same id and
+  // must not post twice. Omitted for one-shot lifecycle notices, which are
+  // already guarded by their state transitions.
+  postReply(chat: AgentChat, text: string, dedupeId?: string): Promise<void>;
   // Called once per finished turn, after the state transition commits.
   meterTurn(chat: AgentChat, snapshot: AgentRunnerSnapshot): Promise<void>;
 };
@@ -178,7 +182,7 @@ export async function syncRunningAgentChat(
     orgId: context.orgId,
     projectId: chat.projectId,
     chatId: chat.id,
-    onReply: (text) => deps.postReply(chat, text),
+    onReply: (text, replyId) => deps.postReply(chat, text, replyId),
   });
 
   const snapshot = await runner.collect(sessionId);

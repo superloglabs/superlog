@@ -100,7 +100,43 @@ const deps: AgentChatWorkflowDeps = {
       .returning({ id: schema.agentChats.id });
     return rows.length > 0;
   },
-  postReply: (chat, text) => postAgentChatMessage(chat, text),
+  async postReply(chat, text, dedupeId) {
+    if (!dedupeId) {
+      await postAgentChatMessage(chat, text);
+      return;
+    }
+    // Idempotency across dispatch retries: a reply that posted but whose
+    // provider ack failed is re-dispatched with the same id. Claim a marker
+    // row first (unique on chatId+dedupeKey); a conflict means an earlier
+    // pass already posted this reply, so just let the caller re-ack. The
+    // claim is released on post failure so a transient Slack error retries
+    // instead of silently dropping the reply. processedAt is pre-set so the
+    // marker never surfaces as a pending inbound message.
+    const [claim] = await db
+      .insert(schema.agentChatMessages)
+      .values({
+        chatId: chat.id,
+        authorSlackUserId: null,
+        text,
+        slackMessageTs: null,
+        dedupeKey: `outbound:${dedupeId}`,
+        processedAt: new Date(),
+      })
+      .onConflictDoNothing({
+        target: [schema.agentChatMessages.chatId, schema.agentChatMessages.dedupeKey],
+      })
+      .returning({ id: schema.agentChatMessages.id });
+    if (!claim) return;
+    try {
+      await postAgentChatMessage(chat, text);
+    } catch (err) {
+      await db
+        .delete(schema.agentChatMessages)
+        .where(eq(schema.agentChatMessages.id, claim.id))
+        .catch(() => {});
+      throw err;
+    }
+  },
   async meterTurn(chat, snapshot) {
     const project = await db.query.projects.findFirst({
       where: eq(schema.projects.id, chat.projectId),
