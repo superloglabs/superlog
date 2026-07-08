@@ -1,4 +1,5 @@
 import { SpanStatusCode, trace } from "@opentelemetry/api";
+import { tickAgentChats } from "../agent-chats/tick.js";
 import { tickAgentRuns } from "../agent-runs/tick.js";
 import { tickAlerts } from "../alerts.js";
 import { tickAutorecovery } from "../autorecovery.js";
@@ -17,6 +18,7 @@ export type WorkerTickResult = {
   spans: number;
   logs: number;
   agentRuns: number;
+  agentChats: number;
   alerts: number;
   digests: number;
   webhooks: number;
@@ -61,6 +63,7 @@ export function createWorkerTick(opts: {
         const spans = await safe("spans", opts.telemetryIngestor.tickSpans, 0);
         const logs = await safe("logs", opts.telemetryIngestor.tickLogs, 0);
         const agentRuns = await safe("agent_runs", tickAgentRuns, 0);
+        const agentChats = await safe("agent_chats", tickAgentChats, 0);
         const alerts = await safe(
           "alerts",
           () => tickAlerts(opts.clickhouse, handleIssueTransition),
@@ -80,6 +83,7 @@ export function createWorkerTick(opts: {
         span.setAttribute("tick.spans", spans);
         span.setAttribute("tick.logs", logs);
         span.setAttribute("tick.agent_runs", agentRuns);
+        span.setAttribute("tick.agent_chats", agentChats);
         span.setAttribute("tick.alerts", alerts);
         span.setAttribute("tick.digests", digests);
         span.setAttribute("tick.webhooks", webhooks);
@@ -90,6 +94,7 @@ export function createWorkerTick(opts: {
           spans,
           logs,
           agentRuns,
+          agentChats,
           alerts,
           digests,
           webhooks,

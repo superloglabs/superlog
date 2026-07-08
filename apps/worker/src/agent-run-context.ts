@@ -329,7 +329,8 @@ function isGithubRepoEnabled(repoAccess: GithubRepoAccess, repoId: number): bool
 }
 
 export async function listAccessibleGithubRepositories(
-  ctx: AgentRunContext,
+  // Only the installs are needed — chats (no incident) share this path.
+  ctx: Pick<AgentRunContext, "githubInstalls">,
 ): Promise<InstalledGithubRepo[]> {
   const results = await Promise.all(
     ctx.githubInstalls.map(async ({ installation, allowedRepoIds }) => {
