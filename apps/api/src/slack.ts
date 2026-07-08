@@ -3,10 +3,15 @@ import {
   confirmResolutionProposal,
   db,
   dismissResolutionProposal,
+  findChatByAnchor,
+  mentionsBot,
+  recordInboundChatMessage,
   recordInboundInteraction,
   requestFollowUpAgentRun,
+  resolveChatInstallation,
   resolveIncident,
   schema,
+  stripBotMention,
   syncLoopsContactsForOrg,
 } from "@superlog/db";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
@@ -24,8 +29,12 @@ import { mergeAgentPullRequestAndResolveIncident } from "./pr-merge-service.js";
 
 const log = logger.child({ scope: "slack" });
 
+// `app_mentions:read` and `im:history` serve the Q&A chat (@-mentions and
+// DMs). Existing installations predating them keep working: channel mentions
+// also arrive as plain `message` events, which the chat router matches by
+// bot-user id. Only DMs strictly need the new scope (and thus a reinstall).
 const SCOPES =
-  "chat:write,chat:write.public,channels:read,groups:read,channels:history,groups:history";
+  "chat:write,chat:write.public,channels:read,groups:read,channels:history,groups:history,app_mentions:read,im:history";
 
 type Vars = { userId: string; orgId: string | null };
 
@@ -677,7 +686,8 @@ async function handleFollowUpConfirm(
 async function postSlackThreadReply(opts: {
   botToken: string;
   channel: string;
-  threadTs: string;
+  // Null posts to the channel root (DM conversations have no thread anchor).
+  threadTs: string | null;
   text: string;
 }): Promise<void> {
   try {
@@ -689,7 +699,7 @@ async function postSlackThreadReply(opts: {
       },
       body: JSON.stringify({
         channel: opts.channel,
-        thread_ts: opts.threadTs,
+        thread_ts: opts.threadTs ?? undefined,
         text: opts.text,
       }),
     });
@@ -935,6 +945,47 @@ export function mountSlackAuthed(app: Hono<any>): void {
     }
     return c.json({ ok: true });
   });
+
+  app.get("/api/projects/:projectId/slack-chat-default", async (c) => {
+    const projectId = c.req.param("projectId");
+    await requireProjectAccess(c, projectId);
+    const install = await findInstallation(projectId);
+    if (!install) return c.json({ installed: false, isDefaultChatProject: false });
+    return c.json({ installed: true, isDefaultChatProject: install.isDefaultChatProject });
+  });
+
+  // Mark this project as the workspace's default for Q&A chats (bot mentions
+  // outside any project's routed channel). One default per workspace: setting
+  // it clears the flag on the team's other installations first, matching the
+  // partial unique index.
+  app.put("/api/projects/:projectId/slack-chat-default", async (c) => {
+    const projectId = c.req.param("projectId");
+    await requireProjectAccess(c, projectId);
+    const install = await findInstallation(projectId);
+    if (!install) return c.json({ error: "slack not installed" }, 400);
+
+    const body = (await c.req.json().catch(() => ({}))) as { enabled?: unknown };
+    const enabled = typeof body.enabled === "boolean" ? body.enabled : true;
+
+    await db.transaction(async (tx) => {
+      if (enabled) {
+        await tx
+          .update(schema.slackInstallations)
+          .set({ isDefaultChatProject: false })
+          .where(
+            and(
+              eq(schema.slackInstallations.teamId, install.teamId),
+              eq(schema.slackInstallations.isDefaultChatProject, true),
+            ),
+          );
+      }
+      await tx
+        .update(schema.slackInstallations)
+        .set({ isDefaultChatProject: enabled })
+        .where(eq(schema.slackInstallations.id, install.id));
+    });
+    return c.json({ ok: true, isDefaultChatProject: enabled });
+  });
 }
 
 async function findInstallation(projectId: string) {
@@ -986,19 +1037,52 @@ async function upsertInstallation(v: {
 
 async function handleSlackEventEnvelope(payload: SlackEventEnvelope): Promise<void> {
   const event = payload.event;
-  if (!event || event.type !== "message") return;
+  if (!event || (event.type !== "message" && event.type !== "app_mention")) return;
   if (event.subtype || event.bot_id) return;
-  if (!event.channel || !event.thread_ts || !event.ts || event.thread_ts === event.ts) return;
+  if (!event.channel || !event.ts || !event.user) return;
   if (typeof event.text !== "string" || event.text.trim().length === 0) return;
+  const inbound: SlackInboundEvent = {
+    ...event,
+    channel: event.channel,
+    ts: event.ts,
+    user: event.user,
+    text: event.text,
+  };
 
-  const incident = await db.query.incidents.findFirst({
-    where: and(
-      eq(schema.incidents.slackChannelId, event.channel),
-      eq(schema.incidents.slackThreadTs, event.thread_ts),
-    ),
-  });
-  if (!incident) return;
+  // Incident threads first: replies there talk to the investigation, never to
+  // a chat. A channel mention fires BOTH a `message` and an `app_mention`
+  // event (with distinct event_ids), so only the `message` copy is processed
+  // here — otherwise one reply would record two human_reply events.
+  if (inbound.thread_ts && inbound.thread_ts !== inbound.ts) {
+    const incident = await db.query.incidents.findFirst({
+      where: and(
+        eq(schema.incidents.slackChannelId, inbound.channel),
+        eq(schema.incidents.slackThreadTs, inbound.thread_ts),
+      ),
+    });
+    if (incident) {
+      if (inbound.type !== "message") return;
+      await handleIncidentThreadReply(payload, inbound, incident);
+      return;
+    }
+  }
 
+  await handleChatEvent(payload, inbound);
+}
+
+type SlackInboundEvent = NonNullable<SlackEventEnvelope["event"]> & {
+  channel: string;
+  ts: string;
+  user: string;
+  text: string;
+};
+
+async function handleIncidentThreadReply(
+  payload: SlackEventEnvelope,
+  event: SlackInboundEvent,
+  incident: schema.Incident,
+): Promise<void> {
+  if (!event.thread_ts) return;
   // Talking to the investigation: continue the SAME durable session where we
   // can (resume / steer), and only spin a fresh run when no session survives.
   // The shared path records the message, reactivates a terminal run, or
@@ -1046,6 +1130,154 @@ async function handleSlackEventEnvelope(payload: SlackEventEnvelope): Promise<vo
       text: ":mag: On it — I'll follow up in this thread.",
     });
   }
+}
+
+// Q&A chat routing: a bot mention (channel) or any human message (DM) opens a
+// chat; further messages in the same thread / DM continue it without needing
+// another mention. The mention double-delivery (message + app_mention) and
+// Events API retries collapse onto the (channel, ts)-keyed dedupe in
+// recordInboundChatMessage, so both copies are safe to route.
+// DMs are one continuous conversation per channel (no thread anchor); channel
+// chats anchor on the thread, with a top-level mention rooting a new thread at
+// its own ts.
+export function chatAnchorThreadTs(event: {
+  channel_type?: string;
+  thread_ts?: string;
+  ts: string;
+}): string | null {
+  return event.channel_type === "im" ? null : (event.thread_ts ?? event.ts);
+}
+
+async function handleChatEvent(
+  payload: SlackEventEnvelope,
+  event: SlackInboundEvent,
+): Promise<void> {
+  const teamId = payload.team_id ?? "";
+  if (!teamId) return;
+  const isDm = event.channel_type === "im";
+  const anchorThreadTs = chatAnchorThreadTs(event);
+
+  const existing = await findChatByAnchor(db, event.channel, anchorThreadTs);
+
+  const installations = await listInstallationsForTeam(teamId);
+  const botUserId =
+    installations.find((i) => i.botUserId)?.botUserId ??
+    payload.authorizations?.find((a) => a.is_bot !== false)?.user_id ??
+    null;
+  if (event.user === botUserId) return;
+
+  const mentioned = mentionsBot(event.text, botUserId) || event.type === "app_mention";
+  // A channel message that neither mentions the bot nor lands in an existing
+  // chat thread is ordinary team conversation.
+  if (!existing && !isDm && !mentioned) return;
+
+  const text = stripBotMention(event.text, botUserId).trim();
+  if (!text) return;
+
+  let target: {
+    projectId: string;
+    installationId: string;
+    installation: schema.SlackInstallation | null;
+  } | null = null;
+  if (existing) {
+    const pinned = existing.slackInstallationId
+      ? (installations.find((i) => i.id === existing.slackInstallationId) ?? null)
+      : null;
+    target = {
+      projectId: existing.projectId,
+      installationId: existing.slackInstallationId ?? pinned?.id ?? "",
+      installation: pinned ?? installations[0] ?? null,
+    };
+    if (!target.installationId && installations[0]) target.installationId = installations[0].id;
+    if (!target.installationId) return;
+  } else {
+    const resolution = resolveChatInstallation(
+      installations.map((i) => ({
+        id: i.id,
+        projectId: i.projectId,
+        channelId: i.channelId,
+        isDefaultChatProject: i.isDefaultChatProject,
+        installedAt: i.installedAt,
+        createdAt: i.createdAt,
+      })),
+      event.channel,
+    );
+    if (resolution.outcome === "none") return;
+    if (resolution.outcome === "ambiguous") {
+      // Only a fresh mention gets the disambiguation nudge; never guess.
+      if (!mentioned && !isDm) return;
+      const anyInstall = await findInstallationForTeam(teamId);
+      if (anyInstall) {
+        await postSlackThreadReply({
+          botToken: anyInstall.botAccessToken,
+          channel: event.channel,
+          threadTs: isDm ? null : anchorThreadTs,
+          text: ":grey_question: This workspace is connected to several Superlog projects, so I don't know which one you're asking about. Mention me in a project's incident channel, or mark one project as the default for questions in its Superlog Slack settings.",
+        });
+      }
+      return;
+    }
+    const row = installations.find((i) => i.id === resolution.installation.id) ?? null;
+    if (!row) return;
+    target = { projectId: row.projectId, installationId: row.id, installation: row };
+  }
+
+  const result = await recordInboundChatMessage(db, {
+    projectId: target.projectId,
+    slackInstallationId: target.installationId,
+    slackTeamId: teamId,
+    slackChannelId: event.channel,
+    slackThreadTs: anchorThreadTs,
+    authorSlackUserId: event.user ?? null,
+    text,
+    slackMessageTs: event.ts,
+    // (channel, ts) — not the event id — so the app_mention/message twin
+    // events for one mention dedupe against each other.
+    dedupeKey: `slackchat:${event.channel}:${event.ts}`,
+  });
+
+  if (result.outcome === "duplicate") return;
+  if (result.outcome === "skipped") {
+    if (result.reason === "chat_disabled" && !existing && target.installation) {
+      await postSlackThreadReply({
+        botToken: target.installation.botAccessToken,
+        channel: event.channel,
+        threadTs: isDm ? null : anchorThreadTs,
+        text: ":no_bell: Q&A chat is turned off for this project in Superlog's automation settings.",
+      });
+    }
+    logger.info(
+      { scope: "slack", project_id: target.projectId, reason: result.reason },
+      "slack chat message skipped",
+    );
+    return;
+  }
+
+  // Ack only the message that opens a conversation; replies get the agent's
+  // actual answer without an extra "on it" in between.
+  if (result.created && target.installation) {
+    await postSlackThreadReply({
+      botToken: target.installation.botAccessToken,
+      channel: event.channel,
+      threadTs: isDm ? null : anchorThreadTs,
+      text: ":mag: On it — I'll answer here shortly.",
+    });
+  }
+}
+
+// Every non-revoked installation row for a workspace (one per connected
+// project). Callers pick between them via resolveChatInstallation.
+async function listInstallationsForTeam(teamId: string) {
+  if (!teamId) return [];
+  return db.query.slackInstallations.findMany({
+    where: and(
+      eq(schema.slackInstallations.teamId, teamId),
+      isNull(schema.slackInstallations.revokedAt),
+    ),
+    orderBy: desc(
+      sql`coalesce(${schema.slackInstallations.installedAt}, ${schema.slackInstallations.createdAt})`,
+    ),
+  });
 }
 
 async function resolveUserOrg(
@@ -1249,11 +1481,16 @@ type SlackEventEnvelope = {
   challenge?: string;
   event_id?: string;
   team_id?: string;
+  // The app's own identity in this workspace; fallback for legacy
+  // installation rows that predate the bot_user_id column.
+  authorizations?: Array<{ user_id?: string; is_bot?: boolean }>;
   event?: {
     type?: string;
     subtype?: string;
     text?: string;
     channel?: string;
+    // "im" for DMs with the bot (delivered via the im:history scope).
+    channel_type?: string;
     thread_ts?: string;
     ts?: string;
     user?: string;

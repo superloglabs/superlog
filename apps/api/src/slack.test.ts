@@ -176,3 +176,22 @@ test("listSlackChannels returns an error when the page cap is exhausted", async 
   assert.ok(!result.ok);
   assert.equal(result.error, "pagination_limit_exceeded");
 });
+
+test("chat anchors: top-level channel mention roots a thread at its own ts", async () => {
+  const { chatAnchorThreadTs } = await import("./slack.js");
+  assert.equal(chatAnchorThreadTs({ ts: "111.222" }), "111.222");
+});
+
+test("chat anchors: a threaded message anchors on the thread root", async () => {
+  const { chatAnchorThreadTs } = await import("./slack.js");
+  assert.equal(chatAnchorThreadTs({ ts: "111.333", thread_ts: "111.222" }), "111.222");
+});
+
+test("chat anchors: DMs have no thread anchor (one conversation per channel)", async () => {
+  const { chatAnchorThreadTs } = await import("./slack.js");
+  assert.equal(chatAnchorThreadTs({ ts: "111.222", channel_type: "im" }), null);
+  assert.equal(
+    chatAnchorThreadTs({ ts: "111.333", thread_ts: "111.222", channel_type: "im" }),
+    null,
+  );
+});

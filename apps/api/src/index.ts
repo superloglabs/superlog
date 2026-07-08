@@ -1173,6 +1173,7 @@ async function getProjectAutomation(projectId: string): Promise<{
   maxHumanResumeCount: number;
   customInstructions: string;
   agentRunEnabled: boolean;
+  chatEnabled: boolean;
   linearTicketPolicy: schema.LinearTicketPolicy;
   linearTicketInstructions: schema.LinearTicketInstruction[];
   prPolicy: schema.PrPolicy;
@@ -1191,6 +1192,7 @@ async function getProjectAutomation(projectId: string): Promise<{
     maxHumanResumeCount: row?.maxHumanResumeCount ?? 3,
     customInstructions: row?.customInstructions ?? "",
     agentRunEnabled: row?.agentRunEnabled ?? true,
+    chatEnabled: row?.chatEnabled ?? true,
     linearTicketPolicy: row?.linearTicketPolicy ?? "on_ready_to_pr",
     linearTicketInstructions: row?.linearTicketInstructions ?? [],
     prPolicy: row?.prPolicy ?? "on_ready_to_pr",
@@ -1654,6 +1656,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     maxHumanResumeCount?: unknown;
     customInstructions?: unknown;
     agentRunEnabled?: unknown;
+    chatEnabled?: unknown;
     linearTicketPolicy?: unknown;
     linearTicketInstructions?: unknown;
     prPolicy?: unknown;
@@ -1683,6 +1686,8 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
       : current.customInstructions;
   const agentRunEnabled =
     typeof body.agentRunEnabled === "boolean" ? body.agentRunEnabled : current.agentRunEnabled;
+  const chatEnabled =
+    typeof body.chatEnabled === "boolean" ? body.chatEnabled : current.chatEnabled;
   const linearTicketPolicy: schema.LinearTicketPolicy =
     typeof body.linearTicketPolicy === "string" && VALID_AGENT_POLICIES.has(body.linearTicketPolicy)
       ? (body.linearTicketPolicy as schema.LinearTicketPolicy)
@@ -1762,6 +1767,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     maxHumanResumeCount,
     customInstructions,
     agentRunEnabled,
+    chatEnabled,
     linearTicketPolicy,
     linearTicketInstructions,
     prPolicy,
@@ -1784,6 +1790,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
         maxHumanResumeCount,
         customInstructions,
         agentRunEnabled,
+        chatEnabled,
         linearTicketPolicy,
         linearTicketInstructions,
         prPolicy,
