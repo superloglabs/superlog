@@ -2,12 +2,14 @@ import { z } from "zod";
 
 // The telemetry signals each ingest source can carry. OTLP (the SDK/exporter
 // path) carries all three; AWS (CloudWatch → Firehose) carries logs+metrics;
-// Vercel Drains carry traces+logs; the Railway API puller carries logs+metrics.
+// Vercel Drains carry traces+logs; the Railway and Render API pullers carry
+// logs+metrics.
 export const INGEST_SOURCE_SIGNALS = {
   otlp: ["traces", "logs", "metrics"],
   aws: ["logs", "metrics"],
   vercel: ["traces", "logs"],
   railway: ["logs", "metrics"],
+  render: ["logs", "metrics"],
 } as const;
 
 export type IngestSource = keyof typeof INGEST_SOURCE_SIGNALS;
@@ -18,6 +20,7 @@ export type IngestFilterState = {
   aws: { logs: boolean; metrics: boolean };
   vercel: { traces: boolean; logs: boolean };
   railway: { logs: boolean; metrics: boolean };
+  render: { logs: boolean; metrics: boolean };
 };
 
 /** Stable key for a (source, signal) pair — matches the proxy's filter key. */
@@ -46,6 +49,7 @@ export function deriveIngestFilterState(disabled: Set<string>): IngestFilterStat
     aws: { logs: on("aws", "logs"), metrics: on("aws", "metrics") },
     vercel: { traces: on("vercel", "traces"), logs: on("vercel", "logs") },
     railway: { logs: on("railway", "logs"), metrics: on("railway", "metrics") },
+    render: { logs: on("render", "logs"), metrics: on("render", "metrics") },
   };
 }
 
@@ -57,6 +61,7 @@ export const ingestFilterStateSchema = z
     aws: z.object({ logs: z.boolean(), metrics: z.boolean() }).strict(),
     vercel: z.object({ traces: z.boolean(), logs: z.boolean() }).strict(),
     railway: z.object({ logs: z.boolean(), metrics: z.boolean() }).strict(),
+    render: z.object({ logs: z.boolean(), metrics: z.boolean() }).strict(),
   })
   .strict();
 

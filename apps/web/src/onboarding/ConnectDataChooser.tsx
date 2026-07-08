@@ -11,6 +11,7 @@ import {
   ChevronRightIcon,
   CloudflareIcon,
   RailwayIcon,
+  RenderIcon,
   TerminalIcon,
   VercelIcon,
 } from "./icons.tsx";
@@ -27,6 +28,7 @@ function ConnectGlyph({ icon }: { icon: ConnectIcon }) {
     cloudflare: CloudflareIcon,
     vercel: VercelIcon,
     railway: RailwayIcon,
+    render: RenderIcon,
     terminal: TerminalIcon,
   };
   const Glyph = map[icon];
@@ -113,6 +115,7 @@ export function ConnectDataChooser({
     cloudflare: capabilities.data?.cloudflareConnect ?? false,
     vercel: capabilities.data?.vercelConnect ?? false,
     railway: capabilities.data?.railwayConnect ?? false,
+    render: capabilities.data?.renderConnect ?? false,
   });
   return (
     <>

@@ -14,6 +14,7 @@ import {
   type LinearTicketInstruction,
   type LinearTicketPolicy,
   type PrPolicy,
+  type RenderOwner,
   type RepoBranch,
   type StackComponent,
   type WebhookDelivery,
@@ -22,6 +23,7 @@ import {
   useCloudConnections,
   useCloudStackHealth,
   useCloudflareInstallation,
+  useConnectRender,
   useCreateCloudConnection,
   useCreateKey,
   useCreateMcpToken,
@@ -55,6 +57,8 @@ import {
   useRailwayInstallation,
   useRedeliverWebhook,
   useRemoveIntegration,
+  useRenderInstallation,
+  useRenderOwners,
   useResetGithubCommitAuthor,
   useRevokeKey,
   useRevokeMcpToken,
@@ -85,6 +89,7 @@ import {
   useUninstallCloudflare,
   useUninstallLinear,
   useUninstallRailway,
+  useUninstallRender,
   useUninstallSlack,
   useUninstallVercel,
   useUpdateGithubRepoAccess,
@@ -100,6 +105,7 @@ import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
 import { Btn, Chip, FieldLabel, Input, Label, Tile } from "./design/ui";
 import { McpInstallPanel } from "./onboarding/McpInstallDialog.tsx";
 import { InfoIcon } from "./onboarding/icons.tsx";
+import { renderErrorMessage } from "./onboarding/renderConnectModel.ts";
 import { VERCEL_PLAN_REQUIREMENT } from "./onboarding/vercelConnectModel.ts";
 import { AgentMemoriesCard } from "./settings/AgentMemoriesCard.tsx";
 import { BillingCard } from "./settings/BillingCard.tsx";
@@ -626,6 +632,7 @@ function ProjectSectionView({
             <CloudflareCard projectId={projectId} />
             <VercelCard projectId={projectId} />
             <RailwayCard projectId={projectId} />
+            <RenderCard projectId={projectId} />
             <AwsCard projectId={projectId} />
             <IngestSourcesCard projectId={projectId} />
           </div>
@@ -1378,6 +1385,159 @@ function RailwayCard({ projectId }: { projectId: string | undefined }) {
   );
 }
 
+// Render connect is an API-key paste (no OAuth redirect), so the card embeds
+// the same two-step form as the onboarding flow in a compact shape: validate
+// the key → pick a workspace → connect.
+function RenderCard({ projectId }: { projectId: string | undefined }) {
+  const install = useRenderInstallation(projectId);
+  const validate = useRenderOwners(projectId);
+  const connect = useConnectRender(projectId);
+  const uninstall = useUninstallRender(projectId);
+
+  const [apiKey, setApiKey] = useState("");
+  const [owners, setOwners] = useState<RenderOwner[] | null>(null);
+  const [ownerId, setOwnerId] = useState<string | null>(null);
+  const [connecting, setConnecting] = useState(false);
+
+  const installed = install.data?.installed === true;
+  const serviceCount = install.data?.installed
+    ? install.data.services.filter((s) => !s.suspended).length
+    : 0;
+
+  const reset = () => {
+    setApiKey("");
+    setOwners(null);
+    setOwnerId(null);
+    setConnecting(false);
+    validate.reset();
+    connect.reset();
+  };
+
+  const error = connect.error
+    ? renderErrorMessage(connect.error)
+    : validate.error
+      ? renderErrorMessage(validate.error)
+      : null;
+
+  return (
+    <Tile label="Render">
+      <div className="space-y-3">
+        <p className="text-[13px] text-muted">
+          Paste a Render API key and pick the workspace to share — we pull your services' logs and
+          infra metrics from Render's API into this project automatically. The key is stored
+          encrypted; revoke it in Render at any time.
+        </p>
+        <div>
+          {installed ? (
+            <Chip tone="success" dot>
+              {install.data?.installed && install.data.ownerName
+                ? `${install.data.ownerName} — ${serviceCount === 1 ? "1 service" : `${serviceCount} services`}`
+                : `${serviceCount} services`}
+            </Chip>
+          ) : (
+            <Chip tone="muted" dot>
+              Not connected
+            </Chip>
+          )}
+        </div>
+        {connecting && !owners && (
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (validate.isPending || !apiKey.trim()) return;
+              validate.mutate(apiKey.trim(), {
+                onSuccess: ({ owners }) => {
+                  setOwners(owners);
+                  setOwnerId(owners.length === 1 ? (owners[0]?.id ?? null) : null);
+                },
+              });
+            }}
+          >
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="rnd_…"
+              autoComplete="off"
+              spellCheck={false}
+              className="h-[32px] min-w-0 flex-1 rounded-[8px] border border-border bg-surface-2 px-2.5 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:outline-none"
+            />
+            <Btn
+              size="sm"
+              variant="primary"
+              type="submit"
+              loading={validate.isPending}
+              disabled={!apiKey.trim()}
+            >
+              Validate
+            </Btn>
+            <Btn size="sm" variant="secondary" onClick={reset}>
+              Cancel
+            </Btn>
+          </form>
+        )}
+        {connecting && owners && (
+          <div className="flex items-center gap-2">
+            <select
+              value={ownerId ?? ""}
+              onChange={(e) => setOwnerId(e.target.value || null)}
+              className="h-[32px] min-w-0 flex-1 rounded-[8px] border border-border bg-surface-2 px-2 text-[12.5px] text-fg focus:outline-none"
+            >
+              <option value="">Pick a workspace…</option>
+              {owners.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name}
+                  {o.type === "team" ? " (team)" : ""}
+                </option>
+              ))}
+            </select>
+            <Btn
+              size="sm"
+              variant="primary"
+              loading={connect.isPending}
+              disabled={!ownerId}
+              onClick={() => {
+                if (!ownerId) return;
+                connect.mutate({ apiKey: apiKey.trim(), ownerId }, { onSuccess: () => reset() });
+              }}
+            >
+              Connect
+            </Btn>
+            <Btn size="sm" variant="secondary" onClick={reset}>
+              Cancel
+            </Btn>
+          </div>
+        )}
+        {error && <p className="m-0 text-[12.5px] text-danger">{error}</p>}
+        {!connecting && (
+          <div className="flex items-center gap-2">
+            <Btn
+              size="sm"
+              variant={installed ? "secondary" : "primary"}
+              disabled={!projectId}
+              onClick={() => setConnecting(true)}
+            >
+              {installed ? "Reconnect" : "Connect Render"}
+            </Btn>
+            {installed && (
+              <Btn
+                size="sm"
+                variant="danger"
+                loading={uninstall.isPending}
+                disabled={!projectId || uninstall.isPending}
+                onClick={() => uninstall.mutate()}
+              >
+                Disconnect
+              </Btn>
+            )}
+          </div>
+        )}
+      </div>
+    </Tile>
+  );
+}
+
 function SlackRoutingCard({ projectId }: { projectId: string | undefined }) {
   const install = useSlackInstallation();
   const installed = install.data?.installed === true;
@@ -1748,7 +1908,7 @@ function IngestSourcesCard({ projectId }: { projectId: string | undefined }) {
   const state = filters.data;
 
   const setSignal = (
-    source: "otlp" | "aws" | "vercel" | "railway",
+    source: "otlp" | "aws" | "vercel" | "railway" | "render",
     signal: string,
     next: boolean,
   ) => {
@@ -1815,6 +1975,17 @@ function IngestSourcesCard({ projectId }: { projectId: string | undefined }) {
               state={state.railway}
               disabled={setFilters.isPending}
               onToggle={(signal, next) => setSignal("railway", signal, next)}
+            />
+            <IngestSourceRow
+              title="Render"
+              hint="Logs and infra metrics pulled from the connected Render workspace."
+              signals={[
+                { key: "logs", label: "Logs" },
+                { key: "metrics", label: "Metrics" },
+              ]}
+              state={state.render}
+              disabled={setFilters.isPending}
+              onToggle={(signal, next) => setSignal("render", signal, next)}
             />
           </div>
         )}

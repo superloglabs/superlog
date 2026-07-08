@@ -17,6 +17,7 @@ import { AwsConnectFlow } from "./AwsConnectFlow.tsx";
 import { CloudflareConnectFlow } from "./CloudflareConnectFlow.tsx";
 import { ConnectDataChooser } from "./ConnectDataChooser.tsx";
 import { RailwayConnectFlow } from "./RailwayConnectFlow.tsx";
+import { RenderConnectFlow } from "./RenderConnectFlow.tsx";
 import { VercelConnectFlow } from "./VercelConnectFlow.tsx";
 import type { ConnectAction } from "./connectChoices.ts";
 import { CheckIcon, GithubIcon, SlackIcon, SpinnerIcon } from "./icons.tsx";
@@ -45,7 +46,15 @@ import {
 type Mode = "web" | "agent";
 // Web-mode landing fork: choose a source, then either a no-code integration
 // flow (AWS / Cloudflare / Vercel) or the coding-agent install → deploy flow.
-type WebView = "chooser" | "aws" | "cloudflare" | "vercel" | "railway" | "code" | "deploy";
+type WebView =
+  | "chooser"
+  | "aws"
+  | "cloudflare"
+  | "vercel"
+  | "railway"
+  | "render"
+  | "code"
+  | "deploy";
 
 // The Cloudflare / Vercel OAuth callbacks redirect back to the app with
 // `?cloudflare=...` / `?vercel=...`. When that lands we want to drop straight
@@ -104,6 +113,8 @@ export function OnboardingWizard({
       setWebView("vercel");
     } else if (action === "railway") {
       setWebView("railway");
+    } else if (action === "render") {
+      setWebView("render");
     } else {
       setWebView("code");
     }
@@ -186,6 +197,14 @@ export function OnboardingWizard({
             />
           ) : webView === "railway" ? (
             <RailwayConnectFlow
+              projectId={projectId}
+              eventsArrived={eventsArrived}
+              onBack={() => setWebView("chooser")}
+              onDone={onComplete}
+              onExploreDemo={onExploreDemo}
+            />
+          ) : webView === "render" ? (
+            <RenderConnectFlow
               projectId={projectId}
               eventsArrived={eventsArrived}
               onBack={() => setWebView("chooser")}

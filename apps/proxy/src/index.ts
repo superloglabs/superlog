@@ -295,6 +295,7 @@ async function validateIngestKey(c: Context<{ Variables: Variables }>, next: () 
 app.use("/v1/*", validateIngestKey);
 app.use("/vercel/drains/*", validateIngestKey);
 app.use("/railway/pull/*", validateIngestKey);
+app.use("/render/pull/*", validateIngestKey);
 
 app.post("/v1/traces", (c) => forward(c, "/v1/traces", "resourceSpans"));
 app.post("/v1/logs", (c) => forward(c, "/v1/logs", "resourceLogs"));
@@ -323,6 +324,14 @@ app.post("/vercel/drains/logs", (c) =>
 app.post("/railway/pull/logs", (c) => forward(c, "/v1/logs", "resourceLogs", { source: "railway" }));
 app.post("/railway/pull/metrics", (c) =>
   forward(c, "/v1/metrics", "resourceMetrics", { source: "railway" }),
+);
+
+// Render puller ingest: identical discipline to the Railway routes — the
+// worker-side puller reads logs/metrics from Render's REST API, transforms to
+// OTLP JSON, and forwards here with the installation's ingest key.
+app.post("/render/pull/logs", (c) => forward(c, "/v1/logs", "resourceLogs", { source: "render" }));
+app.post("/render/pull/metrics", (c) =>
+  forward(c, "/v1/metrics", "resourceMetrics", { source: "render" }),
 );
 
 // AWS Data Firehose HTTP-endpoint ingest (CloudWatch Metric Streams + Logs).

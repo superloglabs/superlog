@@ -17,6 +17,9 @@ export type SystemCapabilities = {
   // Same gate for the Railway connector (OAuth client only — telemetry is
   // pulled by the worker, so there's no intake URL to configure here).
   railwayConnect: boolean;
+  // The Render connector has no OAuth client at all (the user pastes an API
+  // key), so it only needs the at-rest encryption key.
+  renderConnect: boolean;
 };
 
 type CapabilityEnv = Partial<
@@ -74,6 +77,10 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
     env.STATE_SIGNING_SECRET &&
     env.AGENT_SECRETS_KEY
   );
+  // Render connect is an API-key paste, not OAuth — no client id/secret and no
+  // signed state. Storing the pasted key still needs the at-rest encryption
+  // key, so that's the whole gate.
+  const renderConnect = !!env.AGENT_SECRETS_KEY;
 
   return {
     edition,
@@ -84,6 +91,7 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
     cloudflareConnect,
     vercelConnect,
     railwayConnect,
+    renderConnect,
   };
 }
 

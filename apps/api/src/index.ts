@@ -105,6 +105,7 @@ import {
   mergeAgentPullRequestAndResolveIncident,
 } from "./pr-merge-service.js";
 import { mountRailwayAuthed, mountRailwayPublic } from "./railway.js";
+import { mountRenderAuthed } from "./render.js";
 import { mountSettingsAuthed } from "./settings.js";
 import { normalizeSignupIntentKeyHash, normalizeSignupIntentKeyPrefix } from "./signup-intents.js";
 import { mountSlackAuthed, mountSlackPublic } from "./slack.js";
@@ -329,6 +330,7 @@ mountSlackAuthed(app);
 mountCloudflareAuthed(app);
 mountVercelAuthed(app);
 mountRailwayAuthed(app);
+mountRenderAuthed(app);
 mountSettingsAuthed(app);
 mountOrgKeyManagementAuthed(app);
 mountDashboards(app);

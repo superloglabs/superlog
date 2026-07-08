@@ -12,7 +12,13 @@ test("system capabilities default to the open-core community edition", () => {
     cloudflareConnect: false,
     vercelConnect: false,
     railwayConnect: false,
+    renderConnect: false,
   });
+});
+
+test("renderConnect only needs AGENT_SECRETS_KEY (API-key connect, no OAuth client)", () => {
+  assert.equal(buildSystemCapabilities({}).renderConnect, false);
+  assert.equal(buildSystemCapabilities({ AGENT_SECRETS_KEY: "k" }).renderConnect, true);
 });
 
 test("railwayConnect flips on only when client creds + both platform secrets are set", () => {
@@ -86,6 +92,7 @@ test("system capabilities expose cloud billing and managed agents when explicitl
       cloudflareConnect: false,
       vercelConnect: false,
       railwayConnect: false,
+      renderConnect: false,
     },
   );
 });

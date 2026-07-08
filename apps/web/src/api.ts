@@ -80,6 +80,7 @@ export type SystemCapabilities = {
   cloudflareConnect: boolean;
   vercelConnect: boolean;
   railwayConnect: boolean;
+  renderConnect: boolean;
 };
 
 const SIGNUP_SOURCE_STORAGE_KEY = "superlog.signup_source";
@@ -974,6 +975,82 @@ export function useUninstallRailway(projectId: string | undefined) {
   });
 }
 
+export type RenderServiceSummary = {
+  id: string;
+  name: string;
+  type: string;
+  region: string | null;
+  suspended: boolean;
+};
+
+export type RenderInstallation =
+  | { installed: false }
+  | {
+      installed: true;
+      ownerId: string;
+      ownerName: string | null;
+      services: RenderServiceSummary[];
+      installedAt: string;
+    };
+
+export type RenderOwner = {
+  id: string;
+  name: string;
+  email: string | null;
+  type: string;
+};
+
+// Render installs are per-project, same scoping discipline as Railway.
+export function useRenderInstallation(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["render-installation", projectId],
+    queryFn: () => fetcher<RenderInstallation>(`/api/projects/${projectId}/render/installation`),
+    enabled: !!projectId,
+    refetchInterval: 15000,
+  });
+}
+
+// Validate a pasted Render API key and list the workspaces it can see — the
+// connect dialog's picker step. The key is only held in memory client-side.
+export function useRenderOwners(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: (apiKey: string) =>
+      fetcher<{ owners: RenderOwner[] }>(`/api/projects/${projectId}/render/owners`, {
+        method: "POST",
+        body: JSON.stringify({ apiKey }),
+      }),
+  });
+}
+
+export function useConnectRender(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { apiKey: string; ownerId: string }) =>
+      fetcher<RenderInstallation>(`/api/projects/${projectId}/render/connect`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["render-installation", projectId] });
+    },
+  });
+}
+
+export function useUninstallRender(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      fetcher<{ ok: true }>(`/api/projects/${projectId}/render/uninstall`, { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["render-installation", projectId] });
+    },
+  });
+}
+
 export function useSlackChannels(enabled: boolean) {
   const fetcher = useFetcher();
   return useQuery({
@@ -1173,13 +1250,14 @@ export function useDeleteCloudConnection(projectId: string) {
 }
 
 // Per-project ingest source filters: turn a telemetry source (SDK/OTLP, AWS
-// CloudWatch, Vercel Drains, or the Railway puller) on/off per signal. The
-// proxy ack-drops disabled telemetry.
+// CloudWatch, Vercel Drains, or the Railway/Render pullers) on/off per signal.
+// The proxy ack-drops disabled telemetry.
 export type IngestFilterState = {
   otlp: { traces: boolean; logs: boolean; metrics: boolean };
   aws: { logs: boolean; metrics: boolean };
   vercel: { traces: boolean; logs: boolean };
   railway: { logs: boolean; metrics: boolean };
+  render: { logs: boolean; metrics: boolean };
 };
 
 export function useIngestFilters(projectId: string | undefined) {

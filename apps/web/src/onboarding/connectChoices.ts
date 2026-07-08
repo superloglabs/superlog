@@ -10,11 +10,11 @@
 // What activating a row does. `null` => not yet available (coming soon), so the
 // row renders disabled and is not actionable. "code" opens the coding-agent
 // prompt (paste into Cursor / Claude Code / Codex).
-export type ConnectAction = "aws" | "cloudflare" | "vercel" | "railway" | "code";
+export type ConnectAction = "aws" | "cloudflare" | "vercel" | "railway" | "render" | "code";
 
 // Glyph key resolved to a neutral monochrome icon by the component. Kept as a
 // string union (not a component) so this module stays free of JSX/React.
-export type ConnectIcon = "aws" | "cloudflare" | "vercel" | "railway" | "terminal";
+export type ConnectIcon = "aws" | "cloudflare" | "vercel" | "railway" | "render" | "terminal";
 
 export type ConnectOption = {
   id: string;
@@ -73,10 +73,18 @@ export const CONNECT_SECTIONS: ConnectSection[] = [
         action: "railway",
       },
       {
+        id: "render",
+        title: "Render",
+        description:
+          "Paste a Render API key once and pick the workspace to share — we pull your services' logs and infra metrics from Render's API. No agent, no code.",
+        icon: "render",
+        action: "render",
+      },
+      {
         id: "elsewhere",
         title: "I'm hosted elsewhere",
         description:
-          "Fly, Render, a VM, your laptop — anywhere. Paste a prompt into Cursor, Claude Code, or Codex and it installs the SDK, instruments your app, and opens a PR.",
+          "Fly, a VM, your laptop — anywhere. Paste a prompt into Cursor, Claude Code, or Codex and it installs the SDK, instruments your app, and opens a PR.",
         icon: "terminal",
         action: "code",
       },
@@ -93,6 +101,7 @@ export type ConnectAvailability = {
   cloudflare: boolean;
   vercel: boolean;
   railway: boolean;
+  render: boolean;
 };
 
 export function connectSectionsFor(availability: ConnectAvailability): ConnectSection[] {
@@ -100,6 +109,7 @@ export function connectSectionsFor(availability: ConnectAvailability): ConnectSe
   if (!availability.cloudflare) unavailable.add("cloudflare");
   if (!availability.vercel) unavailable.add("vercel");
   if (!availability.railway) unavailable.add("railway");
+  if (!availability.render) unavailable.add("render");
   if (unavailable.size === 0) return CONNECT_SECTIONS;
   return CONNECT_SECTIONS.map((section) => ({
     ...section,
