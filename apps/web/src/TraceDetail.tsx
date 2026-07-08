@@ -1,10 +1,37 @@
 import { useEffect, useMemo, useState } from "react";
 import { type TraceLog, type TraceSpan, useTraceDetail } from "./api.ts";
 import { RowMenu, type RowMenuItem } from "./design/RowMenu.tsx";
+import { Chip, Label, SkeletonBlock } from "./design/ui.tsx";
 import { type AttrScope, attrFilterKey } from "./exploreAttrFilter.ts";
 import { tracer } from "./instrumentation.ts";
-import { Chip, Label } from "./design/ui.tsx";
 import { formatLocalTimestampMs } from "./timeFormat.ts";
+
+const TRACE_SPAN_SKELETON_ROWS = [
+  "root",
+  "auth",
+  "route",
+  "handler",
+  "db",
+  "cache",
+  "queue",
+  "worker",
+  "response",
+];
+const TRACE_LOG_SKELETON_ROWS = ["first", "second", "third", "fourth"];
+const TRACE_ATTR_SKELETON_ROWS = [
+  "span-name",
+  "service",
+  "kind",
+  "status",
+  "duration",
+  "span-id",
+  "parent-span-id",
+  "resource-service",
+  "resource-env",
+  "resource-region",
+  "http-route",
+  "http-method",
+];
 
 export function TraceDrawer({
   projectId,
@@ -97,7 +124,7 @@ function TraceDrawerBody({
   }, [detail.error, traceId]);
 
   if (detail.isLoading) {
-    return <div className="flex-1 px-6 py-6 font-mono text-[11px] text-subtle">loading…</div>;
+    return <TraceDetailSkeleton />;
   }
   if (detail.error) {
     return (
@@ -123,6 +150,75 @@ function TraceDrawerBody({
       focusSpanId={focusSpanId}
       onAddFilter={onAddFilter}
     />
+  );
+}
+
+function TraceDetailSkeleton() {
+  return (
+    <div
+      aria-label="Loading traces detail"
+      className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] lg:divide-x lg:divide-border"
+    >
+      <div className="flex min-h-0 min-w-0 flex-col gap-5 overflow-y-auto px-6 py-6">
+        <section>
+          <div className="mb-2 flex items-baseline gap-2">
+            <SkeletonBlock className="h-4 w-14" />
+            <SkeletonBlock className="h-3 w-64" />
+          </div>
+          <div className="border border-border">
+            <div className="grid grid-cols-[minmax(180px,1fr)_2fr_72px] gap-3 border-b border-border px-4 py-1.5">
+              <SkeletonBlock className="h-3 w-16" />
+              <span />
+              <SkeletonBlock className="h-3 w-14" />
+            </div>
+            {TRACE_SPAN_SKELETON_ROWS.map((row) => (
+              <div
+                key={`trace-span-skeleton-${row}`}
+                className="grid grid-cols-[minmax(180px,1fr)_2fr_72px] items-center gap-3 border-b border-border px-4 py-1.5 last:border-b-0"
+              >
+                <SkeletonBlock className="h-4 w-4/5" />
+                <SkeletonBlock className="h-4 w-full" />
+                <SkeletonBlock className="h-4 w-12" />
+              </div>
+            ))}
+          </div>
+        </section>
+        <section>
+          <SkeletonBlock className="mb-2 h-4 w-20" />
+          <div className="border border-border">
+            {TRACE_LOG_SKELETON_ROWS.map((row) => (
+              <div
+                key={`trace-log-skeleton-${row}`}
+                className="grid grid-cols-[120px_100px_64px_80px_minmax(0,1fr)] gap-3 border-b border-border px-4 py-2 last:border-b-0"
+              >
+                <SkeletonBlock className="h-4 w-full" />
+                <SkeletonBlock className="h-4 w-full" />
+                <SkeletonBlock className="h-4 w-full" />
+                <SkeletonBlock className="h-4 w-full" />
+                <SkeletonBlock className="h-4 w-full" />
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+      <aside className="min-h-0 min-w-0 overflow-y-auto px-6 py-6">
+        <div className="mb-2 flex items-baseline gap-2">
+          <SkeletonBlock className="h-4 w-12" />
+          <SkeletonBlock className="h-3 w-32" />
+        </div>
+        <div className="border border-border">
+          {TRACE_ATTR_SKELETON_ROWS.map((row) => (
+            <div
+              key={`trace-attr-skeleton-${row}`}
+              className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-3 border-b border-border px-3 py-1.5 last:border-b-0"
+            >
+              <SkeletonBlock className="h-4 w-4/5" />
+              <SkeletonBlock className="h-4 w-full" />
+            </div>
+          ))}
+        </div>
+      </aside>
+    </div>
   );
 }
 

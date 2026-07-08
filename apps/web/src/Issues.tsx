@@ -62,6 +62,12 @@ import {
   buildIncidentDetailMeta,
 } from "./incidents/incident-detail-view-model.ts";
 import { getIssueIncidentLinkState } from "./issue-incident-link-state.ts";
+import {
+  IncidentDetailSkeleton,
+  IncidentListSkeleton,
+  IssueDetailSkeleton,
+  IssueListSkeleton,
+} from "./skeletons.tsx";
 
 const IncidentPrDiffView = lazy(() => import("./IncidentPrDiffView.tsx"));
 
@@ -188,6 +194,7 @@ function IssuesTab({ projectId }: { projectId: string }) {
   const fromList = selectedId ? (issues.data?.find((i) => i.id === selectedId) ?? null) : null;
   const fetched = useIssue(projectId, selectedId && !fromList ? selectedId : undefined);
   const selected = fromList ?? fetched.data ?? null;
+  const detailLoading = !!selectedId && !selected && (issues.isLoading || fetched.isLoading);
 
   function selectIssue(issueId: string | null) {
     if (issueId == null) closeItem();
@@ -233,7 +240,7 @@ function IssuesTab({ projectId }: { projectId: string }) {
         )}
       </div>
 
-      {issues.isLoading && <div className="text-[13px] text-muted">Loading…</div>}
+      {issues.isLoading && <IssueListSkeleton />}
       {issues.error && (
         <div className="text-[13px] text-danger">Failed to load: {String(issues.error)}</div>
       )}
@@ -268,6 +275,7 @@ function IssuesTab({ projectId }: { projectId: string }) {
           silenceUpdating={silence.isPending || unsilence.isPending}
         />
       )}
+      {detailLoading && <IssueDrawerSkeleton onClose={() => selectIssue(null)} />}
 
       {eventTarget?.kind === "trace" && (
         <TraceDrawer
@@ -290,6 +298,32 @@ function IssuesTab({ projectId }: { projectId: string }) {
           }
         />
       )}
+    </div>
+  );
+}
+
+function IssueDrawerSkeleton({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="absolute inset-0">
+      <button
+        type="button"
+        aria-label="close"
+        className="absolute inset-0 bg-black/60"
+        onClick={onClose}
+      />
+      <aside className="absolute inset-y-0 right-0 flex w-full max-w-[720px] flex-col border-l border-border bg-bg shadow-2xl">
+        <div className="flex-1 overflow-y-auto">
+          <IssueDetailSkeleton />
+        </div>
+      </aside>
     </div>
   );
 }
@@ -705,7 +739,7 @@ function IncidentsTab({ projectId }: { projectId: string }) {
         </div>
       </div>
 
-      {incidents.isLoading && <div className="text-[13px] text-muted">Loading…</div>}
+      {incidents.isLoading && <IncidentListSkeleton />}
       {incidents.error && (
         <div className="text-[13px] text-danger">Failed to load: {String(incidents.error)}</div>
       )}
@@ -940,11 +974,7 @@ function IncidentDetailBody({
   const decideProposal = useDecideResolutionProposal(projectId);
 
   if (q.isLoading) {
-    return (
-      <div className="p-4 font-mono text-[11px] uppercase tracking-[0.2em] text-muted">
-        loading…
-      </div>
-    );
+    return <IncidentDetailSkeleton />;
   }
   if (q.error || !q.data) {
     return (
@@ -1405,9 +1435,7 @@ export function IncidentDetailContent({
       <div className="flex shrink-0 items-center gap-2 border-b border-border bg-bg px-5 py-3">
         <span className="text-[13px] text-muted">Incidents</span>
         <span className="text-subtle">›</span>
-        <span className="min-w-0 flex-1 truncate text-[13px] text-fg">
-          {incident.title}
-        </span>
+        <span className="min-w-0 flex-1 truncate text-[13px] text-fg">{incident.title}</span>
         <div className="flex shrink-0 items-center gap-3">
           {notAnIssueAction && (
             <Btn
@@ -2189,7 +2217,6 @@ function AgentRunStateChip({ state }: { state: string }) {
   return <Chip tone="neutral">{state}</Chip>;
 }
 
-
 function humanizeReasonCode(code: string): string {
   return code.replace(/[._]/g, " ").trim().toLowerCase();
 }
@@ -2202,7 +2229,6 @@ function sentenceCase(text: string): string {
   if (!trimmed) return trimmed;
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
 }
-
 
 // ---------------------------------------------------------------------------
 // Small components
