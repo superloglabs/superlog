@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import type { RenderLogCursor } from "@superlog/render";
 import {
   type RenderPullerInstallation,
   type RenderPullerStore,
@@ -34,16 +35,17 @@ type StoreState = {
   savedServices: Array<{ id: string; services: unknown }>;
   savedCursors: Array<{
     id: string;
-    logCursor: Record<string, string>;
+    logCursor: RenderLogCursor;
     metricsCursor: Record<string, number>;
   }>;
+  revoked: string[];
 };
 
 function makeStore(installations: RenderPullerInstallation[]): {
   store: RenderPullerStore;
   state: StoreState;
 } {
-  const state: StoreState = { installations, savedServices: [], savedCursors: [] };
+  const state: StoreState = { installations, savedServices: [], savedCursors: [], revoked: [] };
   return {
     store: {
       listActiveInstallations: async () => state.installations,
@@ -52,6 +54,9 @@ function makeStore(installations: RenderPullerInstallation[]): {
       },
       saveCursors: async (id, cursors) => {
         state.savedCursors.push({ id, ...cursors });
+      },
+      markRevoked: async (id) => {
+        state.revoked.push(id);
       },
     },
     state,
@@ -170,7 +175,7 @@ test("first pass seeds logs backward, forwards fresh telemetry, persists cursors
   // Cursors persisted: log cursor at the seed line, metrics cursor per key.
   assert.equal(state.savedCursors.length, 1);
   const cursors = state.savedCursors[0];
-  assert.equal(cursors?.logCursor.oregon, "2026-07-07T14:19:30Z");
+  assert.deepEqual(cursors?.logCursor.oregon, { ts: "2026-07-07T14:19:30Z", ids: ["log-1"] });
   assert.equal(cursors?.metricsCursor["srv-1:cpu"], Date.parse("2026-07-07T14:19:00Z") / 1000);
 });
 
@@ -214,7 +219,7 @@ test("cursor pass reads forward with pagination and dedupes already-seen lines",
   assert.equal(intakeCalls.length, 1);
 
   const cursors = state.savedCursors[0];
-  assert.equal(cursors?.logCursor.oregon, "2026-07-07T14:19:45Z");
+  assert.deepEqual(cursors?.logCursor.oregon, { ts: "2026-07-07T14:19:45Z", ids: ["log-2"] });
 });
 
 test("metrics polls are gated by the interval clock", async () => {
@@ -244,7 +249,7 @@ test("metrics polls are gated by the interval clock", async () => {
   assert.ok(!second.calls.some((c) => c.url.includes("/v1/metrics/")));
 });
 
-test("a rejected key skips the installation without throwing", async () => {
+test("a persistently rejected key is soft-revoked after three passes", async () => {
   const { store, state } = makeStore([installation()]);
   const impl: typeof fetch = async (input) => {
     const url = String(input);
@@ -253,18 +258,29 @@ test("a rejected key skips the installation without throwing", async () => {
     }
     throw new Error(`unexpected fetch: ${url}`);
   };
+  const unauthorizedState = new Map<string, number>();
+  const run = () =>
+    runRenderPullOnce({
+      store,
+      intakeBaseUrl: "http://intake.test",
+      log: silentLog,
+      fetchImpl: impl,
+      now: () => NOW,
+      metricsPollState: new Map(),
+      unauthorizedState,
+    });
 
-  const stats = await runRenderPullOnce({
-    store,
-    intakeBaseUrl: "http://intake.test",
-    log: silentLog,
-    fetchImpl: impl,
-    now: () => NOW,
-    metricsPollState: new Map(),
-  });
+  const stats = await run();
   assert.equal(stats.installations, 1);
   assert.equal(stats.logsForwarded, 0);
   assert.equal(state.savedCursors.length, 0);
+  // Two rejected passes: still just skipping.
+  assert.deepEqual(state.revoked, []);
+  await run();
+  assert.deepEqual(state.revoked, []);
+  // Third consecutive rejection revokes the install.
+  await run();
+  assert.deepEqual(state.revoked, ["inst-1"]);
 });
 
 test("an intake rejection keeps the cursor so nothing is lost", async () => {

@@ -90,6 +90,25 @@ function createStore(db: JobDeps["db"]): RenderPullerStore {
         })
         .where(eq(schema.renderInstallations.id, id));
     },
+
+    // Persistently-rejected key → soft-revoke, mirroring the api's
+    // teardownInstallation: the ingest key is revoked too so nothing minted
+    // for this install can keep writing.
+    async markRevoked(id) {
+      const row = await db.query.renderInstallations.findFirst({
+        where: eq(schema.renderInstallations.id, id),
+      });
+      if (row?.apiKeyId) {
+        await db
+          .update(schema.apiKeys)
+          .set({ revokedAt: new Date() })
+          .where(eq(schema.apiKeys.id, row.apiKeyId));
+      }
+      await db
+        .update(schema.renderInstallations)
+        .set({ revokedAt: new Date(), updatedAt: new Date() })
+        .where(eq(schema.renderInstallations.id, id));
+    },
   };
 }
 

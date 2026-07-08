@@ -2449,11 +2449,14 @@ export const renderInstallations = pgTable(
     ingestKeyCiphertext: bytea("ingest_key_ciphertext"),
     ingestKeyNonce: bytea("ingest_key_nonce"),
     ingestKeyKeyVersion: integer("ingest_key_key_version"),
-    // Puller checkpoint: log pull group (region) → RFC3339 timestamp of the
-    // last forwarded log line, so restarts resume without gaps or duplicates.
-    logCursor: jsonb("log_cursor").$type<Record<string, string>>(),
-    // Puller checkpoint for metrics: `${serviceId}:${kind}` → epoch seconds of
-    // the last forwarded sample.
+    // Puller checkpoint: log pull group (region) → the RFC3339 timestamp of
+    // the last forwarded log line plus the ids of the lines at that timestamp
+    // (equal-timestamp lines at a page boundary are re-read and deduped by
+    // id), so restarts resume without gaps or duplicates. Plain-string values
+    // are the earlier timestamp-only shape, still accepted on read.
+    logCursor: jsonb("log_cursor").$type<Record<string, { ts: string; ids: string[] } | string>>(),
+    // Puller checkpoint for metrics: series identity (resource + kind +
+    // distinguishing labels) → epoch seconds of the last forwarded sample.
     metricsCursor: jsonb("metrics_cursor").$type<Record<string, number>>(),
     installedByUserId: uuid("installed_by_user_id").references(() => users.id, {
       onDelete: "set null",

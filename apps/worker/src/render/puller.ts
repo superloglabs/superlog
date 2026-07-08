@@ -17,6 +17,7 @@
 import {
   RENDER_METRIC_KINDS,
   type RenderLog,
+  type RenderLogCursor,
   type RenderMetricSeries,
   type RenderService,
   advanceLogCursor,
@@ -26,8 +27,10 @@ import {
   fetchServices,
   filterLogsAfterCursor,
   filterSeriesAfterCursor,
+  logCursorTs,
   renderLogsToOtlp,
   renderMetricsToOtlp,
+  seriesCursorKey,
   seriesResourceId,
 } from "@superlog/render";
 
@@ -39,7 +42,7 @@ export type RenderPullerInstallation = {
   ownerName: string;
   ingestKey: string | null;
   services: RenderService[];
-  logCursor: Record<string, string>;
+  logCursor: RenderLogCursor;
   metricsCursor: Record<string, number>;
 };
 
@@ -48,8 +51,14 @@ export type RenderPullerStore = {
   saveServices(id: string, services: RenderService[]): Promise<void>;
   saveCursors(
     id: string,
-    cursors: { logCursor: Record<string, string>; metricsCursor: Record<string, number> },
+    cursors: { logCursor: RenderLogCursor; metricsCursor: Record<string, number> },
   ): Promise<void>;
+  /**
+   * Soft-revoke an installation whose Render key has been persistently
+   * rejected — Render keys don't expire or refresh, so a rejected key stays
+   * rejected until the user reconnects with a new one.
+   */
+  markRevoked(id: string): Promise<void>;
 };
 
 type PullerLogger = {
@@ -78,6 +87,13 @@ export type RenderPullerDeps = {
    * one early poll, deduped by the sample cursor anyway.
    */
   metricsPollState?: Map<string, number>;
+  /**
+   * Per-installation consecutive-unauthorized counter, process-lived. A key
+   * that stays rejected for several passes is treated as revoked on Render's
+   * side and the install is soft-revoked; a worker restart just restarts the
+   * count (worst case a few extra probe calls).
+   */
+  unauthorizedState?: Map<string, number>;
 };
 
 export type RenderPullStats = {
@@ -87,11 +103,17 @@ export type RenderPullStats = {
   errors: number;
 };
 
-// Metrics polls read a fixed recent window; the per-resource sample cursor
+// Metrics polls read a fixed recent window; the per-series sample cursor
 // dedupes overlap between polls.
 const METRICS_LOOKBACK_S = 15 * 60;
 // Metric resource batching: keep request URLs bounded.
 const METRICS_RESOURCE_CHUNK = 25;
+// Series cursor entries untouched for this long are dropped at save time so
+// instance churn (every deploy mints new instance labels) can't grow the
+// cursor blob without bound.
+const METRICS_CURSOR_MAX_AGE_S = 7 * 24 * 60 * 60;
+// Consecutive passes with a rejected key before the install is soft-revoked.
+const UNAUTHORIZED_REVOKE_THRESHOLD = 3;
 
 export async function runRenderPullOnce(deps: RenderPullerDeps): Promise<RenderPullStats> {
   const fetchImpl = deps.fetchImpl ?? fetch;
@@ -101,6 +123,7 @@ export async function runRenderPullOnce(deps: RenderPullerDeps): Promise<RenderP
   const metricsInterval = deps.metricsIntervalSeconds ?? 300;
   const resolution = deps.metricsResolutionSeconds ?? 60;
   const pollState = deps.metricsPollState ?? sharedMetricsPollState;
+  const unauthorizedState = deps.unauthorizedState ?? sharedUnauthorizedState;
   const intake = deps.intakeBaseUrl.replace(/\/+$/, "");
 
   const stats: RenderPullStats = {
@@ -133,8 +156,9 @@ export async function runRenderPullOnce(deps: RenderPullerDeps): Promise<RenderP
 
     // --- Service inventory --------------------------------------------------
     // Refresh the snapshot every pass so new services start flowing without a
-    // reconnect. A revoked key is terminal (Render keys don't refresh): skip
-    // and let the user reconnect.
+    // reconnect. A revoked key is terminal (Render keys don't refresh): after
+    // a few consecutive rejections the install is soft-revoked so the UI
+    // reads "not connected" and the puller stops probing until reconnect.
     let services = installation.services;
     const inventory = await fetchServices({
       apiKey: installation.renderApiKey,
@@ -142,13 +166,25 @@ export async function runRenderPullOnce(deps: RenderPullerDeps): Promise<RenderP
       fetchImpl,
     });
     if (inventory.ok) {
+      unauthorizedState.delete(installation.id);
       services = inventory.services;
       await deps.store.saveServices(installation.id, inventory.services);
     } else if (inventory.unauthorized) {
-      deps.log.warn(
-        { installation_id: installation.id },
-        "render api key rejected — skipping (user must reconnect)",
-      );
+      const strikes = (unauthorizedState.get(installation.id) ?? 0) + 1;
+      unauthorizedState.set(installation.id, strikes);
+      if (strikes >= UNAUTHORIZED_REVOKE_THRESHOLD) {
+        unauthorizedState.delete(installation.id);
+        await deps.store.markRevoked(installation.id);
+        deps.log.warn(
+          { installation_id: installation.id, strikes },
+          "render api key rejected repeatedly — install revoked (user must reconnect)",
+        );
+      } else {
+        deps.log.warn(
+          { installation_id: installation.id, strikes },
+          "render api key rejected — skipping this pass",
+        );
+      }
       return;
     } else {
       deps.log.warn(
@@ -184,7 +220,7 @@ export async function runRenderPullOnce(deps: RenderPullerDeps): Promise<RenderP
 
     for (const [region, group] of byRegion) {
       const resources = group.map((s) => s.id);
-      const cursorTs = logCursor[region];
+      const cursorTs = logCursorTs(logCursor[region]);
       const collected: RenderLog[] = [];
       let readOk = true;
 
@@ -270,8 +306,10 @@ export async function runRenderPullOnce(deps: RenderPullerDeps): Promise<RenderP
 
     // --- Metrics ------------------------------------------------------------
     // One request per kind per resource chunk, gated to one poll per
-    // installation per ~5 minutes. Series come back labeled per resource, so
-    // the sample cursor is keyed `${resourceId}:${kind}`.
+    // installation per ~5 minutes. Series come back labeled per resource (and
+    // per instance for multi-instance services), so the sample cursor is
+    // keyed by the full series identity — a shared per-resource cursor would
+    // let a fast instance advance past a lagging one and drop its points.
     const nowSec = Math.floor(now().getTime() / 1000);
     const lastPoll = pollState.get(installation.id) ?? 0;
     if (nowSec - lastPoll >= metricsInterval) {
@@ -301,13 +339,13 @@ export async function runRenderPullOnce(deps: RenderPullerDeps): Promise<RenderP
             continue;
           }
 
-          // Dedupe each series against its own resource's cursor, then
-          // forward whatever is fresh in one export.
+          // Dedupe each series against its own cursor, then forward whatever
+          // is fresh in one export.
           const freshByKey = new Map<string, RenderMetricSeries[]>();
           for (const series of read.series) {
             const resourceId = seriesResourceId(series);
             if (!resourceId) continue;
-            const key = `${resourceId}:${kind}`;
+            const key = seriesCursorKey(resourceId, kind, series);
             const fresh = filterSeriesAfterCursor(metricsCursor, key, [series]);
             if (fresh.length === 0) continue;
             const group = freshByKey.get(key);
@@ -337,7 +375,13 @@ export async function runRenderPullOnce(deps: RenderPullerDeps): Promise<RenderP
     }
 
     if (cursorsDirty) {
-      await deps.store.saveCursors(installation.id, { logCursor, metricsCursor });
+      // Instance churn mints new series keys on every deploy; drop entries
+      // whose last sample is old enough that re-reading them is impossible
+      // anyway (the poll window only looks back METRICS_LOOKBACK_S).
+      const pruned = Object.fromEntries(
+        Object.entries(metricsCursor).filter(([, sec]) => sec >= nowSec - METRICS_CURSOR_MAX_AGE_S),
+      );
+      await deps.store.saveCursors(installation.id, { logCursor, metricsCursor: pruned });
     }
   }
 
@@ -363,3 +407,4 @@ export async function runRenderPullOnce(deps: RenderPullerDeps): Promise<RenderP
 }
 
 const sharedMetricsPollState = new Map<string, number>();
+const sharedUnauthorizedState = new Map<string, number>();

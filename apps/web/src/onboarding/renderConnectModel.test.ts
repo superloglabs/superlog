@@ -35,6 +35,7 @@ test("API error codes map to actionable messages", () => {
 });
 
 test("status text reflects the telemetry wait", () => {
+  assert.match(renderStatusText("start", false), /not connected/i);
   assert.match(renderStatusText("connected", false), /within a minute/i);
   assert.match(renderStatusText("connected", true), /arriving/i);
   assert.match(renderStatusText("pick", false), /pick the workspace/i);

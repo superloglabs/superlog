@@ -210,30 +210,58 @@ export function renderMetricsToOtlp(
 // ---------------------------------------------------------------------------
 // Cursors — dedupe on re-delivery (start bounds are not trusted to be
 // exclusive) and never move backwards. Log cursors are keyed by the puller's
-// region group; metrics cursors by `${resourceId}:${kind}` in epoch seconds.
+// region group; metrics cursors by series identity in epoch seconds.
 // ---------------------------------------------------------------------------
 
+/**
+ * A log cursor entry: the newest forwarded timestamp plus the ids of the
+ * lines AT that timestamp. A pass can end (page budget, page boundary) in the
+ * middle of a group of lines sharing one timestamp — a timestamp-only cursor
+ * with a strict `>` filter would drop the unseen remainder of that group on
+ * the next pass, so equal-timestamp lines are re-read and deduped by id
+ * instead. Plain strings are the pre-ids shape, still accepted on read.
+ */
+export type RenderLogCursorEntry = { ts: string; ids: string[] };
+export type RenderLogCursor = Record<string, RenderLogCursorEntry | string>;
+
+export function logCursorTs(entry: RenderLogCursorEntry | string | undefined): string | null {
+  if (!entry) return null;
+  return typeof entry === "string" ? entry : entry.ts;
+}
+
+function logCursorIds(entry: RenderLogCursorEntry | string | undefined): string[] {
+  return typeof entry === "object" && entry !== null ? entry.ids : [];
+}
+
 export function filterLogsAfterCursor(
-  cursor: Record<string, string>,
+  cursor: RenderLogCursor,
   groupKey: string,
   logs: RenderLog[],
 ): RenderLog[] {
-  const last = cursor[groupKey];
+  const entry = cursor[groupKey];
+  const last = logCursorTs(entry);
   if (!last) return logs;
   const lastNanos = rfc3339ToNanos(last);
   if (lastNanos === null) return logs;
+  const seenIds = new Set(logCursorIds(entry));
   return logs.filter((log) => {
     const nanos = rfc3339ToNanos(log.timestamp);
-    return nanos !== null && nanos > lastNanos;
+    if (nanos === null) return false;
+    if (nanos > lastNanos) return true;
+    // Lines sharing the boundary timestamp are fresh unless their id was
+    // already forwarded. A boundary line without an id can't be deduped, so
+    // treat it as seen rather than re-forwarding it every pass.
+    return nanos === lastNanos && log.id !== null && !seenIds.has(log.id);
   });
 }
 
 export function advanceLogCursor(
-  cursor: Record<string, string>,
+  cursor: RenderLogCursor,
   groupKey: string,
   logs: RenderLog[],
-): Record<string, string> {
-  let maxTimestamp = cursor[groupKey] ?? null;
+): RenderLogCursor {
+  const previous = cursor[groupKey];
+  let maxTimestamp = logCursorTs(previous);
   let maxNanos = maxTimestamp ? rfc3339ToNanos(maxTimestamp) : null;
   for (const log of logs) {
     const nanos = rfc3339ToNanos(log.timestamp);
@@ -243,13 +271,42 @@ export function advanceLogCursor(
       maxTimestamp = log.timestamp;
     }
   }
-  if (maxTimestamp == null) return cursor;
-  return { ...cursor, [groupKey]: maxTimestamp };
+  if (maxTimestamp == null || maxNanos == null) return cursor;
+  // Collect ids at the boundary timestamp; keep the previous entry's ids when
+  // the boundary didn't move so successive partial reads accumulate.
+  const ids = new Set(
+    logCursorTs(previous) !== null && rfc3339ToNanos(logCursorTs(previous) ?? "") === maxNanos
+      ? logCursorIds(previous)
+      : [],
+  );
+  for (const log of logs) {
+    if (log.id !== null && rfc3339ToNanos(log.timestamp) === maxNanos) ids.add(log.id);
+  }
+  return { ...cursor, [groupKey]: { ts: maxTimestamp, ids: [...ids] } };
 }
 
 function timestampToEpochSeconds(timestamp: string): number | null {
   const ms = Date.parse(timestamp);
   return Number.isFinite(ms) ? ms / 1000 : null;
+}
+
+/**
+ * Stable cursor key for one metric series: resource + kind + every
+ * distinguishing label (e.g. instance). Keying by resource alone would let a
+ * fast instance's samples advance the cursor past a lagging instance's — the
+ * laggard's points would then be dropped as already-seen.
+ */
+export function seriesCursorKey(
+  resourceId: string,
+  kind: RenderMetricKind,
+  series: RenderMetricSeries,
+): string {
+  const extras = series.labels
+    .filter((l) => l.field !== "resource" && l.field !== "service")
+    .map((l) => `${l.field}=${l.value}`)
+    .sort()
+    .join(",");
+  return extras ? `${resourceId}:${kind}:${extras}` : `${resourceId}:${kind}`;
 }
 
 export function filterSeriesAfterCursor(

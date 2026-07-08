@@ -49,7 +49,15 @@ export function RenderConnectFlow({
   const validate = useRenderOwners(projectId);
   const connect = useConnectRender(projectId);
 
-  const installed = install.data?.installed === true;
+  // The connect mutation's response doubles as the installed view until the
+  // installation poll catches up, so clearing the local form state below
+  // can't bounce the flow back to the key panel.
+  const installedData = install.data?.installed
+    ? install.data
+    : connect.data?.installed
+      ? connect.data
+      : null;
+  const installed = installedData !== null;
   const phase = renderPhase({ installed, ownersLoaded: owners !== null });
 
   const submitKey = () => {
@@ -65,7 +73,18 @@ export function RenderConnectFlow({
 
   const submitConnect = () => {
     if (connect.isPending || !ownerId) return;
-    connect.mutate({ apiKey: apiKey.trim(), ownerId });
+    connect.mutate(
+      { apiKey: apiKey.trim(), ownerId },
+      {
+        onSuccess: () => {
+          // The account-wide key has done its job — drop it from memory
+          // instead of keeping it in component state until unmount.
+          setApiKey("");
+          setOwners(null);
+          setOwnerId(null);
+        },
+      },
+    );
   };
 
   const resetKey = () => {
@@ -108,10 +127,10 @@ export function RenderConnectFlow({
         />
       )}
 
-      {phase === "connected" && install.data?.installed && (
+      {phase === "connected" && installedData && (
         <ConnectedPanel
-          ownerName={install.data.ownerName}
-          services={install.data.services}
+          ownerName={installedData.ownerName}
+          services={installedData.services}
           statusText={renderStatusText(phase, eventsArrived)}
           eventsArrived={eventsArrived}
         />

@@ -28,7 +28,7 @@ import {
   schema,
 } from "@superlog/db";
 import { fetchOwners, fetchServices } from "@superlog/render";
-import { and, desc, eq, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { logger } from "./logger.js";
@@ -233,9 +233,15 @@ export function mountRenderAuthed(
 
       // One transaction for the upsert AND the supersede of other active rows,
       // so "a project has exactly one active install" holds even across a
-      // crash between the two writes or two concurrent connects — the
-      // superseded install can't keep pulling with a live ingest key.
+      // crash between the two writes. The project-scoped advisory lock
+      // serializes concurrent connects for *different* workspaces — without
+      // it, two simultaneous transactions can each miss the other's
+      // uncommitted row in the supersede SELECT and both installs stay
+      // active. Released automatically at commit/rollback.
       await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtext(${`render_install:${ctx.projectId}`}))`,
+        );
         await tx
           .insert(schema.renderInstallations)
           .values({

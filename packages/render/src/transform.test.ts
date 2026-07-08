@@ -9,6 +9,7 @@ import {
   renderLogsToOtlp,
   renderMetricsToOtlp,
   rfc3339ToNanos,
+  seriesCursorKey,
   stripAnsi,
 } from "./transform.js";
 
@@ -135,7 +136,8 @@ test("renderMetricsToOtlp uses the fallback unit and drops empty series", () => 
 
 test("log cursor filters already-forwarded lines and advances to the max", () => {
   const older = { ...LOG, timestamp: "2026-07-07T14:10:30Z" };
-  const newer = { ...LOG, timestamp: "2026-07-07T14:10:32Z" };
+  const newer = { ...LOG, id: "log-9", timestamp: "2026-07-07T14:10:32Z" };
+  // Legacy timestamp-only cursors are still accepted on read.
   const cursor = { oregon: "2026-07-07T14:10:31Z" };
 
   const fresh = filterLogsAfterCursor(cursor, "oregon", [older, LOG, newer]);
@@ -147,10 +149,38 @@ test("log cursor filters already-forwarded lines and advances to the max", () =>
   assert.equal(filterLogsAfterCursor(cursor, "frankfurt", [older]).length, 1);
 
   const advanced = advanceLogCursor(cursor, "oregon", [older, LOG, newer]);
-  assert.equal(advanced.oregon, "2026-07-07T14:10:32Z");
+  assert.deepEqual(advanced.oregon, { ts: "2026-07-07T14:10:32Z", ids: ["log-9"] });
   // Never moves backwards.
   const unchanged = advanceLogCursor(advanced, "oregon", [older]);
-  assert.equal(unchanged.oregon, "2026-07-07T14:10:32Z");
+  assert.deepEqual(unchanged.oregon, { ts: "2026-07-07T14:10:32Z", ids: ["log-9"] });
+});
+
+test("boundary-timestamp lines are re-read and deduped by id, not dropped", () => {
+  // A pass can end mid-group: two lines share the boundary timestamp but only
+  // the first was fetched. The cursor carries the forwarded ids so the second
+  // line survives the next pass's filter.
+  const ts = "2026-07-07T14:10:32Z";
+  const seen = { ...LOG, id: "log-a", timestamp: ts };
+  const unseen = { ...LOG, id: "log-b", timestamp: ts };
+
+  const cursor = advanceLogCursor({}, "oregon", [seen]);
+  assert.deepEqual(cursor.oregon, { ts, ids: ["log-a"] });
+
+  const fresh = filterLogsAfterCursor(cursor, "oregon", [seen, unseen]);
+  assert.deepEqual(
+    fresh.map((l) => l.id),
+    ["log-b"],
+  );
+  // A boundary line without an id can't be deduped — treated as seen rather
+  // than re-forwarded forever.
+  assert.equal(
+    filterLogsAfterCursor(cursor, "oregon", [{ ...LOG, id: null, timestamp: ts }]).length,
+    0,
+  );
+
+  // Advancing on the same boundary accumulates ids instead of resetting.
+  const merged = advanceLogCursor(cursor, "oregon", [unseen]);
+  assert.deepEqual(merged.oregon, { ts, ids: ["log-a", "log-b"] });
 });
 
 test("series cursor filters old samples per key and advances in epoch seconds", () => {
@@ -174,4 +204,33 @@ test("series cursor filters old samples per key and advances in epoch seconds", 
   // Untouched cursor object is returned when there's nothing to advance.
   const same = advanceSeriesCursor(advanced, key, []);
   assert.equal(same[key], advanced[key]);
+});
+
+test("seriesCursorKey distinguishes instances so a fast one can't advance past a laggard", () => {
+  const instanceA: RenderMetricSeries = { ...SERIES };
+  const instanceB: RenderMetricSeries = {
+    ...SERIES,
+    labels: [
+      { field: "resource", value: "srv-1" },
+      { field: "instance", value: "srv-1-zzzzz" },
+    ],
+  };
+  const keyA = seriesCursorKey("srv-1", "memory", instanceA);
+  const keyB = seriesCursorKey("srv-1", "memory", instanceB);
+  assert.notEqual(keyA, keyB);
+  // Advancing A's cursor leaves B's series untouched.
+  const cursor = advanceSeriesCursor({}, keyA, [instanceA]);
+  assert.equal(filterSeriesAfterCursor(cursor, keyB, [instanceB]).length, 1);
+  // Label order doesn't change the key; a label-less series still keys cleanly.
+  assert.equal(
+    seriesCursorKey("srv-1", "memory", {
+      ...instanceA,
+      labels: [...instanceA.labels].reverse(),
+    }),
+    keyA,
+  );
+  assert.equal(
+    seriesCursorKey("srv-1", "cpu", { labels: [], unit: null, values: [] }),
+    "srv-1:cpu",
+  );
 });

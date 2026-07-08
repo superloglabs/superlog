@@ -85,6 +85,7 @@ import {
   useStartRailwayInstall,
   useStartSlackInstall,
   useStartVercelInstall,
+  useSystemCapabilities,
   useTestWebhook,
   useUninstallCloudflare,
   useUninstallLinear,
@@ -1393,6 +1394,10 @@ function RenderCard({ projectId }: { projectId: string | undefined }) {
   const validate = useRenderOwners(projectId);
   const connect = useConnectRender(projectId);
   const uninstall = useUninstallRender(projectId);
+  // Self-hosted deployments without AGENT_SECRETS_KEY can't store the pasted
+  // key — don't offer a connect that would only ever 503.
+  const capabilities = useSystemCapabilities();
+  const unavailable = capabilities.data ? !capabilities.data.renderConnect : false;
 
   const [apiKey, setApiKey] = useState("");
   const [owners, setOwners] = useState<RenderOwner[] | null>(null);
@@ -1510,12 +1515,18 @@ function RenderCard({ projectId }: { projectId: string | undefined }) {
           </div>
         )}
         {error && <p className="m-0 text-[12.5px] text-danger">{error}</p>}
+        {unavailable && (
+          <p className="m-0 text-[12.5px] text-muted">
+            Render connect isn't configured in this environment — the server needs an integration
+            secrets key (AGENT_SECRETS_KEY) to store pasted API keys encrypted.
+          </p>
+        )}
         {!connecting && (
           <div className="flex items-center gap-2">
             <Btn
               size="sm"
               variant={installed ? "secondary" : "primary"}
-              disabled={!projectId}
+              disabled={!projectId || unavailable}
               onClick={() => setConnecting(true)}
             >
               {installed ? "Reconnect" : "Connect Render"}
