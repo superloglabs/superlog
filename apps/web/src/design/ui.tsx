@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useState } from "react";
 
 // ---------------------------------------------------------------------------
 // Canonical shared primitives — used across the app and the /design sheet.
@@ -49,6 +49,24 @@ export function Tile({
       )}
       {children}
     </div>
+  );
+}
+
+export function SkeletonBlock({
+  className = "",
+  label = "Loading",
+  style,
+}: {
+  className?: string;
+  label?: string;
+  style?: CSSProperties;
+}) {
+  return (
+    <span
+      aria-label={label}
+      style={style}
+      className={`block animate-pulse rounded-sm bg-surface-2 ${className}`}
+    />
   );
 }
 
