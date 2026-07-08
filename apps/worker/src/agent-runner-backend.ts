@@ -122,10 +122,31 @@ export type AgentRunnerSnapshot = {
   };
 };
 
+// A Slack Q&A chat session (see packages/db agent_chats): answers questions
+// about the project's code and telemetry, delivers replies through a custom
+// tool the worker dispatches, and never produces an investigation outcome.
+export type AgentChatStartInput = {
+  chatId: string;
+  projectId: string;
+  orgId: string;
+  projectName: string;
+  // The first question (mention already stripped).
+  question: string;
+  // Slack display handle of the asker, e.g. "<@U123>", when known.
+  requester: string | null;
+  repoCandidates: AgentRunnerRepoCandidate[];
+  mcpResource: string | null;
+  customInstructions: string;
+  memories: AgentRunnerMemory[];
+};
+
 export type AgentRunnerBackend = {
   name: string;
   maxRepoResources: number;
   start(input: AgentRunnerStartInput): Promise<{ sessionId: string }>;
+  // Chat sessions reuse collect/resume/steer; only creation differs (chat
+  // prompt + reply tool instead of the investigation outcome toolset).
+  startChat(input: AgentChatStartInput): Promise<{ sessionId: string }>;
   collect(sessionId: string): Promise<AgentRunnerSnapshot>;
   resume(sessionId: string, message: string): Promise<void>;
   steer(sessionId: string, message: string): Promise<void>;
@@ -133,5 +154,15 @@ export type AgentRunnerBackend = {
     sessionId: string;
     orgId: string;
     incidentId: string;
+  }): Promise<number>;
+  // Serve a chat session's pending tool calls (memory tools + the reply
+  // tool). `onReply` posts the reply text to the chat's channel — the worker
+  // owns Slack delivery; the backend only surfaces the calls and acks them.
+  dispatchChatToolCalls(input: {
+    sessionId: string;
+    orgId: string;
+    projectId: string;
+    chatId: string;
+    onReply(text: string): Promise<void>;
   }): Promise<number>;
 };
