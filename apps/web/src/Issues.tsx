@@ -2358,7 +2358,7 @@ function ConfidenceMeter({ value }: { value: number }) {
   );
 }
 
-// One issue row — used in the "Causing issues" list and embedded standalone in
+// One issue row — used in the sidebar's linked-issues popover and embedded in
 // activity-feed entries that reference an issue (recurrence, reopen).
 function IssueCard({
   issue,
@@ -2381,40 +2381,6 @@ function IssueCard({
       </div>
       <p className="truncate text-[12px] text-fg">{issue.message ?? issue.title}</p>
     </button>
-  );
-}
-
-const ISSUE_LIST_DEFAULT_LIMIT = 3;
-
-function IssueList({
-  issues,
-  onViewIssue,
-}: {
-  issues: Issue[];
-  onViewIssue: (id: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const visible = expanded ? issues : issues.slice(0, ISSUE_LIST_DEFAULT_LIMIT);
-  const hidden = issues.length - visible.length;
-  return (
-    <div className="space-y-2">
-      <ul className="divide-y divide-border border border-border">
-        {visible.map((issue) => (
-          <li key={issue.id} className="px-3 py-2">
-            <IssueCard issue={issue} onViewIssue={onViewIssue} />
-          </li>
-        ))}
-      </ul>
-      {(hidden > 0 || expanded) && (
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="text-[11px] text-subtle hover:text-fg"
-        >
-          {expanded ? "show less" : `Show ${hidden} more`}
-        </button>
-      )}
-    </div>
   );
 }
 
