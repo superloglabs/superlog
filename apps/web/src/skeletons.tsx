@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { SkeletonBlock } from "./design/ui.tsx";
 
 export type TelemetrySkeletonSource = "logs" | "traces" | "metrics";
@@ -28,6 +29,23 @@ const METRIC_BARS = [35, 58, 44, 70, 52, 82, 62, 48, 76, 56, 88, 64, 42, 72, 54,
   (height, index) => ({ key: `bar-${index}-${height}`, height }),
 );
 
+function SkeletonStatus({
+  label,
+  className,
+  children,
+}: {
+  label: string;
+  className: string;
+  children: ReactNode;
+}) {
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: this status region wraps complex loading layouts; output cannot contain this structure.
+    <div role="status" aria-label={label} className={className}>
+      {children}
+    </div>
+  );
+}
+
 function EntityListSkeleton({
   label,
   rows = 7,
@@ -36,8 +54,8 @@ function EntityListSkeleton({
   rows?: number;
 }) {
   return (
-    <div
-      aria-label={label}
+    <SkeletonStatus
+      label={label}
       className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface"
     >
       {LIST_ROWS.slice(0, rows).map((row) => (
@@ -59,7 +77,7 @@ function EntityListSkeleton({
           </div>
         </div>
       ))}
-    </div>
+    </SkeletonStatus>
   );
 }
 
@@ -73,7 +91,7 @@ export function IncidentListSkeleton() {
 
 export function IssueDetailSkeleton() {
   return (
-    <div aria-label="Loading issue detail" className="space-y-8 p-4">
+    <SkeletonStatus label="Loading issue detail" className="space-y-8 p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <SkeletonBlock className="h-5 w-14" />
@@ -108,13 +126,13 @@ export function IssueDetailSkeleton() {
         <SkeletonBlock className="h-8 w-full" />
         <SkeletonBlock className="h-8 w-full" />
       </div>
-    </div>
+    </SkeletonStatus>
   );
 }
 
 export function IncidentDetailSkeleton() {
   return (
-    <div aria-label="Loading incident detail" className="flex min-h-0 flex-1 flex-col bg-bg">
+    <SkeletonStatus label="Loading incident detail" className="flex min-h-0 flex-1 flex-col bg-bg">
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-5 py-3">
         <SkeletonBlock className="h-4 w-20" />
         <SkeletonBlock className="h-4 w-3/5" />
@@ -165,7 +183,7 @@ export function IncidentDetailSkeleton() {
           </div>
         </main>
       </div>
-    </div>
+    </SkeletonStatus>
   );
 }
 
@@ -194,19 +212,17 @@ export function ExploreSignalListSkeleton({ source }: { source: TelemetrySkeleto
             { key: "value", width: "w-20" },
             { key: "unit", width: "w-12" },
           ];
+  const gridStyle = { gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` };
   return (
-    <div aria-label={`Loading ${source}`} className="min-w-[720px]">
-      <div className="grid grid-cols-[repeat(6,minmax(0,1fr))] gap-4 px-5 py-2">
+    <SkeletonStatus label={`Loading ${source}`} className="min-w-[720px]">
+      <div className="grid gap-4 px-5 py-2" style={gridStyle}>
         {columns.map((column) => (
           <SkeletonBlock key={`${source}-head-${column.key}`} className={`h-3 ${column.width}`} />
         ))}
       </div>
       <div className="divide-y divide-border border-t border-border">
         {LIST_ROWS.map((row) => (
-          <div
-            key={`${source}-row-${row}`}
-            className="grid grid-cols-[repeat(6,minmax(0,1fr))] gap-4 px-5 py-3"
-          >
+          <div key={`${source}-row-${row}`} className="grid gap-4 px-5 py-3" style={gridStyle}>
             {columns.map((column, col) => (
               <SkeletonBlock
                 key={`${source}-cell-${row}-${column.key}`}
@@ -216,13 +232,16 @@ export function ExploreSignalListSkeleton({ source }: { source: TelemetrySkeleto
           </div>
         ))}
       </div>
-    </div>
+    </SkeletonStatus>
   );
 }
 
 export function ExploreSignalDetailSkeleton({ source }: { source: TelemetrySkeletonSource }) {
   return (
-    <div aria-label={`Loading ${source} detail`} className="flex h-full flex-col gap-6 px-6 py-6">
+    <SkeletonStatus
+      label={`Loading ${source} detail`}
+      className="flex h-full flex-col gap-6 px-6 py-6"
+    >
       <div className="space-y-2">
         <SkeletonBlock className="h-3 w-20" />
         <SkeletonBlock className="h-5 w-2/3" />
@@ -239,16 +258,16 @@ export function ExploreSignalDetailSkeleton({ source }: { source: TelemetrySkele
           </div>
         ))}
       </div>
-    </div>
+    </SkeletonStatus>
   );
 }
 
 export function MetricDetailSkeleton() {
   return (
-    <div aria-label="Loading metric detail" className="flex h-48 items-end gap-2 px-2 pb-2">
+    <SkeletonStatus label="Loading metric detail" className="flex h-48 items-end gap-2 px-2 pb-2">
       {METRIC_BARS.map((bar) => (
         <SkeletonBlock key={bar.key} className="flex-1" style={{ height: `${bar.height}%` }} />
       ))}
-    </div>
+    </SkeletonStatus>
   );
 }
