@@ -145,6 +145,9 @@ function makeDeps(
     async startChat() {
       throw new Error("not used");
     },
+    async sendChatMessage() {
+      throw new Error("not used");
+    },
     async collect() {
       throw new Error("not used");
     },

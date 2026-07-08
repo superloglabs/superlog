@@ -140,13 +140,27 @@ export type AgentChatStartInput = {
   memories: AgentRunnerMemory[];
 };
 
+export type AgentChatDispatchResult = {
+  // Tool calls served during this dispatch pass.
+  handled: number;
+  // Reply-tool calls observed since the turn's last user message (served now
+  // or on an earlier pass). Zero at idle means the agent never delivered an
+  // answer this turn and the caller should fall back to its last message.
+  repliesThisTurn: number;
+};
+
 export type AgentRunnerBackend = {
   name: string;
   maxRepoResources: number;
   start(input: AgentRunnerStartInput): Promise<{ sessionId: string }>;
-  // Chat sessions reuse collect/resume/steer; only creation differs (chat
-  // prompt + reply tool instead of the investigation outcome toolset).
+  // Chat sessions reuse collect(); creation and messaging differ (chat prompt
+  // + reply tool instead of the investigation outcome toolset — resume/steer
+  // wrap messages in investigation framing a chat must not inherit).
   startChat(input: AgentChatStartInput): Promise<{ sessionId: string }>;
+  // Deliver a follow-up human message into a chat session. One method covers
+  // both the idle-resume and mid-turn-steer cases: they are the same provider
+  // event, only the investigation flow needs to distinguish them.
+  sendChatMessage(sessionId: string, message: string): Promise<void>;
   collect(sessionId: string): Promise<AgentRunnerSnapshot>;
   resume(sessionId: string, message: string): Promise<void>;
   steer(sessionId: string, message: string): Promise<void>;
@@ -157,12 +171,13 @@ export type AgentRunnerBackend = {
   }): Promise<number>;
   // Serve a chat session's pending tool calls (memory tools + the reply
   // tool). `onReply` posts the reply text to the chat's channel — the worker
-  // owns Slack delivery; the backend only surfaces the calls and acks them.
+  // owns Slack delivery; the backend only surfaces the calls and acks them
+  // (error-acks when onReply throws, so the agent knows delivery failed).
   dispatchChatToolCalls(input: {
     sessionId: string;
     orgId: string;
     projectId: string;
     chatId: string;
     onReply(text: string): Promise<void>;
-  }): Promise<number>;
+  }): Promise<AgentChatDispatchResult>;
 };

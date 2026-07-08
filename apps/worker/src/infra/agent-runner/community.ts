@@ -55,6 +55,9 @@ export const communityRunnerBackend: AgentRunnerBackend = {
     // reply instead of a silent failure.
     throw new Error("agent chats are not supported on the community runtime");
   },
+  async sendChatMessage() {
+    throw new Error("agent chats are not supported on the community runtime");
+  },
   async resume() {
     throw new Error("community runner sessions cannot be resumed");
   },
@@ -65,7 +68,7 @@ export const communityRunnerBackend: AgentRunnerBackend = {
     return 0;
   },
   async dispatchChatToolCalls() {
-    return 0;
+    return { handled: 0, repliesThisTurn: 0 };
   },
 };
 
