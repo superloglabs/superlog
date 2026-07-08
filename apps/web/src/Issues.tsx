@@ -50,11 +50,12 @@ import {
   useUnsilenceIssue,
   useUpdateIncident,
 } from "./api.ts";
-import { Btn, Chip } from "./design/ui.tsx";
+import { Btn, Chip, Tabs } from "./design/ui.tsx";
 import { type IncidentStatusAction, getIncidentStatusActions } from "./incident-status-action.ts";
 import {
-  CollapsibleIncidentTranscript,
+  IncidentActivityFeed,
   IncidentSummaryTelemetry,
+  fmtRelative,
 } from "./incidents/IncidentTranscript.tsx";
 import {
   type IncidentMetaRow,
@@ -1152,70 +1153,6 @@ function CopyAgentPromptButton({
   );
 }
 
-function IncidentActivityPanel({
-  projectId,
-  incidentId,
-}: {
-  projectId: string;
-  incidentId: string;
-}) {
-  const stats = useIncidentStats(projectId, incidentId);
-  return (
-    <div className="space-y-3">
-      <SectionHeading>Recent activity</SectionHeading>
-      <div className="grid grid-cols-[1fr_auto] gap-4 rounded-md border border-border bg-surface p-3">
-        <div className="min-w-0 space-y-1.5">
-          <div className="text-[11px] uppercase tracking-wide text-muted">
-            Events · last {stats.data?.windowDays ?? 14}d
-          </div>
-          {stats.isLoading ? (
-            <ActivitySparklineSkeleton />
-          ) : stats.error || !stats.data ? (
-            <div className="h-[44px] text-[12px] text-danger">Failed to load activity</div>
-          ) : (
-            <ActivitySparkline buckets={stats.data.buckets} />
-          )}
-          {stats.data && (
-            <div className="font-mono text-[11px] text-muted">
-              {stats.data.totalEvents.toLocaleString()} events
-            </div>
-          )}
-        </div>
-        <div className="flex min-w-[140px] flex-col justify-between gap-1 border-l border-border pl-4">
-          <div className="text-[11px] uppercase tracking-wide text-muted">Users impacted</div>
-          <ImpactedUsersValue stats={stats.data} loading={stats.isLoading} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ImpactedUsersValue({
-  stats,
-  loading,
-}: {
-  stats: IncidentStats | undefined;
-  loading: boolean;
-}) {
-  if (loading) return <ImpactedUsersSkeleton />;
-  if (!stats) return <div className="text-[12px] text-muted">—</div>;
-  if (!stats.impactedUsersAvailable) {
-    return (
-      <div className="space-y-0.5">
-        <div className="font-mono text-[16px] text-muted">—</div>
-        <div className="text-[10px] leading-snug text-muted">
-          Set <code className="font-mono">user.id</code> on spans to populate this.
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div className="font-mono text-[20px] font-semibold text-fg">
-      {stats.impactedUsers.toLocaleString()}
-    </div>
-  );
-}
-
 type IncidentRowActivity = {
   buckets: { day: string; count: number }[];
   impactedUsers: number;
@@ -1286,27 +1223,6 @@ function RowUsersSkeleton() {
       aria-label="Loading users"
     />
   );
-}
-
-function ActivitySparklineSkeleton() {
-  return (
-    <div className="flex h-[60px] w-full items-end gap-[1.5%]" aria-label="Loading activity">
-      {[32, 48, 40, 62, 36, 76, 54, 44, 68, 50, 82, 58, 42, 66].map((height, idx) => (
-        <span
-          key={`${height}-${idx}`}
-          className="rounded-sm bg-surface-2"
-          style={{
-            width: `${(100 - 1.5 * 13) / 14}%`,
-            height: `${height}%`,
-          }}
-        />
-      ))}
-    </div>
-  );
-}
-
-function ImpactedUsersSkeleton() {
-  return <div className="h-7 w-20 rounded-sm bg-surface-2" aria-label="Loading impacted users" />;
 }
 
 function RowUsersImpacted({
@@ -1386,55 +1302,6 @@ function PeakMarker({ value }: { value: number }) {
   );
 }
 
-function ActivitySparkline({ buckets }: { buckets: { day: string; count: number }[] }) {
-  if (buckets.length === 0) {
-    return <div className="h-[44px] text-[12px] text-muted">No events</div>;
-  }
-  const max = Math.max(1, ...buckets.map((b) => b.count));
-  const peakIdx = max > 0 ? buckets.findIndex((b) => b.count === max) : -1;
-  const barCount = buckets.length;
-  // Use percentage-based widths so it fills whatever the container gives us.
-  const gapPct = 1.5;
-  const barPct = (100 - gapPct * (barCount - 1)) / barCount;
-  return (
-    <div
-      className="relative h-[60px] w-full"
-      role="img"
-      aria-label={`Daily event counts for the last ${barCount} days`}
-    >
-      <div className="absolute inset-x-0 bottom-0 flex h-[44px] items-end gap-[1.5%]">
-        {buckets.map((b, idx) => {
-          const heightPct = (b.count / max) * 100;
-          const isPeak = idx === peakIdx;
-          return (
-            <div
-              key={b.day}
-              title={`${b.day}: ${b.count.toLocaleString()} events`}
-              className="relative rounded-sm transition-opacity hover:opacity-100"
-              // Tailwind's color-modifier (`bg-accent/70`) doesn't compile to a
-              // visible rgba in this project's config, so we paint the bar with
-              // an inline var() reference and tweak opacity to dim empty days.
-              style={{
-                width: `${barPct}%`,
-                // 2px minimum so empty days still show a faint baseline.
-                height: `max(2px, ${heightPct}%)`,
-                backgroundColor: "var(--color-accent)",
-                opacity: b.count === 0 ? 0.22 : isPeak ? 1 : 0.7,
-              }}
-            >
-              {isPeak && <PeakMarker value={b.count} />}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// "Triggered by" back-link: an alert-raised incident points back at the
-// episode(s) of the alert that opened it, so you can hop from the incident to
-// the alert rule and its full activation history. Rendered with the same tile
-// markup as the issues list below it.
 function TriggeredByAlertEpisodes({ episodes }: { episodes: IncidentAlertEpisode[] }) {
   return (
     <ul className="divide-y divide-border border border-border">
@@ -1491,7 +1358,6 @@ export function IncidentDetailContent({
   restartingAgentRun = false,
   retryingPrDelivery = false,
   summaryTelemetry,
-  transcript,
 }: {
   incident: Incident;
   issues: Issue[];
@@ -1515,9 +1381,6 @@ export function IncidentDetailContent({
   retryingPrDelivery?: boolean;
   /** Telemetry widgets the agent quoted in its summary, rendered inside the Summary section. */
   summaryTelemetry?: ReactNode;
-  /** The agent's conversation, rendered as its own Transcript section. When set,
-   *  the agent's `agent.*` events are dropped from the timeline (lifecycle-only). */
-  transcript?: ReactNode;
 }) {
   const [detailTab, setDetailTab] = useState<IncidentDetailTab>("activity");
   const statusActions = getIncidentStatusActions(incident.status);
@@ -1529,7 +1392,6 @@ export function IncidentDetailContent({
   );
   const detailMeta = buildIncidentDetailMeta({
     incident,
-    issueCount: issues.length || incident.issueCount,
     agentRunState: agentRun?.state ?? null,
     pendingRecovery: !!pendingResolutionProposal,
   });
@@ -1537,23 +1399,6 @@ export function IncidentDetailContent({
     incident.agentSummary ??
     agentRun?.result?.summary ??
     "No investigation summary has been recorded yet.";
-
-  // The agent's conversation renders as a Transcript section (self-rendered from
-  // events, or an explicit override) — and is then dropped from the timeline.
-  const hasAgentConvo = events.some(
-    (e) =>
-      e.kind === "agent.message" ||
-      e.kind === "agent.tool_use" ||
-      e.kind === "agent.mcp_tool_use" ||
-      e.kind === "agent.custom_tool_use",
-  );
-  const transcriptNode =
-    transcript ??
-    (hasAgentConvo ? (
-      <div className="mt-8">
-        <CollapsibleIncidentTranscript events={events} />
-      </div>
-    ) : null);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-bg text-fg">
@@ -1604,7 +1449,10 @@ export function IncidentDetailContent({
             <p className="mt-4 break-words text-[12px] leading-5 text-muted">{sidebarSummary}</p>
 
             <div className="mt-7 grid gap-3.5">
-              <IncidentSidebarMetaRows rows={detailMeta} />
+              {/* "Agent run" stays last; Linked issues slots in where Findings used to be. */}
+              <IncidentSidebarMetaRows rows={detailMeta.slice(0, -1)} />
+              <LinkedIssuesMetaRow issues={issues} onViewIssue={onViewIssue} />
+              <IncidentSidebarMetaRows rows={detailMeta.slice(-1)} />
             </div>
 
             <div className="mt-7 grid gap-2">
@@ -1647,16 +1495,25 @@ export function IncidentDetailContent({
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 lg:px-8">
             {detailTab === "activity" && (
               <div className="space-y-8">
-                <IncidentActivityPanel projectId={incident.projectId} incidentId={incident.id} />
-
-                {transcriptNode}
-
-                <div className={transcriptNode ? "mt-8" : "mt-8 border-t border-border pt-6"}>
-                  <IncidentTimeline
+                <div className="space-y-3">
+                  {eventsLoading && <p className="text-[12px] text-muted">loading…</p>}
+                  {eventsError && (
+                    <p className="text-[12px] text-danger">failed: {String(eventsError)}</p>
+                  )}
+                  {!eventsLoading && !eventsError && events.length === 0 && (
+                    <p className="text-[12px] text-muted">No activity yet.</p>
+                  )}
+                  <IncidentActivityFeed
                     events={events}
-                    eventsError={eventsError}
-                    eventsLoading={eventsLoading}
-                    excludeAgentMessages={!!transcriptNode}
+                    renderIssueCard={(issueId) => {
+                      const issue = issues.find((i) => i.id === issueId);
+                      if (!issue) return null;
+                      return (
+                        <div className="rounded-lg border border-border bg-surface px-3 py-2">
+                          <IssueCard issue={issue} onViewIssue={onViewIssue} />
+                        </div>
+                      );
+                    }}
                   />
                 </div>
               </div>
@@ -1679,15 +1536,6 @@ export function IncidentDetailContent({
                     deciding={!!decidingProposal}
                   />
                 )}
-
-                <div className="space-y-3">
-                  <SectionHeading>Issues in this incident</SectionHeading>
-                  {issues.length === 0 ? (
-                    <p className="text-[12px] text-muted">none</p>
-                  ) : (
-                    <IssueList issues={issues} onViewIssue={onViewIssue} />
-                  )}
-                </div>
 
                 <AgentRunView
                   incident={incident}
@@ -1742,6 +1590,89 @@ function IncidentSidebarMetaRows({ rows }: { rows: IncidentMetaRow[] }) {
   );
 }
 
+// Sidebar property for the incident's linked issues. The value reads as plain
+// "N issues" text like the other meta rows, but clicking it opens a popover
+// listing the issues (same cards as the activity feed).
+function LinkedIssuesMetaRow({
+  issues,
+  onViewIssue,
+}: {
+  issues: Issue[];
+  onViewIssue: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", onDoc);
+    return () => window.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const count = issues.length;
+  return (
+    <div className="grid grid-cols-[132px_minmax(0,1fr)] items-start gap-3 text-[13px]">
+      <div className="text-muted">Linked issues</div>
+      <div ref={ref} className="relative flex min-w-0 items-center gap-[5px] text-fg">
+        <ArrowUpRightIcon />
+        {count === 0 ? (
+          <span className="text-muted">none</span>
+        ) : (
+          <>
+            <button
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={open}
+              onClick={() => setOpen((v) => !v)}
+              className="text-fg transition-colors hover:text-muted"
+            >
+              {count} issue{count === 1 ? "" : "s"}
+            </button>
+            {open && (
+              <div className="absolute left-0 top-full z-20 mt-1.5 w-80 overflow-hidden rounded-lg border border-border bg-surface p-1 shadow-[0_10px_30px_-10px_rgba(0,0,0,0.4)]">
+                {issues.map((issue) => (
+                  <div
+                    key={issue.id}
+                    className="rounded-md px-2.5 py-2 transition-colors hover:bg-surface-2"
+                  >
+                    <IssueCard
+                      issue={issue}
+                      onViewIssue={(id) => {
+                        setOpen(false);
+                        onViewIssue(id);
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ArrowUpRightIcon() {
+  return (
+    <svg
+      className="h-4 w-4 shrink-0 text-muted"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M7 17 17 7" />
+      <path d="M7 7h10v10" />
+    </svg>
+  );
+}
+
 function IncidentMetaIcon({ row }: { row: IncidentMetaRow }) {
   if (row.kind === "priority") return <PriorityBars />;
   if (row.kind === "status") return <StatusDot />;
@@ -1786,31 +1717,18 @@ function IncidentDetailTabs({
   active: IncidentDetailTab;
   onChange: (tab: IncidentDetailTab) => void;
 }) {
-  const tabs: { id: IncidentDetailTab; label: string }[] = [
-    { id: "activity", label: "Activity" },
-    { id: "findings", label: "Findings" },
-    { id: "pr", label: "PR" },
-  ];
   return (
-    <div className="border-b border-border bg-bg px-6 lg:px-8">
-      <div className="flex h-16 flex-wrap items-end gap-2 pb-3">
-        {tabs.map((tab) => {
-          const selected = active === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => onChange(tab.id)}
-              className={`rounded-lg border px-3.5 py-1.5 text-[13px] font-semibold transition-colors ${
-                selected
-                  ? "border-border-strong bg-surface-2 text-fg"
-                  : "border-border bg-surface text-muted hover:text-fg"
-              }`}
-            >
-              {tab.label}
-            </button>
-          );
-        })}
+    <div className="bg-bg px-6 lg:px-8">
+      <div className="flex items-center pb-3 pt-[18px]">
+        <Tabs
+          value={active}
+          onChange={onChange}
+          options={[
+            { value: "activity", label: "Activity" },
+            { value: "findings", label: "Findings" },
+            { value: "pr", label: "PR" },
+          ]}
+        />
       </div>
     </div>
   );
@@ -1848,8 +1766,7 @@ function IncidentPullRequestPanel({
   if (!prs.data || prs.data.length === 0) {
     return (
       <div className="rounded-md border border-border bg-surface p-4">
-        <SectionHeading>Pull request</SectionHeading>
-        <p className="mt-2 text-[12px] text-muted">No PR has been opened for this incident.</p>
+        <p className="text-[12px] text-muted">No PR has been opened for this incident.</p>
       </div>
     );
   }
@@ -1859,7 +1776,6 @@ function IncidentPullRequestPanel({
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
-          <SectionHeading>Pull request</SectionHeading>
           <a
             href={selectedPr.url}
             target="_blank"
@@ -2177,33 +2093,6 @@ export function ResolutionProposalBanner({
 // confirmations, recurrence reopens) that aren't tied to any
 // investigation — and the view shouldn't disappear just because no agent
 // has run yet.
-export function IncidentTimeline({
-  events,
-  eventsError,
-  eventsLoading,
-  excludeAgentMessages = false,
-}: {
-  events: IncidentEvent[];
-  eventsError: Error | null;
-  eventsLoading: boolean;
-  /** When the agent's conversation is shown in a separate Transcript section,
-   *  drop its `agent.*` events here so the timeline is lifecycle-only. */
-  excludeAgentMessages?: boolean;
-}) {
-  const shown = excludeAgentMessages ? events.filter((e) => !e.kind.startsWith("agent.")) : events;
-  return (
-    <div className="space-y-3">
-      <SectionHeading>Timeline</SectionHeading>
-      {eventsLoading && <p className="text-[12px] text-muted">loading…</p>}
-      {eventsError && <p className="text-[12px] text-danger">failed: {String(eventsError)}</p>}
-      {!eventsLoading && !eventsError && shown.length === 0 && (
-        <p className="text-[12px] text-muted">No activity yet.</p>
-      )}
-      {shown.length > 0 && <TimelineView events={shown} />}
-    </div>
-  );
-}
-
 function AgentRunMeta({ agentRun }: { agentRun: AgentRun }) {
   return (
     <div className="grid grid-cols-2 gap-3">
@@ -2300,575 +2189,7 @@ function AgentRunStateChip({ state }: { state: string }) {
   return <Chip tone="neutral">{state}</Chip>;
 }
 
-function AgentRunEventRow({ event }: { event: IncidentEvent }) {
-  const [expanded, setExpanded] = useState(false);
-  const summary = (event.summary ?? "").trim() || humanizeKind(event.kind);
-  const firstLine = summary.split("\n", 1)[0] ?? "";
-  const isTruncatable = summary.length > firstLine.length || firstLine.length > 120;
-  const isAgent = event.kind.startsWith("agent.");
-  const tag = agentKindTag(event.kind);
 
-  if (event.source === "agent_pr" || event.source === "agent_linear") {
-    return <ExternalEventRow event={event} />;
-  }
-
-  const time = (
-    <span className="shrink-0 whitespace-nowrap text-[11px] text-subtle">
-      · {fmtRelative(event.createdAt)}
-    </span>
-  );
-
-  if (!isAgent) {
-    return (
-      <li className="pl-3">
-        {expanded ? (
-          <>
-            <pre className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-muted">
-              {summary}
-            </pre>
-            <div className="mt-0.5">{time}</div>
-          </>
-        ) : (
-          <div className="flex items-baseline gap-2 text-[12px] text-muted">
-            <span className="min-w-0 flex-1 truncate">{firstLine}</span>
-            {time}
-          </div>
-        )}
-        {isTruncatable && (
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className="mt-0.5 text-[11px] text-subtle hover:text-fg"
-          >
-            {expanded ? "show less" : "show more"}
-          </button>
-        )}
-      </li>
-    );
-  }
-
-  return (
-    <li className="border-l-2 border-white/10 pl-3">
-      {tag && (
-        <div className="mb-0.5 text-[10px] font-medium uppercase tracking-[0.1em] text-subtle">
-          {tag}
-        </div>
-      )}
-      {expanded ? (
-        <pre className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fg">
-          {summary}
-        </pre>
-      ) : (
-        <p className="line-clamp-2 text-[12px] leading-relaxed text-fg">{firstLine}</p>
-      )}
-      <div className="mt-0.5 flex items-center gap-2">
-        {time}
-        {isTruncatable && (
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className="text-[11px] text-subtle hover:text-fg"
-          >
-            {expanded ? "show less" : "show more"}
-          </button>
-        )}
-      </div>
-    </li>
-  );
-}
-
-function ExternalEventRow({ event }: { event: IncidentEvent }) {
-  const tag = event.source === "agent_pr" ? "github" : "linear";
-  const summary = (event.summary ?? "").trim() || humanizeKind(event.kind);
-  const detail = event.detail ?? {};
-  const detailUrl =
-    (typeof detail.html_url === "string" && detail.html_url) ||
-    (typeof detail.prUrl === "string" && detail.prUrl) ||
-    (typeof detail.ticketUrl === "string" && detail.ticketUrl) ||
-    null;
-  const actor = event.actor;
-
-  return (
-    <li className="border-l-2 border-white/10 pl-3">
-      <div className="mb-0.5 text-[10px] font-medium uppercase tracking-[0.1em] text-subtle">
-        {tag}
-      </div>
-      <div className="flex items-start gap-2 text-[12px] leading-relaxed">
-        {actor?.avatarUrl && (
-          <img
-            src={actor.avatarUrl}
-            alt={actor.name ?? ""}
-            className="mt-0.5 h-4 w-4 rounded-full"
-          />
-        )}
-        <div className="min-w-0 flex-1">
-          <div className="text-fg">
-            {actor?.name && (
-              <>
-                {actor.profileUrl ? (
-                  <a
-                    href={actor.profileUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="font-medium text-fg hover:underline"
-                  >
-                    {actor.name}
-                  </a>
-                ) : (
-                  <span className="font-medium text-fg">{actor.name}</span>
-                )}
-                <span className="text-muted"> · </span>
-              </>
-            )}
-            <span className="text-muted">{summary}</span>
-          </div>
-          <div className="mt-0.5 flex items-center gap-2 text-[11px] text-subtle">
-            <span>{fmtRelative(event.createdAt)}</span>
-            {detailUrl && (
-              <a
-                href={detailUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="hover:text-fg hover:underline"
-              >
-                view
-              </a>
-            )}
-          </div>
-        </div>
-      </div>
-    </li>
-  );
-}
-
-type TimelineItem =
-  | { kind: "single"; event: IncidentEvent }
-  | { kind: "tool_pair"; call: IncidentEvent; result: IncidentEvent };
-
-function pairToolEvents(events: IncidentEvent[]): TimelineItem[] {
-  const items: TimelineItem[] = [];
-  for (let i = 0; i < events.length; i++) {
-    const event = events[i]!;
-    const next = events[i + 1];
-    if (event.kind === "agent.tool_use" && next?.kind === "agent.tool_result") {
-      items.push({ kind: "tool_pair", call: event, result: next });
-      i++;
-    } else {
-      items.push({ kind: "single", event });
-    }
-  }
-  return items;
-}
-
-function ToolCallRow({
-  call,
-  result,
-}: {
-  call: IncidentEvent;
-  result: IncidentEvent;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const callSummary = (call.summary ?? "").trim() || humanizeKind(call.kind);
-  const callFirstLine = callSummary.split("\n", 1)[0] ?? "";
-  const resultSummary = (result.summary ?? "").trim();
-
-  return (
-    <li className="border-l-2 border-white/10 pl-3">
-      <div className="mb-0.5 text-[10px] font-medium uppercase tracking-[0.1em] text-subtle">
-        tool call
-      </div>
-      {expanded ? (
-        <pre className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fg">
-          {callSummary}
-        </pre>
-      ) : (
-        <p className="line-clamp-2 text-[12px] leading-relaxed text-fg">{callFirstLine}</p>
-      )}
-      {expanded && resultSummary && (
-        <div className="mt-2 border-l border-border pl-3">
-          <div className="mb-0.5 text-[10px] font-medium uppercase tracking-[0.1em] text-subtle">
-            result
-          </div>
-          <pre className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-muted">
-            {resultSummary}
-          </pre>
-        </div>
-      )}
-      <div className="mt-0.5 flex items-center gap-2">
-        <span className="shrink-0 whitespace-nowrap text-[11px] text-subtle">
-          · {fmtRelative(call.createdAt)}
-        </span>
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="text-[11px] text-subtle hover:text-fg"
-        >
-          {expanded ? "hide result" : "show result"}
-        </button>
-      </div>
-    </li>
-  );
-}
-
-function agentKindTag(kind: string): string | null {
-  if (kind === "agent.thinking") return "thinking";
-  if (kind === "agent.message") return "agent";
-  if (kind === "agent.tool_use") return "tool call";
-  if (kind === "agent.tool_result") return "tool result";
-  if (kind.startsWith("agent.")) return kind.slice("agent.".length).replace(/_/g, " ");
-  return null;
-}
-
-function humanizeKind(kind: string): string {
-  const cleaned = kind.replace(/[._]/g, " ").trim().toLowerCase();
-  if (!cleaned) return kind;
-  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
-}
-
-// ---------------------------------------------------------------------------
-// Timeline grouping (story view)
-// ---------------------------------------------------------------------------
-
-type ToolUseDetail = {
-  name: string;
-  input: Record<string, unknown>;
-  mcpServerName?: string;
-};
-
-type ToolResultDetail = {
-  toolUseId?: string;
-  isError: boolean;
-};
-
-type SpanDetail = {
-  modelRequestStartId?: string;
-  modelUsage?: {
-    cache_creation_input_tokens?: number;
-    cache_read_input_tokens?: number;
-    input_tokens?: number;
-    output_tokens?: number;
-  };
-  isError: boolean;
-};
-
-function readToolUse(event: IncidentEvent): ToolUseDetail | null {
-  const detail = event.detail as { toolUse?: ToolUseDetail } | null;
-  return detail?.toolUse ?? null;
-}
-
-function readToolResult(event: IncidentEvent): ToolResultDetail | null {
-  const detail = event.detail as { toolResult?: ToolResultDetail } | null;
-  return detail?.toolResult ?? null;
-}
-
-function readSpan(event: IncidentEvent): SpanDetail | null {
-  const detail = event.detail as { span?: SpanDetail } | null;
-  return detail?.span ?? null;
-}
-
-type TurnToolCall = {
-  callEvent: IncidentEvent;
-  toolUse: ToolUseDetail | null;
-  resultEvent: IncidentEvent | null;
-  resultIsError: boolean;
-};
-
-type Turn = {
-  startEvent: IncidentEvent;
-  endEvent: IncidentEvent | null;
-  durationMs: number | null;
-  thinkingCount: number;
-  message: string | null;
-  messageEvent: IncidentEvent | null;
-  toolCalls: TurnToolCall[];
-  usage: SpanDetail["modelUsage"] | null;
-  isError: boolean;
-};
-
-type TimelineNode = { kind: "turn"; turn: Turn } | { kind: "marker"; event: IncidentEvent };
-
-function groupEvents(events: IncidentEvent[]): TimelineNode[] {
-  const nodes: TimelineNode[] = [];
-  let current: Turn | null = null;
-  const callsById = new Map<string, TurnToolCall>();
-
-  const closeTurn = () => {
-    if (current) {
-      nodes.push({ kind: "turn", turn: current });
-      current = null;
-    }
-  };
-
-  for (const event of events) {
-    if (event.kind === "span.model_request_start") {
-      closeTurn();
-      current = {
-        startEvent: event,
-        endEvent: null,
-        durationMs: null,
-        thinkingCount: 0,
-        message: null,
-        messageEvent: null,
-        toolCalls: [],
-        usage: null,
-        isError: false,
-      };
-      continue;
-    }
-    if (event.kind === "span.model_request_end") {
-      if (current) {
-        const span = readSpan(event);
-        current.endEvent = event;
-        current.usage = span?.modelUsage ?? null;
-        current.isError = span?.isError ?? false;
-        const startMs = new Date(current.startEvent.createdAt).getTime();
-        const endMs = new Date(event.createdAt).getTime();
-        if (Number.isFinite(startMs) && Number.isFinite(endMs)) {
-          current.durationMs = Math.max(0, endMs - startMs);
-        }
-        closeTurn();
-      }
-      continue;
-    }
-    if (event.kind === "agent.thinking") {
-      if (current) current.thinkingCount += 1;
-      continue;
-    }
-    if (event.kind === "agent.message") {
-      if (current) {
-        current.message = (event.summary ?? "").trim() || null;
-        current.messageEvent = event;
-      } else {
-        nodes.push({ kind: "marker", event });
-      }
-      continue;
-    }
-    if (
-      event.kind === "agent.tool_use" ||
-      event.kind === "agent.mcp_tool_use" ||
-      event.kind === "agent.custom_tool_use"
-    ) {
-      const call: TurnToolCall = {
-        callEvent: event,
-        toolUse: readToolUse(event),
-        resultEvent: null,
-        resultIsError: false,
-      };
-      if (current) current.toolCalls.push(call);
-      else nodes.push({ kind: "marker", event });
-      // tool_results carry the provider's tool_use_id (Anthropic `sevt_…`),
-      // which equals the tool_use event's provider_event_id — not its row id.
-      const key = event.providerEventId ?? event.id;
-      callsById.set(key, call);
-      continue;
-    }
-    if (event.kind === "agent.tool_result" || event.kind === "agent.mcp_tool_result") {
-      const result = readToolResult(event);
-      const callId = result?.toolUseId ?? null;
-      const matched = callId ? callsById.get(callId) : null;
-      if (matched) {
-        matched.resultEvent = event;
-        matched.resultIsError = result?.isError ?? false;
-      } else {
-        nodes.push({ kind: "marker", event });
-      }
-      continue;
-    }
-    nodes.push({ kind: "marker", event });
-  }
-
-  closeTurn();
-  return nodes;
-}
-
-// ---------------------------------------------------------------------------
-// Timeline view (story / trace toggle)
-// ---------------------------------------------------------------------------
-
-function TimelineView({ events }: { events: IncidentEvent[] }) {
-  const [view, setView] = useState<"highlights" | "trace">("highlights");
-  const highlights = view === "highlights" ? highlightEvents(events) : null;
-  const traceNodes = view === "trace" ? groupEvents(events) : null;
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-1 text-[11px]">
-        <ViewToggleButton active={view === "highlights"} onClick={() => setView("highlights")}>
-          Highlights
-        </ViewToggleButton>
-        <ViewToggleButton active={view === "trace"} onClick={() => setView("trace")}>
-          Full trace
-        </ViewToggleButton>
-        <span className="ml-2 text-subtle">
-          {view === "highlights" && highlights
-            ? `${highlights.length} of ${events.length} events`
-            : `${events.length} events`}
-        </span>
-      </div>
-      {view === "highlights" && highlights && (
-        <ul className="flex flex-col">
-          {highlights.map((event) => (
-            <HighlightRow key={event.id} event={event} />
-          ))}
-        </ul>
-      )}
-      {view === "trace" && traceNodes && (
-        <ul className="flex flex-col gap-2">
-          {traceNodes.map((node) =>
-            node.kind === "turn" ? (
-              <TurnRow key={node.turn.startEvent.id} turn={node.turn} />
-            ) : (
-              <AgentRunEventRow key={node.event.id} event={node.event} />
-            ),
-          )}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-// Narrative subset of the timeline: lifecycle markers, repo/issue context,
-// PR + ticket activity, and the agent's spoken messages. Tool calls and
-// model-span instrumentation are intentionally hidden — they belong in the
-// full trace. agent.thinking events are also dropped: Anthropic's managed
-// agents API ships them as content-free heartbeats ("model is thinking"),
-// not as carriers of the actual thought text.
-function highlightEvents(events: IncidentEvent[]): IncidentEvent[] {
-  const NARRATIVE_KINDS = new Set([
-    "agent_run_queued",
-    "agent_run_started",
-    "agent_run_restarted",
-    "agent_run_pr_retry_queued",
-    "agent_run_superseded",
-    "agent_run_failed",
-    "awaiting_human",
-    "incident_resolved",
-    "incident_reopened",
-    "repo_selected",
-    "incident_context_changed",
-    "agent.message",
-    "session.error",
-  ]);
-  return events.filter(
-    (e) => e.source === "agent_pr" || e.source === "agent_linear" || NARRATIVE_KINDS.has(e.kind),
-  );
-}
-
-// One-line, Linear-style activity-feed row used by Highlights. Format:
-//   <icon>  <actor> <verb-phrase>  · <time>  [view]
-//           [optional expandable body]
-//
-// Lifecycle / system events render with a small bullet (no actor); agent
-// speech renders with an "Agent" label; PR/Linear events use the actor that
-// the API attached (e.g. `cursor[bot]`, `superlog-app[bot]`).
-function HighlightRow({ event }: { event: IncidentEvent }) {
-  const [expanded, setExpanded] = useState(false);
-  const view = renderHighlight(event);
-
-  const time = (
-    <span className="shrink-0 whitespace-nowrap text-[11px] text-subtle">
-      · {fmtRelative(event.createdAt)}
-    </span>
-  );
-  const viewLink = view.detailUrl ? (
-    <a
-      href={view.detailUrl}
-      target="_blank"
-      rel="noreferrer"
-      className="shrink-0 text-[11px] text-subtle hover:text-fg hover:underline"
-    >
-      view
-    </a>
-  ) : null;
-
-  return (
-    <li className="flex gap-3 py-1.5">
-      <div className="flex w-5 shrink-0 justify-center pt-1">
-        <HighlightIcon variant={view.iconKind} actor={view.actor} />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-baseline gap-x-2 text-[12.5px] leading-relaxed">
-          {view.actor?.name &&
-            (view.actor.profileUrl ? (
-              <a
-                href={view.actor.profileUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="font-medium text-fg hover:underline"
-              >
-                {view.actor.name}
-              </a>
-            ) : (
-              <span className="font-medium text-fg">{view.actor.name}</span>
-            ))}
-          <span className="min-w-0 flex-1 text-muted">{view.inline}</span>
-          {viewLink}
-          {time}
-        </div>
-        {view.expandable && (
-          <>
-            <div
-              className={
-                expanded
-                  ? "mt-1 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fg"
-                  : "hidden"
-              }
-            >
-              {view.expandable}
-            </div>
-            <button
-              type="button"
-              onClick={() => setExpanded((v) => !v)}
-              className="mt-0.5 text-[11px] text-subtle hover:text-fg"
-            >
-              {expanded ? "show less" : "show more"}
-            </button>
-          </>
-        )}
-      </div>
-    </li>
-  );
-}
-
-function HighlightIcon({
-  variant,
-  actor,
-}: {
-  variant: "actor" | "agent" | "system";
-  actor: IncidentEvent["actor"] | null | undefined;
-}) {
-  if (variant === "actor" && actor?.avatarUrl) {
-    return <img src={actor.avatarUrl} alt={actor.name ?? ""} className="h-4 w-4 rounded-full" />;
-  }
-  if (variant === "agent") {
-    return (
-      <div className="flex h-4 w-4 items-center justify-center rounded-full bg-white/10 text-[9px] font-medium uppercase tracking-tight text-fg">
-        A
-      </div>
-    );
-  }
-  // System (lifecycle / context) — simple ring.
-  return <div className="h-2 w-2 rounded-full border border-white/30" />;
-}
-
-type HighlightView = {
-  actor: AgentRunEventActor | null;
-  iconKind: "actor" | "agent" | "system";
-  inline: string;
-  detailUrl?: string | null;
-  expandable?: string | null;
-};
-
-const CONTEXT_PREFIX = /^new issue joined the incident:\s*/i;
-const HIGHLIGHT_PREVIEW_LIMIT = 140;
-
-function truncate(text: string, limit: number): string {
-  return text.length > limit ? `${text.slice(0, limit).trimEnd()}…` : text;
-}
-
-// Snake-case reason codes (`fixed_in_current_code`, `external_dependency_recovered`,
-// agent-emitted free-form codes from autorecovery) → "fixed in current code".
-// Kept loose because the autorecovery agent is intentionally free to coin new
-// categories without a frontend change.
 function humanizeReasonCode(code: string): string {
   return code.replace(/[._]/g, " ").trim().toLowerCase();
 }
@@ -2882,338 +2203,6 @@ function sentenceCase(text: string): string {
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
 }
 
-function renderHighlight(event: IncidentEvent): HighlightView {
-  const detail = (event.detail ?? {}) as Record<string, unknown>;
-
-  if (event.source === "agent_pr") {
-    const prNumber = typeof detail.prNumber === "number" ? detail.prNumber : null;
-    const repo = typeof detail.repoFullName === "string" ? detail.repoFullName : null;
-    const prUrl = typeof detail.prUrl === "string" ? detail.prUrl : null;
-    let inline: string;
-    switch (event.kind) {
-      case "pr_opened":
-        inline = prNumber
-          ? `opened PR #${prNumber}${repo ? ` in ${repo}` : ""}`
-          : "opened a pull request";
-        break;
-      case "pr_merged":
-        inline = prNumber ? `merged PR #${prNumber}` : "merged the pull request";
-        break;
-      case "pr_closed":
-        inline = prNumber ? `closed PR #${prNumber}` : "closed the pull request";
-        break;
-      case "pr_edited":
-      case "pr_synchronize":
-        inline = "updated the PR";
-        break;
-      default:
-        inline = humanizeKind(event.kind).toLowerCase();
-    }
-    return { actor: event.actor ?? null, iconKind: "actor", inline, detailUrl: prUrl };
-  }
-
-  if (event.source === "agent_linear") {
-    const ticketId = typeof detail.ticketIdentifier === "string" ? detail.ticketIdentifier : null;
-    const ticketUrl = typeof detail.ticketUrl === "string" ? detail.ticketUrl : null;
-    let inline: string;
-    switch (event.kind) {
-      case "ticket_filed":
-        inline = ticketId ? `filed Linear ticket ${ticketId}` : "filed a Linear ticket";
-        break;
-      case "ticket_state_changed": {
-        const next = typeof detail.toState === "string" ? detail.toState : null;
-        inline = ticketId
-          ? `moved ${ticketId}${next ? ` to ${next}` : ""}`
-          : "moved the Linear ticket";
-        break;
-      }
-      default:
-        inline = humanizeKind(event.kind).toLowerCase();
-    }
-    // Linear events historically arrive without an actor; fall back to the
-    // agent so the row reads as a sentence rather than a floating verb.
-    const actor: AgentRunEventActor = event.actor ?? {
-      name: "Agent",
-      avatarUrl: null,
-      profileUrl: null,
-    };
-    return { actor, iconKind: "actor", inline, detailUrl: ticketUrl };
-  }
-
-  if (event.kind === "agent.message") {
-    const body = (event.summary ?? "").trim();
-    const firstLine = body.split("\n", 1)[0] ?? body;
-    const truncated = truncate(firstLine, HIGHLIGHT_PREVIEW_LIMIT);
-    const hasMore = body.length > truncated.length;
-    const actor: AgentRunEventActor = {
-      name: "Agent",
-      avatarUrl: null,
-      profileUrl: null,
-    };
-    return {
-      actor,
-      iconKind: "agent",
-      inline: truncated,
-      expandable: hasMore ? body : null,
-    };
-  }
-
-  let inline: string;
-  switch (event.kind) {
-    case "agent_run_queued":
-      inline = "queued agent run";
-      break;
-    case "agent_run_started": {
-      const repoCount =
-        typeof detail.candidateCount === "number"
-          ? detail.candidateCount
-          : typeof detail.repoCandidateCount === "number"
-            ? detail.repoCandidateCount
-            : null;
-      inline = repoCount
-        ? `started agent run across ${repoCount} candidate repo${repoCount === 1 ? "" : "s"}`
-        : "started agent run";
-      break;
-    }
-    case "agent_run_restarted":
-      inline = "restarted agent run";
-      break;
-    case "agent_run_pr_retry_queued":
-      inline = "queued PR delivery retry";
-      break;
-    case "agent_run_superseded":
-      inline = "superseded earlier agent run";
-      break;
-    case "agent_run_failed":
-      inline = (event.summary ?? "").trim() || "agent run failed";
-      break;
-    case "awaiting_human":
-      inline = "paused for human input";
-      break;
-    case "incident_resolved": {
-      // Detail JSON shape comes from packages/db/src/resolve-incident.ts:
-      // { kind, reasonCode, reasonText, resolvedByUserId, resolvedBySlackUserId,
-      //   resolvedIssueCount, ...legacy PR-merge fields }
-      const kind = typeof detail.kind === "string" ? detail.kind : null;
-      const reasonCode = typeof detail.reasonCode === "string" ? detail.reasonCode : null;
-      const reasonText = typeof detail.reasonText === "string" ? detail.reasonText.trim() : null;
-      const slackUserId =
-        typeof detail.resolvedBySlackUserId === "string" ? detail.resolvedBySlackUserId : null;
-      const prNumber = typeof detail.prNumber === "number" ? detail.prNumber : null;
-      const repoFullName = typeof detail.repoFullName === "string" ? detail.repoFullName : null;
-      const reasonLabel = reasonCode ? humanizeReasonCode(reasonCode) : null;
-      switch (kind) {
-        case "agent_pr_merged":
-          inline = prNumber
-            ? `resolved · PR #${prNumber}${repoFullName ? ` in ${repoFullName}` : ""} merged`
-            : "resolved when the agent's PR was merged";
-          break;
-        case "agent_classification":
-          inline = reasonLabel
-            ? `resolved by investigation · ${reasonLabel}`
-            : "resolved by investigation";
-          break;
-        case "slack_manual":
-          inline = slackUserId ? `resolved from Slack by <@${slackUserId}>` : "resolved from Slack";
-          break;
-        case "dashboard_manual":
-          inline = "resolved from the dashboard";
-          break;
-        case "autorecovery_confirmed":
-          // "autorecovery proposal" is internal jargon — describe what the user
-          // experienced: the system detected recovery, a teammate confirmed.
-          inline = reasonLabel
-            ? `auto-detected recovery · ${reasonLabel}${
-                slackUserId ? ` · confirmed by <@${slackUserId}>` : ""
-              }`
-            : `auto-detected recovery${slackUserId ? ` · confirmed by <@${slackUserId}>` : ""}`;
-          break;
-        default:
-          inline = (event.summary ?? "").trim() || "resolved the incident";
-      }
-      // Expose the agent/PR-merge evidence as the expandable body so the
-      // viewer can drill into "why" without leaving the timeline.
-      return {
-        actor: null,
-        iconKind: "system",
-        inline,
-        expandable: reasonText && reasonText.length > 0 ? reasonText : null,
-      };
-    }
-    case "incident_reopened": {
-      const reason = typeof detail.reason === "string" ? detail.reason : null;
-      const issueTitle = typeof detail.issueTitle === "string" ? detail.issueTitle.trim() : null;
-      switch (reason) {
-        case "issue_regressed":
-          inline = issueTitle
-            ? `reopened · linked issue recurred: ${truncate(issueTitle, HIGHLIGHT_PREVIEW_LIMIT)}`
-            : "reopened · linked issue recurred";
-          break;
-        case "dashboard_manual":
-          inline = "reopened from the dashboard";
-          break;
-        default:
-          inline = (event.summary ?? "").trim() || "reopened the incident";
-      }
-      break;
-    }
-    case "repo_selected": {
-      const repo =
-        typeof detail.repoFullName === "string"
-          ? detail.repoFullName
-          : typeof detail.selectedRepoFullName === "string"
-            ? detail.selectedRepoFullName
-            : null;
-      inline = repo ? `selected repo ${repo}` : (event.summary ?? "").trim() || "selected a repo";
-      break;
-    }
-    case "incident_context_changed": {
-      const raw = (event.summary ?? "").trim();
-      const issueTitle = raw.replace(CONTEXT_PREFIX, "").trim();
-      inline = issueTitle
-        ? `issue joined the incident: ${truncate(issueTitle, HIGHLIGHT_PREVIEW_LIMIT)}`
-        : "an issue joined the incident";
-      break;
-    }
-    case "session.error":
-      inline = (event.summary ?? "").trim() || "session error";
-      break;
-    default:
-      inline = (event.summary ?? "").trim() || humanizeKind(event.kind).toLowerCase();
-  }
-  return { actor: null, iconKind: "system", inline };
-}
-
-function ViewToggleButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={
-        active
-          ? "rounded border border-white/20 bg-white/10 px-2 py-0.5 text-fg"
-          : "rounded border border-transparent px-2 py-0.5 text-subtle hover:text-fg"
-      }
-    >
-      {children}
-    </button>
-  );
-}
-
-function TurnRow({ turn }: { turn: Turn }) {
-  const [expanded, setExpanded] = useState(false);
-  const dur = turn.durationMs != null ? `${(turn.durationMs / 1000).toFixed(1)}s` : null;
-  const out = turn.usage?.output_tokens ?? null;
-  const cacheRead = turn.usage?.cache_read_input_tokens ?? 0;
-  const cacheCreate = turn.usage?.cache_creation_input_tokens ?? 0;
-  const inputTok = turn.usage?.input_tokens ?? 0;
-  const totalIn = cacheRead + cacheCreate + inputTok;
-  const cachePct = totalIn > 0 ? Math.round((cacheRead / totalIn) * 100) : null;
-  const hasTools = turn.toolCalls.length > 0;
-
-  return (
-    <li className="border-l-2 border-white/10 pl-3">
-      <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.1em] text-subtle">
-        <span>turn</span>
-        {dur && <span>· {dur}</span>}
-        {out != null && <span>· {out} tok</span>}
-        {cachePct != null && <span>· {cachePct}% cache</span>}
-        {turn.isError && <span className="text-danger">· error</span>}
-        <span className="ml-auto normal-case tracking-normal text-subtle">
-          {fmtRelative(turn.startEvent.createdAt)}
-        </span>
-      </div>
-      {turn.message && (
-        <p className="mt-1 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fg">
-          {turn.message}
-        </p>
-      )}
-      {hasTools && (
-        <div className="mt-1 flex flex-wrap gap-1">
-          {turn.toolCalls.map((call) => (
-            <ToolChip key={call.callEvent.id} call={call} />
-          ))}
-        </div>
-      )}
-      {hasTools && (
-        <div className="mt-1">
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className="text-[11px] text-subtle hover:text-fg"
-          >
-            {expanded ? "hide details" : "show details"}
-          </button>
-        </div>
-      )}
-      {expanded && hasTools && (
-        <div className="mt-2 flex flex-col gap-2">
-          {turn.toolCalls.map((call) => (
-            <ToolCallDetail key={call.callEvent.id} call={call} />
-          ))}
-        </div>
-      )}
-    </li>
-  );
-}
-
-function toolDisplayName(call: TurnToolCall): string {
-  const tu = call.toolUse;
-  if (!tu) {
-    const fallback = (call.callEvent.summary ?? "").trim();
-    return fallback || humanizeKind(call.callEvent.kind);
-  }
-  return tu.mcpServerName ? `${tu.mcpServerName}.${tu.name}` : tu.name;
-}
-
-function ToolChip({ call }: { call: TurnToolCall }) {
-  const name = toolDisplayName(call);
-  const tone = call.resultIsError ? "danger" : "neutral";
-  return (
-    <Chip tone={tone} dot={call.resultIsError}>
-      {name}
-    </Chip>
-  );
-}
-
-function ToolCallDetail({ call }: { call: TurnToolCall }) {
-  const name = toolDisplayName(call);
-  const inputJson = call.toolUse
-    ? JSON.stringify(call.toolUse.input, null, 2)
-    : (call.callEvent.summary ?? "").trim();
-  const resultText = (call.resultEvent?.summary ?? "").trim();
-  return (
-    <div className="border-l border-border pl-3">
-      <div className="text-[10px] font-medium uppercase tracking-[0.1em] text-subtle">
-        {name}
-        {call.resultIsError && <span className="ml-2 text-danger">error</span>}
-      </div>
-      {inputJson && (
-        <pre className="mt-1 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fg">
-          {inputJson}
-        </pre>
-      )}
-      {resultText && (
-        <div className="mt-2 border-l border-border pl-3">
-          <div className="text-[10px] font-medium uppercase tracking-[0.1em] text-subtle">
-            result
-          </div>
-          <pre className="mt-1 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-muted">
-            {resultText}
-          </pre>
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Small components
@@ -3369,6 +2358,32 @@ function ConfidenceMeter({ value }: { value: number }) {
   );
 }
 
+// One issue row — used in the "Causing issues" list and embedded standalone in
+// activity-feed entries that reference an issue (recurrence, reopen).
+function IssueCard({
+  issue,
+  onViewIssue,
+}: {
+  issue: Issue;
+  onViewIssue: (id: string) => void;
+}) {
+  return (
+    <button
+      onClick={() => onViewIssue(issue.id)}
+      className="block w-full min-w-0 overflow-hidden text-left transition-colors hover:text-muted"
+    >
+      <div className="mb-0.5 flex items-center gap-2">
+        <KindChip issue={issue} />
+        <span className="font-mono text-[11px] text-muted">{issue.exceptionType}</span>
+        <span className="font-mono text-[11px] tabular-nums text-subtle">
+          {fmtCount(issue.eventCount)} event{issue.eventCount !== 1 ? "s" : ""}
+        </span>
+      </div>
+      <p className="truncate text-[12px] text-fg">{issue.message ?? issue.title}</p>
+    </button>
+  );
+}
+
 const ISSUE_LIST_DEFAULT_LIMIT = 3;
 
 function IssueList({
@@ -3386,19 +2401,7 @@ function IssueList({
       <ul className="divide-y divide-border border border-border">
         {visible.map((issue) => (
           <li key={issue.id} className="px-3 py-2">
-            <button
-              onClick={() => onViewIssue(issue.id)}
-              className="block w-full min-w-0 overflow-hidden text-left transition-colors hover:text-muted"
-            >
-              <div className="mb-0.5 flex items-center gap-2">
-                <KindChip issue={issue} />
-                <span className="font-mono text-[11px] text-muted">{issue.exceptionType}</span>
-                <span className="font-mono text-[11px] tabular-nums text-subtle">
-                  {fmtCount(issue.eventCount)} event{issue.eventCount !== 1 ? "s" : ""}
-                </span>
-              </div>
-              <p className="truncate text-[12px] text-fg">{issue.message ?? issue.title}</p>
-            </button>
+            <IssueCard issue={issue} onViewIssue={onViewIssue} />
           </li>
         ))}
       </ul>
@@ -3536,19 +2539,6 @@ export function StatusChip({
     );
   if (status === "autoresolved_noise") return <Chip tone="neutral">noise</Chip>;
   return <Chip tone="neutral">{status}</Chip>;
-}
-
-export function fmtRelative(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const s = Math.floor(diff / 1000);
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d ago`;
-  return new Date(iso).toLocaleDateString();
 }
 
 function fmtCount(n: number): string {

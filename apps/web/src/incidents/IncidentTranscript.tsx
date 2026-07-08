@@ -52,10 +52,26 @@ type TranscriptItem =
       isError: boolean;
     };
 
-const TOOL_USE_KINDS = new Set(["agent.tool_use", "agent.mcp_tool_use", "agent.custom_tool_use"]);
-const TOOL_RESULT_KINDS = new Set(["agent.tool_result", "agent.mcp_tool_result"]);
+type FeedItem = TranscriptItem | { type: "lifecycle"; id: string; event: IncidentEvent };
 
-export function buildTranscript(events: IncidentEvent[]): TranscriptItem[] {
+const TOOL_USE_KINDS = new Set(["agent.tool_use", "agent.mcp_tool_use", "agent.custom_tool_use"]);
+const TOOL_RESULT_KINDS = new Set([
+  "agent.tool_result",
+  "agent.mcp_tool_result",
+  "user.custom_tool_result",
+]);
+
+// Provider heartbeats that carry no narrative: model-request spans and
+// session/thread status flips. `session.error` is kept — it explains failures.
+function isFeedNoise(kind: string): boolean {
+  if (kind === "session.error") return false;
+  return kind.startsWith("span.") || kind.startsWith("session.");
+}
+
+// The full activity feed: the agent's conversation (messages, telemetry
+// queries, tool calls) interleaved in event order with lifecycle / external
+// events (run started, status changes, PR & Linear activity).
+export function buildActivityFeed(events: IncidentEvent[]): FeedItem[] {
   // Pair each result to its use by the provider tool-use id.
   const resultByUseId = new Map<string, IncidentEvent>();
   for (const e of events) {
@@ -65,7 +81,7 @@ export function buildTranscript(events: IncidentEvent[]): TranscriptItem[] {
     }
   }
 
-  const items: TranscriptItem[] = [];
+  const items: FeedItem[] = [];
   for (const e of events) {
     if (e.kind === "agent.message") {
       const text = (e.summary ?? "").trim();
@@ -99,22 +115,46 @@ export function buildTranscript(events: IncidentEvent[]): TranscriptItem[] {
       }
       continue;
     }
-    // agent.thinking (content-free heartbeat), tool_result (consumed above), and
-    // any lifecycle events are intentionally skipped here.
+    // agent.thinking is a content-free heartbeat; tool results are consumed above.
+    if (e.kind === "agent.thinking" || TOOL_RESULT_KINDS.has(e.kind)) continue;
+    if (e.kind.startsWith("agent.") || isFeedNoise(e.kind)) continue;
+    items.push({ type: "lifecycle", id: e.id, event: e });
   }
   return items;
 }
 
-export function IncidentTranscript({ events }: { events: IncidentEvent[] }) {
-  const items = buildTranscript(events);
+// Conversation-only projection, used where lifecycle events live elsewhere
+// (the drawer's separate timeline, summary-cited telemetry).
+export function buildTranscript(events: IncidentEvent[]): TranscriptItem[] {
+  return buildActivityFeed(events).filter(
+    (item): item is TranscriptItem => item.type !== "lifecycle",
+  );
+}
+
+// The incident detail's main feed: transcript + lifecycle events on one rail,
+// in chronological order.
+export function IncidentActivityFeed({
+  events,
+  renderIssueCard,
+}: {
+  events: IncidentEvent[];
+  /** Renders the referenced issue as a card under lifecycle events whose
+   *  detail carries an `issueId` (recurrence, reopen). */
+  renderIssueCard?: (issueId: string) => ReactNode;
+}) {
+  const items = buildActivityFeed(events);
   if (items.length === 0) return null;
   return (
     <div className="relative pl-7">
-      <div className="absolute bottom-2 left-[10px] top-1 w-px bg-border" />
+      {/* Start at the first entry's marker center (~12px) so no line pokes above it. */}
+      <div className="absolute bottom-2 left-[10px] top-3 w-px bg-border" />
       {items.map((item) => {
         if (item.type === "message") return <MessageEntry key={item.id} text={item.text} />;
         if (item.type === "telemetry") return <TelemetryEntry key={item.id} item={item} />;
-        return <ToolEntry key={item.id} item={item} />;
+        if (item.type === "tool") return <ToolEntry key={item.id} item={item} />;
+        return (
+          <LifecycleEntry key={item.id} event={item.event} renderIssueCard={renderIssueCard} />
+        );
       })}
     </div>
   );
@@ -156,6 +196,106 @@ function MessageEntry({ text }: { text: string }) {
       <div className="whitespace-pre-wrap text-[14px] leading-relaxed text-fg/85">{text}</div>
     </div>
   );
+}
+
+// Lifecycle / external events (run started, incident status changes, PR and
+// Linear activity) rendered as compact one-liners on the same rail so the
+// conversation keeps its chronology.
+function LifecycleEntry({
+  event,
+  renderIssueCard,
+}: {
+  event: IncidentEvent;
+  renderIssueCard?: (issueId: string) => ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const summary = (event.summary ?? "").trim() || humanizeEventKind(event.kind);
+  const firstLine = summary.split("\n", 1)[0] ?? "";
+  const truncatable = summary.length > firstLine.length || firstLine.length > 160;
+  const detail = event.detail ?? {};
+  const detailUrl =
+    (typeof detail.html_url === "string" && detail.html_url) ||
+    (typeof detail.prUrl === "string" && detail.prUrl) ||
+    (typeof detail.ticketUrl === "string" && detail.ticketUrl) ||
+    null;
+  const actor = event.actor;
+  const issueId = typeof detail.issueId === "string" ? detail.issueId : null;
+  const issueCard = issueId && renderIssueCard ? renderIssueCard(issueId) : null;
+
+  return (
+    <div className="relative mb-5">
+      <span className="absolute -left-7 top-0.5 grid h-[22px] w-[22px] place-items-center">
+        {actor?.avatarUrl ? (
+          <img src={actor.avatarUrl} alt={actor.name ?? ""} className="h-4 w-4 rounded-full" />
+        ) : (
+          <span className="h-2 w-2 rounded-full border-2 border-border-strong bg-bg" />
+        )}
+      </span>
+      <div className="flex flex-wrap items-baseline gap-x-2 text-[12px] leading-relaxed">
+        {actor?.name &&
+          (actor.profileUrl ? (
+            <a
+              href={actor.profileUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="font-medium text-fg hover:underline"
+            >
+              {actor.name}
+            </a>
+          ) : (
+            <span className="font-medium text-fg">{actor.name}</span>
+          ))}
+        {!expanded && <span className="min-w-0 flex-1 truncate text-muted">{firstLine}</span>}
+        {detailUrl && (
+          <a
+            href={detailUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="shrink-0 text-[11px] text-subtle hover:text-fg hover:underline"
+          >
+            view
+          </a>
+        )}
+        <span className="shrink-0 whitespace-nowrap text-[11px] text-subtle">
+          {fmtRelative(event.createdAt)}
+        </span>
+        {truncatable && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="shrink-0 text-[11px] text-subtle hover:text-fg"
+          >
+            {expanded ? "show less" : "show more"}
+          </button>
+        )}
+      </div>
+      {expanded && (
+        <pre className="mt-1 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-muted">
+          {summary}
+        </pre>
+      )}
+      {issueCard && <div className="mt-2">{issueCard}</div>}
+    </div>
+  );
+}
+
+function humanizeEventKind(kind: string): string {
+  const cleaned = kind.replace(/[._]/g, " ").trim().toLowerCase();
+  if (!cleaned) return kind;
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+export function fmtRelative(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString();
 }
 
 const TELEMETRY_LABEL: Record<TelemetryKind, string> = {
@@ -245,7 +385,7 @@ export function TelemetryQueryWidget({
 
   return (
     <div className="mt-3 overflow-hidden rounded-lg border border-border bg-surface">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface-2 px-3.5 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3.5 py-2">
         <span className="font-mono text-[11.5px] text-[#97a3f2]">{QUERY_FN[kind]}</span>
         <span className="text-subtle">·</span>
         {filterChips(input).map((f, i) => (
@@ -421,8 +561,8 @@ function EditEntry({ item }: { item: Extract<TranscriptItem, { type: "tool" }> }
         Edited <span className="font-mono font-normal text-muted">{file}</span>
       </div>
       {lines.length > 0 && (
-        <div className="overflow-hidden rounded-lg border border-border">
-          <div className="overflow-x-auto bg-[#161618] px-3 py-2 font-mono text-[11.5px] leading-relaxed">
+        <div className="overflow-hidden rounded-lg border border-border bg-surface">
+          <div className="overflow-x-auto px-3 py-2 font-mono text-[11.5px] leading-relaxed">
             {lines.map((l, i) => (
               <div key={i} className={l.t === "add" ? "text-success" : "text-danger"}>
                 <span className="select-none opacity-60">{l.t === "add" ? "+ " : "- "}</span>
@@ -457,44 +597,5 @@ export function IncidentSummaryTelemetry({ events }: { events: IncidentEvent[] }
       <div className="mb-2 text-[12px] font-medium text-muted">Cited telemetry</div>
       <TelemetryQueryWidget kind={metric.kind} input={metric.input} rows={metric.rows} />
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Collapsible wrapper used in the incident drawer/detail.
-// ---------------------------------------------------------------------------
-
-export function CollapsibleIncidentTranscript({ events }: { events: IncidentEvent[] }) {
-  const [open, setOpen] = useState(false);
-  const items = buildTranscript(events);
-  if (items.length === 0) return null;
-  const queries = items.filter((i) => i.type === "telemetry").length;
-  const meta = `${queries} telemetry ${queries === 1 ? "query" : "queries"} · ${items.length} steps`;
-  return (
-    <details
-      open={open}
-      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
-      className="rounded-xl border border-border bg-surface"
-    >
-      <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
-        <svg
-          className={`h-4 w-4 flex-none text-muted transition-transform ${open ? "rotate-90" : ""}`}
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="m9 18 6-6-6-6" />
-        </svg>
-        <span className="text-[15px] font-semibold tracking-tight text-fg">Transcript</span>
-        <span className="text-[12px] text-muted">{meta}</span>
-        <span className="ml-auto text-[12px] text-muted">{open ? "Hide" : "Show"}</span>
-      </summary>
-      <div className="border-t border-border px-4 pb-3 pt-5">
-        <IncidentTranscript events={events} />
-      </div>
-    </details>
   );
 }

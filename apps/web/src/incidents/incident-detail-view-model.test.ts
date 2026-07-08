@@ -52,11 +52,11 @@ test("formatIncidentDuration formats compact elapsed time", () => {
 test("buildIncidentDetailMeta returns one sidebar row list without duplicating the title", () => {
   const meta = buildIncidentDetailMeta({
     incident,
-    issueCount: 1,
     agentRunState: "complete",
     pendingRecovery: false,
   });
 
+  // Linked issues renders as its own interactive sidebar row, not a meta row.
   assert.deepEqual(
     meta.map((row) => [row.label, row.value]),
     [
@@ -67,7 +67,6 @@ test("buildIncidentDetailMeta returns one sidebar row list without duplicating t
       ["First detection", "Jun 30, 16:39 UTC"],
       ["Latest detection", "Jun 30, 16:41 UTC"],
       ["Duration", "2 min 29 s"],
-      ["Findings", "1 finding"],
       ["Agent run", "complete"],
     ],
   );
@@ -80,7 +79,6 @@ test("buildIncidentDetailMeta formats midnight UTC with hour zero", () => {
       firstSeen: "2026-06-30T00:05:00.000Z",
       lastSeen: "2026-06-30T00:06:00.000Z",
     },
-    issueCount: 1,
     agentRunState: "complete",
     pendingRecovery: false,
   });

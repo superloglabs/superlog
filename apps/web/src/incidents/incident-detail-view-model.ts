@@ -27,12 +27,10 @@ export function formatIncidentDuration(firstSeen: string, lastSeen: string): str
 
 export function buildIncidentDetailMeta({
   incident,
-  issueCount,
   agentRunState,
   pendingRecovery,
 }: {
   incident: Incident;
-  issueCount: number;
   agentRunState: AgentRun["state"] | null;
   pendingRecovery: boolean;
 }): IncidentMetaRow[] {
@@ -48,13 +46,8 @@ export function buildIncidentDetailMeta({
     { label: "First detection", value: formatIncidentUtc(incident.firstSeen) },
     { label: "Latest detection", value: formatIncidentUtc(incident.lastSeen) },
     { label: "Duration", value: formatIncidentDuration(incident.firstSeen, incident.lastSeen) },
-    { label: "Findings", value: formatFindingsCount(issueCount), kind: "findings" },
     { label: "Agent run", value: agentRunState ?? "not queued", kind: "agent" },
   ];
-}
-
-function formatFindingsCount(count: number): string {
-  return `${count.toLocaleString()} finding${count === 1 ? "" : "s"}`;
 }
 
 function formatIncidentUtc(iso: string): string {
