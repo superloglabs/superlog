@@ -44,12 +44,13 @@ const deps: AgentChatWorkflowDeps = {
     if (!project) return null;
     const automation = await db.query.projectAutomationSettings.findFirst({
       where: eq(schema.projectAutomationSettings.projectId, chat.projectId),
-      columns: { customInstructions: true },
+      columns: { customInstructions: true, chatEnabled: true },
     });
     const memories = await listActiveAgentMemories(project.orgId, chat.projectId);
     return {
       orgId: project.orgId,
       projectName: project.name,
+      chatEnabled: automation?.chatEnabled ?? true,
       customInstructions: automation?.customInstructions ?? "",
       memories: memories.map((memory) => ({
         id: memory.id,

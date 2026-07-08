@@ -1156,8 +1156,14 @@ async function handleChatEvent(
   if (!teamId) return;
   const isDm = event.channel_type === "im";
   const anchorThreadTs = chatAnchorThreadTs(event);
+  // A channel mention arrives twice (message + app_mention). Chat writes are
+  // deduped on (channel, ts) either way; user-visible fallback notices below
+  // are NOT, so only the `message` copy may post them. DMs and mentions from
+  // installs without the message scopes still deliver via app_mention alone —
+  // for those there is no twin, so the gate never drops a notice entirely.
+  const mayPostNotices = event.type === "message" || isDm;
 
-  const existing = await findChatByAnchor(db, event.channel, anchorThreadTs);
+  const existing = await findChatByAnchor(db, teamId, event.channel, anchorThreadTs);
 
   const installations = await listInstallationsForTeam(teamId);
   const botUserId =
@@ -1205,7 +1211,9 @@ async function handleChatEvent(
     if (resolution.outcome === "none") return;
     if (resolution.outcome === "ambiguous") {
       // Only a fresh mention gets the disambiguation nudge; never guess.
-      if (!mentioned && !isDm) return;
+      // Gated to one event copy so the message/app_mention twins can't post
+      // the nudge twice.
+      if ((!mentioned && !isDm) || !mayPostNotices) return;
       const anyInstall = await findInstallationForTeam(teamId);
       if (anyInstall) {
         await postSlackThreadReply({
@@ -1238,7 +1246,7 @@ async function handleChatEvent(
 
   if (result.outcome === "duplicate") return;
   if (result.outcome === "skipped") {
-    if (result.reason === "chat_disabled" && !existing && target.installation) {
+    if (result.reason === "chat_disabled" && !existing && target.installation && mayPostNotices) {
       await postSlackThreadReply({
         botToken: target.installation.botAccessToken,
         channel: event.channel,

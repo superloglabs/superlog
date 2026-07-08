@@ -610,6 +610,13 @@
       "when": 1783497473032,
       "tag": "0086_shocking_owl",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1783500683525,
+      "tag": "0087_special_stryfe",
+      "breakpoints": true
     }
   ]
 }

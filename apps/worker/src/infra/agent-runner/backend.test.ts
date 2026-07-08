@@ -116,7 +116,7 @@ test("getAgentRunnerBackend returns a built-in disabled backend for community in
 
 test("getAgentRunnerBackend loads the closed-overlay anthropic backend from configured module", async () => {
   process.env.AGENT_RUNNER_ANTHROPIC_MODULE =
-    "data:text/javascript,export const agentRunnerBackend = { name: 'anthropic', maxRepoResources: 7, async start() { return { sessionId: 's' }; }, async collect() { throw new Error('not used'); }, async resume() {}, async steer() {}, async dispatchIntegrationToolCalls() { return 2; } };";
+    "data:text/javascript,export const agentRunnerBackend = { name: 'anthropic', maxRepoResources: 7, async start() { return { sessionId: 's' }; }, async startChat() { return { sessionId: 'c' }; }, async sendChatMessage() {}, async collect() { throw new Error('not used'); }, async resume() {}, async steer() {}, async dispatchIntegrationToolCalls() { return 2; }, async dispatchChatToolCalls() { return { handled: 0, repliesThisTurn: 0 }; } };";
 
   const backend = await getAgentRunnerBackend("anthropic");
 

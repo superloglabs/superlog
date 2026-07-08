@@ -32,6 +32,7 @@ function chat(overrides: Partial<AgentChat> = {}): AgentChat {
     providerSessionStatus: null,
     failureReason: null,
     cumulativeActiveSeconds: 0,
+    sessionBaseActiveSeconds: 0,
     lastSyncedAt: null,
     startedAt: null,
     createdAt: new Date("2026-07-08T10:00:00Z"),
@@ -86,6 +87,7 @@ function makeHarness(opts: {
   runner?: Partial<AgentRunnerBackend>;
   repliesThisTurn?: number;
   snapshot?: AgentRunnerSnapshot;
+  chatEnabled?: boolean;
   onStartChat?: (input: AgentChatStartInput) => void;
 }): Harness {
   const calls: string[] = [];
@@ -133,6 +135,7 @@ function makeHarness(opts: {
       return {
         orgId: "org-1",
         projectName: "Acme",
+        chatEnabled: opts.chatEnabled ?? true,
         customInstructions: "",
         memories: [],
       };
@@ -299,4 +302,76 @@ test("combineChatMessages keeps author attribution", () => {
     message({ id: "m3", authorSlackUserId: null, text: "anonymous note" }),
   ]);
   assert.equal(combined, "<@U1>: what broke?\n\n<@U2>: also check checkout\n\nanonymous note");
+});
+
+test("disabling chat parks queued chats without failing them", async () => {
+  const h = makeHarness({ chatEnabled: false });
+  await processQueuedAgentChat(chat(), h.deps);
+
+  assert.deepEqual(h.updates, [{ patch: { state: "idle" }, whenState: ["queued"] }]);
+  assert.ok(!h.calls.some((c) => c.startsWith("startChat:")));
+});
+
+test("disabling chat parks running chats before serving tools", async () => {
+  const h = makeHarness({ chatEnabled: false });
+  await syncRunningAgentChat(chat({ state: "running", providerSessionId: "session-1" }), h.deps);
+
+  assert.ok(!h.calls.includes("dispatchChatToolCalls"));
+  const parked = h.updates.find((u) => u.patch.state === "idle");
+  assert.ok(parked);
+});
+
+test("the compute budget counts prior sessions via the recorded base", async () => {
+  const h = makeHarness({
+    pending: [],
+    snapshot: snapshot({ activeSeconds: 100 }),
+  });
+  await syncRunningAgentChat(
+    chat({
+      state: "running",
+      providerSessionId: "session-2",
+      sessionBaseActiveSeconds: CHAT_MAX_ACTIVE_SECONDS - 50,
+      cumulativeActiveSeconds: CHAT_MAX_ACTIVE_SECONDS - 50,
+    }),
+    h.deps,
+  );
+
+  const failure = h.updates.find((u) => u.patch.state === "failed");
+  assert.equal(failure?.patch.failureReason, "runtime_budget_exhausted");
+});
+
+test("a terminated session with pending text re-queues for a cold start", async () => {
+  const h = makeHarness({
+    pending: [message({ id: "msg-2", text: "still there?" })],
+    snapshot: snapshot({ status: "terminated" }),
+  });
+  await syncRunningAgentChat(chat({ state: "running", providerSessionId: "session-1" }), h.deps);
+
+  // The dead session must not be steered — the pending row survives for the
+  // cold start.
+  assert.ok(!h.calls.some((c) => c.startsWith("send:")));
+  assert.ok(!h.calls.includes("processed:msg-2"));
+  const requeued = h.updates.find((u) => u.patch.state === "queued");
+  assert.equal(requeued?.patch.providerSessionId, null);
+});
+
+test("a fresh start persists the session before acknowledging messages", async () => {
+  const order: string[] = [];
+  const h = makeHarness({
+    onStartChat: () => order.push("startChat"),
+  });
+  const baseUpdate = h.deps.updateChat.bind(h.deps);
+  h.deps.updateChat = async (chatId, patch, whenState) => {
+    if (patch.providerSessionId) order.push("persistSession");
+    return baseUpdate(chatId, patch, whenState);
+  };
+  const baseMark = h.deps.markMessagesProcessed.bind(h.deps);
+  h.deps.markMessagesProcessed = async (ids) => {
+    order.push("markProcessed");
+    return baseMark(ids);
+  };
+
+  await processQueuedAgentChat(chat(), h.deps);
+
+  assert.deepEqual(order, ["startChat", "persistSession", "markProcessed"]);
 });

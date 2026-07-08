@@ -41,6 +41,9 @@ export type AgentChatContext = {
   projectName: string;
   customInstructions: string;
   memories: AgentRunnerMemory[];
+  // The project's chat gate re-checked at processing time, so flipping it
+  // off also parks chats that were queued or running when the flip happened.
+  chatEnabled: boolean;
 };
 
 export type AgentChatPatch = Partial<
@@ -51,6 +54,7 @@ export type AgentChatPatch = Partial<
     | "providerSessionStatus"
     | "failureReason"
     | "cumulativeActiveSeconds"
+    | "sessionBaseActiveSeconds"
     | "lastSyncedAt"
     | "startedAt"
   >
@@ -87,6 +91,20 @@ export async function processQueuedAgentChat(
   chat: AgentChat,
   deps: AgentChatWorkflowDeps,
 ): Promise<void> {
+  const context = await deps.loadChatContext(chat);
+  if (!context) {
+    await deps.updateChat(chat.id, { state: "failed", failureReason: "context_unavailable" }, [
+      "queued",
+    ]);
+    return;
+  }
+  if (!context.chatEnabled) {
+    // Chat was turned off after this message queued. Park (don't fail): the
+    // pending rows stay put, and re-enabling + a new message re-queues.
+    await deps.updateChat(chat.id, { state: "idle" }, ["queued"]);
+    return;
+  }
+
   const pending = await deps.listPendingMessages(chat.id);
   if (pending.length === 0) {
     // Normally unreachable (a chat is queued because a message arrived), but
@@ -96,6 +114,11 @@ export async function processQueuedAgentChat(
     await deps.updateChat(chat.id, { state: chat.providerSessionId ? "running" : "idle" }, [
       "queued",
     ]);
+    // A message that landed between the read above and the transition would
+    // otherwise wait for the next inbound to wake the chat.
+    if (!chat.providerSessionId && (await deps.listPendingMessages(chat.id)).length > 0) {
+      await deps.updateChat(chat.id, { state: "queued" }, ["idle"]);
+    }
     return;
   }
 
@@ -119,13 +142,6 @@ export async function processQueuedAgentChat(
   }
 
   try {
-    const context = await deps.loadChatContext(chat);
-    if (!context) {
-      await deps.updateChat(chat.id, { state: "failed", failureReason: "context_unavailable" }, [
-        "running",
-      ]);
-      return;
-    }
     const repoCandidates = await deps.listRepoCandidates(chat, runner.maxRepoResources);
     const session = await runner.startChat({
       chatId: chat.id,
@@ -139,12 +155,19 @@ export async function processQueuedAgentChat(
       customInstructions: context.customInstructions,
       memories: context.memories,
     });
-    await deps.markMessagesProcessed(pending.map((m) => m.id));
+    // Persist the session BEFORE acknowledging the messages: if this write
+    // fails, the pending rows survive and the retry re-delivers (worst case a
+    // duplicate message into a fresh session) — the reverse order could lose
+    // the chat's only question while orphaning the session.
     await deps.updateChat(chat.id, {
       providerSessionId: session.sessionId,
       providerSessionStatus: "running",
+      // Budget survives session churn: fold everything burned so far into
+      // the new session's base.
+      sessionBaseActiveSeconds: chat.cumulativeActiveSeconds,
       startedAt: chat.startedAt ?? new Date(),
     });
+    await deps.markMessagesProcessed(pending.map((m) => m.id));
   } catch (err) {
     await deps.updateChat(chat.id, { state: "failed", failureReason: "start_failed" }, ["running"]);
     await deps.postReply(chat, CHAT_START_FAILED_TEXT);
@@ -176,6 +199,13 @@ export async function syncRunningAgentChat(
     ]);
     return;
   }
+  if (!context.chatEnabled) {
+    // Chat was turned off mid-turn: stop serving tools and posting. The
+    // session's pending tool calls stay unacked (an intentional pause); a
+    // message after re-enabling re-queues and the next sync resumes them.
+    await deps.updateChat(chat.id, { state: "idle", lastSyncedAt: now }, ["running"]);
+    return;
+  }
 
   const dispatch: AgentChatDispatchResult = await runner.dispatchChatToolCalls({
     sessionId,
@@ -186,16 +216,17 @@ export async function syncRunningAgentChat(
   });
 
   const snapshot = await runner.collect(sessionId);
+  // Total across every session this chat has had — activeSeconds resets when
+  // a reclaimed session is replaced, so the budget adds the live session on
+  // top of the recorded base rather than trusting activeSeconds alone.
+  const totalActiveSeconds = chat.sessionBaseActiveSeconds + Math.round(snapshot.activeSeconds);
   const progressPatch: AgentChatPatch = {
     providerSessionStatus: snapshot.status,
-    cumulativeActiveSeconds: Math.max(
-      Math.round(snapshot.activeSeconds),
-      chat.cumulativeActiveSeconds,
-    ),
+    cumulativeActiveSeconds: Math.max(totalActiveSeconds, chat.cumulativeActiveSeconds),
     lastSyncedAt: now,
   };
 
-  if (snapshot.activeSeconds > CHAT_MAX_ACTIVE_SECONDS) {
+  if (totalActiveSeconds > CHAT_MAX_ACTIVE_SECONDS) {
     const failed = await deps.updateChat(
       chat.id,
       { ...progressPatch, state: "failed", failureReason: "runtime_budget_exhausted" },
@@ -204,6 +235,43 @@ export async function syncRunningAgentChat(
     if (failed) {
       await deps.meterTurn(chat, snapshot);
       await deps.postReply(chat, CHAT_BUDGET_EXHAUSTED_TEXT);
+    }
+    return;
+  }
+
+  // A dead session is handled BEFORE steering: sending pending text into it
+  // would throw every tick and wedge the chat in `running` forever. With
+  // pending text we drop the dead session and re-queue so the cold-start
+  // path re-delivers it; without, fail and let the next message revive.
+  if (snapshot.status === "terminated") {
+    if (dispatch.repliesThisTurn === 0 && snapshot.latestMessage?.trim()) {
+      await deps.postReply(chat, snapshot.latestMessage.trim());
+    }
+    const pendingOnDeath = await deps.listPendingMessages(chat.id);
+    if (pendingOnDeath.length > 0) {
+      await deps.updateChat(
+        chat.id,
+        {
+          ...progressPatch,
+          state: "queued",
+          providerSessionId: null,
+          sessionBaseActiveSeconds: Math.max(totalActiveSeconds, chat.cumulativeActiveSeconds),
+        },
+        ["running"],
+      );
+      await deps.meterTurn(chat, snapshot);
+      return;
+    }
+    const failed = await deps.updateChat(
+      chat.id,
+      { ...progressPatch, state: "failed", failureReason: "session_terminated" },
+      ["running"],
+    );
+    if (failed) {
+      await deps.meterTurn(chat, snapshot);
+      if (dispatch.repliesThisTurn === 0 && !snapshot.latestMessage?.trim()) {
+        await deps.postReply(chat, CHAT_SESSION_LOST_TEXT);
+      }
     }
     return;
   }
@@ -223,37 +291,22 @@ export async function syncRunningAgentChat(
     return;
   }
 
-  if (snapshot.status === "idle") {
+  // idle: the turn finished. Win the transition first so concurrent workers
+  // can't both send the no-reply fallback; the loser leaves delivery (and
+  // metering) to the winner.
+  const moved = await deps.updateChat(chat.id, { ...progressPatch, state: "idle" }, ["running"]);
+  if (moved) {
     // The reply tool is the delivery path; a turn that went idle without a
     // single reply still owes the human something.
     if (dispatch.repliesThisTurn === 0) {
       await deps.postReply(chat, snapshot.latestMessage?.trim() || CHAT_NO_ANSWER_TEXT);
     }
-    const moved = await deps.updateChat(chat.id, { ...progressPatch, state: "idle" }, ["running"]);
-    if (moved) await deps.meterTurn(chat, snapshot);
-    // A message that landed between collect() and the transition would
-    // otherwise sit unprocessed until the next inbound wakes the chat.
-    const lagging = await deps.listPendingMessages(chat.id);
-    if (lagging.length > 0) await deps.updateChat(chat.id, { state: "queued" }, ["idle"]);
-    return;
-  }
-
-  // terminated: the provider ended the session. A new message re-queues the
-  // chat; sendChatMessage will fail on the dead session and cold-start.
-  if (dispatch.repliesThisTurn === 0 && snapshot.latestMessage?.trim()) {
-    await deps.postReply(chat, snapshot.latestMessage.trim());
-  }
-  const failed = await deps.updateChat(
-    chat.id,
-    { ...progressPatch, state: "failed", failureReason: "session_terminated" },
-    ["running"],
-  );
-  if (failed) {
     await deps.meterTurn(chat, snapshot);
-    if (dispatch.repliesThisTurn === 0 && !snapshot.latestMessage?.trim()) {
-      await deps.postReply(chat, CHAT_SESSION_LOST_TEXT);
-    }
   }
+  // A message that landed between collect() and the transition would
+  // otherwise sit unprocessed until the next inbound wakes the chat.
+  const lagging = await deps.listPendingMessages(chat.id);
+  if (lagging.length > 0) await deps.updateChat(chat.id, { state: "queued" }, ["idle"]);
 }
 
 // One inbound Slack message per row; several people can talk in the thread

@@ -140,18 +140,24 @@ export type RecordInboundChatMessageResult =
   | { outcome: "duplicate" }
   | { outcome: "skipped"; reason: "chat_disabled" | "project_not_found" };
 
+// Team id is part of the anchor: Slack ids are only guaranteed unique within
+// a workspace, and a cross-workspace collision here would route one tenant's
+// messages into another tenant's chat.
 export async function findChatByAnchor(
   db: DB,
+  teamId: string,
   channelId: string,
   threadTs: string | null,
 ): Promise<schema.AgentChat | null> {
   const chat = await db.query.agentChats.findFirst({
     where: threadTs
       ? and(
+          eq(schema.agentChats.slackTeamId, teamId),
           eq(schema.agentChats.slackChannelId, channelId),
           eq(schema.agentChats.slackThreadTs, threadTs),
         )
       : and(
+          eq(schema.agentChats.slackTeamId, teamId),
           eq(schema.agentChats.slackChannelId, channelId),
           isNull(schema.agentChats.slackThreadTs),
         ),
@@ -181,7 +187,7 @@ export async function recordInboundChatMessage(
     columns: { chatEnabled: true, agentRunProvider: true },
   });
 
-  let chat = await findChatByAnchor(db, args.slackChannelId, args.slackThreadTs);
+  let chat = await findChatByAnchor(db, args.slackTeamId, args.slackChannelId, args.slackThreadTs);
 
   const verdict = decideChatInbound({
     chatEnabled: automation?.chatEnabled ?? true,
@@ -197,7 +203,7 @@ export async function recordInboundChatMessage(
       created = true;
     } else {
       // Lost the anchor race to a concurrent event — adopt the winner.
-      chat = await findChatByAnchor(db, args.slackChannelId, args.slackThreadTs);
+      chat = await findChatByAnchor(db, args.slackTeamId, args.slackChannelId, args.slackThreadTs);
     }
   }
   if (!chat) throw new Error("agent chat anchor row missing after insert");
@@ -263,7 +269,11 @@ async function insertChatForAnchor(
         .insert(schema.agentChats)
         .values(values)
         .onConflictDoNothing({
-          target: [schema.agentChats.slackChannelId, schema.agentChats.slackThreadTs],
+          target: [
+            schema.agentChats.slackTeamId,
+            schema.agentChats.slackChannelId,
+            schema.agentChats.slackThreadTs,
+          ],
           where: sql`${schema.agentChats.slackThreadTs} is not null`,
         })
         .returning()
@@ -271,7 +281,7 @@ async function insertChatForAnchor(
         .insert(schema.agentChats)
         .values(values)
         .onConflictDoNothing({
-          target: [schema.agentChats.slackChannelId],
+          target: [schema.agentChats.slackTeamId, schema.agentChats.slackChannelId],
           where: sql`${schema.agentChats.slackThreadTs} is null`,
         })
         .returning();

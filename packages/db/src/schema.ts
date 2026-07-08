@@ -261,11 +261,7 @@ export type AgentRunResult = {
   // How a findings-only completion left the incident: a code change is still
   // warranted, the cause is external to the mounted repos, or purely
   // informational. Set by runs that conclude without a PR or classification.
-  disposition?:
-    | "diagnosed_needs_code_change"
-    | "diagnosed_external_cause"
-    | "informational"
-    | null;
+  disposition?: "diagnosed_needs_code_change" | "diagnosed_external_cause" | "informational" | null;
   // One-sentence next step for a human, paired with `disposition`.
   recommendedAction?: string | null;
 };
@@ -1014,24 +1010,33 @@ export const agentChats = pgTable(
     providerSessionId: text("provider_session_id"),
     providerSessionStatus: text("provider_session_status"),
     failureReason: text("failure_reason"),
-    // Sum of the provider session's active seconds, folded in per sync.
-    // Chats have no per-project runtime setting; the worker enforces a
-    // constant cap so one thread can't burn unbounded compute.
+    // Total active seconds across ALL provider sessions of this chat
+    // (sessionBaseActiveSeconds + the live session's active time, folded in
+    // per sync). Chats have no per-project runtime setting; the worker
+    // enforces a constant cap on this total so one thread can't dodge the
+    // budget by having its session reclaimed and cold-started.
     cumulativeActiveSeconds: integer("cumulative_active_seconds").notNull().default(0),
+    // Active seconds accumulated by PRIOR (reclaimed/terminated) sessions.
+    // Set to cumulativeActiveSeconds whenever a fresh session replaces a
+    // dead one, so the budget survives session churn.
+    sessionBaseActiveSeconds: integer("session_base_active_seconds").notNull().default(0),
     lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    // Channel-thread lookup for inbound events. Postgres unique indexes treat
-    // NULLs as distinct, so DM chats (NULL thread) get their own per-channel
-    // partial index instead of relying on the composite one.
+    // Channel-thread lookup for inbound events, scoped by the Slack team so
+    // two workspaces that happen to reuse a channel/thread id can never
+    // collide into one chat (the anchor lookup filters on team id too).
+    // Postgres unique indexes treat NULLs as distinct, so DM chats (NULL
+    // thread) get their own per-channel partial index instead of relying on
+    // the composite one.
     threadUniq: uniqueIndex("agent_chats_thread_idx")
-      .on(t.slackChannelId, t.slackThreadTs)
+      .on(t.slackTeamId, t.slackChannelId, t.slackThreadTs)
       .where(sql`slack_thread_ts IS NOT NULL`),
     dmChannelUniq: uniqueIndex("agent_chats_dm_channel_idx")
-      .on(t.slackChannelId)
+      .on(t.slackTeamId, t.slackChannelId)
       .where(sql`slack_thread_ts IS NULL`),
     providerSessionUniq: uniqueIndex("agent_chats_provider_session_idx").on(t.providerSessionId),
     // The worker tick scans active chats oldest-updated first.
@@ -2346,14 +2351,15 @@ export const railwayInstallations = pgTable(
     // Snapshot of what the grant can see (from `externalWorkspaces`), refreshed
     // by the puller: workspaces and the granted projects with their
     // environments. Display + pull-planning only, never authorization.
-    grantedProjects: jsonb("granted_projects").$type<
-      Array<{
-        id: string;
-        name: string;
-        workspaceId: string | null;
-        workspaceName: string | null;
-      }>
-    >(),
+    grantedProjects:
+      jsonb("granted_projects").$type<
+        Array<{
+          id: string;
+          name: string;
+          workspaceId: string | null;
+          workspaceName: string | null;
+        }>
+      >(),
     // Delegated OAuth tokens, encrypted at rest. Railway access tokens expire
     // after ~1h; refresh tokens rotate on every use (the puller persists the
     // replacement immediately). Refresh token nullable: consent without
