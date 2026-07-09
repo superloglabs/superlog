@@ -3,7 +3,7 @@ import { afterEach, test } from "node:test";
 
 process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
 
-const { exchangeNotionCode, notionOwnerEmail } = await import("./notion.js");
+const { exchangeNotionCode, notionOwnerEmail, revokeNotionToken } = await import("./notion.js");
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -59,6 +59,32 @@ test("exchangeNotionCode throws on a non-2xx response", async () => {
     }),
     /notion oauth exchange failed: 400/,
   );
+});
+
+test("revokeNotionToken posts the token to the revoke endpoint with version + Basic auth", async () => {
+  let captured: { url: string; init: RequestInit } | null = null;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    captured = { url, init };
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+
+  await revokeNotionToken({ clientId: "cid", clientSecret: "csecret", token: "secret_tok" });
+
+  assert.ok(captured);
+  const { url, init } = captured as { url: string; init: RequestInit };
+  assert.equal(url, "https://api.notion.com/v1/oauth/revoke");
+  assert.equal(init.method, "POST");
+  const headers = init.headers as Record<string, string>;
+  assert.equal(headers["Notion-Version"], "2022-06-28");
+  assert.equal(headers.authorization, `Basic ${Buffer.from("cid:csecret").toString("base64")}`);
+  assert.deepEqual(JSON.parse(init.body as string), { token: "secret_tok" });
+});
+
+test("revokeNotionToken swallows fetch failures (best-effort)", async () => {
+  globalThis.fetch = (async () => {
+    throw new Error("network down");
+  }) as typeof fetch;
+  await revokeNotionToken({ clientId: "cid", clientSecret: "csecret", token: "t" });
 });
 
 test("notionOwnerEmail digs the connecting user's email out of the token", () => {
