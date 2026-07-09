@@ -221,14 +221,13 @@ export async function ensureIncidentForIssueWorkflow(
           await deps.repo.touchIncidentLastSeen(existing.id, issue.lastSeen);
         }
         // This losing invocation may have written 'pending' during its own
-        // grouping analysis, possibly AFTER the winner recorded its verdict —
-        // clear it (and only it) so the issue can't end up stuck pending.
-        await deps.repo.updateIssueGrouping(issue.id, {
-          state: "grouped",
-          source: "heuristic",
-          reason: "Concurrent intake: another evaluation already linked this issue.",
-          onlyIfPending: true,
-        });
+        // grouping analysis, possibly AFTER the winner recorded its verdict.
+        // Clear only that leftover marker (onlyIfPending guards the winner's
+        // recorded verdict) and record *this* evaluation's own grouping
+        // result rather than a hard-coded 'grouped/heuristic' — which would
+        // mislabel the issue when the winner actually went standalone/failed
+        // or grouped via the LLM.
+        await markIssueGrouping(issue.id, grouping, deps.repo, { onlyIfPending: true });
         return {
           incident: existing,
           createdIncident: false,
@@ -419,12 +418,18 @@ async function markIssueGrouping(
   issueId: string,
   grouping: Grouping,
   repo: Pick<IntakeRepository, "updateIssueGrouping">,
+  // Set by the losing concurrent-intake racer: apply only if the issue is
+  // still 'pending' so it clears its own leftover marker without clobbering
+  // the winner's recorded verdict.
+  opts?: { onlyIfPending?: boolean },
 ): Promise<void> {
+  const onlyIfPending = opts?.onlyIfPending;
   if (grouping.match) {
     await repo.updateIssueGrouping(issueId, {
       state: "grouped",
       source: grouping.match.source,
       reason: grouping.match.reason,
+      onlyIfPending,
     });
     return;
   }
@@ -433,6 +438,7 @@ async function markIssueGrouping(
       state: "failed",
       source: "llm",
       reason: grouping.failedReason,
+      onlyIfPending,
     });
     return;
   }
@@ -440,5 +446,6 @@ async function markIssueGrouping(
     state: "standalone",
     source: grouping.standaloneSource,
     reason: grouping.standaloneReason,
+    onlyIfPending,
   });
 }

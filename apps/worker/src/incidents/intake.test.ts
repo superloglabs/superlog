@@ -450,10 +450,19 @@ test("intake: serialized create re-checks the link and re-lands on a racer's inc
   assert.equal(result.incident.id, "inc-racer");
   assert.ok(!calls.some((c) => c.startsWith("createOpen")));
   assert.ok(!calls.some((c) => c.startsWith("openRecurrence")));
-  // The loser clears only its own in-flight 'pending' marker — never the
-  // winner's recorded verdict.
+  // The loser clears only its own in-flight 'pending' marker (pending-only,
+  // so the winner's recorded verdict is never clobbered) and records *its own*
+  // grouping result — here standalone/heuristic (no open candidates) — rather
+  // than a hard-coded 'grouped/heuristic' that would mislabel the issue.
   assert.ok(
-    calls.some((c) => c.startsWith("updateIssueGrouping(pending-only):iss-new:grouped:heuristic")),
+    calls.some((c) =>
+      c.startsWith(
+        "updateIssueGrouping(pending-only):iss-new:standalone:heuristic:No open incidents",
+      ),
+    ),
+  );
+  assert.ok(
+    !calls.some((c) => c.startsWith("updateIssueGrouping(pending-only):iss-new:grouped:heuristic")),
   );
 });
 
