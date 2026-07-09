@@ -1,8 +1,9 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import type { IncidentEvent } from "../api.ts";
 import { CountChart } from "../dashboards/widgets/CountChart.tsx";
 import { DEFAULT_TOP_N } from "../dashboards/widgets/series-topn.ts";
 import { Chip, type ChipTone } from "../design/ui.tsx";
+import { type EvidenceLinkContext, EvidenceMarkdown } from "../EvidenceMarkdown.tsx";
 import { LogsTable, TracesTable } from "../Explore.tsx";
 import {
   type TelemetryKind,
@@ -51,7 +52,14 @@ type TranscriptItem =
       input: Record<string, unknown>;
       result: string | null;
       isError: boolean;
-    };
+    }
+  // The run paused on `ask_human`. The question lives in the awaiting_human
+  // event's detail (or, absent that event, on the run result). Rendered as a
+  // rich terminal node rather than a bare lifecycle one-liner.
+  | { type: "question"; id: string; question: string }
+  // The initial investigation prompt (a user.message). Rendered as a
+  // "Started investigation" node with the raw prompt tucked behind a toggle.
+  | { type: "start"; id: string; prompt: string };
 
 type FeedItem = TranscriptItem | { type: "lifecycle"; id: string; event: IncidentEvent };
 
@@ -119,6 +127,18 @@ export function buildActivityFeed(events: IncidentEvent[]): FeedItem[] {
     // agent.thinking is a content-free heartbeat; tool results are consumed above.
     if (e.kind === "agent.thinking" || TOOL_RESULT_KINDS.has(e.kind)) continue;
     if (e.kind.startsWith("agent.") || isFeedNoise(e.kind)) continue;
+    if (e.kind === "user.message") {
+      items.push({ type: "start", id: e.id, prompt: (e.summary ?? "").trim() });
+      continue;
+    }
+    if (e.kind === "awaiting_human") {
+      const detail = e.detail as { question?: unknown } | null;
+      const question =
+        (typeof detail?.question === "string" && detail.question.trim()) ||
+        (e.summary ?? "").trim();
+      if (question) items.push({ type: "question", id: e.id, question });
+      continue;
+    }
     items.push({ type: "lifecycle", id: e.id, event: e });
   }
   return items;
@@ -137,26 +157,207 @@ export function buildTranscript(events: IncidentEvent[]): TranscriptItem[] {
 export function IncidentActivityFeed({
   events,
   renderIssueCard,
+  awaiting,
 }: {
   events: IncidentEvent[];
   /** Renders the referenced issue as a card under lifecycle events whose
    *  detail carries an `issueId` (recurrence, reopen). */
   renderIssueCard?: (issueId: string) => ReactNode;
+  /** When the run paused on `ask_human`, the question is not an incident event
+   *  — it lives on the run result. Render it as a terminal node so the timeline
+   *  ends on what the agent needs from the human. */
+  awaiting?: { question: string; ctx: EvidenceLinkContext } | null;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const railRef = useRef<HTMLDivElement>(null);
+  const lastRef = useRef<HTMLDivElement>(null);
+  // The rail hairline is cut at the last node rather than running to the bottom
+  // of the container, so no line dangles past the final entry. Measured, since
+  // the last node's offset depends on every entry above it.
+  const [railHeight, setRailHeight] = useState<number>();
+
   const items = buildActivityFeed(events);
-  if (items.length === 0) return null;
+  // The awaiting_human event already yields a question node; only fall back to
+  // the run-result question when no such event was recorded on the timeline.
+  const fallbackQuestion =
+    awaiting && !items.some((i) => i.type === "question") ? awaiting : null;
+  const ctx = awaiting?.ctx ?? {};
+  // Full ordered feed, with the run-result question appended when it wasn't a
+  // recorded event.
+  const feed: FeedItem[] = fallbackQuestion
+    ? [...items, { type: "question", id: "awaiting-fallback", question: fallbackQuestion.question }]
+    : items;
+
+  const renderItem = (item: FeedItem) => {
+    if (item.type === "message") return <MessageEntry key={item.id} text={item.text} />;
+    if (item.type === "telemetry") return <TelemetryEntry key={item.id} item={item} />;
+    if (item.type === "tool") return <ToolEntry key={item.id} item={item} />;
+    if (item.type === "start") return <StartEntry key={item.id} prompt={item.prompt} />;
+    if (item.type === "question")
+      return <QuestionEntry key={item.id} question={item.question} ctx={ctx} />;
+    return <LifecycleEntry key={item.id} event={item.event} renderIssueCard={renderIssueCard} />;
+  };
+
+  // Collapse the investigation: everything between the "Started investigation"
+  // node and the final entry folds into an expandable group, so the timeline
+  // reads start → (N steps) → last message by default.
+  const startIdx = feed.findIndex((i) => i.type === "start");
+  const lastIdx = feed.length - 1;
+  const middle = startIdx >= 0 ? feed.slice(startIdx + 1, lastIdx) : [];
+  const collapsible = startIdx >= 0 && middle.length >= 2;
+
+  // Ordered list of rendered nodes (so the last one, whatever its type, can be
+  // measured to end the rail at its marker).
+  const nodes: ReactNode[] = collapsible
+    ? [
+        ...feed.slice(0, startIdx + 1).map(renderItem),
+        <CollapseToggle
+          key="collapse"
+          count={middle.length}
+          expanded={expanded}
+          onToggle={() => setExpanded((v) => !v)}
+        />,
+        ...(expanded ? middle.map(renderItem) : []),
+        ...feed.slice(lastIdx).map(renderItem),
+      ]
+    : feed.map(renderItem);
+
+  useLayoutEffect(() => {
+    const rail = railRef.current;
+    const last = lastRef.current;
+    if (!rail || !last) return;
+    // Rail runs from the first marker center (top-3 ≈ 12px) to the last marker.
+    const measure = () => setRailHeight(Math.max(0, last.offsetTop + 1));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(rail);
+    return () => ro.disconnect();
+  }, [nodes.length, expanded]);
+
+  if (nodes.length === 0) return null;
+
   return (
-    <div className="relative pl-7">
-      {/* Start at the first entry's marker center (~12px) so no line pokes above it. */}
-      <div className="absolute bottom-2 left-[10px] top-3 w-px bg-border" />
-      {items.map((item) => {
-        if (item.type === "message") return <MessageEntry key={item.id} text={item.text} />;
-        if (item.type === "telemetry") return <TelemetryEntry key={item.id} item={item} />;
-        if (item.type === "tool") return <ToolEntry key={item.id} item={item} />;
-        return (
-          <LifecycleEntry key={item.id} event={item.event} renderIssueCard={renderIssueCard} />
-        );
-      })}
+    <div ref={railRef} className="relative pl-7">
+      {/* Start at the first entry's marker center (~12px); cut at the last node
+          so no hairline dangles past the final entry. */}
+      <div
+        className="absolute left-[10px] top-3 w-px bg-border"
+        style={railHeight != null ? { height: railHeight } : { bottom: 8 }}
+      />
+      {nodes.slice(0, -1)}
+      <div ref={lastRef}>{nodes[nodes.length - 1]}</div>
+    </div>
+  );
+}
+
+// Collapsed placeholder for the folded investigation steps — a muted node with
+// a toggle. Expanding reveals the hidden entries inline above the last message.
+function CollapseToggle({
+  count,
+  expanded,
+  onToggle,
+}: {
+  count: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="relative mb-6">
+      <span className="absolute -left-7 top-0 grid h-[22px] w-[22px] place-items-center rounded-full border border-border bg-surface-2">
+        <svg
+          className={`h-3 w-3 text-muted transition-transform ${expanded ? "rotate-90" : ""}`}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="m9 18 6-6-6-6" />
+        </svg>
+      </span>
+      <div className="flex min-h-[22px] items-center">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="text-[12px] font-medium text-muted hover:text-fg"
+        >
+          {expanded ? "Hide investigation" : "Show investigation"}
+          <span className="ml-1 text-subtle">· {count} steps</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// The initial investigation prompt, shown as a compact "Started investigation"
+// node. The raw prompt is verbose (incident id, telemetry dump), so it's tucked
+// behind a toggle.
+function StartEntry({ prompt }: { prompt: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative mb-6">
+      <span className="absolute -left-7 top-0 grid h-[22px] w-[22px] place-items-center rounded-full border border-accent/40 bg-surface-2">
+        <svg
+          className="h-3 w-3 text-[#97a3f2]"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="m5 3 14 9-14 9V3z" />
+        </svg>
+      </span>
+      <div className="flex min-h-[22px] items-center gap-2">
+        <span className="text-[12px] font-semibold text-fg">Started investigation</span>
+        {prompt && (
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="text-[11px] text-subtle hover:text-fg"
+          >
+            {open ? "hide prompt" : "show prompt"}
+          </button>
+        )}
+      </div>
+      {open && prompt && (
+        <pre className="mt-1.5 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-muted">
+          {prompt}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+// Terminal node for an `ask_human` pause: the agent's question to the human,
+// rendered as markdown inside a warning-toned card so it reads as the open
+// action at the end of the trail.
+function QuestionEntry({ question, ctx }: { question: string; ctx: EvidenceLinkContext }) {
+  return (
+    <div className="relative mb-6">
+      <span className="absolute -left-7 top-0 grid h-[22px] w-[22px] place-items-center rounded-full border border-warning/50 bg-surface-2">
+        <svg
+          className="h-3 w-3 text-warning"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+          <path d="M12 17h.01" />
+        </svg>
+      </span>
+      <div className="mb-1.5 flex min-h-[22px] items-center gap-2">
+        <span className="text-[12px] font-semibold text-fg">Investigation agent</span>
+        <Chip tone="warning">Awaiting you</Chip>
+      </div>
+      <div className="rounded-lg border border-warning/30 bg-warning/[0.06] px-3.5 py-3">
+        <EvidenceMarkdown text={question} ctx={ctx} />
+      </div>
     </div>
   );
 }
@@ -225,14 +426,14 @@ function LifecycleEntry({
 
   return (
     <div className="relative mb-5">
-      <span className="absolute -left-7 top-0.5 grid h-[22px] w-[22px] place-items-center">
+      <span className="absolute -left-7 top-0 grid h-[22px] w-[22px] place-items-center">
         {actor?.avatarUrl ? (
           <img src={actor.avatarUrl} alt={actor.name ?? ""} className="h-4 w-4 rounded-full" />
         ) : (
           <span className="h-2 w-2 rounded-full border-2 border-border-strong bg-bg" />
         )}
       </span>
-      <div className="flex flex-wrap items-baseline gap-x-2 text-[12px] leading-relaxed">
+      <div className="flex min-h-[22px] flex-wrap items-center gap-x-2 text-[12px] leading-relaxed">
         {actor?.name &&
           (actor.profileUrl ? (
             <a

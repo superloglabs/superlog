@@ -1415,6 +1415,10 @@ export function IncidentDetailContent({
   summaryTelemetry?: ReactNode;
 }) {
   const [detailTab, setDetailTab] = useState<IncidentDetailTab>("activity");
+  // A run paused on `ask_human` stores its question on the run result, not as an
+  // incident event — surface it as the closing node of the Activity timeline.
+  const awaitingQuestion =
+    agentRun?.state === "awaiting_human" ? (agentRun.result?.question ?? null) : null;
   const statusActions = getIncidentStatusActions(incident.status);
   const problemResolvedAction =
     statusActions.find((action) => action.label === "Problem resolved") ?? null;
@@ -1532,11 +1536,26 @@ export function IncidentDetailContent({
                   {eventsError && (
                     <p className="text-[12px] text-danger">failed: {String(eventsError)}</p>
                   )}
-                  {!eventsLoading && !eventsError && events.length === 0 && !outOfCredits && (
+                  {!eventsLoading &&
+                    !eventsError &&
+                    events.length === 0 &&
+                    !outOfCredits &&
+                    !awaitingQuestion && (
                     <p className="text-[12px] text-muted">No activity yet.</p>
                   )}
                   <IncidentActivityFeed
                     events={events}
+                    awaiting={
+                      awaitingQuestion
+                        ? {
+                            question: awaitingQuestion,
+                            ctx: {
+                              repoUrl: agentRun?.selectedRepoUrl ?? null,
+                              baseBranch: agentRun?.selectedBaseBranch ?? null,
+                            },
+                          }
+                        : null
+                    }
                     renderIssueCard={(issueId) => {
                       const issue = issues.find((i) => i.id === issueId);
                       if (!issue) return null;
@@ -2005,8 +2024,11 @@ export function AgentRunView({
       )}
       {result?.question && (
         <div className="space-y-2">
-          <SectionHeading>Question</SectionHeading>
-          <p className="text-[12.5px] leading-relaxed text-fg">{result.question}</p>
+          <div className="flex items-center gap-2">
+            <SectionHeading>Question</SectionHeading>
+            <Chip tone="warning">Awaiting you</Chip>
+          </div>
+          <EvidenceMarkdown text={result.question} ctx={linkCtx} />
         </div>
       )}
       <div className="space-y-3">
