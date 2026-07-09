@@ -31,6 +31,7 @@ const incident = {
   noiseClassification: null,
   resolutionClassification: null,
   findingsAgentRunId: null,
+  autoInvestigateBlockedReason: null,
   createdAt: "2026-06-30T16:39:01.388Z",
   updatedAt: "2026-06-30T17:01:30.633Z",
 };
@@ -67,9 +68,45 @@ test("buildIncidentDetailMeta returns one sidebar row list without duplicating t
       ["First detection", "Jun 30, 16:39 UTC"],
       ["Latest detection", "Jun 30, 16:41 UTC"],
       ["Duration", "2 min 29 s"],
-      ["Agent run", "complete"],
+      ["Investigation", "complete"],
     ],
   );
+});
+
+test("buildIncidentDetailMeta shows a red 'out of credits' when a blocked incident has no run", () => {
+  const meta = buildIncidentDetailMeta({
+    incident: { ...incident, autoInvestigateBlockedReason: "no_credits" },
+    agentRunState: null,
+    pendingRecovery: false,
+  });
+
+  const row = meta.find((r) => r.label === "Investigation");
+  assert.equal(row?.value, "Out of credits");
+  assert.equal(row?.tone, "danger");
+});
+
+test("buildIncidentDetailMeta shows 'not queued' with no emphasis when nothing blocked the run", () => {
+  const meta = buildIncidentDetailMeta({
+    incident,
+    agentRunState: null,
+    pendingRecovery: false,
+  });
+
+  const row = meta.find((r) => r.label === "Investigation");
+  assert.equal(row?.value, "not queued");
+  assert.equal(row?.tone, undefined);
+});
+
+test("buildIncidentDetailMeta prefers the actual run state over a stale block reason", () => {
+  const meta = buildIncidentDetailMeta({
+    incident: { ...incident, autoInvestigateBlockedReason: "no_credits" },
+    agentRunState: "complete",
+    pendingRecovery: false,
+  });
+
+  const row = meta.find((r) => r.label === "Investigation");
+  assert.equal(row?.value, "complete");
+  assert.equal(row?.tone, undefined);
 });
 
 test("buildIncidentDetailMeta formats midnight UTC with hour zero", () => {
