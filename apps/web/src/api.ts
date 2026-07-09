@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePostHog } from "posthog-js/react";
+import { incidentPollIntervalMs } from "./incidents/agent-run-polling.ts";
 import { buildSignupEventProperties, readFirstTouchAttribution } from "./signupAttribution.ts";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4100";
@@ -2219,6 +2220,10 @@ export function useIncident(projectId: string | undefined, incidentId: string | 
     queryKey: ["incident", projectId, incidentId],
     queryFn: () => fetcher<IncidentDetail>(`/api/projects/${projectId}/incidents/${incidentId}`),
     enabled: !!projectId && !!incidentId,
+    // Poll while the investigation is live so the transcript updates on its own.
+    // Re-evaluated each tick against the freshest data, so it stops the moment
+    // the run reaches a terminal state.
+    refetchInterval: (query) => incidentPollIntervalMs(query.state.data?.agentRun?.state),
   });
 }
 
