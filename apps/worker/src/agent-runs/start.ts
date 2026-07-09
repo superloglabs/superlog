@@ -188,6 +188,24 @@ async function createRunnerRepoCandidates(
 // agent falls back to looking for instruction files itself after cloning.
 const INSTRUCTION_FILE_PROBE_LIMIT = 10;
 
+// Best-effort: the probe must never cost us a repo candidate, so both
+// rejected promises and synchronous throws from the dep degrade to [].
+async function probeRepoInstructionFiles(
+  repo: ScoredGithubRepo,
+  installationToken: string,
+  deps: StartQueuedAgentRunDeps,
+): Promise<string[]> {
+  try {
+    return await deps.listRepositoryInstructionFiles(installationToken, repo.fullName);
+  } catch (err) {
+    logger.warn(
+      { err, repo: repo.fullName },
+      "instruction-file probe failed; starting without repo instruction files",
+    );
+    return [];
+  }
+}
+
 async function createRunnerRepoCandidate(
   repo: ScoredGithubRepo,
   probeInstructionFiles: boolean,
@@ -204,15 +222,7 @@ async function createRunnerRepoCandidate(
       installationToken,
       score: repo.score,
       instructionFiles: probeInstructionFiles
-        ? await deps
-            .listRepositoryInstructionFiles(installationToken, repo.fullName)
-            .catch((err) => {
-              logger.warn(
-                { err, repo: repo.fullName },
-                "instruction-file probe failed; starting without repo instruction files",
-              );
-              return [];
-            })
+        ? await probeRepoInstructionFiles(repo, installationToken, deps)
         : [],
     };
   } catch (err) {

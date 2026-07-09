@@ -151,6 +151,32 @@ test("startQueuedAgentRunWorkflow starts with empty instruction files when probi
   assert.deepEqual(received, [[]]);
 });
 
+test("startQueuedAgentRunWorkflow keeps the repo candidate when the probe throws synchronously", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+
+  let received: string[][] = [];
+  await startQueuedAgentRunWorkflow(
+    ctx,
+    makeDeps(
+      calls,
+      {
+        // Not async: a synchronous throw never yields a rejected promise, so
+        // a .catch() on the return value alone would not cover it.
+        listRepositoryInstructionFiles() {
+          throw new Error("synchronous probe failure");
+        },
+      },
+      (input) => {
+        received = input.repoCandidates.map((repo) => repo.instructionFiles);
+      },
+    ),
+  );
+
+  assert.ok(calls.includes("runner.start:1"));
+  assert.deepEqual(received, [[]]);
+});
+
 test("startQueuedAgentRunWorkflow fails cleanly when async backend selection rejects", async () => {
   const calls: string[] = [];
   const ctx = makeContext();
