@@ -138,3 +138,28 @@ test("counts an error and saves nothing when a refresh is rejected, without bloc
   assert.equal(saved.length, 1);
   assert.equal(saved[0]?.id, "live");
 });
+
+test("a thrown fetch on one install doesn't abort the pass", async () => {
+  // First install's token request throws (network blip); the second still refreshes.
+  const rows = [installation({ id: "boom" }), installation({ id: "live", refreshToken: "rt-2" })];
+  const { store, saved } = fakeStore(rows);
+  let call = 0;
+  const fetchImpl = (async () => {
+    call += 1;
+    if (call === 1) throw new Error("network down");
+    return new Response(
+      JSON.stringify({ access_token: "at-2", refresh_token: "rt-2b", expires_in: 57600 }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+  const stats = await runCloudflareRefreshOnce({
+    store,
+    config: CONFIG,
+    log: LOGGER,
+    fetchImpl,
+    now: () => NOW,
+  });
+  assert.deepEqual(stats, { installations: 2, refreshed: 1, skipped: 0, errors: 1 });
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0]?.id, "live");
+});

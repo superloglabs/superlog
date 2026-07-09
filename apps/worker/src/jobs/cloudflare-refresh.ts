@@ -10,7 +10,7 @@
 
 import { cloudflareClientFromEnv } from "@superlog/cloudflare";
 import { decryptIntegrationSecret, encryptIntegrationSecret, schema } from "@superlog/db";
-import { eq, isNull } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import {
   type CloudflareRefreshInstallation,
   type CloudflareRefresherStore,
@@ -74,7 +74,15 @@ function createStore(db: JobDeps["db"]): CloudflareRefresherStore {
           tokenExpiresAt: tokens.tokenExpiresAt,
           updatedAt: new Date(),
         })
-        .where(eq(schema.cloudflareInstallations.id, id));
+        // Guard against a revoke landing between the list and this write (an
+        // uninstall / account-switch mid-pass): never rewrite tokens onto a
+        // row that's since been torn down.
+        .where(
+          and(
+            eq(schema.cloudflareInstallations.id, id),
+            isNull(schema.cloudflareInstallations.revokedAt),
+          ),
+        );
     },
   };
 }

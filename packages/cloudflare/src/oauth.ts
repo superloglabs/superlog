@@ -70,7 +70,9 @@ export function parseTokenResponse(json: unknown): CloudflareTokenResult {
   return {
     ok: true,
     accessToken: o.access_token,
-    refreshToken: typeof o.refresh_token === "string" ? o.refresh_token : null,
+    // An empty-string refresh token is equivalent to absent (it would fail on
+    // use), so treat it as null — same guard as the Railway client.
+    refreshToken: typeof o.refresh_token === "string" && o.refresh_token ? o.refresh_token : null,
     expiresIn: typeof o.expires_in === "number" ? o.expires_in : null,
     scope: typeof o.scope === "string" ? o.scope : null,
   };

@@ -47,6 +47,10 @@ test("parseTokenResponse extracts tokens and surfaces errors", () => {
     expiresIn: 57600,
     scope: "workers-scripts.read offline_access",
   });
+  // An empty-string refresh token is treated as absent (null), not a valid token.
+  const emptyRefresh = parseTokenResponse({ access_token: "at", refresh_token: "" });
+  assert.ok(emptyRefresh.ok);
+  assert.equal(emptyRefresh.refreshToken, null);
   assert.deepEqual(parseTokenResponse({ error: "invalid_grant" }), {
     ok: false,
     error: "invalid_grant",

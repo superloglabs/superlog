@@ -209,8 +209,11 @@ async function freshAccessToken(
     nonce: row.accessTokenNonce,
     keyVersion: row.accessTokenKeyVersion,
   });
+  // Only a known, comfortably-future expiry counts as fresh. An unknown
+  // (null) expiry falls through to the refresh path so teardown doesn't reuse a
+  // possibly-dead access token when we actually hold a refresh token.
   const expiresAt = row.tokenExpiresAt?.getTime() ?? null;
-  if (expiresAt === null || expiresAt - Date.now() > TOKEN_REFRESH_MARGIN_MS) {
+  if (expiresAt !== null && expiresAt - Date.now() > TOKEN_REFRESH_MARGIN_MS) {
     return accessToken;
   }
 

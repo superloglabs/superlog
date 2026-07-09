@@ -85,33 +85,49 @@ export async function runCloudflareRefreshOnce(
       continue;
     }
 
-    const refreshed = await refreshAccessToken({
-      config: deps.config,
-      refreshToken: inst.refreshToken,
-      fetchImpl,
-    });
-    if (!refreshed.ok) {
-      // A dead grant (expired / revoked) surfaces here. Log and move on — one
-      // bad install must not block the rest, and the connection just needs a
-      // manual reconnect.
+    // Isolate every per-install failure — a dead grant ({ ok: false }), a
+    // thrown fetch (network blip / DNS), or a saveTokens DB error — so one bad
+    // installation can never abort the pass and strand the rest untouched.
+    try {
+      const refreshed = await refreshAccessToken({
+        config: deps.config,
+        refreshToken: inst.refreshToken,
+        fetchImpl,
+      });
+      if (!refreshed.ok) {
+        // A dead grant (expired / revoked) surfaces here. Log and move on — the
+        // connection just needs a manual reconnect.
+        stats.errors += 1;
+        deps.log.error(
+          { installation_id: inst.id, account_id: inst.accountId, error: refreshed.error },
+          "cloudflare token refresh failed",
+        );
+        continue;
+      }
+
+      await deps.store.saveTokens(inst.id, {
+        accessToken: refreshed.accessToken,
+        // Rotating refresh tokens: keep the replacement, falling back to the
+        // existing one when the response didn't rotate it. Dropping the rotated
+        // token would strand the install at the next refresh.
+        refreshToken: refreshed.refreshToken ?? inst.refreshToken,
+        tokenExpiresAt:
+          refreshed.expiresIn != null
+            ? new Date(now().getTime() + refreshed.expiresIn * 1000)
+            : null,
+      });
+      stats.refreshed += 1;
+    } catch (err) {
       stats.errors += 1;
       deps.log.error(
-        { installation_id: inst.id, account_id: inst.accountId, error: refreshed.error },
-        "cloudflare token refresh failed",
+        {
+          installation_id: inst.id,
+          account_id: inst.accountId,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "cloudflare token refresh threw; skipping install",
       );
-      continue;
     }
-
-    await deps.store.saveTokens(inst.id, {
-      accessToken: refreshed.accessToken,
-      // Rotating refresh tokens: keep the replacement, falling back to the
-      // existing one when the response didn't rotate it. Dropping the rotated
-      // token would strand the install at the next refresh.
-      refreshToken: refreshed.refreshToken ?? inst.refreshToken,
-      tokenExpiresAt:
-        refreshed.expiresIn != null ? new Date(now().getTime() + refreshed.expiresIn * 1000) : null,
-    });
-    stats.refreshed += 1;
   }
 
   return stats;
