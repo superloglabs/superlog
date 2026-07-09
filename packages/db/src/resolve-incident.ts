@@ -308,7 +308,10 @@ export function createIncidentLifecycle(database: DB = db) {
         await repository.insertEventInTx(tx, {
           incidentId: opts.previousIncident.id,
           kind: "issue_recurred",
-          summary: "Linked issue recurred; investigation continued in a new incident.",
+          summary:
+            opts.origin === "alert_breached_again"
+              ? "Alert breached again; investigation continued in a new incident."
+              : "Linked issue recurred; investigation continued in a new incident.",
           detail: {
             issueId: opts.issue.id,
             issueTitle: opts.issue.title,

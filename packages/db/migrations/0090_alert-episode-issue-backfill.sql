@@ -6,6 +6,11 @@
 -- After it, every episode has its own 1:1 issue (fingerprint
 -- 'alert-episode:<episodeId>') and incident links go through those issues.
 --
+-- Ordering: this backfill runs BEFORE 0091 creates the unique index on
+-- alert_episodes.issue_id — historical episodes of the same alert+group all
+-- share the aggregate issue's id, so creating the index first would fail on
+-- any deployment with real alert history.
+--
 -- Steps:
 --   1. Synthesize a (closed) episode for every incident that was driven by an
 --      aggregate alert issue but has no episode row (pre-0073 breaches or

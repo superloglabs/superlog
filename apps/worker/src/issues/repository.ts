@@ -123,11 +123,13 @@ export async function findAlertEpisodeForIssue(
   });
 }
 
-// Newest open incident driven by an episode of the same alert+group — the
-// join target for a new breach while the previous one is still being handled.
-export async function findOpenIncidentForAlert(
+// Newest incident driven by an episode of the same alert+group, optionally
+// restricted to open incidents. Single query shape so the open-join and
+// latest-predecessor lookups can't drift apart.
+async function findNewestIncidentForAlert(
   alertId: string,
   groupKey: string,
+  opts: { openOnly: boolean },
 ): Promise<schema.Incident | undefined> {
   const rows = await db
     .select({ incident: schema.incidents })
@@ -137,12 +139,21 @@ export async function findOpenIncidentForAlert(
       and(
         eq(schema.alertEpisodes.alertId, alertId),
         eq(schema.alertEpisodes.groupKey, groupKey),
-        eq(schema.incidents.status, "open"),
+        opts.openOnly ? eq(schema.incidents.status, "open") : undefined,
       ),
     )
     .orderBy(desc(schema.alertEpisodes.startedAt))
     .limit(1);
   return rows[0]?.incident;
+}
+
+// Newest open incident driven by an episode of the same alert+group — the
+// join target for a new breach while the previous one is still being handled.
+export async function findOpenIncidentForAlert(
+  alertId: string,
+  groupKey: string,
+): Promise<schema.Incident | undefined> {
+  return findNewestIncidentForAlert(alertId, groupKey, { openOnly: true });
 }
 
 // Newest incident (any status) driven by an episode of the same alert+group —
@@ -151,16 +162,7 @@ export async function findLatestIncidentForAlert(
   alertId: string,
   groupKey: string,
 ): Promise<schema.Incident | undefined> {
-  const rows = await db
-    .select({ incident: schema.incidents })
-    .from(schema.alertEpisodes)
-    .innerJoin(schema.incidents, eq(schema.incidents.id, schema.alertEpisodes.incidentId))
-    .where(
-      and(eq(schema.alertEpisodes.alertId, alertId), eq(schema.alertEpisodes.groupKey, groupKey)),
-    )
-    .orderBy(desc(schema.alertEpisodes.startedAt))
-    .limit(1);
-  return rows[0]?.incident;
+  return findNewestIncidentForAlert(alertId, groupKey, { openOnly: false });
 }
 
 export async function linkIssueToIncident(opts: {

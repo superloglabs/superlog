@@ -195,9 +195,11 @@ export function createAlertRepository(db: DB) {
         )
         -- See telemetry/ingest.ts: the WHERE clause is arbiter-index inference
         -- against the full unique index on (project_id, fingerprint).
+        -- No event_count bump on conflict: a conflict here is a concurrent
+        -- duplicate or a retry of the SAME opening tick, not a new occurrence;
+        -- subsequent firing ticks are counted by touchOpenEpisode.
         ON CONFLICT (project_id, fingerprint) WHERE silenced_at IS NULL DO UPDATE SET
           last_seen = GREATEST(issues.last_seen, EXCLUDED.last_seen),
-          event_count = issues.event_count + 1,
           last_sample = EXCLUDED.last_sample
         RETURNING id, xmax
       `);
@@ -220,66 +222,71 @@ export function createAlertRepository(db: DB) {
         .where(eq(schema.alertEpisodes.id, episodeId));
     },
 
+    // Serialize incident intake for one episode issue across concurrent worker
+    // tasks. Racing duplicates fold into the same episode + issue, but intake's
+    // existing-link check is read-then-create — unserialized racers could each
+    // open an incident for the same issue. The advisory xact lock (released at
+    // commit/rollback) makes the second racer wait until the first's intake has
+    // committed its incident link, so it re-lands on that link instead.
+    async withIssueIntakeLock<T>(issueId: string, fn: () => Promise<T>): Promise<T> {
+      return db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${issueId}, 0))`);
+        return fn();
+      });
+    },
+
     // Advance an open episode on a still-firing tick: update the latest value,
     // the most-severe value seen so far, and the last-firing timestamp — and
     // mirror the tick onto the episode's issue (the issue's last_seen /
-    // event_count track the breach as it runs).
+    // event_count track the breach as it runs). One statement so the episode
+    // and issue advance atomically — a partial write here couldn't be retried
+    // (the episode row would already carry the new tick).
     async touchOpenEpisode(input: EpisodeTouchInput): Promise<void> {
+      const evaluatedAtIso = input.evaluatedAt.toISOString();
       const peakExpr =
         input.comparator === "gt"
-          ? sql`GREATEST(${schema.alertEpisodes.peakObservedValue}, ${input.observedValue})`
-          : sql`LEAST(${schema.alertEpisodes.peakObservedValue}, ${input.observedValue})`;
-      const rows = await db
-        .update(schema.alertEpisodes)
-        .set({
-          peakObservedValue: peakExpr,
-          lastObservedValue: input.observedValue,
-          lastFiringAt: input.evaluatedAt,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(schema.alertEpisodes.alertId, input.alertId),
-            eq(schema.alertEpisodes.groupKey, input.groupKey),
-            eq(schema.alertEpisodes.state, "firing"),
-          ),
+          ? sql`GREATEST(peak_observed_value, ${input.observedValue})`
+          : sql`LEAST(peak_observed_value, ${input.observedValue})`;
+      await db.execute(sql`
+        WITH ep AS (
+          UPDATE alert_episodes
+          SET peak_observed_value = ${peakExpr},
+              last_observed_value = ${input.observedValue},
+              last_firing_at = ${evaluatedAtIso}::timestamptz,
+              updated_at = now()
+          WHERE alert_id = ${input.alertId}
+            AND group_key = ${input.groupKey}
+            AND state = 'firing'
+          RETURNING issue_id
         )
-        .returning({ issueId: schema.alertEpisodes.issueId });
-      const issueId = rows[0]?.issueId;
-      if (!issueId) return;
-      await db
-        .update(schema.issues)
-        .set({
-          lastSeen: sql`GREATEST(${schema.issues.lastSeen}, ${input.evaluatedAt.toISOString()}::timestamptz)`,
-          eventCount: sql`${schema.issues.eventCount} + 1`,
-          lastSample: input.lastSample,
-        })
-        .where(eq(schema.issues.id, issueId));
+        UPDATE issues
+        SET last_seen = GREATEST(last_seen, ${evaluatedAtIso}::timestamptz),
+            event_count = event_count + 1,
+            last_sample = ${JSON.stringify(input.lastSample)}::jsonb
+        WHERE id = (SELECT issue_id FROM ep WHERE issue_id IS NOT NULL)
+      `);
     },
 
     // Close the open episode for an alert+group on recovery. The issue keeps
     // its own lifecycle (someone still has to resolve it); only its last_seen
-    // is advanced to the breach end.
+    // is advanced to the breach end. One statement so the close and the issue
+    // timestamp commit together — a close that landed without the issue update
+    // would leave nothing for the retry to find (the row is no longer open).
     async closeOpenEpisode(input: EpisodeCloseInput): Promise<void> {
-      const rows = await db
-        .update(schema.alertEpisodes)
-        .set({ state: "resolved", endedAt: input.endedAt, updatedAt: new Date() })
-        .where(
-          and(
-            eq(schema.alertEpisodes.alertId, input.alertId),
-            eq(schema.alertEpisodes.groupKey, input.groupKey),
-            eq(schema.alertEpisodes.state, "firing"),
-          ),
+      const endedAtIso = input.endedAt.toISOString();
+      await db.execute(sql`
+        WITH ep AS (
+          UPDATE alert_episodes
+          SET state = 'resolved', ended_at = ${endedAtIso}::timestamptz, updated_at = now()
+          WHERE alert_id = ${input.alertId}
+            AND group_key = ${input.groupKey}
+            AND state = 'firing'
+          RETURNING issue_id
         )
-        .returning({ issueId: schema.alertEpisodes.issueId });
-      const issueId = rows[0]?.issueId;
-      if (!issueId) return;
-      await db
-        .update(schema.issues)
-        .set({
-          lastSeen: sql`GREATEST(${schema.issues.lastSeen}, ${input.endedAt.toISOString()}::timestamptz)`,
-        })
-        .where(eq(schema.issues.id, issueId));
+        UPDATE issues
+        SET last_seen = GREATEST(last_seen, ${endedAtIso}::timestamptz)
+        WHERE id = (SELECT issue_id FROM ep WHERE issue_id IS NOT NULL)
+      `);
     },
 
     async markEvaluated(alertId: string, evaluatedAt: Date): Promise<void> {
