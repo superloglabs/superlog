@@ -56,13 +56,25 @@ type StreamState = {
 };
 
 /**
- * Public intake origin Render's streams push to (prod:
- * https://intake.superlog.sh). Unset → streams can't be provisioned and the
- * connector runs on API polling alone.
+ * Public intake origin Render's METRICS stream pushes OTLP to (prod:
+ * https://intake.superlog.sh). Unset → the metrics stream can't be
+ * provisioned and metrics fall back to API polling.
  */
 function streamIntakeBaseUrl(env: NodeJS.ProcessEnv = process.env): string | null {
   const base = env.RENDER_STREAM_INTAKE_URL;
   return base ? base.replace(/\/+$/, "") : null;
+}
+
+/**
+ * Public TLS syslog address (host:port) Render's LOG stream pushes RFC 5424
+ * frames to (prod: a TLS NLB in front of the proxy's syslog sink). Render's
+ * log streams only support syslog destinations for third parties — custom
+ * HTTPS endpoints are limited to a couple of first-class providers. Unset →
+ * the log stream can't be provisioned and logs fall back to API polling.
+ */
+function syslogIntakeAddress(env: NodeJS.ProcessEnv = process.env): string | null {
+  const address = env.RENDER_SYSLOG_INTAKE?.trim();
+  return address || null;
 }
 
 /** Public shape — never leaks the API key ciphertext. */
@@ -149,42 +161,61 @@ async function provisionStreams(input: {
   fetchImpl: typeof fetch;
 }): Promise<{ logStream: StreamState; metricsStream: StreamState }> {
   const base = streamIntakeBaseUrl();
-  if (!base) {
-    const detail = "stream intake url not configured";
-    return {
-      logStream: { status: "unavailable", endpoint: null, detail },
-      metricsStream: { status: "unavailable", endpoint: null, detail },
-    };
-  }
+  const syslogAddress = syslogIntakeAddress();
 
   let logStream: StreamState;
-  const logsEndpoint = `${base}/render/stream/logs`;
-  const currentLogs = await fetchOwnerLogStream({
-    apiKey: input.apiKey,
-    ownerId: input.ownerId,
-    fetchImpl: input.fetchImpl,
-  });
-  if (!currentLogs.ok) {
-    logStream = { status: "unavailable", endpoint: null, detail: currentLogs.error };
-  } else if (currentLogs.stream?.endpoint && !currentLogs.stream.endpoint.startsWith(base)) {
+  if (!syslogAddress) {
     logStream = {
-      status: "conflict",
-      endpoint: currentLogs.stream.endpoint,
-      detail: "workspace already streams logs to another destination",
+      status: "unavailable",
+      endpoint: null,
+      detail: "syslog intake address not configured",
     };
   } else {
-    const updated = await updateOwnerLogStream({
+    const currentLogs = await fetchOwnerLogStream({
       apiKey: input.apiKey,
       ownerId: input.ownerId,
-      endpoint: logsEndpoint,
-      token: input.ingestKey,
       fetchImpl: input.fetchImpl,
     });
-    logStream = updated.ok
-      ? { status: "provisioned", endpoint: logsEndpoint, detail: null }
-      : { status: "unavailable", endpoint: null, detail: updated.error };
+    // A destination we own is replaceable: the configured syslog address, or
+    // a leftover pointing at our HTTP intake origin (the connector briefly
+    // registered HTTPS endpoints before the syslog sink existed).
+    const ownsCurrent =
+      !currentLogs.ok || !currentLogs.stream?.endpoint
+        ? true
+        : currentLogs.stream.endpoint === syslogAddress ||
+          (base !== null && currentLogs.stream.endpoint.startsWith(base));
+    if (!currentLogs.ok) {
+      logStream = { status: "unavailable", endpoint: null, detail: currentLogs.error };
+    } else if (currentLogs.stream?.endpoint && !ownsCurrent) {
+      logStream = {
+        status: "conflict",
+        endpoint: currentLogs.stream.endpoint,
+        detail: "workspace already streams logs to another destination",
+      };
+    } else {
+      const updated = await updateOwnerLogStream({
+        apiKey: input.apiKey,
+        ownerId: input.ownerId,
+        endpoint: syslogAddress,
+        token: input.ingestKey,
+        fetchImpl: input.fetchImpl,
+      });
+      logStream = updated.ok
+        ? { status: "provisioned", endpoint: syslogAddress, detail: null }
+        : { status: "unavailable", endpoint: null, detail: updated.error };
+    }
   }
 
+  if (!base) {
+    return {
+      logStream,
+      metricsStream: {
+        status: "unavailable",
+        endpoint: null,
+        detail: "stream intake url not configured",
+      },
+    };
+  }
   let metricsStream: StreamState;
   const metricsEndpoint = `${base}/render/stream/metrics`;
   const currentMetrics = await fetchOwnerMetricsStream({
@@ -223,7 +254,7 @@ async function provisionStreams(input: {
  */
 async function teardownStreams(row: RenderInstallationRow, fetchImpl: typeof fetch): Promise<void> {
   const base = streamIntakeBaseUrl();
-  if (!base) return;
+  const syslogAddress = syslogIntakeAddress();
   let apiKey: string;
   try {
     apiKey = decryptIntegrationSecret({
@@ -238,13 +269,20 @@ async function teardownStreams(row: RenderInstallationRow, fetchImpl: typeof fet
   try {
     if (row.logStream?.status === "provisioned") {
       const current = await fetchOwnerLogStream({ apiKey, ownerId, fetchImpl });
-      if (current.ok && current.stream?.endpoint?.startsWith(base)) {
+      // Match against the configured address AND the address recorded at
+      // provision time, so a stream provisioned before an intake move still
+      // gets cleaned up.
+      const ours = new Set([syslogAddress, row.logStream.endpoint].filter(Boolean));
+      if (current.ok && current.stream?.endpoint && ours.has(current.stream.endpoint)) {
         await deleteOwnerLogStream({ apiKey, ownerId, fetchImpl });
       }
     }
     if (row.metricsStream?.status === "provisioned") {
       const current = await fetchOwnerMetricsStream({ apiKey, ownerId, fetchImpl });
-      if (current.ok && current.stream?.url?.startsWith(base)) {
+      const ownUrl =
+        (base && current.ok && current.stream?.url?.startsWith(base)) ||
+        (current.ok && current.stream?.url && current.stream.url === row.metricsStream.endpoint);
+      if (ownUrl) {
         await deleteOwnerMetricsStream({ apiKey, ownerId, fetchImpl });
       }
     }

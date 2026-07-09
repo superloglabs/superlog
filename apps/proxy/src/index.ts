@@ -37,8 +37,8 @@ import {
 import { logger } from "./logger.js";
 import { proxyOperationalRecorder } from "./operational-metrics.js";
 import { decodeOtlpMetricsPayload } from "./otlp-decode.js";
-import { parseRenderLogStreamBody, renderStreamLogsToOtlp } from "./render-log-stream.js";
 import { stampRenderStreamMetrics } from "./render-metrics-stream.js";
+import { createRenderSyslogServer, renderSyslogToOtlp } from "./render-syslog.js";
 import { Semaphore } from "./semaphore.js";
 import { lookupOrgForProject, recordIngestRequest } from "./tenant-metrics.js";
 import { parseVercelLogDrainBody, vercelLogsToOtlp } from "./vercel-log-drain.js";
@@ -338,22 +338,11 @@ app.post("/render/pull/metrics", (c) =>
   forward(c, "/v1/metrics", "resourceMetrics", { source: "render" }),
 );
 
-// Render stream ingest: Render pushes directly here (no puller in the path).
-// The connector registers these URLs as the workspace's Log Stream (HTTPS
-// JSON payloads, transformed below) and Metrics Stream (standard OTLP —
-// provider CUSTOM sends the token as a bearer header). Authenticated by the
-// installation's ingest key like every other ingest route.
-app.post("/render/stream/logs", (c) =>
-  forward(c, "/v1/logs", "resourceLogs", {
-    source: "render",
-    bodyTransform: (body, contentType) => ({
-      body: Buffer.from(
-        JSON.stringify(renderStreamLogsToOtlp(parseRenderLogStreamBody(body, contentType))),
-      ),
-      contentType: "application/json",
-    }),
-  }),
-);
+// Render metrics-stream ingest: Render pushes OTLP directly here (no puller
+// in the path) — the connector registers this URL as the workspace's Metrics
+// Stream destination with the installation's ingest key as the bearer token.
+// (Logs are different: Render's log streams push syslog to a TCP sink, not
+// HTTP — see the render syslog server at the bottom of this file.)
 // Metrics arrive as standard OTLP/HTTP (JSON or protobuf, possibly gzipped)
 // produced by Render itself, so telemetry.source has to be stamped here —
 // decode, stamp, re-emit as JSON for the collector.
@@ -947,6 +936,86 @@ if ("keepAliveTimeout" in server) {
 if (ingestQueue && ingestQueueConfig?.consumerEnabled) {
   ingestQueue.startConsumer(COLLECTOR_URL);
 }
+
+// Render log-stream sink: plaintext RFC 5424/6587 TCP behind a TLS-terminating
+// NLB (Render's log streams push syslog, not HTTP). Enabled by setting
+// RENDER_SYSLOG_PORT. Frames authenticate via the ingest key the connector
+// registered as the stream's token; delivery rides the same gates + queue as
+// the HTTP ingest edge.
+const RENDER_SYSLOG_PORT = Number(process.env.RENDER_SYSLOG_PORT ?? 0);
+const renderSyslogServer = RENDER_SYSLOG_PORT
+  ? createRenderSyslogServer({
+      authenticate: async (key) => {
+        const row = await db.query.apiKeys.findFirst({
+          where: eq(schema.apiKeys.keyHash, hashApiKey(key)),
+        });
+        if (!row || row.revokedAt) return null;
+        const isFirstUse = row.lastUsedAt === null;
+        void db
+          .update(schema.apiKeys)
+          .set({ lastUsedAt: new Date() })
+          .where(eq(schema.apiKeys.id, row.id))
+          .then(() => {
+            if (isFirstUse) return syncLoopsContactsForProject({ projectId: row.projectId });
+          })
+          .catch((err: unknown) => {
+            logger.error({ err }, "failed to update last_used_at or sync loops contact");
+          });
+        return row.projectId;
+      },
+      deliver: async (projectId, records) => {
+        // Per-project source toggle and quota gate mirror the HTTP edge;
+        // dropping here is an ack-drop (the sender gets no signal either way).
+        if (!ingestSourceFilter.allows(projectId, "render", "logs")) return;
+        if (ingestGate && !ingestGate.allows(projectId, "logs")) return;
+        // Counted under the canonical logs path — recordIngestRequest only
+        // tracks the known signal paths, so a bespoke path would silently
+        // skip the tenant counter.
+        void recordIngestRequest("/v1/logs", projectId).catch((err: unknown) => {
+          logger.warn({ err, projectId }, "tenant counter increment failed");
+        });
+        const body = Buffer.from(JSON.stringify(renderSyslogToOtlp(records)));
+        if (ingestQueue) {
+          await ingestQueue.enqueueStream({
+            path: "/v1/logs",
+            projectId,
+            contentType: "application/json",
+            body: Readable.from([body]),
+          });
+        } else {
+          // Direct mode has no consumer to stamp issue fingerprints, so stamp
+          // here — same as the HTTP edge's direct branch.
+          const stampedBody = stampIssueFingerprintsFailOpen(
+            {
+              path: "/v1/logs",
+              contentType: "application/json",
+              contentEncoding: undefined,
+              body,
+              projectId,
+            },
+            logger,
+          );
+          const res = await fetch(`${COLLECTOR_URL}/v1/logs`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-superlog-project-id": projectId,
+            },
+            body: stampedBody,
+          });
+          if (res.status >= 400) {
+            throw new Error(`collector returned ${res.status} for render syslog batch`);
+          }
+        }
+      },
+      log: logger,
+    })
+  : null;
+if (renderSyslogServer) {
+  renderSyslogServer.listen(RENDER_SYSLOG_PORT, () => {
+    logger.info({ port: RENDER_SYSLOG_PORT }, "render syslog sink listening");
+  });
+}
 logger.info(
   {
     port: PORT,
@@ -977,6 +1046,9 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
         resolve();
       }
     });
+    if (renderSyslogServer) {
+      await new Promise<void>((resolve) => renderSyslogServer.close(() => resolve()));
+    }
     // stop() also flushes any sends still waiting on the batching linger, so a
     // producer-only proxy (consumer disabled) must call it too.
     if (ingestQueue) {
