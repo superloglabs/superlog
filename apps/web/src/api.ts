@@ -1365,6 +1365,43 @@ export function useUninstallLinear() {
   });
 }
 
+export type NotionInstallation =
+  | { installed: false }
+  | {
+      installed: true;
+      workspaceId: string;
+      workspaceName: string | null;
+      workspaceIcon: string | null;
+      actorEmail: string | null;
+      needsReauth: boolean;
+      reauthReason: string | null;
+      reauthRequiredAt: string | null;
+    };
+
+export function useNotionInstallation() {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["notion-installation"],
+    queryFn: () => fetcher<NotionInstallation>("/api/notion/installation"),
+  });
+}
+
+export function useStartNotionInstall() {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: () => fetcher<{ url: string }>("/api/notion/install-url", { method: "POST" }),
+  });
+}
+
+export function useUninstallNotion() {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => fetcher<{ ok: true }>("/api/notion/uninstall", { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["notion-installation"] }),
+  });
+}
+
 export type OrgProject = { id: string; name: string; slug: string; projectContext: string };
 
 export function useOrgProjects() {

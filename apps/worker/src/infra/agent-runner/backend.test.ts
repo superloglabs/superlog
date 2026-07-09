@@ -86,7 +86,7 @@ test("getAgentRunnerBackend returns a built-in disabled backend for community in
   assert.equal(backend.name, "disabled");
   assert.equal(backend.maxRepoResources, 0);
   assert.equal(
-    await backend.dispatchIntegrationToolCalls({ sessionId: "s", orgId: "o", incidentId: "i" }),
+    await backend.dispatchIntegrationToolCalls({ sessionId: "s", orgId: "o", projectId: "p", incidentId: "i" }),
     0,
   );
   await assert.rejects(
@@ -127,7 +127,7 @@ test("getAgentRunnerBackend loads the closed-overlay anthropic backend from conf
     sessionId: "s",
   });
   assert.equal(
-    await backend.dispatchIntegrationToolCalls({ sessionId: "s", orgId: "o", incidentId: "i" }),
+    await backend.dispatchIntegrationToolCalls({ sessionId: "s", orgId: "o", projectId: "p", incidentId: "i" }),
     2,
   );
 });

@@ -1683,6 +1683,39 @@ export const linearInstallations = pgTable(
   }),
 );
 
+export const notionInstallations = pgTable(
+  "notion_installations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    // Notion returns a bot-scoped access token per workspace grant. Tokens do
+    // not expire and the classic OAuth flow issues no refresh token, so there's
+    // no expiry/refresh bookkeeping here — a revoked grant surfaces as a 401 on
+    // use, which flips reauth_required_at.
+    botId: text("bot_id").notNull(),
+    workspaceId: text("workspace_id").notNull(),
+    workspaceName: text("workspace_name"),
+    workspaceIcon: text("workspace_icon"),
+    accessToken: text("access_token").notNull(),
+    actorUserId: uuid("actor_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    actorEmail: text("actor_email"),
+    reauthRequiredAt: timestamp("reauth_required_at", { withTimezone: true }),
+    reauthReason: text("reauth_reason"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    activeUniq: uniqueIndex("notion_installations_project_active_idx")
+      .on(t.projectId)
+      .where(sql`revoked_at IS NULL`),
+  }),
+);
+
 export const orgAgentSettings = pgTable(
   "org_agent_settings",
   {
@@ -2596,6 +2629,7 @@ export type DashboardWidget = typeof dashboardWidgets.$inferSelect;
 export type GithubInstallation = typeof githubInstallations.$inferSelect;
 export type ProjectGithubRepo = typeof projectGithubRepos.$inferSelect;
 export type LinearInstallation = typeof linearInstallations.$inferSelect;
+export type NotionInstallation = typeof notionInstallations.$inferSelect;
 export type OrgAgentSettings = typeof orgAgentSettings.$inferSelect;
 export type AgentMemory = typeof agentMemories.$inferSelect;
 export type NewAgentMemory = typeof agentMemories.$inferInsert;

@@ -44,6 +44,7 @@ import {
   useKeys,
   useLinearInstallation,
   useMcpTokens,
+  useNotionInstallation,
   useMe,
   useMintOrgApiKey,
   useMintOrgGithubInstallUrl,
@@ -82,6 +83,7 @@ import {
   useStartGithubAuthorLogin,
   useStartGithubInstall,
   useStartLinearInstall,
+  useStartNotionInstall,
   useStartRailwayInstall,
   useStartSlackInstall,
   useStartVercelInstall,
@@ -89,6 +91,7 @@ import {
   useTestWebhook,
   useUninstallCloudflare,
   useUninstallLinear,
+  useUninstallNotion,
   useUninstallRailway,
   useUninstallRender,
   useUninstallSlack,
@@ -139,19 +142,21 @@ type NavTarget = {
 export function Settings() {
   const [params, setParams] = useSearchParams();
   const linearStatus = params.get("linear");
+  const notionStatus = params.get("notion");
   const githubStatus = params.get("github");
   const githubAuthorStatus = params.get("github_author");
 
   useEffect(() => {
-    if (!linearStatus && !githubStatus && !githubAuthorStatus) return;
+    if (!linearStatus && !notionStatus && !githubStatus && !githubAuthorStatus) return;
     const t = setTimeout(() => {
       params.delete("linear");
+      params.delete("notion");
       params.delete("github");
       params.delete("github_author");
       setParams(params, { replace: true });
     }, 4000);
     return () => clearTimeout(t);
-  }, [linearStatus, githubStatus, githubAuthorStatus, params, setParams]);
+  }, [linearStatus, notionStatus, githubStatus, githubAuthorStatus, params, setParams]);
 
   const me = useMe();
   const projectsQ = useOrgProjects();
@@ -192,9 +197,10 @@ export function Settings() {
 
   return (
     <div className="space-y-6">
-      {(linearStatus || githubStatus || githubAuthorStatus) && (
+      {(linearStatus || notionStatus || githubStatus || githubAuthorStatus) && (
         <header className="space-y-2">
           {linearStatus && <LinearStatusBanner status={linearStatus} />}
+          {notionStatus && <NotionStatusBanner status={notionStatus} />}
           {githubStatus && <GithubStatusBanner status={githubStatus} />}
           {githubAuthorStatus && <GithubAuthorStatusBanner status={githubAuthorStatus} />}
         </header>
@@ -630,6 +636,7 @@ function ProjectSectionView({
             <GithubCard />
             <SlackCard />
             <LinearCard />
+            <NotionCard />
             <CloudflareCard projectId={projectId} />
             <VercelCard projectId={projectId} />
             <RailwayCard projectId={projectId} />
@@ -906,6 +913,23 @@ function LinearStatusBanner({ status }: { status: string }) {
       : status === "denied"
         ? "Linear authorization was denied."
         : "Linear connection failed. Try again.";
+  return (
+    <div className="pt-1">
+      <Chip tone={tone} dot>
+        {text}
+      </Chip>
+    </div>
+  );
+}
+
+function NotionStatusBanner({ status }: { status: string }) {
+  const tone = status === "installed" ? "success" : status === "denied" ? "warning" : "danger";
+  const text =
+    status === "installed"
+      ? "Notion connected."
+      : status === "denied"
+        ? "Notion authorization was denied."
+        : "Notion connection failed. Try again.";
   return (
     <div className="pt-1">
       <Chip tone={tone} dot>
@@ -1810,6 +1834,64 @@ function LinearCard() {
             }}
           >
             {needsReauth ? "Reconnect Linear" : installed ? "Reconnect" : "Connect Linear"}
+          </Btn>
+          {installed && (
+            <Btn
+              size="sm"
+              variant="danger"
+              loading={uninstall.isPending}
+              onClick={() => uninstall.mutate()}
+            >
+              Disconnect
+            </Btn>
+          )}
+        </div>
+      </div>
+    </Tile>
+  );
+}
+
+function NotionCard() {
+  const install = useNotionInstallation();
+  const start = useStartNotionInstall();
+  const uninstall = useUninstallNotion();
+
+  const notionInstall = install.data?.installed === true ? install.data : null;
+  const installed = notionInstall !== null;
+  const needsReauth = notionInstall?.needsReauth === true;
+
+  return (
+    <Tile label="Notion">
+      <div className="space-y-3">
+        <p className="text-[13px] text-muted">
+          Lets the agent read pages and databases from your Notion workspace while it investigates —
+          runbooks, architecture notes, and on-call docs. Only pages you share with the Superlog
+          integration are visible.
+        </p>
+        <div>
+          {notionInstall ? (
+            <Chip tone={needsReauth ? "warning" : "success"} dot>
+              {needsReauth
+                ? `${notionInstall.workspaceName ?? "Workspace"} needs reconnect`
+                : (notionInstall.workspaceName ?? "Workspace")}
+            </Chip>
+          ) : (
+            <Chip tone="muted" dot>
+              Not connected
+            </Chip>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Btn
+            size="sm"
+            variant={installed ? "secondary" : "primary"}
+            loading={start.isPending}
+            onClick={async () => {
+              const { url } = await start.mutateAsync();
+              window.location.href = url;
+            }}
+          >
+            {needsReauth ? "Reconnect Notion" : installed ? "Reconnect" : "Connect Notion"}
           </Btn>
           {installed && (
             <Btn
