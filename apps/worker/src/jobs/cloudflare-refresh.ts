@@ -12,6 +12,7 @@ import { cloudflareClientFromEnv } from "@superlog/cloudflare";
 import { decryptIntegrationSecret, encryptIntegrationSecret, schema } from "@superlog/db";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import {
+  type CloudflareInstallationTokens,
   type CloudflareRefreshInstallation,
   type CloudflareRefresherStore,
   runCloudflareRefreshOnce,
@@ -57,20 +58,32 @@ function createStore(db: JobDeps["db"]): CloudflareRefresherStore {
             tokenExpiresAt: true,
           },
         });
-        const current =
-          cur == null
-            ? null
-            : {
-                refreshToken:
-                  cur.refreshTokenCiphertext && cur.refreshTokenNonce
-                    ? decryptIntegrationSecret({
-                        ciphertext: cur.refreshTokenCiphertext,
-                        nonce: cur.refreshTokenNonce,
-                        keyVersion: cur.refreshTokenKeyVersion ?? 1,
-                      })
-                    : null,
-                tokenExpiresAt: cur.tokenExpiresAt,
-              };
+        let current: CloudflareInstallationTokens | null = null;
+        if (cur != null) {
+          let refreshToken: string | null = null;
+          if (cur.refreshTokenCiphertext && cur.refreshTokenNonce) {
+            try {
+              refreshToken = decryptIntegrationSecret({
+                ciphertext: cur.refreshTokenCiphertext,
+                nonce: cur.refreshTokenNonce,
+                keyVersion: cur.refreshTokenKeyVersion ?? 1,
+              });
+            } catch (err) {
+              // A row whose refresh token can't be decrypted (corrupted
+              // ciphertext / stale key version) must skip like a no-token
+              // install — nothing was rotated, so don't abort the whole pass.
+              log.error(
+                {
+                  installation_id: installationId,
+                  err: err instanceof Error ? err.message : String(err),
+                },
+                "cloudflare refresh token decrypt failed; skipping install",
+              );
+              refreshToken = null;
+            }
+          }
+          current = { refreshToken, tokenExpiresAt: cur.tokenExpiresAt };
+        }
 
         const save = async (tokens: {
           accessToken: string;

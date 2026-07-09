@@ -125,12 +125,13 @@ export async function runCloudflareRefreshOnce(
         refreshOne(inst, current, save),
       );
     } catch (err) {
-      // Only a persist/DB/lock failure reaches here (a failed token request is
-      // handled inside and returned as "rejected"). A successful refresh has
-      // already rotated the token on Cloudflare's side, so a save failure means
-      // the replacement is lost — and it's a DB problem that would hit every
-      // remaining install too. Abort the pass rather than rotate-and-lose across
-      // all of them; pg-boss retries the job.
+      // Only a persist/lock/transaction failure reaches here — a failed token
+      // request is handled inside and returned as "rejected", and a per-install
+      // decrypt failure is handled in the store as a skip. A successful refresh
+      // has already rotated the token on Cloudflare's side, so a save failure
+      // means the replacement is lost; and it's a DB problem that would hit
+      // every remaining install too. Abort the pass rather than rotate-and-lose
+      // across all of them; pg-boss retries the job.
       stats.errors += 1;
       deps.log.error(
         {
@@ -138,7 +139,7 @@ export async function runCloudflareRefreshOnce(
           account_id: inst.accountId,
           err: err instanceof Error ? err.message : String(err),
         },
-        "cloudflare token save failed after refresh; aborting pass to avoid discarding rotated tokens across installs",
+        "cloudflare token persistence failed; aborting pass to avoid discarding rotated tokens across installs",
       );
       throw err;
     }
