@@ -195,3 +195,58 @@ test("chat anchors: DMs have no thread anchor (one conversation per channel)", a
     null,
   );
 });
+
+// The bot posts to public channels via chat:write.public WITHOUT joining them,
+// but Slack's Events API only delivers message events for channels the bot is
+// a member of — so thread replies in a never-joined channel vanish silently.
+// joinSlackChannel is the repair: called on install, channel-route changes,
+// and re-auth so replies always reach us.
+test("joinSlackChannel joins the channel and reports success", async () => {
+  const { joinSlackChannel } = await import("./slack.js");
+  const calls: { url: string; body: Record<string, unknown> }[] = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    calls.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+    return { json: async () => ({ ok: true, channel: { id: "C123" } }) } as unknown as Response;
+  };
+
+  const result = await joinSlackChannel("xoxb-token", "C123", fetchImpl);
+
+  assert.deepEqual(result, { ok: true });
+  assert.equal(calls[0]?.url, "https://slack.com/api/conversations.join");
+  assert.deepEqual(calls[0]?.body, { channel: "C123" });
+});
+
+test("joinSlackChannel treats already_in_channel as success", async () => {
+  const { joinSlackChannel } = await import("./slack.js");
+  const fetchImpl: typeof fetch = async () =>
+    ({
+      json: async () => ({ ok: true, warning: "already_in_channel", channel: { id: "C123" } }),
+    }) as unknown as Response;
+
+  assert.deepEqual(await joinSlackChannel("xoxb-token", "C123", fetchImpl), { ok: true });
+});
+
+// Legacy installations predate the channels:join scope; the caller uses this
+// error to fall back to an "invite the bot" hint instead of failing the flow.
+test("joinSlackChannel surfaces the Slack error (missing_scope, private channels)", async () => {
+  const { joinSlackChannel } = await import("./slack.js");
+  const fetchImpl: typeof fetch = async () =>
+    ({ json: async () => ({ ok: false, error: "missing_scope" }) }) as unknown as Response;
+
+  assert.deepEqual(await joinSlackChannel("xoxb-token", "C123", fetchImpl), {
+    ok: false,
+    error: "missing_scope",
+  });
+});
+
+test("joinSlackChannel never throws on network failure", async () => {
+  const { joinSlackChannel } = await import("./slack.js");
+  const fetchImpl: typeof fetch = async () => {
+    throw new Error("boom");
+  };
+
+  assert.deepEqual(await joinSlackChannel("xoxb-token", "C123", fetchImpl), {
+    ok: false,
+    error: "network_error",
+  });
+});

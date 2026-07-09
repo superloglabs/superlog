@@ -2,7 +2,14 @@ import { db, environmentFromResourceAttrs, schema } from "@superlog/db";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { logger } from "../../logger.js";
 import { isStaleSlackAnchorError } from "../../slack-pinning.js";
-import { type SlackTarget, postSlackMessage, updateSlackMessage } from "./api.js";
+import {
+  type SlackJoinResult,
+  type SlackTarget,
+  fetchChannelMembership,
+  joinSlackChannel,
+  postSlackMessage,
+  updateSlackMessage,
+} from "./api.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 
@@ -222,16 +229,59 @@ export async function updateIncidentMainMessage(
   }
 }
 
+// Thread replies to the agent only arrive from channels the bot is a member
+// of; posting alone works unjoined (chat:write.public). When the bot can't
+// self-join AND is provably not a member, the root notification carries an
+// invite hint — otherwise users reply into the void with no error anywhere.
+// Membership `null` means Slack didn't say; stay silent rather than nag on a
+// flaky lookup.
+export function needsInviteHint(join: SlackJoinResult, isMember: boolean | null): boolean {
+  return !join.ok && isMember === false;
+}
+
+export function inviteHintBlock(): unknown {
+  return {
+    type: "context",
+    elements: [
+      {
+        type: "mrkdwn",
+        text: "⚠️ The Superlog bot isn't a member of this channel, so thread replies won't reach the agent. `/invite` the bot here (or reconnect Slack in project settings) to enable replies.",
+      },
+    ],
+  };
+}
+
+// Join the channel (idempotent) so replies in the new thread reach the Events
+// API; when joining is impossible, return the invite hint to append to the
+// root blocks. One extra Slack call per NEW incident root — thread replies and
+// updates skip this entirely.
+async function ensureJoinedOrHint(target: SlackTarget): Promise<unknown[]> {
+  const join = await joinSlackChannel(target);
+  if (join.ok) return [];
+  const isMember = await fetchChannelMembership(target);
+  logger.info(
+    {
+      scope: "slack",
+      channel: target.channelId,
+      join_error: join.error,
+      is_member: isMember,
+    },
+    "slack channel self-join failed before incident root post",
+  );
+  return needsInviteHint(join, isMember) ? [inviteHintBlock()] : [];
+}
+
 async function postAndRememberIncidentRoot(opts: {
   incidentId: string;
   target: SlackTarget;
   text: string;
   blocks?: unknown[];
 }): Promise<string | null> {
+  const hintBlocks = await ensureJoinedOrHint(opts.target);
   const data = await postSlackMessage({
     target: opts.target,
     text: opts.text,
-    blocks: opts.blocks,
+    blocks: opts.blocks ? [...opts.blocks, ...hintBlocks] : undefined,
   });
   if (!data?.ok || !data.ts) return null;
   await db
