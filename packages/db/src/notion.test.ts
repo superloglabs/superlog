@@ -40,6 +40,7 @@ test("exchangeNotionCode posts an authorization_code grant with Basic auth", asy
   assert.equal(init.method, "POST");
   const headers = init.headers as Record<string, string>;
   assert.equal(headers.authorization, `Basic ${Buffer.from("cid:csecret").toString("base64")}`);
+  assert.equal(headers["Notion-Version"], "2022-06-28");
   assert.deepEqual(JSON.parse(init.body as string), {
     grant_type: "authorization_code",
     code: "the_code",

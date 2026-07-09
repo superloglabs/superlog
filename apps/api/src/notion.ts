@@ -95,7 +95,7 @@ export function mountNotionPublic(app: Hono<any>): void {
 
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
 export function mountNotionAuthed(app: Hono<any>): void {
-  const { clientId, redirectUrl, stateSecret } = config();
+  const { clientId, clientSecret, redirectUrl, stateSecret } = config();
 
   app.get("/api/notion/installation", async (c) => {
     const ctx = await resolveUserOrg(c);
@@ -115,7 +115,10 @@ export function mountNotionAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/notion/install-url", async (c) => {
-    if (!clientId || !stateSecret) {
+    // clientSecret is required by the callback's token exchange, so gate the
+    // whole flow on it here rather than sending the user into an OAuth we can't
+    // complete.
+    if (!clientId || !clientSecret || !stateSecret) {
       return c.json({ error: "notion not configured" }, 503);
     }
     const ctx = await resolveUserOrg(c);
@@ -134,9 +137,8 @@ export function mountNotionAuthed(app: Hono<any>): void {
     const row = await findCurrentInstallation(ctx.projectId);
     if (!row) return c.json({ ok: true });
 
-    const { clientId: cid, clientSecret } = config();
-    if (cid && clientSecret) {
-      await revokeNotionToken({ clientId: cid, clientSecret, token: row.accessToken });
+    if (clientId && clientSecret) {
+      await revokeNotionToken({ clientId, clientSecret, token: row.accessToken });
     }
     await db
       .update(schema.notionInstallations)

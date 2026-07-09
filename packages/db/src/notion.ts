@@ -3,6 +3,9 @@
 // Notion tools read through that token via the integration dispatch machinery.
 const TOKEN_URL = "https://api.notion.com/v1/oauth/token";
 const REVOKE_URL = "https://api.notion.com/v1/oauth/revoke";
+// Notion rejects /v1/* requests without a version header; send it on the OAuth
+// calls too, matching the agent-facing operations' default headers.
+const NOTION_VERSION = "2022-06-28";
 
 export type NotionOwnerUser = {
   object?: string;
@@ -39,6 +42,7 @@ export async function exchangeNotionCode(args: {
     headers: {
       "content-type": "application/json",
       accept: "application/json",
+      "Notion-Version": NOTION_VERSION,
       authorization: basicAuthHeader(args.clientId, args.clientSecret),
     },
     body: JSON.stringify({
@@ -64,6 +68,7 @@ export async function revokeNotionToken(args: {
     method: "POST",
     headers: {
       "content-type": "application/json",
+      "Notion-Version": NOTION_VERSION,
       authorization: basicAuthHeader(args.clientId, args.clientSecret),
     },
     body: JSON.stringify({ token: args.token }),
