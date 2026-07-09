@@ -65,6 +65,7 @@ function baseInput(): IncidentListItemInput {
       slackChannelId: null,
       slackThreadTs: null,
       autoInvestigateSuppressedUntil: null,
+      autoInvestigateBlockedReason: null,
       autorecoveryLastEvaluatedAt: null,
       agentSummary: null,
       rootCauseText: null,

@@ -117,6 +117,12 @@ export type AgentRunMobileRegressionTest =
     };
 
 export type IncidentSeverity = "SEV-1" | "SEV-2" | "SEV-3";
+
+// Why auto-investigation was skipped for this incident, when the reason is worth
+// surfacing to the user. Currently only `no_credits`: the org is over its plan's
+// monthly investigation limit and billing enforcement is on. Extend this union
+// (don't repurpose it) if other user-actionable skip reasons need surfacing.
+export type IncidentAutoInvestigateBlockedReason = "no_credits";
 // "autoresolved_noise" is legacy: noise verdicts now silence the linked issues
 // and resolve the incident plainly. Rows written by pre-cutover workers are
 // migrated to "resolved"; readers must still treat any straggler as closed.
@@ -653,6 +659,13 @@ export const incidents = pgTable(
     autoInvestigateSuppressedUntil: timestamp("auto_investigate_suppressed_until", {
       withTimezone: true,
     }),
+    // Why the most recent issue transition did NOT queue an auto-investigation,
+    // when it was skipped for a reason worth showing the user. Currently only
+    // 'no_credits' — the org is over its plan's monthly investigation limit and
+    // billing enforcement is on (see apps/worker billing/investigation-gate).
+    // NULL when an investigation was queued or was never blocked; cleared back
+    // to NULL once a run is successfully queued.
+    autoInvestigateBlockedReason: text("auto_investigate_blocked_reason").$type<IncidentAutoInvestigateBlockedReason>(),
     // Last time the autorecovery sweep evaluated this incident (regardless of
     // outcome — proposed, still-happening, below-confidence, or skipped). The
     // sweep orders candidates by this column (NULLS FIRST) so it drains the

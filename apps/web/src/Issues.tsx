@@ -50,7 +50,7 @@ import {
   useUnsilenceIssue,
   useUpdateIncident,
 } from "./api.ts";
-import { Btn, Chip, Tabs } from "./design/ui.tsx";
+import { Btn, Chip, OutOfCreditsBadge, OutOfCreditsBanner, Tabs } from "./design/ui.tsx";
 import { type IncidentStatusAction, getIncidentStatusActions } from "./incident-status-action.ts";
 import {
   IncidentActivityFeed,
@@ -879,7 +879,8 @@ export function IncidentRow({
   selected: boolean;
   onClick: () => void;
 }) {
-  const { incident, pendingResolutionProposal } = row;
+  const { incident, agentRun, pendingResolutionProposal } = row;
+  const outOfCredits = !agentRun && incident.autoInvestigateBlockedReason === "no_credits";
   const [rowRef, nearViewport] = useNearViewport<HTMLButtonElement>();
   const hasInlineActivity = row.buckets !== undefined;
   const stats = useIncidentStats(incident.projectId, incident.id, {
@@ -913,6 +914,7 @@ export function IncidentRow({
             {incident.severity && <SeverityChip severity={incident.severity} />}
             <ServiceEnv service={incident.service} environment={incident.environment} />
             {pendingResolutionProposal && <RecoveryDetectedBadge />}
+            {outOfCredits && <OutOfCreditsBadge />}
           </div>
           <p className="truncate text-[13px] font-medium text-fg">{incident.title}</p>
           {incident.codename && (
@@ -1413,6 +1415,10 @@ export function IncidentDetailContent({
   summaryTelemetry?: ReactNode;
 }) {
   const [detailTab, setDetailTab] = useState<IncidentDetailTab>("activity");
+  // A run paused on `ask_human` stores its question on the run result, not as an
+  // incident event — surface it as the closing node of the Activity timeline.
+  const awaitingQuestion =
+    agentRun?.state === "awaiting_human" ? (agentRun.result?.question ?? null) : null;
   const statusActions = getIncidentStatusActions(incident.status);
   const problemResolvedAction =
     statusActions.find((action) => action.label === "Problem resolved") ?? null;
@@ -1425,6 +1431,7 @@ export function IncidentDetailContent({
     agentRunState: agentRun?.state ?? null,
     pendingRecovery: !!pendingResolutionProposal,
   });
+  const outOfCredits = !agentRun && incident.autoInvestigateBlockedReason === "no_credits";
   const sidebarSummary =
     incident.agentSummary ??
     agentRun?.result?.summary ??
@@ -1523,16 +1530,32 @@ export function IncidentDetailContent({
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 lg:px-8">
             {detailTab === "activity" && (
               <div className="space-y-8">
+                {outOfCredits && <OutOfCreditsBanner />}
                 <div className="space-y-3">
                   {eventsLoading && <p className="text-[12px] text-muted">loading…</p>}
                   {eventsError && (
                     <p className="text-[12px] text-danger">failed: {String(eventsError)}</p>
                   )}
-                  {!eventsLoading && !eventsError && events.length === 0 && (
+                  {!eventsLoading &&
+                    !eventsError &&
+                    events.length === 0 &&
+                    !outOfCredits &&
+                    !awaitingQuestion && (
                     <p className="text-[12px] text-muted">No activity yet.</p>
                   )}
                   <IncidentActivityFeed
                     events={events}
+                    awaiting={
+                      awaitingQuestion
+                        ? {
+                            question: awaitingQuestion,
+                            ctx: {
+                              repoUrl: agentRun?.selectedRepoUrl ?? null,
+                              baseBranch: agentRun?.selectedBaseBranch ?? null,
+                            },
+                          }
+                        : null
+                    }
                     renderIssueCard={(issueId) => {
                       const issue = issues.find((i) => i.id === issueId);
                       if (!issue) return null;
@@ -1564,6 +1587,8 @@ export function IncidentDetailContent({
                     deciding={!!decidingProposal}
                   />
                 )}
+
+                {outOfCredits && <OutOfCreditsBanner />}
 
                 <AgentRunView
                   incident={incident}
@@ -1608,7 +1633,9 @@ function IncidentSidebarMetaRows({ rows }: { rows: IncidentMetaRow[] }) {
           className="grid grid-cols-[132px_minmax(0,1fr)] items-start gap-3 text-[13px]"
         >
           <div className="text-muted">{row.label}</div>
-          <div className="flex min-w-0 items-center gap-2 text-fg">
+          <div
+            className={`flex min-w-0 items-center gap-2 ${row.tone === "danger" ? "text-danger" : "text-fg"}`}
+          >
             <IncidentMetaIcon row={row} />
             <span className="min-w-0 break-words">{row.value}</span>
           </div>
@@ -1706,7 +1733,7 @@ function IncidentMetaIcon({ row }: { row: IncidentMetaRow }) {
   if (row.kind === "status") return <StatusDot />;
   if (row.kind === "environment") return <EnvironmentDot />;
   if (row.kind === "findings") return <FindingsDot />;
-  if (row.kind === "agent") return <AgentDot />;
+  if (row.kind === "agent") return <AgentDot tone={row.tone} />;
   return null;
 }
 
@@ -1732,8 +1759,13 @@ function FindingsDot() {
   return <span className="h-2 w-2 shrink-0 rounded-full bg-warning" aria-hidden />;
 }
 
-function AgentDot() {
-  return <span className="h-2 w-2 shrink-0 rounded-full bg-accent" aria-hidden />;
+function AgentDot({ tone }: { tone?: "danger" }) {
+  return (
+    <span
+      className={`h-2 w-2 shrink-0 rounded-full ${tone === "danger" ? "bg-danger" : "bg-accent"}`}
+      aria-hidden
+    />
+  );
 }
 
 type IncidentDetailTab = "activity" | "findings" | "pr";
@@ -1992,8 +2024,11 @@ export function AgentRunView({
       )}
       {result?.question && (
         <div className="space-y-2">
-          <SectionHeading>Question</SectionHeading>
-          <p className="text-[12.5px] leading-relaxed text-fg">{result.question}</p>
+          <div className="flex items-center gap-2">
+            <SectionHeading>Question</SectionHeading>
+            <Chip tone="warning">Awaiting you</Chip>
+          </div>
+          <EvidenceMarkdown text={result.question} ctx={linkCtx} />
         </div>
       )}
       <div className="space-y-3">

@@ -88,6 +88,7 @@ function baseIncident(): Incident {
     slackChannelId: null,
     slackThreadTs: null,
     autoInvestigateSuppressedUntil: null,
+    autoInvestigateBlockedReason: null,
     autorecoveryLastEvaluatedAt: null,
     agentSummary: null,
     rootCauseText: null,

@@ -1,6 +1,15 @@
 import { type ReactNode, useState } from "react";
 import { Dropdown, type DropdownOption } from "./Dropdown.tsx";
-import { Btn, Tabs, ThemeToggle, Tile, Wordmark } from "./ui.tsx";
+import {
+  Btn,
+  Chip,
+  OutOfCreditsBadge,
+  OutOfCreditsBanner,
+  Tabs,
+  ThemeToggle,
+  Tile,
+  Wordmark,
+} from "./ui.tsx";
 
 // ---------------------------------------------------------------------------
 // Design Language — /design
@@ -21,6 +30,8 @@ const SECTIONS = [
   { id: "buttons", label: "Buttons" },
   { id: "dropdowns", label: "Dropdowns" },
   { id: "tabs", label: "Tabs" },
+  { id: "chips", label: "Chips" },
+  { id: "callouts", label: "Callouts" },
 ];
 
 export function DesignLanguage() {
@@ -54,6 +65,22 @@ export function DesignLanguage() {
 
         <Section id="tabs" title="Tabs" subtitle="Segmented view switch.">
           <TabsBento />
+        </Section>
+
+        <Section
+          id="chips"
+          title="Chips"
+          subtitle="Fully-rounded sans pills; six tones, or a bare dot + label for status."
+        >
+          <ChipsBento />
+        </Section>
+
+        <Section
+          id="callouts"
+          title="Callouts"
+          subtitle="Out-of-credits status chip & banner."
+        >
+          <CalloutsBento />
         </Section>
 
         <Footer />
@@ -500,6 +527,63 @@ function TabsBento() {
           />
           <span className="text-[13px] text-muted">Controls the switch on the left.</span>
         </div>
+      </Tile>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 06 — Chips
+// ---------------------------------------------------------------------------
+
+function ChipsBento() {
+  return (
+    <div className="grid grid-cols-12 gap-3">
+      <Tile className="col-span-12 md:col-span-7">
+        <PanelLabel>Tones</PanelLabel>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <Chip tone="neutral">neutral</Chip>
+          <Chip tone="accent">accent</Chip>
+          <Chip tone="success">success</Chip>
+          <Chip tone="warning">warning</Chip>
+          <Chip tone="danger">danger</Chip>
+          <Chip tone="muted">muted</Chip>
+        </div>
+      </Tile>
+      <Tile className="col-span-12 md:col-span-5">
+        <PanelLabel>With status dot</PanelLabel>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <Chip tone="danger" dot>
+            open
+          </Chip>
+          <Chip tone="success" dot>
+            resolved
+          </Chip>
+          <Chip tone="accent" dot>
+            active
+          </Chip>
+        </div>
+      </Tile>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 07 — Callouts
+// ---------------------------------------------------------------------------
+
+function CalloutsBento() {
+  return (
+    <div className="grid grid-cols-12 gap-3">
+      <Tile className="col-span-12 md:col-span-4">
+        <PanelLabel>Status chip</PanelLabel>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <OutOfCreditsBadge />
+        </div>
+      </Tile>
+      <Tile className="col-span-12 md:col-span-8">
+        <PanelLabel>Banner</PanelLabel>
+        <OutOfCreditsBanner />
       </Tile>
     </div>
   );

@@ -10,6 +10,7 @@
 // filters the MCP tools accept, so a live re-run would be lossy).
 
 import type { LogRow, MetricSeriesRow } from "../api.ts";
+import { parseAbsoluteRange } from "../design/range-url.ts";
 
 export type TelemetryKind = "metrics" | "logs" | "traces";
 
@@ -113,6 +114,63 @@ export function toTraceRows(rows: Record<string, unknown>[]): TraceTableRow[] {
     duration_ms: numField(r, "duration_ms") ?? 0,
     trace_id: strField(r, "trace_id"),
   }));
+}
+
+/** Build a deep link into the Explore page that pre-fills the filters from a
+ *  recorded agent query, so the widget's "Open in Explore" lands on the same
+ *  view the agent saw instead of the bare /explore page.
+ *
+ *  Explore addresses its filters through the URL (see `Explore.tsx`): `attr`
+ *  (repeatable `key=value` resource attributes, with the service modeled as the
+ *  `service.name` attribute), `sev` (logs), `status` (traces), and `metric`
+ *  (metrics). The MCP query tools also accept span_name / free-text search /
+ *  span_attrs / log_attrs, none of which Explore can express in its URL, so
+ *  those are dropped rather than mismapped. The time range is carried as
+ *  `since` / `until` when it's an absolute window; relative ClickHouse
+ *  expressions (`now() - …`) are dropped because Explore can't reconstruct
+ *  them from the URL. */
+export function exploreHref(kind: TelemetryKind, input: Record<string, unknown>): string {
+  const params = new URLSearchParams();
+
+  if (typeof input.service === "string" && input.service) {
+    params.append("attr", `service.name=${input.service}`);
+  }
+  const resourceAttrs = input.resource_attrs;
+  if (Array.isArray(resourceAttrs)) {
+    for (const a of resourceAttrs as { key?: unknown; value?: unknown }[]) {
+      if (a && typeof a.key === "string" && a.key) {
+        params.append("attr", `${a.key}=${typeof a.value === "string" ? a.value : ""}`);
+      }
+    }
+  }
+
+  if (kind === "logs" && typeof input.severity === "string" && input.severity) {
+    params.set("sev", input.severity);
+  }
+  if (kind === "traces" && typeof input.status_code === "string" && input.status_code) {
+    params.set("status", input.status_code);
+  }
+  if (kind === "metrics" && typeof input.metric_name === "string" && input.metric_name) {
+    params.set("metric", input.metric_name);
+  }
+
+  // Pin the exact window the agent queried, but only when it's an absolute
+  // range — the MCP tools also accept ClickHouse expressions (`now() - …`),
+  // which Explore can't reconstruct from the URL.
+  const range = input.range as { since?: unknown; until?: unknown } | undefined;
+  const absolute = range
+    ? parseAbsoluteRange(
+        typeof range.since === "string" ? range.since : null,
+        typeof range.until === "string" ? range.until : null,
+      )
+    : null;
+  if (absolute) {
+    params.set("since", absolute.since);
+    params.set("until", absolute.until);
+  }
+
+  const qs = params.toString();
+  return qs ? `/explore/${kind}?${qs}` : `/explore/${kind}`;
 }
 
 function isoToHm(s: string): string | null {

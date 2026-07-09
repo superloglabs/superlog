@@ -42,6 +42,7 @@ import {
   useSyncCloudConnection,
 } from "./api.ts";
 import { Dropdown } from "./design/Dropdown.tsx";
+import { CUSTOM_RANGE_LABEL, parseAbsoluteRange } from "./design/range-url.ts";
 import {
   RANGE_PRESETS,
   RangePicker,
@@ -234,7 +235,18 @@ function ExploreInner({ projectId }: { projectId: string }) {
   const [metricShowLegend, setMetricShowLegend] = useState(true);
   const [limit, setLimit] = useState(100);
 
-  const range = useMemo(() => rangeFromSeconds(selection.seconds, nowTick), [selection, nowTick]);
+  // A page can be deep-linked (e.g. from an incident's telemetry query) to a
+  // fixed absolute window via `?since=…&until=…`. When present and valid it
+  // pins the range instead of the live "last N" preset; picking any preset in
+  // the RangePicker clears these params and returns to a sliding window.
+  const absoluteRange = useMemo(
+    () => parseAbsoluteRange(searchParams.get("since"), searchParams.get("until")),
+    [searchParams],
+  );
+  const range = useMemo(
+    () => absoluteRange ?? rangeFromSeconds(selection.seconds, nowTick),
+    [absoluteRange, selection, nowTick],
+  );
 
   const filter: ExploreFilter = useMemo(
     () => ({
@@ -295,7 +307,7 @@ function ExploreInner({ projectId }: { projectId: string }) {
         {/* Resources are inventory, not time-ranged telemetry — no range picker. */}
         {source !== "resources" && (
           <RangePicker
-            value={selection}
+            value={absoluteRange ? { seconds: 0, label: CUSTOM_RANGE_LABEL } : selection}
             range={range}
             onChange={(next) => {
               const span = tracer.startSpan("explore.range_change", {
@@ -308,6 +320,15 @@ function ExploreInner({ projectId }: { projectId: string }) {
               try {
                 setSelection(next);
                 setNowTick(Date.now());
+                // Picking a live preset drops any pinned-window params so the
+                // range slides again — keyed on the raw params (not the parsed
+                // range) so a malformed `since`/`until` gets cleaned up too.
+                if (searchParams.has("since") || searchParams.has("until")) {
+                  updateParams((p) => {
+                    p.delete("since");
+                    p.delete("until");
+                  });
+                }
               } finally {
                 span.end();
               }

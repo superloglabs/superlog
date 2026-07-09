@@ -1,1 +1,0 @@
-CREATE UNIQUE INDEX "alert_episodes_issue_uniq" ON "alert_episodes" USING btree ("issue_id") WHERE issue_id IS NOT NULL;
