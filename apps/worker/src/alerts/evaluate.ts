@@ -144,15 +144,12 @@ async function openEpisodeAndNotify(
     evaluatedAt,
   });
   // Always notify, even when the upsert folded into an existing row: a retried
-  // tick whose previous attempt died before intake must not skip it. The
-  // advisory lock serializes racing duplicates on the same issue — intake's
-  // existing-link check is read-then-create, so without the lock two racers
-  // could each open an incident; with it, the second waits and re-lands on the
-  // first's link.
-  const incidentId = await deps.repo.withIssueIntakeLock(upsert.issue.id, async () => {
-    await deps.handleIssueTransition(upsert.issue, "new");
-    return deps.repo.findIncidentIdForIssue(upsert.issue.id);
-  });
+  // tick whose previous attempt died before intake must not skip it. Racing
+  // duplicates on the same issue are serialized inside incident intake (a
+  // per-issue advisory lock around the read-then-create section — see
+  // incident-intake.ts), so both racers land on one incident.
+  await deps.handleIssueTransition(upsert.issue, "new");
+  const incidentId = await deps.repo.findIncidentIdForIssue(upsert.issue.id);
   if (incidentId) {
     await deps.repo.setEpisodeIncident(episodeId, incidentId);
   }

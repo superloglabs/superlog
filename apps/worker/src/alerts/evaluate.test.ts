@@ -77,10 +77,6 @@ function makeRepoFake(opts: {
     async setEpisodeIncident(episodeId, incidentId) {
       opts.calls.push(`setEpisodeIncident:${episodeId}:${incidentId}`);
     },
-    async withIssueIntakeLock(issueId, fn) {
-      opts.calls.push(`withIssueIntakeLock:${issueId}`);
-      return fn();
-    },
     async recordFiring(record) {
       opts.calls.push(
         `recordFiring:${record.groupKey || "*"}:${record.state}:${record.issueId ?? "null"}`,
@@ -153,7 +149,6 @@ test("evaluateAlertWorkflow: first-time firing opens the episode first, then rai
     "logger.warn:alert firing",
     "openOrContinueEpisode:*",
     "upsertEpisodeIssue:ep-1",
-    "withIssueIntakeLock:issue-1",
     "handleIssueTransition:issue-1:new",
     "findIncidentIdForIssue:issue-1",
     "recordFiring:*:firing:issue-1",

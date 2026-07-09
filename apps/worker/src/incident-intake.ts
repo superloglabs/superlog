@@ -17,6 +17,7 @@ import {
   loadLinkedIncidentIssues,
   touchIncidentLastSeen,
   updateIssueGrouping,
+  withIssueIntakeLock,
 } from "./issues/repository.js";
 import { logger } from "./logger.js";
 
@@ -30,22 +31,34 @@ export async function ensureIncidentForIssue(
   issue: schema.Issue,
   transition: IssueIntakeTransition,
 ): Promise<EnsureIncidentForIssueResult> {
-  return ensureIncidentForIssueWorkflow(issue, transition, {
-    repo: {
-      findLatestIncidentIssueLink,
-      findIncident,
-      findAlertEpisodeForIssue,
-      findOpenIncidentForAlert,
-      findLatestIncidentForAlert,
-      findOpenIncidentCandidates,
-      loadLinkedIncidentIssues,
-      findProject,
-      linkIssueToIncident,
-      touchIncidentLastSeen,
-      updateIssueGrouping,
-    },
-    lifecycle: incidentLifecycle,
-    analyzeGrouping: analyzeIssueGrouping,
-    logger,
-  });
+  const run = () =>
+    ensureIncidentForIssueWorkflow(issue, transition, {
+      repo: {
+        findLatestIncidentIssueLink,
+        findIncident,
+        findAlertEpisodeForIssue,
+        findOpenIncidentForAlert,
+        findLatestIncidentForAlert,
+        findOpenIncidentCandidates,
+        loadLinkedIncidentIssues,
+        findProject,
+        linkIssueToIncident,
+        touchIncidentLastSeen,
+        updateIssueGrouping,
+      },
+      lifecycle: incidentLifecycle,
+      analyzeGrouping: analyzeIssueGrouping,
+      logger,
+    });
+  // Alert-episode issues are the one path where concurrent duplicates of the
+  // SAME issue can reach intake together (racing evaluations fold into one
+  // episode issue and both proceed): serialize just the read-then-create
+  // section so the second racer re-lands on the first's incident link.
+  // Notifications and agent queueing happen in the caller, after the lock is
+  // released. Error ingest doesn't need this — its transition classification
+  // already picks a single notifier per occurrence.
+  if (issue.kind === "alert") {
+    return withIssueIntakeLock(issue.id, run);
+  }
+  return run();
 }

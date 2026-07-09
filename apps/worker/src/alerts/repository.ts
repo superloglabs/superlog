@@ -222,19 +222,6 @@ export function createAlertRepository(db: DB) {
         .where(eq(schema.alertEpisodes.id, episodeId));
     },
 
-    // Serialize incident intake for one episode issue across concurrent worker
-    // tasks. Racing duplicates fold into the same episode + issue, but intake's
-    // existing-link check is read-then-create — unserialized racers could each
-    // open an incident for the same issue. The advisory xact lock (released at
-    // commit/rollback) makes the second racer wait until the first's intake has
-    // committed its incident link, so it re-lands on that link instead.
-    async withIssueIntakeLock<T>(issueId: string, fn: () => Promise<T>): Promise<T> {
-      return db.transaction(async (tx) => {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${issueId}, 0))`);
-        return fn();
-      });
-    },
-
     // Advance an open episode on a still-firing tick: update the latest value,
     // the most-severe value seen so far, and the last-firing timestamp — and
     // mirror the tick onto the episode's issue (the issue's last_seen /
