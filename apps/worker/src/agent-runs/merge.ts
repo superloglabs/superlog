@@ -344,9 +344,10 @@ async function applyMergeOutcome(opts: {
       tagline: evidence,
       projectName: ctx.project.name,
       service: ctx.incident.service,
-      buttons: [
-        { text: "View merge target", url: targetUrl, actionId: "view_merge_target" },
-        { text: "View this incident", url: sourceUrl, actionId: "view_incident" },
+      buttons: [],
+      links: [
+        { text: "View merge target", url: targetUrl },
+        { text: "View this incident", url: sourceUrl },
       ],
       incidentId: ctx.incident.id,
     }),

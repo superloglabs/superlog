@@ -329,14 +329,14 @@ export async function completeWithoutPullRequest(
       emoji: noiseReason && noiseApplied ? "no_bell" : "white_check_mark",
       status,
       title: ctx.incident.title,
+      titleUrl: incidentUrl,
       tagline: truncateSlackText(result.summary),
       projectName: ctx.project.name,
       service: ctx.incident.service,
-      buttons: [
-        { text: "View agent run", url: incidentUrl, actionId: "view_agent_run" },
-        ...(ticket?.url ? [{ text: "View ticket", url: ticket.url, actionId: "view_ticket" }] : []),
-      ],
+      buttons: [],
+      links: ticket?.url ? [{ text: "View ticket", url: ticket.url }] : [],
       incidentId: ctx.incident.id,
+      showFeedbackButtons: true,
     }),
   );
   await replyToPrOriginIfNeeded(ctx, result.summary);

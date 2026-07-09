@@ -18,7 +18,7 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { recordFeedback } from "./feedback.js";
+import { attachFeedbackDetail, recordFeedback } from "./feedback.js";
 import { resolveFeedbackIncidentId } from "./follow-up-offer.js";
 import { getDeviceFlow, getSkillDeviceForIntegration } from "./gateway.js";
 import { closeAgentPullRequestOnGithub } from "./github.js";
@@ -263,7 +263,10 @@ export function mountSlackPublic(app: Hono<any>): void {
 // Block_actions arrive when someone clicks a non-URL button in a message.
 // Recognized action_ids (all encoded by the worker's incidentBlocks builder
 // or the sweep proposal posting):
-//   - `give_feedback:<incident-uuid>` → opens a feedback modal
+//   - `rate_incident:<rating>:<incident-uuid>` → records a 👍/👎 rating, then
+//     opens an optional detail modal (feedback_detail:<feedback-uuid>)
+//   - `give_feedback:<incident-uuid>` → opens a feedback modal (legacy: still
+//     handled for threads posted before the 👍/👎 buttons replaced it)
 //   - `resolve_incident:<incident-uuid>` → "Problem resolved": incident
 //     resolved, issues resolved (recurrence opens a new chained incident)
 //   - `not_an_issue:<incident-uuid>` → incident resolved, issues silenced
@@ -288,6 +291,12 @@ async function handleSlackBlockActions(payload: SlackInteractivityPayload): Prom
   if (actionId.startsWith("merge_pr:")) {
     const incidentId = actionId.slice("merge_pr:".length);
     if (incidentId) await handleSlackMergePr(incidentId, payload);
+    return;
+  }
+
+  const rated = parseRateIncidentAction(actionId);
+  if (rated) {
+    await handleSlackRateIncident(rated.incidentId, rated.rating, payload);
     return;
   }
 
@@ -371,6 +380,173 @@ async function handleSlackBlockActions(payload: SlackInteractivityPayload): Prom
   const data = (await res.json()) as { ok: boolean; error?: string };
   if (!data.ok) {
     log.warn({ error: data.error, incidentId }, "views.open failed for feedback modal");
+  }
+}
+
+// Decode a `rate_incident:<rating>:<incidentId>` action_id from the 👍/👎
+// buttons on the incident thread. Incident ids are UUIDs (no colons), so a
+// single split after the rating is unambiguous.
+export function parseRateIncidentAction(
+  actionId: string,
+): { rating: schema.FeedbackRating; incidentId: string } | null {
+  const prefix = "rate_incident:";
+  if (!actionId.startsWith(prefix)) return null;
+  const rest = actionId.slice(prefix.length);
+  const sep = rest.indexOf(":");
+  if (sep <= 0) return null;
+  const rating = rest.slice(0, sep);
+  const incidentId = rest.slice(sep + 1);
+  if (!incidentId) return null;
+  if (rating !== "helpful" && rating !== "unhelpful") return null;
+  return { rating, incidentId };
+}
+
+// Synthesized `feedback.body` for a bare rating click. `body` is NOT NULL, and
+// the team notifier + admin inbox render it, so a thumbs-only click still reads
+// sensibly. Overwritten by the typed text if the user fills the detail modal.
+// Plain text (no emoji) — the notifier prepends its own 👍/👎 rating badge from
+// `feedback.rating`, and the admin inbox renders a separate chip, so baking the
+// emoji in here would double it up (">👍 👍 Marked helpful").
+export function ratingFeedbackBody(rating: schema.FeedbackRating): string {
+  return rating === "helpful" ? "Marked helpful" : "Marked not helpful";
+}
+
+// One-liner shown on the incident timeline (incident_events.summary) for a
+// rating click. The 👍/👎 carries the signal — LifecycleEntry renders the
+// summary verbatim with no per-kind styling.
+export function ratingTimelineSummary(rating: schema.FeedbackRating): string {
+  return rating === "helpful"
+    ? "👍 Marked the investigation helpful"
+    : "👎 Marked the investigation not helpful";
+}
+
+// A 👍/👎 click records the rating immediately (so the signal survives even if
+// the user dismisses the modal), then opens an OPTIONAL detail modal. The modal
+// submit attaches free-form text to this same feedback row.
+async function handleSlackRateIncident(
+  incidentId: string,
+  rating: schema.FeedbackRating,
+  payload: SlackInteractivityPayload,
+): Promise<void> {
+  const incident = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.id, incidentId),
+  });
+  if (!incident) {
+    log.warn({ incidentId }, "rate_incident click for unknown incident");
+    return;
+  }
+  const project = await db.query.projects.findFirst({
+    where: eq(schema.projects.id, incident.projectId),
+  });
+
+  // Claim this click first, before any side effect. `handleSlackBlockActions`
+  // runs to completion before we ack, and this handler makes a `views.open`
+  // round-trip — enough to blow Slack's 3s window and trigger a retry. Keying
+  // the timeline event on the click's own `action_ts` (stable across retries)
+  // rather than the freshly-minted feedback row id makes the whole handler
+  // idempotent: a retry loses the insert race and returns here, so it can't
+  // double-record the feedback row or re-open the modal. A genuine second
+  // rating carries a new action_ts, so it's not suppressed. The `?? Date.now()`
+  // fallback (action_ts should always be present for block_actions) degrades to
+  // the old always-unique behavior rather than collapsing distinct clicks.
+  const actionTs = payload.actions?.[0]?.action_ts ?? String(Date.now());
+  const dedupeKey = `feedback-rating:${incidentId}:${payload.user?.id ?? "anon"}:${rating}:${actionTs}`;
+  const [claimed] = await db
+    .insert(schema.incidentEvents)
+    .values({
+      incidentId,
+      kind: "feedback_rating",
+      summary: ratingTimelineSummary(rating),
+      detail: {
+        rating,
+        source: "slack",
+        slackUserId: payload.user?.id ?? null,
+      },
+      dedupeKey,
+      processedAt: new Date(),
+    })
+    .onConflictDoNothing()
+    .returning({ id: schema.incidentEvents.id });
+  // Lost the race to a retry (or a stray duplicate) — the rating is already
+  // recorded and the modal already opened. Don't do it again.
+  if (!claimed) return;
+
+  const row = await recordFeedback({
+    kind: "incident",
+    refId: incidentId,
+    refRepo: null,
+    source: "slack_rating",
+    body: ratingFeedbackBody(rating),
+    rating,
+    authorUserId: null,
+    authorExternal: {
+      slackUserId: payload.user?.id,
+      slackTeamId: payload.team?.id,
+    },
+    orgId: project?.orgId ?? null,
+    projectId: project?.id ?? null,
+    // Defer the follow-up offer to the detail modal — a bare thumb shouldn't
+    // spawn a "run follow-up" prompt with no context attached.
+    offerFollowUp: false,
+  });
+  if (!row) return;
+
+  const installation = await installationForIncident({
+    pinnedId: incident.slackInstallationId,
+    teamId: payload.team?.id ?? "",
+  });
+  if (!installation) return;
+
+  const prompt =
+    rating === "helpful"
+      ? "Glad it helped. Anything that made it useful — or that we could do better?"
+      : "Thanks — noted. What was off or missing? (optional)";
+  const view = {
+    type: "modal",
+    callback_id: `feedback_detail:${row.id}`,
+    title: { type: "plain_text", text: "Add detail" },
+    submit: { type: "plain_text", text: "Send" },
+    close: { type: "plain_text", text: "Skip" },
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*${rating === "helpful" ? "👍 Helpful" : "👎 Not helpful"}* — _${truncateModalText(
+            incident.title,
+          )}_\nRecorded. Add detail below or just skip.`,
+        },
+      },
+      {
+        type: "input",
+        block_id: "feedback_body",
+        optional: true,
+        label: { type: "plain_text", text: prompt },
+        element: {
+          type: "plain_text_input",
+          action_id: "value",
+          multiline: true,
+          max_length: 3000,
+          placeholder: {
+            type: "plain_text",
+            text: "What worked, what didn't, what's missing…",
+          },
+        },
+      },
+    ],
+  };
+
+  const res = await fetch("https://slack.com/api/views.open", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      authorization: `Bearer ${installation.botAccessToken}`,
+    },
+    body: JSON.stringify({ trigger_id: payload.trigger_id, view }),
+  });
+  const data = (await res.json()) as { ok: boolean; error?: string };
+  if (!data.ok) {
+    log.warn({ error: data.error, incidentId }, "views.open failed for rating detail modal");
   }
 }
 
@@ -742,6 +918,17 @@ async function postSlackThreadReply(opts: {
 
 async function handleSlackViewSubmission(payload: SlackInteractivityPayload): Promise<void> {
   const callbackId = payload.view?.callback_id ?? "";
+
+  // Optional detail typed after a 👍/👎 click — the rating row already exists,
+  // so attach the text to it (input is `optional`, so an empty submit is a
+  // valid no-op skip).
+  if (callbackId.startsWith("feedback_detail:")) {
+    const feedbackId = callbackId.slice("feedback_detail:".length);
+    const detail = payload.view?.state?.values?.feedback_body?.value?.value?.trim() ?? "";
+    if (feedbackId && detail) await attachFeedbackDetail(feedbackId, detail);
+    return;
+  }
+
   if (!callbackId.startsWith("feedback_modal:")) return;
   const incidentId = callbackId.slice("feedback_modal:".length);
   if (!incidentId) return;
@@ -1544,7 +1731,10 @@ type SlackInteractivityPayload = {
   trigger_id?: string;
   team?: { id?: string };
   user?: { id?: string; name?: string };
-  actions?: Array<{ action_id?: string; value?: string }>;
+  // `action_ts` is Slack's per-click timestamp. It is stable across Slack's
+  // interactivity retries (fired when our ack misses the 3s window), so it
+  // gives a natural idempotency key for the click.
+  actions?: Array<{ action_id?: string; value?: string; action_ts?: string }>;
   view?: {
     callback_id?: string;
     state?: {

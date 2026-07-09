@@ -136,12 +136,16 @@ export async function failAgentRun(
       emoji: "x",
       status: `Investigation failed · ${reason}`,
       title: ctx.incident.title,
+      titleUrl: incidentUrl,
       tagline: summary,
       projectName: ctx.project.name,
       service: ctx.incident.service,
-      buttons: [{ text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" }],
+      buttons: [],
       incidentId: ctx.incident.id,
       showResolveButton: true,
+      // No thumbs: the run errored out, so there are no investigation findings
+      // to rate. A 👎 here would conflate "unhelpful findings" with "the run
+      // crashed" and muddy the helpful/unhelpful signal.
     }),
   );
 }
@@ -180,12 +184,14 @@ export async function moveAgentRunToAwaitingHuman(
       emoji: "speech_balloon",
       status: "Awaiting human input",
       title: ctx.incident.title,
+      titleUrl: incidentUrl,
       tagline: question,
       projectName: ctx.project.name,
       service: ctx.incident.service,
-      buttons: [{ text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" }],
+      buttons: [],
       incidentId: ctx.incident.id,
       showResolveButton: true,
+      showFeedbackButtons: true,
     }),
   );
 }
@@ -229,15 +235,15 @@ export async function moveAgentRunToBlockedNoGithub(
       emoji: "no_entry",
       status: "Investigation blocked — connect GitHub",
       title: ctx.incident.title,
+      titleUrl: incidentUrl,
       tagline,
       projectName: ctx.project.name,
       service: ctx.incident.service,
-      buttons: [
-        { text: "Connect GitHub", url: installUrl, actionId: "connect_github" },
-        { text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" },
-      ],
+      buttons: [{ text: "Connect GitHub", url: installUrl, actionId: "connect_github" }],
       incidentId: ctx.incident.id,
       showResolveButton: true,
+      // No thumbs: the investigation is blocked before it can start (no GitHub
+      // repo connected), so there's nothing to rate yet.
     }),
   );
 }
