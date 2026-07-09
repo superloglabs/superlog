@@ -208,6 +208,7 @@ export type AgentRunTrigger =
   | "pr_comment"
   | "feedback"
   | "slack_reply"
+  | "web_chat"
   | "issue_joined";
 
 // Triggers that start an *initial* investigation (vs. a follow-up revived by a

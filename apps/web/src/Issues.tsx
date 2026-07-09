@@ -33,6 +33,7 @@ import {
   type IssueSample,
   type LogRow,
   type PendingResolutionProposal,
+  incidentChatErrorMessage,
   useDecideResolutionProposal,
   useIncident,
   useIncidentPullRequests,
@@ -45,6 +46,7 @@ import {
   useMergeIncidentPullRequest,
   useRestartAgentRun,
   useRetryPrDelivery,
+  useSendIncidentChatMessage,
   useSilenceIssue,
   useStartInvestigation,
   useUnsilenceIssue,
@@ -1610,8 +1612,107 @@ export function IncidentDetailContent({
               <IncidentPullRequestPanel projectId={incident.projectId} incidentId={incident.id} />
             )}
           </div>
+
+          {detailTab === "activity" && (
+            <IncidentChatComposer
+              projectId={incident.projectId}
+              incidentId={incident.id}
+              hasAgentRun={!!agentRun}
+            />
+          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// Talk to the investigation from the incident page — the web equivalent of
+// replying in the incident's Slack thread or commenting on its PR. Messages
+// flow into the same durable agent session (ask for PR changes, explain how to
+// address the issue, correct course); the agent's reply lands in the activity
+// feed above.
+function IncidentChatComposer({
+  projectId,
+  incidentId,
+  hasAgentRun,
+}: {
+  projectId: string;
+  incidentId: string;
+  hasAgentRun: boolean;
+}) {
+  const send = useSendIncidentChatMessage(projectId, incidentId);
+  const [text, setText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [justSent, setJustSent] = useState(false);
+  // The dedupe id for the current draft. Minted once and reused across retries
+  // of the *same* unsent message, so a resend after a failed response (the
+  // first request may have reached the server) dedupes instead of enqueuing
+  // twice. Cleared on success and whenever the draft is edited (a new message).
+  const pendingIdRef = useRef<string | null>(null);
+  const disabled = !hasAgentRun;
+
+  function onDraftChange(value: string) {
+    setText(value);
+    pendingIdRef.current = null;
+    if (justSent) setJustSent(false);
+    if (error) setError(null);
+  }
+
+  function submit() {
+    const trimmed = text.trim();
+    if (!trimmed || send.isPending || disabled) return;
+    setError(null);
+    if (!pendingIdRef.current) pendingIdRef.current = crypto.randomUUID();
+    send.mutate(
+      { text: trimmed, messageId: pendingIdRef.current },
+      {
+        onSuccess: () => {
+          setText("");
+          pendingIdRef.current = null;
+          setJustSent(true);
+        },
+        onError: (err) => setError(incidentChatErrorMessage(err)),
+      },
+    );
+  }
+
+  return (
+    <div className="shrink-0 border-t border-border bg-bg px-6 py-4 lg:px-8">
+      <div className="flex items-end gap-2">
+        <textarea
+          value={text}
+          onChange={(e) => onDraftChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          rows={2}
+          disabled={disabled}
+          placeholder={
+            disabled
+              ? "No investigation to talk to yet — start one from the Findings tab."
+              : "Reply to the investigation — request PR changes, explain the issue, add context…"
+          }
+          className="min-h-[58px] flex-1 resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-[14px] leading-relaxed text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+        />
+        <Btn
+          variant="primary"
+          size="lg"
+          onClick={submit}
+          loading={send.isPending}
+          disabled={disabled || !text.trim()}
+        >
+          Send
+        </Btn>
+      </div>
+      {error && <p className="mt-2 text-[12px] text-danger">{error}</p>}
+      {!error && justSent && (
+        <p className="mt-2 text-[12px] text-muted">
+          Delivered to the investigation — the reply will appear in the feed above.
+        </p>
+      )}
     </div>
   );
 }

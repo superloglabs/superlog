@@ -430,6 +430,8 @@ function followUpQueuedSummary(trigger: AgentRunFollowUpTrigger): string {
       return "Follow-up investigation queued from user feedback.";
     case "slack_reply":
       return "Follow-up investigation queued from a Slack reply.";
+    case "web_chat":
+      return "Follow-up investigation queued from an incident chat message.";
     case "issue_joined":
       return "Follow-up investigation queued: a new error signature joined this incident.";
   }

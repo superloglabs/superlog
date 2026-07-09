@@ -15,6 +15,7 @@ import {
   isAgentRunProvider,
   listAccessibleGithubInstallsForProject,
   mintApiKey,
+  recordInboundInteraction,
   resolveDefaultAgentRunProvider,
   resolveIncident,
   runMigrations,
@@ -55,6 +56,7 @@ import {
 } from "./github.js";
 import { createApiHttpObservabilityMiddleware } from "./http-observability.js";
 import { mountImpersonation } from "./impersonation.js";
+import { prepareIncidentChatMessage } from "./incidents/chat.js";
 import { buildIncidentListItem, shouldInlineIncidentListStats } from "./incidents/list.js";
 import { getPrDeliveryRetryEligibility } from "./incidents/pr-retry.js";
 import { buildIncidentPullRequestViews } from "./incidents/pr-view.js";
@@ -1500,6 +1502,62 @@ app.post(
   "/api/projects/:projectId/incidents/:incidentId/resolution-proposals/:proposalId/dismiss",
   (c) => decideResolutionProposal(c, "dismiss"),
 );
+
+// Chat with the investigation from the incident page — the web sibling of a
+// Slack thread reply or a PR comment. The message flows through the same
+// shared inbound path (resume the durable session, steer it mid-turn, or
+// cold-start a follow-up run), and the agent's reply lands in the incident
+// timeline the page already renders.
+app.post("/api/projects/:projectId/incidents/:incidentId/chat", async (c) => {
+  const projectId = c.req.param("projectId");
+  const incidentId = c.req.param("incidentId");
+  await requireProjectAccess(c, projectId);
+
+  const incident = await db.query.incidents.findFirst({
+    where: and(eq(schema.incidents.id, incidentId), eq(schema.incidents.projectId, projectId)),
+    columns: { id: true },
+  });
+  if (!incident) throw new HTTPException(404, { message: "incident not found" });
+
+  // Any parse failure or valid-but-non-object body (JSON `null`, a bare string /
+  // number / array) collapses to `{}` so the field reads below can't throw —
+  // prepareIncidentChatMessage then returns a clean 400 for the empty text.
+  const rawBody = await c.req.json().catch(() => null);
+  const body: { text?: unknown; messageId?: unknown } =
+    rawBody && typeof rawBody === "object" ? (rawBody as Record<string, unknown>) : {};
+  const user = await db.query.users.findFirst({
+    where: eq(schema.users.id, c.var.userId),
+    columns: { name: true, email: true },
+  });
+  const prepared = prepareIncidentChatMessage({
+    text: typeof body.text === "string" ? body.text : "",
+    messageId: typeof body.messageId === "string" ? body.messageId : "",
+    author: user?.name?.trim() || user?.email || null,
+    now: new Date(),
+  });
+  if (!prepared.ok) throw new HTTPException(400, { message: prepared.error });
+
+  const result = await recordInboundInteraction(db, {
+    incidentId,
+    interaction: prepared.interaction,
+    dedupeKey: prepared.dedupeKey,
+    detail: { userId: c.var.userId },
+    // Typing into the incident page is an explicit human request, like the
+    // feedback button — it bypasses the auto-follow-up project gate.
+    confirmed: true,
+  });
+
+  if (result.outcome === "skipped") {
+    // Surfaced (not swallowed) so the composer can tell the user why the
+    // message won't reach the agent, e.g. agent runs disabled or no prior run.
+    return c.json({ ok: false as const, reason: result.reason }, 409);
+  }
+  return c.json({
+    ok: true as const,
+    duplicate: result.outcome === "duplicate",
+    action: result.outcome === "accepted" ? result.action : null,
+  });
+});
 
 app.post("/api/projects/:projectId/issues/:issueId/silence", async (c) => {
   const projectId = c.req.param("projectId");
