@@ -241,16 +241,17 @@ export function createIncidentLifecycle(database: DB = db) {
       return { updated: true, noiseResolved };
     },
 
-    // A resolved issue recurred, or an under-observation issue's escalation
-    // trigger fired: open a NEW incident chained to the predecessor, put the
-    // issue back to `open`, and append a fresh incident_issues link (the
-    // issue's link history is how "current incident" is derived). The old
-    // incident keeps its findings and stays closed — its timeline records
-    // where the story continued.
+    // A resolved issue recurred, an under-observation issue's escalation
+    // trigger fired, or an alert whose previous incident is closed breached
+    // again: open a NEW incident chained to the predecessor, put the issue
+    // back to `open`, and append a fresh incident_issues link (the issue's
+    // link history is how "current incident" is derived). The old incident
+    // keeps its findings and stays closed — its timeline records where the
+    // story continued.
     async openRecurrence(opts: {
       previousIncident: schema.Incident;
       issue: schema.Issue;
-      origin: "resolved_issue_recurred" | "escalation_trigger";
+      origin: "resolved_issue_recurred" | "escalation_trigger" | "alert_breached_again";
       environment?: string | null;
       now?: Date;
     }): Promise<schema.Incident> {
@@ -282,7 +283,9 @@ export function createIncidentLifecycle(database: DB = db) {
           summary:
             opts.origin === "escalation_trigger"
               ? `Escalation trigger fired for observed issue: ${opts.issue.title}`
-              : `Resolved issue recurred: ${opts.issue.title}`,
+              : opts.origin === "alert_breached_again"
+                ? `Alert breached again: ${opts.issue.title}`
+                : `Resolved issue recurred: ${opts.issue.title}`,
           detail: {
             origin: opts.origin,
             previousIncidentId: opts.previousIncident.id,
@@ -305,7 +308,7 @@ export function createIncidentLifecycle(database: DB = db) {
         await repository.insertEventInTx(tx, {
           incidentId: opts.previousIncident.id,
           kind: "issue_recurred",
-          summary: `Linked issue recurred; investigation continued in a new incident.`,
+          summary: "Linked issue recurred; investigation continued in a new incident.",
           detail: {
             issueId: opts.issue.id,
             issueTitle: opts.issue.title,
@@ -419,21 +422,26 @@ async function resolveIncidentInTx(
     const issues = await repository.listCurrentIssuesForIncidentInTx(tx, input.incidentId);
     resolvedIssueCount = issues.length;
     for (const issue of issues) {
+      // Alert-episode issues are only ever open or resolved (no silenced /
+      // under-observation: a noisy alert is tuned or disabled, not silenced
+      // per episode), so a silence/observe cascade resolves them plainly.
+      const issueOutcome: ResolveIssueOutcome =
+        issue.kind === "alert" ? { kind: "resolve" } : outcome;
       const patch =
-        outcome.kind === "silence"
+        issueOutcome.kind === "silence"
           ? buildIssueSilencePatch(resolvedAt)
-          : outcome.kind === "observe"
+          : issueOutcome.kind === "observe"
             ? buildIssueObservePatch({
-                trigger: outcome.trigger,
+                trigger: issueOutcome.trigger,
                 baselineEventCount: issue.eventCount,
                 now: resolvedAt,
               })
             : buildIssueResolvePatch();
       await repository.updateIssueInTx(tx, issue.id, patch);
       const eventKind =
-        outcome.kind === "silence"
+        issueOutcome.kind === "silence"
           ? "issue_silenced"
-          : outcome.kind === "observe"
+          : issueOutcome.kind === "observe"
             ? "issue_observed"
             : "issue_resolved";
       await repository.insertEventInTx(tx, {
@@ -441,16 +449,16 @@ async function resolveIncidentInTx(
         incidentId: input.incidentId,
         kind: eventKind,
         summary:
-          outcome.kind === "silence"
+          issueOutcome.kind === "silence"
             ? `Issue silenced: ${issue.title}`
-            : outcome.kind === "observe"
+            : issueOutcome.kind === "observe"
               ? `Issue placed under observation: ${issue.title}`
               : `Issue resolved: ${issue.title}`,
         detail: {
           issueId: issue.id,
           issueTitle: issue.title,
-          ...(outcome.kind === "observe"
-            ? { trigger: outcome.trigger, baselineEventCount: issue.eventCount }
+          ...(issueOutcome.kind === "observe"
+            ? { trigger: issueOutcome.trigger, baselineEventCount: issue.eventCount }
             : {}),
         },
         dedupeKey: `${eventKind}:${issue.id}:${resolvedAt.getTime()}`,

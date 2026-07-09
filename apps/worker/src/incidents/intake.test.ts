@@ -61,12 +61,27 @@ function makeRepo(opts: {
   openCandidates?: { withService: schema.Incident[]; withoutService: schema.Incident[] };
   project?: schema.Project;
   linkInsertsSuccess?: boolean;
+  alertEpisode?: schema.AlertEpisode;
+  openIncidentForAlert?: schema.Incident;
+  latestIncidentForAlert?: schema.Incident;
 }): IntakeRepository {
   const incidentById = opts.incidentById ?? new Map<string, schema.Incident>();
   return {
     async findLatestIncidentIssueLink(issueId: string) {
       opts.calls.push(`findLatestIncidentIssueLink:${issueId}`);
       return opts.existingLink as schema.IncidentIssue | undefined;
+    },
+    async findAlertEpisodeForIssue(issueId: string) {
+      opts.calls.push(`findAlertEpisodeForIssue:${issueId}`);
+      return opts.alertEpisode;
+    },
+    async findOpenIncidentForAlert(alertId: string, groupKey: string) {
+      opts.calls.push(`findOpenIncidentForAlert:${alertId}:${groupKey || "*"}`);
+      return opts.openIncidentForAlert;
+    },
+    async findLatestIncidentForAlert(alertId: string, groupKey: string) {
+      opts.calls.push(`findLatestIncidentForAlert:${alertId}:${groupKey || "*"}`);
+      return opts.latestIncidentForAlert;
     },
     async touchIncidentLastSeen(incidentId: string, _lastSeen: Date) {
       opts.calls.push(`touchIncidentLastSeen:${incidentId}`);
@@ -255,31 +270,145 @@ test("intake: heuristic match links to existing incident as 'grouped'", async ()
   assert.ok(calls.some((c) => c.startsWith("updateIssueGrouping:iss-new:grouped:heuristic")));
 });
 
-test("intake: alert issue with no heuristic match opens fresh incident, skips LLM", async () => {
+function makeEpisode(overrides: Partial<schema.AlertEpisode> = {}): schema.AlertEpisode {
+  return {
+    id: "ep-1",
+    alertId: "alert-1",
+    projectId: "proj-1",
+    groupKey: "",
+    state: "firing",
+    startedAt: NOW,
+    endedAt: null,
+    openObservedValue: 15,
+    peakObservedValue: 15,
+    lastObservedValue: 15,
+    lastFiringAt: NOW,
+    issueId: "iss-new",
+    incidentId: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+  } as schema.AlertEpisode;
+}
+
+test("intake: alert episode joins the open incident already driven by the same alert", async () => {
   const calls: string[] = [];
-  const newInc = makeIncident({ id: "inc-fresh" });
+  const open = makeIncident({ id: "inc-same-alert" });
   const repo = makeRepo({
     calls,
-    incidentById: new Map([["inc-fresh", newInc]]),
+    alertEpisode: makeEpisode(),
+    openIncidentForAlert: open,
+    incidentById: new Map([["inc-same-alert", open]]),
   });
-  const lifecycle = makeLifecycle({ calls, createdIncident: newInc });
+  const lifecycle = makeLifecycle({ calls });
   const result = await ensureIncidentForIssueWorkflow(
     makeIssue({ kind: "alert" }),
     "new",
     makeDeps({ repo, lifecycle, calls }),
   );
-  assert.equal(result.createdIncident, true);
-  assert.equal(result.incident.id, "inc-fresh");
-  // No LLM grouping pending update.
-  assert.ok(!calls.some((c) => c.startsWith("updateIssueGrouping:iss-new:pending")));
-  // Standalone with heuristic source (LLM skipped for alerts).
+  assert.equal(result.createdIncident, false);
+  assert.equal(result.linkedIssue, true);
+  assert.equal(result.incident.id, "inc-same-alert");
+  assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-same-alert"));
   assert.ok(
-    calls.some((c) =>
-      c.startsWith(
-        "updateIssueGrouping:iss-new:standalone:heuristic:Alert issues are not LLM-grouped",
-      ),
-    ),
+    calls.some((c) => c.startsWith("updateIssueGrouping:iss-new:grouped:heuristic:New episode")),
   );
+  // No fresh incident, no recurrence, no LLM.
+  assert.ok(!calls.some((c) => c.startsWith("createOpen")));
+  assert.ok(!calls.some((c) => c.startsWith("openRecurrence")));
+  assert.ok(!calls.some((c) => c.startsWith("updateIssueGrouping:iss-new:pending")));
+});
+
+test("intake: alert episode whose previous incident is closed opens a chained recurrence", async () => {
+  const calls: string[] = [];
+  const previous = makeIncident({ id: "inc-prev-alert", status: "resolved" });
+  const repo = makeRepo({
+    calls,
+    alertEpisode: makeEpisode(),
+    latestIncidentForAlert: previous,
+  });
+  const lifecycle = makeLifecycle({ calls });
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue({ kind: "alert", normalizedFrames: [] }),
+    "new",
+    makeDeps({ repo, lifecycle, calls }),
+  );
+  assert.equal(result.createdIncident, true);
+  assert.equal(result.recurrenceIncident, true);
+  assert.ok(calls.includes("openRecurrence:inc-prev-alert<-iss-new:alert_breached_again"));
+  assert.ok(
+    calls.some((c) => c.startsWith("updateIssueGrouping:iss-new:standalone:heuristic:New breach")),
+  );
+});
+
+test("intake: alert episode chaining follows a merge chain to the surviving incident", async () => {
+  const calls: string[] = [];
+  const survivor = makeIncident({ id: "inc-survivor", status: "open" });
+  const merged = makeIncident({
+    id: "inc-merged",
+    status: "merged",
+    mergedIntoId: "inc-survivor",
+  } as Partial<schema.Incident>);
+  const repo = makeRepo({
+    calls,
+    alertEpisode: makeEpisode(),
+    latestIncidentForAlert: merged,
+    incidentById: new Map([
+      ["inc-survivor", survivor],
+      ["inc-merged", merged],
+    ]),
+  });
+  const lifecycle = makeLifecycle({ calls });
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue({ kind: "alert" }),
+    "new",
+    makeDeps({ repo, lifecycle, calls }),
+  );
+  // The merge survivor is open → the new episode joins it instead of chaining.
+  assert.equal(result.createdIncident, false);
+  assert.equal(result.incident.id, "inc-survivor");
+  assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-survivor"));
+});
+
+test("intake: first-ever alert episode goes through LLM grouping like an error", async () => {
+  const calls: string[] = [];
+  const errorIncident = makeIncident({ id: "inc-error", title: "DB down" });
+  const repo = makeRepo({
+    calls,
+    alertEpisode: makeEpisode(),
+    openCandidates: { withService: [], withoutService: [errorIncident] },
+    incidentById: new Map([["inc-error", errorIncident]]),
+  });
+  repo.loadLinkedIncidentIssues = async () => [
+    {
+      incidentId: "inc-error",
+      title: "DB down",
+      exceptionType: "ECONNREFUSED",
+      message: null,
+      topFrame: "db.query",
+      normalizedFrames: ["db.query", "pool.acquire"],
+      lastSample: null,
+      lastSeen: NOW,
+    },
+  ];
+  const lifecycle = makeLifecycle({ calls });
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue({ kind: "alert", normalizedFrames: [] }),
+    "new",
+    makeDeps({
+      repo,
+      lifecycle,
+      calls,
+      analyzeGrouping: async () => ({
+        decision: "join",
+        incidentId: "inc-error",
+        evidence: "same root cause",
+      }),
+    }),
+  );
+  assert.equal(result.createdIncident, false);
+  assert.equal(result.incident.id, "inc-error");
+  assert.ok(calls.some((c) => c.startsWith("updateIssueGrouping:iss-new:pending:llm")));
+  assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-error"));
 });
 
 test("intake: fresh incident captures environment from the issue's resource attrs", async () => {

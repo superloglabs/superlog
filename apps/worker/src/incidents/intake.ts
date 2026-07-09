@@ -2,9 +2,12 @@
 // it joins an existing open incident or opens a new one.
 //
 // The decision is layered:
-//   1. Heuristic match (cheap, deterministic, runs on every issue).
-//   2. LLM grouping (only for runtime-error issues; alerts skip).
-//   3. Open a fresh incident.
+//   1. Heuristic match (cheap, deterministic, runs on every issue). For
+//      alert-episode issues this includes joining the open incident already
+//      driven by an episode of the same alert+group.
+//   2. LLM grouping (errors and alert episodes alike).
+//   3. Open a fresh incident — chained to the latest closed same-alert
+//      incident when the issue is a new breach of an already-seen alert.
 //
 // Each branch updates the issue's grouping metadata (state + source +
 // reason) so the operator can audit why something landed where it did.
@@ -31,6 +34,17 @@ export type IntakeRepository = {
   findLatestIncidentIssueLink(issueId: string): Promise<schema.IncidentIssue | undefined>;
   findIncident(incidentId: string): Promise<schema.Incident | undefined>;
   touchIncidentLastSeen(incidentId: string, lastSeen: Date): Promise<void>;
+  // The episode an alert-episode issue is 1:1 with — carries the alert
+  // identity (alertId + groupKey) that fingerprints no longer encode.
+  findAlertEpisodeForIssue(issueId: string): Promise<schema.AlertEpisode | undefined>;
+  // Newest open / newest overall incident driven by an episode of the same
+  // alert+group. "Open" is the join target for a new breach; "latest" (when
+  // closed) is the predecessor a standalone new breach chains to.
+  findOpenIncidentForAlert(alertId: string, groupKey: string): Promise<schema.Incident | undefined>;
+  findLatestIncidentForAlert(
+    alertId: string,
+    groupKey: string,
+  ): Promise<schema.Incident | undefined>;
   findOpenIncidentCandidates(
     issue: schema.Issue,
     opts: { filterService: boolean },
@@ -56,7 +70,7 @@ export type IntakeLifecycle = {
   openRecurrence(opts: {
     previousIncident: schema.Incident;
     issue: schema.Issue;
-    origin: "resolved_issue_recurred" | "escalation_trigger";
+    origin: "resolved_issue_recurred" | "escalation_trigger" | "alert_breached_again";
     environment?: string | null;
   }): Promise<schema.Incident>;
   createOpen(opts: {
@@ -156,9 +170,51 @@ export async function ensureIncidentForIssueWorkflow(
     }
   }
 
+  // Alert-episode issues are fresh every breach, so the same-alert
+  // relationship lives on the episodes rather than the fingerprint: a new
+  // breach joins the alert's open incident when one exists, and remembers the
+  // latest closed one to chain to if it ends up standalone.
+  const alertContext = issue.kind === "alert" ? await loadAlertIncidentContext(issue, deps) : null;
+  if (alertContext?.openIncident) {
+    const open = alertContext.openIncident;
+    const linkedIssue = await deps.repo.linkIssueToIncident({ incident: open, issue });
+    await deps.repo.updateIssueGrouping(issue.id, {
+      state: "grouped",
+      source: "heuristic",
+      reason: "New episode of an alert whose incident is still open.",
+    });
+    const freshIncident = (await deps.repo.findIncident(open.id)) ?? open;
+    return {
+      incident: freshIncident,
+      createdIncident: false,
+      linkedIssue,
+      recurrenceIncident: false,
+    };
+  }
+
   const grouping = await findMatchingIncident(issue, deps);
   let incident = grouping.match?.incident ?? null;
   let createdIncident = false;
+
+  if (!incident && alertContext?.previousIncident) {
+    const recurrence = await deps.lifecycle.openRecurrence({
+      previousIncident: alertContext.previousIncident,
+      issue,
+      origin: "alert_breached_again",
+      environment: environmentFromResourceAttrs(issue.lastSample?.resourceAttrs),
+    });
+    await deps.repo.updateIssueGrouping(issue.id, {
+      state: "standalone",
+      source: "heuristic",
+      reason: "New breach of an alert whose previous incident is closed; chained to it.",
+    });
+    return {
+      incident: recurrence,
+      createdIncident: true,
+      linkedIssue: true,
+      recurrenceIncident: true,
+    };
+  }
 
   if (!incident) {
     incident = await deps.lifecycle.createOpen({
@@ -178,19 +234,50 @@ export async function ensureIncidentForIssueWorkflow(
   return { incident: freshIncident, createdIncident, linkedIssue, recurrenceIncident: false };
 }
 
+type AlertIncidentContext = {
+  openIncident: schema.Incident | null;
+  previousIncident: schema.Incident | null;
+};
+
+async function loadAlertIncidentContext(
+  issue: schema.Issue,
+  deps: IntakeDeps,
+): Promise<AlertIncidentContext | null> {
+  const episode = await deps.repo.findAlertEpisodeForIssue(issue.id);
+  if (!episode) return null;
+  const open = await deps.repo.findOpenIncidentForAlert(episode.alertId, episode.groupKey);
+  if (open) return { openIncident: open, previousIncident: null };
+  const latest = await deps.repo.findLatestIncidentForAlert(episode.alertId, episode.groupKey);
+  if (!latest) return { openIncident: null, previousIncident: null };
+  // Episodes keep pointing at the incident they originally drove; a merged
+  // incident's live row is the survivor at the end of the merge chain.
+  const live = await followMergeChain(latest, deps);
+  if (live.status === "open") return { openIncident: live, previousIncident: null };
+  return { openIncident: null, previousIncident: live };
+}
+
+async function followMergeChain(
+  incident: schema.Incident,
+  deps: IntakeDeps,
+): Promise<schema.Incident> {
+  let current = incident;
+  const seen = new Set<string>([current.id]);
+  while (current.status === "merged" && current.mergedIntoId && !seen.has(current.mergedIntoId)) {
+    const next = await deps.repo.findIncident(current.mergedIntoId);
+    if (!next) break;
+    seen.add(next.id);
+    current = next;
+  }
+  return current;
+}
+
 async function findMatchingIncident(issue: schema.Issue, deps: IntakeDeps): Promise<Grouping> {
   const heuristic = await findHeuristicMatchingIncident(issue, deps);
   if (heuristic) {
     return { match: heuristic, standaloneSource: null, standaloneReason: null, failedReason: null };
   }
-  if (issue.kind === "alert") {
-    return {
-      match: null,
-      standaloneSource: "heuristic",
-      standaloneReason: "Alert issues are not LLM-grouped with runtime error incidents.",
-      failedReason: null,
-    };
-  }
+  // Alert-episode issues go through LLM grouping like errors do: a breach can
+  // be another manifestation of an incident opened by errors (or vice versa).
   return findLlmMatchingIncident(issue, deps);
 }
 

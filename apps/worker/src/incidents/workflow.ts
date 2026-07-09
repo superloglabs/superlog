@@ -190,7 +190,9 @@ export async function handleIssueTransition(
         incident.id,
         transition === "escalated"
           ? ":rotating_light: An issue under observation tripped its escalation trigger — this incident continues from the earlier investigation, whose findings are available to the new run."
-          : ":repeat: A previously resolved issue recurred — this incident continues from the earlier investigation, whose findings are available to the new run.",
+          : issue.kind === "alert"
+            ? ":repeat: The alert breached again — this incident continues from the earlier investigation, whose findings are available to the new run."
+            : ":repeat: A previously resolved issue recurred — this incident continues from the earlier investigation, whose findings are available to the new run.",
       );
     }
   }

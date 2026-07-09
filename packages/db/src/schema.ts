@@ -2029,6 +2029,11 @@ export const alertEpisodes = pgTable(
     openUniq: uniqueIndex("alert_episodes_open_uniq")
       .on(t.alertId, t.groupKey)
       .where(sql`state = 'firing'`),
+    // An issue is 1:1 with an episode (one breach period = one issue); this is
+    // also the reverse-lookup path from an issue to its episode.
+    issueUniq: uniqueIndex("alert_episodes_issue_uniq")
+      .on(t.issueId)
+      .where(sql`issue_id IS NOT NULL`),
   }),
 );
 

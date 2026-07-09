@@ -3,9 +3,10 @@ import { test } from "node:test";
 import type { schema } from "@superlog/db";
 import { type EvaluateAlertDeps, evaluateAlertWorkflow, runAlertsTick } from "./evaluate.js";
 import type {
-  AlertIssueUpsertInput,
-  AlertIssueUpsertResult,
   AlertRepository,
+  EpisodeIssueUpsertInput,
+  EpisodeOpenInput,
+  EpisodeTouchInput,
   FiringRecord,
 } from "./repository.js";
 
@@ -38,13 +39,16 @@ function makeAlert(overrides: Partial<schema.Alert> = {}): schema.Alert {
 function makeRepoFake(opts: {
   calls: string[];
   previousStates?: Map<string, "firing" | "ok">;
-  upsertResult?: AlertIssueUpsertResult;
+  upsertInserted?: boolean;
   upsertThrows?: boolean;
+  openEpisodeThrows?: boolean;
+  closeEpisodeThrows?: boolean;
   capturedFirings?: FiringRecord[];
-  capturedUpserts?: AlertIssueUpsertInput[];
+  capturedOpens?: EpisodeOpenInput[];
+  capturedUpserts?: EpisodeIssueUpsertInput[];
+  capturedTouches?: EpisodeTouchInput[];
   dueAlerts?: schema.Alert[];
   incidentIdForIssue?: string | null;
-  episodeThrows?: boolean;
 }): AlertRepository {
   return {
     async listDueAlerts() {
@@ -55,18 +59,23 @@ function makeRepoFake(opts: {
       opts.calls.push(`getLatestFiringState:${alertId}:${groupKey}`);
       return opts.previousStates?.get(groupKey) ?? null;
     },
-    async upsertAlertIssue(input) {
-      opts.calls.push(`upsertAlertIssue:${input.fingerprint}`);
+    async openOrContinueEpisode(input) {
+      opts.calls.push(`openOrContinueEpisode:${input.groupKey || "*"}`);
+      opts.capturedOpens?.push(input);
+      if (opts.openEpisodeThrows) throw new Error("episode-boom");
+      return { episodeId: "ep-1" };
+    },
+    async upsertEpisodeIssue(input) {
+      opts.calls.push(`upsertEpisodeIssue:${input.episodeId}`);
       opts.capturedUpserts?.push(input);
       if (opts.upsertThrows) throw new Error("boom");
-      return (
-        opts.upsertResult ?? {
-          issue: { id: "issue-1", title: input.title } as schema.Issue,
-          prevIssueId: null,
-          prevIssueStatus: null,
-          inserted: true,
-        }
-      );
+      return {
+        issue: { id: "issue-1", title: input.title } as schema.Issue,
+        inserted: opts.upsertInserted ?? true,
+      };
+    },
+    async setEpisodeIncident(episodeId, incidentId) {
+      opts.calls.push(`setEpisodeIncident:${episodeId}:${incidentId}`);
     },
     async recordFiring(record) {
       opts.calls.push(
@@ -78,17 +87,13 @@ function makeRepoFake(opts: {
       opts.calls.push(`findIncidentIdForIssue:${issueId}`);
       return opts.incidentIdForIssue ?? null;
     },
-    async openEpisode(input) {
-      opts.calls.push(`openEpisode:${input.groupKey || "*"}:${input.incidentId ?? "null"}`);
-      if (opts.episodeThrows) throw new Error("episode-boom");
-    },
     async touchOpenEpisode(input) {
       opts.calls.push(`touchOpenEpisode:${input.groupKey || "*"}`);
-      if (opts.episodeThrows) throw new Error("episode-boom");
+      opts.capturedTouches?.push(input);
     },
     async closeOpenEpisode(input) {
       opts.calls.push(`closeOpenEpisode:${input.groupKey || "*"}`);
-      if (opts.episodeThrows) throw new Error("episode-boom");
+      if (opts.closeEpisodeThrows) throw new Error("close-boom");
     },
     async markEvaluated(alertId, _at) {
       opts.calls.push(`markEvaluated:${alertId}`);
@@ -129,10 +134,11 @@ function makeDeps(
   return { ...defaults, ...rest };
 }
 
-test("evaluateAlertWorkflow: first-time firing creates issue and notifies as new", async () => {
+test("evaluateAlertWorkflow: first-time firing opens the episode first, then raises its issue", async () => {
   const calls: string[] = [];
-  const upserts: AlertIssueUpsertInput[] = [];
-  const repo = makeRepoFake({ calls, capturedUpserts: upserts });
+  const opens: EpisodeOpenInput[] = [];
+  const upserts: EpisodeIssueUpsertInput[] = [];
+  const repo = makeRepoFake({ calls, capturedOpens: opens, capturedUpserts: upserts });
   const deps = makeDeps({ calls, repo });
 
   await evaluateAlertWorkflow(makeAlert(), deps);
@@ -141,20 +147,50 @@ test("evaluateAlertWorkflow: first-time firing creates issue and notifies as new
     "aggregate",
     "getLatestFiringState:alert-1:",
     "logger.warn:alert firing",
-    "upsertAlertIssue:alert:alert-1",
+    "openOrContinueEpisode:*",
+    "upsertEpisodeIssue:ep-1",
     "handleIssueTransition:issue-1:new",
     "findIncidentIdForIssue:issue-1",
-    "openEpisode:*:null",
     "recordFiring:*:firing:issue-1",
     "markEvaluated:alert-1",
   ]);
-  assert.equal(upserts[0]?.fingerprint, "alert:alert-1");
+  assert.equal(opens[0]?.startedAt, FIXED_NOW);
+  assert.equal(opens[0]?.observedValue, 20);
+  assert.equal(upserts[0]?.episodeId, "ep-1");
   assert.equal(upserts[0]?.title, "Errors > 10 (observed=20)");
 });
 
-test("evaluateAlertWorkflow: still-firing skips upsert and notification, just records", async () => {
+test("evaluateAlertWorkflow: new firing points the episode at the issue's incident", async () => {
   const calls: string[] = [];
-  const repo = makeRepoFake({ calls, previousStates: new Map([["", "firing"]]) });
+  const repo = makeRepoFake({ calls, incidentIdForIssue: "inc-1" });
+  const deps = makeDeps({ calls, repo });
+
+  await evaluateAlertWorkflow(makeAlert(), deps);
+
+  assert.ok(calls.includes("findIncidentIdForIssue:issue-1"));
+  assert.ok(calls.includes("setEpisodeIncident:ep-1:inc-1"));
+});
+
+test("evaluateAlertWorkflow: retried tick notifies again even when the issue upsert folded", async () => {
+  // A previous attempt may have died after creating the issue but before
+  // incident intake ran; the retry must not skip handleIssueTransition.
+  const calls: string[] = [];
+  const repo = makeRepoFake({ calls, upsertInserted: false });
+  const deps = makeDeps({ calls, repo });
+
+  await evaluateAlertWorkflow(makeAlert(), deps);
+
+  assert.ok(calls.includes("handleIssueTransition:issue-1:new"));
+});
+
+test("evaluateAlertWorkflow: still-firing touches the episode (which mirrors onto its issue)", async () => {
+  const calls: string[] = [];
+  const touches: EpisodeTouchInput[] = [];
+  const repo = makeRepoFake({
+    calls,
+    previousStates: new Map([["", "firing"]]),
+    capturedTouches: touches,
+  });
   const deps = makeDeps({ calls, repo });
 
   await evaluateAlertWorkflow(makeAlert(), deps);
@@ -166,9 +202,11 @@ test("evaluateAlertWorkflow: still-firing skips upsert and notification, just re
     "recordFiring:*:firing:null",
     "markEvaluated:alert-1",
   ]);
+  assert.equal(touches[0]?.observedValue, 20);
+  assert.equal(touches[0]?.lastSample.exceptionType, "AlertFired");
 });
 
-test("evaluateAlertWorkflow: recovery logs and records ok without upsert", async () => {
+test("evaluateAlertWorkflow: recovery closes the episode before recording ok", async () => {
   const calls: string[] = [];
   const repo = makeRepoFake({ calls, previousStates: new Map([["", "firing"]]) });
   const deps = makeDeps({
@@ -214,95 +252,53 @@ test("evaluateAlertWorkflow: still-ok records nothing extra", async () => {
   ]);
 });
 
-test("evaluateAlertWorkflow: recurred transition fires handler with 'recurred'", async () => {
+test("evaluateAlertWorkflow: episode-open failure propagates so the next tick retries (does NOT record firing or mark evaluated)", async () => {
+  // The episode is now the paging-critical trigger record: swallowing its
+  // failure would record a firing row with issueId=null and stamp
+  // lastEvaluatedAt — a firing alert that pages nobody, forever.
   const calls: string[] = [];
-  const repo = makeRepoFake({
-    calls,
-    upsertResult: {
-      issue: { id: "issue-2" } as schema.Issue,
-      prevIssueId: "issue-2",
-      prevIssueStatus: "resolved",
-      inserted: false,
-    },
-  });
+  const repo = makeRepoFake({ calls, openEpisodeThrows: true });
   const deps = makeDeps({ calls, repo });
 
-  await evaluateAlertWorkflow(makeAlert(), deps);
+  await assert.rejects(evaluateAlertWorkflow(makeAlert(), deps), /episode-boom/);
 
-  assert.ok(calls.includes("handleIssueTransition:issue-2:recurred"));
+  assert.ok(!calls.some((c) => c.startsWith("upsertEpisodeIssue")));
+  assert.ok(!calls.some((c) => c.startsWith("recordFiring")));
+  assert.ok(!calls.some((c) => c.startsWith("markEvaluated")));
 });
 
-test("evaluateAlertWorkflow: silenced issue suppresses the handler entirely", async () => {
-  const calls: string[] = [];
-  const repo = makeRepoFake({
-    calls,
-    upsertResult: {
-      issue: { id: "issue-4" } as schema.Issue,
-      prevIssueId: "issue-4",
-      prevIssueStatus: "silenced",
-      inserted: false,
-    },
-  });
-  const deps = makeDeps({ calls, repo });
-
-  await evaluateAlertWorkflow(makeAlert(), deps);
-
-  assert.ok(!calls.some((c) => c.startsWith("handleIssueTransition")));
-});
-
-test("evaluateAlertWorkflow: 'seen' transition does not notify but still records firing", async () => {
-  const calls: string[] = [];
-  const repo = makeRepoFake({
-    calls,
-    upsertResult: {
-      issue: { id: "issue-3" } as schema.Issue,
-      prevIssueId: "issue-3",
-      prevIssueStatus: "open",
-      inserted: false,
-    },
-  });
-  const deps = makeDeps({ calls, repo });
-
-  await evaluateAlertWorkflow(makeAlert(), deps);
-
-  assert.ok(!calls.some((c) => c.startsWith("handleIssueTransition")));
-  assert.ok(calls.includes("recordFiring:*:firing:issue-3"));
-});
-
-test("evaluateAlertWorkflow: new firing opens an episode pointed at the resolved incident", async () => {
-  const calls: string[] = [];
-  const repo = makeRepoFake({ calls, incidentIdForIssue: "inc-1" });
-  const deps = makeDeps({ calls, repo });
-
-  await evaluateAlertWorkflow(makeAlert(), deps);
-
-  assert.ok(calls.includes("findIncidentIdForIssue:issue-1"));
-  assert.ok(calls.includes("openEpisode:*:inc-1"));
-});
-
-test("evaluateAlertWorkflow: episode write failure is non-fatal — firing is still recorded and the alert is marked evaluated", async () => {
-  const calls: string[] = [];
-  const repo = makeRepoFake({ calls, episodeThrows: true });
-  const deps = makeDeps({ calls, repo });
-
-  await evaluateAlertWorkflow(makeAlert(), deps);
-
-  // The episode op blew up but the paging-critical path is untouched.
-  assert.ok(calls.includes("openEpisode:*:null"));
-  assert.ok(calls.includes("logger.error:alert episode update failed"));
-  assert.ok(calls.includes("recordFiring:*:firing:issue-1"));
-  assert.ok(calls.includes("markEvaluated:alert-1"));
-});
-
-test("evaluateAlertWorkflow: upsert failure propagates so the next tick retries (does NOT record firing or mark evaluated)", async () => {
+test("evaluateAlertWorkflow: issue-upsert failure propagates so the next tick retries", async () => {
   const calls: string[] = [];
   const repo = makeRepoFake({ calls, upsertThrows: true });
   const deps = makeDeps({ calls, repo });
 
   await assert.rejects(evaluateAlertWorkflow(makeAlert(), deps), /boom/);
 
-  // Critical: a firing row with issueId=null + markEvaluated would lock the
-  // alert into a state where nobody is paged AND the next tick won't retry.
+  assert.ok(!calls.some((c) => c.startsWith("recordFiring")));
+  assert.ok(!calls.some((c) => c.startsWith("markEvaluated")));
+});
+
+test("evaluateAlertWorkflow: episode-close failure propagates so recovery is retried next tick", async () => {
+  // If the close were swallowed, recordFiring('ok') would flip the observed
+  // state and the next tick would classify still_ok — the episode would stay
+  // open until the stale-open net caught it on the next breach.
+  const calls: string[] = [];
+  const repo = makeRepoFake({
+    calls,
+    previousStates: new Map([["", "firing"]]),
+    closeEpisodeThrows: true,
+  });
+  const deps = makeDeps({
+    calls,
+    repo,
+    async aggregate() {
+      calls.push("aggregate");
+      return new Map([["", 0]]);
+    },
+  });
+
+  await assert.rejects(evaluateAlertWorkflow(makeAlert(), deps), /close-boom/);
+
   assert.ok(!calls.some((c) => c.startsWith("recordFiring")));
   assert.ok(!calls.some((c) => c.startsWith("markEvaluated")));
 });

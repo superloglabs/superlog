@@ -6,9 +6,12 @@ import { analyzeIssueGrouping } from "./grouping.js";
 import type { EnsureIncidentForIssueResult, IssueIntakeTransition } from "./incidents/intake.js";
 import { ensureIncidentForIssueWorkflow } from "./incidents/intake.js";
 import {
+  findAlertEpisodeForIssue,
   findIncident,
+  findLatestIncidentForAlert,
   findLatestIncidentIssueLink,
   findOpenIncidentCandidates,
+  findOpenIncidentForAlert,
   findProject,
   linkIssueToIncident,
   loadLinkedIncidentIssues,
@@ -31,6 +34,9 @@ export async function ensureIncidentForIssue(
     repo: {
       findLatestIncidentIssueLink,
       findIncident,
+      findAlertEpisodeForIssue,
+      findOpenIncidentForAlert,
+      findLatestIncidentForAlert,
       findOpenIncidentCandidates,
       loadLinkedIncidentIssues,
       findProject,

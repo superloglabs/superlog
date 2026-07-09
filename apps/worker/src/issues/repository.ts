@@ -113,6 +113,56 @@ export async function findIncident(incidentId: string): Promise<schema.Incident 
   });
 }
 
+// The episode an alert-episode issue is 1:1 with (alert_episodes_issue_uniq
+// enforces the 1:1). Carries the alert identity used for same-alert grouping.
+export async function findAlertEpisodeForIssue(
+  issueId: string,
+): Promise<schema.AlertEpisode | undefined> {
+  return db.query.alertEpisodes.findFirst({
+    where: eq(schema.alertEpisodes.issueId, issueId),
+  });
+}
+
+// Newest open incident driven by an episode of the same alert+group — the
+// join target for a new breach while the previous one is still being handled.
+export async function findOpenIncidentForAlert(
+  alertId: string,
+  groupKey: string,
+): Promise<schema.Incident | undefined> {
+  const rows = await db
+    .select({ incident: schema.incidents })
+    .from(schema.alertEpisodes)
+    .innerJoin(schema.incidents, eq(schema.incidents.id, schema.alertEpisodes.incidentId))
+    .where(
+      and(
+        eq(schema.alertEpisodes.alertId, alertId),
+        eq(schema.alertEpisodes.groupKey, groupKey),
+        eq(schema.incidents.status, "open"),
+      ),
+    )
+    .orderBy(desc(schema.alertEpisodes.startedAt))
+    .limit(1);
+  return rows[0]?.incident;
+}
+
+// Newest incident (any status) driven by an episode of the same alert+group —
+// the predecessor a standalone new breach chains to when it's closed.
+export async function findLatestIncidentForAlert(
+  alertId: string,
+  groupKey: string,
+): Promise<schema.Incident | undefined> {
+  const rows = await db
+    .select({ incident: schema.incidents })
+    .from(schema.alertEpisodes)
+    .innerJoin(schema.incidents, eq(schema.incidents.id, schema.alertEpisodes.incidentId))
+    .where(
+      and(eq(schema.alertEpisodes.alertId, alertId), eq(schema.alertEpisodes.groupKey, groupKey)),
+    )
+    .orderBy(desc(schema.alertEpisodes.startedAt))
+    .limit(1);
+  return rows[0]?.incident;
+}
+
 export async function linkIssueToIncident(opts: {
   incident: schema.Incident;
   issue: schema.Issue;

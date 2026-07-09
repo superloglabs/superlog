@@ -10,8 +10,6 @@ export type EvaluationResult = {
 
 export type FiringTransition = "new_firing" | "recovered" | "still_firing" | "still_ok";
 
-export type IssueTransition = "new" | "recurred" | "suppressed" | "seen";
-
 export function compare(
   value: number,
   comparator: schema.AlertComparator,
@@ -31,8 +29,11 @@ export function moreSevereValue(
   return comparator === "gt" ? Math.max(prev, next) : Math.min(prev, next);
 }
 
-export function alertFingerprint(alertId: string, groupKey: string): string {
-  return groupKey ? `alert:${alertId}:${groupKey}` : `alert:${alertId}`;
+// An issue is 1:1 with an alert episode (one contiguous breach period), so the
+// fingerprint is keyed to the episode row — a new breach is a new issue.
+// Pre-episode issues used `alert:<alertId>[:<groupKey>]`.
+export function alertEpisodeFingerprint(episodeId: string): string {
+  return `alert-episode:${episodeId}`;
 }
 
 export function serviceFromGroup(groupBy: string | null, groupKey: string): string | null {
@@ -96,21 +97,6 @@ export function classifyFiringTransition(
     return prevState === "firing" ? "still_firing" : "new_firing";
   }
   return prevState === "firing" ? "recovered" : "still_ok";
-}
-
-export function classifyIssueTransition(
-  prevIssueId: string | null,
-  prevIssueStatus: string | null,
-  inserted = false,
-): IssueTransition {
-  // A genuinely inserted row is always new — see telemetry/ingest.ts for the
-  // pre-0082 migration-window case where `prev` can show a stale silenced row.
-  if (inserted || prevIssueId === null) return "new";
-  if (prevIssueStatus === "silenced" || prevIssueStatus === "under_observation") {
-    return "suppressed";
-  }
-  if (prevIssueStatus === "resolved") return "recurred";
-  return "seen";
 }
 
 export function buildAlertIssueSample(

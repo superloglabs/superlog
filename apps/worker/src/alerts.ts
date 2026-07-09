@@ -9,7 +9,9 @@ const log = logger.child({ scope: "alerts" });
 
 export async function tickAlerts(
   ch: ClickHouseClient,
-  handleIssueTransition: (issue: schema.Issue, transition: "new" | "recurred") => Promise<void>,
+  // Every episode is a fresh issue, so the only transition an alert can raise
+  // is "new" — recurrence chaining is decided inside incident intake.
+  handleIssueTransition: (issue: schema.Issue, transition: "new") => Promise<void>,
 ): Promise<number> {
   const repo = createAlertRepository(db);
   const metrics = createAlertMetricsRepository(ch);

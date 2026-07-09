@@ -140,6 +140,32 @@ test("resolve with silence outcome silences current issues", async () => {
   }
 });
 
+test("silence cascade resolves alert-episode issues plainly (never silences them)", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { issue, incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "alert-episode:ep-1",
+    });
+    await db.update(schema.issues).set({ kind: "alert" }).where(eq(schema.issues.id, issue.id));
+    await createIncidentLifecycle(db).resolve({
+      incidentId: incident.id,
+      kind: "dashboard_manual",
+      reasonCode: "not_an_issue",
+      reasonText: null,
+      issueOutcome: { kind: "silence" },
+    });
+    const after = one(await db.select().from(schema.issues).where(eq(schema.issues.id, issue.id)));
+    assert.equal(after.status, "resolved");
+    assert.equal(after.silencedAt, null);
+    const kinds = await eventKinds(db, incident.id);
+    assert.ok(kinds.includes("issue_resolved"));
+    assert.ok(!kinds.includes("issue_silenced"));
+  } finally {
+    await client.close();
+  }
+});
+
 test("resolve with observe outcome stores the trigger and baseline", async () => {
   const { db, client } = await freshDb();
   try {

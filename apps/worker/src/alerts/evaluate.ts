@@ -3,12 +3,9 @@ import {
   type EvaluationRange,
   type EvaluationResult,
   type FiringState,
-  type IssueTransition,
-  alertFingerprint,
   buildAlertIssueSample,
   buildIssueTitle,
   classifyFiringTransition,
-  classifyIssueTransition,
   deriveEvaluations,
   evaluationRange,
   serviceFromGroup,
@@ -24,7 +21,7 @@ export type AlertLogger = {
 export type EvaluateAlertDeps = {
   repo: AlertRepository;
   aggregate(alert: schema.Alert, range: EvaluationRange): Promise<Map<string, number>>;
-  handleIssueTransition(issue: schema.Issue, transition: "new" | "recurred"): Promise<void>;
+  handleIssueTransition(issue: schema.Issue, transition: "new"): Promise<void>;
   logger: AlertLogger;
   now(): Date;
 };
@@ -45,6 +42,14 @@ export async function evaluateAlertWorkflow(
   await deps.repo.markEvaluated(alert.id, now);
 }
 
+// Note: failures anywhere in the episode/issue/incident chain propagate to the
+// caller intentionally. Swallowing them would record a firing row and stamp
+// `lastEvaluatedAt`, so the alert would never re-attempt the chain on the next
+// tick — a firing alert would page nobody. By throwing, the outer per-alert
+// handler in `runAlertsTick` logs the failure and skips markEvaluated, so the
+// next tick re-evaluates and retries. Every step is idempotent: the episode
+// upsert folds into the one open row, the issue upsert is keyed to the episode
+// fingerprint, and incident intake re-lands on the existing link.
 async function processEvaluation(
   alert: schema.Alert,
   evalResult: EvaluationResult,
@@ -72,18 +77,16 @@ async function processEvaluation(
       },
       "alert firing",
     );
-    issueId = await upsertAndNotify(alert, evalResult, evaluatedAt, deps);
-    await openEpisodeBestEffort(alert, evalResult, evaluatedAt, issueId, deps);
+    issueId = await openEpisodeAndNotify(alert, evalResult, evaluatedAt, deps);
   } else if (transition === "still_firing") {
-    await runEpisodeBestEffort(alert, evalResult.groupKey, deps, () =>
-      deps.repo.touchOpenEpisode({
-        alertId: alert.id,
-        groupKey: evalResult.groupKey,
-        observedValue: evalResult.value,
-        comparator: alert.comparator,
-        evaluatedAt,
-      }),
-    );
+    await deps.repo.touchOpenEpisode({
+      alertId: alert.id,
+      groupKey: evalResult.groupKey,
+      observedValue: evalResult.value,
+      comparator: alert.comparator,
+      evaluatedAt,
+      lastSample: buildAlertIssueSample(alert, evalResult.value, evalResult.groupKey, evaluatedAt),
+    });
   } else if (transition === "recovered") {
     deps.logger.info(
       {
@@ -96,13 +99,11 @@ async function processEvaluation(
       },
       "alert recovered",
     );
-    await runEpisodeBestEffort(alert, evalResult.groupKey, deps, () =>
-      deps.repo.closeOpenEpisode({
-        alertId: alert.id,
-        groupKey: evalResult.groupKey,
-        endedAt: evaluatedAt,
-      }),
-    );
+    await deps.repo.closeOpenEpisode({
+      alertId: alert.id,
+      groupKey: evalResult.groupKey,
+      endedAt: evaluatedAt,
+    });
   }
 
   await deps.repo.recordFiring({
@@ -115,88 +116,40 @@ async function processEvaluation(
   });
 }
 
-// Episodes are a secondary, read-side record of a contiguous activation. They
-// must never break the paging-critical issue/incident path or the
-// recordFiring/markEvaluated invariant, so every episode write is best-effort:
-// a failure is logged and swallowed rather than propagated.
-async function runEpisodeBestEffort(
-  alert: schema.Alert,
-  groupKey: string,
-  deps: EvaluateAlertDeps,
-  op: () => Promise<void>,
-): Promise<void> {
-  try {
-    await op();
-  } catch (err) {
-    deps.logger.error(
-      { err, alert_id: alert.id, project_id: alert.projectId, group_key: groupKey },
-      "alert episode update failed",
-    );
-  }
-}
-
-// Open a fresh episode for a new firing, pointing it at the issue just raised
-// and the incident that issue resolves to (created/linked synchronously inside
-// upsertAndNotify before we get here).
-async function openEpisodeBestEffort(
-  alert: schema.Alert,
-  evalResult: EvaluationResult,
-  evaluatedAt: Date,
-  issueId: string,
-  deps: EvaluateAlertDeps,
-): Promise<void> {
-  await runEpisodeBestEffort(alert, evalResult.groupKey, deps, async () => {
-    const incidentId = await deps.repo.findIncidentIdForIssue(issueId);
-    await deps.repo.openEpisode({
-      alertId: alert.id,
-      projectId: alert.projectId,
-      groupKey: evalResult.groupKey,
-      startedAt: evaluatedAt,
-      observedValue: evalResult.value,
-      comparator: alert.comparator,
-      evaluationIntervalSeconds: alert.evaluationIntervalSeconds,
-      issueId,
-      incidentId,
-    });
-  });
-}
-
-// Note: failures here propagate to the caller intentionally. Swallowing
-// them would record a firing row with `issueId = null` and stamp
-// `lastEvaluatedAt`, so the alert would never re-attempt the upsert on
-// the next tick — a firing alert would page nobody. By throwing, the
-// outer per-alert handler in `runAlertsTick` logs the failure and skips
-// markEvaluated, so the next tick re-evaluates and retries.
-async function upsertAndNotify(
+// The breach (episode) is the trigger entity: open it first — the partial
+// unique index over open rows makes that the dedup arbiter — then raise its
+// 1:1 issue and hand it to incident intake. Finally point the episode at the
+// incident the issue landed on.
+async function openEpisodeAndNotify(
   alert: schema.Alert,
   evalResult: EvaluationResult,
   evaluatedAt: Date,
   deps: EvaluateAlertDeps,
 ): Promise<string> {
-  const fingerprint = alertFingerprint(alert.id, evalResult.groupKey);
-  const title = buildIssueTitle(alert, evalResult.value, evalResult.groupKey);
-  const service = serviceFromGroup(alert.groupBy, evalResult.groupKey);
-  const lastSample = buildAlertIssueSample(
-    alert,
-    evalResult.value,
-    evalResult.groupKey,
-    evaluatedAt,
-  );
-  const upsert = await deps.repo.upsertAlertIssue({
+  const { episodeId } = await deps.repo.openOrContinueEpisode({
+    alertId: alert.id,
     projectId: alert.projectId,
-    fingerprint,
-    title,
-    service,
-    lastSample,
+    groupKey: evalResult.groupKey,
+    startedAt: evaluatedAt,
+    observedValue: evalResult.value,
+    comparator: alert.comparator,
+    evaluationIntervalSeconds: alert.evaluationIntervalSeconds,
+  });
+  const upsert = await deps.repo.upsertEpisodeIssue({
+    episodeId,
+    projectId: alert.projectId,
+    title: buildIssueTitle(alert, evalResult.value, evalResult.groupKey),
+    service: serviceFromGroup(alert.groupBy, evalResult.groupKey),
+    lastSample: buildAlertIssueSample(alert, evalResult.value, evalResult.groupKey, evaluatedAt),
     evaluatedAt,
   });
-  const issueTransition: IssueTransition = classifyIssueTransition(
-    upsert.prevIssueId,
-    upsert.prevIssueStatus,
-    upsert.inserted,
-  );
-  if (issueTransition === "new" || issueTransition === "recurred") {
-    await deps.handleIssueTransition(upsert.issue, issueTransition);
+  // Always notify, even when the upsert folded into an existing row: intake is
+  // idempotent (it re-lands on the issue's incident link), and a retried tick
+  // whose previous attempt died before intake must not skip it.
+  await deps.handleIssueTransition(upsert.issue, "new");
+  const incidentId = await deps.repo.findIncidentIdForIssue(upsert.issue.id);
+  if (incidentId) {
+    await deps.repo.setEpisodeIncident(episodeId, incidentId);
   }
   return upsert.issue.id;
 }

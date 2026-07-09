@@ -2,11 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { schema } from "@superlog/db";
 import {
-  alertFingerprint,
+  alertEpisodeFingerprint,
   buildAlertIssueSample,
   buildIssueTitle,
   classifyFiringTransition,
-  classifyIssueTransition,
   compare,
   deriveEvaluations,
   evaluationRange,
@@ -30,9 +29,11 @@ test("moreSevereValue keeps the worst value per comparator direction", () => {
   assert.equal(moreSevereValue(3, 10, "lt"), 3);
 });
 
-test("alertFingerprint includes group key only when present", () => {
-  assert.equal(alertFingerprint("a-1", ""), "alert:a-1");
-  assert.equal(alertFingerprint("a-1", "checkout"), "alert:a-1:checkout");
+test("alertEpisodeFingerprint keys the issue to one episode", () => {
+  assert.equal(
+    alertEpisodeFingerprint("5e41fa44-173a-4a06-808c-0144c0f87dbb"),
+    "alert-episode:5e41fa44-173a-4a06-808c-0144c0f87dbb",
+  );
 });
 
 test("serviceFromGroup returns the group key only for service-grouped alerts", () => {
@@ -142,18 +143,6 @@ test("classifyFiringTransition covers all combinations", () => {
   assert.equal(classifyFiringTransition("firing", false), "recovered");
   assert.equal(classifyFiringTransition("ok", false), "still_ok");
   assert.equal(classifyFiringTransition(null, false), "still_ok");
-});
-
-test("classifyIssueTransition distinguishes new, recurred, suppressed, seen", () => {
-  assert.equal(classifyIssueTransition(null, null), "new");
-  assert.equal(classifyIssueTransition("iss-1", "resolved"), "recurred");
-  assert.equal(classifyIssueTransition("iss-1", "silenced"), "suppressed");
-  assert.equal(classifyIssueTransition("iss-1", "under_observation"), "suppressed");
-  assert.equal(classifyIssueTransition("iss-1", "open"), "seen");
-  assert.equal(classifyIssueTransition("iss-1", null), "seen");
-  // A real INSERT is always new, even when a stale prev row was visible
-  // (pre-0082 schema: silenced row invisible to the partial unique index).
-  assert.equal(classifyIssueTransition("iss-1", "silenced", true), "new");
 });
 
 test("buildAlertIssueSample carries service only for service-grouped alerts", () => {
