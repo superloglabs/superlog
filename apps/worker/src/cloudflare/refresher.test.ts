@@ -139,6 +139,30 @@ test("counts an error and saves nothing when a refresh is rejected, without bloc
   assert.equal(saved[0]?.id, "live");
 });
 
+test("a saveTokens failure aborts the pass (never rotate-and-lose across installs)", async () => {
+  // A refresh rotates the token on Cloudflare's side; if the save then fails
+  // (DB outage), continuing would rotate every remaining install and lose each
+  // replacement. So the pass must abort after the first save failure.
+  const rows = [installation({ id: "a" }), installation({ id: "b", refreshToken: "rt-b" })];
+  const store: CloudflareRefresherStore = {
+    async listActiveInstallations() {
+      return rows;
+    },
+    async saveTokens() {
+      throw new Error("db down");
+    },
+  };
+  const { fetchImpl, calls } = fakeTokenFetch({
+    json: { access_token: "at", refresh_token: "rt2", expires_in: 57600 },
+  });
+  await assert.rejects(
+    runCloudflareRefreshOnce({ store, config: CONFIG, log: LOGGER, fetchImpl, now: () => NOW }),
+    /db down/,
+  );
+  // Only the first install's token was requested; the pass aborted before the second.
+  assert.equal(calls.length, 1);
+});
+
 test("a thrown fetch on one install doesn't abort the pass", async () => {
   // First install's token request throws (network blip); the second still refreshes.
   const rows = [installation({ id: "boom" }), installation({ id: "live", refreshToken: "rt-2" })];

@@ -23,7 +23,7 @@ import {
   mintApiKey,
   schema,
 } from "@superlog/db";
-import { and, desc, eq, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import {
@@ -158,33 +158,30 @@ async function deleteRemoteDestinations(input: {
 // point we actually need it.
 const TOKEN_REFRESH_MARGIN_MS = 2 * 60 * 1000;
 
-/**
- * Persist a refreshed (possibly rotated) token pair. Refresh tokens may rotate
- * on use, so we keep the replacement, falling back to the prior one when the
- * response didn't return a new one — losing it would strand the install.
- */
-async function persistRefreshedTokens(
-  rowId: string,
-  refreshed: { accessToken: string; refreshToken: string | null; expiresIn: number | null },
-  previousRefreshToken: string,
-): Promise<void> {
-  const accessCipher = encryptIntegrationSecret(refreshed.accessToken);
-  const refreshCipher = encryptIntegrationSecret(refreshed.refreshToken ?? previousRefreshToken);
-  const tokenExpiresAt =
-    refreshed.expiresIn != null ? new Date(Date.now() + refreshed.expiresIn * 1000) : null;
-  await db
-    .update(schema.cloudflareInstallations)
-    .set({
-      accessTokenCiphertext: accessCipher.ciphertext,
-      accessTokenNonce: accessCipher.nonce,
-      accessTokenKeyVersion: accessCipher.keyVersion,
-      refreshTokenCiphertext: refreshCipher.ciphertext,
-      refreshTokenNonce: refreshCipher.nonce,
-      refreshTokenKeyVersion: refreshCipher.keyVersion,
-      tokenExpiresAt,
-      updatedAt: new Date(),
-    })
-    .where(eq(schema.cloudflareInstallations.id, rowId));
+/** Decrypt the access token stored on an installation row. */
+function decryptAccessToken(row: CloudflareInstallationRow): string {
+  return decryptIntegrationSecret({
+    ciphertext: row.accessTokenCiphertext,
+    nonce: row.accessTokenNonce,
+    keyVersion: row.accessTokenKeyVersion,
+  });
+}
+
+/** Decrypt the refresh token stored on a row, or null when there isn't one. */
+function decryptRefreshToken(row: CloudflareInstallationRow): string | null {
+  return row.refreshTokenCiphertext && row.refreshTokenNonce
+    ? decryptIntegrationSecret({
+        ciphertext: row.refreshTokenCiphertext,
+        nonce: row.refreshTokenNonce,
+        keyVersion: row.refreshTokenKeyVersion ?? 1,
+      })
+    : null;
+}
+
+/** A known expiry that's still comfortably in the future — safe to use as-is. */
+function tokenStillFresh(tokenExpiresAt: Date | null): boolean {
+  const expiresAt = tokenExpiresAt?.getTime() ?? null;
+  return expiresAt !== null && expiresAt - Date.now() > TOKEN_REFRESH_MARGIN_MS;
 }
 
 /**
@@ -193,50 +190,80 @@ async function persistRefreshedTokens(
  * manageable after connect: the delegated access token lives ~16h, but the
  * offline-access grant hands us a long-lived refresh token, so any server-side
  * call (teardown today; reconcile/inspect later) renews right before use rather
- * than relying on a scheduled refresh. A rotated refresh token is persisted
- * immediately. Falls back to the stored (possibly dead) token when there's
- * nothing to refresh with — a legacy install with no refresh token, or an
- * unconfigured OAuth client — so best-effort callers still get to try. Throws
- * only when the stored access token itself can't be decrypted.
+ * than relying on a scheduled refresh.
+ *
+ * The refresh token ROTATES on every use, so two concurrent refreshes of the
+ * same installation would each try to redeem the same token — the loser is
+ * rejected and, under OAuth refresh-token reuse detection, that can revoke the
+ * whole grant. So the refresh runs inside a per-installation Postgres advisory
+ * lock: a second caller (a concurrent management op, or an overlapping
+ * keep-alive pass) blocks on the lock, then re-reads and reuses the token the
+ * winner just persisted instead of redeeming a stale one. The transaction is
+ * held across the token HTTP call, which is fine for these rare, non-latency-
+ * sensitive paths (uninstall / account switch).
+ *
+ * Falls back to the stored (possibly dead) token when there's nothing to
+ * refresh with — a legacy install with no refresh token, or an unconfigured
+ * OAuth client — so best-effort callers still get to try. Throws only when the
+ * stored access token itself can't be decrypted.
  */
 async function freshAccessToken(
   row: CloudflareInstallationRow,
   config: CloudflareConnectConfig | null,
   fetchImpl: typeof fetch,
 ): Promise<string> {
-  const accessToken = decryptIntegrationSecret({
-    ciphertext: row.accessTokenCiphertext,
-    nonce: row.accessTokenNonce,
-    keyVersion: row.accessTokenKeyVersion,
-  });
-  // Only a known, comfortably-future expiry counts as fresh. An unknown
-  // (null) expiry falls through to the refresh path so teardown doesn't reuse a
-  // possibly-dead access token when we actually hold a refresh token.
-  const expiresAt = row.tokenExpiresAt?.getTime() ?? null;
-  if (expiresAt !== null && expiresAt - Date.now() > TOKEN_REFRESH_MARGIN_MS) {
-    return accessToken;
-  }
+  const accessToken = decryptAccessToken(row);
+  if (tokenStillFresh(row.tokenExpiresAt)) return accessToken;
+  // Can't refresh without the OAuth client, or without a refresh token.
+  if (!config || !(row.refreshTokenCiphertext && row.refreshTokenNonce)) return accessToken;
 
-  const refreshToken =
-    row.refreshTokenCiphertext && row.refreshTokenNonce
-      ? decryptIntegrationSecret({
-          ciphertext: row.refreshTokenCiphertext,
-          nonce: row.refreshTokenNonce,
-          keyVersion: row.refreshTokenKeyVersion ?? 1,
-        })
-      : null;
-  if (!refreshToken || !config) return accessToken;
-
-  const refreshed = await refreshAccessToken({ config, refreshToken, fetchImpl });
-  if (!refreshed.ok) {
-    log.warn(
-      { account_id: row.accountId, error: refreshed.error },
-      "cloudflare access token refresh failed; using stored token",
+  return db.transaction(async (tx) => {
+    // Serialize refresh for this installation across processes/requests so the
+    // rotating token is redeemed exactly once. Namespaced two-key lock so it
+    // can't collide with advisory locks elsewhere.
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtext('cloudflare_installations'), hashtext(${row.id}))`,
     );
-    return accessToken;
-  }
-  await persistRefreshedTokens(row.id, refreshed, refreshToken);
-  return refreshed.accessToken;
+    const cur = await tx.query.cloudflareInstallations.findFirst({
+      where: eq(schema.cloudflareInstallations.id, row.id),
+    });
+    if (!cur) return accessToken; // row vanished — fall back to our snapshot
+    const curAccess = decryptAccessToken(cur);
+    // Someone refreshed it while we waited for the lock — reuse their token.
+    if (tokenStillFresh(cur.tokenExpiresAt)) return curAccess;
+    const refreshToken = decryptRefreshToken(cur);
+    if (!refreshToken) return curAccess;
+
+    const refreshed = await refreshAccessToken({ config, refreshToken, fetchImpl });
+    if (!refreshed.ok) {
+      log.warn(
+        { account_id: cur.accountId, error: refreshed.error },
+        "cloudflare access token refresh failed; using stored token",
+      );
+      return curAccess;
+    }
+
+    const accessCipher = encryptIntegrationSecret(refreshed.accessToken);
+    // Rotating refresh tokens: keep the replacement, falling back to the prior
+    // one if the response didn't rotate it — losing it would strand the install.
+    const refreshCipher = encryptIntegrationSecret(refreshed.refreshToken ?? refreshToken);
+    const tokenExpiresAt =
+      refreshed.expiresIn != null ? new Date(Date.now() + refreshed.expiresIn * 1000) : null;
+    await tx
+      .update(schema.cloudflareInstallations)
+      .set({
+        accessTokenCiphertext: accessCipher.ciphertext,
+        accessTokenNonce: accessCipher.nonce,
+        accessTokenKeyVersion: accessCipher.keyVersion,
+        refreshTokenCiphertext: refreshCipher.ciphertext,
+        refreshTokenNonce: refreshCipher.nonce,
+        refreshTokenKeyVersion: refreshCipher.keyVersion,
+        tokenExpiresAt,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.cloudflareInstallations.id, cur.id));
+    return refreshed.accessToken;
+  });
 }
 
 /**
