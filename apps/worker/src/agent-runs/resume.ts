@@ -173,7 +173,7 @@ async function coldStartFallback(
 
   const result = await requestFollowUpAgentRun(db, {
     incidentId: ctx.incident.id,
-    trigger: origin?.channel === "pr_comment" ? "pr_comment" : "slack_reply",
+    trigger: origin?.channel ?? "slack_reply",
     interaction: origin ?? {
       channel: "slack_reply",
       author: null,

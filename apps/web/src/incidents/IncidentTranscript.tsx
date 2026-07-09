@@ -61,7 +61,12 @@ type TranscriptItem =
   // "Started investigation" node with the raw prompt tucked behind a toggle.
   | { type: "start"; id: string; prompt: string };
 
-type FeedItem = TranscriptItem | { type: "lifecycle"; id: string; event: IncidentEvent };
+type FeedItem =
+  | TranscriptItem
+  // A human talking to the investigation (incident chat, Slack thread reply, PR
+  // comment), mirrored into the timeline as a chat message from whoever sent it.
+  | { type: "human"; id: string; author: string | null; text: string; createdAt: string }
+  | { type: "lifecycle"; id: string; event: IncidentEvent };
 
 const TOOL_USE_KINDS = new Set(["agent.tool_use", "agent.mcp_tool_use", "agent.custom_tool_use"]);
 const TOOL_RESULT_KINDS = new Set([
@@ -92,6 +97,22 @@ export function buildActivityFeed(events: IncidentEvent[]): FeedItem[] {
 
   const items: FeedItem[] = [];
   for (const e of events) {
+    // A human talking to the investigation (incident chat, Slack thread reply,
+    // PR comment) — rendered as a chat message, not a one-line lifecycle note.
+    if (e.kind === "human_reply") {
+      const origin = (e.detail as { origin?: { author?: string | null } } | null)?.origin;
+      const text = (e.summary ?? "").trim();
+      if (text) {
+        items.push({
+          type: "human",
+          id: e.id,
+          author: origin?.author ?? null,
+          text,
+          createdAt: e.createdAt,
+        });
+      }
+      continue;
+    }
     if (e.kind === "agent.message") {
       const text = (e.summary ?? "").trim();
       if (text) items.push({ type: "message", id: e.id, text });
@@ -145,7 +166,7 @@ export function buildActivityFeed(events: IncidentEvent[]): FeedItem[] {
 // (the drawer's separate timeline, summary-cited telemetry).
 export function buildTranscript(events: IncidentEvent[]): TranscriptItem[] {
   return buildActivityFeed(events).filter(
-    (item): item is TranscriptItem => item.type !== "lifecycle",
+    (item): item is TranscriptItem => item.type !== "lifecycle" && item.type !== "human",
   );
 }
 
@@ -183,6 +204,7 @@ export function IncidentActivityFeed({
 
   const renderItem = (item: FeedItem) => {
     if (item.type === "message") return <MessageEntry key={item.id} text={item.text} />;
+    if (item.type === "human") return <HumanEntry key={item.id} item={item} />;
     if (item.type === "telemetry") return <TelemetryEntry key={item.id} item={item} />;
     if (item.type === "tool") return <ToolEntry key={item.id} item={item} />;
     if (item.type === "start") return <StartEntry key={item.id} prompt={item.prompt} />;
@@ -414,6 +436,24 @@ function MessageEntry({ text }: { text: string }) {
       </Node>
       <div className="mb-1.5 text-[12px] font-semibold text-fg">Investigation agent</div>
       <div className="whitespace-pre-wrap text-[14px] leading-relaxed text-fg/85">{text}</div>
+    </div>
+  );
+}
+
+// A human message to the investigation, mirrored from whichever channel it
+// arrived on (incident chat, Slack thread, PR comment).
+function HumanEntry({ item }: { item: Extract<FeedItem, { type: "human" }> }) {
+  return (
+    <div className="relative mb-6">
+      <Node>
+        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+        <circle cx="12" cy="7" r="4" />
+      </Node>
+      <div className="mb-1.5 flex items-baseline gap-2">
+        <span className="text-[12px] font-semibold text-fg">{item.author ?? "Teammate"}</span>
+        <span className="text-[11px] text-subtle">{fmtRelative(item.createdAt)}</span>
+      </div>
+      <div className="whitespace-pre-wrap text-[14px] leading-relaxed text-fg/85">{item.text}</div>
     </div>
   );
 }

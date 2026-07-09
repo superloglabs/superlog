@@ -2227,6 +2227,51 @@ export function useIncident(projectId: string | undefined, incidentId: string | 
   });
 }
 
+export type IncidentChatSendResult = {
+  ok: true;
+  duplicate: boolean;
+  action: "resume" | "steer" | "cold_start" | null;
+};
+
+// Reasons recordInboundInteraction can decline a chat message (HTTP 409).
+const INCIDENT_CHAT_SKIP_MESSAGES: Record<string, string> = {
+  agent_runs_disabled: "Agent investigations are disabled for this project.",
+  no_prior_run: "There's no investigation to talk to yet — start one first.",
+  follow_up_cap_reached: "This incident has reached its follow-up limit.",
+  prior_run_too_old: "The last investigation is too old to continue.",
+  run_active: "The investigation is busy right now — try again in a moment.",
+};
+
+export function incidentChatErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const jsonStart = raw.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const body = JSON.parse(raw.slice(jsonStart)) as { reason?: string; message?: string };
+      const key = body.reason ?? body.message;
+      if (key && INCIDENT_CHAT_SKIP_MESSAGES[key]) return INCIDENT_CHAT_SKIP_MESSAGES[key];
+    } catch {
+      // fall through to the raw message
+    }
+  }
+  return `Message failed to send: ${raw}`;
+}
+
+export function useSendIncidentChatMessage(projectId: string, incidentId: string) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { text: string; messageId: string }) =>
+      fetcher<IncidentChatSendResult>(`/api/projects/${projectId}/incidents/${incidentId}/chat`, {
+        method: "POST",
+        body: JSON.stringify(vars),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["incident", projectId, incidentId] });
+    },
+  });
+}
+
 export function useIncidentPullRequests(
   projectId: string | undefined,
   incidentId: string | undefined,
