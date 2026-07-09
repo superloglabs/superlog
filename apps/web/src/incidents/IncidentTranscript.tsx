@@ -775,7 +775,13 @@ function CodeEntry({ item }: { item: Extract<TranscriptItem, { type: "tool" }> }
 }
 
 function MemoryEntry({ item }: { item: Extract<TranscriptItem, { type: "memory" }> }) {
-  const label = item.action === "updated" ? "Updated memory" : "Saved memory";
+  const label = item.isError
+    ? item.action === "updated"
+      ? "Memory update failed"
+      : "Memory save failed"
+    : item.action === "updated"
+      ? "Updated memory"
+      : "Saved memory";
   const fallbackTitle = item.memoryId ? `Memory ${item.memoryId}` : "Project memory";
   const title = item.title ?? fallbackTitle;
   const result = (item.result ?? "").trim();
