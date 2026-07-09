@@ -1523,6 +1523,9 @@ export async function joinSlackChannel(
         authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ channel: channelId }),
+      // Callers sit on user-facing requests (OAuth redirect, route PUT); a
+      // Slack stall must fall through to best-effort, not hang the response.
+      signal: AbortSignal.timeout(5000),
     });
     const data = (await res.json()) as { ok: boolean; error?: string };
     if (!data.ok) return { ok: false, error: data.error ?? "unknown" };

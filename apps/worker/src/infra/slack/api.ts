@@ -83,6 +83,9 @@ export async function joinSlackChannel(target: SlackTarget): Promise<SlackJoinRe
         authorization: `Bearer ${target.botToken}`,
       },
       body: JSON.stringify({ channel: target.channelId }),
+      // Pre-post path: a Slack stall must degrade to the soft-failure branch,
+      // not hold up the notification (fetch has no default timeout).
+      signal: AbortSignal.timeout(5000),
     });
     const data = (await res.json()) as { ok: boolean; error?: string };
     if (!data.ok) {
@@ -107,6 +110,9 @@ export async function fetchChannelMembership(target: SlackTarget): Promise<boole
     url.searchParams.set("channel", target.channelId);
     const res = await fetch(url, {
       headers: { authorization: `Bearer ${target.botToken}` },
+      // Pre-post path, same as the join above: bounded so a stall degrades to
+      // "membership unknown" instead of delaying the notification.
+      signal: AbortSignal.timeout(5000),
     });
     const data = (await res.json()) as {
       ok: boolean;
