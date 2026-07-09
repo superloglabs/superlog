@@ -121,6 +121,9 @@ const deps: AgentChatWorkflowDeps = {
     }
     await postReplyExactlyOnce(chat, text, dedupeId, 0);
   },
+  log(event) {
+    log.info(event, "agent chat tick decision");
+  },
   async meterTurn(chat, snapshot) {
     const project = await db.query.projects.findFirst({
       where: eq(schema.projects.id, chat.projectId),

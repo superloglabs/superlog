@@ -59,6 +59,9 @@ function snapshot(overrides: Partial<AgentRunnerSnapshot> = {}): AgentRunnerSnap
   return {
     sessionId: "session-1",
     status: "idle",
+    // Default represents a genuinely finished turn so the idle-close tests
+    // stay meaningful; non-terminal idles are exercised explicitly below.
+    stopReason: { type: "end_turn", eventIds: [] },
     activeSeconds: 30,
     events: [],
     result: null,
@@ -251,6 +254,41 @@ test("idle turn with no reply and no last message posts the no-answer text", asy
   await syncRunningAgentChat(chat({ state: "running", providerSessionId: "session-1" }), h.deps);
 
   assert.deepEqual(h.replies, [CHAT_NO_ANSWER_TEXT]);
+});
+
+test("idle awaiting a pending reply keeps running instead of posting the fallback", async () => {
+  // The agent emitted send_slack_reply this tick; the session sits idle with
+  // requires_action until the next dispatch acks it. Closing here would strand
+  // the reply and post the no-answer text. Keep the chat running.
+  const h = makeHarness({
+    pending: [],
+    repliesThisTurn: 0,
+    snapshot: snapshot({
+      status: "idle",
+      stopReason: { type: "requires_action", eventIds: ["sevt_reply"] },
+    }),
+  });
+  await syncRunningAgentChat(chat({ state: "running", providerSessionId: "session-1" }), h.deps);
+
+  assert.deepEqual(h.replies, []);
+  assert.ok(!h.updates.some((u) => u.patch.state === "idle"));
+  assert.ok(!h.calls.includes("meterTurn"));
+  const kept = h.updates.find((u) => u.whenState?.[0] === "running");
+  assert.ok(kept);
+});
+
+test("a freshly-started session that has not idled yet keeps running", async () => {
+  // First sync can fire before session.status_running; the session reads idle
+  // with no stop_reason. Treating that as a finished turn was the original bug.
+  const h = makeHarness({
+    pending: [],
+    repliesThisTurn: 0,
+    snapshot: snapshot({ status: "idle", stopReason: null, latestMessage: null }),
+  });
+  await syncRunningAgentChat(chat({ state: "running", providerSessionId: "session-1" }), h.deps);
+
+  assert.deepEqual(h.replies, []);
+  assert.ok(!h.updates.some((u) => u.patch.state === "idle"));
 });
 
 test("messages arriving mid-turn steer the live session and stay running", async () => {
