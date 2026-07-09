@@ -22,6 +22,10 @@ export async function updateIssueGrouping(
     source?: IssueGroupingSource;
     reason?: string | null;
     incrementAttempt?: boolean;
+    // Only apply when the current state is 'pending' — used by a losing
+    // concurrent-intake racer to clear its own in-flight marker without
+    // clobbering the winner's recorded grouping verdict.
+    onlyIfPending?: boolean;
   },
 ): Promise<void> {
   await db
@@ -35,7 +39,11 @@ export async function updateIssueGrouping(
         ? { groupingAttemptCount: sql`${schema.issues.groupingAttemptCount} + 1` }
         : {}),
     })
-    .where(eq(schema.issues.id, issueId));
+    .where(
+      opts.onlyIfPending
+        ? and(eq(schema.issues.id, issueId), eq(schema.issues.groupingState, "pending"))
+        : eq(schema.issues.id, issueId),
+    );
 }
 
 export async function findOpenIncidentCandidates(

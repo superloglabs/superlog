@@ -62,6 +62,9 @@ export type IntakeRepository = {
       source?: IssueGroupingSource;
       reason?: string | null;
       incrementAttempt?: boolean;
+      // Only apply when the current state is 'pending' (see the losing-racer
+      // path in the serialized create section).
+      onlyIfPending?: boolean;
     },
   ): Promise<void>;
 };
@@ -217,6 +220,15 @@ export async function ensureIncidentForIssueWorkflow(
         if (existing.status === "open") {
           await deps.repo.touchIncidentLastSeen(existing.id, issue.lastSeen);
         }
+        // This losing invocation may have written 'pending' during its own
+        // grouping analysis, possibly AFTER the winner recorded its verdict —
+        // clear it (and only it) so the issue can't end up stuck pending.
+        await deps.repo.updateIssueGrouping(issue.id, {
+          state: "grouped",
+          source: "heuristic",
+          reason: "Concurrent intake: another evaluation already linked this issue.",
+          onlyIfPending: true,
+        });
         return {
           incident: existing,
           createdIncident: false,
