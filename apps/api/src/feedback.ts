@@ -161,11 +161,17 @@ export async function recordFeedback(input: {
   refRepo: string | null;
   source: schema.FeedbackSource;
   body: string;
+  rating?: schema.FeedbackRating | null;
   authorUserId: string | null;
   authorExternal: schema.FeedbackAuthorExternal | null;
   orgId: string | null;
   projectId: string | null;
-}): Promise<void> {
+  // The Slack rating click records a bare 👍/👎 first, then opens an optional
+  // detail modal — we defer the follow-up offer to that modal's submit so a
+  // thumbs-only click doesn't spawn a "run follow-up" prompt. Defaults on to
+  // preserve every existing caller's behavior.
+  offerFollowUp?: boolean;
+}): Promise<schema.Feedback | undefined> {
   const [row] = await db
     .insert(schema.feedback)
     .values({
@@ -174,6 +180,7 @@ export async function recordFeedback(input: {
       refRepo: input.refRepo,
       source: input.source,
       body: input.body,
+      rating: input.rating ?? null,
       authorUserId: input.authorUserId,
       authorExternal: input.authorExternal,
       orgId: input.orgId,
@@ -185,6 +192,7 @@ export async function recordFeedback(input: {
       feedback_id: row?.id,
       kind: input.kind,
       source: input.source,
+      rating: input.rating ?? undefined,
       ref_id: input.refId,
       author_user_id: input.authorUserId,
     },
@@ -197,10 +205,40 @@ export async function recordFeedback(input: {
     // Confirm-gated follow-up: offer a "Run follow-up" button in the
     // incident's Slack thread (no-op for pr_comment feedback, which
     // auto-triggers from the webhook path instead).
-    void offerFollowUpForFeedback(row).catch((err) => {
-      log.warn({ err, feedback_id: row.id }, "follow-up offer failed");
-    });
+    if (input.offerFollowUp !== false) {
+      void offerFollowUpForFeedback(row).catch((err) => {
+        log.warn({ err, feedback_id: row.id }, "follow-up offer failed");
+      });
+    }
   }
+  return row;
+}
+
+// Attach free-form detail typed into the optional modal that follows a 👍/👎
+// rating click. Updates the existing rating row in place (keeping the rating)
+// rather than inserting a second row, then fires the deferred follow-up offer
+// now that there's substance to act on.
+export async function attachFeedbackDetail(feedbackId: string, body: string): Promise<void> {
+  const text = body.trim();
+  if (!text) return;
+  const [row] = await db
+    .update(schema.feedback)
+    .set({ body: text })
+    .where(eq(schema.feedback.id, feedbackId))
+    .returning();
+  if (!row) {
+    log.warn({ feedback_id: feedbackId }, "feedback detail for unknown row");
+    return;
+  }
+  log.info({ feedback_id: row.id, rating: row.rating ?? undefined }, "feedback detail attached");
+  // Push the typed detail to the feedback channel too — the initial click
+  // already posted the bare 👍/👎, but the words are the useful part.
+  void notifyFeedbackSlack(row).catch((err) => {
+    log.warn({ err, feedback_id: row.id }, "feedback slack notify (detail) failed");
+  });
+  void offerFollowUpForFeedback(row).catch((err) => {
+    log.warn({ err, feedback_id: row.id }, "follow-up offer failed");
+  });
 }
 
 // Posts a one-liner to FEEDBACK_SLACK_WEBHOOK so the team hears about new
@@ -242,7 +280,9 @@ async function notifyFeedbackSlack(row: schema.Feedback): Promise<void> {
         ? `PR ${row.refId}`
         : `PR ${row.refRepo ?? ""} (${row.refId.slice(0, 8)}…)`
       : `${row.kind} ${row.refId.slice(0, 8)}…`;
-  const text = `:speech_balloon: *New feedback* on ${refDesc} via _${row.source}_ from ${author}\n>${preview}${
+  const ratingBadge =
+    row.rating === "helpful" ? "👍 " : row.rating === "unhelpful" ? "👎 " : "";
+  const text = `:speech_balloon: *New feedback* on ${refDesc} via _${row.source}_ from ${author}\n>${ratingBadge}${preview}${
     link ? `\n<${link}|Open in admin>` : ""
   }`;
   try {

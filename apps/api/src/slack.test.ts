@@ -60,6 +60,45 @@ test("Slack resolve clicks on open incidents perform a fresh resolve", async () 
   assert.equal(resolveSlackResolveClickDisposition("open"), "resolve");
 });
 
+test("parseRateIncidentAction extracts helpful rating and incident id", async () => {
+  const { parseRateIncidentAction } = await import("./slack.js");
+  assert.deepEqual(parseRateIncidentAction("rate_incident:helpful:inc-1"), {
+    rating: "helpful",
+    incidentId: "inc-1",
+  });
+});
+
+test("parseRateIncidentAction extracts unhelpful rating and incident id", async () => {
+  const { parseRateIncidentAction } = await import("./slack.js");
+  assert.deepEqual(parseRateIncidentAction("rate_incident:unhelpful:inc-1"), {
+    rating: "unhelpful",
+    incidentId: "inc-1",
+  });
+});
+
+test("parseRateIncidentAction rejects unknown ratings and other actions", async () => {
+  const { parseRateIncidentAction } = await import("./slack.js");
+  assert.equal(parseRateIncidentAction("rate_incident:meh:inc-1"), null);
+  assert.equal(parseRateIncidentAction("rate_incident:helpful:"), null);
+  assert.equal(parseRateIncidentAction("resolve_incident:inc-1"), null);
+});
+
+test("ratingTimelineSummary carries the 👍/👎 signal for the incident timeline", async () => {
+  const { ratingTimelineSummary } = await import("./slack.js");
+  assert.match(ratingTimelineSummary("helpful"), /^👍 /);
+  assert.match(ratingTimelineSummary("unhelpful"), /^👎 /);
+});
+
+test("ratingFeedbackBody is plain text — the notifier owns the 👍/👎 badge", async () => {
+  const { ratingFeedbackBody } = await import("./slack.js");
+  // No emoji baked in: notifyFeedbackSlack prepends a badge from feedback.rating
+  // and the admin inbox renders a separate chip, so an emoji here would double up.
+  assert.equal(ratingFeedbackBody("helpful"), "Marked helpful");
+  assert.equal(ratingFeedbackBody("unhelpful"), "Marked not helpful");
+  assert.doesNotMatch(ratingFeedbackBody("helpful"), /👍|👎/);
+  assert.doesNotMatch(ratingFeedbackBody("unhelpful"), /👍|👎/);
+});
+
 test("listSlackChannels requests both public and private channels", async () => {
   const { listSlackChannels } = await import("./slack.js");
   const { fetchImpl, calls } = fakeFetch([{ ok: true, channels: [] }]);

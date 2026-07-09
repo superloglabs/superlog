@@ -2063,8 +2063,11 @@ export const alertEpisodes = pgTable(
 // id otherwise (PR webhook captures, /feedback/pr/* public submissions, and
 // Slack view_submission events all come in without a session).
 export type FeedbackKind = "incident" | "issue" | "pr";
-export type FeedbackSource = "dialog" | "slack_button" | "pr_comment" | "pr_link";
+export type FeedbackSource = "dialog" | "slack_button" | "slack_rating" | "pr_comment" | "pr_link";
 export type FeedbackStatus = "new" | "triaged" | "closed";
+// One-click sentiment on an incident's Slack thread (👍/👎). Nullable — most
+// feedback rows carry only free-form `body` with no structured rating.
+export type FeedbackRating = "helpful" | "unhelpful";
 export type FeedbackAuthorExternal = {
   githubLogin?: string;
   githubCommentUrl?: string;
@@ -2081,6 +2084,7 @@ export const feedback = pgTable(
     refRepo: text("ref_repo"),
     source: text("source").$type<FeedbackSource>().notNull(),
     body: text("body").notNull(),
+    rating: text("rating").$type<FeedbackRating>(),
     authorUserId: uuid("author_user_id").references(() => users.id, {
       onDelete: "set null",
     }),

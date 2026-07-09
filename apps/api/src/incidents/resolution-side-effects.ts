@@ -1,6 +1,7 @@
 import type { CloseIncidentOpenPullRequestsResult, CloseIncidentPullRequest } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import { logger } from "../logger.js";
+import { escapeSlackLinkText, escapeSlackLinkUrl } from "../slack-format.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 
@@ -95,10 +96,11 @@ export function buildResolvedIncidentSlackRoot(opts: {
   incident: ResolvedIncidentSideEffectIncident;
   projectName: string;
 }): ResolvedIncidentSlackRoot {
-  const incidentUrl = `${WEB_ORIGIN}/incidents/${opts.incident.id}`;
+  const incidentUrl = escapeSlackLinkUrl(`${WEB_ORIGIN}/incidents/${opts.incident.id}`);
+  const titleLabel = escapeSlackLinkText(opts.incident.title);
   const lines = [
     ":white_check_mark: *Incident resolved*",
-    `*${opts.incident.title}*`,
+    `*<${incidentUrl}|${titleLabel}>*`,
     opts.incident.service
       ? `\`${opts.projectName}\` · \`${opts.incident.service}\``
       : `\`${opts.projectName}\``,
@@ -110,14 +112,13 @@ export function buildResolvedIncidentSlackRoot(opts: {
       elements: [
         {
           type: "button",
-          text: { type: "plain_text", text: "Open in Superlog", emoji: true },
-          url: incidentUrl,
-          action_id: "open_superlog",
+          text: { type: "plain_text", text: "👍 Helpful", emoji: true },
+          action_id: `rate_incident:helpful:${opts.incident.id}`,
         },
         {
           type: "button",
-          text: { type: "plain_text", text: "💬 Give feedback", emoji: true },
-          action_id: `give_feedback:${opts.incident.id}`,
+          text: { type: "plain_text", text: "👎 Not helpful", emoji: true },
+          action_id: `rate_incident:unhelpful:${opts.incident.id}`,
         },
       ],
     },

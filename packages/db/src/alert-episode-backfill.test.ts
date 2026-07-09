@@ -10,17 +10,18 @@ import { migrate } from "drizzle-orm/pglite/migrator";
 import type { DB } from "./client.js";
 import * as schema from "./schema.js";
 
-// The 0091 backfill splits old aggregate alert issues (one per alert+group,
+// The backfill migration splits old aggregate alert issues (one per alert+group,
 // accumulating every breach) into per-episode issues (1:1 with
 // alert_episodes). The migration itself runs on an empty database in fresh
 // environments, so these tests seed OLD-model data on a fully-migrated
-// database and re-apply the 0091 statements — the exact shape prod is in when
+// database and re-apply the backfill statements — the exact shape prod is in when
 // the migration runs there. The ordering test at the bottom instead stops at
-// 0090 (the last pre-episode-model migration), seeds, and applies 0091 + 0092 for real.
+// the last pre-episode-model migration, seeds, and applies the backfill + unique
+// index for real.
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS = path.resolve(HERE, "../migrations");
-const BACKFILL_SQL = path.resolve(MIGRATIONS, "0091_alert-episode-issue-backfill.sql");
+const BACKFILL_SQL = path.resolve(MIGRATIONS, "0092_alert-episode-issue-backfill.sql");
 
 function one<T>(rows: T[]): T {
   const row = rows[0];
@@ -49,11 +50,12 @@ async function applyBackfill(client: PGlite): Promise<void> {
   }
 }
 
-// A database migrated only through 0090 — the pre-episode-as-issue schema a
-// live deployment is on when 0091/0092 arrive.
+// A database migrated only up to the migration before the backfill — the
+// pre-episode-as-issue schema a live deployment is on when the backfill +
+// unique index arrive.
 async function dbAtPreBackfill(): Promise<{ db: DB; client: PGlite }> {
   const client = new PGlite();
-  const files = (await readdir(MIGRATIONS)).filter((f) => f.endsWith(".sql") && f < "0091").sort();
+  const files = (await readdir(MIGRATIONS)).filter((f) => f.endsWith(".sql") && f < "0092").sort();
   for (const file of files) {
     await applyMigrationFile(client, file);
   }
@@ -290,7 +292,7 @@ test("backfill leaves aggregate issues alone when their alert is gone, and is id
   }
 });
 
-test("0091 backfill runs before the 0092 unique index, so shared episode issue_ids don't break the deploy", async () => {
+test("the backfill runs before the unique index, so shared episode issue_ids don't break the deploy", async () => {
   const { db, client } = await dbAtPreBackfill();
   try {
     const { project, alert } = await seedBase(db);
@@ -302,7 +304,7 @@ test("0091 backfill runs before the 0092 unique index, so shared episode issue_i
       { firstSeen, lastSeen: new Date("2026-03-01T10:30:00Z") },
     );
     // Two historical breaches of the same alert both point at the aggregate
-    // issue — the pre-0091 shape that a unique index on issue_id would reject.
+    // issue — the pre-backfill shape that a unique index on issue_id would reject.
     for (const [start, end] of [
       ["2026-03-01T10:00:00Z", "2026-03-01T10:10:00Z"],
       ["2026-03-01T10:20:00Z", "2026-03-01T10:30:00Z"],
@@ -323,9 +325,9 @@ test("0091 backfill runs before the 0092 unique index, so shared episode issue_i
       });
     }
 
-    await applyMigrationFile(client, "0091_alert-episode-issue-backfill.sql");
+    await applyMigrationFile(client, "0092_alert-episode-issue-backfill.sql");
     // The index build must succeed now that every episode has its own issue.
-    await applyMigrationFile(client, "0092_harsh_trish_tilby.sql");
+    await applyMigrationFile(client, "0093_alert-episode-issue-uniq.sql");
 
     const episodes = await db.select().from(schema.alertEpisodes);
     assert.equal(episodes.length, 2);
