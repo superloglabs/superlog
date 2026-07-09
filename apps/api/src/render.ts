@@ -176,9 +176,17 @@ async function provisionStreams(input: {
       ownerId: input.ownerId,
       fetchImpl: input.fetchImpl,
     });
+    // A destination we own is replaceable: the configured syslog address, or
+    // a leftover pointing at our HTTP intake origin (the connector briefly
+    // registered HTTPS endpoints before the syslog sink existed).
+    const ownsCurrent =
+      !currentLogs.ok || !currentLogs.stream?.endpoint
+        ? true
+        : currentLogs.stream.endpoint === syslogAddress ||
+          (base !== null && currentLogs.stream.endpoint.startsWith(base));
     if (!currentLogs.ok) {
       logStream = { status: "unavailable", endpoint: null, detail: currentLogs.error };
-    } else if (currentLogs.stream?.endpoint && currentLogs.stream.endpoint !== syslogAddress) {
+    } else if (currentLogs.stream?.endpoint && !ownsCurrent) {
       logStream = {
         status: "conflict",
         endpoint: currentLogs.stream.endpoint,

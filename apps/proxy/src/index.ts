@@ -968,7 +968,10 @@ const renderSyslogServer = RENDER_SYSLOG_PORT
         // dropping here is an ack-drop (the sender gets no signal either way).
         if (!ingestSourceFilter.allows(projectId, "render", "logs")) return;
         if (ingestGate && !ingestGate.allows(projectId, "logs")) return;
-        void recordIngestRequest("/render/syslog", projectId).catch((err: unknown) => {
+        // Counted under the canonical logs path — recordIngestRequest only
+        // tracks the known signal paths, so a bespoke path would silently
+        // skip the tenant counter.
+        void recordIngestRequest("/v1/logs", projectId).catch((err: unknown) => {
           logger.warn({ err, projectId }, "tenant counter increment failed");
         });
         const body = Buffer.from(JSON.stringify(renderSyslogToOtlp(records)));
@@ -980,13 +983,25 @@ const renderSyslogServer = RENDER_SYSLOG_PORT
             body: Readable.from([body]),
           });
         } else {
+          // Direct mode has no consumer to stamp issue fingerprints, so stamp
+          // here — same as the HTTP edge's direct branch.
+          const stampedBody = stampIssueFingerprintsFailOpen(
+            {
+              path: "/v1/logs",
+              contentType: "application/json",
+              contentEncoding: undefined,
+              body,
+              projectId,
+            },
+            logger,
+          );
           const res = await fetch(`${COLLECTOR_URL}/v1/logs`, {
             method: "POST",
             headers: {
               "content-type": "application/json",
               "x-superlog-project-id": projectId,
             },
-            body,
+            body: stampedBody,
           });
           if (res.status >= 400) {
             throw new Error(`collector returned ${res.status} for render syslog batch`);

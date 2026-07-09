@@ -11,7 +11,8 @@ import {
   type RenderSyslogRecord,
 } from "./render-syslog.js";
 
-const KEY = "sl_public_abc123XYZ-_";
+// Realistic length: real keys are the prefix + 43 chars of base64url.
+const KEY = "sl_public_abc123XYZ-_deFGhij456KLmn789opQRst01uv2";
 const FRAME = `<14>1 2026-07-08T12:00:00.123456Z srv-abc123 my-api 12 - [render@0 token="${KEY}"] GET /health 200`;
 
 function octet(frame: string): Buffer {
@@ -41,8 +42,8 @@ test("splitter rejects oversized frame declarations", () => {
 test("extractIngestKey finds current and legacy key formats anywhere in the frame", () => {
   assert.equal(extractIngestKey(FRAME), KEY);
   assert.equal(
-    extractIngestKey("<14>1 - - - - - - superlog_live_old123 hello"),
-    "superlog_live_old123",
+    extractIngestKey("<14>1 - - - - - - superlog_live_old123456789abcdef hello"),
+    "superlog_live_old123456789abcdef",
   );
   assert.equal(extractIngestKey("<14>1 - - - - - - no token here"), null);
 });
@@ -90,6 +91,40 @@ test("renderSyslogToOtlp groups by app name and never emits the ingest key", () 
   assert.ok(!serialized.includes(KEY), "ingest key must be scrubbed");
   assert.ok(serialized.includes("[redacted]"));
   assert.ok(serialized.includes("telemetry.source"));
+});
+
+test("parseRfc5424 stays linear on pathological structured-data input", () => {
+  // The naive nested-quantifier regex for the SD section backtracks
+  // exponentially on this shape (CodeQL js/redos); the linear scanner must
+  // return quickly.
+  const evil = `<14>1 2026-07-08T12:00:00Z host app - - ${"][".repeat(20_000)} boom`;
+  const started = Date.now();
+  const record = parseRfc5424(evil);
+  assert.ok(Date.now() - started < 1_000);
+  assert.equal(record, null);
+});
+
+test("parseRfc5424 handles escaped quotes and brackets in param values", () => {
+  const record = parseRfc5424(
+    '<14>1 2026-07-08T12:00:00Z host app - - [x@1 a="q\\"b" b="c\\]d"] msg',
+  );
+  assert.ok(record);
+  assert.deepEqual(record.structuredData, { "x@1": { a: 'q"b', b: "c]d" } });
+});
+
+test("keys are scrubbed from app names and structured-data names, not just values", () => {
+  const record = parseRfc5424(
+    `<14>1 2026-07-08T12:00:00Z ${KEY} ${KEY} - - [${KEY} note="ok"] hello`,
+  ) as RenderSyslogRecord;
+  const serialized = JSON.stringify(renderSyslogToOtlp([record]));
+  assert.ok(!serialized.includes(KEY), "key must not survive in any OTLP position");
+});
+
+test("extractIngestKey bounds the token length so junk can't bloat the auth cache", () => {
+  const giant = `sl_public_${"a".repeat(5000)}`;
+  const found = extractIngestKey(`<14>1 - - - - - - ${giant}`);
+  assert.ok(found);
+  assert.ok(found.length <= 101);
 });
 
 // --- server integration over a real socket -----------------------------------------

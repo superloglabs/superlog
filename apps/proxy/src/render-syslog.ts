@@ -20,11 +20,15 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 // a misconfigured high-volume stream can't hammer the db.
 const AUTH_CACHE_TTL_MS = 60 * 1000;
 
-const INGEST_KEY_PATTERN = /(?:sl_public_|superlog_live_)[A-Za-z0-9_-]+/;
+// Bounded length: real ingest keys are ~55 chars, and the bound keeps an
+// attacker from forcing frame-sized strings into the auth cache.
+const INGEST_KEY_PATTERN = /(?:sl_public_|superlog_live_)[A-Za-z0-9_-]{16,90}/;
 
-// RFC 5424: <PRI>VERSION SP TIMESTAMP SP HOSTNAME SP APP-NAME SP PROCID SP MSGID SP STRUCTURED-DATA [SP MSG]
-const RFC5424_PATTERN =
-  /^<(\d{1,3})>1 (\S+) (\S+) (\S+) (\S+) (\S+) (-|(?:\[.*?\])+)(?: (.*))?$/s;
+// RFC 5424 header: <PRI>VERSION SP TIMESTAMP SP HOSTNAME SP APP-NAME SP PROCID SP MSGID SP
+// The STRUCTURED-DATA section is scanned linearly (scanStructuredData) rather
+// than matched here — a nested-quantifier regex over attacker-controlled TCP
+// input is an exponential-backtracking hazard.
+const RFC5424_HEADER_PATTERN = /^<(\d{1,3})>1 (\S+) (\S+) (\S+) (\S+) (\S+) /;
 
 export type RenderSyslogRecord = {
   severityNumber: number;
@@ -102,12 +106,30 @@ const SYSLOG_SEVERITY: Array<{ text: string; number: number }> = [
 ];
 
 export function parseRfc5424(frame: string): RenderSyslogRecord | null {
-  const match = frame.match(RFC5424_PATTERN);
-  if (!match) return null;
-  const [, priRaw, timestamp, hostname, appName, procId, msgId, sdRaw, msg] = match;
+  const header = frame.match(RFC5424_HEADER_PATTERN);
+  if (!header) return null;
+  const [, priRaw, timestamp, hostname, appName, procId, msgId] = header;
   if (timestamp === undefined) return null;
   const pri = Number(priRaw);
   if (!Number.isInteger(pri) || pri < 0 || pri > 191) return null;
+
+  const rest = frame.slice(header[0].length);
+  let structuredData: Record<string, Record<string, string>> = {};
+  let msg: string;
+  if (rest === "-") {
+    msg = "";
+  } else if (rest.startsWith("- ")) {
+    msg = rest.slice(2);
+  } else {
+    const sd = parseSdSection(rest);
+    if (!sd) return null;
+    structuredData = sd.data;
+    const after = rest.slice(sd.end);
+    if (after === "") msg = "";
+    else if (after.startsWith(" ")) msg = after.slice(1);
+    else return null;
+  }
+
   const severity = SYSLOG_SEVERITY[pri & 7] ?? { text: "", number: 0 };
   return {
     severityNumber: severity.number,
@@ -117,9 +139,9 @@ export function parseRfc5424(frame: string): RenderSyslogRecord | null {
     appName: nilFree(appName),
     procId: nilFree(procId),
     msgId: nilFree(msgId),
-    structuredData: sdRaw && sdRaw !== "-" ? parseStructuredData(sdRaw) : {},
+    structuredData,
     // A leading BOM marks UTF-8 MSG per the RFC; strip it either way.
-    message: (msg ?? "").replace(/^﻿/, ""),
+    message: msg.replace(/^﻿/, ""),
   };
 }
 
@@ -127,22 +149,66 @@ function nilFree(value: string | undefined): string | null {
   return value && value !== "-" ? value : null;
 }
 
-function parseStructuredData(raw: string): Record<string, Record<string, string>> {
-  const out: Record<string, Record<string, string>> = {};
-  const elementPattern = /\[([^\s\]=]+)((?:\s+[^\s=\]]+="(?:[^"\\]|\\.)*")*)\s*\]/g;
-  for (const element of raw.matchAll(elementPattern)) {
-    const [, id, paramsRaw] = element;
-    if (!id) continue;
+/**
+ * Single linear pass over the STRUCTURED-DATA section — one or more
+ * `[SD-ID param="value" ...]` elements. Hand-rolled instead of a regex: the
+ * input is attacker-controlled TCP bytes, and the natural nested-quantifier
+ * regex for this grammar backtracks exponentially. Returns the parsed
+ * elements plus the index just past the section, or null if it's malformed.
+ */
+function parseSdSection(
+  raw: string,
+): { data: Record<string, Record<string, string>>; end: number } | null {
+  if (raw[0] !== "[") return null;
+  const data: Record<string, Record<string, string>> = {};
+  let i = 0;
+  while (raw[i] === "[") {
+    i++;
+    let idEnd = i;
+    while (idEnd < raw.length && raw[idEnd] !== " " && raw[idEnd] !== "]") idEnd++;
+    const id = raw.slice(i, idEnd);
+    i = idEnd;
     const params: Record<string, string> = {};
-    const paramPattern = /([^\s=\]]+)="((?:[^"\\]|\\.)*)"/g;
-    for (const param of (paramsRaw ?? "").matchAll(paramPattern)) {
-      const [, name, value] = param;
-      if (!name || value === undefined) continue;
-      params[name] = value.replace(/\\([\\"\]])/g, "$1");
+    while (raw[i] === " ") {
+      while (raw[i] === " ") i++;
+      if (raw[i] === "]" || i >= raw.length) break;
+      let nameEnd = i;
+      while (
+        nameEnd < raw.length &&
+        raw[nameEnd] !== "=" &&
+        raw[nameEnd] !== " " &&
+        raw[nameEnd] !== "]"
+      ) {
+        nameEnd++;
+      }
+      if (raw[nameEnd] !== "=" || raw[nameEnd + 1] !== '"') {
+        i = nameEnd;
+        continue;
+      }
+      const name = raw.slice(i, nameEnd);
+      i = nameEnd + 2;
+      let value = "";
+      while (i < raw.length && raw[i] !== '"') {
+        const ch = raw[i];
+        const next = raw[i + 1];
+        // RFC 5424 escapes \" \\ \] inside PARAM-VALUE.
+        if (ch === "\\" && (next === '"' || next === "\\" || next === "]")) {
+          value += next;
+          i += 2;
+        } else {
+          value += ch;
+          i++;
+        }
+      }
+      if (raw[i] !== '"') return null;
+      i++;
+      if (name) params[name] = value;
     }
-    out[id] = params;
+    if (raw[i] !== "]") return null;
+    i++;
+    if (id) data[id] = params;
   }
-  return out;
+  return { data, end: i };
 }
 
 // RFC 5424 TIMESTAMP is RFC 3339 with up to 6 fractional digits.
@@ -159,8 +225,12 @@ function timestampToNanos(value: string): string {
 
 type OtlpKeyValue = { key: string; value: { stringValue: string } };
 
+// Every string that leaves for storage goes through scrubKey — the sender can
+// place the token in ANY frame position (that's how attribution works), so
+// attribute names, service names, and header fields are as leak-prone as
+// message bodies.
 function kv(key: string, value: string | null): OtlpKeyValue | null {
-  return value ? { key, value: { stringValue: value } } : null;
+  return value ? { key: scrubKey(key), value: { stringValue: scrubKey(value) } } : null;
 }
 
 /** Group records by app-name (the Render service slug) into OTLP JSON. The
@@ -168,7 +238,7 @@ function kv(key: string, value: string | null): OtlpKeyValue | null {
 export function renderSyslogToOtlp(records: RenderSyslogRecord[]): unknown {
   const byService = new Map<string, RenderSyslogRecord[]>();
   for (const record of records) {
-    const service = record.appName ?? "render";
+    const service = scrubKey(record.appName ?? "render");
     const group = byService.get(service);
     if (group) group.push(record);
     else byService.set(service, [record]);
@@ -282,7 +352,9 @@ export function createRenderSyslogServer(deps: RenderSyslogServerDeps): net.Serv
             const record = parseRfc5424(frame);
             if (!record) {
               deps.log.warn(
-                { remote: socket.remoteAddress, frame: frame.slice(0, 200) },
+                // Scrub before slicing so a truncation can't split the key
+                // into an unrecognizable (and unscrubbed) fragment.
+                { remote: socket.remoteAddress, frame: scrubKey(frame).slice(0, 200) },
                 "render syslog: unparseable frame dropped",
               );
               continue;
