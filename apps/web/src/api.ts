@@ -1996,6 +1996,10 @@ export type AgentRunLinearTicket = {
 
 export type IncidentSeverity = "SEV-1" | "SEV-2" | "SEV-3";
 
+// Why auto-investigation was skipped for this incident, when worth surfacing to
+// the user. 'no_credits' = org over its plan's monthly investigation limit.
+export type IncidentAutoInvestigateBlockedReason = "no_credits";
+
 export type IncidentNoiseReason =
   | "cosmetic_log_only"
   | "lifecycle_signal"
@@ -2115,6 +2119,9 @@ export type Incident = {
   noiseClassification: IncidentNoiseClassification | null;
   resolutionClassification: IncidentResolutionClassification | null;
   findingsAgentRunId: string | null;
+  // Why auto-investigation was skipped, when worth surfacing. 'no_credits' = org
+  // over its plan's monthly investigation limit. Null when queued or not blocked.
+  autoInvestigateBlockedReason: IncidentAutoInvestigateBlockedReason | null;
   createdAt: string;
   updatedAt: string;
 };

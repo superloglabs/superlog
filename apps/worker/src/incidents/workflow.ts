@@ -81,6 +81,15 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
     columns: { orgId: true },
   });
   if (project?.orgId && !(await investigationGate.canRunInvestigation(project.orgId))) {
+    // Persist the block reason so the dashboard can show "out of credits" on the
+    // incident (badge on the list row, banner on the detail view) rather than a
+    // bare "not queued". Cleared back to NULL when a run is later queued.
+    if (incident.autoInvestigateBlockedReason !== "no_credits") {
+      await db
+        .update(schema.incidents)
+        .set({ autoInvestigateBlockedReason: "no_credits" })
+        .where(eq(schema.incidents.id, incident.id));
+    }
     logger.info(
       { scope: "agent_run", incidentId: incident.id, orgId: project.orgId },
       "skipping auto-agent run; org is out of investigation credits",
@@ -114,6 +123,15 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
       runtime: automation.agentRunProvider,
     });
     if (!queued) throw new Error("failed to queue agent run");
+
+    // Clear a stale "out of credits" mark now that a run is queued (e.g. the org
+    // upgraded or the monthly limit reset since the last blocked transition).
+    if (incident.autoInvestigateBlockedReason !== null) {
+      await tx
+        .update(schema.incidents)
+        .set({ autoInvestigateBlockedReason: null })
+        .where(eq(schema.incidents.id, incident.id));
+    }
 
     return { agentRun: queued, queueStatus: "queued" };
   });

@@ -4,6 +4,9 @@ export type IncidentMetaRow = {
   label: string;
   value: string;
   kind?: "priority" | "status" | "environment" | "findings" | "agent";
+  // Emphasis for the value (and its icon). "danger" (red) flags an
+  // attention-worthy state like an out-of-credits investigation.
+  tone?: "danger";
 };
 
 export function incidentDisplayStatus(status: string, pendingRecovery: boolean): string {
@@ -46,8 +49,28 @@ export function buildIncidentDetailMeta({
     { label: "First detection", value: formatIncidentUtc(incident.firstSeen) },
     { label: "Latest detection", value: formatIncidentUtc(incident.lastSeen) },
     { label: "Duration", value: formatIncidentDuration(incident.firstSeen, incident.lastSeen) },
-    { label: "Agent run", value: agentRunState ?? "not queued", kind: "agent" },
+    {
+      label: "Investigation",
+      value: agentRunLabel(agentRunState, incident),
+      kind: "agent",
+      tone:
+        !agentRunState && incident.autoInvestigateBlockedReason === "no_credits"
+          ? "danger"
+          : undefined,
+    },
   ];
+}
+
+// The "Agent run" row shows the live run state when there is one. With no run,
+// it explains *why*: an org over its investigation limit reads "out of credits"
+// (actionable — upgrade), everything else falls back to a plain "not queued".
+export function agentRunLabel(
+  agentRunState: AgentRun["state"] | null,
+  incident: Pick<Incident, "autoInvestigateBlockedReason">,
+): string {
+  if (agentRunState) return agentRunState;
+  if (incident.autoInvestigateBlockedReason === "no_credits") return "Out of credits";
+  return "not queued";
 }
 
 function formatIncidentUtc(iso: string): string {

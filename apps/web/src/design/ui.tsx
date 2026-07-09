@@ -1,4 +1,7 @@
+import { CreditCardIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { type CSSProperties, type ReactNode, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 // ---------------------------------------------------------------------------
 // Canonical shared primitives — used across the app and the /design sheet.
@@ -184,9 +187,14 @@ export function Chip({
     muted: "bg-subtle",
     accent: "bg-accent",
   };
+  // Sans, fully rounded, capitalized label. Two modes: a filled pill in the tone
+  // color, or — with `dot` — a bare status indicator (no fill, no border) that's
+  // just the colored dot + label.
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 font-mono text-[11px] tabular-nums ${tones[tone]}`}
+      className={`inline-flex items-center gap-1.5 rounded-full text-[11px] capitalize ${
+        dot ? "text-fg" : `px-2 py-0.5 ${tones[tone]}`
+      }`}
     >
       {dot && <span className={`h-1.5 w-1.5 rounded-full ${dotColor[tone]}`} />}
       {children}
@@ -530,5 +538,65 @@ export function ThemeToggle() {
         </svg>
       )}
     </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Out-of-credits callouts
+//
+// Surfaced on an incident whose auto-investigation was skipped because the org
+// is over its plan's monthly investigation limit. `OutOfCreditsBadge` is the
+// list-row status chip; `OutOfCreditsBanner` is the detail-view callout with a
+// path to billing. Danger tone (red). `color-mix` builds the translucent fills
+// from the existing variables so the tint stays token-driven.
+// ---------------------------------------------------------------------------
+
+export function OutOfCreditsBadge() {
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] text-danger"
+      style={{
+        backgroundColor: "color-mix(in srgb, var(--color-danger) 20%, transparent)",
+        borderColor: "color-mix(in srgb, var(--color-danger) 25%, transparent)",
+      }}
+    >
+      <HugeiconsIcon icon={CreditCardIcon} size={12} strokeWidth={2} />
+      Out of credits
+    </span>
+  );
+}
+
+export function OutOfCreditsBanner() {
+  return (
+    <div
+      className="rounded-md border p-4"
+      style={{
+        backgroundColor: "color-mix(in srgb, var(--color-danger) 12%, transparent)",
+        borderColor: "color-mix(in srgb, var(--color-danger) 25%, transparent)",
+      }}
+    >
+      <div className="mb-1 flex items-center gap-2 text-[14px] font-semibold leading-snug text-danger">
+        <HugeiconsIcon icon={CreditCardIcon} size={14} strokeWidth={2} />
+        Out of credits
+      </div>
+      <p
+        className="mb-3 text-[13px] leading-relaxed"
+        // Softened red — clearly red like the title, but mixed toward the
+        // foreground so the longer paragraph stays legible on the tinted bg.
+        style={{ color: "color-mix(in srgb, var(--color-danger) 82%, var(--color-fg))" }}
+      >
+        Your organization is over its plan's monthly investigation limit, so
+        auto-investigation was skipped. Upgrade to pay-as-you-go to keep
+        investigating new incidents.
+      </p>
+      <div className="flex items-center justify-end">
+        <Link
+          to="/settings?scope=org&section=billing"
+          className="inline-flex items-center rounded-md bg-fg px-3 py-1.5 text-[13px] font-medium text-bg transition-opacity hover:opacity-90"
+        >
+          Manage billing
+        </Link>
+      </div>
+    </div>
   );
 }
