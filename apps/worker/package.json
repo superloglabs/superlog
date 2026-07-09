@@ -62,6 +62,7 @@
     "@opentelemetry/sdk-node": "^0.215.0",
     "@opentelemetry/semantic-conventions": "^1.40.0",
     "@superlog/billing": "workspace:*",
+    "@superlog/cloudflare": "workspace:*",
     "@superlog/db": "workspace:*",
     "@superlog/fingerprint": "workspace:*",
     "@superlog/net-guard": "workspace:*",

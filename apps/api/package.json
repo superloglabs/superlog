@@ -33,6 +33,7 @@
     "@opentelemetry/sdk-node": "^0.215.0",
     "@opentelemetry/semantic-conventions": "^1.40.0",
     "@scalar/hono-api-reference": "^0.10.19",
+    "@superlog/cloudflare": "workspace:*",
     "@superlog/db": "workspace:*",
     "@superlog/railway": "workspace:*",
     "@superlog/render": "workspace:*",

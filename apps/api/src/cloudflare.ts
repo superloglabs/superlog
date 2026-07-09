@@ -38,6 +38,7 @@ import {
   getScriptObservability,
   listAccounts,
   listScripts,
+  refreshAccessToken,
   revokeToken,
   signState,
   staleDestinationSlugs,
@@ -151,11 +152,95 @@ async function deleteRemoteDestinations(input: {
   }
 }
 
+// Access tokens are short-lived; refresh on demand when the stored one is
+// within this margin of expiry. No background job — the offline-access grant
+// gives us a long-lived refresh token, so we mint a fresh access token at the
+// point we actually need it.
+const TOKEN_REFRESH_MARGIN_MS = 2 * 60 * 1000;
+
+/**
+ * Persist a refreshed (possibly rotated) token pair. Refresh tokens may rotate
+ * on use, so we keep the replacement, falling back to the prior one when the
+ * response didn't return a new one — losing it would strand the install.
+ */
+async function persistRefreshedTokens(
+  rowId: string,
+  refreshed: { accessToken: string; refreshToken: string | null; expiresIn: number | null },
+  previousRefreshToken: string,
+): Promise<void> {
+  const accessCipher = encryptIntegrationSecret(refreshed.accessToken);
+  const refreshCipher = encryptIntegrationSecret(refreshed.refreshToken ?? previousRefreshToken);
+  const tokenExpiresAt =
+    refreshed.expiresIn != null ? new Date(Date.now() + refreshed.expiresIn * 1000) : null;
+  await db
+    .update(schema.cloudflareInstallations)
+    .set({
+      accessTokenCiphertext: accessCipher.ciphertext,
+      accessTokenNonce: accessCipher.nonce,
+      accessTokenKeyVersion: accessCipher.keyVersion,
+      refreshTokenCiphertext: refreshCipher.ciphertext,
+      refreshTokenNonce: refreshCipher.nonce,
+      refreshTokenKeyVersion: refreshCipher.keyVersion,
+      tokenExpiresAt,
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.cloudflareInstallations.id, rowId));
+}
+
+/**
+ * A usable access token for an installation, refreshed on demand when the
+ * stored one has expired (or is about to). This is how the connector stays
+ * manageable after connect: the delegated access token lives ~16h, but the
+ * offline-access grant hands us a long-lived refresh token, so any server-side
+ * call (teardown today; reconcile/inspect later) renews right before use rather
+ * than relying on a scheduled refresh. A rotated refresh token is persisted
+ * immediately. Falls back to the stored (possibly dead) token when there's
+ * nothing to refresh with — a legacy install with no refresh token, or an
+ * unconfigured OAuth client — so best-effort callers still get to try. Throws
+ * only when the stored access token itself can't be decrypted.
+ */
+async function freshAccessToken(
+  row: CloudflareInstallationRow,
+  config: CloudflareConnectConfig | null,
+  fetchImpl: typeof fetch,
+): Promise<string> {
+  const accessToken = decryptIntegrationSecret({
+    ciphertext: row.accessTokenCiphertext,
+    nonce: row.accessTokenNonce,
+    keyVersion: row.accessTokenKeyVersion,
+  });
+  const expiresAt = row.tokenExpiresAt?.getTime() ?? null;
+  if (expiresAt === null || expiresAt - Date.now() > TOKEN_REFRESH_MARGIN_MS) {
+    return accessToken;
+  }
+
+  const refreshToken =
+    row.refreshTokenCiphertext && row.refreshTokenNonce
+      ? decryptIntegrationSecret({
+          ciphertext: row.refreshTokenCiphertext,
+          nonce: row.refreshTokenNonce,
+          keyVersion: row.refreshTokenKeyVersion ?? 1,
+        })
+      : null;
+  if (!refreshToken || !config) return accessToken;
+
+  const refreshed = await refreshAccessToken({ config, refreshToken, fetchImpl });
+  if (!refreshed.ok) {
+    log.warn(
+      { account_id: row.accountId, error: refreshed.error },
+      "cloudflare access token refresh failed; using stored token",
+    );
+    return accessToken;
+  }
+  await persistRefreshedTokens(row.id, refreshed, refreshToken);
+  return refreshed.accessToken;
+}
+
 /**
  * Fully tear down one installation row: delete its remote destinations, revoke
  * its delegated OAuth token, revoke the ingest key its destinations authenticate
- * with, and soft-revoke the row. Each remote step is best-effort (tokens may be
- * expired); the ingest-key revoke is the backstop that actually stops telemetry
+ * with, and soft-revoke the row. Each remote step is best-effort (the grant may
+ * be gone); the ingest-key revoke is the backstop that actually stops telemetry
  * being accepted at our intake. Shared by uninstall and account-switch supersede.
  */
 async function teardownInstallation(
@@ -164,11 +249,10 @@ async function teardownInstallation(
 ): Promise<void> {
   let accessToken: string | null = null;
   try {
-    accessToken = decryptIntegrationSecret({
-      ciphertext: row.accessTokenCiphertext,
-      nonce: row.accessTokenNonce,
-      keyVersion: row.accessTokenKeyVersion,
-    });
+    // Refresh first so the remote cleanup actually runs: by uninstall time the
+    // original ~16h access token is almost always dead, but the refresh token
+    // lets us mint a live one and delete the destinations cleanly.
+    accessToken = await freshAccessToken(row, deps.config, deps.fetchImpl);
   } catch (e) {
     log.warn({ err: e, account_id: row.accountId }, "cloudflare access token decrypt failed");
   }

@@ -27,15 +27,23 @@ export const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 //   - workers-observability-telemetry.write   (destinations live under this perm)
 //   - workers-scripts.read/.write      read each Worker's observability config
 //                                      and wire our destinations into it
+//   - offline_access                   the offline grant — makes Cloudflare
+//                                      issue a long-lived refresh token so the
+//                                      short-lived access token can be renewed
+//                                      on demand instead of dying for good
+//                                      (~16h after connect). The refresh token's
+//                                      lifetime is bounded by the OAuth client
+//                                      registration's "grant session duration"
+//                                      (set it long, e.g. a year); the client
+//                                      must also permit the refresh_token grant.
 // Override with CLOUDFLARE_OAUTH_SCOPES if a deployment's client differs.
-// `offline_access` is added/removed automatically by Cloudflare based on the
-// client's grant types, so we don't list it here.
 export const DEFAULT_CLOUDFLARE_OAUTH_SCOPES = [
   "account-settings.read",
   "workers-observability.write",
   "workers-observability-telemetry.write",
   "workers-scripts.read",
   "workers-scripts.write",
+  "offline_access",
 ];
 
 export type CloudflareSignal = "traces" | "logs" | "metrics";
@@ -187,33 +195,15 @@ export { signState, verifyState } from "./oauth-state.js";
 // Response parsing
 // ---------------------------------------------------------------------------
 
-export type CloudflareTokenResult =
-  | {
-      ok: true;
-      accessToken: string;
-      refreshToken: string | null;
-      expiresIn: number | null;
-      scope: string | null;
-    }
-  | { ok: false; error: string };
-
-export function parseTokenResponse(json: unknown): CloudflareTokenResult {
-  if (!json || typeof json !== "object") return { ok: false, error: "invalid_response" };
-  const o = json as Record<string, unknown>;
-  if (typeof o.error === "string") {
-    return { ok: false, error: o.error };
-  }
-  if (typeof o.access_token !== "string" || !o.access_token) {
-    return { ok: false, error: "no_access_token" };
-  }
-  return {
-    ok: true,
-    accessToken: o.access_token,
-    refreshToken: typeof o.refresh_token === "string" ? o.refresh_token : null,
-    expiresIn: typeof o.expires_in === "number" ? o.expires_in : null,
-    scope: typeof o.scope === "string" ? o.scope : null,
-  };
-}
+// OAuth token primitives (exchange / refresh / parse) live in @superlog/cloudflare
+// so the worker's background refresh job shares exactly one implementation with
+// this connect flow. Re-exported here so existing api imports keep working.
+export {
+  type CloudflareTokenResult,
+  exchangeCodeForToken,
+  parseTokenResponse,
+  refreshAccessToken,
+} from "@superlog/cloudflare";
 
 export type CloudflareAccount = { id: string; name: string };
 
@@ -377,27 +367,6 @@ export function wireObservabilityDestinations(
 // ---------------------------------------------------------------------------
 
 export type FetchImpl = typeof fetch;
-
-export async function exchangeCodeForToken(input: {
-  config: CloudflareConnectConfig;
-  code: string;
-  fetchImpl?: FetchImpl;
-}): Promise<CloudflareTokenResult> {
-  const fetchImpl = input.fetchImpl ?? fetch;
-  const res = await fetchImpl(CLOUDFLARE_OAUTH_TOKEN_URL, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code: input.code,
-      redirect_uri: input.config.redirectUri,
-      client_id: input.config.clientId,
-      client_secret: input.config.clientSecret,
-    }),
-  });
-  const json = await res.json().catch(() => null);
-  return parseTokenResponse(json);
-}
 
 export async function listAccounts(
   accessToken: string,

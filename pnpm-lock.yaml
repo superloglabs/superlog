@@ -128,6 +128,9 @@ importers:
       '@scalar/hono-api-reference':
         specifier: ^0.10.19
         version: 0.10.19(hono@4.12.14)
+      '@superlog/cloudflare':
+        specifier: workspace:*
+        version: link:../../packages/cloudflare
       '@superlog/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -471,6 +474,9 @@ importers:
       '@superlog/billing':
         specifier: workspace:*
         version: link:../../packages/billing
+      '@superlog/cloudflare':
+        specifier: workspace:*
+        version: link:../../packages/cloudflare
       '@superlog/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -522,6 +528,18 @@ importers:
         version: 5.9.3
 
   packages/billing:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.1
+        version: 22.19.17
+      tsx:
+        specifier: ^4.19.2
+        version: 4.21.0
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
+  packages/cloudflare:
     devDependencies:
       '@types/node':
         specifier: ^22.10.1

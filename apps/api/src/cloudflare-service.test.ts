@@ -43,6 +43,9 @@ test("cloudflareConfigFromEnv returns null until required vars are set", () => {
     "workers-observability-telemetry.write",
     "workers-scripts.read",
     "workers-scripts.write",
+    // The offline grant — without it Cloudflare issues no refresh token and the
+    // access token dies for good ~16h after connect.
+    "offline_access",
   ]);
 });
 
@@ -347,8 +350,6 @@ test("exchangeCodeForToken posts form body to the token endpoint", async () => {
       clientId: "cid",
       clientSecret: "csecret",
       redirectUri: "https://api.example.com/cloudflare/oauth/callback",
-      scopes: [],
-      intakeBaseUrl: "https://intake.example.com",
     },
     code: "the-code",
     fetchImpl: fakeFetch,
