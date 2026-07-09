@@ -145,6 +145,12 @@ function TopNav({
               Roadmap
             </a>
             <a
+              href="/team"
+              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
+            >
+              Team
+            </a>
+            <a
               href="/pricing"
               className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
             >
@@ -905,6 +911,12 @@ function Footer() {
                 className="text-[14px] font-medium text-muted transition-colors hover:text-fg"
               >
                 Roadmap
+              </a>
+              <a
+                href="/team"
+                className="text-[14px] font-medium text-muted transition-colors hover:text-fg"
+              >
+                Team
               </a>
               <a
                 href="/tos"

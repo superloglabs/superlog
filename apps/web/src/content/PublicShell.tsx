@@ -10,6 +10,7 @@ import { LANDING_GITHUB_REPO_URL } from "../landingLinks.ts";
 const NAV_LINKS: Array<{ href: string; label: string; external?: boolean }> = [
   { href: "/changelog", label: "Changelog" },
   { href: "/roadmap", label: "Roadmap" },
+  { href: "/team", label: "Team" },
   { href: "/pricing", label: "Pricing" },
   { href: LANDING_GITHUB_REPO_URL, label: "GitHub", external: true },
 ];
@@ -26,13 +27,13 @@ export function PublicShell({
   children: ReactNode;
 }) {
   return (
-    <div className="min-h-screen bg-bg font-sans text-fg">
+    <div className="min-h-screen overflow-x-clip bg-bg font-sans text-fg">
       <header className="sticky top-0 z-40 border-b border-border bg-bg">
-        <div className="mx-auto flex w-full max-w-[1080px] items-center justify-between px-4 py-5 md:px-8">
-          <a href="/" aria-label="Superlog home">
+        <div className="mx-auto flex w-full max-w-[1080px] items-center justify-between gap-4 px-4 py-5 md:px-8">
+          <a href="/" aria-label="Superlog home" className="shrink-0">
             <Wordmark />
           </a>
-          <nav className="flex items-center gap-5">
+          <nav className="flex min-w-0 w-32 items-center gap-5 overflow-x-auto [scrollbar-width:none] sm:w-auto [&::-webkit-scrollbar]:hidden">
             {NAV_LINKS.map((link) =>
               link.external ? (
                 <a
@@ -40,7 +41,7 @@ export function PublicShell({
                   href={link.href}
                   target="_blank"
                   rel="noreferrer"
-                  className="text-[12px] font-medium text-muted transition-colors hover:text-fg"
+                  className="shrink-0 text-[12px] font-medium text-muted transition-colors hover:text-fg"
                 >
                   {link.label}
                 </a>
@@ -48,7 +49,7 @@ export function PublicShell({
                 <Link
                   key={link.href}
                   to={link.href}
-                  className="text-[12px] font-medium text-muted transition-colors hover:text-fg"
+                  className="shrink-0 text-[12px] font-medium text-muted transition-colors hover:text-fg"
                 >
                   {link.label}
                 </Link>
@@ -62,7 +63,7 @@ export function PublicShell({
         <div className="max-w-[780px]">
           {eyebrow && <p className="text-[13px] font-medium text-subtle">{eyebrow}</p>}
           <h1
-            className="mt-5 text-[2.25rem] leading-tight tracking-tight text-fg md:text-[3.25rem]"
+            className="mt-5 break-words text-[2.25rem] leading-tight tracking-tight text-fg md:text-[3.25rem]"
             style={{ fontWeight: 450 }}
           >
             {title}

@@ -21,6 +21,7 @@ import { RailwayCallback } from "./RailwayCallback.tsx";
 import { ResetPassword } from "./ResetPassword.tsx";
 import { Roadmap } from "./Roadmap.tsx";
 import { Settings } from "./Settings.tsx";
+import { Team } from "./Team.tsx";
 import { TermsOfService } from "./TermsOfService.tsx";
 import { VercelCallback } from "./VercelCallback.tsx";
 import { AlertEdit } from "./alerts/AlertEdit.tsx";
@@ -134,6 +135,7 @@ export function App() {
         <Route path="/privacy" element={<PrivacyPolicy />} />
         <Route path="/changelog" element={<Changelog />} />
         <Route path="/roadmap" element={<Roadmap />} />
+        <Route path="/team" element={<Team />} />
         <Route path="/tos" element={<TermsOfService />} />
         <Route path="/signup" element={<SignupRoute />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
