@@ -58,7 +58,7 @@ function Entry({ entry }: { entry: ChangelogEntry }) {
 function formatDate(iso: string): string {
   // Parse as UTC to avoid a local-timezone off-by-one on the rendered day.
   const d = new Date(`${iso}T00:00:00Z`);
-  if (Number.isNaN(d.getTime())) return iso;
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== iso) return iso;
   return d.toLocaleDateString("en-US", {
     year: "numeric",
     month: "short",
