@@ -93,10 +93,11 @@ export const CONNECT_SECTIONS: ConnectSection[] = [
 ];
 
 // Runtime availability for connectors that depend on server-side config. The
-// backend self-disables the Cloudflare / Vercel connectors when their OAuth
-// client / OTLP intake env isn't set (see system-capabilities), so the chooser
-// must not offer a click that would 503 — it renders the tile as "coming soon"
-// until the API reports the connector is configured.
+// backend self-disables connectors when their OAuth client / OTLP intake env
+// isn't set (see system-capabilities), so the chooser must not offer a click
+// that would 503. Vercel plan eligibility is detected after OAuth by attempting
+// drain provisioning; if Vercel says drains are unavailable, the callback routes
+// into the coding-agent prompt.
 export type ConnectAvailability = {
   cloudflare: boolean;
   vercel: boolean;

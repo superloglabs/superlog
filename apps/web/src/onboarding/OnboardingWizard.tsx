@@ -22,6 +22,11 @@ import { VercelConnectFlow } from "./VercelConnectFlow.tsx";
 import type { ConnectAction } from "./connectChoices.ts";
 import { CheckIcon, GithubIcon, SlackIcon, SpinnerIcon } from "./icons.tsx";
 import {
+  type WebView,
+  initialWebViewFromSearch,
+  stripHandledOnboardingParams,
+} from "./onboardingWebView.ts";
+import {
   ExploreDemoLink,
   InstallPromptCard,
   SOFT_LINE,
@@ -44,30 +49,17 @@ import {
 // Completion calls onComplete; the gate only allows it after telemetry arrives.
 
 type Mode = "web" | "agent";
-// Web-mode landing fork: choose a source, then either a no-code integration
-// flow (AWS / Cloudflare / Vercel) or the coding-agent install → deploy flow.
-type WebView =
-  | "chooser"
-  | "aws"
-  | "cloudflare"
-  | "vercel"
-  | "railway"
-  | "render"
-  | "code"
-  | "deploy";
 
 // The Cloudflare / Vercel OAuth callbacks redirect back to the app with
 // `?cloudflare=...` / `?vercel=...`. When that lands we want to drop straight
 // into the matching flow (which reads the outcome + install status), not the
 // chooser — otherwise the user is bounced back to "Connect your data" and has
-// to click the integration again to see progress.
+// to click the integration again to see progress. A Vercel `drains_unavailable`
+// outcome is different: the API already learned the team can't use Drains, so
+// route into the coding-agent prompt instead.
 function initialWebView(): WebView {
   if (typeof window === "undefined") return "chooser";
-  const params = new URLSearchParams(window.location.search);
-  if (params.has("cloudflare")) return "cloudflare";
-  if (params.has("vercel")) return "vercel";
-  if (params.has("railway")) return "railway";
-  return "chooser";
+  return initialWebViewFromSearch(window.location.search);
 }
 
 export function OnboardingWizard({
@@ -100,6 +92,17 @@ export function OnboardingWizard({
   const createKey = useCreateKey(projectId ?? "");
   const github = useGithubInstallation();
   const slack = useSlackInstallation();
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const nextSearch = stripHandledOnboardingParams(window.location.search);
+    if (nextSearch === window.location.search) return;
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${nextSearch}${window.location.hash}`,
+    );
+  }, []);
 
   // Route a chooser selection to the matching view. AWS / Cloudflare / Vercel
   // get their no-code integration flows; "I'm hosted elsewhere" (action "code")
@@ -194,6 +197,7 @@ export function OnboardingWizard({
               onBack={() => setWebView("chooser")}
               onDone={onComplete}
               onExploreDemo={onExploreDemo}
+              onDrainsUnavailable={() => setWebView("code")}
             />
           ) : webView === "railway" ? (
             <RailwayConnectFlow
