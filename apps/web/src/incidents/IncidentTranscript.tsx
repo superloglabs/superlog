@@ -131,14 +131,11 @@ export function buildActivityFeed(events: IncidentEvent[]): FeedItem[] {
       items.push({ type: "start", id: e.id, prompt: (e.summary ?? "").trim() });
       continue;
     }
-    if (e.kind === "awaiting_human") {
-      const detail = e.detail as { question?: unknown } | null;
-      const question =
-        (typeof detail?.question === "string" && detail.question.trim()) ||
-        (e.summary ?? "").trim();
-      if (question) items.push({ type: "question", id: e.id, question });
-      continue;
-    }
+    // The ask_human question is surfaced from the *current* run state (the
+    // `awaiting` prop), not from events. Incident events are append-only, so an
+    // awaiting_human event from a run that has since resumed or completed must
+    // not render a stale "Awaiting you" card — skip it here.
+    if (e.kind === "awaiting_human") continue;
     items.push({ type: "lifecycle", id: e.id, event: e });
   }
   return items;
@@ -176,17 +173,13 @@ export function IncidentActivityFeed({
   // the last node's offset depends on every entry above it.
   const [railHeight, setRailHeight] = useState<number>();
 
-  const items = buildActivityFeed(events);
-  // The awaiting_human event already yields a question node; only fall back to
-  // the run-result question when no such event was recorded on the timeline.
-  const fallbackQuestion =
-    awaiting && !items.some((i) => i.type === "question") ? awaiting : null;
   const ctx = awaiting?.ctx ?? {};
-  // Full ordered feed, with the run-result question appended when it wasn't a
-  // recorded event.
-  const feed: FeedItem[] = fallbackQuestion
-    ? [...items, { type: "question", id: "awaiting-fallback", question: fallbackQuestion.question }]
-    : items;
+  // The question is sourced only from the current run state, appended as the
+  // terminal node so a paused run ends on what it needs from the human.
+  const base = buildActivityFeed(events);
+  const feed: FeedItem[] = awaiting
+    ? [...base, { type: "question", id: "awaiting-question", question: awaiting.question }]
+    : base;
 
   const renderItem = (item: FeedItem) => {
     if (item.type === "message") return <MessageEntry key={item.id} text={item.text} />;
@@ -198,29 +191,54 @@ export function IncidentActivityFeed({
     return <LifecycleEntry key={item.id} event={item.event} renderIssueCard={renderIssueCard} />;
   };
 
-  // Collapse the investigation: everything between the "Started investigation"
-  // node and the final entry folds into an expandable group, so the timeline
-  // reads start → (N steps) → last message by default.
+  // Collapse only the agent's investigation *steps* (its messages, telemetry
+  // queries, and tool calls) between the "Started investigation" node and its
+  // final message/question. Lifecycle and external events (status changes, PR /
+  // Linear activity, recurrence cards) stay visible, and any that occur after
+  // the conclusion render after it — so the timeline reads
+  // start → (N steps) → conclusion by default without hiding real activity.
+  const isStep = (i: FeedItem) =>
+    i.type === "message" || i.type === "telemetry" || i.type === "tool";
   const startIdx = feed.findIndex((i) => i.type === "start");
-  const lastIdx = feed.length - 1;
-  const middle = startIdx >= 0 ? feed.slice(startIdx + 1, lastIdx) : [];
-  const collapsible = startIdx >= 0 && middle.length >= 2;
+  let termIdx = -1;
+  for (let i = feed.length - 1; i > startIdx; i--) {
+    if (feed[i]!.type === "message" || feed[i]!.type === "question") {
+      termIdx = i;
+      break;
+    }
+  }
+  const region = startIdx >= 0 && termIdx > startIdx ? feed.slice(startIdx + 1, termIdx) : [];
+  const stepCount = region.filter(isStep).length;
+  const collapsible = stepCount >= 2;
 
   // Ordered list of rendered nodes (so the last one, whatever its type, can be
   // measured to end the rail at its marker).
-  const nodes: ReactNode[] = collapsible
-    ? [
-        ...feed.slice(0, startIdx + 1).map(renderItem),
-        <CollapseToggle
-          key="collapse"
-          count={middle.length}
-          expanded={expanded}
-          onToggle={() => setExpanded((v) => !v)}
-        />,
-        ...(expanded ? middle.map(renderItem) : []),
-        ...feed.slice(lastIdx).map(renderItem),
-      ]
-    : feed.map(renderItem);
+  const nodes: ReactNode[] = [];
+  if (collapsible) {
+    feed.slice(0, startIdx + 1).forEach((i) => nodes.push(renderItem(i)));
+    let toggled = false;
+    for (const i of region) {
+      if (isStep(i)) {
+        if (!toggled) {
+          nodes.push(
+            <CollapseToggle
+              key="collapse"
+              count={stepCount}
+              expanded={expanded}
+              onToggle={() => setExpanded((v) => !v)}
+            />,
+          );
+          toggled = true;
+        }
+        if (expanded) nodes.push(renderItem(i));
+      } else {
+        nodes.push(renderItem(i)); // lifecycle / external events stay visible
+      }
+    }
+    feed.slice(termIdx).forEach((i) => nodes.push(renderItem(i)));
+  } else {
+    feed.forEach((i) => nodes.push(renderItem(i)));
+  }
 
   useLayoutEffect(() => {
     const rail = railRef.current;
