@@ -39,7 +39,7 @@ export function vercelCallbackView(raw: string | null | undefined): VercelCallba
       return {
         tone: "error",
         title: "Vercel Drains aren't available on your plan",
-        body: "Your Vercel team is on the Hobby (free) plan, and Vercel only offers Drains — the mechanism we use to stream your telemetry — on Pro or Enterprise teams. Nothing was connected. To finish, upgrade the team in Vercel or reinstall on a Pro or Enterprise team, then connect again.",
+        body: "Vercel only offers Drains — the mechanism we use to stream telemetry automatically — on Pro or Enterprise teams. If this team is on Hobby or Pro Trial, Superlog can still help you finish setup with the prompt-based install path.",
         backHref: "/?vercel=drains_unavailable",
         backLabel: "Back to Superlog",
       };
