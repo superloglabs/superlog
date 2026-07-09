@@ -5,13 +5,16 @@ In this document, we'll maintain a description of what Superlog needs to do.
 
 # Issue
 
-Whenever a client sends us a new error trace or error log, we'll fingerprint them into **Issues**.
+An **Issue** is the unit that triggers an **Incident**. There are two kinds of **Issues**:
 
-Repeated occurrences of the same error log or trace count as one **Issue**.
+- **Errors**: error logs and error traces. Whenever a client sends us a new error trace or error log, we fingerprint it into an **Issue**. Repeated occurrences of the same error log or trace count as one **Issue**.
+- **Alert episodes**: one contiguous breach period of an **Alert** — from the evaluation tick where the alert starts firing to the tick where it recovers. Every new breach is a new **Issue**. An alert episode records the breach window (start and end times) and the observed values (at open, at peak, and latest), and the **Issue** carries the alert's configuration (what is measured, the filter, aggregation, comparator, threshold, and evaluation window).
 
 ## Issue states
 
 When an **Issue** is created, it starts as `open`. An `open` **Issue** should trigger an **Incident**. 
+
+The `silenced` and `under observation` states below apply to error **Issues** only. An alert-episode **Issue** is only ever `open` or `resolved`: if an alert fires for a real problem, resolve the **Incident** when the problem is gone or fix the underlying cause; if an alert is noisy, the remedy is to tune its threshold or disable the alert, not to silence its episodes.
 
 - An **Issue** can be `silenced`, in which case any new occurrences will not start new **Incidents**.
 - An **Issue** can be `under observation`. An **Issue** in `under observation` must have an `escalation trigger`.
@@ -27,6 +30,8 @@ When an **Issue** is created, it starts as `open`. An `open` **Issue** should tr
 
 On any new `open` **Issue**, or on new occurrences of a `resolved` **Issue**, Superlog opens a new **Incident**.
 
+For alert episodes, "recurrence" means a new breach of the same alert: the new episode joins the alert's currently open **Incident** if one exists; otherwise it opens a new **Incident** chained to the previous one, with access to its findings.
+
 An **Incident** starts a new **Agent Run**. During an **Agent Run** an LLM will examine the error, all relevant telemetry, code and infrastructure in order to understand the issue and resolve it. 
 
 ## Incident states
@@ -40,9 +45,11 @@ Issue fingerprinting is, unfortunately, never exhaustive. We must be resilient t
 
 If the Issue is not a separate problem, but another manifestation of a root cause of another Incident, we should add this Issue to the Issues of that Incident. 
 
+Alert episodes participate in grouping like errors do: multiple episodes can be grouped into one Incident, and an alert episode can join an Incident opened by errors (or vice versa) when they share a root cause — for example, a latency alert and the error causing it.
+
 
 ## Issue is Noise 
-The LLM agent can determine that an issue is 'noise'. 
+The LLM agent can determine that an issue is 'noise'. Noise classification (`silenced` / `under observation`) applies to error issues only; if an alert-episode Incident turns out to need no action, the Incident is resolved and the alert itself should be tuned or disabled.
 
 An issue counts as 'noise' if the system is behaving normally, no users are impacted, or users are not impacted in a meaningful way.
 
@@ -130,3 +137,4 @@ Once per week, Superlog must send to the connected Slack channel an update conta
 # Changelog
 
 July 6, 2026 - initial commit
+July 9, 2026 - Issues are either errors or alert episodes. An alert-episode Issue is one breach period (new breach = new Issue), only uses `open`/`resolved`, and groups into Incidents like errors do.
