@@ -1,15 +1,19 @@
 import { Btn } from "../design/ui.tsx";
 import { ArrowIcon } from "./icons.tsx";
 
-// Persistent, always-on nudge shown over the app while the user is exploring
-// demo (sample) data. It is deliberately prominent and NOT dismissable — the
-// whole point of demo mode is to keep pushing the user toward instrumenting
-// their own app. Clicking "Connect your app" drops the demo-exploring opt-in,
-// which sends them back to the install wizard. It disappears on its own the
-// moment real telemetry lands (the gate stops rendering it).
-export function InstallNudge({ onConnect }: { onConnect: () => void }) {
+export function DemoExploringBanner({
+  onConnect,
+  floating = false,
+}: {
+  onConnect: () => void;
+  floating?: boolean;
+}) {
   return (
-    <div className="fixed bottom-5 right-5 z-50 w-[320px] overflow-hidden rounded-[14px] border border-[rgba(140,152,240,0.35)] bg-[#0f1014] shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+    <div
+      className={`overflow-hidden rounded-[14px] border border-[rgba(140,152,240,0.35)] bg-[#0f1014] shadow-[0_12px_40px_rgba(0,0,0,0.35)] ${
+        floating ? "fixed bottom-5 right-5 z-50 w-[320px]" : "w-full"
+      }`}
+    >
       <div className="flex items-start gap-2.5 border-b border-[rgba(255,255,255,0.07)] px-[18px] py-[14px]">
         <span className="mt-1 h-2 w-2 flex-shrink-0 animate-pulse rounded-full bg-[#8C98F0]" />
         <div className="flex-1">
@@ -33,4 +37,12 @@ export function InstallNudge({ onConnect }: { onConnect: () => void }) {
       </div>
     </div>
   );
+}
+
+// Persistent, always-on nudge shown over the app while the user is exploring
+// demo (sample) data. It is deliberately prominent and NOT dismissable. Clicking
+// "Connect your app" drops the demo-exploring opt-in, which sends them back to
+// the install wizard. It disappears on its own the moment real telemetry lands.
+export function InstallNudge({ onConnect }: { onConnect: () => void }) {
+  return <DemoExploringBanner onConnect={onConnect} floating />;
 }

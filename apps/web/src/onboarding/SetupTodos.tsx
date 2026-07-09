@@ -10,7 +10,8 @@ import {
 } from "../api.ts";
 import { DeployDialog } from "./DeployDialog.tsx";
 import { McpInstallDialog } from "./McpInstallDialog.tsx";
-import { TodoCarousel } from "./TodoCarousel.tsx";
+import { SetupTodosView } from "./SetupTodosView.tsx";
+import { useDemoExploration } from "./demoExploration.tsx";
 import { BoltIcon, GithubIcon, SlackIcon, TerminalIcon } from "./icons.tsx";
 import type { Todo, TodoId } from "./types.ts";
 
@@ -75,15 +76,21 @@ function isStatsZero(stats: Stats | undefined): boolean {
 }
 
 export function SetupTodos({ projectId }: { projectId: string }) {
+  const { exploring, stopExploring } = useDemoExploration();
   const github = useGithubInstallation();
   const slack = useSlackInstallation();
   const stats = useStats(projectId);
   const mcp = useMcpStatus(projectId);
   const startGithub = useStartGithubInstall();
   const startSlack = useStartSlackInstall();
+  const showDemoExploringBanner = exploring;
 
   const [mcpOpen, setMcpOpen] = useState(false);
   const [deployOpen, setDeployOpen] = useState(false);
+
+  if (showDemoExploringBanner) {
+    return <SetupTodosView showDemoExploringBanner stopExploring={stopExploring} />;
+  }
 
   // Hold off the first paint until every signal has resolved once — otherwise
   // a fully-onboarded user briefly sees all four todos (every `…Connected`
@@ -136,7 +143,8 @@ export function SetupTodos({ projectId }: { projectId: string }) {
 
   return (
     <>
-      <TodoCarousel
+      <SetupTodosView
+        showDemoExploringBanner={false}
         todos={todos}
         busyId={busyId}
         total={total}
