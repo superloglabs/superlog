@@ -96,6 +96,14 @@ export type IntakeDeps = {
   lifecycle: IntakeLifecycle;
   analyzeGrouping: GroupingDecider;
   logger: IntakeLogger;
+  // Optional mutual-exclusion hook around the workflow's one read-then-create
+  // section (deciding on + creating/linking the incident, AFTER grouping
+  // analysis). Wired for alert-episode issues, where concurrent duplicates of
+  // the same issue can reach intake together. fn re-checks the issue's link
+  // first, so the racer that lost the lock re-lands on the winner's incident.
+  // Deliberately excludes the LLM grouping call — implementations may hold a
+  // database connection for fn's whole duration.
+  serializeCreate?: <T>(issueId: string, fn: () => Promise<T>) => Promise<T>;
 };
 
 export type IssueIntakeTransition = "new" | "recurred" | "escalated";
@@ -193,45 +201,70 @@ export async function ensureIncidentForIssueWorkflow(
   }
 
   const grouping = await findMatchingIncident(issue, deps);
-  let incident = grouping.match?.incident ?? null;
-  let createdIncident = false;
+  const matched = grouping.match?.incident ?? null;
 
-  if (!incident && alertContext?.previousIncident) {
-    const recurrence = await deps.lifecycle.openRecurrence({
-      previousIncident: alertContext.previousIncident,
-      issue,
-      origin: "alert_breached_again",
-      environment: environmentFromResourceAttrs(issue.lastSample?.resourceAttrs),
-    });
-    await deps.repo.updateIssueGrouping(issue.id, {
-      state: "standalone",
-      source: "heuristic",
-      reason: "New breach of an alert whose previous incident is closed; chained to it.",
-    });
-    return {
-      incident: recurrence,
-      createdIncident: true,
-      linkedIssue: true,
-      recurrenceIncident: true,
-    };
-  }
+  // The tail below is the workflow's one read-then-create section: everything
+  // above only joins existing incidents with idempotent writes. It runs under
+  // the optional serialization hook with a link re-check inside, so a racer
+  // that created the incident first wins and the loser re-lands on it. The
+  // grouping analysis (which can call an LLM) stays outside the hook.
+  const serialize = deps.serializeCreate ?? ((_issueId, fn) => fn());
+  return serialize(issue.id, async () => {
+    const raceLink = await deps.repo.findLatestIncidentIssueLink(issue.id);
+    if (raceLink) {
+      const existing = await deps.repo.findIncident(raceLink.incidentId);
+      if (existing) {
+        if (existing.status === "open") {
+          await deps.repo.touchIncidentLastSeen(existing.id, issue.lastSeen);
+        }
+        return {
+          incident: existing,
+          createdIncident: false,
+          linkedIssue: false,
+          recurrenceIncident: false,
+        };
+      }
+    }
 
-  if (!incident) {
-    incident = await deps.lifecycle.createOpen({
-      projectId: issue.projectId,
-      service: issue.service,
-      environment: environmentFromResourceAttrs(issue.lastSample?.resourceAttrs),
-      title: issue.title,
-      firstSeen: issue.firstSeen,
-      lastSeen: issue.lastSeen,
-    });
-    createdIncident = true;
-  }
+    if (!matched && alertContext?.previousIncident) {
+      const recurrence = await deps.lifecycle.openRecurrence({
+        previousIncident: alertContext.previousIncident,
+        issue,
+        origin: "alert_breached_again",
+        environment: environmentFromResourceAttrs(issue.lastSample?.resourceAttrs),
+      });
+      await deps.repo.updateIssueGrouping(issue.id, {
+        state: "standalone",
+        source: "heuristic",
+        reason: "New breach of an alert whose previous incident is closed; chained to it.",
+      });
+      return {
+        incident: recurrence,
+        createdIncident: true,
+        linkedIssue: true,
+        recurrenceIncident: true,
+      };
+    }
 
-  const linkedIssue = await deps.repo.linkIssueToIncident({ incident, issue });
-  await markIssueGrouping(issue.id, grouping, deps.repo);
-  const freshIncident = (await deps.repo.findIncident(incident.id)) ?? incident;
-  return { incident: freshIncident, createdIncident, linkedIssue, recurrenceIncident: false };
+    let incident = matched;
+    let createdIncident = false;
+    if (!incident) {
+      incident = await deps.lifecycle.createOpen({
+        projectId: issue.projectId,
+        service: issue.service,
+        environment: environmentFromResourceAttrs(issue.lastSample?.resourceAttrs),
+        title: issue.title,
+        firstSeen: issue.firstSeen,
+        lastSeen: issue.lastSeen,
+      });
+      createdIncident = true;
+    }
+
+    const linkedIssue = await deps.repo.linkIssueToIncident({ incident, issue });
+    await markIssueGrouping(issue.id, grouping, deps.repo);
+    const freshIncident = (await deps.repo.findIncident(incident.id)) ?? incident;
+    return { incident: freshIncident, createdIncident, linkedIssue, recurrenceIncident: false };
+  });
 }
 
 type AlertIncidentContext = {

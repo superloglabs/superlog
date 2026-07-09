@@ -150,6 +150,7 @@ function makeDeps(overrides: {
   repo: IntakeRepository;
   lifecycle: IntakeLifecycle;
   analyzeGrouping?: IntakeDeps["analyzeGrouping"];
+  serializeCreate?: IntakeDeps["serializeCreate"];
   calls: string[];
 }): IntakeDeps {
   return {
@@ -162,6 +163,7 @@ function makeDeps(overrides: {
         overrides.calls.push(`logger.warn:${msg ?? ""}`);
       },
     },
+    serializeCreate: overrides.serializeCreate,
   };
 }
 
@@ -367,6 +369,87 @@ test("intake: alert episode chaining follows a merge chain to the surviving inci
   assert.equal(result.createdIncident, false);
   assert.equal(result.incident.id, "inc-survivor");
   assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-survivor"));
+});
+
+test("intake: create/link section runs under serializeCreate, with grouping analysis outside it", async () => {
+  const calls: string[] = [];
+  const newInc = makeIncident({ id: "inc-fresh" });
+  const unrelated = makeIncident({ id: "inc-unrelated" });
+  const repo = makeRepo({
+    calls,
+    incidentById: new Map([["inc-fresh", newInc]]),
+    // An open candidate so the LLM grouping path actually runs.
+    openCandidates: { withService: [], withoutService: [unrelated] },
+  });
+  repo.loadLinkedIncidentIssues = async () => [
+    {
+      incidentId: "inc-unrelated",
+      title: "something else",
+      exceptionType: "Error",
+      message: null,
+      topFrame: null,
+      normalizedFrames: [],
+      lastSample: null,
+      lastSeen: NOW,
+    },
+  ];
+  const lifecycle = makeLifecycle({ calls, createdIncident: newInc });
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue({ kind: "alert", normalizedFrames: [] }),
+    "new",
+    makeDeps({
+      repo,
+      lifecycle,
+      calls,
+      analyzeGrouping: async () => {
+        calls.push("analyzeGrouping");
+        return { decision: "standalone", evidence: null };
+      },
+      serializeCreate: async (issueId, fn) => {
+        calls.push(`serializeCreate:${issueId}`);
+        return fn();
+      },
+    }),
+  );
+  assert.equal(result.createdIncident, true);
+  // The (potentially slow) grouping analysis must complete before the hook —
+  // never inside it, where implementations hold a database connection.
+  const analyze = calls.indexOf("analyzeGrouping");
+  const serialize = calls.indexOf("serializeCreate:iss-new");
+  const create = calls.findIndex((c) => c.startsWith("createOpen"));
+  assert.ok(analyze !== -1 && serialize !== -1 && create !== -1);
+  assert.ok(analyze < serialize);
+  assert.ok(serialize < create);
+});
+
+test("intake: serialized create re-checks the link and re-lands on a racer's incident", async () => {
+  const calls: string[] = [];
+  const racerIncident = makeIncident({ id: "inc-racer" });
+  const repo = makeRepo({ calls, incidentById: new Map([["inc-racer", racerIncident]]) });
+  // No link when intake starts; the racer's link appears by the time the
+  // serialized section runs (the racer held the lock first).
+  let linkCalls = 0;
+  repo.findLatestIncidentIssueLink = async (issueId) => {
+    calls.push(`findLatestIncidentIssueLink:${issueId}`);
+    linkCalls += 1;
+    if (linkCalls === 1) return undefined;
+    return { issueId, incidentId: "inc-racer" } as schema.IncidentIssue;
+  };
+  const lifecycle = makeLifecycle({ calls });
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue({ kind: "alert", normalizedFrames: [] }),
+    "new",
+    makeDeps({
+      repo,
+      lifecycle,
+      calls,
+      serializeCreate: async (_issueId, fn) => fn(),
+    }),
+  );
+  assert.equal(result.createdIncident, false);
+  assert.equal(result.incident.id, "inc-racer");
+  assert.ok(!calls.some((c) => c.startsWith("createOpen")));
+  assert.ok(!calls.some((c) => c.startsWith("openRecurrence")));
 });
 
 test("intake: first-ever alert episode goes through LLM grouping like an error", async () => {
