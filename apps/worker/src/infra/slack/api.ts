@@ -66,6 +66,67 @@ export async function postSlackMessage(opts: {
   }
 }
 
+export type SlackJoinResult = { ok: true } | { ok: false; error: string };
+
+// Best-effort membership repair before posting a notification root: Slack only
+// delivers `message.channels` events for channels the bot is a member of, so
+// a never-joined channel silently swallows every thread reply to the agent.
+// Idempotent — `already_in_channel` comes back as ok:true with a warning.
+// Fails softly (`missing_scope` on pre-channels:join installs, private
+// channels) and the caller decides whether to hint the user instead.
+export async function joinSlackChannel(target: SlackTarget): Promise<SlackJoinResult> {
+  try {
+    const res = await fetch("https://slack.com/api/conversations.join", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        authorization: `Bearer ${target.botToken}`,
+      },
+      body: JSON.stringify({ channel: target.channelId }),
+      // Pre-post path: a Slack stall must degrade to the soft-failure branch,
+      // not hold up the notification (fetch has no default timeout).
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = (await res.json()) as { ok: boolean; error?: string };
+    if (!data.ok) {
+      if (data.error && REVOKE_ERRORS.has(data.error)) {
+        await markInstallationRevoked(target.installationId);
+      }
+      return { ok: false, error: data.error ?? "unknown" };
+    }
+    return { ok: true };
+  } catch (err) {
+    logger.warn({ scope: "slack", err }, "conversations.join failed");
+    return { ok: false, error: "network_error" };
+  }
+}
+
+// Whether the bot is a member of the channel, or null when Slack didn't say
+// (API error, network failure) — callers must treat null as "unknown", not
+// "not a member".
+export async function fetchChannelMembership(target: SlackTarget): Promise<boolean | null> {
+  try {
+    const url = new URL("https://slack.com/api/conversations.info");
+    url.searchParams.set("channel", target.channelId);
+    const res = await fetch(url, {
+      headers: { authorization: `Bearer ${target.botToken}` },
+      // Pre-post path, same as the join above: bounded so a stall degrades to
+      // "membership unknown" instead of delaying the notification.
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = (await res.json()) as {
+      ok: boolean;
+      error?: string;
+      channel?: { is_member?: boolean };
+    };
+    if (!data.ok || typeof data.channel?.is_member !== "boolean") return null;
+    return data.channel.is_member;
+  } catch (err) {
+    logger.warn({ scope: "slack", err }, "conversations.info failed");
+    return null;
+  }
+}
+
 export async function updateSlackMessage(opts: {
   target: SlackTarget;
   ts: string;

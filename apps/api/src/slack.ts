@@ -33,8 +33,15 @@ const log = logger.child({ scope: "slack" });
 // DMs). Existing installations predating them keep working: channel mentions
 // also arrive as plain `message` events, which the chat router matches by
 // bot-user id. Only DMs strictly need the new scope (and thus a reinstall).
+//
+// `channels:join` lets the bot join the notification channel itself. Posting
+// only needs chat:write.public, but the Events API delivers channel messages
+// solely for channels the bot is a MEMBER of — without joining, thread
+// replies to the agent vanish silently. `users:read` (resolve author ids to
+// names in transcripts/chats) and `reactions:write` (emoji acks) ride along
+// so the next feature doesn't force yet another reinstall wave.
 const SCOPES =
-  "chat:write,chat:write.public,channels:read,groups:read,channels:history,groups:history,app_mentions:read,im:history";
+  "chat:write,chat:write.public,channels:read,groups:read,channels:history,groups:history,app_mentions:read,im:history,channels:join,users:read,reactions:write";
 
 type Vars = { userId: string; orgId: string | null };
 
@@ -154,6 +161,24 @@ export function mountSlackPublic(app: Hono<any>): void {
       },
       "slack installed",
     );
+
+    // Re-auth of an installation that already routes to a channel: join it
+    // now, so a bare reinstall (done to grant channels:join) repairs thread-
+    // reply delivery without the user re-picking the channel. Best-effort —
+    // a failure here must not derail the OAuth redirect.
+    const installed = await findInstallation(projectId);
+    if (installed?.channelId) {
+      const joined = await joinSlackChannel(data.access_token, installed.channelId);
+      log.info(
+        {
+          project_id: projectId,
+          channel_id: installed.channelId,
+          joined: joined.ok,
+          ...(joined.ok ? {} : { join_error: joined.error }),
+        },
+        "slack channel join after install",
+      );
+    }
     void syncLoopsContactsForOrg({ orgId, appUrl: webOrigin }).catch((err) => {
       log.warn({ err, org_id: orgId }, "loops contact sync failed after slack connect");
     });
@@ -930,7 +955,19 @@ export function mountSlackAuthed(app: Hono<any>): void {
       .update(schema.slackInstallations)
       .set({ channelId, channelName })
       .where(eq(schema.slackInstallations.id, install.id));
-    return c.json({ ok: true, channelId, channelName });
+
+    // Join the routed channel so thread replies flow back through the Events
+    // API (posting alone works unjoined via chat:write.public, receiving does
+    // not). Best-effort: private channels and pre-channels:join installs
+    // can't self-join — surface that so the UI can suggest an /invite.
+    const joined = await joinSlackChannel(install.botAccessToken, channelId);
+    if (!joined.ok) {
+      log.info(
+        { project_id: projectId, channel_id: channelId, join_error: joined.error },
+        "slack channel join on route change failed",
+      );
+    }
+    return c.json({ ok: true, channelId, channelName, botJoined: joined.ok });
   });
 
   app.delete("/api/projects/:projectId/slack-route", async (c) => {
@@ -1460,6 +1497,42 @@ export async function listSlackChannels(
   }
   if (cursor) return { ok: false, error: "pagination_limit_exceeded" };
   return { ok: true, channels };
+}
+
+export type JoinSlackChannelResult = { ok: true } | { ok: false; error: string };
+
+// Membership repair for the notification channel: chat:write.public lets the
+// bot post to public channels it never joined, but Slack only delivers
+// `message.channels` events for channels the bot is a member of — so thread
+// replies in a never-joined channel reach nobody. Join is idempotent
+// (`already_in_channel` comes back as ok:true with a warning). Private
+// channels can't be self-joined, but they don't have this gap: posting there
+// already requires an invite. Callers treat failure as best-effort —
+// `missing_scope` means a pre-channels:join installation that needs a
+// re-auth (or a manual invite).
+export async function joinSlackChannel(
+  token: string,
+  channelId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<JoinSlackChannelResult> {
+  try {
+    const res = await fetchImpl("https://slack.com/api/conversations.join", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ channel: channelId }),
+      // Callers sit on user-facing requests (OAuth redirect, route PUT); a
+      // Slack stall must fall through to best-effort, not hang the response.
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = (await res.json()) as { ok: boolean; error?: string };
+    if (!data.ok) return { ok: false, error: data.error ?? "unknown" };
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "network_error" };
+  }
 }
 
 // Slack interactivity envelope. `view.state.values` is keyed by block_id
