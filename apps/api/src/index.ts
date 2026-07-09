@@ -74,6 +74,7 @@ import {
 import { mountIngestFilters } from "./ingest-filters.js";
 import { sanitizeIssueFilterConfig } from "./issue-filter-service.js";
 import { mountLinearAuthed, mountLinearPublic } from "./linear.js";
+import { mountNotionAuthed, mountNotionPublic } from "./notion.js";
 import { logger } from "./logger.js";
 import { mountManagementApi, mountOrgKeyManagementAuthed } from "./management.js";
 import {
@@ -288,6 +289,7 @@ mountGateway(app, ch);
 mountGithubPublic(app);
 mountGithubAuthorOAuth(app);
 mountLinearPublic(app);
+mountNotionPublic(app);
 mountMcpPublic(app, ch);
 mountSlackPublic(app);
 mountCloudflarePublic(app);
@@ -328,6 +330,7 @@ mountMcpAuthed(app);
 mountPersonalAccessTokens(app);
 mountGithubAuthed(app);
 mountLinearAuthed(app);
+mountNotionAuthed(app);
 mountSlackAuthed(app);
 mountCloudflareAuthed(app);
 mountVercelAuthed(app);

@@ -213,6 +213,7 @@ export type AgentRunnerBackend = {
   dispatchIntegrationToolCalls(input: {
     sessionId: string;
     orgId: string;
+    projectId: string;
     incidentId: string;
   }): Promise<number>;
   // Serve a chat session's pending tool calls (memory tools + the reply

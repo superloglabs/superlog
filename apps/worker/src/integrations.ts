@@ -9,6 +9,10 @@ import {
 } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import { logger } from "./logger.js";
+import {
+  buildNotionResolvedIntegration,
+  loadActiveNotionInstallation,
+} from "./notion-integration.js";
 
 const log = logger.child({ scope: "integrations" });
 
@@ -239,6 +243,23 @@ export async function loadEnabledIntegrationsForOrg(
     resolved.push({ row, definition, secrets });
   }
   return resolved;
+}
+
+/**
+ * All integrations an investigation run should get for a given org+project:
+ * the org-scoped generic "Tools" integrations plus, if the run's project has a
+ * connected Notion workspace, the Notion tools synthesized from its OAuth grant.
+ */
+export async function loadRunIntegrations(args: {
+  orgId: string;
+  projectId: string;
+}): Promise<ResolvedIntegration[]> {
+  const [generic, notionInstall] = await Promise.all([
+    loadEnabledIntegrationsForOrg(args.orgId),
+    loadActiveNotionInstallation(args.projectId),
+  ]);
+  if (!notionInstall) return generic;
+  return [...generic, buildNotionResolvedIntegration(notionInstall, args.orgId)];
 }
 
 export function hashIntegrationSet(integrations: ResolvedIntegration[]): string {

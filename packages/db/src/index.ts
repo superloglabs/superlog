@@ -96,6 +96,7 @@ export type {
   Issue,
   IssueSample,
   LinearInstallation,
+  NotionInstallation,
   LinearTicketInstruction,
   LinearTicketPolicy,
   PrPolicy,
@@ -261,6 +262,8 @@ export type {
   LinearTeam,
   LinearIssueRef,
 } from "./linear.js";
+export { exchangeNotionCode, revokeNotionToken, notionOwnerEmail } from "./notion.js";
+export type { NotionTokenResponse, NotionOwnerUser } from "./notion.js";
 export {
   DEFAULT_LOOPS_WELCOME_EVENT,
   buildLoopsContactPayload,

@@ -189,6 +189,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       .dispatchIntegrationToolCalls({
         sessionId,
         orgId: ctx.project.orgId,
+        projectId: ctx.project.id,
         incidentId: ctx.incident.id,
       })
       .catch((err) => {
