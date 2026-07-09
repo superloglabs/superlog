@@ -1,4 +1,4 @@
-import { db, schema } from "@superlog/db";
+import { type DB, db, schema } from "@superlog/db";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { IssueGroupingSource, IssueGroupingState, LinkedIncidentIssue } from "./domain.js";
 
@@ -26,9 +26,19 @@ export async function updateIssueGrouping(
     // concurrent-intake racer to clear its own in-flight marker without
     // clobbering the winner's recorded grouping verdict.
     onlyIfPending?: boolean;
+    // Only apply when grouping isn't already decided: either untouched
+    // (source IS NULL on a fresh issue) or in a retryable state
+    // ('pending'/'failed'). Used by the out-of-lock 'pending' marker write so a
+    // losing concurrent racer can never overwrite the winner's recorded
+    // grouped/standalone verdict (which always carries a non-null source). A
+    // single-row predicate, so it re-evaluates correctly under READ COMMITTED
+    // when it contends with the winner's verdict write on the same row.
+    onlyIfUndecided?: boolean;
   },
+  // Injectable for tests; defaults to the shared connection.
+  database: DB = db,
 ): Promise<void> {
-  await db
+  await database
     .update(schema.issues)
     .set({
       groupingState: opts.state,
@@ -42,7 +52,15 @@ export async function updateIssueGrouping(
     .where(
       opts.onlyIfPending
         ? and(eq(schema.issues.id, issueId), eq(schema.issues.groupingState, "pending"))
-        : eq(schema.issues.id, issueId),
+        : opts.onlyIfUndecided
+          ? and(
+              eq(schema.issues.id, issueId),
+              or(
+                isNull(schema.issues.groupingSource),
+                inArray(schema.issues.groupingState, ["pending", "failed"]),
+              ),
+            )
+          : eq(schema.issues.id, issueId),
     );
 }
 

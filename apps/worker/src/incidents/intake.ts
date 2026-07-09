@@ -65,6 +65,10 @@ export type IntakeRepository = {
       // Only apply when the current state is 'pending' (see the losing-racer
       // path in the serialized create section).
       onlyIfPending?: boolean;
+      // Only apply when grouping isn't already decided (source IS NULL) or is
+      // retryable ('pending'/'failed'). Guards the out-of-lock 'pending' marker
+      // so a losing racer can't clobber the winner's grouped/standalone verdict.
+      onlyIfUndecided?: boolean;
     },
   ): Promise<void>;
 };
@@ -361,11 +365,16 @@ async function findLlmMatchingIncident(issue: schema.Issue, deps: IntakeDeps): P
 
   const project = await deps.repo.findProject(issue.projectId);
 
+  // This runs outside the serialized create section, so concurrent duplicates
+  // of the same issue can all reach it. Guard the marker with onlyIfUndecided
+  // so a racer that arrives after the winner already recorded its verdict
+  // (grouped/standalone, non-null source) can't overwrite it with 'pending'.
   await deps.repo.updateIssueGrouping(issue.id, {
     state: "pending",
     source: "llm",
     reason: "Waiting for LLM grouping.",
     incrementAttempt: true,
+    onlyIfUndecided: true,
   });
 
   try {

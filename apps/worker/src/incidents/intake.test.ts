@@ -110,7 +110,7 @@ function makeRepo(opts: {
     },
     async updateIssueGrouping(issueId, input) {
       opts.calls.push(
-        `updateIssueGrouping${input.onlyIfPending ? "(pending-only)" : ""}:${issueId}:${input.state}:${input.source ?? ""}:${input.reason ?? ""}`,
+        `updateIssueGrouping${input.onlyIfPending ? "(pending-only)" : input.onlyIfUndecided ? "(undecided-only)" : ""}:${issueId}:${input.state}:${input.source ?? ""}:${input.reason ?? ""}`,
       );
     },
   };
@@ -504,7 +504,7 @@ test("intake: first-ever alert episode goes through LLM grouping like an error",
   );
   assert.equal(result.createdIncident, false);
   assert.equal(result.incident.id, "inc-error");
-  assert.ok(calls.some((c) => c.startsWith("updateIssueGrouping:iss-new:pending:llm")));
+  assert.ok(calls.some((c) => c.startsWith("updateIssueGrouping(undecided-only):iss-new:pending:llm")));
   assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-error"));
 });
 
@@ -588,7 +588,11 @@ test("intake: LLM 'join' verdict links to the chosen incident", async () => {
     }),
   );
   assert.equal(result.incident.id, "inc-llm");
-  assert.ok(calls.includes("updateIssueGrouping:iss-new:pending:llm:Waiting for LLM grouping."));
+  assert.ok(
+    calls.includes(
+      "updateIssueGrouping(undecided-only):iss-new:pending:llm:Waiting for LLM grouping.",
+    ),
+  );
   assert.ok(calls.some((c) => c.startsWith("updateIssueGrouping:iss-new:grouped:llm")));
 });
 
