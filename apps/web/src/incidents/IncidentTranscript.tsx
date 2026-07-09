@@ -6,6 +6,7 @@ import { Chip, type ChipTone } from "../design/ui.tsx";
 import { LogsTable, TracesTable } from "../Explore.tsx";
 import {
   type TelemetryKind,
+  exploreHref,
   formatRangeLabel,
   parseResultRows,
   telemetryToolKind,
@@ -439,7 +440,7 @@ export function TelemetryQueryWidget({
         )}
         {!empty && <span className="text-subtle">· {count} rows</span>}
         <a
-          href="/explore"
+          href={exploreHref(kind, input)}
           className="ml-auto inline-flex h-7 items-center rounded-md px-2.5 text-[12px] font-medium text-fg transition-colors hover:bg-surface-2"
         >
           Open in Explore
