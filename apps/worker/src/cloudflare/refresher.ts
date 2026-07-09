@@ -11,20 +11,35 @@
 // So this runs as a scheduled job (jobs/cloudflare-refresh.ts) and, once a day,
 // exercises every active installation's refresh token: mint a fresh access
 // token and persist the rotated pair. Daily is well inside the one-month
-// window, and one refresh per install per day is negligible. There's no
-// per-access-token-expiry gate — the daily schedule is the rate limit, and the
-// point is to keep the grant alive, not to chase the 16h access-token expiry.
+// window, and one refresh per install per day is negligible.
+//
+// Each refresh runs inside a per-installation lock provided by the store
+// (`withLockedInstallation`) — the SAME advisory lock the api's on-demand
+// refresh takes — so a rotating refresh token is never redeemed twice
+// concurrently (which would reject the loser and, under reuse detection, revoke
+// the whole grant). The token is re-read under the lock, so if another actor
+// just refreshed it we reuse theirs instead of redeeming again.
 //
 // IO is behind a narrow store port + injectable fetch so the logic is
 // unit-testable without Postgres or a live Cloudflare account.
 
-import { type CloudflareClientCredentials, refreshAccessToken } from "@superlog/cloudflare";
+import {
+  type CloudflareClientCredentials,
+  type CloudflareTokenResult,
+  refreshAccessToken,
+} from "@superlog/cloudflare";
 
+/** Minimal per-install summary for the pass (no secrets decrypted up front). */
 export type CloudflareRefreshInstallation = {
   id: string;
-  projectId: string;
   accountId: string;
+  hasRefreshToken: boolean;
+};
+
+/** Current token state, re-read under the lock. */
+export type CloudflareInstallationTokens = {
   refreshToken: string | null;
+  tokenExpiresAt: Date | null;
 };
 
 export type CloudflareRefreshedTokens = {
@@ -36,8 +51,19 @@ export type CloudflareRefreshedTokens = {
 export type CloudflareRefresherStore = {
   /** Active installs eligible for keep-alive (not revoked). */
   listActiveInstallations(): Promise<CloudflareRefreshInstallation[]>;
-  /** Persist a refreshed (rotated!) token pair immediately. */
-  saveTokens(id: string, tokens: CloudflareRefreshedTokens): Promise<void>;
+  /**
+   * Run `fn` while holding a per-installation advisory lock (the same lock the
+   * api's freshAccessToken takes). `fn` receives the tokens re-read under the
+   * lock and a `save` that persists within the same locked transaction. The
+   * whole thing is one transaction, so `save` failing rolls back and propagates.
+   */
+  withLockedInstallation<T>(
+    installationId: string,
+    fn: (
+      current: CloudflareInstallationTokens | null,
+      save: (tokens: CloudflareRefreshedTokens) => Promise<void>,
+    ) => Promise<T>,
+  ): Promise<T>;
 };
 
 type RefresherLogger = {
@@ -61,6 +87,14 @@ export type CloudflareRefreshStats = {
   errors: number;
 };
 
+// Skip the redeem only when a comfortably-valid access token already exists —
+// i.e. another actor (the api's on-demand refresh) just refreshed it. Access
+// tokens are ~16h and the job runs daily, so under normal operation the token
+// is always past this and gets refreshed, keeping the grant alive.
+const STILL_FRESH_MARGIN_MS = 60 * 1000;
+
+type RefreshOutcome = "refreshed" | "already_fresh" | "no_token" | "rejected";
+
 export async function runCloudflareRefreshOnce(
   deps: CloudflareRefresherDeps,
 ): Promise<CloudflareRefreshStats> {
@@ -80,64 +114,23 @@ export async function runCloudflareRefreshOnce(
 
     // No refresh token: a legacy install (Cloudflare issued none before the
     // offline grant was enabled). Nothing to exercise — the user must reconnect.
-    if (!inst.refreshToken) {
+    if (!inst.hasRefreshToken) {
       stats.skipped += 1;
       continue;
     }
 
-    // The token request and the persist have DIFFERENT failure semantics, so
-    // they're handled separately:
-    //
-    // A refresh failure ({ ok: false } or a thrown fetch) is isolated to this
-    // install — nothing was rotated, so skip it and carry on with the rest.
-    let refreshed: Awaited<ReturnType<typeof refreshAccessToken>>;
+    let outcome: RefreshOutcome;
     try {
-      refreshed = await refreshAccessToken({
-        config: deps.config,
-        refreshToken: inst.refreshToken,
-        fetchImpl,
-      });
-    } catch (err) {
-      stats.errors += 1;
-      deps.log.error(
-        {
-          installation_id: inst.id,
-          account_id: inst.accountId,
-          err: err instanceof Error ? err.message : String(err),
-        },
-        "cloudflare token request threw; skipping install",
+      outcome = await deps.store.withLockedInstallation(inst.id, (current, save) =>
+        refreshOne(inst, current, save),
       );
-      continue;
-    }
-    if (!refreshed.ok) {
-      // A dead grant (expired / revoked) surfaces here. Log and move on — the
-      // connection just needs a manual reconnect.
-      stats.errors += 1;
-      deps.log.error(
-        { installation_id: inst.id, account_id: inst.accountId, error: refreshed.error },
-        "cloudflare token refresh failed",
-      );
-      continue;
-    }
-
-    // The refresh SUCCEEDED, so Cloudflare has already rotated (consumed) the
-    // old refresh token. Persisting the replacement is now mandatory — if the
-    // save fails the install is stranded, and a save failure is a DB problem
-    // that would hit every remaining install too (each rotating then losing its
-    // new token). So abort the whole pass on a save failure instead of bricking
-    // the rest; pg-boss retries the job.
-    try {
-      await deps.store.saveTokens(inst.id, {
-        accessToken: refreshed.accessToken,
-        // Rotating refresh tokens: keep the replacement, falling back to the
-        // existing one when the response didn't rotate it.
-        refreshToken: refreshed.refreshToken ?? inst.refreshToken,
-        tokenExpiresAt:
-          refreshed.expiresIn != null
-            ? new Date(now().getTime() + refreshed.expiresIn * 1000)
-            : null,
-      });
     } catch (err) {
+      // Only a persist/DB/lock failure reaches here (a failed token request is
+      // handled inside and returned as "rejected"). A successful refresh has
+      // already rotated the token on Cloudflare's side, so a save failure means
+      // the replacement is lost — and it's a DB problem that would hit every
+      // remaining install too. Abort the pass rather than rotate-and-lose across
+      // all of them; pg-boss retries the job.
       stats.errors += 1;
       deps.log.error(
         {
@@ -149,8 +142,65 @@ export async function runCloudflareRefreshOnce(
       );
       throw err;
     }
-    stats.refreshed += 1;
+
+    if (outcome === "refreshed") stats.refreshed += 1;
+    else if (outcome === "rejected") stats.errors += 1;
+    else stats.skipped += 1; // no_token | already_fresh
   }
 
   return stats;
+
+  // Runs under the installation lock, against tokens re-read inside it.
+  async function refreshOne(
+    inst: CloudflareRefreshInstallation,
+    current: CloudflareInstallationTokens | null,
+    save: (tokens: CloudflareRefreshedTokens) => Promise<void>,
+  ): Promise<RefreshOutcome> {
+    if (!current || !current.refreshToken) return "no_token";
+    // Another actor refreshed it while we waited for the lock — leave it.
+    const expiresAt = current.tokenExpiresAt?.getTime() ?? null;
+    if (expiresAt !== null && expiresAt - now().getTime() > STILL_FRESH_MARGIN_MS) {
+      return "already_fresh";
+    }
+
+    let refreshed: CloudflareTokenResult;
+    try {
+      refreshed = await refreshAccessToken({
+        config: deps.config,
+        refreshToken: current.refreshToken,
+        fetchImpl,
+      });
+    } catch (err) {
+      // A thrown fetch (network / DNS) didn't rotate anything — isolate it.
+      deps.log.error(
+        {
+          installation_id: inst.id,
+          account_id: inst.accountId,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "cloudflare token request threw; skipping install",
+      );
+      return "rejected";
+    }
+    if (!refreshed.ok) {
+      // A dead grant (expired / revoked) surfaces here — needs manual reconnect.
+      deps.log.error(
+        { installation_id: inst.id, account_id: inst.accountId, error: refreshed.error },
+        "cloudflare token refresh failed",
+      );
+      return "rejected";
+    }
+
+    // Refresh succeeded → the old token is consumed; persisting the replacement
+    // is mandatory. A throw from `save` propagates out and aborts the pass.
+    await save({
+      accessToken: refreshed.accessToken,
+      // Rotating refresh tokens: keep the replacement, falling back to the
+      // existing one when the response didn't rotate it.
+      refreshToken: refreshed.refreshToken ?? current.refreshToken,
+      tokenExpiresAt:
+        refreshed.expiresIn != null ? new Date(now().getTime() + refreshed.expiresIn * 1000) : null,
+    });
+    return "refreshed";
+  }
 }

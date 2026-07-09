@@ -10,7 +10,7 @@
 
 import { cloudflareClientFromEnv } from "@superlog/cloudflare";
 import { decryptIntegrationSecret, encryptIntegrationSecret, schema } from "@superlog/db";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import {
   type CloudflareRefreshInstallation,
   type CloudflareRefresherStore,
@@ -28,61 +28,83 @@ function createStore(db: JobDeps["db"]): CloudflareRefresherStore {
     async listActiveInstallations(): Promise<CloudflareRefreshInstallation[]> {
       const rows = await db.query.cloudflareInstallations.findMany({
         where: isNull(schema.cloudflareInstallations.revokedAt),
+        columns: { id: true, accountId: true, refreshTokenCiphertext: true },
       });
-      const installations: CloudflareRefreshInstallation[] = [];
-      for (const row of rows) {
-        try {
-          installations.push({
-            id: row.id,
-            projectId: row.projectId,
-            accountId: row.accountId,
-            refreshToken:
-              row.refreshTokenCiphertext && row.refreshTokenNonce
-                ? decryptIntegrationSecret({
-                    ciphertext: row.refreshTokenCiphertext,
-                    nonce: row.refreshTokenNonce,
-                    keyVersion: row.refreshTokenKeyVersion ?? 1,
-                  })
-                : null,
-          });
-        } catch (err) {
-          // A row whose refresh token can't be decrypted (e.g. key rotation gone
-          // wrong) must not block the other installations.
-          log.error(
-            { installation_id: row.id, err: err instanceof Error ? err.message : String(err) },
-            "cloudflare install secret decrypt failed; skipping",
-          );
-        }
-      }
-      return installations;
+      return rows.map((row) => ({
+        id: row.id,
+        accountId: row.accountId,
+        hasRefreshToken: row.refreshTokenCiphertext != null,
+      }));
     },
 
-    async saveTokens(id, tokens) {
-      const accessCipher = encryptIntegrationSecret(tokens.accessToken);
-      const refreshCipher = tokens.refreshToken
-        ? encryptIntegrationSecret(tokens.refreshToken)
-        : null;
-      await db
-        .update(schema.cloudflareInstallations)
-        .set({
-          accessTokenCiphertext: accessCipher.ciphertext,
-          accessTokenNonce: accessCipher.nonce,
-          accessTokenKeyVersion: accessCipher.keyVersion,
-          refreshTokenCiphertext: refreshCipher?.ciphertext ?? null,
-          refreshTokenNonce: refreshCipher?.nonce ?? null,
-          refreshTokenKeyVersion: refreshCipher?.keyVersion ?? null,
-          tokenExpiresAt: tokens.tokenExpiresAt,
-          updatedAt: new Date(),
-        })
-        // Guard against a revoke landing between the list and this write (an
-        // uninstall / account-switch mid-pass): never rewrite tokens onto a
-        // row that's since been torn down.
-        .where(
-          and(
-            eq(schema.cloudflareInstallations.id, id),
+    async withLockedInstallation(installationId, fn) {
+      return db.transaction(async (tx) => {
+        // Same namespaced advisory lock the api's freshAccessToken takes, so an
+        // on-demand refresh and this keep-alive can't redeem the same rotating
+        // token concurrently. Auto-released at transaction end.
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtext('cloudflare_installations'), hashtext(${installationId}))`,
+        );
+        const cur = await tx.query.cloudflareInstallations.findFirst({
+          where: and(
+            eq(schema.cloudflareInstallations.id, installationId),
             isNull(schema.cloudflareInstallations.revokedAt),
           ),
-        );
+          columns: {
+            refreshTokenCiphertext: true,
+            refreshTokenNonce: true,
+            refreshTokenKeyVersion: true,
+            tokenExpiresAt: true,
+          },
+        });
+        const current =
+          cur == null
+            ? null
+            : {
+                refreshToken:
+                  cur.refreshTokenCiphertext && cur.refreshTokenNonce
+                    ? decryptIntegrationSecret({
+                        ciphertext: cur.refreshTokenCiphertext,
+                        nonce: cur.refreshTokenNonce,
+                        keyVersion: cur.refreshTokenKeyVersion ?? 1,
+                      })
+                    : null,
+                tokenExpiresAt: cur.tokenExpiresAt,
+              };
+
+        const save = async (tokens: {
+          accessToken: string;
+          refreshToken: string | null;
+          tokenExpiresAt: Date | null;
+        }): Promise<void> => {
+          const accessCipher = encryptIntegrationSecret(tokens.accessToken);
+          const refreshCipher = tokens.refreshToken
+            ? encryptIntegrationSecret(tokens.refreshToken)
+            : null;
+          await tx
+            .update(schema.cloudflareInstallations)
+            .set({
+              accessTokenCiphertext: accessCipher.ciphertext,
+              accessTokenNonce: accessCipher.nonce,
+              accessTokenKeyVersion: accessCipher.keyVersion,
+              refreshTokenCiphertext: refreshCipher?.ciphertext ?? null,
+              refreshTokenNonce: refreshCipher?.nonce ?? null,
+              refreshTokenKeyVersion: refreshCipher?.keyVersion ?? null,
+              tokenExpiresAt: tokens.tokenExpiresAt,
+              updatedAt: new Date(),
+            })
+            // revokedAt guard: a revoke landing between list and write (uninstall
+            // / account-switch) must not resurrect tokens on a torn-down row.
+            .where(
+              and(
+                eq(schema.cloudflareInstallations.id, installationId),
+                isNull(schema.cloudflareInstallations.revokedAt),
+              ),
+            );
+        };
+
+        return fn(current, save);
+      });
     },
   };
 }
