@@ -502,16 +502,16 @@ export async function completeWithPullRequest(
       emoji: "bulb",
       status: "PR Ready",
       title: ctx.incident.title,
+      titleUrl: incidentUrl,
       tagline: result.summary || undefined,
       projectName: ctx.project.name,
       service: ctx.incident.service,
-      buttons: [
-        { text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" },
-        { text: "View PR", url: opened.prUrl, actionId: "view_pr" },
-      ],
+      buttons: [],
+      links: [{ text: "View PR", url: opened.prUrl }],
       incidentId: ctx.incident.id,
       showResolveButton: true,
       showMergePrButton: true,
+      showFeedbackButtons: true,
     }),
   ).catch((err) =>
     logger.error(

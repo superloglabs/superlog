@@ -9,14 +9,11 @@
 import { db, schema } from "@superlog/db";
 import { desc, eq } from "drizzle-orm";
 import { logger } from "./logger.js";
+// User-provided feedback must not be able to inject mentions (<!channel>,
+// <@U…>) or links into the incident thread — escape the mrkdwn control chars.
+import { escapeSlackLinkText as escapeSlackText } from "./slack-format.js";
 
 const log = logger.child({ scope: "follow-up-offer" });
-
-// Slack mrkdwn control characters. User-provided feedback must not be able
-// to inject mentions (<!channel>, <@U…>) or links into the incident thread.
-function escapeSlackText(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
 
 // kind=incident → refId is the incident UUID; kind=pr → refId is an
 // agent_pull_requests UUID (when tracked). kind=issue and untracked PR refs

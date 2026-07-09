@@ -111,22 +111,51 @@ async function clearIncidentSlackAnchor(incidentId: string): Promise<void> {
     .where(eq(schema.incidents.id, incidentId));
 }
 
+// Slack mrkdwn requires &, <, > escaped inside link labels, otherwise a title
+// like `a > b` truncates the `<url|label>` span. Only the link path needs this;
+// plain `*title*` text renders those characters literally. (Mirrors the api
+// app's apps/api/src/slack-format.ts — keep the rules in sync across apps.)
+function escapeSlackLinkText(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Escape the URL side of a `<url|label>` link: `|` separates url from label and
+// `>` closes the link, so a URL containing either truncates or injects
+// formatting. `titleUrl` is internally generated and safe, but `links` carries
+// generic PR/ticket URLs from callers, so escape both. Percent-encode rather
+// than drop, since both chars are valid in a URL.
+function escapeSlackLinkUrl(url: string): string {
+  return url.replace(/\|/g, "%7C").replace(/>/g, "%3E");
+}
+
 export function incidentBlocks(opts: {
   emoji: string;
   status: string;
   title: string;
+  // When set, the title renders as a link to the incident. Preferred over a
+  // standalone "Open in Superlog" button — it frees an actions-row slot.
+  titleUrl?: string | null;
   tagline?: string | null;
   projectName: string;
   service?: string | null;
   environment?: string | null;
   buttons: Array<{ text: string; url: string; actionId: string }>;
+  // Auxiliary links rendered as a body line (`View PR · View ticket · …`)
+  // rather than buttons — keeps informational URLs out of the actions row.
+  links?: Array<{ text: string; url: string }>;
   incidentId?: string;
   showResolveButton?: boolean;
   // Adds a "Merge PR" action button (merge_pr:<incidentId>) — set on the
   // PR-ready root message so the client can land the fix from Slack.
   showMergePrButton?: boolean;
+  // Adds 👍/👎 rating buttons (rate_incident:<rating>:<incidentId>). Set on
+  // states where there's an investigation worth rating.
+  showFeedbackButtons?: boolean;
 }): unknown[] {
-  const lines = [`:${opts.emoji}: *${opts.status}*`, `*${opts.title}*`];
+  const titleText = opts.titleUrl
+    ? `*<${escapeSlackLinkUrl(opts.titleUrl)}|${escapeSlackLinkText(opts.title)}>*`
+    : `*${opts.title}*`;
+  const lines = [`:${opts.emoji}: *${opts.status}*`, titleText];
   if (opts.tagline) lines.push(`_${opts.tagline}_`);
   // `project · service · environment`, each a code chip; service/environment
   // only appear when present on the triggering error.
@@ -135,6 +164,13 @@ export function incidentBlocks(opts: {
     .map((part) => `\`${part}\``)
     .join(" · ");
   lines.push(context);
+  if (opts.links && opts.links.length > 0) {
+    lines.push(
+      opts.links
+        .map((link) => `<${escapeSlackLinkUrl(link.url)}|${escapeSlackLinkText(link.text)}>`)
+        .join("  ·  "),
+    );
+  }
   const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: lines.join("\n") } }];
   const elements: unknown[] = opts.buttons.map((btn) => ({
     type: "button",
@@ -191,11 +227,18 @@ export function incidentBlocks(opts: {
         },
       });
     }
-    elements.push({
-      type: "button",
-      text: { type: "plain_text", text: "💬 Give feedback", emoji: true },
-      action_id: `give_feedback:${opts.incidentId}`,
-    });
+    if (opts.showFeedbackButtons) {
+      elements.push({
+        type: "button",
+        text: { type: "plain_text", text: "👍 Helpful", emoji: true },
+        action_id: `rate_incident:helpful:${opts.incidentId}`,
+      });
+      elements.push({
+        type: "button",
+        text: { type: "plain_text", text: "👎 Not helpful", emoji: true },
+        action_id: `rate_incident:unhelpful:${opts.incidentId}`,
+      });
+    }
   }
   if (elements.length > 0) {
     blocks.push({ type: "actions", elements });
@@ -317,9 +360,11 @@ export async function postIncidentRootMessage(opts: {
     environment:
       opts.incident.environment ??
       environmentFromResourceAttrs(opts.firstIssue.lastSample?.resourceAttrs),
-    buttons: [{ text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" }],
+    titleUrl: incidentUrl,
+    buttons: [],
     incidentId: opts.incident.id,
     showResolveButton: true,
+    showFeedbackButtons: true,
   });
   await postAndRememberIncidentRoot({ incidentId: opts.incident.id, target, text, blocks });
 }
@@ -341,9 +386,11 @@ async function createIncidentRootInCurrentRoute(
     projectName: project?.name ?? incident.projectId,
     service: incident.service,
     environment: incident.environment,
-    buttons: [{ text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" }],
+    titleUrl: incidentUrl,
+    buttons: [],
     incidentId: incident.id,
     showResolveButton: true,
+    showFeedbackButtons: true,
   });
   const threadTs = await postAndRememberIncidentRoot({
     incidentId: incident.id,

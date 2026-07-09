@@ -110,7 +110,7 @@ test("runResolvedIncidentSideEffects does not fail when Slack refresh throws", a
   assert.deepEqual(result, { closedPullRequestCount: 1, failedPullRequestCount: 0 });
 });
 
-test("buildResolvedIncidentSlackRoot removes resolve action and keeps feedback action", () => {
+test("buildResolvedIncidentSlackRoot removes resolve action and keeps rating actions", () => {
   const update = buildResolvedIncidentSlackRoot({
     incident: {
       id: "inc-1",
@@ -120,7 +120,11 @@ test("buildResolvedIncidentSlackRoot removes resolve action and keeps feedback a
     projectName: "Acme",
   });
 
+  const json = JSON.stringify(update.blocks);
   assert.equal(update.text, ":white_check_mark: Checkout API timeout - Incident resolved");
-  assert.equal(JSON.stringify(update.blocks).includes("resolve_incident:"), false);
-  assert.equal(JSON.stringify(update.blocks).includes("give_feedback:inc-1"), true);
+  assert.equal(json.includes("resolve_incident:"), false);
+  // The incident link now lives on the title, not a standalone button.
+  assert.equal(json.includes("open_superlog"), false);
+  assert.equal(json.includes("rate_incident:helpful:inc-1"), true);
+  assert.equal(json.includes("rate_incident:unhelpful:inc-1"), true);
 });
