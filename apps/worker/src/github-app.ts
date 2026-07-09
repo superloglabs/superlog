@@ -274,6 +274,83 @@ export async function listGithubInstallationRepositories(
   return repos;
 }
 
+export type GithubDirEntry = {
+  name: string;
+  path: string;
+  type: string;
+};
+
+// Instruction files aimed at coding agents (Claude Code, Cursor, Copilot).
+// Investigation agents should read these after cloning so patches follow the
+// repository's own conventions.
+const ROOT_INSTRUCTION_FILE_NAMES = new Set(["claude.md", "agents.md", ".cursorrules"]);
+export const MAX_REPO_INSTRUCTION_FILES = 20;
+
+// Detect agent-instruction files on a repository's default branch from
+// directory listings: the root (CLAUDE.md / AGENTS.md / .cursorrules), the
+// .cursor/rules directory, and .github/copilot-instructions.md. Directory
+// entries under .cursor/rules are reported with a trailing slash so the
+// reader knows to look inside. The lister returns null when a listing is
+// unavailable (missing directory, API error) — absence is never an error.
+export async function collectRepoInstructionFiles(
+  listDir: (dirPath: string) => Promise<GithubDirEntry[] | null>,
+): Promise<string[]> {
+  const root = await listDir("");
+  if (!root) return [];
+
+  const files: string[] = [];
+  for (const entry of root) {
+    if (entry.type === "file" && ROOT_INSTRUCTION_FILE_NAMES.has(entry.name.toLowerCase())) {
+      files.push(entry.path);
+    }
+  }
+
+  const hasRootDir = (name: string) =>
+    root.some((entry) => entry.type === "dir" && entry.name === name);
+
+  if (hasRootDir(".cursor")) {
+    for (const entry of (await listDir(".cursor/rules")) ?? []) {
+      if (entry.type === "file") files.push(entry.path);
+      else if (entry.type === "dir") files.push(`${entry.path}/`);
+    }
+  }
+
+  if (hasRootDir(".github")) {
+    for (const entry of (await listDir(".github")) ?? []) {
+      if (entry.type === "file" && entry.name.toLowerCase() === "copilot-instructions.md") {
+        files.push(entry.path);
+      }
+    }
+  }
+
+  return files.slice(0, MAX_REPO_INSTRUCTION_FILES);
+}
+
+// Best-effort: returns [] on any API failure rather than blocking a run
+// start on a metadata probe. Costs 1-3 contents-API requests per repo.
+export async function listGithubRepoInstructionFiles(
+  installationToken: string,
+  repoFullName: string,
+): Promise<string[]> {
+  return collectRepoInstructionFiles(async (dirPath) => {
+    try {
+      const data = await githubRequest<GithubDirEntry[] | { type: string }>(
+        dirPath === ""
+          ? `/repos/${repoFullName}/contents`
+          : `/repos/${repoFullName}/contents/${dirPath}`,
+        { bearerToken: installationToken },
+      );
+      return Array.isArray(data) ? data : null;
+    } catch (err) {
+      logger.debug(
+        { err, repo: repoFullName, dir: dirPath },
+        "instruction-file probe listing failed",
+      );
+      return null;
+    }
+  });
+}
+
 function runGit(
   args: string[],
   opts: { cwd?: string; env?: NodeJS.ProcessEnv; input?: string } = {},

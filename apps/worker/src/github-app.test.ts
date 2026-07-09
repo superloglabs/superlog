@@ -5,13 +5,94 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
+  type GithubDirEntry,
+  MAX_REPO_INSTRUCTION_FILES,
   applyAgentPatch,
+  collectRepoInstructionFiles,
   formatRetryBranchName,
   isGitPushBranchCollision,
   isMissingRemoteBranchFailure,
   isRetryableGitPushFailure,
   redactGitSecrets,
 } from "./github-app.js";
+
+function makeDirLister(
+  dirs: Record<string, GithubDirEntry[]>,
+): (dirPath: string) => Promise<GithubDirEntry[] | null> {
+  return async (dirPath: string) => dirs[dirPath] ?? null;
+}
+
+function file(path: string): GithubDirEntry {
+  return { name: path.split("/").at(-1) ?? path, path, type: "file" };
+}
+
+function dir(path: string): GithubDirEntry {
+  return { name: path.split("/").at(-1) ?? path, path, type: "dir" };
+}
+
+test("collectRepoInstructionFiles finds root-level instruction files", async () => {
+  const found = await collectRepoInstructionFiles(
+    makeDirLister({
+      "": [file("CLAUDE.md"), file("AGENTS.md"), file(".cursorrules"), file("README.md")],
+    }),
+  );
+  assert.deepEqual(found, ["CLAUDE.md", "AGENTS.md", ".cursorrules"]);
+});
+
+test("collectRepoInstructionFiles matches instruction file names case-insensitively", async () => {
+  const found = await collectRepoInstructionFiles(
+    makeDirLister({ "": [file("claude.md"), file("Agents.md")] }),
+  );
+  assert.deepEqual(found, ["claude.md", "Agents.md"]);
+});
+
+test("collectRepoInstructionFiles lists .cursor/rules contents when .cursor exists", async () => {
+  const found = await collectRepoInstructionFiles(
+    makeDirLister({
+      "": [dir(".cursor"), file("README.md")],
+      ".cursor/rules": [file(".cursor/rules/logging.mdc"), dir(".cursor/rules/backend")],
+    }),
+  );
+  assert.deepEqual(found, [".cursor/rules/logging.mdc", ".cursor/rules/backend/"]);
+});
+
+test("collectRepoInstructionFiles finds .github/copilot-instructions.md", async () => {
+  const found = await collectRepoInstructionFiles(
+    makeDirLister({
+      "": [dir(".github")],
+      ".github": [file(".github/copilot-instructions.md"), file(".github/CODEOWNERS")],
+    }),
+  );
+  assert.deepEqual(found, [".github/copilot-instructions.md"]);
+});
+
+test("collectRepoInstructionFiles skips directory probes when the root lacks them", async () => {
+  const probed: string[] = [];
+  const found = await collectRepoInstructionFiles(async (dirPath) => {
+    probed.push(dirPath);
+    return dirPath === "" ? [file("README.md"), dir("src")] : [];
+  });
+  assert.deepEqual(found, []);
+  assert.deepEqual(probed, [""]);
+});
+
+test("collectRepoInstructionFiles returns empty when the root listing fails", async () => {
+  const found = await collectRepoInstructionFiles(async () => null);
+  assert.deepEqual(found, []);
+});
+
+test("collectRepoInstructionFiles ignores directories named like instruction files", async () => {
+  const found = await collectRepoInstructionFiles(makeDirLister({ "": [dir("CLAUDE.md")] }));
+  assert.deepEqual(found, []);
+});
+
+test("collectRepoInstructionFiles caps the result list", async () => {
+  const rules = Array.from({ length: 40 }, (_, i) => file(`.cursor/rules/rule-${i}.mdc`));
+  const found = await collectRepoInstructionFiles(
+    makeDirLister({ "": [dir(".cursor")], ".cursor/rules": rules }),
+  );
+  assert.equal(found.length, MAX_REPO_INSTRUCTION_FILES);
+});
 
 test("redactGitSecrets scrubs GitHub installation/app tokens", () => {
   const token = ["ghs", "AbCdEf0123456789AbCdEf0123456789"].join("_");

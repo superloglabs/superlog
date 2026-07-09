@@ -12,14 +12,15 @@ test("installed carries the outcome back so the wizard resumes the Vercel flow",
   assert.equal(view.backHref, "/?vercel=installed");
 });
 
-test("drains_unavailable spells out the Pro/Enterprise plan requirement", () => {
+test("drains_unavailable explains the prompt fallback", () => {
   const view = vercelCallbackView("drains_unavailable");
   assert.equal(view.tone, "error");
   assert.match(view.title, /drains aren't available/i);
   assert.match(view.body, /Pro or Enterprise/);
   assert.match(view.body, /Hobby|free/i);
+  assert.match(view.body, /prompt/i);
   // Failure back-links carry the outcome so the onboarding wizard (which reads
-  // `?vercel=` on `/`) resets out of its waiting state when the user returns.
+  // `?vercel=` on `/`) can open the coding-agent prompt when the user returns.
   assert.equal(view.backHref, "/?vercel=drains_unavailable");
 });
 

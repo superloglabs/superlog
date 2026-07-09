@@ -2,8 +2,12 @@ import { type ReactNode, useEffect, useState } from "react";
 import { useMe } from "../api.ts";
 import { CenteredShell } from "../design/ui.tsx";
 import { finishSkillOnboarding, isSkillOnboardingPending } from "../skillOnboarding.ts";
-import { InstallNudge } from "./InstallNudge.tsx";
 import { OnboardingWizard } from "./OnboardingWizard.tsx";
+import {
+  DemoExplorationProvider,
+  readDemoExploring,
+  writeDemoExploring,
+} from "./demoExploration.tsx";
 
 // Pre-empts the dashboard for new users until they've finished the install +
 // deploy wizard and telemetry has arrived.
@@ -15,29 +19,9 @@ import { OnboardingWizard } from "./OnboardingWizard.tsx";
 // Demo overlay: when the server is serving sample data (`me.demoMode`), the
 // install wizard stays the default landing, but the user can opt to "Explore
 // with sample data" — which renders the populated app (reading the shared demo
-// project, read-only) with a persistent InstallNudge. The opt-in is local-only
-// and is dropped the instant real telemetry lands (demoMode flips false).
-
-const DEMO_EXPLORING_KEY = "superlog.demo_exploring";
-
-function readDemoExploring(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(DEMO_EXPLORING_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function writeDemoExploring(on: boolean) {
-  if (typeof window === "undefined") return;
-  try {
-    if (on) window.localStorage.setItem(DEMO_EXPLORING_KEY, "1");
-    else window.localStorage.removeItem(DEMO_EXPLORING_KEY);
-  } catch {
-    /* ignore */
-  }
-}
+// project, read-only) with a persistent connect banner in the overview setup
+// slot. The opt-in is local-only and is dropped the instant real telemetry lands
+// (demoMode flips false).
 
 export function OnboardingGate({ children }: { children: ReactNode }) {
   const me = useMe();
@@ -71,6 +55,11 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
   const stopExploring = () => {
     setExploring(false);
     writeDemoExploring(false);
+  };
+  const demoExploration = {
+    demoMode,
+    exploring: demoMode && exploring,
+    stopExploring,
   };
 
   if (me.isLoading || !me.data) {
@@ -120,14 +109,9 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
   }
 
   // Opted into the demo: render the populated app (server serves demo data,
-  // read-only) with a persistent nudge to connect their own app.
+  // read-only). The overview setup slot renders the persistent connect nudge.
   if (demoMode && exploring) {
-    return (
-      <>
-        {children}
-        <InstallNudge onConnect={stopExploring} />
-      </>
-    );
+    return <DemoExplorationProvider value={demoExploration}>{children}</DemoExplorationProvider>;
   }
 
   return (

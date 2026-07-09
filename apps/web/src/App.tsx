@@ -5,6 +5,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AcceptInvitation } from "./AcceptInvitation.tsx";
 import { Activate } from "./Activate.tsx";
+import { Changelog } from "./Changelog.tsx";
 import { CommandPalette } from "./CommandPalette.tsx";
 import { Explore } from "./Explore.tsx";
 import { ForgotPassword } from "./ForgotPassword.tsx";
@@ -18,6 +19,7 @@ import { Pricing } from "./Pricing.tsx";
 import { PrivacyPolicy } from "./PrivacyPolicy.tsx";
 import { RailwayCallback } from "./RailwayCallback.tsx";
 import { ResetPassword } from "./ResetPassword.tsx";
+import { Roadmap } from "./Roadmap.tsx";
 import { Settings } from "./Settings.tsx";
 import { TermsOfService } from "./TermsOfService.tsx";
 import { VercelCallback } from "./VercelCallback.tsx";
@@ -130,6 +132,8 @@ export function App() {
         <Route path="/oauth/consent" element={<OauthConsent />} />
         <Route path="/pricing" element={<Pricing />} />
         <Route path="/privacy" element={<PrivacyPolicy />} />
+        <Route path="/changelog" element={<Changelog />} />
+        <Route path="/roadmap" element={<Roadmap />} />
         <Route path="/tos" element={<TermsOfService />} />
         <Route path="/signup" element={<SignupRoute />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />

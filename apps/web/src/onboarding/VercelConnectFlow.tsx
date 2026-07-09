@@ -40,6 +40,7 @@ export function VercelConnectFlow({
   onBack,
   onDone,
   onExploreDemo,
+  onDrainsUnavailable,
 }: {
   projectId: string;
   // Whether the real project has ingested telemetry yet (from the parent's
@@ -49,6 +50,7 @@ export function VercelConnectFlow({
   onBack: () => void;
   onDone: () => void;
   onExploreDemo?: () => void;
+  onDrainsUnavailable?: () => void;
 }) {
   // Whether we've opened the install screen this session. Drives the transition
   // from the "start" call-to-action to the "connecting" waiting state while the
@@ -68,14 +70,16 @@ export function VercelConnectFlow({
   useEffect(() => {
     const outcome = parseVercelOutcome(searchParams.get("vercel"));
     if (!outcome) return;
-    if (outcome === "denied" || outcome === "error" || outcome === "drains_unavailable") {
+    if (outcome === "drains_unavailable") {
+      onDrainsUnavailable?.();
+    } else if (outcome === "denied" || outcome === "error") {
       setLaunched(false);
       setOutcomeError(vercelOutcomeMessage(outcome));
     }
     const next = new URLSearchParams(searchParams);
     next.delete("vercel");
     setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams]);
+  }, [searchParams, setSearchParams, onDrainsUnavailable]);
 
   const installed = install.data?.installed === true;
   const phase = vercelPhase({ installed, launched });
