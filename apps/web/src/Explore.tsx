@@ -320,9 +320,10 @@ function ExploreInner({ projectId }: { projectId: string }) {
               try {
                 setSelection(next);
                 setNowTick(Date.now());
-                // Leaving a pinned absolute window for a live preset — drop the
-                // deep-link params so the range slides again.
-                if (absoluteRange) {
+                // Picking a live preset drops any pinned-window params so the
+                // range slides again — keyed on the raw params (not the parsed
+                // range) so a malformed `since`/`until` gets cleaned up too.
+                if (searchParams.has("since") || searchParams.has("until")) {
                   updateParams((p) => {
                     p.delete("since");
                     p.delete("until");

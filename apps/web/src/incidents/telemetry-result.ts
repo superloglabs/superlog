@@ -125,8 +125,10 @@ export function toTraceRows(rows: Record<string, unknown>[]): TraceTableRow[] {
  *  `service.name` attribute), `sev` (logs), `status` (traces), and `metric`
  *  (metrics). The MCP query tools also accept span_name / free-text search /
  *  span_attrs / log_attrs, none of which Explore can express in its URL, so
- *  those are dropped rather than mismapped. The time range is likewise not
- *  URL-addressable in Explore (it's a stored preset), so it isn't carried. */
+ *  those are dropped rather than mismapped. The time range is carried as
+ *  `since` / `until` when it's an absolute window; relative ClickHouse
+ *  expressions (`now() - …`) are dropped because Explore can't reconstruct
+ *  them from the URL. */
 export function exploreHref(kind: TelemetryKind, input: Record<string, unknown>): string {
   const params = new URLSearchParams();
 
