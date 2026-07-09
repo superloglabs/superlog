@@ -13,6 +13,38 @@ export type AgentRunnerRepoCandidate = {
   score: number;
 };
 
+// The trigger context for an alert-episode issue: the alert's configuration
+// (what is measured and the breach condition) plus the episode — the specific
+// breach period, with its window and observed values. Timestamps are ISO
+// strings.
+export type AgentRunnerAlertEpisode = {
+  alert: {
+    id: string;
+    name: string;
+    source: string;
+    metricName: string | null;
+    filter: Record<string, unknown>;
+    groupBy: string | null;
+    groupMode: string;
+    aggregation: string;
+    comparator: "gt" | "lt";
+    threshold: number;
+    windowMinutes: number;
+    evaluationIntervalSeconds: number;
+  };
+  episode: {
+    id: string;
+    groupKey: string;
+    state: "firing" | "resolved";
+    startedAt: string;
+    endedAt: string | null;
+    openObservedValue: number;
+    peakObservedValue: number;
+    lastObservedValue: number;
+    lastFiringAt: string;
+  };
+};
+
 export type AgentRunnerIssueSummary = {
   id: string;
   title: string;
@@ -24,6 +56,8 @@ export type AgentRunnerIssueSummary = {
   sessionId: string | null;
   lastSample: unknown;
   traceContext: string | null;
+  // Set for alert-episode issues (kind='alert'); null for errors.
+  alertEpisode: AgentRunnerAlertEpisode | null;
 };
 
 export type AgentRunnerMemory = {

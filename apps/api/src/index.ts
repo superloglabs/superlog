@@ -1517,6 +1517,9 @@ app.post("/api/projects/:projectId/issues/:issueId/silence", async (c) => {
             eq(schema.issues.id, issueId),
             eq(schema.issues.projectId, projectId),
             ne(schema.issues.status, "silenced"),
+            // Alert-episode issues are only ever open or resolved; a noisy
+            // alert is tuned or disabled, not silenced per episode.
+            ne(schema.issues.kind, "alert"),
           ),
         )
         .returning();
@@ -1526,6 +1529,11 @@ app.post("/api/projects/:projectId/issues/:issueId/silence", async (c) => {
           where: and(eq(schema.issues.id, issueId), eq(schema.issues.projectId, projectId)),
         });
         if (!existing) throw new HTTPException(404, { message: "issue not found" });
+        if (existing.kind === "alert") {
+          throw new HTTPException(400, {
+            message: "alert episodes cannot be silenced — tune or disable the alert instead",
+          });
+        }
         return c.json(existing);
       }
       span.setAttribute("issue.silence.applied", true);

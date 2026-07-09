@@ -48,6 +48,7 @@ test("getAgentRunnerBackend returns the default community backend", async () => 
           sessionId: null,
           lastSample: null,
           traceContext: null,
+          alertEpisode: null,
         },
       ],
       repoCandidates: [],

@@ -1,5 +1,8 @@
-import type { schema } from "@superlog/db";
+import { db, type schema } from "@superlog/db";
+import { eq } from "drizzle-orm";
+import type { AgentRunnerAlertEpisode } from "../agent-runner-backend.js";
 import { fetchTraceContext } from "../infra/clickhouse/trace-context.js";
+import { findAlertEpisodeForIssue } from "../issues/repository.js";
 
 const STACKTRACE_PREVIEW_CHARS = 4_000;
 
@@ -16,6 +19,7 @@ function buildIssueSummary(issue: schema.Issue) {
     sessionId: sessionIdForSample(sample),
     lastSample: issue.lastSample ?? null,
     traceContext: null as string | null,
+    alertEpisode: null as AgentRunnerAlertEpisode | null,
   };
 }
 
@@ -24,12 +28,58 @@ export async function buildIssueSummaryWithTrace(
   issue: schema.Issue,
 ): Promise<ReturnType<typeof buildIssueSummary>> {
   const base = buildIssueSummary(issue);
+  if (issue.kind === "alert") {
+    // An alert-episode issue's trigger context is the alert config + the
+    // breach window, not a stack trace: the issue's sample is a synthetic
+    // echo of the title and only misleads the agent into hunting for frames.
+    return {
+      ...base,
+      lastSample: null,
+      alertEpisode: await loadAlertEpisodeContext(issue.id),
+    };
+  }
   const sample = (issue.lastSample ?? null) as schema.IssueSample | null;
   const traceId = sample?.traceId ?? null;
   const spanId = sample?.spanId ?? null;
   if (!traceId) return base;
   const traceContext = await fetchTraceContext(projectId, traceId, spanId ?? null);
   return { ...base, traceContext };
+}
+
+async function loadAlertEpisodeContext(issueId: string): Promise<AgentRunnerAlertEpisode | null> {
+  const episode = await findAlertEpisodeForIssue(issueId);
+  if (!episode) return null;
+  const alert = await db.query.alerts.findFirst({
+    where: (alerts) => eq(alerts.id, episode.alertId),
+  });
+  if (!alert) return null;
+  return {
+    alert: {
+      id: alert.id,
+      name: alert.name,
+      source: alert.source,
+      metricName: alert.metricName,
+      filter: (alert.filter ?? {}) as Record<string, unknown>,
+      groupBy: alert.groupBy,
+      groupMode: alert.groupMode,
+      aggregation: alert.aggregation,
+      comparator: alert.comparator,
+      threshold: alert.threshold,
+      windowMinutes: alert.windowMinutes,
+      evaluationIntervalSeconds: alert.evaluationIntervalSeconds,
+    },
+    episode: {
+      id: episode.id,
+      groupKey: episode.groupKey,
+      state: episode.state,
+      startedAt: episode.startedAt.toISOString(),
+      endedAt: episode.endedAt?.toISOString() ?? null,
+      openObservedValue: episode.openObservedValue,
+      peakObservedValue: episode.peakObservedValue,
+      lastObservedValue: episode.lastObservedValue,
+      lastFiringAt: episode.lastFiringAt.toISOString(),
+    },
+  };
 }
 
 function stacktracePreview(stacktrace: string | null): string | null {
