@@ -102,6 +102,55 @@ test("startQueuedAgentRunWorkflow passes agent memories to the runner", async ()
   ]);
 });
 
+test("startQueuedAgentRunWorkflow passes probed instruction files to the runner", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+
+  let received: string[][] = [];
+  await startQueuedAgentRunWorkflow(
+    ctx,
+    makeDeps(
+      calls,
+      {
+        async listRepositoryInstructionFiles(_token, repoFullName) {
+          calls.push(`listRepositoryInstructionFiles:${repoFullName}`);
+          return ["CLAUDE.md", ".cursor/rules/logging.mdc"];
+        },
+      },
+      (input) => {
+        received = input.repoCandidates.map((repo) => repo.instructionFiles);
+      },
+    ),
+  );
+
+  assert.ok(calls.includes("listRepositoryInstructionFiles:org/repo-1"));
+  assert.deepEqual(received, [["CLAUDE.md", ".cursor/rules/logging.mdc"]]);
+});
+
+test("startQueuedAgentRunWorkflow starts with empty instruction files when probing fails", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+
+  let received: string[][] = [];
+  await startQueuedAgentRunWorkflow(
+    ctx,
+    makeDeps(
+      calls,
+      {
+        async listRepositoryInstructionFiles() {
+          throw new Error("github contents listing failed");
+        },
+      },
+      (input) => {
+        received = input.repoCandidates.map((repo) => repo.instructionFiles);
+      },
+    ),
+  );
+
+  assert.ok(calls.includes("runner.start:1"));
+  assert.deepEqual(received, [[]]);
+});
+
 test("startQueuedAgentRunWorkflow fails cleanly when async backend selection rejects", async () => {
   const calls: string[] = [];
   const ctx = makeContext();
@@ -188,6 +237,9 @@ function makeDeps(
     async createRepositoryReadToken(_installationId, repoId) {
       calls.push(`createRepositoryReadToken:repo-${repoId}`);
       return `token-${repoId}`;
+    },
+    async listRepositoryInstructionFiles() {
+      return [];
     },
     async buildIssueSummaries() {
       calls.push("buildIssueSummaries");

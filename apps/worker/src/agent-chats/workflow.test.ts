@@ -147,6 +147,7 @@ function makeHarness(opts: {
           cloneUrl: "https://github.com/acme/app",
           installationToken: "t",
           score: 0,
+          instructionFiles: [],
         },
       ];
     },
