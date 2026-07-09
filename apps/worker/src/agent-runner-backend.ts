@@ -99,6 +99,13 @@ export type AgentRunnerStartInput = {
 export type AgentRunnerSnapshot = {
   sessionId: string;
   status: "running" | "idle" | "terminated" | "rescheduling";
+  // The stop_reason of the session's most recent idle, or null if it has not
+  // idled yet. `status: "idle"` is ambiguous on its own: a session idles both
+  // when a turn truly ends (`end_turn`) and when it is blocked awaiting a
+  // client-side tool result (`requires_action` — e.g. the chat reply tool the
+  // worker dispatches). The chat workflow keys off this to avoid closing a
+  // turn that is really still waiting on a reply it must deliver.
+  stopReason: { type: string; eventIds: string[] } | null;
   activeSeconds: number;
   events: Array<{
     id: string;
