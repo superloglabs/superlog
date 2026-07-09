@@ -182,8 +182,7 @@ function parseSdSection(
         nameEnd++;
       }
       if (raw[nameEnd] !== "=" || raw[nameEnd + 1] !== '"') {
-        i = nameEnd;
-        continue;
+        return null;
       }
       const name = raw.slice(i, nameEnd);
       i = nameEnd + 2;
