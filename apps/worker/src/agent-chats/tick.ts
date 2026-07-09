@@ -13,7 +13,10 @@ import { listAccessibleGithubRepositories } from "../agent-run-context.js";
 import type { AgentRunnerRepoCandidate } from "../agent-runner-backend.js";
 import { recordTokenUsage } from "../ai-usage.js";
 import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
-import { createRepositoryReadToken } from "../infra/github/repositories.js";
+import {
+  createRepositoryReadToken,
+  listRepositoryInstructionFiles,
+} from "../infra/github/repositories.js";
 import { postAgentChatMessage } from "../infra/slack/chat-messages.js";
 import { logger } from "../logger.js";
 import {
@@ -27,6 +30,7 @@ const tracer = trace.getTracer("@superlog/worker");
 const log = logger.child({ scope: "agent_chat" });
 
 const AGENT_CHAT_BATCH_SIZE = parsePositiveInt(process.env.AGENT_CHAT_BATCH_SIZE, 10, 100);
+const CHAT_INSTRUCTION_FILE_PROBE_LIMIT = 10;
 
 function parsePositiveInt(value: string | undefined, fallback: number, max: number): number {
   if (value === undefined) return fallback;
@@ -67,16 +71,25 @@ const deps: AgentChatWorkflowDeps = {
     // Questions can reference any repo, and the agent picks its own path.
     const repos = (await listAccessibleGithubRepositories({ githubInstalls })).slice(0, maxRepos);
     const candidates = await Promise.all(
-      repos.map(async (repo): Promise<AgentRunnerRepoCandidate | null> => {
+      repos.map(async (repo, index): Promise<AgentRunnerRepoCandidate | null> => {
         try {
+          const installationToken = await createRepositoryReadToken(
+            repo.installation.installationId,
+            repo.id,
+          );
           return {
             fullName: repo.fullName,
             cloneUrl: `https://github.com/${repo.fullName}`,
-            installationToken: await createRepositoryReadToken(
-              repo.installation.installationId,
-              repo.id,
-            ),
+            installationToken,
             score: 0,
+            // Same cap rationale as agent runs: the probe costs GitHub API
+            // requests per repo, so only the first few mounted repos get one.
+            instructionFiles:
+              index < CHAT_INSTRUCTION_FILE_PROBE_LIMIT
+                ? await listRepositoryInstructionFiles(installationToken, repo.fullName).catch(
+                    () => [],
+                  )
+                : [],
           };
         } catch (err) {
           log.warn({ err, repo: repo.fullName }, "skipping inaccessible repo for agent chat");

@@ -11,6 +11,12 @@ export type AgentRunnerRepoCandidate = {
   cloneUrl: string;
   installationToken: string;
   score: number;
+  // Agent-instruction files (CLAUDE.md, AGENTS.md, .cursorrules,
+  // .cursor/rules/*, .github/copilot-instructions.md) detected on the repo's
+  // default branch at start time. Best-effort — empty when probing failed or
+  // was skipped for a low-scored candidate. Runners surface these so the
+  // agent reads them after cloning and follows the repo's conventions.
+  instructionFiles: string[];
 };
 
 export type AgentRunnerIssueSummary = {

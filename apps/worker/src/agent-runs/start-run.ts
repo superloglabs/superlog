@@ -3,7 +3,10 @@ import type { AgentRunContext } from "../agent-run-context.js";
 import { listAccessibleGithubRepositories, scoreRepos } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
-import { createRepositoryReadToken } from "../infra/github/repositories.js";
+import {
+  createRepositoryReadToken,
+  listRepositoryInstructionFiles,
+} from "../infra/github/repositories.js";
 import {
   incidentBlocks,
   postIncidentThreadMessage,
@@ -28,6 +31,7 @@ export async function startQueuedAgentRun(ctx: AgentRunContext): Promise<void> {
     listRepositories: listAccessibleGithubRepositories,
     scoreRepositories: scoreRepos,
     createRepositoryReadToken,
+    listRepositoryInstructionFiles,
     buildIssueSummaries: (ctx) =>
       Promise.all(ctx.issueRows.map((issue) => buildIssueSummaryWithTrace(ctx.project.id, issue))),
     fail: failAgentRun,

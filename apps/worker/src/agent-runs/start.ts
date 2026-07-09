@@ -23,6 +23,10 @@ export type StartQueuedAgentRunDeps = {
   listRepositories(ctx: AgentRunContext): Promise<InstalledGithubRepo[]>;
   scoreRepositories(repos: InstalledGithubRepo[], ctx: AgentRunContext): ScoredGithubRepo[];
   createRepositoryReadToken(installationId: number, repoId: number): Promise<string>;
+  listRepositoryInstructionFiles(
+    installationToken: string,
+    repoFullName: string,
+  ): Promise<string[]>;
   buildIssueSummaries(ctx: AgentRunContext): Promise<AgentRunnerIssueSummary[]>;
   fail(
     ctx: AgentRunContext,
@@ -172,24 +176,54 @@ async function createRunnerRepoCandidates(
   }
 
   const candidates = await Promise.all(
-    topScored.map(async (repo) => createRunnerRepoCandidate(repo, deps)),
+    topScored.map(async (repo, index) =>
+      createRunnerRepoCandidate(repo, index < INSTRUCTION_FILE_PROBE_LIMIT, deps),
+    ),
   );
   return candidates.filter((repo): repo is AgentRunnerRepoCandidate => repo !== null);
 }
 
+// Each probe costs up to three GitHub contents-API requests, so only the
+// strongest candidates get one; the rest start with an empty list and the
+// agent falls back to looking for instruction files itself after cloning.
+const INSTRUCTION_FILE_PROBE_LIMIT = 10;
+
+// Best-effort: the probe must never cost us a repo candidate, so both
+// rejected promises and synchronous throws from the dep degrade to [].
+async function probeRepoInstructionFiles(
+  repo: ScoredGithubRepo,
+  installationToken: string,
+  deps: StartQueuedAgentRunDeps,
+): Promise<string[]> {
+  try {
+    return await deps.listRepositoryInstructionFiles(installationToken, repo.fullName);
+  } catch (err) {
+    logger.warn(
+      { err, repo: repo.fullName },
+      "instruction-file probe failed; starting without repo instruction files",
+    );
+    return [];
+  }
+}
+
 async function createRunnerRepoCandidate(
   repo: ScoredGithubRepo,
+  probeInstructionFiles: boolean,
   deps: StartQueuedAgentRunDeps,
 ): Promise<AgentRunnerRepoCandidate | null> {
   try {
+    const installationToken = await deps.createRepositoryReadToken(
+      repo.installation.installationId,
+      repo.id,
+    );
     return {
       fullName: repo.fullName,
       cloneUrl: `https://github.com/${repo.fullName}`,
-      installationToken: await deps.createRepositoryReadToken(
-        repo.installation.installationId,
-        repo.id,
-      ),
+      installationToken,
       score: repo.score,
+      instructionFiles: probeInstructionFiles
+        ? await probeRepoInstructionFiles(repo, installationToken, deps)
+        : [],
     };
   } catch (err) {
     logger.warn(
