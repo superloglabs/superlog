@@ -7,12 +7,26 @@ export type FacetValue = {
 };
 
 export function facetDisplayName(value: string): string {
-  const words = value
-    .replace(/^(resource|span|log)\./, "")
+  const scoped = value.match(/^(resource|span|log)\.(.+)$/);
+  const words = (scoped?.[2] ?? value)
     .replace(/[._-]+/g, " ")
     .trim()
     .toLowerCase();
-  return words ? `${words[0]?.toUpperCase()}${words.slice(1)}` : value;
+  const label = words ? `${words[0]?.toUpperCase()}${words.slice(1)}` : value;
+  if (!scoped?.[1]) return label;
+  const scope = `${scoped[1][0]?.toUpperCase()}${scoped[1].slice(1)}`;
+  return `${scope} · ${label}`;
+}
+
+export function facetMatchesQuery(key: string, query: string): boolean {
+  const normalize = (value: string) =>
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  const normalizedQuery = normalize(query);
+  if (!normalizedQuery) return true;
+  return normalize(`${key} ${facetDisplayName(key)}`).includes(normalizedQuery);
 }
 
 export function FacetValues({

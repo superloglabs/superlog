@@ -1,6 +1,11 @@
 import type React from "react";
 import { useEffect, useMemo, useState } from "react";
-import { type FacetValue, FacetValues, facetDisplayName } from "./FacetValues.tsx";
+import {
+  type FacetValue,
+  FacetValues,
+  facetDisplayName,
+  facetMatchesQuery,
+} from "./FacetValues.tsx";
 import {
   type AttributeKey,
   type ExploreRange,
@@ -56,9 +61,8 @@ export function ExploreFacets({
   }, [primaryFacet]);
 
   const visibleKeys = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return keys.data ?? [];
-    return (keys.data ?? []).filter((key) => key.key.toLowerCase().includes(normalized));
+    if (!query.trim()) return keys.data ?? [];
+    return (keys.data ?? []).filter((key) => facetMatchesQuery(key.key, query));
   }, [keys.data, query]);
 
   const selectedAttributeValues = useMemo(() => {
