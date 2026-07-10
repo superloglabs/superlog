@@ -3,8 +3,11 @@ import test from "node:test";
 import {
   buildIncidentDetailMeta,
   formatIncidentDuration,
+  formatIncidentLocalTimestamp,
   incidentDisplayStatus,
 } from "./incident-detail-view-model.ts";
+
+const now = Date.parse("2026-07-01T16:39:01.388Z");
 
 const incident = {
   id: "inc_1",
@@ -55,6 +58,7 @@ test("buildIncidentDetailMeta returns one sidebar row list without duplicating t
     incident,
     agentRunState: "complete",
     pendingRecovery: false,
+    now,
   });
 
   // Linked issues renders as its own interactive sidebar row, not a meta row.
@@ -65,8 +69,8 @@ test("buildIncidentDetailMeta returns one sidebar row list without duplicating t
       ["Status", "Active"],
       ["Service", "superlog-api"],
       ["Environment", "production"],
-      ["First detection", "Jun 30, 16:39 UTC"],
-      ["Latest detection", "Jun 30, 16:41 UTC"],
+      ["First detection", "1d ago"],
+      ["Last detection", "23h ago"],
       ["Duration", "2 min 29 s"],
       ["Investigation", "complete"],
     ],
@@ -118,8 +122,19 @@ test("buildIncidentDetailMeta formats midnight UTC with hour zero", () => {
     },
     agentRunState: "complete",
     pendingRecovery: false,
+    now,
   });
 
-  assert.equal(meta.find((row) => row.label === "First detection")?.value, "Jun 30, 00:05 UTC");
-  assert.equal(meta.find((row) => row.label === "Latest detection")?.value, "Jun 30, 00:06 UTC");
+  assert.equal(meta.find((row) => row.label === "First detection")?.value, "1d ago");
+  assert.equal(meta.find((row) => row.label === "Last detection")?.value, "1d ago");
+});
+
+test("formatIncidentLocalTimestamp uses the visitor's timezone", () => {
+  assert.equal(
+    formatIncidentLocalTimestamp("2026-06-30T16:39:01.388Z", {
+      locale: "en-US",
+      timeZone: "America/Los_Angeles",
+    }),
+    "Jun 30, 2026, 09:39 PDT",
+  );
 });

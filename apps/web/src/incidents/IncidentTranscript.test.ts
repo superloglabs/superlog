@@ -1,6 +1,63 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { IncidentEvent } from "../api.ts";
+import { buildActivityFeed } from "./incident-activity-feed.ts";
 import { memoryActivityFromTool } from "./memory-tool-activity.ts";
+
+function event(overrides: Partial<IncidentEvent>): IncidentEvent {
+  return {
+    id: "event-1",
+    agentRunId: "run-1",
+    kind: "agent.message",
+    summary: null,
+    detail: null,
+    createdAt: "2026-07-09T00:37:38.370Z",
+    ...overrides,
+  };
+}
+
+test("buildActivityFeed starts with the issue that triggered the incident", () => {
+  const feed = buildActivityFeed(
+    [event({ kind: "agent_run_queued", summary: "Investigation queued." })],
+    {
+      triggeringIssue: {
+        issueId: "issue-1",
+        createdAt: "2026-07-09T00:26:18.068Z",
+      },
+    },
+  );
+
+  assert.deepEqual(feed[0], {
+    type: "triggering_issue",
+    id: "triggering-issue-issue-1",
+    issueId: "issue-1",
+    createdAt: "2026-07-09T00:26:18.068Z",
+  });
+});
+
+test("buildActivityFeed turns ask_human into a question node with the exact prompt", () => {
+  const feed = buildActivityFeed([
+    event({
+      id: "ask-1",
+      kind: "agent.custom_tool_use",
+      detail: {
+        toolUse: {
+          name: "ask_human",
+          input: { question: "Which remediation path should we take?" },
+        },
+      },
+    }),
+  ]);
+
+  assert.deepEqual(feed, [
+    {
+      type: "question",
+      id: "ask-1",
+      question: "Which remediation path should we take?",
+      awaiting: false,
+    },
+  ]);
+});
 
 test("memoryActivityFromTool decorates save_memory calls as memory activity", () => {
   assert.deepEqual(

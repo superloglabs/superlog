@@ -1,0 +1,167 @@
+import type { IncidentEvent } from "../api.ts";
+import { type MemoryActivity, memoryActivityFromTool } from "./memory-tool-activity.ts";
+import { type TelemetryKind, parseResultRows, telemetryToolKind } from "./telemetry-result.ts";
+
+type ToolUseDetail = { name?: string; input?: Record<string, unknown>; mcpServerName?: string };
+type ToolResultDetail = { toolUseId?: string; isError?: boolean };
+
+function readToolUse(e: IncidentEvent): ToolUseDetail | null {
+  const detail = e.detail as { toolUse?: ToolUseDetail } | null;
+  return detail?.toolUse ?? null;
+}
+
+function readToolResult(e: IncidentEvent): ToolResultDetail | null {
+  const detail = e.detail as { toolResult?: ToolResultDetail } | null;
+  return detail?.toolResult ?? null;
+}
+
+export type TranscriptItem =
+  | { type: "message"; id: string; text: string }
+  | {
+      type: "telemetry";
+      id: string;
+      kind: TelemetryKind;
+      input: Record<string, unknown>;
+      rows: Record<string, unknown>[];
+      isError: boolean;
+    }
+  | {
+      type: "tool";
+      id: string;
+      name: string;
+      input: Record<string, unknown>;
+      result: string | null;
+      isError: boolean;
+    }
+  | MemoryActivity
+  | { type: "question"; id: string; question: string; awaiting: boolean }
+  | { type: "start"; id: string; prompt: string };
+
+export type FeedItem =
+  | TranscriptItem
+  | { type: "triggering_issue"; id: string; issueId: string; createdAt: string }
+  | { type: "human"; id: string; author: string | null; text: string; createdAt: string }
+  | { type: "lifecycle"; id: string; event: IncidentEvent };
+
+export type ActivityFeedOptions = {
+  triggeringIssue?: { issueId: string; createdAt: string } | null;
+};
+
+const TOOL_USE_KINDS = new Set(["agent.tool_use", "agent.mcp_tool_use", "agent.custom_tool_use"]);
+const TOOL_RESULT_KINDS = new Set([
+  "agent.tool_result",
+  "agent.mcp_tool_result",
+  "user.custom_tool_result",
+]);
+
+function isFeedNoise(kind: string): boolean {
+  if (kind === "session.error") return false;
+  return kind.startsWith("span.") || kind.startsWith("session.");
+}
+
+export function buildActivityFeed(
+  events: IncidentEvent[],
+  options: ActivityFeedOptions = {},
+): FeedItem[] {
+  const resultByUseId = new Map<string, IncidentEvent>();
+  for (const event of events) {
+    if (TOOL_RESULT_KINDS.has(event.kind)) {
+      const id = readToolResult(event)?.toolUseId;
+      if (id) resultByUseId.set(id, event);
+    }
+  }
+
+  const items: FeedItem[] = options.triggeringIssue
+    ? [
+        {
+          type: "triggering_issue",
+          id: `triggering-issue-${options.triggeringIssue.issueId}`,
+          issueId: options.triggeringIssue.issueId,
+          createdAt: options.triggeringIssue.createdAt,
+        },
+      ]
+    : [];
+  for (const event of events) {
+    if (event.kind === "human_reply") {
+      const origin = (event.detail as { origin?: { author?: string | null } } | null)?.origin;
+      const text = (event.summary ?? "").trim();
+      if (text) {
+        items.push({
+          type: "human",
+          id: event.id,
+          author: origin?.author ?? null,
+          text,
+          createdAt: event.createdAt,
+        });
+      }
+      continue;
+    }
+    if (event.kind === "agent.message") {
+      const text = (event.summary ?? "").trim();
+      if (text) items.push({ type: "message", id: event.id, text });
+      continue;
+    }
+    if (TOOL_USE_KINDS.has(event.kind)) {
+      const use = readToolUse(event);
+      const name = use?.name ?? "tool";
+      const question = use?.input?.question;
+      if (name === "ask_human" && typeof question === "string" && question.trim()) {
+        items.push({
+          type: "question",
+          id: event.id,
+          question: question.trim(),
+          awaiting: false,
+        });
+        continue;
+      }
+      const result = resultByUseId.get(event.providerEventId ?? event.id) ?? null;
+      const isError = result ? (readToolResult(result)?.isError ?? false) : false;
+      const kind = telemetryToolKind(name);
+      const memory = memoryActivityFromTool(
+        event.id,
+        name,
+        use?.input ?? {},
+        result?.summary ?? null,
+        isError,
+      );
+      if (kind) {
+        items.push({
+          type: "telemetry",
+          id: event.id,
+          kind,
+          input: use?.input ?? {},
+          rows: parseResultRows(result?.summary),
+          isError,
+        });
+      } else if (memory) {
+        items.push(memory);
+      } else if (name !== "submit_agent_run_result") {
+        items.push({
+          type: "tool",
+          id: event.id,
+          name,
+          input: use?.input ?? {},
+          result: result?.summary ?? null,
+          isError,
+        });
+      }
+      continue;
+    }
+    if (event.kind === "agent.thinking" || TOOL_RESULT_KINDS.has(event.kind)) continue;
+    if (event.kind.startsWith("agent.") || isFeedNoise(event.kind)) continue;
+    if (event.kind === "user.message") {
+      items.push({ type: "start", id: event.id, prompt: (event.summary ?? "").trim() });
+      continue;
+    }
+    if (event.kind === "awaiting_human") continue;
+    items.push({ type: "lifecycle", id: event.id, event });
+  }
+  return items;
+}
+
+export function buildTranscript(events: IncidentEvent[]): TranscriptItem[] {
+  return buildActivityFeed(events).filter(
+    (item): item is TranscriptItem =>
+      item.type !== "lifecycle" && item.type !== "human" && item.type !== "triggering_issue",
+  );
+}

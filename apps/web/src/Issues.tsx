@@ -152,7 +152,7 @@ function IssuesShell({ projectId }: { projectId: string }) {
   }
 
   return (
-    <div className="relative">
+    <div>
       <div className="mb-6 flex items-center gap-1">
         {(["incidents", "issues"] as const).map((t) => (
           <Link
@@ -324,7 +324,7 @@ function IssueDrawerSkeleton({ onClose }: { onClose: () => void }) {
         onClick={onClose}
       />
       <aside className="absolute inset-y-0 right-0 flex w-full max-w-[720px] flex-col border-l border-border bg-bg shadow-2xl">
-        <div className="flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto">
           <IssueDetailSkeleton />
         </div>
       </aside>
@@ -401,7 +401,7 @@ export function IssueDrawer(props: IssueDetailProps) {
         onClick={props.onClose}
       />
       <aside className="absolute inset-y-0 right-0 flex w-full max-w-[720px] flex-col border-l border-border bg-bg shadow-2xl">
-        <div className="flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto">
           <IssueDetailContent {...props} />
         </div>
       </aside>
@@ -1002,6 +1002,7 @@ function IncidentDetailBody({
   onViewIssue: (issueId: string) => void;
 }) {
   const q = useIncident(projectId, incidentId);
+  const stats = useIncidentStats(projectId, incidentId);
   const updateIncident = useUpdateIncident(projectId);
   const restartAgentRun = useRestartAgentRun(projectId);
   const retryPrDelivery = useRetryPrDelivery(projectId);
@@ -1059,6 +1060,7 @@ function IncidentDetailBody({
       updatingIncident={updateIncident.isPending}
       restartingAgentRun={restartAgentRun.isPending}
       retryingPrDelivery={retryPrDelivery.isPending}
+      occurrenceBuckets={stats.data?.buckets}
     />
   );
 }
@@ -1425,6 +1427,7 @@ export function IncidentDetailContent({
   restartingAgentRun = false,
   retryingPrDelivery = false,
   summaryTelemetry,
+  occurrenceBuckets,
 }: {
   incident: Incident;
   issues: Issue[];
@@ -1448,6 +1451,7 @@ export function IncidentDetailContent({
   retryingPrDelivery?: boolean;
   /** Telemetry widgets the agent quoted in its summary, rendered inside the Summary section. */
   summaryTelemetry?: ReactNode;
+  occurrenceBuckets?: { day: string; count: number }[];
 }) {
   const [detailTab, setDetailTab] = useState<IncidentDetailTab>("activity");
   // A run paused on `ask_human` stores its question on the run result, not as an
@@ -1471,6 +1475,10 @@ export function IncidentDetailContent({
     incident.agentSummary ??
     agentRun?.result?.summary ??
     "No investigation summary has been recorded yet.";
+  const triggeringIssue = issues.reduce<Issue | null>((earliest, issue) => {
+    if (!earliest) return issue;
+    return Date.parse(issue.firstSeen) < Date.parse(earliest.firstSeen) ? issue : earliest;
+  }, null);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-bg text-fg">
@@ -1575,11 +1583,15 @@ export function IncidentDetailContent({
                     !eventsError &&
                     events.length === 0 &&
                     !outOfCredits &&
-                    !awaitingQuestion && (
-                    <p className="text-[12px] text-muted">No activity yet.</p>
-                  )}
+                    !awaitingQuestion &&
+                    !triggeringIssue && <p className="text-[12px] text-muted">No activity yet.</p>}
                   <IncidentActivityFeed
                     events={events}
+                    triggeringIssue={
+                      triggeringIssue
+                        ? { issueId: triggeringIssue.id, createdAt: incident.firstSeen }
+                        : null
+                    }
                     awaiting={
                       awaitingQuestion
                         ? {
@@ -1591,12 +1603,18 @@ export function IncidentDetailContent({
                           }
                         : null
                     }
-                    renderIssueCard={(issueId) => {
+                    renderIssueCard={(issueId, options) => {
                       const issue = issues.find((i) => i.id === issueId);
                       if (!issue) return null;
                       return (
                         <div className="rounded-lg border border-border bg-surface px-3 py-2">
-                          <IssueCard issue={issue} onViewIssue={onViewIssue} />
+                          <IssueCard
+                            issue={issue}
+                            onViewIssue={onViewIssue}
+                            occurrenceBuckets={
+                              options?.showOccurrences ? occurrenceBuckets : undefined
+                            }
+                          />
                         </div>
                       );
                     }}
@@ -1710,8 +1728,12 @@ function IncidentChatComposer({
   }
 
   return (
-    <div className="shrink-0 border-t border-border bg-bg px-6 py-4 lg:px-8">
-      <div className="flex items-end gap-2">
+    <div className="shrink-0 bg-bg px-6 py-4 lg:px-8">
+      <div
+        className={`relative rounded-lg border border-border bg-surface-2 transition-colors focus-within:border-border-strong ${
+          disabled ? "opacity-40" : ""
+        }`}
+      >
         <textarea
           value={text}
           onChange={(e) => onDraftChange(e.target.value)}
@@ -1728,17 +1750,24 @@ function IncidentChatComposer({
               ? "No investigation to talk to yet — start one from the Findings tab."
               : "Reply to the investigation — request PR changes, explain the issue, add context…"
           }
-          className="min-h-[58px] flex-1 resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-[14px] leading-relaxed text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+          className="min-h-[124px] w-full resize-none bg-transparent px-3 pb-12 pt-2 text-[14px] leading-relaxed text-fg placeholder:text-subtle focus:outline-none disabled:cursor-not-allowed"
         />
-        <Btn
-          variant="primary"
-          size="lg"
-          onClick={submit}
-          loading={send.isPending}
-          disabled={disabled || !text.trim()}
-        >
-          Send
-        </Btn>
+        <div className="absolute bottom-3 right-3 flex items-center gap-2.5">
+          {!disabled && (
+            <span className="text-[10px] leading-[14px] text-subtle">
+              Shift Enter for a new line
+            </span>
+          )}
+          <Btn
+            variant="primary"
+            size="md"
+            onClick={submit}
+            loading={send.isPending}
+            disabled={disabled || !text.trim()}
+          >
+            Send
+          </Btn>
+        </div>
       </div>
       {error && <p className="mt-2 text-[12px] text-danger">{error}</p>}
       {!error && justSent && (
@@ -1771,7 +1800,9 @@ function IncidentSidebarMetaRows({ rows }: { rows: IncidentMetaRow[] }) {
             className={`flex min-w-0 items-center gap-2 ${row.tone === "danger" ? "text-danger" : "text-fg"}`}
           >
             <IncidentMetaIcon row={row} />
-            <span className="min-w-0 break-words">{row.value}</span>
+            <span className="min-w-0 break-words" title={row.title}>
+              {row.value}
+            </span>
           </div>
         </div>
       ))}
@@ -2570,24 +2601,95 @@ function ConfidenceMeter({ value }: { value: number }) {
 function IssueCard({
   issue,
   onViewIssue,
+  occurrenceBuckets,
 }: {
   issue: Issue;
   onViewIssue: (id: string) => void;
+  occurrenceBuckets?: { day: string; count: number }[];
 }) {
   return (
     <button
       onClick={() => onViewIssue(issue.id)}
-      className="block w-full min-w-0 overflow-hidden text-left transition-colors hover:text-muted"
+      className="block w-full min-w-0 text-left transition-colors hover:text-muted"
     >
-      <div className="mb-0.5 flex items-center gap-2">
-        <KindChip issue={issue} />
-        <span className="font-mono text-[11px] text-muted">{issue.exceptionType}</span>
-        <span className="font-mono text-[11px] tabular-nums text-subtle">
-          {fmtCount(issue.eventCount)} event{issue.eventCount !== 1 ? "s" : ""}
-        </span>
+      <div
+        className={
+          occurrenceBuckets && occurrenceBuckets.length > 0
+            ? "flex flex-col gap-3 sm:flex-row sm:gap-4"
+            : undefined
+        }
+      >
+        <div className="min-w-0 flex-1">
+          <div className="mb-0.5 flex items-center gap-2">
+            <KindChip issue={issue} />
+            <span className="text-[11px] text-muted">{issue.exceptionType}</span>
+            <span className="text-[11px] tabular-nums text-subtle">
+              {fmtCount(issue.eventCount)} event{issue.eventCount !== 1 ? "s" : ""}
+            </span>
+          </div>
+          <p className="truncate text-[12px] text-fg">{issue.message ?? issue.title}</p>
+          {occurrenceBuckets && occurrenceBuckets.length > 0 && (
+            <p className="mt-3 text-[10px] text-subtle">
+              First {fmtRelative(issue.firstSeen)} · Last {fmtRelative(issue.lastSeen)}
+            </p>
+          )}
+        </div>
+        {occurrenceBuckets && occurrenceBuckets.length > 0 && (
+          <IssueOccurrenceGraph buckets={occurrenceBuckets} />
+        )}
       </div>
-      <p className="truncate text-[12px] text-fg">{issue.message ?? issue.title}</p>
     </button>
+  );
+}
+
+function formatOccurrenceDate(day: string) {
+  const [year = Number.NaN, month = Number.NaN, date = Number.NaN] = day
+    .split("-")
+    .map(Number);
+  const parsed =
+    Number.isFinite(year) && Number.isFinite(month) && Number.isFinite(date)
+      ? new Date(year, month - 1, date)
+      : new Date(day);
+  if (Number.isNaN(parsed.getTime())) return day;
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(parsed);
+}
+
+function IssueOccurrenceGraph({ buckets }: { buckets: { day: string; count: number }[] }) {
+  const max = Math.max(1, ...buckets.map((bucket) => bucket.count));
+  const total = buckets.reduce((sum, bucket) => sum + bucket.count, 0);
+  return (
+    <div className="border-t border-border pt-2.5 sm:w-44 sm:flex-none sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0">
+      <div className="flex items-center justify-between text-[10px] text-subtle">
+        <span>Occurrences · last {buckets.length} days</span>
+        <span className="font-mono tabular-nums text-fg">{total.toLocaleString()}</span>
+      </div>
+      <div
+        className="mt-2 flex h-16 items-end gap-1 border-b border-border"
+        role="img"
+        aria-label={`${total.toLocaleString()} issue occurrences over the last ${buckets.length} days`}
+      >
+        {buckets.map((bucket) => {
+          const occurrenceLabel = `${formatOccurrenceDate(bucket.day)} · ${bucket.count.toLocaleString()} occurrence${bucket.count === 1 ? "" : "s"}`;
+          return (
+            <span key={bucket.day} className="group relative flex h-full min-w-0 flex-1 items-end">
+              <span
+                className="min-h-px w-full rounded-t-[2px] bg-accent"
+                style={{
+                  height: `max(1px, ${(bucket.count / max) * 100}%)`,
+                  opacity: bucket.count === 0 ? 0.12 : 0.75,
+                }}
+              />
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1 -translate-x-1/2 whitespace-nowrap rounded-md border border-border bg-surface-3 px-2 py-1 font-sans text-[10px] text-fg opacity-0 shadow-lift-sm transition-opacity group-hover:opacity-100"
+              >
+                {occurrenceLabel}
+              </span>
+            </span>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

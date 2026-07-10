@@ -3,6 +3,8 @@ import type { AgentRun, Incident } from "../api.ts";
 export type IncidentMetaRow = {
   label: string;
   value: string;
+  /** Exact value shown on hover; timestamp rows use the visitor's locale and zone. */
+  title?: string;
   kind?: "priority" | "status" | "environment" | "findings" | "agent";
   // Emphasis for the value (and its icon). "danger" (red) flags an
   // attention-worthy state like an out-of-credits investigation.
@@ -32,10 +34,12 @@ export function buildIncidentDetailMeta({
   incident,
   agentRunState,
   pendingRecovery,
+  now = Date.now(),
 }: {
   incident: Incident;
   agentRunState: AgentRun["state"] | null;
   pendingRecovery: boolean;
+  now?: number;
 }): IncidentMetaRow[] {
   return [
     { label: "Priority", value: incident.severity ?? "Unset", kind: "priority" },
@@ -46,8 +50,16 @@ export function buildIncidentDetailMeta({
     },
     { label: "Service", value: incident.service ?? "Unknown" },
     { label: "Environment", value: incident.environment ?? "Unknown", kind: "environment" },
-    { label: "First detection", value: formatIncidentUtc(incident.firstSeen) },
-    { label: "Latest detection", value: formatIncidentUtc(incident.lastSeen) },
+    {
+      label: "First detection",
+      value: formatIncidentRelative(incident.firstSeen, now),
+      title: formatIncidentLocalTimestamp(incident.firstSeen),
+    },
+    {
+      label: "Last detection",
+      value: formatIncidentRelative(incident.lastSeen, now),
+      title: formatIncidentLocalTimestamp(incident.lastSeen),
+    },
     { label: "Duration", value: formatIncidentDuration(incident.firstSeen, incident.lastSeen) },
     {
       label: "Investigation",
@@ -73,17 +85,30 @@ export function agentRunLabel(
   return "not queued";
 }
 
-function formatIncidentUtc(iso: string): string {
-  const date = new Date(iso);
-  const month = new Intl.DateTimeFormat("en-US", { month: "short", timeZone: "UTC" }).format(date);
-  const day = new Intl.DateTimeFormat("en-US", { day: "numeric", timeZone: "UTC" }).format(date);
-  const time = new Intl.DateTimeFormat("en-US", {
+export function formatIncidentRelative(iso: string, now = Date.now()): string {
+  const seconds = Math.max(0, Math.floor((now - Date.parse(iso)) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+export function formatIncidentLocalTimestamp(
+  iso: string,
+  options: { locale?: string; timeZone?: string } = {},
+): string {
+  return new Intl.DateTimeFormat(options.locale, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
     hour: "2-digit",
     hourCycle: "h23",
     minute: "2-digit",
-    timeZone: "UTC",
-  }).format(date);
-  return `${month} ${day}, ${time} UTC`;
+    timeZoneName: "short",
+    timeZone: options.timeZone,
+  }).format(new Date(iso));
 }
 
 function titleizeStatus(status: string): string {

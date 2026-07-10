@@ -1,21 +1,26 @@
 import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { type EvidenceLinkContext, EvidenceMarkdown } from "../EvidenceMarkdown.tsx";
+import { LogsTable, TracesTable } from "../Explore.tsx";
 import type { IncidentEvent } from "../api.ts";
 import { CountChart } from "../dashboards/widgets/CountChart.tsx";
 import { DEFAULT_TOP_N } from "../dashboards/widgets/series-topn.ts";
 import { Chip, type ChipTone } from "../design/ui.tsx";
-import { type EvidenceLinkContext, EvidenceMarkdown } from "../EvidenceMarkdown.tsx";
-import { LogsTable, TracesTable } from "../Explore.tsx";
-import { type MemoryActivity, memoryActivityFromTool } from "./memory-tool-activity.ts";
+import {
+  type FeedItem,
+  type TranscriptItem,
+  buildActivityFeed,
+  buildTranscript,
+} from "./incident-activity-feed.ts";
 import {
   type TelemetryKind,
   exploreHref,
   formatRangeLabel,
-  parseResultRows,
-  telemetryToolKind,
   toLogRows,
   toMetricRows,
   toTraceRows,
 } from "./telemetry-result.ts";
+
+export { buildActivityFeed, buildTranscript } from "./incident-activity-feed.ts";
 
 // ---------------------------------------------------------------------------
 // IncidentTranscript — renders an agent run's conversation from incident_events:
@@ -24,174 +29,21 @@ import {
 // in the timeline; this is only the agent.* conversation.
 // ---------------------------------------------------------------------------
 
-type ToolUseDetail = { name?: string; input?: Record<string, unknown>; mcpServerName?: string };
-type ToolResultDetail = { toolUseId?: string; isError?: boolean };
-
-function readToolUse(e: IncidentEvent): ToolUseDetail | null {
-  const d = e.detail as { toolUse?: ToolUseDetail } | null;
-  return d?.toolUse ?? null;
-}
-function readToolResult(e: IncidentEvent): ToolResultDetail | null {
-  const d = e.detail as { toolResult?: ToolResultDetail } | null;
-  return d?.toolResult ?? null;
-}
-
-type TranscriptItem =
-  | { type: "message"; id: string; text: string }
-  | {
-      type: "telemetry";
-      id: string;
-      kind: TelemetryKind;
-      input: Record<string, unknown>;
-      rows: Record<string, unknown>[];
-      isError: boolean;
-    }
-  | {
-      type: "tool";
-      id: string;
-      name: string;
-      input: Record<string, unknown>;
-      result: string | null;
-      isError: boolean;
-    }
-  | MemoryActivity
-  // The run paused on `ask_human`. The question lives in the awaiting_human
-  // event's detail (or, absent that event, on the run result). Rendered as a
-  // rich terminal node rather than a bare lifecycle one-liner.
-  | { type: "question"; id: string; question: string }
-  // The initial investigation prompt (a user.message). Rendered as a
-  // "Started investigation" node with the raw prompt tucked behind a toggle.
-  | { type: "start"; id: string; prompt: string };
-
-type FeedItem =
-  | TranscriptItem
-  // A human talking to the investigation (incident chat, Slack thread reply, PR
-  // comment), mirrored into the timeline as a chat message from whoever sent it.
-  | { type: "human"; id: string; author: string | null; text: string; createdAt: string }
-  | { type: "lifecycle"; id: string; event: IncidentEvent };
-
-const TOOL_USE_KINDS = new Set(["agent.tool_use", "agent.mcp_tool_use", "agent.custom_tool_use"]);
-const TOOL_RESULT_KINDS = new Set([
-  "agent.tool_result",
-  "agent.mcp_tool_result",
-  "user.custom_tool_result",
-]);
-
-// Provider heartbeats that carry no narrative: model-request spans and
-// session/thread status flips. `session.error` is kept — it explains failures.
-function isFeedNoise(kind: string): boolean {
-  if (kind === "session.error") return false;
-  return kind.startsWith("span.") || kind.startsWith("session.");
-}
-
-// The full activity feed: the agent's conversation (messages, telemetry
-// queries, tool calls) interleaved in event order with lifecycle / external
-// events (run started, status changes, PR & Linear activity).
-export function buildActivityFeed(events: IncidentEvent[]): FeedItem[] {
-  // Pair each result to its use by the provider tool-use id.
-  const resultByUseId = new Map<string, IncidentEvent>();
-  for (const e of events) {
-    if (TOOL_RESULT_KINDS.has(e.kind)) {
-      const id = readToolResult(e)?.toolUseId;
-      if (id) resultByUseId.set(id, e);
-    }
-  }
-
-  const items: FeedItem[] = [];
-  for (const e of events) {
-    // A human talking to the investigation (incident chat, Slack thread reply,
-    // PR comment) — rendered as a chat message, not a one-line lifecycle note.
-    if (e.kind === "human_reply") {
-      const origin = (e.detail as { origin?: { author?: string | null } } | null)?.origin;
-      const text = (e.summary ?? "").trim();
-      if (text) {
-        items.push({
-          type: "human",
-          id: e.id,
-          author: origin?.author ?? null,
-          text,
-          createdAt: e.createdAt,
-        });
-      }
-      continue;
-    }
-    if (e.kind === "agent.message") {
-      const text = (e.summary ?? "").trim();
-      if (text) items.push({ type: "message", id: e.id, text });
-      continue;
-    }
-    if (TOOL_USE_KINDS.has(e.kind)) {
-      const use = readToolUse(e);
-      const name = use?.name ?? "tool";
-      const result = resultByUseId.get(e.providerEventId ?? e.id) ?? null;
-      const isError = result ? (readToolResult(result)?.isError ?? false) : false;
-      const kind = telemetryToolKind(name);
-      const memory = memoryActivityFromTool(
-        e.id,
-        name,
-        use?.input ?? {},
-        result?.summary ?? null,
-        isError,
-      );
-      if (kind) {
-        items.push({
-          type: "telemetry",
-          id: e.id,
-          kind,
-          input: use?.input ?? {},
-          rows: parseResultRows(result?.summary),
-          isError,
-        });
-      } else if (memory) {
-        items.push(memory);
-      } else if (name !== "submit_agent_run_result") {
-        items.push({
-          type: "tool",
-          id: e.id,
-          name,
-          input: use?.input ?? {},
-          result: result?.summary ?? null,
-          isError,
-        });
-      }
-      continue;
-    }
-    // agent.thinking is a content-free heartbeat; tool results are consumed above.
-    if (e.kind === "agent.thinking" || TOOL_RESULT_KINDS.has(e.kind)) continue;
-    if (e.kind.startsWith("agent.") || isFeedNoise(e.kind)) continue;
-    if (e.kind === "user.message") {
-      items.push({ type: "start", id: e.id, prompt: (e.summary ?? "").trim() });
-      continue;
-    }
-    // The ask_human question is surfaced from the *current* run state (the
-    // `awaiting` prop), not from events. Incident events are append-only, so an
-    // awaiting_human event from a run that has since resumed or completed must
-    // not render a stale "Awaiting you" card — skip it here.
-    if (e.kind === "awaiting_human") continue;
-    items.push({ type: "lifecycle", id: e.id, event: e });
-  }
-  return items;
-}
-
-// Conversation-only projection, used where lifecycle events live elsewhere
-// (the drawer's separate timeline, summary-cited telemetry).
-export function buildTranscript(events: IncidentEvent[]): TranscriptItem[] {
-  return buildActivityFeed(events).filter(
-    (item): item is TranscriptItem => item.type !== "lifecycle" && item.type !== "human",
-  );
-}
-
 // The incident detail's main feed: transcript + lifecycle events on one rail,
 // in chronological order.
 export function IncidentActivityFeed({
   events,
+  triggeringIssue,
   renderIssueCard,
   awaiting,
 }: {
   events: IncidentEvent[];
+  /** The issue that opened the incident. It is projected as the first feed
+   *  entry without writing a fictional lifecycle row to incident_events. */
+  triggeringIssue?: { issueId: string; createdAt: string } | null;
   /** Renders the referenced issue as a card under lifecycle events whose
    *  detail carries an `issueId` (recurrence, reopen). */
-  renderIssueCard?: (issueId: string) => ReactNode;
+  renderIssueCard?: (issueId: string, options?: { showOccurrences?: boolean }) => ReactNode;
   /** When the run paused on `ask_human`, the question is not an incident event
    *  — it lives on the run result. Render it as a terminal node so the timeline
    *  ends on what the agent needs from the human. */
@@ -208,20 +60,44 @@ export function IncidentActivityFeed({
   const ctx = awaiting?.ctx ?? {};
   // The question is sourced only from the current run state, appended as the
   // terminal node so a paused run ends on what it needs from the human.
-  const base = buildActivityFeed(events);
-  const feed: FeedItem[] = awaiting
-    ? [...base, { type: "question", id: "awaiting-question", question: awaiting.question }]
-    : base;
+  const base = buildActivityFeed(events, { triggeringIssue });
+  const matchingQuestionId = awaiting
+    ? base.find(
+        (item) => item.type === "question" && item.question.trim() === awaiting.question.trim(),
+      )?.id
+    : undefined;
+  let feed: FeedItem[] = base;
+  if (awaiting && matchingQuestionId) {
+    feed = base.map((item) =>
+      item.id === matchingQuestionId && item.type === "question"
+        ? { ...item, awaiting: true }
+        : item,
+    );
+  } else if (awaiting) {
+    feed = [
+      ...base,
+      {
+        type: "question",
+        id: "awaiting-question",
+        question: awaiting.question,
+        awaiting: true,
+      },
+    ];
+  }
 
   const renderItem = (item: FeedItem) => {
     if (item.type === "message") return <MessageEntry key={item.id} text={item.text} />;
+    if (item.type === "triggering_issue")
+      return <TriggeringIssueEntry key={item.id} item={item} renderIssueCard={renderIssueCard} />;
     if (item.type === "human") return <HumanEntry key={item.id} item={item} />;
     if (item.type === "telemetry") return <TelemetryEntry key={item.id} item={item} />;
     if (item.type === "memory") return <MemoryEntry key={item.id} item={item} />;
     if (item.type === "tool") return <ToolEntry key={item.id} item={item} />;
     if (item.type === "start") return <StartEntry key={item.id} prompt={item.prompt} />;
     if (item.type === "question")
-      return <QuestionEntry key={item.id} question={item.question} ctx={ctx} />;
+      return (
+        <QuestionEntry key={item.id} question={item.question} ctx={ctx} awaiting={item.awaiting} />
+      );
     return <LifecycleEntry key={item.id} event={item.event} renderIssueCard={renderIssueCard} />;
   };
 
@@ -386,7 +262,15 @@ function StartEntry({ prompt }: { prompt: string }) {
 // Terminal node for an `ask_human` pause: the agent's question to the human,
 // rendered as markdown inside a warning-toned card so it reads as the open
 // action at the end of the trail.
-function QuestionEntry({ question, ctx }: { question: string; ctx: EvidenceLinkContext }) {
+function QuestionEntry({
+  question,
+  ctx,
+  awaiting,
+}: {
+  question: string;
+  ctx: EvidenceLinkContext;
+  awaiting: boolean;
+}) {
   return (
     <div className="relative mb-6">
       <span className="absolute -left-7 top-0 grid h-[22px] w-[22px] place-items-center rounded-full border border-warning/50 bg-surface-2">
@@ -405,11 +289,35 @@ function QuestionEntry({ question, ctx }: { question: string; ctx: EvidenceLinkC
       </span>
       <div className="mb-1.5 flex min-h-[22px] items-center gap-2">
         <span className="text-[12px] font-semibold text-fg">Investigation agent</span>
-        <Chip tone="warning">Awaiting you</Chip>
+        <Chip tone="warning">{awaiting ? "Awaiting you" : "Asked for input"}</Chip>
       </div>
       <div className="rounded-lg border border-warning/30 bg-warning/[0.06] px-3.5 py-3">
         <EvidenceMarkdown text={question} ctx={ctx} />
       </div>
+    </div>
+  );
+}
+
+function TriggeringIssueEntry({
+  item,
+  renderIssueCard,
+}: {
+  item: Extract<FeedItem, { type: "triggering_issue" }>;
+  renderIssueCard?: (issueId: string, options?: { showOccurrences?: boolean }) => ReactNode;
+}) {
+  const issueCard = renderIssueCard?.(item.issueId, { showOccurrences: true });
+  return (
+    <div className="relative mb-6">
+      <Node tone="accent">
+        <path d="M12 3v9" />
+        <path d="M12 17h.01" />
+        <circle cx="12" cy="12" r="9" />
+      </Node>
+      <div className="mb-1.5 flex min-h-[22px] items-baseline gap-2">
+        <span className="text-[12px] font-semibold text-fg">Issue detected</span>
+        <span className="text-[11px] text-subtle">{fmtRelative(item.createdAt)}</span>
+      </div>
+      {issueCard}
     </div>
   );
 }
@@ -478,7 +386,7 @@ function LifecycleEntry({
   renderIssueCard,
 }: {
   event: IncidentEvent;
-  renderIssueCard?: (issueId: string) => ReactNode;
+  renderIssueCard?: (issueId: string, options?: { showOccurrences?: boolean }) => ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
   const summary = (event.summary ?? "").trim() || humanizeEventKind(event.kind);
