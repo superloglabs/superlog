@@ -115,21 +115,23 @@ test("exceededWallClockBudget excludes time parked awaiting a human", () => {
 });
 
 test("awaitingHumanSecondsFromEvents sums a single park→resume gap", () => {
+  const startedAt = new Date("2026-07-09T00:35:00Z");
   const park = new Date("2026-07-09T00:37:00Z");
   const resume = new Date("2026-07-09T22:39:00Z"); // ~22h later
   const events = [
-    { kind: "started", createdAt: new Date("2026-07-09T00:35:00Z") },
+    { kind: "agent_run_started", createdAt: startedAt },
     { kind: "awaiting_human", createdAt: park },
     { kind: "resumed", createdAt: resume },
   ];
 
   assert.equal(
-    awaitingHumanSecondsFromEvents(events, new Date("2026-07-09T22:40:00Z")),
+    awaitingHumanSecondsFromEvents({ events, startedAt, now: new Date("2026-07-09T22:40:00Z") }),
     Math.round((resume.getTime() - park.getTime()) / 1_000),
   );
 });
 
 test("awaitingHumanSecondsFromEvents adds multiple park cycles", () => {
+  const startedAt = new Date("2026-07-08T23:59:00Z");
   const events = [
     { kind: "awaiting_human", createdAt: new Date("2026-07-09T00:00:00Z") },
     { kind: "resumed", createdAt: new Date("2026-07-09T01:00:00Z") }, // 1h
@@ -138,36 +140,90 @@ test("awaitingHumanSecondsFromEvents adds multiple park cycles", () => {
   ];
 
   assert.equal(
-    awaitingHumanSecondsFromEvents(events, new Date("2026-07-09T03:00:00Z")),
+    awaitingHumanSecondsFromEvents({ events, startedAt, now: new Date("2026-07-09T03:00:00Z") }),
     90 * 60,
   );
 });
 
-test("awaitingHumanSecondsFromEvents counts a still-parked run up to now", () => {
-  const park = new Date("2026-07-09T00:00:00Z");
-  const now = new Date("2026-07-09T05:00:00Z"); // still parked, 5h
-  const events = [{ kind: "awaiting_human", createdAt: park }];
+test("awaitingHumanSecondsFromEvents excludes parks before startedAt (repo-discovery)", () => {
+  // A repo_discovery pause emits `awaiting_human` before the managed session
+  // starts, and the pre-session resume path requeues WITHOUT a `resumed`
+  // event. That dangling, pre-startedAt park must not be subtracted — doing so
+  // would silently disable the wall-clock backstop once the run starts.
+  const startedAt = new Date("2026-07-09T02:00:00Z");
+  const events = [
+    { kind: "awaiting_human", createdAt: new Date("2026-07-09T00:00:00Z") }, // pre-session, no resumed
+    { kind: "agent_run_started", createdAt: startedAt },
+  ];
 
-  assert.equal(awaitingHumanSecondsFromEvents(events, now), 5 * 60 * 60);
+  assert.equal(
+    awaitingHumanSecondsFromEvents({ events, startedAt, now: new Date("2026-07-09T09:00:00Z") }),
+    0,
+  );
+});
+
+test("awaitingHumanSecondsFromEvents clamps a park that straddles startedAt", () => {
+  // Park opens before startedAt but the matching resume lands after it — only
+  // the portion inside [startedAt, now] counts.
+  const startedAt = new Date("2026-07-09T01:00:00Z");
+  const events = [
+    { kind: "awaiting_human", createdAt: new Date("2026-07-09T00:00:00Z") },
+    { kind: "resumed", createdAt: new Date("2026-07-09T01:30:00Z") }, // 30m after startedAt
+  ];
+
+  assert.equal(
+    awaitingHumanSecondsFromEvents({ events, startedAt, now: new Date("2026-07-09T02:00:00Z") }),
+    30 * 60,
+  );
+});
+
+test("awaitingHumanSecondsFromEvents does not count a dangling open park", () => {
+  // No matching `resumed` → the park's end is untracked; it must not extend to
+  // `now`. In the sync path the run is already `running`, so an unclosed
+  // `awaiting_human` here is a spent repo-discovery pause, not an active wait.
+  const startedAt = new Date("2026-07-09T00:00:00Z");
+  const events = [{ kind: "awaiting_human", createdAt: new Date("2026-07-09T00:10:00Z") }];
+
+  assert.equal(
+    awaitingHumanSecondsFromEvents({ events, startedAt, now: new Date("2026-07-09T05:00:00Z") }),
+    0,
+  );
 });
 
 test("awaitingHumanSecondsFromEvents is 0 when the run never parked", () => {
+  const startedAt = new Date("2026-07-09T00:00:00Z");
   const events = [
-    { kind: "started", createdAt: new Date("2026-07-09T00:00:00Z") },
+    { kind: "agent_run_started", createdAt: startedAt },
     { kind: "report_findings", createdAt: new Date("2026-07-09T00:02:00Z") },
   ];
 
-  assert.equal(awaitingHumanSecondsFromEvents(events, new Date("2026-07-09T00:03:00Z")), 0);
+  assert.equal(
+    awaitingHumanSecondsFromEvents({ events, startedAt, now: new Date("2026-07-09T00:03:00Z") }),
+    0,
+  );
+});
+
+test("awaitingHumanSecondsFromEvents is 0 with no startedAt", () => {
+  const events = [
+    { kind: "awaiting_human", createdAt: new Date("2026-07-09T00:00:00Z") },
+    { kind: "resumed", createdAt: new Date("2026-07-09T01:00:00Z") },
+  ];
+
+  assert.equal(
+    awaitingHumanSecondsFromEvents({ events, startedAt: null, now: new Date("2026-07-09T02:00:00Z") }),
+    0,
+  );
 });
 
 test("awaitingHumanSecondsFromEvents tolerates unordered events", () => {
+  const startedAt = new Date("2026-07-08T23:59:00Z");
   const events = [
     { kind: "resumed", createdAt: new Date("2026-07-09T01:00:00Z") },
     { kind: "awaiting_human", createdAt: new Date("2026-07-09T00:00:00Z") },
   ];
 
   assert.equal(
-    awaitingHumanSecondsFromEvents(events, new Date("2026-07-09T02:00:00Z")),
+    awaitingHumanSecondsFromEvents({ events, startedAt, now: new Date("2026-07-09T02:00:00Z") }),
     60 * 60,
   );
 });

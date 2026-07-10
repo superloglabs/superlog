@@ -28,7 +28,12 @@ const agentRunLifecycle = createAgentRunLifecycle(db);
 // reaped the moment it resumes (prod incident 2026-07-09). Derived from the
 // run's lifecycle events; defaults to 0 if the lookup fails so a telemetry
 // hiccup can never make the budget stricter than it already was.
-async function loadAwaitingHumanSeconds(agentRunId: string, now: Date): Promise<number> {
+async function loadAwaitingHumanSeconds(
+  agentRunId: string,
+  startedAt: Date | null,
+  now: Date,
+): Promise<number> {
+  if (!startedAt) return 0;
   try {
     const events = await db
       .select({
@@ -42,7 +47,7 @@ async function loadAwaitingHumanSeconds(agentRunId: string, now: Date): Promise<
           inArray(schema.incidentEvents.kind, ["awaiting_human", "resumed"]),
         ),
       );
-    return awaitingHumanSecondsFromEvents(events, now);
+    return awaitingHumanSecondsFromEvents({ events, startedAt, now });
   } catch (err) {
     logger.error(
       { err, scope: "agent_run", agent_run_id: agentRunId },
@@ -215,7 +220,11 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
 
   // Time parked awaiting a human is excluded from every wall-clock check below.
   // Computed once up front so the transient-error path in `catch` can reuse it.
-  const awaitingHumanSeconds = await loadAwaitingHumanSeconds(ctx.agentRun.id, new Date());
+  const awaitingHumanSeconds = await loadAwaitingHumanSeconds(
+    ctx.agentRun.id,
+    ctx.agentRun.startedAt,
+    new Date(),
+  );
 
   try {
     const runner = await getAgentRunnerBackend(ctx.agentRun.runtime);

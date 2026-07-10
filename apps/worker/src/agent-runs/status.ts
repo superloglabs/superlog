@@ -42,19 +42,32 @@ export function exceededWallClockBudget(opts: {
   return ageMs > budgetMs;
 }
 
-// Total wall-clock seconds a run has spent parked in `awaiting_human`, derived
-// from its lifecycle events. `pauseForHuman` emits an `awaiting_human` event;
-// the matching `resumeRunning` emits `resumed`. Pair each `awaiting_human` with
-// the next `resumed` and sum the gaps. A trailing `awaiting_human` with no
-// matching `resumed` means the run is still parked, so it counts up to `now`.
-// Nested/duplicate `awaiting_human` events (a re-park before a resume) collapse
-// to the earliest park start, which is the conservative choice — it can only
-// exclude more idle time, never fabricate active time.
-export function awaitingHumanSecondsFromEvents(
-  events: ReadonlyArray<{ kind: string; createdAt: Date }>,
-  now: Date,
-): number {
-  const relevant = events
+// Wall-clock seconds a run spent parked in `awaiting_human` *within its
+// wall-clock measurement window* `[startedAt, now]`, derived from lifecycle
+// events. A managed-session pause (`pauseForHuman` from `running`) emits an
+// `awaiting_human` event and the matching `resumeRunning` emits `resumed`; we
+// pair each such open→close and sum the gaps, clamped to the window.
+//
+// Two things are deliberately excluded, both because the exclusion must never
+// exceed the age it's subtracted from (`now - startedAt`), or the wall-clock
+// backstop silently disables itself:
+//   - Parks before `startedAt` — a `repo_discovery` pause happens before the
+//     managed session (and `startedAt`) exists, so its time was never part of
+//     the age. Clamping to the window drops it.
+//   - A dangling `awaiting_human` with no matching `resumed`. The pre-session
+//     resume path (`requeueAfterHumanReply`) requeues *without* a `resumed`
+//     event, so an unclosed park is that repo-discovery pause — already over,
+//     its end untracked — not an active wait. Only closed intervals count.
+// Nested/duplicate `awaiting_human` events collapse to the earliest park start.
+export function awaitingHumanSecondsFromEvents(opts: {
+  events: ReadonlyArray<{ kind: string; createdAt: Date }>;
+  startedAt: Date | null;
+  now: Date;
+}): number {
+  if (!opts.startedAt) return 0;
+  const windowStart = opts.startedAt.getTime();
+  const windowEnd = opts.now.getTime();
+  const relevant = opts.events
     .filter((e) => e.kind === "awaiting_human" || e.kind === "resumed")
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   let totalMs = 0;
@@ -63,11 +76,12 @@ export function awaitingHumanSecondsFromEvents(
     if (event.kind === "awaiting_human") {
       if (parkedSince === null) parkedSince = event.createdAt;
     } else if (parkedSince !== null) {
-      totalMs += event.createdAt.getTime() - parkedSince.getTime();
+      const from = Math.max(parkedSince.getTime(), windowStart);
+      const to = Math.min(event.createdAt.getTime(), windowEnd);
+      if (to > from) totalMs += to - from;
       parkedSince = null;
     }
   }
-  if (parkedSince !== null) totalMs += now.getTime() - parkedSince.getTime();
   return Math.max(0, Math.round(totalMs / 1_000));
 }
 
