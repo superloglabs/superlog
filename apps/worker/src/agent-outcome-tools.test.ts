@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  ACTION_OUTCOME_TOOL_NAMES,
   OUTCOME_TOOL_DEFINITIONS,
   OUTCOME_TOOL_NAMES,
   REPORT_FINDINGS_TOOL_NAME,
+  RETIRED_OUTCOME_TOOL_NAMES,
   TERMINAL_OUTCOME_TOOL_NAMES,
   assembleAgentRunResult,
+  isActionOutcomeToolName,
   mergeFindings,
   validateOutcomeToolInput,
 } from "./agent-outcome-tools.js";
@@ -22,9 +25,18 @@ const FINDINGS: AgentRunFindings = {
   handoffNotes: "Checked the vendor API timeout config; it is not the cause.",
 };
 
-test("exposes all six tools with API-safe schemas", () => {
-  assert.equal(OUTCOME_TOOL_NAMES.length, 6);
-  assert.equal(OUTCOME_TOOL_DEFINITIONS.length, 6);
+const PROPOSE_PR_INPUT = {
+  repoFullName: "acme/shop",
+  title: "[superlog] Batch vendor lookups",
+  body: "# Summary\n...",
+  branchName: "superlog/batch-vendor-lookups",
+  baseBranch: "dev",
+  patchFilePath: "/mnt/session/outputs/superlog-batch-vendor-lookups.patch",
+};
+
+test("exposes all seven tools with API-safe schemas", () => {
+  assert.equal(OUTCOME_TOOL_NAMES.length, 7);
+  assert.equal(OUTCOME_TOOL_DEFINITIONS.length, 7);
   for (const def of OUTCOME_TOOL_DEFINITIONS) {
     // Some runner APIs reject any top-level composition keyword
     // (allOf/oneOf/if...), which would block every run at agent-create time.
@@ -38,63 +50,56 @@ test("exposes all six tools with API-safe schemas", () => {
   }
 });
 
-// The load-bearing guidance that moved out of the runner's system prompt into
-// tool descriptions. Losing any of these regressed real agent behavior before
-// (structural-only validation, behavior-changing "equivalent" refactors), so
-// pin them here.
-test("propose_pr description carries the validation ladder and refactor-equivalence rules", () => {
+test("splits the contract into action tools and exactly two terminal tools", () => {
+  assert.deepEqual(
+    [...ACTION_OUTCOME_TOOL_NAMES],
+    ["propose_pr", "silence_as_noise", "place_under_observation", "resolve_issue"],
+  );
+  assert.deepEqual([...TERMINAL_OUTCOME_TOOL_NAMES], ["resolve_incident", "ask_human"]);
+  assert.ok(!(TERMINAL_OUTCOME_TOOL_NAMES as readonly string[]).includes(REPORT_FINDINGS_TOOL_NAME));
+  assert.ok(isActionOutcomeToolName("propose_pr"));
+  assert.ok(!isActionOutcomeToolName("resolve_incident"));
+});
+
+// The load-bearing guidance in tool descriptions. Losing any of these
+// regressed real agent behavior before, so pin them.
+test("propose_pr description explains the non-terminal multi-PR contract", () => {
   const proposePr = OUTCOME_TOOL_DEFINITIONS.find((d) => d.name === "propose_pr");
   assert.ok(proposePr);
   const text = proposePr?.description ?? "";
-  assert.ok(text.includes("Validation ladder"));
-  assert.ok(text.includes("Structural checks"));
-  assert.ok(text.includes("are NOT validation"));
-  assert.ok(text.includes("behaviorally identical"));
-  assert.ok(text.includes("first-wins vs last-wins"));
-  assert.ok(text.includes("regression test"));
-  assert.ok(text.includes("/mnt/session/outputs/superlog.patch"));
-  const validationPassed = proposePr?.input_schema.properties.validationPassed as {
-    description?: string;
-  };
-  assert.ok(validationPassed.description?.includes("honest false is acceptable"));
+  assert.ok(text.includes("NOT terminal"));
+  assert.ok(text.includes("NEW branchName"));
+  assert.ok(text.includes("SAME branchName"));
+  assert.ok(text.includes("/mnt/session/outputs/"));
+  // Noise guardrail must survive the rewrite.
+  assert.ok(text.includes("NOT for noise"));
 });
 
-test("noise-outcome descriptions carry the per-reason evidentiary bars", () => {
-  for (const name of ["silence_as_noise", "place_under_observation"]) {
-    const def = OUTCOME_TOOL_DEFINITIONS.find((d) => d.name === name);
-    const text = def?.description ?? "";
-    for (const reason of [
-      "cosmetic_log_only",
-      "lifecycle_signal",
-      "self_telemetry",
-      "expected_third_party",
-      "confusing_log_no_impact",
-    ]) {
-      assert.ok(text.includes(reason), `${name} missing ${reason}`);
-    }
-  }
+test("silence_as_noise keeps the evidentiary bar and the no-quieting-PRs rule", () => {
   const silence = OUTCOME_TOOL_DEFINITIONS.find((d) => d.name === "silence_as_noise");
   assert.ok(silence?.description.includes("the bar is high"));
   assert.ok(silence?.description.includes("Do NOT propose code changes"));
+  assert.ok(silence?.description.includes("resolve_issue"));
 });
 
-test("marks exactly five tools terminal", () => {
-  assert.equal(TERMINAL_OUTCOME_TOOL_NAMES.length, 5);
-  assert.ok(!(TERMINAL_OUTCOME_TOOL_NAMES as readonly string[]).includes(REPORT_FINDINGS_TOOL_NAME));
+test("resolve_incident description requires per-issue classification first", () => {
+  const def = OUTCOME_TOOL_DEFINITIONS.find((d) => d.name === "resolve_incident");
+  assert.ok(def?.description.includes("Every issue linked"));
 });
 
-// Sessions created against the old toolset can resume days later (e.g. from
-// awaiting_human) and still call a retired tool. The validator must reject
-// the call with redirect guidance so the model re-lands on a live outcome —
-// falling through to the unknown-tool path would hard-fail the run instead.
-test("rejects retired terminal tools with redirect guidance", () => {
-  for (const name of ["complete_investigation", "report_failure"]) {
-    const v = validateOutcomeToolInput(name, { disposition: "informational" }, { hasFindings: true });
+// Sessions created against an old toolset can resume days later and still
+// call a retired tool. The validator must reject the call with redirect
+// guidance so the model re-lands on a live outcome — falling through to the
+// unknown-tool path would hard-fail the run instead.
+test("rejects retired tools (incl. mark_already_resolved) with redirect guidance", () => {
+  assert.ok((RETIRED_OUTCOME_TOOL_NAMES as readonly string[]).includes("mark_already_resolved"));
+  for (const name of RETIRED_OUTCOME_TOOL_NAMES) {
+    const v = validateOutcomeToolInput(name, { reason: "upstream_recovered", evidence: "e" }, { hasFindings: true });
     assert.equal(v.ok, false, name);
     if (!v.ok) {
       const text = v.errors.join(" ");
-      assert.ok(text.includes("ask_human"), name);
-      assert.ok(text.includes("propose_pr"), name);
+      assert.ok(text.includes("resolve_incident"), name);
+      assert.ok(text.includes("resolve_issue"), name);
     }
   }
 });
@@ -134,37 +139,40 @@ test("rejects a bad severity with a model-readable message", () => {
   if (!v.ok) assert.ok(v.errors.join(" ").includes("SEV-3"));
 });
 
-test("rejects silence_as_noise with an unknown reason, naming the valid enum", () => {
-  const v = validateOutcomeToolInput(
+test("classification tools take free-text reasons and require issueId", () => {
+  const ok = validateOutcomeToolInput(
     "silence_as_noise",
-    { reason: "not_a_reason", evidence: "e" },
+    { issueId: "issue-1", reason: "Expected 404s from bot traffic probing /wp-admin", evidence: "e" },
     { hasFindings: true },
   );
-  assert.equal(v.ok, false);
-  if (!v.ok) assert.ok(v.errors.join(" ").includes("expected_third_party"));
+  assert.equal(ok.ok, true);
+
+  const missingIssue = validateOutcomeToolInput(
+    "silence_as_noise",
+    { reason: "noise", evidence: "e" },
+    { hasFindings: true },
+  );
+  assert.equal(missingIssue.ok, false);
+  if (!missingIssue.ok) assert.match(missingIssue.errors.join(" "), /issueId/);
+
+  const resolveOk = validateOutcomeToolInput(
+    "resolve_issue",
+    { issueId: "issue-2", reason: "Fixed by the merged retry-guard PR", evidence: "e" },
+    { hasFindings: true },
+  );
+  assert.equal(resolveOk.ok, true);
 });
 
-test("requires findings before complete-family terminals", () => {
+test("requires findings before action tools and resolve_incident", () => {
   const cases: Array<[string, Record<string, unknown>]> = [
-    ["silence_as_noise", { reason: "cosmetic_log_only", evidence: "e" }],
-    ["mark_already_resolved", { reason: "upstream_recovered", evidence: "e" }],
+    ["silence_as_noise", { issueId: "i", reason: "noise", evidence: "e" }],
+    ["resolve_issue", { issueId: "i", reason: "recovered", evidence: "e" }],
     [
       "place_under_observation",
-      { reason: "cosmetic_log_only", evidence: "e", escalateOn: "additional_events", threshold: 10 },
+      { issueId: "i", reason: "one-off", evidence: "e", escalateOn: "additional_events", threshold: 10 },
     ],
-    [
-      "propose_pr",
-      {
-        repoFullName: "acme/shop",
-        title: "[superlog] Fix",
-        body: "# Summary",
-        branchName: "superlog/fix",
-        baseBranch: "main",
-        patchFilePath: "/mnt/session/outputs/superlog.patch",
-        validationPassed: true,
-        validationSummary: "tests pass",
-      },
-    ],
+    ["propose_pr", PROPOSE_PR_INPUT],
+    ["resolve_incident", { reason: "all done", evidence: "e" }],
   ];
   for (const [name, input] of cases) {
     const v = validateOutcomeToolInput(name, input, { hasFindings: false });
@@ -183,7 +191,7 @@ test("allows ask_human without findings", () => {
 test("validates place_under_observation trigger fields", () => {
   const bad = validateOutcomeToolInput(
     "place_under_observation",
-    { reason: "cosmetic_log_only", evidence: "e", escalateOn: "hourly", threshold: 10 },
+    { issueId: "i", reason: "one-off", evidence: "e", escalateOn: "hourly", threshold: 10 },
     { hasFindings: true },
   );
   assert.equal(bad.ok, false);
@@ -191,7 +199,7 @@ test("validates place_under_observation trigger fields", () => {
 
   const badThreshold = validateOutcomeToolInput(
     "place_under_observation",
-    { reason: "cosmetic_log_only", evidence: "e", escalateOn: "additional_events", threshold: 0 },
+    { issueId: "i", reason: "one-off", evidence: "e", escalateOn: "additional_events", threshold: 0 },
     { hasFindings: true },
   );
   assert.equal(badThreshold.ok, false);
@@ -208,36 +216,38 @@ test("validates propose_pr required fields and branch prefix", () => {
 
   const badBranch = validateOutcomeToolInput(
     "propose_pr",
-    {
-      repoFullName: "acme/shop",
-      title: "[superlog] Fix N+1",
-      body: "# Summary",
-      branchName: "claude/fix",
-      baseBranch: "dev",
-      patchFilePath: "/mnt/session/outputs/superlog.patch",
-      validationPassed: true,
-      validationSummary: "tests pass",
-    },
+    { ...PROPOSE_PR_INPUT, branchName: "claude/fix" },
     { hasFindings: true },
   );
   assert.equal(badBranch.ok, false);
   if (!badBranch.ok) assert.ok(badBranch.errors.join(" ").includes("superlog/"));
 });
 
+// Legacy sessions still send validationPassed; an honest false meant "do not
+// open this PR" and must keep being honored.
+test("propose_pr rejects a legacy validationPassed=false", () => {
+  const v = validateOutcomeToolInput(
+    "propose_pr",
+    { ...PROPOSE_PR_INPUT, validationPassed: false },
+    { hasFindings: true },
+  );
+  assert.equal(v.ok, false);
+  if (!v.ok) assert.match(v.errors.join(" "), /validation/i);
+});
+
+test("propose_pr accepts legacy validation fields without carrying them", () => {
+  const v = validateOutcomeToolInput(
+    "propose_pr",
+    { ...PROPOSE_PR_INPUT, validationPassed: true, validationSummary: "tests pass" },
+    { hasFindings: true },
+  );
+  assert.equal(v.ok, true);
+});
+
 test("propose_pr mobile fields are conditionally required", () => {
-  const base = {
-    repoFullName: "acme/shop",
-    title: "[superlog] Fix",
-    body: "# Summary",
-    branchName: "superlog/fix",
-    baseBranch: "main",
-    patchFilePath: "/mnt/session/outputs/superlog.patch",
-    validationPassed: true,
-    validationSummary: "tests pass",
-  };
   const created = validateOutcomeToolInput(
     "propose_pr",
-    { ...base, mobileTestStatus: "created" },
+    { ...PROPOSE_PR_INPUT, mobileTestStatus: "created" },
     { hasFindings: true },
   );
   assert.equal(created.ok, false);
@@ -245,7 +255,7 @@ test("propose_pr mobile fields are conditionally required", () => {
 
   const skipped = validateOutcomeToolInput(
     "propose_pr",
-    { ...base, mobileTestStatus: "skipped" },
+    { ...PROPOSE_PR_INPUT, mobileTestStatus: "skipped" },
     { hasFindings: true },
   );
   assert.equal(skipped.ok, false);
@@ -265,108 +275,134 @@ test("mergeFindings is last-write-wins per defined field", () => {
   assert.equal(b.rootCause, "rc");
 });
 
-test("assembles silence_as_noise into a complete result with a silence action", () => {
+test("assembles resolve_incident with executed actions into a complete result", () => {
   const result = assembleAgentRunResult({
     findings: FINDINGS,
     terminal: {
-      name: "silence_as_noise",
-      payload: { reason: "expected_third_party", evidence: "**a.ts:1**\n```ts\nx\n```" },
+      name: "resolve_incident",
+      payload: { reason: "PR merged and error rate back to zero", evidence: "e" },
     },
+    actions: [
+      {
+        name: "silence_as_noise",
+        payload: { issueId: "issue-1", reason: "bot probe noise", evidence: "e1" },
+      },
+      {
+        name: "resolve_issue",
+        payload: { issueId: "issue-2", reason: "fixed by the merged PR", evidence: "e2" },
+      },
+      { name: "propose_pr", payload: PROPOSE_PR_INPUT },
+    ],
   });
   assert.equal(result.state, "complete");
   assert.equal(result.summary, FINDINGS.summary);
   assert.equal(result.proposedTitle, FINDINGS.proposedTitle);
-  assert.deepEqual(result.noiseClassification, {
-    reason: "expected_third_party",
-    evidence: "**a.ts:1**\n```ts\nx\n```",
-    action: { kind: "silence" },
-  });
-  assert.equal(result.pr, undefined);
-});
-
-test("maps place_under_observation onto an observe action with a parsed trigger", () => {
-  const rate = assembleAgentRunResult({
-    findings: FINDINGS,
-    terminal: {
-      name: "place_under_observation",
-      payload: { reason: "lifecycle_signal", evidence: "e", escalateOn: "events_per_minute", threshold: 5 },
-    },
-  });
-  assert.deepEqual(rate.noiseClassification?.action, {
-    kind: "observe",
-    trigger: { kind: "rate", perMinute: 5 },
-  });
-
-  const count = assembleAgentRunResult({
-    findings: FINDINGS,
-    terminal: {
-      name: "place_under_observation",
-      payload: { reason: "lifecycle_signal", evidence: "e", escalateOn: "additional_events", threshold: 100 },
-    },
-  });
-  assert.deepEqual(count.noiseClassification?.action, {
-    kind: "observe",
-    trigger: { kind: "count", count: 100 },
-  });
-});
-
-test("maps mark_already_resolved onto resolutionClassification", () => {
-  const result = assembleAgentRunResult({
-    findings: FINDINGS,
-    terminal: {
-      name: "mark_already_resolved",
-      payload: { reason: "fixed_in_current_code", evidence: "e" },
-    },
-  });
-  assert.equal(result.state, "complete");
-  assert.deepEqual(result.resolutionClassification, {
-    reason: "fixed_in_current_code",
+  assert.deepEqual(result.incidentResolution, {
+    reason: "PR merged and error rate back to zero",
     evidence: "e",
   });
+  assert.equal(result.issueClassifications?.length, 2);
+  assert.deepEqual(result.issueClassifications?.[0], {
+    issueId: "issue-1",
+    action: "silence",
+    reason: "bot probe noise",
+    evidence: "e1",
+  });
+  assert.equal(result.prs?.length, 1);
+  assert.equal(result.prs?.[0]?.branchName, "superlog/batch-vendor-lookups");
+  assert.equal(result.prs?.[0]?.openStatus, "opened");
+  // Old readers get the singular field pointed at the most recent PR.
+  assert.equal(result.pr?.branchName, "superlog/batch-vendor-lookups");
 });
 
-test("assembles propose_pr into an AgentRunPr with pending openStatus", () => {
+test("latest classification per issue wins and same-branch PRs collapse", () => {
   const result = assembleAgentRunResult({
     findings: FINDINGS,
-    terminal: {
-      name: "propose_pr",
-      payload: {
-        repoFullName: "acme/shop",
-        title: "[superlog] Batch vendor lookups",
-        body: "# Summary\n...",
-        branchName: "superlog/batch-vendor-lookups",
-        baseBranch: "dev",
-        patchFilePath: "/mnt/session/outputs/superlog.patch",
-        validationPassed: true,
-        validationCommands: ["pnpm test"],
-        validationSummary: "repro passes after fix",
-        changedFiles: ["api/pricing.ts"],
-        mobileTestStatus: "not_applicable",
-        mobileTestReason: "backend-only change",
+    terminal: { name: "resolve_incident", payload: { reason: "r", evidence: "e" } },
+    actions: [
+      {
+        name: "place_under_observation",
+        payload: {
+          issueId: "issue-1",
+          reason: "one-off",
+          evidence: "e",
+          escalateOn: "events_per_minute",
+          threshold: 5,
+        },
       },
-    },
+      {
+        name: "resolve_issue",
+        payload: { issueId: "issue-1", reason: "actually fixed", evidence: "e" },
+      },
+      { name: "propose_pr", payload: PROPOSE_PR_INPUT },
+      { name: "propose_pr", payload: { ...PROPOSE_PR_INPUT, title: "[superlog] Follow-up" } },
+    ],
   });
-  assert.equal(result.state, "complete");
-  assert.equal(result.pr?.selectedRepoFullName, "acme/shop");
-  assert.equal(result.pr?.branchName, "superlog/batch-vendor-lookups");
-  assert.equal(result.pr?.baseBranch, "dev");
-  assert.equal(result.pr?.patchFilePath, "/mnt/session/outputs/superlog.patch");
-  assert.equal(result.pr?.validationPassed, true);
-  assert.equal(result.pr?.openStatus, "pending");
-  assert.deepEqual(result.pr?.validationCommands, ["pnpm test"]);
+  assert.equal(result.issueClassifications?.length, 1);
+  assert.equal(result.issueClassifications?.[0]?.action, "resolve");
+  assert.equal(result.prs?.length, 1);
+  assert.equal(result.prs?.[0]?.title, "[superlog] Follow-up");
+});
+
+test("observe classification carries the parsed escalation trigger", () => {
+  const result = assembleAgentRunResult({
+    findings: FINDINGS,
+    terminal: { name: "resolve_incident", payload: { reason: "r", evidence: "e" } },
+    actions: [
+      {
+        name: "place_under_observation",
+        payload: {
+          issueId: "issue-1",
+          reason: "one-off",
+          evidence: "e",
+          escalateOn: "additional_events",
+          threshold: 100,
+        },
+      },
+    ],
+  });
+  assert.deepEqual(result.issueClassifications?.[0]?.trigger, { kind: "count", count: 100 });
+});
+
+test("assembles a parked awaiting_events result when no terminal call happened", () => {
+  const result = assembleAgentRunResult({
+    findings: FINDINGS,
+    terminal: null,
+    actions: [{ name: "propose_pr", payload: PROPOSE_PR_INPUT }],
+  });
+  assert.equal(result.state, "awaiting_events");
+  assert.equal(result.summary, FINDINGS.summary);
+  assert.equal(result.prs?.length, 1);
+  assert.equal(result.incidentResolution, undefined);
+});
+
+test("propose_pr mobile decision lands on the result", () => {
+  const result = assembleAgentRunResult({
+    findings: FINDINGS,
+    terminal: { name: "resolve_incident", payload: { reason: "r", evidence: "e" } },
+    actions: [
+      {
+        name: "propose_pr",
+        payload: {
+          ...PROPOSE_PR_INPUT,
+          changedFiles: ["app/checkout.tsx"],
+          mobileTestStatus: "not_applicable",
+          mobileTestReason: "backend-only change",
+        },
+      },
+    ],
+  });
   assert.deepEqual(result.mobileRegressionTest, {
     status: "not_applicable",
     reason: "backend-only change",
   });
+  assert.deepEqual(result.prs?.[0]?.changedFiles, ["app/checkout.tsx"]);
 });
 
 test("derives the legacy rootCauseConfidence bucket from the numeric confidence", () => {
   const result = assembleAgentRunResult({
     findings: FINDINGS,
-    terminal: {
-      name: "mark_already_resolved",
-      payload: { reason: "transient_condition_cleared", evidence: "e" },
-    },
+    terminal: { name: "resolve_incident", payload: { reason: "r", evidence: "e" } },
   });
   assert.deepEqual(result.rootCause, { text: FINDINGS.rootCause, confidence: 9 });
   assert.equal(result.rootCauseConfidence, "high");

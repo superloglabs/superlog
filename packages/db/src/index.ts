@@ -88,6 +88,8 @@ export type {
   AgentRunTriggerDetail,
   AgentRunResult,
   AgentRunPr,
+  AgentRunIssueClassification,
+  AgentRunIncidentResolution,
   AgentRunLinearTicket,
   AgentRunMobileRegressionTest,
   AgentRunFailureReason,
@@ -216,6 +218,12 @@ export {
   type EscalationEvaluationInput,
   type IssueOccurrenceAction,
 } from "./issue-state.js";
+export {
+  classifyIncidentIssue,
+  listUnclassifiedIncidentIssues,
+  type ClassifyIncidentIssueResult,
+  type IssueClassificationAction,
+} from "./issue-classification.js";
 export {
   confirmResolutionProposal,
   createIncidentLifecycle,

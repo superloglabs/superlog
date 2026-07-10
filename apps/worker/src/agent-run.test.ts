@@ -23,6 +23,7 @@ test("ACTIVE_STATES + DORMANT_STATES + TERMINAL_STATES partition the AgentRunSta
     "repo_discovery",
     "running",
     "awaiting_human",
+    "awaiting_events",
     "pr_retry_queued",
     "blocked_no_github",
     "resuming",

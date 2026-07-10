@@ -22,6 +22,8 @@ export type AgentRunOrgHealthCounts = {
   stuck: number;
   queued: number;
   awaitingHuman: number;
+  // Runs parked while their PRs are out for review (awaiting_events).
+  awaitingEvents: number;
   // Runs parked on missing prerequisites (e.g. no GitHub connected).
   blocked: number;
 };
@@ -75,6 +77,7 @@ export async function loadAgentRunHealthCounts(): Promise<AgentRunOrgHealthCount
     stuck: number;
     queued: number;
     awaiting: number;
+    awaiting_events: number;
     blocked: number;
   }>(sql`
     SELECT
@@ -90,6 +93,7 @@ export async function loadAgentRunHealthCounts(): Promise<AgentRunOrgHealthCount
       )::int AS stuck,
       count(*) FILTER (WHERE ar.state = 'queued')::int AS queued,
       count(*) FILTER (WHERE ar.state = 'awaiting_human')::int AS awaiting,
+      count(*) FILTER (WHERE ar.state = 'awaiting_events')::int AS awaiting_events,
       count(*) FILTER (WHERE ar.state LIKE 'blocked_%')::int AS blocked
     FROM agent_runs ar
     JOIN incidents i ON i.id = ar.incident_id
@@ -103,6 +107,7 @@ export async function loadAgentRunHealthCounts(): Promise<AgentRunOrgHealthCount
     stuck: number;
     queued: number;
     awaiting: number;
+    awaiting_events: number;
     blocked: number;
   }>;
 
@@ -118,6 +123,7 @@ export async function loadAgentRunHealthCounts(): Promise<AgentRunOrgHealthCount
         stuck: 0,
         queued: 0,
         awaitingHuman: 0,
+        awaitingEvents: 0,
         blocked: 0,
       };
       byOrg.set(orgId, entry);
@@ -131,6 +137,7 @@ export async function loadAgentRunHealthCounts(): Promise<AgentRunOrgHealthCount
     entry.stuck = Number(r.stuck);
     entry.queued = Number(r.queued);
     entry.awaitingHuman = Number(r.awaiting);
+    entry.awaitingEvents = Number(r.awaiting_events);
     entry.blocked = Number(r.blocked);
   }
   for (const r of failedRows) {
@@ -143,6 +150,7 @@ export async function loadAgentRunHealthCounts(): Promise<AgentRunOrgHealthCount
       o.stuck > 0 ||
       o.queued > 0 ||
       o.awaitingHuman > 0 ||
+      o.awaitingEvents > 0 ||
       o.blocked > 0 ||
       Object.keys(o.failedRecentByReason).length > 0,
   );
@@ -169,6 +177,7 @@ export function withRecoveryZeros(
       stuck: 0,
       queued: 0,
       awaitingHuman: 0,
+      awaitingEvents: 0,
       blocked: 0,
     });
   }
@@ -193,6 +202,11 @@ export function buildAgentRunHealthObservations(
       { metric: "superlog.agent_runs.stuck", value: org.stuck, attributes: attrs },
       { metric: "superlog.agent_runs.queued", value: org.queued, attributes: attrs },
       { metric: "superlog.agent_runs.awaiting_human", value: org.awaitingHuman, attributes: attrs },
+      {
+        metric: "superlog.agent_runs.awaiting_events",
+        value: org.awaitingEvents,
+        attributes: attrs,
+      },
       { metric: "superlog.agent_runs.blocked", value: org.blocked, attributes: attrs },
       { metric: "superlog.agent_runs.completed_recent", value: org.completedRecent, attributes: attrs },
     );
@@ -211,6 +225,7 @@ export function buildAgentRunHealthObservations(
       { metric: "superlog.agent_runs.stuck", value: 0 },
       { metric: "superlog.agent_runs.queued", value: 0 },
       { metric: "superlog.agent_runs.awaiting_human", value: 0 },
+      { metric: "superlog.agent_runs.awaiting_events", value: 0 },
       { metric: "superlog.agent_runs.blocked", value: 0 },
       { metric: "superlog.agent_runs.completed_recent", value: 0 },
     );
@@ -253,6 +268,10 @@ export function registerAgentRunHealthMetrics(): void {
     "superlog.agent_runs.awaiting_human": meter.createObservableGauge(
       "superlog.agent_runs.awaiting_human",
       { description: "Agent runs parked on a human response, by org." },
+    ),
+    "superlog.agent_runs.awaiting_events": meter.createObservableGauge(
+      "superlog.agent_runs.awaiting_events",
+      { description: "Agent runs parked while their PRs are out for review, by org." },
     ),
     "superlog.agent_runs.blocked": meter.createObservableGauge("superlog.agent_runs.blocked", {
       description: "Agent runs parked on missing prerequisites (e.g. no GitHub connected), by org.",

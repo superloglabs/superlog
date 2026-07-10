@@ -5,6 +5,7 @@ import type {
   AgentRunTrigger,
   PrPolicy,
 } from "@superlog/db";
+import type { AgentRunFindings, ExecutedAction } from "./agent-outcome-tools.js";
 
 export type AgentRunnerRepoCandidate = {
   fullName: string;
@@ -136,6 +137,23 @@ export type AgentRunnerStartInput = {
   predecessors: AgentRunnerPredecessorIncident[];
 };
 
+// A pending outcome-action tool call handed to the worker's executor by the
+// backend's dispatch loop. `hasFindings` reflects whether a valid
+// report_findings call has been seen earlier in the current turn — the
+// executor's validation needs it for the findings-first gate.
+export type OutcomeActionCall = {
+  name: string;
+  input: unknown;
+  hasFindings: boolean;
+};
+
+export type OutcomeActionExecution =
+  // handled: the executor ran (or rejected) the action; ack `payload` back
+  // into the session with is_error = !ok.
+  | { handled: true; ok: boolean; payload: Record<string, unknown> }
+  // Not an outcome action — the dispatch loop tries its other handlers.
+  | { handled: false };
+
 export type AgentRunnerSnapshot = {
   sessionId: string;
   status: "running" | "idle" | "terminated" | "rescheduling";
@@ -148,6 +166,15 @@ export type AgentRunnerSnapshot = {
     detail: Record<string, unknown> | null;
   }>;
   result: AgentRunResult | null;
+  // The current turn's accumulated outcome state even when no terminal tool
+  // has been called: merged findings plus successfully executed mid-run
+  // actions. sync.ts uses it to assemble the parked result when a turn
+  // legitimately ends without a terminal call (open PRs awaiting review).
+  // Optional so runners without the outcome toolset are unaffected.
+  pendingOutcome?: {
+    findings: AgentRunFindings | null;
+    actions: ExecutedAction[];
+  };
   // Custom tools the runtime had no handler for. The collector ack's them
   // with an error result so the session can leave requires_action; sync.ts
   // then fails the run with `unknown_custom_tool` so we can audit them later.
@@ -215,6 +242,11 @@ export type AgentRunnerBackend = {
     orgId: string;
     projectId: string;
     incidentId: string;
+    // Executes the agent's non-terminal outcome-action tools (propose_pr,
+    // issue classification) and guards resolve_incident. When absent (e.g. a
+    // caller without run context), the backend error-acks those calls so the
+    // session never deadlocks in requires_action.
+    executeOutcomeAction?: (call: OutcomeActionCall) => Promise<OutcomeActionExecution>;
   }): Promise<number>;
   // Serve a chat session's pending tool calls (memory tools + the reply
   // tool). `onReply` posts the reply text to the chat's channel — the worker

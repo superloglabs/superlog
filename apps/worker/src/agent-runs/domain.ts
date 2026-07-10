@@ -3,6 +3,7 @@ export type AgentRunState =
   | "repo_discovery"
   | "running"
   | "awaiting_human"
+  | "awaiting_events"
   | "resuming"
   | "pr_retry_queued"
   | "blocked_no_github"
@@ -16,11 +17,14 @@ export type AgentRunState =
 // (no re-investigation). `resuming` is a previously-terminal run that a human
 // message reactivated: the tick resumes its durable provider session in place
 // (no re-investigation) — the heart of "talking to an investigation".
+// `awaiting_events` is a run whose turn ended with PRs out for review: the
+// session stays durable and PR events (comment/merge/close) resume it.
 export const ACTIVE_STATES: readonly AgentRunState[] = [
   "queued",
   "repo_discovery",
   "running",
   "awaiting_human",
+  "awaiting_events",
   "resuming",
   "pr_retry_queued",
 ] as const;
@@ -37,6 +41,7 @@ export type LifecycleEventKind =
   | "agent_run_queued"
   | "agent_run_started"
   | "awaiting_human"
+  | "awaiting_events"
   | "blocked_no_github"
   | "unblocked"
   | "resumed"

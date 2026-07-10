@@ -88,7 +88,9 @@ export type AgentRunPr = {
   patch?: string;
   patchFileId?: string | null;
   patchFilePath?: string | null;
-  validationPassed: boolean;
+  // Legacy fields from the era when propose_pr carried a self-reported
+  // validation verdict; current agents no longer send them.
+  validationPassed?: boolean;
   validationCommands?: string[];
   validationSummary?: string | null;
   changedFiles?: string[];
@@ -142,12 +144,11 @@ export type IssueEscalationTrigger =
   | { kind: "rate"; perMinute: number }
   | { kind: "count"; count: number };
 
-export type IncidentNoiseReason =
-  | "cosmetic_log_only"
-  | "lifecycle_signal"
-  | "self_telemetry"
-  | "expected_third_party"
-  | "confusing_log_no_impact";
+// Free-form text explaining why the issue is noise. Previously a closed enum
+// (cosmetic_log_only, lifecycle_signal, self_telemetry, expected_third_party,
+// confusing_log_no_impact); those values still occur in stored rows and remain
+// valid strings — render the text as-is.
+export type IncidentNoiseReason = string;
 
 // What to do with the incident's issues once a noise verdict lands. Silence
 // suppresses future occurrences outright; observe suppresses until the
@@ -163,10 +164,10 @@ export type IncidentNoiseClassification = {
   action?: IncidentNoiseAction | null;
 };
 
-export type IncidentResolutionReason =
-  | "fixed_in_current_code"
-  | "transient_condition_cleared"
-  | "upstream_recovered";
+// Free-form text explaining why the incident/issue is considered resolved.
+// Previously a closed enum (fixed_in_current_code, transient_condition_cleared,
+// upstream_recovered); stored rows may still carry those values.
+export type IncidentResolutionReason = string;
 
 export type IncidentResolutionClassification = {
   reason: IncidentResolutionReason;
@@ -202,10 +203,15 @@ export type AgentRunConfidence = {
 // an already-investigated incident. Instead of starting a fresh investigation
 // (which produced duplicate PRs for the same root cause), it steers the existing
 // investigation — same continuation path as the human channels below.
+// "pr_merged" / "pr_closed" are GitHub lifecycle events on an agent PR: they
+// resume the investigation so the agent decides whether the incident is done
+// (resolve_incident) or more work remains.
 export type AgentRunTrigger =
   | "incident"
   | "manual"
   | "pr_comment"
+  | "pr_merged"
+  | "pr_closed"
   | "feedback"
   | "slack_reply"
   | "web_chat"
@@ -245,12 +251,35 @@ export type AgentRunTriggerDetail = {
 // failed: the last turn failed; a new inbound message re-queues it.
 export type AgentChatState = "queued" | "running" | "idle" | "failed";
 
+// One issue-level verdict recorded by the agent mid-run. The issue row itself
+// is the source of truth (the status change is applied when the tool call is
+// dispatched); this is the run-result record of what was decided and why.
+export type AgentRunIssueClassification = {
+  issueId: string;
+  action: "silence" | "observe" | "resolve";
+  reason: string;
+  evidence: string;
+  trigger?: IssueEscalationTrigger | null;
+};
+
+// The agent's terminal resolve_incident verdict.
+export type AgentRunIncidentResolution = {
+  reason: string;
+  evidence: string;
+};
+
 export type AgentRunResult = {
-  state: "complete" | "awaiting_human" | "failed";
+  state: "complete" | "awaiting_human" | "awaiting_events" | "failed";
   summary: string;
   question?: string | null;
   failureReason?: AgentRunFailureReason | null;
+  // Legacy single-PR record (pre multi-PR contract). New runs record opened
+  // PRs as agent_pull_requests rows (the source of truth) and mirror them in
+  // `prs`; `pr` is kept pointing at the most recent one for old readers.
   pr?: AgentRunPr | null;
+  prs?: AgentRunPr[] | null;
+  issueClassifications?: AgentRunIssueClassification[] | null;
+  incidentResolution?: AgentRunIncidentResolution | null;
   linearTicket?: AgentRunLinearTicket | null;
   rootCauseConfidence?: "high" | "medium" | "low" | null;
   // Concise human-readable replacement for incident.title — applied by the worker if present.

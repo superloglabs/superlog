@@ -42,7 +42,11 @@ async function markProcessed(ids: string[]): Promise<void> {
 // re-seeds the prior context, so the human's message is never silently lost.
 export async function resumeAgentRunFromHumanInput(ctx: AgentRunContext): Promise<void> {
   const sessionId = ctx.agentRun.providerSessionId;
-  const isContinuation = ctx.agentRun.state === "resuming";
+  // `resuming` (a reactivated terminal run) and `awaiting_events` (parked on
+  // PR review) are continuations: every resume is driven by an intentional
+  // external event, so the human-resume budget doesn't apply.
+  const isContinuation =
+    ctx.agentRun.state === "resuming" || ctx.agentRun.state === "awaiting_events";
 
   if (!sessionId) {
     // `awaiting_human` paused before any managed session existed (repo

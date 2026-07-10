@@ -124,6 +124,32 @@ export function createAgentRunLifecycle(db: DB) {
     },
 
     /**
+     * `running → awaiting_events`: the turn ended without a terminal outcome
+     * call while the run has PRs out for review. The durable session is kept;
+     * PR events (comment, merge, close) and human messages resume it via the
+     * same continuation path as awaiting_human. Stores the partial result
+     * (findings + actions so far) and emits `awaiting_events`.
+     */
+    async pauseForEvents(opts: {
+      id: string;
+      currentState: AgentRunState | string;
+      result: AgentRunResult;
+    }): Promise<void> {
+      assertAgentRunSourceState("pauseForEvents", opts.currentState, ["running"]);
+      await repository.updateRun(opts.id, {
+        state: "awaiting_events",
+        result: opts.result,
+      });
+      await repository.insertEvent({
+        agentRunId: opts.id,
+        kind: "awaiting_events",
+        summary: "Investigation is waiting on PR review/merge events.",
+        dedupeKey: `awaiting_events:${opts.id}:${Date.now()}`,
+        processed: true,
+      });
+    },
+
+    /**
      * `awaiting_human → queued`, used when no managed session exists yet
      * (the agentRun paused before startRunning ever fired). The next
      * tick reloads ctx and re-enters startQueuedAgentRun. No event —
@@ -197,19 +223,27 @@ export function createAgentRunLifecycle(db: DB) {
     // shared governed path while the bulk update bypasses it.
 
     /**
-     * `awaiting_human | resuming → running`, after the managed session
-     * accepted the human message. Increments resumeCount. Emits `resumed`.
+     * `awaiting_human | awaiting_events | resuming → running`, after the
+     * managed session accepted the inbound message. Increments resumeCount and
+     * resets startedAt: the wall-clock budget is per active leg, so a run that
+     * legitimately waited days on a PR review isn't reaped the moment it
+     * resumes. Emits `resumed`.
      */
     async resumeRunning(opts: {
       id: string;
       currentState: AgentRunState | string;
       currentResumeCount: number;
     }): Promise<void> {
-      assertAgentRunSourceState("resumeRunning", opts.currentState, ["awaiting_human", "resuming"]);
+      assertAgentRunSourceState("resumeRunning", opts.currentState, [
+        "awaiting_human",
+        "awaiting_events",
+        "resuming",
+      ]);
       const nextResumeCount = opts.currentResumeCount + 1;
       await repository.updateRun(opts.id, {
         state: "running",
         resumeCount: nextResumeCount,
+        startedAt: new Date(),
       });
       await repository.insertEvent({
         agentRunId: opts.id,
@@ -359,6 +393,7 @@ export function createAgentRunLifecycle(db: DB) {
         "repo_discovery",
         "running",
         "awaiting_human",
+        "awaiting_events",
         "resuming",
         "pr_retry_queued",
         "blocked_no_github",

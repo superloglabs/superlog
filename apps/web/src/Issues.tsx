@@ -5,6 +5,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  Fragment,
   type ReactNode,
   Suspense,
   lazy,
@@ -1114,8 +1115,11 @@ function buildAgentRunPrompt({
         result.estimatedImpact.text,
       );
     }
-    if (result?.pr?.url) {
-      lines.push("", `### Existing PR`, result.pr.url);
+    const prUrls = (result?.prs ?? (result?.pr ? [result.pr] : []))
+      .map((pr) => pr.url)
+      .filter((url): url is string => Boolean(url));
+    if (prUrls.length > 0) {
+      lines.push("", prUrls.length === 1 ? `### Existing PR` : `### Existing PRs`, ...prUrls);
     }
   }
 
@@ -2269,30 +2273,35 @@ function AgentRunMeta({ agentRun }: { agentRun: AgentRun }) {
 function AgentRunDeliverables({ agentRun }: { agentRun: AgentRun }) {
   const result = agentRun.result;
   if (!result) return null;
-  const pr = result.pr ?? null;
+  // Multi-PR runs list every PR in `prs`; older runs only have the single `pr`.
+  const prs = result.prs ?? (result.pr ? [result.pr] : []);
   const ticket = result.linearTicket ?? null;
-  if (!pr && !ticket) return null;
+  if (prs.length === 0 && !ticket) return null;
   return (
     <div className="space-y-3">
       <SectionHeading>Deliverables</SectionHeading>
       <div className="flex flex-wrap gap-2">
-        {pr && pr.openStatus === "opened" && pr.url && (
-          <a href={pr.url} target="_blank" rel="noreferrer" className="text-[12px]">
-            <Chip tone="success" dot>
-              PR opened · {pr.selectedRepoFullName}
-            </Chip>
-          </a>
-        )}
-        {pr && pr.openStatus === "pending" && (
-          <Chip tone="neutral" dot>
-            PR pending · {pr.selectedRepoFullName}
-          </Chip>
-        )}
-        {pr && pr.validationPassed === false && (
-          <Chip tone="danger" dot>
-            Patch validation failed
-          </Chip>
-        )}
+        {prs.map((pr) => (
+          <Fragment key={pr.branchName}>
+            {pr.openStatus === "opened" && pr.url && (
+              <a href={pr.url} target="_blank" rel="noreferrer" className="text-[12px]">
+                <Chip tone="success" dot>
+                  PR opened · {pr.selectedRepoFullName}
+                </Chip>
+              </a>
+            )}
+            {pr.openStatus === "pending" && (
+              <Chip tone="neutral" dot>
+                PR pending · {pr.selectedRepoFullName}
+              </Chip>
+            )}
+            {pr.validationPassed === false && (
+              <Chip tone="danger" dot>
+                Patch validation failed
+              </Chip>
+            )}
+          </Fragment>
+        ))}
         {ticket && ticket.url && (
           <a href={ticket.url} target="_blank" rel="noreferrer" className="text-[12px]">
             <Chip tone="success" dot>
@@ -2333,6 +2342,13 @@ function AgentRunStateChip({ state }: { state: string }) {
     return (
       <Chip tone="warning" dot>
         {state}
+      </Chip>
+    );
+  }
+  if (state === "awaiting_events") {
+    return (
+      <Chip tone="warning" dot>
+        awaiting events
       </Chip>
     );
   }

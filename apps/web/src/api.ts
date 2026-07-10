@@ -2018,7 +2018,9 @@ export type AgentRunPr = {
   patch?: string;
   patchFileId?: string | null;
   patchFilePath?: string | null;
-  validationPassed: boolean;
+  // Legacy fields from the era when propose_pr carried a self-reported
+  // validation verdict; current agents no longer send them.
+  validationPassed?: boolean;
   validationCommands?: string[];
   validationSummary?: string | null;
   changedFiles?: string[];
@@ -2038,22 +2040,21 @@ export type IncidentSeverity = "SEV-1" | "SEV-2" | "SEV-3";
 // the user. 'no_credits' = org over its plan's monthly investigation limit.
 export type IncidentAutoInvestigateBlockedReason = "no_credits";
 
-export type IncidentNoiseReason =
-  | "cosmetic_log_only"
-  | "lifecycle_signal"
-  | "self_telemetry"
-  | "expected_third_party"
-  | "confusing_log_no_impact";
+// Free-form text explaining why the issue is noise. Previously a closed enum
+// (cosmetic_log_only, lifecycle_signal, self_telemetry, expected_third_party,
+// confusing_log_no_impact); those values still occur in stored rows and remain
+// valid strings — render the text as-is.
+export type IncidentNoiseReason = string;
 
 export type IncidentNoiseClassification = {
   reason: IncidentNoiseReason;
   evidence: string;
 };
 
-export type IncidentResolutionReason =
-  | "fixed_in_current_code"
-  | "transient_condition_cleared"
-  | "upstream_recovered";
+// Free-form text explaining why the incident/issue is considered resolved.
+// Previously a closed enum (fixed_in_current_code, transient_condition_cleared,
+// upstream_recovered); stored rows may still carry those values.
+export type IncidentResolutionReason = string;
 
 export type IncidentResolutionClassification = {
   reason: IncidentResolutionReason;
@@ -2065,12 +2066,35 @@ export type AgentRunConfidence = {
   confidence: number;
 };
 
+// One issue-level verdict recorded by the agent mid-run. The issue row itself
+// is the source of truth; this is the run-result record of what was decided
+// and why.
+export type AgentRunIssueClassification = {
+  issueId: string;
+  action: "silence" | "observe" | "resolve";
+  reason: string;
+  evidence: string;
+  trigger?: { kind: "rate"; perMinute: number } | { kind: "count"; count: number } | null;
+};
+
+// The agent's terminal resolve_incident verdict.
+export type AgentRunIncidentResolution = {
+  reason: string;
+  evidence: string;
+};
+
 export type AgentRunResult = {
-  state: "complete" | "awaiting_human" | "failed";
+  state: "complete" | "awaiting_human" | "awaiting_events" | "failed";
   summary: string;
   question?: string | null;
   failureReason?: AgentRunFailureReason | null;
+  // Legacy single-PR record (pre multi-PR contract). New runs record every
+  // opened PR in `prs`; `pr` is kept pointing at the most recent one for old
+  // readers.
   pr?: AgentRunPr | null;
+  prs?: AgentRunPr[] | null;
+  issueClassifications?: AgentRunIssueClassification[] | null;
+  incidentResolution?: AgentRunIncidentResolution | null;
   linearTicket?: AgentRunLinearTicket | null;
   rootCauseConfidence?: "high" | "medium" | "low" | null;
   proposedTitle?: string | null;

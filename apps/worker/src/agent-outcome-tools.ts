@@ -1,27 +1,36 @@
 // Per-outcome tool contract for investigation agent runs.
 //
-// The agent ends a run by calling exactly one *terminal* outcome tool, after
-// recording shared metadata via `report_findings`. Each tool has a flat JSON
-// schema (top-level `type`/`properties`/`required` only — some runner APIs
-// reject composition keywords like `oneOf`/`allOf` at the top level of a
-// custom tool's input_schema, and a rejected schema blocks every run at
-// agent-create time). Schemas are not enforced server-side by every runner,
-// so `validateOutcomeToolInput` re-validates each call worker-side; its error
-// strings are written for the model, which sees them as tool errors and can
-// correct the call within the same session — instead of the run dying at the
-// end with an unusable result.
+// The contract has three tiers:
+//   - `report_findings` (non-terminal): shared metadata, callable repeatedly.
+//   - Action tools (non-terminal, dispatched server-side mid-run): the worker
+//     executes each call while the session is live and acks the result back,
+//     so the agent can iterate — open a PR, read the URL (or the apply
+//     failure and fix its own patch), classify each linked issue, then keep
+//     going. `propose_pr`, `silence_as_noise`, `place_under_observation`,
+//     `resolve_issue`.
+//   - Terminal tools: `resolve_incident` ends the investigation once every
+//     linked issue is classified; `ask_human` pauses it on a human. A turn may
+//     also legitimately end with NO terminal call when the run is waiting on
+//     external events (open PRs) — the worker parks it and resumes the session
+//     when a PR comment/merge/close arrives.
 //
-// `assembleAgentRunResult` folds the merged findings plus the terminal call
-// into the existing persisted `AgentRunResult` shape, so downstream consumers
-// (sync/completion/PR delivery, web, graders) are unaffected by the tool
-// split.
+// Each tool has a flat JSON schema (top-level `type`/`properties`/`required`
+// only — some runner APIs reject composition keywords like `oneOf`/`allOf` at
+// the top level of a custom tool's input_schema, and a rejected schema blocks
+// every run at agent-create time). Schemas are not enforced server-side by
+// every runner, so `validateOutcomeToolInput` re-validates each call
+// worker-side; its error strings are written for the model, which sees them
+// as tool errors and can correct the call within the same session.
+//
+// `assembleAgentRunResult` folds the merged findings, the mid-run actions,
+// and the terminal call into the persisted `AgentRunResult` shape.
 
 import type {
+  AgentRunIncidentResolution,
+  AgentRunIssueClassification,
   AgentRunMobileRegressionTest,
   AgentRunPr,
   AgentRunResult,
-  IncidentNoiseReason,
-  IncidentResolutionReason,
   IncidentSeverity,
   IssueEscalationTrigger,
 } from "@superlog/db";
@@ -40,40 +49,44 @@ export type OutcomeToolDefinition = {
 
 export const REPORT_FINDINGS_TOOL_NAME = "report_findings";
 
-export const TERMINAL_OUTCOME_TOOL_NAMES = [
+// Non-terminal action tools: executed server-side while the run is live, the
+// result is acked back into the session and the agent continues its turn.
+export const ACTION_OUTCOME_TOOL_NAMES = [
   "propose_pr",
   "silence_as_noise",
   "place_under_observation",
-  "mark_already_resolved",
-  "ask_human",
+  "resolve_issue",
 ] as const;
+
+export type ActionOutcomeToolName = (typeof ACTION_OUTCOME_TOOL_NAMES)[number];
+
+export const TERMINAL_OUTCOME_TOOL_NAMES = ["resolve_incident", "ask_human"] as const;
 
 export type TerminalOutcomeToolName = (typeof TERMINAL_OUTCOME_TOOL_NAMES)[number];
 
-// Terminal tools retired from the contract. Sessions created against the old
-// toolset can outlive a deploy (awaiting_human resumes days later), so a call
-// to one of these must be error-acked with redirect guidance — not routed to
-// the unknown-tool path, which hard-fails the run.
-export const RETIRED_OUTCOME_TOOL_NAMES = ["complete_investigation", "report_failure"] as const;
+// Tools retired from the contract. Sessions created against an old toolset
+// can outlive a deploy (a parked run resumes days later), so a call to one of
+// these must be error-acked with redirect guidance — not routed to the
+// unknown-tool path, which hard-fails the run.
+export const RETIRED_OUTCOME_TOOL_NAMES = [
+  "complete_investigation",
+  "report_failure",
+  "mark_already_resolved",
+] as const;
 
 export const OUTCOME_TOOL_NAMES = [
   REPORT_FINDINGS_TOOL_NAME,
+  ...ACTION_OUTCOME_TOOL_NAMES,
   ...TERMINAL_OUTCOME_TOOL_NAMES,
 ] as const;
 
-const NOISE_REASONS: IncidentNoiseReason[] = [
-  "cosmetic_log_only",
-  "lifecycle_signal",
-  "self_telemetry",
-  "expected_third_party",
-  "confusing_log_no_impact",
-];
+export function isActionOutcomeToolName(name: string): name is ActionOutcomeToolName {
+  return (ACTION_OUTCOME_TOOL_NAMES as readonly string[]).includes(name);
+}
 
-const RESOLUTION_REASONS: IncidentResolutionReason[] = [
-  "fixed_in_current_code",
-  "transient_condition_cleared",
-  "upstream_recovered",
-];
+export function isTerminalOutcomeToolName(name: string): name is TerminalOutcomeToolName {
+  return (TERMINAL_OUTCOME_TOOL_NAMES as readonly string[]).includes(name);
+}
 
 const SEVERITIES: IncidentSeverity[] = ["SEV-1", "SEV-2", "SEV-3"];
 
@@ -102,7 +115,7 @@ export type AgentRunFindings = {
 const REPORT_FINDINGS_DEFINITION: OutcomeToolDefinition = {
   name: REPORT_FINDINGS_TOOL_NAME,
   description:
-    "Record what the investigation found. Call this before any completing outcome tool; call it again to revise — include `summary` on every call (repeat the current one when it hasn't changed); every other field overwrites its previous value when provided and is kept when omitted. This is not a terminal tool: after reporting findings you must still end the run with exactly one outcome tool.",
+    "Record what the investigation found. Call this before any classification, PR, or resolution tool; call it again to revise — include `summary` on every call (repeat the current one when it hasn't changed); every other field overwrites its previous value when provided and is kept when omitted.",
   input_schema: {
     type: "object",
     properties: {
@@ -148,7 +161,7 @@ const REPORT_FINDINGS_DEFINITION: OutcomeToolDefinition = {
       handoffNotes: {
         type: "string",
         description:
-          "5-15 markdown lines for a future follow-up run on this incident (triggered by a PR comment or user reply after this session is gone): files/areas examined, hypotheses ruled out with the evidence that ruled them out, repo gotchas (build quirks, test setup), open uncertainties. Do not repeat rootCause — this is for what is NOT captured elsewhere.",
+          "5-15 markdown lines for a future follow-up turn on this incident (triggered by a PR comment or user reply after this session is gone): files/areas examined, hypotheses ruled out with the evidence that ruled them out, repo gotchas (build quirks, test setup), open uncertainties. Do not repeat rootCause — this is for what is NOT captured elsewhere.",
       },
     },
     required: ["summary"],
@@ -156,7 +169,7 @@ const REPORT_FINDINGS_DEFINITION: OutcomeToolDefinition = {
 };
 
 // ---------------------------------------------------------------------------
-// Terminal tools
+// Action tools (non-terminal, server-dispatched)
 // ---------------------------------------------------------------------------
 
 export type ProposePrPayload = {
@@ -166,9 +179,6 @@ export type ProposePrPayload = {
   branchName: string;
   baseBranch: string;
   patchFilePath: string;
-  validationPassed: boolean;
-  validationSummary: string;
-  validationCommands?: string[];
   changedFiles?: string[];
   mobileTestStatus?: (typeof MOBILE_TEST_STATUSES)[number];
   mobileTestId?: string;
@@ -178,7 +188,7 @@ export type ProposePrPayload = {
 const PROPOSE_PR_DEFINITION: OutcomeToolDefinition = {
   name: "propose_pr",
   description:
-    "Terminal: you produced a validated patch for a defect with REAL user or business impact. NOT for noise: if the error you diagnosed is a false positive or the operation returns its intended response, call silence_as_noise instead — a patch that only quiets a signal (log levels, span statuses, recordException, catching expected errors) is the wrong outcome no matter how clean the fix is, and 'alert fatigue from the noisy signal' does not count as impact (silencing is what fixes alert fatigue). Hand the patch off by writing a unified diff to /mnt/session/outputs/superlog.patch (git diff format, applying cleanly to baseBranch) — never inline the diff in this call. Validate the patch yourself before calling; the worker only applies it and opens the PR. Validation ladder — stop at the strongest rung you can execute: (1) the repo's own build/typecheck/tests; (2) targeted tests for the changed module, including regression tests you add with the patch; (3) direct execution of the changed logic or a scripted repro that fails before and passes after. Structural checks (grepping the new code for expected strings) are NOT validation — never set validationPassed on their basis; validation means executing something and reporting observed output. If your patch restructures existing logic (batching queries, hoisting work out of a loop, caching, dedup, reordering), it must be behaviorally identical on every input, not just fix the headline problem: enumerate what the old code could observe that the new cannot (rows written by earlier loop iterations, first-wins vs last-wins on duplicate keys, ordering, null keys, error paths), check each with a concrete example, and add a regression test encoding the ORIGINAL behavior that passes before and after. Set validationPassed=false only when the validation you executed failed or nothing on the ladder could run at all.",
+    "Open a pull request with a patch you authored, for a defect with REAL user or business impact. NOT terminal: the platform applies your patch and opens the PR while you are still running, and returns the PR URL — or the apply failure, which you can fix and retry. Call it again with a NEW branchName to open an additional, independent PR; calling it again with the SAME branchName pushes the new patch as a follow-up commit on that PR (do this when addressing review feedback). NOT for noise: if the error you diagnosed is a false positive or the operation returns its intended response, call silence_as_noise instead — a patch that only quiets a signal (log levels, span statuses, recordException, catching expected errors) is the wrong outcome no matter how clean the fix is, and 'alert fatigue from the noisy signal' does not count as impact (silencing is what fixes alert fatigue). Hand the patch off by writing a unified diff to a file under /mnt/session/outputs/ (git diff format, applying cleanly to baseBranch; use a distinct file per PR) — never inline the diff in this call. Validate the patch yourself before calling — the worker only applies it and opens the PR. After your PRs are up, either resolve the incident (resolve_incident, once every issue is classified) or end your turn to wait for review — you will be resumed when the PR gets a comment, merge, or close.",
   input_schema: {
     type: "object",
     properties: {
@@ -196,27 +206,14 @@ const PROPOSE_PR_DEFINITION: OutcomeToolDefinition = {
       branchName: {
         type: "string",
         pattern: "^superlog/",
-        description: "Must start with 'superlog/' followed by a short kebab-case slug, e.g. superlog/fix-cart-batching.",
+        description:
+          "Must start with 'superlog/' followed by a short kebab-case slug, e.g. superlog/fix-cart-batching. Reuse a branch name to push to that PR; use a new one to open a separate PR.",
       },
       baseBranch: { type: "string", description: "The branch the PR should target (the repo's active development branch)." },
       patchFilePath: {
         type: "string",
-        description: "Where you wrote the unified diff, normally /mnt/session/outputs/superlog.patch.",
-      },
-      validationPassed: {
-        type: "boolean",
         description:
-          "True only when the strongest validation rung you could actually execute passed. An honest false is acceptable; fabricated validation is not.",
-      },
-      validationSummary: {
-        type: "string",
-        description:
-          "Exactly what ran, what could not run, and why (surfaced in the PR body). Include before/after repro outcomes when you have them.",
-      },
-      validationCommands: {
-        type: "array",
-        items: { type: "string" },
-        description: "The commands you executed as validation. Never list greps/structural checks here.",
+          "Where you wrote the unified diff, e.g. /mnt/session/outputs/superlog-fix-cart-batching.patch. Use a distinct file per PR so a later PR's patch never overwrites an earlier one.",
       },
       changedFiles: { type: "array", items: { type: "string" }, description: "Repo-relative paths the patch touches." },
       mobileTestStatus: {
@@ -228,42 +225,37 @@ const PROPOSE_PR_DEFINITION: OutcomeToolDefinition = {
       mobileTestId: { type: "string", description: "The created mobile regression test id." },
       mobileTestReason: { type: "string", description: "Why the mobile regression test was skipped / not applicable." },
     },
-    required: [
-      "repoFullName",
-      "title",
-      "body",
-      "branchName",
-      "baseBranch",
-      "patchFilePath",
-      "validationPassed",
-      "validationSummary",
-    ],
+    required: ["repoFullName", "title", "body", "branchName", "baseBranch", "patchFilePath"],
   },
 };
 
-export type SilenceAsNoisePayload = { reason: IncidentNoiseReason; evidence: string };
-
-const NOISE_REASON_GUIDE =
-  "Reasons: cosmetic_log_only = the primary operation completed successfully and the ERROR is a downstream cosmetic side-effect (evidence must show the operation returned before the error fired). lifecycle_signal = fires only during process lifecycle (SIGTERM, teardown) and in-flight work completed or is retried (evidence must reference the lifecycle hook). self_telemetry = the customer's own telemetry/observability export failing (OTLP timeout, metrics 429); the application is unaffected — evidence may point at third-party exporter code. expected_third_party = the third-party API error is part of its documented contract for this call site (Slack already_reacted, idempotency conflicts); not for real provider outages the customer must act on. confusing_log_no_impact = the log is technically correct but the surrounding code recovers (retry succeeds, fallback fires) — evidence must show the recovery path runs.";
+export type SilenceAsNoisePayload = { issueId: string; reason: string; evidence: string };
 
 const SILENCE_AS_NOISE_DEFINITION: OutcomeToolDefinition = {
   name: "silence_as_noise",
-  description: `Terminal: the error is proven noise — the operation it describes either succeeded or has no user/business impact. The incident resolves and its issues are silenced: recurrences stop paging permanently, so the bar is high. You must quote the success path, the no-op contract, or the third-party contract clause; if you cannot prove it, use place_under_observation instead. Do NOT propose code changes to make the false positive quieter — downgrading log levels, catching/suppressing expected errors, or changing span statuses / recordException calls for expected conditions. Silencing is the correct action, not a PR, even when the noisy signal comes from the application's own instrumentation. ${NOISE_REASON_GUIDE}`,
+  description:
+    "Silence one linked issue as proven noise — the operation it describes either succeeded or has no user/business impact. NOT terminal: the issue is silenced immediately and you continue; classify each linked issue individually (the issue ids are in the incident issue bundle), then finish with resolve_incident. Recurrences of a silenced issue stop paging permanently, so the bar is high: you must quote the success path, the no-op contract, or the third-party contract clause. If you cannot prove it, use place_under_observation instead. Do NOT propose code changes to make the false positive quieter — downgrading log levels, catching/suppressing expected errors, or changing span statuses / recordException calls for expected conditions. Silencing is the correct action, not a PR, even when the noisy signal comes from the application's own instrumentation. Only error issues can be silenced; alert-episode issues can only be resolved (resolve_issue).",
   input_schema: {
     type: "object",
     properties: {
-      reason: { type: "string", enum: NOISE_REASONS, description: "The noise category that fits the evidence." },
+      issueId: { type: "string", description: "The id of the linked issue to silence (from the incident issue bundle)." },
+      reason: {
+        type: "string",
+        description:
+          "Free text: why this is noise, in one plain-English sentence an operator can read in a list (e.g. 'Expected 404s from bot traffic probing /wp-admin').",
+      },
       evidence: {
         type: "string",
         description: `1-3 sentences quoting the success/recovery/contract clause that justifies silencing. ${EVIDENCE_FORMAT}`,
       },
     },
-    required: ["reason", "evidence"],
+    required: ["issueId", "reason", "evidence"],
   },
 };
 
 export type PlaceUnderObservationPayload = {
-  reason: IncidentNoiseReason;
+  issueId: string;
+  reason: string;
   evidence: string;
   escalateOn: (typeof ESCALATE_ON)[number];
   threshold: number;
@@ -272,11 +264,16 @@ export type PlaceUnderObservationPayload = {
 const PLACE_UNDER_OBSERVATION_DEFINITION: OutcomeToolDefinition = {
   name: "place_under_observation",
   description:
-    `Terminal: the error is plausibly noise (a one-off, a non-critical event) but you cannot fully prove no-impact, or it could matter if it grows. The incident resolves and its issues go under observation: recurrences stay quiet until the escalation trigger trips, then a new investigation starts with your findings as context. Prefer this over silence_as_noise whenever the evidence bar for permanent silencing is not met. ${NOISE_REASON_GUIDE}`,
+    "Place one linked issue under observation — plausibly noise (a one-off, a non-critical event) but you cannot fully prove no-impact, or it could matter if it grows. NOT terminal: the issue goes quiet immediately and you continue; finish with resolve_incident once every issue is classified. Recurrences stay quiet until the escalation trigger trips, then a new investigation starts with your findings as context. Prefer this over silence_as_noise whenever the evidence bar for permanent silencing is not met. Only error issues can be observed; alert-episode issues can only be resolved (resolve_issue).",
   input_schema: {
     type: "object",
     properties: {
-      reason: { type: "string", enum: NOISE_REASONS, description: "Your best-guess noise category." },
+      issueId: { type: "string", description: "The id of the linked issue to observe (from the incident issue bundle)." },
+      reason: {
+        type: "string",
+        description:
+          "Free text: your best guess at why this is noise, in one plain-English sentence an operator can read in a list.",
+      },
       evidence: {
         type: "string",
         description:
@@ -294,23 +291,55 @@ const PLACE_UNDER_OBSERVATION_DEFINITION: OutcomeToolDefinition = {
         description: "The rate (per minute) or event count that should trigger re-investigation.",
       },
     },
-    required: ["reason", "evidence", "escalateOn", "threshold"],
+    required: ["issueId", "reason", "evidence", "escalateOn", "threshold"],
   },
 };
 
-export type MarkAlreadyResolvedPayload = { reason: IncidentResolutionReason; evidence: string };
+export type ResolveIssuePayload = { issueId: string; reason: string; evidence: string };
 
-const MARK_ALREADY_RESOLVED_DEFINITION: OutcomeToolDefinition = {
-  name: "mark_already_resolved",
+const RESOLVE_ISSUE_DEFINITION: OutcomeToolDefinition = {
+  name: "resolve_issue",
   description:
-    "Terminal: the incident was real but is already resolved and needs no remediation now. The incident and its issues are marked resolved (a recurrence starts a fresh investigation). Not for noise/no-impact cases (use silence_as_noise) and not just because errors are quiet in a tiny sample. Reasons: fixed_in_current_code = the current code already contains the fix/guard — quote the fixing code or the merged change. transient_condition_cleared = telemetry shows the failing condition recovered and stayed healthy after the incident window — include the before/after signal and window. upstream_recovered = the failing dependency/provider recovered — name the dependency and the observed recovery signal.",
+    "Resolve one linked issue: its impact has ceased and no further action on it is possible or needed — the current code already contains the fix, the transient condition cleared, the upstream dependency recovered, or your own remediation (a merged PR, an executed approval) addressed it. NOT terminal: the issue resolves immediately and you continue; finish with resolve_incident once every issue is classified. A resolved issue that recurs starts a fresh investigation with this one's findings as context — so this is not for noise (use silence_as_noise / place_under_observation) and not just because errors are quiet in a tiny sample.",
   input_schema: {
     type: "object",
     properties: {
-      reason: { type: "string", enum: RESOLUTION_REASONS, description: "Why the incident is already resolved." },
+      issueId: { type: "string", description: "The id of the linked issue to resolve (from the incident issue bundle)." },
+      reason: {
+        type: "string",
+        description:
+          "Free text: why this issue is resolved, in one plain-English sentence an operator can read in a list (e.g. 'Fixed by the retry-guard PR merged during this investigation').",
+      },
       evidence: {
         type: "string",
-        description: `1-3 sentences citing the code/telemetry/status evidence proving resolution, with concrete windows/counts when telemetry is the proof. ${EVIDENCE_FORMAT}`,
+        description: `1-3 sentences citing the code/telemetry/status evidence proving resolution, with before/after signal and concrete windows/counts when telemetry is the proof. ${EVIDENCE_FORMAT}`,
+      },
+    },
+    required: ["issueId", "reason", "evidence"],
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Terminal tools
+// ---------------------------------------------------------------------------
+
+export type ResolveIncidentPayload = { reason: string; evidence: string };
+
+const RESOLVE_INCIDENT_DEFINITION: OutcomeToolDefinition = {
+  name: "resolve_incident",
+  description:
+    "Terminal: resolve the incident. Call this when the impact on the system has ceased (or there never was any), or your actions (merged PRs, executed approvals) have resolved the root cause. Every issue linked to the incident must already be classified — silenced, under observation, or resolved — via the per-issue tools; this call is rejected with the list of unclassified issues otherwise. Do NOT resolve while you are still waiting on an open PR you expect to be merged — end your turn instead and you will be resumed when the PR gets a comment, merge, or close.",
+  input_schema: {
+    type: "object",
+    properties: {
+      reason: {
+        type: "string",
+        description:
+          "Free text: why the incident is resolved, in one plain-English sentence an operator can read in a list.",
+      },
+      evidence: {
+        type: "string",
+        description: `1-3 sentences citing the evidence that the impact has ceased (before/after signal + window when telemetry is the proof). ${EVIDENCE_FORMAT}`,
       },
     },
     required: ["reason", "evidence"],
@@ -322,7 +351,7 @@ export type AskHumanPayload = { question: string };
 const ASK_HUMAN_DEFINITION: OutcomeToolDefinition = {
   name: "ask_human",
   description:
-    "Terminal: a human must act or answer before this investigation can conclude; the run pauses until they reply, then resumes with your session intact. This is the outcome whenever you cannot land on a patch, a noise verdict, or a resolution claim — an investigation never ends with findings merely filed away. Use it when: (1) you need specific missing context (expected behavior, a suspected owner, a recent deploy, a repro hint) — ask for the specific thing and include the best leads you checked; (2) you diagnosed the problem but the remediation is not yours to make (third-party library defect, provider quota, config the customer owns, or a decision needed between remediation paths) — state the diagnosis, then ask the concrete question whose answer unblocks action, naming the options if there are several; (3) you genuinely could not locate the failing code path — say what you searched and ask for the pointer you are missing; (4) telemetry names a concrete code artifact (file path, function, exception class, endpoint) absent from every mounted repo at HEAD and across remote branches — quote the missing artifact, name the repos you searched, and ask which repo owns the code (more repos exist than were mounted into this session). Never fabricate a question to avoid a harder outcome you have the evidence for.",
+    "Terminal: a human must act or answer before this investigation can continue; the run pauses until they reply, then resumes with your session intact. Use it when: (1) you need specific missing context (expected behavior, a suspected owner, a recent deploy, a repro hint) — ask for the specific thing and include the best leads you checked; (2) you diagnosed the problem but the remediation is not yours to make (third-party library defect, provider quota, config the customer owns, or a decision needed between remediation paths) — state the diagnosis, then ask the concrete question whose answer unblocks action, naming the options if there are several; (3) you genuinely could not locate the failing code path — say what you searched and ask for the pointer you are missing; (4) telemetry names a concrete code artifact (file path, function, exception class, endpoint) absent from every mounted repo at HEAD and across remote branches — quote the missing artifact, name the repos you searched, and ask which repo owns the code (more repos exist than were mounted into this session). Never fabricate a question to avoid a harder outcome you have the evidence for.",
   input_schema: {
     type: "object",
     properties: {
@@ -340,7 +369,8 @@ export const OUTCOME_TOOL_DEFINITIONS: OutcomeToolDefinition[] = [
   PROPOSE_PR_DEFINITION,
   SILENCE_AS_NOISE_DEFINITION,
   PLACE_UNDER_OBSERVATION_DEFINITION,
-  MARK_ALREADY_RESOLVED_DEFINITION,
+  RESOLVE_ISSUE_DEFINITION,
+  RESOLVE_INCIDENT_DEFINITION,
   ASK_HUMAN_DEFINITION,
 ];
 
@@ -348,25 +378,30 @@ export const OUTCOME_TOOL_DEFINITIONS: OutcomeToolDefinition[] = [
 // Validation
 // ---------------------------------------------------------------------------
 
-export type TerminalOutcome =
+export type ActionOutcome =
   | { name: "propose_pr"; payload: ProposePrPayload }
   | { name: "silence_as_noise"; payload: SilenceAsNoisePayload }
   | { name: "place_under_observation"; payload: PlaceUnderObservationPayload }
-  | { name: "mark_already_resolved"; payload: MarkAlreadyResolvedPayload }
+  | { name: "resolve_issue"; payload: ResolveIssuePayload };
+
+export type TerminalOutcome =
+  | { name: "resolve_incident"; payload: ResolveIncidentPayload }
   | { name: "ask_human"; payload: AskHumanPayload };
 
 export type ValidateOutcome =
   | { ok: true; tool: "report_findings"; payload: AgentRunFindings }
+  | { ok: true; tool: ActionOutcomeToolName; payload: ActionOutcome["payload"] }
   | { ok: true; tool: TerminalOutcomeToolName; payload: TerminalOutcome["payload"] }
   | { ok: false; errors: string[] };
 
-// Terminal tools that conclude the investigation with findings the humans
-// will read — these refuse to run until report_findings has been called.
+// Tools that conclude with findings humans will read — these refuse to run
+// until report_findings has been called.
 const FINDINGS_REQUIRED = new Set<string>([
   "propose_pr",
   "silence_as_noise",
   "place_under_observation",
-  "mark_already_resolved",
+  "resolve_issue",
+  "resolve_incident",
 ]);
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -446,7 +481,7 @@ export function validateOutcomeToolInput(
     return {
       ok: false,
       errors: [
-        `\`${name}\` is no longer available. End the run with exactly one of: \`propose_pr\`, \`silence_as_noise\`, \`place_under_observation\`, \`mark_already_resolved\`, or \`ask_human\`. If the remediation is not yours to make, or you cannot locate the failing code path, call \`ask_human\` with your findings and the specific question that unblocks action.`,
+        `\`${name}\` is no longer available. Classify each linked issue with \`silence_as_noise\`, \`place_under_observation\`, or \`resolve_issue\`; open PRs with \`propose_pr\`; then finish the run with \`resolve_incident\` (or \`ask_human\` when a human must act or answer first).`,
       ],
     };
   }
@@ -499,16 +534,19 @@ export function validateOutcomeToolInput(
       const branchName = pushRequiredString(errors, input, "branchName");
       const baseBranch = pushRequiredString(errors, input, "baseBranch");
       const patchFilePath = pushRequiredString(errors, input, "patchFilePath");
-      const validationSummary = pushRequiredString(errors, input, "validationSummary");
-      if (typeof input.validationPassed !== "boolean") {
-        errors.push("`validationPassed` is required and must be a boolean.");
-      }
       if (branchName && !branchName.startsWith("superlog/")) {
         errors.push(
           `\`branchName\` must start with \`superlog/\`; you sent ${JSON.stringify(branchName)}.`,
         );
       }
-      const validationCommands = optionalStringArray(errors, input, "validationCommands");
+      // Legacy sessions still send validationPassed; an honest false meant
+      // "do not open this PR", so keep honoring it rather than shipping a
+      // patch its author reported as failing.
+      if (input.validationPassed === false) {
+        errors.push(
+          "You reported `validationPassed: false`. Do not propose a PR whose validation failed — fix the patch and call `propose_pr` again once it validates.",
+        );
+      }
       const changedFiles = optionalStringArray(errors, input, "changedFiles");
       let mobileTestStatus: ProposePrPayload["mobileTestStatus"];
       if (input.mobileTestStatus !== undefined && input.mobileTestStatus !== null) {
@@ -536,10 +574,7 @@ export function validateOutcomeToolInput(
         branchName: branchName as string,
         baseBranch: baseBranch as string,
         patchFilePath: patchFilePath as string,
-        validationPassed: input.validationPassed as boolean,
-        validationSummary: validationSummary as string,
       };
-      if (validationCommands) payload.validationCommands = validationCommands;
       if (changedFiles) payload.changedFiles = changedFiles;
       if (mobileTestStatus) payload.mobileTestStatus = mobileTestStatus;
       if (mobileTestId) payload.mobileTestId = mobileTestId;
@@ -548,30 +583,38 @@ export function validateOutcomeToolInput(
     }
 
     case "silence_as_noise":
-    case "place_under_observation": {
-      const reason = requiredEnum(errors, input, "reason", NOISE_REASONS);
+    case "resolve_issue": {
+      const issueId = pushRequiredString(errors, input, "issueId");
+      const reason = pushRequiredString(errors, input, "reason");
       const evidence = pushRequiredString(errors, input, "evidence");
-      if (name === "silence_as_noise") {
-        if (errors.length > 0) return { ok: false, errors };
-        return {
-          ok: true,
-          tool: name,
-          payload: { reason: reason as IncidentNoiseReason, evidence: evidence as string },
-        };
-      }
+      if (errors.length > 0) return { ok: false, errors };
+      return {
+        ok: true,
+        tool: name,
+        payload: {
+          issueId: issueId as string,
+          reason: reason as string,
+          evidence: evidence as string,
+        },
+      };
+    }
+
+    case "place_under_observation": {
+      const issueId = pushRequiredString(errors, input, "issueId");
+      const reason = pushRequiredString(errors, input, "reason");
+      const evidence = pushRequiredString(errors, input, "evidence");
       const escalateOn = requiredEnum(errors, input, "escalateOn", ESCALATE_ON);
       const threshold = input.threshold;
       if (typeof threshold !== "number" || !Number.isInteger(threshold) || threshold < 1) {
-        errors.push(
-          `\`threshold\` must be an integer >= 1; you sent ${JSON.stringify(threshold)}.`,
-        );
+        errors.push(`\`threshold\` must be an integer >= 1; you sent ${JSON.stringify(threshold)}.`);
       }
       if (errors.length > 0) return { ok: false, errors };
       return {
         ok: true,
         tool: "place_under_observation",
         payload: {
-          reason: reason as IncidentNoiseReason,
+          issueId: issueId as string,
+          reason: reason as string,
           evidence: evidence as string,
           escalateOn: escalateOn as PlaceUnderObservationPayload["escalateOn"],
           threshold: threshold as number,
@@ -579,14 +622,14 @@ export function validateOutcomeToolInput(
       };
     }
 
-    case "mark_already_resolved": {
-      const reason = requiredEnum(errors, input, "reason", RESOLUTION_REASONS);
+    case "resolve_incident": {
+      const reason = pushRequiredString(errors, input, "reason");
       const evidence = pushRequiredString(errors, input, "evidence");
       if (errors.length > 0) return { ok: false, errors };
       return {
         ok: true,
-        tool: "mark_already_resolved",
-        payload: { reason: reason as IncidentResolutionReason, evidence: evidence as string },
+        tool: "resolve_incident",
+        payload: { reason: reason as string, evidence: evidence as string },
       };
     }
 
@@ -652,28 +695,85 @@ function mobileTestFromPr(payload: ProposePrPayload): AgentRunMobileRegressionTe
   return { status: payload.mobileTestStatus, reason: payload.mobileTestReason as string };
 }
 
-function triggerFromObservation(payload: PlaceUnderObservationPayload): IssueEscalationTrigger {
+export function escalationTriggerFromObservation(
+  payload: Pick<PlaceUnderObservationPayload, "escalateOn" | "threshold">,
+): IssueEscalationTrigger {
   return payload.escalateOn === "events_per_minute"
     ? { kind: "rate", perMinute: payload.threshold }
     : { kind: "count", count: payload.threshold };
 }
 
+// A successfully executed mid-run action (the dispatch loop applied its
+// effect and acked ok), replayed from the session event stream so the final
+// result can record what happened during the run.
+export type ExecutedAction = ActionOutcome;
+
+function issueClassificationFromAction(
+  action: ExecutedAction,
+): AgentRunIssueClassification | null {
+  switch (action.name) {
+    case "silence_as_noise":
+      return {
+        issueId: action.payload.issueId,
+        action: "silence",
+        reason: action.payload.reason,
+        evidence: action.payload.evidence,
+      };
+    case "place_under_observation":
+      return {
+        issueId: action.payload.issueId,
+        action: "observe",
+        reason: action.payload.reason,
+        evidence: action.payload.evidence,
+        trigger: escalationTriggerFromObservation(action.payload),
+      };
+    case "resolve_issue":
+      return {
+        issueId: action.payload.issueId,
+        action: "resolve",
+        reason: action.payload.reason,
+        evidence: action.payload.evidence,
+      };
+    default:
+      return null;
+  }
+}
+
+export type AssembledOutcomeState = "complete" | "awaiting_human" | "awaiting_events";
+
 export function assembleAgentRunResult(args: {
   findings: AgentRunFindings | null;
-  terminal: TerminalOutcome;
+  // Null when the turn ended without a terminal call (the run parks on
+  // awaiting_events while its PRs are out for review).
+  terminal: TerminalOutcome | null;
+  // Successfully executed mid-run actions, in call order.
+  actions?: ExecutedAction[];
 }): AgentRunResult {
   const { findings, terminal } = args;
+  const actions = args.actions ?? [];
 
-  const fallbackSummary = terminal.name === "ask_human" ? terminal.payload.question : "";
+  const state: AssembledOutcomeState =
+    terminal === null
+      ? "awaiting_events"
+      : terminal.name === "ask_human"
+        ? "awaiting_human"
+        : "complete";
+  const fallbackSummary = terminal?.name === "ask_human" ? terminal.payload.question : "";
   const result: AgentRunResult = {
-    state: terminal.name === "ask_human" ? "awaiting_human" : "complete",
+    state,
     summary: findings?.summary ?? fallbackSummary,
   };
   if (findings) applyFindings(result, findings);
 
-  switch (terminal.name) {
-    case "propose_pr": {
-      const p = terminal.payload;
+  // Latest action per issue wins (the agent corrected itself mid-run).
+  const classificationsByIssue = new Map<string, AgentRunIssueClassification>();
+  const prs: AgentRunPr[] = [];
+  for (const action of actions) {
+    if (action.name === "propose_pr") {
+      const p = action.payload;
+      const existingIdx = prs.findIndex(
+        (pr) => pr.selectedRepoFullName === p.repoFullName && pr.branchName === p.branchName,
+      );
       const pr: AgentRunPr = {
         selectedRepoFullName: p.repoFullName,
         branchName: p.branchName,
@@ -681,40 +781,35 @@ export function assembleAgentRunResult(args: {
         title: p.title,
         body: p.body,
         patchFilePath: p.patchFilePath,
-        validationPassed: p.validationPassed,
-        validationSummary: p.validationSummary,
-        openStatus: "pending",
+        openStatus: "opened",
       };
-      if (p.validationCommands) pr.validationCommands = p.validationCommands;
       if (p.changedFiles) pr.changedFiles = p.changedFiles;
-      result.pr = pr;
+      if (existingIdx >= 0) prs[existingIdx] = pr;
+      else prs.push(pr);
       const mobile = mobileTestFromPr(p);
       if (mobile) result.mobileRegressionTest = mobile;
-      break;
+      continue;
     }
-    case "silence_as_noise":
-      result.noiseClassification = {
-        reason: terminal.payload.reason,
-        evidence: terminal.payload.evidence,
-        action: { kind: "silence" },
-      };
-      break;
-    case "place_under_observation":
-      result.noiseClassification = {
-        reason: terminal.payload.reason,
-        evidence: terminal.payload.evidence,
-        action: { kind: "observe", trigger: triggerFromObservation(terminal.payload) },
-      };
-      break;
-    case "mark_already_resolved":
-      result.resolutionClassification = {
-        reason: terminal.payload.reason,
-        evidence: terminal.payload.evidence,
-      };
-      break;
-    case "ask_human":
-      result.question = terminal.payload.question;
-      break;
+    const classification = issueClassificationFromAction(action);
+    if (classification) classificationsByIssue.set(classification.issueId, classification);
+  }
+  if (prs.length > 0) {
+    result.prs = prs;
+    // Old readers expect the singular field; point it at the most recent PR.
+    result.pr = prs[prs.length - 1];
+  }
+  if (classificationsByIssue.size > 0) {
+    result.issueClassifications = [...classificationsByIssue.values()];
+  }
+
+  if (terminal?.name === "resolve_incident") {
+    result.incidentResolution = {
+      reason: terminal.payload.reason,
+      evidence: terminal.payload.evidence,
+    };
+  }
+  if (terminal?.name === "ask_human") {
+    result.question = terminal.payload.question;
   }
 
   return result;

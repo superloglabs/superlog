@@ -29,7 +29,12 @@ export type CallSite =
   | "autorecovery"
   | "topology";
 
-export type AgentRunOutcome = "complete_with_pr" | "complete_no_pr" | "failed" | "awaiting_human";
+export type AgentRunOutcome =
+  | "complete_with_pr"
+  | "complete_no_pr"
+  | "failed"
+  | "awaiting_human"
+  | "awaiting_events";
 
 export type RecordTokenUsageInput = {
   orgId: string;

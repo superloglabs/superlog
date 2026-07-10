@@ -15,6 +15,7 @@ const ACME: AgentRunOrgHealthCounts = {
   stuck: 4,
   queued: 12,
   awaitingHuman: 3,
+  awaitingEvents: 2,
   blocked: 5,
 };
 
@@ -26,6 +27,7 @@ const GLOBEX: AgentRunOrgHealthCounts = {
   stuck: 0,
   queued: 1,
   awaitingHuman: 0,
+  awaitingEvents: 0,
   blocked: 0,
 };
 
@@ -44,6 +46,7 @@ test("per-org counts map onto gauges with tenant org attributes", () => {
   assert.equal(byKey.get("superlog.agent_runs.stuck|Acme|"), 4);
   assert.equal(byKey.get("superlog.agent_runs.queued|Acme|"), 12);
   assert.equal(byKey.get("superlog.agent_runs.awaiting_human|Acme|"), 3);
+  assert.equal(byKey.get("superlog.agent_runs.awaiting_events|Acme|"), 2);
   assert.equal(byKey.get("superlog.agent_runs.blocked|Acme|"), 5);
   assert.equal(byKey.get("superlog.agent_runs.completed_recent|Acme|"), 31);
   assert.equal(byKey.get("superlog.agent_runs.failed_recent|Acme|patch_validation_failed"), 7);
@@ -82,6 +85,7 @@ test("orgs that drop out of the snapshot get one explicit all-zero pass", () => 
   assert.equal(globex.orgName, "Globex");
   assert.equal(globex.stuck, 0);
   assert.equal(globex.queued, 0);
+  assert.equal(globex.awaitingEvents, 0);
   assert.equal(globex.blocked, 0);
   assert.deepEqual(globex.failedRecentByReason, {});
   // Orgs still present are passed through untouched.
@@ -95,6 +99,7 @@ test("no orgs at all still observes every gauge so the series never goes dark", 
     "superlog.agent_runs.stuck",
     "superlog.agent_runs.queued",
     "superlog.agent_runs.awaiting_human",
+    "superlog.agent_runs.awaiting_events",
     "superlog.agent_runs.blocked",
     "superlog.agent_runs.completed_recent",
     "superlog.agent_runs.failed_recent",

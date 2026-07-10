@@ -527,6 +527,262 @@ export async function completeWithPullRequest(
   );
 }
 
+// ---------------------------------------------------------------------------
+// Mid-run PR delivery (the non-terminal propose_pr action tool)
+// ---------------------------------------------------------------------------
+
+export type MidRunPrDeliveryResult =
+  | {
+      ok: true;
+      url: string;
+      prNumber: number;
+      branchName: string;
+      // True when the patch landed as a follow-up commit on an existing open
+      // PR with the same branch, instead of opening a new one.
+      updatedExisting: boolean;
+    }
+  | { ok: false; error: string };
+
+// Apply the agent's patch and open (or update) a PR while the session is
+// still live. Unlike completeWithPullRequest this NEVER fails the run: every
+// failure is returned as a model-readable error so the agent can fix its own
+// patch (or pick another branch) and call propose_pr again. PRs are keyed by
+// (incident, repo, branch): the same branchName pushes a follow-up commit to
+// that PR; a new branchName opens an independent PR.
+export async function deliverProposedPullRequest(
+  ctx: AgentRunContext,
+  pr: {
+    repoFullName: string;
+    title: string;
+    body: string;
+    branchName: string;
+    baseBranch: string;
+    patchFilePath: string;
+  },
+  sessionId: string,
+): Promise<MidRunPrDeliveryResult> {
+  if (ctx.prPolicy === "never") {
+    return {
+      ok: false,
+      error:
+        "This organization's policy is do-not-PR. Do not propose patches; record findings and classify/resolve instead.",
+    };
+  }
+  if (ctx.githubInstalls.length === 0) {
+    return { ok: false, error: "Cannot open a PR: no GitHub installation is connected." };
+  }
+
+  let repoMeta: InstalledGithubRepo | undefined;
+  try {
+    const repos = await listAccessibleGithubRepositories(ctx);
+    repoMeta = repos.find((repo) => repo.fullName === pr.repoFullName);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Cannot open a PR: GitHub repositories could not be listed (${err instanceof Error ? err.message : String(err)}). Try again.`,
+    };
+  }
+  if (!repoMeta) {
+    return {
+      ok: false,
+      error: `Cannot open a PR: GitHub does not grant access to ${pr.repoFullName}. Use one of the mounted repositories.`,
+    };
+  }
+
+  let patch: string;
+  try {
+    const downloaded = await downloadAgentPatchFile({
+      sessionId,
+      patchFileId: null,
+      patchFilePath: pr.patchFilePath,
+    });
+    patch = downloaded.patch;
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Failed to read the patch file at ${pr.patchFilePath} (${err instanceof Error ? err.message : String(err)}). Write the unified diff there first, then call propose_pr again.`,
+    };
+  }
+
+  const commitAuthor =
+    repoMeta.installation.commitAuthorName && repoMeta.installation.commitAuthorEmail
+      ? {
+          name: repoMeta.installation.commitAuthorName,
+          email: repoMeta.installation.commitAuthorEmail,
+        }
+      : DEFAULT_COMMIT_AUTHOR;
+  const prTitle = buildPrTitle({ ctx, result: { summary: pr.title }, pr });
+  const prBody = buildPrBody({
+    incidentUrl: `${WEB_ORIGIN}/incidents/${ctx.incident.id}`,
+    result: { summary: pr.body },
+    pr,
+  });
+
+  // Same branch on the same repo for this incident → push a follow-up commit
+  // to the existing open PR instead of opening a duplicate.
+  const existingPr = await db.query.agentPullRequests.findFirst({
+    where: and(
+      eq(schema.agentPullRequests.incidentId, ctx.incident.id),
+      eq(schema.agentPullRequests.repoFullName, pr.repoFullName),
+      eq(schema.agentPullRequests.branchName, pr.branchName),
+      eq(schema.agentPullRequests.state, "open"),
+    ),
+    orderBy: [desc(schema.agentPullRequests.createdAt)],
+  });
+  if (existingPr) {
+    let pushed: { headSha: string };
+    try {
+      pushed = await pushPatchToExistingAgentPr({
+        installationId: repoMeta.installation.installationId,
+        repositoryId: repoMeta.id,
+        repoFullName: pr.repoFullName,
+        patch,
+        branchName: existingPr.branchName,
+        prNumber: existingPr.prNumber,
+        commitTitle: prTitle,
+        commentBody: pr.body,
+        commitAuthor,
+      });
+    } catch (err) {
+      return { ok: false, error: summarizePrOpenFailure(err) };
+    }
+    const now = new Date();
+    await db
+      .update(schema.agentPullRequests)
+      .set({ headSha: pushed.headSha, lastSyncedAt: now, updatedAt: now })
+      .where(eq(schema.agentPullRequests.id, existingPr.id));
+    await postIncidentThreadMessage(
+      ctx.incident.id,
+      `:arrows_counterclockwise: Pushed an update to PR ${existingPr.url}`,
+    ).catch(() => {});
+    return {
+      ok: true,
+      url: existingPr.url,
+      prNumber: existingPr.prNumber,
+      branchName: existingPr.branchName,
+      updatedExisting: true,
+    };
+  }
+
+  let opened: Awaited<ReturnType<typeof openAgentRunPullRequest>>;
+  try {
+    opened = await openAgentRunPullRequest({
+      installationId: repoMeta.installation.installationId,
+      repositoryId: repoMeta.id,
+      repoFullName: pr.repoFullName,
+      patch,
+      branchName: pr.branchName,
+      baseBranch: resolvePullRequestBaseBranch(ctx, pr),
+      title: prTitle,
+      body: prBody,
+      commitAuthor,
+    });
+  } catch (err) {
+    return { ok: false, error: summarizePrOpenFailure(err) };
+  }
+
+  await recordOpenedAgentPullRequest({
+    incidentId: ctx.incident.id,
+    agentRunId: ctx.agentRun.id,
+    installationRowId: repoMeta.installation.id,
+    repoFullName: pr.repoFullName,
+    prNumber: opened.prNumber,
+    prNodeId: opened.prNodeId,
+    url: opened.prUrl,
+    branchName: opened.branchName,
+    baseBranch: opened.baseBranch,
+    headSha: opened.headSha,
+    title: prTitle,
+    authorLogin: opened.authorLogin,
+    authorGithubId: opened.authorGithubId,
+    authorAvatarUrl: opened.authorAvatarUrl,
+  }).catch((err) =>
+    logger.error(
+      {
+        scope: "agent_run.pr_delivery",
+        agent_run_id: ctx.agentRun.id,
+        incident_id: ctx.incident.id,
+        pr_url: opened.prUrl,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "failed to record opened agent pull request",
+    ),
+  );
+  await agentRunLifecycle.appendAgentEvent({
+    agentRunId: ctx.agentRun.id,
+    kind: "pr_opened",
+    summary: `Opened PR: ${opened.prUrl}`,
+    providerEventId: `pr_opened:${opened.prUrl}`,
+    detail: { url: opened.prUrl },
+  });
+
+  if (ctx.autoMergeFixPrs !== "never") {
+    try {
+      const outcome = await mergeAgentPullRequest({
+        installationId: repoMeta.installation.installationId,
+        repositoryId: repoMeta.id,
+        repoFullName: pr.repoFullName,
+        prNumber: opened.prNumber,
+        prNodeId: opened.prNodeId,
+        policy: ctx.autoMergeFixPrs,
+        method: ctx.autoMergeMethod,
+      });
+      const note =
+        outcome.kind === "merged"
+          ? `:white_check_mark: Auto-merged PR (${ctx.autoMergeMethod})`
+          : outcome.kind === "auto_merge_enabled"
+            ? `:hourglass_flowing_sand: Auto-merge enabled — will land once checks pass (${ctx.autoMergeMethod})`
+            : null;
+      if (note) {
+        await postIncidentThreadMessage(ctx.incident.id, note).catch(() => {});
+      }
+    } catch (err) {
+      logger.warn(
+        {
+          scope: "agent_run.pr_delivery.auto_merge",
+          agent_run_id: ctx.agentRun.id,
+          incident_id: ctx.incident.id,
+          pr_url: opened.prUrl,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "auto-merge attempt failed; leaving PR open for human merge",
+      );
+    }
+  }
+
+  await postIncidentThreadMessage(ctx.incident.id, `:bulb: Opened PR ${opened.prUrl}`).catch(
+    () => {},
+  );
+  const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
+  await updateIncidentMainMessage(
+    ctx.incident.id,
+    `:bulb: PR Ready: ${ctx.incident.title}`,
+    incidentBlocks({
+      emoji: "bulb",
+      status: "PR Ready",
+      title: ctx.incident.title,
+      tagline: pr.title,
+      projectName: ctx.project.name,
+      service: ctx.incident.service,
+      buttons: [
+        { text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" },
+        { text: "View PR", url: opened.prUrl, actionId: "view_pr" },
+      ],
+      incidentId: ctx.incident.id,
+      showResolveButton: true,
+      showMergePrButton: true,
+    }),
+  ).catch(() => {});
+
+  return {
+    ok: true,
+    url: opened.prUrl,
+    prNumber: opened.prNumber,
+    branchName: opened.branchName,
+    updatedExisting: false,
+  };
+}
+
 export async function retryQueuedPullRequestDelivery(ctx: AgentRunContext): Promise<void> {
   const result = ctx.agentRun.result;
   const pr = result?.pr ?? null;

@@ -10,60 +10,41 @@ export function normalizeSeverity(input: unknown): IncidentSeverity | null {
     : null;
 }
 
-const NOISE_REASONS: ReadonlySet<schema.IncidentNoiseReason> = new Set([
-  "cosmetic_log_only",
-  "lifecycle_signal",
-  "self_telemetry",
-  "expected_third_party",
-  "confusing_log_no_impact",
-]);
+// Reasons are free text in the current contract. These label maps cover the
+// legacy enum values still present in stored rows and produced by pre-cutover
+// sessions; anything else is rendered as-is.
+const LEGACY_NOISE_REASON_LABELS: Record<string, string> = {
+  cosmetic_log_only: "cosmetic log only",
+  lifecycle_signal: "lifecycle signal",
+  self_telemetry: "self-telemetry",
+  expected_third_party: "expected third-party response",
+  confusing_log_no_impact: "recovered/no impact",
+};
 
-const RESOLUTION_REASONS: ReadonlySet<schema.IncidentResolutionReason> = new Set([
-  "fixed_in_current_code",
-  "transient_condition_cleared",
-  "upstream_recovered",
-]);
+const LEGACY_RESOLUTION_REASON_LABELS: Record<string, string> = {
+  fixed_in_current_code: "fixed in current code",
+  transient_condition_cleared: "transient condition cleared",
+  upstream_recovered: "upstream recovered",
+};
 
 export function normalizeNoiseReason(input: unknown): schema.IncidentNoiseReason | null {
   if (typeof input !== "string") return null;
-  const candidate = input.trim().toLowerCase();
-  return NOISE_REASONS.has(candidate as schema.IncidentNoiseReason)
-    ? (candidate as schema.IncidentNoiseReason)
-    : null;
+  const candidate = input.trim();
+  return candidate.length > 0 ? candidate : null;
 }
 
 export function normalizeResolutionReason(input: unknown): schema.IncidentResolutionReason | null {
   if (typeof input !== "string") return null;
-  const candidate = input.trim().toLowerCase();
-  return RESOLUTION_REASONS.has(candidate as schema.IncidentResolutionReason)
-    ? (candidate as schema.IncidentResolutionReason)
-    : null;
+  const candidate = input.trim();
+  return candidate.length > 0 ? candidate : null;
 }
 
 export function noiseReasonLabel(reason: schema.IncidentNoiseReason): string {
-  switch (reason) {
-    case "cosmetic_log_only":
-      return "cosmetic log only";
-    case "lifecycle_signal":
-      return "lifecycle signal";
-    case "self_telemetry":
-      return "self-telemetry";
-    case "expected_third_party":
-      return "expected third-party response";
-    case "confusing_log_no_impact":
-      return "recovered/no impact";
-  }
+  return LEGACY_NOISE_REASON_LABELS[reason] ?? reason;
 }
 
 export function resolutionReasonLabel(reason: schema.IncidentResolutionReason): string {
-  switch (reason) {
-    case "fixed_in_current_code":
-      return "fixed in current code";
-    case "transient_condition_cleared":
-      return "transient condition cleared";
-    case "upstream_recovered":
-      return "upstream recovered";
-  }
+  return LEGACY_RESOLUTION_REASON_LABELS[reason] ?? reason;
 }
 
 export function completedNoiseReason(result: AgentRunResult): schema.IncidentNoiseReason | null {

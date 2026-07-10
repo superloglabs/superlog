@@ -196,6 +196,49 @@ export async function moveAgentRunToAwaitingHuman(
   );
 }
 
+// Park a run whose turn ended without a terminal call while its PRs are out
+// for review. The session stays durable; a PR comment/merge/close (or any
+// inbound human message) resumes it via the same continuation path as
+// awaiting_human.
+export async function moveAgentRunToAwaitingEvents(
+  ctx: AgentRunContext,
+  result: AgentRunResult,
+  openPrUrls: string[],
+): Promise<void> {
+  await agentRunLifecycle.pauseForEvents({
+    id: ctx.agentRun.id,
+    currentState: ctx.agentRun.state,
+    result,
+  });
+  const prList = openPrUrls.length > 0 ? ` Open PRs: ${openPrUrls.join(", ")}` : "";
+  await postIncidentThreadMessage(
+    ctx.incident.id,
+    `:hourglass_flowing_sand: Investigation is waiting on PR review.${prList}`,
+  );
+  const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
+  await updateIncidentMainMessage(
+    ctx.incident.id,
+    `:hourglass_flowing_sand: ${ctx.incident.title} — Waiting on PR review`,
+    incidentBlocks({
+      emoji: "hourglass_flowing_sand",
+      status: "Waiting on PR review",
+      title: ctx.incident.title,
+      tagline: result.summary || "The investigation opened PRs and is waiting for review or merge.",
+      projectName: ctx.project.name,
+      service: ctx.incident.service,
+      buttons: [
+        { text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" },
+        ...(openPrUrls[0]
+          ? [{ text: "View PR", url: openPrUrls[0], actionId: "view_pr" }]
+          : []),
+      ],
+      incidentId: ctx.incident.id,
+      showResolveButton: true,
+      showMergePrButton: openPrUrls.length > 0,
+    }),
+  );
+}
+
 export async function moveAgentRunToBlockedNoGithub(
   ctx: AgentRunContext,
   reason: "no_github_install" | "no_accessible_repos",

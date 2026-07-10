@@ -324,18 +324,19 @@ test("shouldDeferSteering does not defer settled or concluded snapshots", () => 
   );
 });
 
-test("terminalOutcomeNudgePrompt names every terminal outcome tool", () => {
+test("terminalOutcomeNudgePrompt names every outcome tool", () => {
   const prompt = terminalOutcomeNudgePrompt();
   for (const name of [
+    "report_findings",
     "propose_pr",
     "silence_as_noise",
     "place_under_observation",
-    "mark_already_resolved",
+    "resolve_issue",
+    "resolve_incident",
     "ask_human",
   ]) {
     assert.ok(prompt.includes(name), `missing ${name}`);
   }
-  assert.match(prompt, /exactly ONE/);
 });
 
 test("isSessionBusyError matches the mid-flight steer rejection only", () => {

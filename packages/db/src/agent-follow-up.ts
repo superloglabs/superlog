@@ -32,6 +32,7 @@ const EXECUTING_STATES = [
   "repo_discovery",
   "running",
   "awaiting_human",
+  "awaiting_events",
   "pr_retry_queued",
   "blocked_no_github",
 ];
@@ -73,9 +74,13 @@ export function decideInboundContinuation(
   const run = input.latestRun;
   if (!run) return { action: "skip", reason: "no_prior_run" };
 
-  // The agent explicitly paused for input — always deliver. The worker resumes
-  // the session, or requeues the run if it paused before a session existed.
-  if (run.state === "awaiting_human") return { action: "resume", runId: run.id };
+  // The agent explicitly paused for input (awaiting_human) or parked while its
+  // PRs are out for review (awaiting_events) — always deliver. The worker
+  // resumes the session, or requeues the run if it paused before a session
+  // existed.
+  if (run.state === "awaiting_human" || run.state === "awaiting_events") {
+    return { action: "resume", runId: run.id };
+  }
 
   if (EXECUTING_LIVE_STATES.has(run.state)) {
     // Mid-turn: inject into the live session so the agent adapts in real time.
@@ -426,6 +431,10 @@ function followUpQueuedSummary(trigger: AgentRunFollowUpTrigger): string {
   switch (trigger) {
     case "pr_comment":
       return "Follow-up investigation queued from a pull request comment.";
+    case "pr_merged":
+      return "Follow-up investigation queued: an agent pull request was merged.";
+    case "pr_closed":
+      return "Follow-up investigation queued: an agent pull request was closed.";
     case "feedback":
       return "Follow-up investigation queued from user feedback.";
     case "slack_reply":

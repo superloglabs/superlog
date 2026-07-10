@@ -37,25 +37,47 @@ const incidentLifecycle = createIncidentLifecycle(db);
 // which stays the system of record). The turn's origin is the run's trigger for
 // a cold-start follow-up, or the latest human_reply event for a resumed/steered
 // session. Best-effort — a failed PR post never blocks completion.
+// A GitHub comment/PR URL → (repo, PR number), so the reply can land on the
+// PR the human actually wrote on rather than "the incident's latest open PR".
+export function parsePrRefFromGithubUrl(
+  url: string | null | undefined,
+): { repoFullName: string; prNumber: number } | null {
+  if (!url) return null;
+  const match = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(url);
+  if (!match) return null;
+  const prNumber = Number(match[2]);
+  if (!Number.isInteger(prNumber)) return null;
+  return { repoFullName: match[1] as string, prNumber };
+}
+
 export async function replyToPrOriginIfNeeded(
   ctx: AgentRunContext,
   replyText: string,
 ): Promise<void> {
   let isPrOrigin = ctx.agentRun.trigger === "pr_comment";
-  if (!isPrOrigin) {
-    const lastReply = await db.query.incidentEvents.findFirst({
-      where: and(
-        eq(schema.incidentEvents.agentRunId, ctx.agentRun.id),
-        eq(schema.incidentEvents.kind, "human_reply"),
-      ),
-      orderBy: [desc(schema.incidentEvents.createdAt)],
-      columns: { detail: true },
-    });
-    const origin = (lastReply?.detail as { origin?: { channel?: string } } | null)?.origin;
-    isPrOrigin = origin?.channel === "pr_comment";
+  let originUrl: string | null = null;
+  const lastReply = await db.query.incidentEvents.findFirst({
+    where: and(
+      eq(schema.incidentEvents.agentRunId, ctx.agentRun.id),
+      eq(schema.incidentEvents.kind, "human_reply"),
+    ),
+    orderBy: [desc(schema.incidentEvents.createdAt)],
+    columns: { detail: true },
+  });
+  const origin = (lastReply?.detail as { origin?: { channel?: string; url?: string | null } } | null)
+    ?.origin;
+  if (origin?.channel === "pr_comment") {
+    isPrOrigin = true;
+    originUrl = origin.url ?? null;
+  } else if (!isPrOrigin) {
+    return;
   }
   if (!isPrOrigin) return;
 
+  // Prefer the exact PR the triggering comment was on; an incident can carry
+  // several agent PRs. Fall back to the latest open one for legacy events
+  // whose origin has no parseable URL.
+  const originRef = parsePrRefFromGithubUrl(originUrl);
   const [target] = await db
     .select({
       prNumber: schema.agentPullRequests.prNumber,
@@ -68,10 +90,16 @@ export async function replyToPrOriginIfNeeded(
       eq(schema.githubInstallations.id, schema.agentPullRequests.installationId),
     )
     .where(
-      and(
-        eq(schema.agentPullRequests.incidentId, ctx.incident.id),
-        eq(schema.agentPullRequests.state, "open"),
-      ),
+      originRef
+        ? and(
+            eq(schema.agentPullRequests.incidentId, ctx.incident.id),
+            eq(schema.agentPullRequests.repoFullName, originRef.repoFullName),
+            eq(schema.agentPullRequests.prNumber, originRef.prNumber),
+          )
+        : and(
+            eq(schema.agentPullRequests.incidentId, ctx.incident.id),
+            eq(schema.agentPullRequests.state, "open"),
+          ),
     )
     .orderBy(desc(schema.agentPullRequests.createdAt))
     .limit(1);
@@ -184,6 +212,131 @@ async function resolveIncidentFromAgentRunConclusion(
     resolvedAt: now,
     autoInvestigateSuppressedUntil,
   });
+}
+
+// Reason code stored on incidents resolved by the agent's terminal
+// resolve_incident call. The human-readable why lives in reasonText.
+export const AGENT_RESOLVED_REASON_CODE = "agent_resolved";
+
+// Terminal path for the multi-PR contract: the agent classified every linked
+// issue mid-run (silence/observe/resolve — already applied to the issue rows)
+// and called resolve_incident. This resolves the incident WITHOUT cascading an
+// issue disposition (issueOutcome none), records metadata, and closes any PRs
+// the agent left open (it resolved without them, so they're abandoned).
+export async function completeWithIncidentResolution(
+  ctx: AgentRunContext,
+  result: AgentRunResult,
+  sessionId: string,
+  runtimeMinutes: number,
+): Promise<void> {
+  const resolution = result.incidentResolution;
+  if (!resolution) {
+    throw new Error("completeWithIncidentResolution requires result.incidentResolution");
+  }
+  await agentRunLifecycle.completeWithoutPullRequest({
+    id: ctx.agentRun.id,
+    currentState: ctx.agentRun.state,
+    result,
+  });
+  const metadataOutcome = await incidentLifecycle.applyAgentRunResult({
+    incident: ctx.incident,
+    agentRunId: ctx.agentRun.id,
+    result,
+  });
+  if (metadataOutcome.updated) {
+    const refreshed = await db.query.incidents.findFirst({
+      where: eq(schema.incidents.id, ctx.incident.id),
+    });
+    if (refreshed) ctx.incident = refreshed;
+  }
+  await enqueueAgentRunCompleted(ctx.agentRun.id).catch((err) =>
+    logger.error(
+      {
+        scope: "webhooks.enqueue",
+        agent_run_id: ctx.agentRun.id,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "failed to enqueue agent run.completed webhook",
+    ),
+  );
+
+  const { resolved } = await incidentLifecycle.resolve({
+    incidentId: ctx.incident.id,
+    kind: "agent_classification",
+    reasonCode: AGENT_RESOLVED_REASON_CODE,
+    reasonText: resolution.reason,
+    agentRunId: ctx.agentRun.id,
+    eventSummary: "Incident resolved by the investigating agent.",
+    eventDetail: { reason: resolution.reason, evidence: resolution.evidence },
+    eventDedupeKey: `incident_resolved:agent_run:${ctx.agentRun.id}:resolve_incident`,
+    // Issues were classified one by one during the run; nothing to cascade.
+    issueOutcome: { kind: "none" },
+  });
+  if (resolved) {
+    await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
+    const refreshed = await db.query.incidents.findFirst({
+      where: eq(schema.incidents.id, ctx.incident.id),
+    });
+    if (refreshed) ctx.incident = refreshed;
+  }
+
+  // Linear ticket: file/update deterministically from the findings, linking
+  // the most recent PR when one was opened during the run.
+  const latestPr = await db.query.agentPullRequests.findFirst({
+    where: eq(schema.agentPullRequests.incidentId, ctx.incident.id),
+    orderBy: [desc(schema.agentPullRequests.createdAt)],
+    columns: { url: true },
+  });
+  const deliveredTicket = await deliverLinearTicket(ctx, result, {
+    prUrl: latestPr?.url ?? null,
+  });
+  if (deliveredTicket) {
+    await recordFiledLinearTicket(
+      ctx,
+      {
+        id: deliveredTicket.ticketId,
+        url: deliveredTicket.url,
+        createdByAgent: deliveredTicket.created,
+      },
+      { identifier: deliveredTicket.identifier },
+    );
+  }
+
+  logger.info(
+    {
+      scope: "agent_run",
+      agent_run_id: ctx.agentRun.id,
+      incident_id: ctx.incident.id,
+      session_id: sessionId,
+      runtime_minutes: runtimeMinutes,
+      resolved,
+    },
+    "agent run complete (incident resolved by agent)",
+  );
+
+  const evidence = resolution.evidence?.trim();
+  const lines = [
+    `:white_check_mark: Investigation resolved this incident: ${resolution.reason}`,
+    result.summary,
+  ];
+  if (evidence) lines.push(`Evidence: ${truncateSlackText(evidence, 1800)}`);
+  await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
+  const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
+  await updateIncidentMainMessage(
+    ctx.incident.id,
+    `:white_check_mark: ${ctx.incident.title} — Incident resolved`,
+    incidentBlocks({
+      emoji: "white_check_mark",
+      status: "Incident resolved by the agent",
+      title: ctx.incident.title,
+      tagline: truncateSlackText(result.summary),
+      projectName: ctx.project.name,
+      service: ctx.incident.service,
+      buttons: [{ text: "View agent run", url: incidentUrl, actionId: "view_agent_run" }],
+      incidentId: ctx.incident.id,
+    }),
+  );
+  await replyToPrOriginIfNeeded(ctx, result.summary);
 }
 
 export async function completeWithoutPullRequest(

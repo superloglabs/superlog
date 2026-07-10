@@ -80,7 +80,11 @@ export async function tickAgentRuns(): Promise<number> {
           await syncRunningAgentRun(ctx);
           continue;
         }
-        if (ctx.agentRun.state === "awaiting_human" || ctx.agentRun.state === "resuming") {
+        if (
+          ctx.agentRun.state === "awaiting_human" ||
+          ctx.agentRun.state === "awaiting_events" ||
+          ctx.agentRun.state === "resuming"
+        ) {
           await resumeAgentRunFromHumanInput(ctx);
           continue;
         }

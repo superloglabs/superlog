@@ -2711,6 +2711,8 @@ app.post("/api/projects/:projectId/incidents/:incidentId/agent-run/restart", asy
     "repo_discovery",
     "running",
     "awaiting_human",
+    "awaiting_events",
+    "resuming",
     "pr_retry_queued",
     "blocked_no_github",
   ];

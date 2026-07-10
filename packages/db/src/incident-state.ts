@@ -55,7 +55,10 @@ export function buildAgentRunIncidentPatch(opts: {
     updates.severity = result.severity;
   }
 
-  if (result.state === "complete") {
+  // Findings land on the incident both when the run concludes and when it
+  // parks on awaiting_events (PRs out for review) — the dashboard should show
+  // what the investigation found while it waits.
+  if (result.state === "complete" || result.state === "awaiting_events") {
     updates.agentSummary = result.summary ?? null;
     updates.rootCauseText = result.rootCause?.text ?? null;
     updates.rootCauseConfidence = result.rootCause?.confidence ?? null;

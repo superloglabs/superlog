@@ -9,16 +9,22 @@ import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
 import { postIncidentThreadMessage } from "../infra/slack/incident-messages.js";
 import { type ResolvedIntegration, loadEnabledIntegrationsForOrg } from "../integrations.js";
 import { logger } from "../logger.js";
-import { completeWithoutPullRequest } from "./completion.js";
+import { assembleAgentRunResult } from "../agent-outcome-tools.js";
+import { completeWithIncidentResolution, completeWithoutPullRequest } from "./completion.js";
 import { tryMergeAfterAgentRun } from "./merge.js";
+import { hasRevylCreateTestIntegration, looksLikeMobileChange } from "./mobile-regression.js";
+import { createOutcomeActionExecutor } from "./outcome-actions.js";
 import { completeWithPullRequest, resolvePullRequestBaseBranch } from "./pr-delivery.js";
 import { applyIncidentMetadataFromResult } from "./result-metadata.js";
 import {
   exceededWallClockBudget,
   failAgentRun,
   isTransientError,
+  moveAgentRunToAwaitingEvents,
   moveAgentRunToAwaitingHuman,
 } from "./status.js";
+
+export { hasRevylCreateTestIntegration } from "./mobile-regression.js";
 
 const agentRunLifecycle = createAgentRunLifecycle(db);
 
@@ -76,17 +82,8 @@ export async function steerIdleRunnerWithPendingContext(opts: {
   return "steered";
 }
 
-const MOBILE_FILE_PREFIXES = ["app/", "ios/", "android/", "components/", "screens/"];
 type MobileRegressionToolLookupState = "enabled" | "disabled" | "failed";
 type MobileRegressionGateState = "allow" | "repair" | "defer_lookup";
-
-export function hasRevylCreateTestIntegration(integrations: ResolvedIntegration[]): boolean {
-  return integrations.some(
-    (integration) =>
-      integration.definition.slug === "revyl" &&
-      integration.definition.operations.some((op) => op.name === "revyl_create_test_from_yaml"),
-  );
-}
 
 export function needsMobileRegressionRepair(opts: {
   revylEnabled: boolean;
@@ -112,12 +109,9 @@ export function mobileRegressionGateState(opts: {
   if (!pr || pr.validationPassed !== true) return "allow";
   if (opts.result.mobileRegressionTest) return "allow";
 
-  const serviceLooksMobile = /mobile/i.test(opts.service ?? "");
-  const changedFiles = pr.changedFiles ?? [];
-  const changedMobileFiles = changedFiles.some((file) =>
-    MOBILE_FILE_PREFIXES.some((prefix) => file === prefix.slice(0, -1) || file.startsWith(prefix)),
-  );
-  if (!serviceLooksMobile && !changedMobileFiles) return "allow";
+  if (!looksLikeMobileChange({ service: opts.service, changedFiles: pr.changedFiles })) {
+    return "allow";
+  }
   if (opts.toolLookup === "failed") return "defer_lookup";
   if (opts.toolLookup === "enabled") return "repair";
   return "allow";
@@ -167,12 +161,12 @@ export function shouldDeferSteering(snapshot: {
 }
 
 // Steered into a session that went idle without calling any terminal outcome
-// tool (e.g. the model wrote a chat message instead of a tool call). Fired at
-// most once per session; the runtime/wall-clock budgets stay the hard floor.
+// tool and with nothing pending (no open PRs to wait on). Fired at most once
+// per session; the runtime/wall-clock budgets stay the hard floor.
 export function terminalOutcomeNudgePrompt(): string {
   return [
-    "You ended your turn without calling a terminal outcome tool, so your investigation has no recorded result.",
-    "Call `report_findings` now if you have findings to record, then end your turn by calling exactly ONE terminal outcome tool: `propose_pr`, `silence_as_noise`, `place_under_observation`, `mark_already_resolved`, or `ask_human`.",
+    "You ended your turn without concluding the investigation, so it has no recorded outcome and nothing is pending.",
+    "Call `report_findings` now if you have findings to record, classify each linked issue (`silence_as_noise`, `place_under_observation`, or `resolve_issue`), open any needed PR with `propose_pr`, and then end your turn by calling `resolve_incident` — or `ask_human` if a human must act or answer first.",
   ].join("\n");
 }
 
@@ -191,6 +185,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         orgId: ctx.project.orgId,
         projectId: ctx.project.id,
         incidentId: ctx.incident.id,
+        executeOutcomeAction: createOutcomeActionExecutor(ctx, sessionId),
       })
       .catch((err) => {
         logger.error({ err, sessionId }, "integration tool dispatch failed");
@@ -469,6 +464,18 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         return;
       }
 
+      if (snapshot.result.state === "complete" && snapshot.result.incidentResolution) {
+        // Terminal resolve_incident (multi-PR contract): issues were
+        // classified and PRs delivered mid-run; this resolves the incident.
+        const hasPr = !!(await db.query.agentPullRequests.findFirst({
+          where: eq(schema.agentPullRequests.incidentId, ctx.incident.id),
+          columns: { id: true },
+        }));
+        await completeWithIncidentResolution(ctx, snapshot.result, sessionId, nextRuntimeMinutes);
+        await meterAgentRun(hasPr ? "complete_with_pr" : "complete_no_pr");
+        return;
+      }
+
       if (snapshot.result.state === "complete") {
         const pr = snapshot.result.pr ?? null;
         if (pr && pr.validationPassed === false) {
@@ -539,6 +546,50 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
     });
     if (steeredContextOutcome !== "not_applicable") {
       return;
+    }
+
+    // Idle with no terminal call but with PRs out for review: a legitimate
+    // end state in the multi-PR contract. Park the run — the durable session
+    // is resumed by PR comment/merge/close webhooks (or any human message).
+    if (snapshot.status === "idle" && !snapshot.result) {
+      const openPrs = await db.query.agentPullRequests.findMany({
+        where: and(
+          eq(schema.agentPullRequests.incidentId, ctx.incident.id),
+          eq(schema.agentPullRequests.state, "open"),
+        ),
+        columns: { url: true },
+      });
+      if (openPrs.length > 0) {
+        const parkedResult = assembleAgentRunResult({
+          findings: snapshot.pendingOutcome?.findings ?? null,
+          terminal: null,
+          actions: snapshot.pendingOutcome?.actions ?? [],
+        });
+        // Land the turn's findings on the incident before parking, so the
+        // dashboard shows them while the run waits. Skipped when the turn
+        // recorded no findings — an empty summary must not blank out
+        // findings from an earlier turn.
+        if (snapshot.pendingOutcome?.findings) {
+          await applyIncidentMetadataFromResult(ctx, parkedResult);
+        }
+        await moveAgentRunToAwaitingEvents(
+          ctx,
+          parkedResult,
+          openPrs.map((pr) => pr.url),
+        );
+        await recordAgentRunCompletion({
+          orgId: ctx.project.orgId,
+          projectId: ctx.project.id,
+          incidentId: ctx.incident.id,
+          model: snapshot.modelUsage.model,
+          callSite: "agent_run",
+          usage: snapshot.modelUsage,
+          activeSeconds: snapshot.activeSeconds,
+          outcome: "awaiting_events",
+          hasPr: true,
+        });
+        return;
+      }
     }
 
     // Idle with no result = the model never called a terminal outcome tool

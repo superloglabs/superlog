@@ -1,13 +1,14 @@
 import crypto from "node:crypto";
 import {
   db,
+  decideInboundContinuation,
   listAccessibleGithubInstallsForProject,
   recordInboundInteraction,
   resolveIncident,
   schema,
   syncLoopsContactsForOrg,
 } from "@superlog/db";
-import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
 import {
@@ -681,10 +682,16 @@ async function handleAgentPrWebhook(
       await recordPrClosedMetric(agentPrRow.incidentId);
     }
     if (mergedResolution) {
-      await resolveIncidentForMergedAgentPr({
+      await resumeOrResolveIncidentForMergedAgentPr({
         agentPr: agentPrRow,
         mergedAt: mergedResolution.mergedAt,
         mergedByLogin: mergedResolution.mergedByLogin,
+      });
+    } else if (updates.state === "closed" && wonTransition) {
+      await maybeResumeIncidentForClosedAgentPr({
+        agentPr: agentPrRow,
+        closedByLogin: payload.sender?.login ?? null,
+        closedAt: updates.closedAt ?? now,
       });
     }
   } else if (event === "push") {
@@ -713,6 +720,119 @@ async function handleAgentPrWebhook(
       occurredAt: now,
     })
     .onConflictDoNothing();
+}
+
+// Route a PR lifecycle event (merge/close) into the incident's durable
+// investigation session when one can be resumed: the agent — not the webhook —
+// decides whether the incident is done. Returns true when the event reached a
+// session (or already had, on redelivery).
+async function resumeIncidentSessionForPrEvent(opts: {
+  agentPr: schema.AgentPullRequest;
+  channel: "pr_merged" | "pr_closed";
+  author: string | null;
+  text: string;
+  dedupeKey: string;
+}): Promise<boolean> {
+  const incident = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.id, opts.agentPr.incidentId),
+    columns: { id: true, status: true, projectId: true },
+  });
+  // Only open incidents have a decision left to make. Also guards the
+  // self-inflicted case: resolving an incident closes its remaining open PRs,
+  // and those `closed` webhooks must not re-ping the session.
+  if (!incident || incident.status !== "open") return false;
+
+  const automation = await db.query.projectAutomationSettings.findFirst({
+    where: eq(schema.projectAutomationSettings.projectId, incident.projectId),
+    columns: { agentRunEnabled: true, autoFollowUpEnabled: true },
+  });
+  const latestRun = await db.query.agentRuns.findFirst({
+    where: eq(schema.agentRuns.incidentId, incident.id),
+    orderBy: [desc(schema.agentRuns.createdAt)],
+    columns: { id: true, state: true, providerSessionId: true },
+  });
+  // Pre-route so a merge/close never cold-starts a fresh investigation: with
+  // no resumable session the caller falls back to its deterministic behavior
+  // (auto-resolve for merges, nothing for closes).
+  const verdict = decideInboundContinuation({
+    agentRunEnabled: automation?.agentRunEnabled ?? true,
+    autoFollowUpEnabled: automation?.autoFollowUpEnabled ?? true,
+    confirmed: true,
+    latestRun: latestRun ?? null,
+  });
+  if (verdict.action !== "resume" && verdict.action !== "steer") return false;
+
+  const result = await recordInboundInteraction(db, {
+    incidentId: incident.id,
+    interaction: {
+      channel: opts.channel,
+      author: opts.author,
+      text: opts.text,
+      url: opts.agentPr.url,
+      occurredAt: new Date().toISOString(),
+    },
+    dedupeKey: opts.dedupeKey,
+    confirmed: true,
+  });
+  if (result.outcome === "duplicate") return true;
+  return result.outcome === "accepted" && result.action !== "cold_start";
+}
+
+// An agent PR merged. Resume the durable session so the agent decides whether
+// the incident is complete (per the spec, the agent is the judge of done);
+// when no session can be resumed, fall back to resolving the incident
+// directly — an incident must never stay open forever because its session
+// expired.
+async function resumeOrResolveIncidentForMergedAgentPr(opts: {
+  agentPr: schema.AgentPullRequest;
+  mergedAt: Date;
+  mergedByLogin: string | null;
+}): Promise<void> {
+  const { agentPr, mergedByLogin } = opts;
+  const resumed = await resumeIncidentSessionForPrEvent({
+    agentPr,
+    channel: "pr_merged",
+    author: mergedByLogin,
+    text: `Your PR #${agentPr.prNumber} (${agentPr.repoFullName}, branch \`${agentPr.branchName}\`) was merged${
+      mergedByLogin ? ` by @${mergedByLogin}` : ""
+    }. If this completes the remediation, make sure every linked issue is classified and call resolve_incident; if more work remains (other PRs still open, issues unclassified), continue it.`,
+    dedupeKey: `agent_pr_merged:${agentPr.id}`,
+  }).catch((err) => {
+    log.warn(
+      { err, agent_pr_id: agentPr.id, incident_id: agentPr.incidentId },
+      "failed to resume session for merged agent PR; falling back to auto-resolve",
+    );
+    return false;
+  });
+  if (resumed) return;
+  await resolveIncidentForMergedAgentPr(opts);
+}
+
+// An agent PR was closed without merging. Resume the session so the agent can
+// react (per the spec: if the close context shows the issue is noise, silence
+// it and resolve; otherwise decide the next step). No fallback action — the
+// incident simply stays open for a human or a later run.
+async function maybeResumeIncidentForClosedAgentPr(opts: {
+  agentPr: schema.AgentPullRequest;
+  closedByLogin: string | null;
+  closedAt: Date;
+}): Promise<void> {
+  const { agentPr, closedByLogin } = opts;
+  await resumeIncidentSessionForPrEvent({
+    agentPr,
+    channel: "pr_closed",
+    author: closedByLogin,
+    text: `Your PR #${agentPr.prNumber} (${agentPr.repoFullName}, branch \`${agentPr.branchName}\`) was closed without being merged${
+      closedByLogin ? ` by @${closedByLogin}` : ""
+    }. Read the PR conversation for the close context: if it shows the incident is actually noise, classify the issues accordingly and call resolve_incident; if the fix is still needed, decide the next step (an adjusted PR, or ask_human).`,
+    dedupeKey: `agent_pr_closed:${agentPr.id}:${opts.closedAt.getTime()}`,
+  }).catch((err) => {
+    log.warn(
+      { err, agent_pr_id: agentPr.id, incident_id: agentPr.incidentId },
+      "failed to resume session for closed agent PR",
+    );
+    return false;
+  });
 }
 
 async function resolveIncidentForMergedAgentPr(opts: {
@@ -839,7 +959,10 @@ async function maybeRequestPrCommentFollowUp(opts: {
     interaction: {
       channel: "pr_comment",
       author: comment.actor?.login ?? null,
-      text: comment.body,
+      // Prefix with which PR the feedback is on — an incident can have
+      // several agent PRs, and the resumed session must know which one to
+      // update and reply to.
+      text: `[on PR #${opts.agentPrRow.prNumber} ${opts.agentPrRow.repoFullName}, branch \`${opts.agentPrRow.branchName}\`] ${comment.body}`,
       url: comment.commentUrl,
       path: comment.path,
       line: comment.line,
