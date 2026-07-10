@@ -2476,7 +2476,12 @@ export function useResolveAllRecoveryDetected(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (targets: { incidentId: string; proposalId: string }[]) => {
-      const results = await Promise.all(
+      // allSettled (not Promise.all) so every confirm finishes before we react
+      // — Promise.all would reject on the first failure while the remaining
+      // requests keep running in the background, letting a retry overlap the
+      // still-in-flight batch. Wait for the whole batch to quiesce, then rethrow
+      // the first unexpected failure so the mutation lands in its error state.
+      const results = await Promise.allSettled(
         targets.map(async (t) => {
           try {
             await fetcher<{ ok: true }>(
@@ -2492,7 +2497,11 @@ export function useResolveAllRecoveryDetected(projectId: string) {
           }
         }),
       );
-      const resolved = results.filter((r) => r === "resolved").length;
+      const failed = results.find((r) => r.status === "rejected");
+      if (failed) throw failed.reason;
+      const resolved = results.filter(
+        (r) => r.status === "fulfilled" && r.value === "resolved",
+      ).length;
       return { resolved, alreadyResolved: results.length - resolved };
     },
     onSuccess: (_data, targets) => {
