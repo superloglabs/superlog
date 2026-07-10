@@ -28,11 +28,47 @@ export function exceededWallClockBudget(opts: {
   startedAt: Date | null;
   now: Date;
   maxRuntimeMinutes: number;
+  // Total seconds the run has spent parked in `awaiting_human`. This time is
+  // excluded from the budget: a run waiting on a human reply isn't stuck, and
+  // a human can legitimately take hours to answer. Without this a run that
+  // parked on `ask_human` gets reaped the moment it resumes, discarding a
+  // finished investigation (prod incident 2026-07-09).
+  awaitingHumanSeconds?: number;
 }): boolean {
   if (!opts.startedAt) return false;
-  const ageMs = opts.now.getTime() - opts.startedAt.getTime();
+  const parkedMs = Math.max(0, opts.awaitingHumanSeconds ?? 0) * 1_000;
+  const ageMs = opts.now.getTime() - opts.startedAt.getTime() - parkedMs;
   const budgetMs = WALL_CLOCK_MULTIPLIER * opts.maxRuntimeMinutes * 60_000;
   return ageMs > budgetMs;
+}
+
+// Total wall-clock seconds a run has spent parked in `awaiting_human`, derived
+// from its lifecycle events. `pauseForHuman` emits an `awaiting_human` event;
+// the matching `resumeRunning` emits `resumed`. Pair each `awaiting_human` with
+// the next `resumed` and sum the gaps. A trailing `awaiting_human` with no
+// matching `resumed` means the run is still parked, so it counts up to `now`.
+// Nested/duplicate `awaiting_human` events (a re-park before a resume) collapse
+// to the earliest park start, which is the conservative choice — it can only
+// exclude more idle time, never fabricate active time.
+export function awaitingHumanSecondsFromEvents(
+  events: ReadonlyArray<{ kind: string; createdAt: Date }>,
+  now: Date,
+): number {
+  const relevant = events
+    .filter((e) => e.kind === "awaiting_human" || e.kind === "resumed")
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  let totalMs = 0;
+  let parkedSince: Date | null = null;
+  for (const event of relevant) {
+    if (event.kind === "awaiting_human") {
+      if (parkedSince === null) parkedSince = event.createdAt;
+    } else if (parkedSince !== null) {
+      totalMs += event.createdAt.getTime() - parkedSince.getTime();
+      parkedSince = null;
+    }
+  }
+  if (parkedSince !== null) totalMs += now.getTime() - parkedSince.getTime();
+  return Math.max(0, Math.round(totalMs / 1_000));
 }
 
 const TRANSIENT_ERROR_CODES = new Set([
