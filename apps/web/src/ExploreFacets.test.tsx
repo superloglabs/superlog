@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { FacetValues, facetDisplayName, facetMatchesQuery } from "./FacetValues.tsx";
+import {
+  FacetValues,
+  facetDisplayName,
+  facetMatchesQuery,
+  normalizeFacetQuery,
+} from "./FacetValues.tsx";
 
 test("facetDisplayName turns scoped telemetry keys into capitalized labels", () => {
   assert.equal(facetDisplayName("resource.service.name"), "Resource · Service name");
@@ -16,6 +21,11 @@ test("facetMatchesQuery finds the words users see in a humanized facet label", (
   assert.equal(facetMatchesQuery("resource.service.name", "resource service"), true);
   assert.equal(facetMatchesQuery("span.http.request.method", "http request"), true);
   assert.equal(facetMatchesQuery("span.http.request.method", "log request"), false);
+});
+
+test("normalizeFacetQuery treats whitespace-only input as no search", () => {
+  assert.equal(normalizeFacetQuery("   "), "");
+  assert.equal(normalizeFacetQuery("  service name  "), "service name");
 });
 
 test("facet values expose toggle state and event counts", () => {

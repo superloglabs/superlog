@@ -5,6 +5,7 @@ import {
   FacetValues,
   facetDisplayName,
   facetMatchesQuery,
+  normalizeFacetQuery,
 } from "./FacetValues.tsx";
 import {
   type AttributeKey,
@@ -54,6 +55,7 @@ export function ExploreFacets({
     ? expandedFacet.slice("attr:".length)
     : undefined;
   const values = useExploreAttributeValues(projectId, activeAttributeKey, range, source);
+  const normalizedQuery = normalizeFacetQuery(query);
 
   useEffect(() => {
     setExpandedFacet(primaryFacet);
@@ -61,9 +63,9 @@ export function ExploreFacets({
   }, [primaryFacet]);
 
   const visibleKeys = useMemo(() => {
-    if (!query.trim()) return keys.data ?? [];
-    return (keys.data ?? []).filter((key) => facetMatchesQuery(key.key, query));
-  }, [keys.data, query]);
+    if (!normalizedQuery) return keys.data ?? [];
+    return (keys.data ?? []).filter((key) => facetMatchesQuery(key.key, normalizedQuery));
+  }, [keys.data, normalizedQuery]);
 
   const selectedAttributeValues = useMemo(() => {
     if (!activeAttributeKey) return new Set<string>();
@@ -126,7 +128,7 @@ export function ExploreFacets({
       </div>
 
       <div className="max-h-[min(68vh,720px)] overflow-y-auto py-1.5">
-        {!query && source === "logs" ? (
+        {!normalizedQuery && source === "logs" ? (
           <FacetGroup
             id="severity"
             label="Severity"
@@ -146,7 +148,7 @@ export function ExploreFacets({
           </FacetGroup>
         ) : null}
 
-        {!query && source === "traces" ? (
+        {!normalizedQuery && source === "traces" ? (
           <FacetGroup
             id="status"
             label="Status"
@@ -167,7 +169,7 @@ export function ExploreFacets({
           <div className="px-4 py-5 font-sans text-[11px] text-subtle">Loading facets…</div>
         ) : visibleKeys.length === 0 ? (
           <div className="px-4 py-5 text-[11px] text-subtle">
-            {query ? "No matching facets." : "No attributes in this window."}
+            {normalizedQuery ? "No matching facets." : "No attributes in this window."}
           </div>
         ) : (
           visibleKeys.map((key) => {

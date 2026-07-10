@@ -18,13 +18,17 @@ export function facetDisplayName(value: string): string {
   return `${scope} · ${label}`;
 }
 
+export function normalizeFacetQuery(query: string): string {
+  return query.trim();
+}
+
 export function facetMatchesQuery(key: string, query: string): boolean {
   const normalize = (value: string) =>
     value
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, " ")
       .trim();
-  const normalizedQuery = normalize(query);
+  const normalizedQuery = normalize(normalizeFacetQuery(query));
   if (!normalizedQuery) return true;
   return normalize(`${key} ${facetDisplayName(key)}`).includes(normalizedQuery);
 }
