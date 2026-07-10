@@ -28,3 +28,25 @@ export function addAttrFilter(attrs: ResourceAttr[], key: string, value: string)
   if (alreadyPresent) return attrs;
   return [...attrs, { key, value }];
 }
+
+// Explore combines attribute filters with AND, so one facet can have only one
+// equality value without becoming contradictory (for example service=api AND
+// service=web). Selecting a different value replaces the equality selection;
+// selecting the active value clears it. Other facets and non-equality filters
+// stay untouched.
+export function toggleAttrFilter(
+  attrs: ResourceAttr[],
+  key: string,
+  value: string,
+): ResourceAttr[] {
+  const selected = attrs.some((a) => a.key === key && a.value === value && (a.op ?? "eq") === "eq");
+  const withoutFacetEquality = attrs.filter((a) => !(a.key === key && (a.op ?? "eq") === "eq"));
+  if (selected) return withoutFacetEquality;
+  return [...withoutFacetEquality, { key, value }];
+}
+
+// Severity and trace status are single-value URL facets. Clicking a different
+// value replaces the selection; clicking the active value clears it.
+export function toggleSingleFacetValue(current: string, next: string): string {
+  return current === next ? "" : next;
+}

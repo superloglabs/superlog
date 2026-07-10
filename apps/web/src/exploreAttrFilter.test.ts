@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { addAttrFilter, attrFilterKey } from "./exploreAttrFilter.ts";
+import {
+  addAttrFilter,
+  attrFilterKey,
+  toggleAttrFilter,
+  toggleSingleFacetValue,
+} from "./exploreAttrFilter.ts";
 
 test("attrFilterKey prefixes the key with its attribute scope", () => {
   assert.equal(attrFilterKey("resource", "service.name"), "resource.service.name");
@@ -43,4 +48,25 @@ test("addAttrFilter allows the same key with a different value", () => {
     { key: "resource.service.name", value: "api" },
     { key: "resource.service.name", value: "web" },
   ]);
+});
+
+test("toggleAttrFilter selects, replaces, and clears a facet value", () => {
+  const existing = [
+    { key: "resource.service.name", value: "api" },
+    { key: "resource.deployment.environment", value: "prod" },
+  ];
+
+  assert.deepEqual(toggleAttrFilter(existing, "resource.service.name", "web"), [
+    { key: "resource.deployment.environment", value: "prod" },
+    { key: "resource.service.name", value: "web" },
+  ]);
+  assert.deepEqual(toggleAttrFilter(existing, "resource.service.name", "api"), [
+    { key: "resource.deployment.environment", value: "prod" },
+  ]);
+});
+
+test("toggleSingleFacetValue selects, replaces, and clears a single-value facet", () => {
+  assert.equal(toggleSingleFacetValue("", "ERROR"), "ERROR");
+  assert.equal(toggleSingleFacetValue("WARN", "ERROR"), "ERROR");
+  assert.equal(toggleSingleFacetValue("ERROR", "ERROR"), "");
 });

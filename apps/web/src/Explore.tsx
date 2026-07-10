@@ -14,6 +14,8 @@ import {
 } from "recharts";
 import { LogDrawer } from "./LogDetail.tsx";
 import { TraceDrawer } from "./TraceDetail.tsx";
+import { ExploreFacets, SEVERITY_OPTIONS, STATUS_OPTIONS } from "./ExploreFacets.tsx";
+import { facetDisplayName } from "./FacetValues.tsx";
 import {
   type CloudResourceRow,
   type ExploreFilter,
@@ -50,7 +52,7 @@ import {
   rangeFromSeconds,
 } from "./design/RangePicker.tsx";
 import { ScrollArea } from "./design/scroll-area.tsx";
-import { Btn, Chip, Input, Label, ShortcutKey, Tile } from "./design/ui.tsx";
+import { Btn, Chip, Input, ShortcutKey, Tile } from "./design/ui.tsx";
 import { addAttrFilter } from "./exploreAttrFilter.ts";
 import { tracer } from "./instrumentation.ts";
 import {
@@ -81,9 +83,7 @@ function logRowKey(log: LogRow): string {
 export function Explore() {
   const me = useMe();
   if (me.isLoading) {
-    return (
-      <div className="font-mono text-[11px] uppercase tracking-[0.2em] text-muted">loading…</div>
-    );
+    return <div className="font-sans text-[12px] text-muted">Loading…</div>;
   }
   if (me.error || !me.data || !me.data.project) {
     return (
@@ -392,35 +392,48 @@ function ExploreInner({ projectId }: { projectId: string }) {
           </Tile>
         </>
       ) : (
-        <>
-          <ChartPanel
+        <div className="grid items-start gap-4 xl:grid-cols-[240px_minmax(0,1fr)]">
+          <ExploreFacets
             projectId={projectId}
-            filter={filter}
-            source={source}
-            groupBy={groupBy}
-            onGroupByChange={setGroupBy}
-            range={range}
-          />
-          <ListPanel
-            projectId={projectId}
-            filter={filter}
-            source={source}
-            limit={limit}
-            onLoadMore={() => setLimit((l) => Math.min(l + 100, 500))}
             attrs={attrs}
             onAttrsChange={setAttrs}
             range={range}
-            metricName={metricName}
-            tracesView={tracesView}
-            onTracesViewChange={setTracesView}
-            onSelectTrace={openTrace}
-            onSelectLog={openLog}
+            source={source}
             severity={severity}
             onSeverityChange={setSeverity}
             statusCode={statusCode}
             onStatusCodeChange={setStatusCode}
           />
-        </>
+          <div className="min-w-0 space-y-4">
+            <ChartPanel
+              projectId={projectId}
+              filter={filter}
+              source={source}
+              groupBy={groupBy}
+              onGroupByChange={setGroupBy}
+              range={range}
+            />
+            <ListPanel
+              projectId={projectId}
+              filter={filter}
+              source={source}
+              limit={limit}
+              onLoadMore={() => setLimit((l) => Math.min(l + 100, 500))}
+              attrs={attrs}
+              onAttrsChange={setAttrs}
+              range={range}
+              metricName={metricName}
+              tracesView={tracesView}
+              onTracesViewChange={setTracesView}
+              onSelectTrace={openTrace}
+              onSelectLog={openLog}
+              severity={severity}
+              onSeverityChange={setSeverity}
+              statusCode={statusCode}
+              onStatusCodeChange={setStatusCode}
+            />
+          </div>
+        </div>
       )}
       <TraceDrawer
         projectId={projectId}
@@ -675,9 +688,9 @@ function FilterPill({
       type="button"
       onClick={onRemove}
       title="remove"
-      className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent-soft px-2.5 font-mono text-[12px] tabular-nums text-accent transition-colors hover:brightness-110"
+      className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent-soft px-2.5 font-sans text-[12px] tabular-nums text-accent transition-colors hover:brightness-110"
     >
-      <span className="opacity-70">{label}</span>
+      <span className="opacity-70">{facetDisplayName(label)}</span>
       <span>=</span>
       <span>{value}</span>
       <span className="ml-1 opacity-60">×</span>
@@ -801,14 +814,6 @@ function FilterBar({
     </div>
   );
 }
-
-const SEVERITY_OPTIONS = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"];
-
-const STATUS_OPTIONS: { value: string; label: string }[] = [
-  { value: "STATUS_CODE_OK", label: "OK" },
-  { value: "STATUS_CODE_ERROR", label: "ERROR" },
-  { value: "STATUS_CODE_UNSET", label: "UNSET" },
-];
 
 const STATUS_LABEL_BY_VALUE: Record<string, string> = Object.fromEntries(
   STATUS_OPTIONS.map((o) => [o.value, o.label]),
@@ -1685,7 +1690,7 @@ function KeyboardSelect({
             onListKey(e);
           }
         }}
-        className="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-surface pl-2.5 pr-1.5 font-mono text-[12px] text-fg transition-colors hover:border-border-strong"
+        className="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-surface pl-2.5 pr-1.5 font-sans text-[12px] text-fg transition-colors hover:border-border-strong"
       >
         {triggerLabel && <span className="font-sans text-fg">{triggerLabel}:</span>}
         <span className="truncate text-fg">{selectedLabel}</span>
@@ -1767,12 +1772,12 @@ export function GroupBySelect({
   );
   const options = useMemo<KeyboardSelectOption[]>(() => {
     const out: KeyboardSelectOption[] = [
-      { value: "", label: "none" },
-      { value: "service.name", label: "service.name" },
+      { value: "", label: "None" },
+      { value: "service.name", label: "Service name" },
     ];
     for (const k of keys.data ?? []) {
       if (k.key === "service.name") continue;
-      out.push({ value: k.key, label: k.key });
+      out.push({ value: k.key, label: facetDisplayName(k.key) });
     }
     return out;
   }, [keys.data]);
@@ -1783,14 +1788,14 @@ export function GroupBySelect({
         ariaLabel="group by"
         shortcut={shortcut || undefined}
         value={value}
-        placeholder="none"
+        placeholder="None"
         triggerLabel={triggerLabel}
         options={options}
         searchable
         searchPlaceholder="Search attributes…"
         onChange={onChange}
       />
-      {step && <span className="font-mono text-[10px] text-subtle">step {step.toLowerCase()}</span>}
+      {step && <span className="font-sans text-[10px] text-subtle">Step {step.toLowerCase()}</span>}
     </div>
   );
 }
@@ -1847,7 +1852,7 @@ function ChartPanel({
     <Tile>
       {showControls && (
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <Label>chart</Label>
+          <span className="font-sans text-[12px] font-medium text-subtle">Chart</span>
           <GroupBySelect
             projectId={projectId}
             range={range}
@@ -1860,8 +1865,8 @@ function ChartPanel({
       )}
       <div className="opacity-50">
         {countSeries.isLoading ? (
-          <div className="flex h-14 items-center justify-center font-mono text-[11px] text-subtle">
-            loading…
+          <div className="flex h-14 items-center justify-center font-sans text-[11px] text-subtle">
+            Loading…
           </div>
         ) : countSeries.data && countSeries.data.rows.length > 0 ? (
           <TimeseriesChart
@@ -1871,8 +1876,8 @@ function ChartPanel({
             step={countSeries.data.step}
           />
         ) : (
-          <div className="flex h-14 items-center justify-center font-mono text-[11px] text-subtle">
-            no data
+          <div className="flex h-14 items-center justify-center font-sans text-[11px] text-subtle">
+            No data
           </div>
         )}
       </div>
@@ -2086,7 +2091,7 @@ const TOOLTIP_STYLE = {
     background: "#161618",
     border: "1px solid rgba(255,255,255,0.12)",
     borderRadius: 6,
-    fontFamily: "ui-monospace, monospace",
+    fontFamily: "ui-sans-serif, system-ui, sans-serif",
     fontSize: 11,
     padding: "6px 10px",
   },
@@ -2188,11 +2193,11 @@ function fmtBucketTime(s: string): string {
 const AXIS_TICK_STYLE = {
   fill: "#6b7280",
   fontSize: 9,
-  fontFamily: "ui-monospace, monospace",
+  fontFamily: "ui-sans-serif, system-ui, sans-serif",
 };
 const LEGEND_STYLE = {
   fontSize: 10,
-  fontFamily: "ui-monospace, monospace",
+  fontFamily: "ui-sans-serif, system-ui, sans-serif",
   paddingTop: 16,
 };
 
@@ -2500,8 +2505,8 @@ function ListPanel({
                 <SegmentedToggle
                   value={tracesView}
                   options={[
-                    { value: "traces", label: "traces" },
-                    { value: "spans", label: "spans" },
+                    { value: "traces", label: "Traces" },
+                    { value: "spans", label: "Spans" },
                   ]}
                   onChange={(v) => onTracesViewChange(v as TracesView)}
                 />
@@ -2512,9 +2517,7 @@ function ListPanel({
       )}
       {q.isFetching && !initialLoading && (
         <div className="flex items-center justify-end border-b border-border px-5 py-1.5">
-          <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-subtle">
-            loading…
-          </span>
+          <span className="font-sans text-[11px] text-subtle">Loading…</span>
         </div>
       )}
       <div className="overflow-auto">
@@ -2536,11 +2539,11 @@ function ListPanel({
         )}
       </div>
       <div className="flex items-center justify-between border-t border-border px-5 py-3">
-        <span className="font-mono text-[11px] text-subtle">
-          showing {q.data?.length ?? 0} (limit {limit})
+        <span className="font-sans text-[11px] text-subtle">
+          Showing {q.data?.length ?? 0} (Limit {limit})
         </span>
         <Btn variant="secondary" size="sm" onClick={onLoadMore} disabled={limit >= 500}>
-          load more
+          Load more
         </Btn>
       </div>
     </Tile>
@@ -2556,17 +2559,17 @@ export function LogsTable({
 }) {
   if (rows.length === 0) {
     return (
-      <div className="px-5 py-8 text-center font-mono text-[11px] text-subtle">no results</div>
+      <div className="px-5 py-8 text-center font-sans text-[11px] text-subtle">No results</div>
     );
   }
   return (
     <table className="w-full border-collapse font-mono text-[12px]">
-      <thead>
+      <thead className="font-sans">
         <tr className="text-left text-subtle">
-          <th className="px-5 py-2 font-normal">timestamp</th>
-          <th className="px-5 py-2 font-normal">service</th>
-          <th className="px-5 py-2 font-normal">sev</th>
-          <th className="px-5 py-2 font-normal">body</th>
+          <th className="px-5 py-2 font-normal">Timestamp</th>
+          <th className="px-5 py-2 font-normal">Service</th>
+          <th className="px-5 py-2 font-normal">Severity</th>
+          <th className="px-5 py-2 font-normal">Body</th>
         </tr>
       </thead>
       <tbody>
@@ -2610,9 +2613,9 @@ function SeverityCell({ severity }: { severity: string }) {
           : "bg-success/15 text-success";
   return (
     <span
-      className={`inline-flex items-center rounded-sm px-2 py-0.5 font-mono text-[11px] tabular-nums ${cls}`}
+      className={`inline-flex items-center rounded-sm px-2 py-0.5 font-sans text-[11px] tabular-nums ${cls}`}
     >
-      {s || "—"}
+      {s ? facetDisplayName(s) : "—"}
     </span>
   );
 }
@@ -2639,18 +2642,18 @@ export function TracesTable({
 }) {
   if (rows.length === 0) {
     return (
-      <div className="px-5 py-8 text-center font-mono text-[11px] text-subtle">no results</div>
+      <div className="px-5 py-8 text-center font-sans text-[11px] text-subtle">No results</div>
     );
   }
   return (
     <table className="w-full border-collapse font-mono text-[12px]">
-      <thead>
+      <thead className="font-sans">
         <tr className="text-left text-subtle">
-          <th className="px-5 py-2 font-normal">timestamp</th>
-          <th className="px-5 py-2 font-normal">service</th>
-          <th className="px-5 py-2 font-normal">span</th>
-          <th className="px-5 py-2 font-normal">status</th>
-          <th className="px-5 py-2 text-right font-normal">ms</th>
+          <th className="px-5 py-2 font-normal">Timestamp</th>
+          <th className="px-5 py-2 font-normal">Service</th>
+          <th className="px-5 py-2 font-normal">Span</th>
+          <th className="px-5 py-2 font-normal">Status</th>
+          <th className="px-5 py-2 text-right font-normal">Ms</th>
         </tr>
       </thead>
       <tbody>
@@ -2689,20 +2692,20 @@ export function TracesAggregatedTable({
 }) {
   if (rows.length === 0) {
     return (
-      <div className="px-5 py-8 text-center font-mono text-[11px] text-subtle">no results</div>
+      <div className="px-5 py-8 text-center font-sans text-[11px] text-subtle">No results</div>
     );
   }
   return (
     <table className="w-full border-collapse font-mono text-[12px]">
-      <thead>
+      <thead className="font-sans">
         <tr className="text-left text-subtle">
-          <th className="px-5 py-2 font-normal">started</th>
-          <th className="px-5 py-2 font-normal">service</th>
-          <th className="px-5 py-2 font-normal">root span</th>
-          <th className="px-5 py-2 font-normal">status</th>
-          <th className="px-5 py-2 text-right font-normal">spans</th>
-          <th className="px-5 py-2 text-right font-normal">errors</th>
-          <th className="px-5 py-2 text-right font-normal">ms</th>
+          <th className="px-5 py-2 font-normal">Started</th>
+          <th className="px-5 py-2 font-normal">Service</th>
+          <th className="px-5 py-2 font-normal">Root span</th>
+          <th className="px-5 py-2 font-normal">Status</th>
+          <th className="px-5 py-2 text-right font-normal">Spans</th>
+          <th className="px-5 py-2 text-right font-normal">Errors</th>
+          <th className="px-5 py-2 text-right font-normal">Ms</th>
         </tr>
       </thead>
       <tbody>
@@ -2814,7 +2817,7 @@ export function SegmentedToggle({
           <button
             key={o.value}
             onClick={() => onChange(o.value)}
-            className={`h-7 px-3 font-mono text-[11px] tracking-tight transition-colors ${
+            className={`h-7 px-3 font-sans text-[11px] tracking-tight transition-colors ${
               active ? "bg-accent text-accent-ink" : "text-muted hover:text-fg"
             }`}
           >
