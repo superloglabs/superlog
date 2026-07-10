@@ -781,6 +781,13 @@ function IncidentsTab({ projectId }: { projectId: string }) {
                   </Btn>
                 )}
               </div>
+              {group.key === "recovery" && resolveAllRecovery.isError && (
+                <div className="mb-2 px-1 text-[12px] text-danger">
+                  Couldn't resolve all incidents:{" "}
+                  {String(resolveAllRecovery.error).replace(/^Error:\s*/, "")}. Some may have
+                  resolved — refresh to see the current state.
+                </div>
+              )}
               <div className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface">
                 {group.items.map((row) => (
                   <IncidentRow

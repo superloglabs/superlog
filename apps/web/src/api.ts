@@ -2465,24 +2465,35 @@ export function useDecideResolutionProposal(projectId: string) {
 // incident's pending resolution proposal. There's no server-side bulk route —
 // we fan out to the same confirm endpoint the single-incident banner uses, so
 // each confirm still runs the full resolve + PR-close side effects and stays
-// race-safe (a proposal a teammate already decided comes back 409, which we
-// swallow via allSettled rather than failing the whole batch). Returns how
-// many confirms succeeded vs failed so the caller can surface a partial result.
+// race-safe. A proposal a teammate already decided comes back 409; that's the
+// one expected, benign outcome, so we count it as "already resolved" and keep
+// going. Any other failure (auth, 5xx, network) is unexpected — we rethrow so
+// the mutation lands in its error state instead of silently reporting success.
+// Returns how many confirms went through vs. were already resolved so the
+// caller can surface a partial result.
 export function useResolveAllRecoveryDetected(projectId: string) {
   const fetcher = useFetcher();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (targets: { incidentId: string; proposalId: string }[]) => {
-      const results = await Promise.allSettled(
-        targets.map((t) =>
-          fetcher<{ ok: true }>(
-            `/api/projects/${projectId}/incidents/${t.incidentId}/resolution-proposals/${t.proposalId}/confirm`,
-            { method: "POST" },
-          ),
-        ),
+      const results = await Promise.all(
+        targets.map(async (t) => {
+          try {
+            await fetcher<{ ok: true }>(
+              `/api/projects/${projectId}/incidents/${t.incidentId}/resolution-proposals/${t.proposalId}/confirm`,
+              { method: "POST" },
+            );
+            return "resolved" as const;
+          } catch (err) {
+            if (err instanceof Error && err.message.startsWith("409:")) {
+              return "already" as const;
+            }
+            throw err;
+          }
+        }),
       );
-      const succeeded = results.filter((r) => r.status === "fulfilled").length;
-      return { succeeded, failed: results.length - succeeded };
+      const resolved = results.filter((r) => r === "resolved").length;
+      return { resolved, alreadyResolved: results.length - resolved };
     },
     onSuccess: (_data, targets) => {
       qc.invalidateQueries({ queryKey: ["incidents", projectId] });
