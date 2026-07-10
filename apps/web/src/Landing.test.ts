@@ -23,10 +23,20 @@ test("landing top nav renders a Docs link wired to the docs URL", async () => {
 test("landing top nav renders a GitHub link wired to the repository URL", async () => {
   const source = await readFile(new URL("./Landing.tsx", import.meta.url), "utf8");
 
+  // The link still opens the repo in a new tab and shows the octocat, but the
+  // label is now the live star count (with a static "GitHub" fallback until the
+  // count loads or if the API is unreachable).
   assert.match(
     source,
-    /href=\{LANDING_GITHUB_REPO_URL\}[\s\S]*?target="_blank"[\s\S]*?rel="noreferrer"[\s\S]*?<GitHubIcon \/>[\s\S]*?GitHub\s*<\/a>/,
+    /href=\{LANDING_GITHUB_REPO_URL\}[\s\S]*?target="_blank"[\s\S]*?rel="noreferrer"[\s\S]*?<GitHubIcon \/>[\s\S]*?formatStarCount\(stars\)[\s\S]*?"GitHub"[\s\S]*?<\/a>/,
   );
+});
+
+test("landing top nav feeds the live star count from the repo URL", async () => {
+  const source = await readFile(new URL("./Landing.tsx", import.meta.url), "utf8");
+  // The count is derived from the same repo URL the link points at, so the
+  // badge and the destination can never drift apart.
+  assert.match(source, /useGithubStarCount\(LANDING_GITHUB_REPO_URL\)/);
 });
 
 test("landing footer links to the terms of service page", async () => {

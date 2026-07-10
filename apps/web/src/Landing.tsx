@@ -2,8 +2,10 @@ import { usePostHog } from "posthog-js/react";
 import { useEffect, useRef, useState } from "react";
 import { AuthForm } from "./AuthForm.tsx";
 import { Btn, Chip, Label, Tile, Wordmark } from "./design/ui.tsx";
+import { formatStarCount } from "./githubStars.ts";
 import { INSTALL_PROMPT } from "./installPrompt.ts";
 import { LANDING_DOCS_URL, LANDING_GITHUB_REPO_URL } from "./landingLinks.ts";
+import { useGithubStarCount } from "./useGithubStars.ts";
 
 // ---------------------------------------------------------------------------
 // Landing — /
@@ -109,6 +111,7 @@ function TopNav({
   onSignIn: () => void;
   onSignUp: () => void;
 }) {
+  const stars = useGithubStarCount(LANDING_GITHUB_REPO_URL);
   return (
     <header className="sticky top-0 z-40 bg-bg">
       <div className="mx-auto w-full max-w-[1400px] px-4 md:px-8 xl:px-12">
@@ -119,10 +122,17 @@ function TopNav({
               href={LANDING_GITHUB_REPO_URL}
               target="_blank"
               rel="noreferrer"
+              aria-label={
+                stars != null
+                  ? `Superlog on GitHub, ${stars.toLocaleString()} stars`
+                  : "Superlog on GitHub"
+              }
               className="hidden items-center gap-1.5 text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline-flex"
             >
               <GitHubIcon />
-              GitHub
+              <span className="tabular-nums">
+                {stars != null ? formatStarCount(stars) : "GitHub"}
+              </span>
             </a>
             <a
               href={LANDING_DOCS_URL}
