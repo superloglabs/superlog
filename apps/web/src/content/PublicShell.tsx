@@ -8,6 +8,7 @@ import { LANDING_GITHUB_REPO_URL } from "../landingLinks.ts";
 // pages feel part of the marketing surface.
 
 const NAV_LINKS: Array<{ href: string; label: string; external?: boolean }> = [
+  { href: "/blog", label: "Blog" },
   { href: "/changelog", label: "Changelog" },
   { href: "/roadmap", label: "Roadmap" },
   { href: "/team", label: "Team" },

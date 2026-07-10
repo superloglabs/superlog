@@ -5,6 +5,8 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AcceptInvitation } from "./AcceptInvitation.tsx";
 import { Activate } from "./Activate.tsx";
+import { Blog } from "./Blog.tsx";
+import { BlogPost } from "./BlogPost.tsx";
 import { Changelog } from "./Changelog.tsx";
 import { CommandPalette } from "./CommandPalette.tsx";
 import { Explore } from "./Explore.tsx";
@@ -134,6 +136,8 @@ export function App() {
         <Route path="/pricing" element={<Pricing />} />
         <Route path="/privacy" element={<PrivacyPolicy />} />
         <Route path="/changelog" element={<Changelog />} />
+        <Route path="/blog" element={<Blog />} />
+        <Route path="/blog/:slug" element={<BlogPost />} />
         <Route path="/roadmap" element={<Roadmap />} />
         <Route path="/team" element={<Team />} />
         <Route path="/tos" element={<TermsOfService />} />
