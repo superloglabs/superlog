@@ -135,23 +135,25 @@ fi
 # required so any process — including node fetch in seed scripts — can hit
 # the route.
 PORTLESS_PORT_FILE="$HOME/.portless/proxy.port"
-PORTLESS_DEFAULT_PROXY_PORT="${SUPERLOG_PORTLESS_PROXY_PORT:-1355}"
 PORT_SUFFIX=""
 PROXY_PORT_VAL=""
 if [[ -s "$PORTLESS_PORT_FILE" ]]; then
   PROXY_PORT_VAL="$(tr -d '[:space:]' < "$PORTLESS_PORT_FILE")"
 fi
-# A missing marker makes the portless CLI fall back to privileged port 443 and
-# attempt sudo. That cannot succeed from non-interactive worktree setup even if
-# this machine normally uses the shared unprivileged proxy. Seed the standard
-# unprivileged port so both URL generation and the CLI agree on first boot.
-if [[ ! "$PROXY_PORT_VAL" =~ ^[0-9]+$ ]]; then
-  PROXY_PORT_VAL="$PORTLESS_DEFAULT_PROXY_PORT"
+# Preserve portless' native no-marker behavior: privileged installs bind 443.
+# Non-privileged setup can opt into a shared port explicitly; writing the marker
+# keeps URL generation and the portless CLI in agreement on first boot.
+if [[ ! "$PROXY_PORT_VAL" =~ ^[0-9]+$ ]] && [[ -n "${SUPERLOG_PORTLESS_PROXY_PORT:-}" ]]; then
+  if [[ ! "$SUPERLOG_PORTLESS_PROXY_PORT" =~ ^[0-9]+$ ]]; then
+    echo "SUPERLOG_PORTLESS_PROXY_PORT must be a numeric port" >&2
+    exit 1
+  fi
+  PROXY_PORT_VAL="$SUPERLOG_PORTLESS_PROXY_PORT"
   mkdir -p "$(dirname "$PORTLESS_PORT_FILE")"
   printf '%s\n' "$PROXY_PORT_VAL" > "$PORTLESS_PORT_FILE"
-  echo "==> portless proxy port was unset; defaulting to $PROXY_PORT_VAL" >&2
+  echo "==> portless proxy port was unset; using explicit port $PROXY_PORT_VAL" >&2
 fi
-if [[ "$PROXY_PORT_VAL" != "443" ]]; then
+if [[ "$PROXY_PORT_VAL" =~ ^[0-9]+$ ]] && [[ "$PROXY_PORT_VAL" != "443" ]]; then
   PORT_SUFFIX=":$PROXY_PORT_VAL"
 fi
 

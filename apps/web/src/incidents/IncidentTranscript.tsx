@@ -10,6 +10,7 @@ import {
   type TranscriptItem,
   buildActivityFeed,
   buildTranscript,
+  markAwaitingQuestion,
 } from "./incident-activity-feed.ts";
 import {
   type TelemetryKind,
@@ -61,29 +62,7 @@ export function IncidentActivityFeed({
   // The question is sourced only from the current run state, appended as the
   // terminal node so a paused run ends on what it needs from the human.
   const base = buildActivityFeed(events, { triggeringIssue });
-  const matchingQuestionId = awaiting
-    ? base.find(
-        (item) => item.type === "question" && item.question.trim() === awaiting.question.trim(),
-      )?.id
-    : undefined;
-  let feed: FeedItem[] = base;
-  if (awaiting && matchingQuestionId) {
-    feed = base.map((item) =>
-      item.id === matchingQuestionId && item.type === "question"
-        ? { ...item, awaiting: true }
-        : item,
-    );
-  } else if (awaiting) {
-    feed = [
-      ...base,
-      {
-        type: "question",
-        id: "awaiting-question",
-        question: awaiting.question,
-        awaiting: true,
-      },
-    ];
-  }
+  const feed: FeedItem[] = awaiting ? markAwaitingQuestion(base, awaiting.question) : base;
 
   const renderItem = (item: FeedItem) => {
     if (item.type === "message") return <MessageEntry key={item.id} text={item.text} />;

@@ -159,6 +159,34 @@ export function buildActivityFeed(
   return items;
 }
 
+export function markAwaitingQuestion(feed: FeedItem[], question: string): FeedItem[] {
+  const normalizedQuestion = question.trim();
+  let matchingIndex = -1;
+  for (let index = feed.length - 1; index >= 0; index--) {
+    const item = feed[index];
+    if (item?.type === "question" && item.question.trim() === normalizedQuestion) {
+      matchingIndex = index;
+      break;
+    }
+  }
+
+  if (matchingIndex === -1) {
+    return [
+      ...feed,
+      {
+        type: "question",
+        id: "awaiting-question",
+        question,
+        awaiting: true,
+      },
+    ];
+  }
+
+  return feed.map((item, index) =>
+    index === matchingIndex && item.type === "question" ? { ...item, awaiting: true } : item,
+  );
+}
+
 export function buildTranscript(events: IncidentEvent[]): TranscriptItem[] {
   return buildActivityFeed(events).filter(
     (item): item is TranscriptItem =>

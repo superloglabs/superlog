@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { IncidentEvent } from "../api.ts";
-import { buildActivityFeed } from "./incident-activity-feed.ts";
+import { buildActivityFeed, markAwaitingQuestion } from "./incident-activity-feed.ts";
 import { memoryActivityFromTool } from "./memory-tool-activity.ts";
 
 function event(overrides: Partial<IncidentEvent>): IncidentEvent {
@@ -55,6 +55,46 @@ test("buildActivityFeed turns ask_human into a question node with the exact prom
       id: "ask-1",
       question: "Which remediation path should we take?",
       awaiting: false,
+    },
+  ]);
+});
+
+test("markAwaitingQuestion marks the latest repeated ask_human prompt", () => {
+  const feed = buildActivityFeed([
+    event({
+      id: "ask-1",
+      kind: "agent.custom_tool_use",
+      detail: {
+        toolUse: {
+          name: "ask_human",
+          input: { question: "Which remediation path should we take?" },
+        },
+      },
+    }),
+    event({
+      id: "ask-2",
+      kind: "agent.custom_tool_use",
+      detail: {
+        toolUse: {
+          name: "ask_human",
+          input: { question: "Which remediation path should we take?" },
+        },
+      },
+    }),
+  ]);
+
+  assert.deepEqual(markAwaitingQuestion(feed, "Which remediation path should we take?"), [
+    {
+      type: "question",
+      id: "ask-1",
+      question: "Which remediation path should we take?",
+      awaiting: false,
+    },
+    {
+      type: "question",
+      id: "ask-2",
+      question: "Which remediation path should we take?",
+      awaiting: true,
     },
   ]);
 });
