@@ -135,12 +135,24 @@ fi
 # required so any process — including node fetch in seed scripts — can hit
 # the route.
 PORTLESS_PORT_FILE="$HOME/.portless/proxy.port"
+PORTLESS_DEFAULT_PROXY_PORT="${SUPERLOG_PORTLESS_PROXY_PORT:-1355}"
 PORT_SUFFIX=""
-if [[ -f "$PORTLESS_PORT_FILE" ]]; then
+PROXY_PORT_VAL=""
+if [[ -s "$PORTLESS_PORT_FILE" ]]; then
   PROXY_PORT_VAL="$(tr -d '[:space:]' < "$PORTLESS_PORT_FILE")"
-  if [[ -n "$PROXY_PORT_VAL" && "$PROXY_PORT_VAL" != "443" ]]; then
-    PORT_SUFFIX=":$PROXY_PORT_VAL"
-  fi
+fi
+# A missing marker makes the portless CLI fall back to privileged port 443 and
+# attempt sudo. That cannot succeed from non-interactive worktree setup even if
+# this machine normally uses the shared unprivileged proxy. Seed the standard
+# unprivileged port so both URL generation and the CLI agree on first boot.
+if [[ ! "$PROXY_PORT_VAL" =~ ^[0-9]+$ ]]; then
+  PROXY_PORT_VAL="$PORTLESS_DEFAULT_PROXY_PORT"
+  mkdir -p "$(dirname "$PORTLESS_PORT_FILE")"
+  printf '%s\n' "$PROXY_PORT_VAL" > "$PORTLESS_PORT_FILE"
+  echo "==> portless proxy port was unset; defaulting to $PROXY_PORT_VAL" >&2
+fi
+if [[ "$PROXY_PORT_VAL" != "443" ]]; then
+  PORT_SUFFIX=":$PROXY_PORT_VAL"
 fi
 
 WEB_URL="https://$WEB_ROUTE.localhost$PORT_SUFFIX"
@@ -227,10 +239,10 @@ ensure_portless_routes_healthy() {
   #       Symptom shows up even when `overmind ps` says services are running.
   #
   #   (b) `routes.lock/` (a directory — portless uses mkdir-as-mutex) is
-  #       held by a process that crashed mid-write. addRoute() blocks for
-  #       LOCK_TIMEOUT_MS (default 30s) and STALE_LOCK_THRESHOLD_MS (~10min)
-  #       before reclaiming. New service starts during that window fail to
-  #       register, even though they print "registered" to stdout.
+  #       held by a process that crashed mid-write. Portless 0.11 retries for
+  #       5s and reclaims locks older than 10s. Never remove a fresh lock here:
+  #       a sibling service may be registering concurrently, and deleting its
+  #       lock can overwrite routes.json with an incomplete snapshot.
   #
   # Reset both before bringing the stack up. Backups go next to the file so
   # we can post-mortem if needed.
@@ -240,7 +252,10 @@ ensure_portless_routes_healthy() {
 
   mkdir -p "$portless_dir"
 
-  if [[ -d "$lock_dir" ]]; then
+  if [[ -d "$lock_dir" ]] && node -e '
+    const ageMs = Date.now() - require("fs").statSync(process.argv[1]).mtimeMs;
+    process.exit(ageMs > 10_000 ? 0 : 1);
+  ' "$lock_dir"; then
     echo "==> clearing stale portless routes.lock at $lock_dir" >&2
     rm -rf "$lock_dir"
   fi

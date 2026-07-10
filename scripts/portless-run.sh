@@ -31,15 +31,19 @@ set +a
 #   1. routes.json is 0-bytes / missing / not a JSON array — portless then
 #      reads it as empty and the user gets "No app registered for ...".
 #   2. routes.lock/ (a directory portless uses as a mutex) was left held by
-#      a crashed register call — addRoute blocks for ~30s then errors with
-#      "Failed to acquire route lock", so the service prints "Proxy is
-#      running" but never actually registers.
+#      a crashed register call. Portless 0.11 reclaims locks older than 10s;
+#      only remove locks past that threshold here. A fresh lock can belong to
+#      a sibling service registering concurrently, and deleting it can drop
+#      otherwise healthy routes from routes.json.
 # See .agents/skills/worktree-bootstrap/SKILL.md "Common pitfalls".
 portless_dir="$HOME/.portless"
 routes_file="$portless_dir/routes.json"
 lock_dir="$portless_dir/routes.lock"
 mkdir -p "$portless_dir"
-if [[ -d "$lock_dir" ]]; then
+if [[ -d "$lock_dir" ]] && node -e '
+  const ageMs = Date.now() - require("fs").statSync(process.argv[1]).mtimeMs;
+  process.exit(ageMs > 10_000 ? 0 : 1);
+' "$lock_dir"; then
   echo "[portless-run:$service] clearing stale routes.lock at $lock_dir" >&2
   rm -rf "$lock_dir"
 fi
