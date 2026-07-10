@@ -10,7 +10,8 @@
 
 import { cloudflareClientFromEnv } from "@superlog/cloudflare";
 import { decryptIntegrationSecret, encryptIntegrationSecret, schema } from "@superlog/db";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
+import { lockInstallation } from "../cloudflare/lock.js";
 import {
   type CloudflareInstallationTokens,
   type CloudflareRefreshInstallation,
@@ -40,12 +41,10 @@ function createStore(db: JobDeps["db"]): CloudflareRefresherStore {
 
     async withLockedInstallation(installationId, fn) {
       return db.transaction(async (tx) => {
-        // Same namespaced advisory lock the api's freshAccessToken takes, so an
-        // on-demand refresh and this keep-alive can't redeem the same rotating
-        // token concurrently. Auto-released at transaction end.
-        await tx.execute(
-          sql`select pg_advisory_xact_lock(hashtext('cloudflare_installations'), hashtext(${installationId}))`,
-        );
+        // Same namespaced advisory lock the api's freshAccessToken and the
+        // reconcile job take, so no two actors redeem the same rotating token
+        // concurrently. Auto-released at transaction end.
+        await lockInstallation(tx, installationId);
         const cur = await tx.query.cloudflareInstallations.findFirst({
           where: and(
             eq(schema.cloudflareInstallations.id, installationId),

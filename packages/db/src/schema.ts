@@ -2303,6 +2303,13 @@ export const cloudflareInstallations = pgTable(
     // The Workers Observability destinations we created, keyed by signal:
     // { traces, logs, metrics } → Cloudflare destination slug.
     destinations: jsonb("destinations").$type<Record<string, string>>(),
+    // When true, a periodic reconcile keeps every Worker in the account wired to
+    // our destinations — including workers created, recreated, or renamed after
+    // connect (which come up unwired and would otherwise go dark). Default on:
+    // connect already wires everything once, so "on" preserves that intent and
+    // makes it durable. Off = the account owner manages wiring manually via the
+    // Workers list.
+    autoWire: boolean("auto_wire").notNull().default(true),
     installedByUserId: uuid("installed_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),

@@ -38,7 +38,8 @@ import {
   getScriptObservability,
   isWorkerWired,
   listAccounts,
-  listScripts,
+  listScriptsStrict,
+  reconcileWorkerWiring,
   refreshAccessToken,
   revokeToken,
   signState,
@@ -65,6 +66,7 @@ function toPublic(row: CloudflareInstallationRow) {
     accountName: row.accountName,
     scope: row.scope,
     destinations: row.destinations ?? {},
+    autoWire: row.autoWire,
     installedAt: row.createdAt,
   };
 }
@@ -322,52 +324,24 @@ async function teardownInstallation(
 }
 
 /**
- * Wire the account's Workers to our destinations. Creating a destination only
- * makes telemetry flow once each Worker's own `observability` config enables the
- * signal and lists the destination, so we read every Worker's settings and merge
- * our slugs in (additive + idempotent). Best-effort and per-Worker isolated: a
- * Worker we can't update is logged and skipped, never failing the connect. Only
- * traces/logs are wired — Workers Observability has no per-Worker metrics signal.
+ * Wire the account's Workers to our destinations — the idempotent pass run at
+ * connect and by the "Wire all" button. Delegates to the shared
+ * reconcileWorkerWiring (same code the worker's periodic reconcile uses), mapping
+ * our stored destination slugs into the traces/logs shape it expects.
  */
 async function wireAccountWorkers(input: {
   accountId: string;
   accessToken: string;
   destinations: Record<string, string>;
   fetchImpl: typeof fetch;
-}): Promise<{ scripts: number; wired: number }> {
-  const slugs = { traces: input.destinations.traces, logs: input.destinations.logs };
-  if (!slugs.traces && !slugs.logs) return { scripts: 0, wired: 0 };
-  const scripts = await listScripts(input.accountId, input.accessToken, input.fetchImpl);
-  let wired = 0;
-  for (const script of scripts) {
-    try {
-      const current = await getScriptObservability({
-        accountId: input.accountId,
-        script,
-        accessToken: input.accessToken,
-        fetchImpl: input.fetchImpl,
-      });
-      const next = wireObservabilityDestinations(current, slugs);
-      if (!next) continue; // already wired
-      const res = await updateScriptObservability({
-        accountId: input.accountId,
-        script,
-        observability: next,
-        accessToken: input.accessToken,
-        fetchImpl: input.fetchImpl,
-      });
-      if (res.ok) wired += 1;
-      else
-        log.warn({ script, error: res.error }, "cloudflare: failed to wire worker observability");
-    } catch (e) {
-      log.warn({ err: e, script }, "cloudflare: failed to wire worker observability");
-    }
-  }
-  log.info(
-    { account_id: input.accountId, scripts: scripts.length, wired },
-    "cloudflare: wired worker observability to destinations",
-  );
-  return { scripts: scripts.length, wired };
+}): Promise<{ scripts: number; wired: number; listOk: boolean }> {
+  return reconcileWorkerWiring({
+    accountId: input.accountId,
+    accessToken: input.accessToken,
+    slugs: { traces: input.destinations.traces, logs: input.destinations.logs },
+    fetchImpl: input.fetchImpl,
+    log,
+  });
 }
 
 /** Our destination slugs for a row, in the shape the wire/unwire helpers take. */
@@ -751,7 +725,15 @@ export function mountCloudflareAuthed(
     if (!row) return c.json({ error: "not connected" }, 404);
     const slugs = slugsForRow(row);
     const accessToken = await accessTokenFor(row);
-    const scripts = await listScripts(row.accountId, accessToken, fetchImpl);
+    // Strict list: a failed scripts read surfaces as an error the card shows as
+    // "reconnect", not an empty account (the tolerant listScripts would hide it).
+    let scripts: string[];
+    try {
+      scripts = await listScriptsStrict(row.accountId, accessToken, fetchImpl);
+    } catch (e) {
+      log.warn({ err: e }, "cloudflare: list workers failed");
+      return c.json({ error: "could not list workers" }, 502);
+    }
     const workers = await Promise.all(
       scripts.map(async (script) => {
         try {
@@ -790,7 +772,48 @@ export function mountCloudflareAuthed(
       destinations: row.destinations ?? {},
       fetchImpl,
     });
-    return c.json({ ok: true, ...result });
+    // A failed scripts list here means we wired nothing because we couldn't see
+    // the account — surface it instead of reporting a misleading success.
+    if (!result.listOk) {
+      return c.json({ error: "could not list workers" }, 502);
+    }
+    const { listOk: _listOk, ...counts } = result;
+    return c.json({ ok: true, ...counts });
+  });
+
+  // Toggle auto-wire. When on, the worker's periodic reconcile keeps every
+  // Worker in the account wired (including ones created/recreated after connect);
+  // when off, wiring is manual via the list. Enabling also runs one wire pass
+  // immediately so the effect is visible without waiting for the next reconcile.
+  app.post("/api/projects/:projectId/cloudflare/auto-wire", async (c) => {
+    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
+    const row = await findInstallation(ctx.projectId);
+    if (!row) return c.json({ error: "not connected" }, 404);
+    const body = await c.req.json().catch(() => ({}));
+    const autoWire = (body as { autoWire?: unknown }).autoWire;
+    if (typeof autoWire !== "boolean") {
+      return c.json({ error: "autoWire must be a boolean" }, 400);
+    }
+    await db
+      .update(schema.cloudflareInstallations)
+      .set({ autoWire, updatedAt: new Date() })
+      .where(eq(schema.cloudflareInstallations.id, row.id));
+    if (autoWire) {
+      // Best-effort immediate wire so turning it on takes effect now; the
+      // scheduled reconcile is what keeps it wired going forward.
+      try {
+        const accessToken = await accessTokenFor(row);
+        await wireAccountWorkers({
+          accountId: row.accountId,
+          accessToken,
+          destinations: row.destinations ?? {},
+          fetchImpl,
+        });
+      } catch (e) {
+        log.warn({ err: e }, "cloudflare: immediate wire on auto-wire enable failed");
+      }
+    }
+    return c.json({ ok: true, autoWire });
   });
 
   // Wire / unwire one worker. Both read the worker's current observability,

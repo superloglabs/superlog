@@ -17,7 +17,6 @@
 export const CLOUDFLARE_OAUTH_AUTHORIZE_URL = "https://dash.cloudflare.com/oauth2/auth";
 export const CLOUDFLARE_OAUTH_TOKEN_URL = "https://dash.cloudflare.com/oauth2/token";
 export const CLOUDFLARE_OAUTH_REVOKE_URL = "https://dash.cloudflare.com/oauth2/revoke";
-export const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 
 // Cloudflare OAuth scope identifiers (dot-delimited, mirroring API-token
 // permission names — verified against `GET /client/v4/oauth/scopes`). The
@@ -195,15 +194,34 @@ export { signState, verifyState } from "./oauth-state.js";
 // Response parsing
 // ---------------------------------------------------------------------------
 
-// OAuth token primitives (exchange / refresh / parse) live in @superlog/cloudflare
-// so the worker's background refresh job shares exactly one implementation with
-// this connect flow. Re-exported here so existing api imports keep working.
+// OAuth token primitives (exchange / refresh / parse) and the Workers
+// Observability wiring + script client live in @superlog/cloudflare so the
+// worker's background jobs (token refresh, wiring reconcile) share exactly one
+// implementation with this connect flow. Re-exported here so existing api
+// imports keep working.
 export {
+  CLOUDFLARE_API_BASE,
   type CloudflareTokenResult,
+  type WorkerDestinationSlugs,
+  type WorkerObservability,
+  type WorkerObservabilitySignal,
   exchangeCodeForToken,
+  getScriptObservability,
+  isWorkerWired,
+  listScripts,
+  listScriptsStrict,
+  parseScriptsResponse,
   parseTokenResponse,
+  reconcileWorkerWiring,
   refreshAccessToken,
+  unwireObservabilityDestinations,
+  updateScriptObservability,
+  wireObservabilityDestinations,
 } from "@superlog/cloudflare";
+
+// Imported (not just re-exported) because the account/destination wrappers below
+// still build request URLs against it.
+import { CLOUDFLARE_API_BASE } from "@superlog/cloudflare";
 
 export type CloudflareAccount = { id: string; name: string };
 
@@ -298,111 +316,13 @@ export function staleDestinationSlugs(
 }
 
 // ---------------------------------------------------------------------------
-// Worker observability wiring
-//
-// Creating a destination is not enough: a Worker only exports to a destination
-// when its own `observability` config enables the signal and lists the
-// destination by name. So on connect we read each Worker's settings and merge our
-// destination slugs in.
-// ---------------------------------------------------------------------------
-
-export type WorkerObservabilitySignal = {
-  enabled?: boolean;
-  destinations?: string[];
-  [k: string]: unknown;
-};
-export type WorkerObservability = {
-  enabled?: boolean;
-  logs?: WorkerObservabilitySignal;
-  traces?: WorkerObservabilitySignal;
-  [k: string]: unknown;
-};
-
-/** signal → the Worker `observability` sub-key it maps to (metrics isn't a Worker signal). */
-const WORKER_OBSERVABILITY_SIGNALS = ["logs", "traces"] as const;
-
-/**
- * Merge our destination slugs into a Worker's existing observability config so it
- * exports the matching signals to our intake. Additive and idempotent: turns on
- * observability and each wired signal, and appends our slug to that signal's
- * `destinations` without dropping the Worker's existing destinations, sampling
- * rates, or any other fields. Returns the updated config, or `null` when the
- * Worker is already wired (nothing to change) so the caller can skip the PATCH.
- *
- * `slugs` maps our signal name (traces/logs) to the destination slug we created;
- * metrics is omitted because Workers Observability has no per-Worker metrics
- * signal.
- */
-export function wireObservabilityDestinations(
-  current: WorkerObservability | null | undefined,
-  slugs: { traces?: string; logs?: string },
-): WorkerObservability | null {
-  const next: WorkerObservability = current ? { ...current } : {};
-  let changed = false;
-  if (next.enabled !== true) {
-    next.enabled = true;
-    changed = true;
-  }
-  for (const signal of WORKER_OBSERVABILITY_SIGNALS) {
-    const slug = slugs[signal];
-    if (!slug) continue;
-    const sig: WorkerObservabilitySignal = { ...(next[signal] ?? {}) };
-    const destinations = Array.isArray(sig.destinations) ? [...sig.destinations] : [];
-    if (sig.enabled !== true) {
-      sig.enabled = true;
-      changed = true;
-    }
-    if (!destinations.includes(slug)) {
-      destinations.push(slug);
-      changed = true;
-    }
-    sig.destinations = destinations;
-    next[signal] = sig;
-  }
-  return changed ? next : null;
-}
-
-/**
- * Remove our destination slugs from a Worker's observability config (the inverse
- * of wireObservabilityDestinations). Only strips our slug from each signal's
- * `destinations` — it leaves the signal enabled and any other destinations the
- * Worker uses untouched, so unwiring from us never disables the Worker's own
- * observability. Returns the updated config, or `null` when none of our slugs
- * were present (nothing to change) so the caller can skip the PATCH.
- */
-export function unwireObservabilityDestinations(
-  current: WorkerObservability | null | undefined,
-  slugs: { traces?: string; logs?: string },
-): WorkerObservability | null {
-  if (!current) return null;
-  const next: WorkerObservability = { ...current };
-  let changed = false;
-  for (const signal of WORKER_OBSERVABILITY_SIGNALS) {
-    const slug = slugs[signal];
-    if (!slug) continue;
-    const existing = next[signal];
-    if (!existing || !Array.isArray(existing.destinations)) continue;
-    if (!existing.destinations.includes(slug)) continue;
-    next[signal] = { ...existing, destinations: existing.destinations.filter((d) => d !== slug) };
-    changed = true;
-  }
-  return changed ? next : null;
-}
-
-/**
- * Whether a Worker is fully wired to our destinations — i.e. wiring would be a
- * no-op. Defined in terms of wireObservabilityDestinations so "wired" and "wire"
- * can never drift: if wiring returns null there's nothing to add, so it's wired.
- */
-export function isWorkerWired(
-  current: WorkerObservability | null | undefined,
-  slugs: { traces?: string; logs?: string },
-): boolean {
-  return wireObservabilityDestinations(current, slugs) === null;
-}
-
-// ---------------------------------------------------------------------------
 // HTTP wrappers (injectable fetch)
+//
+// The Workers Observability wiring (wire/unwire/isWorkerWired) and script client
+// (listScripts/getScriptObservability/updateScriptObservability/reconcile) moved
+// to @superlog/cloudflare so the worker's reconcile job shares them; they're
+// re-exported above. Only the account + destination wrappers, which are connect-
+// only, stay here.
 // ---------------------------------------------------------------------------
 
 export type FetchImpl = typeof fetch;
@@ -487,100 +407,5 @@ export async function revokeToken(input: {
     });
   } catch {
     // best-effort
-  }
-}
-
-/** Parse `GET /workers/scripts` → list of script (Worker) ids. */
-export function parseScriptsResponse(json: unknown): string[] {
-  if (!json || typeof json !== "object") return [];
-  const result = (json as Record<string, unknown>).result;
-  if (!Array.isArray(result)) return [];
-  const ids: string[] = [];
-  for (const item of result) {
-    const id = item && typeof item === "object" ? (item as Record<string, unknown>).id : null;
-    if (typeof id === "string" && id) ids.push(id);
-  }
-  return ids;
-}
-
-/** List the Worker script ids in an account. Returns [] on any failure. */
-export async function listScripts(
-  accountId: string,
-  accessToken: string,
-  fetchImpl: FetchImpl = fetch,
-): Promise<string[]> {
-  const res = await fetchImpl(`${CLOUDFLARE_API_BASE}/accounts/${accountId}/workers/scripts`, {
-    headers: { authorization: `Bearer ${accessToken}` },
-  });
-  const json = await res.json().catch(() => null);
-  return parseScriptsResponse(json);
-}
-
-/**
- * Read one Worker's `observability` config. Returns `null` only on a *successful*
- * read where observability is unset (a genuinely fresh Worker). A failed read
- * (non-OK HTTP or `success !== true`) THROWS — the caller must not treat that as
- * "fresh" and PATCH a minimal config, which would clobber an existing
- * observability block we simply couldn't read.
- */
-export async function getScriptObservability(input: {
-  accountId: string;
-  script: string;
-  accessToken: string;
-  fetchImpl?: FetchImpl;
-}): Promise<WorkerObservability | null> {
-  const fetchImpl = input.fetchImpl ?? fetch;
-  const res = await fetchImpl(
-    `${CLOUDFLARE_API_BASE}/accounts/${input.accountId}/workers/scripts/${encodeURIComponent(
-      input.script,
-    )}/settings`,
-    { headers: { authorization: `Bearer ${input.accessToken}` } },
-  );
-  const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-  if (!res.ok || !json || json.success !== true) {
-    throw new Error(`cloudflare: read worker settings failed (status ${res.status})`);
-  }
-  const result = json.result as Record<string, unknown> | undefined;
-  const obs = result?.observability;
-  return obs && typeof obs === "object" ? (obs as WorkerObservability) : null;
-}
-
-/**
- * PATCH a Worker's settings to set its `observability` config. The settings
- * endpoint only accepts `multipart/form-data` with a JSON `settings` part (not a
- * JSON body), so we build a FormData and let fetch set the multipart boundary.
- */
-export async function updateScriptObservability(input: {
-  accountId: string;
-  script: string;
-  observability: WorkerObservability;
-  accessToken: string;
-  fetchImpl?: FetchImpl;
-}): Promise<{ ok: boolean; error?: string }> {
-  const fetchImpl = input.fetchImpl ?? fetch;
-  const form = new FormData();
-  form.append(
-    "settings",
-    new Blob([JSON.stringify({ observability: input.observability })], {
-      type: "application/json",
-    }),
-    "settings.json",
-  );
-  try {
-    const res = await fetchImpl(
-      `${CLOUDFLARE_API_BASE}/accounts/${input.accountId}/workers/scripts/${encodeURIComponent(
-        input.script,
-      )}/settings`,
-      {
-        method: "PATCH",
-        headers: { authorization: `Bearer ${input.accessToken}` },
-        body: form,
-      },
-    );
-    const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-    if (json?.success === true) return { ok: true };
-    return { ok: false, error: extractCreateError(json ?? {}) };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "request_failed" };
   }
 }
