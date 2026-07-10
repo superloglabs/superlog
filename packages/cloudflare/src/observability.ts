@@ -154,17 +154,62 @@ export function parseScriptsResponse(json: unknown): string[] {
   return ids;
 }
 
-/** List the Worker script ids in an account. Returns [] on any failure. */
+// Cloudflare's list endpoints paginate (default `per_page` 20). A single request
+// would silently drop every Worker past the first page — those workers vanish
+// from the settings list AND never get wired by reconcile. We request a large
+// page and follow `result_info.total_pages` so all workers are covered.
+const SCRIPTS_PER_PAGE = 100;
+const SCRIPTS_MAX_PAGES = 1000; // hard stop against a misbehaving result_info
+
+/** `result_info.total_pages` when the response carries pagination metadata, else null. */
+function totalPagesOf(json: unknown): number | null {
+  const ri = (json as Record<string, unknown> | null)?.result_info as
+    | Record<string, unknown>
+    | undefined;
+  return typeof ri?.total_pages === "number" ? ri.total_pages : null;
+}
+
+/**
+ * Fetch every Worker script id in an account, following pagination. `strict`
+ * controls the failure mode: strict THROWS on a failed page (for interactive
+ * routes, so the user sees a reconnect/upstream error rather than a
+ * falsely-empty account), tolerant returns whatever it has so far (for the
+ * best-effort background reconcile, which just retries next pass).
+ */
+async function fetchAllScripts(
+  accountId: string,
+  accessToken: string,
+  fetchImpl: FetchImpl,
+  strict: boolean,
+): Promise<string[]> {
+  const all: string[] = [];
+  for (let page = 1; page <= SCRIPTS_MAX_PAGES; page += 1) {
+    const res = await fetchImpl(
+      `${CLOUDFLARE_API_BASE}/accounts/${accountId}/workers/scripts?per_page=${SCRIPTS_PER_PAGE}&page=${page}`,
+      { headers: { authorization: `Bearer ${accessToken}` } },
+    );
+    const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!res.ok || !json || json.success !== true) {
+      if (strict) throw new Error(`cloudflare: list worker scripts failed (status ${res.status})`);
+      break; // tolerant: stop and return what we have
+    }
+    const ids = parseScriptsResponse(json);
+    all.push(...ids);
+    // Stop when there's no pagination metadata (endpoint returned everything at
+    // once), we've reached the last page, or a page came back empty (safety).
+    const totalPages = totalPagesOf(json);
+    if (totalPages === null || page >= totalPages || ids.length === 0) break;
+  }
+  return all;
+}
+
+/** List all Worker script ids in an account (paginated). Returns [] on any failure. */
 export async function listScripts(
   accountId: string,
   accessToken: string,
   fetchImpl: FetchImpl = fetch,
 ): Promise<string[]> {
-  const res = await fetchImpl(`${CLOUDFLARE_API_BASE}/accounts/${accountId}/workers/scripts`, {
-    headers: { authorization: `Bearer ${accessToken}` },
-  });
-  const json = await res.json().catch(() => null);
-  return parseScriptsResponse(json);
+  return fetchAllScripts(accountId, accessToken, fetchImpl, false);
 }
 
 /**
@@ -180,14 +225,7 @@ export async function listScriptsStrict(
   accessToken: string,
   fetchImpl: FetchImpl = fetch,
 ): Promise<string[]> {
-  const res = await fetchImpl(`${CLOUDFLARE_API_BASE}/accounts/${accountId}/workers/scripts`, {
-    headers: { authorization: `Bearer ${accessToken}` },
-  });
-  const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-  if (!res.ok || !json || json.success !== true) {
-    throw new Error(`cloudflare: list worker scripts failed (status ${res.status})`);
-  }
-  return parseScriptsResponse(json);
+  return fetchAllScripts(accountId, accessToken, fetchImpl, true);
 }
 
 /**

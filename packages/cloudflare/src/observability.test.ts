@@ -1,11 +1,11 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { reconcileWorkerWiring } from "./observability.js";
+import { listScripts, listScriptsStrict, reconcileWorkerWiring } from "./observability.js";
 
 // A fetch stub that answers the three Workers endpoints reconcile touches:
-//   GET  …/workers/scripts                       → the script list
-//   GET  …/workers/scripts/:s/settings           → that script's observability
-//   PATCH …/workers/scripts/:s/settings          → apply new observability
+//   GET  …/workers/scripts?per_page&page       → the (paginated) script list
+//   GET  …/workers/scripts/:s/settings         → that script's observability
+//   PATCH …/workers/scripts/:s/settings        → apply new observability
 // `settings` maps script id → its current observability block (or undefined).
 function fakeCloudflare(input: {
   scripts: string[];
@@ -17,7 +17,8 @@ function fakeCloudflare(input: {
   const fetchImpl = (async (url: unknown, init?: RequestInit) => {
     const u = String(url);
     const method = init?.method ?? "GET";
-    if (u.endsWith("/workers/scripts")) {
+    if (new URL(u).pathname.endsWith("/workers/scripts")) {
+      // Single page (no result_info → the pager stops after one request).
       return json({ success: true, result: input.scripts.map((id) => ({ id })) });
     }
     const m = u.match(/\/workers\/scripts\/([^/]+)\/settings$/);
@@ -109,7 +110,7 @@ test("reconcileWorkerWiring is a no-op when no destination slugs exist", async (
 test("reconcileWorkerWiring reports listOk:false when the scripts list fails", async () => {
   // GET /workers/scripts returns a non-OK / unsuccessful envelope.
   const fetchImpl = (async (url: unknown) => {
-    if (String(url).endsWith("/workers/scripts")) {
+    if (new URL(String(url)).pathname.endsWith("/workers/scripts")) {
       return json({ success: false, errors: [{ message: "unauthorized" }] }, 403);
     }
     throw new Error("should not reach per-script reads");
@@ -123,4 +124,41 @@ test("reconcileWorkerWiring reports listOk:false when the scripts list fails", a
   });
 
   assert.deepEqual(res, { scripts: 0, wired: 0, listOk: false });
+});
+
+// A paged /workers/scripts fake: `pages` is the list of id-arrays per page,
+// each carrying result_info.total_pages so the lister keeps following pages.
+function pagedScriptsFetch(pages: string[][], failPage?: number) {
+  const requested: number[] = [];
+  const fetchImpl = (async (url: unknown) => {
+    const parsed = new URL(String(url));
+    const page = Number(parsed.searchParams.get("page") ?? "1");
+    requested.push(page);
+    if (failPage != null && page === failPage) return json({ success: false }, 500);
+    const result = (pages[page - 1] ?? []).map((id) => ({ id }));
+    return json({
+      success: true,
+      result,
+      result_info: { page, per_page: result.length, total_pages: pages.length },
+    });
+  }) as typeof fetch;
+  return { fetchImpl, requested };
+}
+
+test("listScripts follows pagination across all pages", async () => {
+  const { fetchImpl, requested } = pagedScriptsFetch([["a", "b"], ["c", "d"], ["e"]]);
+  const ids = await listScripts("acc", "tok", fetchImpl);
+  assert.deepEqual(ids, ["a", "b", "c", "d", "e"]);
+  assert.deepEqual(requested, [1, 2, 3]); // fetched every page
+});
+
+test("listScriptsStrict throws when a later page fails", async () => {
+  const { fetchImpl } = pagedScriptsFetch([["a"], ["b"], ["c"]], 2);
+  await assert.rejects(listScriptsStrict("acc", "tok", fetchImpl), /list worker scripts failed/);
+});
+
+test("listScripts returns the pages it got before a later page fails (tolerant)", async () => {
+  const { fetchImpl } = pagedScriptsFetch([["a", "b"], ["c"]], 2);
+  const ids = await listScripts("acc", "tok", fetchImpl);
+  assert.deepEqual(ids, ["a", "b"]); // page 1 kept, failed page 2 stops the loop
 });
