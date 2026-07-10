@@ -82,7 +82,12 @@ type RecordedCall =
   | { op: "transaction.begin" }
   | { op: "transaction.end" };
 
-function recordingDb(opts: { insertReturningRow?: Record<string, unknown> } = {}): {
+function recordingDb(
+  opts: {
+    insertReturningRow?: Record<string, unknown>;
+    updateReturningRows?: Array<Record<string, unknown>>;
+  } = {},
+): {
   db: DB;
   calls: RecordedCall[];
 } {
@@ -103,8 +108,17 @@ function recordingDb(opts: { insertReturningRow?: Record<string, unknown> } = {}
   const updateChain = (table: unknown) => ({
     set(values: Record<string, unknown>) {
       return {
-        async where(_cond: unknown) {
+        where(_cond: unknown) {
           calls.push({ op: "update.where", table, values });
+          // Both `await ...where(...)` and `await ...where(...).returning()`
+          // are used by the module; support the conditional-update pattern by
+          // returning a thenable that also exposes returning().
+          const thenable = Promise.resolve(undefined);
+          return Object.assign(thenable, {
+            async returning() {
+              return opts.updateReturningRows ?? [{ id: "fake-id" }];
+            },
+          });
         },
       };
     },
@@ -497,3 +511,39 @@ function makeIncident(id: string, opts: { issueCount: number; lastSeen: Date }):
     status: "open",
   } as unknown as schema.Incident;
 }
+
+// ─── pauseForEvents race guard ───────────────────────────────────────────
+
+test("pauseForEvents parks the run and reports it won the transition", async () => {
+  const { db, calls } = recordingDb();
+  const lifecycle = createAgentRunLifecycle(db);
+  const result: AgentRunResult = { state: "awaiting_events", summary: "waiting on PRs" };
+
+  const won = await lifecycle.pauseForEvents({ id: "run-1", currentState: "running", result });
+
+  assert.equal(won, true);
+  const update = calls.find((c) => c.op === "update.where");
+  assert.equal((update as { values: Record<string, unknown> } | undefined)?.values.state, "awaiting_events");
+  const event = calls.find((c) => c.op === "insert.onConflictDoNothing");
+  assert.equal(
+    (event as { values: Record<string, unknown> } | undefined)?.values.kind,
+    "awaiting_events",
+  );
+});
+
+test("pauseForEvents that lost the race writes no event and reports false", async () => {
+  // Two sync passes can both observe the session idle; the transition is
+  // folded into the UPDATE's WHERE (state must still be 'running'), so the
+  // loser sees zero updated rows and must skip its side effects.
+  const { db, calls } = recordingDb({ updateReturningRows: [] });
+  const lifecycle = createAgentRunLifecycle(db);
+  const result: AgentRunResult = { state: "awaiting_events", summary: "waiting on PRs" };
+
+  const won = await lifecycle.pauseForEvents({ id: "run-1", currentState: "running", result });
+
+  assert.equal(won, false);
+  assert.equal(
+    calls.find((c) => c.op === "insert.onConflictDoNothing"),
+    undefined,
+  );
+});

@@ -129,17 +129,23 @@ export function createAgentRunLifecycle(db: DB) {
      * PR events (comment, merge, close) and human messages resume it via the
      * same continuation path as awaiting_human. Stores the partial result
      * (findings + actions so far) and emits `awaiting_events`.
+     *
+     * Two sync passes can both observe the session idle, so the state check
+     * is folded into the UPDATE's WHERE: only the winner parks the run and
+     * returns true; the loser gets false and must skip its side effects
+     * (Slack messaging, metering).
      */
     async pauseForEvents(opts: {
       id: string;
       currentState: AgentRunState | string;
       result: AgentRunResult;
-    }): Promise<void> {
+    }): Promise<boolean> {
       assertAgentRunSourceState("pauseForEvents", opts.currentState, ["running"]);
-      await repository.updateRun(opts.id, {
+      const won = await repository.updateRunIfState(opts.id, "running", {
         state: "awaiting_events",
         result: opts.result,
       });
+      if (!won) return false;
       await repository.insertEvent({
         agentRunId: opts.id,
         kind: "awaiting_events",
@@ -147,6 +153,7 @@ export function createAgentRunLifecycle(db: DB) {
         dedupeKey: `awaiting_events:${opts.id}:${Date.now()}`,
         processed: true,
       });
+      return true;
     },
 
     /**

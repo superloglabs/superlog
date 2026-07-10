@@ -572,22 +572,26 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         if (snapshot.pendingOutcome?.findings) {
           await applyIncidentMetadataFromResult(ctx, parkedResult);
         }
-        await moveAgentRunToAwaitingEvents(
+        const parked = await moveAgentRunToAwaitingEvents(
           ctx,
           parkedResult,
           openPrs.map((pr) => pr.url),
         );
-        await recordAgentRunCompletion({
-          orgId: ctx.project.orgId,
-          projectId: ctx.project.id,
-          incidentId: ctx.incident.id,
-          model: snapshot.modelUsage.model,
-          callSite: "agent_run",
-          usage: snapshot.modelUsage,
-          activeSeconds: snapshot.activeSeconds,
-          outcome: "awaiting_events",
-          hasPr: true,
-        });
+        // A lost park means a concurrent pass owns this turn's conclusion —
+        // it also records the usage, so a duplicate here would double-meter.
+        if (parked) {
+          await recordAgentRunCompletion({
+            orgId: ctx.project.orgId,
+            projectId: ctx.project.id,
+            incidentId: ctx.incident.id,
+            model: snapshot.modelUsage.model,
+            callSite: "agent_run",
+            usage: snapshot.modelUsage,
+            activeSeconds: snapshot.activeSeconds,
+            outcome: "awaiting_events",
+            hasPr: true,
+          });
+        }
         return;
       }
     }

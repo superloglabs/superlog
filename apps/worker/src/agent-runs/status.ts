@@ -199,17 +199,25 @@ export async function moveAgentRunToAwaitingHuman(
 // Park a run whose turn ended without a terminal call while its PRs are out
 // for review. The session stays durable; a PR comment/merge/close (or any
 // inbound human message) resumes it via the same continuation path as
-// awaiting_human.
+// awaiting_human. Returns false when a concurrent pass already moved the run
+// (the transition is conditional) — the caller must skip its side effects.
 export async function moveAgentRunToAwaitingEvents(
   ctx: AgentRunContext,
   result: AgentRunResult,
   openPrUrls: string[],
-): Promise<void> {
-  await agentRunLifecycle.pauseForEvents({
+): Promise<boolean> {
+  const parked = await agentRunLifecycle.pauseForEvents({
     id: ctx.agentRun.id,
     currentState: ctx.agentRun.state,
     result,
   });
+  if (!parked) {
+    logger.info(
+      { scope: "agent_run", agent_run_id: ctx.agentRun.id, incident_id: ctx.incident.id },
+      "skipping awaiting_events park; a concurrent pass already transitioned the run",
+    );
+    return false;
+  }
   const prList = openPrUrls.length > 0 ? ` Open PRs: ${openPrUrls.join(", ")}` : "";
   await postIncidentThreadMessage(
     ctx.incident.id,
@@ -238,6 +246,7 @@ export async function moveAgentRunToAwaitingEvents(
       showMergePrButton: openPrUrls.length === 1,
     }),
   );
+  return true;
 }
 
 export async function moveAgentRunToBlockedNoGithub(

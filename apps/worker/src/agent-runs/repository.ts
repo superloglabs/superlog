@@ -1,5 +1,5 @@
 import { type AgentRunResult, type DB, mergeIncidentsInTx, schema } from "@superlog/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { LifecycleEventKind } from "./domain.js";
 
 export type AgentRunRepository = ReturnType<typeof createAgentRunRepository>;
@@ -49,6 +49,23 @@ export function createAgentRunRepository(db: DB) {
         .update(schema.agentRuns)
         .set({ ...updates, updatedAt: updates.updatedAt ?? new Date() })
         .where(eq(schema.agentRuns.id, id));
+    },
+
+    // Conditional transition: applies `updates` only while the run is still
+    // in `fromState`, folding the state check into the UPDATE's WHERE so two
+    // racing passes can't both transition. Returns false for the loser, whose
+    // caller must skip its side effects.
+    async updateRunIfState(
+      id: string,
+      fromState: schema.AgentRun["state"],
+      updates: Partial<schema.AgentRun>,
+    ): Promise<boolean> {
+      const updated = await db
+        .update(schema.agentRuns)
+        .set({ ...updates, updatedAt: updates.updatedAt ?? new Date() })
+        .where(and(eq(schema.agentRuns.id, id), eq(schema.agentRuns.state, fromState)))
+        .returning({ id: schema.agentRuns.id });
+      return updated.length > 0;
     },
 
     insertEvent,
