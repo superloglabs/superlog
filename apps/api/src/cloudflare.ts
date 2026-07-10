@@ -36,12 +36,14 @@ import {
   deleteDestination,
   exchangeCodeForToken,
   getScriptObservability,
+  isWorkerWired,
   listAccounts,
   listScripts,
   refreshAccessToken,
   revokeToken,
   signState,
   staleDestinationSlugs,
+  unwireObservabilityDestinations,
   updateScriptObservability,
   verifyState,
   wireObservabilityDestinations,
@@ -332,9 +334,9 @@ async function wireAccountWorkers(input: {
   accessToken: string;
   destinations: Record<string, string>;
   fetchImpl: typeof fetch;
-}): Promise<void> {
+}): Promise<{ scripts: number; wired: number }> {
   const slugs = { traces: input.destinations.traces, logs: input.destinations.logs };
-  if (!slugs.traces && !slugs.logs) return;
+  if (!slugs.traces && !slugs.logs) return { scripts: 0, wired: 0 };
   const scripts = await listScripts(input.accountId, input.accessToken, input.fetchImpl);
   let wired = 0;
   for (const script of scripts) {
@@ -365,6 +367,12 @@ async function wireAccountWorkers(input: {
     { account_id: input.accountId, scripts: scripts.length, wired },
     "cloudflare: wired worker observability to destinations",
   );
+  return { scripts: scripts.length, wired };
+}
+
+/** Our destination slugs for a row, in the shape the wire/unwire helpers take. */
+function slugsForRow(row: CloudflareInstallationRow): { traces?: string; logs?: string } {
+  return { traces: row.destinations?.traces, logs: row.destinations?.logs };
 }
 
 export function mountCloudflarePublic(
@@ -722,5 +730,136 @@ export function mountCloudflareAuthed(
     // soft-revoke the row so nothing keeps streaming after "Disconnect".
     await teardownInstallation(row, { config, fetchImpl });
     return c.json({ ok: true });
+  });
+
+  // Obtain a live access token for a management call, or throw an HTTPException
+  // the routes surface as "reconnect needed" — the shared refresh-on-use path.
+  async function accessTokenFor(row: CloudflareInstallationRow): Promise<string> {
+    try {
+      return await freshAccessToken(row, config, fetchImpl);
+    } catch (e) {
+      log.warn({ err: e, account_id: row.accountId }, "cloudflare: could not obtain access token");
+      throw new HTTPException(502, { message: "cloudflare token unavailable; reconnect" });
+    }
+  }
+
+  // List the account's Worker scripts with whether each currently exports to our
+  // destinations. This is the surface that makes a dark/unwired worker visible.
+  app.get("/api/projects/:projectId/cloudflare/workers", async (c) => {
+    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
+    const row = await findInstallation(ctx.projectId);
+    if (!row) return c.json({ error: "not connected" }, 404);
+    const slugs = slugsForRow(row);
+    const accessToken = await accessTokenFor(row);
+    const scripts = await listScripts(row.accountId, accessToken, fetchImpl);
+    const workers = await Promise.all(
+      scripts.map(async (script) => {
+        try {
+          const obs = await getScriptObservability({
+            accountId: row.accountId,
+            script,
+            accessToken,
+            fetchImpl,
+          });
+          return {
+            name: script,
+            wired: isWorkerWired(obs, slugs),
+            observabilityEnabled: obs?.enabled === true,
+          };
+        } catch (e) {
+          // A single unreadable worker shouldn't blank the list — show it as
+          // unwired so the user can still try to wire it.
+          log.warn({ err: e, script }, "cloudflare: worker observability read failed");
+          return { name: script, wired: false, observabilityEnabled: false };
+        }
+      }),
+    );
+    workers.sort((a, b) => a.name.localeCompare(b.name));
+    return c.json({ workers });
+  });
+
+  // Wire every current worker in the account to our destinations (one-shot).
+  app.post("/api/projects/:projectId/cloudflare/workers/wire-all", async (c) => {
+    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
+    const row = await findInstallation(ctx.projectId);
+    if (!row) return c.json({ error: "not connected" }, 404);
+    const accessToken = await accessTokenFor(row);
+    const result = await wireAccountWorkers({
+      accountId: row.accountId,
+      accessToken,
+      destinations: row.destinations ?? {},
+      fetchImpl,
+    });
+    return c.json({ ok: true, ...result });
+  });
+
+  // Wire / unwire one worker. Both read the worker's current observability,
+  // apply the additive (wire) or subtractive (unwire) transform, and PATCH only
+  // when it actually changes.
+  app.post("/api/projects/:projectId/cloudflare/workers/:script/wire", async (c) => {
+    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
+    const script = c.req.param("script");
+    const row = await findInstallation(ctx.projectId);
+    if (!row) return c.json({ error: "not connected" }, 404);
+    const slugs = slugsForRow(row);
+    if (!slugs.traces && !slugs.logs) {
+      return c.json({ error: "no destinations provisioned" }, 400);
+    }
+    const accessToken = await accessTokenFor(row);
+    try {
+      const obs = await getScriptObservability({
+        accountId: row.accountId,
+        script,
+        accessToken,
+        fetchImpl,
+      });
+      const next = wireObservabilityDestinations(obs, slugs);
+      if (next) {
+        const res = await updateScriptObservability({
+          accountId: row.accountId,
+          script,
+          observability: next,
+          accessToken,
+          fetchImpl,
+        });
+        if (!res.ok) return c.json({ error: res.error ?? "wire failed" }, 502);
+      }
+      return c.json({ ok: true, wired: true });
+    } catch (e) {
+      log.warn({ err: e, script }, "cloudflare: wire worker failed");
+      return c.json({ error: "wire failed" }, 502);
+    }
+  });
+
+  app.post("/api/projects/:projectId/cloudflare/workers/:script/unwire", async (c) => {
+    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
+    const script = c.req.param("script");
+    const row = await findInstallation(ctx.projectId);
+    if (!row) return c.json({ error: "not connected" }, 404);
+    const slugs = slugsForRow(row);
+    const accessToken = await accessTokenFor(row);
+    try {
+      const obs = await getScriptObservability({
+        accountId: row.accountId,
+        script,
+        accessToken,
+        fetchImpl,
+      });
+      const next = unwireObservabilityDestinations(obs, slugs);
+      if (next) {
+        const res = await updateScriptObservability({
+          accountId: row.accountId,
+          script,
+          observability: next,
+          accessToken,
+          fetchImpl,
+        });
+        if (!res.ok) return c.json({ error: res.error ?? "unwire failed" }, 502);
+      }
+      return c.json({ ok: true, wired: false });
+    } catch (e) {
+      log.warn({ err: e, script }, "cloudflare: unwire worker failed");
+      return c.json({ error: "unwire failed" }, 502);
+    }
   });
 }

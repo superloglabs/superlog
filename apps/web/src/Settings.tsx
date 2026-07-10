@@ -23,6 +23,7 @@ import {
   useCloudConnections,
   useCloudStackHealth,
   useCloudflareInstallation,
+  useCloudflareWorkers,
   useConnectRender,
   useCreateCloudConnection,
   useCreateKey,
@@ -44,10 +45,10 @@ import {
   useKeys,
   useLinearInstallation,
   useMcpTokens,
-  useNotionInstallation,
   useMe,
   useMintOrgApiKey,
   useMintOrgGithubInstallUrl,
+  useNotionInstallation,
   useOrgAgentSettings,
   useOrgApiKeys,
   useOrgDigest,
@@ -96,6 +97,7 @@ import {
   useUninstallRender,
   useUninstallSlack,
   useUninstallVercel,
+  useUnwireCloudflareWorker,
   useUpdateGithubRepoAccess,
   useUpdateOrgProject,
   useUpdateWebhook,
@@ -103,6 +105,8 @@ import {
   useVerifyCloudConnection,
   useWebhookDeliveries,
   useWebhooks,
+  useWireAllCloudflareWorkers,
+  useWireCloudflareWorker,
 } from "./api";
 import { AWS_REGIONS } from "./awsRegions.ts";
 import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
@@ -1288,8 +1292,81 @@ function CloudflareCard({ projectId }: { projectId: string | undefined }) {
             </Btn>
           )}
         </div>
+        {installed && <CloudflareWorkers projectId={projectId} />}
       </div>
     </Tile>
+  );
+}
+
+// The account's Workers, each with its current wiring state. A worker only
+// streams to us when its observability config lists our destination — so a
+// worker that was recreated/renamed shows up here as "Not wired" and can be
+// re-wired with one click (or all at once).
+function CloudflareWorkers({ projectId }: { projectId: string | undefined }) {
+  const workers = useCloudflareWorkers(projectId, true);
+  const wire = useWireCloudflareWorker(projectId);
+  const unwire = useUnwireCloudflareWorker(projectId);
+  const wireAll = useWireAllCloudflareWorkers(projectId);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  if (workers.isLoading) {
+    return <p className="text-[13px] text-muted">Loading workers…</p>;
+  }
+  if (workers.isError) {
+    return (
+      <p className="text-[13px] text-danger">
+        Couldn't load workers — the Cloudflare connection may need reconnecting.
+      </p>
+    );
+  }
+  const list = workers.data?.workers ?? [];
+  if (list.length === 0) {
+    return <p className="text-[13px] text-muted">No Workers found in this account.</p>;
+  }
+  const anyUnwired = list.some((w) => !w.wired);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[13px] font-medium">Workers</span>
+        <Btn
+          size="sm"
+          variant="secondary"
+          loading={wireAll.isPending}
+          disabled={!anyUnwired || wireAll.isPending}
+          onClick={() => wireAll.mutate()}
+        >
+          Wire all
+        </Btn>
+      </div>
+      <ul className="divide-y divide-border overflow-hidden rounded-md border border-border">
+        {list.map((w) => {
+          const pending = busy === w.name && (wire.isPending || unwire.isPending);
+          return (
+            <li key={w.name} className="flex items-center justify-between gap-3 px-3 py-2">
+              <span className="min-w-0 truncate text-[13px]">{w.name}</span>
+              <div className="flex flex-shrink-0 items-center gap-2">
+                <Chip tone={w.wired ? "success" : "muted"} dot>
+                  {w.wired ? "Streaming" : "Not wired"}
+                </Chip>
+                <Btn
+                  size="sm"
+                  variant={w.wired ? "secondary" : "primary"}
+                  loading={pending}
+                  disabled={pending}
+                  onClick={() => {
+                    setBusy(w.name);
+                    (w.wired ? unwire : wire).mutate(w.name, { onSettled: () => setBusy(null) });
+                  }}
+                >
+                  {w.wired ? "Unwire" : "Wire"}
+                </Btn>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 

@@ -19,6 +19,7 @@ import {
   projectDestinationToken,
   signState,
   staleDestinationSlugs,
+  unwireObservabilityDestinations,
   verifyState,
   wireObservabilityDestinations,
 } from "./cloudflare-service.js";
@@ -294,6 +295,61 @@ test("wireObservabilityDestinations is additive + idempotent and skips when alre
     enabled: true,
     logs: { enabled: true, destinations: ["superlog-logs"] },
   });
+});
+
+test("unwireObservabilityDestinations removes our slugs, keeps others, null when absent", () => {
+  // Removes our slug from each signal, leaving the Worker's other destinations
+  // and fields intact.
+  assert.deepEqual(
+    unwireObservabilityDestinations(
+      {
+        enabled: true,
+        head_sampling_rate: 1,
+        logs: { enabled: true, persist: true, destinations: ["other-dest", "superlog-logs"] },
+        traces: { enabled: true, destinations: ["superlog-traces"] },
+      },
+      { traces: "superlog-traces", logs: "superlog-logs" },
+    ),
+    {
+      enabled: true,
+      head_sampling_rate: 1,
+      logs: { enabled: true, persist: true, destinations: ["other-dest"] },
+      traces: { enabled: true, destinations: [] },
+    },
+  );
+
+  // Our slugs aren't present → null (nothing to change, skip the PATCH).
+  assert.equal(
+    unwireObservabilityDestinations(
+      {
+        enabled: true,
+        logs: { enabled: true, destinations: ["other-dest"] },
+        traces: { enabled: true, destinations: [] },
+      },
+      { traces: "superlog-traces", logs: "superlog-logs" },
+    ),
+    null,
+  );
+
+  // Null/unset observability → null.
+  assert.equal(unwireObservabilityDestinations(null, { logs: "superlog-logs" }), null);
+
+  // Only the signal whose slug is present is touched.
+  assert.deepEqual(
+    unwireObservabilityDestinations(
+      {
+        enabled: true,
+        logs: { enabled: true, destinations: ["superlog-logs"] },
+        traces: { enabled: true, destinations: ["kept"] },
+      },
+      { traces: "superlog-traces", logs: "superlog-logs" },
+    ),
+    {
+      enabled: true,
+      logs: { enabled: true, destinations: [] },
+      traces: { enabled: true, destinations: ["kept"] },
+    },
+  );
 });
 
 test("parseCreateDestinationResponse returns slug on success and message on failure", () => {

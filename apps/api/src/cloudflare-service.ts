@@ -362,6 +362,45 @@ export function wireObservabilityDestinations(
   return changed ? next : null;
 }
 
+/**
+ * Remove our destination slugs from a Worker's observability config (the inverse
+ * of wireObservabilityDestinations). Only strips our slug from each signal's
+ * `destinations` — it leaves the signal enabled and any other destinations the
+ * Worker uses untouched, so unwiring from us never disables the Worker's own
+ * observability. Returns the updated config, or `null` when none of our slugs
+ * were present (nothing to change) so the caller can skip the PATCH.
+ */
+export function unwireObservabilityDestinations(
+  current: WorkerObservability | null | undefined,
+  slugs: { traces?: string; logs?: string },
+): WorkerObservability | null {
+  if (!current) return null;
+  const next: WorkerObservability = { ...current };
+  let changed = false;
+  for (const signal of WORKER_OBSERVABILITY_SIGNALS) {
+    const slug = slugs[signal];
+    if (!slug) continue;
+    const existing = next[signal];
+    if (!existing || !Array.isArray(existing.destinations)) continue;
+    if (!existing.destinations.includes(slug)) continue;
+    next[signal] = { ...existing, destinations: existing.destinations.filter((d) => d !== slug) };
+    changed = true;
+  }
+  return changed ? next : null;
+}
+
+/**
+ * Whether a Worker is fully wired to our destinations — i.e. wiring would be a
+ * no-op. Defined in terms of wireObservabilityDestinations so "wired" and "wire"
+ * can never drift: if wiring returns null there's nothing to add, so it's wired.
+ */
+export function isWorkerWired(
+  current: WorkerObservability | null | undefined,
+  slugs: { traces?: string; logs?: string },
+): boolean {
+  return wireObservabilityDestinations(current, slugs) === null;
+}
+
 // ---------------------------------------------------------------------------
 // HTTP wrappers (injectable fetch)
 // ---------------------------------------------------------------------------
