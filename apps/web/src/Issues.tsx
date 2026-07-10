@@ -44,6 +44,7 @@ import {
   useIssues,
   useMe,
   useMergeIncidentPullRequest,
+  useResolveAllRecoveryDetected,
   useRestartAgentRun,
   useRetryPrDelivery,
   useSendIncidentChatMessage,
@@ -669,6 +670,7 @@ function IncidentsTab({ projectId }: { projectId: string }) {
   const [newInvestigationOpen, setNewInvestigationOpen] = useState(false);
   const { id: selectedId, openItem, closeItem } = useNav();
   const incidents = useIncidents(projectId, status);
+  const resolveAllRecovery = useResolveAllRecoveryDetected(projectId);
 
   // Group incidents by severity (most severe first), newest-seen first within
   // each group. Incidents where the autorecovery agent has detected recovery
@@ -756,9 +758,29 @@ function IncidentsTab({ projectId }: { projectId: string }) {
         <div className="space-y-6">
           {groups.map((group) => (
             <section key={group.key}>
-              <h3 className="mb-2 px-1 text-[11px] font-medium uppercase tracking-wide text-muted">
-                {group.label}
-              </h3>
+              <div className="mb-2 flex items-center justify-between px-1">
+                <h3 className="text-[11px] font-medium uppercase tracking-wide text-muted">
+                  {group.label}
+                </h3>
+                {group.key === "recovery" && (
+                  <Btn
+                    variant="secondary"
+                    size="sm"
+                    loading={resolveAllRecovery.isPending}
+                    onClick={() => {
+                      const targets = group.items
+                        .filter((r) => r.pendingResolutionProposal != null)
+                        .map((r) => ({
+                          incidentId: r.incident.id,
+                          proposalId: r.pendingResolutionProposal!.id,
+                        }));
+                      if (targets.length > 0) resolveAllRecovery.mutate(targets);
+                    }}
+                  >
+                    Resolve all {group.items.length}
+                  </Btn>
+                )}
+              </div>
               <div className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface">
                 {group.items.map((row) => (
                   <IncidentRow

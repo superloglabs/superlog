@@ -2461,6 +2461,39 @@ export function useDecideResolutionProposal(projectId: string) {
   });
 }
 
+// Resolve every "recovery detected" incident in one click by confirming each
+// incident's pending resolution proposal. There's no server-side bulk route —
+// we fan out to the same confirm endpoint the single-incident banner uses, so
+// each confirm still runs the full resolve + PR-close side effects and stays
+// race-safe (a proposal a teammate already decided comes back 409, which we
+// swallow via allSettled rather than failing the whole batch). Returns how
+// many confirms succeeded vs failed so the caller can surface a partial result.
+export function useResolveAllRecoveryDetected(projectId: string) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (targets: { incidentId: string; proposalId: string }[]) => {
+      const results = await Promise.allSettled(
+        targets.map((t) =>
+          fetcher<{ ok: true }>(
+            `/api/projects/${projectId}/incidents/${t.incidentId}/resolution-proposals/${t.proposalId}/confirm`,
+            { method: "POST" },
+          ),
+        ),
+      );
+      const succeeded = results.filter((r) => r.status === "fulfilled").length;
+      return { succeeded, failed: results.length - succeeded };
+    },
+    onSuccess: (_data, targets) => {
+      qc.invalidateQueries({ queryKey: ["incidents", projectId] });
+      for (const t of targets) {
+        qc.invalidateQueries({ queryKey: ["incident", projectId, t.incidentId] });
+        qc.invalidateQueries({ queryKey: ["incident-investigation", projectId, t.incidentId] });
+      }
+    },
+  });
+}
+
 export function useUpdateIncident(projectId: string) {
   const fetcher = useFetcher();
   const qc = useQueryClient();
