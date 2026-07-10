@@ -19,18 +19,16 @@ export function facetDisplayName(value: string): string {
 }
 
 export function normalizeFacetQuery(query: string): string {
-  return query.trim();
+  return query
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 export function facetMatchesQuery(key: string, query: string): boolean {
-  const normalize = (value: string) =>
-    value
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, " ")
-      .trim();
-  const normalizedQuery = normalize(normalizeFacetQuery(query));
+  const normalizedQuery = normalizeFacetQuery(query);
   if (!normalizedQuery) return true;
-  return normalize(`${key} ${facetDisplayName(key)}`).includes(normalizedQuery);
+  return normalizeFacetQuery(`${key} ${facetDisplayName(key)}`).includes(normalizedQuery);
 }
 
 export function FacetValues({

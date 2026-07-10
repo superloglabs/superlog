@@ -23,9 +23,10 @@ test("facetMatchesQuery finds the words users see in a humanized facet label", (
   assert.equal(facetMatchesQuery("span.http.request.method", "log request"), false);
 });
 
-test("normalizeFacetQuery treats whitespace-only input as no search", () => {
+test("normalizeFacetQuery treats punctuation-only input as no search", () => {
   assert.equal(normalizeFacetQuery("   "), "");
-  assert.equal(normalizeFacetQuery("  service name  "), "service name");
+  assert.equal(normalizeFacetQuery("---"), "");
+  assert.equal(normalizeFacetQuery("  Service.Name  "), "service name");
 });
 
 test("facet values expose toggle state and event counts", () => {
