@@ -8,6 +8,7 @@ import {
   cloudflareConfigFromEnv,
   createDestination,
   deleteDestination,
+  ensureDestination,
   exchangeCodeForToken,
   getScriptObservability,
   intakeUrlForSignal,
@@ -106,7 +107,7 @@ test("buildDestinationPayload builds a project-scoped Logpush OTLP destination",
   });
   assert.equal(payload.enabled, true);
   // Name is project-scoped so two projects on one Cloudflare account don't collide
-  // (upsert-by-name would otherwise hijack each other's destination). Must also
+  // (Cloudflare requires account-wide unique names). Must also
   // match Cloudflare's ^[a-z0-9-]+$ rule.
   assert.equal(payload.name, "superlog-aa49a851b727-logs");
   assert.match(payload.name, /^[a-z0-9-]+$/);
@@ -217,7 +218,7 @@ test("staleDestinationSlugs only deletes prior slugs for signals that got a repl
     traces: "old-t",
   });
 
-  // Cloudflare returned the same slug (upsert-by-name) → it's the live one, keep it.
+  // Reconnect updated the same slug in place → it's the live one, keep it.
   assert.deepEqual(staleDestinationSlugs({ traces: "same" }, { traces: "same" }), {});
 });
 
@@ -465,6 +466,84 @@ test("createDestination hits the account-scoped destinations endpoint", async ()
   );
   assert.equal(result.ok, true);
   if (result.ok) assert.equal(result.slug, "dest-xyz");
+});
+
+test("ensureDestination updates an existing destination during reconnect", async () => {
+  let capturedUrl = "";
+  let capturedMethod = "";
+  let capturedBody: unknown = null;
+  const fakeFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    capturedUrl = String(url);
+    capturedMethod = String(init?.method ?? "");
+    capturedBody = JSON.parse(String(init?.body ?? "null"));
+    return new Response(JSON.stringify({ success: true, result: { slug: "existing-traces" } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  const payload = buildDestinationPayload({
+    signal: "traces",
+    intakeBaseUrl: "https://intake.example.com",
+    ingestKey: "sl_public_x",
+    projectId: "aa49a851-b727-4014-bbff-571dc282613c",
+  });
+
+  const result = await ensureDestination({
+    accountId: "acct-1",
+    accessToken: "new-access-token",
+    existingSlug: "existing-traces",
+    payload,
+    fetchImpl: fakeFetch,
+  });
+
+  assert.equal(capturedMethod, "PATCH");
+  assert.equal(
+    capturedUrl,
+    "https://api.cloudflare.com/client/v4/accounts/acct-1/workers/observability/destinations/existing-traces",
+  );
+  assert.deepEqual(capturedBody, {
+    enabled: true,
+    configuration: {
+      type: "logpush",
+      url: "https://intake.example.com/v1/traces",
+      headers: { "x-api-key": "sl_public_x" },
+    },
+  });
+  assert.deepEqual(result, { ok: true, slug: "existing-traces" });
+});
+
+test("ensureDestination recreates a destination when the persisted slug is stale", async () => {
+  const methods: string[] = [];
+  const fakeFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const method = String(init?.method ?? "GET");
+    methods.push(method);
+    if (method === "PATCH") {
+      return new Response(
+        JSON.stringify({ success: false, errors: [{ message: "destination not found" }] }),
+        { status: 404, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({ success: true, result: { slug: "replacement-logs" } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+
+  const result = await ensureDestination({
+    accountId: "acct-1",
+    accessToken: "new-access-token",
+    existingSlug: "deleted-logs",
+    payload: buildDestinationPayload({
+      signal: "logs",
+      intakeBaseUrl: "https://intake.example.com",
+      ingestKey: "sl_public_x",
+      projectId: "aa49a851-b727-4014-bbff-571dc282613c",
+    }),
+    fetchImpl: fakeFetch,
+  });
+
+  assert.deepEqual(methods, ["PATCH", "POST"]);
+  assert.deepEqual(result, { ok: true, slug: "replacement-logs" });
 });
 
 test("deleteDestination DELETEs the slug-scoped endpoint and never throws", async () => {

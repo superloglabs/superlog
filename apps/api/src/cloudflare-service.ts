@@ -300,9 +300,8 @@ export function parseCreateDestinationResponse(json: unknown): CreateDestination
  *  - Only signals that actually got a fresh destination this run (`signal in
  *    current`) are eligible — a signal whose recreate FAILED keeps its prior
  *    destination, since deleting it would leave that signal with nothing.
- *  - A prior slug that's still present in the new set is kept (Cloudflare's
- *    create can be upsert-by-name and return the same slug — that's the live
- *    destination, not a stale duplicate).
+ *  - A prior slug that's still present in the new set is kept (reconnect updates
+ *    same-account destinations in place, so that slug is still live).
  */
 export function staleDestinationSlugs(
   previous: Record<string, string> | null | undefined,
@@ -357,6 +356,46 @@ export async function createDestination(input: {
     },
   );
   const json = await res.json().catch(() => null);
+  return parseCreateDestinationResponse(json);
+}
+
+/**
+ * Ensure one project-owned destination is configured for the latest connection.
+ * Reconnects PATCH the slug already persisted for the same Cloudflare account:
+ * destination names are unique and Cloudflare's create endpoint does not upsert.
+ */
+export async function ensureDestination(input: {
+  accountId: string;
+  accessToken: string;
+  existingSlug?: string;
+  payload: DestinationPayload;
+  fetchImpl?: FetchImpl;
+}): Promise<CreateDestinationResult> {
+  if (!input.existingSlug) return createDestination(input);
+
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const res = await fetchImpl(
+    `${CLOUDFLARE_API_BASE}/accounts/${input.accountId}/workers/observability/destinations/${encodeURIComponent(
+      input.existingSlug,
+    )}`,
+    {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${input.accessToken}`,
+      },
+      body: JSON.stringify({
+        enabled: input.payload.enabled,
+        configuration: {
+          type: input.payload.configuration.type,
+          url: input.payload.configuration.url,
+          headers: input.payload.configuration.headers,
+        },
+      }),
+    },
+  );
+  const json = await res.json().catch(() => null);
+  if (res.status === 404) return createDestination(input);
   return parseCreateDestinationResponse(json);
 }
 

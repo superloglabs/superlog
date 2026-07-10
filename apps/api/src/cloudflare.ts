@@ -32,8 +32,8 @@ import {
   buildAuthorizeUrl,
   buildDestinationPayload,
   cloudflareConfigFromEnv,
-  createDestination,
   deleteDestination,
+  ensureDestination,
   exchangeCodeForToken,
   getScriptObservability,
   isWorkerWired,
@@ -462,11 +462,10 @@ async function provisionInstallation(input: {
   const { ingestKey, apiKeyId, minted } = await ensureIngestKey(input.projectId, sameAccount);
 
   // Undo everything this run created that isn't safely persisted to an install
-  // row: the new remote destinations (minus any slug the prior same-account row
-  // still owns — an upsert-by-name create that returned the same slug is the live
-  // one that row depends on), a freshly minted ingest key, and the just-exchanged
-  // OAuth grant. Called on *every* pre-commit failure path so a connect never
-  // leaves an orphaned destination/key/grant behind. Best-effort throughout.
+  // row: the new remote destinations (minus any same-account slug updated in
+  // place, which the prior row still owns), a freshly minted ingest key, and the
+  // just-exchanged OAuth grant. Called on *every* pre-commit failure path so a
+  // connect never leaves an orphaned destination/key/grant behind. Best-effort.
   const rollback = async (created: Record<string, string>): Promise<void> => {
     const priorSlugs = new Set(Object.values(sameAccount?.destinations ?? {}));
     const orphaned = Object.fromEntries(
@@ -491,14 +490,15 @@ async function provisionInstallation(input: {
     });
   };
 
-  // Create the new destinations first; we only tear down any prior same-account
-  // destinations *after* a replacement lands (see below). Deleting up front would
-  // leave the project "connected" with zero live destinations if creation fails.
+  // Create new destinations on first connect; reconnects update the same-account
+  // slugs in place so Cloudflare's unique destination names don't collide and
+  // existing Worker wiring remains intact.
   const destinations: Record<string, string> = {};
   for (const signal of CLOUDFLARE_SIGNALS) {
-    const result = await createDestination({
+    const result = await ensureDestination({
       accountId: input.account.id,
       accessToken: input.token.accessToken,
+      existingSlug: sameAccount?.destinations?.[signal],
       payload: buildDestinationPayload({
         signal,
         intakeBaseUrl: input.config.intakeBaseUrl,
@@ -614,7 +614,7 @@ async function provisionInstallation(input: {
     // `staleDestinationSlugs` only targets prior slugs for signals that actually
     // got a replacement this run (a signal whose recreate failed keeps its old
     // destination, which we merged back into the row above) and never a slug
-    // that's still live (an upsert-by-name create that returned the same slug).
+    // that reconnect updated in place.
     if (sameAccount?.destinations) {
       const staleSlugs = staleDestinationSlugs(sameAccount.destinations, destinations);
       await deleteRemoteDestinations({
