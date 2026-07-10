@@ -228,13 +228,14 @@ export async function moveAgentRunToAwaitingEvents(
       service: ctx.incident.service,
       buttons: [
         { text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" },
-        ...(openPrUrls[0]
-          ? [{ text: "View PR", url: openPrUrls[0], actionId: "view_pr" }]
-          : []),
+        ...(openPrUrls[0] ? [{ text: "View PR", url: openPrUrls[0], actionId: "view_pr" }] : []),
       ],
       incidentId: ctx.incident.id,
       showResolveButton: true,
-      showMergePrButton: openPrUrls.length > 0,
+      // The one-click merge action targets "the incident's latest open PR",
+      // so with several PRs out it would merge only one and resolve the whole
+      // incident — only offer it when the target is unambiguous.
+      showMergePrButton: openPrUrls.length === 1,
     }),
   );
 }

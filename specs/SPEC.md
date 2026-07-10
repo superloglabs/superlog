@@ -154,7 +154,7 @@ Once per week, Superlog must send to the connected Slack channel an update conta
 
 # Agent
 
-The following describes how the a Superlog agent should work — how it accomplishes an Agent Run.
+The following describes how a Superlog agent should work — how it accomplishes an Agent Run.
 
 ## Goal of the agent
 
@@ -200,7 +200,7 @@ The agent must have full access to the triggering issue (error log / trace / ale
 If the Incident was opened by a recurrence of a `resolved` Issue or by an Escalation trigger, the findings of the predecessor Incident(s) must be part of the prompt as well.
 
 ### Memory
-Comments on the related Issues and Incident, and all Project Memories (see Memory above), must be visible to the agent. The agent must have a tool to add new Memories during the investigation.
+Comments on the related Issues, and all Project Memories (see Memory above), must be visible to the agent. The agent must have a tool to add new Memories during the investigation.
 
 ### Telemetry
 The agent must have free access to all the telemetry of the related project, but not as part of its prompt and rather as an MCP / tool.

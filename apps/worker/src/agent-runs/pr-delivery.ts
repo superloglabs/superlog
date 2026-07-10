@@ -681,22 +681,28 @@ export async function deliverProposedPullRequest(
     return { ok: false, error: summarizePrOpenFailure(err) };
   }
 
-  await recordOpenedAgentPullRequest({
-    incidentId: ctx.incident.id,
-    agentRunId: ctx.agentRun.id,
-    installationRowId: repoMeta.installation.id,
-    repoFullName: pr.repoFullName,
-    prNumber: opened.prNumber,
-    prNodeId: opened.prNodeId,
-    url: opened.prUrl,
-    branchName: opened.branchName,
-    baseBranch: opened.baseBranch,
-    headSha: opened.headSha,
-    title: prTitle,
-    authorLogin: opened.authorLogin,
-    authorGithubId: opened.authorGithubId,
-    authorAvatarUrl: opened.authorAvatarUrl,
-  }).catch((err) =>
+  // The agent_pull_requests row is what the awaiting_events park, the PR
+  // webhooks, and same-branch follow-up pushes key on — an unrecorded PR is
+  // invisible to all of them, so recording must succeed before the tool can
+  // report success.
+  try {
+    await recordOpenedAgentPullRequest({
+      incidentId: ctx.incident.id,
+      agentRunId: ctx.agentRun.id,
+      installationRowId: repoMeta.installation.id,
+      repoFullName: pr.repoFullName,
+      prNumber: opened.prNumber,
+      prNodeId: opened.prNodeId,
+      url: opened.prUrl,
+      branchName: opened.branchName,
+      baseBranch: opened.baseBranch,
+      headSha: opened.headSha,
+      title: prTitle,
+      authorLogin: opened.authorLogin,
+      authorGithubId: opened.authorGithubId,
+      authorAvatarUrl: opened.authorAvatarUrl,
+    });
+  } catch (err) {
     logger.error(
       {
         scope: "agent_run.pr_delivery",
@@ -706,8 +712,12 @@ export async function deliverProposedPullRequest(
         err: err instanceof Error ? err.message : String(err),
       },
       "failed to record opened agent pull request",
-    ),
-  );
+    );
+    return {
+      ok: false,
+      error: `The PR was opened at ${opened.prUrl} but could not be recorded on the incident, so Superlog cannot track it. Do not open another PR for this change — include the PR URL in your findings and use ask_human to have the tracking reconciled.`,
+    };
+  }
   await agentRunLifecycle.appendAgentEvent({
     agentRunId: ctx.agentRun.id,
     kind: "pr_opened",

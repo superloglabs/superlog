@@ -5,8 +5,8 @@
 // classifies ONE issue while the incident stays open, so the agent can work
 // through a grouped incident issue by issue and only then resolve it.
 
-import { and, eq } from "drizzle-orm";
-import { type DB, db } from "./client.js";
+import { desc, eq, inArray } from "drizzle-orm";
+import type { DB } from "./client.js";
 import {
   buildIssueObservePatch,
   buildIssueResolvePatch,
@@ -37,7 +37,7 @@ export type ClassifyIncidentIssueResult =
 // already in the target status reports alreadyClassified instead of failing,
 // so a re-dispatched tool call (ack lost, worker retried) converges.
 export async function classifyIncidentIssue(
-  database: DB = db,
+  database: DB,
   opts: {
     incidentId: string;
     issueId: string;
@@ -61,17 +61,22 @@ export async function classifyIncidentIssue(
         message: `No issue with id ${opts.issueId}. Use an issue_id from the incident issue bundle.`,
       };
     }
-    const link = await tx.query.incidentIssues.findFirst({
-      where: and(
-        eq(schema.incidentIssues.incidentId, opts.incidentId),
-        eq(schema.incidentIssues.issueId, opts.issueId),
-      ),
+    // An issue accumulates one link per incident over its life (recurrence
+    // appends a new link), so "belongs to this incident" means the NEWEST
+    // link points here — mirroring listCurrentIssuesForIncidentInTx. A stale
+    // resumed run must not classify an issue that already recurred into a
+    // newer incident; that verdict belongs to the newer investigation.
+    const latestLink = await tx.query.incidentIssues.findFirst({
+      where: eq(schema.incidentIssues.issueId, opts.issueId),
+      orderBy: [desc(schema.incidentIssues.createdAt), desc(schema.incidentIssues.id)],
     });
-    if (!link) {
+    if (latestLink?.incidentId !== opts.incidentId) {
       return {
         ok: false as const,
         error: "not_linked_to_incident" as const,
-        message: `Issue ${opts.issueId} is not linked to this incident. Only classify issues from the incident issue bundle.`,
+        message: latestLink
+          ? `Issue ${opts.issueId} now belongs to a newer incident; it can no longer be classified from this one. Only classify issues from the incident issue bundle.`
+          : `Issue ${opts.issueId} is not linked to this incident. Only classify issues from the incident issue bundle.`,
       };
     }
     // Alert-episode issues track an alert breach period; suppressing future
@@ -148,10 +153,13 @@ export async function classifyIncidentIssue(
   });
 }
 
-// Issues still `open` on the incident — the resolve_incident guard: the
-// terminal call is rejected until this list is empty.
+// Issues still `open` whose CURRENT incident is this one — the
+// resolve_incident guard: the terminal call is rejected until this list is
+// empty. Same newest-link-wins semantics as classifyIncidentIssue: an issue
+// that already recurred into a newer incident is that investigation's to
+// classify and must not block this incident's resolution.
 export async function listUnclassifiedIncidentIssues(
-  database: DB = db,
+  database: DB,
   incidentId: string,
 ): Promise<Array<{ id: string; title: string }>> {
   const rows = await database
@@ -159,5 +167,27 @@ export async function listUnclassifiedIncidentIssues(
     .from(schema.issues)
     .innerJoin(schema.incidentIssues, eq(schema.incidentIssues.issueId, schema.issues.id))
     .where(eq(schema.incidentIssues.incidentId, incidentId));
-  return rows.filter((row) => row.status === "open").map(({ id, title }) => ({ id, title }));
+  const open = rows.filter((row) => row.status === "open");
+  if (open.length === 0) return [];
+
+  const links = await database.query.incidentIssues.findMany({
+    where: inArray(
+      schema.incidentIssues.issueId,
+      open.map((row) => row.id),
+    ),
+  });
+  const latestByIssue = new Map<string, (typeof links)[number]>();
+  for (const link of links) {
+    const current = latestByIssue.get(link.issueId);
+    if (
+      !current ||
+      link.createdAt > current.createdAt ||
+      (link.createdAt.getTime() === current.createdAt.getTime() && link.id > current.id)
+    ) {
+      latestByIssue.set(link.issueId, link);
+    }
+  }
+  return open
+    .filter((row) => latestByIssue.get(row.id)?.incidentId === incidentId)
+    .map(({ id, title }) => ({ id, title }));
 }

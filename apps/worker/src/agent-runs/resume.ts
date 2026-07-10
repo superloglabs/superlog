@@ -96,6 +96,7 @@ export async function resumeAgentRunFromHumanInput(ctx: AgentRunContext): Promis
       id: ctx.agentRun.id,
       currentState: ctx.agentRun.state,
       currentResumeCount: ctx.agentRun.resumeCount,
+      continuation: isContinuation,
     });
     logger.info(
       {

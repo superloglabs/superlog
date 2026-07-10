@@ -224,22 +224,31 @@ export function createAgentRunLifecycle(db: DB) {
 
     /**
      * `awaiting_human | awaiting_events | resuming → running`, after the
-     * managed session accepted the inbound message. Increments resumeCount and
-     * resets startedAt: the wall-clock budget is per active leg, so a run that
-     * legitimately waited days on a PR review isn't reaped the moment it
-     * resumes. Emits `resumed`.
+     * managed session accepted the inbound message. Resets startedAt: the
+     * wall-clock budget is per active leg, so a run that legitimately waited
+     * days on a PR review isn't reaped the moment it resumes. Emits `resumed`.
+     *
+     * resumeCount is the HUMAN-resume budget (it guards a runaway agent that
+     * keeps re-pinging the human), so only awaiting_human resumes increment
+     * it. Continuation resumes (`awaiting_events`, `resuming`) are driven by
+     * external events — PR reviews, merges, replies to a finished run — and
+     * must not eat the budget: several PR round-trips would otherwise fail
+     * the next real human reply as human_resume_budget_exhausted.
      */
     async resumeRunning(opts: {
       id: string;
       currentState: AgentRunState | string;
       currentResumeCount: number;
+      continuation?: boolean;
     }): Promise<void> {
       assertAgentRunSourceState("resumeRunning", opts.currentState, [
         "awaiting_human",
         "awaiting_events",
         "resuming",
       ]);
-      const nextResumeCount = opts.currentResumeCount + 1;
+      const nextResumeCount = opts.continuation
+        ? opts.currentResumeCount
+        : opts.currentResumeCount + 1;
       await repository.updateRun(opts.id, {
         state: "running",
         resumeCount: nextResumeCount,
@@ -249,7 +258,12 @@ export function createAgentRunLifecycle(db: DB) {
         agentRunId: opts.id,
         kind: "resumed",
         summary: "Investigation resumed with human input.",
-        dedupeKey: `resumed:${nextResumeCount}`,
+        // Continuations don't advance the counter, so the count alone can't
+        // dedupe them — suffix a timestamp so each continuation resume still
+        // records a fresh audit event.
+        dedupeKey: opts.continuation
+          ? `resumed:${nextResumeCount}:${Date.now()}`
+          : `resumed:${nextResumeCount}`,
         processed: true,
       });
     },
@@ -405,6 +419,11 @@ export function createAgentRunLifecycle(db: DB) {
         summary: opts.summary,
         failureReason: opts.reason,
         pr: existing?.pr ?? null,
+        // A failing parked run may already have delivered PRs and classified
+        // issues mid-run; those records must survive the failure so the
+        // incident still shows them.
+        prs: existing?.prs ?? null,
+        issueClassifications: existing?.issueClassifications ?? null,
         linearTicket: existing?.linearTicket ?? null,
         rootCauseConfidence: existing?.rootCauseConfidence ?? null,
       };

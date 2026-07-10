@@ -55,7 +55,14 @@ export async function replyToPrOriginIfNeeded(
   replyText: string,
 ): Promise<void> {
   let isPrOrigin = ctx.agentRun.trigger === "pr_comment";
-  let originUrl: string | null = null;
+  // A cold-start pr_comment run has no human_reply event yet — its origin PR
+  // lives in the trigger detail. A later human_reply (resumed/steered
+  // session) still overrides below, since the latest interaction wins.
+  let originUrl: string | null = isPrOrigin
+    ? (ctx.agentRun.triggerDetail?.interactions?.find(
+        (interaction) => interaction.channel === "pr_comment",
+      )?.url ?? null)
+    : null;
   const lastReply = await db.query.incidentEvents.findFirst({
     where: and(
       eq(schema.incidentEvents.agentRunId, ctx.agentRun.id),
@@ -64,8 +71,9 @@ export async function replyToPrOriginIfNeeded(
     orderBy: [desc(schema.incidentEvents.createdAt)],
     columns: { detail: true },
   });
-  const origin = (lastReply?.detail as { origin?: { channel?: string; url?: string | null } } | null)
-    ?.origin;
+  const origin = (
+    lastReply?.detail as { origin?: { channel?: string; url?: string | null } } | null
+  )?.origin;
   if (origin?.channel === "pr_comment") {
     isPrOrigin = true;
     originUrl = origin.url ?? null;

@@ -14,18 +14,18 @@
 // collect pass captures the call as the run's terminal outcome and sync's
 // completion path performs the actual resolve.
 
-import { classifyIncidentIssue, listUnclassifiedIncidentIssues, db } from "@superlog/db";
+import { classifyIncidentIssue, db, listUnclassifiedIncidentIssues } from "@superlog/db";
 import {
+  type ProposePrPayload,
   escalationTriggerFromObservation,
   isActionOutcomeToolName,
-  type ProposePrPayload,
   validateOutcomeToolInput,
 } from "../agent-outcome-tools.js";
 import type { AgentRunContext } from "../agent-run-context.js";
 import type { OutcomeActionCall, OutcomeActionExecution } from "../agent-runner-backend.js";
-import { hasRevylCreateTestIntegration, looksLikeMobileChange } from "./mobile-regression.js";
 import { loadEnabledIntegrationsForOrg } from "../integrations.js";
 import { logger } from "../logger.js";
+import { hasRevylCreateTestIntegration, looksLikeMobileChange } from "./mobile-regression.js";
 import { deliverProposedPullRequest } from "./pr-delivery.js";
 
 // Orgs with the Revyl integration must attach a mobile regression-test
@@ -36,7 +36,9 @@ async function missingMobileTestDecision(
   payload: ProposePrPayload,
 ): Promise<boolean> {
   if (payload.mobileTestStatus) return false;
-  if (!looksLikeMobileChange({ service: ctx.incident.service, changedFiles: payload.changedFiles })) {
+  if (
+    !looksLikeMobileChange({ service: ctx.incident.service, changedFiles: payload.changedFiles })
+  ) {
     return false;
   }
   try {
@@ -70,106 +72,127 @@ export function createOutcomeActionExecutor(
       return { handled: true, ok: false, payload: { ok: false, errors: validated.errors } };
     }
 
-    switch (validated.tool) {
-      case "propose_pr": {
-        const payload = validated.payload as ProposePrPayload;
-        if (await missingMobileTestDecision(ctx, payload)) {
-          return {
-            handled: true,
-            ok: false,
-            payload: {
-              ok: false,
-              errors: [
-                'This looks like a mobile change and the Revyl integration is enabled, so propose_pr requires a mobile regression-test decision. If the fix can be covered by a reliable mobile user flow, author the Revyl YAML, call `revyl_validate_yaml`, then `revyl_create_test_from_yaml`, and call `propose_pr` again with `mobileTestStatus="created"` plus the returned test id as `mobileTestId`. Otherwise call it again with `mobileTestStatus="skipped"` (or "not_applicable") and a concrete `mobileTestReason`.',
-              ],
-            },
-          };
-        }
-        const delivery = await deliverProposedPullRequest(ctx, payload, sessionId);
-        if (!delivery.ok) {
-          return { handled: true, ok: false, payload: { ok: false, errors: [delivery.error] } };
-        }
-        return {
-          handled: true,
-          ok: true,
-          payload: {
-            ok: true,
-            prUrl: delivery.url,
-            prNumber: delivery.prNumber,
-            branchName: delivery.branchName,
-            updatedExisting: delivery.updatedExisting,
-          },
-        };
-      }
-
-      case "silence_as_noise":
-      case "place_under_observation":
-      case "resolve_issue": {
-        const payload = validated.payload as {
-          issueId: string;
-          reason: string;
-          evidence: string;
-          escalateOn?: "events_per_minute" | "additional_events";
-          threshold?: number;
-        };
-        const action =
-          validated.tool === "silence_as_noise"
-            ? ({ kind: "silence" } as const)
-            : validated.tool === "place_under_observation"
-              ? ({
-                  kind: "observe",
-                  trigger: escalationTriggerFromObservation({
-                    escalateOn: payload.escalateOn as "events_per_minute" | "additional_events",
-                    threshold: payload.threshold as number,
-                  }),
-                } as const)
-              : ({ kind: "resolve" } as const);
-        const result = await classifyIncidentIssue(db, {
-          incidentId: ctx.incident.id,
-          issueId: payload.issueId,
-          agentRunId: ctx.agentRun.id,
-          action,
-          reason: payload.reason,
-          evidence: payload.evidence,
-        });
-        if (!result.ok) {
-          return { handled: true, ok: false, payload: { ok: false, errors: [result.message] } };
-        }
-        return {
-          handled: true,
-          ok: true,
-          payload: {
-            ok: true,
-            issueId: payload.issueId,
-            status: result.status,
-            alreadyClassified: result.alreadyClassified,
-          },
-        };
-      }
-
-      case "resolve_incident": {
-        const unclassified = await listUnclassifiedIncidentIssues(db, ctx.incident.id);
-        if (unclassified.length > 0) {
-          return {
-            handled: true,
-            ok: false,
-            payload: {
-              ok: false,
-              errors: [
-                `Cannot resolve the incident yet: ${unclassified.length} linked issue(s) are still open and must be classified first (silence_as_noise / place_under_observation / resolve_issue): ${unclassified
-                  .map((issue) => `${issue.id} ("${issue.title}")`)
-                  .join(", ")}.`,
-              ],
-            },
-          };
-        }
-        // Guard passed — ack final; the collect pass captures this call as
-        // the terminal outcome and the completion path applies the resolve.
-        return { handled: true, ok: true, payload: { ok: true, final: true } };
-      }
-
-      default:
-        return { handled: false };
+    // A transient DB/GitHub throw must stay inside the action contract — the
+    // agent gets a tool error it can retry, instead of the call being left
+    // unacked (the backend's dispatch loop also guards this, but the contract
+    // shouldn't depend on it).
+    try {
+      return await executeValidatedCall(ctx, sessionId, validated);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error(
+        { err, op: call.name, agentRunId: ctx.agentRun.id, incidentId: ctx.incident.id },
+        "outcome action execution threw",
+      );
+      return { handled: true, ok: false, payload: { ok: false, errors: [message] } };
     }
   };
+}
+
+async function executeValidatedCall(
+  ctx: AgentRunContext,
+  sessionId: string,
+  validated: Extract<ReturnType<typeof validateOutcomeToolInput>, { ok: true }>,
+): Promise<OutcomeActionExecution> {
+  switch (validated.tool) {
+    case "propose_pr": {
+      const payload = validated.payload as ProposePrPayload;
+      if (await missingMobileTestDecision(ctx, payload)) {
+        return {
+          handled: true,
+          ok: false,
+          payload: {
+            ok: false,
+            errors: [
+              'This looks like a mobile change and the Revyl integration is enabled, so propose_pr requires a mobile regression-test decision. If the fix can be covered by a reliable mobile user flow, author the Revyl YAML, call `revyl_validate_yaml`, then `revyl_create_test_from_yaml`, and call `propose_pr` again with `mobileTestStatus="created"` plus the returned test id as `mobileTestId`. Otherwise call it again with `mobileTestStatus="skipped"` (or "not_applicable") and a concrete `mobileTestReason`.',
+            ],
+          },
+        };
+      }
+      const delivery = await deliverProposedPullRequest(ctx, payload, sessionId);
+      if (!delivery.ok) {
+        return { handled: true, ok: false, payload: { ok: false, errors: [delivery.error] } };
+      }
+      return {
+        handled: true,
+        ok: true,
+        payload: {
+          ok: true,
+          prUrl: delivery.url,
+          prNumber: delivery.prNumber,
+          branchName: delivery.branchName,
+          updatedExisting: delivery.updatedExisting,
+        },
+      };
+    }
+
+    case "silence_as_noise":
+    case "place_under_observation":
+    case "resolve_issue": {
+      const payload = validated.payload as {
+        issueId: string;
+        reason: string;
+        evidence: string;
+        escalateOn?: "events_per_minute" | "additional_events";
+        threshold?: number;
+      };
+      const action =
+        validated.tool === "silence_as_noise"
+          ? ({ kind: "silence" } as const)
+          : validated.tool === "place_under_observation"
+            ? ({
+                kind: "observe",
+                trigger: escalationTriggerFromObservation({
+                  escalateOn: payload.escalateOn as "events_per_minute" | "additional_events",
+                  threshold: payload.threshold as number,
+                }),
+              } as const)
+            : ({ kind: "resolve" } as const);
+      const result = await classifyIncidentIssue(db, {
+        incidentId: ctx.incident.id,
+        issueId: payload.issueId,
+        agentRunId: ctx.agentRun.id,
+        action,
+        reason: payload.reason,
+        evidence: payload.evidence,
+      });
+      if (!result.ok) {
+        return { handled: true, ok: false, payload: { ok: false, errors: [result.message] } };
+      }
+      return {
+        handled: true,
+        ok: true,
+        payload: {
+          ok: true,
+          issueId: payload.issueId,
+          status: result.status,
+          alreadyClassified: result.alreadyClassified,
+        },
+      };
+    }
+
+    case "resolve_incident": {
+      const unclassified = await listUnclassifiedIncidentIssues(db, ctx.incident.id);
+      if (unclassified.length > 0) {
+        return {
+          handled: true,
+          ok: false,
+          payload: {
+            ok: false,
+            errors: [
+              `Cannot resolve the incident yet: ${unclassified.length} linked issue(s) are still open and must be classified first (silence_as_noise / place_under_observation / resolve_issue): ${unclassified
+                .map((issue) => `${issue.id} ("${issue.title}")`)
+                .join(", ")}.`,
+            ],
+          },
+        };
+      }
+      // Guard passed — ack final; the collect pass captures this call as
+      // the terminal outcome and the completion path applies the resolve.
+      return { handled: true, ok: true, payload: { ok: true, final: true } };
+    }
+
+    default:
+      return { handled: false };
+  }
 }
