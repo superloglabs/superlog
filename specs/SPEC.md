@@ -160,7 +160,7 @@ The following describes how a Superlog agent should work — how it accomplishes
 
 An agent needs to accomplish an Agent Run described above.
 
-An Agent Run starts with a new Incident being opened from either a new Issue, a recurrence of a `resolved` Issue, or a trip of an Escalation trigger.
+An Agent Run starts with a new Incident being opened from either a new Issue (an error or an alert episode — see Issue kinds above), a recurrence of a `resolved` Issue, or a trip of an Escalation trigger.
 
 ## Agent actions
 
@@ -195,7 +195,10 @@ Each Incident is investigated by one durable agent session. Intervention outcome
 ## Inputs of the agent
 
 ### Issues
-The agent must have full access to the triggering issue (error log / trace / alert) / trigger as part of its prompt.
+The agent must have full access to the triggering issue as part of its prompt.
+
+- For an error Issue: the error sample (log/trace), stack frames, and trace context.
+- For an alert-episode Issue: the alert's configuration (source/metric, filter, aggregation, comparator, threshold, evaluation window, grouping) and the episode itself (breach start time, end time if recovered, and the observed values at open, peak, and latest). No synthetic error-shaped sample is shown for alerts.
 
 If the Incident was opened by a recurrence of a `resolved` Issue or by an Escalation trigger, the findings of the predecessor Incident(s) must be part of the prompt as well.
 
