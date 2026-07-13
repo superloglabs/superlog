@@ -65,6 +65,7 @@ import {
   type IncidentMetaRow,
   buildIncidentDetailMeta,
 } from "./incidents/incident-detail-view-model.ts";
+import { IncidentDetailScrollArea } from "./incidents/IncidentDetailScrollArea.tsx";
 import { getIssueIncidentLinkState } from "./issue-incident-link-state.ts";
 import {
   IncidentDetailSkeleton,
@@ -1570,7 +1571,7 @@ export function IncidentDetailContent({
         <div className="flex min-h-0 min-w-0 flex-col bg-bg">
           <IncidentDetailTabs active={detailTab} onChange={setDetailTab} />
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 lg:px-8">
+          <IncidentDetailScrollArea>
             {detailTab === "activity" && (
               <div className="space-y-8">
                 {outOfCredits && <OutOfCreditsBanner />}
@@ -1662,7 +1663,7 @@ export function IncidentDetailContent({
             {detailTab === "pr" && (
               <IncidentPullRequestPanel projectId={incident.projectId} incidentId={incident.id} />
             )}
-          </div>
+          </IncidentDetailScrollArea>
 
           {detailTab === "activity" && (
             <IncidentChatComposer
