@@ -2,6 +2,7 @@ import "./env.js";
 import { createClient } from "@clickhouse/client";
 import { db } from "@superlog/db";
 import { registerAgentRunHealthMetrics } from "./agent-run-health-metrics.js";
+import { startAgentRunQueue } from "./agent-runs/queue-wiring.js";
 import { initAiUsageSink } from "./ai-usage.js";
 import { createUsageMeterTicker } from "./billing/usage-meter-ticker.js";
 import { handleIssueTransition } from "./incidents/workflow.js";
@@ -82,6 +83,24 @@ const dispatchIssueTransition = createIssueTransitionDispatcher({
   inline: handleIssueTransition,
 });
 
+// Agent runs advance as per-run jobs on their own pg-boss queue (one job per
+// run, minute sweep as the safety net) so investigation throughput no longer
+// depends on the size of the global active set. If registration fails, the
+// tick's batch rotation below remains the fallback — degraded cadence, but
+// investigations still advance.
+let agentRunQueueReady = false;
+if (jobBoss) {
+  try {
+    await startAgentRunQueue(jobBoss);
+    agentRunQueueReady = true;
+  } catch (err) {
+    logger.error(
+      { scope: "boot", err: err instanceof Error ? err.message : String(err) },
+      "agent-run queue failed to register; falling back to tick batch rotation",
+    );
+  }
+}
+
 const telemetryIngestor = createTelemetryIngestor({
   clickhouse: ch,
   batchSize: BATCH_SIZE,
@@ -102,6 +121,7 @@ const tick = createWorkerTick({
   telemetryIngestor,
   usageMeter,
   handleIssueTransition: dispatchIssueTransition,
+  includeAgentRuns: !agentRunQueueReady,
 });
 
 runWorker({ pollIntervalMs: POLL_INTERVAL_MS, batchSize: BATCH_SIZE, tick }).catch((err) => {

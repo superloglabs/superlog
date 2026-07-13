@@ -13,6 +13,7 @@ import {
   isActiveState as isActiveAgentRunState,
 } from "../agent-run.js";
 import { TERMINAL_STATES as AGENT_RUN_TERMINAL_STATES } from "../agent-runs/domain.js";
+import { dispatchAgentRunJob } from "../agent-runs/enqueue.js";
 import { investigationGate } from "../billing/investigation-gate.js";
 import { usageNotifier } from "../billing/usage-notifier-infra.js";
 import { isAutoAgentRunSuppressed } from "../incident-cooldown.js";
@@ -102,39 +103,50 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
     return { agentRun: null, queueStatus: "no_credits" };
   }
 
-  return db.transaction(async (tx) => {
-    await tx
-      .select({ id: schema.incidents.id })
-      .from(schema.incidents)
-      .where(eq(schema.incidents.id, incident.id))
-      .for("update");
-
-    const existing = await tx.query.agentRuns.findFirst({
-      where: and(
-        eq(schema.agentRuns.incidentId, incident.id),
-        inArray(schema.agentRuns.state, [...AGENT_RUN_ACTIVE_STATES]),
-      ),
-      orderBy: [desc(schema.agentRuns.createdAt)],
-    });
-    if (existing) return { agentRun: existing, queueStatus: "existing_active" };
-
-    const queued = await createAgentRunLifecycle(tx as unknown as DB).enqueue({
-      incidentId: incident.id,
-      runtime: automation.agentRunProvider,
-    });
-    if (!queued) throw new Error("failed to queue agent run");
-
-    // Clear a stale "out of credits" mark now that a run is queued (e.g. the org
-    // upgraded or the monthly limit reset since the last blocked transition).
-    if (incident.autoInvestigateBlockedReason !== null) {
+  const result = await db.transaction(
+    async (
+      tx,
+    ): Promise<{ agentRun: schema.AgentRun | null; queueStatus: ReopenedIncidentQueueStatus }> => {
       await tx
-        .update(schema.incidents)
-        .set({ autoInvestigateBlockedReason: null })
-        .where(eq(schema.incidents.id, incident.id));
-    }
+        .select({ id: schema.incidents.id })
+        .from(schema.incidents)
+        .where(eq(schema.incidents.id, incident.id))
+        .for("update");
 
-    return { agentRun: queued, queueStatus: "queued" };
-  });
+      const existing = await tx.query.agentRuns.findFirst({
+        where: and(
+          eq(schema.agentRuns.incidentId, incident.id),
+          inArray(schema.agentRuns.state, [...AGENT_RUN_ACTIVE_STATES]),
+        ),
+        orderBy: [desc(schema.agentRuns.createdAt)],
+      });
+      if (existing) return { agentRun: existing, queueStatus: "existing_active" };
+
+      const queued = await createAgentRunLifecycle(tx as unknown as DB).enqueue({
+        incidentId: incident.id,
+        runtime: automation.agentRunProvider,
+      });
+      if (!queued) throw new Error("failed to queue agent run");
+
+      // Clear a stale "out of credits" mark now that a run is queued (e.g. the org
+      // upgraded or the monthly limit reset since the last blocked transition).
+      if (incident.autoInvestigateBlockedReason !== null) {
+        await tx
+          .update(schema.incidents)
+          .set({ autoInvestigateBlockedReason: null })
+          .where(eq(schema.incidents.id, incident.id));
+      }
+
+      return { agentRun: queued, queueStatus: "queued" };
+    },
+  );
+  if (result.queueStatus === "queued" && result.agentRun) {
+    // Post-commit: put the new run on the advance queue now so the
+    // investigation starts in seconds. Best-effort — the minute sweep picks
+    // it up regardless.
+    await dispatchAgentRunJob(result.agentRun.id);
+  }
+  return result;
 }
 
 // Steer the incident's existing investigation with a newly-arrived error

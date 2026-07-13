@@ -34,8 +34,14 @@ export function createWorkerTick(opts: {
   // Injected so callers can route transition side effects out-of-band (see
   // issue-transitions.ts); defaults to the direct inline workflow.
   handleIssueTransition?: typeof handleIssueTransition;
+  // Agent runs normally advance on their own pg-boss queue (agent-runs/
+  // queue.ts). The tick's batch rotation is kept only as the fallback for a
+  // boot where that queue failed to register — pass false once the queue is
+  // live so runs aren't advanced from two places at once.
+  includeAgentRuns?: boolean;
 }): () => Promise<WorkerTickResult> {
   const onIssueTransition = opts.handleIssueTransition ?? handleIssueTransition;
+  const includeAgentRuns = opts.includeAgentRuns ?? true;
   return () =>
     tracer.startActiveSpan("worker.tick", async (span) => {
       async function safe<T>(name: string, run: () => Promise<T>, fallback: T): Promise<T> {
@@ -66,7 +72,7 @@ export function createWorkerTick(opts: {
       try {
         const spans = await safe("spans", opts.telemetryIngestor.tickSpans, 0);
         const logs = await safe("logs", opts.telemetryIngestor.tickLogs, 0);
-        const agentRuns = await safe("agent_runs", tickAgentRuns, 0);
+        const agentRuns = includeAgentRuns ? await safe("agent_runs", tickAgentRuns, 0) : 0;
         const agentChats = await safe("agent_chats", tickAgentChats, 0);
         const alerts = await safe(
           "alerts",

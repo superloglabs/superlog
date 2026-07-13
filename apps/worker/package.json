@@ -20,6 +20,7 @@
     "test:slack-pinning": "tsx --test src/slack-pinning.test.ts",
     "test:incident-cooldown": "tsx --test src/incident-cooldown.test.ts",
     "test:agent-run": "tsx --test src/agent-run.test.ts",
+    "test:agent-run-queue": "tsx --test src/agent-runs/queue.test.ts",
     "test:agent-run-start": "tsx --test src/agent-runs/start.test.ts",
     "test:agent-run-status": "tsx --test src/agent-runs/status.test.ts",
     "test:agent-run-sync": "tsx --test src/agent-runs/sync.test.ts",
