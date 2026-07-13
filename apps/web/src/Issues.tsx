@@ -54,7 +54,14 @@ import {
   useUnsilenceIssue,
   useUpdateIncident,
 } from "./api.ts";
-import { Btn, Chip, OutOfCreditsBadge, OutOfCreditsBanner, Tabs } from "./design/ui.tsx";
+import {
+  Btn,
+  Chip,
+  OutOfCreditsBadge,
+  OutOfCreditsBanner,
+  PageHeader,
+  Tabs,
+} from "./design/ui.tsx";
 import { type IncidentStatusAction, getIncidentStatusActions } from "./incident-status-action.ts";
 import {
   IncidentActivityFeed,
@@ -67,6 +74,7 @@ import {
 } from "./incidents/incident-detail-view-model.ts";
 import { IncidentDetailScrollArea } from "./incidents/IncidentDetailScrollArea.tsx";
 import { getIssueIncidentLinkState } from "./issue-incident-link-state.ts";
+import { IssueDetailView } from "./issues/IssueDetailView.tsx";
 import {
   IncidentDetailSkeleton,
   IncidentListSkeleton,
@@ -146,41 +154,47 @@ export function Issues() {
 function IssuesShell({ projectId }: { projectId: string }) {
   const tab = useTab();
   const params = useParams<{ id?: string }>();
-  const labels: Record<Tab, string> = { incidents: "Incidents", issues: "Issues" };
+  const navigate = useNavigate();
+  const labels: Record<Tab, string> = { incidents: "Incidents", issues: "Errors" };
 
   if (tab === "incidents" && params.id) {
     return <IncidentsTab projectId={projectId} />;
   }
 
+  if (tab === "issues" && params.id) {
+    return (
+      <IssueDetailPage
+        projectId={projectId}
+        issueId={params.id}
+        onClose={() => navigate("/issues")}
+        onViewIncident={(incidentId) => navigate(`/incidents/${incidentId}`)}
+      />
+    );
+  }
+
   return (
-    <div>
-      <div className="mb-6 flex items-center gap-1">
-        {(["incidents", "issues"] as const).map((t) => (
-          <Link
-            key={t}
-            to={tabBasePath(t)}
-            replace={tab === t}
-            className={
-              tab === t
-                ? "rounded-lg bg-surface-2 px-3 py-1.5 text-[13px] font-medium tracking-tight text-fg"
-                : "rounded-lg px-3 py-1.5 text-[13px] font-medium tracking-tight text-muted hover:text-fg"
-            }
-          >
-            {labels[t]}
-          </Link>
-        ))}
+    <div className="relative">
+      <PageHeader
+        title={labels[tab]}
+        description={
+          tab === "issues"
+            ? "Triage recurring errors and follow investigations from first signal to resolution."
+            : "Investigate operational incidents from first signal to resolution."
+        }
+      />
+      <div className="mt-6">
+        {tab === "issues" ? (
+          <IssuesTab projectId={projectId} />
+        ) : (
+          <IncidentsTab projectId={projectId} />
+        )}
       </div>
-      {tab === "issues" ? (
-        <IssuesTab projectId={projectId} />
-      ) : (
-        <IncidentsTab projectId={projectId} />
-      )}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Issues tab
+// Errors tab
 // ---------------------------------------------------------------------------
 
 type EventTarget =
@@ -230,8 +244,8 @@ function IssuesTab({ projectId }: { projectId: string }) {
               }}
               className={
                 filter === t.id
-                  ? "rounded-lg bg-surface-2 px-3 py-1.5 text-[13px] font-medium tracking-tight text-fg"
-                  : "rounded-lg px-3 py-1.5 text-[13px] font-medium tracking-tight text-muted hover:text-fg"
+                  ? "rounded-md bg-surface-3 px-3 py-1.5 text-[13px] font-medium tracking-tight text-fg"
+                  : "rounded-md px-3 py-1.5 text-[13px] font-medium tracking-tight text-muted hover:text-fg"
               }
             >
               {t.label}
@@ -240,7 +254,7 @@ function IssuesTab({ projectId }: { projectId: string }) {
         </div>
         {issues.data && (
           <span className="text-[12px] text-muted">
-            {issues.data.length} issue{issues.data.length !== 1 ? "s" : ""}
+            {issues.data.length} error{issues.data.length !== 1 ? "s" : ""}
           </span>
         )}
       </div>
@@ -250,14 +264,14 @@ function IssuesTab({ projectId }: { projectId: string }) {
         <div className="text-[13px] text-danger">Failed to load: {String(issues.error)}</div>
       )}
       {issues.data && issues.data.length === 0 && (
-        <div className="rounded-2xl border border-border bg-surface p-12 text-center">
+        <div className="rounded-xl border border-border bg-surface p-12 text-center">
           <p className="text-[13px] text-muted">
-            No {filter === "all" ? "" : filter + " "}ungrouped issues
+            No {filter === "all" ? "" : filter + " "}ungrouped errors
           </p>
         </div>
       )}
       {issues.data && issues.data.length > 0 && (
-        <div className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface">
+        <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface">
           {issues.data.map((issue) => (
             <IssueRow
               key={issue.id}
@@ -353,19 +367,19 @@ export function IssueRow({
             <KindChip issue={issue} />
             <IssueStatusChip issue={issue} />
             <GroupingChip state={issue.groupingState} />
-            <span className="font-mono text-[11px] text-muted">{issue.exceptionType}</span>
+            <span className="font-sans text-[11px] text-muted">{issue.exceptionType}</span>
             <ServiceEnv service={issue.service} environment={issueEnvironment(issue)} />
           </div>
           <p className="truncate text-[13px] font-medium text-fg">{issue.title}</p>
           {issue.message && (
-            <p className="mt-0.5 truncate font-mono text-[11px] text-muted">{issue.message}</p>
+            <p className="mt-0.5 truncate font-sans text-[11px] text-muted">{issue.message}</p>
           )}
         </div>
         <div className="shrink-0 text-right">
-          <div className="font-mono text-[11px] tabular-nums text-muted">
+          <div className="font-sans text-[11px] tabular-nums text-muted">
             {fmtRelative(issue.lastSeen)}
           </div>
-          <div className="mt-1 font-mono text-[11px] tabular-nums text-subtle">
+          <div className="mt-1 font-sans text-[11px] tabular-nums text-subtle">
             {fmtCount(issue.eventCount)} event{issue.eventCount !== 1 ? "s" : ""}
           </div>
         </div>
@@ -383,6 +397,92 @@ type IssueDetailProps = {
   onOpenEvent?: (target: NonNullable<EventTarget>) => void;
   silenceUpdating?: boolean;
 };
+
+function IssueDetailPage({
+  projectId,
+  issueId,
+  onClose,
+  onViewIncident,
+}: {
+  projectId: string;
+  issueId: string;
+  onClose: () => void;
+  onViewIncident: (incidentId: string) => void;
+}) {
+  const q = useIssue(projectId, issueId);
+  const silence = useSilenceIssue(projectId);
+  const unsilence = useUnsilenceIssue(projectId);
+  const [eventTarget, setEventTarget] = useState<EventTarget>(null);
+
+  if (q.isLoading) {
+    return <IssueDetailSkeleton />;
+  }
+  if (q.error || !q.data) {
+    return (
+      <div className="p-6 text-[12px] text-danger">
+        Failed to load error: {String(q.error ?? "no data")}
+      </div>
+    );
+  }
+
+  const issue = q.data;
+  const latestEvent = eventTargetFromIssue(issue);
+  const toggleSilence = issue.silencedAt ? unsilence : silence;
+
+  return (
+    <>
+      <IssueDetailView
+        issue={issue}
+        environment={issueEnvironment(issue)}
+        onBack={onClose}
+        onToggleSilence={() => toggleSilence.mutate(issue.id)}
+        silenceUpdating={toggleSilence.isPending}
+        onOpenEvidence={latestEvent ? () => setEventTarget(latestEvent) : undefined}
+        evidenceLabel={latestEvent?.kind === "trace" ? "Open latest trace" : "Open latest log"}
+        linkedIncident={
+          <IssueIncidentLink
+            projectId={projectId}
+            issueId={issue.id}
+            groupingState={issue.groupingState}
+            groupingReason={issue.groupingReason}
+            onViewIncident={onViewIncident}
+            showHeading={false}
+          />
+        }
+        feedbackAction={
+          <FeedbackTrigger
+            kind="issue"
+            refId={issue.id}
+            projectId={projectId}
+            className="w-full justify-center"
+          />
+        }
+      />
+
+      {eventTarget?.kind === "trace" && (
+        <TraceDrawer
+          projectId={projectId}
+          traceId={eventTarget.traceId}
+          focusSpanId={eventTarget.spanId}
+          onClose={() => setEventTarget(null)}
+        />
+      )}
+      {eventTarget?.kind === "log" && (
+        <LogDrawer
+          log={eventTarget.log}
+          onClose={() => setEventTarget(null)}
+          onOpenTrace={(traceId) =>
+            setEventTarget({
+              kind: "trace",
+              traceId,
+              spanId: eventTarget.log.span_id || undefined,
+            })
+          }
+        />
+      )}
+    </>
+  );
+}
 
 export function IssueDrawer(props: IssueDetailProps) {
   useEffect(() => {
@@ -460,7 +560,7 @@ function IssueDetailContent({
         <div className="flex flex-wrap items-center gap-2">
           {!issue.topFrame && (
             <>
-              <span className="font-mono text-[11px] text-muted">{issue.exceptionType}</span>
+              <span className="font-sans text-[11px] text-muted">{issue.exceptionType}</span>
               <KindChip issue={issue} />
             </>
           )}
@@ -470,7 +570,7 @@ function IssueDetailContent({
         {issue.topFrame && (
           <div className="space-y-0.5">
             <SectionHeader>Top frame</SectionHeader>
-            <p className="font-mono text-[12px] text-muted">{issue.topFrame}</p>
+            <p className="font-sans text-[12px] text-muted">{issue.topFrame}</p>
           </div>
         )}
       </div>
@@ -478,7 +578,7 @@ function IssueDetailContent({
       {issue.message && (
         <div className="space-y-3">
           <SectionHeading>Error body</SectionHeading>
-          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-sm border border-border bg-surface-2 px-3 py-2 font-mono text-[11px] text-fg">
+          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-sm border border-border bg-surface-2 px-3 py-2 font-sans text-[11px] text-fg">
             {issue.message}
           </pre>
         </div>
@@ -488,11 +588,11 @@ function IssueDetailContent({
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-3">
             <SectionHeading>Original stack</SectionHeading>
-            <span className="font-mono text-[10px] text-subtle">
+            <span className="font-sans text-[10px] text-subtle">
               {issue.symbolication.artifact.platform} - {issue.symbolication.artifact.release}
             </span>
           </div>
-          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-sm border border-border bg-surface-2 px-3 py-2 font-mono text-[11px] text-fg">
+          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-sm border border-border bg-surface-2 px-3 py-2 font-sans text-[11px] text-fg">
             {issue.symbolication.stacktrace}
           </pre>
         </div>
@@ -549,12 +649,14 @@ function IssueIncidentLink({
   groupingState,
   groupingReason,
   onViewIncident,
+  showHeading = true,
 }: {
   projectId: string;
   issueId: string;
   groupingState: Issue["groupingState"];
   groupingReason: string | null;
   onViewIncident?: (incidentId: string) => void;
+  showHeading?: boolean;
 }) {
   const q = useIssueAgentRun(projectId, issueId);
   const incident = q.data?.incident ?? null;
@@ -563,11 +665,12 @@ function IssueIncidentLink({
     incident,
     isLoading: q.isLoading,
   });
+  const heading = showHeading ? <SectionHeading>Incident</SectionHeading> : null;
 
   if (linkState === "pending") {
     return (
       <div className="space-y-3">
-        <SectionHeading>Incident</SectionHeading>
+        {heading}
         <p className="text-[12px] text-muted">Analysing — grouping in progress.</p>
       </div>
     );
@@ -575,7 +678,7 @@ function IssueIncidentLink({
   if (linkState === "failed") {
     return (
       <div className="space-y-3">
-        <SectionHeading>Incident</SectionHeading>
+        {heading}
         <p className="text-[12px] text-danger">Grouping analysis failed.</p>
       </div>
     );
@@ -585,7 +688,7 @@ function IssueIncidentLink({
   if (linkState === "loading") {
     return (
       <div className="space-y-3">
-        <SectionHeading>Incident</SectionHeading>
+        {heading}
         <p className="text-[12px] text-muted">loading…</p>
       </div>
     );
@@ -593,10 +696,10 @@ function IssueIncidentLink({
   if (!incident) {
     return (
       <div className="space-y-3">
-        <SectionHeading>Incident</SectionHeading>
+        {heading}
         <p className="text-[12px] text-muted">
           {groupingState === "standalone"
-            ? "Standalone — not bundled with other issues."
+            ? "Standalone — not bundled with other errors."
             : "loading…"}
         </p>
       </div>
@@ -604,10 +707,11 @@ function IssueIncidentLink({
   }
   return (
     <div className="space-y-3">
-      <SectionHeading>Incident</SectionHeading>
+      {heading}
       <button
+        type="button"
         onClick={() => onViewIncident?.(incident.id)}
-        className="block w-full rounded-sm border border-border bg-surface-2 px-3 py-2 text-left transition-colors hover:bg-surface-3"
+        className="block w-full rounded-lg border border-border bg-surface-2 px-3 py-2.5 text-left transition-colors hover:bg-surface-3"
       >
         <div className="mb-1 flex items-center gap-2">
           <StatusChip status={incident.status} />
@@ -715,8 +819,8 @@ function IncidentsTab({ projectId }: { projectId: string }) {
               }}
               className={
                 status === t.id
-                  ? "rounded-lg bg-surface-2 px-3 py-1.5 text-[13px] font-medium tracking-tight text-fg"
-                  : "rounded-lg px-3 py-1.5 text-[13px] font-medium tracking-tight text-muted hover:text-fg"
+                  ? "rounded-md bg-surface-3 px-3 py-1.5 text-[13px] font-medium tracking-tight text-fg"
+                  : "rounded-md px-3 py-1.5 text-[13px] font-medium tracking-tight text-muted hover:text-fg"
               }
             >
               {t.label}
@@ -750,7 +854,7 @@ function IncidentsTab({ projectId }: { projectId: string }) {
         <div className="text-[13px] text-danger">Failed to load: {String(incidents.error)}</div>
       )}
       {incidents.data && incidents.data.length === 0 && (
-        <div className="rounded-2xl border border-border bg-surface p-12 text-center">
+        <div className="rounded-xl border border-border bg-surface p-12 text-center">
           <p className="text-[13px] text-muted">
             No {status === "all" ? "" : status + " "}incidents
           </p>
@@ -761,9 +865,7 @@ function IncidentsTab({ projectId }: { projectId: string }) {
           {groups.map((group) => (
             <section key={group.key}>
               <div className="mb-2 flex items-center justify-between px-1">
-                <h3 className="text-[11px] font-medium uppercase tracking-wide text-muted">
-                  {group.label}
-                </h3>
+                <h3 className="text-[11px] font-medium text-muted">{group.label}</h3>
                 {group.key === "recovery" && (
                   <Btn
                     variant="secondary"
@@ -790,7 +892,7 @@ function IncidentsTab({ projectId }: { projectId: string }) {
                   resolved — refresh to see the current state.
                 </div>
               )}
-              <div className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface">
+              <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface">
                 {group.items.map((row) => (
                   <IncidentRow
                     key={row.incident.id}
@@ -951,14 +1053,14 @@ export function IncidentRow({
           </div>
           <p className="truncate text-[13px] font-medium text-fg">{incident.title}</p>
           {incident.codename && (
-            <p className="mt-0.5 font-mono text-[11px] text-subtle">{incident.codename}</p>
+            <p className="mt-0.5 font-sans text-[11px] text-subtle">{incident.codename}</p>
           )}
         </div>
         <div className="hidden shrink-0 self-center sm:block">
           <LazyRowSparkline activity={activity} error={!!stats.error} />
         </div>
         <div className="shrink-0 text-right">
-          <div className="font-mono text-[11px] tabular-nums text-muted">
+          <div className="font-sans text-[11px] tabular-nums text-muted">
             {fmtRelative(incident.lastSeen)}
           </div>
           <LazyRowUsersImpacted activity={activity} error={!!stats.error} />
@@ -1014,7 +1116,7 @@ function IncidentDetailBody({
   }
   if (q.error || !q.data) {
     return (
-      <div className="p-4 font-mono text-[11px] text-danger">
+      <div className="p-4 font-sans text-[11px] text-danger">
         failed: {String(q.error ?? "no data")}
       </div>
     );
@@ -1096,7 +1198,7 @@ function buildAgentRunPrompt({
     `- Project ID: ${incident.projectId}`,
   );
 
-  lines.push("", `## Issues in this incident (${issues.length})`);
+  lines.push("", `## Errors in this incident (${issues.length})`);
   if (issues.length === 0) {
     lines.push("(none)");
   } else {
@@ -1110,7 +1212,7 @@ function buildAgentRunPrompt({
         `   - Symbolicated top frame: ${formatSymbolicatedTopFrame(issue) ?? "(none)"}`,
         `   - Event count: ${issue.eventCount}`,
         `   - First/last seen: ${issue.firstSeen} → ${issue.lastSeen}`,
-        `   - Issue ID: ${issue.id}`,
+        `   - Error ID: ${issue.id}`,
       );
     });
   }
@@ -1158,7 +1260,7 @@ function buildAgentRunPrompt({
   lines.push(
     "",
     "## Task",
-    `1. Query the Superlog MCP for traces, logs, and metrics around \`${incident.lastSeen}\` for service \`${incident.service ?? "(see above)"}\` and project \`${incident.projectId}\`. Pull representative samples for each issue ID above.`,
+    `1. Query the Superlog MCP for traces, logs, and metrics around \`${incident.lastSeen}\` for service \`${incident.service ?? "(see above)"}\` and project \`${incident.projectId}\`. Pull representative samples for each error ID above.`,
     "2. If a sample includes a `session.id` attribute, use it to query preceding traces and logs from the same user/app session before focusing only on the failing trace or log line.",
     "3. Identify the root cause. Cite specific trace IDs, span attributes, log lines, and (if you have repo access) the offending file + line.",
     "4. Propose a fix. If a prior agent run is shown above, treat it as a hypothesis — verify or refute it against the data rather than restating it.",
@@ -1266,7 +1368,7 @@ function LazyRowUsersImpacted({
   }
   if (!error) return <RowUsersSkeleton />;
   return (
-    <div className="mt-1 font-mono text-[11px] tabular-nums text-subtle" title="Activity failed">
+    <div className="mt-1 font-sans text-[11px] tabular-nums text-subtle" title="Activity failed">
       — users
     </div>
   );
@@ -1308,7 +1410,7 @@ function RowUsersImpacted({
     // Empty signal: the incident's events had no `user.id`, so we can't say.
     return (
       <div
-        className="mt-1 font-mono text-[11px] tabular-nums text-subtle"
+        className="mt-1 font-sans text-[11px] tabular-nums text-subtle"
         title="No user.id attribute on this incident's events"
       >
         — users
@@ -1317,7 +1419,7 @@ function RowUsersImpacted({
   }
   const label = capped ? `${count.toLocaleString()}+` : count.toLocaleString();
   return (
-    <div className="mt-1 font-mono text-[11px] tabular-nums text-subtle">
+    <div className="mt-1 font-sans text-[11px] tabular-nums text-subtle">
       {label} user{count === 1 && !capped ? "" : "s"}
     </div>
   );
@@ -1363,7 +1465,7 @@ function RowSparkline({ buckets }: { buckets: { day: string; count: number }[] }
 function PeakMarker({ value }: { value: number }) {
   return (
     <span
-      className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 whitespace-nowrap pb-0.5 font-mono text-[9px] leading-none tabular-nums"
+      className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 whitespace-nowrap pb-0.5 font-sans text-[9px] leading-none tabular-nums"
       style={{ color: "var(--color-accent)" }}
       aria-hidden
     >
@@ -1385,7 +1487,7 @@ function TriggeredByAlertEpisodes({ episodes }: { episodes: IncidentAlertEpisode
             >
               <div className="mb-0.5 flex items-center gap-2">
                 <Chip tone="accent">alert</Chip>
-                <span className="font-mono text-[11px] text-muted">Episode #{ep.seq}</span>
+                <span className="font-sans text-[11px] text-muted">Episode #{ep.seq}</span>
                 <span className="inline-flex items-center gap-1.5 text-[11px] text-muted">
                   <span
                     className={`h-1.5 w-1.5 rounded-full ${firing ? "bg-danger" : "bg-subtle"}`}
@@ -1521,7 +1623,7 @@ export function IncidentDetailContent({
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[390px_minmax(0,1fr)]">
         <aside className="flex min-w-0 flex-col border-b border-border bg-bg lg:border-b-0 lg:border-r">
           <div className="px-7 pb-7 pt-7">
-            <div className="font-mono text-[11px] text-subtle">#{incident.codename}</div>
+            <div className="font-sans text-[11px] text-subtle">#{incident.codename}</div>
             <h2 className="mt-2 break-words text-[20px] font-semibold leading-[1.1] tracking-tight text-fg">
               {incident.title}
             </h2>
@@ -1835,7 +1937,7 @@ function LinkedIssuesMetaRow({
   const count = issues.length;
   return (
     <div className="grid grid-cols-[132px_minmax(0,1fr)] items-start gap-3 text-[13px]">
-      <div className="text-muted">Linked issues</div>
+      <div className="text-muted">Linked errors</div>
       <div ref={ref} className="relative flex min-w-0 items-center gap-[5px] text-fg">
         <ArrowUpRightIcon />
         {count === 0 ? (
@@ -1849,7 +1951,7 @@ function LinkedIssuesMetaRow({
               onClick={() => setOpen((v) => !v)}
               className="text-fg transition-colors hover:text-muted"
             >
-              {count} issue{count === 1 ? "" : "s"}
+              {count} error{count === 1 ? "" : "s"}
             </button>
             {open && (
               <div className="absolute left-0 top-full z-20 mt-1.5 w-80 overflow-hidden rounded-lg border border-border bg-surface p-1 shadow-[0_10px_30px_-10px_rgba(0,0,0,0.4)]">
@@ -2238,7 +2340,7 @@ export function AgentRunView({
       {agentRuns.length > 1 && (
         <div className="space-y-2">
           <SectionHeading>Run history</SectionHeading>
-          <ul className="space-y-1 font-mono text-[11px]">
+          <ul className="space-y-1 font-sans text-[11px]">
             {agentRuns.map((run, i) => (
               <li key={run.id} className="flex items-center gap-2">
                 <span className="text-muted">#{agentRuns.length - i}</span>
@@ -2291,7 +2393,7 @@ export function ResolutionProposalBanner({
 }) {
   return (
     <div className="rounded-md border border-border bg-surface p-4">
-      <div className="mb-3 flex items-center gap-2 text-[11px] uppercase tracking-wide">
+      <div className="mb-3 flex items-center gap-2 text-[11px] font-medium">
         <span className="text-success">Recovery detected</span>
         <span aria-hidden className="text-muted">
           ·
@@ -2514,7 +2616,7 @@ function ServiceEnv({
 }) {
   const parts = [service, environment].filter((part): part is string => Boolean(part));
   if (parts.length === 0) return null;
-  return <span className="font-mono text-[11px] text-subtle">{parts.join(" | ")}</span>;
+  return <span className="font-sans text-[11px] text-subtle">{parts.join(" | ")}</span>;
 }
 
 function IssueStatusChip({ issue }: { issue: Issue }) {
@@ -2543,7 +2645,7 @@ function MetaField({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <SectionHeader>{label}</SectionHeader>
-      <p className="mt-0.5 font-mono text-[12px] text-fg">{value}</p>
+      <p className="mt-0.5 font-sans text-[12px] text-fg">{value}</p>
     </div>
   );
 }
@@ -2552,7 +2654,7 @@ function MetaInline({ label, value }: { label: string; value: string }) {
   return (
     <span className="inline-flex items-baseline gap-1.5">
       <SectionHeader>{label}</SectionHeader>
-      <span className="font-mono text-[12px] text-fg">{value}</span>
+      <span className="font-sans text-[12px] text-fg">{value}</span>
     </span>
   );
 }
@@ -2591,7 +2693,7 @@ function ConfidenceMeter({ value }: { value: number }) {
   const clamped = Math.max(0, Math.min(10, Math.round(value)));
   const toneClass = clamped >= 8 ? "text-success" : clamped >= 5 ? "text-warning" : "text-danger";
   return (
-    <span className={`font-mono text-[11px] tabular-nums ${toneClass}`}>
+    <span className={`font-sans text-[11px] tabular-nums ${toneClass}`}>
       confidence {clamped}/10
     </span>
   );
@@ -2623,8 +2725,8 @@ function IssueCard({
         <div className="min-w-0 flex-1">
           <div className="mb-0.5 flex items-center gap-2">
             <KindChip issue={issue} />
-            <span className="text-[11px] text-muted">{issue.exceptionType}</span>
-            <span className="text-[11px] tabular-nums text-subtle">
+            <span className="font-sans text-[11px] text-muted">{issue.exceptionType}</span>
+            <span className="font-sans text-[11px] tabular-nums text-subtle">
               {fmtCount(issue.eventCount)} event{issue.eventCount !== 1 ? "s" : ""}
             </span>
           </div>
@@ -2662,12 +2764,12 @@ function IssueOccurrenceGraph({ buckets }: { buckets: { day: string; count: numb
     <div className="border-t border-border pt-2.5 sm:w-44 sm:flex-none sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0">
       <div className="flex items-center justify-between text-[10px] text-subtle">
         <span>Occurrences · last {buckets.length} days</span>
-        <span className="font-mono tabular-nums text-fg">{total.toLocaleString()}</span>
+        <span className="font-sans tabular-nums text-fg">{total.toLocaleString()}</span>
       </div>
       <div
         className="mt-2 flex h-16 items-end gap-1 border-b border-border"
         role="img"
-        aria-label={`${total.toLocaleString()} issue occurrences over the last ${buckets.length} days`}
+        aria-label={`${total.toLocaleString()} error occurrences over the last ${buckets.length} days`}
       >
         {buckets.map((bucket) => {
           const occurrenceLabel = `${formatOccurrenceDate(bucket.day)} · ${bucket.count.toLocaleString()} occurrence${bucket.count === 1 ? "" : "s"}`;

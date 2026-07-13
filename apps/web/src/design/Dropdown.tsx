@@ -102,7 +102,7 @@ export function Dropdown({
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className="flex h-9 w-full items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 text-left text-[13px] text-fg transition-colors hover:border-border-strong focus:border-border-strong focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+        className="flex h-9 w-full items-center gap-2 rounded-md border border-border bg-surface-2 px-3 text-left text-[13px] text-fg transition-colors hover:border-border-strong focus:border-border-strong focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
       >
         <span className={`flex-1 truncate ${selected ? "text-fg" : "text-subtle"}`}>
           {selected ? (selected.searchText ?? selected.label) : placeholder}
@@ -114,7 +114,7 @@ export function Dropdown({
           ref={listRef}
           tabIndex={-1}
           onKeyDown={onKey}
-          className="absolute left-0 top-full z-20 mt-1.5 w-full overflow-hidden rounded-lg border border-border bg-surface shadow-[0_10px_30px_-10px_rgba(0,0,0,0.4)]"
+          className="absolute left-0 top-full z-20 mt-1.5 w-full overflow-hidden rounded-lg border border-border bg-surface shadow-[0_16px_40px_-16px_rgba(0,0,0,0.7)]"
         >
           {searchable && (
             <div className="border-b border-border px-2.5">

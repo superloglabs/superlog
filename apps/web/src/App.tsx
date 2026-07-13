@@ -33,10 +33,12 @@ import { authClient, useSession } from "./auth-client.ts";
 import { signalAtHardCap } from "./billing.ts";
 import { DashboardView } from "./dashboards/DashboardView.tsx";
 import { DashboardsList } from "./dashboards/DashboardsList.tsx";
-import { AppShell, ThemeToggle, Wordmark } from "./design/ui.tsx";
+import { ProductShell } from "./design/ProductShell.tsx";
+import { ThemeToggle } from "./design/ui.tsx";
 import { McpInstallPill } from "./onboarding/McpInstallPill.tsx";
 import { OnboardingGate } from "./onboarding/OnboardingGate.tsx";
 import { useDemoExploration } from "./onboarding/demoExploration.tsx";
+import { isDetailWorkspacePath } from "./route-layout.ts";
 import {
   buildSignupEventProperties,
   parseAttribution,
@@ -223,7 +225,7 @@ function AuthenticatedApp() {
           email={data.user.email}
           billingPaused={billingPaused}
         />
-        <AppShell nav={<TopNav />}>
+        <ProductShell toolbar={<ProductToolbar />}>
           <RouteContainer>
             <Routes>
               <Route path="/explore/*" element={<Explore />} />
@@ -240,7 +242,7 @@ function AuthenticatedApp() {
               <Route path="*" element={<Overview />} />
             </Routes>
           </RouteContainer>
-        </AppShell>
+        </ProductShell>
       </div>
       <CommandPalette />
       <McpInstallPill />
@@ -314,7 +316,7 @@ function DemoModeBar() {
 
 function ImpersonationBar({ email }: { email: string }) {
   return (
-    <div className="flex h-7 w-full items-center justify-center gap-3 bg-amber-500 px-3 font-mono text-[11px] text-black">
+    <div className="flex h-7 w-full items-center justify-center gap-3 bg-amber-500 px-3 text-[11px] text-black">
       <span className="uppercase tracking-[0.2em]">impersonating</span>
       <span className="font-medium">{email}</span>
       <span className="opacity-70">·</span>
@@ -350,59 +352,27 @@ function BillingLimitBar() {
 
 function RouteContainer({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
-  const incidentDetail = /^\/incidents\/[^/]+/.test(pathname);
+  const detailWorkspace = isDetailWorkspacePath(pathname);
   const wide = pathname.startsWith("/dashboards/");
-  if (incidentDetail) {
+  if (detailWorkspace) {
     return <div className="flex min-h-0 flex-1 flex-col">{children}</div>;
   }
   return (
-    <div className={`mx-auto w-full px-6 pb-24 pt-6 ${wide ? "max-w-[2400px]" : "max-w-6xl"}`}>
+    <div
+      className={`mx-auto w-full px-5 pb-24 pt-8 sm:px-6 lg:px-8 ${wide ? "max-w-[2400px]" : "max-w-[1180px]"}`}
+    >
       {children}
     </div>
   );
 }
 
-function TopNav() {
-  const { pathname } = useLocation();
-  const navLink = (href: string, label: string, extraPrefixes: string[] = []) => {
-    const active =
-      href === "/"
-        ? pathname === "/" || pathname === ""
-        : pathname.startsWith(href) || extraPrefixes.some((p) => pathname.startsWith(p));
-    return (
-      <Link
-        key={href}
-        to={href}
-        className={
-          active
-            ? "text-[13px] font-medium text-fg underline underline-offset-[6px] decoration-1"
-            : "text-[13px] font-medium text-muted transition-opacity hover:text-fg"
-        }
-      >
-        {label}
-      </Link>
-    );
-  };
-
+function ProductToolbar() {
   return (
-    <nav className="flex items-center justify-between py-5">
-      <div className="flex items-center gap-8">
-        <Wordmark />
-        <div className="hidden items-center gap-6 md:flex">
-          {navLink("/", "Overview")}
-          {navLink("/incidents", "Issues", ["/issues"])}
-          {navLink("/alerts", "Alerts")}
-          {navLink("/explore", "Explore")}
-          {navLink("/dashboards", "Dashboards")}
-          {navLink("/settings", "Settings")}
-        </div>
-      </div>
-      <div className="flex items-center gap-3">
-        <ThemeToggle />
-        <OrgProjectSwitcher />
-        <UserMenu />
-      </div>
-    </nav>
+    <>
+      <ThemeToggle />
+      <OrgProjectSwitcher />
+      <UserMenu />
+    </>
   );
 }
 

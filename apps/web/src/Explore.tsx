@@ -52,7 +52,7 @@ import {
   rangeFromSeconds,
 } from "./design/RangePicker.tsx";
 import { ScrollArea } from "./design/scroll-area.tsx";
-import { Btn, Chip, Input, ShortcutKey, Tile } from "./design/ui.tsx";
+import { Btn, Chip, Input, PageHeader, ShortcutKey, Tile } from "./design/ui.tsx";
 import { addAttrFilter } from "./exploreAttrFilter.ts";
 import { tracer } from "./instrumentation.ts";
 import {
@@ -86,11 +86,7 @@ export function Explore() {
     return <div className="font-sans text-[12px] text-muted">Loading…</div>;
   }
   if (me.error || !me.data || !me.data.project) {
-    return (
-      <div className="font-mono text-[11px] text-danger">
-        error: {String(me.error ?? "no session")}
-      </div>
-    );
+    return <div className="text-[12px] text-danger">Error: {String(me.error ?? "no session")}</div>;
   }
   return <ExploreInner projectId={me.data.project.id} />;
 }
@@ -302,6 +298,10 @@ function ExploreInner({ projectId }: { projectId: string }) {
 
   return (
     <div className="relative flex flex-col gap-6">
+      <PageHeader
+        title="Explore"
+        description="Search, filter, and compare every signal in the current project."
+      />
       <section className="flex flex-wrap items-center justify-between gap-4">
         <ExploreTabs />
         {/* Resources are inventory, not time-ranged telemetry — no range picker. */}
@@ -550,7 +550,7 @@ function ResourcesPanel({ projectId }: { projectId: string }) {
           searchable={regions.length > 8}
         />
         <div className="ml-auto flex items-center gap-3">
-          <span className="font-mono text-[11px] text-subtle">
+          <span className="font-sans text-[11px] text-subtle">
             {filtered.length} of {rows.length}
           </span>
           {connected && (
@@ -568,11 +568,11 @@ function ResourcesPanel({ projectId }: { projectId: string }) {
 
       <div className="overflow-auto">
         {filtered.length === 0 ? (
-          <div className="px-5 py-8 text-center font-mono text-[11px] text-subtle">
+          <div className="px-5 py-8 text-center font-sans text-[11px] text-subtle">
             {resources.isLoading ? "loading…" : "no resources"}
           </div>
         ) : (
-          <table className="w-full border-collapse font-mono text-[12px]">
+          <table className="w-full border-collapse font-sans text-[12px]">
             <thead>
               <tr className="text-left text-subtle">
                 <th className="px-5 py-2 font-normal">name</th>
@@ -629,8 +629,8 @@ export function ExploreTabs() {
           to={`/explore/${t.source}`}
           className={({ isActive }) =>
             isActive
-              ? "rounded-lg bg-surface-2 px-3 py-1.5 text-[13px] font-medium tracking-tight text-fg"
-              : "rounded-lg px-3 py-1.5 text-[13px] font-medium tracking-tight text-muted hover:text-fg"
+              ? "rounded-md bg-surface-3 px-3 py-1.5 text-[13px] font-medium tracking-tight text-fg"
+              : "rounded-md px-3 py-1.5 text-[13px] font-medium tracking-tight text-muted hover:text-fg"
           }
         >
           {t.label}
@@ -658,8 +658,8 @@ export function ExploreTabsStatic({
             onClick={() => onChange(t.source)}
             className={
               active
-                ? "rounded-lg bg-surface-2 px-3 py-1.5 text-[13px] font-medium tracking-tight text-fg"
-                : "rounded-lg px-3 py-1.5 text-[13px] font-medium tracking-tight text-muted hover:text-fg"
+                ? "rounded-md bg-surface-3 px-3 py-1.5 text-[13px] font-medium tracking-tight text-fg"
+                : "rounded-md px-3 py-1.5 text-[13px] font-medium tracking-tight text-muted hover:text-fg"
             }
           >
             {t.label}
@@ -830,7 +830,7 @@ type AddedFilter =
 
 function PickerKbd({ children }: { children: React.ReactNode }) {
   return (
-    <span className="rounded-sm border border-border bg-surface px-1 py-px font-mono text-[10px] text-muted">
+    <span className="rounded-sm border border-border bg-surface px-1 py-px font-sans text-[10px] text-muted">
       {children}
     </span>
   );
@@ -1929,7 +1929,7 @@ function MetricChartBody({
     );
   }
   return (
-    <div className="flex h-48 items-center justify-center font-mono text-[11px] text-subtle">
+    <div className="flex h-48 items-center justify-center font-sans text-[11px] text-subtle">
       {metricName ? "no data" : "pick a metric above"}
     </div>
   );
@@ -2413,7 +2413,7 @@ function ExploreSignalDetailDrawerSkeleton({
           type="button"
           onClick={onClose}
           title="close (esc)"
-          className="absolute right-4 top-4 z-10 rounded-sm border border-border bg-bg px-2 py-1 font-mono text-[11px] text-muted hover:text-fg"
+          className="absolute right-4 top-4 z-10 rounded-sm border border-border bg-bg px-2 py-1 font-sans text-[11px] text-muted hover:text-fg"
         >
           ✕
         </button>
@@ -2563,7 +2563,7 @@ export function LogsTable({
     );
   }
   return (
-    <table className="w-full border-collapse font-mono text-[12px]">
+    <table className="w-full border-collapse font-sans text-[12px]">
       <thead className="font-sans">
         <tr className="text-left text-subtle">
           <th className="px-5 py-2 font-normal">Timestamp</th>
@@ -2646,7 +2646,7 @@ export function TracesTable({
     );
   }
   return (
-    <table className="w-full border-collapse font-mono text-[12px]">
+    <table className="w-full border-collapse font-sans text-[12px]">
       <thead className="font-sans">
         <tr className="text-left text-subtle">
           <th className="px-5 py-2 font-normal">Timestamp</th>
@@ -2696,7 +2696,7 @@ export function TracesAggregatedTable({
     );
   }
   return (
-    <table className="w-full border-collapse font-mono text-[12px]">
+    <table className="w-full border-collapse font-sans text-[12px]">
       <thead className="font-sans">
         <tr className="text-left text-subtle">
           <th className="px-5 py-2 font-normal">Started</th>
@@ -2748,11 +2748,11 @@ export function TracesAggregatedTable({
 export function MetricsTable({ rows }: { rows: MetricRow[] }) {
   if (rows.length === 0) {
     return (
-      <div className="px-5 py-8 text-center font-mono text-[11px] text-subtle">no results</div>
+      <div className="px-5 py-8 text-center font-sans text-[11px] text-subtle">no results</div>
     );
   }
   return (
-    <table className="w-full border-collapse font-mono text-[12px]">
+    <table className="w-full border-collapse font-sans text-[12px]">
       <thead>
         <tr className="text-left text-subtle">
           <th className="px-5 py-2 font-normal">timestamp</th>

@@ -4,7 +4,7 @@ import { McpInstallDialog } from "./McpInstallDialog.tsx";
 import { TerminalIcon } from "./icons.tsx";
 import { isMcpPillDismissed, rememberMcpPillDismiss, shouldShowMcpPill } from "./mcpPill.ts";
 
-// Floating bottom-left reminder for users who skipped the MCP install during
+// Floating bottom-right reminder for users who skipped the MCP install during
 // onboarding. Mounted app-wide; auto-hides once the MCP OAuth flow completes.
 export function McpInstallPill() {
   const me = useMe();
@@ -19,7 +19,7 @@ export function McpInstallPill() {
 
   return (
     <>
-      <div className="fixed bottom-5 left-5 z-40 flex items-center overflow-hidden rounded-full border border-border-strong bg-surface shadow-[0_10px_30px_rgba(0,0,0,0.35)]">
+      <div className="fixed bottom-5 right-5 z-40 flex items-center overflow-hidden rounded-full border border-border-strong bg-surface shadow-[0_10px_30px_rgba(0,0,0,0.35)]">
         <button
           type="button"
           onClick={() => setOpen(true)}
