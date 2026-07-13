@@ -6,6 +6,7 @@ import {
   pgbossSchemaName,
   recordTickHeartbeat,
   tickHeartbeatAgeMs,
+  withQueueRecoveryZeros,
 } from "./queue-health.js";
 
 const NOW = new Date("2026-07-13T18:00:00.000Z");
@@ -57,6 +58,21 @@ test("an empty snapshot still emits explicit zeros so series don't freeze", () =
       ["superlog.worker.jobs.oldest_pending_age_ms", 0, "none"],
     ],
   );
+});
+
+test("a queue that drains out of the snapshot gets one recovery zero, then drops", () => {
+  const drained = withQueueRecoveryZeros([], new Set(["agent-run-advance"]));
+  assert.deepEqual(drained, [
+    { queue: "agent-run-advance", pending: 0, active: 0, oldestPendingAt: null },
+  ]);
+
+  // The recovery zero must not keep itself alive: with the previous snapshot
+  // also empty, nothing is emitted for the queue on the following pass.
+  assert.deepEqual(withQueueRecoveryZeros([], new Set()), []);
+
+  // A queue still present in the snapshot is not duplicated.
+  const live = [{ queue: "agent-run-advance", pending: 3, active: 1, oldestPendingAt: null }];
+  assert.deepEqual(withQueueRecoveryZeros(live, new Set(["agent-run-advance"])), live);
 });
 
 test("tick heartbeat age measures time since the last recorded tick", () => {

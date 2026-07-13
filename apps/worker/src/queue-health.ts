@@ -111,8 +111,27 @@ export async function loadQueueHealthCounts(): Promise<QueueHealthCounts[]> {
   }));
 }
 
+// A queue that drains out of the snapshot (the pgboss query only returns
+// queues with live jobs) gets one explicit all-zero entry so its series ends
+// at 0 instead of freezing at the last non-zero value. `previous` tracks the
+// queues the snapshot contained, so recovery zeros live exactly one pass —
+// same convention as agent-run-health-metrics' withRecoveryZeros.
+export function withQueueRecoveryZeros(
+  current: QueueHealthCounts[],
+  previous: ReadonlySet<string>,
+): QueueHealthCounts[] {
+  const seen = new Set(current.map((q) => q.queue));
+  const out = [...current];
+  for (const queue of previous) {
+    if (seen.has(queue)) continue;
+    out.push({ queue, pending: 0, active: 0, oldestPendingAt: null });
+  }
+  return out;
+}
+
 let cached: { at: number; counts: QueueHealthCounts[] } | null = null;
 const CACHE_TTL_MS = 30_000;
+let previousSnapshotQueues = new Set<string>();
 // Structured log cadence for deployment-side metric filters — one flat line
 // per queue plus one heartbeat line, once a minute.
 const LOG_INTERVAL_MS = 60_000;
@@ -121,8 +140,10 @@ let lastLoggedAt = 0;
 async function snapshot(): Promise<QueueHealthCounts[]> {
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.counts;
   const counts = await loadQueueHealthCounts();
-  cached = { at: Date.now(), counts };
-  return counts;
+  const withZeros = withQueueRecoveryZeros(counts, previousSnapshotQueues);
+  previousSnapshotQueues = new Set(counts.map((q) => q.queue));
+  cached = { at: Date.now(), counts: withZeros };
+  return withZeros;
 }
 
 function logQueueHealth(counts: QueueHealthCounts[], now: Date): void {
