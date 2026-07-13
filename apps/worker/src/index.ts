@@ -58,17 +58,29 @@ try {
 // Issue-transition side effects (incident intake with its LLM grouping call,
 // notifications, agent-run routing) run out-of-band on a pg-boss queue so a
 // burst of new fingerprints can't stall the ingest cursor for other projects.
+// If the queue worker fails to register, drop the boss reference so the
+// dispatcher runs transitions inline — a registration failure must degrade,
+// not crash boot or enqueue jobs nothing will ever work.
+let transitionBoss = jobBoss;
+if (transitionBoss) {
+  try {
+    await registerIssueTransitionWorker(transitionBoss, {
+      handle: handleIssueTransition,
+      loadIssue: async (issueId) =>
+        db.query.issues.findFirst({ where: (issues, { eq }) => eq(issues.id, issueId) }),
+    });
+  } catch (err) {
+    logger.error(
+      { scope: "boot", err: err instanceof Error ? err.message : String(err) },
+      "issue-transition worker failed to register; falling back to inline transitions",
+    );
+    transitionBoss = null;
+  }
+}
 const dispatchIssueTransition = createIssueTransitionDispatcher({
-  boss: jobBoss,
+  boss: transitionBoss,
   inline: handleIssueTransition,
 });
-if (jobBoss) {
-  await registerIssueTransitionWorker(jobBoss, {
-    handle: handleIssueTransition,
-    loadIssue: async (issueId) =>
-      db.query.issues.findFirst({ where: (issues, { eq }) => eq(issues.id, issueId) }),
-  });
-}
 
 const telemetryIngestor = createTelemetryIngestor({
   clickhouse: ch,

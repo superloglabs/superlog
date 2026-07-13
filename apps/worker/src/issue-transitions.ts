@@ -76,6 +76,16 @@ function parseJobData(data: unknown): IssueTransitionJobData | null {
 // Without a queue (no DATABASE_URL / boss failed to start) — or when the
 // enqueue itself fails — it falls back to running the handler inline, so a
 // degraded queue never drops transitions, it just loses the latency win.
+//
+// The inline fallback on a send error is a deliberate at-least-once choice:
+// the realistic send failures (queue missing, database unreachable) commit
+// nothing, so inline is the only delivery. The narrow case of a connection
+// dropping AFTER pg-boss committed the row can run the transition twice —
+// accepted, because a repeat execution sees the already-created incident
+// (`createdIncident` is false on re-entry) and skips notifications, whereas
+// dropping the transition could leave a new issue without an incident
+// forever (later occurrences of the same fingerprint are "seen", which
+// never re-enters intake).
 export function createIssueTransitionDispatcher(opts: {
   boss: Pick<TransitionQueueBoss, "send"> | null;
   inline: DispatchIssueTransition;
@@ -93,7 +103,13 @@ export function createIssueTransitionDispatcher(opts: {
       transition,
     };
     try {
-      await opts.boss.send(ISSUE_TRANSITION_QUEUE, data);
+      // singletonKey dedupes while a matching job is queued: a rapid
+      // re-dispatch of the same (issue, transition) collapses to one job.
+      // Event counters were already bumped by the upsert, so one execution
+      // of the side effects is all that's needed.
+      await opts.boss.send(ISSUE_TRANSITION_QUEUE, data, {
+        singletonKey: `${issue.id}:${transition}`,
+      });
     } catch (err) {
       logger.warn(
         {

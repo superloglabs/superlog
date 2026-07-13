@@ -54,6 +54,9 @@ test("dispatcher enqueues the transition instead of running it inline", async ()
     projectId: "project-1",
     transition: "new",
   });
+  // Rapid duplicate dispatches of the same (issue, transition) must dedupe
+  // while a matching job is still queued.
+  assert.deepEqual(fb.sent[0]?.options, { singletonKey: "issue-1:new" });
 });
 
 test("dispatcher runs inline when no queue is configured", async () => {
