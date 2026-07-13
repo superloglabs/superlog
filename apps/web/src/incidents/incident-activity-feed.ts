@@ -35,7 +35,10 @@ export type TranscriptItem =
     }
   | MemoryActivity
   | { type: "question"; id: string; question: string; awaiting: boolean }
-  | { type: "start"; id: string; prompt: string };
+  // The raw initial prompt is a system-generated brief (internal instructions +
+  // telemetry dump), not user content, so it is intentionally not carried into
+  // the feed — the node is a bare "Started investigation" marker.
+  | { type: "start"; id: string };
 
 export type FeedItem =
   | TranscriptItem
@@ -150,7 +153,7 @@ export function buildActivityFeed(
     if (event.kind === "agent.thinking" || TOOL_RESULT_KINDS.has(event.kind)) continue;
     if (event.kind.startsWith("agent.") || isFeedNoise(event.kind)) continue;
     if (event.kind === "user.message") {
-      items.push({ type: "start", id: event.id, prompt: (event.summary ?? "").trim() });
+      items.push({ type: "start", id: event.id });
       continue;
     }
     if (event.kind === "awaiting_human") continue;

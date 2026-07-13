@@ -72,7 +72,7 @@ export function IncidentActivityFeed({
     if (item.type === "telemetry") return <TelemetryEntry key={item.id} item={item} />;
     if (item.type === "memory") return <MemoryEntry key={item.id} item={item} />;
     if (item.type === "tool") return <ToolEntry key={item.id} item={item} />;
-    if (item.type === "start") return <StartEntry key={item.id} prompt={item.prompt} />;
+    if (item.type === "start") return <StartEntry key={item.id} />;
     if (item.type === "question")
       return (
         <QuestionEntry key={item.id} question={item.question} ctx={ctx} awaiting={item.awaiting} />
@@ -197,11 +197,10 @@ function CollapseToggle({
   );
 }
 
-// The initial investigation prompt, shown as a compact "Started investigation"
-// node. The raw prompt is verbose (incident id, telemetry dump), so it's tucked
-// behind a toggle.
-function StartEntry({ prompt }: { prompt: string }) {
-  const [open, setOpen] = useState(false);
+// The "Started investigation" marker. The raw initial prompt is a
+// system-generated brief (incident id, telemetry dump, internal instructions),
+// not user content, so it's not surfaced in the timeline — only the node itself.
+function StartEntry() {
   return (
     <div className="relative mb-6">
       <span className="absolute -left-7 top-0 grid h-[22px] w-[22px] place-items-center rounded-full border border-accent/40 bg-surface-2">
@@ -219,21 +218,7 @@ function StartEntry({ prompt }: { prompt: string }) {
       </span>
       <div className="flex min-h-[22px] items-center gap-2">
         <span className="text-[12px] font-semibold text-fg">Started investigation</span>
-        {prompt && (
-          <button
-            type="button"
-            onClick={() => setOpen((v) => !v)}
-            className="text-[11px] text-subtle hover:text-fg"
-          >
-            {open ? "hide prompt" : "show prompt"}
-          </button>
-        )}
       </div>
-      {open && prompt && (
-        <pre className="mt-1.5 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-muted">
-          {prompt}
-        </pre>
-      )}
     </div>
   );
 }

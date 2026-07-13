@@ -52,7 +52,7 @@ export function ProductShell({
 
   return (
     <div className="flex min-h-0 flex-1 bg-bg font-sans text-fg" data-product-shell>
-      <aside className="sticky top-0 hidden h-screen w-56 shrink-0 flex-col border-r border-border bg-surface/55 px-4 py-5 backdrop-blur md:flex">
+      <aside className="sticky top-0 hidden h-full w-56 shrink-0 flex-col border-r border-border bg-surface/55 px-4 py-5 backdrop-blur md:flex">
         <div className="px-2">
           <Wordmark size="sm" />
         </div>
