@@ -958,6 +958,11 @@ async function forwardFirehose(
         span.setAttribute("firehose.result", res.status === 200 ? "ok" : `collector_${res.status}`);
         logger.info({ signal, projectId, status: res.status }, "proxied firehose batch");
 
+        // Firehose treats only a 200 as delivered, so that's this project's first
+        // accepted telemetry when it arrives via AWS. Idempotent project-level
+        // claim, fire-and-forget.
+        if (res.status === 200) void maybeCaptureProjectActivation(projectId);
+
         // Pass the receiver's ack through verbatim — it owns the
         // {requestId,timestamp} body and the application/json content-type.
         const resHeaders = new Headers();
@@ -1072,6 +1077,11 @@ const renderSyslogServer = RENDER_SYSLOG_PORT
             throw new Error(`collector returned ${res.status} for render syslog batch`);
           }
         }
+        // Reached only when the batch was accepted (enqueued, or forwarded with
+        // a 2xx) — the source-filter / quota drops returned early above, and a
+        // direct-mode collector error threw. So this is the project's first
+        // accepted telemetry when it arrives via the Render log stream.
+        void maybeCaptureProjectActivation(projectId);
       },
       log: logger,
     })
