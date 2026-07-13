@@ -5,9 +5,9 @@ import { Readable } from "node:stream";
 import { shutdownTelemetry } from "./telemetry-shutdown.js";
 import { serve } from "@hono/node-server";
 import { type Span, SpanStatusCode, metrics, trace } from "@opentelemetry/api";
-import { hashApiKey, schema, syncLoopsContactsForProject } from "@superlog/db";
+import { captureServerEvent, hashApiKey, schema, syncLoopsContactsForProject } from "@superlog/db";
 import { db } from "@superlog/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
@@ -217,6 +217,25 @@ app.use("/v1/*", async (c, next) => {
   return next();
 });
 
+// Emit the activation event the first time a project ever ingests telemetry.
+// Attributed to the org owner's person so it lands in the same funnel as their
+// signup / org-created events. Best-effort — a lookup miss or analytics being
+// unconfigured just means no event.
+async function captureFirstTelemetry(projectId: string): Promise<void> {
+  const [owner] = await db
+    .select({ userId: schema.orgMembers.userId, orgId: schema.orgMembers.orgId })
+    .from(schema.projects)
+    .innerJoin(schema.orgMembers, eq(schema.orgMembers.orgId, schema.projects.orgId))
+    .where(and(eq(schema.projects.id, projectId), eq(schema.orgMembers.role, "owner")))
+    .limit(1);
+  if (!owner) return;
+  captureServerEvent({
+    distinctId: owner.userId,
+    event: "first_telemetry_received",
+    properties: { project_id: projectId, org_id: owner.orgId },
+  });
+}
+
 async function validateIngestKey(c: Context<{ Variables: Variables }>, next: () => Promise<void>) {
   return tracer.startActiveSpan("auth.validate", async (span) => {
     try {
@@ -275,13 +294,16 @@ async function validateIngestKey(c: Context<{ Variables: Variables }>, next: () 
         .update(schema.apiKeys)
         .set({ lastUsedAt: new Date() })
         .where(eq(schema.apiKeys.id, row.id))
-        .then(() => {
-          // Loops only needs the lifecycle nudge when telemetrySet flips false→true, i.e. on the
-          // first ingest for this key. Firing on every request hammers the Loops rate limit.
-          if (isFirstUse) return syncLoopsContactsForProject({ projectId: row.projectId });
+        .then(async () => {
+          // Both side effects fire only when telemetrySet flips false→true, i.e.
+          // on the first ingest for this key. Firing on every request would
+          // hammer the Loops rate limit and double-count the activation event.
+          if (!isFirstUse) return;
+          await captureFirstTelemetry(row.projectId);
+          await syncLoopsContactsForProject({ projectId: row.projectId });
         })
         .catch((err: unknown) => {
-          logger.error({ err }, "failed to update last_used_at or sync loops contact");
+          logger.error({ err }, "failed to update last_used_at or fire first-ingest side effects");
         });
 
       await next();

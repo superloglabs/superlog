@@ -1,10 +1,12 @@
 import "dotenv/config";
 import { strict as assert } from "node:assert";
 import { after, before, test } from "node:test";
-import { closeDb, db, runMigrations, schema } from "@superlog/db";
+import { closeDb, db, runMigrations, schema, setAnalyticsClientForTests } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { mountOrgCrud } from "./orgs.js";
+
+type CapturedEvent = { distinctId: string; event: string; properties?: Record<string, unknown> };
 
 type Vars = { userId: string; orgId: string | null };
 
@@ -15,6 +17,7 @@ before(async () => {
   await runMigrations();
 });
 after(async () => {
+  setAnalyticsClientForTests(undefined);
   try {
     // Orgs first (cascades members/projects), then the users we seeded.
     for (const orgId of orgIds.reverse()) {
@@ -97,6 +100,35 @@ test("POST /api/orgs creates a new owner org with a Default project", async () =
     where: eq(schema.projectAutomationSettings.projectId, body.project.id),
   });
   assert.ok(settings, "default project should have automation settings");
+});
+
+test("POST /api/orgs emits a server-side organization_created event", async () => {
+  const captured: CapturedEvent[] = [];
+  setAnalyticsClientForTests({
+    capture: (e) => captured.push(e),
+  });
+  try {
+    const user = await seedUser();
+    const app = appFor(user.id, null);
+    const res = await app.request("/api/orgs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Analytics Co" }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { org: { id: string }; project: { id: string } };
+    orgIds.push(body.org.id);
+
+    const event = captured.find((e) => e.event === "organization_created");
+    assert.ok(event, "expected an organization_created event");
+    assert.equal(event.distinctId, user.id);
+    // An additional org (not first-org onboarding) must be flagged as such.
+    assert.equal(event.properties?.is_first_org, false);
+    assert.equal(event.properties?.org_id, body.org.id);
+    assert.equal(event.properties?.project_id, body.project.id);
+  } finally {
+    setAnalyticsClientForTests(undefined);
+  }
 });
 
 test("POST /api/orgs with a duplicate name succeeds with a distinct slug", async () => {

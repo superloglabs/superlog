@@ -1,4 +1,4 @@
-import { db, schema } from "@superlog/db";
+import { captureServerEvent, db, schema } from "@superlog/db";
 import { autumn } from "autumn-js/better-auth";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
@@ -238,6 +238,22 @@ export const auth = betterAuth({
     ...autumnPlugins,
   ],
   databaseHooks: {
+    user: {
+      create: {
+        after: async (user) => {
+          // Fires on every new users row — email and social signups alike, and
+          // users who never finish onboarding — so the signup count is captured
+          // server-side and can't be lost to a blocked or bounced browser. The
+          // browser posthog-js event depended on the page actually running it.
+          // Best-effort; captureServerEvent no-ops when analytics is unconfigured.
+          captureServerEvent({
+            distinctId: user.id,
+            event: "user_signed_up",
+            set: { email: user.email, name: user.name },
+          });
+        },
+      },
+    },
     session: {
       create: {
         before: async (session) => {

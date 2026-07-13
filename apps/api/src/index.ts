@@ -8,6 +8,7 @@ import {
   type Issue,
   buildIssueReopenPatch,
   buildIssueSilencePatch,
+  captureServerEvent,
   confirmResolutionProposal,
   createIncidentLifecycle,
   db,
@@ -594,6 +595,20 @@ app.post("/api/me/orgs", async (c) => {
       appUrl: WEB_ORIGIN,
     }).catch((err) => {
       logger.warn({ err, userId, orgId: result.welcome?.org.id }, "loops welcome flow failed");
+    });
+    // Fired only on genuine first-org creation (welcome != null), after the tx
+    // commits so a rolled-back org never produces an event.
+    captureServerEvent({
+      distinctId: userId,
+      event: "organization_created",
+      properties: {
+        org_id: result.welcome.org.id,
+        org_slug: result.welcome.org.slug,
+        org_name: result.welcome.org.name,
+        project_id: result.welcome.project.id,
+        is_first_org: true,
+        signup_source: result.welcome.org.signupSource ?? undefined,
+      },
     });
   }
 

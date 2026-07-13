@@ -8,6 +8,12 @@ export {
   type AgentRunProvider,
 } from "./agent-runtime.js";
 export { runMigrations } from "./migrate.js";
+export {
+  type AnalyticsClient,
+  type CaptureServerEventInput,
+  captureServerEvent,
+  setAnalyticsClientForTests,
+} from "./analytics.js";
 export * as schema from "./schema.js";
 export {
   generateApiKey,

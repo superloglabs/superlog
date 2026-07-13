@@ -1,4 +1,4 @@
-import { db, resolveDefaultAgentRunProvider, schema } from "@superlog/db";
+import { captureServerEvent, db, resolveDefaultAgentRunProvider, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import type { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -119,6 +119,20 @@ export function mountOrgCrud(app: Hono<{ Variables: Vars }>) {
         .for("update");
       if (!user) throw new HTTPException(404, { message: "user not found" });
       return createOrgWithDefaults(tx, { userId, name: rawName });
+    });
+
+    // An additional org by an existing user — not a first-org signup. Emitted
+    // after the tx commits; best-effort inside captureServerEvent.
+    captureServerEvent({
+      distinctId: userId,
+      event: "organization_created",
+      properties: {
+        org_id: org.id,
+        org_slug: org.slug,
+        org_name: org.name,
+        project_id: project.id,
+        is_first_org: false,
+      },
     });
 
     return c.json({

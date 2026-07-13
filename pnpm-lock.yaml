@@ -565,6 +565,9 @@ importers:
       postgres:
         specifier: ^3.4.5
         version: 3.4.9
+      posthog-node:
+        specifier: ^5.41.0
+        version: 5.41.0(rxjs@7.8.2)
     devDependencies:
       '@electric-sql/pglite':
         specifier: ^0.2.17
@@ -2608,8 +2611,14 @@ packages:
   '@posthog/core@1.30.3':
     resolution: {integrity: sha512-mGIN4Du1a8fKxV5WfnEtogq3VOQLa4PfWMUg5uMIMDD+fp5bhTA4QG4oYAea4vBTZ1ZOanQbjXcX4b5k2X93Qw==}
 
+  '@posthog/core@1.40.2':
+    resolution: {integrity: sha512-H12j7O9iHGvpK9t2ko8W4pvfbV1pBDxrsWC1LA6yp2RhzwvC4T3sWhu+AekDQJSRSrJEWlB0t/Ueq9QhPSq7FQ==}
+
   '@posthog/types@1.379.0':
     resolution: {integrity: sha512-QJLzyV22iZKy5eEXKn9IB1swSVo2JigIawebBha+BmsePsY3XA0HAcq2B+D8Km5BHnbE+SGm5aHxFG3DlVE1yg==}
+
+  '@posthog/types@1.393.0':
+    resolution: {integrity: sha512-vzWeEJZ7ERQhFRoQYaP5jzN1JvIu46UJyHXsuv+dTGW2r3sMgREOhNxXLZjmFHwZ8/FOHQoyqqQmXTCXZSfMSg==}
 
   '@protobufjs/aspromise@1.1.2':
     resolution: {integrity: sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ==}
@@ -5415,6 +5424,15 @@ packages:
 
   posthog-js@1.379.0:
     resolution: {integrity: sha512-cSESmnPvIaY/pyhV5a6pF00q8tqmXlJBQWX9T7dbBh9TXhVM5oQVi7g77vWGD9G8wq4iNF5ZOxqeAK9dpOSOYg==}
+
+  posthog-node@5.41.0:
+    resolution: {integrity: sha512-jOkX6THOr5WD+FGUEaTxekas8c7NOC3TqJ2Byfe2KMimQdL/F/osz17uSbkNzR4V9WFZoe8YaGP3Xp0EUpPKGg==}
+    engines: {node: ^20.20.0 || >=22.22.0}
+    peerDependencies:
+      rxjs: ^7.0.0
+    peerDependenciesMeta:
+      rxjs:
+        optional: true
 
   powershell-utils@0.2.0:
     resolution: {integrity: sha512-ZlsFlG7MtSFCoc5xreOvBAozCJ6Pf06opgJjh9ONEv418xpZSAzNjstD36C6+JwOnfSqOW/9uDkqKjezTdxZhw==}
@@ -8467,7 +8485,13 @@ snapshots:
     dependencies:
       '@posthog/types': 1.379.0
 
+  '@posthog/core@1.40.2':
+    dependencies:
+      '@posthog/types': 1.393.0
+
   '@posthog/types@1.379.0': {}
+
+  '@posthog/types@1.393.0': {}
 
   '@protobufjs/aspromise@1.1.2': {}
 
@@ -11547,6 +11571,12 @@ snapshots:
       preact: 10.29.2
       query-selector-shadow-dom: 1.0.1
       web-vitals: 5.3.0
+
+  posthog-node@5.41.0(rxjs@7.8.2):
+    dependencies:
+      '@posthog/core': 1.40.2
+    optionalDependencies:
+      rxjs: 7.8.2
 
   powershell-utils@0.2.0: {}
 
