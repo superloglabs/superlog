@@ -23,9 +23,13 @@ import { logger as defaultLogger } from "./logger.js";
 
 export const ISSUE_TRANSITION_QUEUE = "issue-transition";
 
-// How many queued transitions a single fetch works on. Batches are processed
-// concurrently within the worker, so this is also the effective concurrency.
-const WORKER_BATCH_SIZE = 5;
+// How many transitions run concurrently, as independent single-job consumers
+// (`localConcurrency`), never a fetch batch: pg-boss completes a batch only
+// when the whole handler resolves, so with batchSize > 1 one hung LLM
+// grouping call would hold every fetched transition active until queue
+// expiry (the agent-run queue hit exactly this in prod — see
+// agent-runs/queue.ts).
+const WORKER_CONCURRENCY = 5;
 
 // Covers every dispatch site: telemetry ingest and alerts send "new" /
 // "recurred"; observation escalations send "escalated".
@@ -48,7 +52,7 @@ export type TransitionQueueBoss = {
   createQueue(name: string, options?: unknown): Promise<unknown>;
   work(
     name: string,
-    options: { batchSize: number },
+    options: { batchSize: number; localConcurrency?: number },
     handler: (jobs: Array<{ id: string; data: unknown }>) => Promise<unknown>,
   ): Promise<unknown>;
   send(name: string, data: object, options?: object): Promise<unknown>;
@@ -125,9 +129,10 @@ export function createIssueTransitionDispatcher(opts: {
   };
 }
 
-// Register the queue and its worker. Jobs in a batch run concurrently; each
-// job's failure is logged and swallowed (at-most-once, matching the previous
-// inline behavior) so one poisoned transition can't wedge or re-run the rest.
+// Register the queue and its worker. Each consumer processes one job at a
+// time; a job's failure is logged and swallowed (at-most-once, matching the
+// previous inline behavior) so one poisoned transition can't wedge or re-run
+// the rest.
 export async function registerIssueTransitionWorker(
   boss: Pick<TransitionQueueBoss, "createQueue" | "work">,
   opts: {
@@ -138,40 +143,44 @@ export async function registerIssueTransitionWorker(
 ): Promise<void> {
   const logger = opts.logger ?? defaultLogger;
   await boss.createQueue(ISSUE_TRANSITION_QUEUE);
-  await boss.work(ISSUE_TRANSITION_QUEUE, { batchSize: WORKER_BATCH_SIZE }, async (jobs) => {
-    await Promise.all(
-      jobs.map(async (job) => {
-        const data = parseJobData(job.data);
-        if (!data) {
-          logger.warn(
-            { scope: "issue-transitions", jobId: job.id },
-            "skipping malformed issue-transition job",
-          );
-          return;
-        }
-        try {
-          const issue = await opts.loadIssue(data.issueId);
-          if (!issue) {
+  await boss.work(
+    ISSUE_TRANSITION_QUEUE,
+    { batchSize: 1, localConcurrency: WORKER_CONCURRENCY },
+    async (jobs) => {
+      await Promise.all(
+        jobs.map(async (job) => {
+          const data = parseJobData(job.data);
+          if (!data) {
             logger.warn(
-              { scope: "issue-transitions", issueId: data.issueId, jobId: job.id },
-              "issue no longer exists; skipping transition",
+              { scope: "issue-transitions", jobId: job.id },
+              "skipping malformed issue-transition job",
             );
             return;
           }
-          await opts.handle(issue, data.transition);
-        } catch (err) {
-          logger.error(
-            {
-              scope: "issue-transitions",
-              issueId: data.issueId,
-              transition: data.transition,
-              projectId: data.projectId,
-              err: err instanceof Error ? err.message : String(err),
-            },
-            "issue transition failed; skipping",
-          );
-        }
-      }),
-    );
-  });
+          try {
+            const issue = await opts.loadIssue(data.issueId);
+            if (!issue) {
+              logger.warn(
+                { scope: "issue-transitions", issueId: data.issueId, jobId: job.id },
+                "issue no longer exists; skipping transition",
+              );
+              return;
+            }
+            await opts.handle(issue, data.transition);
+          } catch (err) {
+            logger.error(
+              {
+                scope: "issue-transitions",
+                issueId: data.issueId,
+                transition: data.transition,
+                projectId: data.projectId,
+                err: err instanceof Error ? err.message : String(err),
+              },
+              "issue transition failed; skipping",
+            );
+          }
+        }),
+      );
+    },
+  );
 }

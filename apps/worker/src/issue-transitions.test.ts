@@ -3,9 +3,9 @@ import { test } from "node:test";
 import type { schema } from "@superlog/db";
 import {
   ISSUE_TRANSITION_QUEUE,
+  type TransitionQueueBoss,
   createIssueTransitionDispatcher,
   registerIssueTransitionWorker,
-  type TransitionQueueBoss,
 } from "./issue-transitions.js";
 
 function issueOf(id: string, projectId: string): schema.Issue {
@@ -19,19 +19,21 @@ function fakeBoss() {
   const sent: SentJob[] = [];
   const queues: Array<{ name: string; options: unknown }> = [];
   const workers = new Map<string, WorkHandler>();
+  const workOptions = new Map<string, unknown>();
   const boss: TransitionQueueBoss = {
     async createQueue(name, options) {
       queues.push({ name, options });
     },
-    async work(name, _options, handler) {
+    async work(name, options, handler) {
       workers.set(name, handler as WorkHandler);
+      workOptions.set(name, options);
     },
     async send(name, data, options) {
       sent.push({ name, data, options });
       return "job-id";
     },
   };
-  return { boss, sent, queues, workers };
+  return { boss, sent, queues, workers, workOptions };
 }
 
 test("dispatcher enqueues the transition instead of running it inline", async () => {
@@ -107,6 +109,13 @@ test("worker registration creates a standard queue and a batch worker", async ()
   // unlike the exclusive cron-job queues.
   assert.equal(fb.queues[0]?.options, undefined);
   assert.ok(fb.workers.get(ISSUE_TRANSITION_QUEUE), "a worker must be registered");
+  // Independent single-job consumers, not a fetch batch: pg-boss completes a
+  // batch only when the whole handler resolves, so batchSize > 1 lets one
+  // hung LLM grouping call pin every fetched transition until queue expiry.
+  assert.deepEqual(fb.workOptions.get(ISSUE_TRANSITION_QUEUE), {
+    batchSize: 1,
+    localConcurrency: 5,
+  });
 });
 
 test("the queue worker reloads each issue and runs the handler", async () => {
