@@ -48,6 +48,96 @@ test("messageBucketFor still separates genuinely different messages", () => {
   );
 });
 
+// Serverless platforms stamp every runtime log line with a per-request ID
+// whose tail is a short (8-16 char) hex run plus a mixed letter-digit node
+// token, e.g. `sin1::h4p45-1783721553799-7973d118dc17`. The old rules only
+// collapsed hex runs of 20+ chars, so every request produced a unique
+// fingerprint — one flooding deployment can mint tens of thousands of issues.
+test("fingerprintLog groups request-scoped runtime log lines from serverless drains", () => {
+  const line = (region: string, node: string, epoch: string, hexTail: string, path: string) =>
+    `START RequestId: ${region}::${node}-${epoch}-${hexTail}\n[GET] ${path}`;
+  const base = {
+    service: "storefront",
+    severity: "ERROR",
+    exceptionType: "ERROR",
+    stacktrace: null,
+  };
+  const fp1 = fingerprintLog({
+    ...base,
+    body: line("sin1", "h4p45", "1783721553799", "7973d118dc17", "/collections/bath?filter=a"),
+  });
+  // Node tokens with a single digit run (sv2np) and other regions must group
+  // too: the whole digit-bearing `scope::token` blob collapses to one id.
+  const fp2 = fingerprintLog({
+    ...base,
+    body: line("gru1", "sv2np", "1783721551971", "8ab18e6846a0", "/collections/kids?filter=b"),
+  });
+  assert.equal(fp1.hash, fp2.hash);
+});
+
+test("digit-free scoped tokens like C++ symbols survive normalization", () => {
+  const a = fingerprintLog({
+    service: "s",
+    severity: "ERROR",
+    body: "terminate called after throwing an instance of std::bad_alloc",
+    exceptionType: null,
+    stacktrace: null,
+  });
+  const b = fingerprintLog({
+    service: "s",
+    severity: "ERROR",
+    body: "terminate called after throwing an instance of std::length_error",
+    exceptionType: null,
+    stacktrace: null,
+  });
+  assert.notEqual(a.hash, b.hash);
+});
+
+test("normalized log bodies collapse short hex runs and mixed letter-digit id tokens", () => {
+  const a = fingerprintLog({
+    service: "s",
+    severity: "ERROR",
+    body: "cache write failed for entry 7973d118dc17 on node h4p45",
+    exceptionType: null,
+    stacktrace: null,
+  });
+  const b = fingerprintLog({
+    service: "s",
+    severity: "ERROR",
+    body: "cache write failed for entry 8ab18e6846a0 on node 2kxk8",
+    exceptionType: null,
+    stacktrace: null,
+  });
+  assert.equal(a.hash, b.hash);
+});
+
+test("meaningful single-digit-run tokens are not collapsed", () => {
+  // utf8 / sha256 / base64-style tokens carry meaning and have one digit run;
+  // only tokens with 2+ separate digit runs (id shapes) may collapse.
+  const a = fingerprintLog({
+    service: "s",
+    severity: "ERROR",
+    body: "sha256 digest mismatch decoding utf8 payload",
+    exceptionType: null,
+    stacktrace: null,
+  });
+  const b = fingerprintLog({
+    service: "s",
+    severity: "ERROR",
+    body: "base64 padding error decoding utf8 payload",
+    exceptionType: null,
+    stacktrace: null,
+  });
+  assert.notEqual(a.hash, b.hash);
+});
+
+test("messageBucketFor collapses short hex runs and id tokens for span messages", () => {
+  assert.equal(
+    messageBucketFor("upstream call failed (request 7973d118dc17 via sin1::h4p45)"),
+    messageBucketFor("upstream call failed (request 8ab18e6846a0 via gru1::sv2np)"),
+  );
+});
+
 // Postgres text and jsonb columns reject the NUL byte (0x00) — it raises
 // `22021 invalid byte sequence for encoding "UTF8": 0x00`. Telemetry can carry
 // a raw NUL in a message or stack frame; the fingerprint outputs feed straight
