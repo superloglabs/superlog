@@ -673,8 +673,17 @@ async function forward(
               queueSpan.setAttribute("ingest.queue.storage", r.storage);
               return r;
             } catch (err) {
-              queueSpan.recordException(err as Error);
-              queueSpan.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+              // PayloadTooLargeError and EmptyBodyError are expected client-side
+              // rejections (→413 / →400). Don't mark the span ERROR for those —
+              // handleIngestBodyError (below) maps them to 4xx responses and they
+              // are not server-side failures.
+              if (
+                !(err instanceof PayloadTooLargeError) &&
+                !(err instanceof EmptyBodyError)
+              ) {
+                queueSpan.recordException(err as Error);
+                queueSpan.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+              }
               throw err;
             } finally {
               queueSpan.end();
