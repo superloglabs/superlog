@@ -7,6 +7,7 @@ import {
   exceededWallClockBudget,
   isTransientError,
   WALL_CLOCK_MULTIPLIER,
+  ZERO_ACTIVITY_WALL_CLOCK_MULTIPLIER,
 } from "./status.js";
 
 test("isTransientError handles cyclic cause chains", () => {
@@ -111,6 +112,45 @@ test("exceededWallClockBudget excludes time parked awaiting a human", () => {
       awaitingHumanSeconds: 30 * 60, // only 30 min parked → 6.5h active > 6h
     }),
     true,
+  );
+});
+
+test("exceededWallClockBudget uses tighter budget for sessions with zero cumulative runtime", () => {
+  // The prod case: a session that returned active_seconds = null/0 on every
+  // collect pass is permanently stuck. With cumulativeRuntimeMinutes=0 the
+  // ZERO_ACTIVITY multiplier fires after one budget cycle instead of four,
+  // giving users faster failure feedback (90 min vs 6 h for maxRuntimeMinutes=90).
+  const startedAt = new Date("2026-07-13T06:00:00Z");
+  const maxRuntimeMinutes = 90;
+  const zeroActivityBudgetMs = ZERO_ACTIVITY_WALL_CLOCK_MULTIPLIER * maxRuntimeMinutes * 60_000;
+  const normalBudgetMs = WALL_CLOCK_MULTIPLIER * maxRuntimeMinutes * 60_000;
+
+  // Just over the zero-activity budget (90 min + 1s) but well under the normal budget.
+  const justOverZero = new Date(startedAt.getTime() + zeroActivityBudgetMs + 1_000);
+  assert.ok(justOverZero.getTime() < startedAt.getTime() + normalBudgetMs);
+
+  assert.equal(
+    exceededWallClockBudget({ startedAt, now: justOverZero, maxRuntimeMinutes, cumulativeRuntimeMinutes: 0 }),
+    true,
+    "zero-activity session should be reaped after 1× budget",
+  );
+  assert.equal(
+    exceededWallClockBudget({ startedAt, now: justOverZero, maxRuntimeMinutes, cumulativeRuntimeMinutes: 1 }),
+    false,
+    "session with any activity should not be reaped at 1× budget",
+  );
+  assert.equal(
+    exceededWallClockBudget({ startedAt, now: justOverZero, maxRuntimeMinutes }),
+    false,
+    "omitting cumulativeRuntimeMinutes keeps the normal 4× path",
+  );
+
+  // Under the zero-activity budget: should not fire even for zero-activity sessions.
+  const justUnderZero = new Date(startedAt.getTime() + zeroActivityBudgetMs - 1_000);
+  assert.equal(
+    exceededWallClockBudget({ startedAt, now: justUnderZero, maxRuntimeMinutes, cumulativeRuntimeMinutes: 0 }),
+    false,
+    "zero-activity session should not fire before 1× budget",
   );
 });
 

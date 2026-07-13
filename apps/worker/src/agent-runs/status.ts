@@ -23,6 +23,12 @@ const agentRunLifecycle = createAgentRunLifecycle(db);
 // sessions, so it never trips for runs that go idle waiting on an
 // unacknowledged custom_tool_use. Wall-clock catches those.
 export const WALL_CLOCK_MULTIPLIER = 4;
+// A session that has never reported any provider-active time (active_seconds
+// is null/0 on every collect pass) is likely permanently stuck. Apply a tighter
+// multiplier so these sessions fail faster — giving users quicker feedback and
+// preventing large synchronous cleanup bursts when many zero-activity sessions
+// age out at the same time (prod incident 2026-07-13).
+export const ZERO_ACTIVITY_WALL_CLOCK_MULTIPLIER = 1;
 
 export function exceededWallClockBudget(opts: {
   startedAt: Date | null;
@@ -34,11 +40,20 @@ export function exceededWallClockBudget(opts: {
   // parked on `ask_human` gets reaped the moment it resumes, discarding a
   // finished investigation (prod incident 2026-07-09).
   awaitingHumanSeconds?: number;
+  // Cumulative provider-active minutes as stored on the run (updated each tick
+  // from snapshot.activeSeconds). When 0 the session has never had any provider
+  // activity; use the tighter ZERO_ACTIVITY_WALL_CLOCK_MULTIPLIER so it is
+  // reaped in one budget cycle rather than four. Omit (or pass undefined) to
+  // keep the normal WALL_CLOCK_MULTIPLIER — callers without access to the
+  // cumulative count stay on the existing behaviour.
+  cumulativeRuntimeMinutes?: number;
 }): boolean {
   if (!opts.startedAt) return false;
   const parkedMs = Math.max(0, opts.awaitingHumanSeconds ?? 0) * 1_000;
   const ageMs = opts.now.getTime() - opts.startedAt.getTime() - parkedMs;
-  const budgetMs = WALL_CLOCK_MULTIPLIER * opts.maxRuntimeMinutes * 60_000;
+  const hasActivity = opts.cumulativeRuntimeMinutes === undefined || opts.cumulativeRuntimeMinutes > 0;
+  const multiplier = hasActivity ? WALL_CLOCK_MULTIPLIER : ZERO_ACTIVITY_WALL_CLOCK_MULTIPLIER;
+  const budgetMs = multiplier * opts.maxRuntimeMinutes * 60_000;
   return ageMs > budgetMs;
 }
 

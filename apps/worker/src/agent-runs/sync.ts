@@ -272,6 +272,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         now: new Date(),
         maxRuntimeMinutes: ctx.automation.maxRuntimeMinutes,
         awaitingHumanSeconds,
+        cumulativeRuntimeMinutes: nextRuntimeMinutes,
       })
     ) {
       await failAgentRun(
@@ -408,6 +409,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
               now: new Date(),
               maxRuntimeMinutes: ctx.automation.maxRuntimeMinutes,
               awaitingHumanSeconds,
+              cumulativeRuntimeMinutes: nextRuntimeMinutes,
             })
           ) {
             await failAgentRun(
@@ -730,6 +732,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           now: new Date(),
           maxRuntimeMinutes: ctx.automation.maxRuntimeMinutes,
           awaitingHumanSeconds,
+          cumulativeRuntimeMinutes: ctx.agentRun.cumulativeRuntimeMinutes,
         })
       ) {
         await failAgentRun(
