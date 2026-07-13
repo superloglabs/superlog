@@ -26,11 +26,12 @@ test("pill stays hidden after the user dismisses it", () => {
   assert.equal(shouldShowMcpPill({ projectId: "p1", connected: false, dismissed: true }), false);
 });
 
-test("pill is fixed to the bottom-left and opens the install dialog", async () => {
+test("pill is fixed to the bottom-right and opens the install dialog", async () => {
   const source = await readFile(new URL("./McpInstallPill.tsx", import.meta.url), "utf8");
   assert.match(source, /fixed/);
   assert.match(source, /bottom-/);
-  assert.match(source, /left-/);
+  assert.match(source, /right-/);
+  assert.doesNotMatch(source, /bottom-5 left-5/);
   assert.match(source, /McpInstallDialog/);
   assert.match(source, /useMcpStatus/);
 });

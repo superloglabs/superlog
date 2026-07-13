@@ -15,7 +15,8 @@ The sheet is how we catch drift — a change that isn't visible there didn't hap
 - Route: `/design` (served by `src/design/DesignLanguage.tsx`, wired in `src/main.tsx`).
 - It renders with only a QueryClient — **no backend, no auth**. To view it:
   `pnpm --filter @superlog/web dev`, then open `http://localhost:<port>/design`.
-- Sections: Tokens (color · type · space · radius), Card, Buttons, Dropdowns, Tabs.
+- Sections: Principles, operational palette, typography & rhythm, actions &
+  fields, selection & status, data display, and feedback.
 - Keep it lean. It's a component catalog, not a page gallery. Don't grow it back
   into full-page route mocks — those lived here once and were removed on purpose.
 
@@ -25,6 +26,7 @@ The sheet is how we catch drift — a change that isn't visible there didn't hap
 |---|---|
 | Color / radius / font tokens | `src/index.css` (CSS vars, dark `:root` + light `:root[data-theme="light"]`) → mapped in `tailwind.config.ts` |
 | Core primitives | `src/design/ui.tsx` |
+| Signed-in product shell | `src/design/ProductShell.tsx` |
 | Dropdown (themed single-select) | `src/design/Dropdown.tsx` |
 | Range picker, row menu, scroll area | `src/design/RangePicker.tsx`, `RowMenu.tsx`, `scroll-area.tsx` |
 | The catalog page | `src/design/DesignLanguage.tsx` |
@@ -38,39 +40,38 @@ Use the Tailwind classes backed by the CSS vars — **never hardcode hexes** in
 components (the sheet may display a hex as a *label*, but styling goes through the
 token). This keeps light/dark theming automatic.
 
-- **Color:** `bg`, `surface`, `surface-2`, `surface-3` (elevation); `fg`, `muted`,
-  `subtle` (ink); `border`, `border-strong`; `accent` / `accent-ink` /
-  `accent-soft` (single action color — one intense moment, used sparingly);
-  `success` / `warning` / `danger` (signal).
-- **Radius:** `sm` 2 · `DEFAULT` 4 · `md` 6 · `lg` 10 · `xl` 12 · `2xl` 14 (px).
-  `rounded-full` for pills.
+- **Color:** `bg`, `surface`, `surface-2`, `surface-3` are near-black layers;
+  `fg`, `muted`, `subtle` are warm neutral ink; `border`, `border-strong` create
+  hierarchy with hairlines. `accent` / `accent-ink` / `accent-soft` are reserved
+  for selection, links, and information. Primary actions use neutral `fg` on
+  `bg`. `success` / `warning` / `danger` communicate state.
+- **Radius:** `xs` 2 · `sm` 4 · `DEFAULT` 6 · `md` 8 · `lg` 12 · `xl` 14 ·
+  `2xl` 18 (px). Use `rounded-full` only for dots, progress tracks, avatars, and
+  objects that are genuinely circular—not for tabs or tags.
 - **Spacing:** eight-pixel rhythm (4, 8, 12, 16, 24, 32, 48, 64).
-- **Type:** `font-sans` = Inter, `font-mono` = JetBrains Mono.
+- **Type:** Inter is the single interface family. The legacy `font-mono` Tailwind
+  alias intentionally resolves to the same sans stack so older screens inherit
+  this rule. True source-code blocks use the dedicated `.superlog-code` class.
 
-## Typography — NEVER USE MONOSPACE CAPS
+## Typography — ONE INTERFACE TYPEFACE
 
-Do **not** combine a monospace font with uppercased text. No `font-mono` +
-`uppercase`, no all-caps labels, eyebrows, table headers, badges, or section
-titles set in a monospace typeface — anywhere, in product UI or in mockups.
+Do not introduce a second typeface for IDs, timestamps, metrics, table values,
+filters, badges, labels, shortcuts, or other interface chrome. Sans typography
+keeps dense operational pages calm and lets weight, size, color, alignment, and
+tabular numerals establish hierarchy.
 
-- **Why:** monospace caps read as cramped, dated, "terminal-cosplay"; the even
-  glyph widths plus capital letterforms kill the hierarchy small labels should
-  provide.
-- **Instead:** use the sans (Inter) in its natural case. For a quiet small label,
-  reach for size, weight, and color (`text-muted` / `text-subtle`) — not
-  monospace and not all-caps.
-- **Monospace is still fine** for genuinely monospaced content: code, log lines,
-  JSON, ids, keys, numeric/tabular values. Keep it in its natural case.
+- Use natural-case labels. For a quiet small label, reach for size, weight, and
+  color (`text-muted` / `text-subtle`), not uppercase tracking.
+- Use `tabular-nums` when vertically aligned numbers need stable widths.
+- Genuine source code, JSON payloads, and stack traces may use
+  `.superlog-code`; this is content rendering, not interface typography.
 
 ```tsx
-// ✗ banned
-<span className="font-mono text-[10px] uppercase tracking-[0.2em]">Telemetry sources</span>
-
-// ✓ small label — capitalized sans
+// ✓ small interface label
 <span className="text-[13px] font-medium text-muted">Telemetry sources</span>
 
-// ✓ monospace in its natural case (code / values)
-<code className="font-mono">sl_public_…</code>
+// ✓ genuine code content opts in explicitly
+<pre className="superlog-code">curl https://api.superlog.sh</pre>
 ```
 
 ## Canonical components (`src/design/ui.tsx` unless noted)
@@ -79,28 +80,30 @@ Reuse these. Don't hand-roll a new button/dropdown/tab/card inline — if a
 primitive is missing, add it here and add a panel to the `/design` sheet.
 
 - **`Btn`** — variants `primary` · `secondary` · `ghost` · `danger`; sizes
-  `sm` · `md` · `lg`; `loading` / `disabled`.
-- **`Chip`** (`ChipTone`) — small status/label token.
-- **`Tile`** — the card: bordered `surface`, `rounded-lg`, consistent padding.
+  `sm` · `md` · `lg`; `loading` / `disabled`. Primary is neutral high contrast;
+  do not make every primary action blue.
+- **`Chip`** (`ChipTone`) — small rectangular status/label token. The `dot`
+  mode removes the fill and is preferred for live state.
+- **`Tile`** — the card: bordered `surface`, `rounded-xl`, consistent padding.
   Compose content inside it. `MetricTile` is the number variant.
+- **`DataList`, `DataListHeader`, `DataListRow`** — responsive table-like lists
+  with semantic roles, quiet column headers, shared row rhythm, and hover state.
 - **`Input`, `SearchInput`, `Select`** — form fields.
 - **`Dropdown`** (`Dropdown.tsx`) — themed single-select, searchable by default;
   prefer over the native `Select` for anything non-trivial.
-- **`Tabs`** — view switch. Capitalized sans, **fully rounded** (`rounded-full`),
-  **no shadow**, no outer track. Active tab = filled `bg-surface-3 text-fg` pill;
-  inactive = `text-muted hover:text-fg`. Sizes `sm` · `md`. Use for switching
-  what a panel shows.
-- **`PillToggle`** — the other segmented control (rounded-full, raised active
-  pill); interchangeable with `Tabs` in style, radio semantics.
+- **`Tabs`** — view switch. Capitalized sans, compact `rounded-md`, **no
+  shadow**, no outer track. Active tab = `bg-surface-3 text-fg`; inactive =
+  `text-muted hover:text-fg`. Sizes `sm` · `md`. Use for switching what a panel
+  shows.
+- **`PillToggle`** — the radio-semantic counterpart to `Tabs`; it shares the
+  same compact rectangular selection language.
+- **`PageHeader`** — the canonical title, supporting copy, and action row for a
+  primary route.
+- **`ProductShell`** (`ProductShell.tsx`) — the signed-in left rail, responsive
+  navigation, and route toolbar. Primary product pages live inside this shell.
 - **`Wordmark`, `ThemeToggle`, `useTheme`, `AppShell`, `CenteredShell`,
-  `Sparkline`, `ShortcutKey`** — chrome and helpers.
+  `Sparkline`, `ShortcutKey`** — lower-level chrome and helpers.
 
-### Legacy — being phased out
-
-`Label`, `FieldLabel`, and `MetricTile`'s label in `src/design/ui.tsx` still
-render the old mono-caps style and are used widely. **Don't use them in new UI**
-— prefer a plain capitalized-sans label (`text-[13px] font-medium text-muted`),
-as the `/design` sheet now does. Treat each one you touch as a chance to drop the
-mono-caps. Flipping them at the source is a deliberate app-wide change (many call
-sites pass lowercase strings that rely on the `uppercase` CSS) — audit call sites
-first.
+`Label`, `FieldLabel`, and `MetricTile` now follow the same natural-case sans
+language as the rest of the system. Prefer them over hand-rolled tracked or
+uppercase labels.

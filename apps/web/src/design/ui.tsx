@@ -5,13 +5,12 @@ import { Link } from "react-router-dom";
 
 // ---------------------------------------------------------------------------
 // Canonical shared primitives — used across the app and the /design sheet.
-// Dark canvas · cobalt accent · soft corners (6px buttons, 10px inputs,
-// 10-12px cards).
+// Quiet dark canvas · neutral actions · blue selection · soft utility corners.
 //
 // Rules + catalog: apps/web/DESIGN.md. Live reference: /design
 // (DesignLanguage.tsx). Changing a primitive here? Update its panel on the
-// /design sheet too — the sheet is how we catch drift. No mono caps: labels are
-// capitalized sans (Label/FieldLabel below are legacy mono-caps, being retired).
+// /design sheet too — the sheet is how we catch drift. All interface typography
+// uses the same sans family; true source code opts into `.superlog-code`.
 // ---------------------------------------------------------------------------
 
 export function ShortcutKey({
@@ -23,7 +22,7 @@ export function ShortcutKey({
 }) {
   return (
     <kbd
-      className={`inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded border border-border bg-surface-2 px-1 font-mono text-[10px] text-muted ${className}`}
+      className={`inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-sm border border-border bg-surface-2 px-1 font-sans text-[10px] text-muted ${className}`}
     >
       {children}
     </kbd>
@@ -43,7 +42,7 @@ export function Tile({
 }) {
   return (
     <div
-      className={`relative rounded-lg border border-border bg-surface ${padded ? "p-5" : ""} ${className}`}
+      className={`relative rounded-xl border border-border bg-surface ${padded ? "p-5" : ""} ${className}`}
     >
       {label && (
         <div className="mb-4 flex items-center justify-between">
@@ -52,6 +51,92 @@ export function Tile({
       )}
       {children}
     </div>
+  );
+}
+
+export function DataList({
+  label,
+  children,
+  className = "",
+}: {
+  label: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      role="table"
+      aria-label={label}
+      className={`overflow-hidden rounded-xl border border-border bg-surface ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+export function DataListHeader({
+  children,
+  className = "",
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      role="row"
+      className={`border-b border-border bg-bg/30 px-4 py-2 text-[10px] font-medium text-subtle ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+export function DataListHeaderCell({
+  children,
+  className = "",
+  ariaLabel,
+}: {
+  children?: ReactNode;
+  className?: string;
+  ariaLabel?: string;
+}) {
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: CSS-grid cells must remain independently hideable for responsive lists.
+    <span role="columnheader" aria-label={ariaLabel} className={className}>
+      {children}
+    </span>
+  );
+}
+
+export function DataListRow({
+  children,
+  className = "",
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      role="row"
+      className={`border-b border-border px-4 py-3 transition-colors last:border-b-0 hover:bg-surface-2/70 ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+export function DataListCell({
+  children,
+  className = "",
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: CSS-grid cells must remain independently hideable for responsive lists.
+    <span role="cell" className={className}>
+      {children}
+    </span>
   );
 }
 
@@ -72,17 +157,11 @@ export function SkeletonBlock({
 }
 
 export function Label({ children }: { children: ReactNode }) {
-  return (
-    <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-subtle">{children}</span>
-  );
+  return <span className="text-[11px] font-medium text-subtle">{children}</span>;
 }
 
 export function FieldLabel({ children }: { children: ReactNode }) {
-  return (
-    <label className="mb-2 block font-mono text-[10px] uppercase tracking-[0.2em] text-muted">
-      {children}
-    </label>
-  );
+  return <label className="mb-2 block text-[11px] font-medium text-muted">{children}</label>;
 }
 
 export function Arrow() {
@@ -99,6 +178,28 @@ export function Arrow() {
       <path d="M7 17 17 7" />
       <path d="M8 7h9v9" />
     </svg>
+  );
+}
+
+export function PageHeader({
+  title,
+  description,
+  actions,
+}: {
+  title: string;
+  description?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <header className="flex flex-col gap-4 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
+      <div className="min-w-0">
+        <h1 className="text-[28px] font-semibold leading-tight tracking-tight text-fg">{title}</h1>
+        {description && (
+          <p className="mt-2 max-w-2xl text-[13px] leading-5 text-muted">{description}</p>
+        )}
+      </div>
+      {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+    </header>
   );
 }
 
@@ -128,16 +229,16 @@ export function Btn({
   onClick,
 }: BtnProps) {
   const base =
-    "inline-flex items-center gap-2 rounded-md font-medium tracking-tight transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40 select-none";
+    "inline-flex items-center justify-center gap-2 rounded-md font-medium tracking-tight transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40 select-none";
   const sizes = {
     sm: "h-7 px-2.5 text-[12px]",
     md: "h-8 px-3 text-[13px]",
     lg: "h-10 px-4 text-[14px]",
   };
   const variants = {
-    primary:
-      "bg-accent text-accent-ink hover:brightness-110 active:brightness-95 shadow-[0_1px_0_0_rgba(255,255,255,0.12)_inset,0_6px_14px_-6px_rgba(72,90,226,0.55)]",
-    secondary: "bg-transparent text-fg border border-border hover:border-border-strong",
+    primary: "bg-fg text-bg hover:bg-fg/90 active:bg-fg/80",
+    secondary:
+      "border border-border bg-surface-2 text-fg hover:border-border-strong hover:bg-surface-3",
     ghost: "bg-transparent text-fg hover:bg-surface-2",
     danger: "bg-danger/20 text-danger hover:bg-danger/30 active:bg-danger/25",
   };
@@ -187,12 +288,12 @@ export function Chip({
     muted: "bg-subtle",
     accent: "bg-accent",
   };
-  // Sans, fully rounded, capitalized label. Two modes: a filled pill in the tone
+  // Sans, compact rectangular, capitalized label. Two modes: a filled tag in the tone
   // color, or — with `dot` — a bare status indicator (no fill, no border) that's
   // just the colored dot + label.
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full text-[11px] capitalize ${
+      className={`inline-flex items-center gap-1.5 rounded text-[11px] font-medium capitalize ${
         dot ? "text-fg" : `px-2 py-0.5 ${tones[tone]}`
       }`}
     >
@@ -202,7 +303,7 @@ export function Chip({
   );
 }
 
-// Rounded-pill segmented toggle. The selected option gets a raised pill;
+// Compact segmented toggle. The selected option gets a quiet surface;
 // the rest are muted text on the shared track. Sans, no caps.
 export function PillToggle({
   value,
@@ -227,8 +328,8 @@ export function PillToggle({
             role="radio"
             aria-checked={active}
             onClick={() => onChange(o.value)}
-            className={`rounded-full ${pad} transition-colors ${
-              active ? "bg-surface-3 text-fg shadow-sm" : "text-muted hover:text-fg"
+            className={`rounded-md ${pad} transition-colors ${
+              active ? "bg-surface-3 text-fg" : "text-muted hover:text-fg"
             }`}
           >
             {o.label}
@@ -240,7 +341,7 @@ export function PillToggle({
 }
 
 // Tab bar. Capitalized sans labels with no outer track — only the active tab
-// gets a soft raised pill (surface-2 fill + hairline border); the rest are
+// gets a soft rectangular fill; the rest are
 // muted text that brightens on hover.
 export function Tabs<T extends string>({
   value,
@@ -265,7 +366,7 @@ export function Tabs<T extends string>({
             role="tab"
             aria-selected={active}
             onClick={() => onChange(o.value)}
-            className={`rounded-full font-medium tracking-tight transition-colors ${pad} ${
+            className={`rounded-md font-medium tracking-tight transition-colors ${pad} ${
               active ? "bg-surface-3 text-fg" : "text-muted hover:text-fg"
             }`}
           >
@@ -286,7 +387,7 @@ export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...rest}
-      className={`h-9 w-full rounded-lg border border-border bg-surface-2 px-3 text-[13px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none ${className}`}
+      className={`h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-[13px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none ${className}`}
     />
   );
 }
@@ -312,9 +413,9 @@ export function SearchInput({
       </svg>
       <input
         placeholder={placeholder}
-        className="h-9 w-full rounded-lg border border-border bg-surface-2 pl-8 pr-16 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none"
+        className="h-9 w-full rounded-md border border-border bg-surface-2 pl-8 pr-16 font-sans text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none"
       />
-      <span className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm border border-border bg-surface-3 px-1.5 py-0.5 font-mono text-[10px] text-muted">
+      <span className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm border border-border bg-surface-3 px-1.5 py-0.5 font-sans text-[10px] text-muted">
         {shortcut}
       </span>
     </div>
@@ -326,7 +427,7 @@ export function Select({ options }: { options: string[] }) {
     <div className="relative">
       <select
         defaultValue={options[0]}
-        className="h-9 w-full appearance-none rounded-lg border border-border bg-surface-2 pl-3 pr-8 text-[13px] text-fg focus:border-border-strong focus:outline-none"
+        className="h-9 w-full appearance-none rounded-md border border-border bg-surface-2 pl-3 pr-8 text-[13px] text-fg focus:border-border-strong focus:outline-none"
       >
         {options.map((o) => (
           <option key={o} value={o}>
@@ -373,11 +474,11 @@ export function MetricTile({
   const tone = positive ? "text-success" : "text-danger";
   const sign = hasDelta && (delta as number) > 0 ? "+" : "";
   return (
-    <div className={`relative rounded-2xl border border-border bg-surface p-5 ${className}`}>
+    <div className={`relative rounded-xl border border-border bg-surface p-5 ${className}`}>
       <div className="flex items-center justify-between">
-        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted">{label}</span>
+        <span className="text-[12px] font-medium text-muted">{label}</span>
         {hasDelta && (
-          <span className={`font-mono text-[11px] tabular-nums ${tone}`}>
+          <span className={`font-sans text-[11px] tabular-nums ${tone}`}>
             {sign}
             {(delta as number).toFixed(2)}%
           </span>
@@ -387,7 +488,7 @@ export function MetricTile({
         <span className="font-sans text-4xl font-semibold tabular-nums tracking-tight text-fg">
           {value}
         </span>
-        {unit && <span className="font-mono text-[11px] text-subtle">{unit}</span>}
+        {unit && <span className="font-sans text-[11px] text-subtle">{unit}</span>}
       </div>
       {sparkline && <Sparkline className="mt-4" tone={positive ? "success" : "danger"} />}
     </div>
@@ -406,7 +507,12 @@ export function Sparkline({
   const d = pts
     .map((y, i) => `${i === 0 ? "M" : "L"} ${(i / (pts.length - 1)) * 100} ${40 - (y / max) * 38}`)
     .join(" ");
-  const color = tone === "success" ? "#41D195" : tone === "danger" ? "#EF5A6F" : "#485AE2";
+  const color =
+    tone === "success"
+      ? "var(--color-success)"
+      : tone === "danger"
+        ? "var(--color-danger)"
+        : "var(--color-accent)";
   return (
     <svg
       className={className}
@@ -507,7 +613,7 @@ export function ThemeToggle() {
       onClick={() => apply(next)}
       aria-label={`Switch to ${next} theme`}
       title={`Switch to ${next} theme`}
-      className="grid h-7 w-7 place-items-center border border-border text-muted transition-colors hover:text-fg"
+      className="grid h-7 w-7 place-items-center rounded-md border border-border bg-surface text-muted transition-colors hover:border-border-strong hover:text-fg"
     >
       {theme === "dark" ? (
         <svg
@@ -554,7 +660,7 @@ export function ThemeToggle() {
 export function OutOfCreditsBadge() {
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] text-danger"
+      className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[11px] text-danger"
       style={{
         backgroundColor: "color-mix(in srgb, var(--color-danger) 20%, transparent)",
         borderColor: "color-mix(in srgb, var(--color-danger) 25%, transparent)",
@@ -585,9 +691,8 @@ export function OutOfCreditsBanner() {
         // foreground so the longer paragraph stays legible on the tinted bg.
         style={{ color: "color-mix(in srgb, var(--color-danger) 82%, var(--color-fg))" }}
       >
-        Your organization is over its plan's monthly investigation limit, so
-        auto-investigation was skipped. Upgrade to pay-as-you-go to keep
-        investigating new incidents.
+        Your organization is over its plan's monthly investigation limit, so auto-investigation was
+        skipped. Upgrade to pay-as-you-go to keep investigating new incidents.
       </p>
       <div className="flex items-center justify-end">
         <Link

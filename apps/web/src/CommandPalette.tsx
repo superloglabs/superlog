@@ -76,7 +76,8 @@ export function CommandPalette() {
     if (mode === "root") {
       const navItems: Item[] = [
         { id: "nav-overview", label: "Overview", group: "Navigate", haystack: "overview home", onSelect: () => navigate("/") },
-        { id: "nav-issues", label: "Issues", group: "Navigate", haystack: "issues incidents", onSelect: () => navigate("/incidents") },
+        { id: "nav-incidents", label: "Incidents", group: "Navigate", haystack: "incidents", onSelect: () => navigate("/incidents") },
+        { id: "nav-errors", label: "Errors", group: "Navigate", haystack: "errors issues", onSelect: () => navigate("/issues") },
         { id: "nav-alerts", label: "Alerts", group: "Navigate", haystack: "alerts", onSelect: () => navigate("/alerts") },
         { id: "nav-explore", label: "Explore", group: "Navigate", haystack: "explore traces logs metrics", onSelect: () => navigate("/explore") },
         { id: "nav-dashboards", label: "Dashboards", group: "Navigate", haystack: "dashboards", onSelect: () => navigate("/dashboards") },

@@ -14,7 +14,17 @@ export default {
           "Roboto",
           "sans-serif",
         ],
-        mono: ["JetBrains Mono", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+        // Compatibility alias for older call sites. Interface typography is
+        // intentionally single-family; true source code uses `.superlog-code`.
+        mono: [
+          "Inter",
+          "ui-sans-serif",
+          "system-ui",
+          "-apple-system",
+          "Segoe UI",
+          "Roboto",
+          "sans-serif",
+        ],
       },
       colors: {
         // Solid colors use RGB-triplet vars (see index.css) so opacity
@@ -37,13 +47,13 @@ export default {
         success: "rgb(var(--color-success-rgb) / <alpha-value>)",
       },
       borderRadius: {
-        xs: "1px",
-        sm: "2px",
-        DEFAULT: "4px",
-        md: "6px",
-        lg: "10px",
-        xl: "12px",
-        "2xl": "14px",
+        xs: "2px",
+        sm: "4px",
+        DEFAULT: "6px",
+        md: "8px",
+        lg: "12px",
+        xl: "14px",
+        "2xl": "18px",
       },
       letterSpacing: {
         tightest: "-0.04em",
@@ -58,7 +68,7 @@ export default {
           "0 1px 0 0 rgba(255,255,255,0.05) inset, 0 1px 2px 0 rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.04)",
         "lift-md":
           "0 1px 0 0 rgba(255,255,255,0.06) inset, 0 2px 8px -1px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05)",
-        "glow-accent": "0 0 0 1px rgba(72,90,226,0.35), 0 0 24px -4px rgba(72,90,226,0.42)",
+        "glow-accent": "0 0 0 1px rgba(115,178,222,0.28), 0 0 24px -6px rgba(115,178,222,0.3)",
       },
       keyframes: {
         "pulse-dot": {

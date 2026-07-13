@@ -82,7 +82,7 @@ function EntityListSkeleton({
 }
 
 export function IssueListSkeleton() {
-  return <EntityListSkeleton label="Loading issues" />;
+  return <EntityListSkeleton label="Loading errors" />;
 }
 
 export function IncidentListSkeleton() {
@@ -91,40 +91,59 @@ export function IncidentListSkeleton() {
 
 export function IssueDetailSkeleton() {
   return (
-    <SkeletonStatus label="Loading issue detail" className="space-y-8 p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <SkeletonBlock className="h-5 w-14" />
-          <SkeletonBlock className="h-5 w-2/3" />
-        </div>
+    <SkeletonStatus label="Loading error detail" className="flex min-h-0 flex-1 flex-col bg-bg">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-5 py-3">
+        <SkeletonBlock className="h-4 w-16" />
+        <SkeletonBlock className="h-4 w-2/5" />
+        <SkeletonBlock className="ml-auto h-7 w-20" />
         <SkeletonBlock className="h-7 w-7" />
       </div>
-      <div className="space-y-2">
-        <div className="flex gap-2">
-          <SkeletonBlock className="h-5 w-20" />
-          <SkeletonBlock className="h-5 w-24" />
-          <SkeletonBlock className="h-5 w-28" />
-        </div>
-        <SkeletonBlock className="h-4 w-3/5" />
-      </div>
-      <div className="space-y-3">
-        <SkeletonBlock className="h-4 w-24" />
-        <SkeletonBlock className="h-28 w-full" />
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        {ISSUE_META_CELLS.map((cell) => (
-          <div
-            key={`issue-meta-${cell}`}
-            className="space-y-2 border border-border bg-surface-2 p-3"
-          >
-            <SkeletonBlock className="h-3 w-20" />
-            <SkeletonBlock className="h-4 w-28" />
+      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[380px_minmax(0,1fr)]">
+        <aside className="border-b border-border px-7 py-7 lg:border-b-0 lg:border-r">
+          <div className="flex gap-2">
+            <SkeletonBlock className="h-5 w-16" />
+            <SkeletonBlock className="h-5 w-16" />
           </div>
-        ))}
-      </div>
-      <div className="space-y-2">
-        <SkeletonBlock className="h-8 w-full" />
-        <SkeletonBlock className="h-8 w-full" />
+          <div className="mt-5 space-y-3">
+            <SkeletonBlock className="h-3 w-32" />
+            <SkeletonBlock className="h-7 w-4/5" />
+            <SkeletonBlock className="h-4 w-full" />
+            <SkeletonBlock className="h-4 w-5/6" />
+          </div>
+          <div className="mt-7 grid gap-3.5">
+            {ISSUE_META_CELLS.map((cell) => (
+              <div
+                key={`issue-meta-${cell}`}
+                className="grid grid-cols-[116px_minmax(0,1fr)] gap-3"
+              >
+                <SkeletonBlock className="h-3 w-20" />
+                <SkeletonBlock className="h-4 w-full" />
+              </div>
+            ))}
+          </div>
+          <div className="mt-7 space-y-2">
+            <SkeletonBlock className="h-8 w-full" />
+            <SkeletonBlock className="h-8 w-full" />
+          </div>
+        </aside>
+        <main className="min-h-0 min-w-0 px-5 py-7 sm:px-7 lg:px-10">
+          <div className="mx-auto max-w-[900px] space-y-8">
+            <div className="space-y-3">
+              <SkeletonBlock className="h-3 w-24" />
+              <SkeletonBlock className="h-6 w-3/5" />
+              <SkeletonBlock className="h-4 w-4/5" />
+              <div className="grid gap-3 pt-2 sm:grid-cols-3">
+                <SkeletonBlock className="h-24 w-full" />
+                <SkeletonBlock className="h-24 w-full" />
+                <SkeletonBlock className="h-24 w-full" />
+              </div>
+            </div>
+            <div className="border-t border-border pt-7">
+              <SkeletonBlock className="h-3 w-24" />
+              <SkeletonBlock className="mt-4 h-40 w-full" />
+            </div>
+          </div>
+        </main>
       </div>
     </SkeletonStatus>
   );

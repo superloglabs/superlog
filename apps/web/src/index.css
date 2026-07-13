@@ -15,26 +15,26 @@
      modifiers (bg-danger/20 etc.) can inject <alpha-value>. The legacy
      --color-* hex-style vars are derived from them — raw CSS/chart code keeps
      reading var(--color-x) and stays theme-aware. */
-  --color-bg-rgb: 20 20 20;
-  --color-surface-rgb: 28 28 30;
-  --color-surface-2-rgb: 35 35 37;
-  --color-surface-3-rgb: 43 43 46;
-  --color-fg-rgb: 245 245 246;
-  --color-muted-rgb: 138 138 143;
-  --color-subtle-rgb: 90 90 96;
-  --color-accent-rgb: 72 90 226;
-  --color-accent-ink-rgb: 255 255 255;
-  --color-accent-deep-rgb: 49 64 184;
-  --color-danger-rgb: 239 90 111;
-  --color-warning-rgb: 231 177 90;
-  --color-success-rgb: 65 209 149;
+  --color-bg-rgb: 18 18 18;
+  --color-surface-rgb: 23 23 23;
+  --color-surface-2-rgb: 28 28 28;
+  --color-surface-3-rgb: 35 35 35;
+  --color-fg-rgb: 220 220 220;
+  --color-muted-rgb: 140 140 140;
+  --color-subtle-rgb: 91 91 91;
+  --color-accent-rgb: 115 178 222;
+  --color-accent-ink-rgb: 20 24 27;
+  --color-accent-deep-rgb: 82 144 187;
+  --color-danger-rgb: 217 113 120;
+  --color-warning-rgb: 201 157 102;
+  --color-success-rgb: 127 199 151;
 
   --color-bg: rgb(var(--color-bg-rgb));
   --color-surface: rgb(var(--color-surface-rgb));
   --color-surface-2: rgb(var(--color-surface-2-rgb));
   --color-surface-3: rgb(var(--color-surface-3-rgb));
-  --color-border: rgba(255, 255, 255, 0.07);
-  --color-border-strong: rgba(255, 255, 255, 0.12);
+  --color-border: rgba(255, 255, 255, 0.09);
+  --color-border-strong: rgba(255, 255, 255, 0.16);
 
   --color-fg: rgb(var(--color-fg-rgb));
   --color-muted: rgb(var(--color-muted-rgb));
@@ -42,14 +42,14 @@
 
   --color-accent: rgb(var(--color-accent-rgb));
   --color-accent-ink: rgb(var(--color-accent-ink-rgb));
-  --color-accent-soft: rgba(72, 90, 226, 0.14);
+  --color-accent-soft: rgba(115, 178, 222, 0.14);
   --color-accent-deep: rgb(var(--color-accent-deep-rgb));
 
   --color-danger: rgb(var(--color-danger-rgb));
   --color-warning: rgb(var(--color-warning-rgb));
   --color-success: rgb(var(--color-success-rgb));
 
-  --dot-color: rgba(245, 245, 246, 0.05);
+  --dot-color: rgba(220, 220, 220, 0.045);
 }
 
 :root[data-theme="light"] {
@@ -64,13 +64,16 @@
   --color-fg-rgb: 35 35 35;
   --color-muted-rgb: 91 94 102;
   --color-subtle-rgb: 156 159 166;
+  --color-accent-rgb: 65 126 168;
+  --color-accent-ink-rgb: 255 255 255;
+  --color-accent-deep-rgb: 48 100 136;
   --color-danger-rgb: 214 56 64;
   --color-warning-rgb: 184 117 3;
   --color-success-rgb: 31 143 95;
 
   --color-border: rgba(15, 17, 21, 0.08);
   --color-border-strong: rgba(15, 17, 21, 0.16);
-  --color-accent-soft: rgba(72, 90, 226, 0.1);
+  --color-accent-soft: rgba(65, 126, 168, 0.1);
 
   --dot-color: rgba(0, 0, 0, 0.06);
 }
@@ -644,13 +647,7 @@ body {
 
 /* Feather both edges to transparent so logos glide in and out of the band. */
 .marquee-fade {
-  -webkit-mask-image: linear-gradient(
-    to right,
-    transparent 0,
-    #000 9%,
-    #000 91%,
-    transparent 100%
-  );
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 9%, #000 91%, transparent 100%);
   mask-image: linear-gradient(to right, transparent 0, #000 9%, #000 91%, transparent 100%);
 }
 

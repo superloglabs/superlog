@@ -105,7 +105,7 @@ function LogDrawerBody({
     <div className="flex flex-col gap-5">
       {issue && onOpenIssue ? (
         <section>
-          <SectionHeader>Issue</SectionHeader>
+          <SectionHeader>Error</SectionHeader>
           <button
             type="button"
             onClick={() => onOpenIssue(issue.id)}
@@ -116,7 +116,7 @@ function LogDrawerBody({
               {issue.title ? <span className="ml-2">{issue.title}</span> : null}
             </span>
             <span className="shrink-0 rounded-sm border border-border px-1.5 py-0.5 text-[10px] text-muted">
-              open issue →
+              open error →
             </span>
           </button>
         </section>

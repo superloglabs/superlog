@@ -20,14 +20,14 @@ test("skeleton blocks are decorative and respect reduced motion", () => {
   assert.match(html, /motion-safe:animate-pulse/);
 });
 
-test("issue skeletons cover list and detail loading surfaces", () => {
+test("error skeletons cover list and detail loading surfaces", () => {
   const list = renderToStaticMarkup(<IssueListSkeleton />);
   const detail = renderToStaticMarkup(<IssueDetailSkeleton />);
 
   assert.match(list, /role="status"/);
   assert.match(detail, /role="status"/);
-  assert.match(list, /aria-label="Loading issues"/);
-  assert.match(detail, /aria-label="Loading issue detail"/);
+  assert.match(list, /aria-label="Loading errors"/);
+  assert.match(detail, /aria-label="Loading error detail"/);
 });
 
 test("incident skeletons cover list and detail loading surfaces", () => {

@@ -111,7 +111,7 @@ import {
 } from "./api";
 import { AWS_REGIONS } from "./awsRegions.ts";
 import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
-import { Btn, Chip, FieldLabel, Input, Label, Tile } from "./design/ui";
+import { Btn, Chip, FieldLabel, Input, Label, PageHeader, Tile } from "./design/ui";
 import { McpInstallPanel } from "./onboarding/McpInstallDialog.tsx";
 import { useDemoExploration } from "./onboarding/demoExploration.tsx";
 import { InfoIcon } from "./onboarding/icons.tsx";
@@ -203,6 +203,10 @@ export function Settings() {
 
   return (
     <div className="space-y-6">
+      <PageHeader
+        title="Settings"
+        description="Manage the project, organization, integrations, and investigation defaults."
+      />
       {(linearStatus || notionStatus || githubStatus || githubAuthorStatus) && (
         <header className="space-y-2">
           {linearStatus && <LinearStatusBanner status={linearStatus} />}
@@ -350,9 +354,7 @@ function SettingsSideNav({
         {groups.map((group, gi) => (
           <li key={group.label ?? gi}>
             {group.label && (
-              <p className="mb-1 mt-4 px-3 text-[11px] uppercase tracking-wider text-muted">
-                {group.label}
-              </p>
+              <p className="mb-1 mt-5 px-3 text-[11px] font-medium text-subtle">{group.label}</p>
             )}
             <ul className="flex flex-col gap-0.5">
               {group.items.map((item) => (
@@ -694,8 +696,8 @@ function ProjectSectionView({
     case "issue-filter":
       return (
         <Section
-          title="Issue filter"
-          subtitle="Drop error logs and traces whose attributes don't match before they create issues."
+          title="Error filter"
+          subtitle="Drop error logs and traces whose attributes don't match before they create errors."
         >
           <IssueFilterCard projectId={projectId} />
         </Section>
@@ -807,7 +809,7 @@ function ProjectGeneralCard({
           description="Used in URLs — fixed after creation"
           control={
             <div className="w-60">
-              <Input className="font-mono text-[12.5px]" value={project?.slug ?? ""} disabled />
+              <Input className="font-sans text-[12.5px]" value={project?.slug ?? ""} disabled />
             </div>
           }
         />
@@ -821,9 +823,9 @@ function ProjectGeneralCard({
             onChange={(e) => setDraft(e.target.value.slice(0, PROJECT_CONTEXT_MAX_LEN))}
             rows={7}
             placeholder="e.g. This project is the billing API. Stripe customer IDs are org-scoped. Prefer touching packages/billing before app code."
-            className="w-full rounded-lg border border-border bg-surface-2 p-3 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
+            className="w-full rounded-lg border border-border bg-surface-2 p-3 font-sans text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
           />
-          <div className="mt-1 flex justify-end font-mono text-[12px] tabular-nums text-muted">
+          <div className="mt-1 flex justify-end font-sans text-[12px] tabular-nums text-muted">
             {draft.length} / {PROJECT_CONTEXT_MAX_LEN}
           </div>
         </SettingsRow>
@@ -1101,7 +1103,7 @@ function GithubCard() {
                           {installation.accountLogin ??
                             `Installation ${installation.installationId}`}
                         </div>
-                        <div className="font-mono text-[11px] text-muted">
+                        <div className="font-sans text-[11px] text-muted">
                           {installation.enabled
                             ? installation.repos.filter((repo) => repo.enabled).length
                             : 0}
@@ -1142,7 +1144,7 @@ function GithubCard() {
                                 })
                               }
                             />
-                            <span className="truncate font-mono text-[11px] text-fg">
+                            <span className="truncate font-sans text-[11px] text-fg">
                               {repo.fullName}
                             </span>
                           </span>
@@ -1162,7 +1164,7 @@ function GithubCard() {
                 <img src={commitAuthor.avatarUrl} alt="" className="h-6 w-6 flex-none rounded-sm" />
               )}
               {!commitAuthor?.avatarUrl && (
-                <div className="flex h-6 w-6 flex-none items-center justify-center rounded-sm border border-border font-mono text-[10px] text-muted">
+                <div className="flex h-6 w-6 flex-none items-center justify-center rounded-sm border border-border font-sans text-[10px] text-muted">
                   SL
                 </div>
               )}
@@ -1175,7 +1177,7 @@ function GithubCard() {
                     {commitAuthor?.source === "github_user" ? "installer" : "default"}
                   </Chip>
                 </div>
-                <div className="truncate font-mono text-[11px] text-muted">
+                <div className="truncate font-sans text-[11px] text-muted">
                   {commitAuthor?.email ?? "bot@superlog.sh"}
                 </div>
               </div>
@@ -1633,7 +1635,7 @@ function RenderCard({ projectId }: { projectId: string | undefined }) {
               placeholder="rnd_…"
               autoComplete="off"
               spellCheck={false}
-              className="h-[32px] min-w-0 flex-1 rounded-[8px] border border-border bg-surface-2 px-2.5 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:outline-none"
+              className="h-[32px] min-w-0 flex-1 rounded-[8px] border border-border bg-surface-2 px-2.5 font-sans text-[12.5px] text-fg placeholder:text-subtle focus:outline-none"
             />
             <Btn
               size="sm"
@@ -2093,7 +2095,7 @@ const AWS_REGION_OPTIONS = AWS_REGIONS.map((r) => ({
   value: r.code,
   label: (
     <span>
-      <span className="font-mono">{r.code}</span>
+      <span className="font-sans">{r.code}</span>
       <span className="text-muted"> · {r.name}</span>
     </span>
   ),
@@ -2492,11 +2494,11 @@ function OrgGuidanceCard() {
           onChange={(e) => setDraft(e.target.value.slice(0, ORG_GUIDANCE_MAX_LEN))}
           rows={5}
           placeholder="e.g. Always link incidents to the on-call runbook before filing a ticket. Prefer reverts over forward fixes for prod regressions."
-          className="w-full rounded-lg border border-border bg-surface-2 p-3 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
+          className="w-full rounded-lg border border-border bg-surface-2 p-3 font-sans text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
         />
         <div className="flex items-center justify-between text-[12px] text-muted">
           <span>Prepended to every agent run prompt across all projects in this org.</span>
-          <span className="font-mono tabular-nums">
+          <span className="font-sans tabular-nums">
             {draft.length} / {ORG_GUIDANCE_MAX_LEN}
           </span>
         </div>
@@ -2751,7 +2753,7 @@ function PrBaseBranchField({
       searchText: branch.name,
       label: (
         <span className="flex items-center gap-2">
-          <span className="font-mono">{branch.name}</span>
+          <span className="font-sans">{branch.name}</span>
           {branch.isDefault && <span className="text-[11px] text-subtle">default</span>}
         </span>
       ),
@@ -2804,25 +2806,25 @@ const BUCKET_META: Record<
 > = {
   includeLogs: {
     label: "Include only logs with",
-    subtitle: "If set, only error logs that match one of these attributes can create issues.",
+    subtitle: "If set, only error logs that match one of these attributes can create errors.",
     kind: "log",
     mode: "include",
   },
   includeSpans: {
     label: "Include only traces with",
-    subtitle: "If set, only exception spans that match one of these attributes can create issues.",
+    subtitle: "If set, only exception spans that match one of these attributes can create errors.",
     kind: "span",
     mode: "include",
   },
   excludeLogs: {
     label: "Exclude all logs with",
-    subtitle: "Error logs matching any of these are dropped before issue creation.",
+    subtitle: "Error logs matching any of these are dropped before error creation.",
     kind: "log",
     mode: "exclude",
   },
   excludeSpans: {
     label: "Exclude all traces with",
-    subtitle: "Exception spans matching any of these are dropped before issue creation.",
+    subtitle: "Exception spans matching any of these are dropped before error creation.",
     kind: "span",
     mode: "exclude",
   },
@@ -2893,7 +2895,7 @@ function IssueFilterCard({ projectId }: { projectId: string | undefined }) {
               </li>
               <li>
                 <b>Include is OR within a bucket.</b> If you set any include clauses for a kind, an
-                event of that kind must match at least one to create an issue.
+                event of that kind must match at least one to create an error.
               </li>
               <li>
                 <b>Logs and traces are independent.</b> Filters for "logs" only affect error logs;
@@ -2932,7 +2934,7 @@ function IssueFilterCard({ projectId }: { projectId: string | undefined }) {
             <FieldLabel>
               {totalClauses === 0
                 ? "Recent errors (last 24h)"
-                : "Errors that would still create issues (last 24h)"}
+                : "Errors that would still be created (last 24h)"}
             </FieldLabel>
             {preview.isFetching && <span className="text-[11px] text-subtle">refreshing…</span>}
           </div>
@@ -3039,9 +3041,9 @@ function FilterPill({
     <span
       className={`inline-flex h-6 items-center gap-1 rounded-sm border border-border bg-surface px-2 text-[11.5px] text-fg ${accent}`}
     >
-      <span className="font-mono text-subtle">{clause.key}</span>
+      <span className="font-sans text-subtle">{clause.key}</span>
       <span className="text-subtle">=</span>
-      <span className="font-mono">{clause.value}</span>
+      <span className="font-sans">{clause.value}</span>
       <button
         type="button"
         disabled={disabled}
@@ -3128,7 +3130,7 @@ function IssueFilterPicker({
             }}
             className="mb-1.5 flex items-center gap-1.5 text-[11px] text-subtle hover:text-fg"
           >
-            ← <span className="truncate font-mono">{drillKey}</span>
+            ← <span className="truncate font-sans">{drillKey}</span>
           </button>
           <input
             ref={searchInputRef}
@@ -3176,7 +3178,7 @@ function IssueFilterPicker({
                         highlight === i ? "bg-surface-2" : ""
                       } ${already ? "cursor-not-allowed opacity-50" : "hover:bg-surface-2"}`}
                     >
-                      <span className="truncate font-mono text-fg">{r.value || "(empty)"}</span>
+                      <span className="truncate font-sans text-fg">{r.value || "(empty)"}</span>
                       <span className="shrink-0 text-[10px] text-subtle">
                         {already ? "added" : r.count}
                       </span>
@@ -3244,7 +3246,7 @@ function IssueFilterPicker({
                     highlight === i ? "bg-surface-2" : ""
                   }`}
                 >
-                  <span className="truncate font-mono text-fg">{k.key}</span>
+                  <span className="truncate font-sans text-fg">{k.key}</span>
                   <span className="shrink-0 text-[10px] text-subtle">{k.count} ›</span>
                 </button>
               </li>
@@ -3286,19 +3288,19 @@ function IssueFilterPreviewList({
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-[11px] text-subtle">
               <Chip tone={e.kind === "log" ? "warning" : "danger"}>{e.kind}</Chip>
-              <span className="font-mono">{e.service || "(no service)"}</span>
-              {e.exception_type && <span className="font-mono text-muted">{e.exception_type}</span>}
+              <span className="font-sans">{e.service || "(no service)"}</span>
+              {e.exception_type && <span className="font-sans text-muted">{e.exception_type}</span>}
             </div>
-            <span className="font-mono text-[10px] text-subtle">{formatRelative(e.ts)}</span>
+            <span className="font-sans text-[10px] text-subtle">{formatRelative(e.ts)}</span>
           </div>
-          <div className="line-clamp-2 break-words font-mono text-[12px] text-fg">
+          <div className="line-clamp-2 break-words font-sans text-[12px] text-fg">
             {e.message || "(no message)"}
           </div>
           <div className="flex flex-wrap gap-1">
             {pickPreviewAttrs(e.attrs, clauseKeys).map(([k, v]) => (
               <span
                 key={`${k}=${v}`}
-                className="inline-flex items-center gap-1 rounded-sm border border-border bg-surface-2 px-1.5 py-0.5 font-mono text-[10.5px] text-muted"
+                className="inline-flex items-center gap-1 rounded-sm border border-border bg-surface-2 px-1.5 py-0.5 font-sans text-[10.5px] text-muted"
               >
                 <span className="text-subtle">{k}</span>
                 <span className="text-subtle">=</span>
@@ -3380,7 +3382,7 @@ function FlowNode({
     <div className={`relative grid grid-cols-[40px_1fr] gap-4 ${dim}`}>
       <div className="relative flex flex-col items-center">
         <div
-          className={`flex h-8 w-8 items-center justify-center rounded-full border font-mono text-[11px] tabular-nums ${
+          className={`flex h-8 w-8 items-center justify-center rounded-full border font-sans text-[11px] tabular-nums ${
             off
               ? "border-border bg-surface-2 text-muted"
               : accent && spineActive
@@ -3487,7 +3489,7 @@ function AutoMergeControls({
   };
   return (
     <div className="space-y-3 rounded-sm border border-border bg-surface-2 p-3">
-      <div className="text-[11px] font-mono uppercase tracking-tight text-muted">
+      <div className="text-[11px] font-sans uppercase tracking-tight text-muted">
         Auto-merge fix PRs
       </div>
       <div className="flex flex-wrap gap-1.5">
@@ -3499,7 +3501,7 @@ function AutoMergeControls({
               type="button"
               disabled={disabled}
               onClick={() => onChange({ autoMergeFixPrs: opt })}
-              className={`rounded-sm border px-2.5 py-1 font-mono text-[11px] tracking-tight transition-colors ${
+              className={`rounded-sm border px-2.5 py-1 font-sans text-[11px] tracking-tight transition-colors ${
                 active
                   ? "border-accent bg-accent-soft text-accent"
                   : "border-border bg-surface-2 text-muted hover:text-fg"
@@ -3513,7 +3515,7 @@ function AutoMergeControls({
       <p className="text-[12px] text-muted">{policyHints[policy]}</p>
       {policy !== "never" && (
         <div className="space-y-2">
-          <div className="text-[11px] font-mono uppercase tracking-tight text-muted">
+          <div className="text-[11px] font-sans uppercase tracking-tight text-muted">
             Merge method
           </div>
           <div className="flex flex-wrap gap-1.5">
@@ -3525,7 +3527,7 @@ function AutoMergeControls({
                   type="button"
                   disabled={disabled}
                   onClick={() => onChange({ autoMergeMethod: opt })}
-                  className={`rounded-sm border px-2.5 py-1 font-mono text-[11px] tracking-tight transition-colors ${
+                  className={`rounded-sm border px-2.5 py-1 font-sans text-[11px] tracking-tight transition-colors ${
                     active
                       ? "border-accent bg-accent-soft text-accent"
                       : "border-border bg-surface-2 text-muted hover:text-fg"
@@ -3567,7 +3569,7 @@ function PolicyControls<T extends string>({
               type="button"
               disabled={disabled}
               onClick={() => onChange(opt as T)}
-              className={`rounded-sm border px-2.5 py-1 font-mono text-[11px] tracking-tight transition-colors ${
+              className={`rounded-sm border px-2.5 py-1 font-sans text-[11px] tracking-tight transition-colors ${
                 active
                   ? "border-accent bg-accent-soft text-accent"
                   : "border-border bg-surface-2 text-muted hover:text-fg"
@@ -3632,11 +3634,11 @@ function InstructionsField({
         placeholder={
           "e.g. Prefer one-line fixes when possible. When patching the billing service, run pnpm typecheck before declaring the patch validated."
         }
-        className="w-full rounded-lg border border-border bg-surface-2 p-3 font-mono text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
+        className="w-full rounded-lg border border-border bg-surface-2 p-3 font-sans text-[12.5px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
       />
       <div className="flex items-center justify-between text-[12px] text-muted">
         <span>Appended to every agent run prompt for this workspace.</span>
-        <span className="font-mono tabular-nums">{draft.length} / 8000</span>
+        <span className="font-sans tabular-nums">{draft.length} / 8000</span>
       </div>
       <div className="flex items-center gap-2">
         <Btn
@@ -3834,7 +3836,7 @@ function InstructionForm({
         onChange={(e) => onTextChange(e.target.value)}
         rows={3}
         placeholder="Describe the requirement the agent must follow when filing this ticket…"
-        className="w-full rounded-lg border border-border bg-surface-1 p-2 font-mono text-[12px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
+        className="w-full rounded-lg border border-border bg-surface-1 p-2 font-sans text-[12px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none disabled:opacity-60"
       />
       <div className="flex items-center gap-2">
         <Btn size="sm" variant="primary" disabled={!title.trim() || disabled} onClick={onSave}>
@@ -4005,7 +4007,7 @@ function IntegrationEditor({
           <div className="text-[12px] text-muted">{integration.description}</div>
         </div>
         <div className="flex items-center gap-2">
-          <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-muted">
+          <span className="font-sans text-[11px] uppercase tracking-[0.15em] text-muted">
             {enabled ? "On" : "Off"}
           </span>
           <Toggle checked={enabled} onChange={setEnabled} disabled={save.isPending} />
@@ -4022,7 +4024,7 @@ function IntegrationEditor({
               placeholder={spec.present ? "•••••••• stored — type to replace" : "Paste key"}
               value={secrets[spec.name] ?? ""}
               onChange={(e) => setSecrets((s) => ({ ...s, [spec.name]: e.target.value }))}
-              className="font-mono"
+              className="font-sans"
             />
             <div className="text-[12px] text-muted">{spec.description}</div>
           </div>
@@ -4134,7 +4136,7 @@ function ApiKeysCard({ projectId }: { projectId: string | undefined }) {
                 dismiss
               </button>
             </div>
-            <code className="block break-all font-mono text-[12.5px] text-fg">
+            <code className="block break-all font-sans text-[12.5px] text-fg">
               {reveal.plaintext}
             </code>
           </div>
@@ -4151,23 +4153,23 @@ function ApiKeysCard({ projectId }: { projectId: string | undefined }) {
             <table className="w-full text-[13px]">
               <thead>
                 <tr className="border-b border-border text-left text-muted">
-                  <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.2em]">
+                  <th className="py-2 pr-4 font-sans text-[10px] uppercase tracking-[0.2em]">
                     Name
                   </th>
-                  <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.2em]">
+                  <th className="py-2 pr-4 font-sans text-[10px] uppercase tracking-[0.2em]">
                     Prefix
                   </th>
-                  <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.2em]">
+                  <th className="py-2 pr-4 font-sans text-[10px] uppercase tracking-[0.2em]">
                     Last used
                   </th>
-                  <th className="py-2 font-mono text-[10px] uppercase tracking-[0.2em]" />
+                  <th className="py-2 font-sans text-[10px] uppercase tracking-[0.2em]" />
                 </tr>
               </thead>
               <tbody>
                 {live.map((k) => (
                   <tr key={k.id} className="border-b border-border last:border-0">
                     <td className="py-3 pr-4">{k.name}</td>
-                    <td className="py-3 pr-4 font-mono tabular-nums text-muted">{k.keyPrefix}…</td>
+                    <td className="py-3 pr-4 font-sans tabular-nums text-muted">{k.keyPrefix}…</td>
                     <td className="py-3 pr-4 text-muted">
                       {k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleString() : "never"}
                     </td>
@@ -4297,11 +4299,11 @@ function McpTokensCard({ projectId }: { projectId: string | undefined }) {
                 dismiss
               </button>
             </div>
-            <code className="block break-all font-mono text-[12.5px] text-fg">
+            <code className="block break-all font-sans text-[12.5px] text-fg">
               {reveal.plaintext}
             </code>
             <p className="mt-2 text-[12px] text-muted">Add it to your agent, for example:</p>
-            <code className="mt-1 block break-all font-mono text-[12px] text-subtle">
+            <code className="mt-1 block break-all font-sans text-[12px] text-subtle">
               claude mcp add --transport http superlog https://api.superlog.sh/mcp --header
               "Authorization: Bearer {reveal.plaintext}"
             </code>
@@ -4319,19 +4321,19 @@ function McpTokensCard({ projectId }: { projectId: string | undefined }) {
             <table className="w-full text-[13px]">
               <thead>
                 <tr className="border-b border-border text-left text-muted">
-                  <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.2em]">
+                  <th className="py-2 pr-4 font-sans text-[10px] uppercase tracking-[0.2em]">
                     Name
                   </th>
-                  <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.2em]">
+                  <th className="py-2 pr-4 font-sans text-[10px] uppercase tracking-[0.2em]">
                     Project
                   </th>
-                  <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.2em]">
+                  <th className="py-2 pr-4 font-sans text-[10px] uppercase tracking-[0.2em]">
                     Expires
                   </th>
-                  <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.2em]">
+                  <th className="py-2 pr-4 font-sans text-[10px] uppercase tracking-[0.2em]">
                     Last used
                   </th>
-                  <th className="py-2 font-mono text-[10px] uppercase tracking-[0.2em]" />
+                  <th className="py-2 font-sans text-[10px] uppercase tracking-[0.2em]" />
                 </tr>
               </thead>
               <tbody>
@@ -4339,7 +4341,7 @@ function McpTokensCard({ projectId }: { projectId: string | undefined }) {
                   <tr key={t.id} className="border-b border-border last:border-0">
                     <td className="py-3 pr-4">
                       <div>{t.name}</div>
-                      <div className="font-mono text-[11px] text-muted">{t.tokenPrefix}…</div>
+                      <div className="font-sans text-[11px] text-muted">{t.tokenPrefix}…</div>
                     </td>
                     <td className="py-3 pr-4 text-muted">{t.projectName ?? "—"}</td>
                     <td className="py-3 pr-4 text-muted">
@@ -4434,7 +4436,7 @@ function OrgApiKeysCard() {
                 dismiss
               </button>
             </div>
-            <code className="block break-all font-mono text-[12.5px] text-fg">
+            <code className="block break-all font-sans text-[12.5px] text-fg">
               {reveal.plaintext}
             </code>
           </div>
@@ -4451,23 +4453,23 @@ function OrgApiKeysCard() {
             <table className="w-full text-[13px]">
               <thead>
                 <tr className="border-b border-border text-left text-muted">
-                  <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.2em]">
+                  <th className="py-2 pr-4 font-sans text-[10px] uppercase tracking-[0.2em]">
                     Name
                   </th>
-                  <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.2em]">
+                  <th className="py-2 pr-4 font-sans text-[10px] uppercase tracking-[0.2em]">
                     Prefix
                   </th>
-                  <th className="py-2 pr-4 font-mono text-[10px] uppercase tracking-[0.2em]">
+                  <th className="py-2 pr-4 font-sans text-[10px] uppercase tracking-[0.2em]">
                     Last used
                   </th>
-                  <th className="py-2 font-mono text-[10px] uppercase tracking-[0.2em]" />
+                  <th className="py-2 font-sans text-[10px] uppercase tracking-[0.2em]" />
                 </tr>
               </thead>
               <tbody>
                 {live.map((k) => (
                   <tr key={k.id} className="border-b border-border last:border-0">
                     <td className="py-3 pr-4">{k.name}</td>
-                    <td className="py-3 pr-4 font-mono tabular-nums text-muted">{k.key_prefix}…</td>
+                    <td className="py-3 pr-4 font-sans tabular-nums text-muted">{k.key_prefix}…</td>
                     <td className="py-3 pr-4 text-muted">
                       {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "never"}
                     </td>
@@ -4617,12 +4619,12 @@ function OrgGithubInstallRow({
           onClick={() => setExpanded((v) => !v)}
           className="flex min-w-0 items-center gap-2 text-left"
         >
-          <span className="font-mono text-[10px] text-muted">{expanded ? "▾" : "▸"}</span>
+          <span className="font-sans text-[10px] text-muted">{expanded ? "▾" : "▸"}</span>
           <div className="min-w-0">
             <div className="truncate text-[13px] text-fg">
               {install.account_login ?? `Installation ${install.installation_id}`}
             </div>
-            <div className="font-mono text-[11px] text-muted">
+            <div className="font-sans text-[11px] text-muted">
               {install.account_type ?? "—"} · install {install.installation_id}
             </div>
           </div>
@@ -4683,7 +4685,7 @@ function OrgGithubInstallRow({
                       className="flex min-w-0 items-center justify-between gap-2 px-1 py-1"
                     >
                       <span className="flex min-w-0 items-center gap-2">
-                        <span className="truncate font-mono text-[11px] text-fg">
+                        <span className="truncate font-sans text-[11px] text-fg">
                           {repo.full_name}
                         </span>
                         <Chip tone={repo.private ? "muted" : "neutral"}>
@@ -4722,8 +4724,8 @@ function OrgGithubInstallRow({
                               }}
                               className={
                                 isGranted
-                                  ? "inline-flex items-center gap-1 border border-accent bg-accent/15 px-1.5 py-0.5 font-mono text-[10px] text-accent"
-                                  : "inline-flex items-center gap-1 border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted hover:border-fg/40 hover:text-fg"
+                                  ? "inline-flex items-center gap-1 border border-accent bg-accent/15 px-1.5 py-0.5 font-sans text-[10px] text-accent"
+                                  : "inline-flex items-center gap-1 border border-border px-1.5 py-0.5 font-sans text-[10px] text-muted hover:border-fg/40 hover:text-fg"
                               }
                               title={
                                 isGranted
@@ -4792,7 +4794,7 @@ function WebhookEventPicker({
             onChange={() => toggle(event.id)}
           />
           <span>
-            <code className="font-mono text-[11.5px] text-fg">{event.id}</code>
+            <code className="font-sans text-[11.5px] text-fg">{event.id}</code>
             <span className="block text-[11px] text-muted">{event.label}</span>
           </span>
         </label>
@@ -4825,7 +4827,7 @@ function WebhooksCard({ projectId }: { projectId: string | undefined }) {
           <button
             type="button"
             onClick={() => setSchemaOpen(true)}
-            className="font-mono text-[11px] uppercase tracking-[0.2em] text-muted hover:text-fg"
+            className="font-sans text-[11px] uppercase tracking-[0.2em] text-muted hover:text-fg"
           >
             view payloads
           </button>
@@ -4891,7 +4893,7 @@ function WebhooksCard({ projectId }: { projectId: string | undefined }) {
                 dismiss
               </button>
             </div>
-            <code className="block break-all font-mono text-[12.5px] text-fg">{reveal.secret}</code>
+            <code className="block break-all font-sans text-[12.5px] text-fg">{reveal.secret}</code>
           </div>
         )}
 
@@ -5114,7 +5116,7 @@ function WebhookSchemaModal({ onClose }: { onClose: () => void }) {
             <button
               type="button"
               onClick={onClose}
-              className="font-mono text-[11px] uppercase tracking-[0.2em] text-subtle hover:text-fg"
+              className="font-sans text-[11px] uppercase tracking-[0.2em] text-subtle hover:text-fg"
             >
               close
             </button>
@@ -5138,7 +5140,7 @@ function WebhookSchemaModal({ onClose }: { onClose: () => void }) {
                     key={event.id}
                     className="flex flex-col gap-0.5 px-3 py-2 sm:flex-row sm:items-baseline sm:gap-3"
                   >
-                    <code className="font-mono text-[12px] text-fg sm:w-[200px] sm:shrink-0">
+                    <code className="font-sans text-[12px] text-fg sm:w-[200px] sm:shrink-0">
                       {event.id}
                     </code>
                     <span className="text-[12px] text-muted">{event.label}</span>
@@ -5149,7 +5151,7 @@ function WebhookSchemaModal({ onClose }: { onClose: () => void }) {
 
             <section>
               <h3 className="mb-2 text-[13px] font-medium text-fg">Headers</h3>
-              <div className="rounded-sm border border-border bg-surface-2 p-3 font-mono text-[12px]">
+              <div className="rounded-sm border border-border bg-surface-2 p-3 font-sans text-[12px]">
                 <div>
                   <span className="text-muted">Content-Type:</span> application/json
                 </div>
@@ -5169,7 +5171,7 @@ function WebhookSchemaModal({ onClose }: { onClose: () => void }) {
 
             <section>
               <h3 className="mb-2 text-[13px] font-medium text-fg">Example body</h3>
-              <pre className="max-h-[400px] overflow-auto rounded-sm border border-border bg-surface-2 p-3 font-mono text-[11.5px] leading-[1.55] text-fg">
+              <pre className="max-h-[400px] overflow-auto rounded-sm border border-border bg-surface-2 p-3 font-sans text-[11.5px] leading-[1.55] text-fg">
                 {INCIDENT_UPDATED_EXAMPLE}
               </pre>
             </section>
@@ -5184,7 +5186,7 @@ function WebhookSchemaModal({ onClose }: { onClose: () => void }) {
                   onClick={() => {
                     navigator.clipboard?.writeText(IMPLEMENT_PROMPT).catch(() => {});
                   }}
-                  className="font-mono text-[11px] uppercase tracking-[0.2em] text-muted hover:text-fg"
+                  className="font-sans text-[11px] uppercase tracking-[0.2em] text-muted hover:text-fg"
                 >
                   copy
                 </button>
@@ -5193,7 +5195,7 @@ function WebhookSchemaModal({ onClose }: { onClose: () => void }) {
                 Paste this into Claude Code / Cursor / your IDE agent. It describes the headers,
                 signature scheme, payload, and what to build.
               </p>
-              <pre className="max-h-[260px] overflow-auto rounded-sm border border-border bg-surface-2 p-3 font-mono text-[11.5px] leading-[1.55] text-fg whitespace-pre-wrap">
+              <pre className="max-h-[260px] overflow-auto rounded-sm border border-border bg-surface-2 p-3 font-sans text-[11.5px] leading-[1.55] text-fg whitespace-pre-wrap">
                 {IMPLEMENT_PROMPT}
               </pre>
             </section>
@@ -5205,7 +5207,7 @@ function WebhookSchemaModal({ onClose }: { onClose: () => void }) {
                 endpoint's signing secret and compare against the <code>v1</code> value. Verify
                 against the raw body, before JSON-parsing.
               </p>
-              <pre className="max-h-[260px] overflow-auto rounded-sm border border-border bg-surface-2 p-3 font-mono text-[11.5px] leading-[1.55] text-fg">
+              <pre className="max-h-[260px] overflow-auto rounded-sm border border-border bg-surface-2 p-3 font-sans text-[11.5px] leading-[1.55] text-fg">
                 {VERIFY_SNIPPET}
               </pre>
             </section>
@@ -5299,7 +5301,7 @@ function WebhookEndpointRow({
           <button
             type="button"
             onClick={onToggle}
-            className="block w-full truncate text-left font-mono text-[12.5px] text-fg hover:underline"
+            className="block w-full truncate text-left font-sans text-[12.5px] text-fg hover:underline"
           >
             {endpoint.url}
           </button>
@@ -5405,14 +5407,14 @@ function WebhookDeliveriesPanel({
         <table className="w-full text-[12px]">
           <thead>
             <tr className="border-b border-border text-left text-muted">
-              <th className="py-1 pr-3 font-mono text-[10px] uppercase tracking-[0.2em]">When</th>
-              <th className="py-1 pr-3 font-mono text-[10px] uppercase tracking-[0.2em]">Event</th>
-              <th className="py-1 pr-3 font-mono text-[10px] uppercase tracking-[0.2em]">Status</th>
-              <th className="py-1 pr-3 font-mono text-[10px] uppercase tracking-[0.2em]">
+              <th className="py-1 pr-3 font-sans text-[10px] uppercase tracking-[0.2em]">When</th>
+              <th className="py-1 pr-3 font-sans text-[10px] uppercase tracking-[0.2em]">Event</th>
+              <th className="py-1 pr-3 font-sans text-[10px] uppercase tracking-[0.2em]">Status</th>
+              <th className="py-1 pr-3 font-sans text-[10px] uppercase tracking-[0.2em]">
                 Attempts
               </th>
-              <th className="py-1 pr-3 font-mono text-[10px] uppercase tracking-[0.2em]">HTTP</th>
-              <th className="py-1 font-mono text-[10px] uppercase tracking-[0.2em]" />
+              <th className="py-1 pr-3 font-sans text-[10px] uppercase tracking-[0.2em]">HTTP</th>
+              <th className="py-1 font-sans text-[10px] uppercase tracking-[0.2em]" />
             </tr>
           </thead>
           <tbody>
@@ -5440,7 +5442,7 @@ function DeliveryRow({
     <>
       <tr className="border-b border-border last:border-0">
         <td className="py-1.5 pr-3 text-muted">{new Date(delivery.createdAt).toLocaleString()}</td>
-        <td className="py-1.5 pr-3 font-mono">{delivery.eventType}</td>
+        <td className="py-1.5 pr-3 font-sans">{delivery.eventType}</td>
         <td className="py-1.5 pr-3">
           <Chip tone={tone} dot>
             {delivery.status}
@@ -5470,7 +5472,7 @@ function DeliveryRow({
       {open && (
         <tr>
           <td colSpan={6} className="bg-surface-1 py-2 pr-3">
-            <div className="space-y-1 font-mono text-[11px] text-muted">
+            <div className="space-y-1 font-sans text-[11px] text-muted">
               <div>next attempt: {new Date(delivery.nextAttemptAt).toLocaleString()}</div>
               {delivery.deliveredAt && (
                 <div>delivered: {new Date(delivery.deliveredAt).toLocaleString()}</div>
