@@ -8,14 +8,20 @@ import {
 } from "./connectChoices.ts";
 import {
   AwsIcon,
+  CalendarIcon,
   ChevronRightIcon,
   CloudflareIcon,
+  ExternalLinkIcon,
   RailwayIcon,
   RenderIcon,
   TerminalIcon,
   VercelIcon,
 } from "./icons.tsx";
 import { ExploreDemoLink, SOFT_LINE } from "./wizardChrome.tsx";
+
+// Where the "Book a call" tile sends people. Onboarding-only human-help escape
+// hatch — not a data source, so it lives outside the CONNECT_SECTIONS catalog.
+const ONBOARDING_CALL_URL = "https://cal.com/ash-superlog/onboarding";
 
 // The path chooser: a flat, low-color list (modeled on a Plugins page). Peer
 // lanes — the no-code integrations (AWS, Cloudflare, Vercel, integration-first)
@@ -101,6 +107,33 @@ function Section({
   );
 }
 
+// A row that looks like a connector tile but opens an external booking link
+// instead of routing into a connect flow. Kept out of CONNECT_SECTIONS so the
+// data-source catalog stays a pure list of telemetry sources.
+function BookCallTile() {
+  return (
+    <a
+      href={ONBOARDING_CALL_URL}
+      target="_blank"
+      rel="noreferrer"
+      className={`group flex w-full items-center gap-3.5 overflow-hidden rounded-[14px] border bg-surface px-[18px] py-[14px] text-left transition-colors hover:bg-surface-2 ${SOFT_LINE}`}
+    >
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-[9px] border border-border bg-surface-2 text-muted">
+        <CalendarIcon size={18} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[14px] font-medium text-fg">Need help onboarding?</span>
+        <span className="mt-0.5 block text-[12.5px] leading-[1.45] text-muted">
+          Book a call with our experts and we'll walk you through getting your data in.
+        </span>
+      </span>
+      <span className="text-subtle transition-colors group-hover:text-muted">
+        <ExternalLinkIcon size={15} />
+      </span>
+    </a>
+  );
+}
+
 export function ConnectDataChooser({
   onPick,
   onExploreDemo,
@@ -133,6 +166,7 @@ export function ConnectDataChooser({
         {sections.map((section) => (
           <Section key={section.id} section={section} onPick={onPick} />
         ))}
+        <BookCallTile />
       </div>
 
       <ExploreDemoLink onExploreDemo={onExploreDemo} />

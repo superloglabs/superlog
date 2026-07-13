@@ -235,6 +235,26 @@ export function ExternalLinkIcon({ size = 13, className }: IconProps) {
   );
 }
 
+export function CalendarIcon({ size = 16, className }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="1.5" y="2.5" width="11" height="10" rx="1.5" />
+      <path d="M1.5 5.5h11M4.5 1v2.5M9.5 1v2.5" />
+    </svg>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Connect-source glyphs. Neutral monochrome line icons (currentColor) so no
 // per-integration brand color competes for attention on the chooser.
