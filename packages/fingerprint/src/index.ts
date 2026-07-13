@@ -96,7 +96,7 @@ const MESSAGE_BUCKET_MAX = 160;
 export function messageBucketFor(message: string | null | undefined): string {
   if (!message) return "";
   let s = unwrapAnthropicErrorMessage(message);
-  s = s.replace(/https?:\/\/\S+/gi, "<url>");
+  s = collapseUrls(s);
   s = collapseRequestPaths(s);
   s = s.replace(/\b[\w.+-]+@[\w.-]+\.\w+\b/g, "<email>");
   s = s.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>");
@@ -118,6 +118,18 @@ export function messageBucketFor(message: string | null | undefined): string {
 // unique fingerprint. The lookahead requires at least one a-f char so pure
 // numbers keep normalizing to `<n>` (no hash churn for numeric messages).
 const HEX_RUN = /\b(?=\d*[a-f])[0-9a-f]{8,}\b/gi;
+
+// The guiding rule for every collapse here: erase UNBOUNDED-cardinality
+// tokens (paths, query strings, request ids, numbers) and keep BOUNDED
+// discriminators. A URL's host names which dependency failed — collapsing
+// `OutOfMemory: http://web.company.com` and `http://api.company.com` onto one
+// fingerprint would merge two different errors — while its path/query vary
+// per request. So keep the host, drop the rest. Id-shaped host labels
+// (`customer-7973d118dc17.workers.dev`) still collapse because the hex/id
+// rules run over the kept host text afterwards.
+function collapseUrls(s: string): string {
+  return s.replace(/https?:\/\/([^\s/:?#]+)\S*/gi, (_m, host: string) => `<url:${host}>`);
+}
 
 // Tokens mixing letters with TWO OR MORE separate digit runs (h4p45, 5t6gm)
 // are id shapes: machine/instance tokens in request IDs. One digit run is
@@ -157,7 +169,7 @@ function unwrapAnthropicErrorMessage(raw: string): string {
 
 export function normalizeMessage(body: string): string {
   let s = body;
-  s = s.replace(/https?:\/\/\S+/gi, "<url>");
+  s = collapseUrls(s);
   s = collapseRequestPaths(s);
   s = s.replace(/\b[\w.+-]+@[\w.-]+\.\w+\b/g, "<email>");
   s = s.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>");

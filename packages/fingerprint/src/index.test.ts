@@ -75,6 +75,40 @@ test("fingerprintLog groups request-scoped runtime log lines from serverless dra
   assert.equal(fp1.hash, fp2.hash);
 });
 
+// URLs collapse host-preservingly: the host is a bounded discriminator that
+// names which dependency failed, so it must survive; the path/query vary per
+// request and must not.
+test("same error against different hosts stays distinct", () => {
+  const mk = (body: string) =>
+    fingerprintLog({ service: "s", severity: "ERROR", body, exceptionType: null, stacktrace: null });
+  assert.notEqual(
+    mk("OutOfMemory: http://web.company.com").hash,
+    mk("OutOfMemory: http://api.company.com").hash,
+  );
+  assert.notEqual(
+    messageBucketFor("OutOfMemory: http://web.company.com"),
+    messageBucketFor("OutOfMemory: http://api.company.com"),
+  );
+});
+
+test("same error against the same host groups across request paths", () => {
+  const mk = (body: string) =>
+    fingerprintLog({ service: "s", severity: "ERROR", body, exceptionType: null, stacktrace: null });
+  assert.equal(
+    mk("fetch failed: https://api.stripe.com/v1/charges/ch_1a2b3c?expand=customer").hash,
+    mk("fetch failed: https://api.stripe.com/v1/charges/ch_9z8y7x").hash,
+  );
+});
+
+test("id-shaped host labels still collapse", () => {
+  const mk = (body: string) =>
+    fingerprintLog({ service: "s", severity: "ERROR", body, exceptionType: null, stacktrace: null });
+  assert.equal(
+    mk("upstream timeout: https://customer-7973d118dc17.workers.dev/render").hash,
+    mk("upstream timeout: https://customer-8ab18e6846a0.workers.dev/render").hash,
+  );
+});
+
 test("digit-free scoped tokens like C++ symbols survive normalization", () => {
   const a = fingerprintLog({
     service: "s",
