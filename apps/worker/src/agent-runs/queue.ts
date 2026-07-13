@@ -112,6 +112,15 @@ async function advanceRun(deps: AgentRunQueueDeps, data: AgentRunJobData): Promi
 }
 
 // Register both queues and their workers, plus the minute cron for the sweep.
+//
+// Ordering is load-bearing: the advance CONSUMER is registered last. When any
+// call here throws, the caller (index.ts) falls back to the tick's batch
+// rotation — if an advance consumer were already live at that point (it starts
+// consuming leftover jobs from a previous boot immediately), the same run
+// could be advanced concurrently from both paths. Failing before the final
+// `work` leaves at most queues/cron/sweep behind, all of which are inert or
+// idempotent without a consumer: sweep-inserted jobs sit deduped until a
+// healthy boot picks them up, and each job reloads its run's current state.
 export async function registerAgentRunQueue(
   boss: AgentRunQueueBoss,
   deps: AgentRunQueueDeps,
@@ -120,6 +129,18 @@ export async function registerAgentRunQueue(
   const concurrency = clampConcurrency(deps.concurrency);
 
   await boss.createQueue(AGENT_RUN_ADVANCE_QUEUE, { policy: "stately" });
+  await boss.createQueue(AGENT_RUN_SWEEP_QUEUE, { policy: "exclusive" });
+
+  await boss.work(AGENT_RUN_SWEEP_QUEUE, { batchSize: 1 }, async () => {
+    const ids = await deps.listActiveRunIds();
+    if (ids.length === 0) return;
+    await boss.insert(
+      AGENT_RUN_ADVANCE_QUEUE,
+      ids.map((id) => ({ data: { agentRunId: id } satisfies AgentRunJobData, singletonKey: id })),
+    );
+  });
+  await boss.schedule(AGENT_RUN_SWEEP_QUEUE, SWEEP_SCHEDULE);
+
   await boss.work(AGENT_RUN_ADVANCE_QUEUE, { batchSize: concurrency }, async (jobs) => {
     await Promise.all(
       jobs.map(async (job) => {
@@ -146,17 +167,6 @@ export async function registerAgentRunQueue(
       }),
     );
   });
-
-  await boss.createQueue(AGENT_RUN_SWEEP_QUEUE, { policy: "exclusive" });
-  await boss.work(AGENT_RUN_SWEEP_QUEUE, { batchSize: 1 }, async () => {
-    const ids = await deps.listActiveRunIds();
-    if (ids.length === 0) return;
-    await boss.insert(
-      AGENT_RUN_ADVANCE_QUEUE,
-      ids.map((id) => ({ data: { agentRunId: id } satisfies AgentRunJobData, singletonKey: id })),
-    );
-  });
-  await boss.schedule(AGENT_RUN_SWEEP_QUEUE, SWEEP_SCHEDULE);
 }
 
 // A send function for code that creates or touches a run and wants it

@@ -20,11 +20,14 @@ function fakeBoss() {
   const queues: Array<{ name: string; options: unknown }> = [];
   const schedules: Array<{ name: string; cron: string }> = [];
   const workers = new Map<string, WorkHandler>();
+  const ops: string[] = [];
   const boss: AgentRunQueueBoss = {
     async createQueue(name, options) {
+      ops.push(`createQueue:${name}`);
       queues.push({ name, options });
     },
     async work(name, _options, handler) {
+      ops.push(`work:${name}`);
       workers.set(name, handler as WorkHandler);
     },
     async send(name, data, options) {
@@ -36,10 +39,11 @@ function fakeBoss() {
       return [];
     },
     async schedule(name, cron) {
+      ops.push(`schedule:${name}`);
       schedules.push({ name, cron });
     },
   };
-  return { boss, sent, inserted, queues, schedules, workers };
+  return { boss, sent, inserted, queues, schedules, workers, ops };
 }
 
 function runOf(id: string, state: string): schema.AgentRun {
@@ -96,6 +100,11 @@ test("registration creates both queues, workers, and the sweep schedule", async 
   assert.ok(fb.workers.get(AGENT_RUN_ADVANCE_QUEUE));
   assert.ok(fb.workers.get(AGENT_RUN_SWEEP_QUEUE));
   assert.deepEqual(fb.schedules, [{ name: AGENT_RUN_SWEEP_QUEUE, cron: "* * * * *" }]);
+  // The advance consumer must be registered LAST: the caller enables the
+  // tick's batch-rotation fallback when registration throws, so a partial
+  // failure must never leave a live advance consumer behind — that would
+  // advance the same run from two places at once.
+  assert.equal(fb.ops.at(-1), `work:${AGENT_RUN_ADVANCE_QUEUE}`);
 });
 
 test("advance worker dispatches by run state", async () => {
