@@ -60,7 +60,11 @@ export type AgentPrSweepDeps = {
     repoFullName: string,
     prNumber: number,
   ): Promise<GithubReaction[]>;
-  /** Conditionally stamp negative_reaction_at; true iff this call won. */
+  /**
+   * Conditionally stamp negative_reaction_at; true iff this call won. The
+   * implementation must also require the row to still be open and unexpired,
+   * so a poll that raced a concurrent merge/close webhook loses.
+   */
   markNegativeReaction(prId: string, now: Date): Promise<boolean>;
   resolveOrg(incidentId: string): Promise<{ id: string; name: string } | null>;
   capture(input: AgentPrLifecycleEventInput): void;

@@ -17,7 +17,7 @@ import {
   type SweptAgentPr,
   runAgentPrLifecycleSweep,
 } from "../agent-pr-sweep.js";
-import { createGithubPullRequestReadToken, listGithubPrReactions } from "../github-app.js";
+import { createGithubIssuesReadToken, listGithubPrReactions } from "../github-app.js";
 import type { JobDefinition, JobDeps } from "../jobs.js";
 import { logger } from "../logger.js";
 
@@ -99,6 +99,9 @@ async function markNegativeReaction(
   prId: string,
   now: Date,
 ): Promise<boolean> {
+  // Re-assert open/unexpired in the WHERE: the PR can merge or close (webhook)
+  // while its reactions request is in flight, and that stale poll must lose to
+  // the terminal transition rather than record a spurious rejection.
   const updated = await db
     .update(schema.agentPullRequests)
     .set({ negativeReactionAt: now, updatedAt: now })
@@ -106,6 +109,8 @@ async function markNegativeReaction(
       and(
         eq(schema.agentPullRequests.id, prId),
         isNull(schema.agentPullRequests.negativeReactionAt),
+        eq(schema.agentPullRequests.state, "open"),
+        isNull(schema.agentPullRequests.expiredAt),
       ),
     )
     .returning({ id: schema.agentPullRequests.id });
@@ -127,7 +132,7 @@ export const job: JobDefinition = {
       const tokenFor = (installationId: number): Promise<string> => {
         let token = tokens.get(installationId);
         if (!token) {
-          token = createGithubPullRequestReadToken(installationId);
+          token = createGithubIssuesReadToken(installationId);
           tokens.set(installationId, token);
         }
         return token;

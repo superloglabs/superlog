@@ -205,14 +205,15 @@ export type GithubIssueReaction = {
 };
 
 /**
- * Installation token scoped to pull_requests:read — the permission GitHub
- * requires for the issue-reactions endpoint on a PR. Cache per installation
- * for the duration of one sweep; tokens expire after an hour.
+ * Installation token scoped to issues:read — the permission GitHub requires
+ * for the issue-reactions endpoint, including on PRs (the endpoint is listed
+ * only under Issues in the fine-grained permission reference). Cache per
+ * installation for the duration of one sweep; tokens expire after an hour.
  */
-export async function createGithubPullRequestReadToken(installationId: number): Promise<string> {
+export async function createGithubIssuesReadToken(installationId: number): Promise<string> {
   return createInstallationToken({
     installationId,
-    permissions: { pull_requests: "read" },
+    permissions: { issues: "read" },
   });
 }
 
