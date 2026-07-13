@@ -190,12 +190,37 @@ function formatTraceContext(
   return joined;
 }
 
+// Time bounds for the span lookup. TraceId alone can't be found efficiently:
+// otel_traces is sorted by (ServiceName, SpanName, Timestamp) and partitioned
+// by day, so an unbounded TraceId query probes the bloom index across every
+// partition in retention (~20s+ on a large deployment, and it saturates the
+// read pool under concurrency). A time bound restores partition pruning. The
+// caller passes the event timestamp the trace id came from (issue sample
+// seenAt / issue lastSeen) — spans of that trace lie within ±1h of it. With
+// no usable hint, bound to the last 72h: investigations are about recent
+// events, and an unbounded scan is never worth its cost.
+const HINT_MARGIN_MS = 60 * 60 * 1000;
+const NO_HINT_LOOKBACK_MS = 72 * 60 * 60 * 1000;
+const NO_HINT_HEADROOM_MS = 5 * 60 * 1000;
+
+export function traceContextTimeBounds(
+  hintTs: Date | null,
+  now: Date,
+): { fromMs: number; toMs: number } {
+  if (hintTs && Number.isFinite(hintTs.getTime())) {
+    return { fromMs: hintTs.getTime() - HINT_MARGIN_MS, toMs: hintTs.getTime() + HINT_MARGIN_MS };
+  }
+  return { fromMs: now.getTime() - NO_HINT_LOOKBACK_MS, toMs: now.getTime() + NO_HINT_HEADROOM_MS };
+}
+
 export async function fetchTraceContext(
   projectId: string,
   traceId: string,
   anchorSpanId: string | null,
+  hintTs: Date | null = null,
 ): Promise<string | null> {
   if (!traceId) return null;
+  const { fromMs, toMs } = traceContextTimeBounds(hintTs, new Date());
   try {
     const result = await ch.query({
       query: `
@@ -216,11 +241,16 @@ export async function fetchTraceContext(
         FROM otel_traces
         WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
           AND TraceId = {traceId:String}
+          AND Timestamp >= fromUnixTimestamp64Milli({fromMs:Int64})
+          AND Timestamp <= fromUnixTimestamp64Milli({toMs:Int64})
         ORDER BY Timestamp ASC, SpanId ASC
         LIMIT 200
       `,
-      query_params: { projectId, traceId },
+      query_params: { projectId, traceId, fromMs, toMs },
       format: "JSONEachRow",
+      // Fail fast instead of holding an agent-run advance slot until the
+      // socket timeout — the prompt degrades gracefully without trace context.
+      clickhouse_settings: { max_execution_time: 10 },
     });
     const rows = (await result.json()) as TraceSpanRow[];
     if (rows.length === 0) return null;

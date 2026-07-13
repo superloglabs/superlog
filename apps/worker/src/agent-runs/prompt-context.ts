@@ -42,7 +42,14 @@ export async function buildIssueSummaryWithTrace(
   const traceId = sample?.traceId ?? null;
   const spanId = sample?.spanId ?? null;
   if (!traceId) return base;
-  const traceContext = await fetchTraceContext(projectId, traceId, spanId ?? null);
+  // The sample's own timestamp bounds the span lookup (see fetchTraceContext);
+  // fall back to the issue's lastSeen, which the sample tracks by construction.
+  const sampleSeenAt = sample?.seenAt ? new Date(sample.seenAt) : null;
+  const hintTs =
+    sampleSeenAt && Number.isFinite(sampleSeenAt.getTime())
+      ? sampleSeenAt
+      : (issue.lastSeen ?? null);
+  const traceContext = await fetchTraceContext(projectId, traceId, spanId ?? null, hintTs);
   return { ...base, traceContext };
 }
 
