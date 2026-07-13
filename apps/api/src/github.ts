@@ -677,9 +677,16 @@ async function handleAgentPrWebhook(
       .returning({ id: schema.agentPullRequests.id });
     const wonTransition = updated.length > 0;
     if (countTransition === "merged" && wonTransition) {
-      await recordPrMergedMetric(agentPrRow.incidentId);
+      await recordPrMergedMetric({
+        agentPr: agentPrRow,
+        resolvedAt: updates.mergedAt ?? updates.closedAt ?? now,
+        mergedByLogin: updates.mergedByLogin ?? null,
+      });
     } else if (countTransition === "closed" && wonTransition) {
-      await recordPrClosedMetric(agentPrRow.incidentId);
+      await recordPrClosedMetric({
+        agentPr: agentPrRow,
+        resolvedAt: updates.closedAt ?? now,
+      });
     }
     if (mergedResolution) {
       await resumeOrResolveIncidentForMergedAgentPr({
