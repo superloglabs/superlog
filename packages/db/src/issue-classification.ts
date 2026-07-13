@@ -36,6 +36,8 @@ export type ClassifyIncidentIssueResult =
 // Classify a single issue linked to an open incident. Idempotent: an issue
 // already in the target status reports alreadyClassified instead of failing,
 // so a re-dispatched tool call (ack lost, worker retried) converges.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function classifyIncidentIssue(
   database: DB,
   opts: {
@@ -49,6 +51,14 @@ export async function classifyIncidentIssue(
   },
 ): Promise<ClassifyIncidentIssueResult> {
   const now = opts.now ?? new Date();
+
+  if (!UUID_RE.test(opts.issueId)) {
+    return {
+      ok: false as const,
+      error: "issue_not_found" as const,
+      message: `No issue with id ${opts.issueId}. Use an issue_id from the incident issue bundle.`,
+    };
+  }
 
   return database.transaction(async (tx) => {
     const issue = await tx.query.issues.findFirst({
