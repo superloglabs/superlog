@@ -48,14 +48,15 @@ export async function ensureIncidentForIssue(
     lifecycle: incidentLifecycle,
     analyzeGrouping: analyzeIssueGrouping,
     logger,
-    // Alert-episode issues are the one path where concurrent duplicates of the
-    // SAME issue can reach intake together (racing evaluations fold into one
-    // episode issue and both proceed): serialize the workflow's create/link
-    // section with a per-issue advisory lock so the second racer re-lands on
-    // the first's incident. The workflow keeps the LLM grouping call outside
-    // the hook; notifications and agent queueing happen in the caller, after
-    // the lock is released. Error ingest doesn't need this — its transition
-    // classification already picks a single notifier per occurrence.
-    serializeCreate: issue.kind === "alert" ? withIssueIntakeLock : undefined,
+    // Serialize the workflow's read-then-create section with an advisory lock so
+    // concurrent intakes (pg-boss issue-transition jobs) can't each open an
+    // incident for what should be one. The workflow keys the lock by trace id
+    // when present — same-request symptoms (a span exception and its own log
+    // line) are DIFFERENT issues, so a per-issue lock wouldn't serialize them —
+    // and re-checks the same-trace match inside the lock so the loser re-lands on
+    // the winner's incident. Falls back to the issue id (the alert-episode case:
+    // racing evaluations fold into one episode issue). The LLM grouping call
+    // stays outside the hook; notifications happen in the caller after release.
+    serializeCreate: withIssueIntakeLock,
   });
 }

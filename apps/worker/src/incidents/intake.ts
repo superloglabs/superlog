@@ -209,16 +209,23 @@ export async function ensureIncidentForIssueWorkflow(
     };
   }
 
-  const grouping = await findMatchingIncident(issue, deps);
-  const matched = grouping.match?.incident ?? null;
+  let grouping = await findMatchingIncident(issue, deps);
+  let matched = grouping.match?.incident ?? null;
 
   // The tail below is the workflow's one read-then-create section: everything
   // above only joins existing incidents with idempotent writes. It runs under
   // the optional serialization hook with a link re-check inside, so a racer
   // that created the incident first wins and the loser re-lands on it. The
   // grouping analysis (which can call an LLM) stays outside the hook.
-  const serialize = deps.serializeCreate ?? ((_issueId, fn) => fn());
-  return serialize(issue.id, async () => {
+  //
+  // Key the lock by trace id when present, so same-request symptoms — a span
+  // exception and its own log line, which are DIFFERENT issues — serialize on
+  // the same lock (a per-issue lock wouldn't). Fall back to the issue id for
+  // no-trace issues (e.g. alert episodes).
+  const traceId = issueSample(issue)?.traceId;
+  const serializeKey = traceId ? `trace:${traceId}` : issue.id;
+  const serialize = deps.serializeCreate ?? ((_key, fn) => fn());
+  return serialize(serializeKey, async () => {
     const raceLink = await deps.repo.findLatestIncidentIssueLink(issue.id);
     if (raceLink) {
       const existing = await deps.repo.findIncident(raceLink.incidentId);
@@ -240,6 +247,17 @@ export async function ensureIncidentForIssueWorkflow(
           linkedIssue: false,
           recurrenceIncident: false,
         };
+      }
+    }
+
+    // Same-request race: we resolved grouping outside the lock, so a sibling
+    // symptom sharing this trace may have opened the incident since. Now that we
+    // hold the trace-keyed lock, re-check and join it rather than duplicating.
+    if (!matched) {
+      const sameTrace = await findSameTraceMatchingIncident(issue, deps);
+      if (sameTrace) {
+        grouping = { match: sameTrace, standaloneSource: null, standaloneReason: null, failedReason: null };
+        matched = sameTrace.incident;
       }
     }
 

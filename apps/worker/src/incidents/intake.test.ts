@@ -683,3 +683,60 @@ test("intake: LLM error logs a warning and marks issue 'failed'", async () => {
     ),
   );
 });
+
+test("intake: joins a same-trace incident that appears during the serialize lock", async () => {
+  // The span exception's incident is opened by a racing transition while this
+  // (log) transition is between its outside-lock grouping and the create. The
+  // incident only becomes visible on the inside-lock same-trace re-check (the
+  // 3rd cross-service candidate read); we must join it, not open a duplicate.
+  const calls: string[] = [];
+  const racer = makeIncident({ id: "inc-racer", service: "superlog-sample-nextjs" });
+  const issue = makeIssue({
+    id: "iss-log",
+    service: "superlog-sample",
+    exceptionType: "ERROR",
+    lastSample: { traceId: "trace-1", spanId: "span-log" } as schema.Issue["lastSample"],
+  });
+
+  let crossServiceReads = 0;
+  const base = makeRepo({ calls });
+  const repo: IntakeRepository = {
+    ...base,
+    async findOpenIncidentCandidates(_issue, queryOpts) {
+      calls.push(`findOpenIncidentCandidates:${queryOpts.filterService}`);
+      if (queryOpts.filterService) return [];
+      crossServiceReads += 1;
+      return crossServiceReads >= 3 ? [racer] : [];
+    },
+    async loadLinkedIncidentIssues(incidents) {
+      calls.push(`loadLinkedIncidentIssues:${incidents.length}`);
+      return incidents.map((inc) => ({
+        incidentId: inc.id,
+        title: "span exception",
+        exceptionType: "TypeError",
+        message: null,
+        topFrame: null,
+        normalizedFrames: [],
+        lastSample: { traceId: "trace-1", spanId: "span-exc" },
+        lastSeen: NOW,
+      })) as unknown as Awaited<ReturnType<IntakeRepository["loadLinkedIncidentIssues"]>>;
+    },
+    async findIncident(incidentId) {
+      calls.push(`findIncident:${incidentId}`);
+      return incidentId === "inc-racer" ? racer : undefined;
+    },
+  };
+  const deps = makeDeps({
+    repo,
+    lifecycle: makeLifecycle({ calls }),
+    calls,
+    serializeCreate: (_key, fn) => fn(),
+  });
+
+  const result = await ensureIncidentForIssueWorkflow(issue, "new", deps);
+
+  assert.equal(result.createdIncident, false);
+  assert.equal(result.incident.id, "inc-racer");
+  assert.ok(calls.includes("linkIssueToIncident:iss-log->inc-racer"));
+  assert.ok(!calls.some((c) => c.startsWith("createOpen")));
+});
