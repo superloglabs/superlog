@@ -13,7 +13,7 @@ import { syncRunningAgentRun } from "./sync.js";
 
 const lifecycle = createAgentRunLifecycle(db);
 
-function parseConcurrency(value: string | undefined): number | undefined {
+function parsePositive(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
@@ -49,7 +49,8 @@ export async function startAgentRunQueue(boss: AgentRunQueueBoss): Promise<void>
       resume: resumeAgentRunFromHumanInput,
       retryPrDelivery: retryQueuedPullRequestDelivery,
     },
-    concurrency: parseConcurrency(process.env.AGENT_RUN_JOB_CONCURRENCY),
+    concurrency: parsePositive(process.env.AGENT_RUN_JOB_CONCURRENCY),
+    jobTimeoutMs: parsePositive(process.env.AGENT_RUN_JOB_TIMEOUT_MS),
   });
   setAgentRunJobDispatch(createAgentRunJobSender(boss));
 }

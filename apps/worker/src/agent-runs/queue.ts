@@ -30,19 +30,31 @@ export const AGENT_RUN_ADVANCE_QUEUE = "agent-run-advance";
 export const AGENT_RUN_SWEEP_QUEUE = "agent-run-sweep";
 const SWEEP_SCHEDULE = "* * * * *";
 
-// How many advance jobs a single fetch works on; batches run concurrently, so
-// this is the effective per-process concurrency. Starting a run is dominated
+// How many advance jobs run concurrently per process, as INDEPENDENT
+// single-job consumers (`localConcurrency`), never a fetch batch: pg-boss
+// completes a batch only when the whole handler resolves, so with
+// batchSize > 1 one hung provider call holds every fetched job active until
+// queue expiry (observed in prod: one stuck sync pinned 10 jobs for 15
+// minutes while nine of them were long finished). Starting a run is dominated
 // by provider/GitHub round-trips (IO-bound), so a moderate default drains a
-// queued backlog far faster than the old one-batch-per-tick rotation without
-// saturating the task.
+// queued backlog without saturating the task.
 const DEFAULT_CONCURRENCY = 10;
 const MAX_CONCURRENCY = 50;
+
+// Upper bound on a single advance attempt. Legitimate work (repo discovery +
+// session creation + Slack) finishes well under a minute; the pathological
+// case is a provider call hanging into the SDK's 10-minute default timeout,
+// which would otherwise pin a consumer slot for the duration. On timeout the
+// attempt is abandoned (logged, including a late-failure hook so an eventual
+// rejection can't become an unhandled rejection) and the minute sweep
+// re-enqueues the run.
+const DEFAULT_JOB_TIMEOUT_MS = 180_000;
 
 export type AgentRunQueueBoss = {
   createQueue(name: string, options?: unknown): Promise<unknown>;
   work(
     name: string,
-    options: { batchSize: number },
+    options: { batchSize: number; localConcurrency?: number },
     handler: (jobs: Array<{ id: string; data: unknown }>) => Promise<unknown>,
   ): Promise<unknown>;
   send(name: string, data: object, options?: object): Promise<unknown>;
@@ -66,6 +78,7 @@ export type AgentRunQueueDeps = {
     retryPrDelivery(ctx: AgentRunContext): Promise<void>;
   };
   concurrency?: number;
+  jobTimeoutMs?: number;
   logger?: LoggerLike;
 };
 
@@ -141,19 +154,24 @@ export async function registerAgentRunQueue(
   });
   await boss.schedule(AGENT_RUN_SWEEP_QUEUE, SWEEP_SCHEDULE);
 
-  await boss.work(AGENT_RUN_ADVANCE_QUEUE, { batchSize: concurrency }, async (jobs) => {
-    await Promise.all(
-      jobs.map(async (job) => {
+  const jobTimeoutMs = deps.jobTimeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
+  await boss.work(
+    AGENT_RUN_ADVANCE_QUEUE,
+    { batchSize: 1, localConcurrency: concurrency },
+    async (jobs) => {
+      // batchSize is 1, so this loop sees a single job; each of the
+      // `localConcurrency` consumers runs this handler independently.
+      for (const job of jobs) {
         const data = parseJobData(job.data);
         if (!data) {
           logger.warn(
             { scope: "agent-run-queue", jobId: job.id },
             "skipping malformed agent-run job",
           );
-          return;
+          continue;
         }
         try {
-          await advanceRun(deps, data);
+          await advanceWithTimeout(deps, data, jobTimeoutMs, logger);
         } catch (err) {
           logger.error(
             {
@@ -164,9 +182,47 @@ export async function registerAgentRunQueue(
             "agent-run advance failed; the next sweep re-enqueues it",
           );
         }
-      }),
-    );
+      }
+    },
+  );
+}
+
+// Run one advance attempt with a hard deadline. On timeout the attempt is
+// abandoned — its promise keeps running in the background until the
+// underlying SDK/network timeout fires, so a late rejection is routed to the
+// logger instead of becoming an unhandled rejection.
+async function advanceWithTimeout(
+  deps: AgentRunQueueDeps,
+  data: AgentRunJobData,
+  timeoutMs: number,
+  logger: LoggerLike,
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
+  const attempt = advanceRun(deps, data).then(() => "done" as const);
+  try {
+    const outcome = await Promise.race([attempt, timedOut]);
+    if (outcome === "timeout") {
+      logger.error(
+        { scope: "agent-run-queue", agent_run_id: data.agentRunId, timeout_ms: timeoutMs },
+        "agent-run advance timed out; abandoning the attempt (the sweep re-enqueues the run)",
+      );
+      attempt.catch((err) =>
+        logger.error(
+          {
+            scope: "agent-run-queue",
+            agent_run_id: data.agentRunId,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "abandoned agent-run advance eventually failed",
+        ),
+      );
+    }
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // A send function for code that creates or touches a run and wants it
