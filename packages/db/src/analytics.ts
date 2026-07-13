@@ -78,6 +78,25 @@ export function captureServerEvent(input: CaptureServerEventInput): void {
   }
 }
 
+/**
+ * Flush and stop the analytics client. Call from a service's graceful-shutdown
+ * path so events still sitting in posthog-node's in-memory queue are delivered
+ * before the process exits — otherwise every deploy's SIGTERM drops them. No-op
+ * when no client was ever created (analytics unconfigured, or nothing captured).
+ */
+export async function shutdownAnalytics(): Promise<void> {
+  // Use whatever client already exists; never lazily create one just to shut it
+  // down. A test override is a plain recorder with no shutdown() — skip it.
+  const client = testOverrideClient !== undefined ? testOverrideClient : cachedClient;
+  const shutdown = (client as { shutdown?: () => Promise<void> } | null | undefined)?.shutdown;
+  if (typeof shutdown !== "function") return;
+  try {
+    await shutdown.call(client);
+  } catch {
+    /* best-effort */
+  }
+}
+
 /** Test-only: inject a recorder (or null to force the no-op path). */
 export function setAnalyticsClientForTests(client: AnalyticsClient | null | undefined): void {
   testOverrideClient = client;

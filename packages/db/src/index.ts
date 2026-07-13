@@ -13,6 +13,7 @@ export {
   type CaptureServerEventInput,
   captureServerEvent,
   setAnalyticsClientForTests,
+  shutdownAnalytics,
 } from "./analytics.js";
 export * as schema from "./schema.js";
 export {

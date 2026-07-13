@@ -5,7 +5,13 @@ import { Readable } from "node:stream";
 import { shutdownTelemetry } from "./telemetry-shutdown.js";
 import { serve } from "@hono/node-server";
 import { type Span, SpanStatusCode, metrics, trace } from "@opentelemetry/api";
-import { captureServerEvent, hashApiKey, schema, syncLoopsContactsForProject } from "@superlog/db";
+import {
+  captureServerEvent,
+  hashApiKey,
+  schema,
+  shutdownAnalytics,
+  syncLoopsContactsForProject,
+} from "@superlog/db";
 import { db } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
@@ -1076,9 +1082,13 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     if (ingestQueue) {
       await ingestQueue.stop();
     }
-    // Flush telemetry LAST, after the ingest drain. tracing.ts no longer
-    // registers its own SIGTERM handler — it used to race this one and
-    // process.exit(0) mid-drain, orphaning in-flight SQS messages.
+    // Flush analytics + telemetry LAST, after the ingest drain and once the
+    // server is closed to new requests, so a first_telemetry_received event
+    // still queued in posthog-node is delivered before exit rather than dropped
+    // by the SIGKILL that follows. Best-effort; never blocks the exit path.
+    await shutdownAnalytics();
+    // tracing.ts no longer registers its own SIGTERM handler — it used to race
+    // this one and process.exit(0) mid-drain, orphaning in-flight SQS messages.
     await shutdownTelemetry();
   } catch (err) {
     // Exit non-zero so a failed drain is visible rather than masquerading as a

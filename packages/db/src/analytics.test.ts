@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
-import { captureServerEvent, setAnalyticsClientForTests } from "./analytics.js";
+import { captureServerEvent, setAnalyticsClientForTests, shutdownAnalytics } from "./analytics.js";
 
 type Captured = { distinctId: string; event: string; properties?: Record<string, unknown> };
 
@@ -71,4 +71,24 @@ test("captureServerEvent swallows client errors so it never breaks the caller", 
   assert.doesNotThrow(() =>
     captureServerEvent({ distinctId: "u", event: "first_telemetry_received" }),
   );
+});
+
+test("shutdownAnalytics flushes the active client when it supports shutdown", async () => {
+  let shutdownCalls = 0;
+  const client = {
+    capture() {},
+    shutdown: async () => {
+      shutdownCalls += 1;
+    },
+  };
+  setAnalyticsClientForTests(client);
+  await shutdownAnalytics();
+  assert.equal(shutdownCalls, 1);
+});
+
+test("shutdownAnalytics no-ops when unconfigured or the client can't shut down", async () => {
+  setAnalyticsClientForTests(null);
+  await assert.doesNotReject(() => shutdownAnalytics());
+  setAnalyticsClientForTests({ capture() {} });
+  await assert.doesNotReject(() => shutdownAnalytics());
 });
