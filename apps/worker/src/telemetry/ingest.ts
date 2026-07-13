@@ -147,6 +147,12 @@ export function createTelemetryIngestor(opts: {
   };
 }
 
+// Flat once-a-minute log line per kind so deployment-side log tooling can
+// alarm on ingest cursor lag without parsing nested JSON (same convention as
+// queue-health.ts).
+const CURSOR_LOG_INTERVAL_MS = 60_000;
+let cursorLastLoggedAt = 0;
+
 export function registerTelemetryIngestMetrics(opts: {
   clickhouse: ClickHouseClientLike;
   database?: DB;
@@ -159,6 +165,8 @@ export function registerTelemetryIngestMetrics(opts: {
   meter.addBatchObservableCallback(
     async (result) => {
       const observedAt = Date.now();
+      const shouldLog = observedAt - cursorLastLoggedAt >= CURSOR_LOG_INTERVAL_MS;
+      if (shouldLog) cursorLastLoggedAt = observedAt;
       for (const kind of ["span", "log"] as const) {
         try {
           const stats = await loadBacklogStats({
@@ -172,6 +180,12 @@ export function registerTelemetryIngestMetrics(opts: {
           result.observe(pendingRowsGauge, stats.pendingRows, attrs);
           result.observe(oldestPendingAgeMsGauge, stats.oldestPendingAgeMs, attrs);
           result.observe(cursorLagMsGauge, stats.cursorLagMs, attrs);
+          if (shouldLog) {
+            logger.info(
+              { scope: "queue-health", cursor_kind: kind, cursor_lag_ms: stats.cursorLagMs },
+              "ingest cursor lag",
+            );
+          }
         } catch (err) {
           logger.error(
             { err, scope: "telemetry-ingest-metrics", kind, now: observedAt },
