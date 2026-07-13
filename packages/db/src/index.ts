@@ -15,6 +15,14 @@ export {
   setAnalyticsClientForTests,
   shutdownAnalytics,
 } from "./analytics.js";
+export {
+  type AgentPrAnalyticsOrg,
+  type AgentPrAnalyticsPr,
+  type AgentPrLifecycleEventInput,
+  type AgentPrRejectionReason,
+  captureAgentPrLifecycleEvent,
+  daysBetween,
+} from "./pr-analytics.js";
 export * as schema from "./schema.js";
 export {
   generateApiKey,

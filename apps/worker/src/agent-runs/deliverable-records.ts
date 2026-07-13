@@ -102,5 +102,12 @@ export async function recordOpenedAgentPullRequest(opts: {
     .onConflictDoNothing();
   // Only reached when the PR row was newly inserted (see `if (!row) return`
   // above), so retries / re-deliveries don't double-count.
-  await recordPrCreatedMetric(opts.incidentId);
+  await recordPrCreatedMetric({
+    id: row.id,
+    incidentId: opts.incidentId,
+    agentRunId: opts.agentRunId,
+    repoFullName: opts.repoFullName,
+    prNumber: opts.prNumber,
+    url: opts.url,
+  });
 }

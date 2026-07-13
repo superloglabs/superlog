@@ -44,6 +44,7 @@
     "test:agent-outcome-tools": "tsx --test src/agent-outcome-tools.test.ts",
     "test:linear-delivery": "tsx --test src/agent-runs/linear-delivery.test.ts",
     "test:github-app": "tsx --test src/github-app.test.ts",
+    "test:agent-pr-sweep": "tsx --test src/agent-pr-sweep.test.ts",
     "test:notion-integration": "tsx --test src/notion-integration.test.ts",
     "test:autorecovery-repository": "tsx --test src/autorecovery/repository.integration.test.ts",
     "typecheck": "tsc --noEmit"

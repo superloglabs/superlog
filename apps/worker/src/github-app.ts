@@ -199,6 +199,40 @@ export async function createGithubReadToken(
   });
 }
 
+export type GithubIssueReaction = {
+  content: string;
+  user?: { type?: string } | null;
+};
+
+/**
+ * Installation token scoped to issues:read — the permission GitHub requires
+ * for the issue-reactions endpoint, including on PRs (the endpoint is listed
+ * only under Issues in the fine-grained permission reference). Cache per
+ * installation for the duration of one sweep; tokens expire after an hour.
+ */
+export async function createGithubIssuesReadToken(installationId: number): Promise<string> {
+  return createInstallationToken({
+    installationId,
+    permissions: { issues: "read" },
+  });
+}
+
+/**
+ * Reactions on a PR's body (PRs are issues to this endpoint). One page of 100
+ * is plenty — we only look for the presence of a human 👎, and no agent PR
+ * accumulates a hundred reactions before one shows up.
+ */
+export async function listGithubPrReactions(
+  installationToken: string,
+  repoFullName: string,
+  prNumber: number,
+): Promise<GithubIssueReaction[]> {
+  return githubRequest<GithubIssueReaction[]>(
+    `/repos/${repoFullName}/issues/${prNumber}/reactions?per_page=100`,
+    { bearerToken: installationToken },
+  );
+}
+
 export async function createGithubWriteToken(
   installationId: number,
   repositoryId?: number,

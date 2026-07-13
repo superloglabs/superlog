@@ -1,0 +1,2 @@
+ALTER TABLE "agent_pull_requests" ADD COLUMN "negative_reaction_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "agent_pull_requests" ADD COLUMN "expired_at" timestamp with time zone;

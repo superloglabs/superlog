@@ -1142,6 +1142,13 @@ export const agentPullRequests = pgTable(
     closedAt: timestamp("closed_at", { withTimezone: true }),
     mergedByLogin: text("merged_by_login"),
     mergedByGithubId: bigint("merged_by_github_id", { mode: "number" }),
+    // Rejection signals for the PR acceptance-rate metric, written exactly once
+    // by the lifecycle sweep (worker jobs/agent-pr-lifecycle.ts) via
+    // IS NULL-guarded updates so each signal emits a single analytics event.
+    // A 👎 reaction or expiry doesn't change `state` — the PR is still open on
+    // GitHub and a later merge supersedes both signals in the metric.
+    negativeReactionAt: timestamp("negative_reaction_at", { withTimezone: true }),
+    expiredAt: timestamp("expired_at", { withTimezone: true }),
     lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
