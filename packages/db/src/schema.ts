@@ -491,6 +491,11 @@ export const projects = pgTable(
     slug: text("slug").notNull(),
     projectContext: text("project_context").notNull().default(""),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    // First time this project ever had telemetry accepted. Claimed atomically by
+    // the proxy (UPDATE ... WHERE first_telemetry_at IS NULL) so the activation
+    // event fires exactly once per project, independent of how many ingest keys
+    // it has or how many requests race in. Null until the project activates.
+    firstTelemetryAt: timestamp("first_telemetry_at", { withTimezone: true }),
   },
   (t) => ({
     uniq: uniqueIndex("projects_org_slug_idx").on(t.orgId, t.slug),

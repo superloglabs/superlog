@@ -673,6 +673,13 @@
       "when": 1783683432246,
       "tag": "0095_blushing_nighthawk",
       "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1783931407135,
+      "tag": "0096_mighty_cerise",
+      "breakpoints": true
     }
   ]
 }
