@@ -52,8 +52,9 @@ export async function registerJobs(boss: JobBoss, jobs: LoadedJob[]): Promise<vo
 
 // Boot the job runner: construct pg-boss from the environment, discover jobs
 // from the jobs dir, and schedule them. Returns the PgBoss instance (or null
-// when no jobs were discovered — stock builds) so the caller can stop it on
-// shutdown. Never throws on an empty jobs dir.
+// when DATABASE_URL is unset) so the caller can stop it on shutdown and
+// register send-on-demand queues (e.g. issue transitions). The boss starts
+// even when the jobs dir is empty — cron jobs are only one of its consumers.
 export async function startJobRunner(deps: JobDeps): Promise<PgBoss | null> {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
@@ -62,7 +63,6 @@ export async function startJobRunner(deps: JobDeps): Promise<PgBoss | null> {
   }
 
   const jobs = await loadJobs(deps);
-  if (jobs.length === 0) return null;
 
   const boss = new PgBoss({
     connectionString,

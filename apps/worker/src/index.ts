@@ -5,6 +5,10 @@ import { registerAgentRunHealthMetrics } from "./agent-run-health-metrics.js";
 import { initAiUsageSink } from "./ai-usage.js";
 import { createUsageMeterTicker } from "./billing/usage-meter-ticker.js";
 import { handleIssueTransition } from "./incidents/workflow.js";
+import {
+  createIssueTransitionDispatcher,
+  registerIssueTransitionWorker,
+} from "./issue-transitions.js";
 import { startJobRunner } from "./jobs/runner.js";
 import { logger } from "./logger.js";
 import { registerDatastoreObservability } from "./observability/datastores.js";
@@ -37,11 +41,40 @@ const ch = createClient({
 
 registerDatastoreObservability({ db, clickhouse: ch, logger });
 
+// Start the pg-boss background job runner first: it hosts the cron jobs from
+// the jobs dir AND the issue-transition queue the ingest tick enqueues onto.
+// A runner failure must not take down telemetry ingest, so it is isolated —
+// log and continue; the dispatcher falls back to inline transitions.
+let jobBoss: Awaited<ReturnType<typeof startJobRunner>> = null;
+try {
+  jobBoss = await startJobRunner({ db, clickhouse: ch });
+} catch (err) {
+  logger.error(
+    { scope: "boot", err: err instanceof Error ? err.message : String(err) },
+    "background job runner failed to start; continuing without it",
+  );
+}
+
+// Issue-transition side effects (incident intake with its LLM grouping call,
+// notifications, agent-run routing) run out-of-band on a pg-boss queue so a
+// burst of new fingerprints can't stall the ingest cursor for other projects.
+const dispatchIssueTransition = createIssueTransitionDispatcher({
+  boss: jobBoss,
+  inline: handleIssueTransition,
+});
+if (jobBoss) {
+  await registerIssueTransitionWorker(jobBoss, {
+    handle: handleIssueTransition,
+    loadIssue: async (issueId) =>
+      db.query.issues.findFirst({ where: (issues, { eq }) => eq(issues.id, issueId) }),
+  });
+}
+
 const telemetryIngestor = createTelemetryIngestor({
   clickhouse: ch,
   batchSize: BATCH_SIZE,
   discoveryWindowMs: TELEMETRY_DISCOVERY_WINDOW_MS,
-  handleIssueTransition,
+  handleIssueTransition: dispatchIssueTransition,
 });
 registerTelemetryIngestMetrics({
   clickhouse: ch,
@@ -52,19 +85,12 @@ registerTelemetryIngestMetrics({
 // out-of-band as the `usage-notify` pg-boss job (jobs/usage-notify.ts), which
 // derives active orgs from ClickHouse itself — no coupling to the tick.
 const usageMeter = createUsageMeterTicker({ db, clickhouse: ch });
-const tick = createWorkerTick({ clickhouse: ch, telemetryIngestor, usageMeter });
-
-// Start the pg-boss background job runner: discovers jobs from the jobs dir and
-// schedules them on their own queues, OUTSIDE this tick loop. A runner failure
-// must not take down telemetry ingest, so it is isolated — log and continue.
-try {
-  await startJobRunner({ db, clickhouse: ch });
-} catch (err) {
-  logger.error(
-    { scope: "boot", err: err instanceof Error ? err.message : String(err) },
-    "background job runner failed to start; continuing without it",
-  );
-}
+const tick = createWorkerTick({
+  clickhouse: ch,
+  telemetryIngestor,
+  usageMeter,
+  handleIssueTransition: dispatchIssueTransition,
+});
 
 runWorker({ pollIntervalMs: POLL_INTERVAL_MS, batchSize: BATCH_SIZE, tick }).catch((err) => {
   logger.fatal({ err }, "worker crashed");

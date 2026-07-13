@@ -31,7 +31,11 @@ export function createWorkerTick(opts: {
   clickhouse: ClickHouseClientLike;
   telemetryIngestor: TelemetryIngestor;
   usageMeter?: (() => Promise<number>) | null;
+  // Injected so callers can route transition side effects out-of-band (see
+  // issue-transitions.ts); defaults to the direct inline workflow.
+  handleIssueTransition?: typeof handleIssueTransition;
 }): () => Promise<WorkerTickResult> {
+  const onIssueTransition = opts.handleIssueTransition ?? handleIssueTransition;
   return () =>
     tracer.startActiveSpan("worker.tick", async (span) => {
       async function safe<T>(name: string, run: () => Promise<T>, fallback: T): Promise<T> {
@@ -66,7 +70,7 @@ export function createWorkerTick(opts: {
         const agentChats = await safe("agent_chats", tickAgentChats, 0);
         const alerts = await safe(
           "alerts",
-          () => tickAlerts(opts.clickhouse, handleIssueTransition),
+          () => tickAlerts(opts.clickhouse, onIssueTransition),
           0,
         );
         const digests = await safe("digests", tickDigests, 0);
@@ -74,7 +78,7 @@ export function createWorkerTick(opts: {
         const autorecoveryProposals = await safe("autorecovery", tickAutorecovery, 0);
         const observedEscalations = await safe(
           "observation",
-          () => tickObservedIssues(handleIssueTransition),
+          () => tickObservedIssues(onIssueTransition),
           0,
         );
         const usageReported = opts.usageMeter
