@@ -50,12 +50,21 @@ async function applyBackfill(client: PGlite): Promise<void> {
   }
 }
 
-// A database migrated only up to the migration before the backfill — the
-// pre-episode-as-issue schema a live deployment is on when the backfill +
-// unique index arrive.
+// A database with the alert-episode tables still in their pre-backfill shape,
+// so the backfill (0092) + unique index (0093) can be applied by hand below to
+// exercise their ordering. We apply every *other* migration — including ones
+// after 0093 — rather than stopping at 0092, because the seed helpers insert via
+// the current drizzle schema: a column added to a seeded table by a later
+// migration (e.g. projects.first_telemetry_at in 0096) must exist physically or
+// the insert references a missing column. Those later migrations are additive
+// and don't touch the alert-episode tables (verified: 0094 notion, 0095
+// cloudflare, 0096 projects), so the backfill still runs against pre-0092 data.
 async function dbAtPreBackfill(): Promise<{ db: DB; client: PGlite }> {
   const client = new PGlite();
-  const files = (await readdir(MIGRATIONS)).filter((f) => f.endsWith(".sql") && f < "0092").sort();
+  const files = (await readdir(MIGRATIONS))
+    .filter((f) => f.endsWith(".sql"))
+    .filter((f) => !f.startsWith("0092_") && !f.startsWith("0093_"))
+    .sort();
   for (const file of files) {
     await applyMigrationFile(client, file);
   }

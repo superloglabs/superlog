@@ -134,11 +134,16 @@ test("issue lifecycle backfill migrates prod-shaped data and the unique index la
     const org = one(
       await db.insert(schema.orgs).values({ name: "Acme", slug: "acme" }).returning(),
     );
+    // Raw insert (not drizzle) so it lists only columns that exist at the
+    // pre-backfill schema: drizzle would emit every current-schema column,
+    // including ones added by later migrations (e.g. projects.first_telemetry_at
+    // in 0096) that this partially-migrated DB doesn't have yet.
     const project = one(
-      await db
-        .insert(schema.projects)
-        .values({ orgId: org.id, name: "Default", slug: "default" })
-        .returning(),
+      rowsOf<{ id: string }>(
+        await db.execute(
+          sql`INSERT INTO projects (org_id, name, slug) VALUES (${org.id}, 'Default', 'default') RETURNING id`,
+        ),
+      ),
     );
     const now = new Date("2026-07-01T00:00:00Z");
     const earlier = new Date("2026-06-01T00:00:00Z");
