@@ -72,6 +72,38 @@ export function findHeuristicIncidentMatch(
   return { incident: best.incident, source: "heuristic", reason: best.reason };
 }
 
+// Same trace id ⇒ same request ⇒ same incident. A span exception and its own
+// log line, or several log lines from one failed request, are one error
+// observed more than once — join them deterministically instead of leaving it
+// to the LLM (whose "distinct exception type" heuristic wrongly splits a log,
+// whose type is a severity like ERROR, from its span). Trace ids are
+// per-request, so this never merges unrelated failures. Returns the most
+// recently-seen candidate that shares the issue's trace id.
+export function findSameTraceIncidentMatch(
+  issue: schema.Issue,
+  candidates: schema.Incident[],
+  linked: LinkedIncidentIssue[],
+): IncidentMatch | null {
+  const traceId = issueSample(issue)?.traceId;
+  if (!traceId) return null;
+
+  let best: { incident: schema.Incident; lastSeen: number } | null = null;
+  for (const candidate of candidates) {
+    const shares = linked.some(
+      (row) => row.incidentId === candidate.id && row.lastSample?.traceId === traceId,
+    );
+    if (!shares) continue;
+    const lastSeen = candidate.lastSeen.getTime();
+    if (!best || lastSeen > best.lastSeen) best = { incident: candidate, lastSeen };
+  }
+  if (!best) return null;
+  return {
+    incident: best.incident,
+    source: "heuristic",
+    reason: `Same request: shares trace id ${traceId} with this incident.`,
+  };
+}
+
 export function buildGroupingCandidate(
   incident: schema.Incident,
   linked: LinkedIncidentIssue[],

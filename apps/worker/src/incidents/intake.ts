@@ -21,6 +21,7 @@ import {
   type LinkedIncidentIssue,
   buildGroupingCandidate,
   findHeuristicIncidentMatch,
+  findSameTraceIncidentMatch,
   groupingIssueInput,
 } from "../issues/domain.js";
 
@@ -324,6 +325,14 @@ async function findMatchingIncident(issue: schema.Issue, deps: IntakeDeps): Prom
   if (heuristic) {
     return { match: heuristic, standaloneSource: null, standaloneReason: null, failedReason: null };
   }
+  // Same request = same incident: join an open incident that shares this
+  // issue's trace id (a span exception and its own log line, or several logs
+  // from one failed request) before spending an LLM call. Cross-service, since
+  // the span and its Vercel-drained log arrive under different service names.
+  const sameTrace = await findSameTraceMatchingIncident(issue, deps);
+  if (sameTrace) {
+    return { match: sameTrace, standaloneSource: null, standaloneReason: null, failedReason: null };
+  }
   // Alert-episode issues go through LLM grouping like errors do: a breach can
   // be another manifestation of an incident opened by errors (or vice versa).
   return findLlmMatchingIncident(issue, deps);
@@ -337,6 +346,16 @@ async function findHeuristicMatchingIncident(
   if (candidates.length === 0) return null;
   const linked = await deps.repo.loadLinkedIncidentIssues(candidates);
   return findHeuristicIncidentMatch(issue, candidates, linked);
+}
+
+async function findSameTraceMatchingIncident(
+  issue: schema.Issue,
+  deps: IntakeDeps,
+): Promise<IncidentMatch | null> {
+  const candidates = await deps.repo.findOpenIncidentCandidates(issue, { filterService: false });
+  if (candidates.length === 0) return null;
+  const linked = await deps.repo.loadLinkedIncidentIssues(candidates);
+  return findSameTraceIncidentMatch(issue, candidates, linked);
 }
 
 async function findLlmMatchingIncident(issue: schema.Issue, deps: IntakeDeps): Promise<Grouping> {
