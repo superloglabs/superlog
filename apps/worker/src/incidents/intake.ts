@@ -23,6 +23,7 @@ import {
   findHeuristicIncidentMatch,
   findSameTraceIncidentMatch,
   groupingIssueInput,
+  issueSample,
 } from "../issues/domain.js";
 
 export type IntakeLogger = {
@@ -352,6 +353,10 @@ async function findSameTraceMatchingIncident(
   issue: schema.Issue,
   deps: IntakeDeps,
 ): Promise<IncidentMatch | null> {
+  // No trace id ⇒ nothing to match on. Bail before the candidate/linked reads
+  // so no-trace intakes (e.g. alert episodes) don't do them here only for the
+  // LLM path to immediately repeat them.
+  if (!issueSample(issue)?.traceId) return null;
   const candidates = await deps.repo.findOpenIncidentCandidates(issue, { filterService: false });
   if (candidates.length === 0) return null;
   const linked = await deps.repo.loadLinkedIncidentIssues(candidates);
