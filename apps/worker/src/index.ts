@@ -13,6 +13,7 @@ import {
 import { startJobRunner } from "./jobs/runner.js";
 import { logger } from "./logger.js";
 import { registerDatastoreObservability } from "./observability/datastores.js";
+import { registerQueueHealthMetrics } from "./queue-health.js";
 import { createTelemetryIngestor, registerTelemetryIngestMetrics } from "./telemetry/ingest.js";
 import { registerTenantMetrics } from "./tenant-metrics.js";
 import { runWorker } from "./worker/runtime.js";
@@ -26,6 +27,7 @@ await initAiUsageSink();
 
 registerTenantMetrics();
 registerAgentRunHealthMetrics();
+registerQueueHealthMetrics();
 
 const CLICKHOUSE_URL = process.env.CLICKHOUSE_URL ?? "http://localhost:8123";
 const CLICKHOUSE_DB = process.env.CLICKHOUSE_DB ?? "superlog";
