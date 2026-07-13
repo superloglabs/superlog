@@ -113,6 +113,7 @@ import { AWS_REGIONS } from "./awsRegions.ts";
 import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
 import { Btn, Chip, FieldLabel, Input, Label, Tile } from "./design/ui";
 import { McpInstallPanel } from "./onboarding/McpInstallDialog.tsx";
+import { useDemoExploration } from "./onboarding/demoExploration.tsx";
 import { InfoIcon } from "./onboarding/icons.tsx";
 import { renderErrorMessage } from "./onboarding/renderConnectModel.ts";
 import { VERCEL_PLAN_REQUIREMENT } from "./onboarding/vercelConnectModel.ts";
@@ -336,7 +337,13 @@ function SettingsSideNav({
   section: SectionId;
   onNavigate: (target: NavTarget) => void;
 }) {
-  const groups = scope === "org" ? ORG_NAV_GROUPS : PROJECT_NAV_GROUPS;
+  const { exploring } = useDemoExploration();
+  const rawGroups = scope === "org" ? ORG_NAV_GROUPS : PROJECT_NAV_GROUPS;
+  // Billing is blocked while exploring demo data (no real project to bill yet),
+  // so drop its tab from the org sidebar.
+  const groups = exploring
+    ? rawGroups.map((g) => ({ ...g, items: g.items.filter((i) => i.id !== "billing") }))
+    : rawGroups;
   return (
     <nav className="shrink-0 md:sticky md:top-6 md:w-56">
       <ul className="flex flex-col gap-0.5">
@@ -543,6 +550,21 @@ function NewProjectForm({
 }
 
 function OrgSectionView({ section }: { section: OrgSectionId }) {
+  const { exploring } = useDemoExploration();
+  // Billing is unavailable while exploring demo data — guard the section in case
+  // it's reached by a deep link (the sidebar tab is already hidden).
+  if (section === "billing" && exploring) {
+    return (
+      <Section title="Billing" subtitle="Your plan, usage this period, and payment — billed per org.">
+        <Tile>
+          <p className="text-[13px] text-muted">
+            Billing is unavailable while you’re exploring demo data. Connect your app to start
+            sending your own telemetry, then manage your plan here.
+          </p>
+        </Tile>
+      </Section>
+    );
+  }
   switch (section) {
     case "general":
       return (

@@ -36,6 +36,7 @@ import { DashboardsList } from "./dashboards/DashboardsList.tsx";
 import { AppShell, ThemeToggle, Wordmark } from "./design/ui.tsx";
 import { McpInstallPill } from "./onboarding/McpInstallPill.tsx";
 import { OnboardingGate } from "./onboarding/OnboardingGate.tsx";
+import { useDemoExploration } from "./onboarding/demoExploration.tsx";
 import {
   buildSignupEventProperties,
   parseAttribution,
@@ -217,11 +218,11 @@ function AuthenticatedApp() {
   return (
     <OnboardingGate>
       <div className="flex min-h-screen flex-col bg-bg">
-        {impersonating ? (
-          <ImpersonationBar email={data.user.email} />
-        ) : (
-          billingPaused && <BillingLimitBar />
-        )}
+        <TopRibbon
+          impersonating={impersonating}
+          email={data.user.email}
+          billingPaused={billingPaused}
+        />
         <AppShell nav={<TopNav />}>
           <RouteContainer>
             <Routes>
@@ -273,6 +274,42 @@ function useGlobalKeybinds(enabled: boolean) {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [enabled]);
+}
+
+// Single app-wide status ribbon slot. Only one bar shows at a time, in priority
+// order: impersonation (staff) > demo mode > billing paused. Demo mode reads the
+// exploration context so the bar tracks the same opt-in that gates the demo app.
+function TopRibbon({
+  impersonating,
+  email,
+  billingPaused,
+}: {
+  impersonating: boolean;
+  email: string;
+  billingPaused: boolean;
+}) {
+  const { exploring } = useDemoExploration();
+  if (impersonating) return <ImpersonationBar email={email} />;
+  if (exploring) return <DemoModeBar />;
+  if (billingPaused) return <BillingLimitBar />;
+  return null;
+}
+
+function DemoModeBar() {
+  const { stopExploring } = useDemoExploration();
+  return (
+    <div className="flex h-7 w-full items-center justify-center gap-2 bg-[#8C98F0] px-3 text-[11px] text-black">
+      <span className="font-semibold">Demo mode</span>
+      <span className="opacity-80">You’re viewing sample data.</span>
+      <button
+        type="button"
+        onClick={stopExploring}
+        className="font-medium underline underline-offset-2 hover:opacity-80"
+      >
+        Connect your app →
+      </button>
+    </div>
+  );
 }
 
 function ImpersonationBar({ email }: { email: string }) {
