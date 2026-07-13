@@ -5,9 +5,15 @@ import { Readable } from "node:stream";
 import { shutdownTelemetry } from "./telemetry-shutdown.js";
 import { serve } from "@hono/node-server";
 import { type Span, SpanStatusCode, metrics, trace } from "@opentelemetry/api";
-import { hashApiKey, schema, syncLoopsContactsForProject } from "@superlog/db";
+import {
+  captureServerEvent,
+  hashApiKey,
+  schema,
+  shutdownAnalytics,
+  syncLoopsContactsForProject,
+} from "@superlog/db";
 import { db } from "@superlog/db";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
@@ -217,6 +223,51 @@ app.use("/v1/*", async (c, next) => {
   return next();
 });
 
+// Per-instance cache of projects we've already resolved as activated, so the
+// steady state (every request after activation) skips the DB round-trip. It's
+// only an optimization — the atomic UPDATE below is the real once-only gate, so
+// multiple proxy instances each keeping their own cache is fine.
+const activatedProjects = new Set<string>();
+
+// Emit `first_telemetry_received` the first time a project ever has telemetry
+// ACCEPTED — called from forward()'s accept path (not from auth), so a rejected
+// or dropped request never counts. The activation is claimed with a single
+// atomic UPDATE gated on `first_telemetry_at IS NULL`, so it fires exactly once
+// per project no matter how many ingest keys it has or how many requests race.
+// Attributed to the org owner's person so it lands in the funnel with their
+// signup / org-created events. Best-effort throughout.
+async function maybeCaptureProjectActivation(projectId: string): Promise<void> {
+  if (activatedProjects.has(projectId)) return;
+  try {
+    const claimed = await db
+      .update(schema.projects)
+      .set({ firstTelemetryAt: new Date() })
+      .where(and(eq(schema.projects.id, projectId), isNull(schema.projects.firstTelemetryAt)))
+      .returning({ id: schema.projects.id });
+    // Either we won the claim or someone else already did — in both cases this
+    // project is activated, so stop re-checking it on this instance.
+    activatedProjects.add(projectId);
+    if (claimed.length === 0) return; // already activated; don't double-fire
+
+    const [owner] = await db
+      .select({ userId: schema.orgMembers.userId, orgId: schema.orgMembers.orgId })
+      .from(schema.projects)
+      .innerJoin(schema.orgMembers, eq(schema.orgMembers.orgId, schema.projects.orgId))
+      .where(and(eq(schema.projects.id, projectId), eq(schema.orgMembers.role, "owner")))
+      .limit(1);
+    if (!owner) return;
+    captureServerEvent({
+      distinctId: owner.userId,
+      event: "first_telemetry_received",
+      properties: { project_id: projectId, org_id: owner.orgId },
+    });
+  } catch (err) {
+    // Don't cache on failure — a transient DB error should be retried on the
+    // next accepted request rather than permanently suppressing the event.
+    logger.warn({ err, projectId }, "first-telemetry activation claim failed");
+  }
+}
+
 async function validateIngestKey(c: Context<{ Variables: Variables }>, next: () => Promise<void>) {
   return tracer.startActiveSpan("auth.validate", async (span) => {
     try {
@@ -278,6 +329,8 @@ async function validateIngestKey(c: Context<{ Variables: Variables }>, next: () 
         .then(() => {
           // Loops only needs the lifecycle nudge when telemetrySet flips false→true, i.e. on the
           // first ingest for this key. Firing on every request hammers the Loops rate limit.
+          // (The product-analytics activation event is fired separately, from the accept path in
+          // forward(), gated on a project-level atomic claim — see maybeCaptureProjectActivation.)
           if (isFirstUse) return syncLoopsContactsForProject({ projectId: row.projectId });
         })
         .catch((err: unknown) => {
@@ -493,6 +546,10 @@ async function forward(
     let requestBytes = 0;
     let storage: "direct" | "inline" | "s3" = "direct";
     let prebufferedBody: Buffer | null = null;
+    // Set only when telemetry is actually accepted (enqueued, or forwarded to the
+    // collector with a 2xx) — never on an ack-drop, quota block, or error. Drives
+    // the first-telemetry activation event so a rejected request can't trigger it.
+    let accepted = false;
 
     // Route into the matching admission lane by declared body size, so a slow
     // oversize S3 upload can't head-of-line block a tiny request. Unknown size
@@ -637,6 +694,7 @@ async function forward(
         span.setAttribute("ingest.queue.enabled", true);
         span.setAttribute("ingest.queue.storage", storage);
         responseStatus = 200;
+        accepted = true;
         logger.info({ path, projectId, storage }, "queued ingest payload");
         return new Response(new Uint8Array(0), {
           status: 200,
@@ -692,6 +750,7 @@ async function forward(
 
       span.setAttribute("http.response.status_code", res.status);
       responseStatus = res.status;
+      accepted = res.status < 400;
       logger.info({ path, projectId, status: res.status }, "proxied");
 
       const resHeaders = new Headers();
@@ -708,6 +767,12 @@ async function forward(
       // Released on every path (success, 4xx, throw) so a failing request can't
       // leak permits and wedge the proxy into permanent backpressure.
       ingestLaneSemaphores[lane].release();
+
+      // Fire the first-telemetry activation only for genuinely accepted requests
+      // (never ack-drops/quota/errors). Self-gated by a project-level atomic
+      // claim + per-instance cache, so this is a no-op after the project's first
+      // accepted ingest. Fire-and-forget: never block the response on it.
+      if (accepted) void maybeCaptureProjectActivation(projectId);
 
       const durationMs = performance.now() - startedAt;
       const emitOperationalMetric = (org?: { orgId: string; orgName: string } | null) => {
@@ -893,6 +958,11 @@ async function forwardFirehose(
         span.setAttribute("firehose.result", res.status === 200 ? "ok" : `collector_${res.status}`);
         logger.info({ signal, projectId, status: res.status }, "proxied firehose batch");
 
+        // Firehose treats only a 200 as delivered, so that's this project's first
+        // accepted telemetry when it arrives via AWS. Idempotent project-level
+        // claim, fire-and-forget.
+        if (res.status === 200) void maybeCaptureProjectActivation(projectId);
+
         // Pass the receiver's ack through verbatim — it owns the
         // {requestId,timestamp} body and the application/json content-type.
         const resHeaders = new Headers();
@@ -1007,6 +1077,11 @@ const renderSyslogServer = RENDER_SYSLOG_PORT
             throw new Error(`collector returned ${res.status} for render syslog batch`);
           }
         }
+        // Reached only when the batch was accepted (enqueued, or forwarded with
+        // a 2xx) — the source-filter / quota drops returned early above, and a
+        // direct-mode collector error threw. So this is the project's first
+        // accepted telemetry when it arrives via the Render log stream.
+        void maybeCaptureProjectActivation(projectId);
       },
       log: logger,
     })
@@ -1054,9 +1129,13 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     if (ingestQueue) {
       await ingestQueue.stop();
     }
-    // Flush telemetry LAST, after the ingest drain. tracing.ts no longer
-    // registers its own SIGTERM handler — it used to race this one and
-    // process.exit(0) mid-drain, orphaning in-flight SQS messages.
+    // Flush analytics + telemetry LAST, after the ingest drain and once the
+    // server is closed to new requests, so a first_telemetry_received event
+    // still queued in posthog-node is delivered before exit rather than dropped
+    // by the SIGKILL that follows. Best-effort; never blocks the exit path.
+    await shutdownAnalytics();
+    // tracing.ts no longer registers its own SIGTERM handler — it used to race
+    // this one and process.exit(0) mid-drain, orphaning in-flight SQS messages.
     await shutdownTelemetry();
   } catch (err) {
     // Exit non-zero so a failed drain is visible rather than masquerading as a

@@ -36,7 +36,12 @@ import { DashboardsList } from "./dashboards/DashboardsList.tsx";
 import { AppShell, ThemeToggle, Wordmark } from "./design/ui.tsx";
 import { McpInstallPill } from "./onboarding/McpInstallPill.tsx";
 import { OnboardingGate } from "./onboarding/OnboardingGate.tsx";
-import { parseAttribution, persistFirstTouchAttribution } from "./signupAttribution.ts";
+import {
+  buildSignupEventProperties,
+  parseAttribution,
+  persistFirstTouchAttribution,
+  readFirstTouchAttribution,
+} from "./signupAttribution.ts";
 import { startSkillOnboarding } from "./skillOnboarding.ts";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4100";
@@ -89,10 +94,24 @@ function PostHogUserSync() {
     // than a live crash path — guard anyway in case the return becomes nullable.
     if (!posthog || isPending) return;
     if (data?.user) {
-      posthog.identify(data.user.id, {
-        email: data.user.email,
-        name: data.user.name,
-      });
+      // First-touch attribution (source + UTM + referrer) was stashed at landing
+      // in localStorage. The signup event itself is now emitted server-side and
+      // can't carry it, so attach it to the person via $set_once (write-once, so
+      // a later touch never clobbers the original) — person-on-events then makes
+      // it queryable on the server-side user_signed_up / organization_created
+      // events too.
+      const attr =
+        typeof window === "undefined" ? {} : (readFirstTouchAttribution(window.localStorage) ?? {});
+      const authMethod =
+        typeof window === "undefined"
+          ? undefined
+          : window.localStorage.getItem("superlog.auth.last_provider")?.trim() || undefined;
+      const attribution = buildSignupEventProperties(attr, { authMethod });
+      posthog.identify(
+        data.user.id,
+        { email: data.user.email, name: data.user.name },
+        Object.keys(attribution).length > 0 ? attribution : undefined,
+      );
     } else {
       posthog.reset();
     }

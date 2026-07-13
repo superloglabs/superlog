@@ -7,10 +7,11 @@
 //   - UTM params + referrer: standard marketing attribution.
 //
 // The values are read at landing time and stashed in localStorage so they
-// survive the OAuth redirect round-trip and the multi-step onboarding wizard.
-// The actual PostHog event is fired once the user creates their first org (the
-// canonical "new account" moment — see useCreateMyFirstOrg), which covers email
-// and social signups uniformly.
+// survive the OAuth redirect round-trip and the multi-step onboarding wizard,
+// then attached to the PostHog person as $set_once on identify (see
+// PostHogUserSync in App.tsx). The signup count itself is emitted server-side
+// (the API's user-create hook), so attribution rides on the person and stays
+// queryable — via person-on-events — on the server-side signup event.
 
 export type SignupAttribution = {
   source?: string;

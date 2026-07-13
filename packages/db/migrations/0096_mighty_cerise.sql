@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "first_telemetry_at" timestamp with time zone;

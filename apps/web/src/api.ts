@@ -1,37 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { usePostHog } from "posthog-js/react";
 import { incidentPollIntervalMs } from "./incidents/agent-run-polling.ts";
-import { buildSignupEventProperties, readFirstTouchAttribution } from "./signupAttribution.ts";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4100";
-
-// PostHog instance shape we actually use — `usePostHog()` returns the (possibly
-// uninitialized) global when no token is configured, so callers must null-guard.
-type PostHogLike = {
-  capture(event: string, properties?: Record<string, unknown>): void;
-} | null;
-
-// Fire the "new account" signup event once the user creates their first org —
-// the one moment that's common to both email and social signups. Attribution
-// (source + UTM + referrer) was stashed at landing in localStorage. Best-effort:
-// analytics must never block or break account creation.
-function captureSignupEvent(posthog: PostHogLike) {
-  if (!posthog || typeof window === "undefined") return;
-  try {
-    const attr = readFirstTouchAttribution(window.localStorage) ?? {};
-    const authMethod =
-      window.localStorage.getItem("superlog.auth.last_provider")?.trim() || undefined;
-    const props = buildSignupEventProperties(attr, { authMethod });
-    posthog.capture("user_signed_up", {
-      ...props,
-      // Persist first-touch attribution onto the PostHog person so signups can be
-      // segmented by source/UTM indefinitely, without clobbering a later touch.
-      $set_once: props,
-    });
-  } catch {
-    /* analytics is best-effort */
-  }
-}
 
 export type Me = {
   user: { id: string; email: string; name: string; isStaff: boolean; impersonating: boolean };
@@ -159,17 +129,15 @@ export function useSystemCapabilities() {
 export function useCreateMyFirstOrg() {
   const fetcher = useFetcher();
   const qc = useQueryClient();
-  const posthog = usePostHog();
   return useMutation({
     mutationFn: (name: string) =>
       fetcher<{
         org: { id: string; name: string; slug: string };
         project: { id: string; name: string; slug: string };
       }>("/api/me/orgs", { method: "POST", body: JSON.stringify({ name }) }),
-    onSuccess: () => {
-      captureSignupEvent(posthog);
-      return qc.invalidateQueries({ queryKey: ["me"] });
-    },
+    // The signup / org-created events are emitted server-side now (see the API's
+    // user-create hook and /api/me/orgs), so the client just refreshes state.
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["me"] }),
   });
 }
 
