@@ -4,6 +4,7 @@ import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { ProductShell } from "./ProductShell.tsx";
+import { readSidebarCollapsed, writeSidebarCollapsed } from "./sidebarCollapsed.ts";
 
 test("the signed-in shell uses standard icons without workspace status copy", async () => {
   const html = renderToStaticMarkup(
@@ -24,6 +25,41 @@ test("the signed-in shell uses standard icons without workspace status copy", as
   const source = await readFile(new URL("./ProductShell.tsx", import.meta.url), "utf8");
   assert.match(source, /@phosphor-icons\/react/);
   assert.doesNotMatch(source, /function NavigationIcon/);
+});
+
+test("the shell renders a collapse toggle and expanded nav labels by default", () => {
+  const html = renderToStaticMarkup(
+    <MemoryRouter initialEntries={["/"]}>
+      <ProductShell>
+        <main>Page body</main>
+      </ProductShell>
+    </MemoryRouter>,
+  );
+
+  // Server render has no localStorage, so the sidebar defaults to expanded.
+  assert.match(html, /aria-label="Collapse sidebar"/);
+  assert.match(html, /aria-pressed="false"/);
+  assert.match(html, />Overview<\/span>/);
+});
+
+test("sidebar collapse state round-trips through localStorage", () => {
+  const store = new Map<string, string>();
+  const original = globalThis.window;
+  const localStorage = {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => void store.set(key, value),
+    removeItem: (key: string) => void store.delete(key),
+  };
+  globalThis.window = { localStorage } as unknown as Window & typeof globalThis;
+  try {
+    assert.equal(readSidebarCollapsed(), false);
+    writeSidebarCollapsed(true);
+    assert.equal(readSidebarCollapsed(), true);
+    writeSidebarCollapsed(false);
+    assert.equal(readSidebarCollapsed(), false);
+  } finally {
+    globalThis.window = original;
+  }
 });
 
 test("errors and incidents are separate primary navigation destinations", () => {

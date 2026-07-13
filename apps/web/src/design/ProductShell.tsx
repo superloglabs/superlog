@@ -4,10 +4,12 @@ import { BugIcon } from "@phosphor-icons/react/dist/csr/Bug";
 import { ChartBarIcon } from "@phosphor-icons/react/dist/csr/ChartBar";
 import { GearIcon } from "@phosphor-icons/react/dist/csr/Gear";
 import { MagnifyingGlassIcon } from "@phosphor-icons/react/dist/csr/MagnifyingGlass";
+import { SidebarSimpleIcon } from "@phosphor-icons/react/dist/csr/SidebarSimple";
 import { SirenIcon } from "@phosphor-icons/react/dist/csr/Siren";
 import { SquaresFourIcon } from "@phosphor-icons/react/dist/csr/SquaresFour";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
+import { readSidebarCollapsed, writeSidebarCollapsed } from "./sidebarCollapsed.ts";
 import { Wordmark } from "./ui.tsx";
 
 type NavigationItem = {
@@ -46,24 +48,50 @@ export function ProductShell({
   children: ReactNode;
 }) {
   const { pathname } = useLocation();
+  const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
+  useEffect(() => {
+    writeSidebarCollapsed(collapsed);
+  }, [collapsed]);
   const current = [...NAVIGATION_GROUPS.flatMap((group) => group.items), SETTINGS_ITEM].find(
     (item) => isActive(item, pathname),
   );
 
   return (
     <div className="flex min-h-0 flex-1 bg-bg font-sans text-fg" data-product-shell>
-      <aside className="sticky top-0 hidden h-full w-56 shrink-0 flex-col border-r border-border bg-surface/55 px-4 py-5 backdrop-blur md:flex">
-        <div className="px-2">
-          <Wordmark size="sm" />
+      <aside
+        data-collapsed={collapsed || undefined}
+        className={`sticky top-0 hidden h-full shrink-0 flex-col border-r border-border bg-surface/55 py-5 backdrop-blur md:flex ${
+          collapsed ? "w-16 px-2" : "w-56 px-4"
+        }`}
+      >
+        <div className={`flex items-center ${collapsed ? "justify-center" : "justify-between px-2"}`}>
+          {!collapsed && <Wordmark size="sm" />}
+          <button
+            type="button"
+            onClick={() => setCollapsed((value) => !value)}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-pressed={collapsed}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-surface-2 hover:text-fg"
+          >
+            <SidebarSimpleIcon size={17} weight="regular" aria-hidden />
+          </button>
         </div>
 
         <nav aria-label="Primary navigation" className="mt-9 space-y-7">
           {NAVIGATION_GROUPS.map((group) => (
             <div key={group.label}>
-              <div className="px-2 text-[11px] font-medium text-subtle">{group.label}</div>
+              {!collapsed && (
+                <div className="px-2 text-[11px] font-medium text-subtle">{group.label}</div>
+              )}
               <div className="mt-2 space-y-0.5">
                 {group.items.map((item) => (
-                  <NavigationLink key={item.href} item={item} pathname={pathname} />
+                  <NavigationLink
+                    key={item.href}
+                    item={item}
+                    pathname={pathname}
+                    collapsed={collapsed}
+                  />
                 ))}
               </div>
             </div>
@@ -71,7 +99,7 @@ export function ProductShell({
         </nav>
 
         <div className="mt-auto border-t border-border pt-3">
-          <NavigationLink item={SETTINGS_ITEM} pathname={pathname} />
+          <NavigationLink item={SETTINGS_ITEM} pathname={pathname} collapsed={collapsed} />
         </div>
       </aside>
 
@@ -96,19 +124,28 @@ export function ProductShell({
   );
 }
 
-function NavigationLink({ item, pathname }: { item: NavigationItem; pathname: string }) {
+function NavigationLink({
+  item,
+  pathname,
+  collapsed,
+}: {
+  item: NavigationItem;
+  pathname: string;
+  collapsed?: boolean;
+}) {
   const active = isActive(item, pathname);
   const Icon = item.icon;
   return (
     <Link
       to={item.href}
       aria-current={active ? "page" : undefined}
-      className={`flex items-center gap-3 rounded-md px-2 py-1.5 text-[13px] transition-colors ${
-        active ? "bg-surface-3 text-fg" : "text-muted hover:bg-surface-2 hover:text-fg"
-      }`}
+      title={collapsed ? item.label : undefined}
+      className={`flex items-center rounded-md py-1.5 text-[13px] transition-colors ${
+        collapsed ? "justify-center px-0" : "gap-3 px-2"
+      } ${active ? "bg-surface-3 text-fg" : "text-muted hover:bg-surface-2 hover:text-fg"}`}
     >
       <Icon size={17} weight="regular" className="shrink-0" aria-hidden />
-      <span>{item.label}</span>
+      {!collapsed && <span>{item.label}</span>}
     </Link>
   );
 }
