@@ -155,6 +155,16 @@ export async function registerAgentRunQueue(
   await boss.schedule(AGENT_RUN_SWEEP_QUEUE, SWEEP_SCHEDULE);
 
   const jobTimeoutMs = deps.jobTimeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
+  // Runs with an attempt still executing — including attempts whose JOB was
+  // completed by the timeout below while the underlying promise keeps
+  // running. A new job for such a run is skipped so two attempts never
+  // advance the same run concurrently (duplicated provider calls, racing
+  // lifecycle writes); the sweep re-enqueues it after the attempt settles.
+  // In-process state is sufficient while one worker task consumes this queue
+  // (the stately policy already caps cross-process concurrency at one ACTIVE
+  // job per run); a durable per-run lease is part of the multi-task
+  // scale-out, not this hotfix.
+  const inFlight = new Set<string>();
   await boss.work(
     AGENT_RUN_ADVANCE_QUEUE,
     { batchSize: 1, localConcurrency: concurrency },
@@ -170,8 +180,15 @@ export async function registerAgentRunQueue(
           );
           continue;
         }
+        if (inFlight.has(data.agentRunId)) {
+          logger.warn(
+            { scope: "agent-run-queue", agent_run_id: data.agentRunId },
+            "previous advance attempt still in flight; skipping (the sweep retries)",
+          );
+          continue;
+        }
         try {
-          await advanceWithTimeout(deps, data, jobTimeoutMs, logger);
+          await advanceWithTimeout(deps, data, jobTimeoutMs, inFlight, logger);
         } catch (err) {
           logger.error(
             {
@@ -190,18 +207,24 @@ export async function registerAgentRunQueue(
 // Run one advance attempt with a hard deadline. On timeout the attempt is
 // abandoned — its promise keeps running in the background until the
 // underlying SDK/network timeout fires, so a late rejection is routed to the
-// logger instead of becoming an unhandled rejection.
+// logger instead of becoming an unhandled rejection. The run id stays in
+// `inFlight` until the underlying promise settles, which is what blocks a
+// concurrent second attempt for the same run.
 async function advanceWithTimeout(
   deps: AgentRunQueueDeps,
   data: AgentRunJobData,
   timeoutMs: number,
+  inFlight: Set<string>,
   logger: LoggerLike,
 ): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   const timedOut = new Promise<"timeout">((resolve) => {
     timer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
-  const attempt = advanceRun(deps, data).then(() => "done" as const);
+  inFlight.add(data.agentRunId);
+  const attempt = advanceRun(deps, data)
+    .then(() => "done" as const)
+    .finally(() => inFlight.delete(data.agentRunId));
   try {
     const outcome = await Promise.race([attempt, timedOut]);
     if (outcome === "timeout") {
