@@ -38,7 +38,11 @@ import { ThemeToggle } from "./design/ui.tsx";
 import { McpInstallPill } from "./onboarding/McpInstallPill.tsx";
 import { OnboardingGate } from "./onboarding/OnboardingGate.tsx";
 import { useDemoExploration } from "./onboarding/demoExploration.tsx";
-import { isDetailWorkspacePath } from "./route-layout.ts";
+import {
+  APP_FRAME_CLASS,
+  PAGE_SCROLL_CONTAINER_CLASS,
+  isDetailWorkspacePath,
+} from "./route-layout.ts";
 import {
   buildSignupEventProperties,
   parseAttribution,
@@ -219,7 +223,7 @@ function AuthenticatedApp() {
   if (!data) return <Landing />;
   return (
     <OnboardingGate>
-      <div className="flex min-h-screen flex-col bg-bg">
+      <div className={APP_FRAME_CLASS}>
         <TopRibbon
           impersonating={impersonating}
           email={data.user.email}
@@ -358,10 +362,12 @@ function RouteContainer({ children }: { children: ReactNode }) {
     return <div className="flex min-h-0 flex-1 flex-col">{children}</div>;
   }
   return (
-    <div
-      className={`mx-auto w-full px-5 pb-24 pt-8 sm:px-6 lg:px-8 ${wide ? "max-w-[2400px]" : "max-w-[1180px]"}`}
-    >
-      {children}
+    <div className={PAGE_SCROLL_CONTAINER_CLASS}>
+      <div
+        className={`mx-auto w-full px-5 pb-24 pt-8 sm:px-6 lg:px-8 ${wide ? "max-w-[2400px]" : "max-w-[1180px]"}`}
+      >
+        {children}
+      </div>
     </div>
   );
 }

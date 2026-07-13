@@ -16,6 +16,14 @@ function event(overrides: Partial<IncidentEvent>): IncidentEvent {
   };
 }
 
+test("buildActivityFeed marks the start without carrying the raw system prompt", () => {
+  const prompt =
+    "Investigate incident amber-otter. Internal instructions and telemetry dump follow…";
+  const feed = buildActivityFeed([event({ id: "start-1", kind: "user.message", summary: prompt })]);
+
+  assert.deepEqual(feed, [{ type: "start", id: "start-1" }]);
+});
+
 test("buildActivityFeed starts with the issue that triggered the incident", () => {
   const feed = buildActivityFeed(
     [event({ kind: "agent_run_queued", summary: "Investigation queued." })],
