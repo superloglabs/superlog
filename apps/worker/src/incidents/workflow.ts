@@ -167,7 +167,7 @@ async function steerInvestigationWithNewSignature(
     interaction: {
       channel: "issue_joined",
       author: null,
-      text: `${label} error signature joined this incident: ${issue.title}. If your existing analysis or open PR already covers this, no new change is needed; if it reveals a code path your fix misses, extend the existing PR rather than opening another.`,
+      text: `${label} error signature joined this incident (issue id: ${issue.id}): ${issue.title}. If your existing analysis or open PR already covers this, no new change is needed; if it reveals a code path your fix misses, extend the existing PR rather than opening another. If it is noise, classify it with silence_as_noise using that issue id.`,
       occurredAt: new Date().toISOString(),
     },
     dedupeKey: `issue_joined:${issue.id}:${transition}`,
@@ -262,7 +262,11 @@ export async function handleIssueTransition(
   if (agentRun && linkedIssue && !createdIncident && isActiveAgentRunState(agentRun.state)) {
     await agentRunLifecycle.appendContextChangeEvent({
       agentRunId: agentRun.id,
-      summary: `${transition === "new" ? "New" : "Regressed"} issue joined the incident: ${issue.title}`,
+      // Include the issue id: this summary is steered verbatim into the running
+      // agent, and the outcome tools (silence_as_noise / resolve_issue / classify)
+      // key on issue id. Without it the agent knows a new issue joined but can't
+      // act on it, and parks in awaiting_human asking a human for the id.
+      summary: `${transition === "new" ? "New" : "Regressed"} issue joined the incident (issue id: ${issue.id}): ${issue.title}`,
       dedupeKey: `issue:${issue.id}:joined`,
     });
     await postIncidentThreadMessage(
