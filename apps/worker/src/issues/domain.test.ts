@@ -6,6 +6,7 @@ import {
   type LinkedIncidentIssue,
   buildGroupingCandidate,
   findHeuristicIncidentMatch,
+  findSameTraceIncidentMatch,
   groupingIssueInput,
   overlapCount,
 } from "./domain.js";
@@ -28,6 +29,41 @@ test("findHeuristicIncidentMatch joins the strongest stack-frame match", () => {
   assert.equal(match?.incident.id, "inc-2");
   assert.equal(match?.source, "heuristic");
   assert.equal(match?.reason, "Matched existing incident by 3 overlapping stack frames.");
+});
+
+test("findSameTraceIncidentMatch joins the incident sharing the issue's trace id", () => {
+  // A log observation of an error: no stack-frame overlap and a severity-derived
+  // exception type, but the same request (trace id) as an existing incident.
+  const issue = {
+    ...makeIssue(["svc/log.ts"]),
+    exceptionType: "ERROR",
+    lastSample: { traceId: "trace-xyz", spanId: "span-1" },
+  } as schema.Issue;
+  const candidates = [makeIncident("inc-1"), makeIncident("inc-2")];
+  const linked: LinkedIncidentIssue[] = [
+    {
+      ...makeLinkedIssue("inc-2", ["svc/route.ts"]),
+      lastSample: { traceId: "trace-xyz", spanId: "span-9" } as LinkedIncidentIssue["lastSample"],
+    },
+    {
+      ...makeLinkedIssue("inc-1", ["other.ts"]),
+      lastSample: { traceId: "trace-other", spanId: "span-2" } as LinkedIncidentIssue["lastSample"],
+    },
+  ];
+
+  const match = findSameTraceIncidentMatch(issue, candidates, linked);
+
+  assert.equal(match?.incident.id, "inc-2");
+  assert.equal(match?.source, "heuristic");
+  assert.match(match?.reason ?? "", /trace-xyz/);
+});
+
+test("findSameTraceIncidentMatch returns null when the issue has no trace id", () => {
+  const issue = makeIssue(["svc/a.ts"]); // lastSample is null
+  const candidates = [makeIncident("inc-1")];
+  const linked: LinkedIncidentIssue[] = [makeLinkedIssue("inc-1", ["svc/a.ts"])];
+
+  assert.equal(findSameTraceIncidentMatch(issue, candidates, linked), null);
 });
 
 test("groupingIssueInput and buildGroupingCandidate keep LLM input shape explicit", () => {
