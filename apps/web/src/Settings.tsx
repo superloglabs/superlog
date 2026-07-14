@@ -178,6 +178,11 @@ import {
   SettingsRow,
   SettingsSectionHeader,
 } from "./settings/rows.tsx";
+import {
+  weeklyDigestChannelSelection,
+  weeklyDigestStatusDescription,
+  weeklyDigestToggleDisabled,
+} from "./weekly-digest-controls.ts";
 
 type NavTarget = {
   scope?: SettingsScope;
@@ -2347,56 +2352,45 @@ function WeeklyDigestCard({ projectId }: { projectId: string | undefined }) {
     <SettingsCard>
       <SettingsRow
         title="Post a weekly project recap to Slack"
-        description={
-          enabled && channelId
-            ? `Posting to #${channelName ?? channelId} · ${lastRunLabel}`
-            : lastRunLabel
-        }
+        description={weeklyDigestStatusDescription({ enabled, channelId, channelName, lastRunLabel })}
         control={
           <Toggle
             checked={enabled}
-            disabled={save.isPending || (!enabled && !channelId)}
+            disabled={weeklyDigestToggleDisabled({ enabled, channelId, saving: save.isPending })}
             onChange={(v) => save.mutate({ enabled: v })}
           />
         }
       />
       <SettingsRow
         title="Channel"
-        description="Use a different channel from incident threads if it's noisy — invite the bot to private channels"
+        description="Picking a channel turns the recap on. Use a different channel from incident threads if it's noisy — invite the bot to private channels"
         control={
           <div className="w-60">
             <Dropdown
               value={channelId}
               disabled={channels.isLoading || channels.isError || save.isPending}
               onChange={(next) => {
-                if (!next) {
-                  save.mutate({ enabled: false, channelId: null, channelName: null });
-                  return;
-                }
-                const ch = channelList.find((c) => c.id === next);
-                save.mutate({ channelId: next, channelName: ch?.name ?? null });
+                const selection = weeklyDigestChannelSelection(next, channelList);
+                if (selection) save.mutate(selection);
               }}
               placeholder={
                 channels.isLoading
                   ? "Loading channels…"
                   : channels.isError
                     ? "Failed to load channels"
-                    : "No channel"
+                    : "Select a channel…"
               }
               emptyLabel="No channels found"
-              options={[
-                { value: "", searchText: "No channel", label: "No channel" },
-                ...channelList.map((ch) => ({
-                  value: ch.id,
-                  searchText: `${ch.isPrivate ? "🔒 " : "#"}${ch.name}`,
-                  label: (
-                    <span className="flex items-center gap-1.5">
-                      <span className="text-subtle">{ch.isPrivate ? "🔒" : "#"}</span>
-                      <span>{ch.name}</span>
-                    </span>
-                  ),
-                })),
-              ]}
+              options={channelList.map((ch) => ({
+                value: ch.id,
+                searchText: `${ch.isPrivate ? "🔒 " : "#"}${ch.name}`,
+                label: (
+                  <span className="flex items-center gap-1.5">
+                    <span className="text-subtle">{ch.isPrivate ? "🔒" : "#"}</span>
+                    <span>{ch.name}</span>
+                  </span>
+                ),
+              }))}
             />
           </div>
         }
