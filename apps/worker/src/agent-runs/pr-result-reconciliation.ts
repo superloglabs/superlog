@@ -20,8 +20,8 @@ function proposalAssignments(
   proposals: AgentRunPr[],
   deliveredPullRequests: DeliveredPullRequestRecord[],
   currentAgentRunId: string | undefined,
-): Map<number, AgentRunPr> {
-  const assignments = new Map<number, AgentRunPr>();
+): Map<number, number> {
+  const assignments = new Map<number, number>();
   const unmatchedProposals = new Set(proposals.map((_, index) => index));
 
   const assignMatches = (args: {
@@ -42,7 +42,7 @@ function proposalAssignments(
       // PR closed attaches its proposal context to the collision-renamed PR.
       const deliveryIndex = matchingDeliveryIndexes.at(-1);
       if (deliveryIndex === undefined) continue;
-      assignments.set(deliveryIndex, proposal);
+      assignments.set(deliveryIndex, proposalIndex);
       unmatchedProposals.delete(proposalIndex);
     }
   };
@@ -63,7 +63,7 @@ function proposalAssignments(
       });
       const deliveryIndex = deliveryIndexes[0];
       if (deliveryIndexes.length !== 1 || deliveryIndex === undefined) continue;
-      assignments.set(deliveryIndex, proposal);
+      assignments.set(deliveryIndex, proposalIndex);
       unmatchedProposals.delete(proposalIndex);
     }
   };
@@ -94,16 +94,16 @@ export function selectDeliveredPullRequestsForOutcome<T extends DeliveredPullReq
   }
 
   // Durable results created before delivery URLs were attached can still be
-  // reconciled safely through rows owned by this run. An update to an older
-  // open PR keeps that row's original run id, so fall back to a one-to-one
-  // proposal-coordinate match only when the current run owns no rows.
-  const currentRunDeliveries = deliveredPullRequests.filter(
-    (delivery) => delivery.agentRunId === currentAgentRunId,
-  );
-  if (currentRunDeliveries.length > 0) return currentRunDeliveries;
-
-  const assignments = proposalAssignments(proposals, deliveredPullRequests, undefined);
-  return deliveredPullRequests.filter((_, index) => assignments.has(index));
+  // reconciled safely through one-to-one proposal assignments. Prefer rows
+  // owned by this run, then match any remaining proposals by their coordinates
+  // because an update to an older open PR keeps that row's original run id.
+  const assignments = proposalAssignments(proposals, deliveredPullRequests, currentAgentRunId);
+  return [...assignments.entries()]
+    .sort(([, leftProposalIndex], [, rightProposalIndex]) => leftProposalIndex - rightProposalIndex)
+    .flatMap(([deliveryIndex]) => {
+      const delivery = deliveredPullRequests[deliveryIndex];
+      return delivery ? [delivery] : [];
+    });
 }
 
 export function reconcileDeliveredPullRequests(
@@ -114,7 +114,8 @@ export function reconcileDeliveredPullRequests(
   const proposals = result.prs ?? (result.pr ? [result.pr] : []);
   const assignments = proposalAssignments(proposals, deliveredPullRequests, opts.currentAgentRunId);
   const prs: AgentRunPr[] = deliveredPullRequests.map((delivered, index) => {
-    const proposal = assignments.get(index);
+    const proposalIndex = assignments.get(index);
+    const proposal = proposalIndex === undefined ? undefined : proposals[proposalIndex];
     return {
       ...(proposal ?? {}),
       selectedRepoFullName: delivered.repoFullName,

@@ -268,3 +268,58 @@ test("legacy outcomes without URLs prefer rows recorded by the current run", () 
 
   assert.deepEqual(selectDeliveredPullRequestsForOutcome(result, rows, "current-run"), [rows[1]]);
 });
+
+test("legacy mixed batches retain updated pull requests owned by an older run", () => {
+  const result: AgentRunResult = {
+    state: "awaiting_events",
+    summary: "Delivered fixes to both services.",
+    prs: [
+      {
+        selectedRepoFullName: "acme/worker",
+        branchName: "superlog/fix-worker",
+        baseBranch: "main",
+        openStatus: "opened",
+      },
+      {
+        selectedRepoFullName: "acme/api",
+        branchName: "superlog/fix-api",
+        baseBranch: "main",
+        openStatus: "opened",
+      },
+    ],
+  };
+  const rows = [
+    {
+      agentRunId: "old-run",
+      repoFullName: "acme/api",
+      branchName: "superlog/fix-api",
+      baseBranch: "main",
+      title: "Fix API retries",
+      url: "https://github.com/acme/api/pull/12",
+      state: "open" as const,
+    },
+    {
+      agentRunId: "current-run",
+      repoFullName: "acme/web",
+      branchName: "superlog/unrelated-fix",
+      baseBranch: "main",
+      title: "Unrelated fix",
+      url: "https://github.com/acme/web/pull/3",
+      state: "closed" as const,
+    },
+    {
+      agentRunId: "current-run",
+      repoFullName: "acme/worker",
+      branchName: "superlog/fix-worker",
+      baseBranch: "main",
+      title: "Fix worker retries",
+      url: "https://github.com/acme/worker/pull/34",
+      state: "open" as const,
+    },
+  ];
+
+  assert.deepEqual(selectDeliveredPullRequestsForOutcome(result, rows, "current-run"), [
+    rows[2],
+    rows[0],
+  ]);
+});
