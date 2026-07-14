@@ -168,6 +168,24 @@ export async function ensureIncidentForIssueWorkflow(
       // don't recur into separate incidents. Serialize on the trace and
       // re-check inside the lock so concurrent sibling recurrences converge.
       return serialize(serializeKey, async () => {
+        // Re-read the latest link now that we hold the lock: a concurrent
+        // recurrence job for this same issue may have already opened the
+        // recurrence incident (this matters for no-trace issues, where the lock
+        // is keyed by issue id) — re-land on it instead of opening a second, and
+        // don't let the same-trace lookup below match the issue's own fresh
+        // incident. Mirrors the tail create path's `raceLink` re-check.
+        const raceLink = await deps.repo.findLatestIncidentIssueLink(issue.id);
+        if (raceLink) {
+          const landed = await deps.repo.findIncident(raceLink.incidentId);
+          if (landed?.status === "open") {
+            return {
+              incident: landed,
+              createdIncident: false,
+              linkedIssue: false,
+              recurrenceIncident: false,
+            };
+          }
+        }
         if (traceId) {
           const sameTrace = await findSameTraceMatchingIncident(issue, deps);
           if (sameTrace) {

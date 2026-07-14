@@ -265,6 +265,38 @@ test("intake: recurred same-trace sibling joins the incident instead of opening 
   assert.ok(!calls.some((c) => c.startsWith("openRecurrence")));
 });
 
+test("intake: recurred no-trace issue re-lands on a recurrence a racer opened inside the lock", async () => {
+  // No trace id, so the lock is keyed by issue id. Outside the lock the previous
+  // incident is still resolved; by the time we hold the lock a concurrent
+  // recurrence job has opened it. We must re-read and re-land, not open a second.
+  const calls: string[] = [];
+  const resolved = makeIncident({ id: "inc-prev", status: "resolved" });
+  const openedByRacer = makeIncident({ id: "inc-prev", status: "open" });
+  let findIncidentCalls = 0;
+  const base = makeRepo({
+    calls,
+    existingLink: { issueId: "iss-new", incidentId: "inc-prev" },
+  });
+  const repo: IntakeRepository = {
+    ...base,
+    async findIncident(incidentId) {
+      calls.push(`findIncident:${incidentId}`);
+      findIncidentCalls += 1;
+      return findIncidentCalls === 1 ? resolved : openedByRacer;
+    },
+  };
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue({ status: "resolved" } as Partial<schema.Issue>),
+    "recurred",
+    makeDeps({ repo, lifecycle: makeLifecycle({ calls }), calls }),
+  );
+
+  assert.equal(result.createdIncident, false);
+  assert.equal(result.recurrenceIncident, false);
+  assert.equal(result.incident.id, "inc-prev");
+  assert.ok(!calls.some((c) => c.startsWith("openRecurrence")));
+});
+
 test("intake: recurred issue whose latest link is already open reuses it (retry idempotency)", async () => {
   const calls: string[] = [];
   const alreadyOpen = makeIncident({ id: "inc-open", status: "open" });
