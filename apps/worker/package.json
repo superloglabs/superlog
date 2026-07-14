@@ -40,7 +40,7 @@
     "test:grouping-candidate-search": "tsx --test src/grouping/candidate-search.test.ts",
     "test:grouping-agent": "tsx --test src/grouping/agent.test.ts",
     "test:digest-domain": "tsx --test src/digest/domain.test.ts",
-    "test:digest-run": "tsx --test src/digest/run.test.ts src/digest/project-run.test.ts",
+    "test:digest-run": "tsx --test src/digest/run.test.ts src/digest/project-run.test.ts src/digest/repository.integration.test.ts",
     "test:incident-intake": "tsx --test src/incidents/intake.test.ts",
     "test:issue-routing": "tsx --test src/incidents/issue-routing.test.ts",
     "test:merge-agent-run": "tsx --test src/merge-agent-run.test.ts",

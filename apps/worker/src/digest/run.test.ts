@@ -74,8 +74,8 @@ function makeRepo(opts: {
     async stampLastRun(projectId, at) {
       opts.calls.push(`stampLastRun:${projectId}:${at.toISOString()}`);
     },
-    async clearRunRequest(projectId) {
-      opts.calls.push(`clearRunRequest:${projectId}`);
+    async clearRunRequest(projectId, requestedAt) {
+      opts.calls.push(`clearRunRequest:${projectId}:${requestedAt.toISOString()}`);
     },
     async gatherCandidates(projectId, _policy, _now) {
       opts.calls.push(`gatherCandidates:${projectId}`);
@@ -326,7 +326,7 @@ test("tickDigests: a manual request runs immediately without enabling the weekly
   });
 
   assert.deepEqual(projectRuns, [{ projectId: "manual", force: true }]);
-  assert.ok(calls.includes("clearRunRequest:manual"));
+  assert.ok(calls.includes(`clearRunRequest:manual:${NOW.toISOString()}`));
 });
 
 test("tickDigests: a failed manual attempt is consumed instead of retrying every tick", async () => {
@@ -354,5 +354,5 @@ test("tickDigests: a failed manual attempt is consumed instead of retrying every
     reason: "slack error: channel_not_found",
   }));
 
-  assert.ok(calls.includes("clearRunRequest:manual"));
+  assert.ok(calls.includes(`clearRunRequest:manual:${NOW.toISOString()}`));
 });
