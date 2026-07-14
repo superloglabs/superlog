@@ -3,9 +3,10 @@
 //   - digest/policy.ts        cadence and lookback policy (env-overridable)
 //   - digest/repository.ts    createDigestRepository(db) pg queries
 //   - digest/ranker.ts        LLM ranking with injected client + accountant
-//   - digest/run.ts           runDigestForOrgWorkflow + runDigestsTickWorkflow
+//   - digest/run.ts           runDigestForProjectWorkflow + runDigestsTickWorkflow
 import Anthropic from "@anthropic-ai/sdk";
-import { db } from "@superlog/db";
+import { db, schema } from "@superlog/db";
+import { eq } from "drizzle-orm";
 import { recordTokenUsage } from "./ai-usage.js";
 import type { DigestCandidate, DigestPick } from "./digest/domain.js";
 import { TOP_N } from "./digest/domain.js";
@@ -13,21 +14,21 @@ import { digestPolicyFromEnv } from "./digest/policy.js";
 import { asDigestLLMClient, rankCandidates } from "./digest/ranker.js";
 import { createDigestRepository } from "./digest/repository.js";
 import {
-  createDigestSlackPoster,
-  type RunDigestForOrgDeps,
+  type RunDigestForProjectDeps,
   type RunDigestResult,
-  runDigestForOrgWorkflow,
+  createDigestSlackPoster,
+  runDigestForProjectWorkflow,
   runDigestsTickWorkflow,
 } from "./digest/run.js";
 import { logger } from "./logger.js";
 
 const MODEL = process.env.ANTHROPIC_DIGEST_MODEL ?? "claude-sonnet-4-6";
 
-const lastAttemptByOrg = new Map<string, number>();
+const lastAttemptByProject = new Map<string, number>();
 
 export type { RunDigestResult } from "./digest/run.js";
 
-function rankerFor(orgId: string) {
+function rankerForProject(projectId: string) {
   return async (candidates: DigestCandidate[]): Promise<DigestPick[]> => {
     if (candidates.length === 0) return [];
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -38,15 +39,24 @@ function rankerFor(orgId: string) {
     }
     const client = apiKey
       ? asDigestLLMClient(new Anthropic({ apiKey }))
-      : { async send() { throw new Error("digest LLM client unavailable"); } };
+      : {
+          async send() {
+            throw new Error("digest LLM client unavailable");
+          },
+        };
     return rankCandidates(candidates, {
       client,
       model: MODEL,
       logger,
       accountant: {
         async record(rec) {
+          const project = await db.query.projects.findFirst({
+            where: eq(schema.projects.id, projectId),
+            columns: { orgId: true },
+          });
+          if (!project) throw new Error(`project ${projectId} not found for digest accounting`);
           await recordTokenUsage({
-            orgId,
+            orgId: project.orgId,
             model: rec.model,
             callSite: "digest",
             usage: rec.usage,
@@ -57,39 +67,37 @@ function rankerFor(orgId: string) {
   };
 }
 
-function makeDepsForOrg(orgId: string): RunDigestForOrgDeps {
+function makeDepsForProject(projectId: string): RunDigestForProjectDeps {
   return {
     repo: createDigestRepository(db),
     policy: digestPolicyFromEnv(),
     slack: createDigestSlackPoster(),
     logger,
     now: () => new Date(),
-    rank: rankerFor(orgId),
+    rank: rankerForProject(projectId),
   };
 }
 
-export async function runDigestForOrg(
-  orgId: string,
+export async function runDigestForProject(
+  projectId: string,
   opts: { force?: boolean } = {},
 ): Promise<RunDigestResult> {
-  return runDigestForOrgWorkflow(orgId, makeDepsForOrg(orgId), opts);
+  return runDigestForProjectWorkflow(projectId, makeDepsForProject(projectId), opts);
 }
 
 export async function tickDigests(): Promise<number> {
   // Use a single repo/policy/slack/logger for the iteration, and re-resolve
-  // the org-scoped rank() each time runDigestForOrg() runs.
-  const baseDeps: RunDigestForOrgDeps = {
+  // project-scoped ranking/accounting for each digest.
+  const baseDeps: RunDigestForProjectDeps = {
     repo: createDigestRepository(db),
     policy: digestPolicyFromEnv(),
     slack: createDigestSlackPoster(),
     logger,
     now: () => new Date(),
-    // Tick path doesn't call rank() directly — it dispatches to
-    // runDigestForOrg below, which wires its own org-scoped rank().
+    // Tick dispatches to runDigestForProject below, which wires its own rank().
     rank: async () => [],
   };
-  return runDigestsTickWorkflow(
-    { ...baseDeps, lastAttemptByOrg },
-    (orgId) => runDigestForOrg(orgId),
+  return runDigestsTickWorkflow({ ...baseDeps, lastAttemptByProject }, (projectId, opts) =>
+    runDigestForProject(projectId, opts),
   );
 }

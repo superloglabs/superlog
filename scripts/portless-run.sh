@@ -86,4 +86,28 @@ case "$service" in
     ;;
 esac
 
-exec pnpm exec portless --app-port "$app_port" "$route" "$@"
+max_lock_attempts=5
+for attempt in $(seq 1 "$max_lock_attempts"); do
+  error_file="$(mktemp)"
+  set +e
+  pnpm exec portless --app-port "$app_port" "$route" "$@" \
+    2> >(tee "$error_file" >&2)
+  status=$?
+  wait
+  set -e
+
+  if [[ $status -eq 0 ]]; then
+    rm -f "$error_file"
+    exit 0
+  fi
+
+  if ! grep -Fq "Error: Failed to acquire route lock" "$error_file" \
+    || [[ $attempt -eq $max_lock_attempts ]]; then
+    rm -f "$error_file"
+    exit "$status"
+  fi
+
+  rm -f "$error_file"
+  echo "[portless-run:$service] route lock busy; retrying registration ($attempt/$max_lock_attempts)" >&2
+  sleep "0.$attempt"
+done

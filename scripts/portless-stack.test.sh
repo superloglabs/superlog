@@ -91,6 +91,58 @@ output="$(
 if ! grep -Fq 'overmind environment changed; restarting services' <<< "$output"; then
   echo "expected stack startup to restart overmind after a generated env change" >&2
   printf '%s\n' "$output" >&2
+rendered="$("$REPO_ROOT/scripts/clickhouse-apply-local-migrations.sh" --render \
+  "$REPO_ROOT/infra/clickhouse/migrations/004_otel_exceptions.sql")"
+
+if grep -qE 'ON CLUSTER|ReplicatedMergeTree' <<< "$rendered"; then
+  echo "expected local ClickHouse migrations to remove cluster-only syntax" >&2
+  exit 1
+fi
+
+if ! grep -Fq 'ENGINE = MergeTree' <<< "$rendered"; then
+  echo "expected local ClickHouse migrations to use a single-node engine" >&2
+  exit 1
+fi
+
+fake_bin="$TMP_HOME/bin"
+fake_env="$TMP_HOME/stack.env"
+fake_attempts="$TMP_HOME/portless-attempts"
+mkdir -p "$fake_bin" "$TMP_HOME/.portless"
+printf '[]\n' > "$TMP_HOME/.portless/routes.json"
+cat > "$fake_env" <<'EOF'
+SUPERLOG_PORTLESS_WEB_NAME=test-web
+SUPERLOG_PORTLESS_API_NAME=test-api
+SUPERLOG_PORTLESS_PROXY_NAME=test-proxy
+WEB_APP_PORT=20001
+API_APP_PORT=20002
+PROXY_APP_PORT=20003
+EOF
+cat > "$fake_bin/pnpm" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+attempts="${PORTLESS_TEST_ATTEMPTS:?}"
+count=0
+if [[ -f "$attempts" ]]; then
+  count="$(cat "$attempts")"
+fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$attempts"
+if [[ $count -eq 1 ]]; then
+  echo "Error: Failed to acquire route lock" >&2
+  exit 1
+fi
+echo "registered after retry"
+EOF
+chmod +x "$fake_bin/pnpm"
+
+PATH="$fake_bin:$PATH" \
+  HOME="$TMP_HOME" \
+  PORTLESS_TEST_ATTEMPTS="$fake_attempts" \
+  SUPERLOG_STACK_ENV_FILE="$fake_env" \
+  "$REPO_ROOT/scripts/portless-run.sh" api true >/dev/null
+
+if [[ "$(cat "$fake_attempts")" != "2" ]]; then
+  echo "expected portless route registration to retry a transient lock collision" >&2
   exit 1
 fi
 

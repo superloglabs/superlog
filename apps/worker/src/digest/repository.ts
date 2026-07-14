@@ -1,16 +1,51 @@
-import { type DB, schema } from "@superlog/db";
-import { and, desc, eq, gte, inArray, isNull } from "drizzle-orm";
+import { type DB, adoptLegacyOrgDigestSettings, schema } from "@superlog/db";
+import { and, desc, eq, gte, isNotNull, isNull, or } from "drizzle-orm";
 import type { DigestCandidate } from "./domain.js";
 import type { DigestPolicy } from "./policy.js";
 
-export type DigestRepository = ReturnType<typeof createDigestRepository>;
+export type ProjectDigestSettings = {
+  projectId: string;
+  enabled: boolean;
+  installationId: string | null;
+  channelId: string | null;
+  lastRunAt: Date | null;
+  runRequestedAt: Date | null;
+};
 
-export function createDigestRepository(db: DB) {
+export type DigestRepository = {
+  findProjectSettings(projectId: string): Promise<ProjectDigestSettings | undefined>;
+  findActiveSlackInstallation(
+    installationId: string,
+  ): Promise<{ id: string; botAccessToken: string } | undefined>;
+  listRunnableProjectSettings(): Promise<ProjectDigestSettings[]>;
+  stampLastRun(projectId: string, at: Date): Promise<void>;
+  clearRunRequest(projectId: string): Promise<void>;
+  gatherCandidates(
+    projectId: string,
+    policy: Pick<DigestPolicy, "candidateLookbackMs" | "candidateLimit">,
+    now: Date,
+  ): Promise<DigestCandidate[]>;
+};
+
+function toDigestSettings(row: schema.ProjectAutomationSetting): ProjectDigestSettings {
   return {
-    async findOrgSettings(orgId: string) {
-      return db.query.orgAgentSettings.findFirst({
-        where: eq(schema.orgAgentSettings.orgId, orgId),
+    projectId: row.projectId,
+    enabled: row.digestEnabled ?? false,
+    installationId: row.digestSlackInstallationId,
+    channelId: row.digestSlackChannelId,
+    lastRunAt: row.digestLastRunAt,
+    runRequestedAt: row.digestRunRequestedAt,
+  };
+}
+
+export function createDigestRepository(db: DB): DigestRepository {
+  return {
+    async findProjectSettings(projectId) {
+      await adoptLegacyOrgDigestSettings(db, projectId);
+      const row = await db.query.projectAutomationSettings.findFirst({
+        where: eq(schema.projectAutomationSettings.projectId, projectId),
       });
+      return row ? toDigestSettings(row) : undefined;
     },
 
     async findActiveSlackInstallation(installationId: string) {
@@ -22,31 +57,37 @@ export function createDigestRepository(db: DB) {
       });
     },
 
-    async listEnabledDigestSettings() {
-      return db.query.orgAgentSettings.findMany({
-        where: eq(schema.orgAgentSettings.digestEnabled, true),
+    async listRunnableProjectSettings() {
+      await adoptLegacyOrgDigestSettings(db);
+      const rows = await db.query.projectAutomationSettings.findMany({
+        where: or(
+          eq(schema.projectAutomationSettings.digestEnabled, true),
+          isNotNull(schema.projectAutomationSettings.digestRunRequestedAt),
+        ),
       });
+      return rows.map(toDigestSettings);
     },
 
-    async stampLastRun(orgId: string, at: Date): Promise<void> {
+    async stampLastRun(projectId, at) {
       await db
-        .update(schema.orgAgentSettings)
-        .set({ digestLastRunAt: at, updatedAt: at })
-        .where(eq(schema.orgAgentSettings.orgId, orgId));
+        .update(schema.projectAutomationSettings)
+        .set({ digestLastRunAt: at, digestRunRequestedAt: null, updatedAt: at })
+        .where(eq(schema.projectAutomationSettings.projectId, projectId));
     },
 
-    async gatherCandidates(
-      orgId: string,
-      policy: Pick<DigestPolicy, "candidateLookbackMs" | "candidateLimit">,
-      now: Date,
-    ): Promise<DigestCandidate[]> {
-      const projects = await db.query.projects.findMany({
-        where: eq(schema.projects.orgId, orgId),
+    async clearRunRequest(projectId) {
+      await db
+        .update(schema.projectAutomationSettings)
+        .set({ digestRunRequestedAt: null, updatedAt: new Date() })
+        .where(eq(schema.projectAutomationSettings.projectId, projectId));
+    },
+
+    async gatherCandidates(projectId, policy, now) {
+      const project = await db.query.projects.findFirst({
+        where: eq(schema.projects.id, projectId),
         columns: { id: true, name: true },
       });
-      if (projects.length === 0) return [];
-      const projectIds = projects.map((p) => p.id);
-      const projectNameById = new Map(projects.map((p) => [p.id, p.name]));
+      if (!project) return [];
 
       const since = new Date(now.getTime() - policy.candidateLookbackMs);
       const prRows = await db
@@ -56,14 +97,11 @@ export function createDigestRepository(db: DB) {
           incident: schema.incidents,
         })
         .from(schema.agentPullRequests)
-        .innerJoin(
-          schema.agentRuns,
-          eq(schema.agentRuns.id, schema.agentPullRequests.agentRunId),
-        )
+        .innerJoin(schema.agentRuns, eq(schema.agentRuns.id, schema.agentPullRequests.agentRunId))
         .innerJoin(schema.incidents, eq(schema.incidents.id, schema.agentRuns.incidentId))
         .where(
           and(
-            inArray(schema.incidents.projectId, projectIds),
+            eq(schema.incidents.projectId, projectId),
             eq(schema.agentPullRequests.state, "open"),
             gte(schema.agentPullRequests.createdAt, since),
           ),
@@ -81,7 +119,7 @@ export function createDigestRepository(db: DB) {
           incidentId: row.incident.id,
           incidentCodename: row.incident.codename || row.incident.id.slice(0, 8),
           incidentTitle: row.incident.title,
-          projectName: projectNameById.get(row.incident.projectId) ?? "(unknown)",
+          projectName: project.name,
           service: row.incident.service,
           severity: result.severity ?? row.incident.severity ?? null,
           completedAt: row.agentRun.completedAt ?? row.agentRun.updatedAt,

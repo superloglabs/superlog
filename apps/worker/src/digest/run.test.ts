@@ -1,15 +1,14 @@
 import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { schema } from "@superlog/db";
 import type { DigestCandidate, DigestPick } from "./domain.js";
 import { DEFAULT_DIGEST_POLICY, type DigestPolicy } from "./policy.js";
-import type { DigestRepository } from "./repository.js";
+import type { DigestRepository, ProjectDigestSettings } from "./repository.js";
 import {
   type DigestSlackPoster,
-  type RunDigestForOrgDeps,
+  type RunDigestForProjectDeps,
   type RunDigestsTickDeps,
-  runDigestForOrgWorkflow,
+  runDigestForProjectWorkflow,
   runDigestsTickWorkflow,
 } from "./run.js";
 
@@ -44,38 +43,42 @@ function makeCandidate(overrides: Partial<DigestCandidate> = {}): DigestCandidat
 
 function makeRepo(opts: {
   calls: string[];
-  settings?: Partial<schema.OrgAgentSettings>;
-  installation?: schema.SlackInstallation;
+  settings?: Partial<ProjectDigestSettings>;
+  installation?: { id: string; botAccessToken: string };
   candidates?: DigestCandidate[];
-  enabledSettings?: schema.OrgAgentSettings[];
+  enabledSettings?: ProjectDigestSettings[];
 }): DigestRepository {
   return {
-    async findOrgSettings(orgId) {
-      opts.calls.push(`findOrgSettings:${orgId}`);
+    async findProjectSettings(projectId) {
+      opts.calls.push(`findProjectSettings:${projectId}`);
       return opts.settings === undefined
         ? undefined
-        : ({
-            orgId,
-            digestEnabled: true,
-            digestSlackInstallationId: "inst-1",
-            digestSlackChannelId: "C1",
-            digestLastRunAt: null,
+        : {
+            projectId,
+            enabled: true,
+            installationId: "inst-1",
+            channelId: "C1",
+            lastRunAt: null,
+            runRequestedAt: null,
             ...opts.settings,
-          } as schema.OrgAgentSettings);
+          };
     },
     async findActiveSlackInstallation(id) {
       opts.calls.push(`findActiveSlackInstallation:${id}`);
       return opts.installation;
     },
-    async listEnabledDigestSettings() {
-      opts.calls.push("listEnabledDigestSettings");
+    async listRunnableProjectSettings() {
+      opts.calls.push("listRunnableProjectSettings");
       return opts.enabledSettings ?? [];
     },
-    async stampLastRun(orgId, at) {
-      opts.calls.push(`stampLastRun:${orgId}:${at.toISOString()}`);
+    async stampLastRun(projectId, at) {
+      opts.calls.push(`stampLastRun:${projectId}:${at.toISOString()}`);
     },
-    async gatherCandidates(orgId, _policy, _now) {
-      opts.calls.push(`gatherCandidates:${orgId}`);
+    async clearRunRequest(projectId) {
+      opts.calls.push(`clearRunRequest:${projectId}`);
+    },
+    async gatherCandidates(projectId, _policy, _now) {
+      opts.calls.push(`gatherCandidates:${projectId}`);
       return opts.candidates ?? [];
     },
   };
@@ -111,7 +114,7 @@ function makeDeps(opts: {
   slack: DigestSlackPoster;
   picks?: DigestPick[];
   policy?: DigestPolicy;
-}): RunDigestForOrgDeps {
+}): RunDigestForProjectDeps {
   return {
     repo: opts.repo,
     slack: opts.slack,
@@ -120,20 +123,17 @@ function makeDeps(opts: {
     now: () => NOW,
     async rank(candidates) {
       opts.calls.push(`rank:${candidates.length}`);
-      return (
-        opts.picks ??
-        candidates.map((c) => ({ agentRunId: c.agentRunId, rationale: "ok" }))
-      );
+      return opts.picks ?? candidates.map((c) => ({ agentRunId: c.agentRunId, rationale: "ok" }));
     },
   };
 }
 
-const INSTALLATION: schema.SlackInstallation = {
+const INSTALLATION = {
   id: "inst-1",
   botAccessToken: "xoxb-fake",
-} as schema.SlackInstallation;
+};
 
-test("runDigestForOrg: full happy path posts and stamps last-run", async () => {
+test("runDigestForProject: full happy path posts and stamps last-run", async () => {
   const calls: string[] = [];
   const repo = makeRepo({
     calls,
@@ -144,48 +144,48 @@ test("runDigestForOrg: full happy path posts and stamps last-run", async () => {
   const slack = makeSlack({ calls });
   const deps = makeDeps({ calls, repo, slack });
 
-  const result = await runDigestForOrgWorkflow("org-1", deps);
+  const result = await runDigestForProjectWorkflow("project-1", deps);
   assert.deepEqual(result, { status: "posted", pickCount: 2, ts: "1700000000.0001" });
-  assert.ok(calls.includes(`stampLastRun:org-1:${NOW.toISOString()}`));
+  assert.ok(calls.includes(`stampLastRun:project-1:${NOW.toISOString()}`));
   assert.ok(calls.includes("postDigest:C1"));
 });
 
-test("runDigestForOrg: skipped when no settings row", async () => {
+test("runDigestForProject: skipped when no settings row", async () => {
   const calls: string[] = [];
   const repo = makeRepo({ calls });
   const slack = makeSlack({ calls });
   const deps = makeDeps({ calls, repo, slack });
 
-  const result = await runDigestForOrgWorkflow("org-x", deps);
-  assert.deepEqual(result, { status: "skipped", reason: "no org_agent_settings row" });
+  const result = await runDigestForProjectWorkflow("project-x", deps);
+  assert.deepEqual(result, { status: "skipped", reason: "no project settings row" });
 });
 
-test("runDigestForOrg: skipped when disabled (and not forced)", async () => {
+test("runDigestForProject: skipped when disabled (and not forced)", async () => {
   const calls: string[] = [];
-  const repo = makeRepo({ calls, settings: { digestEnabled: false } });
+  const repo = makeRepo({ calls, settings: { enabled: false } });
   const slack = makeSlack({ calls });
   const deps = makeDeps({ calls, repo, slack });
 
-  const result = await runDigestForOrgWorkflow("org-1", deps);
+  const result = await runDigestForProjectWorkflow("project-1", deps);
   assert.deepEqual(result, { status: "skipped", reason: "disabled" });
 });
 
-test("runDigestForOrg: force=true bypasses the digestEnabled gate", async () => {
+test("runDigestForProject: force=true bypasses the enabled gate", async () => {
   const calls: string[] = [];
   const repo = makeRepo({
     calls,
-    settings: { digestEnabled: false },
+    settings: { enabled: false },
     installation: INSTALLATION,
     candidates: [makeCandidate()],
   });
   const slack = makeSlack({ calls });
   const deps = makeDeps({ calls, repo, slack });
 
-  const result = await runDigestForOrgWorkflow("org-1", deps, { force: true });
+  const result = await runDigestForProjectWorkflow("project-1", deps, { force: true });
   assert.equal(result.status, "posted");
 });
 
-test("runDigestForOrg: still stamps last-run when there are no candidates", async () => {
+test("runDigestForProject: still stamps last-run when there are no candidates", async () => {
   const calls: string[] = [];
   const repo = makeRepo({
     calls,
@@ -196,12 +196,30 @@ test("runDigestForOrg: still stamps last-run when there are no candidates", asyn
   const slack = makeSlack({ calls });
   const deps = makeDeps({ calls, repo, slack });
 
-  const result = await runDigestForOrgWorkflow("org-1", deps);
+  const result = await runDigestForProjectWorkflow("project-1", deps);
   assert.equal(result.status, "skipped");
-  assert.ok(calls.includes(`stampLastRun:org-1:${NOW.toISOString()}`));
+  assert.ok(calls.includes(`stampLastRun:project-1:${NOW.toISOString()}`));
 });
 
-test("runDigestForOrg: does NOT stamp last-run when Slack post fails", async () => {
+test("runDigestForProject: a forced test posts an empty digest when there are no candidates", async () => {
+  const calls: string[] = [];
+  const repo = makeRepo({
+    calls,
+    settings: { enabled: false },
+    installation: INSTALLATION,
+    candidates: [],
+  });
+  const slack = makeSlack({ calls });
+  const deps = makeDeps({ calls, repo, slack });
+
+  const result = await runDigestForProjectWorkflow("project-1", deps, { force: true });
+
+  assert.deepEqual(result, { status: "posted", pickCount: 0, ts: "1700000000.0001" });
+  assert.ok(calls.includes("postDigest:C1"));
+  assert.ok(calls.includes(`stampLastRun:project-1:${NOW.toISOString()}`));
+});
+
+test("runDigestForProject: does NOT stamp last-run when Slack post fails", async () => {
   const calls: string[] = [];
   const repo = makeRepo({
     calls,
@@ -212,66 +230,129 @@ test("runDigestForOrg: does NOT stamp last-run when Slack post fails", async () 
   const slack = makeSlack({ calls, ok: false });
   const deps = makeDeps({ calls, repo, slack });
 
-  const result = await runDigestForOrgWorkflow("org-1", deps);
+  const result = await runDigestForProjectWorkflow("project-1", deps);
   assert.equal(result.status, "skipped");
   assert.ok(!calls.some((c) => c.startsWith("stampLastRun")));
   assert.ok(calls.includes("logger.warn:digest post failed; not stamping last-run"));
 });
 
-test("runDigestForOrg: skipped when slack installation is revoked/missing", async () => {
+test("runDigestForProject: skipped when slack installation is revoked/missing", async () => {
   const calls: string[] = [];
   const repo = makeRepo({ calls, settings: {} });
   const slack = makeSlack({ calls });
   const deps = makeDeps({ calls, repo, slack });
 
-  const result = await runDigestForOrgWorkflow("org-1", deps);
+  const result = await runDigestForProjectWorkflow("project-1", deps);
   assert.deepEqual(result, {
     status: "skipped",
     reason: "slack installation revoked or missing",
   });
 });
 
-test("tickDigests: applies long-cadence and short retry-cooldown per org", async () => {
+test("tickDigests: applies long-cadence and short retry-cooldown per project", async () => {
   const calls: string[] = [];
   const fiveMinAgo = new Date(NOW.getTime() - 5 * 60 * 1000);
   const oneDayAgo = new Date(NOW.getTime() - 24 * 60 * 60 * 1000);
   const enabled = [
     {
-      orgId: "fresh",
-      digestEnabled: true,
-      digestSlackChannelId: "C1",
-      digestSlackInstallationId: "inst-1",
-      digestLastRunAt: null,
-    } as schema.OrgAgentSettings,
+      projectId: "fresh",
+      enabled: true,
+      channelId: "C1",
+      installationId: "inst-1",
+      lastRunAt: null,
+      runRequestedAt: null,
+    },
     {
-      orgId: "recent",
-      digestEnabled: true,
-      digestSlackChannelId: "C2",
-      digestSlackInstallationId: "inst-1",
-      digestLastRunAt: oneDayAgo,
-    } as schema.OrgAgentSettings, // long-cadence skip (not yet 7d)
+      projectId: "recent",
+      enabled: true,
+      channelId: "C2",
+      installationId: "inst-1",
+      lastRunAt: oneDayAgo,
+      runRequestedAt: null,
+    }, // long-cadence skip (not yet 7d)
     {
-      orgId: "cooldown",
-      digestEnabled: true,
-      digestSlackChannelId: "C3",
-      digestSlackInstallationId: "inst-1",
-      digestLastRunAt: null,
-    } as schema.OrgAgentSettings,
+      projectId: "cooldown",
+      enabled: true,
+      channelId: "C3",
+      installationId: "inst-1",
+      lastRunAt: null,
+      runRequestedAt: null,
+    },
   ];
   const repo = makeRepo({ calls, enabledSettings: enabled });
   const slack = makeSlack({ calls });
-  const lastAttemptByOrg = new Map<string, number>([["cooldown", fiveMinAgo.getTime() + 1000]]);
+  const lastAttemptByProject = new Map<string, number>([["cooldown", fiveMinAgo.getTime() + 1000]]);
   const deps: RunDigestsTickDeps = {
     ...makeDeps({ calls, repo, slack }),
-    lastAttemptByOrg,
+    lastAttemptByProject,
   };
 
-  const orgRuns: string[] = [];
-  const processed = await runDigestsTickWorkflow(deps, async (orgId) => {
-    orgRuns.push(orgId);
+  const projectRuns: string[] = [];
+  const processed = await runDigestsTickWorkflow(deps, async (projectId) => {
+    projectRuns.push(projectId);
     return { status: "posted", pickCount: 1, ts: "x" };
   });
   assert.equal(processed, 1);
-  assert.deepEqual(orgRuns, ["fresh"]);
-  assert.ok(lastAttemptByOrg.has("fresh"));
+  assert.deepEqual(projectRuns, ["fresh"]);
+  assert.ok(lastAttemptByProject.has("fresh"));
+});
+
+test("tickDigests: a manual request runs immediately without enabling the weekly schedule", async () => {
+  const calls: string[] = [];
+  const oneDayAgo = new Date(NOW.getTime() - 24 * 60 * 60 * 1000);
+  const requested = [
+    {
+      projectId: "manual",
+      enabled: false,
+      channelId: "C1",
+      installationId: "inst-1",
+      lastRunAt: oneDayAgo,
+      runRequestedAt: NOW,
+    },
+  ];
+  const repo = makeRepo({ calls, enabledSettings: requested });
+  const slack = makeSlack({ calls });
+  const deps: RunDigestsTickDeps = {
+    ...makeDeps({ calls, repo, slack }),
+    // A manual test must bypass the retry cooldown left by a recent scheduled
+    // attempt; otherwise "Send test now" could silently wait several minutes.
+    lastAttemptByProject: new Map([["manual", NOW.getTime() - 1000]]),
+  };
+
+  const projectRuns: Array<{ projectId: string; force: boolean }> = [];
+  await runDigestsTickWorkflow(deps, async (projectId: string, opts?: { force?: boolean }) => {
+    projectRuns.push({ projectId, force: opts?.force === true });
+    return { status: "posted", pickCount: 1, ts: "x" };
+  });
+
+  assert.deepEqual(projectRuns, [{ projectId: "manual", force: true }]);
+  assert.ok(calls.includes("clearRunRequest:manual"));
+});
+
+test("tickDigests: a failed manual attempt is consumed instead of retrying every tick", async () => {
+  const calls: string[] = [];
+  const repo = makeRepo({
+    calls,
+    enabledSettings: [
+      {
+        projectId: "manual",
+        enabled: false,
+        channelId: "C1",
+        installationId: "inst-1",
+        lastRunAt: null,
+        runRequestedAt: NOW,
+      },
+    ],
+  });
+  const deps: RunDigestsTickDeps = {
+    ...makeDeps({ calls, repo, slack: makeSlack({ calls }) }),
+    lastAttemptByProject: new Map(),
+  };
+
+  await runDigestsTickWorkflow(deps, async () => ({
+    status: "skipped",
+    reason: "slack error: channel_not_found",
+  }));
+
+  assert.ok(calls.includes("clearRunRequest:manual"));
 });

@@ -971,6 +971,18 @@ export const projectAutomationSettings = pgTable(
       .notNull()
       .default(false),
     prBaseBranch: text("pr_base_branch"),
+    // Slack digests follow the same project boundary as the installation and
+    // incident channel. Null means this project has not adopted/configured a
+    // digest yet, allowing the legacy org setting to be migrated once.
+    digestEnabled: boolean("digest_enabled"),
+    digestSlackInstallationId: uuid("digest_slack_installation_id").references(
+      (): AnyPgColumn => slackInstallations.id,
+      { onDelete: "set null" },
+    ),
+    digestSlackChannelId: text("digest_slack_channel_id"),
+    digestSlackChannelName: text("digest_slack_channel_name"),
+    digestLastRunAt: timestamp("digest_last_run_at", { withTimezone: true }),
+    digestRunRequestedAt: timestamp("digest_run_requested_at", { withTimezone: true }),
     autoMergeFixPrs: text("auto_merge_fix_prs")
       .$type<"never" | "when_checks_pass" | "immediately">()
       .notNull()
@@ -1874,6 +1886,9 @@ export const orgAgentSettings = pgTable(
     digestSlackChannelId: text("digest_slack_channel_id"),
     digestSlackChannelName: text("digest_slack_channel_name"),
     digestLastRunAt: timestamp("digest_last_run_at", { withTimezone: true }),
+    // A one-shot command consumed by the worker. Unlike digestEnabled, this
+    // requests one immediate test delivery without changing the weekly policy.
+    digestRunRequestedAt: timestamp("digest_run_requested_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },

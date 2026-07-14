@@ -50,7 +50,7 @@ import {
   useNotionInstallation,
   useOrgAgentSettings,
   useOrgApiKeys,
-  useOrgDigest,
+  useProjectDigest,
   useOrgGithubInstallGrants,
   useOrgGithubInstallRepos,
   useOrgGithubInstallations,
@@ -67,11 +67,11 @@ import {
   useRevokeOrgGithubInstallation,
   useRevokeOrgRepoFromProject,
   useRotateWebhookSecret,
-  useRunOrgDigestNow,
+  useRunProjectDigestNow,
   useSaveAgentSettings,
   useSaveIntegration,
   useSaveOrgAgentSettings,
-  useSaveOrgDigest,
+  useSaveProjectDigest,
   useSetCloudflareAutoWire,
   useSetIngestFilters,
   useSetSlackRoute,
@@ -138,7 +138,12 @@ import {
   sectionIconKind,
   shouldShowProjectPicker,
 } from "./settings/nav.ts";
-import { SettingsCard, SettingsCardFooter, SettingsRow } from "./settings/rows.tsx";
+import {
+  SettingsCard,
+  SettingsCardFooter,
+  SettingsRow,
+  SettingsSectionHeader,
+} from "./settings/rows.tsx";
 
 type NavTarget = {
   scope?: SettingsScope;
@@ -599,12 +604,6 @@ function OrgSectionView({ section }: { section: OrgSectionId }) {
             <OrgGeneralCard />
           </Section>
           <Section
-            title="Weekly fixes digest"
-            subtitle="A short Slack recap of the top 3 pending bug-fix PRs, ranked by an LLM."
-          >
-            <WeeklyDigestCard />
-          </Section>
-          <Section
             title="Create organization"
             subtitle="Spin up another organization — useful for separating teams, clients, or environments."
           >
@@ -684,7 +683,7 @@ function ProjectSectionView({
         <Section title="Integrations" subtitle="Per-project connections.">
           <div className="flex flex-col gap-4">
             <GithubCard />
-            <SlackCard />
+            <SlackCard projectId={projectId} />
             <LinearCard />
             <NotionCard />
             <CloudflareCard projectId={projectId} />
@@ -736,9 +735,18 @@ function ProjectSectionView({
       return (
         <Section
           title="Slack channel"
-          subtitle="Where this project's incident threads are posted. Disable to stop posting entirely."
+          subtitle="Where this project's incident threads and weekly fixes digest are posted."
         >
-          <SlackRoutingCard projectId={projectId} />
+          <div className="flex flex-col gap-8">
+            <SlackRoutingCard projectId={projectId} />
+            <div className="space-y-4">
+              <SettingsSectionHeader
+                title="Weekly recap"
+                subtitle="A weekly Slack recap of this project's top 3 pending bug-fix PRs, ranked by an LLM."
+              />
+              <WeeklyDigestCard projectId={projectId} />
+            </div>
+          </div>
         </Section>
       );
     case "api-keys":
@@ -955,10 +963,7 @@ function Section({
 }) {
   return (
     <section className="space-y-4">
-      <div>
-        <h2 className="text-[15px] font-medium">{title}</h2>
-        <p className="text-[13px] text-muted">{subtitle}</p>
-      </div>
+      <SettingsSectionHeader title={title} subtitle={subtitle} />
       {children}
     </section>
   );
@@ -1244,10 +1249,10 @@ function GithubCard() {
   );
 }
 
-function SlackCard() {
-  const install = useSlackInstallation();
-  const start = useStartSlackInstall();
-  const uninstall = useUninstallSlack();
+function SlackCard({ projectId }: { projectId: string | undefined }) {
+  const install = useSlackInstallation(projectId, !!projectId);
+  const start = useStartSlackInstall(projectId);
+  const uninstall = useUninstallSlack(projectId);
 
   const installed = install.data?.installed === true;
 
@@ -1273,6 +1278,7 @@ function SlackCard() {
           <Btn
             size="sm"
             variant={installed ? "secondary" : "primary"}
+            disabled={!projectId}
             loading={start.isPending}
             onClick={async () => {
               const { url } = await start.mutateAsync();
@@ -1285,6 +1291,7 @@ function SlackCard() {
             <Btn
               size="sm"
               variant="danger"
+              disabled={!projectId}
               loading={uninstall.isPending}
               onClick={() => uninstall.mutate()}
             >
@@ -1749,10 +1756,10 @@ function RenderCard({ projectId }: { projectId: string | undefined }) {
 }
 
 function SlackRoutingCard({ projectId }: { projectId: string | undefined }) {
-  const install = useSlackInstallation();
+  const install = useSlackInstallation(projectId, !!projectId);
   const installed = install.data?.installed === true;
   const route = useSlackRoute(projectId);
-  const channels = useSlackChannels(installed && !!projectId);
+  const channels = useSlackChannels(installed && !!projectId, projectId);
   const setRoute = useSetSlackRoute(projectId ?? "");
   const deleteRoute = useDeleteSlackRoute(projectId ?? "");
 
@@ -1864,18 +1871,19 @@ function SlackRoutingCard({ projectId }: { projectId: string | undefined }) {
   );
 }
 
-function WeeklyDigestCard() {
-  const install = useSlackInstallation();
+function WeeklyDigestCard({ projectId }: { projectId: string | undefined }) {
+  const install = useSlackInstallation(projectId, !!projectId);
   const installed = install.data?.installed === true;
-  const digest = useOrgDigest();
-  const channels = useSlackChannels(installed);
-  const save = useSaveOrgDigest();
-  const runNow = useRunOrgDigestNow();
+  const digest = useProjectDigest(projectId);
+  const channels = useSlackChannels(installed && !!projectId, projectId);
+  const save = useSaveProjectDigest(projectId);
+  const runNow = useRunProjectDigestNow(projectId);
 
   const enabled = digest.data?.enabled ?? false;
   const channelId = digest.data?.channelId ?? "";
   const channelName = digest.data?.channelName ?? null;
   const lastRunAt = digest.data?.lastRunAt;
+  const runRequestedAt = digest.data?.runRequestedAt;
   const channelList = channels.data?.channels ?? [];
 
   if (!installed) {
@@ -1895,7 +1903,7 @@ function WeeklyDigestCard() {
   return (
     <SettingsCard>
       <SettingsRow
-        title="Post a weekly recap to Slack"
+        title="Post a weekly project recap to Slack"
         description={
           enabled && channelId
             ? `Posting to #${channelName ?? channelId} · ${lastRunLabel}`
@@ -1951,20 +1959,29 @@ function WeeklyDigestCard() {
         }
       />
       <SettingsRow
-        title="Send digest now"
-        description="An LLM ranks the open bug-fix PRs across this org and posts the top 3"
+        title="Send a test digest"
+        description={
+          runRequestedAt
+            ? "Queued for delivery — it should arrive in Slack within a few seconds"
+            : "Immediately rank this project's open bug-fix PRs and post the top 3"
+        }
         control={
           <Btn
             size="sm"
             variant="secondary"
-            disabled={!channelId || runNow.isPending}
-            loading={runNow.isPending}
+            disabled={!projectId || !channelId || runNow.isPending || !!runRequestedAt}
+            loading={runNow.isPending || !!runRequestedAt}
             onClick={() => runNow.mutate()}
           >
-            Send now
+            {runRequestedAt ? "Sending…" : "Send test now"}
           </Btn>
         }
       />
+      {runNow.isError && (
+        <p className="m-0 px-4 pb-3 text-[12.5px] text-danger">
+          {runNow.error instanceof Error ? runNow.error.message : "Couldn't queue the test digest"}
+        </p>
+      )}
     </SettingsCard>
   );
 }

@@ -767,32 +767,56 @@ export type SlackRoute =
   | { configured: false }
   | { configured: true; channelId: string; channelName: string | null };
 
-export function useSlackInstallation() {
+export function slackProjectEndpoints(projectId: string) {
+  const base = `/api/projects/${encodeURIComponent(projectId)}/slack`;
+  return {
+    installation: `${base}/installation`,
+    installUrl: `${base}/install-url`,
+    uninstall: `${base}/uninstall`,
+    channels: `${base}/channels`,
+  };
+}
+
+function slackEndpoints(projectId?: string) {
+  return projectId
+    ? slackProjectEndpoints(projectId)
+    : {
+        installation: "/api/slack/installation",
+        installUrl: "/api/slack/install-url",
+        uninstall: "/api/slack/uninstall",
+        channels: "/api/slack/channels",
+      };
+}
+
+export function useSlackInstallation(projectId?: string, enabled = true) {
   const fetcher = useFetcher();
   return useQuery({
-    queryKey: ["slack-installation"],
-    queryFn: () => fetcher<SlackInstallation>("/api/slack/installation"),
+    queryKey: ["slack-installation", projectId ?? "active"],
+    queryFn: () => fetcher<SlackInstallation>(slackEndpoints(projectId).installation),
+    enabled,
     // Poll like the github query so the setup stepper picks up OAuth
     // completion without a manual refresh.
     refetchInterval: 15000,
   });
 }
 
-export function useStartSlackInstall() {
+export function useStartSlackInstall(projectId?: string) {
   const fetcher = useFetcher();
   return useMutation({
-    mutationFn: () => fetcher<{ url: string }>("/api/slack/install-url", { method: "POST" }),
+    mutationFn: () =>
+      fetcher<{ url: string }>(slackEndpoints(projectId).installUrl, { method: "POST" }),
   });
 }
 
-export function useUninstallSlack() {
+export function useUninstallSlack(projectId?: string) {
   const fetcher = useFetcher();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => fetcher<{ ok: true }>("/api/slack/uninstall", { method: "POST" }),
+    mutationFn: () =>
+      fetcher<{ ok: true }>(slackEndpoints(projectId).uninstall, { method: "POST" }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["slack-installation"] });
-      qc.invalidateQueries({ queryKey: ["slack-channels"] });
+      qc.invalidateQueries({ queryKey: ["slack-installation", projectId ?? "active"] });
+      qc.invalidateQueries({ queryKey: ["slack-channels", projectId ?? "active"] });
     },
   });
 }
@@ -1110,11 +1134,11 @@ export function useUninstallRender(projectId: string | undefined) {
   });
 }
 
-export function useSlackChannels(enabled: boolean) {
+export function useSlackChannels(enabled: boolean, projectId?: string) {
   const fetcher = useFetcher();
   return useQuery({
-    queryKey: ["slack-channels"],
-    queryFn: () => fetcher<{ channels: SlackChannel[] }>("/api/slack/channels"),
+    queryKey: ["slack-channels", projectId ?? "active"],
+    queryFn: () => fetcher<{ channels: SlackChannel[] }>(slackEndpoints(projectId).channels),
     enabled,
   });
 }
@@ -1914,23 +1938,32 @@ export function useDeleteProjectAgentMemory(projectId: string | undefined) {
   });
 }
 
-export type OrgDigestSettings = {
+export type ProjectDigestSettings = {
   enabled: boolean;
   channelId: string | null;
   channelName: string | null;
   installationId: string | null;
   lastRunAt: string | null;
+  runRequestedAt: string | null;
 };
 
-export function useOrgDigest() {
+export function projectDigestEndpoints(projectId: string) {
+  const settings = `/api/projects/${encodeURIComponent(projectId)}/digest`;
+  return { settings, runNow: `${settings}/run-now` };
+}
+
+export function useProjectDigest(projectId: string | undefined) {
   const fetcher = useFetcher();
   return useQuery({
-    queryKey: ["org-digest"],
-    queryFn: () => fetcher<OrgDigestSettings>("/api/org/digest"),
+    queryKey: ["project-digest", projectId],
+    queryFn: () =>
+      fetcher<ProjectDigestSettings>(projectDigestEndpoints(requireProjectId(projectId)).settings),
+    enabled: !!projectId,
+    refetchInterval: (query) => (query.state.data?.runRequestedAt ? 2000 : false),
   });
 }
 
-export function useSaveOrgDigest() {
+export function useSaveProjectDigest(projectId: string | undefined) {
   const fetcher = useFetcher();
   const qc = useQueryClient();
   return useMutation({
@@ -1939,20 +1972,24 @@ export function useSaveOrgDigest() {
       channelId?: string | null;
       channelName?: string | null;
     }) =>
-      fetcher<OrgDigestSettings>("/api/org/digest", {
+      fetcher<ProjectDigestSettings>(projectDigestEndpoints(requireProjectId(projectId)).settings, {
         method: "PUT",
         body: JSON.stringify(patch),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["org-digest"] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-digest", projectId] }),
   });
 }
 
-export function useRunOrgDigestNow() {
+export function useRunProjectDigestNow(projectId: string | undefined) {
   const fetcher = useFetcher();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => fetcher<{ ok: true }>("/api/org/digest/run-now", { method: "POST" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["org-digest"] }),
+    mutationFn: () =>
+      fetcher<{ ok: true; requestedAt: string }>(
+        projectDigestEndpoints(requireProjectId(projectId)).runNow,
+        { method: "POST" },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-digest", projectId] }),
   });
 }
 

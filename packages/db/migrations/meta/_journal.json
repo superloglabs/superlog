@@ -708,6 +708,13 @@
       "when": 1784031696429,
       "tag": "0100_tidy_young_avengers",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1784033012637,
+      "tag": "0101_good_wendigo",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,10 @@
-import { db, encryptIntegrationSecret, resolveDefaultAgentRunProvider, schema } from "@superlog/db";
+import {
+  adoptLegacyOrgDigestSettings,
+  db,
+  encryptIntegrationSecret,
+  resolveDefaultAgentRunProvider,
+  schema,
+} from "@superlog/db";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
@@ -14,6 +20,7 @@ import {
   serializeAgentMemory,
   updateAgentMemory,
 } from "./agent-memories-service.js";
+import { requestDigestRunForProject } from "./digest-run-request.js";
 import { INTEGRATION_MANIFESTS } from "./integrations-manifest.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 import { clampProjectContext } from "./project-context-service.js";
@@ -24,6 +31,17 @@ const ORG_INSTRUCTIONS_MAX_LEN = 8000;
 
 const PROJECT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 const PROJECT_NAME_MAX_LEN = 80;
+
+function serializeProjectDigest(row: schema.ProjectAutomationSetting | undefined) {
+  return {
+    enabled: row?.digestEnabled ?? false,
+    channelId: row?.digestSlackChannelId ?? null,
+    channelName: row?.digestSlackChannelName ?? null,
+    installationId: row?.digestSlackInstallationId ?? null,
+    lastRunAt: row?.digestLastRunAt?.toISOString() ?? null,
+    runRequestedAt: row?.digestRunRequestedAt?.toISOString() ?? null,
+  };
+}
 
 function slugifyProjectName(name: string): string {
   const base = name
@@ -144,32 +162,20 @@ export function mountSettingsAuthed(app: Hono<any>): void {
     return c.json({ ok: true });
   });
 
-  app.get("/api/org/digest", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) {
-      return c.json({
-        enabled: false,
-        channelId: null,
-        channelName: null,
-        installationId: null,
-        lastRunAt: null,
-      });
-    }
-    const row = await db.query.orgAgentSettings.findFirst({
-      where: eq(schema.orgAgentSettings.orgId, ctx.orgId),
+  app.get("/api/projects/:projectId/digest", async (c) => {
+    const scope = await resolveProjectScope(c);
+    if (!scope) return c.json({ error: "project not found" }, 404);
+    await adoptLegacyOrgDigestSettings(db, scope.projectId);
+    const row = await db.query.projectAutomationSettings.findFirst({
+      where: eq(schema.projectAutomationSettings.projectId, scope.projectId),
     });
-    return c.json({
-      enabled: row?.digestEnabled ?? false,
-      channelId: row?.digestSlackChannelId ?? null,
-      channelName: row?.digestSlackChannelName ?? null,
-      installationId: row?.digestSlackInstallationId ?? null,
-      lastRunAt: row?.digestLastRunAt?.toISOString() ?? null,
-    });
+    return c.json(serializeProjectDigest(row));
   });
 
-  app.put("/api/org/digest", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ error: "no org for user" }, 404);
+  app.put("/api/projects/:projectId/digest", async (c) => {
+    const scope = await resolveProjectScope(c);
+    if (!scope) return c.json({ error: "project not found" }, 404);
+    await adoptLegacyOrgDigestSettings(db, scope.projectId);
     const body = (await c.req.json().catch(() => ({}))) as {
       enabled?: unknown;
       channelId?: unknown;
@@ -189,26 +195,26 @@ export function mountSettingsAuthed(app: Hono<any>): void {
           ? body.channelName
           : undefined;
 
-    // Digest is org-scoped today; pick any active slack install in the org
-    // by joining through projects. (One install per project — for orgs with
-    // multiple projects + multiple installs this returns an arbitrary one,
-    // same ambiguity as the previous org-scoped lookup.)
-    const installs = await db
-      .select({
-        id: schema.slackInstallations.id,
-      })
-      .from(schema.slackInstallations)
-      .innerJoin(schema.projects, eq(schema.projects.id, schema.slackInstallations.projectId))
-      .where(and(eq(schema.projects.orgId, ctx.orgId), isNull(schema.slackInstallations.revokedAt)))
-      .limit(1);
-    const install = installs[0] ?? null;
-
-    if (enabled === true && !channelIdRaw && !install) {
-      return c.json({ error: "Slack must be installed to enable the digest" }, 400);
+    const install = await db.query.slackInstallations.findFirst({
+      where: and(
+        eq(schema.slackInstallations.projectId, scope.projectId),
+        isNull(schema.slackInstallations.revokedAt),
+      ),
+    });
+    const existing = await db.query.projectAutomationSettings.findFirst({
+      where: eq(schema.projectAutomationSettings.projectId, scope.projectId),
+    });
+    const effectiveChannelId =
+      channelIdRaw !== undefined ? channelIdRaw : (existing?.digestSlackChannelId ?? null);
+    if ((enabled === true || !!channelIdRaw) && (!install || !effectiveChannelId)) {
+      return c.json({ error: "Slack must be installed with a channel for this project" }, 400);
     }
 
-    const update: Partial<typeof schema.orgAgentSettings.$inferInsert> = { updatedAt: new Date() };
+    const update: Partial<typeof schema.projectAutomationSettings.$inferInsert> = {
+      updatedAt: new Date(),
+    };
     if (enabled !== undefined) update.digestEnabled = enabled;
+    else if (existing?.digestEnabled == null) update.digestEnabled = false;
     if (channelIdRaw !== undefined) {
       update.digestSlackChannelId = channelIdRaw;
       update.digestSlackInstallationId = channelIdRaw ? (install?.id ?? null) : null;
@@ -216,9 +222,9 @@ export function mountSettingsAuthed(app: Hono<any>): void {
     if (channelNameRaw !== undefined) update.digestSlackChannelName = channelNameRaw;
 
     await db
-      .insert(schema.orgAgentSettings)
+      .insert(schema.projectAutomationSettings)
       .values({
-        orgId: ctx.orgId,
+        projectId: scope.projectId,
         digestEnabled: enabled ?? false,
         digestSlackChannelId: channelIdRaw ?? null,
         digestSlackChannelName: channelNameRaw ?? null,
@@ -226,38 +232,43 @@ export function mountSettingsAuthed(app: Hono<any>): void {
           channelIdRaw && install ? install.id : channelIdRaw === null ? null : null,
       })
       .onConflictDoUpdate({
-        target: schema.orgAgentSettings.orgId,
+        target: schema.projectAutomationSettings.projectId,
         set: update,
       });
 
-    const row = await db.query.orgAgentSettings.findFirst({
-      where: eq(schema.orgAgentSettings.orgId, ctx.orgId),
+    const row = await db.query.projectAutomationSettings.findFirst({
+      where: eq(schema.projectAutomationSettings.projectId, scope.projectId),
     });
-    return c.json({
-      enabled: row?.digestEnabled ?? false,
-      channelId: row?.digestSlackChannelId ?? null,
-      channelName: row?.digestSlackChannelName ?? null,
-      installationId: row?.digestSlackInstallationId ?? null,
-      lastRunAt: row?.digestLastRunAt?.toISOString() ?? null,
-    });
+    return c.json(serializeProjectDigest(row));
   });
 
-  app.post("/api/org/digest/run-now", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ error: "no org for user" }, 404);
-    const row = await db.query.orgAgentSettings.findFirst({
-      where: eq(schema.orgAgentSettings.orgId, ctx.orgId),
+  app.post("/api/projects/:projectId/digest/run-now", async (c) => {
+    const scope = await resolveProjectScope(c);
+    if (!scope) return c.json({ error: "project not found" }, 404);
+    await adoptLegacyOrgDigestSettings(db, scope.projectId);
+    const result = await requestDigestRunForProject(scope.projectId, {
+      async findConfiguration(projectId) {
+        const row = await db.query.projectAutomationSettings.findFirst({
+          where: eq(schema.projectAutomationSettings.projectId, projectId),
+        });
+        return row
+          ? {
+              installationId: row.digestSlackInstallationId,
+              channelId: row.digestSlackChannelId,
+            }
+          : null;
+      },
+      async requestRun(projectId, requestedAt) {
+        await db
+          .update(schema.projectAutomationSettings)
+          .set({ digestRunRequestedAt: requestedAt, updatedAt: requestedAt })
+          .where(eq(schema.projectAutomationSettings.projectId, projectId));
+      },
     });
-    if (!row?.digestSlackChannelId || !row?.digestSlackInstallationId) {
+    if (result.status === "not_configured") {
       return c.json({ error: "configure a Slack channel for the digest first" }, 400);
     }
-    // Worker fires next tick when last_run_at is null. We also bump enabled to
-    // true so manual runs work even if the user hasn't flipped the toggle yet.
-    await db
-      .update(schema.orgAgentSettings)
-      .set({ digestEnabled: true, digestLastRunAt: null, updatedAt: new Date() })
-      .where(eq(schema.orgAgentSettings.orgId, ctx.orgId));
-    return c.json({ ok: true });
+    return c.json({ ok: true, requestedAt: result.requestedAt.toISOString() });
   });
 
   app.get("/api/org/projects", async (c) => {

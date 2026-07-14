@@ -310,6 +310,25 @@ ensure_portless_routes_healthy() {
   fi
 }
 
+routes_registered() {
+  local routes_file="$HOME/.portless/routes.json"
+  node -e '
+    const routes = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    const required = new Set(process.argv.slice(2));
+    for (const route of routes) {
+      if (!required.has(route.hostname)) continue;
+      try {
+        process.kill(route.pid, 0);
+        required.delete(route.hostname);
+      } catch {}
+    }
+    if (required.size > 0) process.exit(1);
+  ' "$routes_file" \
+    "${WEB_ROUTE}.localhost" \
+    "${API_ROUTE}.localhost" \
+    "${PROXY_ROUTE}.localhost"
+}
+
 start_stack() {
   write_env_file
   ensure_portless_routes_healthy
@@ -317,6 +336,21 @@ start_stack() {
   compose up -d --wait --wait-timeout 120 postgres clickhouse collector
 
   run_with_env pnpm --filter @superlog/db db:migrate
+  run_with_env ./scripts/clickhouse-apply-local-migrations.sh
+
+  if overmind status --socket "$OVERMIND_SOCKET" >/dev/null 2>&1 && ! routes_registered; then
+    echo "==> portless routes are missing; restarting services to register them"
+    overmind quit --socket "$OVERMIND_SOCKET" >/dev/null
+    for _ in {1..50}; do
+      if ! overmind status --socket "$OVERMIND_SOCKET" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.1
+    done
+    # Concurrent service unregisters can leave a partial routes write while
+    # overmind is shutting down. Repair it before the new processes register.
+    ensure_portless_routes_healthy
+  fi
 
   local desired_env_checksum running_env_checksum=""
   desired_env_checksum="$(cksum "$ENV_FILE" | awk '{print $1 ":" $2}')"

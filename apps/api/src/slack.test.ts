@@ -216,6 +216,17 @@ test("listSlackChannels returns an error when the page cap is exhausted", async 
   assert.equal(result.error, "pagination_limit_exceeded");
 });
 
+test("project Slack settings are exposed only through an authenticated project-scoped route", async () => {
+  const { Hono } = await import("hono");
+  const { mountSlackAuthed } = await import("./slack.js");
+  const app = new Hono();
+  mountSlackAuthed(app);
+
+  const res = await app.request("/api/projects/project-2/slack/installation");
+
+  assert.equal(res.status, 401);
+});
+
 test("chat anchors: top-level channel mention roots a thread at its own ts", async () => {
   const { chatAnchorThreadTs } = await import("./slack.js");
   assert.equal(chatAnchorThreadTs({ ts: "111.222" }), "111.222");
