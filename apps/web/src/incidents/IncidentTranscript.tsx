@@ -46,8 +46,8 @@ export function IncidentActivityFeed({
   /** The issue that opened the incident. It is projected as the first feed
    *  entry without writing a fictional lifecycle row to incident_events. */
   triggeringIssue?: { issueId: string; createdAt: string } | null;
-  /** Renders the referenced issue as a card under lifecycle events whose
-   *  detail carries an `issueId` (recurrence, reopen). */
+  /** Renders the referenced issue as a card under issue activity projected
+   *  from lifecycle detail or a legacy joined-issue summary. */
   renderIssueCard?: (issueId: string, options?: { showOccurrences?: boolean }) => ReactNode;
   /** When the run paused on `ask_human`, the question is not an incident event
    *  — it lives on the run result. Render it as a terminal node so the timeline
@@ -73,7 +73,25 @@ export function IncidentActivityFeed({
   const renderItem = (item: FeedItem) => {
     if (item.type === "message") return <MessageEntry key={item.id} text={item.text} />;
     if (item.type === "triggering_issue")
-      return <TriggeringIssueEntry key={item.id} item={item} renderIssueCard={renderIssueCard} />;
+      return (
+        <IssueActivityEntry
+          key={item.id}
+          item={item}
+          label="Issue detected"
+          renderIssueCard={renderIssueCard}
+          showOccurrences
+          accent
+        />
+      );
+    if (item.type === "issue_activity")
+      return (
+        <IssueActivityEntry
+          key={item.id}
+          item={item}
+          label={item.label}
+          renderIssueCard={renderIssueCard}
+        />
+      );
     if (item.type === "human") return <HumanEntry key={item.id} item={item} />;
     if (item.type === "telemetry") return <TelemetryEntry key={item.id} item={item} />;
     if (item.type === "memory") return <MemoryEntry key={item.id} item={item} />;
@@ -273,23 +291,32 @@ function QuestionEntry({
   );
 }
 
-function TriggeringIssueEntry({
+function IssueActivityEntry({
   item,
+  label,
   renderIssueCard,
+  showOccurrences = false,
+  accent = false,
 }: {
-  item: Extract<FeedItem, { type: "triggering_issue" }>;
+  item: Extract<FeedItem, { type: "triggering_issue" | "issue_activity" }>;
+  label: string;
   renderIssueCard?: (issueId: string, options?: { showOccurrences?: boolean }) => ReactNode;
+  showOccurrences?: boolean;
+  accent?: boolean;
 }) {
-  const issueCard = renderIssueCard?.(item.issueId, { showOccurrences: true });
+  const issueCard = renderIssueCard?.(
+    item.issueId,
+    showOccurrences ? { showOccurrences: true } : undefined,
+  );
   return (
     <div className="relative mb-6">
-      <Node tone="accent">
+      <Node tone={accent ? "accent" : "muted"}>
         <path d="M12 3v9" />
         <path d="M12 17h.01" />
         <circle cx="12" cy="12" r="9" />
       </Node>
       <div className="mb-1.5 flex min-h-[22px] items-baseline gap-2">
-        <span className="text-[12px] font-semibold text-fg">Issue detected</span>
+        <span className="text-[12px] font-semibold text-fg">{label}</span>
         <span className="text-[11px] text-subtle">{fmtRelative(item.createdAt)}</span>
       </div>
       {issueCard}
