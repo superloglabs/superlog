@@ -55,6 +55,7 @@ import {
 import { ScrollArea } from "./design/scroll-area.tsx";
 import { Btn, Chip, Input, PageHeader, ShortcutKey, Tile } from "./design/ui.tsx";
 import { addAttrFilter } from "./exploreAttrFilter.ts";
+import { sourceFromExplorePath, type ExploreSource } from "./explore-route.ts";
 import { tracer } from "./instrumentation.ts";
 import {
   ExploreSignalDetailSkeleton,
@@ -92,22 +93,16 @@ export function Explore() {
   return <ExploreInner projectId={me.data.project.id} />;
 }
 
-export type Source = "logs" | "traces" | "metrics" | "resources";
+export type Source = ExploreSource;
 type TelemetrySource = TelemetrySkeletonSource;
 export type TracesView = "spans" | "traces";
-
-function sourceFromPath(pathname: string): Source | null {
-  const seg = pathname.replace(/^\/explore\/?/, "").split("/")[0];
-  if (seg === "logs" || seg === "traces" || seg === "metrics" || seg === "resources") return seg;
-  return null;
-}
 
 function ExploreInner({ projectId }: { projectId: string }) {
   const navigate = useNavigate();
   const projectPath = useProjectPath();
   const { pathname } = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
-  const sourceFromUrl = sourceFromPath(pathname);
+  const sourceFromUrl = sourceFromExplorePath(pathname);
 
   useEffect(() => {
     if (sourceFromUrl === null) {

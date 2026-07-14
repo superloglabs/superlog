@@ -28,7 +28,7 @@ export function canonicalProjectLocation(
 ): ProjectRouteLocation {
   return {
     ...location,
-    pathname: buildProjectPath(slugs, location.pathname),
+    pathname: buildProjectPath(slugs, appPathFromProjectRoute(location.pathname)),
   };
 }
 

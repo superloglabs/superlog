@@ -72,6 +72,24 @@ test("canonical project navigation preserves search and hash state", () => {
   );
 });
 
+test("canonical project navigation replaces an existing project scope", () => {
+  assert.deepEqual(
+    canonicalProjectLocation(
+      { orgSlug: "new-org", projectSlug: "new-project" },
+      {
+        pathname: "/org/old-org/project/old-project/incidents/incident-1",
+        search: "?tab=timeline",
+        hash: "#event-1",
+      },
+    ),
+    {
+      pathname: "/org/new-org/project/new-project/incidents/incident-1",
+      search: "?tab=timeline",
+      hash: "#event-1",
+    },
+  );
+});
+
 test("scoped browser locations are translated back to app routes", () => {
   assert.deepEqual(
     appLocationFromProjectRoute({
