@@ -119,7 +119,19 @@ registerTelemetryIngestMetrics({
 // Telemetry usage metering runs in the tick; the usage-limit notifier runs
 // out-of-band as the `usage-notify` pg-boss job (jobs/usage-notify.ts), which
 // derives active orgs from ClickHouse itself — no coupling to the tick.
-const usageMeter = createUsageMeterTicker({ db, clickhouse: ch });
+//
+// The metric_points count query is a UNION ALL across five OTel metric tables;
+// under write load it can exceed the ClickHouse client's default 30 s
+// request_timeout. A dedicated client with a longer timeout prevents the
+// cursor from stalling and metric-point usage going unreported to Autumn.
+const chUsage = createClient({
+  url: CLICKHOUSE_URL,
+  username: process.env.CLICKHOUSE_USER ?? "default",
+  password: process.env.CLICKHOUSE_PASSWORD ?? "",
+  database: CLICKHOUSE_DB,
+  request_timeout: 90_000,
+});
+const usageMeter = createUsageMeterTicker({ db, clickhouse: chUsage });
 const tick = createWorkerTick({
   clickhouse: ch,
   telemetryIngestor,
