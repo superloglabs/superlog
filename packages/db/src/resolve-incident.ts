@@ -146,9 +146,9 @@ export type CreateOpenIncidentOpts = {
 async function allocateOpenIncidentInTx(
   tx: Tx,
   opts: CreateOpenIncidentOpts,
+  _generateCodename: () => string = generateCodename,
 ): Promise<schema.Incident> {
-  for (let attempt = 0; attempt < 6; attempt++) {
-    const codename = generateCodename();
+  async function tryInsert(codename: string): Promise<schema.Incident | null> {
     try {
       const created = await tx.transaction((sp) =>
         sp
@@ -166,32 +166,55 @@ async function allocateOpenIncidentInTx(
           })
           .returning(),
       );
-      if (created[0]) return created[0];
+      return created[0] ?? null;
     } catch (err) {
       // drizzle-orm wraps postgres errors in DrizzleQueryError; the original
       // postgres error (with its .code) is stored on .cause. 23505 =
       // unique_violation; anything else is a real failure.
       const anyErr = err as { code?: string; cause?: { code?: string } } | null;
       if ((anyErr?.code ?? anyErr?.cause?.code) !== "23505") throw err;
+      return null;
     }
   }
-  throw new Error("failed to allocate a unique incident codename after 6 attempts");
+
+  // Phase 1: up to 6 purely random codenames (handles the common case cheaply).
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const result = await tryInsert(_generateCodename());
+    if (result) return result;
+  }
+
+  // Phase 2: numbered suffix fallback so the pool is effectively unbounded.
+  // Pick one random base and try <base>-2, <base>-3, … until one is unique.
+  // A project would need one incident for every possible numbered variant of
+  // this specific base before all of these could collide — essentially
+  // impossible in practice.
+  const base = _generateCodename();
+  for (let n = 2; n <= 9999; n++) {
+    const result = await tryInsert(`${base}-${n}`);
+    if (result) return result;
+  }
+
+  throw new Error("failed to allocate a unique incident codename after exhausting all attempts");
 }
 
-export function createIncidentLifecycle(database: DB = db) {
+export function createIncidentLifecycle(
+  database: DB = db,
+  opts: { generateCodename?: () => string } = {},
+) {
   const repository = createIncidentRepository(database);
+  const _generateCodename = opts.generateCodename ?? generateCodename;
 
   return {
     // Open an incident in its own transaction.
-    async createOpen(opts: CreateOpenIncidentOpts): Promise<schema.Incident> {
-      return database.transaction((tx) => allocateOpenIncidentInTx(tx, opts));
+    async createOpen(createOpts: CreateOpenIncidentOpts): Promise<schema.Incident> {
+      return database.transaction((tx) => allocateOpenIncidentInTx(tx, createOpts, _generateCodename));
     },
 
     // Same allocation, but joins a caller's transaction so the incident and
     // whatever else the caller writes (e.g. an initial agent run) commit
     // atomically — no orphan incident on partial failure.
-    createOpenInTx(tx: Tx, opts: CreateOpenIncidentOpts): Promise<schema.Incident> {
-      return allocateOpenIncidentInTx(tx, opts);
+    createOpenInTx(tx: Tx, createOpts: CreateOpenIncidentOpts): Promise<schema.Incident> {
+      return allocateOpenIncidentInTx(tx, createOpts, _generateCodename);
     },
 
     async resolve(input: ResolveIncidentInput): Promise<ResolveIncidentResult> {
@@ -264,7 +287,7 @@ export function createIncidentLifecycle(database: DB = db) {
           title: opts.issue.title,
           firstSeen: opts.issue.lastSeen,
           lastSeen: opts.issue.lastSeen,
-        });
+        }, _generateCodename);
         await repository.updateIncidentInTx(
           tx,
           incident.id,

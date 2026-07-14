@@ -281,3 +281,41 @@ test("openRecurrence chains a new incident, reopens the issue, and appends the l
     await client.close();
   }
 });
+
+test("createOpen falls back to a numbered suffix when all random codenames collide", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const now = new Date();
+
+    // Pre-occupy "stuck-lynx" so every Phase-1 random attempt collides.
+    await db.insert(schema.incidents).values({
+      projectId: project.id,
+      title: "pre-existing",
+      codename: "stuck-lynx",
+      status: "open",
+      firstSeen: now,
+      lastSeen: now,
+    });
+
+    // Inject a generator that always returns the occupied codename, forcing
+    // the allocation to fall through to the numbered-suffix fallback.
+    const lifecycle = createIncidentLifecycle(db, {
+      generateCodename: () => "stuck-lynx",
+    });
+
+    const incident = await lifecycle.createOpen({
+      projectId: project.id,
+      service: "api",
+      title: "New incident",
+      firstSeen: now,
+      lastSeen: now,
+    });
+
+    // The fallback must produce "stuck-lynx-2" (first numbered variant).
+    assert.equal(incident.codename, "stuck-lynx-2");
+    assert.equal(incident.status, "open");
+  } finally {
+    await client.close();
+  }
+});

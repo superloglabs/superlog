@@ -22,7 +22,7 @@ const ANIMALS = [
   "pelican", "quail", "robin", "salamander", "tarsier", "uakari", "vole",
   "walrus", "xerus", "yak", "zebra", "badger", "cuttlefish", "dolphin",
   "egret", "falcon", "gecko", "hare", "iguana", "jellyfish", "kingfisher",
-  "loris", "moth", "narwhal", "owl", "puma", "ray", "skunk", "toucan",
+  "loris", "moth", "stoat", "owl", "puma", "ray", "skunk", "toucan",
 ];
 
 /**
