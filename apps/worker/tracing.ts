@@ -48,6 +48,7 @@ import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
+import { setTelemetryShutdown } from "./src/telemetry-shutdown.js";
 
 if (process.env.OTEL_DIAG_DEBUG === "1") {
   diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.INFO);
@@ -132,25 +133,10 @@ if (telemetryEnabled) {
       // Don't crash shutdown on a flush failure.
       console.error("[otel] shutdown error", err);
     }
-    // This SIGTERM handler is the worker's single shutdown owner (it exits
-    // below), so flush server-side analytics here too — otherwise an
-    // agent_pr_opened / agent_pr_rejected event still queued in posthog-node is
-    // dropped by the SIGKILL that follows an ECS deploy's SIGTERM. Dynamic
-    // import so the OTel bootstrap doesn't pull in @superlog/db; index.ts
-    // already loaded it, so this resolves to the same module + queued client.
-    // Best-effort.
-    try {
-      const { shutdownAnalytics } = await import("@superlog/db");
-      await shutdownAnalytics();
-    } catch (err) {
-      console.error("[analytics] shutdown error", err);
-    }
   };
 
-  process.once("SIGTERM", () => {
-    void shutdown().finally(() => process.exit(0));
-  });
-  process.once("SIGINT", () => {
-    void shutdown().finally(() => process.exit(0));
-  });
+  // index.ts owns SIGTERM/SIGINT and invokes this only after the tick loop and
+  // pg-boss workers drain. A second signal handler here could exit as soon as
+  // telemetry flushes and orphan active queue jobs during a rolling restart.
+  setTelemetryShutdown(shutdown);
 }

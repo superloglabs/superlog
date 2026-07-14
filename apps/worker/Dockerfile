@@ -21,4 +21,7 @@ COPY apps/worker apps/worker
 
 RUN pnpm --filter @superlog/worker typecheck
 
-CMD ["pnpm", "--filter", "@superlog/worker", "start"]
+# Keep Node as PID 1 so container SIGTERM reaches index.ts and its queue drain.
+# Package-manager script runners do not reliably forward termination signals.
+WORKDIR /app/apps/worker
+CMD ["node", "--import", "tsx", "--import", "./tracing.ts", "src/index.ts"]

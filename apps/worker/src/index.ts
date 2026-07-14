@@ -1,6 +1,6 @@
 import "./env.js";
 import { createClient } from "@clickhouse/client";
-import { db } from "@superlog/db";
+import { db, shutdownAnalytics } from "@superlog/db";
 import { registerAgentRunHealthMetrics } from "./agent-run-health-metrics.js";
 import { startAgentRunQueue } from "./agent-runs/queue-wiring.js";
 import { initAiUsageSink } from "./ai-usage.js";
@@ -14,9 +14,11 @@ import { startJobRunner } from "./jobs/runner.js";
 import { logger } from "./logger.js";
 import { registerDatastoreObservability } from "./observability/datastores.js";
 import { registerQueueHealthMetrics } from "./queue-health.js";
+import { shutdownTelemetry } from "./telemetry-shutdown.js";
 import { createTelemetryIngestor, registerTelemetryIngestMetrics } from "./telemetry/ingest.js";
 import { registerTenantMetrics } from "./tenant-metrics.js";
 import { runWorker } from "./worker/runtime.js";
+import { drainWorker, shutdownWorkerProcess } from "./worker/shutdown.js";
 import { createWorkerTick } from "./worker/tick.js";
 
 logger.info({ scope: "boot" }, "env loaded");
@@ -126,7 +128,39 @@ const tick = createWorkerTick({
   includeAgentRuns: !agentRunQueueReady,
 });
 
-runWorker({ pollIntervalMs: POLL_INTERVAL_MS, batchSize: BATCH_SIZE, tick }).catch((err) => {
+const workerController = new AbortController();
+const workerLoop = runWorker({
+  pollIntervalMs: POLL_INTERVAL_MS,
+  batchSize: BATCH_SIZE,
+  signal: workerController.signal,
+  tick,
+}).catch((err) => {
   logger.fatal({ err }, "worker crashed");
   process.exit(1);
 });
+
+let shuttingDown = false;
+async function shutdown(signal: NodeJS.Signals): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info({ signal }, "received shutdown signal; draining");
+
+  const exitCode = await shutdownWorkerProcess({
+    drain: () =>
+      drainWorker({
+        stopTickLoop: () => workerController.abort(),
+        tickLoop: workerLoop,
+        jobRunner: jobBoss,
+        closeClickHouse: () => ch.close(),
+      }),
+    shutdownAnalytics,
+    shutdownTelemetry,
+    onError: (phase, err) => {
+      logger.error({ err, phase }, "worker shutdown phase failed");
+    },
+  });
+  process.exit(exitCode);
+}
+
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+process.once("SIGINT", () => void shutdown("SIGINT"));
