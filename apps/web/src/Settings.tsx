@@ -49,11 +49,11 @@ import {
   useNotionInstallation,
   useOrgAgentSettings,
   useOrgApiKeys,
-  useProjectDigest,
   useOrgGithubInstallGrants,
   useOrgGithubInstallRepos,
   useOrgGithubInstallations,
   useOrgProjects,
+  useProjectDigest,
   useRailwayInstallation,
   useRedeliverWebhook,
   useRemoveIntegration,
@@ -139,8 +139,14 @@ import {
 } from "./onboarding/icons.tsx";
 import { renderErrorMessage } from "./onboarding/renderConnectModel.ts";
 import { VERCEL_PLAN_REQUIREMENT } from "./onboarding/vercelConnectModel.ts";
-import { AgentMemoriesCard } from "./settings/AgentMemoriesCard.tsx";
 import { AgentMcpServersCard } from "./settings/AgentMcpServersCard.tsx";
+import { AgentMemoriesCard } from "./settings/AgentMemoriesCard.tsx";
+import { BillingCard } from "./settings/BillingCard.tsx";
+import { CreateOrgCard } from "./settings/CreateOrgCard.tsx";
+import { IntegrationConfigDialog } from "./settings/IntegrationConfigDialog.tsx";
+import { OrgDangerCard } from "./settings/OrgDangerCard.tsx";
+import { OrgGeneralCard } from "./settings/OrgGeneralCard.tsx";
+import { OrgMembersCard } from "./settings/OrgMembersCard.tsx";
 import {
   type IngestSignal,
   type IngestSource,
@@ -152,11 +158,6 @@ import {
   filterAvailableIntegrations,
   partitionIntegrations,
 } from "./settings/integrationsCatalogModel.ts";
-import { BillingCard } from "./settings/BillingCard.tsx";
-import { CreateOrgCard } from "./settings/CreateOrgCard.tsx";
-import { OrgDangerCard } from "./settings/OrgDangerCard.tsx";
-import { OrgGeneralCard } from "./settings/OrgGeneralCard.tsx";
-import { OrgMembersCard } from "./settings/OrgMembersCard.tsx";
 import {
   NEW_PROJECT_OPTION_VALUE,
   ORG_NAV_GROUPS,
@@ -210,7 +211,15 @@ export function Settings() {
       setParams(params, { replace: true });
     }, 4000);
     return () => clearTimeout(t);
-  }, [linearStatus, notionStatus, githubStatus, githubAuthorStatus, mcpOAuthStatus, params, setParams]);
+  }, [
+    linearStatus,
+    notionStatus,
+    githubStatus,
+    githubAuthorStatus,
+    mcpOAuthStatus,
+    params,
+    setParams,
+  ]);
 
   const me = useMe();
   const projectsQ = useOrgProjects();
@@ -264,7 +273,9 @@ export function Settings() {
           {mcpOAuthStatus && (
             <div className="pt-1">
               <Chip tone={mcpOAuthStatus === "connected" ? "success" : "danger"} dot>
-                {mcpOAuthStatus === "connected" ? "Agent MCP connected." : "Agent MCP OAuth failed."}
+                {mcpOAuthStatus === "connected"
+                  ? "Agent MCP connected."
+                  : "Agent MCP OAuth failed."}
               </Chip>
             </div>
           )}
@@ -630,7 +641,10 @@ function OrgSectionView({ section }: { section: OrgSectionId }) {
   // it's reached by a deep link (the sidebar tab is already hidden).
   if (section === "billing" && exploring) {
     return (
-      <Section title="Billing" subtitle="Your plan, usage this period, and payment — billed per org.">
+      <Section
+        title="Billing"
+        subtitle="Your plan, usage this period, and payment — billed per org."
+      >
         <Tile>
           <p className="text-[13px] text-muted">
             Billing is unavailable while you’re exploring demo data. Connect your app to start
@@ -1267,7 +1281,6 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
               <IntegrationBentoCard
                 key={item.id}
                 item={item}
-                selected={selectedId === item.id}
                 onSelect={() => setSelectedId(item.id)}
               />
             ))}
@@ -1306,7 +1319,6 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
               <IntegrationBentoCard
                 key={item.id}
                 item={item}
-                selected={selectedId === item.id}
                 onSelect={() => setSelectedId(item.id)}
               />
             ))}
@@ -1326,22 +1338,28 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
       </div>
 
       {selectedId && selectedItem && (
-        <div className="space-y-3 border-t border-border pt-6">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-[15px] font-medium text-fg">Configure {selectedItem.name}</h2>
-              <p className="mt-1 text-[12.5px] text-muted">
-                {selectedItem.installed
-                  ? "Review the connection, update access, or disconnect it."
-                  : "Follow the steps below to add this integration."}
-              </p>
-            </div>
-            <Btn size="sm" variant="ghost" onClick={() => setSelectedId(null)}>
-              Close
-            </Btn>
-          </div>
+        <IntegrationConfigDialog
+          title={selectedItem.name}
+          subtitle={
+            selectedItem.installed
+              ? "Review the connection, update access, or disconnect it."
+              : selectedItem.description
+          }
+          glyph={<IntegrationGlyph id={selectedItem.id} />}
+          status={
+            selectedItem.installed ? (
+              <Chip
+                tone={selectedItem.statusLabel === "Needs reconnect" ? "warning" : "success"}
+                dot
+              >
+                {selectedItem.statusLabel}
+              </Chip>
+            ) : undefined
+          }
+          onClose={() => setSelectedId(null)}
+        >
           <IntegrationConfiguration id={selectedId} projectId={projectId} />
-        </div>
+        </IntegrationConfigDialog>
       )}
     </div>
   );
@@ -1371,21 +1389,16 @@ function IntegrationsBentoSkeleton() {
 
 function IntegrationBentoCard({
   item,
-  selected,
   onSelect,
 }: {
   item: IntegrationBentoItem;
-  selected: boolean;
   onSelect: () => void;
 }) {
   return (
     <button
       type="button"
-      aria-pressed={selected}
       onClick={onSelect}
-      className={`group flex min-h-[142px] flex-col justify-between rounded-xl border bg-surface p-4 text-left transition-colors hover:border-border-strong hover:bg-surface-2/40 ${
-        selected ? "border-accent bg-accent-soft/30" : "border-border"
-      }`}
+      className="group flex min-h-[142px] flex-col justify-between rounded-xl border border-border bg-surface p-4 text-left transition-colors hover:border-border-strong hover:bg-surface-2/40"
     >
       <span className="flex w-full items-start justify-between gap-3">
         <IntegrationGlyph id={item.id} />
@@ -1516,184 +1529,181 @@ function GithubCard() {
   const needsInstall = params.get("github_author") === "no_install";
 
   return (
-    <Tile label="GitHub">
-      <div className="space-y-3">
-        <p className="text-[13px] text-muted">
-          Required for opening pull requests. Connect GitHub to find existing app installs or add
-          repo access.
-        </p>
-        <div className="flex items-center gap-2">
-          {installed ? (
-            <Chip tone="success" dot>
-              Connected · {accounts} {accounts === 1 ? "account" : "accounts"} · {enabledRepos}/
-              {totalRepos} repos enabled
-            </Chip>
-          ) : (
-            <Chip tone="muted" dot>
-              Not connected
-            </Chip>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <Btn
-            size="sm"
-            variant={installed ? "secondary" : "primary"}
-            loading={startAccess.isPending}
-            onClick={async () => {
-              const { url } = await startAccess.mutateAsync();
-              window.location.href = url;
-            }}
-          >
-            {installed ? "Refresh access" : "Connect GitHub"}
-          </Btn>
-          <Btn
-            size="sm"
-            variant={needsInstall ? "primary" : "secondary"}
-            loading={start.isPending}
-            onClick={async () => {
-              const { url } = await start.mutateAsync();
-              window.location.href = url;
-            }}
-          >
-            {installed ? "Add repositories" : "Install GitHub App"}
-          </Btn>
-        </div>
-        {installed && (
-          <div className="space-y-2 pt-2">
-            <FieldLabel>Installed accounts</FieldLabel>
-            <div className="space-y-2">
-              {installations.map((installation) => (
-                <div
-                  key={installation.installationId}
-                  className="space-y-2 border border-border px-2.5 py-2"
-                >
-                  <div className="flex min-w-0 items-center justify-between gap-3">
-                    <label className="flex min-w-0 items-center gap-2">
-                      <input
-                        type="checkbox"
-                        className="h-3.5 w-3.5 accent-accent"
-                        checked={installation.enabled}
-                        disabled={updateRepoAccess.isPending}
-                        onChange={(event) =>
-                          updateRepoAccess.mutate({
-                            installationId: installation.installationId,
-                            enabled: event.target.checked,
-                          })
-                        }
-                      />
-                      <div className="min-w-0">
-                        <div className="truncate text-[13px] text-fg">
-                          {installation.accountLogin ??
-                            `Installation ${installation.installationId}`}
-                        </div>
-                        <div className="font-sans text-[11px] text-muted">
-                          {installation.enabled
-                            ? installation.repos.filter((repo) => repo.enabled).length
-                            : 0}
-                          /{installation.repos.length} repos enabled
-                        </div>
-                      </div>
-                    </label>
-                    <Btn
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => {
-                        window.location.href = installation.manageUrl;
-                      }}
-                    >
-                      Manage
-                    </Btn>
-                  </div>
-                  {installation.repos.length > 0 && (
-                    <div className="max-h-48 space-y-1 overflow-y-auto border-t border-border pt-2">
-                      {installation.repos.map((repo) => (
-                        <label
-                          key={repo.id}
-                          className={`flex min-w-0 items-center justify-between gap-2 px-1 py-1 ${
-                            installation.enabled ? "" : "opacity-50"
-                          }`}
-                        >
-                          <span className="flex min-w-0 items-center gap-2">
-                            <input
-                              type="checkbox"
-                              className="h-3.5 w-3.5 accent-accent"
-                              checked={repo.enabled}
-                              disabled={!installation.enabled || updateRepoAccess.isPending}
-                              onChange={(event) =>
-                                updateRepoAccess.mutate({
-                                  installationId: installation.installationId,
-                                  repoId: repo.id,
-                                  repoEnabled: event.target.checked,
-                                })
-                              }
-                            />
-                            <span className="truncate font-sans text-[11px] text-fg">
-                              {repo.fullName}
-                            </span>
-                          </span>
-                          <Chip tone={repo.private ? "muted" : "neutral"}>
-                            {repo.private ? "private" : "public"}
-                          </Chip>
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-            <FieldLabel>Commit author</FieldLabel>
-            <div className="flex min-w-0 items-center gap-2">
-              {commitAuthor?.avatarUrl && (
-                <img src={commitAuthor.avatarUrl} alt="" className="h-6 w-6 flex-none rounded-sm" />
-              )}
-              {!commitAuthor?.avatarUrl && (
-                <div className="flex h-6 w-6 flex-none items-center justify-center rounded-sm border border-border font-sans text-[10px] text-muted">
-                  SL
-                </div>
-              )}
-              <div className="min-w-0">
-                <div className="flex min-w-0 items-center gap-2">
-                  <div className="truncate text-[13px] text-fg">
-                    {commitAuthor?.name ?? "Superlog app"}
-                  </div>
-                  <Chip tone={commitAuthor?.source === "github_user" ? "accent" : "muted"}>
-                    {commitAuthor?.source === "github_user" ? "installer" : "default"}
-                  </Chip>
-                </div>
-                <div className="truncate font-sans text-[11px] text-muted">
-                  {commitAuthor?.email ?? "bot@superlog.sh"}
-                </div>
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Btn
-                size="sm"
-                variant="secondary"
-                loading={startAuthor.isPending}
-                onClick={async () => {
-                  const { url } = await startAuthor.mutateAsync();
-                  window.location.href = url;
-                }}
-              >
-                {commitAuthor?.source === "github_user"
-                  ? "Change app installer"
-                  : "Use app installer"}
-              </Btn>
-              {commitAuthor?.source === "github_user" && (
-                <Btn
-                  size="sm"
-                  variant="ghost"
-                  loading={resetAuthor.isPending}
-                  onClick={() => resetAuthor.mutate()}
-                >
-                  Use Superlog app
-                </Btn>
-              )}
-            </div>
-          </div>
+    <div className="space-y-3">
+      <p className="text-[13px] text-muted">
+        Required for opening pull requests. Connect GitHub to find existing app installs or add repo
+        access.
+      </p>
+      <div className="flex items-center gap-2">
+        {installed ? (
+          <Chip tone="success" dot>
+            Connected · {accounts} {accounts === 1 ? "account" : "accounts"} · {enabledRepos}/
+            {totalRepos} repos enabled
+          </Chip>
+        ) : (
+          <Chip tone="muted" dot>
+            Not connected
+          </Chip>
         )}
       </div>
-    </Tile>
+      <div className="flex items-center gap-2">
+        <Btn
+          size="sm"
+          variant={installed ? "secondary" : "primary"}
+          loading={startAccess.isPending}
+          onClick={async () => {
+            const { url } = await startAccess.mutateAsync();
+            window.location.href = url;
+          }}
+        >
+          {installed ? "Refresh access" : "Connect GitHub"}
+        </Btn>
+        <Btn
+          size="sm"
+          variant={needsInstall ? "primary" : "secondary"}
+          loading={start.isPending}
+          onClick={async () => {
+            const { url } = await start.mutateAsync();
+            window.location.href = url;
+          }}
+        >
+          {installed ? "Add repositories" : "Install GitHub App"}
+        </Btn>
+      </div>
+      {installed && (
+        <div className="space-y-2 pt-2">
+          <FieldLabel>Installed accounts</FieldLabel>
+          <div className="space-y-2">
+            {installations.map((installation) => (
+              <div
+                key={installation.installationId}
+                className="space-y-2 border border-border px-2.5 py-2"
+              >
+                <div className="flex min-w-0 items-center justify-between gap-3">
+                  <label className="flex min-w-0 items-center gap-2">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 accent-accent"
+                      checked={installation.enabled}
+                      disabled={updateRepoAccess.isPending}
+                      onChange={(event) =>
+                        updateRepoAccess.mutate({
+                          installationId: installation.installationId,
+                          enabled: event.target.checked,
+                        })
+                      }
+                    />
+                    <div className="min-w-0">
+                      <div className="truncate text-[13px] text-fg">
+                        {installation.accountLogin ?? `Installation ${installation.installationId}`}
+                      </div>
+                      <div className="font-sans text-[11px] text-muted">
+                        {installation.enabled
+                          ? installation.repos.filter((repo) => repo.enabled).length
+                          : 0}
+                        /{installation.repos.length} repos enabled
+                      </div>
+                    </div>
+                  </label>
+                  <Btn
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      window.location.href = installation.manageUrl;
+                    }}
+                  >
+                    Manage
+                  </Btn>
+                </div>
+                {installation.repos.length > 0 && (
+                  <div className="max-h-48 space-y-1 overflow-y-auto border-t border-border pt-2">
+                    {installation.repos.map((repo) => (
+                      <label
+                        key={repo.id}
+                        className={`flex min-w-0 items-center justify-between gap-2 px-1 py-1 ${
+                          installation.enabled ? "" : "opacity-50"
+                        }`}
+                      >
+                        <span className="flex min-w-0 items-center gap-2">
+                          <input
+                            type="checkbox"
+                            className="h-3.5 w-3.5 accent-accent"
+                            checked={repo.enabled}
+                            disabled={!installation.enabled || updateRepoAccess.isPending}
+                            onChange={(event) =>
+                              updateRepoAccess.mutate({
+                                installationId: installation.installationId,
+                                repoId: repo.id,
+                                repoEnabled: event.target.checked,
+                              })
+                            }
+                          />
+                          <span className="truncate font-sans text-[11px] text-fg">
+                            {repo.fullName}
+                          </span>
+                        </span>
+                        <Chip tone={repo.private ? "muted" : "neutral"}>
+                          {repo.private ? "private" : "public"}
+                        </Chip>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <FieldLabel>Commit author</FieldLabel>
+          <div className="flex min-w-0 items-center gap-2">
+            {commitAuthor?.avatarUrl && (
+              <img src={commitAuthor.avatarUrl} alt="" className="h-6 w-6 flex-none rounded-sm" />
+            )}
+            {!commitAuthor?.avatarUrl && (
+              <div className="flex h-6 w-6 flex-none items-center justify-center rounded-sm border border-border font-sans text-[10px] text-muted">
+                SL
+              </div>
+            )}
+            <div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-2">
+                <div className="truncate text-[13px] text-fg">
+                  {commitAuthor?.name ?? "Superlog app"}
+                </div>
+                <Chip tone={commitAuthor?.source === "github_user" ? "accent" : "muted"}>
+                  {commitAuthor?.source === "github_user" ? "installer" : "default"}
+                </Chip>
+              </div>
+              <div className="truncate font-sans text-[11px] text-muted">
+                {commitAuthor?.email ?? "bot@superlog.sh"}
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Btn
+              size="sm"
+              variant="secondary"
+              loading={startAuthor.isPending}
+              onClick={async () => {
+                const { url } = await startAuthor.mutateAsync();
+                window.location.href = url;
+              }}
+            >
+              {commitAuthor?.source === "github_user"
+                ? "Change app installer"
+                : "Use app installer"}
+            </Btn>
+            {commitAuthor?.source === "github_user" && (
+              <Btn
+                size="sm"
+                variant="ghost"
+                loading={resetAuthor.isPending}
+                onClick={() => resetAuthor.mutate()}
+              >
+                Use Superlog app
+              </Btn>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1705,50 +1715,48 @@ function SlackCard({ projectId }: { projectId: string | undefined }) {
   const installed = install.data?.installed === true;
 
   return (
-    <Tile label="Slack">
-      <div className="space-y-3">
-        <p className="text-[13px] text-muted">
-          Posts incident threads and routes the agent's questions back to humans. Pick the channel
-          (or disable posting) per project below.
-        </p>
-        <div>
-          {installed && install.data?.installed ? (
-            <Chip tone="success" dot>
-              {install.data.teamName ?? "Workspace"}
-            </Chip>
-          ) : (
-            <Chip tone="muted" dot>
-              Not connected
-            </Chip>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
+    <div className="space-y-3">
+      <p className="text-[13px] text-muted">
+        Posts incident threads and routes the agent's questions back to humans. Pick the channel (or
+        disable posting) per project below.
+      </p>
+      <div>
+        {installed && install.data?.installed ? (
+          <Chip tone="success" dot>
+            {install.data.teamName ?? "Workspace"}
+          </Chip>
+        ) : (
+          <Chip tone="muted" dot>
+            Not connected
+          </Chip>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <Btn
+          size="sm"
+          variant={installed ? "secondary" : "primary"}
+          disabled={!projectId}
+          loading={start.isPending}
+          onClick={async () => {
+            const { url } = await start.mutateAsync();
+            window.location.href = url;
+          }}
+        >
+          {installed ? "Reinstall" : "Connect Slack"}
+        </Btn>
+        {installed && (
           <Btn
             size="sm"
-            variant={installed ? "secondary" : "primary"}
+            variant="danger"
             disabled={!projectId}
-            loading={start.isPending}
-            onClick={async () => {
-              const { url } = await start.mutateAsync();
-              window.location.href = url;
-            }}
+            loading={uninstall.isPending}
+            onClick={() => uninstall.mutate()}
           >
-            {installed ? "Reinstall" : "Connect Slack"}
+            Disconnect
           </Btn>
-          {installed && (
-            <Btn
-              size="sm"
-              variant="danger"
-              disabled={!projectId}
-              loading={uninstall.isPending}
-              onClick={() => uninstall.mutate()}
-            >
-              Disconnect
-            </Btn>
-          )}
-        </div>
+        )}
       </div>
-    </Tile>
+    </div>
   );
 }
 
@@ -1760,57 +1768,55 @@ function CloudflareCard({ projectId }: { projectId: string | undefined }) {
   const installed = install.data?.installed === true;
 
   return (
-    <Tile label="Cloudflare">
-      <div className="space-y-3">
-        <p className="text-[13px] text-muted">
-          Connect your Cloudflare account and we'll set up Workers Observability destinations that
-          stream your Workers traces, logs, and metrics into this project automatically.
-        </p>
-        <div>
-          {installed && install.data?.installed ? (
-            <Chip tone="success" dot>
-              {install.data.accountName ?? "Cloudflare account"}
-            </Chip>
-          ) : (
-            <Chip tone="muted" dot>
-              Not connected
-            </Chip>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <Btn
-            size="sm"
-            variant={installed ? "secondary" : "primary"}
-            loading={start.isPending}
-            disabled={!projectId || start.isPending}
-            onClick={async () => {
-              const { url } = await start.mutateAsync();
-              window.location.href = url;
-            }}
-          >
-            {installed ? "Reconnect" : "Connect Cloudflare"}
-          </Btn>
-          {installed && (
-            <Btn
-              size="sm"
-              variant="danger"
-              loading={uninstall.isPending}
-              disabled={!projectId || uninstall.isPending}
-              onClick={() => uninstall.mutate()}
-            >
-              Disconnect
-            </Btn>
-          )}
-        </div>
-        {installed && install.data?.installed && (
-          <CloudflareWorkers
-            projectId={projectId}
-            accountId={install.data.accountId}
-            autoWire={install.data.autoWire}
-          />
+    <div className="space-y-3">
+      <p className="text-[13px] text-muted">
+        Connect your Cloudflare account and we'll set up Workers Observability destinations that
+        stream your Workers traces, logs, and metrics into this project automatically.
+      </p>
+      <div>
+        {installed && install.data?.installed ? (
+          <Chip tone="success" dot>
+            {install.data.accountName ?? "Cloudflare account"}
+          </Chip>
+        ) : (
+          <Chip tone="muted" dot>
+            Not connected
+          </Chip>
         )}
       </div>
-    </Tile>
+      <div className="flex items-center gap-2">
+        <Btn
+          size="sm"
+          variant={installed ? "secondary" : "primary"}
+          loading={start.isPending}
+          disabled={!projectId || start.isPending}
+          onClick={async () => {
+            const { url } = await start.mutateAsync();
+            window.location.href = url;
+          }}
+        >
+          {installed ? "Reconnect" : "Connect Cloudflare"}
+        </Btn>
+        {installed && (
+          <Btn
+            size="sm"
+            variant="danger"
+            loading={uninstall.isPending}
+            disabled={!projectId || uninstall.isPending}
+            onClick={() => uninstall.mutate()}
+          >
+            Disconnect
+          </Btn>
+        )}
+      </div>
+      {installed && install.data?.installed && (
+        <CloudflareWorkers
+          projectId={projectId}
+          accountId={install.data.accountId}
+          autoWire={install.data.autoWire}
+        />
+      )}
+    </div>
   );
 }
 
@@ -1931,56 +1937,54 @@ function VercelCard({ projectId }: { projectId: string | undefined }) {
   const installed = install.data?.installed === true;
 
   return (
-    <Tile label="Vercel">
-      <div className="space-y-3">
-        <p className="text-[13px] text-muted">
-          Install the Superlog integration on your Vercel team and we'll set up trace and log drains
-          that stream your deployments' telemetry into this project automatically.
-        </p>
-        <div className="flex items-center gap-2 text-[12.5px]">
-          <span className="text-[#8C98F0]">
-            <InfoIcon size={13} />
-          </span>
-          <span className="text-fg">{VERCEL_PLAN_REQUIREMENT}</span>
-        </div>
-        <div>
-          {installed && install.data?.installed ? (
-            <Chip tone="success" dot>
-              {install.data.teamName ?? "Vercel team"}
-            </Chip>
-          ) : (
-            <Chip tone="muted" dot>
-              Not connected
-            </Chip>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
+    <div className="space-y-3">
+      <p className="text-[13px] text-muted">
+        Install the Superlog integration on your Vercel team and we'll set up trace and log drains
+        that stream your deployments' telemetry into this project automatically.
+      </p>
+      <div className="flex items-center gap-2 text-[12.5px]">
+        <span className="text-[#8C98F0]">
+          <InfoIcon size={13} />
+        </span>
+        <span className="text-fg">{VERCEL_PLAN_REQUIREMENT}</span>
+      </div>
+      <div>
+        {installed && install.data?.installed ? (
+          <Chip tone="success" dot>
+            {install.data.teamName ?? "Vercel team"}
+          </Chip>
+        ) : (
+          <Chip tone="muted" dot>
+            Not connected
+          </Chip>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <Btn
+          size="sm"
+          variant={installed ? "secondary" : "primary"}
+          loading={start.isPending}
+          disabled={!projectId || start.isPending}
+          onClick={async () => {
+            const { url } = await start.mutateAsync();
+            window.location.href = url;
+          }}
+        >
+          {installed ? "Reconnect" : "Connect Vercel"}
+        </Btn>
+        {installed && (
           <Btn
             size="sm"
-            variant={installed ? "secondary" : "primary"}
-            loading={start.isPending}
-            disabled={!projectId || start.isPending}
-            onClick={async () => {
-              const { url } = await start.mutateAsync();
-              window.location.href = url;
-            }}
+            variant="danger"
+            loading={uninstall.isPending}
+            disabled={!projectId || uninstall.isPending}
+            onClick={() => uninstall.mutate()}
           >
-            {installed ? "Reconnect" : "Connect Vercel"}
+            Disconnect
           </Btn>
-          {installed && (
-            <Btn
-              size="sm"
-              variant="danger"
-              loading={uninstall.isPending}
-              disabled={!projectId || uninstall.isPending}
-              onClick={() => uninstall.mutate()}
-            >
-              Disconnect
-            </Btn>
-          )}
-        </div>
+        )}
       </div>
-    </Tile>
+    </div>
   );
 }
 
@@ -1993,50 +1997,48 @@ function RailwayCard({ projectId }: { projectId: string | undefined }) {
   const grantedCount = install.data?.installed ? install.data.grantedProjects.length : 0;
 
   return (
-    <Tile label="Railway">
-      <div className="space-y-3">
-        <p className="text-[13px] text-muted">
-          Authorize Railway and pick the projects to share — we pull your services' logs and infra
-          metrics from Railway's API into this project automatically. Read-only, revocable any time.
-        </p>
-        <div>
-          {installed ? (
-            <Chip tone="success" dot>
-              {grantedCount === 1 ? "1 Railway project" : `${grantedCount} Railway projects`}
-            </Chip>
-          ) : (
-            <Chip tone="muted" dot>
-              Not connected
-            </Chip>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
+    <div className="space-y-3">
+      <p className="text-[13px] text-muted">
+        Authorize Railway and pick the projects to share — we pull your services' logs and infra
+        metrics from Railway's API into this project automatically. Read-only, revocable any time.
+      </p>
+      <div>
+        {installed ? (
+          <Chip tone="success" dot>
+            {grantedCount === 1 ? "1 Railway project" : `${grantedCount} Railway projects`}
+          </Chip>
+        ) : (
+          <Chip tone="muted" dot>
+            Not connected
+          </Chip>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <Btn
+          size="sm"
+          variant={installed ? "secondary" : "primary"}
+          loading={start.isPending}
+          disabled={!projectId || start.isPending}
+          onClick={async () => {
+            const { url } = await start.mutateAsync();
+            window.location.href = url;
+          }}
+        >
+          {installed ? "Reconnect" : "Connect Railway"}
+        </Btn>
+        {installed && (
           <Btn
             size="sm"
-            variant={installed ? "secondary" : "primary"}
-            loading={start.isPending}
-            disabled={!projectId || start.isPending}
-            onClick={async () => {
-              const { url } = await start.mutateAsync();
-              window.location.href = url;
-            }}
+            variant="danger"
+            loading={uninstall.isPending}
+            disabled={!projectId || uninstall.isPending}
+            onClick={() => uninstall.mutate()}
           >
-            {installed ? "Reconnect" : "Connect Railway"}
+            Disconnect
           </Btn>
-          {installed && (
-            <Btn
-              size="sm"
-              variant="danger"
-              loading={uninstall.isPending}
-              disabled={!projectId || uninstall.isPending}
-              onClick={() => uninstall.mutate()}
-            >
-              Disconnect
-            </Btn>
-          )}
-        </div>
+        )}
       </div>
-    </Tile>
+    </div>
   );
 }
 
@@ -2079,127 +2081,125 @@ function RenderCard({ projectId }: { projectId: string | undefined }) {
       : null;
 
   return (
-    <Tile label="Render">
-      <div className="space-y-3">
-        <p className="text-[13px] text-muted">
-          Paste a Render API key and pick the workspace to share — we set up Render's log and
-          metrics streams to push your services' telemetry into this project (with API polling as
-          fallback). The key is stored encrypted; revoke it in Render at any time.
-        </p>
-        <div>
-          {installed ? (
-            <Chip tone="success" dot>
-              {install.data?.installed && install.data.ownerName
-                ? `${install.data.ownerName} — ${serviceCount === 1 ? "1 service" : `${serviceCount} services`}`
-                : `${serviceCount} services`}
-            </Chip>
-          ) : (
-            <Chip tone="muted" dot>
-              Not connected
-            </Chip>
-          )}
-        </div>
-        {connecting && !owners && (
-          <form
-            className="flex items-center gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (validate.isPending || !apiKey.trim()) return;
-              validate.mutate(apiKey.trim(), {
-                onSuccess: ({ owners }) => {
-                  setOwners(owners);
-                  setOwnerId(owners.length === 1 ? (owners[0]?.id ?? null) : null);
-                },
-              });
-            }}
-          >
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="rnd_…"
-              autoComplete="off"
-              spellCheck={false}
-              className="h-[32px] min-w-0 flex-1 rounded-[8px] border border-border bg-surface-2 px-2.5 font-sans text-[12.5px] text-fg placeholder:text-subtle focus:outline-none"
-            />
-            <Btn
-              size="sm"
-              variant="primary"
-              type="submit"
-              loading={validate.isPending}
-              disabled={!apiKey.trim()}
-            >
-              Validate
-            </Btn>
-            <Btn size="sm" variant="secondary" onClick={reset}>
-              Cancel
-            </Btn>
-          </form>
-        )}
-        {connecting && owners && (
-          <div className="flex items-center gap-2">
-            <select
-              value={ownerId ?? ""}
-              onChange={(e) => setOwnerId(e.target.value || null)}
-              className="h-[32px] min-w-0 flex-1 rounded-[8px] border border-border bg-surface-2 px-2 text-[12.5px] text-fg focus:outline-none"
-            >
-              <option value="">Pick a workspace…</option>
-              {owners.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.name}
-                  {o.type === "team" ? " (team)" : ""}
-                </option>
-              ))}
-            </select>
-            <Btn
-              size="sm"
-              variant="primary"
-              loading={connect.isPending}
-              disabled={!ownerId}
-              onClick={() => {
-                if (!ownerId) return;
-                connect.mutate({ apiKey: apiKey.trim(), ownerId }, { onSuccess: () => reset() });
-              }}
-            >
-              Connect
-            </Btn>
-            <Btn size="sm" variant="secondary" onClick={reset}>
-              Cancel
-            </Btn>
-          </div>
-        )}
-        {error && <p className="m-0 text-[12.5px] text-danger">{error}</p>}
-        {unavailable && (
-          <p className="m-0 text-[12.5px] text-muted">
-            Render connect isn't configured in this environment — the server needs an integration
-            secrets key (AGENT_SECRETS_KEY) to store pasted API keys encrypted.
-          </p>
-        )}
-        {!connecting && (
-          <div className="flex items-center gap-2">
-            <Btn
-              size="sm"
-              variant={installed ? "secondary" : "primary"}
-              disabled={!projectId || unavailable}
-              onClick={() => setConnecting(true)}
-            >
-              {installed ? "Reconnect" : "Connect Render"}
-            </Btn>
-            {installed && (
-              <Btn
-                size="sm"
-                variant="danger"
-                loading={uninstall.isPending}
-                disabled={!projectId || uninstall.isPending}
-                onClick={() => uninstall.mutate()}
-              >
-                Disconnect
-              </Btn>
-            )}
-          </div>
+    <div className="space-y-3">
+      <p className="text-[13px] text-muted">
+        Paste a Render API key and pick the workspace to share — we set up Render's log and metrics
+        streams to push your services' telemetry into this project (with API polling as fallback).
+        The key is stored encrypted; revoke it in Render at any time.
+      </p>
+      <div>
+        {installed ? (
+          <Chip tone="success" dot>
+            {install.data?.installed && install.data.ownerName
+              ? `${install.data.ownerName} — ${serviceCount === 1 ? "1 service" : `${serviceCount} services`}`
+              : `${serviceCount} services`}
+          </Chip>
+        ) : (
+          <Chip tone="muted" dot>
+            Not connected
+          </Chip>
         )}
       </div>
-    </Tile>
+      {connecting && !owners && (
+        <form
+          className="flex items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (validate.isPending || !apiKey.trim()) return;
+            validate.mutate(apiKey.trim(), {
+              onSuccess: ({ owners }) => {
+                setOwners(owners);
+                setOwnerId(owners.length === 1 ? (owners[0]?.id ?? null) : null);
+              },
+            });
+          }}
+        >
+          <input
+            type="password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="rnd_…"
+            autoComplete="off"
+            spellCheck={false}
+            className="h-[32px] min-w-0 flex-1 rounded-[8px] border border-border bg-surface-2 px-2.5 font-sans text-[12.5px] text-fg placeholder:text-subtle focus:outline-none"
+          />
+          <Btn
+            size="sm"
+            variant="primary"
+            type="submit"
+            loading={validate.isPending}
+            disabled={!apiKey.trim()}
+          >
+            Validate
+          </Btn>
+          <Btn size="sm" variant="secondary" onClick={reset}>
+            Cancel
+          </Btn>
+        </form>
+      )}
+      {connecting && owners && (
+        <div className="flex items-center gap-2">
+          <select
+            value={ownerId ?? ""}
+            onChange={(e) => setOwnerId(e.target.value || null)}
+            className="h-[32px] min-w-0 flex-1 rounded-[8px] border border-border bg-surface-2 px-2 text-[12.5px] text-fg focus:outline-none"
+          >
+            <option value="">Pick a workspace…</option>
+            {owners.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.name}
+                {o.type === "team" ? " (team)" : ""}
+              </option>
+            ))}
+          </select>
+          <Btn
+            size="sm"
+            variant="primary"
+            loading={connect.isPending}
+            disabled={!ownerId}
+            onClick={() => {
+              if (!ownerId) return;
+              connect.mutate({ apiKey: apiKey.trim(), ownerId }, { onSuccess: () => reset() });
+            }}
+          >
+            Connect
+          </Btn>
+          <Btn size="sm" variant="secondary" onClick={reset}>
+            Cancel
+          </Btn>
+        </div>
+      )}
+      {error && <p className="m-0 text-[12.5px] text-danger">{error}</p>}
+      {unavailable && (
+        <p className="m-0 text-[12.5px] text-muted">
+          Render connect isn't configured in this environment — the server needs an integration
+          secrets key (AGENT_SECRETS_KEY) to store pasted API keys encrypted.
+        </p>
+      )}
+      {!connecting && (
+        <div className="flex items-center gap-2">
+          <Btn
+            size="sm"
+            variant={installed ? "secondary" : "primary"}
+            disabled={!projectId || unavailable}
+            onClick={() => setConnecting(true)}
+          >
+            {installed ? "Reconnect" : "Connect Render"}
+          </Btn>
+          {installed && (
+            <Btn
+              size="sm"
+              variant="danger"
+              loading={uninstall.isPending}
+              disabled={!projectId || uninstall.isPending}
+              onClick={() => uninstall.mutate()}
+            >
+              Disconnect
+            </Btn>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2433,50 +2433,48 @@ function LinearCard() {
   const needsReauth = linearInstall?.needsReauth === true;
 
   return (
-    <Tile label="Linear">
-      <div className="space-y-3">
-        <p className="text-[13px] text-muted">
-          Lets the agent file and update tickets while it investigates. Tickets are tagged with the
-          incident id so subsequent runs find and update the same issue.
-        </p>
-        <div>
-          {linearInstall ? (
-            <Chip tone={needsReauth ? "warning" : "success"} dot>
-              {needsReauth
-                ? `${linearInstall.workspaceName ?? "Workspace"} needs reconnect`
-                : (linearInstall.workspaceName ?? "Workspace")}
-            </Chip>
-          ) : (
-            <Chip tone="muted" dot>
-              Not connected
-            </Chip>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
+    <div className="space-y-3">
+      <p className="text-[13px] text-muted">
+        Lets the agent file and update tickets while it investigates. Tickets are tagged with the
+        incident id so subsequent runs find and update the same issue.
+      </p>
+      <div>
+        {linearInstall ? (
+          <Chip tone={needsReauth ? "warning" : "success"} dot>
+            {needsReauth
+              ? `${linearInstall.workspaceName ?? "Workspace"} needs reconnect`
+              : (linearInstall.workspaceName ?? "Workspace")}
+          </Chip>
+        ) : (
+          <Chip tone="muted" dot>
+            Not connected
+          </Chip>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <Btn
+          size="sm"
+          variant={installed ? "secondary" : "primary"}
+          loading={start.isPending}
+          onClick={async () => {
+            const { url } = await start.mutateAsync();
+            window.location.href = url;
+          }}
+        >
+          {needsReauth ? "Reconnect Linear" : installed ? "Reconnect" : "Connect Linear"}
+        </Btn>
+        {installed && (
           <Btn
             size="sm"
-            variant={installed ? "secondary" : "primary"}
-            loading={start.isPending}
-            onClick={async () => {
-              const { url } = await start.mutateAsync();
-              window.location.href = url;
-            }}
+            variant="danger"
+            loading={uninstall.isPending}
+            onClick={() => uninstall.mutate()}
           >
-            {needsReauth ? "Reconnect Linear" : installed ? "Reconnect" : "Connect Linear"}
+            Disconnect
           </Btn>
-          {installed && (
-            <Btn
-              size="sm"
-              variant="danger"
-              loading={uninstall.isPending}
-              onClick={() => uninstall.mutate()}
-            >
-              Disconnect
-            </Btn>
-          )}
-        </div>
+        )}
       </div>
-    </Tile>
+    </div>
   );
 }
 
@@ -2490,51 +2488,49 @@ function NotionCard() {
   const needsReauth = notionInstall?.needsReauth === true;
 
   return (
-    <Tile label="Notion">
-      <div className="space-y-3">
-        <p className="text-[13px] text-muted">
-          Lets the agent read pages and databases from your Notion workspace while it investigates —
-          runbooks, architecture notes, and on-call docs. Only pages you share with the Superlog
-          integration are visible.
-        </p>
-        <div>
-          {notionInstall ? (
-            <Chip tone={needsReauth ? "warning" : "success"} dot>
-              {needsReauth
-                ? `${notionInstall.workspaceName ?? "Workspace"} needs reconnect`
-                : (notionInstall.workspaceName ?? "Workspace")}
-            </Chip>
-          ) : (
-            <Chip tone="muted" dot>
-              Not connected
-            </Chip>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
+    <div className="space-y-3">
+      <p className="text-[13px] text-muted">
+        Lets the agent read pages and databases from your Notion workspace while it investigates —
+        runbooks, architecture notes, and on-call docs. Only pages you share with the Superlog
+        integration are visible.
+      </p>
+      <div>
+        {notionInstall ? (
+          <Chip tone={needsReauth ? "warning" : "success"} dot>
+            {needsReauth
+              ? `${notionInstall.workspaceName ?? "Workspace"} needs reconnect`
+              : (notionInstall.workspaceName ?? "Workspace")}
+          </Chip>
+        ) : (
+          <Chip tone="muted" dot>
+            Not connected
+          </Chip>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <Btn
+          size="sm"
+          variant={installed ? "secondary" : "primary"}
+          loading={start.isPending}
+          onClick={async () => {
+            const { url } = await start.mutateAsync();
+            window.location.href = url;
+          }}
+        >
+          {needsReauth ? "Reconnect Notion" : installed ? "Reconnect" : "Connect Notion"}
+        </Btn>
+        {installed && (
           <Btn
             size="sm"
-            variant={installed ? "secondary" : "primary"}
-            loading={start.isPending}
-            onClick={async () => {
-              const { url } = await start.mutateAsync();
-              window.location.href = url;
-            }}
+            variant="danger"
+            loading={uninstall.isPending}
+            onClick={() => uninstall.mutate()}
           >
-            {needsReauth ? "Reconnect Notion" : installed ? "Reconnect" : "Connect Notion"}
+            Disconnect
           </Btn>
-          {installed && (
-            <Btn
-              size="sm"
-              variant="danger"
-              loading={uninstall.isPending}
-              onClick={() => uninstall.mutate()}
-            >
-              Disconnect
-            </Btn>
-          )}
-        </div>
+        )}
       </div>
-    </Tile>
+    </div>
   );
 }
 
@@ -2860,122 +2856,120 @@ function AwsCard({ projectId }: { projectId: string | undefined }) {
   const setupTarget = active && active.status !== "connected" ? active : undefined;
 
   return (
-    <Tile label="AWS">
-      <div className="space-y-3">
-        <p className="text-[13px] text-muted">
-          Connect your AWS account to inventory resources and stream CloudWatch metrics. Deploys a
-          read-only IAM role you control via CloudFormation — revoke any time.
-        </p>
+    <div className="space-y-3">
+      <p className="text-[13px] text-muted">
+        Connect your AWS account to inventory resources and stream CloudWatch metrics. Deploys a
+        read-only IAM role you control via CloudFormation — revoke any time.
+      </p>
 
-        <div>{awsStatusChip(active)}</div>
+      <div>{awsStatusChip(active)}</div>
 
-        {active?.status === "connected" ? (
-          <div className="space-y-3">
-            <AwsStackHealthPanel
-              projectId={projectId}
-              connectionId={active.id}
-              region={active.region}
-            />
-            <Btn
-              size="sm"
-              variant="danger"
-              loading={del.isPending}
-              onClick={() => del.mutate(active.id)}
-            >
-              Disconnect
-            </Btn>
-          </div>
-        ) : setupTarget || created ? (
-          <div className="space-y-2">
-            {created && (
-              <Btn
-                size="sm"
-                variant="primary"
-                onClick={() => window.open(created.launchUrl, "_blank", "noopener")}
-              >
-                Launch CloudFormation stack
-              </Btn>
-            )}
-            {created && (
-              <p className="text-[12px] text-muted">
-                After you create the stack it connects automatically — this updates on its own. Or
-                paste the Role ARN from the stack's Outputs below.
-              </p>
-            )}
-            <FieldLabel>Role ARN (from the stack's Outputs)</FieldLabel>
-            <Input
-              value={roleArn}
-              onChange={(e) => setRoleArn(e.target.value)}
-              placeholder="arn:aws:iam::123456789012:role/SuperlogScrapeRole"
-            />
-            {setupTarget &&
-              (setupTarget.status === "failed" || setupTarget.status === "account_mismatch") && (
-                <p className="text-[12px] text-danger">
-                  {setupTarget.lastError ??
-                    "Couldn't assume the role — confirm the stack deployed and the ARN is correct."}
-                </p>
-              )}
-            <div className="flex items-center gap-2">
-              <Btn
-                size="sm"
-                variant="primary"
-                loading={verify.isPending}
-                disabled={!roleArn.trim()}
-                onClick={async () => {
-                  const id = created?.id ?? setupTarget?.id;
-                  if (!id) return;
-                  const res = await verify.mutateAsync({
-                    id,
-                    scrapeRoleArn: roleArn.trim(),
-                  });
-                  if (res.status === "connected") {
-                    setCreated(null);
-                    setRoleArn("");
-                  }
-                }}
-              >
-                Verify connection
-              </Btn>
-              <Btn
-                size="sm"
-                variant="ghost"
-                loading={del.isPending}
-                onClick={() => {
-                  const id = created?.id ?? setupTarget?.id;
-                  setCreated(null);
-                  setRoleArn("");
-                  if (id) del.mutate(id);
-                }}
-              >
-                Cancel
-              </Btn>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <FieldLabel>Region</FieldLabel>
-            <Dropdown
-              value={region}
-              onChange={setRegion}
-              options={AWS_REGION_OPTIONS}
-              placeholder="Select a region…"
-            />
+      {active?.status === "connected" ? (
+        <div className="space-y-3">
+          <AwsStackHealthPanel
+            projectId={projectId}
+            connectionId={active.id}
+            region={active.region}
+          />
+          <Btn
+            size="sm"
+            variant="danger"
+            loading={del.isPending}
+            onClick={() => del.mutate(active.id)}
+          >
+            Disconnect
+          </Btn>
+        </div>
+      ) : setupTarget || created ? (
+        <div className="space-y-2">
+          {created && (
             <Btn
               size="sm"
               variant="primary"
-              loading={create.isPending}
-              disabled={!projectId || !region.trim()}
+              onClick={() => window.open(created.launchUrl, "_blank", "noopener")}
+            >
+              Launch CloudFormation stack
+            </Btn>
+          )}
+          {created && (
+            <p className="text-[12px] text-muted">
+              After you create the stack it connects automatically — this updates on its own. Or
+              paste the Role ARN from the stack's Outputs below.
+            </p>
+          )}
+          <FieldLabel>Role ARN (from the stack's Outputs)</FieldLabel>
+          <Input
+            value={roleArn}
+            onChange={(e) => setRoleArn(e.target.value)}
+            placeholder="arn:aws:iam::123456789012:role/SuperlogScrapeRole"
+          />
+          {setupTarget &&
+            (setupTarget.status === "failed" || setupTarget.status === "account_mismatch") && (
+              <p className="text-[12px] text-danger">
+                {setupTarget.lastError ??
+                  "Couldn't assume the role — confirm the stack deployed and the ARN is correct."}
+              </p>
+            )}
+          <div className="flex items-center gap-2">
+            <Btn
+              size="sm"
+              variant="primary"
+              loading={verify.isPending}
+              disabled={!roleArn.trim()}
               onClick={async () => {
-                const res = await create.mutateAsync({ region: region.trim() });
-                setCreated({ id: res.id, launchUrl: res.launchUrl });
+                const id = created?.id ?? setupTarget?.id;
+                if (!id) return;
+                const res = await verify.mutateAsync({
+                  id,
+                  scrapeRoleArn: roleArn.trim(),
+                });
+                if (res.status === "connected") {
+                  setCreated(null);
+                  setRoleArn("");
+                }
               }}
             >
-              Connect AWS
+              Verify connection
+            </Btn>
+            <Btn
+              size="sm"
+              variant="ghost"
+              loading={del.isPending}
+              onClick={() => {
+                const id = created?.id ?? setupTarget?.id;
+                setCreated(null);
+                setRoleArn("");
+                if (id) del.mutate(id);
+              }}
+            >
+              Cancel
             </Btn>
           </div>
-        )}
-      </div>
-    </Tile>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <FieldLabel>Region</FieldLabel>
+          <Dropdown
+            value={region}
+            onChange={setRegion}
+            options={AWS_REGION_OPTIONS}
+            placeholder="Select a region…"
+          />
+          <Btn
+            size="sm"
+            variant="primary"
+            loading={create.isPending}
+            disabled={!projectId || !region.trim()}
+            onClick={async () => {
+              const res = await create.mutateAsync({ region: region.trim() });
+              setCreated({ id: res.id, launchUrl: res.launchUrl });
+            }}
+          >
+            Connect AWS
+          </Btn>
+        </div>
+      )}
+    </div>
   );
 }
 
