@@ -19,6 +19,22 @@ export type LinearHandoffReconciliationDeps = {
   markProcessed(ids: string[]): Promise<void>;
 };
 
+export type LinearHandoffSchedulingDeps = {
+  recordPending(): Promise<void>;
+  dispatch(): Promise<void>;
+  reconcile(): Promise<DeliveredLinearTicket | null>;
+};
+
+export async function scheduleLinearHandoffWithDeps(
+  input: { hasInstall: boolean },
+  deps: LinearHandoffSchedulingDeps,
+): Promise<DeliveredLinearTicket | null> {
+  if (!input.hasInstall) return null;
+  await deps.recordPending();
+  await deps.dispatch().catch(() => undefined);
+  return deps.reconcile();
+}
+
 export async function reconcileLinearHandoffWithDeps(
   input: {
     hasInstall: boolean;
@@ -131,19 +147,26 @@ export async function scheduleLinearHandoff(
   result: AgentRunResult,
   boundary: string,
 ): Promise<DeliveredLinearTicket | null> {
-  await db
-    .insert(schema.incidentEvents)
-    .values({
-      agentRunId: ctx.agentRun.id,
-      incidentId: ctx.incident.id,
-      kind: LINEAR_HANDOFF_PENDING_EVENT,
-      summary: "Linear handoff pending reconciliation.",
-      detail: { result },
-      providerEventId: `linear_handoff:${boundary}`,
-    })
-    .onConflictDoNothing();
-  await dispatchAgentRunJob(ctx.agentRun.id).catch(() => undefined);
-  return reconcilePendingLinearHandoff(ctx);
+  return scheduleLinearHandoffWithDeps(
+    { hasInstall: !!ctx.linearInstall },
+    {
+      recordPending: async () => {
+        await db
+          .insert(schema.incidentEvents)
+          .values({
+            agentRunId: ctx.agentRun.id,
+            incidentId: ctx.incident.id,
+            kind: LINEAR_HANDOFF_PENDING_EVENT,
+            summary: "Linear handoff pending reconciliation.",
+            detail: { result },
+            providerEventId: `linear_handoff:${boundary}`,
+          })
+          .onConflictDoNothing();
+      },
+      dispatch: () => dispatchAgentRunJob(ctx.agentRun.id),
+      reconcile: () => reconcilePendingLinearHandoff(ctx),
+    },
+  );
 }
 
 export async function listPendingLinearHandoffRunIds(limit = 500): Promise<string[]> {

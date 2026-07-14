@@ -5,6 +5,7 @@ import type { AgentRunResult } from "@superlog/db";
 import {
   type LinearHandoffReconciliationDeps,
   reconcileLinearHandoffWithDeps,
+  scheduleLinearHandoffWithDeps,
 } from "./linear-handoff.js";
 
 const RESULT: AgentRunResult = { state: "complete", summary: "Investigation complete." };
@@ -33,6 +34,52 @@ function makeDeps(overrides: Partial<LinearHandoffReconciliationDeps> = {}) {
     } satisfies LinearHandoffReconciliationDeps,
   };
 }
+
+test("a project without Linear connected does not schedule a handoff", async () => {
+  const calls: string[] = [];
+
+  const ticket = await scheduleLinearHandoffWithDeps(
+    { hasInstall: false },
+    {
+      recordPending: async () => {
+        calls.push("record_pending");
+      },
+      dispatch: async () => {
+        calls.push("dispatch");
+      },
+      reconcile: async () => {
+        calls.push("reconcile");
+        return TICKET;
+      },
+    },
+  );
+
+  assert.equal(ticket, null);
+  assert.deepEqual(calls, []);
+});
+
+test("a connected Linear project schedules and reconciles its handoff", async () => {
+  const calls: string[] = [];
+
+  const ticket = await scheduleLinearHandoffWithDeps(
+    { hasInstall: true },
+    {
+      recordPending: async () => {
+        calls.push("record_pending");
+      },
+      dispatch: async () => {
+        calls.push("dispatch");
+      },
+      reconcile: async () => {
+        calls.push("reconcile");
+        return TICKET;
+      },
+    },
+  );
+
+  assert.equal(ticket, TICKET);
+  assert.deepEqual(calls, ["record_pending", "dispatch", "reconcile"]);
+});
 
 test("reconciliation keeps durable work pending when ticket delivery fails", async () => {
   const { deps, calls } = makeDeps({ deliverTicket: async () => null });

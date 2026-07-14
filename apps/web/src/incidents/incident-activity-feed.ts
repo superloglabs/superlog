@@ -67,6 +67,7 @@ const TOOL_RESULT_KINDS = new Set([
 
 function isFeedNoise(kind: string): boolean {
   if (kind === "session.error") return false;
+  if (kind === "linear_handoff_pending") return true;
   return kind.startsWith("span.") || kind.startsWith("session.");
 }
 

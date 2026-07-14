@@ -43,6 +43,25 @@ test("buildActivityFeed starts with the issue that triggered the incident", () =
   });
 });
 
+test("buildActivityFeed shows the filed Linear ticket without the internal handoff marker", () => {
+  const filed = event({
+    id: "linear-filed-1",
+    kind: "ticket_filed",
+    summary: "Filed Linear ticket ENG-42",
+    detail: { ticketUrl: "https://linear.app/acme/issue/ENG-42" },
+  });
+  const feed = buildActivityFeed([
+    event({
+      id: "linear-pending-1",
+      kind: "linear_handoff_pending",
+      summary: "Linear handoff pending reconciliation.",
+    }),
+    filed,
+  ]);
+
+  assert.deepEqual(feed, [{ type: "lifecycle", id: "linear-filed-1", event: filed }]);
+});
+
 test("buildActivityFeed turns ask_human into a question node with the exact prompt", () => {
   const feed = buildActivityFeed([
     event({
