@@ -241,7 +241,7 @@ export function parseProjectMcpServerUrl(value: string): string {
       "URL must use HTTPS and must not contain credentials",
     );
   }
-  return raw;
+  return parsed.toString();
 }
 
 function validateAuth(auth: ProjectMcpServerAuth): ProjectMcpServerAuth {

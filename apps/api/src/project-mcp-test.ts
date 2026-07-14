@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ProjectMcpServer, ProjectMcpServerRepository } from "@superlog/db";
-import { assertPublicHttpsUrl } from "./project-mcp-relay.js";
+import { projectMcpFetch } from "./project-mcp-http.js";
 
 export async function testProjectMcpServerConnection(input: {
   projectId: string;
@@ -15,7 +15,6 @@ export async function testProjectMcpServerConnection(input: {
     server = await input.ensureFreshOAuth(input.projectId, input.serverId);
   }
   const endpoint = new URL(server.url);
-  await assertPublicHttpsUrl(endpoint);
   const headers = new Headers();
   if (server.auth.type === "bearer") {
     headers.set("authorization", `Bearer ${server.auth.token}`);
@@ -29,6 +28,7 @@ export async function testProjectMcpServerConnection(input: {
     version: "1.0.0",
   });
   const transport = new StreamableHTTPClientTransport(endpoint, {
+    fetch: projectMcpFetch,
     requestInit: {
       headers,
       redirect: "error",

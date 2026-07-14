@@ -25,8 +25,8 @@ test("the MCP relay authenticates the session and injects only the configured AP
   const app = new Hono();
   mountProjectMcpRelayPublic(app, {
     repository,
-    assertSafeUrl: async () => {},
-    fetch: async (request) => {
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
       upstreamRequests.push(request);
       return new Response('{"jsonrpc":"2.0","id":1,"result":{}}', {
         status: 200,

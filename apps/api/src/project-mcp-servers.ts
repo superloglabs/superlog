@@ -334,10 +334,13 @@ export function parseProjectMcpServerAuthInput(value: unknown): ProjectMcpServer
     };
   }
   if (input.type === "oauth") {
+    const grantType = input.grantType ?? "authorization_code";
+    if (grantType !== "authorization_code" && grantType !== "client_credentials") {
+      throw new ProjectMcpServerError("invalid_auth", "unsupported OAuth grant type");
+    }
     return {
       type: "oauth",
-      grantType:
-        input.grantType === "client_credentials" ? "client_credentials" : "authorization_code",
+      grantType,
       status: "pending",
       scopes: Array.isArray(input.scopes)
         ? input.scopes.filter((scope): scope is string => typeof scope === "string")

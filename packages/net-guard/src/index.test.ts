@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { WebhookDestinationError, assertPublicWebhookUrl, isBlockedAddress } from "./index.js";
+import {
+  WebhookDestinationError,
+  assertPublicWebhookUrl,
+  guardedPublicFetch,
+  isBlockedAddress,
+} from "./index.js";
 
 describe("isBlockedAddress — IPv4", () => {
   const blocked = [
@@ -143,5 +148,14 @@ describe("assertPublicWebhookUrl", () => {
     await rejects("ftp://127.0.0.1/");
     // ...but a private literal is allowed once the hatch is open
     await assert.doesNotReject(() => assertPublicWebhookUrl("http://127.0.0.1:8080/"));
+  });
+});
+
+describe("guardedPublicFetch", () => {
+  it("rejects private destinations at the outbound connection boundary", async () => {
+    await assert.rejects(
+      () => guardedPublicFetch("https://127.0.0.1/mcp", { method: "POST" }),
+      WebhookDestinationError,
+    );
   });
 });

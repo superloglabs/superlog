@@ -1,6 +1,6 @@
 import { lookup } from "node:dns";
 import { isIP } from "node:net";
-import { Agent, type Dispatcher, fetch as undiciFetch } from "undici";
+import { Agent, type Dispatcher, type HeadersInit, fetch as undiciFetch } from "undici";
 
 // Guards outbound webhook delivery against SSRF. The destination host is
 // resolved and every resolved address is checked against a default-deny set of
@@ -284,6 +284,30 @@ export type WebhookFetchInit = {
   signal?: AbortSignal;
 };
 
+export type GuardedPublicFetchInit = {
+  method?: string;
+  headers?: HeadersInit;
+  body?: string | ArrayBuffer | Uint8Array;
+  signal?: AbortSignal;
+};
+
+// Perform an outbound request through the IP-pinning dispatcher. Callers may
+// apply stricter protocol rules, but cannot bypass the connect-time DNS check.
+export async function guardedPublicFetch(
+  url: string | URL,
+  init: GuardedPublicFetchInit = {},
+): Promise<Response> {
+  const destination = url.toString();
+  await assertPublicWebhookUrl(destination, init.signal);
+  const options = {
+    ...init,
+    redirect: "manual",
+    dispatcher: guardedDispatcher() as Dispatcher,
+  } as unknown as NonNullable<Parameters<typeof undiciFetch>[1]>;
+  const response = await undiciFetch(destination, options);
+  return response as unknown as Response;
+}
+
 // Deliver a webhook request through the SSRF-guarded, IP-pinned dispatcher.
 // Validates the destination up front (undici skips connect.lookup for literal
 // IPs, so a literal private IP would otherwise slip past the dispatcher check),
@@ -291,14 +315,5 @@ export type WebhookFetchInit = {
 // are never followed — a 3xx is returned as-is (and treated as a non-2xx
 // failure by the caller) so a redirect can't bounce us to an internal host.
 export async function webhookFetch(url: string, init: WebhookFetchInit): Promise<Response> {
-  await assertPublicWebhookUrl(url, init.signal);
-  const res = await undiciFetch(url, {
-    method: init.method,
-    headers: init.headers,
-    body: init.body,
-    signal: init.signal,
-    redirect: "manual",
-    dispatcher: guardedDispatcher() as Dispatcher,
-  });
-  return res as unknown as Response;
+  return guardedPublicFetch(url, init);
 }

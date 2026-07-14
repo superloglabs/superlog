@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { ProjectMcpServer, ProjectMcpServerRepository } from "@superlog/db";
 import { db, decryptIntegrationSecret, encryptIntegrationSecret, schema } from "@superlog/db";
 import { and, eq, isNull } from "drizzle-orm";
-import { assertPublicHttpsUrl } from "./project-mcp-relay.js";
+import { projectMcpFetch } from "./project-mcp-http.js";
 
 const OAUTH_ATTEMPT_TTL_MS = 10 * 60 * 1000;
 
@@ -19,6 +19,7 @@ export type ProjectMcpOAuthDiscovery = {
 export type ProjectMcpOAuthAttempt = {
   projectId: string;
   serverId: string;
+  serverUrl: string;
   stateHash: string;
   codeVerifier: string;
   redirectUri: string;
@@ -121,6 +122,7 @@ export function createProjectMcpOAuthService(deps: {
       await deps.attempts.create({
         projectId: input.projectId,
         serverId: input.serverId,
+        serverUrl: server.url,
         stateHash: sha256(state),
         codeVerifier,
         redirectUri: input.redirectUri,
@@ -171,6 +173,9 @@ export function createProjectMcpOAuthService(deps: {
       if (!attempt || attempt.expiresAt <= now())
         throw new Error("OAuth attempt is invalid or expired");
       const server = await requireOAuthServer(deps.repository, attempt.projectId, attempt.serverId);
+      if (server.url !== attempt.serverUrl) {
+        throw new Error("OAuth server configuration changed after authorization started");
+      }
       const token = await deps.http.exchange({
         tokenEndpoint: attempt.tokenEndpoint,
         code: input.code,
@@ -377,12 +382,11 @@ export function createDrizzleProjectMcpOAuthAttemptStore(): ProjectMcpOAuthAttem
 }
 
 export function createFetchProjectMcpOAuthHttp(
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: typeof fetch = projectMcpFetch,
 ): ProjectMcpOAuthHttp {
   return {
     async discover(serverUrl) {
       const endpoint = new URL(serverUrl);
-      await assertPublicHttpsUrl(endpoint);
       const initial = await fetchImpl(endpoint, {
         method: "GET",
         headers: {
@@ -419,7 +423,6 @@ export function createFetchProjectMcpOAuthHttp(
       };
     },
     async register(registrationEndpoint, redirectUri) {
-      await assertPublicHttpsUrl(new URL(registrationEndpoint));
       const response = await fetchImpl(registrationEndpoint, {
         method: "POST",
         redirect: "manual",
@@ -498,7 +501,6 @@ async function tokenRequest(
   clientId: string,
   clientSecret: string | null,
 ): Promise<ProjectMcpOAuthTokenResponse> {
-  await assertPublicHttpsUrl(new URL(tokenEndpoint));
   const headers = new Headers({
     accept: "application/json",
     "content-type": "application/x-www-form-urlencoded",
@@ -532,7 +534,6 @@ async function firstJson(
 ): Promise<Record<string, unknown>> {
   for (const url of urls) {
     try {
-      await assertPublicHttpsUrl(new URL(url));
       const response = await fetchImpl(url, {
         headers: { accept: "application/json" },
         redirect: "manual",

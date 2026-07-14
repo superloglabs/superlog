@@ -17,6 +17,7 @@ import { Hono } from "hono";
 import {
   mountProjectMcpServersAuthed,
   mountProjectMcpServersManagement,
+  parseProjectMcpServerAuthInput,
 } from "./project-mcp-servers.js";
 
 process.env.AGENT_SECRETS_KEY ||= randomBytes(32).toString("base64");
@@ -52,6 +53,17 @@ async function seedProject(role: "owner" | "member" = "owner") {
   if (!project) throw new Error("seed project failed");
   return { org, user, project };
 }
+
+test("OAuth authentication rejects unknown grant types", () => {
+  assert.throws(
+    () =>
+      parseProjectMcpServerAuthInput({
+        type: "oauth",
+        grantType: "password",
+      }),
+    (error: unknown) => error instanceof ProjectMcpServerError && error.code === "invalid_auth",
+  );
+});
 
 test("an owner can configure bearer and API-key MCPs without credentials leaking", async () => {
   const { org, user, project } = await seedProject();

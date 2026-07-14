@@ -111,3 +111,28 @@ test("editing preserves a credential unless authentication is explicitly replace
   });
   assert.deepEqual(disconnected.auth, { type: "none", hasCredential: false });
 });
+
+test("equivalent endpoint URL spellings cannot create duplicate MCP servers", async () => {
+  const manager = createProjectMcpServerManager(new InMemoryProjectMcpServerRepository());
+  const created = await manager.add({
+    projectId: "project-1",
+    actorUserId: "user-1",
+    name: "first",
+    url: "https://MCP.EXAMPLE:443",
+    auth: { type: "none" },
+    confirmTrusted: true,
+  });
+
+  assert.equal(created.url, "https://mcp.example/");
+  await assert.rejects(
+    manager.add({
+      projectId: "project-1",
+      actorUserId: "user-1",
+      name: "second",
+      url: "https://mcp.example/",
+      auth: { type: "none" },
+      confirmTrusted: true,
+    }),
+    /URL already exists/i,
+  );
+});

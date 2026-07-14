@@ -2,7 +2,11 @@ import "./project-mcp-test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ProjectMcpServer, ProjectMcpServerRepository } from "@superlog/db";
-import { type ProjectMcpOAuthAttempt, createProjectMcpOAuthService } from "./project-mcp-oauth.js";
+import {
+  type ProjectMcpOAuthAttempt,
+  createFetchProjectMcpOAuthHttp,
+  createProjectMcpOAuthService,
+} from "./project-mcp-oauth.js";
 
 function oauthServer(): ProjectMcpServer {
   const now = new Date("2026-07-14T10:00:00.000Z");
@@ -34,6 +38,13 @@ function oauthServer(): ProjectMcpServer {
     updatedAt: now,
   };
 }
+
+test("OAuth discovery rejects private destinations at the outbound request boundary", async () => {
+  await assert.rejects(
+    createFetchProjectMcpOAuthHttp().discover("https://127.0.0.1/mcp"),
+    /not allowed/i,
+  );
+});
 
 test("OAuth start uses discovery, dynamic registration, PKCE, and resource binding", async () => {
   let server = oauthServer();
@@ -118,6 +129,7 @@ test("OAuth completion consumes the PKCE attempt and stores the token without ex
       consume: async () => ({
         projectId: server.projectId,
         serverId: server.id,
+        serverUrl: server.url,
         stateHash: "hash",
         codeVerifier: "verifier",
         redirectUri: "https://api.superlog.sh/api/agent-mcp-oauth/callback",
@@ -164,6 +176,67 @@ test("OAuth completion consumes the PKCE attempt and stores the token without ex
   assert.equal(result.auth.status, "connected");
   assert.equal(result.auth.accessToken, "access-secret");
   assert.deepEqual(result.auth.scopes, ["issues:read", "issues:write"]);
+});
+
+test("OAuth completion rejects a grant started before the server configuration changed", async () => {
+  let server = oauthServer();
+  const originalUrl = server.url;
+  let exchangeCalled = false;
+  const repository = {
+    get: async () => server,
+    update: async (next: ProjectMcpServer) => {
+      server = next;
+      return next;
+    },
+  } as unknown as ProjectMcpServerRepository;
+  const service = createProjectMcpOAuthService({
+    repository,
+    attempts: {
+      create: async () => {},
+      consume: async () => ({
+        projectId: server.projectId,
+        serverId: server.id,
+        serverUrl: originalUrl,
+        stateHash: "hash",
+        codeVerifier: "verifier",
+        redirectUri: "https://api.superlog.sh/api/agent-mcp-oauth/callback",
+        clientId: "client",
+        clientSecret: null,
+        tokenEndpoint: "https://auth.example/token",
+        authorizationServer: "https://auth.example",
+        resource: originalUrl,
+        scopes: ["issues:read"],
+        expiresAt: new Date("2026-07-14T10:10:00.000Z"),
+      }),
+    },
+    http: {
+      discover: async () => {
+        throw new Error("not called");
+      },
+      register: async () => {
+        throw new Error("not called");
+      },
+      exchange: async () => {
+        exchangeCalled = true;
+        throw new Error("must not exchange");
+      },
+      refresh: async () => {
+        throw new Error("not called");
+      },
+      clientCredentials: async () => {
+        throw new Error("not called");
+      },
+    },
+    now: () => new Date("2026-07-14T10:00:00.000Z"),
+  });
+
+  server = { ...server, url: "https://replacement.example/mcp" };
+
+  await assert.rejects(
+    service.complete({ state: "state", code: "code" }),
+    /configuration changed/i,
+  );
+  assert.equal(exchangeCalled, false);
 });
 
 test("expired OAuth access tokens are refreshed and rotated refresh tokens are retained", async () => {

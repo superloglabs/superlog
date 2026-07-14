@@ -12,29 +12,8 @@ import {
   useUpdateProjectMcpServer,
 } from "../api.ts";
 import { Btn, Chip, FieldLabel, Input } from "../design/ui.tsx";
+import { type AuthDraft, EMPTY_AUTH, createProjectMcpEditorDraft } from "./project-mcp-editor.ts";
 import { SettingsCard, SettingsRow } from "./rows.tsx";
-
-type AuthDraft = {
-  type: "none" | "bearer" | "api_key" | "oauth";
-  token: string;
-  headerName: string;
-  key: string;
-  grantType: "authorization_code" | "client_credentials";
-  scopes: string;
-  clientId: string;
-  clientSecret: string;
-};
-
-const EMPTY_AUTH: AuthDraft = {
-  type: "none",
-  token: "",
-  headerName: "X-API-Key",
-  key: "",
-  grantType: "authorization_code",
-  scopes: "",
-  clientId: "",
-  clientSecret: "",
-};
 
 export function AgentMcpServersCard({ projectId }: { projectId: string | undefined }) {
   const query = useProjectMcpServers(projectId);
@@ -321,18 +300,25 @@ function ServerEditor({
   disabled: boolean;
   onSave: (patch: Record<string, unknown>) => void;
 }) {
+  const initialDraft = createProjectMcpEditorDraft(server);
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState(server.name);
-  const [url, setUrl] = useState(server.url);
-  const [trusted, setTrusted] = useState(false);
-  const [replaceAuth, setReplaceAuth] = useState(false);
-  const [auth, setAuth] = useState<AuthDraft>({
-    ...EMPTY_AUTH,
-    type: server.auth.type,
-    headerName: server.auth.type === "api_key" ? server.auth.headerName : "X-API-Key",
-    grantType: server.auth.type === "oauth" ? server.auth.grantType : "authorization_code",
-    scopes: server.auth.type === "oauth" ? server.auth.scopes.join(" ") : "",
-  });
+  const [name, setName] = useState(initialDraft.name);
+  const [url, setUrl] = useState(initialDraft.url);
+  const [trusted, setTrusted] = useState(initialDraft.trusted);
+  const [replaceAuth, setReplaceAuth] = useState(initialDraft.replaceAuth);
+  const [auth, setAuth] = useState<AuthDraft>(initialDraft.auth);
+  const resetDraft = () => {
+    const draft = createProjectMcpEditorDraft(server);
+    setName(draft.name);
+    setUrl(draft.url);
+    setTrusted(draft.trusted);
+    setReplaceAuth(draft.replaceAuth);
+    setAuth(draft.auth);
+  };
+  const closeEditor = () => {
+    resetDraft();
+    setOpen(false);
+  };
   return open ? (
     <div className="mt-2 w-full rounded-md border border-border bg-surface-2 p-3">
       <div className="grid gap-3 sm:grid-cols-2">
@@ -376,7 +362,7 @@ function ServerEditor({
         </div>
       )}
       <div className="mt-3 flex justify-end gap-2">
-        <Btn size="sm" variant="ghost" onClick={() => setOpen(false)}>
+        <Btn size="sm" variant="ghost" onClick={closeEditor}>
           Cancel
         </Btn>
         <Btn
@@ -389,7 +375,7 @@ function ServerEditor({
               confirmTrusted,
               ...(replaceAuth ? { auth: authInput(auth) } : {}),
             });
-            setOpen(false);
+            closeEditor();
           }}
         >
           Save
@@ -397,7 +383,15 @@ function ServerEditor({
       </div>
     </div>
   ) : (
-    <Btn size="sm" variant="ghost" disabled={disabled} onClick={() => setOpen(true)}>
+    <Btn
+      size="sm"
+      variant="ghost"
+      disabled={disabled}
+      onClick={() => {
+        resetDraft();
+        setOpen(true);
+      }}
+    >
       Edit
     </Btn>
   );
