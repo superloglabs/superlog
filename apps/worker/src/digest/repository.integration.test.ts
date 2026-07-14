@@ -74,3 +74,132 @@ test("clearing a one-shot request only consumes the request selected by the tick
   });
   assert.equal(afterMatchingClear?.digestRunRequestedAt, null);
 });
+
+test("weekly summary counts incident activity and the current status of issues touched in the window", async () => {
+  const now = new Date("2026-07-14T10:00:00Z");
+  const withinWindow = new Date("2026-07-10T10:00:00Z");
+  const beforeWindow = new Date("2026-07-01T10:00:00Z");
+
+  await db.insert(schema.incidents).values([
+    {
+      projectId,
+      codename: "new-open",
+      title: "New open incident",
+      status: "open",
+      firstSeen: withinWindow,
+      lastSeen: withinWindow,
+      createdAt: withinWindow,
+    },
+    {
+      projectId,
+      codename: "new-resolved",
+      title: "New resolved incident",
+      status: "resolved",
+      firstSeen: withinWindow,
+      lastSeen: withinWindow,
+      resolvedAt: withinWindow,
+      createdAt: withinWindow,
+    },
+    {
+      projectId,
+      codename: "old-resolved",
+      title: "Older incident resolved this week",
+      status: "resolved",
+      firstSeen: beforeWindow,
+      lastSeen: withinWindow,
+      resolvedAt: withinWindow,
+      createdAt: beforeWindow,
+    },
+    {
+      projectId,
+      codename: "old-open",
+      title: "Older open incident",
+      status: "open",
+      firstSeen: beforeWindow,
+      lastSeen: withinWindow,
+      createdAt: beforeWindow,
+    },
+  ]);
+
+  await db.insert(schema.issues).values([
+    ...["open-1", "open-2"].map((fingerprint) => ({
+      projectId,
+      fingerprint,
+      exceptionType: "Error",
+      title: fingerprint,
+      status: "open" as const,
+      firstSeen: beforeWindow,
+      lastSeen: withinWindow,
+    })),
+    {
+      projectId,
+      fingerprint: "observed",
+      exceptionType: "Error",
+      title: "Observed",
+      status: "under_observation",
+      firstSeen: beforeWindow,
+      lastSeen: withinWindow,
+    },
+    {
+      projectId,
+      fingerprint: "silenced",
+      exceptionType: "Error",
+      title: "Silenced",
+      status: "silenced",
+      firstSeen: beforeWindow,
+      lastSeen: withinWindow,
+    },
+    {
+      projectId,
+      fingerprint: "resolved",
+      exceptionType: "Error",
+      title: "Resolved",
+      status: "resolved",
+      firstSeen: beforeWindow,
+      lastSeen: withinWindow,
+    },
+    {
+      projectId,
+      fingerprint: "untouched",
+      exceptionType: "Error",
+      title: "Untouched",
+      status: "open",
+      firstSeen: beforeWindow,
+      lastSeen: beforeWindow,
+    },
+  ]);
+
+  const [reviewedIssue] = await db
+    .insert(schema.issues)
+    .values({
+      projectId,
+      fingerprint: "reviewed-this-week",
+      exceptionType: "Error",
+      title: "Reviewed this week",
+      status: "resolved",
+      firstSeen: beforeWindow,
+      lastSeen: beforeWindow,
+    })
+    .returning();
+  const eventIncident = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.codename, "new-open"),
+  });
+  assert.ok(reviewedIssue);
+  assert.ok(eventIncident);
+  await db.insert(schema.incidentEvents).values({
+    incidentId: eventIncident.id,
+    kind: "issue_resolved",
+    detail: { issueId: reviewedIssue.id },
+    processedAt: withinWindow,
+    createdAt: withinWindow,
+  });
+
+  const summary = await repo.gatherWeeklySummary(projectId, { intervalMs: 7 * 86_400_000 }, now);
+
+  assert.deepEqual(summary, {
+    from: new Date("2026-07-07T10:00:00Z"),
+    to: now,
+    incidents: { opened: 2, resolved: 2, remainOpen: 1 },
+    issues: { open: 2, underObservation: 1, silenced: 1, resolved: 2 },
+  });
+});

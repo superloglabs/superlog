@@ -45,6 +45,34 @@ export type RankedDigestPick = {
   candidate: DigestCandidate;
 };
 
+export type WeeklyDigestSummary = {
+  from: Date;
+  to: Date;
+  incidents: {
+    opened: number;
+    resolved: number;
+    remainOpen: number;
+  };
+  issues: {
+    open: number;
+    underObservation: number;
+    silenced: number;
+    resolved: number;
+  };
+};
+
+export function hasWeeklyDigestActivity(summary: WeeklyDigestSummary): boolean {
+  return (
+    summary.incidents.opened +
+      summary.incidents.resolved +
+      summary.issues.open +
+      summary.issues.underObservation +
+      summary.issues.silenced +
+      summary.issues.resolved >
+    0
+  );
+}
+
 export const DIGEST_SYSTEM_PROMPT = [
   "You rank pending bug-fix pull requests for a weekly Slack digest.",
   "You will receive a list of completed agent_runs whose proposed fix PR is still open (not merged).",
@@ -127,16 +155,60 @@ export function severityEmoji(severity: string | null): string {
   }
 }
 
-export function buildDigestBlocks(picks: RankedDigestPick[]): { text: string; blocks: unknown[] } {
+function formatDigestDateRange(from: Date, to: Date): string {
+  const month = new Intl.DateTimeFormat("en-US", { month: "short", timeZone: "UTC" });
+  const day = new Intl.DateTimeFormat("en-US", { day: "numeric", timeZone: "UTC" });
+  const fromMonth = month.format(from);
+  const toMonth = month.format(to);
+  const fromLabel = `${fromMonth} ${day.format(from)}`;
+  const toLabel = fromMonth === toMonth ? day.format(to) : `${toMonth} ${day.format(to)}`;
+  return `${fromLabel}–${toLabel}`;
+}
+
+export function buildDigestBlocks(
+  picks: RankedDigestPick[],
+  summary?: WeeklyDigestSummary,
+): { text: string; blocks: unknown[] } {
   const headerLine = `:sparkles: *Top ${picks.length} fixes to merge this week*`;
   const subline =
     picks.length === 1
       ? "_One pending bug-fix PR is ready for review._"
       : `_${picks.length} pending bug-fix PRs are ready for review, ranked by impact._`;
-  const blocks: unknown[] = [
-    { type: "section", text: { type: "mrkdwn", text: `${headerLine}\n${subline}` } },
-    { type: "divider" },
-  ];
+  const blocks: unknown[] = [];
+  if (summary) {
+    blocks.push(
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `:sparkles: *Weekly project recap · ${formatDigestDateRange(summary.from, summary.to)}*`,
+        },
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: [
+            "*Incidents*",
+            `*${summary.incidents.opened} opened* · *${summary.incidents.resolved} resolved* · *${summary.incidents.remainOpen} remain open*`,
+            "",
+            "*Issues reviewed*",
+            `:red_circle: Open: *${summary.issues.open}*`,
+            `:eyes: Under observation: *${summary.issues.underObservation}*`,
+            `:mute: Silenced: *${summary.issues.silenced}*`,
+            `:white_check_mark: Resolved: *${summary.issues.resolved}*`,
+          ].join("\n"),
+        },
+      },
+      { type: "divider" },
+    );
+  }
+  if (picks.length > 0) {
+    blocks.push(
+      { type: "section", text: { type: "mrkdwn", text: `${headerLine}\n${subline}` } },
+      { type: "divider" },
+    );
+  }
   picks.forEach(({ pick, candidate }, idx) => {
     const severity = candidate.severity ? `*${candidate.severity}* · ` : "";
     const lines = [
@@ -147,9 +219,11 @@ export function buildDigestBlocks(picks: RankedDigestPick[]): { text: string; bl
     ];
     blocks.push({ type: "section", text: { type: "mrkdwn", text: lines.join("\n") } });
   });
-  const fallbackText = `Top ${picks.length} fixes to merge: ${picks
-    .map(({ candidate }) => `${candidate.incidentCodename} (${candidate.pr.url})`)
-    .join(", ")}`;
+  const fallbackText = summary
+    ? `Weekly project recap: ${summary.incidents.opened} incidents opened, ${summary.incidents.resolved} resolved, ${summary.incidents.remainOpen} remain open.`
+    : `Top ${picks.length} fixes to merge: ${picks
+        .map(({ candidate }) => `${candidate.incidentCodename} (${candidate.pr.url})`)
+        .join(", ")}`;
   return { text: fallbackText, blocks };
 }
 

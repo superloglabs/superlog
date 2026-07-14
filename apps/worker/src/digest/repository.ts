@@ -1,6 +1,6 @@
 import { type DB, adoptLegacyOrgDigestSettings, schema } from "@superlog/db";
-import { and, desc, eq, gte, isNotNull, isNull, or } from "drizzle-orm";
-import type { DigestCandidate } from "./domain.js";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import type { DigestCandidate, WeeklyDigestSummary } from "./domain.js";
 import type { DigestPolicy } from "./policy.js";
 
 export type ProjectDigestSettings = {
@@ -20,6 +20,11 @@ export type DigestRepository = {
   listRunnableProjectSettings(): Promise<ProjectDigestSettings[]>;
   stampLastRun(projectId: string, at: Date): Promise<void>;
   clearRunRequest(projectId: string, requestedAt: Date): Promise<void>;
+  gatherWeeklySummary(
+    projectId: string,
+    policy: Pick<DigestPolicy, "intervalMs">,
+    now: Date,
+  ): Promise<WeeklyDigestSummary>;
   gatherCandidates(
     projectId: string,
     policy: Pick<DigestPolicy, "candidateLookbackMs" | "candidateLimit">,
@@ -85,6 +90,84 @@ export function createDigestRepository(db: DB): DigestRepository {
             eq(schema.projectAutomationSettings.digestRunRequestedAt, requestedAt),
           ),
         );
+    },
+
+    async gatherWeeklySummary(projectId, policy, now) {
+      const from = new Date(now.getTime() - policy.intervalMs);
+      const [incidentCounts] = await db
+        .select({
+          opened: sql<number>`count(*) filter (
+            where ${schema.incidents.firstSeen} >= ${from}
+              and ${schema.incidents.firstSeen} <= ${now}
+          )`.mapWith(Number),
+          resolved: sql<number>`count(*) filter (
+            where ${schema.incidents.resolvedAt} >= ${from}
+              and ${schema.incidents.resolvedAt} <= ${now}
+          )`.mapWith(Number),
+          remainOpen: sql<number>`count(*) filter (
+            where ${schema.incidents.firstSeen} >= ${from}
+              and ${schema.incidents.firstSeen} <= ${now}
+              and ${schema.incidents.status} = 'open'
+          )`.mapWith(Number),
+        })
+        .from(schema.incidents)
+        .where(eq(schema.incidents.projectId, projectId));
+
+      const lifecycleRows = await db
+        .select({ detail: schema.incidentEvents.detail })
+        .from(schema.incidentEvents)
+        .innerJoin(schema.incidents, eq(schema.incidents.id, schema.incidentEvents.incidentId))
+        .where(
+          and(
+            eq(schema.incidents.projectId, projectId),
+            inArray(schema.incidentEvents.kind, [
+              "issue_reopened",
+              "issue_resolved",
+              "issue_silenced",
+              "issue_observed",
+            ]),
+            sql`coalesce(
+              ${schema.incidentEvents.processedAt},
+              ${schema.incidentEvents.createdAt}
+            ) >= ${from}`,
+            sql`coalesce(
+              ${schema.incidentEvents.processedAt},
+              ${schema.incidentEvents.createdAt}
+            ) <= ${now}`,
+          ),
+        );
+      const classifiedIssueIds = lifecycleRows.flatMap((row) => {
+        const issueId = row.detail?.issueId;
+        return typeof issueId === "string" ? [issueId] : [];
+      });
+      const recentlySeen = and(gte(schema.issues.lastSeen, from), lte(schema.issues.lastSeen, now));
+      const touchedThisWeek =
+        classifiedIssueIds.length > 0
+          ? or(recentlySeen, inArray(schema.issues.id, classifiedIssueIds))
+          : recentlySeen;
+
+      const issueRows = await db
+        .select({ status: schema.issues.status, count: sql<number>`count(*)`.mapWith(Number) })
+        .from(schema.issues)
+        .where(and(eq(schema.issues.projectId, projectId), touchedThisWeek))
+        .groupBy(schema.issues.status);
+      const issueCounts = new Map(issueRows.map((row) => [row.status, row.count]));
+
+      return {
+        from,
+        to: now,
+        incidents: {
+          opened: incidentCounts?.opened ?? 0,
+          resolved: incidentCounts?.resolved ?? 0,
+          remainOpen: incidentCounts?.remainOpen ?? 0,
+        },
+        issues: {
+          open: issueCounts.get("open") ?? 0,
+          underObservation: issueCounts.get("under_observation") ?? 0,
+          silenced: issueCounts.get("silenced") ?? 0,
+          resolved: issueCounts.get("resolved") ?? 0,
+        },
+      };
     },
 
     async gatherCandidates(projectId, policy, now) {

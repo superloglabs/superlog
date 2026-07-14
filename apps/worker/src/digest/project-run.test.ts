@@ -27,6 +27,15 @@ test("a project digest loads settings and candidates only for that project", asy
     },
     async stampLastRun() {},
     async clearRunRequest() {},
+    async gatherWeeklySummary(projectId, policy, now) {
+      calls.push(`summary:${projectId}`);
+      return {
+        from: new Date(now.getTime() - policy.intervalMs),
+        to: now,
+        incidents: { opened: 0, resolved: 0, remainOpen: 0 },
+        issues: { open: 0, underObservation: 0, silenced: 0, resolved: 0 },
+      };
+    },
     async gatherCandidates(projectId) {
       calls.push(`candidates:${projectId}`);
       return [];
@@ -46,5 +55,5 @@ test("a project digest loads settings and candidates only for that project", asy
     { force: true },
   );
 
-  assert.deepEqual(calls, ["settings:project-2", "candidates:project-2"]);
+  assert.deepEqual(calls, ["settings:project-2", "summary:project-2", "candidates:project-2"]);
 });

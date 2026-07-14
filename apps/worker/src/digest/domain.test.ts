@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  type DigestCandidate,
+  TOP_N,
   attachCandidatesToPicks,
   buildDigestBlocks,
   buildRankingUserMessage,
-  type DigestCandidate,
   parsePicks,
   severityEmoji,
-  TOP_N,
   trivialPicks,
 } from "./domain.js";
 
@@ -49,10 +49,10 @@ test("severityEmoji distinguishes SEV-1/2/3 and unset", () => {
 test("buildRankingUserMessage serialises candidates as JSON with the fields the prompt expects", () => {
   const msg = buildRankingUserMessage([makeCandidate()]);
   assert.ok(msg.includes("Open bug-fix PRs to rank"));
-  assert.ok(msg.includes("\"agentRunId\": \"run-1\""));
-  assert.ok(msg.includes("\"severity\": \"SEV-2\""));
+  assert.ok(msg.includes('"agentRunId": "run-1"'));
+  assert.ok(msg.includes('"severity": "SEV-2"'));
   // Dates serialised as ISO strings.
-  assert.ok(msg.includes("\"completedAt\": \"2026-05-22T10:00:00.000Z\""));
+  assert.ok(msg.includes('"completedAt": "2026-05-22T10:00:00.000Z"'));
 });
 
 test("parsePicks: valid JSON yields ordered picks (capped at TOP_N, dedup)", () => {
@@ -92,13 +92,11 @@ test("parsePicks: invalid JSON or wrong shape yields empty array", () => {
 });
 
 test("buildDigestBlocks: header reflects pick count and includes PR url + codename per pick", () => {
-  const candidates = [
-    makeCandidate({ agentRunId: "a" }),
-    makeCandidate({ agentRunId: "b", incidentCodename: "blue-eel" }),
-  ];
+  const firstCandidate = makeCandidate({ agentRunId: "a" });
+  const secondCandidate = makeCandidate({ agentRunId: "b", incidentCodename: "blue-eel" });
   const { text, blocks } = buildDigestBlocks([
-    { pick: { agentRunId: "a", rationale: "first reason" }, candidate: candidates[0]! },
-    { pick: { agentRunId: "b", rationale: "second reason" }, candidate: candidates[1]! },
+    { pick: { agentRunId: "a", rationale: "first reason" }, candidate: firstCandidate },
+    { pick: { agentRunId: "b", rationale: "second reason" }, candidate: secondCandidate },
   ]);
   assert.ok(text.includes("purple-otter"));
   assert.ok(text.includes("blue-eel"));
@@ -117,6 +115,43 @@ test("buildDigestBlocks: singular subline when exactly one pick", () => {
   ]);
   const json = JSON.stringify(blocks);
   assert.ok(json.includes("One pending bug-fix PR is ready"));
+});
+
+test("buildDigestBlocks: leads with the weekly incident and issue breakdown", () => {
+  const { text, blocks } = buildDigestBlocks([], {
+    from: new Date("2026-07-07T10:00:00Z"),
+    to: new Date("2026-07-14T10:00:00Z"),
+    incidents: { opened: 12, resolved: 9, remainOpen: 3 },
+    issues: { open: 4, underObservation: 3, silenced: 2, resolved: 8 },
+  });
+
+  assert.equal(text, "Weekly project recap: 12 incidents opened, 9 resolved, 3 remain open.");
+  assert.deepEqual(blocks.slice(0, 3), [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: ":sparkles: *Weekly project recap · Jul 7–14*",
+      },
+    },
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: [
+          "*Incidents*",
+          "*12 opened* · *9 resolved* · *3 remain open*",
+          "",
+          "*Issues reviewed*",
+          ":red_circle: Open: *4*",
+          ":eyes: Under observation: *3*",
+          ":mute: Silenced: *2*",
+          ":white_check_mark: Resolved: *8*",
+        ].join("\n"),
+      },
+    },
+    { type: "divider" },
+  ]);
 });
 
 test("attachCandidatesToPicks: filters out picks whose id has no candidate, caps at TOP_N", () => {

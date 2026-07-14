@@ -4,6 +4,7 @@ import {
   type DigestPick,
   attachCandidatesToPicks,
   buildDigestBlocks,
+  hasWeeklyDigestActivity,
 } from "./domain.js";
 import type { DigestPolicy } from "./policy.js";
 import type { DigestRepository } from "./repository.js";
@@ -71,32 +72,24 @@ export async function runDigestForProjectWorkflow(
     return { status: "skipped", reason: "slack installation revoked or missing" };
   }
 
-  const candidates = await deps.repo.gatherCandidates(projectId, deps.policy, deps.now());
+  const now = deps.now();
+  const summary = await deps.repo.gatherWeeklySummary(projectId, deps.policy, now);
+  const candidates = await deps.repo.gatherCandidates(projectId, deps.policy, now);
   let text: string;
   let blocks: unknown[];
   let pickCount: number;
   if (candidates.length === 0) {
-    if (!opts.force) {
+    if (!opts.force && !hasWeeklyDigestActivity(summary)) {
       // Stamp last-run so an empty scheduled week doesn't retry every tick.
-      await deps.repo.stampLastRun(projectId, deps.now());
-      return { status: "skipped", reason: "no open bug-fix PRs in lookback window" };
+      await deps.repo.stampLastRun(projectId, now);
+      return { status: "skipped", reason: "no weekly activity or open bug-fix PRs" };
     }
-    text = "Superlog weekly digest: no open bug-fix PRs in the lookback window.";
-    blocks = [
-      { type: "header", text: { type: "plain_text", text: "Weekly digest" } },
-      {
-        type: "section",
-        text: { type: "mrkdwn", text: "No open bug-fix PRs in the lookback window." },
-      },
-    ];
+    ({ text, blocks } = buildDigestBlocks([], summary));
     pickCount = 0;
   } else {
     const picks = await deps.rank(candidates);
     const ordered = attachCandidatesToPicks(picks, candidates);
-    if (ordered.length === 0) {
-      return { status: "skipped", reason: "ranking returned no valid picks" };
-    }
-    ({ text, blocks } = buildDigestBlocks(ordered));
+    ({ text, blocks } = buildDigestBlocks(ordered, summary));
     pickCount = ordered.length;
   }
 
@@ -116,7 +109,7 @@ export async function runDigestForProjectWorkflow(
     return { status: "skipped", reason: `slack error: ${result.error ?? "no response"}` };
   }
 
-  await deps.repo.stampLastRun(projectId, deps.now());
+  await deps.repo.stampLastRun(projectId, now);
   return { status: "posted", pickCount, ts: result.ts ?? null };
 }
 

@@ -1,7 +1,7 @@
 import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { DigestCandidate, DigestPick } from "./domain.js";
+import type { DigestCandidate, DigestPick, WeeklyDigestSummary } from "./domain.js";
 import { DEFAULT_DIGEST_POLICY, type DigestPolicy } from "./policy.js";
 import type { DigestRepository, ProjectDigestSettings } from "./repository.js";
 import {
@@ -41,11 +41,22 @@ function makeCandidate(overrides: Partial<DigestCandidate> = {}): DigestCandidat
   };
 }
 
+function makeSummary(overrides: Partial<WeeklyDigestSummary> = {}): WeeklyDigestSummary {
+  return {
+    from: new Date(NOW.getTime() - DEFAULT_DIGEST_POLICY.intervalMs),
+    to: NOW,
+    incidents: { opened: 0, resolved: 0, remainOpen: 0 },
+    issues: { open: 0, underObservation: 0, silenced: 0, resolved: 0 },
+    ...overrides,
+  };
+}
+
 function makeRepo(opts: {
   calls: string[];
   settings?: Partial<ProjectDigestSettings>;
   installation?: { id: string; botAccessToken: string };
   candidates?: DigestCandidate[];
+  summary?: WeeklyDigestSummary;
   enabledSettings?: ProjectDigestSettings[];
 }): DigestRepository {
   return {
@@ -76,6 +87,10 @@ function makeRepo(opts: {
     },
     async clearRunRequest(projectId, requestedAt) {
       opts.calls.push(`clearRunRequest:${projectId}:${requestedAt.toISOString()}`);
+    },
+    async gatherWeeklySummary(projectId) {
+      opts.calls.push(`gatherWeeklySummary:${projectId}`);
+      return opts.summary ?? makeSummary();
     },
     async gatherCandidates(projectId, _policy, _now) {
       opts.calls.push(`gatherCandidates:${projectId}`);
@@ -217,6 +232,37 @@ test("runDigestForProject: a forced test posts an empty digest when there are no
   assert.deepEqual(result, { status: "posted", pickCount: 0, ts: "1700000000.0001" });
   assert.ok(calls.includes("postDigest:C1"));
   assert.ok(calls.includes(`stampLastRun:project-1:${NOW.toISOString()}`));
+});
+
+test("runDigestForProject: posts the weekly breakdown even when there are no PR candidates", async () => {
+  const calls: string[] = [];
+  let postedBlocks: unknown[] = [];
+  const repo = makeRepo({
+    calls,
+    settings: {},
+    installation: INSTALLATION,
+    candidates: [],
+    summary: makeSummary({
+      incidents: { opened: 2, resolved: 1, remainOpen: 1 },
+      issues: { open: 1, underObservation: 1, silenced: 0, resolved: 2 },
+    }),
+  });
+  const deps = makeDeps({
+    calls,
+    repo,
+    slack: {
+      async postDigest(input) {
+        postedBlocks = input.blocks;
+        return { ok: true, ts: "1700000000.0001" };
+      },
+    },
+  });
+
+  const result = await runDigestForProjectWorkflow("project-1", deps);
+
+  assert.deepEqual(result, { status: "posted", pickCount: 0, ts: "1700000000.0001" });
+  assert.match(JSON.stringify(postedBlocks), /Weekly project recap/);
+  assert.match(JSON.stringify(postedBlocks), /2 opened/);
 });
 
 test("runDigestForProject: does NOT stamp last-run when Slack post fails", async () => {
