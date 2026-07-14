@@ -46,6 +46,7 @@ test("metric counts probe optimized columns, scan projections sequentially, and 
   assert.ok(querySignals.every((signal) => signal === deadline.signal));
   assert.equal(maxInFlight, 1);
   assert.match(queries[0] ?? "", /FROM system\.columns/);
+  assert.match(queries[0] ?? "", /table IN \{tables:Array\(String\)\}/);
   assert.ok(queries.slice(1).every((query) => query.includes("SuperlogProjectId AS pid")));
   assert.deepEqual(
     [...result],

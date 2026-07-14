@@ -26,7 +26,7 @@ export async function findMetricUsageProjectionTables(
               FROM system.columns
               WHERE database = currentDatabase()
                 AND name = {column:String}
-                AND table IN ({tables:Array(String)})`,
+                AND table IN {tables:Array(String)}`,
       query_params: {
         column: METRIC_USAGE_PROJECT_ID_COLUMN,
         tables: [...METRIC_TABLES],
