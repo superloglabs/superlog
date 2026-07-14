@@ -1,4 +1,4 @@
-import { type DB, db, schema } from "@superlog/db";
+import { type DB, buildIssueReopenPatch, db, schema } from "@superlog/db";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { IssueGroupingSource, IssueGroupingState, LinkedIncidentIssue } from "./domain.js";
 
@@ -139,6 +139,25 @@ export async function findIncident(incidentId: string): Promise<schema.Incident 
   });
 }
 
+// A resolved incident can have several issue fingerprints recur at once. They
+// all belong to one successor investigation, so intake reuses the newest open
+// successor instead of opening one recurrence per fingerprint.
+export async function findOpenRecurrenceForIncident(
+  previousIncidentId: string,
+): Promise<schema.Incident | undefined> {
+  return db.query.incidents.findFirst({
+    where: and(
+      eq(schema.incidents.previousIncidentId, previousIncidentId),
+      eq(schema.incidents.status, "open"),
+    ),
+    orderBy: [desc(schema.incidents.createdAt)],
+  });
+}
+
+export async function reopenIssue(issueId: string): Promise<void> {
+  await db.update(schema.issues).set(buildIssueReopenPatch()).where(eq(schema.issues.id, issueId));
+}
+
 // The episode an alert-episode issue is 1:1 with (alert_episodes_issue_uniq
 // enforces the 1:1). Carries the alert identity used for same-alert grouping.
 export async function findAlertEpisodeForIssue(
@@ -149,17 +168,15 @@ export async function findAlertEpisodeForIssue(
   });
 }
 
-// Serialize incident intake for one issue across concurrent worker tasks.
-// Intake's existing-link check is read-then-create, so two racers processing
-// the same issue (e.g. duplicate alert evaluations folding into one episode
-// issue) could each open an incident. The advisory xact lock (released at
-// commit/rollback) makes the second racer wait until the first's intake has
-// committed its incident link, so it re-lands on that link instead. Callers
+// Serialize incident intake across concurrent worker tasks. The key represents
+// the correlation boundary chosen by the application workflow: issue, trace,
+// or predecessor incident. The advisory xact lock (released at commit/rollback)
+// makes later racers observe the incident/link created by the winner. Callers
 // keep notifications and other slow side effects OUTSIDE fn — the lock holds a
 // database connection open for fn's whole duration.
-export async function withIssueIntakeLock<T>(issueId: string, fn: () => Promise<T>): Promise<T> {
+export async function withIssueIntakeLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${issueId}, 0))`);
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
     return fn();
   });
 }

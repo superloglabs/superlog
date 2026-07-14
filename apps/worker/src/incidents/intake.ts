@@ -35,6 +35,8 @@ export type IntakeRepository = {
   // driven over its life, so the latest link is its current incident.
   findLatestIncidentIssueLink(issueId: string): Promise<schema.IncidentIssue | undefined>;
   findIncident(incidentId: string): Promise<schema.Incident | undefined>;
+  findOpenRecurrenceForIncident(previousIncidentId: string): Promise<schema.Incident | undefined>;
+  reopenIssue(issueId: string): Promise<void>;
   touchIncidentLastSeen(incidentId: string, lastSeen: Date): Promise<void>;
   // The episode an alert-episode issue is 1:1 with — carries the alert
   // identity (alertId + groupKey) that fingerprints no longer encode.
@@ -105,14 +107,14 @@ export type IntakeDeps = {
   lifecycle: IntakeLifecycle;
   analyzeGrouping: GroupingDecider;
   logger: IntakeLogger;
-  // Optional mutual-exclusion hook around the workflow's one read-then-create
+  // Optional mutual-exclusion hook around the workflow's read-then-create
   // section (deciding on + creating/linking the incident, AFTER grouping
   // analysis). Wired for alert-episode issues, where concurrent duplicates of
   // the same issue can reach intake together. fn re-checks the issue's link
   // first, so the racer that lost the lock re-lands on the winner's incident.
   // Deliberately excludes the LLM grouping call — implementations may hold a
   // database connection for fn's whole duration.
-  serializeCreate?: <T>(issueId: string, fn: () => Promise<T>) => Promise<T>;
+  serializeCreate?: <T>(key: string, fn: () => Promise<T>) => Promise<T>;
 };
 
 export type IssueIntakeTransition = "new" | "recurred" | "escalated";
@@ -141,8 +143,8 @@ export async function ensureIncidentForIssueWorkflow(
   // Serialize intake by trace id when present, so same-request symptoms — a span
   // exception and its own log line, which are DIFFERENT issues — can't each open
   // an incident under concurrent pg-boss jobs. Falls back to the issue id (the
-  // alert-episode / same-issue case). Used by both the recurrence path below and
-  // the create path at the tail.
+  // alert-episode / same-issue case). Recurrences use their predecessor id
+  // instead, so concurrent fingerprints from one prior incident converge.
   const traceId = issueSample(issue)?.traceId;
   const serializeKey = traceId ? `trace:${traceId}` : issue.id;
   const serialize = deps.serializeCreate ?? ((_key, fn) => fn());
@@ -155,6 +157,7 @@ export async function ensureIncidentForIssueWorkflow(
       // Retry-idempotency: if a prior attempt already opened the recurrence
       // incident, the latest link points at an open incident — reuse it.
       if (previous.status === "open") {
+        await deps.repo.reopenIssue(issue.id);
         return {
           incident: previous,
           createdIncident: false,
@@ -163,21 +166,22 @@ export async function ensureIncidentForIssueWorkflow(
         };
       }
       // A recurrence opens a NEW incident chained to its predecessor — but if a
-      // sibling symptom of the SAME request has already opened (or recurred)
-      // an incident, join that instead so a span exception and its own log line
-      // don't recur into separate incidents. Serialize on the trace and
-      // re-check inside the lock so concurrent sibling recurrences converge.
-      return serialize(serializeKey, async () => {
+      // related issue already has an open incident, run the same grouping
+      // pipeline as a first occurrence and join that incident instead. The
+      // potentially slow LLM call stays outside the serialized section.
+      let grouping = await findMatchingIncident(issue, deps);
+      let matched = grouping.match?.incident ?? null;
+      return serialize(`recurrence:${previous.id}`, async () => {
         // Re-read the latest link now that we hold the lock: a concurrent
         // recurrence job for this same issue may have already opened the
-        // recurrence incident (this matters for no-trace issues, where the lock
-        // is keyed by issue id) — re-land on it instead of opening a second, and
+        // recurrence incident — re-land on it instead of opening a second, and
         // don't let the same-trace lookup below match the issue's own fresh
         // incident. Mirrors the tail create path's `raceLink` re-check.
         const raceLink = await deps.repo.findLatestIncidentIssueLink(issue.id);
         if (raceLink) {
           const landed = await deps.repo.findIncident(raceLink.incidentId);
           if (landed?.status === "open") {
+            await deps.repo.reopenIssue(issue.id);
             return {
               incident: landed,
               createdIncident: false,
@@ -186,26 +190,51 @@ export async function ensureIncidentForIssueWorkflow(
             };
           }
         }
-        if (traceId) {
+        // The grouping decision ran before acquiring the lock. A sibling
+        // recurrence may have opened an incident while this issue was being
+        // analysed, so converge on that successor before trusting a stale
+        // standalone verdict. Recurrences of one predecessor share the same
+        // lock key, making this deterministic even when neither log has trace
+        // context.
+        if (!matched) {
+          const openRecurrence = await deps.repo.findOpenRecurrenceForIncident(previous.id);
+          if (openRecurrence) {
+            grouping = {
+              match: {
+                incident: openRecurrence,
+                source: "heuristic",
+                reason: "Joined the open recurrence of the same previous incident.",
+              },
+              standaloneSource: null,
+              standaloneReason: null,
+              failedReason: null,
+            };
+            matched = openRecurrence;
+          }
+        }
+        if (!matched && traceId) {
           const sameTrace = await findSameTraceMatchingIncident(issue, deps);
           if (sameTrace) {
-            const linkedIssue = await deps.repo.linkIssueToIncident({
-              incident: sameTrace.incident,
-              issue,
-            });
-            await deps.repo.updateIssueGrouping(issue.id, {
-              state: "grouped",
-              source: "heuristic",
-              reason: sameTrace.reason,
-            });
-            const fresh = (await deps.repo.findIncident(sameTrace.incident.id)) ?? sameTrace.incident;
-            return {
-              incident: fresh,
-              createdIncident: false,
-              linkedIssue,
-              recurrenceIncident: false,
+            grouping = {
+              match: sameTrace,
+              standaloneSource: null,
+              standaloneReason: null,
+              failedReason: null,
             };
+            matched = sameTrace.incident;
           }
+        }
+        if (matched) {
+          const linkedIssue = await deps.repo.linkIssueToIncident({ incident: matched, issue });
+          await deps.repo.reopenIssue(issue.id);
+          await markIssueGrouping(issue.id, grouping, deps.repo);
+          const fresh = (await deps.repo.findIncident(matched.id)) ?? matched;
+          return {
+            incident: fresh,
+            createdIncident: false,
+            linkedIssue,
+            recurrenceIncident: false,
+          };
         }
         const incident = await deps.lifecycle.openRecurrence({
           previousIncident: previous,
@@ -213,14 +242,7 @@ export async function ensureIncidentForIssueWorkflow(
           origin: transition === "escalated" ? "escalation_trigger" : "resolved_issue_recurred",
           environment: environmentFromResourceAttrs(issue.lastSample?.resourceAttrs),
         });
-        await deps.repo.updateIssueGrouping(issue.id, {
-          state: "standalone",
-          source: "heuristic",
-          reason:
-            transition === "escalated"
-              ? "Escalation trigger fired for an observed issue; chained to its previous incident."
-              : "Recurrence of a resolved issue; chained to its previous incident.",
-        });
+        await markIssueGrouping(issue.id, grouping, deps.repo);
         return { incident, createdIncident: true, linkedIssue: true, recurrenceIncident: true };
       });
     }
@@ -304,7 +326,12 @@ export async function ensureIncidentForIssueWorkflow(
     if (!matched) {
       const sameTrace = await findSameTraceMatchingIncident(issue, deps);
       if (sameTrace) {
-        grouping = { match: sameTrace, standaloneSource: null, standaloneReason: null, failedReason: null };
+        grouping = {
+          match: sameTrace,
+          standaloneSource: null,
+          standaloneReason: null,
+          failedReason: null,
+        };
         matched = sameTrace.incident;
       }
     }

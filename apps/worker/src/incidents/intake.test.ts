@@ -90,6 +90,13 @@ function makeRepo(opts: {
       opts.calls.push(`findIncident:${incidentId}`);
       return incidentById.get(incidentId);
     },
+    async findOpenRecurrenceForIncident(previousIncidentId) {
+      opts.calls.push(`findOpenRecurrenceForIncident:${previousIncidentId}`);
+      return undefined;
+    },
+    async reopenIssue(issueId) {
+      opts.calls.push(`reopenIssue:${issueId}`);
+    },
     async findOpenIncidentCandidates(_issue, queryOpts) {
       opts.calls.push(`findOpenIncidentCandidates:${queryOpts.filterService}`);
       return queryOpts.filterService
@@ -208,8 +215,70 @@ test("intake: recurred issue opens a new incident chained to its previous one", 
   assert.equal(result.incident.previousIncidentId, "inc-prev");
   assert.ok(calls.includes("openRecurrence:inc-prev<-iss-new:resolved_issue_recurred"));
   assert.ok(
-    calls.some((c) => c.startsWith("updateIssueGrouping:iss-new:standalone:heuristic:Recurrence")),
+    calls.some((c) =>
+      c.startsWith(
+        "updateIssueGrouping:iss-new:standalone:heuristic:No open incidents in this project.",
+      ),
+    ),
   );
+});
+
+test("intake: recurred issue goes through grouping and joins an existing incident", async () => {
+  const calls: string[] = [];
+  const previous = makeIncident({ id: "inc-prev", status: "resolved" });
+  const candidate = makeIncident({ id: "inc-current", title: "Recall credits exhausted" });
+  const repo = makeRepo({
+    calls,
+    existingLink: { issueId: "iss-new", incidentId: "inc-prev" },
+    incidentById: new Map([
+      ["inc-prev", previous],
+      ["inc-current", candidate],
+    ]),
+    openCandidates: { withService: [], withoutService: [candidate] },
+    project: { id: "proj-1", orgId: "org-1", name: "Production" } as schema.Project,
+  });
+  repo.loadLinkedIncidentIssues = async (incidents) =>
+    incidents.map((incident) => ({
+      incidentId: incident.id,
+      title: incident.title,
+      exceptionType: "ERROR",
+      message: "Recall.ai returned insufficient_credit_balance",
+      topFrame: null,
+      normalizedFrames: [],
+      lastSample: null,
+      lastSeen: NOW,
+    }));
+
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue({
+      kind: "log",
+      status: "resolved",
+      normalizedFrames: [],
+      lastSample: null,
+    } as Partial<schema.Issue>),
+    "recurred",
+    makeDeps({
+      repo,
+      lifecycle: makeLifecycle({ calls }),
+      calls,
+      analyzeGrouping: async () => {
+        calls.push("analyzeGrouping");
+        return {
+          decision: "join",
+          incidentId: "inc-current",
+          evidence: "Both failures come from the same exhausted Recall.ai credit balance.",
+        };
+      },
+    }),
+  );
+
+  assert.equal(result.createdIncident, false);
+  assert.equal(result.recurrenceIncident, false);
+  assert.equal(result.incident.id, "inc-current");
+  assert.ok(calls.includes("analyzeGrouping"));
+  assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-current"));
+  assert.ok(calls.includes("reopenIssue:iss-new"));
+  assert.ok(!calls.some((call) => call.startsWith("openRecurrence:")));
 });
 
 test("intake: recurred same-trace sibling joins the incident instead of opening a recurrence", async () => {
@@ -266,9 +335,9 @@ test("intake: recurred same-trace sibling joins the incident instead of opening 
 });
 
 test("intake: recurred no-trace issue re-lands on a recurrence a racer opened inside the lock", async () => {
-  // No trace id, so the lock is keyed by issue id. Outside the lock the previous
-  // incident is still resolved; by the time we hold the lock a concurrent
-  // recurrence job has opened it. We must re-read and re-land, not open a second.
+  // Outside the lock the previous incident is still resolved; by the time we
+  // hold the predecessor-keyed lock a concurrent recurrence job has opened it.
+  // We must re-read and re-land, not open a second.
   const calls: string[] = [];
   const resolved = makeIncident({ id: "inc-prev", status: "resolved" });
   const openedByRacer = makeIncident({ id: "inc-prev", status: "open" });
@@ -295,6 +364,56 @@ test("intake: recurred no-trace issue re-lands on a recurrence a racer opened in
   assert.equal(result.recurrenceIncident, false);
   assert.equal(result.incident.id, "inc-prev");
   assert.ok(!calls.some((c) => c.startsWith("openRecurrence")));
+});
+
+test("intake: no-trace recurrences from the same predecessor converge on one incident", async () => {
+  const calls: string[] = [];
+  const previous = makeIncident({ id: "inc-prev", status: "resolved" });
+  const siblingRecurrence = makeIncident({
+    id: "inc-sibling-recurrence",
+    previousIncidentId: "inc-prev",
+  });
+  const base = makeRepo({
+    calls,
+    existingLink: { issueId: "iss-new", incidentId: "inc-prev" },
+    incidentById: new Map([
+      ["inc-prev", previous],
+      ["inc-sibling-recurrence", siblingRecurrence],
+    ]),
+  });
+  const repo = {
+    ...base,
+    async findOpenRecurrenceForIncident(previousIncidentId: string) {
+      calls.push(`findOpenRecurrenceForIncident:${previousIncidentId}`);
+      return siblingRecurrence;
+    },
+  } as IntakeRepository;
+
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue({
+      id: "iss-new",
+      kind: "log",
+      status: "resolved",
+      normalizedFrames: [],
+      lastSample: null,
+    } as Partial<schema.Issue>),
+    "recurred",
+    makeDeps({
+      repo,
+      lifecycle: makeLifecycle({ calls }),
+      calls,
+      serializeCreate: async (key, fn) => {
+        calls.push(`serializeCreate:${key}`);
+        return fn();
+      },
+    }),
+  );
+
+  assert.equal(result.createdIncident, false);
+  assert.equal(result.recurrenceIncident, false);
+  assert.equal(result.incident.id, "inc-sibling-recurrence");
+  assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-sibling-recurrence"));
+  assert.ok(!calls.some((call) => call.startsWith("openRecurrence:")));
 });
 
 test("intake: recurred issue whose latest link is already open reuses it (retry idempotency)", async () => {
@@ -589,7 +708,9 @@ test("intake: first-ever alert episode goes through LLM grouping like an error",
   );
   assert.equal(result.createdIncident, false);
   assert.equal(result.incident.id, "inc-error");
-  assert.ok(calls.some((c) => c.startsWith("updateIssueGrouping(undecided-only):iss-new:pending:llm")));
+  assert.ok(
+    calls.some((c) => c.startsWith("updateIssueGrouping(undecided-only):iss-new:pending:llm")),
+  );
   assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-error"));
 });
 

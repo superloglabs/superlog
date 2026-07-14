@@ -12,9 +12,11 @@ import {
   findLatestIncidentIssueLink,
   findOpenIncidentCandidates,
   findOpenIncidentForAlert,
+  findOpenRecurrenceForIncident,
   findProject,
   linkIssueToIncident,
   loadLinkedIncidentIssues,
+  reopenIssue,
   touchIncidentLastSeen,
   updateIssueGrouping,
   withIssueIntakeLock,
@@ -35,6 +37,8 @@ export async function ensureIncidentForIssue(
     repo: {
       findLatestIncidentIssueLink,
       findIncident,
+      findOpenRecurrenceForIncident,
+      reopenIssue,
       findAlertEpisodeForIssue,
       findOpenIncidentForAlert,
       findLatestIncidentForAlert,
@@ -50,13 +54,11 @@ export async function ensureIncidentForIssue(
     logger,
     // Serialize the workflow's read-then-create section with an advisory lock so
     // concurrent intakes (pg-boss issue-transition jobs) can't each open an
-    // incident for what should be one. The workflow keys the lock by trace id
-    // when present — same-request symptoms (a span exception and its own log
-    // line) are DIFFERENT issues, so a per-issue lock wouldn't serialize them —
-    // and re-checks the same-trace match inside the lock so the loser re-lands on
-    // the winner's incident. Falls back to the issue id (the alert-episode case:
-    // racing evaluations fold into one episode issue). The LLM grouping call
-    // stays outside the hook; notifications happen in the caller after release.
+    // incident for what should be one. The workflow keys new issues by trace id
+    // when present, otherwise by issue id; recurrences key by predecessor id so
+    // all fingerprints from the prior incident converge on one successor. The
+    // LLM grouping call stays outside the hook; notifications happen in the
+    // caller after release.
     serializeCreate: withIssueIntakeLock,
   });
 }
