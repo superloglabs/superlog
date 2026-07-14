@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  type UsageMeterDeps,
-  aggregateByOrg,
-  meterTelemetryUsageTick,
-} from "./usage-metering.js";
+import { type UsageMeterDeps, aggregateByOrg, meterTelemetryUsageTick } from "./usage-metering.js";
 
 test("aggregateByOrg sums projects into their org and drops unknown projects", () => {
   const perProject = new Map([
@@ -48,10 +44,7 @@ test("reports per-org deltas for each signal and advances the cursor by one wind
   const reported = await meterTelemetryUsageTick(d);
   // 3 signals × 1 org each
   assert.equal(reported, 3);
-  assert.deepEqual(
-    tracks.map((t) => t.featureId).sort(),
-    ["logs", "metric_points", "spans"],
-  );
+  assert.deepEqual(tracks.map((t) => t.featureId).sort(), ["logs", "metric_points", "spans"]);
   assert.ok(tracks.every((t) => t.orgId === "orgA" && t.value === 10));
   // cursor advanced to start + windowMs (capped below now)
   assert.equal(cursors.get("usage-meter-spans")?.toISOString(), "2026-05-01T00:05:00.000Z");
@@ -76,17 +69,44 @@ test("a track failure is swallowed and the cursor still advances (at-most-once)"
   assert.ok(cursors.get("usage-meter-spans") instanceof Date);
 });
 
+test("a signal count failure preserves its cursor and does not block later signals", async () => {
+  const counted: string[] = [];
+  const {
+    deps: d,
+    tracks,
+    cursors,
+  } = deps({
+    countByProject: async (signal) => {
+      counted.push(signal);
+      if (signal === "logs") throw new Error("clickhouse timeout");
+      return new Map([["p1", 10]]);
+    },
+  });
+
+  const reported = await meterTelemetryUsageTick(d);
+
+  assert.equal(reported, 2);
+  assert.deepEqual(counted, ["spans", "logs", "metric_points"]);
+  assert.deepEqual(
+    tracks.map((track) => track.featureId),
+    ["spans", "metric_points"],
+  );
+  assert.ok(cursors.get("usage-meter-spans") instanceof Date);
+  assert.equal(cursors.has("usage-meter-logs"), false);
+  assert.ok(cursors.get("usage-meter-metric_points") instanceof Date);
+});
+
 test("does not scan past now (window capped at current time)", async () => {
-  let counted: { after: string; until: string } | null = null;
+  const counted: Array<{ after: string; until: string }> = [];
   const { deps: d } = deps({
     getCursor: async () => new Date("2026-05-01T00:09:30Z"),
     now: () => new Date("2026-05-01T00:10:00Z"),
     countByProject: async (_s, after, until) => {
-      counted = { after, until };
+      counted.push({ after, until });
       return new Map();
     },
   });
   await meterTelemetryUsageTick(d);
   // 30s remaining < 5min window → until clamps to now, not cursor+window
-  assert.equal(counted!.until, "2026-05-01T00:10:00.000Z");
+  assert.equal(counted[0]?.until, "2026-05-01T00:10:00.000Z");
 });

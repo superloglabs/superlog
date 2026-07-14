@@ -5,6 +5,7 @@
 import type { ClickHouseClient } from "@clickhouse/client";
 import { type DB, db as defaultDb, schema } from "@superlog/db";
 import { inArray } from "drizzle-orm";
+import { buildUsageCountQuery } from "./usage-count-query.js";
 import {
   type UsageMeterDeps,
   type UsageSignal,
@@ -14,37 +15,6 @@ import {
 const DEFAULT_WINDOW_MS = 5 * 60 * 1000;
 const DEFAULT_INTERVAL_MS = 60 * 1000;
 
-// One bounded-window count query per signal. Metrics span five OTel tables.
-function countQuery(signal: UsageSignal): string {
-  if (signal === "spans") {
-    return `SELECT ResourceAttributes['superlog.project_id'] AS pid, count() AS c
-            FROM otel_traces
-            WHERE Timestamp > {after:DateTime64(9)} AND Timestamp <= {until:DateTime64(9)} AND pid != ''
-            GROUP BY pid`;
-  }
-  if (signal === "logs") {
-    return `SELECT ResourceAttributes['superlog.project_id'] AS pid, count() AS c
-            FROM otel_logs
-            WHERE Timestamp > {after:DateTime64(9)} AND Timestamp <= {until:DateTime64(9)} AND pid != ''
-            GROUP BY pid`;
-  }
-  const metricTables = [
-    "otel_metrics_sum",
-    "otel_metrics_gauge",
-    "otel_metrics_histogram",
-    "otel_metrics_summary",
-    "otel_metrics_exp_histogram",
-  ];
-  const union = metricTables
-    .map(
-      (t) =>
-        `SELECT ResourceAttributes['superlog.project_id'] AS pid, count() AS c FROM ${t}
-         WHERE TimeUnix > {after:DateTime64(9)} AND TimeUnix <= {until:DateTime64(9)} AND pid != '' GROUP BY pid`,
-    )
-    .join(" UNION ALL ");
-  return `SELECT pid, sum(c) AS c FROM (${union}) GROUP BY pid`;
-}
-
 // ClickHouse DateTime64 params want "YYYY-MM-DD hh:mm:ss.fffffffff" (UTC, no Z).
 function chTime(iso: string): string {
   return iso.replace("T", " ").replace("Z", "");
@@ -53,7 +23,7 @@ function chTime(iso: string): string {
 function createCountByProject(clickhouse: Pick<ClickHouseClient, "query">) {
   return async (signal: UsageSignal, afterIso: string, untilIso: string) => {
     const result = await clickhouse.query({
-      query: countQuery(signal),
+      query: buildUsageCountQuery(signal),
       query_params: { after: chTime(afterIso), until: chTime(untilIso) },
       format: "JSONEachRow",
     });

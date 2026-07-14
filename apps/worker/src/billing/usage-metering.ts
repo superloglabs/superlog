@@ -56,36 +56,51 @@ export type UsageMeterDeps = {
 export async function meterTelemetryUsageTick(deps: UsageMeterDeps): Promise<number> {
   let reported = 0;
   for (const signal of Object.keys(SIGNAL_FEATURE_IDS) as UsageSignal[]) {
-    const cursorName = `${CURSOR_PREFIX}${signal}`;
-    const cursor = await deps.getCursor(cursorName);
-    const until = new Date(Math.min(cursor.getTime() + deps.windowMs, deps.now().getTime()));
-    if (until.getTime() <= cursor.getTime()) continue; // nothing new to scan yet
+    try {
+      const cursorName = `${CURSOR_PREFIX}${signal}`;
+      const cursor = await deps.getCursor(cursorName);
+      const until = new Date(Math.min(cursor.getTime() + deps.windowMs, deps.now().getTime()));
+      if (until.getTime() <= cursor.getTime()) continue; // nothing new to scan yet
 
-    const perProject = await deps.countByProject(signal, cursor.toISOString(), until.toISOString());
-    // Persist the cursor BEFORE issuing the non-idempotent track() calls. track()
-    // is additive, so a setCursor failure AFTER tracking would replay this window
-    // next tick and double-charge. Advancing first makes it strictly at-most-once:
-    // a track failure below under-reports one window rather than risk double-count.
-    await deps.setCursor(cursorName, until);
-    if (perProject.size > 0) {
-      const orgMap = await deps.resolveOrgIds([...perProject.keys()]);
-      for (const [orgId, value] of aggregateByOrg(perProject, orgMap)) {
-        try {
-          await deps.track(orgId, SIGNAL_FEATURE_IDS[signal], value);
-          reported += 1;
-        } catch (err) {
-          logger.error(
-            {
-              scope: "billing.usage",
-              signal,
-              orgId,
-              value,
-              err: err instanceof Error ? err.message : String(err),
-            },
-            "usage track failed; window not re-reported (cursor already advanced)",
-          );
+      const perProject = await deps.countByProject(
+        signal,
+        cursor.toISOString(),
+        until.toISOString(),
+      );
+      // Persist the cursor BEFORE issuing the non-idempotent track() calls. track()
+      // is additive, so a setCursor failure AFTER tracking would replay this window
+      // next tick and double-charge. Advancing first makes it strictly at-most-once:
+      // a track failure below under-reports one window rather than risk double-count.
+      await deps.setCursor(cursorName, until);
+      if (perProject.size > 0) {
+        const orgMap = await deps.resolveOrgIds([...perProject.keys()]);
+        for (const [orgId, value] of aggregateByOrg(perProject, orgMap)) {
+          try {
+            await deps.track(orgId, SIGNAL_FEATURE_IDS[signal], value);
+            reported += 1;
+          } catch (err) {
+            logger.error(
+              {
+                scope: "billing.usage",
+                signal,
+                orgId,
+                value,
+                err: err instanceof Error ? err.message : String(err),
+              },
+              "usage track failed; window not re-reported (cursor already advanced)",
+            );
+          }
         }
       }
+    } catch (err) {
+      logger.error(
+        {
+          scope: "billing.usage",
+          signal,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "usage signal metering failed; continuing with remaining signals",
+      );
     }
   }
   return reported;
