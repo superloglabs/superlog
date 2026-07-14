@@ -147,11 +147,11 @@ An Agent Run starts with a new Incident being opened from either a new Issue (an
 
 During an Agent Run, the Agent can:
 
-Manage issues:
+Determine the outcome of every issue linked to the Incident. These outcomes are applied atomically when the Agent resolves the Incident; they are not separate actions:
 
 - Silence an issue. If the system is operating normally, and an Issue is a false positive, the Issue must be silenced. It will not raise Incidents anymore.
-- Put an issue under observation. If the Issue is a one-off event and needs observation (see above), the Issues needs to be placed under observation with an Escalation trigger.
-- Resolve an issue. If the impact of an issue has ceased due to other factors, and no more action can be taken, the issue needs to be Resolved. 
+- Put an issue under observation. If the Issue is a one-off event and needs observation (see above), the Issue needs to be placed under observation with an Escalation trigger.
+- Resolve an issue. If the impact of an issue has ceased due to other factors, and no more action can be taken, the issue needs to be Resolved.
 
 Take actions to resolve the root cause of the incident (multiple times, iterating and responding to external triggers). These tools might or might not be available in a given project:
 
@@ -162,16 +162,17 @@ Take actions to resolve the root cause of the incident (multiple times, iteratin
 When a human approves an Approval prompt, the platform executes the approved command verbatim under the customer-owned action role and reports the result back to the agent's session. The agent does not execute approved commands itself.
 - Require a prompt for human input and ask for clarification.
 - If no action tools are available, the agent can 'complete_investigation'.
+- If the root cause is proven to be external and Superlog cannot remediate it, the agent can report the external cause and wait for an external change.
 
 And then, finally,
 
 - Resolve the incident. If the impact on the system has ceased (or there has been no impact), or the action of the agent (PRs, approval prompts) have resolved the root cause of the Incident, the agent can resolve the Incident.
-    - All issues connected to the Incident must be either resolved, silenced or put under observation prior to resolving the incident.
+    - As part of resolving the Incident, every connected Issue must be atomically set to `resolved`, `silenced`, or `under observation`.
 
 
 ## Session continuity
 
-Each Incident is investigated by one durable agent session. Intervention outcomes do not end the investigation — they leave the session waiting on an external event: a PR comment, a PR merge or close, an approval decision, or a human answer to a clarification. Any inbound event on the Incident resumes the same session with its context intact. The agent responds on the channel the inbound event arrived on.
+Each Incident is investigated by one durable agent session. A terminal-for-turn intervention ends the current turn, but not necessarily the investigation: the session can remain waiting on a PR comment, merge or close, an approval decision, an external change, or a human answer. Any inbound event on the Incident resumes the same session with its context intact. The agent responds on the channel the inbound event arrived on.
 
 ## Inputs of the agent
 
@@ -197,23 +198,24 @@ When the customer has connected their infrastructure (e.g. an AWS account), the 
 
 ## Structure of the agent
 
+### General principles
+
 The prompt of the agent must be short and clear. The goal and the workflow of the agent must be explicit.
 
 The outcomes of the agent must be provided as tools that the agent can call based on its investigation.
 
-## Outcome tools
+### Turn
+A unit of agent action is a turn. A successfully executed terminal tool ends a turn and determines whether the Incident is resolved, the investigation is completed, or the session waits for external input. A rejected tool call does not end the turn; the agent receives the error and can correct the call.
 
-The tool contract (source of truth: `apps/worker/src/agent-outcome-tools.ts`) has three tiers:
+This section describes the desired agent contract. The implementation may temporarily lag behind it while the contract is rolled out.
+
+## Available tools
+
+### General tools
 
 1. **`report_findings`** (non-terminal) — shared metadata, callable repeatedly.
-2. **Action tools** (non-terminal, executed server-side mid-run): `propose_pr`, `silence_as_noise`, `place_under_observation`, `resolve_issue`. The platform executes each call while the session is live and returns the result to the agent — a PR call returns the PR URL (or the apply failure, which the agent can fix and retry); a classification call applies to the issue immediately.
-3. **Terminal tools**: `resolve_incident` ends the investigation and resolves the incident; `complete_investigation` ends the investigation while leaving the incident open, and is only exposed when no PR or approval-prompt action is actually available; `ask_human` pauses it on a human.
 
-A turn may also legitimately end with **no** terminal call when the agent is waiting on external events — open PRs out for review. If Linear is connected, the platform creates this run's ticket as soon as the first PR is successfully recorded. It then cross-links every PR independently: the PR gets the ticket link and the ticket gets the PR link. Later PRs reuse the same run-scoped ticket, and the Slack PR/waiting updates include it. The run then parks (`awaiting_events`) with its session intact and is resumed by a PR comment, merge, or close (or any human message). Ending a turn with no terminal call *and* nothing pending gets one nudge, then the budget backstops fail the run: a diagnosis that ends with nothing happening is not an outcome.
-
-### report_findings (non-terminal)
-
-Records shared metadata before any acting tool. Callable repeatedly; fields are last-write-wins. All action tools, `complete_investigation`, and `resolve_incident` refuse to run until it has been called.
+Records shared metadata before an outcome. Callable repeatedly; fields are last-write-wins. `propose_pr`, `complete_investigation`, `report_external_cause`, and `resolve_incident` refuse to run until it has been called. `ask_human` may be called without findings when the missing human input is what prevents the investigation.
 
 - `summary` (required) — 1-2 sentences, operator's view, symptom before mechanism
 - `proposedTitle` — replacement incident title, symptom-first, never the fix
@@ -222,37 +224,84 @@ Records shared metadata before any acting tool. Callable repeatedly; fields are 
 - `severity` — SEV-1 / SEV-2 / SEV-3
 - `handoffNotes` — for a future follow-up run: files examined, ruled-out hypotheses, repo gotchas
 
-### Action tools (non-terminal)
-
-**`propose_pr`** — intervention: a validated patch for a defect with real user/business impact. The agent writes a unified diff to a distinct file under `/mnt/session/outputs/`; the platform applies it and opens the PR mid-run, returning the URL or the failure (the agent never holds push credentials). PRs are keyed by branch: a **new** `branchName` opens an independent PR; the **same** `branchName` pushes the patch as a follow-up commit on that PR (how review feedback is addressed). Params: `repoFullName`, `title`, `body`, `branchName` (must start `superlog/`), `baseBranch`, `patchFilePath`; optional `changedFiles`, mobile-regression fields. The agent validates its own patch before proposing; noise is classified, never patched — no PRs that only quiet a signal.
-
-**`silence_as_noise`** — one issue is proven a false positive; it is silenced permanently, so the evidentiary bar is high (quote the success path / contract clause). Params: `issueId`, `reason` (full-text), `evidence`.
-
-**`place_under_observation`** — one issue is plausibly noise but unproven; it goes quiet until the escalation trigger trips. Params: `issueId`, `reason` (full-text), `evidence`, `escalateOn` (`events_per_minute` | `additional_events`), `threshold` (int ≥ 1).
-
-**`resolve_issue`** — one issue's impact has ceased (already fixed, transient cleared, upstream recovered, or fixed by the agent's own merged PR). Params: `issueId`, `reason` (full-text), `evidence` (before/after signal + window).
-
-Only error issues can be silenced or observed; alert-episode issues can only be resolved.
 
 ### Terminal tools
 
-**`resolve_incident`** — the global resolution of the incident: impact has ceased (or never was), or the agent's actions resolved the root cause. Rejected (with the list) while any linked issue is still unclassified. Params: `reason` (full-text), `evidence` (before/after signal + window).
+#### 2. `propose_pr`
 
-**`complete_investigation`** — finish a findings-only investigation, create the external ticket handoff when Linear is connected, and leave the incident open. It is available only when PR creation is disabled or unavailable and no approval-prompt action is available. Requires `report_findings`; does not require issue classification. No params.
+Opens or updates one or more PRs and then ends the turn while the session waits for PR lifecycle events. A single call can cover a change spanning multiple repositories, with at most one PR per repository. Each PR has its own unified diff under `/mnt/session/outputs/`; patches are never embedded in the tool call. Any PR comment, merge, or close starts another turn, in which the agent can update a PR and wait again.
 
-**`ask_human`** — a human must act or answer first; the run pauses and resumes with session intact on reply (waiting indefinitely is by design). Param: `question`. Covers: missing context; a code artifact absent from every mounted repo; a diagnosis whose remediation is not the agent's to make (third-party defect, provider quota, customer-owned config, a decision between fix paths); a failing code path the agent could not locate. In each case the agent states what it found and asks the concrete question that unblocks action.
+Input:
 
-The Approval-prompt outcome (infra fix via AWS CLI etc.) is not yet a tool; when built it joins this contract as an action-or-waiting tool.
+- `pullRequests` (required, non-empty array), where every entry contains:
+    - `repoFullName` (required string) — repository in `owner/repo` form; unique within the call.
+    - `title` (required string)
+    - `body` (required string)
+    - `branchName` (required string) — must start with `superlog/`.
+    - `baseBranch` (required string)
+    - `patchFilePath` (required string) — a distinct unified-diff file under `/mnt/session/outputs/` containing changes only for this repository.
+    - `changedFiles` (optional string array)
+    - mobile-regression fields (optional, according to the connected mobile-test integration)
+
+A new `branchName` opens a PR. Reusing the same repository and `branchName` pushes the patch as a follow-up commit to that PR. The agent must validate every patch before calling the tool. The platform validates all entries and patch applicability before opening any PR. If an external operation nevertheless partially fails, the tool returns a result for every entry, keeps the turn active, and the agent retries only the failed entries. The turn ends only when every PR requested by the call has been recorded successfully.
+
+This tool is only for defects with real user or business impact. Noise is classified when resolving the Incident and must not be patched merely to quiet its signal.
+
+#### 3. `complete_investigation`
+
+Available only when PR creation is disabled or unavailable and no approval-prompt action is available. It finishes a findings-only investigation while leaving the Incident open. When Linear is connected, it triggers the Linear handoff. Requires `report_findings`; does not classify issues. No params.
+
+#### 4. `ask_human`
+
+A human must act or answer first; the turn ends and the run pauses with its session intact until a reply arrives. Param: `question`. Covers missing context, a code artifact absent from every mounted repository, a decision between remediation paths, or a failing code path the agent could not locate. The agent states what it found and asks the concrete question that unblocks action.
+
+#### 5. `report_external_cause`
+
+Reports that the root cause is outside the systems Superlog can remediate. It ends the turn and leaves both the Incident and its Issues open while the session waits for an external change or a human update. Use it only when the external cause is established and there is no concrete unanswered question; use `ask_human` when an answer or decision is needed.
+
+Input:
+
+- `cause` (required string) — concise explanation of the external root cause.
+- `source` (required string) — the external provider, service, customer-owned system, or other responsible system.
+- `evidence` (required string) — evidence establishing that the cause is external and explaining how it produces the observed impact.
+- `recommendedNextStep` (required string) — the action an operator or external owner should take, or the condition Superlog should wait for.
+
+Requires `report_findings`. This tool does not classify issues or resolve the Incident.
+
+#### 6. `resolve_incident`
+
+The global resolution of the Incident. Use it once everything required has been done and the impact has ceased, or when the investigation proves that no remediation is needed and the relevant Issues should be silenced or observed. This tool is terminal for both the turn and the Incident.
+
+Input:
+
+- `reason` (required string) — why no further action is required.
+- `evidence` (required string) — evidence that the impact has ceased or that no meaningful impact existed, including a before/after signal and window when telemetry is the proof.
+- `issueOutcomes` (required array) — exactly one entry for every Issue linked to the Incident. Every entry contains:
+    - `issueId` (required string) — unique within the array.
+    - `status` (required enum) — `resolved`, `silenced`, or `under_observation`.
+    - `reason` (required string) — why this is the correct outcome for the Issue.
+    - `evidence` (required string) — evidence supporting the outcome.
+    - `escalateOn` (conditionally required enum) — `events_per_minute` or `additional_events`; required only for `under_observation`.
+    - `threshold` (conditionally required integer, minimum 1) — required only for `under_observation`.
+
+Only error Issues can be `silenced` or placed `under_observation`; alert-episode Issues must be `resolved`. Observation fields are forbidden for other statuses. The platform validates the complete set—including missing or duplicate Issue IDs and status/type compatibility—before changing state. Issue classification and Incident resolution are one atomic operation: if any entry is invalid, neither the Issues nor the Incident are changed, and the turn remains active so the agent can correct the call.
+
+Requires `report_findings`.
+
+### Approval prompts (in progress)
+
+The Approval-prompt outcome for infrastructure, database, and other customer-authorized changes is still in development. When built, it will join this contract as a terminal-for-turn action that waits for approval and execution results before resuming the same session.
+
 
 ### PR lifecycle events
 
-When an agent PR is merged or closed, the platform resumes the incident's session with the event context and the agent decides what follows — resolve the incident, push more commits, open another PR, or classify remaining issues. Merge only auto-resolves the incident as a fallback when no session can be resumed (e.g. expired), so incidents never stay open forever.
+When an agent PR receives a comment, is merged, or is closed, the platform resumes the Incident's session with the event context. The agent decides what follows: update one or more PRs, open cross-repository follow-up PRs, report an external cause, ask a human, or resolve the Incident with all Issue outcomes. Merge only auto-resolves the Incident as a fallback when no session can be resumed (e.g. expired), so Incidents never stay open forever.
 
 ### Contract mechanics
 
 - Tool schemas are flat (`type`/`properties`/`required` only) — runner APIs reject top-level composition keywords at agent-create time.
 - Runner APIs don't enforce custom-tool schemas server-side, so the worker re-validates every call and error-acks invalid input with a model-readable message; the model corrects the call within the same session. Identical-tool error acks are capped per turn, then the budget backstops own the runaway session.
-- Retired tools (`report_failure` — removed 2026-07-08 because it let a run end without findings; `mark_already_resolved` — replaced 2026-07-10 by the per-issue `resolve_issue` + `resolve_incident`) are still recognized by the validator: old sessions that resume and call one get an error ack redirecting to the live outcomes, not an unknown-tool hard failure.
+- Legacy sessions may know retired tools such as `report_failure`, `mark_already_resolved`, `silence_as_noise`, `place_under_observation`, or `resolve_issue`. During rollout, the validator must continue recognizing them and return a model-readable error directing the agent to the current terminal outcomes rather than hard-failing the run as an unknown tool.
 
 # Memory
 
@@ -280,3 +329,4 @@ July 9, 2026 - Issues are either errors or alert episodes. An alert-episode Issu
 July 9, 2026 - merged the managed-agent spec into this document
 July 10, 2026 - agent loop rework: full-text reasons, non-terminal propose_pr (multiple PRs, keyed by branch), per-issue classification tools, terminal resolve_incident, awaiting_events parking, PR merge/close resumes the session
 July 14, 2026 - deterministic Linear handoff: when Linear is connected, each explicitly completed investigation gets its own ticket, while PR-producing runs create/reuse their run-scoped ticket on the first recorded PR and cross-link every later PR; resolve-time filing is configurable; completed Linear tickets resolve incidents and count as accepted remediation. Projects without PR or approval actions finish through complete_investigation.
+July 14, 2026 - desired agent contract: terminal batched PR proposals (one PR and patch per repository), atomic per-Issue outcomes inside resolve_incident, report_external_cause waiting with the Incident open, and Approval prompts documented as in progress
