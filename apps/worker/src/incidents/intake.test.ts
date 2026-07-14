@@ -212,6 +212,59 @@ test("intake: recurred issue opens a new incident chained to its previous one", 
   );
 });
 
+test("intake: recurred same-trace sibling joins the incident instead of opening a recurrence", async () => {
+  // Same request, resolved yesterday, recurring now: the span exception's
+  // incident is (re)opened by a racing transition; this log symptom shares the
+  // trace and must join it, not chain its own recurrence to its own predecessor.
+  const calls: string[] = [];
+  const previous = makeIncident({ id: "inc-prev", status: "resolved" });
+  const sibling = makeIncident({ id: "inc-sibling", service: "superlog-sample-nextjs" });
+  const base = makeRepo({
+    calls,
+    existingLink: { issueId: "iss-log", incidentId: "inc-prev" },
+    incidentById: new Map([
+      ["inc-prev", previous],
+      ["inc-sibling", sibling],
+    ]),
+  });
+  const repo: IntakeRepository = {
+    ...base,
+    async findOpenIncidentCandidates(_issue, queryOpts) {
+      calls.push(`findOpenIncidentCandidates:${queryOpts.filterService}`);
+      return queryOpts.filterService ? [] : [sibling];
+    },
+    async loadLinkedIncidentIssues(incidents) {
+      calls.push(`loadLinkedIncidentIssues:${incidents.length}`);
+      return incidents.map((inc) => ({
+        incidentId: inc.id,
+        title: "span exception",
+        exceptionType: "TypeError",
+        message: null,
+        topFrame: null,
+        normalizedFrames: [],
+        lastSample: { traceId: "trace-1", spanId: "span-exc" },
+        lastSeen: NOW,
+      })) as unknown as Awaited<ReturnType<IntakeRepository["loadLinkedIncidentIssues"]>>;
+    },
+  };
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue({
+      id: "iss-log",
+      service: "superlog-sample",
+      status: "resolved",
+      lastSample: { traceId: "trace-1", spanId: "span-log" },
+    } as Partial<schema.Issue>),
+    "recurred",
+    makeDeps({ repo, lifecycle: makeLifecycle({ calls }), calls }),
+  );
+
+  assert.equal(result.createdIncident, false);
+  assert.equal(result.recurrenceIncident, false);
+  assert.equal(result.incident.id, "inc-sibling");
+  assert.ok(calls.includes("linkIssueToIncident:iss-log->inc-sibling"));
+  assert.ok(!calls.some((c) => c.startsWith("openRecurrence")));
+});
+
 test("intake: recurred issue whose latest link is already open reuses it (retry idempotency)", async () => {
   const calls: string[] = [];
   const alreadyOpen = makeIncident({ id: "inc-open", status: "open" });
