@@ -13,8 +13,8 @@ import {
 // deploy wizard and telemetry has arrived.
 //
 // We auto-pass-through once the project has ever ingested. `hasIngested` is
-// derived from api_keys.last_used_at (the proxy stamps it on every successful
-// auth), so this gate stays cheap: no ClickHouse queries per page load.
+// derived from the proxy's project-level telemetry marker, so this gate stays
+// cheap: no ClickHouse queries per page load.
 //
 // Demo overlay: when the server is serving sample data (`me.demoMode`), the
 // install wizard stays the default landing, but the user can opt to "Explore

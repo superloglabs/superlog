@@ -14,8 +14,10 @@ import { HTTPException } from "hono/http-exception";
 //
 //   effectiveReadProjectId = hasIngested ? realProjectId : DEMO_PROJECT_ID
 //
-// The moment their real telemetry lands, the proxy stamps api_keys.last_used_at,
-// `hasIngested` flips true, and every read switches back to their own project.
+// The moment their real telemetry lands, the proxy stamps the project-level
+// first-telemetry marker (and authenticated key paths also stamp
+// api_keys.last_used_at), `hasIngested` flips true, and every read switches back
+// to their own project.
 //
 // The whole feature is gated on the DEMO_PROJECT_ID env var. When unset (the
 // open-core / self-host default) every helper below is a no-op and behaviour is
@@ -62,10 +64,17 @@ export function pickReadProjectId(args: {
 }
 
 /**
- * Has this project ever ingested telemetry? Derived from api_keys.last_used_at,
- * which the proxy stamps on every successful ingest auth (no ClickHouse hit).
+ * Has this project ever ingested telemetry? Prefer the project-level acceptance
+ * marker, which also covers vendor-authenticated paths without a project API
+ * key. Keep last_used_at as a compatibility fallback for projects activated
+ * before first_telemetry_at existed.
  */
 export async function projectHasIngested(projectId: string): Promise<boolean> {
+  const project = await db.query.projects.findFirst({
+    columns: { firstTelemetryAt: true },
+    where: eq(schema.projects.id, projectId),
+  });
+  if (project?.firstTelemetryAt) return true;
   const row = await db.query.apiKeys.findFirst({
     columns: { id: true },
     where: and(eq(schema.apiKeys.projectId, projectId), isNotNull(schema.apiKeys.lastUsedAt)),

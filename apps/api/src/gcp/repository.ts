@@ -1,5 +1,5 @@
 import { db, encryptIntegrationSecret, mintApiKey, schema } from "@superlog/db";
-import { and, desc, eq, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import type {
   GcpConnectionRecord,
   GcpConnectionRepository,
@@ -47,7 +47,10 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
         eq(schema.gcpConnections.projectId, projectId),
         isNull(schema.gcpConnections.revokedAt),
       ),
-      orderBy: desc(schema.gcpConnections.createdAt),
+      orderBy: [
+        desc(sql`${schema.gcpConnections.status} = 'connected'`),
+        desc(schema.gcpConnections.createdAt),
+      ],
     });
     return row ? toDomain(row) : null;
   }
@@ -56,7 +59,7 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
     await db
       .update(schema.gcpConnections)
       .set({ status: "provisioning", lastError: null, updatedAt: new Date() })
-      .where(eq(schema.gcpConnections.id, id));
+      .where(and(eq(schema.gcpConnections.id, id), ne(schema.gcpConnections.status, "connected")));
   }
 
   async ensureIngestKey(id: string, projectId: string): Promise<void> {
@@ -84,7 +87,11 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
       const [row] = await tx
         .update(schema.gcpConnections)
         .set({
-          ...result,
+          gcpProjectNumber: result.gcpProjectNumber,
+          topicName: result.topicName,
+          subscriptionName: result.subscriptionName,
+          logSinkName: result.logSinkName,
+          logSinkWriterIdentity: result.logSinkWriterIdentity,
           status: "connected",
           lastError: null,
           lastVerifiedAt: new Date(),
@@ -112,6 +119,6 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
     await db
       .update(schema.gcpConnections)
       .set({ status: "failed", lastError: error.slice(0, 2_000), updatedAt: new Date() })
-      .where(eq(schema.gcpConnections.id, id));
+      .where(and(eq(schema.gcpConnections.id, id), ne(schema.gcpConnections.status, "connected")));
   }
 }

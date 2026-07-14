@@ -45,6 +45,7 @@ const provisioned: ProvisionedGcpConnection = {
   subscriptionName: "superlog-connection-id",
   logSinkName: "superlog-connection-id",
   logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+  monitoringViewerGrantCreated: true,
 };
 
 test("a local persistence failure removes newly provisioned Google resources", async () => {

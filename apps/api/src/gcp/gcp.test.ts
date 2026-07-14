@@ -5,6 +5,7 @@ import { after, before, test } from "node:test";
 import { closeDb, db, runMigrations, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
+import { projectHasIngested } from "../demo.js";
 import type { GcpGateway } from "./domain.js";
 import { type GcpConnectConfig, mountGcpAuthed, mountGcpPublic } from "./interfaces.js";
 import { DrizzleGcpConnectionRepository } from "./repository.js";
@@ -96,6 +97,7 @@ test("a project owner connects GCP without retaining their OAuth token", async (
         logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
         topicName: `superlog-${input.connectionId}`,
         subscriptionName: `superlog-${input.connectionId}`,
+        monitoringViewerGrantCreated: true,
       };
     },
     async deprovision() {},
@@ -178,6 +180,7 @@ test("completing an older OAuth tab does not revoke a newer pending connection",
     subscriptionName: `superlog-${older.id}`,
     logSinkName: `superlog-${older.id}`,
     logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+    monitoringViewerGrantCreated: false,
   });
 
   const stillPending = await db.query.gcpConnections.findFirst({
@@ -185,6 +188,59 @@ test("completing an older OAuth tab does not revoke a newer pending connection",
   });
   assert.equal(stillPending?.status, "pending");
   assert.equal(stillPending?.revokedAt, null);
+});
+
+test("a failed reconnect does not hide an older working GCP connection", async () => {
+  const { user, project } = await seedProject();
+  const [connected] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: project.id,
+      gcpProjectId: "acme-production",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: user.id,
+      status: "connected",
+      createdAt: new Date("2026-07-13T00:00:00Z"),
+    })
+    .returning();
+  await db.insert(schema.gcpConnections).values({
+    projectId: project.id,
+    gcpProjectId: "acme-staging",
+    readerServiceAccountEmail: config.readerServiceAccountEmail,
+    createdBy: user.id,
+    status: "failed",
+    lastError: "OAuth denied",
+    createdAt: new Date("2026-07-14T00:00:00Z"),
+  });
+  assert.ok(connected);
+
+  const current = await new DrizzleGcpConnectionRepository().findCurrent(project.id);
+
+  assert.equal(current?.id, connected.id);
+  assert.equal(current?.status, "connected");
+});
+
+test("a stale callback failure cannot demote an already connected row", async () => {
+  const { user, project } = await seedProject();
+  const [connection] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: project.id,
+      gcpProjectId: "acme-production",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: user.id,
+      status: "connected",
+    })
+    .returning();
+  assert.ok(connection);
+  const repository = new DrizzleGcpConnectionRepository();
+
+  await repository.markProvisioning(connection.id);
+  await repository.markFailed(connection.id, "late OAuth callback failed");
+
+  const current = await repository.findById(connection.id);
+  assert.equal(current?.status, "connected");
+  assert.equal(current?.lastError, null);
 });
 
 test("starting the same GCP project twice reuses one active connection", async () => {
@@ -205,6 +261,16 @@ test("starting the same GCP project twice reuses one active connection", async (
     where: eq(schema.gcpConnections.projectId, project.id),
   });
   assert.equal(active.filter((item) => item.revokedAt === null).length, 1);
+});
+
+test("accepted GCP logs mark a project as ingested without an API key request", async () => {
+  const { project } = await seedProject();
+  await db
+    .update(schema.projects)
+    .set({ firstTelemetryAt: new Date() })
+    .where(eq(schema.projects.id, project.id));
+
+  assert.equal(await projectHasIngested(project.id), true);
 });
 
 test("a null install request body is rejected as an invalid project id", async () => {

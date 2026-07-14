@@ -1,10 +1,10 @@
+import { createAwsFederatedGcpClient } from "@superlog/gcp-auth";
 import type {
   GcpDeprovisioningInput,
   GcpGateway,
   GcpProvisioningInput,
   ProvisionedGcpConnection,
 } from "./domain.js";
-import { createAwsFederatedGcpClient } from "@superlog/gcp-auth";
 import type { GcpConnectConfig } from "./interfaces.js";
 
 type AccessTokenProvider = () => Promise<string>;
@@ -309,6 +309,7 @@ export class GoogleGcpGateway implements GcpGateway {
         subscriptionName: resourceSlug,
         logSinkName: sink.name,
         logSinkWriterIdentity: sink.writerIdentity,
+        monitoringViewerGrantCreated: projectPolicyChanged,
       };
     } catch (error) {
       const topicPolicyUrl = `https://pubsub.googleapis.com/v1/${topicPath}`;
@@ -372,17 +373,6 @@ export class GoogleGcpGateway implements GcpGateway {
   async deprovision(input: GcpDeprovisioningInput): Promise<void> {
     const serviceToken = await this.serviceAccessToken();
     const resourceSlug = `superlog-${input.connectionId}`;
-    const projectIamUrl = `https://cloudresourcemanager.googleapis.com/v1/projects/${encodeURIComponent(input.gcpProjectId)}`;
-    const projectPolicy = await requestJson<IamPolicy>(
-      this.fetchImpl,
-      `${projectIamUrl}:getIamPolicy`,
-      input.userAccessToken,
-      {
-        method: "POST",
-        body: JSON.stringify({ options: { requestedPolicyVersion: 3 } }),
-      },
-    );
-    const readerMember = `serviceAccount:${input.readerServiceAccountEmail}`;
     const actions: Array<() => Promise<void>> = [
       () =>
         deleteResource(
@@ -405,15 +395,33 @@ export class GoogleGcpGateway implements GcpGateway {
           input.integrationProjectId,
         ),
     ];
-    if (hasMember(projectPolicy, "roles/monitoring.viewer", readerMember)) {
-      actions.push(() =>
-        requestJson<void>(this.fetchImpl, `${projectIamUrl}:setIamPolicy`, input.userAccessToken, {
+    if (input.provisioned.monitoringViewerGrantCreated) {
+      const projectIamUrl = `https://cloudresourcemanager.googleapis.com/v1/projects/${encodeURIComponent(input.gcpProjectId)}`;
+      const projectPolicy = await requestJson<IamPolicy>(
+        this.fetchImpl,
+        `${projectIamUrl}:getIamPolicy`,
+        input.userAccessToken,
+        {
           method: "POST",
-          body: JSON.stringify({
-            policy: removeMember(projectPolicy, "roles/monitoring.viewer", readerMember),
-          }),
-        }),
+          body: JSON.stringify({ options: { requestedPolicyVersion: 3 } }),
+        },
       );
+      const readerMember = `serviceAccount:${input.readerServiceAccountEmail}`;
+      if (hasMember(projectPolicy, "roles/monitoring.viewer", readerMember)) {
+        actions.push(() =>
+          requestJson<void>(
+            this.fetchImpl,
+            `${projectIamUrl}:setIamPolicy`,
+            input.userAccessToken,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                policy: removeMember(projectPolicy, "roles/monitoring.viewer", readerMember),
+              }),
+            },
+          ),
+        );
+      }
     }
     const results = await Promise.allSettled(actions.map((action) => action()));
     const failures = results.flatMap((result) =>

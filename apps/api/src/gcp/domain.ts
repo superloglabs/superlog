@@ -29,6 +29,7 @@ export type ProvisionedGcpConnection = {
   subscriptionName: string;
   logSinkName: string;
   logSinkWriterIdentity: string;
+  monitoringViewerGrantCreated: boolean;
 };
 
 export type GcpProvisioningInput = {
