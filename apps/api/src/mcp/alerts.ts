@@ -17,7 +17,7 @@ import {
   testAlertById,
   updateAlertRecord,
 } from "../alerts-service.js";
-import { assertProjectAccess } from "./projects.js";
+import { assertProjectAccess, assertTokenScope } from "./projects.js";
 
 const projectIdSchema = z
   .string()
@@ -125,11 +125,12 @@ const text = (v: unknown) => ({ content: [{ type: "text" as const, text: JSON.st
 
 export function registerAlertTools(
   server: McpServer,
-  session: { userId: string; activeProjectId: string },
+  session: { userId: string; activeProjectId: string; allowedOrgId?: string },
   ch: ClickHouseClient,
 ): void {
   const resolve = async (explicit: string | undefined): Promise<string> => {
     const id = explicit ?? session.activeProjectId;
+    await assertTokenScope(session.allowedOrgId, id);
     await assertProjectAccess(session.userId, id);
     return id;
   };
