@@ -2626,18 +2626,24 @@ export function useIncidentPullRequests(
 
 // The live PR diff, fetched from GitHub by the API. Used when the PR view has
 // no recorded patch body (mid-run `propose_pr` deliveries never record one).
+// `headSha` is part of the key: the PR list polls while a run is active and a
+// follow-up push moves the head, so the diff refetches exactly when a new
+// commit lands — without polling GitHub on a timer.
 export function useIncidentPullRequestDiff(
   projectId: string,
   incidentId: string,
   prId: string,
+  headSha: string | null,
 ) {
   const fetcher = useFetcher();
   return useQuery({
-    queryKey: ["incident-pr-diff", projectId, incidentId, prId],
+    queryKey: ["incident-pr-diff", projectId, incidentId, prId, headSha],
     queryFn: () =>
       fetcher<{ patch: string }>(
         `/api/projects/${projectId}/incidents/${incidentId}/pull-requests/${prId}/diff`,
       ),
+    // Keep showing the previous commit's diff while the new head's loads.
+    placeholderData: (prev) => prev,
     staleTime: 60_000,
     retry: 1,
   });

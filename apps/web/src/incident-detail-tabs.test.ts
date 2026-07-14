@@ -64,6 +64,41 @@ test("run-result findings count before the incident columns are backfilled", () 
   );
 });
 
+test("malformed result fields do not count as findings", () => {
+  // AgentRunView renders nothing for these shapes (see isConfidenceField),
+  // so counting them would surface an empty Findings tab.
+  assert.equal(
+    incidentHasFindings({
+      incident: EMPTY_INCIDENT,
+      agentRun: {
+        failureReason: null,
+        result: {
+          summary: "",
+          rootCause: "a bare string instead of { text, confidence }",
+          estimatedImpact: { text: "missing confidence" },
+          resolutionClassification: "resolved",
+        },
+      },
+      hasPendingResolutionProposal: false,
+    }),
+    false,
+  );
+});
+
+test("well-formed result confidence fields count as findings", () => {
+  assert.equal(
+    incidentHasFindings({
+      incident: EMPTY_INCIDENT,
+      agentRun: {
+        failureReason: null,
+        result: { summary: "", rootCause: { text: "bad deploy", confidence: 0.8 } },
+      },
+      hasPendingResolutionProposal: false,
+    }),
+    true,
+  );
+});
+
 test("an ask_human question surfaces the Findings tab", () => {
   assert.equal(
     incidentHasFindings({

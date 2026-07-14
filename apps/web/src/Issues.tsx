@@ -2358,7 +2358,7 @@ function IncidentPrRemoteDiff({
   incidentId: string;
   pr: IncidentPullRequest;
 }) {
-  const diff = useIncidentPullRequestDiff(projectId, incidentId, pr.id);
+  const diff = useIncidentPullRequestDiff(projectId, incidentId, pr.id, pr.headSha);
   if (diff.isLoading) {
     return (
       <div className="min-h-[520px] rounded-md border border-border bg-surface p-4 text-[12px] text-muted">

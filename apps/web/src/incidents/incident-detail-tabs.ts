@@ -24,6 +24,19 @@ type FindingsAgentRun = {
   } | null;
 };
 
+// Same defensive shape check as AgentRunView's isConfidenceField: agent-emitted
+// result fields are sometimes malformed (e.g. a flat string in place of
+// { text, confidence }), and AgentRunView renders nothing for those — so they
+// must not count as visible findings either.
+function isConfidenceField(v: unknown): boolean {
+  return (
+    !!v &&
+    typeof v === "object" &&
+    typeof (v as { text?: unknown }).text === "string" &&
+    typeof (v as { confidence?: unknown }).confidence === "number"
+  );
+}
+
 // Mirrors what the Findings tab actually renders (AgentRunView + the
 // resolution-proposal banner): flattened incident findings, the run result's
 // fallbacks, an ask_human question, or a failure reason.
@@ -52,9 +65,9 @@ export function incidentHasFindings({
   return !!(
     result.summary ||
     result.question ||
-    result.rootCause ||
-    result.estimatedImpact ||
-    result.resolutionClassification
+    isConfidenceField(result.rootCause) ||
+    isConfidenceField(result.estimatedImpact) ||
+    (result.resolutionClassification && typeof result.resolutionClassification === "object")
   );
 }
 
