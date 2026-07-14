@@ -4,8 +4,10 @@ import { after, before, test } from "node:test";
 import type { ClickHouseClient } from "@clickhouse/client";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { closeDb, db, runMigrations, schema, setAnalyticsClientForTests } from "@superlog/db";
 import { eq } from "drizzle-orm";
+import { instrumentMcpToolAnalytics } from "./analytics.js";
 import { createMcpServerForSession } from "./server.js";
 
 type CapturedEvent = { distinctId: string; event: string; properties?: Record<string, unknown> };
@@ -142,4 +144,63 @@ test("failed tool calls emit mcp_tool_called with success=false and the error", 
   assert.equal(event.properties?.token_kind, "oauth");
   assert.match(String(event.properties?.error), /project/i);
   assert.equal(event.properties?.project_id, outsideProject);
+});
+
+test("org context is omitted for projects the user is not a member of", async () => {
+  const { user } = await seedUserWithProject();
+  const other = await seedUserWithProject();
+  const client = await connectedClient({
+    ch: fakeCh,
+    userId: user.id,
+    tokenId: "tok-analytics-3",
+    tokenKind: "pat",
+    activeProjectId: other.project.id,
+  });
+
+  const failed = await client.callTool({
+    name: "query_logs",
+    arguments: { project_id: other.project.id },
+  });
+  assert.equal(failed.isError, true);
+
+  const event = await waitForEvent(
+    (e) =>
+      e.event === "mcp_tool_called" &&
+      e.properties?.tool === "query_logs" &&
+      e.properties?.project_id === other.project.id,
+  );
+  assert.equal(event.properties?.success, false);
+  // The target project belongs to another tenant — never enrich with its org.
+  assert.equal(event.properties?.org_id, undefined);
+  assert.equal(event.properties?.org_name, undefined);
+  assert.equal(event.properties?.org_slug, undefined);
+  assert.equal(event.properties?.user_email, user.email);
+});
+
+test("isError results carry the error text without a throw", async () => {
+  const { user, project } = await seedUserWithProject();
+  const server = new McpServer({ name: "test", version: "0.0.0" });
+  instrumentMcpToolAnalytics(server, {
+    ch: fakeCh,
+    userId: user.id,
+    tokenId: "tok-analytics-4",
+    tokenKind: "pat",
+    activeProjectId: project.id,
+  });
+  server.registerTool("soft_fail", { inputSchema: {} }, async () => ({
+    content: [{ type: "text" as const, text: "budget exceeded" }],
+    isError: true,
+  }));
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test-client", version: "0.0.0" });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+  const result = await client.callTool({ name: "soft_fail", arguments: {} });
+  assert.equal(result.isError, true);
+
+  const event = await waitForEvent(
+    (e) => e.event === "mcp_tool_called" && e.properties?.tool === "soft_fail",
+  );
+  assert.equal(event.properties?.success, false);
+  assert.equal(event.properties?.error, "budget exceeded");
 });

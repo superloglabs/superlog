@@ -8,7 +8,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { captureServerEvent, db, schema } from "@superlog/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { logger } from "../logger.js";
 import type { McpSession } from "./server.js";
 
@@ -42,12 +42,13 @@ export function instrumentMcpToolAnalytics(server: McpServer, session: McpSessio
       const startedAt = performance.now();
       try {
         const result = await handler(...args);
-        const isError = (result as { isError?: unknown } | null | undefined)?.isError === true;
+        const error = resultErrorText(result);
         emitToolCalled(session, {
           tool: name,
           projectId,
-          success: !isError,
+          success: error === undefined,
           durationMs: performance.now() - startedAt,
+          error,
         });
         return result;
       } catch (err) {
@@ -66,6 +67,17 @@ export function instrumentMcpToolAnalytics(server: McpServer, session: McpSessio
 function effectiveProjectId(input: unknown, session: McpSession): string {
   const explicit = (input as { project_id?: unknown } | null | undefined)?.project_id;
   return typeof explicit === "string" ? explicit : session.activeProjectId;
+}
+
+/** Undefined when the result is a success; the error text otherwise. */
+function resultErrorText(result: unknown): string | undefined {
+  const r = result as
+    | { isError?: unknown; content?: Array<{ type?: unknown; text?: unknown }> }
+    | null
+    | undefined;
+  if (r?.isError !== true) return undefined;
+  const text = r.content?.find((c) => typeof c?.text === "string")?.text;
+  return typeof text === "string" && text ? text : "unknown error";
 }
 
 type ToolCallFacts = {
@@ -90,6 +102,9 @@ async function captureToolCalled(session: McpSession, facts: ToolCallFacts): Pro
       where: eq(schema.users.id, session.userId),
       columns: { email: true, name: true },
     }),
+    // Join through the caller's org membership: a rejected call can carry an
+    // arbitrary project_id, and enriching it would attribute another tenant's
+    // org to this event. No membership → no org fields.
     db
       .select({
         id: schema.orgs.id,
@@ -98,6 +113,13 @@ async function captureToolCalled(session: McpSession, facts: ToolCallFacts): Pro
       })
       .from(schema.projects)
       .innerJoin(schema.orgs, eq(schema.orgs.id, schema.projects.orgId))
+      .innerJoin(
+        schema.orgMembers,
+        and(
+          eq(schema.orgMembers.orgId, schema.orgs.id),
+          eq(schema.orgMembers.userId, session.userId),
+        ),
+      )
       .where(eq(schema.projects.id, facts.projectId)),
   ]);
 
