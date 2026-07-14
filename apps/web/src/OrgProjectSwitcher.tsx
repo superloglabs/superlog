@@ -11,7 +11,6 @@ import {
 } from "./api.ts";
 import { authClient, useActiveOrganization, useListOrganizations } from "./auth-client.ts";
 import { ScrollArea } from "./design/scroll-area.tsx";
-import { beginOrgSwitch, endOrgSwitch } from "./org-switch-lock.ts";
 import { appPathFromProjectRoute, canonicalProjectLocation } from "./project-route.ts";
 
 const ON_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || "");
@@ -167,46 +166,41 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
       setPendingOrgSwitch({ targetOrgId: orgId });
       return;
     }
-    // Switching to a *different* org flips Better Auth's active organization,
-    // which trips ActiveOrgSync's queryClient.clear() and unmounts this
-    // dropdown. We must not defer the navigation to an effect — it would be torn
-    // down before it runs, leaving the stale (old-org) URL to win route
-    // reconciliation and revert the switch. Instead do the whole switch here in
-    // the async handler: this promise keeps running past the unmount and
-    // navigate() still updates the router. Read the new org's active project
-    // straight from the server (uncached, so it's unaffected by clear()'s
-    // timing) and land on it; the new URL then drives the app into the new org.
+    // Switching to a *different* org flips Better Auth's active organization.
+    // A client-side navigate can't win here: setActive moves the session to the
+    // new org (and trips ActiveOrgSync's queryClient.clear()) before the URL
+    // catches up, and in that window ProjectRouteBoundary sees new-org `me`
+    // against the old URL and "reconciles" by reloading back to the old org —
+    // reverting the switch. React Router's navigate() also doesn't commit
+    // synchronously, so any lock racing that commit is fragile.
     //
-    // begin/endOrgSwitch brackets the window between "session moved to the new
-    // org" and "URL navigated to the new org". During that window `me` refetches
-    // to the new org while the URL still names the old one; the lock stops
-    // ProjectRouteBoundary from reconciling that transient mismatch back to the
-    // old URL (which would revert the switch — see [org-switch-lock.ts]).
-    beginOrgSwitch();
+    // So do a hard navigation instead: set the active org, read its active
+    // project from the server, then load the new scoped URL directly. The full
+    // reload boots with session and URL already agreeing on the new org, so
+    // there's nothing to reconcile — the same clean-slate reload ProjectRoute-
+    // Boundary itself uses for cross-tenant changes (which cross-org switches
+    // already incur today).
     try {
       await authClient.organization.setActive({ organizationId: orgId });
       const next = await fetcher<Me>("/api/me");
       if (next.org && next.project) {
-        navigate(
-          canonicalProjectLocation(
-            { orgSlug: next.org.slug, projectSlug: next.project.slug },
-            {
-              pathname: appPathFromProjectRoute(location.pathname),
-              search: location.search,
-              hash: location.hash,
-            },
-          ),
-          { replace: true },
+        const dest = canonicalProjectLocation(
+          { orgSlug: next.org.slug, projectSlug: next.project.slug },
+          {
+            pathname: appPathFromProjectRoute(location.pathname),
+            search: location.search,
+            hash: location.hash,
+          },
         );
+        window.location.assign(`${dest.pathname}${dest.search}${dest.hash}`);
+        return;
       }
     } catch {
-      // Best effort: if the switch fails partway, bail rather than navigate
-      // somewhere wrong. The route boundary (or a manual reload) reconciles the
-      // URL and session once the lock is released.
-    } finally {
-      endOrgSwitch();
-      onClose();
+      // Best effort: if the switch fails partway, fall through and close. The
+      // session may be on the new org while the URL isn't; the route boundary
+      // reconciles that on the next render.
     }
+    onClose();
   };
 
   const manageOrg = async (orgId: string) => {
