@@ -42,6 +42,7 @@ export {
   PERSONAL_ACCESS_TOKEN_PREFIX,
 } from "./keys.js";
 export { mintApiKey, type MintedApiKey } from "./api-keys.js";
+export { adoptLegacyOrgDigestSettings } from "./project-digest-settings.js";
 export {
   isPatExpiryChoice,
   mintPersonalAccessToken,

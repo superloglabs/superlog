@@ -21,6 +21,21 @@ export function SettingsCard({
   );
 }
 
+export function SettingsSectionHeader({
+  title,
+  subtitle,
+}: {
+  title: ReactNode;
+  subtitle: ReactNode;
+}) {
+  return (
+    <div>
+      <h2 className="text-[15px] font-medium">{title}</h2>
+      <p className="text-[13px] text-muted">{subtitle}</p>
+    </div>
+  );
+}
+
 export function SettingsRow({
   title,
   description,

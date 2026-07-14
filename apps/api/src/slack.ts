@@ -1033,6 +1033,80 @@ export function mountSlackAuthed(app: Hono<any>): void {
     process.env.SLACK_OAUTH_REDIRECT_URL ?? "http://localhost:4100/slack/oauth/callback";
   const stateSecret = process.env.STATE_SIGNING_SECRET;
 
+  app.get("/api/projects/:projectId/slack/installation", async (c) => {
+    const projectId = c.req.param("projectId");
+    await requireProjectAccess(c, projectId);
+    const row = await findInstallation(projectId);
+    if (!row) return c.json({ installed: false });
+    return c.json({
+      installed: true,
+      teamId: row.teamId,
+      teamName: row.teamName,
+    });
+  });
+
+  app.post("/api/projects/:projectId/slack/install-url", async (c) => {
+    if (!clientId || !stateSecret) {
+      return c.json({ error: "slack not configured" }, 503);
+    }
+    const projectId = c.req.param("projectId");
+    const ctx = await requireProjectAccess(c, projectId);
+    const callbackRedirectUrl = resolveSlackRedirectUrl(c, redirectUrl);
+    const state = signState({ orgId: ctx.orgId, projectId, userId: ctx.userId }, stateSecret);
+    const url = new URL("https://slack.com/oauth/v2/authorize");
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("scope", SCOPES);
+    url.searchParams.set("redirect_uri", callbackRedirectUrl);
+    url.searchParams.set("state", state);
+    log.info(
+      { org_id: ctx.orgId, project_id: projectId, redirect_uri: callbackRedirectUrl },
+      "slack install url created",
+    );
+    return c.json({ url: url.toString() });
+  });
+
+  app.post("/api/projects/:projectId/slack/uninstall", async (c) => {
+    const projectId = c.req.param("projectId");
+    await requireProjectAccess(c, projectId);
+    const row = await findInstallation(projectId);
+    if (!row) return c.json({ ok: true });
+
+    try {
+      await fetch("https://slack.com/api/auth.revoke", {
+        method: "POST",
+        headers: { authorization: `Bearer ${row.botAccessToken}` },
+      });
+    } catch (e) {
+      log.warn({ err: e }, "auth.revoke failed");
+    }
+
+    await db
+      .update(schema.slackInstallations)
+      .set({ revokedAt: new Date() })
+      .where(eq(schema.slackInstallations.id, row.id));
+    return c.json({ ok: true });
+  });
+
+  app.get("/api/projects/:projectId/slack/channels", async (c) => {
+    const projectId = c.req.param("projectId");
+    await requireProjectAccess(c, projectId);
+    const row = await findInstallation(projectId);
+    if (!row) return c.json({ error: "slack not installed" }, 404);
+
+    const result = await listSlackChannels(row.botAccessToken);
+    if (!result.ok) {
+      log.warn({ team_id: row.teamId, error: result.error }, "slack conversations.list failed");
+      if (result.error === "not_authed" || result.error === "token_revoked") {
+        await db
+          .update(schema.slackInstallations)
+          .set({ revokedAt: new Date() })
+          .where(eq(schema.slackInstallations.id, row.id));
+      }
+      return c.json({ error: result.error }, 502);
+    }
+    return c.json({ channels: result.channels });
+  });
+
   app.get("/api/slack/installation", async (c) => {
     const ctx = await resolveUserOrg(c);
     if (!ctx) return c.json({ installed: false });
