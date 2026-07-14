@@ -77,6 +77,7 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
 CREATE TABLE IF NOT EXISTS superlog.otel_metrics_gauge ON CLUSTER superlog_ha
 (
     `ResourceAttributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    `SuperlogProjectId` LowCardinality(String) MATERIALIZED ResourceAttributes['superlog.project_id'],
     `ResourceSchemaUrl` String CODEC(ZSTD(1)),
     `ScopeName` String CODEC(ZSTD(1)),
     `ScopeVersion` String CODEC(ZSTD(1)),
@@ -102,7 +103,12 @@ CREATE TABLE IF NOT EXISTS superlog.otel_metrics_gauge ON CLUSTER superlog_ha
     INDEX idx_scope_attr_key mapKeys(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_scope_attr_value mapValues(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_attr_key mapKeys(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
-    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1
+    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
+    PROJECTION usage_by_time
+    (
+        SELECT TimeUnix, SuperlogProjectId, count()
+        GROUP BY TimeUnix, SuperlogProjectId
+    )
 )
 ENGINE = ReplicatedMergeTree('/clickhouse/{cluster}/tables/{shard}/{database}/{table}', '{replica}')
 PARTITION BY toDate(TimeUnix)
@@ -113,6 +119,7 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
 CREATE TABLE IF NOT EXISTS superlog.otel_metrics_sum ON CLUSTER superlog_ha
 (
     `ResourceAttributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    `SuperlogProjectId` LowCardinality(String) MATERIALIZED ResourceAttributes['superlog.project_id'],
     `ResourceSchemaUrl` String CODEC(ZSTD(1)),
     `ScopeName` String CODEC(ZSTD(1)),
     `ScopeVersion` String CODEC(ZSTD(1)),
@@ -140,7 +147,12 @@ CREATE TABLE IF NOT EXISTS superlog.otel_metrics_sum ON CLUSTER superlog_ha
     INDEX idx_scope_attr_key mapKeys(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_scope_attr_value mapValues(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_attr_key mapKeys(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
-    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1
+    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
+    PROJECTION usage_by_time
+    (
+        SELECT TimeUnix, SuperlogProjectId, count()
+        GROUP BY TimeUnix, SuperlogProjectId
+    )
 )
 ENGINE = ReplicatedMergeTree('/clickhouse/{cluster}/tables/{shard}/{database}/{table}', '{replica}')
 PARTITION BY toDate(TimeUnix)
@@ -151,6 +163,7 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
 CREATE TABLE IF NOT EXISTS superlog.otel_metrics_summary ON CLUSTER superlog_ha
 (
     `ResourceAttributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    `SuperlogProjectId` LowCardinality(String) MATERIALIZED ResourceAttributes['superlog.project_id'],
     `ResourceSchemaUrl` String CODEC(ZSTD(1)),
     `ScopeName` String CODEC(ZSTD(1)),
     `ScopeVersion` String CODEC(ZSTD(1)),
@@ -174,7 +187,12 @@ CREATE TABLE IF NOT EXISTS superlog.otel_metrics_summary ON CLUSTER superlog_ha
     INDEX idx_scope_attr_key mapKeys(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_scope_attr_value mapValues(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_attr_key mapKeys(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
-    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1
+    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
+    PROJECTION usage_by_time
+    (
+        SELECT TimeUnix, SuperlogProjectId, count()
+        GROUP BY TimeUnix, SuperlogProjectId
+    )
 )
 ENGINE = ReplicatedMergeTree('/clickhouse/{cluster}/tables/{shard}/{database}/{table}', '{replica}')
 PARTITION BY toDate(TimeUnix)
@@ -185,6 +203,7 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
 CREATE TABLE IF NOT EXISTS superlog.otel_metrics_histogram ON CLUSTER superlog_ha
 (
     `ResourceAttributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    `SuperlogProjectId` LowCardinality(String) MATERIALIZED ResourceAttributes['superlog.project_id'],
     `ResourceSchemaUrl` String CODEC(ZSTD(1)),
     `ScopeName` String CODEC(ZSTD(1)),
     `ScopeVersion` String CODEC(ZSTD(1)),
@@ -216,7 +235,12 @@ CREATE TABLE IF NOT EXISTS superlog.otel_metrics_histogram ON CLUSTER superlog_h
     INDEX idx_scope_attr_key mapKeys(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_scope_attr_value mapValues(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_attr_key mapKeys(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
-    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1
+    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
+    PROJECTION usage_by_time
+    (
+        SELECT TimeUnix, SuperlogProjectId, count()
+        GROUP BY TimeUnix, SuperlogProjectId
+    )
 )
 ENGINE = ReplicatedMergeTree('/clickhouse/{cluster}/tables/{shard}/{database}/{table}', '{replica}')
 PARTITION BY toDate(TimeUnix)
@@ -227,6 +251,7 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
 CREATE TABLE IF NOT EXISTS superlog.otel_metrics_exp_histogram ON CLUSTER superlog_ha
 (
     `ResourceAttributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    `SuperlogProjectId` LowCardinality(String) MATERIALIZED ResourceAttributes['superlog.project_id'],
     `ResourceSchemaUrl` String CODEC(ZSTD(1)),
     `ScopeName` String CODEC(ZSTD(1)),
     `ScopeVersion` String CODEC(ZSTD(1)),
@@ -262,7 +287,12 @@ CREATE TABLE IF NOT EXISTS superlog.otel_metrics_exp_histogram ON CLUSTER superl
     INDEX idx_scope_attr_key mapKeys(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_scope_attr_value mapValues(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_attr_key mapKeys(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
-    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1
+    INDEX idx_attr_value mapValues(Attributes) TYPE bloom_filter(0.01) GRANULARITY 1,
+    PROJECTION usage_by_time
+    (
+        SELECT TimeUnix, SuperlogProjectId, count()
+        GROUP BY TimeUnix, SuperlogProjectId
+    )
 )
 ENGINE = ReplicatedMergeTree('/clickhouse/{cluster}/tables/{shard}/{database}/{table}', '{replica}')
 PARTITION BY toDate(TimeUnix)

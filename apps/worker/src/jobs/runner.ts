@@ -28,7 +28,10 @@ export async function registerJobs(boss: JobBoss, jobs: LoadedJob[]): Promise<vo
   await boss.start();
   for (const job of jobs) {
     try {
-      await boss.createQueue(job.name, { policy: "exclusive" });
+      await boss.createQueue(job.name, {
+        policy: "exclusive",
+        ...(job.expireInSeconds ? { expireInSeconds: job.expireInSeconds } : {}),
+      });
       await boss.work(job.name, async () => {
         await job.handler();
       });

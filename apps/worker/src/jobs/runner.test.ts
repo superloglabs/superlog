@@ -33,7 +33,12 @@ function fakeBoss() {
 test("registerJobs starts the boss and registers a queue, worker, and cron schedule per job", async () => {
   const fb = fakeBoss();
   const jobs: LoadedJob[] = [
-    { name: "a.sync", schedule: "0 */6 * * *", handler: async () => {} },
+    {
+      name: "a.sync",
+      schedule: "0 */6 * * *",
+      expireInSeconds: 3_600,
+      handler: async () => {},
+    },
     { name: "b.sync", schedule: "*/5 * * * *", handler: async () => {} },
   ];
 
@@ -46,7 +51,7 @@ test("registerJobs starts the boss and registers a queue, worker, and cron sched
     { name: "b.sync", cron: "*/5 * * * *" },
   ]);
   // Each queue is created exclusive (at most one queued-or-active).
-  assert.ok(fb.calls.includes('createQueue:a.sync:{"policy":"exclusive"}'));
+  assert.ok(fb.calls.includes('createQueue:a.sync:{"policy":"exclusive","expireInSeconds":3600}'));
 });
 
 test("the registered worker invokes the job handler", async () => {

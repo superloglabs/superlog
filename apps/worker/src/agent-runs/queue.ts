@@ -48,7 +48,8 @@ const MAX_CONCURRENCY = 50;
 // attempt is abandoned (logged, including a late-failure hook so an eventual
 // rejection can't become an unhandled rejection) and the minute sweep
 // re-enqueues the run.
-const DEFAULT_JOB_TIMEOUT_MS = 180_000;
+const DEFAULT_JOB_TIMEOUT_MS = 90_000;
+const JOB_EXPIRY_GRACE_SECONDS = 30;
 
 export type AgentRunQueueBoss = {
   createQueue(name: string, options?: unknown): Promise<unknown>;
@@ -143,7 +144,13 @@ export async function registerAgentRunQueue(
   const logger = deps.logger ?? defaultLogger;
   const concurrency = clampConcurrency(deps.concurrency);
 
-  await boss.createQueue(AGENT_RUN_ADVANCE_QUEUE, { policy: "stately" });
+  await boss.createQueue(AGENT_RUN_ADVANCE_QUEUE, {
+    policy: "stately",
+    // Keep pg-boss's durable active-job lease just beyond the application's
+    // own deadline. A task killed during deploy can then block a run for at
+    // most two minutes instead of pg-boss's 15-minute default.
+    expireInSeconds: Math.ceil(DEFAULT_JOB_TIMEOUT_MS / 1000) + JOB_EXPIRY_GRACE_SECONDS,
+  });
   await boss.createQueue(AGENT_RUN_SWEEP_QUEUE, { policy: "exclusive" });
 
   await boss.work(AGENT_RUN_SWEEP_QUEUE, { batchSize: 1 }, async () => {

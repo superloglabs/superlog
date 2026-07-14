@@ -98,7 +98,7 @@ test("registration creates both queues, workers, and the sweep schedule", async 
   // `stately` allows one queued + one active job per run id, so an
   // event-driven enqueue during processing is preserved while duplicates
   // still collapse.
-  assert.deepEqual(advance?.options, { policy: "stately" });
+  assert.deepEqual(advance?.options, { policy: "stately", expireInSeconds: 120 });
   const sweep = fb.queues.find((q) => q.name === AGENT_RUN_SWEEP_QUEUE);
   assert.deepEqual(sweep?.options, { policy: "exclusive" });
   assert.ok(fb.workers.get(AGENT_RUN_ADVANCE_QUEUE));

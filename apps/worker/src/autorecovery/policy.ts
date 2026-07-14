@@ -53,13 +53,9 @@ export const DEFAULT_AUTORECOVERY_POLICY: AutorecoveryPolicy = {
   skipRecentlyCreatedMs: 2 * 60 * 60 * 1000,
   dismissalCooldownMs: 24 * 60 * 60 * 1000,
   reevaluationCooldownMs: 24 * 60 * 60 * 1000,
-  // Per-tick cap on incidents evaluated. The sweep runs inline in the worker's
-  // sequential tick and processes candidates one LLM call at a time, so this
-  // value also bounds how long a single pass blocks telemetry ingest /
-  // investigations. 50 drains the typical backlog in well under a day while
-  // keeping the worst-case pass duration bounded. Crank `AUTORECOVERY_MAX_PER_TICK`
-  // higher to blast through a large backlog faster — but mind that the pass
-  // blocks the rest of the tick until it finishes.
+  // Per-pass cap on incidents evaluated. The sweep processes candidates one
+  // LLM call at a time on its own exclusive background queue; 50 drains the
+  // typical backlog in well under a day without competing passes overlapping.
   maxCandidatesPerTick: 50,
   proposeMinConfidence: "medium",
   maxAgentIterations: 6,

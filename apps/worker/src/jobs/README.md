@@ -14,6 +14,9 @@ export const job: JobDefinition = {
   name: "my-thing.sync",
   // 5-field cron (minute precision; pg-boss checks schedules every 30s).
   schedule: "0 */6 * * *",
+  // Optional: keep the durable active-job lease above this handler's
+  // legitimate worst case so a very slow run cannot overlap its successor.
+  expireInSeconds: 30 * 60,
   // Receives shared deps; return a handler that does ONE pass, or null to opt
   // out (e.g. a required env var is missing). pg-boss owns scheduling, retries,
   // and single-active semantics — handlers do not loop or self-gate.
@@ -32,7 +35,18 @@ Rules the loader enforces:
 - Files load in filename-sorted order.
 
 Each job gets an `exclusive` pg-boss queue (at most one queued-or-active at a
-time), so a slow run never overlaps its next schedule.
+time). Jobs that can legitimately run near pg-boss's default 15-minute lease
+must set `expireInSeconds` above their worst case so a slow run never overlaps
+its next schedule.
+
+Telemetry usage metering follows this rule deliberately: `usage-meter.ts` owns
+an isolated ClickHouse client with a 30-second client deadline and a 25-second
+server execution cap. Metric counts use the exact-timestamp `usage_by_time`
+projection when available and retain a raw-schema fallback. Apply
+`infra/clickhouse/migrations/008_metric_usage_projection.sql`, then materialize
+existing partitions sequentially with
+`scripts/materialize-metric-usage-projections.ts`; do not compensate for an
+unmaterialized projection by extending the request timeout.
 
 This is a build seam as much as a convention: a deployment can overlay
 additional job files into this directory at image-build time without this

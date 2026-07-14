@@ -20,30 +20,27 @@
 //   - autorecovery/tick.ts is the application service
 //
 // This file is now a thin facade that wires real deps and re-exports the
-// two public entry points the worker tick calls.
+// scheduled-job and manual entry points.
 import Anthropic from "@anthropic-ai/sdk";
 import { db } from "@superlog/db";
 import { recordTokenUsage } from "./ai-usage.js";
 import {
-  asLLMClient,
   type AutorecoveryTokenAccountant,
+  asLLMClient,
   runAutorecoveryAgent,
 } from "./autorecovery/agent.js";
 import type { CandidateIncident } from "./autorecovery/domain.js";
 import {
-  type AutorecoveryPolicy,
-  autorecoveryPolicyFromEnv,
-} from "./autorecovery/policy.js";
-import {
   createAutorecoveryMetricsRepository,
   defaultClickhouseClient,
 } from "./autorecovery/metrics-repository.js";
+import { type AutorecoveryPolicy, autorecoveryPolicyFromEnv } from "./autorecovery/policy.js";
 import { createAutorecoveryRepository } from "./autorecovery/repository.js";
 import { createSlackPoster } from "./autorecovery/slack.js";
 import {
+  type TickDeps,
   runAutorecoveryNow as runAutorecoveryNowApp,
   runAutorecoveryTick as runAutorecoveryTickApp,
-  type TickDeps,
 } from "./autorecovery/tick.js";
 import { logger } from "./logger.js";
 
@@ -90,9 +87,8 @@ function makeDeps(apiKey: string, policy: AutorecoveryPolicy): TickDeps {
   };
 }
 
-// Entry point called from the main worker tick loop. Throttled by
-// `worker_state.cursor` — every worker tick checks the cursor and
-// short-circuits if the last autorecovery pass was recent.
+// Entry point called from jobs/autorecovery.ts. Throttled by
+// `worker_state.cursor` so a delayed or duplicate cron fire remains harmless.
 export async function tickAutorecovery(): Promise<number> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return 0;

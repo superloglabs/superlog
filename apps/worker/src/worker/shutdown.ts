@@ -1,4 +1,7 @@
-const DEFAULT_JOB_DRAIN_TIMEOUT_MS = 90_000;
+// Agent-run attempts abandon their pg-boss job after 90s. The deployment
+// grants 120s from SIGTERM to SIGKILL, so 110s lets the job deadline win while
+// preserving ten seconds to close clients and flush telemetry.
+const DEFAULT_JOB_DRAIN_TIMEOUT_MS = 110_000;
 
 type JobRunner = {
   stop(options: { graceful: boolean; timeout: number }): Promise<void>;

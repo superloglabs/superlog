@@ -35,7 +35,7 @@ test("shutdown drains the tick loop and active jobs before closing shared client
 
   await Promise.resolve();
   assert.equal(pollingStopped, true);
-  assert.deepEqual(stopOptions, { graceful: true, timeout: 90_000 });
+  assert.deepEqual(stopOptions, { graceful: true, timeout: 110_000 });
   assert.equal(clickhouseClosed, false);
 
   tick.resolve();

@@ -2,7 +2,6 @@ import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { tickAgentChats } from "../agent-chats/tick.js";
 import { tickAgentRuns } from "../agent-runs/tick.js";
 import { tickAlerts } from "../alerts.js";
-import { tickAutorecovery } from "../autorecovery.js";
 import { tickDigests } from "../digest.js";
 import { handleIssueTransition } from "../incidents/workflow.js";
 import { logger } from "../logger.js";
@@ -22,15 +21,12 @@ export type WorkerTickResult = {
   alerts: number;
   digests: number;
   webhooks: number;
-  autorecoveryProposals: number;
   observedEscalations: number;
-  usageReported: number;
 };
 
 export function createWorkerTick(opts: {
   clickhouse: ClickHouseClientLike;
   telemetryIngestor: TelemetryIngestor;
-  usageMeter?: (() => Promise<number>) | null;
   // Injected so callers can route transition side effects out-of-band (see
   // issue-transitions.ts); defaults to the direct inline workflow.
   handleIssueTransition?: typeof handleIssueTransition;
@@ -81,15 +77,11 @@ export function createWorkerTick(opts: {
         );
         const digests = await safe("digests", tickDigests, 0);
         const webhooks = await safe("webhooks", tickWebhooks, 0);
-        const autorecoveryProposals = await safe("autorecovery", tickAutorecovery, 0);
         const observedEscalations = await safe(
           "observation",
           () => tickObservedIssues(onIssueTransition),
           0,
         );
-        const usageReported = opts.usageMeter
-          ? await safe("usage_metering", opts.usageMeter, 0)
-          : 0;
         span.setAttribute("tick.spans", spans);
         span.setAttribute("tick.logs", logs);
         span.setAttribute("tick.agent_runs", agentRuns);
@@ -97,9 +89,7 @@ export function createWorkerTick(opts: {
         span.setAttribute("tick.alerts", alerts);
         span.setAttribute("tick.digests", digests);
         span.setAttribute("tick.webhooks", webhooks);
-        span.setAttribute("tick.autorecovery_proposals", autorecoveryProposals);
         span.setAttribute("tick.observed_escalations", observedEscalations);
-        span.setAttribute("tick.usage_reported", usageReported);
         return {
           spans,
           logs,
@@ -108,9 +98,7 @@ export function createWorkerTick(opts: {
           alerts,
           digests,
           webhooks,
-          autorecoveryProposals,
           observedEscalations,
-          usageReported,
         };
       } catch (err) {
         span.recordException(err as Error);

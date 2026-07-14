@@ -4,7 +4,6 @@ import { db, shutdownAnalytics } from "@superlog/db";
 import { registerAgentRunHealthMetrics } from "./agent-run-health-metrics.js";
 import { startAgentRunQueue } from "./agent-runs/queue-wiring.js";
 import { initAiUsageSink } from "./ai-usage.js";
-import { createUsageMeterTicker } from "./billing/usage-meter-ticker.js";
 import { handleIssueTransition } from "./incidents/workflow.js";
 import {
   createIssueTransitionDispatcher,
@@ -116,14 +115,9 @@ registerTelemetryIngestMetrics({
   discoveryWindowMs: TELEMETRY_DISCOVERY_WINDOW_MS,
 });
 
-// Telemetry usage metering runs in the tick; the usage-limit notifier runs
-// out-of-band as the `usage-notify` pg-boss job (jobs/usage-notify.ts), which
-// derives active orgs from ClickHouse itself — no coupling to the tick.
-const usageMeter = createUsageMeterTicker({ db, clickhouse: ch });
 const tick = createWorkerTick({
   clickhouse: ch,
   telemetryIngestor,
-  usageMeter,
   handleIssueTransition: dispatchIssueTransition,
   includeAgentRuns: !agentRunQueueReady,
 });

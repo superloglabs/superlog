@@ -34,6 +34,10 @@ export type JobDefinition = {
   name: string;
   // 5-field cron expression (minute precision); pg-boss checks every 30s.
   schedule: string;
+  // Durable active-job lease. Set this above the handler's legitimate worst
+  // case so pg-boss never starts an overlapping successor while a slow run is
+  // still alive.
+  expireInSeconds?: number;
   // create() receives the shared deps and returns the handler — or null to opt
   // out (e.g. a required env var / API key is absent), in which case the job is
   // skipped entirely.
@@ -44,6 +48,7 @@ export type JobDefinition = {
 export type LoadedJob = {
   name: string;
   schedule: string;
+  expireInSeconds?: number;
   handler: JobHandler;
 };
 
@@ -64,6 +69,8 @@ function isJobDefinition(value: unknown): value is JobDefinition {
     typeof def.name === "string" &&
     typeof def.schedule === "string" &&
     def.schedule.length > 0 &&
+    (def.expireInSeconds === undefined ||
+      (Number.isFinite(def.expireInSeconds) && def.expireInSeconds > 0)) &&
     typeof def.create === "function"
   );
 }
@@ -101,7 +108,12 @@ export async function loadJobs(deps: JobDeps, options: { dir?: URL } = {}): Prom
         logger.info({ scope: "jobs.load", job: def.name }, "job opted out at create(); skipping");
         continue;
       }
-      jobs.push({ name: def.name, schedule: def.schedule, handler });
+      jobs.push({
+        name: def.name,
+        schedule: def.schedule,
+        expireInSeconds: def.expireInSeconds,
+        handler,
+      });
       logger.info(
         { scope: "jobs.load", job: def.name, schedule: def.schedule },
         "discovered background job",

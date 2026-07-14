@@ -5,7 +5,8 @@
 import type { ClickHouseClient } from "@clickhouse/client";
 import { type DB, db as defaultDb, schema } from "@superlog/db";
 import { inArray } from "drizzle-orm";
-import { buildUsageCountQuery } from "./usage-count-query.js";
+import { findMetricUsageProjectionTables } from "./metric-usage-schema.js";
+import { buildUsageCountQueries } from "./usage-count-query.js";
 import {
   type UsageMeterDeps,
   type UsageSignal,
@@ -20,18 +21,34 @@ function chTime(iso: string): string {
   return iso.replace("T", " ").replace("Z", "");
 }
 
-function createCountByProject(clickhouse: Pick<ClickHouseClient, "query">) {
+export function createCountByProject(clickhouse: Pick<ClickHouseClient, "query">) {
+  let optimizedMetricTables: Promise<ReadonlySet<string>> | undefined;
   return async (signal: UsageSignal, afterIso: string, untilIso: string) => {
-    const result = await clickhouse.query({
-      query: buildUsageCountQuery(signal),
-      query_params: { after: chTime(afterIso), until: chTime(untilIso) },
-      format: "JSONEachRow",
-    });
-    const rows = (await result.json()) as Array<{ pid: string; c: number | string }>;
     const out = new Map<string, number>();
-    for (const row of rows) {
-      const n = Number(row.c);
-      if (row.pid && Number.isFinite(n) && n > 0) out.set(row.pid, n);
+    // Metrics live in five physical tables. Query them one at a time so a
+    // single metering pass never fans five full-partition scans out in
+    // parallel under write load. Each request also gets its own client
+    // deadline instead of sharing one deadline across a UNION ALL query.
+    let optimizedTables: ReadonlySet<string> | undefined;
+    if (signal === "metric_points") {
+      if (!optimizedMetricTables) {
+        optimizedMetricTables = findMetricUsageProjectionTables(clickhouse);
+      }
+      optimizedTables = await optimizedMetricTables;
+    }
+    for (const query of buildUsageCountQueries(signal, optimizedTables)) {
+      const result = await clickhouse.query({
+        query,
+        query_params: { after: chTime(afterIso), until: chTime(untilIso) },
+        format: "JSONEachRow",
+      });
+      const rows = (await result.json()) as Array<{ pid: string; c: number | string }>;
+      for (const row of rows) {
+        const n = Number(row.c);
+        if (row.pid && Number.isFinite(n) && n > 0) {
+          out.set(row.pid, (out.get(row.pid) ?? 0) + n);
+        }
+      }
     }
     return out;
   };
