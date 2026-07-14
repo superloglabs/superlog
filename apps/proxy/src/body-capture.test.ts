@@ -5,6 +5,7 @@ import {
   PayloadTooLargeError,
   type SpillSink,
   captureBody,
+  isExpectedBodyError,
 } from "./body-capture.js";
 
 function source(...chunks: Array<Uint8Array | string>): AsyncIterable<Uint8Array> {
@@ -131,4 +132,14 @@ test("treats a zero-byte body as an EmptyBodyError", async () => {
     }),
     EmptyBodyError,
   );
+});
+
+test("isExpectedBodyError matches only the handled 4xx rejections", () => {
+  // These two are mapped to 413/400 by handleIngestBodyError — the request
+  // lifecycle handles them, so spans must not be marked ERROR for them
+  // (ERROR status on an expected rejection creates false-positive incidents).
+  assert.equal(isExpectedBodyError(new PayloadTooLargeError(64, 65)), true);
+  assert.equal(isExpectedBodyError(new EmptyBodyError()), true);
+  assert.equal(isExpectedBodyError(new Error("boom")), false);
+  assert.equal(isExpectedBodyError(undefined), false);
 });
