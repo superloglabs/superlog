@@ -32,22 +32,21 @@ export type PullRequestDeliveryReceipt = {
   delivery: RecordedPullRequestDelivery;
 };
 
-const PULL_REQUEST_DELIVERY_EVENT_KIND = "internal_agent_outcome_pr_delivery";
+export const PULL_REQUEST_DELIVERY_EVENT_KIND = "internal_agent_outcome_pr_delivery";
 
 export function pullRequestDeliveryReceiptKey(deliveryId: string): string {
   return `internal_agent_outcome_pr_delivery:${deliveryId}`;
 }
 
-function parseRecordedPullRequestDelivery(
+function parseRecordedPullRequestDeliveryDetail(
   detail: Record<string, unknown> | null | undefined,
-  identity: PullRequestDeliveryIdentity,
 ): RecordedPullRequestDelivery | null {
   if (
     !detail ||
-    detail.deliveryId !== identity.deliveryId ||
-    detail.inputHash !== identity.inputHash ||
+    typeof detail.deliveryId !== "string" ||
+    typeof detail.inputHash !== "string" ||
     typeof detail.repoFullName !== "string" ||
-    detail.requestedBranchName !== identity.requestedBranchName ||
+    typeof detail.requestedBranchName !== "string" ||
     typeof detail.branchName !== "string" ||
     typeof detail.url !== "string" ||
     typeof detail.prNumber !== "number" ||
@@ -58,13 +57,34 @@ function parseRecordedPullRequestDelivery(
   }
   return {
     repoFullName: detail.repoFullName,
-    requestedBranchName: identity.requestedBranchName,
+    requestedBranchName: detail.requestedBranchName,
     branchName: detail.branchName,
     url: detail.url,
     prNumber: detail.prNumber,
     updatedExisting: detail.updatedExisting,
     headSha: detail.headSha,
   };
+}
+
+export function pullRequestDeliveryUrlFromReceiptDetail(
+  detail: Record<string, unknown> | null | undefined,
+): string | null {
+  return parseRecordedPullRequestDeliveryDetail(detail)?.url ?? null;
+}
+
+function parseRecordedPullRequestDelivery(
+  detail: Record<string, unknown> | null | undefined,
+  identity: PullRequestDeliveryIdentity,
+): RecordedPullRequestDelivery | null {
+  if (
+    !detail ||
+    detail.deliveryId !== identity.deliveryId ||
+    detail.inputHash !== identity.inputHash ||
+    detail.requestedBranchName !== identity.requestedBranchName
+  ) {
+    return null;
+  }
+  return parseRecordedPullRequestDeliveryDetail(detail);
 }
 
 export async function findRecordedPullRequestDelivery(

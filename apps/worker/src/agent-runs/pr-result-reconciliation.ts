@@ -84,11 +84,13 @@ export function selectDeliveredPullRequestsForOutcome<T extends DeliveredPullReq
   result: AgentRunResult,
   deliveredPullRequests: T[],
   currentAgentRunId: string,
+  opts: { deliveryReceiptUrls?: readonly string[] } = {},
 ): T[] {
   const proposals = result.prs ?? (result.pr ? [result.pr] : []);
-  const declaredUrls = new Set(
-    proposals.flatMap((proposal) => (proposal.url ? [proposal.url] : [])),
-  );
+  const declaredUrls = new Set([
+    ...proposals.flatMap((proposal) => (proposal.url ? [proposal.url] : [])),
+    ...(proposals.length > 0 ? (opts.deliveryReceiptUrls ?? []) : []),
+  ]);
   if (declaredUrls.size > 0) {
     return deliveredPullRequests.filter((delivery) => declaredUrls.has(delivery.url));
   }

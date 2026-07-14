@@ -11,6 +11,10 @@ import { postIncidentThreadMessage } from "../infra/slack/incident-messages.js";
 import { type ResolvedIntegration, loadEnabledIntegrationsForOrg } from "../integrations.js";
 import { logger } from "../logger.js";
 import { completeWithIncidentResolution, completeWithoutPullRequest } from "./completion.js";
+import {
+  PULL_REQUEST_DELIVERY_EVENT_KIND,
+  pullRequestDeliveryUrlFromReceiptDetail,
+} from "./deliverable-records.js";
 import { scheduleLinearHandoff } from "./linear-handoff.js";
 import { tryMergeAfterAgentRun } from "./merge.js";
 import { hasRevylCreateTestIntegration, looksLikeMobileChange } from "./mobile-regression.js";
@@ -650,25 +654,45 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       }
 
       if (snapshot.result.state === "awaiting_events") {
-        const deliveredPrs = await db.query.agentPullRequests.findMany({
-          where: eq(schema.agentPullRequests.incidentId, ctx.incident.id),
-          columns: {
-            id: true,
-            agentRunId: true,
-            repoFullName: true,
-            branchName: true,
-            baseBranch: true,
-            title: true,
-            url: true,
-            state: true,
-            createdAt: true,
-          },
-          orderBy: [asc(schema.agentPullRequests.createdAt), asc(schema.agentPullRequests.id)],
+        const [deliveredPrs, deliveryReceiptEvents] = await Promise.all([
+          db.query.agentPullRequests.findMany({
+            where: eq(schema.agentPullRequests.incidentId, ctx.incident.id),
+            columns: {
+              id: true,
+              agentRunId: true,
+              repoFullName: true,
+              branchName: true,
+              baseBranch: true,
+              title: true,
+              url: true,
+              state: true,
+              createdAt: true,
+            },
+            orderBy: [asc(schema.agentPullRequests.createdAt), asc(schema.agentPullRequests.id)],
+          }),
+          db.query.incidentEvents.findMany({
+            where: and(
+              eq(schema.incidentEvents.incidentId, ctx.incident.id),
+              eq(schema.incidentEvents.agentRunId, ctx.agentRun.id),
+              eq(schema.incidentEvents.kind, PULL_REQUEST_DELIVERY_EVENT_KIND),
+            ),
+            columns: { detail: true },
+          }),
+        ]);
+        // A failed batch can deliver some repositories before the model
+        // retries only the remaining entries. The final tool result therefore
+        // does not necessarily name every mutation from this run. Durable
+        // per-delivery receipts retain those earlier URLs, including updates
+        // to canonical PR rows originally created by another run.
+        const deliveryReceiptUrls = deliveryReceiptEvents.flatMap(({ detail }) => {
+          const url = pullRequestDeliveryUrlFromReceiptDetail(detail);
+          return url ? [url] : [];
         });
         const outcomePrs = selectDeliveredPullRequestsForOutcome(
           snapshot.result,
           deliveredPrs,
           ctx.agentRun.id,
+          { deliveryReceiptUrls },
         );
         const waitPlan = planPullRequestAwaitingEvents(snapshot.result, outcomePrs);
         if (waitPlan.shouldFail) {

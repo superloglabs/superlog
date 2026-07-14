@@ -6,6 +6,7 @@ import {
   decidePullRequestMutationReconciliation,
   findRecordedPullRequestDelivery,
   markAgentPullRequestClosedAfterDeliveryAbort,
+  pullRequestDeliveryUrlFromReceiptDetail,
   recordOpenedAgentPullRequest,
   recordUpdatedAgentPullRequest,
   resolveIncidentOrgBestEffort,
@@ -368,6 +369,26 @@ test("a recorded per-entry delivery is reconstructed only for the same input", a
   );
 
   assert.equal(recovered?.branchName, "ash/fix-api-retry-d4e5f607");
+});
+
+test("a delivery receipt exposes its canonical pull request URL", () => {
+  const detail = {
+    deliveryId: "d4e5f60718293a4b",
+    inputHash: "proposal-sha256",
+    repoFullName: "acme/api",
+    requestedBranchName: "ash/fix-api",
+    branchName: "ash/fix-api-retry-d4e5f607",
+    url: "https://github.com/acme/api/pull/42",
+    prNumber: 42,
+    updatedExisting: false,
+    headSha: "abc123",
+  };
+
+  assert.equal(
+    pullRequestDeliveryUrlFromReceiptDetail(detail),
+    "https://github.com/acme/api/pull/42",
+  );
+  assert.equal(pullRequestDeliveryUrlFromReceiptDetail({ url: detail.url }), null);
 });
 
 test("recording an existing PR update locks the incident before updating the canonical record", async () => {

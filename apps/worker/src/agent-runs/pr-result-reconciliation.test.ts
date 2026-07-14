@@ -232,6 +232,89 @@ test("terminal reconciliation selects only canonical rows named by the outcome",
   assert.deepEqual(selectDeliveredPullRequestsForOutcome(result, rows, "current-run"), [rows[1]]);
 });
 
+test("partial batch retries retain every delivered pull request exactly once", () => {
+  const result: AgentRunResult = {
+    state: "awaiting_events",
+    summary: "Delivered the remaining web fix.",
+    prs: [
+      {
+        selectedRepoFullName: "acme/web",
+        branchName: "superlog/fix-web",
+        baseBranch: "main",
+        openStatus: "opened",
+        url: "https://github.com/acme/web/pull/34",
+      },
+    ],
+  };
+  const rows = [
+    {
+      agentRunId: "older-run",
+      repoFullName: "acme/api",
+      branchName: "superlog/fix-api",
+      baseBranch: "main",
+      title: "Fix API retries",
+      url: "https://github.com/acme/api/pull/12",
+      state: "open" as const,
+    },
+    {
+      agentRunId: "current-run",
+      repoFullName: "acme/web",
+      branchName: "superlog/fix-web",
+      baseBranch: "main",
+      title: "Fix web retries",
+      url: "https://github.com/acme/web/pull/34",
+      state: "open" as const,
+    },
+    {
+      agentRunId: "current-run",
+      repoFullName: "acme/worker",
+      branchName: "superlog/unrelated-worker-fix",
+      baseBranch: "main",
+      title: "Unrelated worker fix",
+      url: "https://github.com/acme/worker/pull/56",
+      state: "closed" as const,
+    },
+  ];
+
+  assert.deepEqual(
+    selectDeliveredPullRequestsForOutcome(result, rows, "current-run", {
+      deliveryReceiptUrls: [
+        "https://github.com/acme/api/pull/12",
+        "https://github.com/acme/api/pull/12",
+        "https://github.com/acme/web/pull/34",
+      ],
+    }),
+    [rows[0], rows[1]],
+  );
+});
+
+test("delivery receipts do not turn a non-PR terminal into a PR outcome", () => {
+  const deliveryUrl = "https://github.com/acme/api/pull/12";
+  const result: AgentRunResult = {
+    state: "awaiting_events",
+    summary: "Waiting on the upstream provider.",
+    waitReason: "external_cause",
+  };
+  const rows = [
+    {
+      agentRunId: "current-run",
+      repoFullName: "acme/api",
+      branchName: "superlog/older-api-fix",
+      baseBranch: "main",
+      title: "Older API fix",
+      url: deliveryUrl,
+      state: "merged" as const,
+    },
+  ];
+
+  assert.deepEqual(
+    selectDeliveredPullRequestsForOutcome(result, rows, "current-run", {
+      deliveryReceiptUrls: [deliveryUrl],
+    }),
+    [],
+  );
+});
+
 test("legacy outcomes without URLs prefer rows recorded by the current run", () => {
   const result: AgentRunResult = {
     state: "awaiting_events",
