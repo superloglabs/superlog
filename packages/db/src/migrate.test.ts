@@ -61,6 +61,9 @@ test("resolveMigrationConnection throws when neither DATABASE_URL nor PGHOST is 
 test("pending migration planning skips SQL already applied under an earlier journal timestamp", () => {
   const deployedDigest = migrationAt(REBASED_DIGEST_CREATED_AT);
   const pendingTidy = migrationAt(TIDY_CREATED_AT);
+  const laterMigrations = MIGRATIONS.filter(
+    (migration) => migration.folderMillis > REBASED_DIGEST_CREATED_AT,
+  );
 
   const pending = planPendingMigrations(MIGRATIONS, [
     {
@@ -71,13 +74,16 @@ test("pending migration planning skips SQL already applied under an earlier jour
 
   assert.deepEqual(
     pending.map((migration) => migration.hash),
-    [pendingTidy.hash],
+    [pendingTidy.hash, ...laterMigrations.map((migration) => migration.hash)],
   );
 });
 
 test("pending migration planning applies digest SQL when only the earlier tidy migration ran", () => {
   const pendingDigest = migrationAt(REBASED_DIGEST_CREATED_AT);
   const appliedTidy = migrationAt(TIDY_CREATED_AT);
+  const laterMigrations = MIGRATIONS.filter(
+    (migration) => migration.folderMillis > REBASED_DIGEST_CREATED_AT,
+  );
 
   const pending = planPendingMigrations(MIGRATIONS, [
     {
@@ -88,6 +94,6 @@ test("pending migration planning applies digest SQL when only the earlier tidy m
 
   assert.deepEqual(
     pending.map((migration) => migration.hash),
-    [pendingDigest.hash],
+    [pendingDigest.hash, ...laterMigrations.map((migration) => migration.hash)],
   );
 });

@@ -1430,6 +1430,7 @@ export const webhookDeliveries = pgTable(
 export const workerState = pgTable("worker_state", {
   name: text("name").primaryKey(),
   cursor: timestamp("cursor", { withTimezone: true, precision: 6 }).notNull(),
+  cursorKey: text("cursor_key").notNull().default("00000000-0000-0000-0000-000000000000"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
