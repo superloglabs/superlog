@@ -1,6 +1,21 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import { test } from "node:test";
-import { resolveMigrationConnection } from "./migrate.js";
+import { fileURLToPath } from "node:url";
+import { readMigrationFiles } from "drizzle-orm/migrator";
+import { planPendingMigrations, resolveMigrationConnection } from "./migrate.js";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const MIGRATIONS = readMigrationFiles({ migrationsFolder: path.resolve(HERE, "../migrations") });
+const DEPLOYED_DIGEST_CREATED_AT = 1_784_031_056_182;
+const TIDY_CREATED_AT = 1_784_031_696_429;
+const REBASED_DIGEST_CREATED_AT = 1_784_032_979_583;
+
+function migrationAt(createdAt: number) {
+  const migration = MIGRATIONS.find((candidate) => candidate.folderMillis === createdAt);
+  assert.ok(migration, `expected migration at ${createdAt}`);
+  return migration;
+}
 
 test("resolveMigrationConnection prefers DATABASE_URL when set", () => {
   const out = resolveMigrationConnection({
@@ -40,5 +55,39 @@ test("resolveMigrationConnection throws when neither DATABASE_URL nor PGHOST is 
   assert.throws(
     () => resolveMigrationConnection({} as NodeJS.ProcessEnv),
     /No database connection configured/,
+  );
+});
+
+test("pending migration planning skips SQL already applied under an earlier journal timestamp", () => {
+  const deployedDigest = migrationAt(REBASED_DIGEST_CREATED_AT);
+  const pendingTidy = migrationAt(TIDY_CREATED_AT);
+
+  const pending = planPendingMigrations(MIGRATIONS, [
+    {
+      hash: deployedDigest.hash,
+      createdAt: DEPLOYED_DIGEST_CREATED_AT,
+    },
+  ]);
+
+  assert.deepEqual(
+    pending.map((migration) => migration.hash),
+    [pendingTidy.hash],
+  );
+});
+
+test("pending migration planning applies digest SQL when only the earlier tidy migration ran", () => {
+  const pendingDigest = migrationAt(REBASED_DIGEST_CREATED_AT);
+  const appliedTidy = migrationAt(TIDY_CREATED_AT);
+
+  const pending = planPendingMigrations(MIGRATIONS, [
+    {
+      hash: appliedTidy.hash,
+      createdAt: appliedTidy.folderMillis,
+    },
+  ]);
+
+  assert.deepEqual(
+    pending.map((migration) => migration.hash),
+    [pendingDigest.hash],
   );
 });
