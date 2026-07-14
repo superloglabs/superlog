@@ -5,6 +5,7 @@ import {
   AriaComponent,
   BrushComponent,
   GridComponent,
+  MarkLineComponent,
   ToolboxComponent,
   TooltipComponent,
 } from "echarts/components";
@@ -17,6 +18,9 @@ echarts.use([
   AriaComponent,
   BrushComponent,
   GridComponent,
+  // Required for `series.markLine` (the dashed threshold line on alert charts).
+  // Without it the tree-shaken core silently drops markLine — no error, no line.
+  MarkLineComponent,
   ToolboxComponent,
   TooltipComponent,
   CanvasRenderer,

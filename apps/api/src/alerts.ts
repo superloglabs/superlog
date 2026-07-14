@@ -12,6 +12,7 @@ import {
   listAlertsForProject,
   previewAlert,
   previewAlertSeries,
+  previewAlertSeriesById,
   testAlertById,
   updateAlertRecord,
 } from "./alerts-service.js";
@@ -66,6 +67,15 @@ export function mountAlerts(app: Hono<{ Variables: Vars }>, opts: { ch: ClickHou
     const episodes = await listAlertEpisodes(projectId, id);
     if (episodes === null) throw new HTTPException(404, { message: "alert not found" });
     return c.json(episodes);
+  });
+
+  app.get("/api/projects/:projectId/alerts/:id/series", async (c) => {
+    const projectId = c.req.param("projectId");
+    const id = c.req.param("id");
+    await requireAccess(c, projectId);
+    const series = await previewAlertSeriesById(opts.ch, projectId, id);
+    if (series === null) throw new HTTPException(404, { message: "alert not found" });
+    return c.json(series);
   });
 
   app.patch("/api/projects/:projectId/alerts/:id", async (c) => {

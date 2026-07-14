@@ -52,6 +52,24 @@ export function useAlertEpisodes(projectId: string | undefined, id: string | und
   });
 }
 
+// The evaluated-signal series (with threshold) for a *saved* alert, keyed by
+// alert id. Used by the incident timeline to draw the alert's metric-vs-threshold
+// graph on the triggering issue card. `enabled` lets callers defer the fetch
+// until the card is actually an alert.
+export function useAlertSeries(
+  projectId: string | undefined,
+  alertId: string | undefined,
+  options: { enabled?: boolean } = {},
+) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["alert-series", projectId, alertId],
+    queryFn: () =>
+      fetcher<AlertPreviewSeries>(`/api/projects/${projectId}/alerts/${alertId}/series`),
+    enabled: !!projectId && !!alertId && options.enabled !== false,
+  });
+}
+
 export function useCreateAlert(projectId: string) {
   const fetcher = useFetcher();
   const qc = useQueryClient();

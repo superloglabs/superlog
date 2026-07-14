@@ -436,7 +436,8 @@ export async function previewAlertSeries(
   const range = { since, until: new Date(now).toISOString() };
   const step = { n: windowMinutes, unit: "MINUTE" as const };
   const filter = alertInputToFilter(input);
-  const label = input.source === "metric" ? (input.metricName ?? "metric") : `${input.source} count`;
+  const label =
+    input.source === "metric" ? (input.metricName ?? "metric") : `${input.source} count`;
 
   const byBucket = new Map<string, number>();
   if (input.source === "metric") {
@@ -485,6 +486,53 @@ export async function previewAlertSeries(
     windowMinutes,
     label,
   };
+}
+
+// Map a stored alert row back to the `AlertInput` shape the preview/series
+// helpers consume, so we can reuse `previewAlertSeries` for a saved alert
+// without re-deriving its config at the call site.
+export function alertRecordToInput(
+  alert: Pick<
+    schema.Alert,
+    | "name"
+    | "source"
+    | "metricName"
+    | "filter"
+    | "groupBy"
+    | "groupMode"
+    | "aggregation"
+    | "comparator"
+    | "threshold"
+    | "windowMinutes"
+  >,
+): AlertInput {
+  return {
+    name: alert.name,
+    source: alert.source,
+    metricName: alert.metricName,
+    filter: alert.filter ?? undefined,
+    groupBy: alert.groupBy,
+    groupMode: alert.groupMode,
+    aggregation: alert.aggregation,
+    comparator: alert.comparator,
+    threshold: alert.threshold,
+    windowMinutes: alert.windowMinutes,
+  };
+}
+
+// The evaluated-signal series (with threshold) for a *saved* alert, so the
+// incident detail can draw the alert's metric-vs-threshold graph. Returns null
+// when the alert doesn't belong to the project (404 at the route layer).
+export async function previewAlertSeriesById(
+  ch: ClickHouseClient,
+  projectId: string,
+  id: string,
+): Promise<AlertPreviewSeries | null> {
+  const alert = await db.query.alerts.findFirst({
+    where: and(eq(schema.alerts.id, id), eq(schema.alerts.projectId, projectId)),
+  });
+  if (!alert) return null;
+  return previewAlertSeries(ch, projectId, alertRecordToInput(alert));
 }
 
 export async function listAlertEpisodes(
@@ -547,6 +595,9 @@ export type IncidentAlertEpisodeView = {
   endedAt: string | null;
   peakObservedValue: number;
   seq: number;
+  // The issue this episode raised, so the incident timeline can match the
+  // triggering issue card to its alert (and draw the metric-vs-threshold graph).
+  issueId: string | null;
 };
 
 // The alert episodes that triggered a given incident, for the incident detail
@@ -592,6 +643,7 @@ export async function loadIncidentAlertEpisodes(
     endedAt: r.endedAt ? r.endedAt.toISOString() : null,
     peakObservedValue: r.peakObservedValue,
     seq: seqMap.get(r.id) ?? 1,
+    issueId: r.issueId,
   }));
 }
 
