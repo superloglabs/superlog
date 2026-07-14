@@ -9,7 +9,7 @@
 // a few seconds to apply is fine; a DB hiccup silently dropping telemetry is not.
 import { logger } from "./logger.js";
 
-export type IngestSource = "otlp" | "aws" | "vercel" | "railway" | "render";
+export type IngestSource = "otlp" | "aws" | "gcp" | "vercel" | "railway" | "render";
 export type TelemetrySignal = "traces" | "logs" | "metrics";
 
 export const ingestFilterKey = (source: IngestSource, signal: TelemetrySignal): string =>

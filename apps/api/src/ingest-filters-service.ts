@@ -7,6 +7,7 @@ import { z } from "zod";
 export const INGEST_SOURCE_SIGNALS = {
   otlp: ["traces", "logs", "metrics"],
   aws: ["logs", "metrics"],
+  gcp: ["logs", "metrics"],
   vercel: ["traces", "logs"],
   railway: ["logs", "metrics"],
   render: ["logs", "metrics"],
@@ -18,6 +19,7 @@ export type IngestSignal = "traces" | "logs" | "metrics";
 export type IngestFilterState = {
   otlp: { traces: boolean; logs: boolean; metrics: boolean };
   aws: { logs: boolean; metrics: boolean };
+  gcp: { logs: boolean; metrics: boolean };
   vercel: { traces: boolean; logs: boolean };
   railway: { logs: boolean; metrics: boolean };
   render: { logs: boolean; metrics: boolean };
@@ -47,6 +49,7 @@ export function deriveIngestFilterState(disabled: Set<string>): IngestFilterStat
       metrics: on("otlp", "metrics"),
     },
     aws: { logs: on("aws", "logs"), metrics: on("aws", "metrics") },
+    gcp: { logs: on("gcp", "logs"), metrics: on("gcp", "metrics") },
     vercel: { traces: on("vercel", "traces"), logs: on("vercel", "logs") },
     railway: { logs: on("railway", "logs"), metrics: on("railway", "metrics") },
     render: { logs: on("render", "logs"), metrics: on("render", "metrics") },
@@ -59,6 +62,7 @@ export const ingestFilterStateSchema = z
   .object({
     otlp: z.object({ traces: z.boolean(), logs: z.boolean(), metrics: z.boolean() }).strict(),
     aws: z.object({ logs: z.boolean(), metrics: z.boolean() }).strict(),
+    gcp: z.object({ logs: z.boolean(), metrics: z.boolean() }).strict(),
     vercel: z.object({ traces: z.boolean(), logs: z.boolean() }).strict(),
     railway: z.object({ logs: z.boolean(), metrics: z.boolean() }).strict(),
     render: z.object({ logs: z.boolean(), metrics: z.boolean() }).strict(),

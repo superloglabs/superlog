@@ -8,13 +8,15 @@ import {
   ingestFilterStateSchema,
 } from "./ingest-filters-service.js";
 
-test("allIngestFilterPairs covers otlp×3 + aws×2 + vercel×2 + railway×2 + render×2", () => {
+test("allIngestFilterPairs covers every supported source and signal", () => {
   const pairs = allIngestFilterPairs()
     .map((p) => ingestFilterKey(p.source, p.signal))
     .sort();
   assert.deepEqual(pairs, [
     "aws:logs",
     "aws:metrics",
+    "gcp:logs",
+    "gcp:metrics",
     "otlp:logs",
     "otlp:metrics",
     "otlp:traces",
@@ -31,6 +33,7 @@ test("empty disabled set → everything enabled", () => {
   assert.deepEqual(deriveIngestFilterState(new Set()), {
     otlp: { traces: true, logs: true, metrics: true },
     aws: { logs: true, metrics: true },
+    gcp: { logs: true, metrics: true },
     vercel: { traces: true, logs: true },
     railway: { logs: true, metrics: true },
     render: { logs: true, metrics: true },
@@ -61,6 +64,7 @@ test("state schema rejects unknown source/signal keys", () => {
     ingestFilterStateSchema.safeParse({
       otlp: { traces: true, logs: true, metrics: true },
       aws: { logs: true, metrics: true },
+      gcp: { logs: true, metrics: true },
       vercel: { traces: true, logs: true },
       railway: { logs: true, metrics: true },
       render: { logs: true, metrics: true },
@@ -72,6 +76,7 @@ test("state schema rejects unknown source/signal keys", () => {
     ingestFilterStateSchema.safeParse({
       otlp: { traces: true, logs: true, metrics: true },
       aws: { logs: true, metrics: true, traces: true },
+      gcp: { logs: true, metrics: true },
       vercel: { traces: true, logs: true },
       railway: { logs: true, metrics: true },
       render: { logs: true, metrics: true },
@@ -83,6 +88,7 @@ test("state schema rejects unknown source/signal keys", () => {
     ingestFilterStateSchema.safeParse({
       otlp: { traces: true, logs: true },
       aws: { logs: true, metrics: true },
+      gcp: { logs: true, metrics: true },
       vercel: { traces: true, logs: true },
       railway: { logs: true, metrics: true },
       render: { logs: true, metrics: true },

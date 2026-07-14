@@ -14,6 +14,7 @@ import {
 } from "@superlog/db";
 import { db } from "@superlog/db";
 import { and, eq, isNull } from "drizzle-orm";
+import { OAuth2Client } from "google-auth-library";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
@@ -28,11 +29,16 @@ import {
   firehoseResponseBody,
   parseAccountIdFromFirehoseArn,
 } from "./firehose.js";
-import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import {
   ClickHouseIngestWriter,
   getIngestClickHouseConfig,
 } from "./clickhouse-writer.js";
+import {
+  authenticateGcpPubSubPush,
+  gcpPubSubLogToOtlp,
+  type GcpIdTokenVerifier,
+} from "./gcp-pubsub.js";
+import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import { IngestQueue, getIngestQueueConfig } from "./ingest-queue.js";
 import {
   type IngestSource,
@@ -105,6 +111,20 @@ const ingestSourceFilter = createIngestSourceFilter({
     return new Set(rows.map((r) => ingestFilterKey(r.source, r.signal)));
   },
 });
+
+const GCP_PUBSUB_PUSH_AUDIENCE = process.env.GCP_PUBSUB_PUSH_AUDIENCE;
+const GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL = process.env.GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL;
+const googleOidcClient = new OAuth2Client();
+const gcpIdTokenVerifier: GcpIdTokenVerifier = {
+  async verify({ idToken, audience }) {
+    const ticket = await googleOidcClient.verifyIdToken({ idToken, audience });
+    const payload = ticket.getPayload();
+    return {
+      email: payload?.email ?? null,
+      emailVerified: payload?.email_verified === true,
+    };
+  },
+};
 
 // Map an OTLP ingest path to its telemetry signal for the source filter.
 function otlpSignalForPath(path: string): TelemetrySignal | null {
@@ -390,6 +410,9 @@ app.post("/render/pull/logs", (c) => forward(c, "/v1/logs", "resourceLogs", { so
 app.post("/render/pull/metrics", (c) =>
   forward(c, "/v1/metrics", "resourceMetrics", { source: "render" }),
 );
+app.post("/gcp/pull/metrics", (c) =>
+  forward(c, "/v1/metrics", "resourceMetrics", { source: "gcp" }),
+);
 
 // Render metrics-stream ingest: Render pushes OTLP directly here (no puller
 // in the path) — the connector registers this URL as the workspace's Metrics
@@ -426,6 +449,57 @@ app.post("/aws/firehose/metrics", (c) =>
   forwardFirehose(c, FIREHOSE_METRICS_COLLECTOR_URL, "metrics"),
 );
 app.post("/aws/firehose/logs", (c) => forwardFirehose(c, FIREHOSE_LOGS_COLLECTOR_URL, "logs"));
+
+// Cloud Logging delivers each LogEntry through a per-connection Pub/Sub push
+// subscription owned by the integration project. Google signs the request with
+// the configured push service account; only after audience + email verification
+// do we resolve the connection id to a tenant and enter the normal bounded
+// ingest pipeline. No customer-controlled project id is trusted from the body.
+app.post("/gcp/pubsub/:connectionId", async (c) => {
+  if (!GCP_PUBSUB_PUSH_AUDIENCE || !GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL) {
+    return c.json({ error: "GCP Pub/Sub intake is not configured" }, 503);
+  }
+  try {
+    await authenticateGcpPubSubPush({
+      authorization: c.req.header("authorization"),
+      audience: GCP_PUBSUB_PUSH_AUDIENCE,
+      serviceAccountEmail: GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL,
+      verifier: gcpIdTokenVerifier,
+    });
+  } catch (error) {
+    logger.warn(
+      { err: error instanceof Error ? error.message : String(error) },
+      "rejecting unauthenticated GCP Pub/Sub push",
+    );
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const connection = await db.query.gcpConnections.findFirst({
+    where: and(
+      eq(schema.gcpConnections.id, c.req.param("connectionId")),
+      eq(schema.gcpConnections.status, "connected"),
+      isNull(schema.gcpConnections.revokedAt),
+    ),
+  });
+  if (!connection) return c.json({ error: "GCP connection not found" }, 404);
+
+  const response = await forward(c, "/v1/logs", "resourceLogs", {
+    source: "gcp",
+    trustedProjectId: connection.projectId,
+    bodyTransform: (body) => ({
+      body: Buffer.from(JSON.stringify(gcpPubSubLogToOtlp(body, connection.gcpProjectId))),
+      contentType: "application/json",
+    }),
+  });
+  if (response.ok) {
+    void db
+      .update(schema.gcpConnections)
+      .set({ lastLogReceivedAt: new Date(), updatedAt: new Date() })
+      .where(eq(schema.gcpConnections.id, connection.id))
+      .catch((err: unknown) => logger.warn({ err }, "failed to update GCP log receipt time"));
+  }
+  return response;
+});
 
 app.get("/health", (c) => c.json({ ok: true }));
 
@@ -523,6 +597,10 @@ function isTestKey(key: string | null): boolean {
 
 type ForwardOptions = {
   source?: IngestSource;
+  // A vendor-authenticated route can pin the tenant without presenting a
+  // project ingest key. Only set after verifying the vendor's signed identity
+  // and resolving a connected integration row.
+  trustedProjectId?: string;
   bodyTransform?: (
     body: Buffer,
     contentType: string,
@@ -538,7 +616,7 @@ async function forward(
 ) {
   return tracer.startActiveSpan("ingest.forward", async (span) => {
     const startedAt = performance.now();
-    const projectId = c.var.projectId;
+    const projectId = opts.trustedProjectId ?? c.var.projectId;
     const source = opts.source ?? "otlp";
     let contentType = c.req.header("content-type") ?? "application/x-protobuf";
     let contentEncoding = c.req.header("content-encoding");

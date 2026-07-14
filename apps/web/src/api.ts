@@ -53,6 +53,7 @@ export type SystemCapabilities = {
   vercelConnect: boolean;
   railwayConnect: boolean;
   renderConnect: boolean;
+  gcpConnect: boolean;
 };
 
 const SIGNUP_SOURCE_STORAGE_KEY = "superlog.signup_source";
@@ -1048,6 +1049,47 @@ export function useUninstallRailway(projectId: string | undefined) {
   });
 }
 
+export type GcpConnection =
+  | { connected: false }
+  | {
+      connected: boolean;
+      id: string;
+      projectId: string;
+      gcpProjectId: string;
+      gcpProjectNumber: string | null;
+      status: "pending" | "provisioning" | "connected" | "failed";
+      lastVerifiedAt: string | null;
+      lastLogReceivedAt: string | null;
+      lastMetricsReceivedAt: string | null;
+      metricsBudgetMonth: string | null;
+      metricsSeriesRead: number;
+      metricsMonthlySeriesLimit: number;
+      lastError: string | null;
+      createdAt: string;
+      updatedAt: string;
+    };
+
+export function useGcpConnection(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["gcp-connection", projectId],
+    queryFn: () => fetcher<GcpConnection>(`/api/projects/${projectId}/gcp/connection`),
+    enabled: !!projectId,
+    refetchInterval: 15_000,
+  });
+}
+
+export function useStartGcpConnect(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: (gcpProjectId: string) =>
+      fetcher<{ url: string }>(`/api/projects/${projectId}/gcp/install-url`, {
+        method: "POST",
+        body: JSON.stringify({ gcpProjectId }),
+      }),
+  });
+}
+
 export type RenderServiceSummary = {
   id: string;
   name: string;
@@ -1339,6 +1381,7 @@ export function useDeleteCloudConnection(projectId: string) {
 export type IngestFilterState = {
   otlp: { traces: boolean; logs: boolean; metrics: boolean };
   aws: { logs: boolean; metrics: boolean };
+  gcp: { logs: boolean; metrics: boolean };
   vercel: { traces: boolean; logs: boolean };
   railway: { logs: boolean; metrics: boolean };
   render: { logs: boolean; metrics: boolean };
