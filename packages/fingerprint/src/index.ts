@@ -156,6 +156,7 @@ export function normalizeMessage(body: string): string {
 const START_REQUEST_ID = "START RequestId:";
 const END_REQUEST_ID = "END RequestId:";
 const REPORT_REQUEST_ID = "REPORT RequestId:";
+const VERSION_METADATA = "Version:";
 
 function normalizeVercelRuntimeRequest(body: string): string | null {
   const lines = body
@@ -167,7 +168,7 @@ function normalizeVercelRuntimeRequest(body: string): string | null {
   const [startLine, requestLine, endLine, reportLine] = lines;
   if (!startLine || !requestLine || !endLine || !reportLine) return null;
 
-  const requestId = requestIdFromLine(startLine, START_REQUEST_ID);
+  const requestId = startRequestId(startLine);
   if (!requestId || requestIdFromLine(endLine, END_REQUEST_ID) !== requestId) return null;
   if (reportRequestId(reportLine) !== requestId) return null;
 
@@ -175,6 +176,21 @@ function normalizeVercelRuntimeRequest(body: string): string | null {
   return request
     ? `vercel runtime request method=${request.method.toLowerCase()} status=${request.status}`
     : null;
+}
+
+function startRequestId(line: string): string | null {
+  if (!line.startsWith(START_REQUEST_ID)) return null;
+  const rest = line.slice(START_REQUEST_ID.length).trim();
+  if (!rest) return null;
+
+  const boundary = firstWhitespaceIndex(rest);
+  if (boundary === -1) return rest;
+
+  const requestId = rest.slice(0, boundary);
+  const metadata = rest.slice(boundary).trimStart();
+  if (!metadata.startsWith(VERSION_METADATA)) return null;
+  const version = metadata.slice(VERSION_METADATA.length).trim();
+  return version && !hasWhitespace(version) ? requestId : null;
 }
 
 function requestIdFromLine(line: string, prefix: string): string | null {

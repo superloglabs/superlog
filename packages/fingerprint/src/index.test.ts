@@ -61,6 +61,7 @@ function vercelRuntimeEnvelope(input: {
   path?: string;
   status?: number;
   report?: string;
+  startMetadata?: string;
 }): string {
   const method = input.method ?? "GET";
   const path = input.path ?? "/collections/summer";
@@ -68,8 +69,9 @@ function vercelRuntimeEnvelope(input: {
   const report =
     input.report ??
     "Duration: 25880 ms Billed Duration: 25880 ms Memory Size: 2048 MB Max Memory Used: 673 MB";
+  const startMetadata = input.startMetadata ? ` ${input.startMetadata}` : "";
   return [
-    `START RequestId: ${input.id}`,
+    `START RequestId: ${input.id}${startMetadata}`,
     `[${method}] ${path} status=${status}`,
     `END RequestId: ${input.id}`,
     `REPORT RequestId: ${input.id} ${report}`,
@@ -130,6 +132,25 @@ test("fingerprintLog accepts scoped and opaque Vercel request IDs", () => {
   });
 
   assert.equal(scoped.hash, opaque.hash);
+});
+
+test("fingerprintLog ignores Vercel START-line runtime version metadata", () => {
+  const latest = fingerprintLog({
+    ...VERCEL_LOG,
+    body: vercelRuntimeEnvelope({
+      id: "sin1::request-a",
+      startMetadata: "Version: $LATEST",
+    }),
+  });
+  const numbered = fingerprintLog({
+    ...VERCEL_LOG,
+    body: vercelRuntimeEnvelope({
+      id: "gru1::request-b",
+      startMetadata: "Version: 42",
+    }),
+  });
+
+  assert.equal(latest.hash, numbered.hash);
 });
 
 test("fingerprintLog separates Vercel runtime request envelopes by method", () => {
