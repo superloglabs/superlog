@@ -14,6 +14,10 @@ import { logger } from "../logger.js";
 const log = logger.child({ scope: "gcp-metrics-pull" });
 const DEFAULT_MONTHLY_SERIES_LIMIT = 100_000_000;
 
+export function isMetricIntakeAcknowledged(status: number): boolean {
+  return (status >= 200 && status < 300) || [400, 402, 404, 413].includes(status);
+}
+
 function intakeBaseUrl(env: NodeJS.ProcessEnv): string {
   if (env.GCP_METRICS_INTAKE_URL) return env.GCP_METRICS_INTAKE_URL.replace(/\/$/, "");
   return `http://localhost:${env.PROXY_APP_PORT ?? "4000"}`;
@@ -203,7 +207,7 @@ export const job: JobDefinition = {
           if (!response.ok) {
             log.warn({ status: response.status }, "GCP metric intake rejected a batch");
           }
-          return response.ok;
+          return isMetricIntakeAcknowledged(response.status);
         },
       });
       if (stats.connections > 0) {
