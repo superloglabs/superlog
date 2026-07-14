@@ -51,6 +51,13 @@ export type TranscriptItem =
 export type FeedItem =
   | TranscriptItem
   | { type: "triggering_issue"; id: string; issueId: string; createdAt: string }
+  | {
+      type: "issue_activity";
+      id: string;
+      issueId: string;
+      label: string;
+      createdAt: string;
+    }
   | { type: "human"; id: string; author: string | null; text: string; createdAt: string }
   | { type: "lifecycle"; id: string; event: IncidentEvent };
 
@@ -69,6 +76,26 @@ function isFeedNoise(kind: string): boolean {
   if (kind === "session.error") return false;
   if (kind === "linear_handoff_pending") return true;
   return kind.startsWith("span.") || kind.startsWith("session.");
+}
+
+function joinedIssueActivity(
+  event: IncidentEvent,
+): Extract<FeedItem, { type: "issue_activity" }> | null {
+  if (event.kind !== "incident_context_changed") return null;
+  const match = (event.summary ?? "").match(
+    /^(New|Regressed) issue joined the incident(?: \(issue id:\s*([^)]+)\))?(?::|$)/,
+  );
+  if (!match) return null;
+  const detailIssueId = event.detail?.issueId;
+  const issueId = typeof detailIssueId === "string" ? detailIssueId : match[2]?.trim();
+  if (!issueId) return null;
+  return {
+    type: "issue_activity",
+    id: event.id,
+    issueId,
+    label: `${match[1]} issue joined the incident`,
+    createdAt: event.createdAt,
+  };
 }
 
 export function buildActivityFeed(
@@ -94,6 +121,11 @@ export function buildActivityFeed(
       ]
     : [];
   for (const event of events) {
+    const issueActivity = joinedIssueActivity(event);
+    if (issueActivity) {
+      items.push(issueActivity);
+      continue;
+    }
     const mcpError = (
       event.detail as {
         mcpError?: { serverName?: string; category?: string; message?: string };
@@ -218,6 +250,9 @@ export function markAwaitingQuestion(feed: FeedItem[], question: string): FeedIt
 export function buildTranscript(events: IncidentEvent[]): TranscriptItem[] {
   return buildActivityFeed(events).filter(
     (item): item is TranscriptItem =>
-      item.type !== "lifecycle" && item.type !== "human" && item.type !== "triggering_issue",
+      item.type !== "lifecycle" &&
+      item.type !== "human" &&
+      item.type !== "triggering_issue" &&
+      item.type !== "issue_activity",
   );
 }

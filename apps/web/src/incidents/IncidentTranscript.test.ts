@@ -43,6 +43,28 @@ test("buildActivityFeed starts with the issue that triggered the incident", () =
   });
 });
 
+test("buildActivityFeed presents a joined issue as issue activity instead of its raw context summary", () => {
+  const feed = buildActivityFeed([
+    event({
+      id: "joined-issue-1",
+      kind: "incident_context_changed",
+      summary:
+        'Regressed issue joined the incident (issue id: 85cc8c48-fefb-4c99-8c99-47a83800b91c): ERROR: cart.add failed for plant "nullingia"',
+      createdAt: "2026-07-09T00:28:18.068Z",
+    }),
+  ]);
+
+  assert.deepEqual(feed, [
+    {
+      type: "issue_activity",
+      id: "joined-issue-1",
+      issueId: "85cc8c48-fefb-4c99-8c99-47a83800b91c",
+      label: "Regressed issue joined the incident",
+      createdAt: "2026-07-09T00:28:18.068Z",
+    },
+  ]);
+});
+
 test("buildActivityFeed shows the filed Linear ticket without the internal handoff marker", () => {
   const filed = event({
     id: "linear-filed-1",
