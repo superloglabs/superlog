@@ -36,6 +36,7 @@ function usage(): string {
 function parseArgs(argv: string[]): Options {
   const map = new Map<string, string>();
   let help = false;
+
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--") continue;
@@ -44,17 +45,26 @@ function parseArgs(argv: string[]): Options {
       continue;
     }
     if (!arg.startsWith("--")) throw new Error(`unexpected: ${arg}`);
+
     const next = argv[i + 1];
     if (!next || next.startsWith("--")) throw new Error(`missing value for ${arg}`);
+
     map.set(arg.slice(2), next);
     i += 1;
   }
+
+  const services = Number(map.get("services") ?? 4);
+
+  if (!Number.isFinite(services)) {
+    throw new Error("invalid services count");
+  }
+
   return {
     projectId: map.get("project-id") ?? "",
     collectorUrl: (map.get("collector-url") ?? "http://localhost:4318").replace(/\/+$/, ""),
     minutes: Number(map.get("minutes") ?? 60),
     points: Number(map.get("points") ?? 30),
-    services: Math.min(8, Math.max(1, Number(map.get("services") ?? 4))),
+    services: Math.min(8, Math.max(1, Math.floor(services))),
     help,
   };
 }
@@ -84,18 +94,8 @@ const LOG_MESSAGES: Record<string, string[]> = {
     "session refreshed",
     "feature flag evaluated",
   ],
-  WARN: [
-    "downstream slow",
-    "cache miss",
-    "retrying request",
-    "queue backlog rising",
-  ],
-  ERROR: [
-    "upstream timeout",
-    "db connection refused",
-    "auth token rejected",
-    "panic recovered",
-  ],
+  WARN: ["downstream slow", "cache miss", "retrying request", "queue backlog rising"],
+  ERROR: ["upstream timeout", "db connection refused", "auth token rejected", "panic recovered"],
 };
 
 function stringAttr(key: string, value: string) {
@@ -209,7 +209,7 @@ function buildMetrics(opts: Options, services: typeof SERVICES) {
 function buildLogs(opts: Options, services: typeof SERVICES) {
   const now = Date.now();
   const totalLogs = opts.points * services.length * 4;
-  const records: { svcIdx: number; t: number; sev: typeof SEVERITIES[number] }[] = [];
+  const records: { svcIdx: number; t: number; sev: (typeof SEVERITIES)[number] }[] = [];
   for (let i = 0; i < totalLogs; i++) {
     records.push({
       svcIdx: Math.floor(Math.random() * services.length),
@@ -238,8 +238,14 @@ function buildLogs(opts: Options, services: typeof SERVICES) {
               severityText: rec.sev.text,
               body: { stringValue: message },
               attributes: [
-                stringAttr("http.method", ["GET", "POST", "PUT", "DELETE"][Math.floor(Math.random() * 4)]!),
-                intAttr("http.status_code", rec.sev.text === "ERROR" ? 500 : rec.sev.text === "WARN" ? 429 : 200),
+                stringAttr(
+                  "http.method",
+                  ["GET", "POST", "PUT", "DELETE"][Math.floor(Math.random() * 4)]!,
+                ),
+                intAttr(
+                  "http.status_code",
+                  rec.sev.text === "ERROR" ? 500 : rec.sev.text === "WARN" ? 429 : 200,
+                ),
               ],
             };
           }),
@@ -321,9 +327,7 @@ async function main(): Promise<void> {
   const traces = buildTraces(opts, services);
 
   console.log(`seeding project=${opts.projectId} into ${opts.collectorUrl}`);
-  console.log(
-    `  services=${services.length} window=${opts.minutes}m points/series=${opts.points}`,
-  );
+  console.log(`  services=${services.length} window=${opts.minutes}m points/series=${opts.points}`);
 
   await postOtlp(`${opts.collectorUrl}/v1/metrics`, opts.projectId, metrics);
   console.log(`  ✓ metrics`);
