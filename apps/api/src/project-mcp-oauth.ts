@@ -381,9 +381,8 @@ export function createDrizzleProjectMcpOAuthAttemptStore(): ProjectMcpOAuthAttem
   };
 }
 
-export function createFetchProjectMcpOAuthHttp(
-  fetchImpl: typeof fetch = strictProjectMcpFetch,
-): ProjectMcpOAuthHttp {
+export function createFetchProjectMcpOAuthHttp(fetchOverride?: typeof fetch): ProjectMcpOAuthHttp {
+  const fetchImpl = fetchOverride ?? strictProjectMcpFetch;
   return {
     async discover(serverUrl) {
       const endpoint = new URL(serverUrl);
