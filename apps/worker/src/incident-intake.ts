@@ -55,10 +55,10 @@ export async function ensureIncidentForIssue(
     // Serialize the workflow's read-then-create section with an advisory lock so
     // concurrent intakes (pg-boss issue-transition jobs) can't each open an
     // incident for what should be one. The workflow keys new issues by trace id
-    // when present, otherwise by issue id; recurrences key by predecessor id so
-    // all fingerprints from the prior incident converge on one successor. The
-    // LLM grouping call stays outside the hook; notifications happen in the
-    // caller after release.
+    // when present, otherwise by issue id; recurrences acquire both predecessor
+    // and trace keys when available so overlapping correlation boundaries all
+    // converge. The LLM grouping call stays outside the hook; notifications
+    // happen in the caller after release.
     serializeCreate: withIssueIntakeLock,
   });
 }

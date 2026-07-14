@@ -114,7 +114,7 @@ export type IntakeDeps = {
   // first, so the racer that lost the lock re-lands on the winner's incident.
   // Deliberately excludes the LLM grouping call — implementations may hold a
   // database connection for fn's whole duration.
-  serializeCreate?: <T>(key: string, fn: () => Promise<T>) => Promise<T>;
+  serializeCreate?: <T>(keys: readonly string[], fn: () => Promise<T>) => Promise<T>;
 };
 
 export type IssueIntakeTransition = "new" | "recurred" | "escalated";
@@ -144,10 +144,10 @@ export async function ensureIncidentForIssueWorkflow(
   // exception and its own log line, which are DIFFERENT issues — can't each open
   // an incident under concurrent pg-boss jobs. Falls back to the issue id (the
   // alert-episode / same-issue case). Recurrences use their predecessor id
-  // instead, so concurrent fingerprints from one prior incident converge.
+  // in addition, so both same-request and same-predecessor symptoms converge.
   const traceId = issueSample(issue)?.traceId;
-  const serializeKey = traceId ? `trace:${traceId}` : issue.id;
-  const serialize = deps.serializeCreate ?? ((_key, fn) => fn());
+  const serializeKeys = traceId ? [`trace:${traceId}`] : [issue.id];
+  const serialize = deps.serializeCreate ?? ((_keys, fn) => fn());
 
   const existingLink = await deps.repo.findLatestIncidentIssueLink(issue.id);
 
@@ -171,7 +171,11 @@ export async function ensureIncidentForIssueWorkflow(
       // potentially slow LLM call stays outside the serialized section.
       let grouping = await findMatchingIncident(issue, deps);
       let matched = grouping.match?.incident ?? null;
-      return serialize(`recurrence:${previous.id}`, async () => {
+      const recurrenceKeys = [
+        `recurrence:${previous.id}`,
+        ...(traceId ? [`trace:${traceId}`] : []),
+      ];
+      return serialize(recurrenceKeys, async () => {
         // Re-read the latest link now that we hold the lock: a concurrent
         // recurrence job for this same issue may have already opened the
         // recurrence incident — re-land on it instead of opening a second, and
@@ -295,7 +299,7 @@ export async function ensureIncidentForIssueWorkflow(
   // link re-checks inside, so a racer that created the incident first wins and
   // the loser re-lands on it. The grouping analysis (which can call an LLM)
   // stays outside the hook.
-  return serialize(serializeKey, async () => {
+  return serialize(serializeKeys, async () => {
     const raceLink = await deps.repo.findLatestIncidentIssueLink(issue.id);
     if (raceLink) {
       const existing = await deps.repo.findIncident(raceLink.incidentId);

@@ -168,15 +168,21 @@ export async function findAlertEpisodeForIssue(
   });
 }
 
-// Serialize incident intake across concurrent worker tasks. The key represents
-// the correlation boundary chosen by the application workflow: issue, trace,
-// or predecessor incident. The advisory xact lock (released at commit/rollback)
-// makes later racers observe the incident/link created by the winner. Callers
-// keep notifications and other slow side effects OUTSIDE fn — the lock holds a
-// database connection open for fn's whole duration.
-export async function withIssueIntakeLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+// Serialize incident intake across concurrent worker tasks. The keys represent
+// every correlation boundary chosen by the application workflow: issue, trace,
+// and/or predecessor incident. Acquiring unique keys in lexical order avoids
+// deadlocks when concurrent intakes overlap on only one boundary. The advisory
+// xact locks are released at commit/rollback. Callers keep notifications and
+// other slow side effects OUTSIDE fn — the lock holds a database connection
+// open for fn's whole duration.
+export async function withIssueIntakeLock<T>(
+  keys: readonly string[],
+  fn: () => Promise<T>,
+): Promise<T> {
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+    for (const key of [...new Set(keys)].sort()) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+    }
     return fn();
   });
 }

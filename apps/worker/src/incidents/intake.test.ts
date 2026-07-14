@@ -324,12 +324,21 @@ test("intake: recurred same-trace sibling joins the incident instead of opening 
       lastSample: { traceId: "trace-1", spanId: "span-log" },
     } as Partial<schema.Issue>),
     "recurred",
-    makeDeps({ repo, lifecycle: makeLifecycle({ calls }), calls }),
+    makeDeps({
+      repo,
+      lifecycle: makeLifecycle({ calls }),
+      calls,
+      serializeCreate: async (keys, fn) => {
+        calls.push(`serializeCreate:${String(keys)}`);
+        return fn();
+      },
+    }),
   );
 
   assert.equal(result.createdIncident, false);
   assert.equal(result.recurrenceIncident, false);
   assert.equal(result.incident.id, "inc-sibling");
+  assert.ok(calls.includes("serializeCreate:recurrence:inc-prev,trace:trace-1"));
   assert.ok(calls.includes("linkIssueToIncident:iss-log->inc-sibling"));
   assert.ok(!calls.some((c) => c.startsWith("openRecurrence")));
 });
