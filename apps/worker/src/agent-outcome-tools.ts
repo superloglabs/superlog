@@ -80,6 +80,18 @@ export const OUTCOME_TOOL_NAMES = [
   ...TERMINAL_OUTCOME_TOOL_NAMES,
 ] as const;
 
+// First line of the worker's one-shot "conclude your turn" steer (the full
+// prompt lives with the sync loop). It doubles as the machine-readable way to
+// recognize that steer in a session's own event stream — the sync loop uses
+// it to skip redelivering the nudge, and stream-replaying runner backends use
+// it to exempt the nudge from turn-boundary handling: unlike a human reply or
+// a context delta, the nudge carries no new information, so it must never
+// reset (and thereby discard) outcome state the turn already produced. The
+// wording must stay stable; live sessions can carry an already-delivered
+// nudge across a deploy.
+export const TERMINAL_OUTCOME_NUDGE_MARKER =
+  "You ended your turn without concluding the investigation, so it has no recorded outcome and nothing is pending.";
+
 export function isActionOutcomeToolName(name: string): name is ActionOutcomeToolName {
   return (ACTION_OUTCOME_TOOL_NAMES as readonly string[]).includes(name);
 }

@@ -9,7 +9,10 @@ import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
 import { postIncidentThreadMessage } from "../infra/slack/incident-messages.js";
 import { type ResolvedIntegration, loadEnabledIntegrationsForOrg } from "../integrations.js";
 import { logger } from "../logger.js";
-import { assembleAgentRunResult } from "../agent-outcome-tools.js";
+import {
+  TERMINAL_OUTCOME_NUDGE_MARKER,
+  assembleAgentRunResult,
+} from "../agent-outcome-tools.js";
 import { completeWithIncidentResolution, completeWithoutPullRequest } from "./completion.js";
 import { tryMergeAfterAgentRun } from "./merge.js";
 import { hasRevylCreateTestIntegration, looksLikeMobileChange } from "./mobile-regression.js";
@@ -209,12 +212,14 @@ export function shouldDeferSteering(snapshot: {
 // tool and with nothing pending (no open PRs to wait on). Fired at most once
 // per session; the runtime/wall-clock budgets stay the hard floor.
 //
-// The first line doubles as a stable marker: the redelivery check below and
+// Opens with TERMINAL_OUTCOME_NUDGE_MARKER: the redelivery check below and
 // runner backends detect a delivered nudge in the session event stream by
-// substring-matching it. Don't reword it without checking those call sites.
+// substring-matching that line (a test pins it as the prompt's exact first
+// line). Reword it only via the exported constant, never here — live
+// sessions can carry an already-delivered nudge across a deploy.
 export function terminalOutcomeNudgePrompt(): string {
   return [
-    "You ended your turn without concluding the investigation, so it has no recorded outcome and nothing is pending.",
+    TERMINAL_OUTCOME_NUDGE_MARKER,
     "Call `report_findings` now if you have findings to record, classify each linked issue (`silence_as_noise`, `place_under_observation`, or `resolve_issue`), open any needed PR with `propose_pr`, and then end your turn by calling `resolve_incident` — or `ask_human` if a human must act or answer first.",
   ].join("\n");
 }
@@ -690,10 +695,11 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         // landed. The delivered nudge is visible in the session's own event
         // stream, so a retry can detect it and keep the claim without
         // steering a duplicate.
-        const nudgeMarker = terminalOutcomeNudgePrompt().split("\n")[0] ?? "";
         const nudgeAlreadyDelivered = snapshot.events.some(
           (event) =>
-            event.type === "user.message" && !!event.summary && event.summary.includes(nudgeMarker),
+            event.type === "user.message" &&
+            !!event.summary &&
+            event.summary.includes(TERMINAL_OUTCOME_NUDGE_MARKER),
         );
         if (!nudgeAlreadyDelivered) {
           try {

@@ -1,6 +1,7 @@
 import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { TERMINAL_OUTCOME_NUDGE_MARKER } from "../agent-outcome-tools.js";
 import {
   isSessionBusyError,
   mobileRegressionGateState,
@@ -338,6 +339,14 @@ test("shouldDeferSteering does not defer settled or concluded snapshots", () => 
     shouldDeferSteering({ result: { state: "complete", summary: "x" }, dispatchedToolCallCount: 1 }),
     false,
   );
+});
+
+test("terminalOutcomeNudgePrompt opens with the shared nudge marker", () => {
+  // The marker is the contract runner backends use to recognize the worker's
+  // own nudge in a session's event stream (redelivery detection here, and
+  // turn-boundary exemption in stream-replaying runners). The prompt must
+  // keep it as its exact first line.
+  assert.equal(terminalOutcomeNudgePrompt().split("\n")[0], TERMINAL_OUTCOME_NUDGE_MARKER);
 });
 
 test("terminalOutcomeNudgePrompt names every outcome tool", () => {
