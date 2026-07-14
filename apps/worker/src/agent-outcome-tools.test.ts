@@ -524,12 +524,14 @@ test("mergeFindings is last-write-wins per defined field", () => {
 });
 
 test("assembles resolve_incident issue outcomes into a complete result", () => {
+  const resolutionEventDedupeKey = "incident_resolved:agent_run:run-1:resolve_incident:tool-use-1";
   const result = assembleAgentRunResult({
     findings: FINDINGS,
     terminal: {
       name: "resolve_incident",
       payload: RESOLVE_INCIDENT_INPUT,
     },
+    incidentResolutionEventDedupeKey: resolutionEventDedupeKey,
   });
   assert.equal(result.state, "complete");
   assert.equal(result.summary, FINDINGS.summary);
@@ -538,6 +540,7 @@ test("assembles resolve_incident issue outcomes into a complete result", () => {
     reason: RESOLVE_INCIDENT_INPUT.reason,
     evidence: RESOLVE_INCIDENT_INPUT.evidence,
   });
+  assert.equal(result.incidentResolutionEventDedupeKey, resolutionEventDedupeKey);
   assert.equal(result.issueClassifications?.length, 2);
   assert.deepEqual(result.issueClassifications?.[0], {
     issueId: "issue-1",

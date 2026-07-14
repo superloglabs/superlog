@@ -1076,6 +1076,10 @@ export function assembleAgentRunResult(args: {
   terminal: TerminalOutcome | null;
   // Successfully executed actions from durable legacy runs, in call order.
   actions?: ExecutedAction[];
+  // Proof returned by the successful resolve_incident dispatch. Keeping it
+  // in the shared assembly boundary prevents a runner backend from dropping
+  // the exact event key completion uses to attribute the atomic resolution.
+  incidentResolutionEventDedupeKey?: string | null;
 }): AgentRunResult {
   const { findings, terminal } = args;
   const actions = args.actions ?? [];
@@ -1147,6 +1151,9 @@ export function assembleAgentRunResult(args: {
       reason: terminal.payload.reason,
       evidence: terminal.payload.evidence,
     };
+    if (args.incidentResolutionEventDedupeKey) {
+      result.incidentResolutionEventDedupeKey = args.incidentResolutionEventDedupeKey;
+    }
     for (const outcome of terminal.payload.issueOutcomes) {
       const action: AgentRunIssueClassification["action"] =
         outcome.status === "silenced"
