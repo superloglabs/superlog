@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { registerAgentConfigTools } from "./agent-config.js";
 import { registerAlertTools } from "./alerts.js";
+import { instrumentMcpToolAnalytics } from "./analytics.js";
 import { listServices, queryLogs, queryMetrics, queryTraces } from "./clickhouse.js";
 import { registerDashboardTools } from "./dashboards.js";
 import { registerIncidentTools } from "./incidents.js";
@@ -98,6 +99,10 @@ export function createMcpServerForSession(session: McpSession): McpServer {
     { name: "superlog", version: "0.1.0" },
     session.telemetryOnly ? undefined : { instructions: SERVER_INSTRUCTIONS },
   );
+
+  // Before any registerTool call so every tool below (and in the register*
+  // modules) emits a per-invocation analytics event.
+  instrumentMcpToolAnalytics(server, session);
 
   const assertTokenScope = async (projectId: string): Promise<void> => {
     if (!session.allowedOrgId) return;
