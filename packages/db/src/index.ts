@@ -307,3 +307,19 @@ export type {
   SendLoopsResult,
 } from "./loops.js";
 export { environmentFromResourceAttrs } from "./telemetry-environment.js";
+export {
+  MAX_ENABLED_CUSTOM_MCP_SERVERS,
+  ProjectMcpServerError,
+  createProjectMcpServerManager,
+  parseProjectMcpServerName,
+  parseProjectMcpServerUrl,
+  toProjectMcpServerView,
+} from "./project-mcp-servers.js";
+export type {
+  NewProjectMcpServer,
+  ProjectMcpServer,
+  ProjectMcpServerAuth,
+  ProjectMcpServerRepository,
+  ProjectMcpServerView,
+} from "./project-mcp-servers.js";
+export { createDrizzleProjectMcpServerRepository } from "./project-mcp-servers-repository.js";

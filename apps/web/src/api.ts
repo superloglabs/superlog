@@ -1596,6 +1596,158 @@ export function useSaveAgentSettings(projectId: string | undefined) {
   });
 }
 
+export type ProjectMcpServerAuthView =
+  | { type: "none"; hasCredential: false }
+  | { type: "bearer"; hasCredential: true }
+  | { type: "api_key"; hasCredential: true; headerName: string }
+  | {
+      type: "oauth";
+      grantType: "authorization_code" | "client_credentials";
+      hasCredential: boolean;
+      status: "pending" | "connected" | "error";
+      scopes: string[];
+      expiresAt: string | null;
+    };
+
+export type ProjectMcpServer = {
+  id: string;
+  projectId: string;
+  name: string;
+  url: string;
+  enabled: boolean;
+  auth: ProjectMcpServerAuthView;
+  trustedByUserId: string | null;
+  createdByUserId: string | null;
+  updatedByUserId: string | null;
+  trustedAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProjectMcpAuthInput =
+  | { type: "none" }
+  | { type: "bearer"; token: string }
+  | { type: "api_key"; headerName: string; key: string }
+  | {
+      type: "oauth";
+      grantType: "authorization_code" | "client_credentials";
+      scopes: string[];
+      clientId?: string;
+      clientSecret?: string;
+    };
+
+export type ProjectMcpServerList = {
+  servers: ProjectMcpServer[];
+  enabledCount: number;
+  enabledLimit: number;
+  canManage: boolean;
+};
+
+const projectMcpQueryKey = (projectId: string | undefined) => ["project-agent-mcps", projectId];
+
+export function useProjectMcpServers(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: projectMcpQueryKey(projectId),
+    queryFn: () =>
+      fetcher<ProjectMcpServerList>(`/api/org/projects/${projectId}/agent-mcp-servers`),
+    enabled: !!projectId,
+  });
+}
+
+export function useCreateProjectMcpServer(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      name: string;
+      url: string;
+      enabled?: boolean;
+      auth: ProjectMcpAuthInput;
+      confirmTrusted: boolean;
+    }) =>
+      fetcher<{ server: ProjectMcpServer }>(
+        `/api/org/projects/${requireProjectId(projectId)}/agent-mcp-servers`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: projectMcpQueryKey(projectId) }),
+  });
+}
+
+export function useUpdateProjectMcpServer(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...patch }: { id: string } & Record<string, unknown>) =>
+      fetcher<{ server: ProjectMcpServer }>(
+        `/api/org/projects/${requireProjectId(projectId)}/agent-mcp-servers/${id}`,
+        { method: "PATCH", body: JSON.stringify(patch) },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: projectMcpQueryKey(projectId) }),
+  });
+}
+
+export function useDeleteProjectMcpServer(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetcher<{ ok: true }>(
+        `/api/org/projects/${requireProjectId(projectId)}/agent-mcp-servers/${id}`,
+        { method: "DELETE" },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: projectMcpQueryKey(projectId) }),
+  });
+}
+
+export function useTestProjectMcpServer(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetcher<{ toolCount: number; tools: string[] }>(
+        `/api/org/projects/${requireProjectId(projectId)}/agent-mcp-servers/${id}/test`,
+        { method: "POST" },
+      ),
+  });
+}
+
+export function useStartProjectMcpOAuth(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetcher<{ authorizationUrl: string; expiresAt: string }>(
+        `/api/org/projects/${requireProjectId(projectId)}/agent-mcp-servers/${id}/oauth/start`,
+        { method: "POST" },
+      ),
+  });
+}
+
+export function useConnectProjectMcpClientCredentials(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetcher<{ server: ProjectMcpServer }>(
+        `/api/org/projects/${requireProjectId(projectId)}/agent-mcp-servers/${id}/oauth/client-credentials`,
+        { method: "POST" },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: projectMcpQueryKey(projectId) }),
+  });
+}
+
+export function useDisconnectProjectMcpOAuth(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetcher<{ ok: true }>(
+        `/api/org/projects/${requireProjectId(projectId)}/agent-mcp-servers/${id}/oauth/disconnect`,
+        { method: "POST" },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: projectMcpQueryKey(projectId) }),
+  });
+}
+
 export type IssueFilterPreviewEvent = {
   kind: "log" | "span";
   ts: string;

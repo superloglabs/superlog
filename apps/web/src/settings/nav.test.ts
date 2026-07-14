@@ -6,6 +6,7 @@ import {
   nextOrgIdAfterDelete,
   nextProjectIdAfterDelete,
   projectPickerOptions,
+  sectionIconKind,
   resolveOrgSection,
   resolveProjectSection,
   shouldShowProjectPicker,
@@ -32,6 +33,7 @@ test("project nav: single flat group, Install MCP sits next to MCP tokens", () =
     "general",
     "agent",
     "agent-memories",
+    "agent-mcps",
     "integrations",
     "issue-filter",
     "slack-channel",
@@ -42,6 +44,10 @@ test("project nav: single flat group, Install MCP sits next to MCP tokens", () =
   ]);
   assert.equal(PROJECT_NAV_GROUPS.length, 1);
   assert.equal(PROJECT_NAV_GROUPS[0]?.label, undefined);
+});
+
+test("Agent MCPs has a distinct navigation icon from Agent", () => {
+  assert.notEqual(sectionIconKind("project", "agent-mcps"), sectionIconKind("project", "agent"));
 });
 
 test("every org nav id resolves to itself", () => {

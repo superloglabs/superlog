@@ -29,9 +29,17 @@ export type TranscriptItem =
       type: "tool";
       id: string;
       name: string;
+      serverName?: string;
       input: Record<string, unknown>;
       result: string | null;
       isError: boolean;
+    }
+  | {
+      type: "mcp_error";
+      id: string;
+      serverName: string | null;
+      category: string;
+      message: string;
     }
   | MemoryActivity
   | { type: "question"; id: string; question: string; awaiting: boolean }
@@ -85,6 +93,21 @@ export function buildActivityFeed(
       ]
     : [];
   for (const event of events) {
+    const mcpError = (
+      event.detail as {
+        mcpError?: { serverName?: string; category?: string; message?: string };
+      } | null
+    )?.mcpError;
+    if (mcpError) {
+      items.push({
+        type: "mcp_error",
+        id: event.id,
+        serverName: mcpError.serverName ?? null,
+        category: mcpError.category ?? "connection",
+        message: mcpError.message ?? event.summary ?? "MCP connection failed",
+      });
+      continue;
+    }
     if (event.kind === "human_reply") {
       const origin = (event.detail as { origin?: { author?: string | null } } | null)?.origin;
       const text = (event.summary ?? "").trim();
@@ -143,6 +166,7 @@ export function buildActivityFeed(
           type: "tool",
           id: event.id,
           name,
+          ...(use?.mcpServerName ? { serverName: use.mcpServerName } : {}),
           input: use?.input ?? {},
           result: result?.summary ?? null,
           isError,

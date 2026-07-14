@@ -19,6 +19,12 @@ import {
 } from "drizzle-orm/pg-core";
 import { DEFAULT_AGENT_RUN_PROVIDER } from "./agent-runtime.js";
 
+const bytea = customType<{ data: Buffer; default: false }>({
+  dataType() {
+    return "bytea";
+  },
+});
+
 export type IssueSample = {
   kind: "span" | "log";
   service: string | null;
@@ -502,6 +508,78 @@ export const projects = pgTable(
     // Lets child tables carry (project_id, org_id) composite FKs that
     // guarantee the project belongs to the same org as the row.
     idOrgUniq: unique("projects_id_org_uniq").on(t.id, t.orgId),
+  }),
+);
+
+export const projectMcpServers = pgTable(
+  "project_mcp_servers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    url: text("url").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    authType: text("auth_type")
+      .$type<"none" | "bearer" | "api_key" | "oauth">()
+      .notNull()
+      .default("none"),
+    authCiphertext: bytea("auth_ciphertext"),
+    authNonce: bytea("auth_nonce"),
+    authKeyVersion: integer("auth_key_version"),
+    trustedAt: timestamp("trusted_at", { withTimezone: true }).notNull(),
+    trustedByUserId: uuid("trusted_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    projectNameUniq: uniqueIndex("project_mcp_servers_project_name_idx").on(t.projectId, t.name),
+    projectUrlUniq: uniqueIndex("project_mcp_servers_project_url_idx").on(t.projectId, t.url),
+    projectEnabledIdx: index("project_mcp_servers_project_enabled_idx").on(t.projectId, t.enabled),
+    authFieldsCheck: check(
+      "project_mcp_servers_auth_fields_check",
+      sql`(
+        auth_type = 'none'
+        AND auth_ciphertext IS NULL
+        AND auth_nonce IS NULL
+        AND auth_key_version IS NULL
+      ) OR (
+        auth_type IN ('bearer', 'api_key', 'oauth')
+        AND auth_ciphertext IS NOT NULL
+        AND auth_nonce IS NOT NULL
+        AND auth_key_version IS NOT NULL
+      )`,
+    ),
+  }),
+);
+
+export const projectMcpOauthAttempts = pgTable(
+  "project_mcp_oauth_attempts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    serverId: uuid("server_id")
+      .notNull()
+      .references(() => projectMcpServers.id, { onDelete: "cascade" }),
+    stateHash: text("state_hash").notNull().unique(),
+    payloadCiphertext: bytea("payload_ciphertext").notNull(),
+    payloadNonce: bytea("payload_nonce").notNull(),
+    payloadKeyVersion: integer("payload_key_version").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    serverIdx: index("project_mcp_oauth_attempts_server_idx").on(t.serverId),
+    expiryIdx: index("project_mcp_oauth_attempts_expiry_idx").on(t.expiresAt),
   }),
 );
 
@@ -1922,12 +2000,6 @@ export type IntegrationDefinition = {
   operations: IntegrationOperation[];
 };
 
-const bytea = customType<{ data: Buffer; default: false }>({
-  dataType() {
-    return "bytea";
-  },
-});
-
 export const orgIntegrations = pgTable(
   "org_integrations",
   {
@@ -2655,6 +2727,8 @@ export type ProjectTopology = typeof projectTopologies.$inferSelect;
 export type Org = typeof orgs.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Project = typeof projects.$inferSelect;
+export type ProjectMcpServerRow = typeof projectMcpServers.$inferSelect;
+export type ProjectMcpOauthAttemptRow = typeof projectMcpOauthAttempts.$inferSelect;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type OrgApiKey = typeof orgApiKeys.$inferSelect;
 export type Issue = typeof issues.$inferSelect;

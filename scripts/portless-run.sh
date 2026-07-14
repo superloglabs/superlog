@@ -40,6 +40,7 @@ portless_dir="$HOME/.portless"
 routes_file="$portless_dir/routes.json"
 lock_dir="$portless_dir/routes.lock"
 mkdir -p "$portless_dir"
+fresh_lock=0
 if [[ -d "$lock_dir" ]] && node -e '
   const ageMs = Date.now() - require("fs").statSync(process.argv[1]).mtimeMs;
   process.exit(ageMs > 10_000 ? 0 : 1);
@@ -47,16 +48,23 @@ if [[ -d "$lock_dir" ]] && node -e '
   echo "[portless-run:$service] clearing stale routes.lock at $lock_dir" >&2
   rm -rf "$lock_dir"
 fi
+if [[ -d "$lock_dir" ]]; then
+  fresh_lock=1
+fi
 if [[ ! -s "$routes_file" ]] \
   || ! node -e '
     const v = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
     if (!Array.isArray(v)) process.exit(2);
   ' "$routes_file" >/dev/null 2>&1; then
-  echo "[portless-run:$service] resetting invalid routes.json to []" >&2
-  if [[ -s "$routes_file" ]]; then
-    cp "$routes_file" "$routes_file.bak.$(date +%s)" 2>/dev/null || true
+  if [[ "$fresh_lock" -eq 1 ]]; then
+    echo "[portless-run:$service] deferring routes.json repair while registration lock is fresh" >&2
+  else
+    echo "[portless-run:$service] resetting invalid routes.json to []" >&2
+    if [[ -s "$routes_file" ]]; then
+      cp "$routes_file" "$routes_file.bak.$(date +%s)" 2>/dev/null || true
+    fi
+    echo '[]' > "$routes_file"
   fi
-  echo '[]' > "$routes_file"
 fi
 
 case "$service" in

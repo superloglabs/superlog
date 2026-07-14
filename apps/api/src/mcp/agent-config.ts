@@ -1,6 +1,12 @@
 import type { ClickHouseClient } from "@clickhouse/client";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { db, schema } from "@superlog/db";
+import {
+  MAX_ENABLED_CUSTOM_MCP_SERVERS,
+  createDrizzleProjectMcpServerRepository,
+  createProjectMcpServerManager,
+  db,
+  schema,
+} from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -21,6 +27,13 @@ import {
   setIssueFilterConfig,
 } from "../issue-filter-service.js";
 import { getProjectContext, setProjectContext } from "../project-context-service.js";
+import {
+  createDrizzleProjectMcpOAuthAttemptStore,
+  createFetchProjectMcpOAuthHttp,
+  createProjectMcpOAuthService,
+} from "../project-mcp-oauth.js";
+import { parseProjectMcpServerAuthInput } from "../project-mcp-servers.js";
+import { testProjectMcpServerConnection } from "../project-mcp-test.js";
 import { previewIssueFilterMatches } from "./clickhouse.js";
 
 const projectIdSchema = z
@@ -47,7 +60,31 @@ const memoryKindSchema = z
     "feedback = a correction/preference for how the agent should work; terminology = a domain term/acronym; infra = how the system is deployed/runs; project = general project facts.",
   );
 
-const text = (v: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(v) }] });
+const text = (v: unknown) => ({
+  content: [{ type: "text" as const, text: JSON.stringify(v) }],
+});
+
+const mcpRepository = createDrizzleProjectMcpServerRepository();
+const mcpManager = createProjectMcpServerManager(mcpRepository);
+const mcpOAuth = createProjectMcpOAuthService({
+  repository: mcpRepository,
+  attempts: createDrizzleProjectMcpOAuthAttemptStore(),
+  http: createFetchProjectMcpOAuthHttp(),
+});
+const mcpOAuthRedirectUri = `${(
+  process.env.GATEWAY_PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 4100}`
+).replace(/\/$/, "")}/api/agent-mcp-oauth/callback`;
+
+const mcpAuthSchema = z.object({
+  type: z.enum(["none", "bearer", "api_key", "oauth"]),
+  token: z.string().min(1).optional(),
+  header_name: z.string().min(1).optional(),
+  key: z.string().min(1).optional(),
+  grant_type: z.enum(["authorization_code", "client_credentials"]).optional(),
+  scopes: z.array(z.string().min(1)).max(50).optional(),
+  client_id: z.string().min(1).optional(),
+  client_secret: z.string().min(1).optional(),
+});
 
 type Session = {
   userId: string;
@@ -65,7 +102,7 @@ export function registerAgentConfigTools(
   // correctly.
   const resolve = async (
     explicit: string | undefined,
-  ): Promise<{ projectId: string; orgId: string }> => {
+  ): Promise<{ projectId: string; orgId: string; canManage: boolean }> => {
     const projectId = explicit ?? session.activeProjectId;
     const project = await db.query.projects.findFirst({
       where: eq(schema.projects.id, projectId),
@@ -73,7 +110,9 @@ export function registerAgentConfigTools(
     });
     if (!project) throw new HTTPException(404, { message: "project not found" });
     if (session.allowedOrgId && project.orgId !== session.allowedOrgId) {
-      throw new HTTPException(403, { message: "project is outside this MCP token's org scope" });
+      throw new HTTPException(403, {
+        message: "project is outside this MCP token's org scope",
+      });
     }
     const membership = await db.query.orgMembers.findFirst({
       where: and(
@@ -82,8 +121,216 @@ export function registerAgentConfigTools(
       ),
     });
     if (!membership) throw new HTTPException(403, { message: "no access to project" });
-    return { projectId: project.id, orgId: project.orgId };
+    return {
+      projectId: project.id,
+      orgId: project.orgId,
+      canManage: membership.role === "owner" || membership.role === "admin",
+    };
   };
+
+  const resolveManager = async (explicit: string | undefined) => {
+    const scope = await resolve(explicit);
+    if (!scope.canManage) {
+      throw new HTTPException(403, {
+        message: "project admin access required",
+      });
+    }
+    return scope;
+  };
+
+  // ---- Custom agent MCP servers ---------------------------------------
+
+  server.registerTool(
+    "list_agent_mcp_servers",
+    {
+      title: "List agent MCP servers",
+      description:
+        "List the custom MCP servers available to new investigation and Slack-agent sessions for this project. Credentials are always redacted.",
+      inputSchema: { project_id: projectIdSchema },
+    },
+    async (input) => {
+      const { projectId } = await resolve(input.project_id);
+      const servers = await mcpManager.list(projectId);
+      return text({
+        servers,
+        enabledCount: servers.filter((server) => server.enabled).length,
+        enabledLimit: MAX_ENABLED_CUSTOM_MCP_SERVERS,
+      });
+    },
+  );
+
+  server.registerTool(
+    "add_agent_mcp_server",
+    {
+      title: "Add agent MCP server",
+      description:
+        "Add a trusted HTTPS Streamable HTTP MCP server to this project. Admin only. Authentication accepts none, bearer/API token, arbitrary API-key header, or OAuth. Credential inputs are write-only and never returned.",
+      inputSchema: {
+        project_id: projectIdSchema,
+        name: z.string().min(1).max(64),
+        url: z.string().url(),
+        enabled: z.boolean().optional(),
+        auth: mcpAuthSchema,
+        confirm_trusted: z.literal(true).describe("Confirms that this remote server is trusted."),
+      },
+    },
+    async (input) => {
+      const { projectId } = await resolveManager(input.project_id);
+      const serverView = await mcpManager.add({
+        projectId,
+        actorUserId: session.userId,
+        name: input.name,
+        url: input.url,
+        enabled: input.enabled,
+        auth: parseMcpToolAuth(input.auth),
+        confirmTrusted: input.confirm_trusted,
+      });
+      return text({ server: serverView });
+    },
+  );
+
+  server.registerTool(
+    "update_agent_mcp_server",
+    {
+      title: "Update agent MCP server",
+      description:
+        "Update a project MCP server. Admin only. Omit auth to preserve its credential; supplying auth replaces it. A changed URL must be explicitly trusted.",
+      inputSchema: {
+        project_id: projectIdSchema,
+        id: z.string().uuid(),
+        name: z.string().min(1).max(64).optional(),
+        url: z.string().url().optional(),
+        enabled: z.boolean().optional(),
+        auth: mcpAuthSchema.optional(),
+        confirm_trusted: z.boolean().optional(),
+      },
+    },
+    async (input) => {
+      const { projectId } = await resolveManager(input.project_id);
+      return text({
+        server: await mcpManager.update({
+          projectId,
+          id: input.id,
+          actorUserId: session.userId,
+          name: input.name,
+          url: input.url,
+          enabled: input.enabled,
+          auth: input.auth ? parseMcpToolAuth(input.auth) : undefined,
+          confirmTrusted: input.confirm_trusted,
+        }),
+      });
+    },
+  );
+
+  server.registerTool(
+    "remove_agent_mcp_server",
+    {
+      title: "Remove agent MCP server",
+      description: "Remove a custom MCP server from this project. Admin only.",
+      inputSchema: { project_id: projectIdSchema, id: z.string().uuid() },
+    },
+    async (input) => {
+      const { projectId } = await resolveManager(input.project_id);
+      await mcpManager.remove(projectId, input.id);
+      return text({ ok: true });
+    },
+  );
+
+  server.registerTool(
+    "start_agent_mcp_oauth",
+    {
+      title: "Start agent MCP OAuth",
+      description:
+        "Start OAuth authorization-code authentication with discovery, PKCE, resource binding, and dynamic client registration when needed. Admin only. Open the returned authorizationUrl in a browser.",
+      inputSchema: { project_id: projectIdSchema, id: z.string().uuid() },
+    },
+    async (input) => {
+      const { projectId } = await resolveManager(input.project_id);
+      return text(
+        await mcpOAuth.start({
+          projectId,
+          serverId: input.id,
+          actorUserId: session.userId,
+          redirectUri: mcpOAuthRedirectUri,
+        }),
+      );
+    },
+  );
+
+  server.registerTool(
+    "connect_agent_mcp_client_credentials",
+    {
+      title: "Connect agent MCP client credentials",
+      description:
+        "Exchange the configured OAuth client ID and secret using client_credentials, but only when advertised by the authorization server. Admin only.",
+      inputSchema: { project_id: projectIdSchema, id: z.string().uuid() },
+    },
+    async (input) => {
+      const { projectId } = await resolveManager(input.project_id);
+      await mcpOAuth.connectClientCredentials({
+        projectId,
+        serverId: input.id,
+        actorUserId: session.userId,
+      });
+      const serverView = (await mcpManager.list(projectId)).find((item) => item.id === input.id);
+      return text({ server: serverView });
+    },
+  );
+
+  server.registerTool(
+    "disconnect_agent_mcp_oauth",
+    {
+      title: "Disconnect agent MCP OAuth",
+      description: "Erase stored OAuth tokens and disable this custom MCP server. Admin only.",
+      inputSchema: { project_id: projectIdSchema, id: z.string().uuid() },
+    },
+    async (input) => {
+      const { projectId } = await resolveManager(input.project_id);
+      const current = await mcpRepository.get(projectId, input.id);
+      if (!current) throw new HTTPException(404, { message: "MCP server not found" });
+      if (current.auth.type !== "oauth") {
+        throw new HTTPException(400, {
+          message: "MCP server does not use OAuth",
+        });
+      }
+      await mcpRepository.update({
+        ...current,
+        enabled: false,
+        auth: {
+          ...current.auth,
+          status: "pending",
+          accessToken: null,
+          refreshToken: null,
+          expiresAt: null,
+        },
+        updatedByUserId: session.userId,
+        updatedAt: new Date(),
+      });
+      return text({ ok: true });
+    },
+  );
+
+  server.registerTool(
+    "test_agent_mcp_server",
+    {
+      title: "Test agent MCP server",
+      description:
+        "Connect to a configured MCP server, initialize the protocol, and list its tools. Admin only. Secrets are never returned.",
+      inputSchema: { project_id: projectIdSchema, id: z.string().uuid() },
+    },
+    async (input) => {
+      const { projectId } = await resolveManager(input.project_id);
+      return text(
+        await testProjectMcpServerConnection({
+          projectId,
+          serverId: input.id,
+          repository: mcpRepository,
+          ensureFreshOAuth: async (targetProjectId, serverId) =>
+            mcpOAuth.ensureFresh({ projectId: targetProjectId, serverId }),
+        }),
+      );
+    },
+  );
 
   // ---- Issue filter ----------------------------------------------------
 
@@ -205,7 +452,9 @@ export function registerAgentConfigTools(
     },
     async (input) => {
       const { projectId } = await resolve(input.project_id);
-      return text({ projectContext: await setProjectContext(projectId, input.context) });
+      return text({
+        projectContext: await setProjectContext(projectId, input.context),
+      });
     },
   );
 
@@ -292,12 +541,18 @@ export function registerAgentConfigTools(
       if (input.kind !== undefined) patch.kind = input.kind;
       if (input.title !== undefined) {
         const title = parseMemoryText(input.title, AGENT_MEMORY_TITLE_MAX_LEN);
-        if (!title) throw new HTTPException(400, { message: "title must be a non-empty string" });
+        if (!title)
+          throw new HTTPException(400, {
+            message: "title must be a non-empty string",
+          });
         patch.title = title;
       }
       if (input.body !== undefined) {
         const body = parseMemoryText(input.body, AGENT_MEMORY_BODY_MAX_LEN);
-        if (!body) throw new HTTPException(400, { message: "body must be a non-empty string" });
+        if (!body)
+          throw new HTTPException(400, {
+            message: "body must be a non-empty string",
+          });
         patch.body = body;
       }
       if (input.status !== undefined) patch.status = input.status;
@@ -330,4 +585,17 @@ export function registerAgentConfigTools(
       return text({ ok: true });
     },
   );
+}
+
+function parseMcpToolAuth(input: z.infer<typeof mcpAuthSchema>) {
+  return parseProjectMcpServerAuthInput({
+    type: input.type,
+    token: input.token,
+    headerName: input.header_name,
+    key: input.key,
+    grantType: input.grant_type,
+    scopes: input.scopes,
+    clientId: input.client_id,
+    clientSecret: input.client_secret,
+  });
 }
