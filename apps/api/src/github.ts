@@ -1293,6 +1293,35 @@ async function createInstallationWriteToken(installationId: number): Promise<str
   });
 }
 
+// Fetch the current unified diff of a PR straight from GitHub. Agent PRs
+// opened mid-run don't carry a patch body on the run result (only the legacy
+// end-of-run delivery path recorded one), and the live diff is more truthful
+// anyway — it includes follow-up commits pushed to the same branch.
+export async function fetchGithubPullRequestDiff(opts: {
+  installationId: number;
+  repoFullName: string;
+  prNumber: number;
+}): Promise<string> {
+  const token = await createInstallationToken({
+    installationId: opts.installationId,
+    permissions: { contents: "read", pull_requests: "read" },
+  });
+  const pathname = `/repos/${opts.repoFullName}/pulls/${opts.prNumber}`;
+  const res = await fetch(`https://api.github.com${pathname}`, {
+    headers: {
+      accept: "application/vnd.github.diff",
+      authorization: `Bearer ${token}`,
+      "x-github-api-version": "2022-11-28",
+      "user-agent": "superlog-api",
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`github GET ${pathname} (diff) failed: ${res.status} ${text}`);
+  }
+  return await res.text();
+}
+
 export async function mergeGithubPullRequest(opts: {
   installationId: number;
   repoFullName: string;

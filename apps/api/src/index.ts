@@ -50,6 +50,7 @@ import { type GatewayVars, mountGateway } from "./gateway.js";
 import { prBaseBranchExists } from "./github-branches.js";
 import {
   closeAgentPullRequestOnGithub,
+  fetchGithubPullRequestDiff,
   listProjectRepoBranches,
   mountGithubAuthed,
   mountGithubAuthorOAuth,
@@ -2209,6 +2210,59 @@ app.get("/api/projects/:projectId/incidents/:incidentId/pull-requests", async (c
 
   return c.json(buildIncidentPullRequestViews(prs, agentRuns));
 });
+
+// Live diff for an agent PR, fetched from GitHub on demand. PRs opened mid-run
+// via `propose_pr` never record a patch body on the run result, so this is the
+// dashboard's only path to the diff — and it stays current with follow-up
+// commits pushed to the PR branch.
+app.get(
+  "/api/projects/:projectId/incidents/:incidentId/pull-requests/:prId/diff",
+  async (c) => {
+    const projectId = await requireProjectAccess(c, c.req.param("projectId"));
+    const incidentId = c.req.param("incidentId");
+    const prId = c.req.param("prId");
+
+    const incident = await getProjectIncident(projectId, incidentId);
+    if (!incident) throw new HTTPException(404, { message: "incident not found" });
+
+    const pr = await db.query.agentPullRequests.findFirst({
+      where: and(
+        eq(schema.agentPullRequests.id, prId),
+        eq(schema.agentPullRequests.incidentId, incidentId),
+      ),
+    });
+    if (!pr) throw new HTTPException(404, { message: "pull request not found" });
+
+    const installation = await db.query.githubInstallations.findFirst({
+      where: eq(schema.githubInstallations.id, pr.installationId),
+    });
+    if (!installation || installation.revokedAt) {
+      throw new HTTPException(409, { message: "github installation is unavailable" });
+    }
+
+    let patch: string;
+    try {
+      patch = await fetchGithubPullRequestDiff({
+        installationId: installation.installationId,
+        repoFullName: pr.repoFullName,
+        prNumber: pr.prNumber,
+      });
+    } catch (err) {
+      logger.warn(
+        {
+          scope: "incidents.pr_diff",
+          incident_id: incidentId,
+          pr_id: prId,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "failed to fetch PR diff from github",
+      );
+      throw new HTTPException(502, { message: "could not fetch the diff from github" });
+    }
+
+    return c.json({ patch });
+  },
+);
 
 app.post("/api/projects/:projectId/incidents/:incidentId/pull-requests/:prId/merge", async (c) => {
   const projectId = c.req.param("projectId");

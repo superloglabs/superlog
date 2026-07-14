@@ -39,6 +39,7 @@ import {
   incidentChatErrorMessage,
   useDecideResolutionProposal,
   useIncident,
+  useIncidentPullRequestDiff,
   useIncidentPullRequests,
   useIncidentStats,
   useIncidents,
@@ -76,6 +77,12 @@ import {
   getIncidentDetailAccess,
   shouldUsePreloadedPullRequests,
 } from "./incidents/incident-detail-access.ts";
+import {
+  type IncidentDetailTab,
+  incidentHasFindings,
+  resolveIncidentDetailTab,
+  visibleIncidentDetailTabs,
+} from "./incidents/incident-detail-tabs.ts";
 import {
   type IncidentMetaRow,
   buildIncidentDetailMeta,
@@ -1132,6 +1139,9 @@ function IncidentDetailBody({
 }) {
   const q = useIncident(projectId, incidentId);
   const stats = useIncidentStats(projectId, incidentId);
+  // Fetched here (not just inside the PR panel) so the PR tab can hide until a
+  // PR actually exists. Same query key as the panel's, so no duplicate fetch.
+  const prsQuery = useIncidentPullRequests(projectId, incidentId, true, q.data?.agentRun?.state);
   const updateIncident = useUpdateIncident(projectId);
   const restartAgentRun = useRestartAgentRun(projectId);
   const retryPrDelivery = useRetryPrDelivery(projectId);
@@ -1174,6 +1184,7 @@ function IncidentDetailBody({
       linearTickets={linearTickets}
       alertEpisodes={alertEpisodes}
       pendingResolutionProposal={q.data.pendingResolutionProposal ?? null}
+      pullRequests={prsQuery.data}
       events={timeline}
       eventsLoading={false}
       eventsError={null}
@@ -1587,13 +1598,25 @@ export function IncidentDetailContent({
   /** Telemetry widgets the agent quoted in its summary, rendered inside the Summary section. */
   summaryTelemetry?: ReactNode;
   occurrenceBuckets?: { day: string; count: number }[];
-  /** Preloaded PRs for read-model consumers that cannot call product APIs. */
+  /**
+   * Preloaded PRs. Drives PR-tab visibility everywhere; read-only consumers
+   * that cannot call product APIs also render the PR panel from this.
+   */
   pullRequests?: IncidentPullRequest[];
   /** Render the canonical incident UI without controls that mutate customer data. */
   readOnly?: boolean;
 }) {
   const [detailTab, setDetailTab] = useState<IncidentDetailTab>("activity");
   const access = getIncidentDetailAccess(readOnly);
+  const visibleTabs = visibleIncidentDetailTabs({
+    hasFindings: incidentHasFindings({
+      incident,
+      agentRun,
+      hasPendingResolutionProposal: !!pendingResolutionProposal,
+    }),
+    hasPullRequests: (pullRequests?.length ?? 0) > 0,
+  });
+  const activeTab = resolveIncidentDetailTab(detailTab, visibleTabs);
   // A run paused on `ask_human` stores its question on the run result, not as an
   // incident event — surface it as the closing node of the Activity timeline.
   const awaitingQuestion =
@@ -1736,10 +1759,10 @@ export function IncidentDetailContent({
         </aside>
 
         <div className="flex min-h-0 min-w-0 flex-col bg-bg">
-          <IncidentDetailTabs active={detailTab} onChange={setDetailTab} />
+          <IncidentDetailTabs active={activeTab} tabs={visibleTabs} onChange={setDetailTab} />
 
           <IncidentDetailScrollArea>
-            {detailTab === "activity" && (
+            {activeTab === "activity" && (
               <div className="space-y-8">
                 {outOfCredits && <OutOfCreditsBanner />}
                 <div className="space-y-3">
@@ -1802,7 +1825,7 @@ export function IncidentDetailContent({
               </div>
             )}
 
-            {detailTab === "findings" && (
+            {activeTab === "findings" && (
               <div className="space-y-8">
                 {alertEpisodes.length > 0 && (
                   <div className="space-y-3">
@@ -1847,7 +1870,7 @@ export function IncidentDetailContent({
               </div>
             )}
 
-            {detailTab === "pr" && (
+            {activeTab === "pr" && (
               <IncidentPullRequestPanel
                 projectId={incident.projectId}
                 incidentId={incident.id}
@@ -1857,7 +1880,7 @@ export function IncidentDetailContent({
             )}
           </IncidentDetailScrollArea>
 
-          {detailTab === "activity" && access.canChat && (
+          {activeTab === "activity" && access.canChat && (
             <IncidentChatComposer
               projectId={incident.projectId}
               incidentId={incident.id}
@@ -2126,13 +2149,19 @@ function AgentDot({ tone }: { tone?: "danger" }) {
   );
 }
 
-type IncidentDetailTab = "activity" | "findings" | "pr";
+const INCIDENT_DETAIL_TAB_LABELS: Record<IncidentDetailTab, string> = {
+  activity: "Activity",
+  findings: "Findings",
+  pr: "PR",
+};
 
 function IncidentDetailTabs({
   active,
+  tabs,
   onChange,
 }: {
   active: IncidentDetailTab;
+  tabs: IncidentDetailTab[];
   onChange: (tab: IncidentDetailTab) => void;
 }) {
   return (
@@ -2141,11 +2170,7 @@ function IncidentDetailTabs({
         <Tabs
           value={active}
           onChange={onChange}
-          options={[
-            { value: "activity", label: "Activity" },
-            { value: "findings", label: "Findings" },
-            { value: "pr", label: "PR" },
-          ]}
+          options={tabs.map((tab) => ({ value: tab, label: INCIDENT_DETAIL_TAB_LABELS[tab] }))}
         />
       </div>
     </div>
@@ -2163,12 +2188,7 @@ export function IncidentPullRequestPanel({
   pullRequests?: IncidentPullRequest[];
   readOnly: boolean;
 }) {
-  if (
-    shouldUsePreloadedPullRequests({
-      readOnly,
-      pullRequestsProvided: pullRequests !== undefined,
-    })
-  ) {
+  if (shouldUsePreloadedPullRequests({ readOnly })) {
     return <IncidentPullRequestView pullRequests={pullRequests ?? []} readOnly={readOnly} />;
   }
   return <ProductIncidentPullRequestPanel projectId={projectId} incidentId={incidentId} />;
@@ -2197,6 +2217,7 @@ function ProductIncidentPullRequestPanel({
       merging={mergePr.isPending}
       mergeError={mergePr.error}
       onMerge={(prId) => mergePr.mutate({ prId })}
+      diffSource={{ projectId, incidentId }}
     />
   );
 }
@@ -2207,12 +2228,19 @@ export function IncidentPullRequestView({
   merging = false,
   mergeError = null,
   onMerge,
+  diffSource,
 }: {
   pullRequests: IncidentPullRequest[];
   readOnly: boolean;
   merging?: boolean;
   mergeError?: Error | null;
   onMerge?: (prId: string) => void;
+  /**
+   * Where to fetch the live diff when a PR has no recorded patch body.
+   * Omitted by read-only consumers that cannot call product APIs — they fall
+   * back to a GitHub link.
+   */
+  diffSource?: { projectId: string; incidentId: string };
 }) {
   const [selectedPrId, setSelectedPrId] = useState<string | null>(null);
 
@@ -2295,11 +2323,7 @@ export function IncidentPullRequestView({
         </p>
       )}
 
-      {!selectedPr.patch ? (
-        <div className="rounded-md border border-border bg-surface p-4">
-          <p className="text-[12px] text-muted">No patch body was recorded for this PR.</p>
-        </div>
-      ) : (
+      {selectedPr.patch ? (
         <Suspense
           fallback={
             <div className="min-h-[520px] rounded-md border border-border bg-surface p-4 text-[12px] text-muted">
@@ -2309,7 +2333,70 @@ export function IncidentPullRequestView({
         >
           <IncidentPrDiffView patch={selectedPr.patch} patchKey={selectedPr.id} />
         </Suspense>
+      ) : diffSource ? (
+        <IncidentPrRemoteDiff
+          key={selectedPr.id}
+          projectId={diffSource.projectId}
+          incidentId={diffSource.incidentId}
+          pr={selectedPr}
+        />
+      ) : (
+        <IncidentPrDiffUnavailable pr={selectedPr} />
       )}
+    </div>
+  );
+}
+
+// Loads the diff from GitHub through the API when the PR view carries no
+// recorded patch body (the normal case for PRs opened mid-run).
+function IncidentPrRemoteDiff({
+  projectId,
+  incidentId,
+  pr,
+}: {
+  projectId: string;
+  incidentId: string;
+  pr: IncidentPullRequest;
+}) {
+  const diff = useIncidentPullRequestDiff(projectId, incidentId, pr.id, pr.headSha);
+  if (diff.isLoading) {
+    return (
+      <div className="min-h-[520px] rounded-md border border-border bg-surface p-4 text-[12px] text-muted">
+        Loading diff…
+      </div>
+    );
+  }
+  if (diff.error || !diff.data?.patch) {
+    return <IncidentPrDiffUnavailable pr={pr} />;
+  }
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-[520px] rounded-md border border-border bg-surface p-4 text-[12px] text-muted">
+          Loading diff…
+        </div>
+      }
+    >
+      <IncidentPrDiffView patch={diff.data.patch} patchKey={pr.id} />
+    </Suspense>
+  );
+}
+
+function IncidentPrDiffUnavailable({ pr }: { pr: IncidentPullRequest }) {
+  return (
+    <div className="rounded-md border border-border bg-surface p-4">
+      <p className="text-[12px] text-muted">
+        The diff couldn't be loaded here.{" "}
+        <a
+          href={`${pr.url}/files`}
+          target="_blank"
+          rel="noreferrer"
+          className="text-fg underline hover:text-muted"
+        >
+          View it on GitHub
+        </a>
+        .
+      </p>
     </div>
   );
 }
