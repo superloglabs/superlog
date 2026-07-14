@@ -5,7 +5,7 @@ import { runGcpMetricsPullOnce } from "./metrics-puller.js";
 test("the metrics puller forwards and checkpoints only through the visibility watermark", async () => {
   const pageSizes: number[] = [];
   const reservations: Array<{ month: string; requested: number; monthlyLimit: number }> = [];
-  const savedCursors: Date[] = [];
+  const savedCursors: Array<Record<string, Date>> = [];
   const forwarded: unknown[] = [];
   const now = new Date("2026-07-13T12:00:00Z");
   let seriesRead = 99_999_999;
@@ -20,7 +20,9 @@ test("the metrics puller forwards and checkpoints only through the visibility wa
             id: "connection-id",
             projectId: "superlog-project-id",
             gcpProjectId: "acme-production",
-            metricsCursor: new Date("2026-07-13T11:45:00Z"),
+            metricsCursors: {
+              "compute.googleapis.com/instance/cpu/utilization": new Date("2026-07-13T11:45:00Z"),
+            },
             metricsBudgetMonth: "2026-07",
             metricsSeriesRead: 99_999_999,
             ingestKey: "sl_public_test",
@@ -36,8 +38,8 @@ test("the metrics puller forwards and checkpoints only through the visibility wa
       async refundBudget(_id, refund) {
         seriesRead -= refund.series;
       },
-      async saveCursor(_id, cursor) {
-        savedCursors.push(cursor);
+      async saveCursors(_id, cursors) {
+        savedCursors.push(cursors);
       },
     },
     monitoring: {
@@ -86,13 +88,16 @@ test("the metrics puller forwards and checkpoints only through the visibility wa
     { month: "2026-07", requested: 1_000, monthlyLimit: 100_000_000 },
   ]);
   assert.equal(seriesRead, 100_000_000);
-  assert.deepEqual(savedCursors, [new Date("2026-07-13T11:49:00Z")]);
+  assert.equal(
+    savedCursors[0]?.["compute.googleapis.com/instance/cpu/utilization"]?.toISOString(),
+    "2026-07-13T11:49:00.000Z",
+  );
   assert.deepEqual(stats, { connections: 1, seriesRead: 1, pointsForwarded: 1, errors: 0 });
 });
 
 test("paginated Monitoring results are forwarded in bounded page payloads", async () => {
   const forwardedSeriesCounts: number[] = [];
-  const savedCursors: Date[] = [];
+  const savedCursors: Array<Record<string, Date>> = [];
   let seriesRead = 0;
   let monitoringCalls = 0;
   const stats = await runGcpMetricsPullOnce({
@@ -105,7 +110,9 @@ test("paginated Monitoring results are forwarded in bounded page payloads", asyn
             id: "connection-id",
             projectId: "project-id",
             gcpProjectId: "acme-production",
-            metricsCursor: new Date("2026-07-13T11:45:00Z"),
+            metricsCursors: {
+              "compute.googleapis.com/instance/cpu/utilization": new Date("2026-07-13T11:45:00Z"),
+            },
             metricsBudgetMonth: "2026-07",
             metricsSeriesRead: 0,
             ingestKey: "sl_public_test",
@@ -120,8 +127,8 @@ test("paginated Monitoring results are forwarded in bounded page payloads", asyn
       async refundBudget(_id, refund) {
         seriesRead -= refund.series;
       },
-      async saveCursor(_id, cursor) {
-        savedCursors.push(cursor);
+      async saveCursors(_id, cursors) {
+        savedCursors.push(cursors);
       },
     },
     monitoring: {
@@ -154,13 +161,79 @@ test("paginated Monitoring results are forwarded in bounded page payloads", asyn
   });
 
   assert.deepEqual(forwardedSeriesCounts, [1, 1]);
-  assert.deepEqual(savedCursors, [new Date("2026-07-13T11:49:00Z")]);
+  assert.equal(
+    savedCursors[0]?.["compute.googleapis.com/instance/cpu/utilization"]?.toISOString(),
+    "2026-07-13T11:49:00.000Z",
+  );
   assert.deepEqual(stats, { connections: 1, seriesRead: 2, pointsForwarded: 2, errors: 0 });
+});
+
+test("a faster metric cursor does not hide a later-visible point from a slower metric type", async () => {
+  const forwarded: unknown[] = [];
+  const savedCursors: Array<Record<string, Date>> = [];
+  await runGcpMetricsPullOnce({
+    now: () => new Date("2026-07-13T12:00:00Z"),
+    monthlySeriesLimit: 10,
+    store: {
+      async listConnected() {
+        return [
+          {
+            id: "connection-id",
+            projectId: "project-id",
+            gcpProjectId: "acme-production",
+            metricsCursors: {
+              "compute.googleapis.com/instance/cpu/utilization": new Date("2026-07-13T11:49:00Z"),
+            },
+            metricsBudgetMonth: "2026-07",
+            metricsSeriesRead: 0,
+            ingestKey: "sl_public_test",
+          },
+        ];
+      },
+      async reserveBudget(_id, reservation) {
+        return reservation.requested;
+      },
+      async refundBudget() {},
+      async saveCursors(_id, cursors) {
+        savedCursors.push(cursors);
+      },
+    },
+    monitoring: {
+      async listTimeSeries({ metricType }) {
+        if (metricType !== "run.googleapis.com/request_count") return { timeSeries: [] };
+        return {
+          timeSeries: [
+            {
+              metric: { type: metricType },
+              resource: { type: "cloud_run_revision" },
+              metricKind: "DELTA",
+              points: [
+                {
+                  interval: { endTime: "2026-07-13T11:48:00Z" },
+                  value: { int64Value: "1" },
+                },
+              ],
+            },
+          ],
+        };
+      },
+    },
+    async forward({ payload }) {
+      forwarded.push(payload);
+      return true;
+    },
+  });
+
+  assert.equal(forwarded.length, 1);
+  assert.equal(
+    savedCursors[0]?.["run.googleapis.com/request_count"]?.toISOString(),
+    "2026-07-13T11:48:00.000Z",
+  );
 });
 
 test("a failed intake still spends the read budget but does not advance the data cursor", async () => {
   const reservations: number[] = [];
-  const savedCursors: Date[] = [];
+  const savedCursors: Array<Record<string, Date>> = [];
   let remaining = 1;
   await runGcpMetricsPullOnce({
     now: () => new Date("2026-07-13T12:00:00Z"),
@@ -172,7 +245,9 @@ test("a failed intake still spends the read budget but does not advance the data
             id: "connection-id",
             projectId: "project-id",
             gcpProjectId: "acme-production",
-            metricsCursor: new Date("2026-07-13T11:45:00Z"),
+            metricsCursors: {
+              "compute.googleapis.com/instance/cpu/utilization": new Date("2026-07-13T11:45:00Z"),
+            },
             metricsBudgetMonth: "2026-07",
             metricsSeriesRead: 9,
             ingestKey: "sl_public_test",
@@ -188,8 +263,8 @@ test("a failed intake still spends the read budget but does not advance the data
       async refundBudget() {
         throw new Error("a full page must not be refunded");
       },
-      async saveCursor(_id, cursor) {
-        savedCursors.push(cursor);
+      async saveCursors(_id, cursors) {
+        savedCursors.push(cursors);
       },
     },
     monitoring: {
@@ -228,7 +303,7 @@ test("no paid Monitoring call starts when the atomic database reservation is exh
             id: "connection-id",
             projectId: "project-id",
             gcpProjectId: "acme-production",
-            metricsCursor: null,
+            metricsCursors: {},
             metricsBudgetMonth: "2026-07",
             metricsSeriesRead: 10,
             ingestKey: "sl_public_test",
@@ -239,7 +314,7 @@ test("no paid Monitoring call starts when the atomic database reservation is exh
         return 0;
       },
       async refundBudget() {},
-      async saveCursor() {},
+      async saveCursors() {},
     },
     monitoring: {
       async listTimeSeries() {
@@ -267,7 +342,7 @@ test("a failed Monitoring read refunds its full budget reservation", async () =>
             id: "connection-id",
             projectId: "project-id",
             gcpProjectId: "acme-production",
-            metricsCursor: null,
+            metricsCursors: {},
             metricsBudgetMonth: "2026-07",
             metricsSeriesRead: 0,
             ingestKey: "sl_public_test",
@@ -283,7 +358,7 @@ test("a failed Monitoring read refunds its full budget reservation", async () =>
         refunds.push(refund.series);
         seriesRead -= refund.series;
       },
-      async saveCursor() {},
+      async saveCursors() {},
     },
     monitoring: {
       async listTimeSeries() {
@@ -301,7 +376,7 @@ test("a failed Monitoring read refunds its full budget reservation", async () =>
 });
 
 test("an empty poll does not checkpoint past delayed Cloud Monitoring samples", async () => {
-  const savedCursors: Date[] = [];
+  const savedCursors: Array<Record<string, Date>> = [];
   await runGcpMetricsPullOnce({
     now: () => new Date("2026-07-13T12:00:00Z"),
     monthlySeriesLimit: 10,
@@ -312,7 +387,9 @@ test("an empty poll does not checkpoint past delayed Cloud Monitoring samples", 
             id: "connection-id",
             projectId: "project-id",
             gcpProjectId: "acme-production",
-            metricsCursor: new Date("2026-07-13T11:55:00Z"),
+            metricsCursors: {
+              "compute.googleapis.com/instance/cpu/utilization": new Date("2026-07-13T11:55:00Z"),
+            },
             metricsBudgetMonth: "2026-07",
             metricsSeriesRead: 0,
             ingestKey: "sl_public_test",
@@ -323,8 +400,8 @@ test("an empty poll does not checkpoint past delayed Cloud Monitoring samples", 
         return reservation.requested;
       },
       async refundBudget() {},
-      async saveCursor(_id, cursor) {
-        savedCursors.push(cursor);
+      async saveCursors(_id, cursors) {
+        savedCursors.push(cursors);
       },
     },
     monitoring: {
@@ -358,7 +435,9 @@ test("overlap reads do not forward metric points at or before the delivered curs
             id: "connection-id",
             projectId: "project-id",
             gcpProjectId: "acme-production",
-            metricsCursor: cursor,
+            metricsCursors: {
+              "compute.googleapis.com/instance/cpu/utilization": cursor,
+            },
             metricsBudgetMonth: "2026-07",
             metricsSeriesRead: 0,
             ingestKey: "sl_public_test",
@@ -369,7 +448,7 @@ test("overlap reads do not forward metric points at or before the delivered curs
         return reservation.requested;
       },
       async refundBudget() {},
-      async saveCursor() {},
+      async saveCursors() {},
     },
     monitoring: {
       async listTimeSeries(input) {
@@ -412,7 +491,7 @@ test("overlap reads do not forward metric points at or before the delivered curs
 
 test("Cloud Run CPU utilization distributions are forwarded as OTLP histograms", async () => {
   const forwarded: unknown[] = [];
-  const savedCursors: Date[] = [];
+  const savedCursors: Array<Record<string, Date>> = [];
   let monitoringCalls = 0;
   const stats = await runGcpMetricsPullOnce({
     now: () => new Date("2026-07-13T12:00:00Z"),
@@ -424,7 +503,7 @@ test("Cloud Run CPU utilization distributions are forwarded as OTLP histograms",
             id: "connection-id",
             projectId: "project-id",
             gcpProjectId: "acme-production",
-            metricsCursor: null,
+            metricsCursors: {},
             metricsBudgetMonth: "2026-07",
             metricsSeriesRead: 0,
             ingestKey: "sl_public_test",
@@ -435,14 +514,16 @@ test("Cloud Run CPU utilization distributions are forwarded as OTLP histograms",
         return reservation.requested;
       },
       async refundBudget() {},
-      async saveCursor(_id, cursor) {
-        savedCursors.push(cursor);
+      async saveCursors(_id, cursors) {
+        savedCursors.push(cursors);
       },
     },
     monitoring: {
-      async listTimeSeries() {
+      async listTimeSeries({ metricType }) {
         monitoringCalls += 1;
-        if (monitoringCalls > 1) return { timeSeries: [] };
+        if (metricType !== "run.googleapis.com/container/cpu/utilizations") {
+          return { timeSeries: [] };
+        }
         return {
           timeSeries: [
             {
@@ -513,5 +594,8 @@ test("Cloud Run CPU utilization distributions are forwarded as OTLP histograms",
     attributes: [],
   });
   assert.equal(stats.pointsForwarded, 1);
-  assert.deepEqual(savedCursors, [new Date("2026-07-13T11:49:00Z")]);
+  assert.equal(
+    savedCursors[0]?.["run.googleapis.com/container/cpu/utilizations"]?.toISOString(),
+    "2026-07-13T11:49:00.000Z",
+  );
 });

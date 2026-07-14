@@ -25,6 +25,15 @@ function monthlyLimit(value: string | undefined): number {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : DEFAULT_MONTHLY_SERIES_LIMIT;
 }
 
+function metricCursors(value: Record<string, string> | null): Record<string, Date> {
+  return Object.fromEntries(
+    Object.entries(value ?? {}).flatMap(([metricType, timestamp]) => {
+      const cursor = new Date(timestamp);
+      return Number.isFinite(cursor.getTime()) ? [[metricType, cursor]] : [];
+    }),
+  );
+}
+
 function createStore(db: JobDeps["db"]): GcpMetricsPullerStore {
   return {
     async listConnected(): Promise<GcpMetricConnection[]> {
@@ -55,7 +64,7 @@ function createStore(db: JobDeps["db"]): GcpMetricsPullerStore {
           id: row.id,
           projectId: row.projectId,
           gcpProjectId: row.gcpProjectId,
-          metricsCursor: row.metricsCursor,
+          metricsCursors: metricCursors(row.metricsCursors),
           metricsBudgetMonth: row.metricsBudgetMonth,
           metricsSeriesRead: row.metricsSeriesRead,
           ingestKey,
@@ -112,11 +121,36 @@ function createStore(db: JobDeps["db"]): GcpMetricsPullerStore {
       });
     },
 
-    async saveCursor(id, cursor) {
-      await db
-        .update(schema.gcpConnections)
-        .set({ metricsCursor: cursor, lastMetricsReceivedAt: cursor, updatedAt: new Date() })
-        .where(eq(schema.gcpConnections.id, id));
+    async saveCursors(id, cursors) {
+      await db.transaction(async (tx) => {
+        const [row] = await tx
+          .select({ metricsCursors: schema.gcpConnections.metricsCursors })
+          .from(schema.gcpConnections)
+          .where(eq(schema.gcpConnections.id, id))
+          .for("update");
+        if (!row) return;
+        const merged = { ...(row.metricsCursors ?? {}) };
+        for (const [metricType, cursor] of Object.entries(cursors)) {
+          const current = Date.parse(merged[metricType] ?? "");
+          if (!Number.isFinite(current) || cursor.getTime() > current) {
+            merged[metricType] = cursor.toISOString();
+          }
+        }
+        const timestamps = Object.values(merged)
+          .map((value) => Date.parse(value))
+          .filter(Number.isFinite);
+        if (timestamps.length === 0) return;
+        const latest = Math.max(...timestamps);
+        await tx
+          .update(schema.gcpConnections)
+          .set({
+            metricsCursors: merged,
+            metricsCursor: new Date(latest),
+            lastMetricsReceivedAt: new Date(latest),
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.gcpConnections.id, id));
+      });
     },
   };
 }

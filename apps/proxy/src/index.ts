@@ -484,7 +484,9 @@ app.post("/gcp/pubsub/:connectionId", async (c) => {
       isNull(schema.gcpConnections.revokedAt),
     ),
   });
-  if (!connection) return c.json({ error: "GCP connection not found" }, 404);
+  if (!connection) {
+    return acknowledgeGcpPubSubDelivery(c.json({ error: "GCP connection not found" }, 404));
+  }
 
   const response = await forward(c, "/v1/logs", "resourceLogs", {
     source: "gcp",

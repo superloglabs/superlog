@@ -2507,8 +2507,11 @@ export const gcpConnections = pgTable(
     lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
     lastLogReceivedAt: timestamp("last_log_received_at", { withTimezone: true }),
     lastMetricsReceivedAt: timestamp("last_metrics_received_at", { withTimezone: true }),
-    // Bounded metric polling checkpoint and monthly returned-series counter.
+    // Legacy summary checkpoint retained for status display; delivery uses the
+    // per-metric map so a faster metric cannot hide a lagging metric type.
     metricsCursor: timestamp("metrics_cursor", { withTimezone: true }),
+    metricsCursors: jsonb("metrics_cursors").$type<Record<string, string>>(),
+    // Monthly returned-series counter enforces the customer cost ceiling.
     metricsBudgetMonth: text("metrics_budget_month"),
     metricsSeriesRead: bigint("metrics_series_read", { mode: "number" }).notNull().default(0),
     lastError: text("last_error"),

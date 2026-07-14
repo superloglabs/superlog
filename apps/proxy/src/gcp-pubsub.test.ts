@@ -24,10 +24,12 @@ test("the Pub/Sub verifier defaults its audience to the configured push endpoint
   );
 });
 
-test("Pub/Sub acknowledges permanent quota drops but preserves retryable failures", () => {
-  const quotaDrop = acknowledgeGcpPubSubDelivery(new Response("quota exceeded", { status: 402 }));
-  assert.equal(quotaDrop.status, 204);
-  assert.equal(quotaDrop.headers.get("x-superlog-pubsub-drop"), "quota_exceeded");
+test("Pub/Sub acknowledges permanent ingest rejects but preserves retryable failures", () => {
+  for (const status of [400, 402, 413]) {
+    const permanentDrop = acknowledgeGcpPubSubDelivery(new Response("rejected", { status }));
+    assert.equal(permanentDrop.status, 204);
+    assert.equal(permanentDrop.headers.get("x-superlog-pubsub-drop"), String(status));
+  }
 
   const retryable = new Response("collector unavailable", { status: 503 });
   assert.equal(acknowledgeGcpPubSubDelivery(retryable), retryable);

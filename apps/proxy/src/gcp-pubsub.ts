@@ -43,10 +43,10 @@ export function resolveGcpPubSubPushAudience(
 }
 
 export function acknowledgeGcpPubSubDelivery(response: Response): Response {
-  if (response.status !== 402) return response;
+  if (response.status < 400 || response.status >= 500) return response;
   return new Response(null, {
     status: 204,
-    headers: { "x-superlog-pubsub-drop": "quota_exceeded" },
+    headers: { "x-superlog-pubsub-drop": String(response.status) },
   });
 }
 

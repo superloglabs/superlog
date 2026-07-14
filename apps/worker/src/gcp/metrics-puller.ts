@@ -49,7 +49,7 @@ export type GcpMetricConnection = {
   id: string;
   projectId: string;
   gcpProjectId: string;
-  metricsCursor: Date | null;
+  metricsCursors: Record<string, Date>;
   metricsBudgetMonth: string | null;
   metricsSeriesRead: number;
   ingestKey: string | null;
@@ -62,7 +62,7 @@ export type GcpMetricsPullerStore = {
     reservation: { month: string; requested: number; monthlyLimit: number },
   ): Promise<number>;
   refundBudget(id: string, refund: { month: string; series: number }): Promise<void>;
-  saveCursor(id: string, cursor: Date): Promise<void>;
+  saveCursors(id: string, cursors: Record<string, Date>): Promise<void>;
 };
 
 export type GcpMonitoringReader = {
@@ -95,10 +95,6 @@ export async function runGcpMetricsPullOnce(input: {
     try {
       const endTime = now();
       const earliest = new Date(endTime.getTime() - 20 * 60 * 1000);
-      const overlapStart = connection.metricsCursor
-        ? new Date(connection.metricsCursor.getTime() - 10 * 60 * 1000)
-        : earliest;
-      const startTime = overlapStart < earliest ? earliest : overlapStart;
       const month = MetricReadBudget.restore({
         month: null,
         seriesRead: 0,
@@ -106,10 +102,15 @@ export async function runGcpMetricsPullOnce(input: {
         now: endTime,
       }).month;
       const visibilityWatermark = new Date(endTime.getTime() - GCP_METRICS_VISIBILITY_LAG_MS);
-      let deliveredThrough: Date | null = null;
+      const deliveredCursors: Record<string, Date> = {};
       let deliveryFailed = false;
 
       outer: for (const metricType of CURATED_GCP_METRIC_TYPES) {
+        const metricCursor = connection.metricsCursors[metricType] ?? null;
+        const overlapStart = metricCursor
+          ? new Date(metricCursor.getTime() - 10 * 60 * 1000)
+          : earliest;
+        const startTime = overlapStart < earliest ? earliest : overlapStart;
         let pageToken: string | undefined;
         do {
           // The store serializes this reservation on the connection row. That
@@ -119,7 +120,13 @@ export async function runGcpMetricsPullOnce(input: {
             requested: 1_000,
             monthlyLimit: input.monthlySeriesLimit,
           });
-          if (pageSize === 0) break outer;
+          if (pageSize === 0) {
+            // Do not checkpoint a partially paginated metric. When the monthly
+            // budget resets, replaying its delivered pages is safer than
+            // skipping series that were behind the unconsumed page token.
+            Reflect.deleteProperty(deliveredCursors, metricType);
+            break outer;
+          }
           // Reserve the worst-case returned-series charge before making the
           // external call. If persistence fails, no request is sent. Refund
           // unused capacity afterward; a failed refund only under-uses the cap.
@@ -153,7 +160,7 @@ export async function runGcpMetricsPullOnce(input: {
           // partial failure remains at-least-once instead of dropping data.
           const fresh = filterPointsThroughWatermark(
             page.timeSeries,
-            connection.metricsCursor,
+            metricCursor,
             visibilityWatermark,
           );
           const points = fresh.reduce((sum, series) => sum + (series.points?.length ?? 0), 0);
@@ -171,9 +178,9 @@ export async function runGcpMetricsPullOnce(input: {
             const pageDeliveredThrough = latestPointTime(fresh);
             if (
               pageDeliveredThrough &&
-              (!deliveredThrough || pageDeliveredThrough > deliveredThrough)
+              (!deliveredCursors[metricType] || pageDeliveredThrough > deliveredCursors[metricType])
             ) {
-              deliveredThrough = pageDeliveredThrough;
+              deliveredCursors[metricType] = pageDeliveredThrough;
             }
           }
           pageToken = page.nextPageToken;
@@ -181,8 +188,8 @@ export async function runGcpMetricsPullOnce(input: {
       }
 
       if (deliveryFailed) continue;
-      if (deliveredThrough) {
-        await input.store.saveCursor(connection.id, deliveredThrough);
+      if (Object.keys(deliveredCursors).length > 0) {
+        await input.store.saveCursors(connection.id, deliveredCursors);
       }
     } catch {
       stats.errors += 1;
