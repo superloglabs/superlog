@@ -67,6 +67,62 @@ test("buildActivityFeed turns ask_human into a question node with the exact prom
   ]);
 });
 
+test("custom MCP calls and failures identify their server in the investigation transcript", () => {
+  const feed = buildActivityFeed([
+    event({
+      id: "mcp-use-1",
+      providerEventId: "mcp-provider-use-1",
+      kind: "agent.mcp_tool_use",
+      detail: {
+        toolUse: {
+          name: "list_issues",
+          mcpServerName: "linear",
+          input: { team: "INF" },
+        },
+      },
+    }),
+    event({
+      id: "mcp-result-1",
+      kind: "agent.mcp_tool_result",
+      summary: '{"issues":[]}',
+      detail: {
+        toolResult: { toolUseId: "mcp-provider-use-1", isError: false },
+      },
+    }),
+    event({
+      id: "mcp-error-1",
+      kind: "session.error",
+      summary: "linear authentication failed",
+      detail: {
+        mcpError: {
+          serverName: "linear",
+          category: "authentication",
+          message: "authentication failed",
+        },
+      },
+    }),
+  ]);
+
+  assert.deepEqual(feed, [
+    {
+      type: "tool",
+      id: "mcp-use-1",
+      name: "list_issues",
+      serverName: "linear",
+      input: { team: "INF" },
+      result: '{"issues":[]}',
+      isError: false,
+    },
+    {
+      type: "mcp_error",
+      id: "mcp-error-1",
+      serverName: "linear",
+      category: "authentication",
+      message: "authentication failed",
+    },
+  ]);
+});
+
 test("markAwaitingQuestion marks the latest repeated ask_human prompt", () => {
   const feed = buildActivityFeed([
     event({

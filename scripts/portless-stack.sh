@@ -253,6 +253,7 @@ ensure_portless_routes_healthy() {
   local lock_dir="$portless_dir/routes.lock"
 
   mkdir -p "$portless_dir"
+  local fresh_lock=0
 
   if [[ -d "$lock_dir" ]] && node -e '
     const ageMs = Date.now() - require("fs").statSync(process.argv[1]).mtimeMs;
@@ -260,6 +261,9 @@ ensure_portless_routes_healthy() {
   ' "$lock_dir"; then
     echo "==> clearing stale portless routes.lock at $lock_dir" >&2
     rm -rf "$lock_dir"
+  fi
+  if [[ -d "$lock_dir" ]]; then
+    fresh_lock=1
   fi
 
   local needs_reset=0
@@ -273,11 +277,15 @@ ensure_portless_routes_healthy() {
   fi
 
   if [[ "$needs_reset" -eq 1 ]]; then
-    echo "==> portless routes file missing/invalid, resetting $routes_file to []" >&2
-    if [[ -s "$routes_file" ]]; then
-      cp "$routes_file" "$routes_file.bak.$(date +%s)" 2>/dev/null || true
+    if [[ "$fresh_lock" -eq 1 ]]; then
+      echo "==> deferring portless routes repair while registration lock is fresh" >&2
+    else
+      echo "==> portless routes file missing/invalid, resetting $routes_file to []" >&2
+      if [[ -s "$routes_file" ]]; then
+        cp "$routes_file" "$routes_file.bak.$(date +%s)" 2>/dev/null || true
+      fi
+      echo '[]' > "$routes_file"
     fi
-    echo '[]' > "$routes_file"
   fi
 }
 

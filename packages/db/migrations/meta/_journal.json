@@ -687,6 +687,20 @@
       "when": 1783934911519,
       "tag": "0097_swift_sauron",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1784020648318,
+      "tag": "0098_nostalgic_raider",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1784021018932,
+      "tag": "0099_tired_beast",
+      "breakpoints": true
     }
   ]
 }

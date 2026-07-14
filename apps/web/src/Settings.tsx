@@ -118,6 +118,7 @@ import { InfoIcon } from "./onboarding/icons.tsx";
 import { renderErrorMessage } from "./onboarding/renderConnectModel.ts";
 import { VERCEL_PLAN_REQUIREMENT } from "./onboarding/vercelConnectModel.ts";
 import { AgentMemoriesCard } from "./settings/AgentMemoriesCard.tsx";
+import { AgentMcpServersCard } from "./settings/AgentMcpServersCard.tsx";
 import { BillingCard } from "./settings/BillingCard.tsx";
 import { CreateOrgCard } from "./settings/CreateOrgCard.tsx";
 import { OrgDangerCard } from "./settings/OrgDangerCard.tsx";
@@ -135,6 +136,7 @@ import {
   projectPickerOptions,
   resolveOrgSection,
   resolveProjectSection,
+  sectionIconKind,
   shouldShowProjectPicker,
 } from "./settings/nav.ts";
 import { SettingsCard, SettingsCardFooter, SettingsRow } from "./settings/rows.tsx";
@@ -151,18 +153,21 @@ export function Settings() {
   const notionStatus = params.get("notion");
   const githubStatus = params.get("github");
   const githubAuthorStatus = params.get("github_author");
+  const mcpOAuthStatus = params.get("mcp_oauth");
 
   useEffect(() => {
-    if (!linearStatus && !notionStatus && !githubStatus && !githubAuthorStatus) return;
+    if (!linearStatus && !notionStatus && !githubStatus && !githubAuthorStatus && !mcpOAuthStatus)
+      return;
     const t = setTimeout(() => {
       params.delete("linear");
       params.delete("notion");
       params.delete("github");
       params.delete("github_author");
+      params.delete("mcp_oauth");
       setParams(params, { replace: true });
     }, 4000);
     return () => clearTimeout(t);
-  }, [linearStatus, notionStatus, githubStatus, githubAuthorStatus, params, setParams]);
+  }, [linearStatus, notionStatus, githubStatus, githubAuthorStatus, mcpOAuthStatus, params, setParams]);
 
   const me = useMe();
   const projectsQ = useOrgProjects();
@@ -207,12 +212,19 @@ export function Settings() {
         title="Settings"
         description="Manage the project, organization, integrations, and investigation defaults."
       />
-      {(linearStatus || notionStatus || githubStatus || githubAuthorStatus) && (
+      {(linearStatus || notionStatus || githubStatus || githubAuthorStatus || mcpOAuthStatus) && (
         <header className="space-y-2">
           {linearStatus && <LinearStatusBanner status={linearStatus} />}
           {notionStatus && <NotionStatusBanner status={notionStatus} />}
           {githubStatus && <GithubStatusBanner status={githubStatus} />}
           {githubAuthorStatus && <GithubAuthorStatusBanner status={githubAuthorStatus} />}
+          {mcpOAuthStatus && (
+            <div className="pt-1">
+              <Chip tone={mcpOAuthStatus === "connected" ? "success" : "danger"} dot>
+                {mcpOAuthStatus === "connected" ? "Agent MCP connected." : "Agent MCP OAuth failed."}
+              </Chip>
+            </div>
+          )}
         </header>
       )}
 
@@ -394,7 +406,7 @@ function SectionIcon({ scope, section }: { scope: SettingsScope; section: Sectio
     strokeLinecap: "round",
     strokeLinejoin: "round",
   } as const;
-  const key = `${scope}:${section}`;
+  const key = sectionIconKind(scope, section);
   switch (key) {
     case "org:general":
     case "project:general":
@@ -422,13 +434,23 @@ function SectionIcon({ scope, section }: { scope: SettingsScope; section: Sectio
           <line x1="1" y1="10" x2="23" y2="10" />
         </svg>
       );
-    case "org:agent-guidance":
-    case "project:agent":
+    case "agent":
       return (
         <svg {...props} aria-hidden="true">
           <path d="M12 3a7 7 0 0 1 7 7v3a7 7 0 0 1-14 0v-3a7 7 0 0 1 7-7z" />
           <circle cx="9" cy="12" r="0.5" fill="currentColor" />
           <circle cx="15" cy="12" r="0.5" fill="currentColor" />
+        </svg>
+      );
+    case "mcp-server":
+      return (
+        <svg {...props} aria-hidden="true">
+          <rect x="3" y="3" width="18" height="7" rx="2" />
+          <rect x="3" y="14" width="18" height="7" rx="2" />
+          <circle cx="7" cy="6.5" r="0.75" fill="currentColor" stroke="none" />
+          <circle cx="7" cy="17.5" r="0.75" fill="currentColor" stroke="none" />
+          <path d="M11 6.5h6" />
+          <path d="M11 17.5h6" />
         </svg>
       );
     case "org:mgmt-keys":
@@ -691,6 +713,15 @@ function ProjectSectionView({
           subtitle="Durable facts the investigation agent carries across runs of this project — terminology, infra layout, lessons from your feedback. The agent saves these itself; review and prune them here."
         >
           <AgentMemoriesCard projectId={projectId} />
+        </Section>
+      );
+    case "agent-mcps":
+      return (
+        <Section
+          title="Agent MCP servers"
+          subtitle="Project-scoped tools attached to new investigation and Slack-agent sessions. Superlog telemetry occupies the reserved twentieth provider slot."
+        >
+          <AgentMcpServersCard projectId={projectId} />
         </Section>
       );
     case "issue-filter":

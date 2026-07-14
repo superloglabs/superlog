@@ -21,7 +21,10 @@ import {
   toTraceRows,
 } from "./telemetry-result.ts";
 
-export { buildActivityFeed, buildTranscript } from "./incident-activity-feed.ts";
+export {
+  buildActivityFeed,
+  buildTranscript,
+} from "./incident-activity-feed.ts";
 
 // ---------------------------------------------------------------------------
 // IncidentTranscript — renders an agent run's conversation from incident_events:
@@ -72,6 +75,7 @@ export function IncidentActivityFeed({
     if (item.type === "telemetry") return <TelemetryEntry key={item.id} item={item} />;
     if (item.type === "memory") return <MemoryEntry key={item.id} item={item} />;
     if (item.type === "tool") return <ToolEntry key={item.id} item={item} />;
+    if (item.type === "mcp_error") return <McpErrorEntry key={item.id} item={item} />;
     if (item.type === "start") return <StartEntry key={item.id} />;
     if (item.type === "question")
       return (
@@ -87,7 +91,11 @@ export function IncidentActivityFeed({
   // the conclusion render after it — so the timeline reads
   // start → (N steps) → conclusion by default without hiding real activity.
   const isStep = (i: FeedItem) =>
-    i.type === "message" || i.type === "telemetry" || i.type === "memory" || i.type === "tool";
+    i.type === "message" ||
+    i.type === "telemetry" ||
+    i.type === "memory" ||
+    i.type === "tool" ||
+    i.type === "mcp_error";
   const startIdx = feed.findIndex((i) => i.type === "start");
   let termIdx = -1;
   for (let i = feed.length - 1; i > startIdx; i--) {
@@ -672,6 +680,7 @@ function CodeEntry({ item }: { item: Extract<TranscriptItem, { type: "tool" }> }
   return (
     <div className="rounded-lg border border-border bg-surface px-3 py-2 font-mono text-[12px]">
       <div className="flex items-center gap-2">
+        {item.serverName && <Chip tone="muted">{item.serverName}</Chip>}
         <span className="text-muted">{item.name}</span>
         <span className="truncate text-fg">{toolArg(item.name, item.input)}</span>
       </div>
@@ -682,6 +691,25 @@ function CodeEntry({ item }: { item: Extract<TranscriptItem, { type: "tool" }> }
           {result.slice(0, 240)}
         </div>
       )}
+    </div>
+  );
+}
+
+function McpErrorEntry({ item }: { item: Extract<TranscriptItem, { type: "mcp_error" }> }) {
+  return (
+    <div className="relative mb-6">
+      <Node>
+        <path d="M12 9v4" />
+        <path d="M12 17h.01" />
+        <circle cx="12" cy="12" r="9" />
+      </Node>
+      <div className="rounded-lg border border-danger/30 bg-danger/[0.05] px-3.5 py-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[12px] font-semibold text-fg">MCP {item.category} failed</span>
+          {item.serverName && <Chip tone="danger">{item.serverName}</Chip>}
+        </div>
+        <div className="mt-1.5 break-words font-mono text-[11.5px] text-danger">{item.message}</div>
+      </div>
     </div>
   );
 }

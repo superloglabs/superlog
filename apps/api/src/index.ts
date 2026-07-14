@@ -108,6 +108,12 @@ import {
   VALID_MANUAL_MERGE_METHODS,
   mergeAgentPullRequestAndResolveIncident,
 } from "./pr-merge-service.js";
+import {
+  mountProjectMcpOAuthPublic,
+  mountProjectMcpServersAuthed,
+  mountProjectMcpServersManagement,
+} from "./project-mcp-servers.js";
+import { mountProjectMcpRelayPublic } from "./project-mcp-relay.js";
 import { mountRailwayAuthed, mountRailwayPublic } from "./railway.js";
 import { mountRenderAuthed } from "./render.js";
 import { mountSettingsAuthed } from "./settings.js";
@@ -297,10 +303,13 @@ mountCloudflarePublic(app);
 mountVercelPublic(app);
 mountRailwayPublic(app);
 mountFeedbackPublic(app);
+mountProjectMcpOAuthPublic(app);
+mountProjectMcpRelayPublic(app);
 // Management API (org-key auth, /api/v1/*) registers its own middleware
 // before the session middleware below — the session middleware skips
 // /api/v1/* and /api/auth/*.
 mountManagementApi(app, { ch });
+mountProjectMcpServersManagement(app);
 
 app.use("/api/*", async (c, next) => {
   if (c.req.path.startsWith("/api/v1/")) return next();
@@ -338,6 +347,7 @@ mountVercelAuthed(app);
 mountRailwayAuthed(app);
 mountRenderAuthed(app);
 mountSettingsAuthed(app);
+mountProjectMcpServersAuthed(app);
 mountOrgKeyManagementAuthed(app);
 mountDashboards(app);
 mountCloudConnectionsAuthed(app);

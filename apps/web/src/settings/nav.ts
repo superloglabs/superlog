@@ -21,6 +21,7 @@ export type ProjectSectionId =
   | "general"
   | "agent"
   | "agent-memories"
+  | "agent-mcps"
   | "integrations"
   | "issue-filter"
   | "slack-channel"
@@ -30,6 +31,12 @@ export type ProjectSectionId =
   | "webhooks";
 
 export type SectionId = OrgSectionId | ProjectSectionId;
+
+export function sectionIconKind(scope: SettingsScope, section: SectionId): string {
+  if (section === "agent-mcps") return "mcp-server";
+  if (section === "agent" || section === "agent-guidance") return "agent";
+  return `${scope}:${section}`;
+}
 
 export type NavGroup<Id extends string> = {
   // Undefined for the primary group; "More" for the secondary one.
@@ -58,6 +65,7 @@ export const PROJECT_NAV_GROUPS: ReadonlyArray<NavGroup<ProjectSectionId>> = [
       { id: "general", label: "General" },
       { id: "agent", label: "Agent" },
       { id: "agent-memories", label: "Agent memories" },
+      { id: "agent-mcps", label: "Agent MCPs" },
       { id: "integrations", label: "Integrations" },
       { id: "issue-filter", label: "Issue filter" },
       { id: "slack-channel", label: "Slack channel" },
