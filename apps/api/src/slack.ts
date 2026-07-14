@@ -26,6 +26,7 @@ import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolutio
 import { logger } from "./logger.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 import { mergeAgentPullRequestAndResolveIncident } from "./pr-merge-service.js";
+import { classifyIncidentSlackReply } from "./slack-reply-intent.js";
 
 const log = logger.child({ scope: "slack" });
 
@@ -1390,6 +1391,53 @@ async function handleIncidentThreadReply(
   incident: schema.Incident,
 ): Promise<void> {
   if (!event.thread_ts) return;
+
+  const installation = await installationForIncident({
+    pinnedId: incident.slackInstallationId,
+    teamId: payload.team_id ?? "",
+  });
+  const botUserId =
+    installation?.botUserId ??
+    payload.authorizations?.find((authorization) => authorization.is_bot !== false)?.user_id ??
+    null;
+  if (!installation || !botUserId) {
+    log.warn(
+      { incident_id: incident.id, has_installation: Boolean(installation) },
+      "slack reply intent could not resolve the incident bot identity",
+    );
+    return;
+  }
+
+  const intent = await classifyIncidentSlackReply(
+    {
+      botToken: installation.botAccessToken,
+      botUserId,
+      channelId: event.channel,
+      threadTs: event.thread_ts,
+      currentMessage: {
+        ts: event.ts,
+        userId: event.user,
+        text: event.text,
+      },
+    },
+    {
+      apiKey: process.env.ANTHROPIC_API_KEY ?? "",
+      model: process.env.ANTHROPIC_SLACK_REPLY_INTENT_MODEL ?? "claude-sonnet-4-6",
+    },
+  );
+  log.info(
+    {
+      incident_id: incident.id,
+      slack_message_ts: event.ts,
+      decision: intent.decision,
+      confidence: intent.confidence,
+      source: intent.source,
+      reason: intent.reason,
+    },
+    "classified Slack incident thread reply intent",
+  );
+  if (intent.decision !== "intended") return;
+
   // Talking to the investigation: continue the SAME durable session where we
   // can (resume / steer), and only spin a fresh run when no session survives.
   // The shared path records the message, reactivates a terminal run, or
@@ -1425,18 +1473,12 @@ async function handleIncidentThreadReply(
 
   // One instant acknowledgement in the originating thread so the human knows
   // the message landed, rather than silence until the agent replies.
-  const installation = await installationForIncident({
-    pinnedId: incident.slackInstallationId,
-    teamId: payload.team_id ?? "",
+  await postSlackThreadReply({
+    botToken: installation.botAccessToken,
+    channel: event.channel,
+    threadTs: event.thread_ts,
+    text: ":mag: On it — I'll follow up in this thread.",
   });
-  if (installation) {
-    await postSlackThreadReply({
-      botToken: installation.botAccessToken,
-      channel: event.channel,
-      threadTs: event.thread_ts,
-      text: ":mag: On it — I'll follow up in this thread.",
-    });
-  }
 }
 
 // Q&A chat routing: a bot mention (channel) or any human message (DM) opens a
