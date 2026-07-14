@@ -2141,6 +2141,10 @@ export type Issue = {
   lastSample: IssueSample | null;
   symbolication?: Symbolication | null;
   createdAt: string;
+  // Set on the issue-detail response for alert-episode issues: the alert whose
+  // breach opened this issue, for the "Triggered by" back-link. Null/absent for
+  // ordinary error issues and in list responses.
+  triggeringAlert?: { id: string; name: string } | null;
 };
 
 export function useIssues(
