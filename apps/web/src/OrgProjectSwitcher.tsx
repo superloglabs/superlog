@@ -11,6 +11,7 @@ import {
 } from "./api.ts";
 import { authClient, useActiveOrganization, useListOrganizations } from "./auth-client.ts";
 import { ScrollArea } from "./design/scroll-area.tsx";
+import { beginOrgSwitch, endOrgSwitch } from "./org-switch-lock.ts";
 import { appPathFromProjectRoute, canonicalProjectLocation } from "./project-route.ts";
 
 const ON_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || "");
@@ -175,31 +176,37 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
     // navigate() still updates the router. Read the new org's active project
     // straight from the server (uncached, so it's unaffected by clear()'s
     // timing) and land on it; the new URL then drives the app into the new org.
-    await authClient.organization.setActive({ organizationId: orgId });
-    let next: Me;
+    //
+    // begin/endOrgSwitch brackets the window between "session moved to the new
+    // org" and "URL navigated to the new org". During that window `me` refetches
+    // to the new org while the URL still names the old one; the lock stops
+    // ProjectRouteBoundary from reconciling that transient mismatch back to the
+    // old URL (which would revert the switch — see [org-switch-lock.ts]).
+    beginOrgSwitch();
     try {
-      next = await fetcher<Me>("/api/me");
+      await authClient.organization.setActive({ organizationId: orgId });
+      const next = await fetcher<Me>("/api/me");
+      if (next.org && next.project) {
+        navigate(
+          canonicalProjectLocation(
+            { orgSlug: next.org.slug, projectSlug: next.project.slug },
+            {
+              pathname: appPathFromProjectRoute(location.pathname),
+              search: location.search,
+              hash: location.hash,
+            },
+          ),
+          { replace: true },
+        );
+      }
     } catch {
-      // Best effort: if /api/me fails right after the switch, bail rather than
-      // navigate somewhere wrong. The session is already on the new org, so a
-      // manual reload lands correctly.
+      // Best effort: if the switch fails partway, bail rather than navigate
+      // somewhere wrong. The route boundary (or a manual reload) reconciles the
+      // URL and session once the lock is released.
+    } finally {
+      endOrgSwitch();
       onClose();
-      return;
     }
-    if (next.org && next.project) {
-      navigate(
-        canonicalProjectLocation(
-          { orgSlug: next.org.slug, projectSlug: next.project.slug },
-          {
-            pathname: appPathFromProjectRoute(location.pathname),
-            search: location.search,
-            hash: location.hash,
-          },
-        ),
-        { replace: true },
-      );
-    }
-    onClose();
   };
 
   const manageOrg = async (orgId: string) => {
