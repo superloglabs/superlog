@@ -665,8 +665,11 @@ export async function getTraceDetail(ch: ClickHouseClient, projectId: string, tr
   });
 
   const [spansR, logsR] = await Promise.all([spansQ, logsQ]);
-  const spans = await spansR.json();
-  const logs = await logsR.json();
+  // Read both response bodies in parallel. Sequential reads leave the second
+  // TCP connection idle while the first body is consumed; an intermediate
+  // load-balancer (e.g. the ClickHouse ELB) can drop idle connections after
+  // ~10-12 s, causing ETIMEDOUT on the second read.
+  const [spans, logs] = await Promise.all([spansR.json(), logsR.json()]);
   return { spans, logs };
 }
 
