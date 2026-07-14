@@ -150,6 +150,15 @@ test("listSlackChannels returns the Slack error without paginating further", asy
   assert.equal(result.error, "token_revoked");
 });
 
+test("invalid Slack credentials revoke the stale installation", async () => {
+  const { isRevokedSlackAuthError } = await import("./slack.js");
+
+  for (const error of ["not_authed", "token_revoked", "invalid_auth"]) {
+    assert.equal(isRevokedSlackAuthError(error), true, error);
+  }
+  assert.equal(isRevokedSlackAuthError("ratelimited"), false);
+});
+
 // Regression guard: clicking Send on the Slack incident feedback modal kept
 // surfacing "We had some trouble connecting. Try again?". Slack's
 // view_submission ack contract requires an EMPTY 200 body to close the modal;

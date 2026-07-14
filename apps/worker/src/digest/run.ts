@@ -138,9 +138,10 @@ export async function runDigestsTickWorkflow(
   const now = deps.now().getTime();
   let posted = 0;
   for (const row of due) {
-    const force = row.runRequestedAt != null;
+    const runRequestedAt = row.runRequestedAt;
+    const force = runRequestedAt != null;
     if (!row.channelId || !row.installationId) {
-      if (force) await deps.repo.clearRunRequest(row.projectId);
+      if (runRequestedAt) await deps.repo.clearRunRequest(row.projectId, runRequestedAt);
       continue;
     }
     if (!force && row.lastRunAt && now - row.lastRunAt.getTime() < deps.policy.intervalMs) {
@@ -156,7 +157,7 @@ export async function runDigestsTickWorkflow(
     } catch (err) {
       deps.logger.error({ scope: "digest", projectId: row.projectId, err }, "digest tick failed");
     } finally {
-      if (force) await deps.repo.clearRunRequest(row.projectId);
+      if (runRequestedAt) await deps.repo.clearRunRequest(row.projectId, runRequestedAt);
     }
   }
   return posted;

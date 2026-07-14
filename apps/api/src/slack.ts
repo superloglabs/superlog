@@ -51,6 +51,10 @@ export function resolveSlackResolveClickDisposition(status: string): SlackResolv
   return status === "open" ? "resolve" : "refresh_side_effects";
 }
 
+export function isRevokedSlackAuthError(error: string): boolean {
+  return error === "not_authed" || error === "token_revoked" || error === "invalid_auth";
+}
+
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
 export function mountSlackPublic(app: Hono<any>): void {
   const clientId = process.env.SLACK_CLIENT_ID;
@@ -1096,7 +1100,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
     const result = await listSlackChannels(row.botAccessToken);
     if (!result.ok) {
       log.warn({ team_id: row.teamId, error: result.error }, "slack conversations.list failed");
-      if (result.error === "not_authed" || result.error === "token_revoked") {
+      if (isRevokedSlackAuthError(result.error)) {
         await db
           .update(schema.slackInstallations)
           .set({ revokedAt: new Date() })
@@ -1175,7 +1179,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
     const result = await listSlackChannels(row.botAccessToken);
     if (!result.ok) {
       log.warn({ team_id: row.teamId, error: result.error }, "slack conversations.list failed");
-      if (result.error === "not_authed" || result.error === "token_revoked") {
+      if (isRevokedSlackAuthError(result.error)) {
         await db
           .update(schema.slackInstallations)
           .set({ revokedAt: new Date() })

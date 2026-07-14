@@ -19,7 +19,7 @@ export type DigestRepository = {
   ): Promise<{ id: string; botAccessToken: string } | undefined>;
   listRunnableProjectSettings(): Promise<ProjectDigestSettings[]>;
   stampLastRun(projectId: string, at: Date): Promise<void>;
-  clearRunRequest(projectId: string): Promise<void>;
+  clearRunRequest(projectId: string, requestedAt: Date): Promise<void>;
   gatherCandidates(
     projectId: string,
     policy: Pick<DigestPolicy, "candidateLookbackMs" | "candidateLimit">,
@@ -71,15 +71,20 @@ export function createDigestRepository(db: DB): DigestRepository {
     async stampLastRun(projectId, at) {
       await db
         .update(schema.projectAutomationSettings)
-        .set({ digestLastRunAt: at, digestRunRequestedAt: null, updatedAt: at })
+        .set({ digestLastRunAt: at, updatedAt: at })
         .where(eq(schema.projectAutomationSettings.projectId, projectId));
     },
 
-    async clearRunRequest(projectId) {
+    async clearRunRequest(projectId, requestedAt) {
       await db
         .update(schema.projectAutomationSettings)
         .set({ digestRunRequestedAt: null, updatedAt: new Date() })
-        .where(eq(schema.projectAutomationSettings.projectId, projectId));
+        .where(
+          and(
+            eq(schema.projectAutomationSettings.projectId, projectId),
+            eq(schema.projectAutomationSettings.digestRunRequestedAt, requestedAt),
+          ),
+        );
     },
 
     async gatherCandidates(projectId, policy, now) {
