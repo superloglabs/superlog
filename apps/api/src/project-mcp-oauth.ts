@@ -384,43 +384,7 @@ export function createDrizzleProjectMcpOAuthAttemptStore(): ProjectMcpOAuthAttem
 export function createFetchProjectMcpOAuthHttp(fetchOverride?: typeof fetch): ProjectMcpOAuthHttp {
   const fetchImpl = fetchOverride ?? strictProjectMcpFetch;
   return {
-    async discover(serverUrl) {
-      const endpoint = new URL(serverUrl);
-      const initial = await fetchImpl(endpoint, {
-        method: "GET",
-        headers: {
-          accept: "application/json, text/event-stream",
-          "mcp-protocol-version": "2025-11-25",
-        },
-        redirect: "manual",
-      });
-      const challenge = initial.headers.get("www-authenticate") ?? "";
-      const advertised = /resource_metadata="([^"]+)"/i.exec(challenge)?.[1];
-      const resourceCandidates = [
-        advertised,
-        new URL(`/.well-known/oauth-protected-resource${endpoint.pathname}`, endpoint).toString(),
-        new URL("/.well-known/oauth-protected-resource", endpoint).toString(),
-      ].filter((value, index, all): value is string => !!value && all.indexOf(value) === index);
-      const resourceMetadata = await firstJson(fetchImpl, resourceCandidates);
-      const authorizationServers = readStringArray(resourceMetadata.authorization_servers);
-      if (authorizationServers.length === 0) {
-        throw new Error("MCP protected-resource metadata has no authorization server");
-      }
-      const authorizationServer = authorizationServers[0] as string;
-      const metadata = await firstJson(fetchImpl, authorizationMetadataUrls(authorizationServer));
-      return {
-        authorizationServer,
-        authorizationEndpoint: requiredMetadataUrl(metadata.authorization_endpoint),
-        tokenEndpoint: requiredMetadataUrl(metadata.token_endpoint),
-        registrationEndpoint: optionalMetadataUrl(metadata.registration_endpoint),
-        resource:
-          typeof resourceMetadata.resource === "string"
-            ? resourceMetadata.resource
-            : endpoint.toString(),
-        codeChallengeMethods: readStringArray(metadata.code_challenge_methods_supported),
-        grantTypes: readStringArray(metadata.grant_types_supported),
-      };
-    },
+    discover: (serverUrl) => discoverProjectMcpOAuth(fetchImpl, serverUrl),
     async register(registrationEndpoint, redirectUri) {
       const response = await fetchImpl(registrationEndpoint, {
         method: "POST",
@@ -490,6 +454,47 @@ export function createFetchProjectMcpOAuthHttp(fetchOverride?: typeof fetch): Pr
         input.clientSecret,
       );
     },
+  };
+}
+
+async function discoverProjectMcpOAuth(
+  fetchImpl: typeof fetch,
+  serverUrl: string,
+): Promise<ProjectMcpOAuthDiscovery> {
+  const endpoint = new URL(serverUrl);
+  const initial = await fetchImpl(endpoint, {
+    method: "GET",
+    headers: {
+      accept: "application/json, text/event-stream",
+      "mcp-protocol-version": "2025-11-25",
+    },
+    redirect: "manual",
+  });
+  const challenge = initial.headers.get("www-authenticate") ?? "";
+  const advertised = /resource_metadata="([^"]+)"/i.exec(challenge)?.[1];
+  const resourceCandidates = [
+    advertised,
+    new URL(`/.well-known/oauth-protected-resource${endpoint.pathname}`, endpoint).toString(),
+    new URL("/.well-known/oauth-protected-resource", endpoint).toString(),
+  ].filter((value, index, all): value is string => !!value && all.indexOf(value) === index);
+  const resourceMetadata = await firstJson(fetchImpl, resourceCandidates);
+  const authorizationServers = readStringArray(resourceMetadata.authorization_servers);
+  if (authorizationServers.length === 0) {
+    throw new Error("MCP protected-resource metadata has no authorization server");
+  }
+  const authorizationServer = authorizationServers[0] as string;
+  const metadata = await firstJson(fetchImpl, authorizationMetadataUrls(authorizationServer));
+  return {
+    authorizationServer,
+    authorizationEndpoint: requiredMetadataUrl(metadata.authorization_endpoint),
+    tokenEndpoint: requiredMetadataUrl(metadata.token_endpoint),
+    registrationEndpoint: optionalMetadataUrl(metadata.registration_endpoint),
+    resource:
+      typeof resourceMetadata.resource === "string"
+        ? resourceMetadata.resource
+        : endpoint.toString(),
+    codeChallengeMethods: readStringArray(metadata.code_challenge_methods_supported),
+    grantTypes: readStringArray(metadata.grant_types_supported),
   };
 }
 
