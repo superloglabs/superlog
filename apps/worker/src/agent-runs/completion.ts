@@ -340,7 +340,7 @@ export async function completeWithIncidentResolution(
       tagline: truncateSlackText(result.summary),
       projectName: ctx.project.name,
       service: ctx.incident.service,
-      buttons: [{ text: "View agent run", url: incidentUrl, actionId: "view_agent_run" }],
+      buttons: [{ text: "View incident", url: incidentUrl, actionId: "view_incident" }],
       incidentId: ctx.incident.id,
     }),
   );
