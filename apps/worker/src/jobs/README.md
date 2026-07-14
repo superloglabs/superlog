@@ -41,8 +41,11 @@ its next schedule.
 
 Telemetry usage metering follows this rule deliberately: `usage-meter.ts` owns
 an isolated ClickHouse client with a 30-second client deadline and a 25-second
-server execution cap. Metric counts use the exact-timestamp `usage_by_time`
-projection when available and retain a raw-schema fallback. Apply
+server execution cap. Its 90-second whole-job deadline cancels in-flight
+ClickHouse and billing HTTP requests, leaving time for the worker's 110-second
+shutdown drain before the 120-second durable lease expires. Metric counts use
+the exact-timestamp `usage_by_time` projection when available and retain a
+raw-schema fallback. Apply
 `infra/clickhouse/migrations/008_metric_usage_projection.sql`, then materialize
 existing partitions sequentially with
 `scripts/materialize-metric-usage-projections.ts`; do not compensate for an

@@ -7,6 +7,8 @@ import type { JobDefinition } from "../jobs.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_EXECUTION_TIME_SECONDS = 25;
+const DEFAULT_JOB_TIMEOUT_MS = 90_000;
+const JOB_EXPIRY_GRACE_SECONDS = 30;
 
 type UsageClickHouseClient = Pick<ClickHouseClient, "query" | "close">;
 type ClientConfig = NonNullable<Parameters<typeof createClient>[0]>;
@@ -22,20 +24,26 @@ export function createUsageMeterJob(
     env?: Record<string, string | undefined>;
     createClient?: (config: ClientConfig) => UsageClickHouseClient;
     createMeter?: (options: MeterOptions) => UsageMeterTicker | null;
+    jobTimeoutMs?: number;
   } = {},
 ): JobDefinition {
   const env = options.env ?? process.env;
   const secretKey = env.AUTUMN_SECRET_KEY?.trim();
   const createClickHouse = options.createClient ?? ((config: ClientConfig) => createClient(config));
   const createMeter = options.createMeter ?? createUsageMeterTicker;
+  const jobTimeoutMs = options.jobTimeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
 
   return {
     name: "usage-meter",
     schedule: "* * * * *",
-    expireInSeconds: 1_800,
+    // The handler stops active ClickHouse and billing requests after 90 seconds,
+    // leaving the worker's 110-second shutdown drain time to close cleanly. The
+    // durable lease has a small grace period beyond that application deadline.
+    expireInSeconds: Math.ceil(jobTimeoutMs / 1000) + JOB_EXPIRY_GRACE_SECONDS,
     create: ({ db }) => {
       if (!secretKey) return null;
       return async () => {
+        const signal = AbortSignal.timeout(jobTimeoutMs);
         const clickhouse = createClickHouse({
           url: env.CLICKHOUSE_URL ?? "http://localhost:8123",
           username: env.CLICKHOUSE_USER ?? "default",
@@ -58,7 +66,7 @@ export function createUsageMeterJob(
         try {
           // pg-boss owns the minute cadence and exclusive execution; disable
           // the old process-local interval gate for this one-shot handler.
-          const meter = createMeter({ db, clickhouse, secretKey, intervalMs: 0 });
+          const meter = createMeter({ db, clickhouse, secretKey, intervalMs: 0, signal });
           await meter?.();
         } finally {
           await clickhouse.close();

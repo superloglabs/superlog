@@ -18,6 +18,7 @@ export const METRIC_USAGE_PROJECT_ID_COLUMN = "SuperlogProjectId";
 // applied migration remains correct while it finishes.
 export async function findMetricUsageProjectionTables(
   clickhouse: Pick<ClickHouseClient, "query">,
+  abortSignal?: AbortSignal,
 ): Promise<ReadonlySet<string>> {
   try {
     const result = await clickhouse.query({
@@ -31,6 +32,7 @@ export async function findMetricUsageProjectionTables(
         tables: [...METRIC_TABLES],
       },
       format: "JSONEachRow",
+      abort_signal: abortSignal,
     });
     const rows = (await result.json()) as Array<{ table: string }>;
     return new Set(rows.map(({ table }) => table));

@@ -96,6 +96,30 @@ test("a signal count failure preserves its cursor and does not block later signa
   assert.ok(cursors.get("usage-meter-metric_points") instanceof Date);
 });
 
+test("cancellation after counting preserves the cursor and skips delivery", async () => {
+  let cancelled = false;
+  let countCalls = 0;
+  const {
+    deps: d,
+    tracks,
+    cursors,
+  } = deps({
+    countByProject: async () => {
+      countCalls += 1;
+      cancelled = true;
+      return new Map([["p1", 10]]);
+    },
+    isCancelled: () => cancelled,
+  });
+
+  const reported = await meterTelemetryUsageTick(d);
+
+  assert.equal(reported, 0);
+  assert.equal(countCalls, 1);
+  assert.equal(tracks.length, 0);
+  assert.equal(cursors.size, 0);
+});
+
 test("an org lookup failure preserves its cursor and does not block later signals", async () => {
   const {
     deps: d,

@@ -49,6 +49,7 @@ export type UsageMeterDeps = {
   setCursor: (name: string, at: Date) => Promise<void>;
   now: () => Date;
   windowMs: number;
+  isCancelled?: () => boolean;
 };
 
 // One metering pass over all three signals. Returns the number of (org, signal)
@@ -56,6 +57,7 @@ export type UsageMeterDeps = {
 export async function meterTelemetryUsageTick(deps: UsageMeterDeps): Promise<number> {
   let reported = 0;
   for (const signal of Object.keys(SIGNAL_FEATURE_IDS) as UsageSignal[]) {
+    if (deps.isCancelled?.()) return reported;
     try {
       const cursorName = `${CURSOR_PREFIX}${signal}`;
       const cursor = await deps.getCursor(cursorName);
@@ -67,7 +69,9 @@ export async function meterTelemetryUsageTick(deps: UsageMeterDeps): Promise<num
         cursor.toISOString(),
         until.toISOString(),
       );
+      if (deps.isCancelled?.()) return reported;
       const orgMap = perProject.size > 0 ? await deps.resolveOrgIds([...perProject.keys()]) : null;
+      if (deps.isCancelled?.()) return reported;
       // Complete the idempotent reads before advancing, then persist the cursor
       // BEFORE issuing the non-idempotent track() calls. track() is additive, so
       // a setCursor failure AFTER tracking would replay this window next tick and
@@ -76,10 +80,12 @@ export async function meterTelemetryUsageTick(deps: UsageMeterDeps): Promise<num
       await deps.setCursor(cursorName, until);
       if (orgMap) {
         for (const [orgId, value] of aggregateByOrg(perProject, orgMap)) {
+          if (deps.isCancelled?.()) return reported;
           try {
             await deps.track(orgId, SIGNAL_FEATURE_IDS[signal], value);
             reported += 1;
           } catch (err) {
+            if (deps.isCancelled?.()) return reported;
             logger.error(
               {
                 scope: "billing.usage",
@@ -94,6 +100,7 @@ export async function meterTelemetryUsageTick(deps: UsageMeterDeps): Promise<num
         }
       }
     } catch (err) {
+      if (deps.isCancelled?.()) return reported;
       logger.error(
         {
           scope: "billing.usage",
