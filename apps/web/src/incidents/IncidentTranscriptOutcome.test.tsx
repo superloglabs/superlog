@@ -94,3 +94,49 @@ test("observation records show the escalation trigger in operator language", () 
   assert.match(html, /20 additional events/);
   assert.doesNotMatch(html, /events_per_minute/);
 });
+
+test("memory list records show every returned memory in full", () => {
+  const listEvent = {
+    ...outcomeToolEvent("list-memories", "list_memories", {}),
+    providerEventId: "provider-list-memories",
+  };
+  const resultEvent: IncidentEvent = {
+    id: "list-memories-result",
+    agentRunId: "run-1",
+    kind: "user.custom_tool_result",
+    summary: JSON.stringify({
+      memories: [
+        {
+          id: "memory-1",
+          kind: "terminology",
+          title: "SiteWatch customer",
+          body: "A SiteWatch customer is the organization-level monitoring configuration.",
+        },
+        {
+          id: "memory-2",
+          kind: "infra",
+          title: "SiteWatch verification",
+          body: "Verification retries once before falling back to the last valid configuration.",
+        },
+      ],
+    }),
+    detail: { toolResult: { toolUseId: "provider-list-memories", isError: false } },
+    createdAt: "2026-07-14T16:11:23.000Z",
+  };
+
+  const html = renderToStaticMarkup(<IncidentActivityFeed events={[listEvent, resultEvent]} />);
+
+  assert.match(html, /Listed memories/);
+  assert.match(html, /2 memories/);
+  assert.match(html, /memory-1/);
+  assert.match(html, /terminology/);
+  assert.match(html, /SiteWatch customer/);
+  assert.match(html, /A SiteWatch customer is the organization-level monitoring configuration\./);
+  assert.match(html, /memory-2/);
+  assert.match(html, /infra/);
+  assert.match(html, /SiteWatch verification/);
+  assert.match(
+    html,
+    /Verification retries once before falling back to the last valid configuration\./,
+  );
+});

@@ -674,10 +674,99 @@ function ToolEntry({
       </Node>
       {isEdit ? (
         <EditEntry item={item} />
+      ) : item.name === "list_memories" ? (
+        <ListMemoriesEntry item={item} />
       ) : outcomePresentation ? (
         <OutcomeRecordEntry item={item} ctx={ctx} presentation={outcomePresentation} />
       ) : (
         <CodeEntry item={item} />
+      )}
+    </div>
+  );
+}
+
+type ListedMemory = {
+  id: string;
+  kind: string | null;
+  title: string | null;
+  body: string | null;
+};
+
+function listedMemoriesFromResult(result: string | null): ListedMemory[] | null {
+  if (!result) return null;
+  try {
+    const payload = JSON.parse(result) as { memories?: unknown };
+    if (!Array.isArray(payload.memories)) return null;
+    return payload.memories.flatMap((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+      const memory = value as Record<string, unknown>;
+      const text = (key: string) =>
+        typeof memory[key] === "string" && memory[key] ? (memory[key] as string) : null;
+      const id = text("id");
+      if (!id) return [];
+      return [
+        {
+          id,
+          kind: text("kind"),
+          title: text("title"),
+          body: text("body"),
+        },
+      ];
+    });
+  } catch {
+    return null;
+  }
+}
+
+function ListMemoriesEntry({ item }: { item: Extract<TranscriptItem, { type: "tool" }> }) {
+  const memories = listedMemoriesFromResult(item.result);
+  return (
+    <div className="overflow-hidden rounded-lg border border-border bg-surface">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3.5 py-2.5">
+        <span className="text-[12px] font-semibold text-fg">Listed memories</span>
+        <span className="font-mono text-[11px] text-subtle">{item.name}</span>
+        {memories && (
+          <Chip tone="muted">
+            {memories.length} {memories.length === 1 ? "memory" : "memories"}
+          </Chip>
+        )}
+        {item.isError && <Chip tone="danger">failed</Chip>}
+      </div>
+      {memories ? (
+        memories.length === 0 ? (
+          <div className="px-3.5 py-4 text-[12.5px] text-muted">No active memories.</div>
+        ) : (
+          <div className="divide-y divide-border">
+            {memories.map((memory) => (
+              <article key={memory.id} className="px-3.5 py-3">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="min-w-0 font-medium text-[13px] text-fg">
+                    {memory.title ?? "Untitled memory"}
+                  </span>
+                  {memory.kind && <Chip tone="muted">{memory.kind}</Chip>}
+                  <span className="min-w-0 truncate font-mono text-[10.5px] text-subtle">
+                    {memory.id}
+                  </span>
+                </div>
+                {memory.body && (
+                  <div className="mt-1.5 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-muted">
+                    {memory.body}
+                  </div>
+                )}
+              </article>
+            ))}
+          </div>
+        )
+      ) : item.result ? (
+        <div
+          className={`whitespace-pre-wrap break-words px-3.5 py-3 font-mono text-[11.5px] leading-relaxed ${
+            item.isError ? "text-danger" : "text-muted"
+          }`}
+        >
+          {item.result}
+        </div>
+      ) : (
+        <div className="px-3.5 py-4 text-[12.5px] text-muted">No result recorded.</div>
       )}
     </div>
   );
