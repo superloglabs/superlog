@@ -64,6 +64,10 @@ FAKE_BIN="$TMP_HOME/bin"
 mkdir -p "$FAKE_BIN"
 cat > "$FAKE_BIN/docker" <<'EOF'
 #!/usr/bin/env bash
+case "$*" in
+  *"FROM system.tables"*) printf '7\n' ;;
+  *"FROM superlog.local_schema_migrations"*) printf '0\n' ;;
+esac
 exit 0
 EOF
 cat > "$FAKE_BIN/pnpm" <<'EOF'
@@ -84,6 +88,13 @@ chmod +x "$FAKE_BIN/docker" "$FAKE_BIN/pnpm" "$FAKE_BIN/overmind"
 
 HOME="$TMP_HOME" PATH="$FAKE_BIN:$PATH" SUPERLOG_PORTLESS_OFFSET=7 \
   "$REPO_ROOT/scripts/portless-stack.sh" start --name "$STACK_NAME" >/dev/null
+cat > "$TMP_HOME/.portless/routes.json" <<EOF
+[
+  {"hostname":"$STACK_NAME.superlog.localhost","pid":$$},
+  {"hostname":"api.$STACK_NAME.superlog.localhost","pid":$$},
+  {"hostname":"intake.$STACK_NAME.superlog.localhost","pid":$$}
+]
+EOF
 output="$(
   HOME="$TMP_HOME" PATH="$FAKE_BIN:$PATH" SUPERLOG_PORTLESS_OFFSET=8 \
     "$REPO_ROOT/scripts/portless-stack.sh" start --name "$STACK_NAME"
