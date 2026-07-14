@@ -125,7 +125,10 @@ test("buildDigestBlocks: leads with the weekly incident and issue breakdown", ()
     issues: { open: 4, underObservation: 3, silenced: 2, resolved: 8 },
   });
 
-  assert.equal(text, "Weekly project recap: 12 incidents opened, 9 resolved, 3 remain open.");
+  assert.equal(
+    text,
+    "Weekly project recap: 12 incidents opened, 9 resolved, 3 remain open. Issues reviewed: 4 open, 3 under observation, 2 silenced, 8 resolved.",
+  );
   assert.deepEqual(blocks.slice(0, 3), [
     {
       type: "section",
@@ -152,6 +155,24 @@ test("buildDigestBlocks: leads with the weekly incident and issue breakdown", ()
     },
     { type: "divider" },
   ]);
+});
+
+test("buildDigestBlocks: plain-text fallback includes ranked PRs alongside the summary", () => {
+  const candidate = makeCandidate();
+  const { text } = buildDigestBlocks(
+    [{ pick: { agentRunId: candidate.agentRunId, rationale: "Review first" }, candidate }],
+    {
+      from: new Date("2026-07-07T10:00:00Z"),
+      to: new Date("2026-07-14T10:00:00Z"),
+      incidents: { opened: 1, resolved: 0, remainOpen: 1 },
+      issues: { open: 1, underObservation: 0, silenced: 0, resolved: 0 },
+    },
+  );
+
+  assert.match(
+    text,
+    /Top 1 fixes to merge: purple-otter \(https:\/\/github.com\/acme\/api\/pull\/42\)/,
+  );
 });
 
 test("attachCandidatesToPicks: filters out picks whose id has no candidate, caps at TOP_N", () => {

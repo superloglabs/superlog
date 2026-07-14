@@ -219,11 +219,20 @@ export function buildDigestBlocks(
     ];
     blocks.push({ type: "section", text: { type: "mrkdwn", text: lines.join("\n") } });
   });
-  const fallbackText = summary
-    ? `Weekly project recap: ${summary.incidents.opened} incidents opened, ${summary.incidents.resolved} resolved, ${summary.incidents.remainOpen} remain open.`
-    : `Top ${picks.length} fixes to merge: ${picks
+  const fallbackParts: string[] = [];
+  if (summary) {
+    fallbackParts.push(
+      `Weekly project recap: ${summary.incidents.opened} incidents opened, ${summary.incidents.resolved} resolved, ${summary.incidents.remainOpen} remain open. Issues reviewed: ${summary.issues.open} open, ${summary.issues.underObservation} under observation, ${summary.issues.silenced} silenced, ${summary.issues.resolved} resolved.`,
+    );
+  }
+  if (picks.length > 0) {
+    fallbackParts.push(
+      `Top ${picks.length} fixes to merge: ${picks
         .map(({ candidate }) => `${candidate.incidentCodename} (${candidate.pr.url})`)
-        .join(", ")}`;
+        .join(", ")}`,
+    );
+  }
+  const fallbackText = fallbackParts.join(" ");
   return { text: fallbackText, blocks };
 }
 
