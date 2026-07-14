@@ -1755,6 +1755,10 @@ export function IncidentDetailContent({
                     !triggeringIssue && <p className="text-[12px] text-muted">No activity yet.</p>}
                   <IncidentActivityFeed
                     events={events}
+                    evidenceContext={{
+                      repoUrl: agentRun?.selectedRepoUrl ?? null,
+                      baseBranch: agentRun?.selectedBaseBranch ?? null,
+                    }}
                     triggeringIssue={
                       triggeringIssue
                         ? { issueId: triggeringIssue.id, createdAt: incident.firstSeen }

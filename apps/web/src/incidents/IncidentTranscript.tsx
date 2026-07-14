@@ -40,6 +40,7 @@ export function IncidentActivityFeed({
   triggeringIssue,
   renderIssueCard,
   awaiting,
+  evidenceContext,
 }: {
   events: IncidentEvent[];
   /** The issue that opened the incident. It is projected as the first feed
@@ -52,6 +53,8 @@ export function IncidentActivityFeed({
    *  — it lives on the run result. Render it as a terminal node so the timeline
    *  ends on what the agent needs from the human. */
   awaiting?: { question: string; ctx: EvidenceLinkContext } | null;
+  /** Link context for markdown evidence recorded by outcome tools. */
+  evidenceContext?: EvidenceLinkContext;
 }) {
   const [expanded, setExpanded] = useState(false);
   const railRef = useRef<HTMLDivElement>(null);
@@ -61,7 +64,7 @@ export function IncidentActivityFeed({
   // the last node's offset depends on every entry above it.
   const [railHeight, setRailHeight] = useState<number>();
 
-  const ctx = awaiting?.ctx ?? {};
+  const ctx = evidenceContext ?? awaiting?.ctx ?? {};
   // The question is sourced only from the current run state, appended as the
   // terminal node so a paused run ends on what it needs from the human.
   const base = buildActivityFeed(events, { triggeringIssue });
@@ -74,7 +77,7 @@ export function IncidentActivityFeed({
     if (item.type === "human") return <HumanEntry key={item.id} item={item} />;
     if (item.type === "telemetry") return <TelemetryEntry key={item.id} item={item} />;
     if (item.type === "memory") return <MemoryEntry key={item.id} item={item} />;
-    if (item.type === "tool") return <ToolEntry key={item.id} item={item} />;
+    if (item.type === "tool") return <ToolEntry key={item.id} item={item} ctx={ctx} />;
     if (item.type === "mcp_error") return <McpErrorEntry key={item.id} item={item} />;
     if (item.type === "start") return <StartEntry key={item.id} />;
     if (item.type === "question")
@@ -648,8 +651,15 @@ function MetricWidget({
 
 const EDIT_TOOLS = new Set(["edit", "write", "multi_edit", "str_replace_editor"]);
 
-function ToolEntry({ item }: { item: Extract<TranscriptItem, { type: "tool" }> }) {
+function ToolEntry({
+  item,
+  ctx,
+}: {
+  item: Extract<TranscriptItem, { type: "tool" }>;
+  ctx: EvidenceLinkContext;
+}) {
   const isEdit = EDIT_TOOLS.has(item.name);
+  const outcomePresentation = OUTCOME_RECORD_PRESENTATION[item.name];
   return (
     <div className="relative mb-6">
       <Node>
@@ -662,7 +672,157 @@ function ToolEntry({ item }: { item: Extract<TranscriptItem, { type: "tool" }> }
           </>
         )}
       </Node>
-      {isEdit ? <EditEntry item={item} /> : <CodeEntry item={item} />}
+      {isEdit ? (
+        <EditEntry item={item} />
+      ) : outcomePresentation ? (
+        <OutcomeRecordEntry item={item} ctx={ctx} presentation={outcomePresentation} />
+      ) : (
+        <CodeEntry item={item} />
+      )}
+    </div>
+  );
+}
+
+type OutcomeRecordField = {
+  key: string;
+  label: string;
+  sourceKeys?: string[];
+  read?: (input: Record<string, unknown>) => unknown;
+};
+
+type OutcomeRecordPresentation = {
+  title: string;
+  fields: OutcomeRecordField[];
+};
+
+const OUTCOME_RECORD_PRESENTATION: Record<string, OutcomeRecordPresentation> = {
+  report_findings: {
+    title: "Reported findings",
+    fields: [
+      { key: "summary", label: "Summary" },
+      { key: "proposedTitle", label: "Proposed title" },
+      { key: "rootCause", label: "Root cause" },
+      { key: "rootCauseConfidence", label: "Root cause confidence" },
+      { key: "estimatedImpact", label: "Estimated impact" },
+      { key: "impactConfidence", label: "Impact confidence" },
+      { key: "severity", label: "Severity" },
+      { key: "handoffNotes", label: "Handoff notes" },
+    ],
+  },
+  silence_as_noise: {
+    title: "Silenced as noise",
+    fields: [
+      { key: "issueId", label: "Issue" },
+      { key: "reason", label: "Reasoning" },
+      { key: "evidence", label: "Evidence" },
+    ],
+  },
+  place_under_observation: {
+    title: "Placed under observation",
+    fields: [
+      { key: "issueId", label: "Issue" },
+      { key: "reason", label: "Reasoning" },
+      { key: "evidence", label: "Evidence" },
+      {
+        key: "escalationTrigger",
+        label: "Escalation trigger",
+        sourceKeys: ["escalateOn", "threshold"],
+        read: formatEscalationTrigger,
+      },
+    ],
+  },
+  resolve_incident: {
+    title: "Resolved incident",
+    fields: [
+      { key: "reason", label: "Reasoning" },
+      { key: "evidence", label: "Evidence" },
+    ],
+  },
+};
+
+function humanizeFieldName(key: string): string {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .toLowerCase();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : key;
+}
+
+function formatEscalationTrigger(input: Record<string, unknown>): string | null {
+  const threshold = input.threshold;
+  if (typeof threshold !== "number" || !Number.isFinite(threshold)) return null;
+  const events = threshold === 1 ? "event" : "events";
+  if (input.escalateOn === "events_per_minute") {
+    return `${threshold} ${events} per minute (trailing 5-minute average)`;
+  }
+  if (input.escalateOn === "additional_events") {
+    return `${threshold} additional ${events}`;
+  }
+  return null;
+}
+
+function outcomeRecordFields(
+  item: Extract<TranscriptItem, { type: "tool" }>,
+  presentation: OutcomeRecordPresentation,
+) {
+  const knownKeys = new Set(
+    presentation.fields.flatMap((field) => [field.key, ...(field.sourceKeys ?? [])]),
+  );
+  const fields: OutcomeRecordField[] = [
+    ...presentation.fields,
+    ...Object.keys(item.input)
+      .filter((key) => !knownKeys.has(key))
+      .map((key) => ({ key, label: humanizeFieldName(key) })),
+  ];
+  return fields.flatMap((field) => {
+    const value = field.read?.(item.input) ?? item.input[field.key];
+    if (value == null || value === "") return [];
+    return [{ ...field, value }];
+  });
+}
+
+function OutcomeRecordEntry({
+  item,
+  ctx,
+  presentation,
+}: {
+  item: Extract<TranscriptItem, { type: "tool" }>;
+  ctx: EvidenceLinkContext;
+  presentation: OutcomeRecordPresentation;
+}) {
+  const fields = outcomeRecordFields(item, presentation);
+  return (
+    <div className="overflow-hidden rounded-lg border border-border bg-surface">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3.5 py-2.5">
+        <span className="text-[12px] font-semibold text-fg">{presentation.title}</span>
+        <span className="font-mono text-[11px] text-subtle">{item.name}</span>
+        {item.isError && <Chip tone="danger">failed</Chip>}
+      </div>
+      <div className="divide-y divide-border">
+        {fields.map(({ key, label, value }) => (
+          <div key={key} className="grid gap-1.5 px-3.5 py-3 sm:grid-cols-[150px_minmax(0,1fr)]">
+            <div className="text-[11px] font-medium text-muted">{label}</div>
+            <div className="min-w-0">
+              {typeof value === "string" ? (
+                <EvidenceMarkdown text={value} ctx={ctx} />
+              ) : (
+                <span className="whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-fg">
+                  {typeof value === "object" ? JSON.stringify(value, null, 2) : String(value)}
+                </span>
+              )}
+            </div>
+          </div>
+        ))}
+        {item.isError && item.result && (
+          <div className="grid gap-1.5 px-3.5 py-3 sm:grid-cols-[150px_minmax(0,1fr)]">
+            <div className="text-[11px] font-medium text-muted">Result</div>
+            <div className="whitespace-pre-wrap break-words font-mono text-[11.5px] leading-relaxed text-danger">
+              {item.result}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
