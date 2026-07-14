@@ -53,6 +53,7 @@ const JOB_EXPIRY_GRACE_SECONDS = 30;
 
 export type AgentRunQueueBoss = {
   createQueue(name: string, options?: unknown): Promise<unknown>;
+  updateQueue(name: string, options?: unknown): Promise<unknown>;
   work(
     name: string,
     options: { batchSize: number; localConcurrency?: number },
@@ -143,13 +144,21 @@ export async function registerAgentRunQueue(
 ): Promise<void> {
   const logger = deps.logger ?? defaultLogger;
   const concurrency = clampConcurrency(deps.concurrency);
+  const jobTimeoutMs = deps.jobTimeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
+  const expireInSeconds = Math.ceil(jobTimeoutMs / 1000) + JOB_EXPIRY_GRACE_SECONDS;
 
   await boss.createQueue(AGENT_RUN_ADVANCE_QUEUE, {
     policy: "stately",
     // Keep pg-boss's durable active-job lease just beyond the application's
     // own deadline. A task killed during deploy can then block a run for at
     // most two minutes instead of pg-boss's 15-minute default.
-    expireInSeconds: Math.ceil(DEFAULT_JOB_TIMEOUT_MS / 1000) + JOB_EXPIRY_GRACE_SECONDS,
+    expireInSeconds,
+  });
+  // createQueue is insert-only in pg-boss. Update the mutable lease explicitly
+  // so queues created by an older deployment do not retain the 15-minute
+  // default indefinitely.
+  await boss.updateQueue(AGENT_RUN_ADVANCE_QUEUE, {
+    expireInSeconds,
   });
   await boss.createQueue(AGENT_RUN_SWEEP_QUEUE, { policy: "exclusive" });
 
@@ -163,7 +172,6 @@ export async function registerAgentRunQueue(
   });
   await boss.schedule(AGENT_RUN_SWEEP_QUEUE, SWEEP_SCHEDULE);
 
-  const jobTimeoutMs = deps.jobTimeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
   // Runs with an attempt still executing — including attempts whose JOB was
   // completed by the timeout below while the underlying promise keeps
   // running. A new job for such a run is skipped so two attempts never

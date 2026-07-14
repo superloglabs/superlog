@@ -19,6 +19,7 @@ function fakeBoss() {
   const sent: SentJob[] = [];
   const inserted: InsertedJob[] = [];
   const queues: Array<{ name: string; options: unknown }> = [];
+  const queueUpdates: Array<{ name: string; options: unknown }> = [];
   const schedules: Array<{ name: string; cron: string }> = [];
   const workers = new Map<string, WorkHandler>();
   const workOptions = new Map<string, WorkOptions>();
@@ -27,6 +28,10 @@ function fakeBoss() {
     async createQueue(name, options) {
       ops.push(`createQueue:${name}`);
       queues.push({ name, options });
+    },
+    async updateQueue(name, options) {
+      ops.push(`updateQueue:${name}`);
+      queueUpdates.push({ name, options });
     },
     async work(name, options, handler) {
       ops.push(`work:${name}`);
@@ -46,7 +51,7 @@ function fakeBoss() {
       schedules.push({ name, cron });
     },
   };
-  return { boss, sent, inserted, queues, schedules, workers, workOptions, ops };
+  return { boss, sent, inserted, queues, queueUpdates, schedules, workers, workOptions, ops };
 }
 
 function runOf(id: string, state: string): schema.AgentRun {
@@ -84,6 +89,8 @@ function makeDeps(overrides: DepsOverrides = {}) {
       resume: overrides.handlers?.resume ?? handler("resume"),
       retryPrDelivery: overrides.handlers?.retryPrDelivery ?? handler("retry_pr_delivery"),
     },
+    concurrency: overrides.concurrency,
+    jobTimeoutMs: overrides.jobTimeoutMs,
     logger: { warn: () => {}, error: () => {} },
   };
   return { deps, calls };
@@ -99,6 +106,9 @@ test("registration creates both queues, workers, and the sweep schedule", async 
   // event-driven enqueue during processing is preserved while duplicates
   // still collapse.
   assert.deepEqual(advance?.options, { policy: "stately", expireInSeconds: 120 });
+  assert.deepEqual(fb.queueUpdates, [
+    { name: AGENT_RUN_ADVANCE_QUEUE, options: { expireInSeconds: 120 } },
+  ]);
   const sweep = fb.queues.find((q) => q.name === AGENT_RUN_SWEEP_QUEUE);
   assert.deepEqual(sweep?.options, { policy: "exclusive" });
   assert.ok(fb.workers.get(AGENT_RUN_ADVANCE_QUEUE));
@@ -117,6 +127,17 @@ test("registration creates both queues, workers, and the sweep schedule", async 
   // failure must never leave a live advance consumer behind — that would
   // advance the same run from two places at once.
   assert.equal(fb.ops.at(-1), `work:${AGENT_RUN_ADVANCE_QUEUE}`);
+});
+
+test("a custom attempt timeout keeps the durable lease beyond the application deadline", async () => {
+  const fb = fakeBoss();
+  const { deps } = makeDeps({ jobTimeoutMs: 180_000 });
+
+  await registerAgentRunQueue(fb.boss, deps);
+
+  assert.deepEqual(fb.queueUpdates, [
+    { name: AGENT_RUN_ADVANCE_QUEUE, options: { expireInSeconds: 210 } },
+  ]);
 });
 
 test("advance worker dispatches by run state", async () => {
