@@ -32,7 +32,7 @@ import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { nanoid } from "nanoid";
-import { loadIncidentAlertEpisodes } from "./alerts-service.js";
+import { loadIncidentAlertEpisodes, loadTriggeringAlertForIssue } from "./alerts-service.js";
 import { mountAlerts } from "./alerts.js";
 import { auth } from "./auth.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
@@ -1290,16 +1290,19 @@ app.get("/api/projects/:projectId/issues/:issueId", async (c) => {
     where: and(eq(schema.issues.id, issueId), eq(schema.issues.projectId, projectId)),
   });
   if (!issue) throw new HTTPException(404, { message: "issue not found" });
-  const symbolication = await symbolicateIssueSample({
-    database: db,
-    objectReader: sourceMapObjectStore,
-    projectId,
-    sample: issue.lastSample,
-  }).catch((err) => {
-    logger.warn({ err, projectId, issueId }, "failed to symbolicate issue sample");
-    return null;
-  });
-  return c.json({ ...issue, symbolication });
+  const [symbolication, triggeringAlert] = await Promise.all([
+    symbolicateIssueSample({
+      database: db,
+      objectReader: sourceMapObjectStore,
+      projectId,
+      sample: issue.lastSample,
+    }).catch((err) => {
+      logger.warn({ err, projectId, issueId }, "failed to symbolicate issue sample");
+      return null;
+    }),
+    loadTriggeringAlertForIssue(issue.id),
+  ]);
+  return c.json({ ...issue, symbolication, triggeringAlert });
 });
 
 app.post("/api/projects/:projectId/issues/lookup", async (c) => {

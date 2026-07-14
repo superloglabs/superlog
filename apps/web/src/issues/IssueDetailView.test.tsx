@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
 import type { IncidentEvent, Issue } from "../api.ts";
 import { IssueDetailView } from "./IssueDetailView.tsx";
 
@@ -149,4 +150,36 @@ test("error detail shows system-generated resolution activity without a reason",
 
   assert.match(html, /Activity/);
   assert.match(html, /Resolved/);
+});
+
+test("an alert-episode error links straight to the alert that fired", () => {
+  const html = renderToStaticMarkup(
+    <MemoryRouter>
+      <IssueDetailView
+        issue={{
+          ...issue,
+          kind: "alert",
+          exceptionType: "AlertFired",
+          triggeringAlert: { id: "alert-9", name: "checkout-api p95 latency > 500ms" },
+        }}
+        environment="production"
+        onBack={() => {}}
+      />
+    </MemoryRouter>,
+  );
+
+  assert.match(html, /Triggered by/);
+  assert.match(html, /checkout-api p95 latency &gt; 500ms/);
+  assert.match(html, /href="\/alerts\/alert-9"/);
+});
+
+test("a normal error shows no alert link", () => {
+  const html = renderToStaticMarkup(
+    <MemoryRouter>
+      <IssueDetailView issue={issue} environment="production" onBack={() => {}} />
+    </MemoryRouter>,
+  );
+
+  assert.doesNotMatch(html, /Triggered by/);
+  assert.doesNotMatch(html, /href="\/alerts\//);
 });

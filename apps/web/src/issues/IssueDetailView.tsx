@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import type { IncidentEvent, Issue } from "../api.ts";
 import { Btn, Chip } from "../design/ui.tsx";
 
@@ -91,6 +92,22 @@ export function IssueDetailView({
               <MetaRow label="Last seen" value={formatTimestamp(issue.lastSeen)} />
               <MetaRow label="Grouping" value={groupingLabel(issue)} />
             </dl>
+
+            {issue.triggeringAlert && (
+              <section className="mt-7 border-t border-border pt-6">
+                <SectionLabel>Triggered by</SectionLabel>
+                <Link
+                  to={`/alerts/${issue.triggeringAlert.id}`}
+                  className="mt-2 flex items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-fg transition-colors hover:border-muted"
+                >
+                  <AlertIcon />
+                  <span className="min-w-0 flex-1 truncate text-[12.5px]">
+                    {issue.triggeringAlert.name}
+                  </span>
+                  <ArrowUpRightIcon />
+                </Link>
+              </section>
+            )}
 
             {linkedIncident && (
               <section className="mt-7 border-t border-border pt-6">
@@ -351,6 +368,42 @@ function CloseIcon() {
       aria-hidden="true"
     >
       <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
+function AlertIcon() {
+  return (
+    <svg
+      className="h-4 w-4 shrink-0 text-muted"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+    </svg>
+  );
+}
+
+function ArrowUpRightIcon() {
+  return (
+    <svg
+      className="h-4 w-4 shrink-0 text-muted"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M7 17 17 7" />
+      <path d="M7 7h10v10" />
     </svg>
   );
 }

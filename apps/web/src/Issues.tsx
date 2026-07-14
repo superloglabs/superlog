@@ -77,6 +77,7 @@ import {
   buildIncidentDetailMeta,
 } from "./incidents/incident-detail-view-model.ts";
 import { IncidentDetailScrollArea } from "./incidents/IncidentDetailScrollArea.tsx";
+import { TriggeredByAlertMetaRow } from "./incidents/TriggeredByAlertMetaRow.tsx";
 import { getIssueIncidentLinkState } from "./issue-incident-link-state.ts";
 import { IssueDetailView } from "./issues/IssueDetailView.tsx";
 import {
@@ -1645,6 +1646,9 @@ export function IncidentDetailContent({
             <div className="mt-7 grid gap-3.5">
               {/* "Agent run" stays last; Linked issues slots in where Findings used to be. */}
               <IncidentSidebarMetaRows rows={detailMeta.slice(0, -1)} />
+              {alertEpisodes.length > 0 && (
+                <TriggeredByAlertMetaRow episodes={alertEpisodes} />
+              )}
               <LinkedIssuesMetaRow issues={issues} onViewIssue={onViewIssue} />
               <IncidentSidebarMetaRows rows={detailMeta.slice(-1)} />
             </div>
