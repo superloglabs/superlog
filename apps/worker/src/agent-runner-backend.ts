@@ -18,6 +18,13 @@ export type AgentRunnerRepoCandidate = {
   // was skipped for a low-scored candidate. Runners surface these so the
   // agent reads them after cloning and follows the repo's conventions.
   instructionFiles: string[];
+  // Called just before the provider session is created to obtain a fresh
+  // installation token. GitHub installation tokens expire after 1 hour; when
+  // the preceding API calls (vault/agent/session creation) take longer than
+  // that, the token stored in `installationToken` is stale by the time it is
+  // used. Optional: runners and test callers that do not need the refresh path
+  // may omit it, in which case `installationToken` is used as-is.
+  refreshToken?: () => Promise<string>;
 };
 
 // The trigger context for an alert-episode issue: the alert's configuration

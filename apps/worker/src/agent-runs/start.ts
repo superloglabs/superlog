@@ -224,6 +224,12 @@ async function createRunnerRepoCandidate(
       instructionFiles: probeInstructionFiles
         ? await probeRepoInstructionFiles(repo, installationToken, deps)
         : [],
+      // Refresh callback so the runner can obtain a fresh token just before
+      // creating the provider session. GitHub installation tokens expire after
+      // 1 hour; when the preceding provider API calls take longer than that,
+      // the token stored above is stale by the time it would be used.
+      refreshToken: () =>
+        deps.createRepositoryReadToken(repo.installation.installationId, repo.id),
     };
   } catch (err) {
     logger.warn(
