@@ -146,6 +146,7 @@ export type TickDeps = EvaluateIncidentDeps & {
     opts?: CandidateSelectionOptions,
   ): Promise<CandidateIncident[]>;
   now(): Date;
+  isCancelled?: () => boolean;
 };
 
 // Throttled hourly pass. Selects candidates first, then stamps the cursor
@@ -155,14 +156,18 @@ export type TickDeps = EvaluateIncidentDeps & {
 // the next poll instead of silently advancing the cursor and hiding for an
 // hour (which is exactly how the 42702 ambiguous-column bug went unnoticed).
 export async function runAutorecoveryTick(deps: TickDeps): Promise<number> {
+  if (deps.isCancelled?.()) return 0;
   const now = deps.now();
   const lastRun = await deps.repo.getLastRunAt();
+  if (deps.isCancelled?.()) return 0;
   const throttle = decideThrottle(lastRun, now, deps.policy);
   if (throttle.kind === "skip") return 0;
 
   const candidates = await deps.selectCandidates(now, deps.policy);
+  if (deps.isCancelled?.()) return 0;
 
   await deps.repo.setLastRunAt(now);
+  if (deps.isCancelled?.()) return 0;
 
   if (candidates.length === 0) {
     deps.logger.info({ scope: "autorecovery" }, "no candidates");
@@ -175,6 +180,7 @@ export async function runAutorecoveryTick(deps: TickDeps): Promise<number> {
 
   let proposalsWritten = 0;
   for (const candidate of candidates) {
+    if (deps.isCancelled?.()) break;
     try {
       // Stamp the per-incident evaluation cursor up front, before the agent
       // runs, so this incident rotates to the back of the NULLS-FIRST queue
@@ -185,9 +191,11 @@ export async function runAutorecoveryTick(deps: TickDeps): Promise<number> {
       // isolates to this incident (it'll just be re-picked next tick) instead
       // of aborting the whole pass.
       await deps.repo.markEvaluated(candidate.id, now);
+      if (deps.isCancelled?.()) break;
       const result = await evaluateIncident(candidate, deps);
       if (result.kind === "proposed") proposalsWritten += 1;
     } catch (err) {
+      if (deps.isCancelled?.()) break;
       deps.logger.warn(
         {
           scope: "autorecovery",

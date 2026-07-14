@@ -5,22 +5,30 @@
 import { tickAutorecovery } from "../autorecovery.js";
 import type { JobDefinition } from "../jobs.js";
 
+const DEFAULT_JOB_TIMEOUT_MS = 45 * 60 * 1000;
+const JOB_EXPIRY_GRACE_SECONDS = 15 * 60;
+
 export function createAutorecoveryJob(
   options: {
     apiKey?: string | null;
-    run?: () => Promise<number>;
+    run?: (signal: AbortSignal) => Promise<number>;
+    jobTimeoutMs?: number;
   } = {},
 ): JobDefinition {
   const apiKey = options.apiKey ?? process.env.ANTHROPIC_API_KEY;
   const run = options.run ?? tickAutorecovery;
+  const jobTimeoutMs = options.jobTimeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
   return {
     name: "autorecovery",
     schedule: "*/5 * * * *",
-    expireInSeconds: 3_600,
+    // Cancel active external I/O before the durable lease can expire. The
+    // remaining grace covers fast DB/Slack cleanup without permitting a
+    // second exclusive pass to overlap the first one.
+    expireInSeconds: Math.ceil(jobTimeoutMs / 1000) + JOB_EXPIRY_GRACE_SECONDS,
     create: () => {
       if (!apiKey?.trim()) return null;
       return async () => {
-        await run();
+        await run(AbortSignal.timeout(jobTimeoutMs));
       };
     },
   };

@@ -5,7 +5,11 @@ import type { ClickHouseClient } from "@clickhouse/client";
 import type { CandidateIncident } from "./domain.js";
 import { createAutorecoveryMetricsRepository } from "./metrics-repository.js";
 
-type CapturedQuery = { query: string; params: Record<string, unknown> };
+type CapturedQuery = {
+  query: string;
+  params: Record<string, unknown>;
+  abortSignal?: AbortSignal;
+};
 
 function makeFakeCh(
   rows: Array<Record<string, unknown>>,
@@ -16,8 +20,16 @@ function makeFakeCh(
 } {
   const captured: CapturedQuery[] = [];
   const client = {
-    async query(input: { query: string; query_params: Record<string, unknown> }) {
-      captured.push({ query: input.query, params: input.query_params });
+    async query(input: {
+      query: string;
+      query_params: Record<string, unknown>;
+      abort_signal?: AbortSignal;
+    }) {
+      captured.push({
+        query: input.query,
+        params: input.query_params,
+        abortSignal: input.abort_signal,
+      });
       const isProbe = /EXISTS TABLE/i.test(input.query);
       return {
         async json() {
@@ -59,13 +71,15 @@ function makeCandidate(overrides: Partial<CandidateIncident> = {}): CandidateInc
 
 test("queryIncidentActivity filters by the candidate's issue exception types", async () => {
   const { client, captured } = makeFakeCh([{ hour: "2026-05-23 00:00:00", count: "2" }]);
-  const repo = createAutorecoveryMetricsRepository(async () => client);
+  const deadline = new AbortController();
+  const repo = createAutorecoveryMetricsRepository(async () => client, deadline.signal);
 
   await repo.queryIncidentActivity(makeCandidate(), 24);
 
   assert.equal(captured.length, 1);
   const q = captured[0];
   assert.ok(q, "expected a CH query to be captured");
+  assert.equal(q.abortSignal, deadline.signal);
   // The query must scope by the actual issue signatures, not just project+service.
   // Without this filter, a project-wide spike in unrelated exceptions (e.g.
   // ECONNREFUSED storm) would be attributed to this incident.
@@ -95,10 +109,10 @@ test("queryIncidentActivity collapses duplicate exception types and filters by s
 
   const q = captured[0];
   assert.ok(q);
-  assert.deepEqual(
-    [...(q.params.exception_types as string[])].sort(),
-    ["APIError", "TimeoutError"],
-  );
+  assert.deepEqual([...(q.params.exception_types as string[])].sort(), [
+    "APIError",
+    "TimeoutError",
+  ]);
   assert.equal(q.params.service, "@superlog/api");
   assert.equal(q.params.hours, 12);
 });
@@ -107,10 +121,7 @@ test("queryIncidentActivity short-circuits with zero events when there are no si
   const { client, captured } = makeFakeCh([{ hour: "x", count: "999" }]);
   const repo = createAutorecoveryMetricsRepository(async () => client);
 
-  const result = await repo.queryIncidentActivity(
-    makeCandidate({ issueSignatures: [] }),
-    24,
-  );
+  const result = await repo.queryIncidentActivity(makeCandidate({ issueSignatures: [] }), 24);
 
   // No signatures means we can't safely scope the query — fall back to "no
   // signal observed" so the agent stays conservative rather than counting

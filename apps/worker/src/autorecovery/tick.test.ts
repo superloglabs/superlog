@@ -379,6 +379,32 @@ test("runAutorecoveryTick: a failing candidate does not block the rest", async (
   assert.ok(calls.includes("logger.warn:autorecovery candidate failed"));
 });
 
+test("runAutorecoveryTick: cancellation stops before the next candidate", async () => {
+  const calls: string[] = [];
+  let cancelled = false;
+  const repo = makeRepo({
+    calls,
+    lastRun: new Date(NOW.getTime() - 2 * 60 * 60 * 1000),
+    candidates: [makeCandidate({ id: "a" }), makeCandidate({ id: "b" })],
+  });
+  const deps: TickDeps & { isCancelled: () => boolean } = {
+    ...makeDeps({ calls, repo, proposal: makeProposal() }),
+    isCancelled: () => cancelled,
+    async runAgent(incident) {
+      calls.push(`runAgent:${incident.id}`);
+      cancelled = true;
+      throw new Error("job deadline exceeded");
+    },
+  };
+
+  await runAutorecoveryTick(deps);
+
+  assert.ok(calls.includes("runAgent:a"));
+  assert.ok(!calls.includes("runAgent:b"));
+  assert.ok(!calls.includes(`markEvaluated:b:${NOW.toISOString()}`));
+  assert.ok(!calls.includes("logger.warn:autorecovery candidate failed"));
+});
+
 test("runAutorecoveryNow: bypasses throttle and filters by incidentIds", async () => {
   const calls: string[] = [];
   const candidates = [

@@ -1,28 +1,28 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import {
-  buildInitialUserMessage,
   type CandidateIncident,
+  type ProposalToolInput,
+  buildInitialUserMessage,
   clampLookbackHours,
   parseProposalToolInput,
-  type ProposalToolInput,
 } from "./domain.js";
-import type {
-  IncidentActivity,
-  ServiceTraffic,
-} from "./metrics-repository.js";
+import type { IncidentActivity, ServiceTraffic } from "./metrics-repository.js";
 import { AUTORECOVERY_SYSTEM_PROMPT, AUTORECOVERY_TOOLS } from "./tools.js";
 
 // Abstraction over the Anthropic client so we can swap a fake in for tests.
 // We only need the create() shape from messages.create.
 export type AutorecoveryLLMClient = {
-  send(input: {
-    model: string;
-    system: string;
-    tools: Anthropic.Messages.Tool[];
-    messages: Anthropic.Messages.MessageParam[];
-    maxTokens: number;
-    temperature: number;
-  }): Promise<Anthropic.Messages.Message>;
+  send(
+    input: {
+      model: string;
+      system: string;
+      tools: Anthropic.Messages.Tool[];
+      messages: Anthropic.Messages.MessageParam[];
+      maxTokens: number;
+      temperature: number;
+    },
+    options?: { signal?: AbortSignal },
+  ): Promise<Anthropic.Messages.Message>;
 };
 
 export type AutorecoveryTokenAccountant = {
@@ -54,6 +54,7 @@ export type RunAgentDeps = {
   accountant: AutorecoveryTokenAccountant;
   logger: AutorecoveryLogger;
   maxIterations: number;
+  signal?: AbortSignal;
   now(): Date;
 };
 
@@ -62,15 +63,18 @@ export type RunAgentDeps = {
 // production deps.
 export function asLLMClient(client: Anthropic): AutorecoveryLLMClient {
   return {
-    async send(input) {
-      return client.messages.create({
-        model: input.model,
-        max_tokens: input.maxTokens,
-        temperature: input.temperature,
-        system: input.system,
-        tools: input.tools,
-        messages: input.messages,
-      });
+    async send(input, options) {
+      return client.messages.create(
+        {
+          model: input.model,
+          max_tokens: input.maxTokens,
+          temperature: input.temperature,
+          system: input.system,
+          tools: input.tools,
+          messages: input.messages,
+        },
+        { signal: options?.signal },
+      );
     },
   };
 }
@@ -87,14 +91,17 @@ export async function runAutorecoveryAgent(
   ];
 
   for (let iter = 0; iter < deps.maxIterations; iter++) {
-    const message = await deps.client.send({
-      model: deps.model,
-      system: AUTORECOVERY_SYSTEM_PROMPT,
-      tools: AUTORECOVERY_TOOLS,
-      messages: conversation,
-      maxTokens: 1500,
-      temperature: 0,
-    });
+    const message = await deps.client.send(
+      {
+        model: deps.model,
+        system: AUTORECOVERY_SYSTEM_PROMPT,
+        tools: AUTORECOVERY_TOOLS,
+        messages: conversation,
+        maxTokens: 1500,
+        temperature: 0,
+      },
+      { signal: deps.signal },
+    );
 
     await deps.accountant.record({
       model: deps.model,

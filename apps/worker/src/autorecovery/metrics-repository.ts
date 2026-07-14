@@ -18,7 +18,10 @@ export type ServiceTraffic = {
 
 export type AutorecoveryMetricsRepository = ReturnType<typeof createAutorecoveryMetricsRepository>;
 
-export function createAutorecoveryMetricsRepository(getCh: () => Promise<ClickHouseClient>) {
+export function createAutorecoveryMetricsRepository(
+  getCh: () => Promise<ClickHouseClient>,
+  abortSignal?: AbortSignal,
+) {
   return {
     // Counts exception events on the incident's service whose `exception.type`
     // matches one of the live issues linked to the incident. Filtering by
@@ -73,16 +76,14 @@ export function createAutorecoveryMetricsRepository(getCh: () => Promise<ClickHo
           hours,
         },
         format: "JSONEachRow",
+        abort_signal: abortSignal,
       });
       const rows = (await result.json()) as ActivityBucket[];
       const totalEvents = rows.reduce((acc, r) => acc + Number(r.count), 0);
       return { totalEvents, perHour: rows, lookbackHours: hours };
     },
 
-    async queryServiceTraffic(
-      incident: CandidateIncident,
-      hours: number,
-    ): Promise<ServiceTraffic> {
+    async queryServiceTraffic(incident: CandidateIncident, hours: number): Promise<ServiceTraffic> {
       if (!incident.service) {
         return { totalSpans: 0, perHour: [], lookbackHours: hours, service: null };
       }
@@ -99,7 +100,7 @@ export function createAutorecoveryMetricsRepository(getCh: () => Promise<ClickHo
       // milliseconds. Fall back to the raw scan only where the rollup isn't
       // deployed (it is not part of the collector's auto-created schema — see
       // infra/clickhouse/migrations/003_events_per_minute.sql).
-      if (await rollupAvailable(ch)) {
+      if (await rollupAvailable(ch, abortSignal)) {
         const result = await ch.query({
           query: `
             SELECT
@@ -125,6 +126,7 @@ export function createAutorecoveryMetricsRepository(getCh: () => Promise<ClickHo
             hours,
           },
           format: "JSONEachRow",
+          abort_signal: abortSignal,
         });
         const rows = (await result.json()) as ActivityBucket[];
         const totalSpans = rows.reduce((acc, r) => acc + Number(r.count), 0);
@@ -148,6 +150,7 @@ export function createAutorecoveryMetricsRepository(getCh: () => Promise<ClickHo
           hours,
         },
         format: "JSONEachRow",
+        abort_signal: abortSignal,
       });
       const rows = (await result.json()) as ActivityBucket[];
       const totalSpans = rows.reduce((acc, r) => acc + Number(r.count), 0);
@@ -163,7 +166,7 @@ export function createAutorecoveryMetricsRepository(getCh: () => Promise<ClickHo
 // for that call without pinning the slow path until restart.
 const rollupAvailability = new WeakMap<ClickHouseClient, Promise<boolean>>();
 
-function rollupAvailable(ch: ClickHouseClient): Promise<boolean> {
+function rollupAvailable(ch: ClickHouseClient, abortSignal?: AbortSignal): Promise<boolean> {
   let probe = rollupAvailability.get(ch);
   if (!probe) {
     probe = (async () => {
@@ -171,6 +174,7 @@ function rollupAvailable(ch: ClickHouseClient): Promise<boolean> {
         const r = await ch.query({
           query: "EXISTS TABLE events_per_minute",
           format: "JSONEachRow",
+          abort_signal: abortSignal,
         });
         const rows = (await r.json()) as { result: number | string }[];
         return Number(rows[0]?.result) === 1;
@@ -199,8 +203,7 @@ export async function defaultClickhouseClient(): Promise<ClickHouseClient> {
     password: process.env.CLICKHOUSE_PASSWORD ?? "",
     // Local portless stacks ship a `superlog` database; prod uses `olly`.
     // `CLICKHOUSE_DB` is the env name `scripts/portless-stack.sh` writes.
-    database:
-      process.env.CLICKHOUSE_DATABASE ?? process.env.CLICKHOUSE_DB ?? "olly",
+    database: process.env.CLICKHOUSE_DATABASE ?? process.env.CLICKHOUSE_DB ?? "olly",
   });
   return cachedClient;
 }

@@ -87,7 +87,9 @@ function makeLogger(calls: string[]): AutorecoveryLogger {
   };
 }
 
-function makeAccountant(captured: Array<{ input: number; output: number }>): AutorecoveryTokenAccountant {
+function makeAccountant(
+  captured: Array<{ input: number; output: number }>,
+): AutorecoveryTokenAccountant {
   return {
     record(input) {
       captured.push({
@@ -146,6 +148,33 @@ test("agent: immediate propose_resolution returns parsed proposal", async () => 
   assert.equal(accountant[0]?.input, 100);
 });
 
+test("agent: forwards the pass deadline to each LLM request", async () => {
+  const calls: string[] = [];
+  const deadline = new AbortController();
+  let requestSignal: AbortSignal | undefined;
+  const client: AutorecoveryLLMClient = {
+    async send(_input, options?: { signal?: AbortSignal }) {
+      requestSignal = options?.signal;
+      return makeMessage([
+        toolUse("propose_resolution", {
+          looks_resolved: false,
+          confidence: "low",
+          reason_code: "stopped recurring unknown cause",
+          reason_text: "no signal",
+        }),
+      ]);
+    },
+  };
+  const deps = {
+    ...makeDeps({ calls, client }),
+    signal: deadline.signal,
+  } as RunAgentDeps & { signal: AbortSignal };
+
+  await runAutorecoveryAgent(makeCandidate(), deps);
+
+  assert.equal(requestSignal, deadline.signal);
+});
+
 test("agent: telemetry tool result feeds next turn, then proposal terminates", async () => {
   const calls: string[] = [];
   let turn = 0;
@@ -155,9 +184,7 @@ test("agent: telemetry tool result feeds next turn, then proposal terminates", a
       sends.push([...input.messages]);
       turn += 1;
       if (turn === 1) {
-        return makeMessage([
-          toolUse("query_service_traffic", { hours: 12 }, "tu_traffic"),
-        ]);
+        return makeMessage([toolUse("query_service_traffic", { hours: 12 }, "tu_traffic")]);
       }
       return makeMessage([
         toolUse("propose_resolution", {
@@ -269,5 +296,7 @@ test("agent: exhausts iteration budget without proposal returns null", async () 
 
   const result = await runAutorecoveryAgent(makeCandidate(), deps);
   assert.equal(result, null);
-  assert.ok(calls.includes("logger.warn:agent exhausted iteration budget without propose_resolution"));
+  assert.ok(
+    calls.includes("logger.warn:agent exhausted iteration budget without propose_resolution"),
+  );
 });
