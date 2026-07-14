@@ -1729,9 +1729,9 @@ export function IncidentDetailContent({
                       const issue = issues.find((i) => i.id === issueId);
                       if (!issue) return null;
                       // If an alert episode raised this issue, draw the alert's
-                      // metric-vs-threshold graph instead of the occurrence graph.
-                      const alertId =
-                        alertEpisodes.find((ep) => ep.issueId === issueId)?.alertId ?? null;
+                      // metric-vs-threshold graph instead of the occurrence graph,
+                      // scoped to the group that breached for per-group alerts.
+                      const episode = alertEpisodes.find((ep) => ep.issueId === issueId) ?? null;
                       return (
                         <div className="rounded-lg border border-border bg-surface px-3 py-2">
                           <IssueCard
@@ -1741,7 +1741,8 @@ export function IncidentDetailContent({
                               options?.showOccurrences ? occurrenceBuckets : undefined
                             }
                             projectId={incident.projectId}
-                            alertId={alertId}
+                            alertId={episode?.alertId ?? null}
+                            alertGroupKey={episode?.groupKey ?? null}
                           />
                         </div>
                       );
@@ -2797,6 +2798,7 @@ function IssueCard({
   occurrenceBuckets,
   projectId,
   alertId,
+  alertGroupKey,
 }: {
   issue: Issue;
   onViewIssue: (id: string) => void;
@@ -2806,6 +2808,9 @@ function IssueCard({
   // The right-side graph then shows the alert's evaluated signal against its
   // threshold instead of raw occurrence counts.
   alertId?: string | null;
+  // For a per-group alert, the group that breached — scopes the graph to that
+  // group's signal rather than the aggregate across all groups.
+  alertGroupKey?: string | null;
 }) {
   const hasOccurrences = !!occurrenceBuckets && occurrenceBuckets.length > 0;
   const showAlertGraph = !!alertId && !!projectId;
@@ -2832,7 +2837,7 @@ function IssueCard({
           )}
         </div>
         {showAlertGraph ? (
-          <AlertThresholdGraph projectId={projectId} alertId={alertId} />
+          <AlertThresholdGraph projectId={projectId} alertId={alertId} groupKey={alertGroupKey} />
         ) : hasOccurrences ? (
           <IssueOccurrenceGraph buckets={occurrenceBuckets} />
         ) : null}
@@ -2848,8 +2853,16 @@ const alertSeriesValue = (r: AlertSeriesRow) => r.value;
 // line — shown in place of the occurrence graph on an alert-raised issue card,
 // where "occurrences" is always 0 and the metric-vs-threshold view is what
 // actually explains the firing. Same footprint as IssueOccurrenceGraph.
-function AlertThresholdGraph({ projectId, alertId }: { projectId: string; alertId: string }) {
-  const series = useAlertSeries(projectId, alertId);
+function AlertThresholdGraph({
+  projectId,
+  alertId,
+  groupKey,
+}: {
+  projectId: string;
+  alertId: string;
+  groupKey?: string | null;
+}) {
+  const series = useAlertSeries(projectId, alertId, { groupKey });
   return (
     <div className="border-t border-border pt-2.5 sm:w-44 sm:flex-none sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0">
       {series.isLoading ? (
