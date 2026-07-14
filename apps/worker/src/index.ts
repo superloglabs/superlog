@@ -10,6 +10,7 @@ import {
   createIssueTransitionDispatcher,
   registerIssueTransitionWorker,
 } from "./issue-transitions.js";
+import { startAutorecoveryJob } from "./autorecovery.js";
 import { startJobRunner } from "./jobs/runner.js";
 import { logger } from "./logger.js";
 import { registerDatastoreObservability } from "./observability/datastores.js";
@@ -105,6 +106,23 @@ if (jobBoss) {
   }
 }
 
+// Autorecovery runs as a pg-boss cron job so its serial LLM pass (up to 50
+// incidents, ~12 min at scale) doesn't block the tick heartbeat. If the job
+// fails to register (no API key, pg-boss unavailable), the tick falls back to
+// the inline path which short-circuits to 0 proposals when the key is absent.
+let autorecoveryJobReady = false;
+if (jobBoss) {
+  try {
+    await startAutorecoveryJob(jobBoss);
+    autorecoveryJobReady = true;
+  } catch (err) {
+    logger.info(
+      { scope: "boot", err: err instanceof Error ? err.message : String(err) },
+      "autorecovery job not registered; tick will handle it inline",
+    );
+  }
+}
+
 const telemetryIngestor = createTelemetryIngestor({
   clickhouse: ch,
   batchSize: BATCH_SIZE,
@@ -126,6 +144,7 @@ const tick = createWorkerTick({
   usageMeter,
   handleIssueTransition: dispatchIssueTransition,
   includeAgentRuns: !agentRunQueueReady,
+  includeAutorecovery: !autorecoveryJobReady,
 });
 
 const workerController = new AbortController();

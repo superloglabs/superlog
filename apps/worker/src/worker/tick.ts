@@ -39,9 +39,16 @@ export function createWorkerTick(opts: {
   // boot where that queue failed to register — pass false once the queue is
   // live so runs aren't advanced from two places at once.
   includeAgentRuns?: boolean;
+  // Autorecovery normally runs as an hourly pg-boss cron job
+  // (startAutorecoveryJob in autorecovery.ts) so its 50-candidate LLM loop
+  // doesn't block the tick heartbeat. Pass false once that job is live; the
+  // tick path remains the fallback for deployments where pg-boss is
+  // unavailable or ANTHROPIC_API_KEY is unset.
+  includeAutorecovery?: boolean;
 }): () => Promise<WorkerTickResult> {
   const onIssueTransition = opts.handleIssueTransition ?? handleIssueTransition;
   const includeAgentRuns = opts.includeAgentRuns ?? true;
+  const includeAutorecovery = opts.includeAutorecovery ?? true;
   return () =>
     tracer.startActiveSpan("worker.tick", async (span) => {
       async function safe<T>(name: string, run: () => Promise<T>, fallback: T): Promise<T> {
@@ -81,7 +88,9 @@ export function createWorkerTick(opts: {
         );
         const digests = await safe("digests", tickDigests, 0);
         const webhooks = await safe("webhooks", tickWebhooks, 0);
-        const autorecoveryProposals = await safe("autorecovery", tickAutorecovery, 0);
+        const autorecoveryProposals = includeAutorecovery
+          ? await safe("autorecovery", tickAutorecovery, 0)
+          : 0;
         const observedEscalations = await safe(
           "observation",
           () => tickObservedIssues(onIssueTransition),

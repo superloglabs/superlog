@@ -93,6 +93,9 @@ function makeDeps(apiKey: string, policy: AutorecoveryPolicy): TickDeps {
 // Entry point called from the main worker tick loop. Throttled by
 // `worker_state.cursor` — every worker tick checks the cursor and
 // short-circuits if the last autorecovery pass was recent.
+//
+// Prefer startAutorecoveryJob() (which runs the pass on a pg-boss cron) so
+// this inline path is used only as a fallback when pg-boss is unavailable.
 export async function tickAutorecovery(): Promise<number> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return 0;
@@ -109,4 +112,36 @@ export async function runAutorecoveryNow(opts?: {
   if (!apiKey) return { candidates: 0, proposalsWritten: 0 };
   const policy = autorecoveryPolicyFromEnv();
   return runAutorecoveryNowApp(makeDeps(apiKey, policy), opts);
+}
+
+// The slice of the pg-boss API this function needs — a strict subset of
+// the JobBoss interface so callers can pass any compatible boss without
+// importing pg-boss types directly.
+type AutorecoveryBoss = {
+  createQueue(name: string, options?: unknown): Promise<unknown>;
+  work(name: string, handler: (jobs: unknown[]) => Promise<unknown>): Promise<unknown>;
+  schedule(name: string, cron: string, data?: unknown, options?: unknown): Promise<unknown>;
+};
+
+// Register autorecovery as a standalone hourly pg-boss cron job.
+//
+// Running the LLM pass out-of-band (rather than inline in the worker tick)
+// prevents the 50-candidate serial loop (~12 min at scale) from blocking the
+// tick heartbeat and triggering the stale-heartbeat alarm.
+//
+// Throws when ANTHROPIC_API_KEY is absent so the caller can detect that the
+// job was skipped and fall back to the inline tickAutorecovery() path instead
+// (which returns 0 immediately when there is no API key anyway).
+export async function startAutorecoveryJob(boss: AutorecoveryBoss): Promise<void> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set; autorecovery job skipped");
+  await boss.createQueue("autorecovery", { policy: "exclusive" });
+  await boss.work("autorecovery", async () => {
+    await runAutorecoveryNow();
+  });
+  // Run once per hour, aligned to the top of the hour. pg-boss uses
+  // minute-granular cron; the internal per-incident reevaluation cooldown
+  // (24 h) prevents re-chewing the same incidents on every pass.
+  await boss.schedule("autorecovery", "0 * * * *");
+  logger.info({ scope: "autorecovery" }, "autorecovery job registered (hourly pg-boss cron)");
 }
