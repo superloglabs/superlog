@@ -153,7 +153,7 @@ test("listSlackChannels returns the Slack error without paginating further", asy
 test("invalid Slack credentials revoke the stale installation", async () => {
   const { isRevokedSlackAuthError } = await import("./slack.js");
 
-  for (const error of ["not_authed", "token_revoked", "invalid_auth"]) {
+  for (const error of ["not_authed", "token_revoked", "invalid_auth", "account_inactive"]) {
     assert.equal(isRevokedSlackAuthError(error), true, error);
   }
   assert.equal(isRevokedSlackAuthError("ratelimited"), false);
