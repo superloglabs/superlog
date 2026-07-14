@@ -312,6 +312,18 @@ test("shouldDeferSteering defers when collect just acked tool calls and there is
   assert.equal(shouldDeferSteering({ result: null, sentToolAckCount: 3 }), true);
 });
 
+test("shouldDeferSteering defers when the dispatch pass just acked outcome tools", () => {
+  // Dispatch-pass acks (action tools, the resolve_incident guard) unblock the
+  // model exactly like collect-pass acks do, but they are not counted in
+  // sentToolAckCount — the dispatch loop sends them before collect runs. A
+  // steer sent in that window races the model's terminal outcome call.
+  assert.equal(shouldDeferSteering({ result: null, dispatchedToolCallCount: 1 }), true);
+  assert.equal(
+    shouldDeferSteering({ result: null, sentToolAckCount: 0, dispatchedToolCallCount: 2 }),
+    true,
+  );
+});
+
 test("shouldDeferSteering does not defer settled or concluded snapshots", () => {
   // No acks sent: the idle status is genuine, steers are safe.
   assert.equal(shouldDeferSteering({ result: null, sentToolAckCount: 0 }), false);
@@ -320,6 +332,10 @@ test("shouldDeferSteering does not defer settled or concluded snapshots", () => 
   // A result landed: the run is concluding; the completion path owns it.
   assert.equal(
     shouldDeferSteering({ result: { state: "complete", summary: "x" }, sentToolAckCount: 1 }),
+    false,
+  );
+  assert.equal(
+    shouldDeferSteering({ result: { state: "complete", summary: "x" }, dispatchedToolCallCount: 1 }),
     false,
   );
 });

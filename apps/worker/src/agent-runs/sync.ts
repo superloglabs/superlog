@@ -180,7 +180,7 @@ export function mobileRegressionRepairPrompt(): string {
   ].join("\n");
 }
 
-// A collect pass that just sent custom_tool_result acks has unblocked the
+// A sync pass that just sent custom_tool_result acks has unblocked the
 // model: the snapshot's "idle" status predates those acks, so the agent is
 // about to resume with the tool results. A steer (human reply, context delta,
 // or the terminal nudge) sent into that window is queued behind the open turn
@@ -188,16 +188,30 @@ export function mobileRegressionRepairPrompt(): string {
 // outcome call, whose turn would then be reset out from under it. Defer all
 // steering to the next tick, when the session state has settled. A result
 // means the run is concluding; the completion paths below own it.
+//
+// Acks reach the session on two paths, and both open the same race window:
+// `sentToolAckCount` counts the collect pass's acks (report_findings etc.),
+// `dispatchedToolCallCount` counts the dispatch pass's (action tools, the
+// resolve_incident guard) — the dispatch loop sends those before collect
+// runs, so they never show up in the collect count.
 export function shouldDeferSteering(snapshot: {
   result: unknown;
   sentToolAckCount?: number;
+  dispatchedToolCallCount?: number;
 }): boolean {
-  return !snapshot.result && (snapshot.sentToolAckCount ?? 0) > 0;
+  return (
+    !snapshot.result &&
+    ((snapshot.sentToolAckCount ?? 0) > 0 || (snapshot.dispatchedToolCallCount ?? 0) > 0)
+  );
 }
 
 // Steered into a session that went idle without calling any terminal outcome
 // tool and with nothing pending (no open PRs to wait on). Fired at most once
 // per session; the runtime/wall-clock budgets stay the hard floor.
+//
+// The first line doubles as a stable marker: the redelivery check below and
+// runner backends detect a delivered nudge in the session event stream by
+// substring-matching it. Don't reword it without checking those call sites.
 export function terminalOutcomeNudgePrompt(): string {
   return [
     "You ended your turn without concluding the investigation, so it has no recorded outcome and nothing is pending.",
@@ -317,8 +331,15 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       .set(baseUpdate)
       .where(eq(schema.agentRuns.id, ctx.agentRun.id));
 
-    if (shouldDeferSteering(snapshot)) {
-      // This pass acked tool calls (e.g. report_findings) and the model is
+    if (
+      shouldDeferSteering({
+        result: snapshot.result,
+        sentToolAckCount: snapshot.sentToolAckCount,
+        dispatchedToolCallCount: dispatched,
+      })
+    ) {
+      // This pass acked tool calls (report_findings via collect, action
+      // tools / the resolve_incident guard via dispatch) and the model is
       // resuming; the idle status is stale. Steering now races the model's
       // next event — retry every steer on the next tick instead. The budget
       // checks above already ran, so a run can't hide here indefinitely.
