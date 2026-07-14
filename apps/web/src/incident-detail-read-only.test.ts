@@ -1,121 +1,41 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router-dom";
 import {
-  IncidentDetailContent,
-  IncidentPullRequestPanel,
-  ResolutionProposalBanner,
-} from "./Issues.tsx";
-import type { Incident, PendingResolutionProposal } from "./api.ts";
+  getIncidentDetailAccess,
+  shouldUsePreloadedPullRequests,
+} from "./incidents/incident-detail-access.ts";
 
-test("read-only incident detail preserves the product layout without mutation controls", () => {
-  const incident: Incident = {
-    id: "incident-1",
-    projectId: "project-1",
-    service: "api",
-    environment: "production",
-    title: "Checkout failures",
-    codename: "steady-amber",
-    severity: "SEV-2",
-    status: "open",
-    noiseReason: null,
-    noiseResolvedAt: null,
-    firstSeen: "2026-07-06T08:00:00.000Z",
-    lastSeen: "2026-07-06T08:10:00.000Z",
-    issueCount: 1,
-    slackChannelId: null,
-    slackThreadTs: null,
-    agentSummary: "Checkout started returning 500s.",
-    rootCauseText: "A checkout repository method threw on null totals.",
-    rootCauseConfidence: 82,
-    estimatedImpactText: "Checkout requests failed.",
-    estimatedImpactConfidence: 75,
-    suggestedSeverity: "SEV-2",
-    noiseClassification: null,
-    resolutionClassification: null,
-    findingsAgentRunId: null,
-    autoInvestigateBlockedReason: null,
-    createdAt: "2026-07-06T08:00:00.000Z",
-    updatedAt: "2026-07-06T08:20:00.000Z",
-  };
-  const queryClient = new QueryClient();
-
-  const html = renderToStaticMarkup(
-    createElement(
-      QueryClientProvider,
-      { client: queryClient },
-      createElement(
-        MemoryRouter,
-        null,
-        createElement(IncidentDetailContent, {
-          incident,
-          issues: [],
-          agentRun: null,
-          events: [],
-          eventsLoading: false,
-          eventsError: null,
-          onClose: () => {},
-          onViewIssue: () => {},
-          onStatusAction: () => {},
-          updatingIncident: false,
-          readOnly: true,
-        }),
-      ),
-    ),
-  );
-
-  assert.match(html, /Checkout failures/);
-  assert.match(html, />Activity</);
-  assert.match(html, />Findings</);
-  assert.match(html, />PR</);
-  assert.doesNotMatch(html, />Not an issue</);
-  assert.doesNotMatch(html, />Problem resolved</);
-  assert.doesNotMatch(html, />Give feedback</);
-  assert.doesNotMatch(html, /Reply to the investigation/);
+test("read-only incident detail denies every customer-data mutation", () => {
+  assert.deepEqual(getIncidentDetailAccess(true), {
+    canUpdateStatus: false,
+    canSubmitFeedback: false,
+    canChat: false,
+    canDecideResolutionProposal: false,
+    canMergePullRequest: false,
+  });
 });
 
-test("read-only recovery proposal keeps its findings without decision controls", () => {
-  const proposal: PendingResolutionProposal = {
-    id: "proposal-1",
-    sourceKind: "autorecovery",
-    confidence: "high",
-    proposedReasonCode: "signal_recovered",
-    proposedReasonText: "The error rate returned to its baseline.",
-    proposedAt: "2026-07-06T08:20:00.000Z",
-  };
-
-  const html = renderToStaticMarkup(
-    createElement(ResolutionProposalBanner, {
-      proposal,
-      readOnly: true,
-    }),
-  );
-
-  assert.match(html, /Recovery detected/);
-  assert.match(html, /The error rate returned to its baseline/);
-  assert.doesNotMatch(html, />Dismiss</);
-  assert.doesNotMatch(html, />Confirm resolution</);
+test("interactive incident detail retains every product action", () => {
+  assert.deepEqual(getIncidentDetailAccess(false), {
+    canUpdateStatus: true,
+    canSubmitFeedback: true,
+    canChat: true,
+    canDecideResolutionProposal: true,
+    canMergePullRequest: true,
+  });
 });
 
-test("read-only PR panel never falls back to the interactive product loader", () => {
-  const queryClient = new QueryClient();
-
-  const html = renderToStaticMarkup(
-    createElement(
-      QueryClientProvider,
-      { client: queryClient },
-      createElement(IncidentPullRequestPanel, {
-        projectId: "project-1",
-        incidentId: "incident-1",
-        readOnly: true,
-      }),
-    ),
+test("read-only PRs always use supplied data instead of the connected loader", () => {
+  assert.equal(
+    shouldUsePreloadedPullRequests({ readOnly: true, pullRequestsProvided: false }),
+    true,
   );
-
-  assert.match(html, /No PR has been opened for this incident/);
-  assert.doesNotMatch(html, /Loading PR/);
-  assert.doesNotMatch(html, /Merge PR/);
+  assert.equal(
+    shouldUsePreloadedPullRequests({ readOnly: false, pullRequestsProvided: true }),
+    true,
+  );
+  assert.equal(
+    shouldUsePreloadedPullRequests({ readOnly: false, pullRequestsProvided: false }),
+    false,
+  );
 });

@@ -69,6 +69,10 @@ import {
   fmtRelative,
 } from "./incidents/IncidentTranscript.tsx";
 import {
+  getIncidentDetailAccess,
+  shouldUsePreloadedPullRequests,
+} from "./incidents/incident-detail-access.ts";
+import {
   type IncidentMetaRow,
   buildIncidentDetailMeta,
 } from "./incidents/incident-detail-view-model.ts";
@@ -1563,6 +1567,7 @@ export function IncidentDetailContent({
   readOnly?: boolean;
 }) {
   const [detailTab, setDetailTab] = useState<IncidentDetailTab>("activity");
+  const access = getIncidentDetailAccess(readOnly);
   // A run paused on `ask_human` stores its question on the run result, not as an
   // incident event — surface it as the closing node of the Activity timeline.
   const awaitingQuestion =
@@ -1596,7 +1601,7 @@ export function IncidentDetailContent({
         <span className="text-subtle">›</span>
         <span className="min-w-0 flex-1 truncate text-[13px] text-fg">{incident.title}</span>
         <div className="flex shrink-0 items-center gap-3">
-          {!readOnly && notAnIssueAction && (
+          {access.canUpdateStatus && notAnIssueAction && (
             <Btn
               variant={notAnIssueAction.variant}
               size="sm"
@@ -1606,7 +1611,7 @@ export function IncidentDetailContent({
               {notAnIssueAction.label}
             </Btn>
           )}
-          {!readOnly && problemResolvedAction && (
+          {access.canUpdateStatus && problemResolvedAction && (
             <Btn
               variant={problemResolvedAction.variant}
               size="sm"
@@ -1649,7 +1654,7 @@ export function IncidentDetailContent({
                 agentRun={agentRun}
                 className="w-full justify-center"
               />
-              {!readOnly && (
+              {access.canSubmitFeedback && (
                 <FeedbackTrigger
                   kind="incident"
                   refId={incident.id}
@@ -1657,7 +1662,7 @@ export function IncidentDetailContent({
                   className="w-full justify-center"
                 />
               )}
-              {!readOnly &&
+              {access.canUpdateStatus &&
                 otherStatusActions.map((action) => (
                   <Btn
                     key={action.label}
@@ -1758,7 +1763,7 @@ export function IncidentDetailContent({
                         : undefined
                     }
                     deciding={!!decidingProposal}
-                    readOnly={readOnly}
+                    readOnly={!access.canDecideResolutionProposal}
                   />
                 )}
 
@@ -1785,12 +1790,12 @@ export function IncidentDetailContent({
                 projectId={incident.projectId}
                 incidentId={incident.id}
                 pullRequests={pullRequests}
-                readOnly={readOnly}
+                readOnly={!access.canMergePullRequest}
               />
             )}
           </IncidentDetailScrollArea>
 
-          {detailTab === "activity" && !readOnly && (
+          {detailTab === "activity" && access.canChat && (
             <IncidentChatComposer
               projectId={incident.projectId}
               incidentId={incident.id}
@@ -2096,7 +2101,12 @@ export function IncidentPullRequestPanel({
   pullRequests?: IncidentPullRequest[];
   readOnly: boolean;
 }) {
-  if (pullRequests || readOnly) {
+  if (
+    shouldUsePreloadedPullRequests({
+      readOnly,
+      pullRequestsProvided: pullRequests !== undefined,
+    })
+  ) {
     return <IncidentPullRequestView pullRequests={pullRequests ?? []} readOnly={readOnly} />;
   }
   return <ProductIncidentPullRequestPanel projectId={projectId} incidentId={incidentId} />;
