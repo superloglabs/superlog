@@ -261,6 +261,11 @@ async function startRunnerSession(
         repoCandidates,
         mcpResource: `${(process.env.API_BASE_URL ?? "https://api.superlog.sh").replace(/\/$/, "")}/mcp`,
         prPolicy: ctx.prPolicy,
+        approvalPromptsEnabled: ctx.approvalPromptsEnabled,
+        // ask_human is the approval boundary exposed by every runner. The
+        // project setting decides whether it counts as an available
+        // intervention when terminal tools are registered.
+        approvalPromptToolsAvailable: true,
         prBaseBranch: ctx.prBaseBranch,
         githubConnected: ctx.githubInstalls.length > 0,
         telemetryInvestigationHint: TELEMETRY_INVESTIGATION_HINT,

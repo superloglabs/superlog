@@ -1,8 +1,8 @@
 // Deterministic Linear ticket delivery. The platform — not the agent — files
-// or updates the incident's Linear ticket from the completed run's findings,
-// so the recorded ticket id/url always refer to a ticket that actually
-// exists. Delivery is best-effort: any failure is logged and returns null,
-// never blocking run completion.
+// exactly one ticket for each investigation handoff. A retry of the same
+// terminal or first-PR boundary reuses that run's ticket, while a later
+// run always creates a new one. Delivery is best-effort: any failure is logged
+// and returns null, never blocking the investigation state transition.
 
 import {
   type AgentRunResult,
@@ -23,11 +23,11 @@ import { logger } from "../logger.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 
-// Marker line embedded in every ticket description; dedupe searches for it.
-// Kept identical to the convention agent-filed tickets used, so historical
-// tickets keep deduping.
-export function incidentMarker(incidentId: string): string {
-  return `superlog_incident_id=${incidentId}`;
+// Marker line embedded in every ticket description. It is scoped to the run,
+// rather than only the incident, so a delivery retry dedupes while a separate
+// completed investigation receives a new ticket.
+export function investigationMarker(incidentId: string, agentRunId: string): string {
+  return `superlog_incident_id=${incidentId} superlog_agent_run_id=${agentRunId}`;
 }
 
 export type DeliveredLinearTicket = {
@@ -37,14 +37,14 @@ export type DeliveredLinearTicket = {
   // Human identifier for display, e.g. ENG-42.
   identifier: string;
   url: string | null;
-  // True when this delivery created the ticket (vs commented on an existing one).
+  // True when this delivery created the ticket (vs reusing an existing one).
   created: boolean;
 };
 
 export function ticketDescription(
-  args: { incidentId: string; incidentTitle: string },
+  args: { incidentId: string; agentRunId: string; incidentTitle: string },
   result: AgentRunResult,
-  prUrl: string | null,
+  prUrls: string[],
 ): string {
   const lines: string[] = [result.summary];
   if (result.rootCause?.text) {
@@ -54,38 +54,27 @@ export function ticketDescription(
     lines.push("", "## Impact", result.estimatedImpact.text);
   }
   if (result.severity) lines.push("", `Severity: ${result.severity}`);
-  if (prUrl) lines.push("", `Proposed fix: ${prUrl}`);
+  if (prUrls.length > 0) {
+    lines.push("", prUrls.length === 1 ? "Proposed fix:" : "Proposed fixes:");
+    lines.push(...prUrls.map((url) => `- ${url}`));
+  }
   lines.push("", `[Incident on Superlog](${WEB_ORIGIN}/incidents/${args.incidentId})`);
-  lines.push("", incidentMarker(args.incidentId));
+  lines.push("", investigationMarker(args.incidentId, args.agentRunId));
   return lines.join("\n");
 }
-
-function followUpComment(result: AgentRunResult, prUrl: string | null): string {
-  const lines: string[] = ["New findings from the latest investigation run:", "", result.summary];
-  if (result.rootCause?.text) lines.push("", result.rootCause.text);
-  if (prUrl) lines.push("", `Proposed fix: ${prUrl}`);
-  return lines.join("\n");
-}
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function isRevokedTokenError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return /invalid_grant|revoked|unauthorized|401/i.test(msg);
 }
 
+function isLinearIssueUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 // Should this completion produce/refresh a ticket at all?
-export function linearDeliveryAllowed(
-  args: {
-    hasInstall: boolean;
-    policy: schema.LinearTicketPolicy;
-    prUrl: string | null;
-  },
-): boolean {
-  if (!args.hasInstall) return false;
-  if (args.policy === "never") return false;
-  if (args.policy === "on_ready_to_pr" && !args.prUrl) return false;
-  return true;
+export function linearDeliveryAllowed(args: { hasInstall: boolean }): boolean {
+  return args.hasInstall;
 }
 
 export type LinearDeliveryDeps = {
@@ -95,63 +84,59 @@ export type LinearDeliveryDeps = {
     url: string | null;
   } | null>;
   searchIssues(term: string): Promise<LinearIssueRef[]>;
-  createIssue(args: { teamId: string; title: string; description: string }): Promise<LinearIssueRef>;
-  createComment(args: { issueId: string; body: string }): Promise<void>;
+  createIssue(args: {
+    teamId: string;
+    title: string;
+    description: string;
+  }): Promise<LinearIssueRef>;
   listTeams(): Promise<LinearTeam[]>;
   markNeedsReauth(reason: string): Promise<void>;
   log(level: "info" | "warn", fields: Record<string, unknown>, msg: string): void;
 };
 
-// Core delivery: comment on the incident's known ticket, else dedupe by
-// marker search, else create under the configured (or first) team.
+// Core delivery: reuse a ticket already recorded/found for this exact run,
+// otherwise create under the configured (or first) team.
 export async function deliverLinearTicketWithDeps(
   args: {
     incidentId: string;
+    agentRunId: string;
     incidentTitle: string;
-    policy: schema.LinearTicketPolicy;
     hasInstall: boolean;
     defaultTeamId: string | null;
-    prUrl: string | null;
+    prUrls: string[];
   },
   result: AgentRunResult,
   deps: LinearDeliveryDeps,
 ): Promise<DeliveredLinearTicket | null> {
-  if (!linearDeliveryAllowed({ hasInstall: args.hasInstall, policy: args.policy, prUrl: args.prUrl })) {
+  if (!linearDeliveryAllowed({ hasInstall: args.hasInstall })) {
     return null;
   }
   try {
     const known = await deps.findKnownTicket();
     if (known) {
-      // New rows store the Linear issue UUID and can be commented directly;
-      // legacy agent-filed rows may hold the human identifier instead, which
-      // needs a search to resolve to the UUID.
-      if (UUID_RE.test(known.ticketId)) {
-        await deps.createComment({
-          issueId: known.ticketId,
-          body: followUpComment(result, args.prUrl),
-        });
-        return {
-          ticketId: known.ticketId,
-          identifier: known.identifier ?? known.ticketId,
-          url: known.url,
-          created: false,
-        };
+      if (!isLinearIssueUuid(known.ticketId)) {
+        const [resolved] = await deps.searchIssues(known.identifier ?? known.ticketId);
+        if (resolved) {
+          return {
+            ticketId: resolved.id,
+            identifier: resolved.identifier,
+            url: resolved.url ?? known.url,
+            created: false,
+          };
+        }
       }
-      const [found] = await deps.searchIssues(known.ticketId);
-      if (found) {
-        await deps.createComment({ issueId: found.id, body: followUpComment(result, args.prUrl) });
-        return {
-          ticketId: found.id,
-          identifier: found.identifier,
-          url: known.url ?? found.url,
-          created: false,
-        };
-      }
+      return {
+        ticketId: known.ticketId,
+        identifier: known.identifier ?? known.ticketId,
+        url: known.url,
+        created: false,
+      };
     }
 
-    const [existing] = await deps.searchIssues(incidentMarker(args.incidentId));
+    const [existing] = await deps.searchIssues(
+      investigationMarker(args.incidentId, args.agentRunId),
+    );
     if (existing) {
-      await deps.createComment({ issueId: existing.id, body: followUpComment(result, args.prUrl) });
       return {
         ticketId: existing.id,
         identifier: existing.identifier,
@@ -178,9 +163,13 @@ export async function deliverLinearTicketWithDeps(
       teamId,
       title: args.incidentTitle,
       description: ticketDescription(
-        { incidentId: args.incidentId, incidentTitle: args.incidentTitle },
+        {
+          incidentId: args.incidentId,
+          agentRunId: args.agentRunId,
+          incidentTitle: args.incidentTitle,
+        },
         result,
-        args.prUrl,
+        args.prUrls,
       ),
     });
     return { ticketId: issue.id, identifier: issue.identifier, url: issue.url, created: true };
@@ -219,10 +208,35 @@ async function resolveAccessToken(ctx: AgentRunContext): Promise<string> {
   return install.accessToken;
 }
 
+export async function postLinearTicketComment(
+  ctx: AgentRunContext,
+  ticketId: string,
+  body: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const install = ctx.linearInstall;
+  if (!install) return { ok: false, error: "Linear is not connected" };
+  try {
+    await createLinearComment({
+      accessToken: await resolveAccessToken(ctx),
+      issueId: ticketId,
+      body,
+    });
+    return { ok: true };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    if (isRevokedTokenError(err)) {
+      await markLinearInstallationNeedsReauth(install.id, `agent PR linking: ${error}`).catch(
+        () => undefined,
+      );
+    }
+    return { ok: false, error };
+  }
+}
+
 export async function deliverLinearTicket(
   ctx: AgentRunContext,
   result: AgentRunResult,
-  opts: { prUrl: string | null },
+  opts: { prUrls: string[] },
 ): Promise<DeliveredLinearTicket | null> {
   // The run may have retitled the incident (applyAgentRunResult) after ctx
   // was loaded; reload so the ticket carries the current title in every
@@ -255,25 +269,25 @@ export async function deliverLinearTicket(
   return deliverLinearTicketWithDeps(
     {
       incidentId: ctx.incident.id,
+      agentRunId: ctx.agentRun.id,
       incidentTitle: ctx.incident.title,
-      policy: ctx.linearTicketPolicy,
       hasInstall: !!install,
       defaultTeamId: ctx.linearDefaultTeamId,
-      prUrl: opts.prUrl,
+      prUrls: opts.prUrls,
     },
     result,
     {
       async findKnownTicket() {
         const row = await db.query.agentLinearTickets.findFirst({
-          where: eq(schema.agentLinearTickets.incidentId, ctx.incident.id),
+          where: eq(schema.agentLinearTickets.agentRunId, ctx.agentRun.id),
         });
         return row
           ? { ticketId: row.ticketId, identifier: row.ticketIdentifier, url: row.url }
           : null;
       },
       searchIssues: async (term) => searchLinearIssues(await resolveTokenOnce(), term),
-      createIssue: async (args) => createLinearIssue({ accessToken: await resolveTokenOnce(), ...args }),
-      createComment: async (args) => createLinearComment({ accessToken: await resolveTokenOnce(), ...args }),
+      createIssue: async (args) =>
+        createLinearIssue({ accessToken: await resolveTokenOnce(), ...args }),
       listTeams: async () => listLinearTeams(await resolveTokenOnce()),
       markNeedsReauth: async (reason) => {
         if (install) await markLinearInstallationNeedsReauth(install.id, reason);

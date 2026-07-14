@@ -9,7 +9,9 @@
 //     going. `propose_pr`, `silence_as_noise`, `place_under_observation`,
 //     `resolve_issue`.
 //   - Terminal tools: `resolve_incident` ends the investigation once every
-//     linked issue is classified; `ask_human` pauses it on a human. A turn may
+//     linked issue is classified; `complete_investigation` finishes a
+//     findings-only run while leaving the incident open; `ask_human` pauses it
+//     on a human. A turn may
 //     also legitimately end with NO terminal call when the run is waiting on
 //     external events (open PRs) — the worker parks it and resumes the session
 //     when a PR comment/merge/close arrives.
@@ -60,7 +62,11 @@ export const ACTION_OUTCOME_TOOL_NAMES = [
 
 export type ActionOutcomeToolName = (typeof ACTION_OUTCOME_TOOL_NAMES)[number];
 
-export const TERMINAL_OUTCOME_TOOL_NAMES = ["resolve_incident", "ask_human"] as const;
+export const TERMINAL_OUTCOME_TOOL_NAMES = [
+  "resolve_incident",
+  "complete_investigation",
+  "ask_human",
+] as const;
 
 export type TerminalOutcomeToolName = (typeof TERMINAL_OUTCOME_TOOL_NAMES)[number];
 
@@ -68,11 +74,7 @@ export type TerminalOutcomeToolName = (typeof TERMINAL_OUTCOME_TOOL_NAMES)[numbe
 // can outlive a deploy (a parked run resumes days later), so a call to one of
 // these must be error-acked with redirect guidance — not routed to the
 // unknown-tool path, which hard-fails the run.
-export const RETIRED_OUTCOME_TOOL_NAMES = [
-  "complete_investigation",
-  "report_failure",
-  "mark_already_resolved",
-] as const;
+export const RETIRED_OUTCOME_TOOL_NAMES = ["report_failure", "mark_already_resolved"] as const;
 
 export const OUTCOME_TOOL_NAMES = [
   REPORT_FINDINGS_TOOL_NAME,
@@ -204,7 +206,10 @@ const PROPOSE_PR_DEFINITION: OutcomeToolDefinition = {
   input_schema: {
     type: "object",
     properties: {
-      repoFullName: { type: "string", description: "owner/repo of the mounted repository the patch targets." },
+      repoFullName: {
+        type: "string",
+        description: "owner/repo of the mounted repository the patch targets.",
+      },
       title: {
         type: "string",
         description:
@@ -221,13 +226,20 @@ const PROPOSE_PR_DEFINITION: OutcomeToolDefinition = {
         description:
           "Must start with 'superlog/' followed by a short kebab-case slug, e.g. superlog/fix-cart-batching. Reuse a branch name to push to that PR; use a new one to open a separate PR.",
       },
-      baseBranch: { type: "string", description: "The branch the PR should target (the repo's active development branch)." },
+      baseBranch: {
+        type: "string",
+        description: "The branch the PR should target (the repo's active development branch).",
+      },
       patchFilePath: {
         type: "string",
         description:
           "Where you wrote the unified diff, e.g. /mnt/session/outputs/superlog-fix-cart-batching.patch. Use a distinct file per PR so a later PR's patch never overwrites an earlier one.",
       },
-      changedFiles: { type: "array", items: { type: "string" }, description: "Repo-relative paths the patch touches." },
+      changedFiles: {
+        type: "array",
+        items: { type: "string" },
+        description: "Repo-relative paths the patch touches.",
+      },
       mobileTestStatus: {
         type: "string",
         enum: MOBILE_TEST_STATUSES,
@@ -235,7 +247,10 @@ const PROPOSE_PR_DEFINITION: OutcomeToolDefinition = {
           "Only for orgs with a mobile-regression integration: whether you created a regression test for this fix ('created' requires mobileTestId; 'skipped'/'not_applicable' require mobileTestReason).",
       },
       mobileTestId: { type: "string", description: "The created mobile regression test id." },
-      mobileTestReason: { type: "string", description: "Why the mobile regression test was skipped / not applicable." },
+      mobileTestReason: {
+        type: "string",
+        description: "Why the mobile regression test was skipped / not applicable.",
+      },
     },
     required: ["repoFullName", "title", "body", "branchName", "baseBranch", "patchFilePath"],
   },
@@ -250,7 +265,10 @@ const SILENCE_AS_NOISE_DEFINITION: OutcomeToolDefinition = {
   input_schema: {
     type: "object",
     properties: {
-      issueId: { type: "string", description: "The id of the linked issue to silence (from the incident issue bundle)." },
+      issueId: {
+        type: "string",
+        description: "The id of the linked issue to silence (from the incident issue bundle).",
+      },
       reason: {
         type: "string",
         description:
@@ -280,7 +298,10 @@ const PLACE_UNDER_OBSERVATION_DEFINITION: OutcomeToolDefinition = {
   input_schema: {
     type: "object",
     properties: {
-      issueId: { type: "string", description: "The id of the linked issue to observe (from the incident issue bundle)." },
+      issueId: {
+        type: "string",
+        description: "The id of the linked issue to observe (from the incident issue bundle).",
+      },
       reason: {
         type: "string",
         description:
@@ -316,7 +337,10 @@ const RESOLVE_ISSUE_DEFINITION: OutcomeToolDefinition = {
   input_schema: {
     type: "object",
     properties: {
-      issueId: { type: "string", description: "The id of the linked issue to resolve (from the incident issue bundle)." },
+      issueId: {
+        type: "string",
+        description: "The id of the linked issue to resolve (from the incident issue bundle).",
+      },
       reason: {
         type: "string",
         description:
@@ -360,6 +384,19 @@ const RESOLVE_INCIDENT_DEFINITION: OutcomeToolDefinition = {
 
 export type AskHumanPayload = { question: string };
 
+export type CompleteInvestigationPayload = Record<string, never>;
+
+const COMPLETE_INVESTIGATION_DEFINITION: OutcomeToolDefinition = {
+  name: "complete_investigation",
+  description:
+    "Terminal: finish the investigation and hand the recorded findings to the configured external ticket workflow, while leaving the incident open. Use this only after report_findings when no PR or approval action is available. This does not resolve the incident and does not require every linked issue to be classified.",
+  input_schema: {
+    type: "object",
+    properties: {},
+    required: [],
+  },
+};
+
 const ASK_HUMAN_DEFINITION: OutcomeToolDefinition = {
   name: "ask_human",
   description:
@@ -386,6 +423,30 @@ export const OUTCOME_TOOL_DEFINITIONS: OutcomeToolDefinition[] = [
   ASK_HUMAN_DEFINITION,
 ];
 
+export type AgentInterventionCapabilities = {
+  prCreation: boolean;
+  approvalPrompts: boolean;
+};
+
+export function hasInterventionTools(capabilities: AgentInterventionCapabilities): boolean {
+  return capabilities.prCreation || capabilities.approvalPrompts;
+}
+
+export function outcomeToolDefinitionsForCapabilities(
+  capabilities: AgentInterventionCapabilities,
+): OutcomeToolDefinition[] {
+  return [
+    REPORT_FINDINGS_DEFINITION,
+    ...(capabilities.prCreation ? [PROPOSE_PR_DEFINITION] : []),
+    SILENCE_AS_NOISE_DEFINITION,
+    PLACE_UNDER_OBSERVATION_DEFINITION,
+    RESOLVE_ISSUE_DEFINITION,
+    RESOLVE_INCIDENT_DEFINITION,
+    ...(!hasInterventionTools(capabilities) ? [COMPLETE_INVESTIGATION_DEFINITION] : []),
+    ASK_HUMAN_DEFINITION,
+  ];
+}
+
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
@@ -398,6 +459,7 @@ export type ActionOutcome =
 
 export type TerminalOutcome =
   | { name: "resolve_incident"; payload: ResolveIncidentPayload }
+  | { name: "complete_investigation"; payload: CompleteInvestigationPayload }
   | { name: "ask_human"; payload: AskHumanPayload };
 
 export type ValidateOutcome =
@@ -414,6 +476,7 @@ const FINDINGS_REQUIRED = new Set<string>([
   "place_under_observation",
   "resolve_issue",
   "resolve_incident",
+  "complete_investigation",
 ]);
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -568,14 +631,14 @@ export function validateOutcomeToolInput(
       const mobileTestId = optionalString(errors, input, "mobileTestId");
       const mobileTestReason = optionalString(errors, input, "mobileTestReason");
       if (mobileTestStatus === "created" && !mobileTestId) {
-        errors.push("`mobileTestId` is required when `mobileTestStatus` is \"created\".");
+        errors.push('`mobileTestId` is required when `mobileTestStatus` is "created".');
       }
       if (
         (mobileTestStatus === "skipped" || mobileTestStatus === "not_applicable") &&
         !mobileTestReason
       ) {
         errors.push(
-          "`mobileTestReason` is required when `mobileTestStatus` is \"skipped\" or \"not_applicable\".",
+          '`mobileTestReason` is required when `mobileTestStatus` is "skipped" or "not_applicable".',
         );
       }
       if (errors.length > 0) return { ok: false, errors };
@@ -618,7 +681,9 @@ export function validateOutcomeToolInput(
       const escalateOn = requiredEnum(errors, input, "escalateOn", ESCALATE_ON);
       const threshold = input.threshold;
       if (typeof threshold !== "number" || !Number.isInteger(threshold) || threshold < 1) {
-        errors.push(`\`threshold\` must be an integer >= 1; you sent ${JSON.stringify(threshold)}.`);
+        errors.push(
+          `\`threshold\` must be an integer >= 1; you sent ${JSON.stringify(threshold)}.`,
+        );
       }
       if (errors.length > 0) return { ok: false, errors };
       return {
@@ -644,6 +709,9 @@ export function validateOutcomeToolInput(
         payload: { reason: reason as string, evidence: evidence as string },
       };
     }
+
+    case "complete_investigation":
+      return { ok: true, tool: "complete_investigation", payload: {} };
 
     case "ask_human": {
       const question = pushRequiredString(errors, input, "question");
@@ -720,9 +788,7 @@ export function escalationTriggerFromObservation(
 // result can record what happened during the run.
 export type ExecutedAction = ActionOutcome;
 
-function issueClassificationFromAction(
-  action: ExecutedAction,
-): AgentRunIssueClassification | null {
+function issueClassificationFromAction(action: ExecutedAction): AgentRunIssueClassification | null {
   switch (action.name) {
     case "silence_as_noise":
       return {
@@ -819,6 +885,9 @@ export function assembleAgentRunResult(args: {
       reason: terminal.payload.reason,
       evidence: terminal.payload.evidence,
     };
+  }
+  if (terminal?.name === "complete_investigation") {
+    result.completionKind = "investigation_complete";
   }
   if (terminal?.name === "ask_human") {
     result.question = terminal.payload.question;

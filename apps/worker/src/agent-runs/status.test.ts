@@ -2,12 +2,23 @@ import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  WALL_CLOCK_MULTIPLIER,
   agentRunErrorLogMeta,
+  awaitingEventsSlackMessage,
   awaitingHumanSecondsFromEvents,
   exceededWallClockBudget,
   isTransientError,
-  WALL_CLOCK_MULTIPLIER,
 } from "./status.js";
+
+test("awaiting PR review Slack copy includes PRs and the Linear ticket", () => {
+  assert.equal(
+    awaitingEventsSlackMessage(["https://github.com/acme/api/pull/10"], {
+      identifier: "ENG-42",
+      url: "https://linear.app/acme/issue/ENG-42",
+    }),
+    ":hourglass_flowing_sand: Investigation is waiting on PR review. Open PRs: https://github.com/acme/api/pull/10 Linear ticket: ENG-42 (https://linear.app/acme/issue/ENG-42)",
+  );
+});
 
 test("isTransientError handles cyclic cause chains", () => {
   const err = { code: "NOPE" } as { code: string; cause?: unknown };
@@ -65,14 +76,8 @@ test("exceededWallClockBudget fires when wall-clock age exceeds maxRuntimeMinute
     startedAt.getTime() + WALL_CLOCK_MULTIPLIER * maxRuntimeMinutes * 60_000 - 1_000,
   );
 
-  assert.equal(
-    exceededWallClockBudget({ startedAt, now: justUnder, maxRuntimeMinutes }),
-    false,
-  );
-  assert.equal(
-    exceededWallClockBudget({ startedAt, now: justOver, maxRuntimeMinutes }),
-    true,
-  );
+  assert.equal(exceededWallClockBudget({ startedAt, now: justUnder, maxRuntimeMinutes }), false);
+  assert.equal(exceededWallClockBudget({ startedAt, now: justOver, maxRuntimeMinutes }), true);
 });
 
 test("exceededWallClockBudget excludes time parked awaiting a human", () => {
@@ -210,7 +215,11 @@ test("awaitingHumanSecondsFromEvents is 0 with no startedAt", () => {
   ];
 
   assert.equal(
-    awaitingHumanSecondsFromEvents({ events, startedAt: null, now: new Date("2026-07-09T02:00:00Z") }),
+    awaitingHumanSecondsFromEvents({
+      events,
+      startedAt: null,
+      now: new Date("2026-07-09T02:00:00Z"),
+    }),
     0,
   );
 });
@@ -235,10 +244,7 @@ test("exceededWallClockBudget is independent of provider-reported activeSeconds"
   const startedAt = new Date("2026-05-01T00:00:00Z");
   const now = new Date("2026-05-28T00:00:00Z"); // 27 days later
 
-  assert.equal(
-    exceededWallClockBudget({ startedAt, now, maxRuntimeMinutes: 90 }),
-    true,
-  );
+  assert.equal(exceededWallClockBudget({ startedAt, now, maxRuntimeMinutes: 90 }), true);
 });
 
 test("failure log messages split log fingerprints per failure reason", async () => {

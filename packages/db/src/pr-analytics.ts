@@ -35,6 +35,7 @@ export type AgentPrLifecycleEventInput =
       org: AgentPrAnalyticsOrg;
       daysToOutcome: number | null;
       mergedByLogin?: string | null;
+      acceptanceSource?: "github_merge" | "linear";
     }
   | {
       kind: "rejected";
@@ -82,6 +83,7 @@ export function captureAgentPrLifecycleEvent(input: AgentPrLifecycleEventInput):
   if (input.kind === "accepted") {
     properties.days_to_accept = input.daysToOutcome;
     properties.merged_by = input.mergedByLogin ?? null;
+    properties.acceptance_source = input.acceptanceSource ?? "github_merge";
   } else if (input.kind === "rejected") {
     properties.reason = input.reason;
     properties.days_to_reject = input.daysToOutcome;

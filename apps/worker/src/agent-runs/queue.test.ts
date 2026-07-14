@@ -78,6 +78,7 @@ function makeDeps(overrides: DepsOverrides = {}) {
       }),
     listActiveRunIds: overrides.listActiveRunIds ?? (async () => []),
     handlers: {
+      reconcileHandoff: overrides.handlers?.reconcileHandoff ?? handler("reconcile_handoff"),
       start: overrides.handlers?.start ?? handler("start"),
       sync: overrides.handlers?.sync ?? handler("sync"),
       resume: overrides.handlers?.resume ?? handler("resume"),
@@ -135,11 +136,15 @@ test("advance worker dispatches by run state", async () => {
     const worker = fb.workers.get(AGENT_RUN_ADVANCE_QUEUE);
     assert.ok(worker);
     await worker([{ id: "job-1", data: { agentRunId: "run-1" } }]);
-    assert.deepEqual(calls, [expected], `state ${state} must dispatch ${expected}`);
+    assert.deepEqual(
+      calls,
+      ["reconcile_handoff", expected],
+      `state ${state} must reconcile before dispatching ${expected}`,
+    );
   }
 });
 
-test("advance worker skips missing runs, terminal states, and malformed jobs", async () => {
+test("advance worker reconciles terminal handoffs and skips missing or malformed jobs", async () => {
   const fb = fakeBoss();
   const { deps, calls } = makeDeps({
     loadRun: async (id) =>
@@ -155,7 +160,7 @@ test("advance worker skips missing runs, terminal states, and malformed jobs", a
     { id: "job-3", data: { nonsense: true } },
   ]);
 
-  assert.deepEqual(calls, [], "no handler may run for missing/terminal/malformed jobs");
+  assert.deepEqual(calls, ["reconcile_handoff"]);
 });
 
 test("a run whose incident or project is gone is failed as context_unavailable", async () => {
@@ -196,7 +201,11 @@ test("one job's failure is swallowed and the rest of the batch still runs", asyn
     { id: "job-2", data: { agentRunId: "run-2" } },
   ]);
 
-  assert.deepEqual(calls, ["sync"], "the healthy job must still be processed");
+  assert.deepEqual(
+    calls,
+    ["reconcile_handoff", "reconcile_handoff", "sync"],
+    "the healthy job must still be processed",
+  );
 });
 
 test("a job exceeding the per-job timeout is abandoned and the handler resolves", async () => {
@@ -258,7 +267,11 @@ test("a run with an abandoned in-flight attempt is not advanced concurrently", a
   await worker([{ id: "job-2", data: { agentRunId: "hung-run" } }]);
   assert.equal(startCalls, 1, "the hung run must not be advanced concurrently");
   await worker([{ id: "job-3", data: { agentRunId: "other-run" } }]);
-  assert.deepEqual(calls, ["start"], "other runs must be unaffected");
+  assert.deepEqual(
+    calls,
+    ["reconcile_handoff", "reconcile_handoff", "start"],
+    "other runs must be unaffected",
+  );
 
   // Once the abandoned attempt finally settles, the run may be advanced again.
   releaseHung?.();

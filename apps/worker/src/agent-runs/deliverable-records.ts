@@ -1,6 +1,23 @@
-import { db, schema } from "@superlog/db";
+import {
+  captureAgentPrLifecycleEvent,
+  db,
+  linearTicketAcceptanceUnit,
+  resolveIncidentOrg,
+  schema,
+} from "@superlog/db";
+import { eq } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { recordPrCreatedMetric } from "../pr-metrics.js";
+
+export async function resolveIncidentOrgBestEffort(
+  resolve: () => Promise<{ id: string; name: string } | null>,
+): Promise<{ id: string; name: string } | null> {
+  try {
+    return await resolve();
+  } catch {
+    return null;
+  }
+}
 
 export async function recordFiledLinearTicket(
   ctx: AgentRunContext,
@@ -39,6 +56,27 @@ export async function recordFiledLinearTicket(
       occurredAt: now,
     })
     .onConflictDoNothing();
+
+  // Findings-only investigations still belong in the PR-acceptance funnel.
+  // When this run has no PR, the durable ticket row is its stable acceptance
+  // unit and this newly-inserted path emits the denominator exactly once.
+  const pr = await db.query.agentPullRequests.findFirst({
+    where: eq(schema.agentPullRequests.agentRunId, ctx.agentRun.id),
+    columns: { id: true },
+  });
+  if (!pr) {
+    const org = await resolveIncidentOrgBestEffort(() => resolveIncidentOrg(ctx.incident.id));
+    captureAgentPrLifecycleEvent({
+      kind: "opened",
+      pr: linearTicketAcceptanceUnit({
+        id: row.id,
+        incidentId: ctx.incident.id,
+        agentRunId: ctx.agentRun.id,
+        url: ticket.url ?? null,
+      }),
+      org,
+    });
+  }
 }
 
 export async function recordOpenedAgentPullRequest(opts: {

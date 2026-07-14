@@ -185,6 +185,7 @@ export type IncidentResolutionClassification = {
 // status path.
 export type IncidentResolvedByKind =
   | "agent_pr_merged" // our agent opened a PR, GitHub said it merged
+  | "linear_ticket_completed" // the run's Linear handoff entered a completed state
   | "agent_classification" // agent run completed with resolutionClassification.reason set
   | "slack_manual" // human clicked the Resolve button in Slack
   | "autorecovery_confirmed" // autorecovery agent proposed, human clicked Confirm
@@ -277,6 +278,9 @@ export type AgentRunIncidentResolution = {
 export type AgentRunResult = {
   state: "complete" | "awaiting_human" | "awaiting_events" | "failed";
   summary: string;
+  // Explicit terminal signal for runs that finish their investigation while
+  // deliberately leaving the incident open for an external ticket workflow.
+  completionKind?: "investigation_complete" | null;
   question?: string | null;
   failureReason?: AgentRunFailureReason | null;
   // Legacy single-PR record (pre multi-PR contract). New runs record opened
@@ -956,6 +960,16 @@ export const projectAutomationSettings = pgTable(
       .$type<"never" | "on_ready_to_pr" | "always">()
       .notNull()
       .default("on_ready_to_pr"),
+    // Master switch for remediation actions that require a human approval
+    // before the worker executes them. Availability is still determined by
+    // the installed integrations' actual tool set.
+    approvalPromptsEnabled: boolean("approval_prompts_enabled").notNull().default(true),
+    // Resolving an incident is normally terminal without an extra handoff.
+    // Projects that use Linear as their audit trail can opt into filing a
+    // ticket for this terminal path as well.
+    createLinearTicketOnResolve: boolean("create_linear_ticket_on_resolve")
+      .notNull()
+      .default(false),
     prBaseBranch: text("pr_base_branch"),
     autoMergeFixPrs: text("auto_merge_fix_prs")
       .$type<"never" | "when_checks_pass" | "immediately">()

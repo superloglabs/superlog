@@ -1,5 +1,26 @@
 import type { AgentRun, Incident } from "../api.ts";
 
+export function latestIncidentLinearTicket<T extends { createdAt: string }>(
+  tickets: T[],
+): T | null {
+  return tickets.reduce<T | null>(
+    (latest, ticket) =>
+      !latest || Date.parse(ticket.createdAt) > Date.parse(latest.createdAt) ? ticket : latest,
+    null,
+  );
+}
+
+export function linearTicketSidebarTarget(ticket: {
+  ticketIdentifier: string | null;
+  id: string;
+  url: string | null;
+}): { label: string; url: string | null } {
+  return {
+    label: ticket.ticketIdentifier ?? "Recorded ticket",
+    url: ticket.url,
+  };
+}
+
 export type IncidentMetaRow = {
   label: string;
   value: string;

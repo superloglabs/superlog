@@ -60,6 +60,24 @@ test("startQueuedAgentRunWorkflow starts runner with capped repo candidates", as
   ]);
 });
 
+test("startQueuedAgentRunWorkflow exposes ask_human as an approval boundary", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+  let approvalPromptsEnabled: boolean | null = null;
+  let approvalPromptToolsAvailable: boolean | null = null;
+
+  await startQueuedAgentRunWorkflow(
+    ctx,
+    makeDeps(calls, {}, (input) => {
+      approvalPromptsEnabled = input.approvalPromptsEnabled;
+      approvalPromptToolsAvailable = input.approvalPromptToolsAvailable;
+    }),
+  );
+
+  assert.equal(approvalPromptsEnabled, true);
+  assert.equal(approvalPromptToolsAvailable, true);
+});
+
 test("startQueuedAgentRunWorkflow passes agent memories to the runner", async () => {
   const calls: string[] = [];
   const ctx = makeContext();
@@ -325,6 +343,8 @@ function makeContext(opts: { githubInstalled?: boolean } = {}): AgentRunContext 
     linearTicketInstructions: [],
     linearDefaultTeamId: null,
     prPolicy: "on_ready_to_pr",
+    approvalPromptsEnabled: true,
+    createLinearTicketOnResolve: false,
     prBaseBranch: "development",
     autoMergeFixPrs: "never",
     autoMergeMethod: "squash",

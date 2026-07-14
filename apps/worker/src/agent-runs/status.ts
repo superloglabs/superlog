@@ -255,6 +255,8 @@ export async function moveAgentRunToAwaitingEvents(
   ctx: AgentRunContext,
   result: AgentRunResult,
   openPrUrls: string[],
+  loadLinearTicket: () => Promise<{ identifier: string; url: string | null } | null> = async () =>
+    null,
 ): Promise<boolean> {
   const parked = await agentRunLifecycle.pauseForEvents({
     id: ctx.agentRun.id,
@@ -268,10 +270,13 @@ export async function moveAgentRunToAwaitingEvents(
     );
     return false;
   }
-  const prList = openPrUrls.length > 0 ? ` Open PRs: ${openPrUrls.join(", ")}` : "";
+  // Cross-provider side effects happen only after this sync pass wins the
+  // conditional state transition. A concurrent terminal outcome must not
+  // accidentally file a waiting ticket from the losing pass.
+  const linearTicket = await loadLinearTicket();
   await postIncidentThreadMessage(
     ctx.incident.id,
-    `:hourglass_flowing_sand: Investigation is waiting on PR review.${prList}`,
+    awaitingEventsSlackMessage(openPrUrls, linearTicket),
   );
   const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
   await updateIncidentMainMessage(
@@ -287,6 +292,15 @@ export async function moveAgentRunToAwaitingEvents(
       buttons: [
         { text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" },
         ...(openPrUrls[0] ? [{ text: "View PR", url: openPrUrls[0], actionId: "view_pr" }] : []),
+        ...(linearTicket?.url
+          ? [
+              {
+                text: `View ${linearTicket.identifier}`,
+                url: linearTicket.url,
+                actionId: "view_linear",
+              },
+            ]
+          : []),
       ],
       incidentId: ctx.incident.id,
       showResolveButton: true,
@@ -297,6 +311,17 @@ export async function moveAgentRunToAwaitingEvents(
     }),
   );
   return true;
+}
+
+export function awaitingEventsSlackMessage(
+  openPrUrls: string[],
+  linearTicket: { identifier: string; url: string | null } | null,
+): string {
+  const prList = openPrUrls.length > 0 ? ` Open PRs: ${openPrUrls.join(", ")}` : "";
+  const ticket = linearTicket
+    ? ` Linear ticket: ${linearTicket.identifier}${linearTicket.url ? ` (${linearTicket.url})` : ""}`
+    : "";
+  return `:hourglass_flowing_sand: Investigation is waiting on PR review.${prList}${ticket}`;
 }
 
 export async function moveAgentRunToBlockedNoGithub(

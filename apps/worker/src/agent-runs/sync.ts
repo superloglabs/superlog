@@ -1,5 +1,6 @@
 import { type AgentRunResult, db, schema } from "@superlog/db";
 import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { TERMINAL_OUTCOME_NUDGE_MARKER, assembleAgentRunResult } from "../agent-outcome-tools.js";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import { type AgentRunOutcome, recordAgentRunCompletion } from "../ai-usage.js";
@@ -9,11 +10,8 @@ import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
 import { postIncidentThreadMessage } from "../infra/slack/incident-messages.js";
 import { type ResolvedIntegration, loadEnabledIntegrationsForOrg } from "../integrations.js";
 import { logger } from "../logger.js";
-import {
-  TERMINAL_OUTCOME_NUDGE_MARKER,
-  assembleAgentRunResult,
-} from "../agent-outcome-tools.js";
 import { completeWithIncidentResolution, completeWithoutPullRequest } from "./completion.js";
+import { scheduleLinearHandoff } from "./linear-handoff.js";
 import { tryMergeAfterAgentRun } from "./merge.js";
 import { hasRevylCreateTestIntegration, looksLikeMobileChange } from "./mobile-regression.js";
 import { createOutcomeActionExecutor } from "./outcome-actions.js";
@@ -29,6 +27,31 @@ import {
 } from "./status.js";
 
 export { hasRevylCreateTestIntegration } from "./mobile-regression.js";
+
+export function isCompleteInvestigationAllowed(
+  result: AgentRunResult,
+  capabilities: {
+    prPolicy: schema.PrPolicy;
+    githubConnected: boolean;
+    approvalPromptsEnabled: boolean;
+    approvalPromptToolsAvailable: boolean;
+  },
+): boolean {
+  if (result.completionKind !== "investigation_complete") return true;
+  return completeInvestigationAvailable(capabilities);
+}
+
+export function completeInvestigationAvailable(capabilities: {
+  prPolicy: schema.PrPolicy;
+  githubConnected: boolean;
+  approvalPromptsEnabled: boolean;
+  approvalPromptToolsAvailable: boolean;
+}): boolean {
+  const prCreation = capabilities.githubConnected && capabilities.prPolicy !== "never";
+  const approvalPrompts =
+    capabilities.approvalPromptsEnabled && capabilities.approvalPromptToolsAvailable;
+  return !prCreation && !approvalPrompts;
+}
 
 const agentRunLifecycle = createAgentRunLifecycle(db);
 
@@ -217,10 +240,16 @@ export function shouldDeferSteering(snapshot: {
 // substring-matching that line (a test pins it as the prompt's exact first
 // line). Reword it only via the exported constant, never here — live
 // sessions can carry an already-delivered nudge across a deploy.
-export function terminalOutcomeNudgePrompt(): string {
+export function terminalOutcomeNudgePrompt(
+  args: {
+    completeInvestigationAvailable?: boolean;
+  } = {},
+): string {
   return [
     TERMINAL_OUTCOME_NUDGE_MARKER,
-    "Call `report_findings` now if you have findings to record, classify each linked issue (`silence_as_noise`, `place_under_observation`, or `resolve_issue`), open any needed PR with `propose_pr`, and then end your turn by calling `resolve_incident` — or `ask_human` if a human must act or answer first.",
+    args.completeInvestigationAvailable
+      ? "Call `report_findings` now, then explicitly end your turn with `complete_investigation`. Use `resolve_incident` only if impact has ceased and every linked issue is classified, or `ask_human` if a concrete human answer is required first."
+      : "Call `report_findings` now if you have findings to record, classify each linked issue (`silence_as_noise`, `place_under_observation`, or `resolve_issue`), open any needed PR with `propose_pr`, and then end your turn by calling `resolve_incident` — or `ask_human` if a human must act or answer first.",
   ].join("\n");
 }
 
@@ -535,6 +564,24 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         return;
       }
 
+      if (
+        !isCompleteInvestigationAllowed(snapshot.result, {
+          prPolicy: ctx.prPolicy,
+          githubConnected: ctx.githubInstalls.length > 0,
+          approvalPromptsEnabled: ctx.approvalPromptsEnabled,
+          approvalPromptToolsAvailable: true,
+        })
+      ) {
+        await failAgentRun(
+          ctx,
+          "sync_failed",
+          "Investigation tried to finish while a remediation intervention was still available.",
+          { existingResult: snapshot.result },
+        );
+        await meterAgentRun("failed");
+        return;
+      }
+
       if (snapshot.result.state === "complete" && snapshot.result.incidentResolution) {
         // Terminal resolve_incident (multi-PR contract): issues were
         // classified and PRs delivered mid-run; this resolves the incident.
@@ -643,10 +690,33 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         if (snapshot.pendingOutcome?.findings) {
           await applyIncidentMetadataFromResult(ctx, parkedResult);
         }
+        const openPrUrls = openPrs.map((pr) => pr.url);
         const parked = await moveAgentRunToAwaitingEvents(
           ctx,
           parkedResult,
-          openPrs.map((pr) => pr.url),
+          openPrUrls,
+          async () => {
+            try {
+              const linearTicket = await scheduleLinearHandoff(
+                ctx,
+                parkedResult,
+                `awaiting_events:${openPrUrls.join(",")}`,
+              );
+              if (!linearTicket) return null;
+              return { identifier: linearTicket.identifier, url: linearTicket.url };
+            } catch (err) {
+              logger.warn(
+                {
+                  scope: "agent_run.awaiting_events",
+                  agent_run_id: ctx.agentRun.id,
+                  incident_id: ctx.incident.id,
+                  err: err instanceof Error ? err.message : String(err),
+                },
+                "failed to record or cross-link Linear ticket after parking; continuing",
+              );
+              return null;
+            }
+          },
         );
         // A lost park means a concurrent pass owns this turn's conclusion —
         // it also records the usage, so a duplicate here would double-meter.
@@ -695,6 +765,14 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         // landed. The delivered nudge is visible in the session's own event
         // stream, so a retry can detect it and keep the claim without
         // steering a duplicate.
+        const nudgePrompt = terminalOutcomeNudgePrompt({
+          completeInvestigationAvailable: completeInvestigationAvailable({
+            prPolicy: ctx.prPolicy,
+            githubConnected: ctx.githubInstalls.length > 0,
+            approvalPromptsEnabled: ctx.approvalPromptsEnabled,
+            approvalPromptToolsAvailable: true,
+          }),
+        });
         const nudgeAlreadyDelivered = snapshot.events.some(
           (event) =>
             event.type === "user.message" &&
@@ -703,7 +781,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         );
         if (!nudgeAlreadyDelivered) {
           try {
-            await runner.steer(sessionId, terminalOutcomeNudgePrompt());
+            await runner.steer(sessionId, nudgePrompt);
           } catch (err) {
             // Release the claim so a later tick can retry the nudge — a
             // transient steer failure must not permanently spend the one-shot.

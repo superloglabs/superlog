@@ -6,6 +6,7 @@ import {
   schema,
 } from "@superlog/db";
 import { and, desc, eq } from "drizzle-orm";
+import { type AgentRunFindings, assembleAgentRunResult } from "../agent-outcome-tools.js";
 import {
   type AgentRunContext,
   type InstalledGithubRepo,
@@ -23,7 +24,9 @@ import {
 import { logger } from "../logger.js";
 import { enqueueAgentRunCompleted } from "../webhooks.js";
 import { recordFiledLinearTicket, recordOpenedAgentPullRequest } from "./deliverable-records.js";
-import { deliverLinearTicket } from "./linear-delivery.js";
+import type { DeliveredLinearTicket } from "./linear-delivery.js";
+import { scheduleLinearHandoff } from "./linear-handoff.js";
+import { linearTicketSlackReference } from "./linear-pr-linking.js";
 import { buildPrBody, buildPrTitle } from "./pr-copy.js";
 import { summarizePrOpenFailure } from "./pr-open-failure.js";
 import { failAgentRun } from "./status.js";
@@ -52,27 +55,18 @@ function buildFollowUpPrComment(ctx: AgentRunContext, result: AgentRunResult): s
   return lines.join("\n");
 }
 
-// Files/updates the incident's Linear ticket from the run result (platform-
-// side, deterministic) and records it. Best-effort: PR delivery never fails
-// on ticket problems.
+// Files/reuses this run's Linear ticket from the result (platform-side,
+// deterministic) and records it. Best-effort: PR delivery never fails on
+// ticket problems.
 async function deliverAndRecordLinearTicket(
   ctx: AgentRunContext,
   result: AgentRunResult,
   prUrl: string,
-): Promise<void> {
+): Promise<DeliveredLinearTicket | null> {
   try {
-    const ticket = await deliverLinearTicket(ctx, result, { prUrl });
-    if (ticket) {
-      await recordFiledLinearTicket(
-        ctx,
-        {
-          id: ticket.ticketId,
-          url: ticket.url,
-          createdByAgent: ticket.created,
-        },
-        { identifier: ticket.identifier },
-      );
-    } else if (result.linearTicket) {
+    const ticket = await scheduleLinearHandoff(ctx, result, `pr:${prUrl}`);
+    if (ticket) return ticket;
+    if (result.linearTicket) {
       // Legacy in-flight run finishing on the old contract: preserve its
       // self-reported ticket link.
       await recordFiledLinearTicket(ctx, result.linearTicket);
@@ -88,12 +82,18 @@ async function deliverAndRecordLinearTicket(
       "failed to deliver/record Linear ticket",
     );
   }
+  return null;
 }
 
-async function notifyFollowUpPrUpdated(ctx: AgentRunContext, prUrl: string): Promise<void> {
+async function notifyFollowUpPrUpdated(
+  ctx: AgentRunContext,
+  prUrl: string,
+  ticket: DeliveredLinearTicket | null,
+): Promise<void> {
+  const ticketLine = ticket ? `\n${linearTicketSlackReference(ticket)}` : "";
   await postIncidentThreadMessage(
     ctx.incident.id,
-    `:arrows_counterclockwise: Follow-up investigation pushed an update to the existing PR: ${prUrl}`,
+    `:arrows_counterclockwise: Follow-up investigation pushed an update to the existing PR: ${prUrl}${ticketLine}`,
   );
 }
 
@@ -287,8 +287,8 @@ export async function completeWithPullRequest(
           "failed to enqueue agent run.completed webhook",
         ),
       );
-      await deliverAndRecordLinearTicket(ctx, result, existingPr.url);
-      await notifyFollowUpPrUpdated(ctx, existingPr.url).catch((err) =>
+      const linearTicket = await deliverAndRecordLinearTicket(ctx, result, existingPr.url);
+      await notifyFollowUpPrUpdated(ctx, existingPr.url, linearTicket).catch((err) =>
         logger.warn(
           {
             scope: "agent_run.pr_delivery",
@@ -468,7 +468,7 @@ export async function completeWithPullRequest(
       ).catch(() => {});
     }
   }
-  await deliverAndRecordLinearTicket(ctx, result, opened.prUrl);
+  const linearTicket = await deliverAndRecordLinearTicket(ctx, result, opened.prUrl);
   logger.info(
     {
       scope: "agent_run",
@@ -481,18 +481,21 @@ export async function completeWithPullRequest(
     },
     "agent run complete (pr opened)",
   );
-  await postIncidentThreadMessage(ctx.incident.id, `:bulb: Opened PR ${opened.prUrl}`).catch(
-    (err) =>
-      logger.error(
-        {
-          scope: "agent_run.pr_delivery",
-          agent_run_id: ctx.agentRun.id,
-          incident_id: ctx.incident.id,
-          pr_url: opened.prUrl,
-          err: err instanceof Error ? err.message : String(err),
-        },
-        "failed to post PR-ready Slack thread message",
-      ),
+  const ticketLine = linearTicket ? `\n${linearTicketSlackReference(linearTicket)}` : "";
+  await postIncidentThreadMessage(
+    ctx.incident.id,
+    `:bulb: Opened PR ${opened.prUrl}${ticketLine}`,
+  ).catch((err) =>
+    logger.error(
+      {
+        scope: "agent_run.pr_delivery",
+        agent_run_id: ctx.agentRun.id,
+        incident_id: ctx.incident.id,
+        pr_url: opened.prUrl,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "failed to post PR-ready Slack thread message",
+    ),
   );
   const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
   await updateIncidentMainMessage(
@@ -507,7 +510,10 @@ export async function completeWithPullRequest(
       projectName: ctx.project.name,
       service: ctx.incident.service,
       buttons: [],
-      links: [{ text: "View PR", url: opened.prUrl }],
+      links: [
+        { text: "View PR", url: opened.prUrl },
+        ...(linearTicket?.url ? [{ text: "View ticket", url: linearTicket.url }] : []),
+      ],
       incidentId: ctx.incident.id,
       showResolveButton: true,
       showMergePrButton: true,
@@ -560,6 +566,7 @@ export async function deliverProposedPullRequest(
     patchFilePath: string;
   },
   sessionId: string,
+  findings: AgentRunFindings | null,
 ): Promise<MidRunPrDeliveryResult> {
   if (ctx.prPolicy === "never") {
     return {
@@ -617,6 +624,11 @@ export async function deliverProposedPullRequest(
     result: { summary: pr.body },
     pr,
   });
+  const ticketResult = assembleAgentRunResult({
+    findings: findings ?? { summary: pr.title },
+    terminal: null,
+    actions: [],
+  });
 
   // Same branch on the same repo for this incident → push a follow-up commit
   // to the existing open PR instead of opening a duplicate.
@@ -651,9 +663,11 @@ export async function deliverProposedPullRequest(
       .update(schema.agentPullRequests)
       .set({ headSha: pushed.headSha, lastSyncedAt: now, updatedAt: now })
       .where(eq(schema.agentPullRequests.id, existingPr.id));
+    const linearTicket = await deliverAndRecordLinearTicket(ctx, ticketResult, existingPr.url);
+    const ticketLine = linearTicket ? `\n${linearTicketSlackReference(linearTicket)}` : "";
     await postIncidentThreadMessage(
       ctx.incident.id,
-      `:arrows_counterclockwise: Pushed an update to PR ${existingPr.url}`,
+      `:arrows_counterclockwise: Pushed an update to PR ${existingPr.url}${ticketLine}`,
     ).catch(() => {});
     return {
       ok: true,
@@ -726,6 +740,11 @@ export async function deliverProposedPullRequest(
     detail: { url: opened.prUrl },
   });
 
+  // The first successfully-recorded PR is the ticket creation boundary.
+  // Later PRs reuse the run-scoped ticket, then independently cross-link in
+  // both directions.
+  const linearTicket = await deliverAndRecordLinearTicket(ctx, ticketResult, opened.prUrl);
+
   if (ctx.autoMergeFixPrs !== "never") {
     try {
       const outcome = await mergeAgentPullRequest({
@@ -744,7 +763,8 @@ export async function deliverProposedPullRequest(
             ? `:hourglass_flowing_sand: Auto-merge enabled — will land once checks pass (${ctx.autoMergeMethod})`
             : null;
       if (note) {
-        await postIncidentThreadMessage(ctx.incident.id, note).catch(() => {});
+        const ticketLine = linearTicket ? `\n${linearTicketSlackReference(linearTicket)}` : "";
+        await postIncidentThreadMessage(ctx.incident.id, `${note}${ticketLine}`).catch(() => {});
       }
     } catch (err) {
       logger.warn(
@@ -760,9 +780,11 @@ export async function deliverProposedPullRequest(
     }
   }
 
-  await postIncidentThreadMessage(ctx.incident.id, `:bulb: Opened PR ${opened.prUrl}`).catch(
-    () => {},
-  );
+  const ticketLine = linearTicket ? `\n${linearTicketSlackReference(linearTicket)}` : "";
+  await postIncidentThreadMessage(
+    ctx.incident.id,
+    `:bulb: Opened PR ${opened.prUrl}${ticketLine}`,
+  ).catch(() => {});
   const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
   await updateIncidentMainMessage(
     ctx.incident.id,
@@ -777,6 +799,15 @@ export async function deliverProposedPullRequest(
       buttons: [
         { text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" },
         { text: "View PR", url: opened.prUrl, actionId: "view_pr" },
+        ...(linearTicket?.url
+          ? [
+              {
+                text: `View ${linearTicket.identifier}`,
+                url: linearTicket.url,
+                actionId: "view_linear",
+              },
+            ]
+          : []),
       ],
       incidentId: ctx.incident.id,
       showResolveButton: true,

@@ -619,6 +619,24 @@ export type IncidentAlertEpisodeView = {
   issueId: string | null;
 };
 
+// The alert whose breach opened a given issue (alert-episode issues are 1:1
+// with an episode), for the "Triggered by" link on the issue detail page.
+// Returns null for ordinary error issues, which have no episode row.
+export async function loadTriggeringAlertForIssue(
+  issueId: string,
+): Promise<{ id: string; name: string } | null> {
+  const episode = await db.query.alertEpisodes.findFirst({
+    where: eq(schema.alertEpisodes.issueId, issueId),
+    columns: { alertId: true },
+  });
+  if (!episode) return null;
+  const alert = await db.query.alerts.findFirst({
+    where: eq(schema.alerts.id, episode.alertId),
+    columns: { id: true, name: true },
+  });
+  return alert ? { id: alert.id, name: alert.name } : null;
+}
+
 // The alert episodes that triggered a given incident, for the incident detail
 // "Triggered by" back-link. Computes each episode's per-alert ordinal so the UI
 // can render "alert X · Episode #N".

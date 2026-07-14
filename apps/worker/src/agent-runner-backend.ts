@@ -120,6 +120,10 @@ export type AgentRunnerStartInput = {
   repoCandidates: AgentRunnerRepoCandidate[];
   mcpResource: string | null;
   prPolicy: PrPolicy;
+  approvalPromptsEnabled: boolean;
+  // True only when at least one currently registered integration operation
+  // is implemented as an approval prompt for this run.
+  approvalPromptToolsAvailable: boolean;
   prBaseBranch: string | null;
   githubConnected: boolean;
   telemetryInvestigationHint: string;
@@ -145,6 +149,7 @@ export type OutcomeActionCall = {
   name: string;
   input: unknown;
   hasFindings: boolean;
+  findings: import("./agent-outcome-tools.js").AgentRunFindings | null;
 };
 
 export type OutcomeActionExecution =

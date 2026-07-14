@@ -24,8 +24,9 @@ import {
 } from "../infra/slack/incident-messages.js";
 import { logger } from "../logger.js";
 import { enqueueAgentRunCompleted } from "../webhooks.js";
+import { shouldCreateLinearTicketForTerminalOutcome } from "./completion-policy.js";
 import { recordFiledLinearTicket } from "./deliverable-records.js";
-import { deliverLinearTicket } from "./linear-delivery.js";
+import { scheduleLinearHandoff } from "./linear-handoff.js";
 import { isAlertIncident, truncateSlackText } from "./result-metadata.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
@@ -288,27 +289,16 @@ export async function completeWithIncidentResolution(
     if (refreshed) ctx.incident = refreshed;
   }
 
-  // Linear ticket: file/update deterministically from the findings, linking
-  // the most recent PR when one was opened during the run.
-  const latestPr = await db.query.agentPullRequests.findFirst({
-    where: eq(schema.agentPullRequests.incidentId, ctx.incident.id),
-    orderBy: [desc(schema.agentPullRequests.createdAt)],
-    columns: { url: true },
-  });
-  const deliveredTicket = await deliverLinearTicket(ctx, result, {
-    prUrl: latestPr?.url ?? null,
-  });
-  if (deliveredTicket) {
-    await recordFiledLinearTicket(
-      ctx,
-      {
-        id: deliveredTicket.ticketId,
-        url: deliveredTicket.url,
-        createdByAgent: deliveredTicket.created,
-      },
-      { identifier: deliveredTicket.identifier },
-    );
-  }
+  // Linear ticket: file/update deterministically from the findings. The
+  // reconciliation boundary links every PR recorded for the incident and
+  // remains pending when either provider is temporarily unavailable.
+  const shouldCreateTicket = shouldCreateLinearTicketForTerminalOutcome(
+    "resolve_incident",
+    ctx.createLinearTicketOnResolve,
+  );
+  const deliveredTicket = shouldCreateTicket
+    ? await scheduleLinearHandoff(ctx, result, "resolve_incident")
+    : null;
 
   logger.info(
     {
@@ -328,6 +318,9 @@ export async function completeWithIncidentResolution(
     result.summary,
   ];
   if (evidence) lines.push(`Evidence: ${truncateSlackText(evidence, 1800)}`);
+  if (deliveredTicket?.url) {
+    lines.push(`Linear: <${deliveredTicket.url}|${deliveredTicket.identifier}>`);
+  }
   await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
   const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
   await updateIncidentMainMessage(
@@ -340,7 +333,8 @@ export async function completeWithIncidentResolution(
       tagline: truncateSlackText(result.summary),
       projectName: ctx.project.name,
       service: ctx.incident.service,
-      buttons: [{ text: "View agent run", url: incidentUrl, actionId: "view_agent_run" }],
+      buttons: [{ text: "View incident", url: incidentUrl, actionId: "view_incident" }],
+      links: deliveredTicket?.url ? [{ text: "View ticket", url: deliveredTicket.url }] : [],
       incidentId: ctx.incident.id,
     }),
   );
@@ -391,18 +385,12 @@ export async function completeWithoutPullRequest(
   // agent-proposed title). The agent no longer self-reports ticket ids —
   // except legacy in-flight runs finishing on the old contract, whose
   // self-reported ticket link is preserved below.
-  const deliveredTicket = await deliverLinearTicket(ctx, result, { prUrl: null });
-  if (deliveredTicket) {
-    await recordFiledLinearTicket(
-      ctx,
-      {
-        id: deliveredTicket.ticketId,
-        url: deliveredTicket.url,
-        createdByAgent: deliveredTicket.created,
-      },
-      { identifier: deliveredTicket.identifier },
-    );
-  } else if (result.linearTicket) {
+  const deliveredTicket = await scheduleLinearHandoff(
+    ctx,
+    result,
+    result.completionKind ?? "complete_without_pr",
+  );
+  if (!deliveredTicket && result.linearTicket) {
     await recordFiledLinearTicket(ctx, result.linearTicket);
   }
   const ticketDisplay = deliveredTicket
@@ -452,6 +440,13 @@ export async function completeWithoutPullRequest(
       result.summary,
     ];
     if (evidence) lines.push(`Evidence: ${truncateSlackText(evidence, 1800)}`);
+    if (ticket) {
+      lines.push(
+        ticket.url
+          ? `Linear: <${ticket.url}|${ticket.identifier}>`
+          : `Linear: ${ticket.identifier}`,
+      );
+    }
     await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
   } else if (resolutionReason) {
     const label = resolutionReasonLabel(resolutionReason);
@@ -461,6 +456,13 @@ export async function completeWithoutPullRequest(
       result.summary,
     ];
     if (evidence) lines.push(`Evidence: ${truncateSlackText(evidence, 1800)}`);
+    if (ticket) {
+      lines.push(
+        ticket.url
+          ? `Linear: <${ticket.url}|${ticket.identifier}>`
+          : `Linear: ${ticket.identifier}`,
+      );
+    }
     await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
   } else {
     const badge = ticket
