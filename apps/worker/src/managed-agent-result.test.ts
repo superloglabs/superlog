@@ -18,11 +18,25 @@ test("rejects when state is not in the enum", () => {
   assert.equal(r.ok, false);
 });
 
-test("rejects when summary is missing or non-string", () => {
-  const r1 = normalizeAgentResult({ state: "complete" });
-  assert.equal(r1.ok, false);
-  const r2 = normalizeAgentResult({ state: "complete", summary: 42 });
-  assert.equal(r2.ok, false);
+test("accepts result when summary is missing, synthesises fallback and records drop", () => {
+  const r = normalizeAgentResult({ state: "complete" });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.equal(typeof r.result.summary, "string");
+  assert.ok(r.result.summary.length > 0);
+  assert.ok(r.drops.includes("summary"));
+});
+
+test("accepts result when summary is non-string, synthesises fallback from proposedTitle and records drop", () => {
+  const r = normalizeAgentResult({
+    state: "complete",
+    summary: 42,
+    proposedTitle: "Alert evaluation fails due to ClickHouse drops",
+  });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.ok(r.result.summary.includes("Alert evaluation fails due to ClickHouse drops"));
+  assert.ok(r.drops.includes("summary"));
 });
 
 test("accepts minimal well-formed result", () => {
