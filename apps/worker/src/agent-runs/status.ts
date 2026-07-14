@@ -1,4 +1,5 @@
 import {
+  type AgentRunExternalCause,
   type AgentRunResult,
   db,
   enqueueAgentRunAwaitingInput,
@@ -253,11 +254,9 @@ export async function moveAgentRunToAwaitingHuman(
   );
 }
 
-// Park a run whose turn ended without a terminal call while its PRs are out
-// for review. The session stays durable; a PR comment/merge/close (or any
-// inbound human message) resumes it via the same continuation path as
-// awaiting_human. Returns false when a concurrent pass already moved the run
-// (the transition is conditional) — the caller must skip its side effects.
+// Park a run after a terminal-for-turn outcome while it waits on PR lifecycle
+// events or an external cause. The durable session resumes from inbound
+// context. Returns false when a concurrent pass already moved the run.
 export async function moveAgentRunToAwaitingEvents(
   ctx: AgentRunContext,
   result: AgentRunResult,
@@ -281,19 +280,25 @@ export async function moveAgentRunToAwaitingEvents(
   // conditional state transition. A concurrent terminal outcome must not
   // accidentally file a waiting ticket from the losing pass.
   const linearTicket = await loadLinearTicket();
+  const externalCause = result.waitReason === "external_cause" ? result.externalCause : null;
   await postIncidentThreadMessage(
     ctx.incident.id,
-    awaitingEventsSlackMessage(openPrUrls, linearTicket),
+    awaitingEventsSlackMessage(openPrUrls, linearTicket, externalCause),
   );
   const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
+  const isExternalCause = !!externalCause;
   await updateIncidentMainMessage(
     ctx.incident.id,
-    `:hourglass_flowing_sand: ${ctx.incident.title} — Waiting on PR review`,
+    isExternalCause
+      ? `:warning: ${ctx.incident.title} — Waiting on external cause`
+      : `:hourglass_flowing_sand: ${ctx.incident.title} — Waiting on PR review`,
     incidentBlocks({
-      emoji: "hourglass_flowing_sand",
-      status: "Waiting on PR review",
+      emoji: isExternalCause ? "warning" : "hourglass_flowing_sand",
+      status: isExternalCause ? "Waiting on external cause" : "Waiting on PR review",
       title: ctx.incident.title,
-      tagline: result.summary || "The investigation opened PRs and is waiting for review or merge.",
+      tagline: isExternalCause
+        ? `${externalCause.source}: ${externalCause.cause}`
+        : result.summary || "The investigation opened PRs and is waiting for review or merge.",
       projectName: ctx.project.name,
       service: ctx.incident.service,
       buttons: [
@@ -323,7 +328,11 @@ export async function moveAgentRunToAwaitingEvents(
 export function awaitingEventsSlackMessage(
   openPrUrls: string[],
   linearTicket: { identifier: string; url: string | null } | null,
+  externalCause?: AgentRunExternalCause | null,
 ): string {
+  if (externalCause) {
+    return `:warning: Investigation found an external cause in ${externalCause.source} and remains open. ${externalCause.cause} Next step: ${externalCause.recommendedNextStep}`;
+  }
   const prList = openPrUrls.length > 0 ? ` Open PRs: ${openPrUrls.join(", ")}` : "";
   const ticket = linearTicket
     ? ` Linear ticket: ${linearTicket.identifier}${linearTicket.url ? ` (${linearTicket.url})` : ""}`

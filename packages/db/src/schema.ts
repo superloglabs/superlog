@@ -266,9 +266,9 @@ export type AgentRunTriggerDetail = {
 // failed: the last turn failed; a new inbound message re-queues it.
 export type AgentChatState = "queued" | "running" | "idle" | "failed";
 
-// One issue-level verdict recorded by the agent mid-run. The issue row itself
-// is the source of truth (the status change is applied when the tool call is
-// dispatched); this is the run-result record of what was decided and why.
+// One issue-level verdict recorded by the agent. New runs supply the complete
+// set through terminal resolve_incident and commit it atomically with the
+// Incident; persisted legacy runs may contain earlier action-by-action data.
 export type AgentRunIssueClassification = {
   issueId: string;
   action: "silence" | "observe" | "resolve";
@@ -283,12 +283,22 @@ export type AgentRunIncidentResolution = {
   evidence: string;
 };
 
+export type AgentRunExternalCause = {
+  cause: string;
+  source: string;
+  evidence: string;
+  recommendedNextStep: string;
+};
+
 export type AgentRunResult = {
   state: "complete" | "awaiting_human" | "awaiting_events" | "failed";
   summary: string;
   // Explicit terminal signal for runs that finish their investigation while
   // deliberately leaving the incident open for an external ticket workflow.
   completionKind?: "investigation_complete" | null;
+  // Why an awaiting_events run is parked when it is not waiting on a PR.
+  waitReason?: "external_cause" | null;
+  externalCause?: AgentRunExternalCause | null;
   question?: string | null;
   failureReason?: AgentRunFailureReason | null;
   // Legacy single-PR record (pre multi-PR contract). New runs record opened
@@ -2025,6 +2035,7 @@ export function isValidPrBaseBranch(value: string): boolean {
   if (branch === "@" || branch.startsWith("/") || branch.endsWith("/")) return false;
   if (branch.endsWith(".") || branch.includes("..") || branch.includes("//")) return false;
   if (branch.includes("@{")) return false;
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: Git ref names reject ASCII control bytes.
   if (/[\s~^:?*[\\\]\x00-\x1f\x7f]/.test(branch)) return false;
   return branch
     .split("/")

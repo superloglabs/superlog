@@ -393,9 +393,7 @@ test("terminalOutcomeNudgePrompt names every outcome tool", () => {
   for (const name of [
     "report_findings",
     "propose_pr",
-    "silence_as_noise",
-    "place_under_observation",
-    "resolve_issue",
+    "report_external_cause",
     "resolve_incident",
     "ask_human",
   ]) {

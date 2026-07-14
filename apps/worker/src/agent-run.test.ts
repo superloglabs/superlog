@@ -523,11 +523,38 @@ test("pauseForEvents parks the run and reports it won the transition", async () 
 
   assert.equal(won, true);
   const update = calls.find((c) => c.op === "update.where");
-  assert.equal((update as { values: Record<string, unknown> } | undefined)?.values.state, "awaiting_events");
+  assert.equal(
+    (update as { values: Record<string, unknown> } | undefined)?.values.state,
+    "awaiting_events",
+  );
   const event = calls.find((c) => c.op === "insert.onConflictDoNothing");
   assert.equal(
     (event as { values: Record<string, unknown> } | undefined)?.values.kind,
     "awaiting_events",
+  );
+});
+
+test("pauseForEvents records an external-cause wait without claiming it is waiting on a PR", async () => {
+  const { db, calls } = recordingDb();
+  const lifecycle = createAgentRunLifecycle(db);
+  const result: AgentRunResult = {
+    state: "awaiting_events",
+    summary: "The provider account has no remaining credit.",
+    waitReason: "external_cause",
+    externalCause: {
+      cause: "The provider account has no remaining credit.",
+      source: "Recall.ai",
+      evidence: "Bot creation returned HTTP 402.",
+      recommendedNextStep: "Top up the account.",
+    },
+  };
+
+  await lifecycle.pauseForEvents({ id: "run-1", currentState: "running", result });
+
+  const event = calls.find((c) => c.op === "insert.onConflictDoNothing");
+  assert.equal(
+    (event as { values: Record<string, unknown> } | undefined)?.values.summary,
+    "Investigation is waiting on an external change from Recall.ai.",
   );
 });
 

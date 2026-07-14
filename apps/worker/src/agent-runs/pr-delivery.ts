@@ -13,7 +13,11 @@ import {
   listAccessibleGithubRepositories,
 } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
-import { mergeAgentPullRequest, pushPatchToExistingAgentPr } from "../github-app.js";
+import {
+  mergeAgentPullRequest,
+  pushPatchToExistingAgentPr,
+  validateAgentPatchApplicability,
+} from "../github-app.js";
 import { buildContextIncidentUrl } from "../incident-route.js";
 import { downloadAgentPatchFile } from "../infra/agent-runner/patch-files.js";
 import { openAgentRunPullRequest } from "../infra/github/pull-requests.js";
@@ -544,10 +548,10 @@ export async function completeWithPullRequest(
 }
 
 // ---------------------------------------------------------------------------
-// Mid-run PR delivery (the non-terminal propose_pr action tool)
+// Terminal-for-turn PR delivery
 // ---------------------------------------------------------------------------
 
-export type MidRunPrDeliveryResult =
+export type ProposedPullRequestDeliveryResult =
   | {
       ok: true;
       url: string;
@@ -559,8 +563,84 @@ export type MidRunPrDeliveryResult =
     }
   | { ok: false; error: string };
 
-// Apply the agent's patch and open (or update) a PR while the session is
-// still live. Unlike completeWithPullRequest this NEVER fails the run: every
+export type PreparedProposedPullRequest = { patch: string };
+
+export async function preflightProposedPullRequest(
+  ctx: AgentRunContext,
+  pr: {
+    repoFullName: string;
+    branchName: string;
+    baseBranch: string;
+    patchFilePath: string;
+  },
+  sessionId: string,
+): Promise<{ ok: true; prepared: PreparedProposedPullRequest } | { ok: false; error: string }> {
+  if (ctx.prPolicy === "never") {
+    return { ok: false, error: "This organization's policy is do-not-PR." };
+  }
+  if (ctx.githubInstalls.length === 0) {
+    return { ok: false, error: "Cannot open a PR: no GitHub installation is connected." };
+  }
+
+  let repoMeta: InstalledGithubRepo | undefined;
+  try {
+    const repos = await listAccessibleGithubRepositories(ctx);
+    repoMeta = repos.find((repo) => repo.fullName === pr.repoFullName);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Cannot validate a PR: GitHub repositories could not be listed (${err instanceof Error ? err.message : String(err)}). Try again.`,
+    };
+  }
+  if (!repoMeta) {
+    return {
+      ok: false,
+      error: `Cannot open a PR: GitHub does not grant access to ${pr.repoFullName}.`,
+    };
+  }
+
+  let patch: string;
+  try {
+    patch = (
+      await downloadAgentPatchFile({
+        sessionId,
+        patchFileId: null,
+        patchFilePath: pr.patchFilePath,
+      })
+    ).patch;
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Failed to read ${pr.patchFilePath} (${err instanceof Error ? err.message : String(err)}).`,
+    };
+  }
+
+  const existingPr = await db.query.agentPullRequests.findFirst({
+    where: and(
+      eq(schema.agentPullRequests.incidentId, ctx.incident.id),
+      eq(schema.agentPullRequests.repoFullName, pr.repoFullName),
+      eq(schema.agentPullRequests.branchName, pr.branchName),
+      eq(schema.agentPullRequests.state, "open"),
+    ),
+    orderBy: [desc(schema.agentPullRequests.createdAt)],
+  });
+  try {
+    await validateAgentPatchApplicability({
+      installationId: repoMeta.installation.installationId,
+      repositoryId: repoMeta.id,
+      repoFullName: pr.repoFullName,
+      patch,
+      baseBranch: resolvePullRequestBaseBranch(ctx, pr),
+      existingBranch: existingPr?.branchName ?? null,
+    });
+  } catch (err) {
+    return { ok: false, error: summarizePrOpenFailure(err) };
+  }
+  return { ok: true, prepared: { patch } };
+}
+
+// Apply the agent's patch and open (or update) a PR before the terminal ack.
+// Unlike completeWithPullRequest this NEVER fails the run: every
 // failure is returned as a model-readable error so the agent can fix its own
 // patch (or pick another branch) and call propose_pr again. PRs are keyed by
 // (incident, repo, branch): the same branchName pushes a follow-up commit to
@@ -577,12 +657,13 @@ export async function deliverProposedPullRequest(
   },
   sessionId: string,
   findings: AgentRunFindings | null,
-): Promise<MidRunPrDeliveryResult> {
+  prepared?: PreparedProposedPullRequest,
+): Promise<ProposedPullRequestDeliveryResult> {
   if (ctx.prPolicy === "never") {
     return {
       ok: false,
       error:
-        "This organization's policy is do-not-PR. Do not propose patches; record findings and classify/resolve instead.",
+        "This organization's policy is do-not-PR. Do not propose patches; record findings, then choose another terminal outcome appropriate to the investigation.",
     };
   }
   if (ctx.githubInstalls.length === 0) {
@@ -606,19 +687,21 @@ export async function deliverProposedPullRequest(
     };
   }
 
-  let patch: string;
-  try {
-    const downloaded = await downloadAgentPatchFile({
-      sessionId,
-      patchFileId: null,
-      patchFilePath: pr.patchFilePath,
-    });
-    patch = downloaded.patch;
-  } catch (err) {
-    return {
-      ok: false,
-      error: `Failed to read the patch file at ${pr.patchFilePath} (${err instanceof Error ? err.message : String(err)}). Write the unified diff there first, then call propose_pr again.`,
-    };
+  let patch = prepared?.patch;
+  if (!patch) {
+    try {
+      const downloaded = await downloadAgentPatchFile({
+        sessionId,
+        patchFileId: null,
+        patchFilePath: pr.patchFilePath,
+      });
+      patch = downloaded.patch;
+    } catch (err) {
+      return {
+        ok: false,
+        error: `Failed to read the patch file at ${pr.patchFilePath} (${err instanceof Error ? err.message : String(err)}). Write the unified diff there first, then call propose_pr again.`,
+      };
+    }
   }
 
   const commitAuthor =

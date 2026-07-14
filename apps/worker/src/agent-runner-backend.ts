@@ -171,10 +171,9 @@ export type AgentRunnerSnapshot = {
     detail: Record<string, unknown> | null;
   }>;
   result: AgentRunResult | null;
-  // The current turn's accumulated outcome state even when no terminal tool
-  // has been called: merged findings plus successfully executed mid-run
-  // actions. sync.ts uses it to assemble the parked result when a turn
-  // legitimately ends without a terminal call (open PRs awaiting review).
+  // Compatibility state for durable turns created before propose_pr became
+  // terminal: merged findings plus their retained actions. sync.ts uses it to
+  // assemble the parked result after one of those turns delivers a PR.
   // Optional so runners without the outcome toolset are unaffected.
   pendingOutcome?: {
     findings: AgentRunFindings | null;
@@ -247,10 +246,9 @@ export type AgentRunnerBackend = {
     orgId: string;
     projectId: string;
     incidentId: string;
-    // Executes the agent's non-terminal outcome-action tools (propose_pr,
-    // issue classification) and guards resolve_incident. When absent (e.g. a
-    // caller without run context), the backend error-acks those calls so the
-    // session never deadlocks in requires_action.
+    // Delivers propose_pr and preflights resolve_incident before their terminal
+    // success acks. When absent (e.g. a caller without run context), the
+    // backend error-acks those calls so the session never deadlocks.
     executeOutcomeAction?: (call: OutcomeActionCall) => Promise<OutcomeActionExecution>;
   }): Promise<number>;
   // Serve a chat session's pending tool calls (memory tools + the reply

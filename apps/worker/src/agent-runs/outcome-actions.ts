@@ -1,39 +1,122 @@
-// Server-side execution of the agent's non-terminal outcome action tools.
+// Server-side execution of terminal outcomes that need delivery or database
+// validation before their success ack can end the turn.
 //
 // The runner backend's dispatch loop (the same one that serves memory and
-// integration tools) hands each pending action call to the executor built
-// here; the executor validates it, applies the effect — open/update a PR,
-// classify one linked issue — and returns a model-readable payload that the
+// integration tools) hands each pending call to the executor built here; the
+// executor opens/updates a batch of PRs or applies the complete atomic
+// resolution, then returns a model-readable payload that the
 // dispatch loop acks back into the live session. Failures are acks, not run
 // failures: the agent reads the error (e.g. a patch that didn't apply) and
 // corrects itself within the same session.
-//
-// `resolve_incident` is guarded here but APPLIED by the completion path: the
-// guard (every linked issue classified) needs a DB read at ack time so the
-// rejection reaches the model as a tool error; once the ack is out, the
-// collect pass captures the call as the run's terminal outcome and sync's
-// completion path performs the actual resolve.
 
-import { classifyIncidentIssue, db, listUnclassifiedIncidentIssues } from "@superlog/db";
+import { createIncidentLifecycle, db, validateIncidentIssueOutcomes } from "@superlog/db";
 import {
   type ProposePrPayload,
-  escalationTriggerFromObservation,
-  isActionOutcomeToolName,
+  type PullRequestProposal,
+  type ResolveIncidentPayload,
+  isDispatchedOutcomeToolName,
   validateOutcomeToolInput,
 } from "../agent-outcome-tools.js";
 import type { AgentRunContext } from "../agent-run-context.js";
 import type { OutcomeActionCall, OutcomeActionExecution } from "../agent-runner-backend.js";
 import { loadEnabledIntegrationsForOrg } from "../integrations.js";
 import { logger } from "../logger.js";
+import { AGENT_RESOLVED_REASON_CODE } from "./completion.js";
 import { hasRevylCreateTestIntegration, looksLikeMobileChange } from "./mobile-regression.js";
-import { deliverProposedPullRequest } from "./pr-delivery.js";
+import {
+  type ProposedPullRequestDeliveryResult,
+  deliverProposedPullRequest,
+  preflightProposedPullRequest,
+} from "./pr-delivery.js";
+
+const incidentLifecycle = createIncidentLifecycle(db);
+
+export type ProposedPullRequestBatchEntry = {
+  repoFullName: string;
+  branchName: string;
+  status: "delivered" | "validation_failed" | "delivery_failed" | "not_delivered";
+  error?: string;
+  prUrl?: string;
+  prNumber?: number;
+  updatedExisting?: boolean;
+};
+
+export type ProposedPullRequestBatchResult = {
+  ok: boolean;
+  pullRequests: ProposedPullRequestBatchEntry[];
+};
+
+export async function executeProposedPullRequestBatch<Prepared>(
+  proposals: PullRequestProposal[],
+  deps: {
+    preflight(
+      proposal: PullRequestProposal,
+    ): Promise<{ ok: true; prepared: Prepared } | { ok: false; error: string }>;
+    deliver(
+      proposal: PullRequestProposal,
+      prepared: Prepared,
+    ): Promise<ProposedPullRequestDeliveryResult>;
+  },
+): Promise<ProposedPullRequestBatchResult> {
+  const preflights = await Promise.all(proposals.map((proposal) => deps.preflight(proposal)));
+  if (preflights.some((preflight) => !preflight.ok)) {
+    return {
+      ok: false,
+      pullRequests: proposals.map((proposal, index) => {
+        const preflight = preflights[index];
+        return preflight && !preflight.ok
+          ? {
+              repoFullName: proposal.repoFullName,
+              branchName: proposal.branchName,
+              status: "validation_failed" as const,
+              error: preflight.error,
+            }
+          : {
+              repoFullName: proposal.repoFullName,
+              branchName: proposal.branchName,
+              status: "not_delivered" as const,
+              error: "The batch was not delivered because another patch failed validation.",
+            };
+      }),
+    };
+  }
+
+  const deliveries: ProposedPullRequestDeliveryResult[] = [];
+  for (const [index, proposal] of proposals.entries()) {
+    const preflight = preflights[index];
+    if (!preflight?.ok) throw new Error("validated preflight unexpectedly missing");
+    deliveries.push(await deps.deliver(proposal, preflight.prepared));
+  }
+  return {
+    ok: deliveries.every((delivery) => delivery.ok),
+    pullRequests: proposals.map((proposal, index) => {
+      const delivery = deliveries[index];
+      if (!delivery || !delivery.ok) {
+        return {
+          repoFullName: proposal.repoFullName,
+          branchName: proposal.branchName,
+          status: "delivery_failed" as const,
+          error: delivery?.error ?? "PR delivery returned no result.",
+        };
+      }
+      return {
+        repoFullName: proposal.repoFullName,
+        branchName: delivery.branchName,
+        status: "delivered" as const,
+        prUrl: delivery.url,
+        prNumber: delivery.prNumber,
+        updatedExisting: delivery.updatedExisting,
+      };
+    }),
+  };
+}
 
 // Orgs with the Revyl integration must attach a mobile regression-test
 // decision to mobile-looking PRs. Enforced at dispatch time so the agent is
 // told immediately, instead of the old post-hoc completion-repair steer.
 async function missingMobileTestDecision(
   ctx: AgentRunContext,
-  payload: ProposePrPayload,
+  payload: PullRequestProposal,
 ): Promise<boolean> {
   if (payload.mobileTestStatus) return false;
   if (
@@ -61,7 +144,7 @@ export function createOutcomeActionExecutor(
   sessionId: string,
 ): (call: OutcomeActionCall) => Promise<OutcomeActionExecution> {
   return async (call) => {
-    if (!isActionOutcomeToolName(call.name) && call.name !== "resolve_incident") {
+    if (!isDispatchedOutcomeToolName(call.name)) {
       return { handled: false };
     }
 
@@ -98,99 +181,103 @@ async function executeValidatedCall(
   switch (validated.tool) {
     case "propose_pr": {
       const payload = validated.payload as ProposePrPayload;
-      if (await missingMobileTestDecision(ctx, payload)) {
+      for (const proposal of payload.pullRequests) {
+        if (await missingMobileTestDecision(ctx, proposal)) {
+          return {
+            handled: true,
+            ok: false,
+            payload: {
+              ok: false,
+              errors: [
+                `The patch for ${proposal.repoFullName} looks like a mobile change and the Revyl integration is enabled, so that pullRequests entry requires a mobile regression-test decision. Create the test and use mobileTestStatus="created" with mobileTestId, or use "skipped" / "not_applicable" with a concrete mobileTestReason.`,
+              ],
+            },
+          };
+        }
+      }
+
+      const batch = await executeProposedPullRequestBatch(payload.pullRequests, {
+        preflight: (proposal) => preflightProposedPullRequest(ctx, proposal, sessionId),
+        deliver: (proposal, prepared) =>
+          deliverProposedPullRequest(ctx, proposal, sessionId, findings, prepared),
+      });
+      if (!batch.ok) {
         return {
           handled: true,
           ok: false,
           payload: {
             ok: false,
-            errors: [
-              'This looks like a mobile change and the Revyl integration is enabled, so propose_pr requires a mobile regression-test decision. If the fix can be covered by a reliable mobile user flow, author the Revyl YAML, call `revyl_validate_yaml`, then `revyl_create_test_from_yaml`, and call `propose_pr` again with `mobileTestStatus="created"` plus the returned test id as `mobileTestId`. Otherwise call it again with `mobileTestStatus="skipped"` (or "not_applicable") and a concrete `mobileTestReason`.',
-            ],
+            pullRequests: batch.pullRequests,
+            errors: ["One or more PRs failed. Retry only the failed entries."],
           },
         };
       }
-      const delivery = await deliverProposedPullRequest(ctx, payload, sessionId, findings);
-      if (!delivery.ok) {
-        return { handled: true, ok: false, payload: { ok: false, errors: [delivery.error] } };
-      }
       return {
         handled: true,
         ok: true,
         payload: {
           ok: true,
-          prUrl: delivery.url,
-          prNumber: delivery.prNumber,
-          branchName: delivery.branchName,
-          updatedExisting: delivery.updatedExisting,
-        },
-      };
-    }
-
-    case "silence_as_noise":
-    case "place_under_observation":
-    case "resolve_issue": {
-      const payload = validated.payload as {
-        issueId: string;
-        reason: string;
-        evidence: string;
-        escalateOn?: "events_per_minute" | "additional_events";
-        threshold?: number;
-      };
-      const action =
-        validated.tool === "silence_as_noise"
-          ? ({ kind: "silence" } as const)
-          : validated.tool === "place_under_observation"
-            ? ({
-                kind: "observe",
-                trigger: escalationTriggerFromObservation({
-                  escalateOn: payload.escalateOn as "events_per_minute" | "additional_events",
-                  threshold: payload.threshold as number,
-                }),
-              } as const)
-            : ({ kind: "resolve" } as const);
-      const result = await classifyIncidentIssue(db, {
-        incidentId: ctx.incident.id,
-        issueId: payload.issueId,
-        agentRunId: ctx.agentRun.id,
-        action,
-        reason: payload.reason,
-        evidence: payload.evidence,
-      });
-      if (!result.ok) {
-        return { handled: true, ok: false, payload: { ok: false, errors: [result.message] } };
-      }
-      return {
-        handled: true,
-        ok: true,
-        payload: {
-          ok: true,
-          issueId: payload.issueId,
-          status: result.status,
-          alreadyClassified: result.alreadyClassified,
+          final: true,
+          pullRequests: batch.pullRequests,
         },
       };
     }
 
     case "resolve_incident": {
-      const unclassified = await listUnclassifiedIncidentIssues(db, ctx.incident.id);
-      if (unclassified.length > 0) {
+      const payload = validated.payload as ResolveIncidentPayload;
+      const issueOutcomes = payload.issueOutcomes.map((outcome) => ({
+        issueId: outcome.issueId,
+        action:
+          outcome.status === "silenced"
+            ? ("silence" as const)
+            : outcome.status === "under_observation"
+              ? ("observe" as const)
+              : ("resolve" as const),
+        reason: outcome.reason,
+        evidence: outcome.evidence,
+        ...(outcome.status === "under_observation"
+          ? {
+              trigger:
+                outcome.escalateOn === "events_per_minute"
+                  ? { kind: "rate" as const, perMinute: outcome.threshold as number }
+                  : { kind: "count" as const, count: outcome.threshold as number },
+            }
+          : {}),
+      }));
+      const issueValidation = await validateIncidentIssueOutcomes(
+        db,
+        ctx.incident.id,
+        issueOutcomes,
+      );
+      if (!issueValidation.ok) {
         return {
           handled: true,
           ok: false,
           payload: {
             ok: false,
-            errors: [
-              `Cannot resolve the incident yet: ${unclassified.length} linked issue(s) are still open and must be classified first (silence_as_noise / place_under_observation / resolve_issue): ${unclassified
-                .map((issue) => `${issue.id} ("${issue.title}")`)
-                .join(", ")}.`,
-            ],
+            errors: issueValidation.errors,
           },
         };
       }
-      // Guard passed — ack final; the collect pass captures this call as
-      // the terminal outcome and the completion path applies the resolve.
-      return { handled: true, ok: true, payload: { ok: true, final: true } };
+      const resolution = await incidentLifecycle.resolve({
+        incidentId: ctx.incident.id,
+        kind: "agent_classification",
+        reasonCode: AGENT_RESOLVED_REASON_CODE,
+        reasonText: payload.reason,
+        agentRunId: ctx.agentRun.id,
+        eventSummary: "Incident resolved by the investigating agent.",
+        eventDetail: { reason: payload.reason, evidence: payload.evidence },
+        eventDedupeKey: `incident_resolved:agent_run:${ctx.agentRun.id}:resolve_incident`,
+        issueOutcomes,
+      });
+      // Success is final even when another concurrent path already closed the
+      // Incident. The requested atomic mutation either committed in full or
+      // the lifecycle threw and this call is error-acked.
+      return {
+        handled: true,
+        ok: true,
+        payload: { ok: true, final: true, resolved: resolution.resolved },
+      };
     }
 
     default:

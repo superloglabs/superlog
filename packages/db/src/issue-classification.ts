@@ -1,9 +1,7 @@
-// Per-issue classification applied mid-run by the investigation agent's
-// action tools (silence_as_noise / place_under_observation / resolve_issue).
-// Unlike the incident-resolution cascade in resolve-incident.ts — which
-// disposes of every linked issue at once when an incident closes — this
-// classifies ONE issue while the incident stays open, so the agent can work
-// through a grouped incident issue by issue and only then resolve it.
+// Domain rules for Issue outcomes attached to an Incident. New investigations
+// validate a complete set and commit it atomically through resolve_incident.
+// The single-Issue classifier below remains for durable legacy runs that were
+// already in flight under the retired action-by-action contract.
 
 import { desc, eq, inArray } from "drizzle-orm";
 import type { DB } from "./client.js";
@@ -13,6 +11,58 @@ import {
   buildIssueSilencePatch,
 } from "./issue-state.js";
 import * as schema from "./schema.js";
+
+export type CompleteIncidentIssueOutcomesValidation =
+  | { ok: true }
+  | { ok: false; errors: string[] };
+
+// Domain validation for the terminal resolve contract. It deliberately takes
+// plain issue data so both the dispatch preflight and the transactional
+// lifecycle operation use the same rules.
+export function validateCompleteIncidentIssueOutcomes(
+  issues: Array<Pick<schema.Issue, "id" | "title" | "kind">>,
+  outcomes: schema.AgentRunIssueClassification[],
+): CompleteIncidentIssueOutcomesValidation {
+  const errors: string[] = [];
+  const issueById = new Map(issues.map((issue) => [issue.id, issue]));
+  const seen = new Set<string>();
+
+  for (const outcome of outcomes) {
+    if (seen.has(outcome.issueId)) {
+      errors.push(`Duplicate outcome for Issue ${outcome.issueId}.`);
+      continue;
+    }
+    seen.add(outcome.issueId);
+    const issue = issueById.get(outcome.issueId);
+    if (!issue) {
+      errors.push(`Issue ${outcome.issueId} is not currently linked to this Incident.`);
+      continue;
+    }
+    if (issue.kind === "alert" && outcome.action !== "resolve") {
+      errors.push(
+        `Issue ${outcome.issueId} ("${issue.title}") is an alert episode and can only be resolved.`,
+      );
+    }
+    if (outcome.action === "observe" && !outcome.trigger) {
+      errors.push(
+        `Issue ${outcome.issueId} needs an escalation trigger when placed under observation.`,
+      );
+    }
+    if (outcome.action !== "observe" && outcome.trigger != null) {
+      errors.push(
+        `Issue ${outcome.issueId} has an escalation trigger, but triggers are only valid under observation.`,
+      );
+    }
+  }
+
+  for (const issue of issues) {
+    if (!seen.has(issue.id)) {
+      errors.push(`Missing outcome for Issue ${issue.id} ("${issue.title}").`);
+    }
+  }
+
+  return errors.length > 0 ? { ok: false, errors } : { ok: true };
+}
 
 export type IssueClassificationAction =
   | { kind: "silence" }
@@ -86,7 +136,7 @@ export async function classifyIncidentIssue(
       return {
         ok: false as const,
         error: "alert_issue_not_suppressible" as const,
-        message: `Issue ${opts.issueId} is an alert episode — it can only be resolved (resolve_issue), not silenced or observed.`,
+        message: `Issue ${opts.issueId} is an alert episode — use status="resolved" for it in resolve_incident; it cannot be silenced or observed.`,
       };
     }
 

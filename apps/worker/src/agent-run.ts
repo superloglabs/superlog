@@ -124,11 +124,11 @@ export function createAgentRunLifecycle(db: DB) {
     },
 
     /**
-     * `running → awaiting_events`: the turn ended without a terminal outcome
-     * call while the run has PRs out for review. The durable session is kept;
-     * PR events (comment, merge, close) and human messages resume it via the
-     * same continuation path as awaiting_human. Stores the partial result
-     * (findings + actions so far) and emits `awaiting_events`.
+     * `running → awaiting_events`: the turn ended on a PR or external-cause
+     * outcome. The durable session is kept; PR events and human/context
+     * updates resume it through the same continuation path as awaiting_human.
+     * Durable sessions from the previous contract may also park here after a
+     * delivered PR without a terminal call.
      *
      * Two sync passes can both observe the session idle, so the state check
      * is folded into the UPDATE's WHERE: only the winner parks the run and
@@ -146,10 +146,14 @@ export function createAgentRunLifecycle(db: DB) {
         result: opts.result,
       });
       if (!won) return false;
+      const externalSource =
+        opts.result.waitReason === "external_cause" ? opts.result.externalCause?.source : null;
       await repository.insertEvent({
         agentRunId: opts.id,
         kind: "awaiting_events",
-        summary: "Investigation is waiting on PR review/merge events.",
+        summary: externalSource
+          ? `Investigation is waiting on an external change from ${externalSource}.`
+          : "Investigation is waiting on PR review/merge events.",
         dedupeKey: `awaiting_events:${opts.id}:${Date.now()}`,
         processed: true,
       });
@@ -426,9 +430,9 @@ export function createAgentRunLifecycle(db: DB) {
         summary: opts.summary,
         failureReason: opts.reason,
         pr: existing?.pr ?? null,
-        // A failing parked run may already have delivered PRs and classified
-        // issues mid-run; those records must survive the failure so the
-        // incident still shows them.
+        // A failing parked run may already have delivered PRs, or a durable
+        // legacy run may have classified Issues action by action. Preserve
+        // those records so the Incident still shows them.
         prs: existing?.prs ?? null,
         issueClassifications: existing?.issueClassifications ?? null,
         linearTicket: existing?.linearTicket ?? null,

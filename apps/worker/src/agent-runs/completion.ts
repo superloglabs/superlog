@@ -229,11 +229,10 @@ async function resolveIncidentFromAgentRunConclusion(
 // resolve_incident call. The human-readable why lives in reasonText.
 export const AGENT_RESOLVED_REASON_CODE = "agent_resolved";
 
-// Terminal path for the multi-PR contract: the agent classified every linked
-// issue mid-run (silence/observe/resolve — already applied to the issue rows)
-// and called resolve_incident. This resolves the incident WITHOUT cascading an
-// issue disposition (issueOutcome none), records metadata, and closes any PRs
-// the agent left open (it resolved without them, so they're abandoned).
+// Terminal resolve completion: dispatch has already applied every Issue
+// outcome and the Incident resolution in one transaction. This records the
+// run metadata and closes any PRs the agent left open (it resolved without
+// them, so they're abandoned).
 export async function completeWithIncidentResolution(
   ctx: AgentRunContext,
   result: AgentRunResult,
@@ -271,25 +270,15 @@ export async function completeWithIncidentResolution(
     ),
   );
 
-  const { resolved } = await incidentLifecycle.resolve({
-    incidentId: ctx.incident.id,
-    kind: "agent_classification",
-    reasonCode: AGENT_RESOLVED_REASON_CODE,
-    reasonText: resolution.reason,
-    agentRunId: ctx.agentRun.id,
-    eventSummary: "Incident resolved by the investigating agent.",
-    eventDetail: { reason: resolution.reason, evidence: resolution.evidence },
-    eventDedupeKey: `incident_resolved:agent_run:${ctx.agentRun.id}:resolve_incident`,
-    // Issues were classified one by one during the run; nothing to cascade.
-    issueOutcome: { kind: "none" },
+  // resolve_incident commits its Issue classifications + Incident resolution
+  // before the runner receives the final ack. Completion only persists the
+  // run result and reconciles dependent deliverables.
+  await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
+  const refreshed = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.id, ctx.incident.id),
   });
-  if (resolved) {
-    await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
-    const refreshed = await db.query.incidents.findFirst({
-      where: eq(schema.incidents.id, ctx.incident.id),
-    });
-    if (refreshed) ctx.incident = refreshed;
-  }
+  if (refreshed) ctx.incident = refreshed;
+  const resolved = ctx.incident.status === "resolved";
 
   // Linear ticket: file/update deterministically from the findings. The
   // reconciliation boundary links every PR recorded for the incident and

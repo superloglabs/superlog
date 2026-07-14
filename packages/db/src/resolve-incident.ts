@@ -7,6 +7,7 @@ import {
   buildAgentRunIncidentPatch,
   buildManualReopenPatch,
 } from "./incident-state.js";
+import { validateCompleteIncidentIssueOutcomes } from "./issue-classification.js";
 import {
   buildIssueObservePatch,
   buildIssueReopenPatch,
@@ -98,6 +99,9 @@ export type ResolveIncidentInput = {
   // Disposition applied to the incident's current issues. Defaults to
   // { kind: "resolve" }.
   issueOutcome?: ResolveIssueOutcome;
+  // Agent terminal contract: exactly one independently chosen disposition
+  // for every current issue. Mutually exclusive with issueOutcome.
+  issueOutcomes?: schema.AgentRunIssueClassification[];
 };
 
 export type ResolveIncidentResult = {
@@ -113,6 +117,18 @@ export type ApplyAgentRunResultOutcome = {
   updated: boolean;
   noiseResolved: boolean;
 };
+
+export async function validateIncidentIssueOutcomes(
+  database: DB,
+  incidentId: string,
+  outcomes: schema.AgentRunIssueClassification[],
+): Promise<ReturnType<typeof validateCompleteIncidentIssueOutcomes>> {
+  const repository = createIncidentRepository(database);
+  const issues = await repository.transaction((tx) =>
+    repository.listCurrentIssuesForIncidentInTx(tx, incidentId),
+  );
+  return validateCompleteIncidentIssueOutcomes(issues, outcomes);
+}
 
 export async function mergeIncidentsInTx(
   tx: Tx,
@@ -403,7 +419,20 @@ async function resolveIncidentInTx(
   input: ResolveIncidentInput,
   repository = createIncidentRepository(db),
 ): Promise<ResolveIncidentResult> {
+  if (input.issueOutcome && input.issueOutcomes) {
+    throw new Error("issueOutcome and issueOutcomes are mutually exclusive");
+  }
   const resolvedAt = input.resolvedAt ?? new Date();
+  // Validate the entire set before flipping either the Incident or an Issue.
+  // The surrounding transaction remains the final safety net if any later
+  // write fails.
+  const issues = await repository.listCurrentIssuesForIncidentInTx(tx, input.incidentId);
+  if (input.issueOutcomes) {
+    const validation = validateCompleteIncidentIssueOutcomes(issues, input.issueOutcomes);
+    if (!validation.ok) {
+      throw new Error(`Invalid issue outcomes: ${validation.errors.join(" ")}`);
+    }
+  }
   const didResolve = await repository.resolveOpenIncidentInTx(tx, {
     incidentId: input.incidentId,
     resolvedAt,
@@ -421,15 +450,25 @@ async function resolveIncidentInTx(
   // incident belongs to that investigation.
   const outcome: ResolveIssueOutcome = input.issueOutcome ?? { kind: "resolve" };
   let resolvedIssueCount = 0;
-  if (outcome.kind !== "none") {
-    const issues = await repository.listCurrentIssuesForIncidentInTx(tx, input.incidentId);
+  if (input.issueOutcomes || outcome.kind !== "none") {
     resolvedIssueCount = issues.length;
+    const explicitByIssue = new Map(
+      (input.issueOutcomes ?? []).map((issueOutcome) => [issueOutcome.issueId, issueOutcome]),
+    );
     for (const issue of issues) {
       // Alert-episode issues are only ever open or resolved (no silenced /
       // under-observation: a noisy alert is tuned or disabled, not silenced
       // per episode), so a silence/observe cascade resolves them plainly.
-      const issueOutcome: ResolveIssueOutcome =
-        issue.kind === "alert" ? { kind: "resolve" } : outcome;
+      const explicit = explicitByIssue.get(issue.id);
+      const issueOutcome: ResolveIssueOutcome = explicit
+        ? explicit.action === "silence"
+          ? { kind: "silence" }
+          : explicit.action === "observe"
+            ? { kind: "observe", trigger: explicit.trigger as schema.IssueEscalationTrigger }
+            : { kind: "resolve" }
+        : issue.kind === "alert"
+          ? { kind: "resolve" }
+          : outcome;
       const patch =
         issueOutcome.kind === "silence"
           ? buildIssueSilencePatch(resolvedAt)
@@ -460,6 +499,7 @@ async function resolveIncidentInTx(
         detail: {
           issueId: issue.id,
           issueTitle: issue.title,
+          ...(explicit ? { reason: explicit.reason, evidence: explicit.evidence } : {}),
           ...(issueOutcome.kind === "observe"
             ? { trigger: issueOutcome.trigger, baselineEventCount: issue.eventCount }
             : {}),

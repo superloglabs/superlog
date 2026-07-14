@@ -248,8 +248,8 @@ export function terminalOutcomeNudgePrompt(
   return [
     TERMINAL_OUTCOME_NUDGE_MARKER,
     args.completeInvestigationAvailable
-      ? "Call `report_findings` now, then explicitly end your turn with `complete_investigation`. Use `resolve_incident` only if impact has ceased and every linked issue is classified, or `ask_human` if a concrete human answer is required first."
-      : "Call `report_findings` now if you have findings to record, classify each linked issue (`silence_as_noise`, `place_under_observation`, or `resolve_issue`), open any needed PR with `propose_pr`, and then end your turn by calling `resolve_incident` — or `ask_human` if a human must act or answer first.",
+      ? "Call `report_findings` now, then explicitly end your turn with `complete_investigation`, `report_external_cause`, `resolve_incident` with all Issue outcomes, or `ask_human`."
+      : "Call `report_findings` now if you have findings to record, then end the turn with exactly one terminal tool: batched `propose_pr`, `resolve_incident` with all Issue outcomes, `report_external_cause`, or `ask_human`.",
   ].join("\n");
 }
 
@@ -521,7 +521,10 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       // transition commits — a transient DB failure leaves the agentRun
       // in its current state, the next tick re-enters this block with the
       // same Anthropic snapshot, and we'd double-count cumulative counters.
-      const meterAgentRun = async (outcome: AgentRunOutcome): Promise<void> => {
+      const meterAgentRun = async (
+        outcome: AgentRunOutcome,
+        hasPr = outcome === "complete_with_pr",
+      ): Promise<void> => {
         await recordAgentRunCompletion({
           orgId: ctx.project.orgId,
           projectId: ctx.project.id,
@@ -531,7 +534,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           usage: snapshot.modelUsage,
           activeSeconds: snapshot.activeSeconds,
           outcome,
-          hasPr: outcome === "complete_with_pr",
+          hasPr,
         });
         // Consume one investigation credit per COMPLETED run (the billable
         // unit). Failed / awaiting_human runs don't burn a credit. Fail-open:
@@ -564,6 +567,49 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         return;
       }
 
+      if (snapshot.result.state === "awaiting_events") {
+        const openPrs = await db.query.agentPullRequests.findMany({
+          where: and(
+            eq(schema.agentPullRequests.incidentId, ctx.incident.id),
+            eq(schema.agentPullRequests.state, "open"),
+          ),
+          columns: { url: true },
+        });
+        const isExternalCause = snapshot.result.waitReason === "external_cause";
+        if (!isExternalCause && openPrs.length === 0) {
+          await failAgentRun(
+            ctx,
+            "sync_failed",
+            "A PR outcome finished without a recorded open PR to wait on.",
+            { existingResult: snapshot.result },
+          );
+          await meterAgentRun("failed");
+          return;
+        }
+
+        await applyIncidentMetadataFromResult(ctx, snapshot.result);
+        const openPrUrls = openPrs.map((pr) => pr.url);
+        const parked = await moveAgentRunToAwaitingEvents(
+          ctx,
+          snapshot.result,
+          openPrUrls,
+          openPrUrls.length === 0
+            ? undefined
+            : async () => {
+                const linearTicket = await scheduleLinearHandoff(
+                  ctx,
+                  snapshot.result as AgentRunResult,
+                  `awaiting_events:${openPrUrls.join(",")}`,
+                );
+                return linearTicket
+                  ? { identifier: linearTicket.identifier, url: linearTicket.url }
+                  : null;
+              },
+        );
+        if (parked) await meterAgentRun("awaiting_events", openPrUrls.length > 0);
+        return;
+      }
+
       if (
         !isCompleteInvestigationAllowed(snapshot.result, {
           prPolicy: ctx.prPolicy,
@@ -583,8 +629,9 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       }
 
       if (snapshot.result.state === "complete" && snapshot.result.incidentResolution) {
-        // Terminal resolve_incident (multi-PR contract): issues were
-        // classified and PRs delivered mid-run; this resolves the incident.
+        // The successful terminal ack means resolve_incident already committed
+        // every Issue outcome and the Incident resolution atomically. This
+        // path persists the run result and reconciles dependent deliverables.
         const hasPr = !!(await db.query.agentPullRequests.findFirst({
           where: eq(schema.agentPullRequests.incidentId, ctx.incident.id),
           columns: { id: true },
@@ -666,9 +713,9 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       return;
     }
 
-    // Idle with no terminal call but with PRs out for review: a legitimate
-    // end state in the multi-PR contract. Park the run — the durable session
-    // is resumed by PR comment/merge/close webhooks (or any human message).
+    // Compatibility path for a durable session created before propose_pr
+    // became terminal: park its already-delivered PR while it waits for a PR
+    // event or human message.
     if (snapshot.status === "idle" && !snapshot.result) {
       const openPrs = await db.query.agentPullRequests.findMany({
         where: and(

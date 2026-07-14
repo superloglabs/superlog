@@ -20,6 +20,18 @@ test("awaiting PR review Slack copy includes PRs and the Linear ticket", () => {
   );
 });
 
+test("external-cause waiting copy names the source and next step without claiming resolution", () => {
+  assert.equal(
+    awaitingEventsSlackMessage([], null, {
+      cause: "The provider account has no remaining credit.",
+      source: "Recall.ai",
+      evidence: "Bot creation returned HTTP 402 insufficient credit.",
+      recommendedNextStep: "Top up the account before retrying bot creation.",
+    }),
+    ":warning: Investigation found an external cause in Recall.ai and remains open. The provider account has no remaining credit. Next step: Top up the account before retrying bot creation.",
+  );
+});
+
 test("isTransientError handles cyclic cause chains", () => {
   const err = { code: "NOPE" } as { code: string; cause?: unknown };
   err.cause = err;

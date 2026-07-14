@@ -679,6 +679,56 @@ async function pushBranchWithCollisionFallback(opts: {
   }
 }
 
+// Read-only delivery preflight for a batched propose_pr call. It clones the
+// exact branch that delivery would target, applies the patch with the same
+// three-way helper, and verifies the result is non-empty. No commit, push, or
+// GitHub mutation occurs, so every entry in a batch can pass this gate before
+// the first PR is changed.
+export async function validateAgentPatchApplicability(opts: {
+  installationId: number;
+  repositoryId?: number;
+  repoFullName: string;
+  patch: string;
+  baseBranch?: string | null;
+  existingBranch?: string | null;
+}): Promise<void> {
+  const repo = await getGithubRepoInfo(opts.installationId, opts.repoFullName, opts.repositoryId);
+  const workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-pr-preflight-"));
+  const token = await createGithubWriteToken(opts.installationId, opts.repositoryId);
+  const gitAuthEnv = githubGitAuthEnv(token);
+  const repoDir = path.join(workdir, "repo");
+  try {
+    if (opts.existingBranch) {
+      await ensureGitOk(
+        [
+          "clone",
+          "--filter=blob:none",
+          "--branch",
+          opts.existingBranch,
+          `https://github.com/${opts.repoFullName}.git`,
+          repoDir,
+        ],
+        { env: gitAuthEnv, suppressOutputOnError: true },
+      );
+    } else {
+      await cloneRepositoryAtBaseBranch({
+        repoFullName: opts.repoFullName,
+        repoDir,
+        preferredBaseBranch: opts.baseBranch?.trim() || repo.default_branch,
+        defaultBranch: repo.default_branch,
+        env: gitAuthEnv,
+      });
+    }
+    const patchPath = path.join(workdir, "superlog.patch");
+    await writeFile(patchPath, normalizeAgentPatch(opts.patch), "utf8");
+    await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv });
+    const status = await ensureGitOk(["status", "--porcelain"], { cwd: repoDir });
+    if (!status.stdout.trim()) throw new Error("patch produced no working tree changes");
+  } finally {
+    await rm(workdir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 export async function applyPatchAndOpenPr(opts: {
   installationId: number;
   repositoryId?: number;

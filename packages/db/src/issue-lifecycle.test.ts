@@ -192,6 +192,111 @@ test("resolve with observe outcome stores the trigger and baseline", async () =>
   }
 });
 
+test("agent resolve applies distinct issue outcomes and closes the incident atomically", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { issue: logIssue, incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-atomic-log",
+    });
+    const alertIssue = one(
+      await db
+        .insert(schema.issues)
+        .values({
+          projectId: project.id,
+          fingerprint: "fp-atomic-alert",
+          kind: "log",
+          exceptionType: "AlertBreach",
+          title: "checkout latency alert",
+          firstSeen: new Date(),
+          lastSeen: new Date(),
+          eventCount: 1,
+        })
+        .returning(),
+    );
+    await db
+      .update(schema.issues)
+      .set({ kind: "alert" })
+      .where(eq(schema.issues.id, alertIssue.id));
+    await db
+      .insert(schema.incidentIssues)
+      .values({ incidentId: incident.id, issueId: alertIssue.id });
+
+    const result = await createIncidentLifecycle(db).resolve({
+      incidentId: incident.id,
+      kind: "agent_classification",
+      reasonCode: "agent_resolved",
+      reasonText: "No further action is needed.",
+      issueOutcomes: [
+        {
+          issueId: logIssue.id,
+          action: "silence",
+          reason: "Expected probe traffic has no user impact.",
+          evidence: "The request completed through the documented no-op path.",
+        },
+        {
+          issueId: alertIssue.id,
+          action: "resolve",
+          reason: "The alert recovered.",
+          evidence: "The metric remained below threshold for 30 minutes.",
+        },
+      ],
+    });
+
+    assert.equal(result.resolved, true);
+    const issues = await db.query.issues.findMany();
+    assert.equal(issues.find((issue) => issue.id === logIssue.id)?.status, "silenced");
+    assert.equal(issues.find((issue) => issue.id === alertIssue.id)?.status, "resolved");
+    const incidentAfter = one(
+      await db.select().from(schema.incidents).where(eq(schema.incidents.id, incident.id)),
+    );
+    assert.equal(incidentAfter.status, "resolved");
+  } finally {
+    await client.close();
+  }
+});
+
+test("an invalid agent issue outcome leaves every issue and the incident unchanged", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { issue, incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-atomic-invalid",
+    });
+    await db.update(schema.issues).set({ kind: "alert" }).where(eq(schema.issues.id, issue.id));
+
+    await assert.rejects(
+      createIncidentLifecycle(db).resolve({
+        incidentId: incident.id,
+        kind: "agent_classification",
+        reasonCode: "agent_resolved",
+        reasonText: "Incorrect classification should roll back.",
+        issueOutcomes: [
+          {
+            issueId: issue.id,
+            action: "silence",
+            reason: "noise",
+            evidence: "not enough",
+          },
+        ],
+      }),
+      /alert episode.*only be resolved/i,
+    );
+
+    const issueAfter = one(
+      await db.select().from(schema.issues).where(eq(schema.issues.id, issue.id)),
+    );
+    const incidentAfter = one(
+      await db.select().from(schema.incidents).where(eq(schema.incidents.id, incident.id)),
+    );
+    assert.equal(issueAfter.status, "open");
+    assert.equal(incidentAfter.status, "open");
+    assert.deepEqual(await eventKinds(db, incident.id), []);
+  } finally {
+    await client.close();
+  }
+});
+
 test("resolving an old incident does not touch issues that recurred into a newer one", async () => {
   const { db, client } = await freshDb();
   try {

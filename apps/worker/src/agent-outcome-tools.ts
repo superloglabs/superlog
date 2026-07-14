@@ -1,20 +1,11 @@
 // Per-outcome tool contract for investigation agent runs.
 //
-// The contract has three tiers:
+// The contract has two tiers:
 //   - `report_findings` (non-terminal): shared metadata, callable repeatedly.
-//   - Action tools (non-terminal, dispatched server-side mid-run): the worker
-//     executes each call while the session is live and acks the result back,
-//     so the agent can iterate — open a PR, read the URL (or the apply
-//     failure and fix its own patch), classify each linked issue, then keep
-//     going. `propose_pr`, `silence_as_noise`, `place_under_observation`,
-//     `resolve_issue`.
-//   - Terminal tools: `resolve_incident` ends the investigation once every
-//     linked issue is classified; `complete_investigation` finishes a
-//     findings-only run while leaving the incident open; `ask_human` pauses it
-//     on a human. A turn may
-//     also legitimately end with NO terminal call when the run is waiting on
-//     external events (open PRs) — the worker parks it and resumes the session
-//     when a PR comment/merge/close arrives.
+//   - Terminal tools: every successful call ends the turn. `propose_pr` and
+//     `resolve_incident` are dispatched server-side before their final ack so
+//     delivery/validation failures can be corrected in the same turn. The
+//     other terminal tools are pure outcomes collected by the runner.
 //
 // Each tool has a flat JSON schema (top-level `type`/`properties`/`required`
 // only — some runner APIs reject composition keywords like `oneOf`/`allOf` at
@@ -24,8 +15,8 @@
 // worker-side; its error strings are written for the model, which sees them
 // as tool errors and can correct the call within the same session.
 //
-// `assembleAgentRunResult` folds the merged findings, the mid-run actions,
-// and the terminal call into the persisted `AgentRunResult` shape.
+// `assembleAgentRunResult` folds the merged findings and terminal call into
+// the persisted `AgentRunResult` shape.
 
 import type {
   AgentRunIncidentResolution,
@@ -51,21 +42,18 @@ export type OutcomeToolDefinition = {
 
 export const REPORT_FINDINGS_TOOL_NAME = "report_findings";
 
-// Non-terminal action tools: executed server-side while the run is live, the
-// result is acked back into the session and the agent continues its turn.
-export const ACTION_OUTCOME_TOOL_NAMES = [
-  "propose_pr",
-  "silence_as_noise",
-  "place_under_observation",
-  "resolve_issue",
-] as const;
+// Terminal tools whose success depends on a server-side operation. They are
+// acked only after the operation succeeds; an error ack keeps the turn active.
+export const DISPATCHED_OUTCOME_TOOL_NAMES = ["propose_pr", "resolve_incident"] as const;
 
-export type ActionOutcomeToolName = (typeof ACTION_OUTCOME_TOOL_NAMES)[number];
+export type DispatchedOutcomeToolName = (typeof DISPATCHED_OUTCOME_TOOL_NAMES)[number];
 
 export const TERMINAL_OUTCOME_TOOL_NAMES = [
-  "resolve_incident",
+  "propose_pr",
   "complete_investigation",
   "ask_human",
+  "report_external_cause",
+  "resolve_incident",
 ] as const;
 
 export type TerminalOutcomeToolName = (typeof TERMINAL_OUTCOME_TOOL_NAMES)[number];
@@ -74,11 +62,16 @@ export type TerminalOutcomeToolName = (typeof TERMINAL_OUTCOME_TOOL_NAMES)[numbe
 // can outlive a deploy (a parked run resumes days later), so a call to one of
 // these must be error-acked with redirect guidance — not routed to the
 // unknown-tool path, which hard-fails the run.
-export const RETIRED_OUTCOME_TOOL_NAMES = ["report_failure", "mark_already_resolved"] as const;
+export const RETIRED_OUTCOME_TOOL_NAMES = [
+  "report_failure",
+  "mark_already_resolved",
+  "silence_as_noise",
+  "place_under_observation",
+  "resolve_issue",
+] as const;
 
 export const OUTCOME_TOOL_NAMES = [
   REPORT_FINDINGS_TOOL_NAME,
-  ...ACTION_OUTCOME_TOOL_NAMES,
   ...TERMINAL_OUTCOME_TOOL_NAMES,
 ] as const;
 
@@ -94,8 +87,8 @@ export const OUTCOME_TOOL_NAMES = [
 export const TERMINAL_OUTCOME_NUDGE_MARKER =
   "You ended your turn without concluding the investigation, so it has no recorded outcome and nothing is pending.";
 
-export function isActionOutcomeToolName(name: string): name is ActionOutcomeToolName {
-  return (ACTION_OUTCOME_TOOL_NAMES as readonly string[]).includes(name);
+export function isDispatchedOutcomeToolName(name: string): name is DispatchedOutcomeToolName {
+  return (DISPATCHED_OUTCOME_TOOL_NAMES as readonly string[]).includes(name);
 }
 
 export function isTerminalOutcomeToolName(name: string): name is TerminalOutcomeToolName {
@@ -183,10 +176,10 @@ const REPORT_FINDINGS_DEFINITION: OutcomeToolDefinition = {
 };
 
 // ---------------------------------------------------------------------------
-// Action tools (non-terminal, server-dispatched)
+// Terminal tools
 // ---------------------------------------------------------------------------
 
-export type ProposePrPayload = {
+export type PullRequestProposal = {
   repoFullName: string;
   title: string;
   body: string;
@@ -199,172 +192,111 @@ export type ProposePrPayload = {
   mobileTestReason?: string;
 };
 
+export type ProposePrPayload = {
+  pullRequests: PullRequestProposal[];
+};
+
+const PULL_REQUEST_PROPERTIES = {
+  repoFullName: {
+    type: "string",
+    description: "owner/repo of the mounted repository this patch targets.",
+  },
+  title: {
+    type: "string",
+    description:
+      "Exact PR title for human review: '[superlog] <imperative fix summary>' describing the fix outcome, not the incident title.",
+  },
+  body: {
+    type: "string",
+    description:
+      "Review-ready markdown. Default shape: '# Summary', one paragraph for the user-visible symptom, one for the root-cause mechanism in plain English, one for the remediation direction, then a final incident link. Follow the org PR template instead when one is provided.",
+  },
+  branchName: {
+    type: "string",
+    pattern: "^superlog/",
+    description:
+      "Must start with 'superlog/' followed by a short kebab-case slug. Reuse a branch name to push to that PR.",
+  },
+  baseBranch: {
+    type: "string",
+    description: "The branch the PR should target (the repo's active development branch).",
+  },
+  patchFilePath: {
+    type: "string",
+    description:
+      "A distinct unified diff under /mnt/session/outputs/ containing changes only for this repository.",
+  },
+  changedFiles: {
+    type: "array",
+    items: { type: "string" },
+    description: "Repo-relative paths the patch touches.",
+  },
+  mobileTestStatus: {
+    type: "string",
+    enum: MOBILE_TEST_STATUSES,
+    description:
+      "Only for orgs with a mobile-regression integration: whether a regression test was created, skipped, or not applicable.",
+  },
+  mobileTestId: { type: "string", description: "The created mobile regression test id." },
+  mobileTestReason: {
+    type: "string",
+    description: "Why the mobile regression test was skipped / not applicable.",
+  },
+};
+
+const PULL_REQUEST_REQUIRED = [
+  "repoFullName",
+  "title",
+  "body",
+  "branchName",
+  "baseBranch",
+  "patchFilePath",
+];
+
 const PROPOSE_PR_DEFINITION: OutcomeToolDefinition = {
   name: "propose_pr",
   description:
-    "Open a pull request with a patch you authored, for a defect with REAL user or business impact. NOT terminal: the platform applies your patch and opens the PR while you are still running, and returns the PR URL — or the apply failure, which you can fix and retry. Call it again with a NEW branchName to open an additional, independent PR; calling it again with the SAME branchName pushes the new patch as a follow-up commit on that PR (do this when addressing review feedback). NOT for noise: if the error you diagnosed is a false positive or the operation returns its intended response, call silence_as_noise instead — a patch that only quiets a signal (log levels, span statuses, recordException, catching expected errors) is the wrong outcome no matter how clean the fix is, and 'alert fatigue from the noisy signal' does not count as impact (silencing is what fixes alert fatigue). Hand the patch off by writing a unified diff to a file under /mnt/session/outputs/ (git diff format, applying cleanly to baseBranch; use a distinct file per PR) — never inline the diff in this call. Validate the patch yourself before calling — the worker only applies it and opens the PR. After your PRs are up, either resolve the incident (resolve_incident, once every issue is classified) or end your turn to wait for review — you will be resumed when the PR gets a comment, merge, or close.",
+    "Terminal for this turn: open or update one validated PR per repository, then wait for review. Pass a non-empty pullRequests array; every repository and patchFilePath must be unique. Each patch must be a unified diff under /mnt/session/outputs/ that changes only its repository. A new branchName opens a PR; reusing the same repository and branchName pushes a follow-up commit. If validation or delivery fails, the call is rejected and the turn stays active so you can retry only failed entries. NOT for noise: a patch that only quiets a signal is the wrong outcome. Do not call resolve_incident in the same turn; the incident stays open until the PR lifecycle resumes the session.",
   input_schema: {
     type: "object",
     properties: {
-      repoFullName: {
-        type: "string",
-        description: "owner/repo of the mounted repository the patch targets.",
-      },
-      title: {
-        type: "string",
-        description:
-          "Exact PR title for human review: '[superlog] <imperative fix summary>' describing the fix outcome, not the incident title.",
-      },
-      body: {
-        type: "string",
-        description:
-          "Review-ready markdown. Default shape: '# Summary', one paragraph for the user-visible symptom, one for the root-cause mechanism in plain English, one for the remediation direction (briefly mention credible alternative approaches if any), then a final '[Incident on Superlog](<incident url>)' link. Follow the org PR template instead when one is provided.",
-      },
-      branchName: {
-        type: "string",
-        pattern: "^superlog/",
-        description:
-          "Must start with 'superlog/' followed by a short kebab-case slug, e.g. superlog/fix-cart-batching. Reuse a branch name to push to that PR; use a new one to open a separate PR.",
-      },
-      baseBranch: {
-        type: "string",
-        description: "The branch the PR should target (the repo's active development branch).",
-      },
-      patchFilePath: {
-        type: "string",
-        description:
-          "Where you wrote the unified diff, e.g. /mnt/session/outputs/superlog-fix-cart-batching.patch. Use a distinct file per PR so a later PR's patch never overwrites an earlier one.",
-      },
-      changedFiles: {
+      pullRequests: {
         type: "array",
-        items: { type: "string" },
-        description: "Repo-relative paths the patch touches.",
-      },
-      mobileTestStatus: {
-        type: "string",
-        enum: MOBILE_TEST_STATUSES,
+        minItems: 1,
+        items: {
+          type: "object",
+          properties: PULL_REQUEST_PROPERTIES,
+          required: PULL_REQUEST_REQUIRED,
+        },
         description:
-          "Only for orgs with a mobile-regression integration: whether you created a regression test for this fix ('created' requires mobileTestId; 'skipped'/'not_applicable' require mobileTestReason).",
-      },
-      mobileTestId: { type: "string", description: "The created mobile regression test id." },
-      mobileTestReason: {
-        type: "string",
-        description: "Why the mobile regression test was skipped / not applicable.",
+          "One validated PR proposal per repository. Pass an actual JSON array, not JSON-encoded text.",
       },
     },
-    required: ["repoFullName", "title", "body", "branchName", "baseBranch", "patchFilePath"],
+    required: ["pullRequests"],
   },
 };
 
-export type SilenceAsNoisePayload = { issueId: string; reason: string; evidence: string };
+export type IssueOutcomeStatus = "resolved" | "silenced" | "under_observation";
 
-const SILENCE_AS_NOISE_DEFINITION: OutcomeToolDefinition = {
-  name: "silence_as_noise",
-  description:
-    "Silence one linked issue as proven noise — the operation it describes either succeeded or has no user/business impact. NOT terminal: the issue is silenced immediately and you continue; classify each linked issue individually (the issue ids are in the incident issue bundle), then finish with resolve_incident. Recurrences of a silenced issue stop paging permanently, so the bar is high: you must quote the success path, the no-op contract, or the third-party contract clause. If you cannot prove it, use place_under_observation instead. Do NOT propose code changes to make the false positive quieter — downgrading log levels, catching/suppressing expected errors, or changing span statuses / recordException calls for expected conditions. Silencing is the correct action, not a PR, even when the noisy signal comes from the application's own instrumentation. Only error issues can be silenced; alert-episode issues can only be resolved (resolve_issue).",
-  input_schema: {
-    type: "object",
-    properties: {
-      issueId: {
-        type: "string",
-        description: "The id of the linked issue to silence (from the incident issue bundle).",
-      },
-      reason: {
-        type: "string",
-        description:
-          "Free text: why this is noise, in one plain-English sentence an operator can read in a list (e.g. 'Expected 404s from bot traffic probing /wp-admin').",
-      },
-      evidence: {
-        type: "string",
-        description: `1-3 sentences quoting the success/recovery/contract clause that justifies silencing. ${EVIDENCE_FORMAT}`,
-      },
-    },
-    required: ["issueId", "reason", "evidence"],
-  },
-};
-
-export type PlaceUnderObservationPayload = {
+export type ResolveIncidentIssueOutcome = {
   issueId: string;
+  status: IssueOutcomeStatus;
   reason: string;
   evidence: string;
-  escalateOn: (typeof ESCALATE_ON)[number];
-  threshold: number;
+  escalateOn?: (typeof ESCALATE_ON)[number];
+  threshold?: number;
 };
 
-const PLACE_UNDER_OBSERVATION_DEFINITION: OutcomeToolDefinition = {
-  name: "place_under_observation",
-  description:
-    "Place one linked issue under observation — plausibly noise (a one-off, a non-critical event) but you cannot fully prove no-impact, or it could matter if it grows. NOT terminal: the issue goes quiet immediately and you continue; finish with resolve_incident once every issue is classified. Recurrences stay quiet until the escalation trigger trips, then a new investigation starts with your findings as context. Prefer this over silence_as_noise whenever the evidence bar for permanent silencing is not met. Only error issues can be observed; alert-episode issues can only be resolved (resolve_issue).",
-  input_schema: {
-    type: "object",
-    properties: {
-      issueId: {
-        type: "string",
-        description: "The id of the linked issue to observe (from the incident issue bundle).",
-      },
-      reason: {
-        type: "string",
-        description:
-          "Free text: your best guess at why this is noise, in one plain-English sentence an operator can read in a list.",
-      },
-      evidence: {
-        type: "string",
-        description:
-          "Why suppression is likely safe AND what growth pattern would change your mind. Quote what you verified.",
-      },
-      escalateOn: {
-        type: "string",
-        enum: ESCALATE_ON,
-        description:
-          "events_per_minute = escalate when the issue's trailing 5-minute average rate reaches the threshold. additional_events = escalate when the issue accumulates this many new events after observation begins.",
-      },
-      threshold: {
-        type: "integer",
-        minimum: 1,
-        description: "The rate (per minute) or event count that should trigger re-investigation.",
-      },
-    },
-    required: ["issueId", "reason", "evidence", "escalateOn", "threshold"],
-  },
+export type ResolveIncidentPayload = {
+  reason: string;
+  evidence: string;
+  issueOutcomes: ResolveIncidentIssueOutcome[];
 };
-
-export type ResolveIssuePayload = { issueId: string; reason: string; evidence: string };
-
-const RESOLVE_ISSUE_DEFINITION: OutcomeToolDefinition = {
-  name: "resolve_issue",
-  description:
-    "Resolve one linked issue: its impact has ceased and no further action on it is possible or needed — the current code already contains the fix, the transient condition cleared, the upstream dependency recovered, or your own remediation (a merged PR, an executed approval) addressed it. NOT terminal: the issue resolves immediately and you continue; finish with resolve_incident once every issue is classified. A resolved issue that recurs starts a fresh investigation with this one's findings as context — so this is not for noise (use silence_as_noise / place_under_observation) and not just because errors are quiet in a tiny sample.",
-  input_schema: {
-    type: "object",
-    properties: {
-      issueId: {
-        type: "string",
-        description: "The id of the linked issue to resolve (from the incident issue bundle).",
-      },
-      reason: {
-        type: "string",
-        description:
-          "Free text: why this issue is resolved, in one plain-English sentence an operator can read in a list (e.g. 'Fixed by the retry-guard PR merged during this investigation').",
-      },
-      evidence: {
-        type: "string",
-        description: `1-3 sentences citing the code/telemetry/status evidence proving resolution, with before/after signal and concrete windows/counts when telemetry is the proof. ${EVIDENCE_FORMAT}`,
-      },
-    },
-    required: ["issueId", "reason", "evidence"],
-  },
-};
-
-// ---------------------------------------------------------------------------
-// Terminal tools
-// ---------------------------------------------------------------------------
-
-export type ResolveIncidentPayload = { reason: string; evidence: string };
 
 const RESOLVE_INCIDENT_DEFINITION: OutcomeToolDefinition = {
   name: "resolve_incident",
   description:
-    "Terminal: resolve the incident. Call this when the impact on the system has ceased (or there never was any), or your actions (merged PRs, executed approvals) have resolved the root cause. Every issue linked to the incident must already be classified — silenced, under observation, or resolved — via the per-issue tools; this call is rejected with the list of unclassified issues otherwise. Do NOT resolve while you are still waiting on an open PR you expect to be merged — end your turn instead and you will be resumed when the PR gets a comment, merge, or close.",
+    "Terminal: resolve the Incident only when everything required has been done and impact has ceased, or when no remediation is needed. Include exactly one outcome for every linked Issue. Error Issues may be resolved, silenced, or placed under observation; alert-episode Issues must be resolved. The platform validates and applies all Issue outcomes and the Incident resolution atomically. If any entry is invalid, nothing changes and the turn stays active. Do not resolve while waiting for an open PR; propose_pr ends that turn instead.",
   input_schema: {
     type: "object",
     properties: {
@@ -377,8 +309,63 @@ const RESOLVE_INCIDENT_DEFINITION: OutcomeToolDefinition = {
         type: "string",
         description: `1-3 sentences citing the evidence that the impact has ceased (before/after signal + window when telemetry is the proof). ${EVIDENCE_FORMAT}`,
       },
+      issueOutcomes: {
+        type: "array",
+        minItems: 1,
+        items: {
+          type: "object",
+          properties: {
+            issueId: { type: "string" },
+            status: {
+              type: "string",
+              enum: ["resolved", "silenced", "under_observation"],
+            },
+            reason: { type: "string" },
+            evidence: { type: "string" },
+            escalateOn: { type: "string", enum: ESCALATE_ON },
+            threshold: { type: "integer", minimum: 1 },
+          },
+          required: ["issueId", "status", "reason", "evidence"],
+        },
+        description: "Exactly one outcome for every Issue linked to the Incident.",
+      },
     },
-    required: ["reason", "evidence"],
+    required: ["reason", "evidence", "issueOutcomes"],
+  },
+};
+
+export type ReportExternalCausePayload = {
+  cause: string;
+  source: string;
+  evidence: string;
+  recommendedNextStep: string;
+};
+
+const REPORT_EXTERNAL_CAUSE_DEFINITION: OutcomeToolDefinition = {
+  name: "report_external_cause",
+  description:
+    "Terminal: report an established root cause outside the systems available for remediation. This ends the turn and leaves the Incident and every linked Issue open while the session waits for an external change or human update. Use ask_human instead when a concrete answer or decision is needed.",
+  input_schema: {
+    type: "object",
+    properties: {
+      cause: {
+        type: "string",
+        description: "Concise explanation of the established external root cause.",
+      },
+      source: {
+        type: "string",
+        description: "The external provider, service, or customer-owned system responsible.",
+      },
+      evidence: {
+        type: "string",
+        description: "Evidence proving the cause is external and produces the observed impact.",
+      },
+      recommendedNextStep: {
+        type: "string",
+        description: "The action an external owner should take or the condition to wait for.",
+      },
+    },
+    required: ["cause", "source", "evidence", "recommendedNextStep"],
   },
 };
 
@@ -416,11 +403,9 @@ const ASK_HUMAN_DEFINITION: OutcomeToolDefinition = {
 export const OUTCOME_TOOL_DEFINITIONS: OutcomeToolDefinition[] = [
   REPORT_FINDINGS_DEFINITION,
   PROPOSE_PR_DEFINITION,
-  SILENCE_AS_NOISE_DEFINITION,
-  PLACE_UNDER_OBSERVATION_DEFINITION,
-  RESOLVE_ISSUE_DEFINITION,
-  RESOLVE_INCIDENT_DEFINITION,
   ASK_HUMAN_DEFINITION,
+  REPORT_EXTERNAL_CAUSE_DEFINITION,
+  RESOLVE_INCIDENT_DEFINITION,
 ];
 
 export type AgentInterventionCapabilities = {
@@ -438,12 +423,10 @@ export function outcomeToolDefinitionsForCapabilities(
   return [
     REPORT_FINDINGS_DEFINITION,
     ...(capabilities.prCreation ? [PROPOSE_PR_DEFINITION] : []),
-    SILENCE_AS_NOISE_DEFINITION,
-    PLACE_UNDER_OBSERVATION_DEFINITION,
-    RESOLVE_ISSUE_DEFINITION,
-    RESOLVE_INCIDENT_DEFINITION,
     ...(!hasInterventionTools(capabilities) ? [COMPLETE_INVESTIGATION_DEFINITION] : []),
     ASK_HUMAN_DEFINITION,
+    REPORT_EXTERNAL_CAUSE_DEFINITION,
+    RESOLVE_INCIDENT_DEFINITION,
   ];
 }
 
@@ -451,32 +434,31 @@ export function outcomeToolDefinitionsForCapabilities(
 // Validation
 // ---------------------------------------------------------------------------
 
-export type ActionOutcome =
-  | { name: "propose_pr"; payload: ProposePrPayload }
-  | { name: "silence_as_noise"; payload: SilenceAsNoisePayload }
-  | { name: "place_under_observation"; payload: PlaceUnderObservationPayload }
-  | { name: "resolve_issue"; payload: ResolveIssuePayload };
-
 export type TerminalOutcome =
-  | { name: "resolve_incident"; payload: ResolveIncidentPayload }
+  | { name: "propose_pr"; payload: ProposePrPayload }
   | { name: "complete_investigation"; payload: CompleteInvestigationPayload }
-  | { name: "ask_human"; payload: AskHumanPayload };
+  | { name: "ask_human"; payload: AskHumanPayload }
+  | { name: "report_external_cause"; payload: ReportExternalCausePayload }
+  | { name: "resolve_incident"; payload: ResolveIncidentPayload };
+
+type ValidatedTerminalOutcome = TerminalOutcome extends infer Outcome
+  ? Outcome extends TerminalOutcome
+    ? { ok: true; tool: Outcome["name"]; payload: Outcome["payload"] }
+    : never
+  : never;
 
 export type ValidateOutcome =
   | { ok: true; tool: "report_findings"; payload: AgentRunFindings }
-  | { ok: true; tool: ActionOutcomeToolName; payload: ActionOutcome["payload"] }
-  | { ok: true; tool: TerminalOutcomeToolName; payload: TerminalOutcome["payload"] }
+  | ValidatedTerminalOutcome
   | { ok: false; errors: string[] };
 
 // Tools that conclude with findings humans will read — these refuse to run
 // until report_findings has been called.
 const FINDINGS_REQUIRED = new Set<string>([
   "propose_pr",
-  "silence_as_noise",
-  "place_under_observation",
-  "resolve_issue",
   "resolve_incident",
   "complete_investigation",
+  "report_external_cause",
 ]);
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -547,6 +529,131 @@ function optionalStringArray(
   return undefined;
 }
 
+function validatePullRequestProposal(
+  raw: unknown,
+  index: number,
+): { payload: PullRequestProposal | null; errors: string[] } {
+  if (!isRecord(raw)) {
+    return {
+      payload: null,
+      errors: [`\`pullRequests[${index}]\` must be an object.`],
+    };
+  }
+  const errors: string[] = [];
+  const prefix = `pullRequests[${index}]`;
+  const required = (key: string): string | null => {
+    const value = raw[key];
+    if (typeof value === "string" && value.trim()) return value;
+    errors.push(`\`${prefix}.${key}\` is required and must be a non-empty string.`);
+    return null;
+  };
+  const repoFullName = required("repoFullName");
+  const title = required("title");
+  const body = required("body");
+  const branchName = required("branchName");
+  const baseBranch = required("baseBranch");
+  const patchFilePath = required("patchFilePath");
+  if (branchName && !branchName.startsWith("superlog/")) {
+    errors.push(`\`${prefix}.branchName\` must start with \`superlog/\`.`);
+  }
+  if (patchFilePath && !patchFilePath.startsWith("/mnt/session/outputs/")) {
+    errors.push(`\`${prefix}.patchFilePath\` must be under \`/mnt/session/outputs/\`.`);
+  }
+  if (raw.validationPassed === false) {
+    errors.push(
+      `\`${prefix}.validationPassed\` is false. Fix and validate the patch before proposing it.`,
+    );
+  }
+  const changedFiles = optionalStringArray(errors, raw, "changedFiles");
+  let mobileTestStatus: PullRequestProposal["mobileTestStatus"];
+  if (raw.mobileTestStatus !== undefined && raw.mobileTestStatus !== null) {
+    mobileTestStatus =
+      requiredEnum(errors, raw, "mobileTestStatus", MOBILE_TEST_STATUSES) ?? undefined;
+  }
+  const mobileTestId = optionalString(errors, raw, "mobileTestId");
+  const mobileTestReason = optionalString(errors, raw, "mobileTestReason");
+  if (mobileTestStatus === "created" && !mobileTestId) {
+    errors.push(`\`${prefix}.mobileTestId\` is required when mobileTestStatus is "created".`);
+  }
+  if (
+    (mobileTestStatus === "skipped" || mobileTestStatus === "not_applicable") &&
+    !mobileTestReason
+  ) {
+    errors.push(
+      `\`${prefix}.mobileTestReason\` is required when mobileTestStatus is "${mobileTestStatus}".`,
+    );
+  }
+  if (errors.length > 0) return { payload: null, errors };
+  const payload: PullRequestProposal = {
+    repoFullName: repoFullName as string,
+    title: title as string,
+    body: body as string,
+    branchName: branchName as string,
+    baseBranch: baseBranch as string,
+    patchFilePath: patchFilePath as string,
+  };
+  if (changedFiles) payload.changedFiles = changedFiles;
+  if (mobileTestStatus) payload.mobileTestStatus = mobileTestStatus;
+  if (mobileTestId) payload.mobileTestId = mobileTestId;
+  if (mobileTestReason) payload.mobileTestReason = mobileTestReason;
+  return { payload, errors: [] };
+}
+
+function validateIssueOutcome(
+  raw: unknown,
+  index: number,
+): { payload: ResolveIncidentIssueOutcome | null; errors: string[] } {
+  const prefix = `issueOutcomes[${index}]`;
+  if (!isRecord(raw)) {
+    return { payload: null, errors: [`\`${prefix}\` must be an object.`] };
+  }
+  const errors: string[] = [];
+  const required = (key: string): string | null => {
+    const value = raw[key];
+    if (typeof value === "string" && value.trim()) return value;
+    errors.push(`\`${prefix}.${key}\` is required and must be a non-empty string.`);
+    return null;
+  };
+  const issueId = required("issueId");
+  const status = requiredEnum(errors, raw, "status", [
+    "resolved",
+    "silenced",
+    "under_observation",
+  ] as const);
+  const reason = required("reason");
+  const evidence = required("evidence");
+
+  let escalateOn: ResolveIncidentIssueOutcome["escalateOn"];
+  let threshold: number | undefined;
+  if (status === "under_observation") {
+    escalateOn = requiredEnum(errors, raw, "escalateOn", ESCALATE_ON) ?? undefined;
+    if (
+      typeof raw.threshold !== "number" ||
+      !Number.isInteger(raw.threshold) ||
+      raw.threshold < 1
+    ) {
+      errors.push(`\`${prefix}.threshold\` must be an integer >= 1 for under_observation.`);
+    } else {
+      threshold = raw.threshold;
+    }
+  } else if (raw.escalateOn !== undefined || raw.threshold !== undefined) {
+    errors.push(
+      `\`${prefix}.escalateOn\` and \`${prefix}.threshold\` are forbidden unless status is "under_observation".`,
+    );
+  }
+
+  if (errors.length > 0) return { payload: null, errors };
+  const payload: ResolveIncidentIssueOutcome = {
+    issueId: issueId as string,
+    status: status as IssueOutcomeStatus,
+    reason: reason as string,
+    evidence: evidence as string,
+  };
+  if (escalateOn) payload.escalateOn = escalateOn;
+  if (threshold !== undefined) payload.threshold = threshold;
+  return { payload, errors: [] };
+}
+
 export function validateOutcomeToolInput(
   name: string,
   rawInput: unknown,
@@ -556,7 +663,7 @@ export function validateOutcomeToolInput(
     return {
       ok: false,
       errors: [
-        `\`${name}\` is no longer available. Classify each linked issue with \`silence_as_noise\`, \`place_under_observation\`, or \`resolve_issue\`; open PRs with \`propose_pr\`; then finish the run with \`resolve_incident\` (or \`ask_human\` when a human must act or answer first).`,
+        `\`${name}\` is no longer available. Put exactly one classification for every linked Issue in \`resolve_incident.issueOutcomes\`; use \`propose_pr\` when remediation needs review, \`report_external_cause\` for an established external cause, or \`ask_human\` when a human answer is required.`,
       ],
     };
   }
@@ -603,110 +710,83 @@ export function validateOutcomeToolInput(
     }
 
     case "propose_pr": {
-      const repoFullName = pushRequiredString(errors, input, "repoFullName");
-      const title = pushRequiredString(errors, input, "title");
-      const body = pushRequiredString(errors, input, "body");
-      const branchName = pushRequiredString(errors, input, "branchName");
-      const baseBranch = pushRequiredString(errors, input, "baseBranch");
-      const patchFilePath = pushRequiredString(errors, input, "patchFilePath");
-      if (branchName && !branchName.startsWith("superlog/")) {
-        errors.push(
-          `\`branchName\` must start with \`superlog/\`; you sent ${JSON.stringify(branchName)}.`,
-        );
+      // Durable sessions created against the previous singular schema can
+      // outlive a deploy. Normalize that shape to a one-entry batch so they
+      // can still conclude their current turn.
+      let rawPullRequests: unknown[];
+      if (input.pullRequests !== undefined) {
+        if (!Array.isArray(input.pullRequests)) {
+          return {
+            ok: false,
+            errors: [
+              "`pullRequests` must be an actual JSON array, not a JSON-encoded string or object.",
+            ],
+          };
+        }
+        rawPullRequests = input.pullRequests;
+      } else {
+        rawPullRequests = [input];
       }
-      // Legacy sessions still send validationPassed; an honest false meant
-      // "do not open this PR", so keep honoring it rather than shipping a
-      // patch its author reported as failing.
-      if (input.validationPassed === false) {
-        errors.push(
-          "You reported `validationPassed: false`. Do not propose a PR whose validation failed — fix the patch and call `propose_pr` again once it validates.",
-        );
+      if (rawPullRequests.length === 0) {
+        return { ok: false, errors: ["`pullRequests` must contain at least one PR proposal."] };
       }
-      const changedFiles = optionalStringArray(errors, input, "changedFiles");
-      let mobileTestStatus: ProposePrPayload["mobileTestStatus"];
-      if (input.mobileTestStatus !== undefined && input.mobileTestStatus !== null) {
-        mobileTestStatus =
-          requiredEnum(errors, input, "mobileTestStatus", MOBILE_TEST_STATUSES) ?? undefined;
-      }
-      const mobileTestId = optionalString(errors, input, "mobileTestId");
-      const mobileTestReason = optionalString(errors, input, "mobileTestReason");
-      if (mobileTestStatus === "created" && !mobileTestId) {
-        errors.push('`mobileTestId` is required when `mobileTestStatus` is "created".');
-      }
-      if (
-        (mobileTestStatus === "skipped" || mobileTestStatus === "not_applicable") &&
-        !mobileTestReason
-      ) {
-        errors.push(
-          '`mobileTestReason` is required when `mobileTestStatus` is "skipped" or "not_applicable".',
-        );
+      const pullRequests: PullRequestProposal[] = [];
+      rawPullRequests.forEach((raw, index) => {
+        const validated = validatePullRequestProposal(raw, index);
+        errors.push(...validated.errors);
+        if (validated.payload) pullRequests.push(validated.payload);
+      });
+      const seenRepos = new Set<string>();
+      const seenPatchPaths = new Set<string>();
+      for (const proposal of pullRequests) {
+        if (seenRepos.has(proposal.repoFullName)) {
+          errors.push(
+            `Only one PR per repository is allowed; ${proposal.repoFullName} is duplicated.`,
+          );
+        }
+        seenRepos.add(proposal.repoFullName);
+        if (seenPatchPaths.has(proposal.patchFilePath)) {
+          errors.push(
+            `Each PR needs a distinct patchFilePath; ${proposal.patchFilePath} is duplicated.`,
+          );
+        }
+        seenPatchPaths.add(proposal.patchFilePath);
       }
       if (errors.length > 0) return { ok: false, errors };
-      const payload: ProposePrPayload = {
-        repoFullName: repoFullName as string,
-        title: title as string,
-        body: body as string,
-        branchName: branchName as string,
-        baseBranch: baseBranch as string,
-        patchFilePath: patchFilePath as string,
-      };
-      if (changedFiles) payload.changedFiles = changedFiles;
-      if (mobileTestStatus) payload.mobileTestStatus = mobileTestStatus;
-      if (mobileTestId) payload.mobileTestId = mobileTestId;
-      if (mobileTestReason) payload.mobileTestReason = mobileTestReason;
+      const payload: ProposePrPayload = { pullRequests };
       return { ok: true, tool: "propose_pr", payload };
-    }
-
-    case "silence_as_noise":
-    case "resolve_issue": {
-      const issueId = pushRequiredString(errors, input, "issueId");
-      const reason = pushRequiredString(errors, input, "reason");
-      const evidence = pushRequiredString(errors, input, "evidence");
-      if (errors.length > 0) return { ok: false, errors };
-      return {
-        ok: true,
-        tool: name,
-        payload: {
-          issueId: issueId as string,
-          reason: reason as string,
-          evidence: evidence as string,
-        },
-      };
-    }
-
-    case "place_under_observation": {
-      const issueId = pushRequiredString(errors, input, "issueId");
-      const reason = pushRequiredString(errors, input, "reason");
-      const evidence = pushRequiredString(errors, input, "evidence");
-      const escalateOn = requiredEnum(errors, input, "escalateOn", ESCALATE_ON);
-      const threshold = input.threshold;
-      if (typeof threshold !== "number" || !Number.isInteger(threshold) || threshold < 1) {
-        errors.push(
-          `\`threshold\` must be an integer >= 1; you sent ${JSON.stringify(threshold)}.`,
-        );
-      }
-      if (errors.length > 0) return { ok: false, errors };
-      return {
-        ok: true,
-        tool: "place_under_observation",
-        payload: {
-          issueId: issueId as string,
-          reason: reason as string,
-          evidence: evidence as string,
-          escalateOn: escalateOn as PlaceUnderObservationPayload["escalateOn"],
-          threshold: threshold as number,
-        },
-      };
     }
 
     case "resolve_incident": {
       const reason = pushRequiredString(errors, input, "reason");
       const evidence = pushRequiredString(errors, input, "evidence");
+      if (!Array.isArray(input.issueOutcomes) || input.issueOutcomes.length === 0) {
+        errors.push("`issueOutcomes` must be a non-empty array with one outcome per linked Issue.");
+      }
+      const issueOutcomes: ResolveIncidentIssueOutcome[] = [];
+      if (Array.isArray(input.issueOutcomes)) {
+        input.issueOutcomes.forEach((raw, index) => {
+          const validated = validateIssueOutcome(raw, index);
+          errors.push(...validated.errors);
+          if (validated.payload) issueOutcomes.push(validated.payload);
+        });
+      }
+      const seenIssueIds = new Set<string>();
+      for (const outcome of issueOutcomes) {
+        if (seenIssueIds.has(outcome.issueId)) {
+          errors.push(`Duplicate issue outcome for ${outcome.issueId}.`);
+        }
+        seenIssueIds.add(outcome.issueId);
+      }
       if (errors.length > 0) return { ok: false, errors };
       return {
         ok: true,
         tool: "resolve_incident",
-        payload: { reason: reason as string, evidence: evidence as string },
+        payload: {
+          reason: reason as string,
+          evidence: evidence as string,
+          issueOutcomes,
+        },
       };
     }
 
@@ -717,6 +797,24 @@ export function validateOutcomeToolInput(
       const question = pushRequiredString(errors, input, "question");
       if (errors.length > 0) return { ok: false, errors };
       return { ok: true, tool: "ask_human", payload: { question: question as string } };
+    }
+
+    case "report_external_cause": {
+      const cause = pushRequiredString(errors, input, "cause");
+      const source = pushRequiredString(errors, input, "source");
+      const evidence = pushRequiredString(errors, input, "evidence");
+      const recommendedNextStep = pushRequiredString(errors, input, "recommendedNextStep");
+      if (errors.length > 0) return { ok: false, errors };
+      return {
+        ok: true,
+        tool: "report_external_cause",
+        payload: {
+          cause: cause as string,
+          source: source as string,
+          evidence: evidence as string,
+          recommendedNextStep: recommendedNextStep as string,
+        },
+      };
     }
 
     default:
@@ -767,7 +865,7 @@ function applyFindings(result: AgentRunResult, findings: AgentRunFindings): void
   }
 }
 
-function mobileTestFromPr(payload: ProposePrPayload): AgentRunMobileRegressionTest | null {
+function mobileTestFromPr(payload: PullRequestProposal): AgentRunMobileRegressionTest | null {
   if (!payload.mobileTestStatus) return null;
   if (payload.mobileTestStatus === "created") {
     return { status: "created", testId: payload.mobileTestId as string };
@@ -776,16 +874,36 @@ function mobileTestFromPr(payload: ProposePrPayload): AgentRunMobileRegressionTe
 }
 
 export function escalationTriggerFromObservation(
-  payload: Pick<PlaceUnderObservationPayload, "escalateOn" | "threshold">,
+  payload: Required<Pick<ResolveIncidentIssueOutcome, "escalateOn" | "threshold">>,
 ): IssueEscalationTrigger {
   return payload.escalateOn === "events_per_minute"
     ? { kind: "rate", perMinute: payload.threshold }
     : { kind: "count", count: payload.threshold };
 }
 
-// A successfully executed mid-run action (the dispatch loop applied its
-// effect and acked ok), replayed from the session event stream so the final
-// result can record what happened during the run.
+// Compatibility shape for durable sessions created before classifications
+// moved into resolve_incident and propose_pr became terminal.
+export type ActionOutcome =
+  | { name: "propose_pr"; payload: ProposePrPayload | PullRequestProposal }
+  | {
+      name: "silence_as_noise";
+      payload: { issueId: string; reason: string; evidence: string };
+    }
+  | {
+      name: "place_under_observation";
+      payload: {
+        issueId: string;
+        reason: string;
+        evidence: string;
+        escalateOn: (typeof ESCALATE_ON)[number];
+        threshold: number;
+      };
+    }
+  | {
+      name: "resolve_issue";
+      payload: { issueId: string; reason: string; evidence: string };
+    };
+
 export type ExecutedAction = ActionOutcome;
 
 function issueClassificationFromAction(action: ExecutedAction): AgentRunIssueClassification | null {
@@ -821,10 +939,10 @@ export type AssembledOutcomeState = "complete" | "awaiting_human" | "awaiting_ev
 
 export function assembleAgentRunResult(args: {
   findings: AgentRunFindings | null;
-  // Null when the turn ended without a terminal call (the run parks on
-  // awaiting_events while its PRs are out for review).
+  // Null only for durable legacy turns that delivered PRs before propose_pr
+  // became terminal.
   terminal: TerminalOutcome | null;
-  // Successfully executed mid-run actions, in call order.
+  // Successfully executed actions from durable legacy runs, in call order.
   actions?: ExecutedAction[];
 }): AgentRunResult {
   const { findings, terminal } = args;
@@ -833,9 +951,13 @@ export function assembleAgentRunResult(args: {
   const state: AssembledOutcomeState =
     terminal === null
       ? "awaiting_events"
-      : terminal.name === "ask_human"
-        ? "awaiting_human"
-        : "complete";
+      : terminal.name === "propose_pr"
+        ? "awaiting_events"
+        : terminal.name === "report_external_cause"
+          ? "awaiting_events"
+          : terminal.name === "ask_human"
+            ? "awaiting_human"
+            : "complete";
   const fallbackSummary = terminal?.name === "ask_human" ? terminal.payload.question : "";
   const result: AgentRunResult = {
     state,
@@ -843,33 +965,40 @@ export function assembleAgentRunResult(args: {
   };
   if (findings) applyFindings(result, findings);
 
-  // Latest action per issue wins (the agent corrected itself mid-run).
+  // Preserve action-by-action classifications from durable legacy runs.
   const classificationsByIssue = new Map<string, AgentRunIssueClassification>();
   const prs: AgentRunPr[] = [];
+  const appendPr = (p: PullRequestProposal) => {
+    const existingIdx = prs.findIndex(
+      (pr) => pr.selectedRepoFullName === p.repoFullName && pr.branchName === p.branchName,
+    );
+    const pr: AgentRunPr = {
+      selectedRepoFullName: p.repoFullName,
+      branchName: p.branchName,
+      baseBranch: p.baseBranch,
+      title: p.title,
+      body: p.body,
+      patchFilePath: p.patchFilePath,
+      openStatus: "opened",
+    };
+    if (p.changedFiles) pr.changedFiles = p.changedFiles;
+    if (existingIdx >= 0) prs[existingIdx] = pr;
+    else prs.push(pr);
+    const mobile = mobileTestFromPr(p);
+    if (mobile) result.mobileRegressionTest = mobile;
+  };
   for (const action of actions) {
     if (action.name === "propose_pr") {
-      const p = action.payload;
-      const existingIdx = prs.findIndex(
-        (pr) => pr.selectedRepoFullName === p.repoFullName && pr.branchName === p.branchName,
-      );
-      const pr: AgentRunPr = {
-        selectedRepoFullName: p.repoFullName,
-        branchName: p.branchName,
-        baseBranch: p.baseBranch,
-        title: p.title,
-        body: p.body,
-        patchFilePath: p.patchFilePath,
-        openStatus: "opened",
-      };
-      if (p.changedFiles) pr.changedFiles = p.changedFiles;
-      if (existingIdx >= 0) prs[existingIdx] = pr;
-      else prs.push(pr);
-      const mobile = mobileTestFromPr(p);
-      if (mobile) result.mobileRegressionTest = mobile;
+      const payload = action.payload as ProposePrPayload | PullRequestProposal;
+      const proposals = "pullRequests" in payload ? payload.pullRequests : [payload];
+      proposals.forEach(appendPr);
       continue;
     }
     const classification = issueClassificationFromAction(action);
     if (classification) classificationsByIssue.set(classification.issueId, classification);
+  }
+  if (terminal?.name === "propose_pr") {
+    terminal.payload.pullRequests.forEach(appendPr);
   }
   if (prs.length > 0) {
     result.prs = prs;
@@ -885,12 +1014,42 @@ export function assembleAgentRunResult(args: {
       reason: terminal.payload.reason,
       evidence: terminal.payload.evidence,
     };
+    for (const outcome of terminal.payload.issueOutcomes) {
+      const action: AgentRunIssueClassification["action"] =
+        outcome.status === "silenced"
+          ? "silence"
+          : outcome.status === "under_observation"
+            ? "observe"
+            : "resolve";
+      const classification: AgentRunIssueClassification = {
+        issueId: outcome.issueId,
+        action,
+        reason: outcome.reason,
+        evidence: outcome.evidence,
+      };
+      if (
+        outcome.status === "under_observation" &&
+        outcome.escalateOn !== undefined &&
+        outcome.threshold !== undefined
+      ) {
+        classification.trigger = escalationTriggerFromObservation({
+          escalateOn: outcome.escalateOn,
+          threshold: outcome.threshold,
+        });
+      }
+      classificationsByIssue.set(outcome.issueId, classification);
+    }
+    result.issueClassifications = [...classificationsByIssue.values()];
   }
   if (terminal?.name === "complete_investigation") {
     result.completionKind = "investigation_complete";
   }
   if (terminal?.name === "ask_human") {
     result.question = terminal.payload.question;
+  }
+  if (terminal?.name === "report_external_cause") {
+    result.waitReason = "external_cause";
+    result.externalCause = terminal.payload;
   }
 
   return result;
