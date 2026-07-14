@@ -1001,7 +1001,7 @@ test("countSeries exact scan path (no scanCap) does not use inner subquery limit
   assert.doesNotMatch(capture.query ?? "", /sum\(count\(\)\) OVER \(\)/);
 });
 
-test("countSeries capped scan path (with scanCap) uses subquery limit and window function", async () => {
+test("countSeries capped scan path (with scanCap) uses subquery limit and UNION ALL metadata count", async () => {
   const capture: { query?: string; params?: Record<string, unknown> } = {};
 
   await countSeries(
@@ -1015,5 +1015,6 @@ test("countSeries capped scan path (with scanCap) uses subquery limit and window
   );
 
   assert.match(capture.query ?? "", /FROM \(\s*SELECT [\s\S]*FROM otel_logs\s*WHERE [\s\S]*LIMIT 1000000\s*\)/);
-  assert.match(capture.query ?? "", /sum\(count\(\)\) OVER \(\)/);
+  assert.match(capture.query ?? "", /UNION ALL/);
+  assert.match(capture.query ?? "", /LIMIT 1000001/);
 });

@@ -1625,21 +1625,37 @@ export async function countSeries(
     const whereSql = filterConds.length > 0 ? `WHERE ${filterConds.join(" AND ")}` : "";
 
     const query = `
-      SELECT
-        toString(toStartOfInterval(Timestamp, INTERVAL ${step.n} ${step.unit})) AS bucket,
-        ${group.expr} AS group_key,
-        count() AS c,
-        sum(count()) OVER () AS total_count
-      FROM (
-        SELECT ${selectCols}
-        FROM ${table}
-        WHERE ${baseConds.join(" AND ")}
-        LIMIT ${scanCap}
+      (
+        SELECT
+          0 AS is_metadata,
+          toString(toStartOfInterval(Timestamp, INTERVAL ${step.n} ${step.unit})) AS bucket,
+          ${group.expr} AS group_key,
+          count() AS c
+        FROM (
+          SELECT ${selectCols}
+          FROM ${table}
+          WHERE ${baseConds.join(" AND ")}
+          LIMIT ${scanCap}
+        )
+        ${whereSql}
+        GROUP BY bucket, group_key
+        ORDER BY bucket ASC
+        LIMIT 10000
       )
-      ${whereSql}
-      GROUP BY bucket, group_key
-      ORDER BY bucket ASC
-      LIMIT 10000
+      UNION ALL
+      (
+        SELECT
+          1 AS is_metadata,
+          '' AS bucket,
+          '' AS group_key,
+          count() AS c
+        FROM (
+          SELECT 1
+          FROM ${table}
+          WHERE ${baseConds.join(" AND ")}
+          LIMIT ${scanCap + 1}
+        )
+      )
     `;
 
     const r = await ch.query({
@@ -1662,14 +1678,16 @@ export async function countSeries(
       format: "JSONEachRow",
     });
     const rows = (await r.json()) as {
+      is_metadata: string | number;
       bucket: string;
       group_key: string;
       c: string | number;
-      total_count?: string | number;
     }[];
-    const mapped = rows.map((row) => ({ bucket: row.bucket, group: row.group_key, count: Number(row.c) }));
-    const totalCount = Number(rows[0]?.total_count ?? 0);
-    return { rows: mapped, sampled: totalCount >= scanCap };
+    const dataRows = rows.filter((row) => Number(row.is_metadata) === 0);
+    const metaRow = rows.find((row) => Number(row.is_metadata) === 1);
+    const totalCount = Number(metaRow?.c ?? 0);
+    const mapped = dataRows.map((row) => ({ bucket: row.bucket, group: row.group_key, count: Number(row.c) }));
+    return { rows: mapped, sampled: totalCount > scanCap };
   }
 
   // Exact scan path (used by alerts)
