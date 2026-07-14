@@ -12,9 +12,9 @@ type QueryCall = {
 
 function fakeDb(): {
   database: DB;
-  state: Map<string, { cursor: Date }>;
+  state: Map<string, { cursor: Date; cursorKey?: string }>;
 } {
-  const state = new Map<string, { cursor: Date }>();
+  const state = new Map<string, { cursor: Date; cursorKey?: string }>();
   state.set("fingerprint", { cursor: new Date("2026-05-23T10:00:00.000Z") });
   state.set("fingerprint-logs", { cursor: new Date("2026-05-23T10:00:00.000Z") });
   const database = {
@@ -37,11 +37,12 @@ function fakeDb(): {
     },
     insert() {
       return {
-        values(values: { name: string; cursor: Date }) {
+        values(values: { name: string; cursor: Date; cursorKey?: string }) {
           return {
             async onConflictDoUpdate() {
               state.set(values.name, {
                 cursor: values.cursor,
+                cursorKey: values.cursorKey,
               });
             },
           };
@@ -80,9 +81,9 @@ test("span ingestion processes every row for a selected timestamp", async () => 
   });
 
   assert.equal(await ingestor.tickSpans(), 2);
-  assert.match(calls[0]?.query ?? "", /GROUP BY Timestamp/);
-  // Reads the exception-only projection, not ARRAY JOIN Events over otel_traces.
-  assert.match(calls[0]?.query ?? "", /FROM otel_exceptions/);
+  assert.match(calls[0]?.query ?? "", /\(discovered_at, candidate_id\) >/);
+  // Reads the arrival-ordered issue-candidate projection, not raw telemetry.
+  assert.match(calls[0]?.query ?? "", /FROM otel_issue_candidates/);
   assert.match(calls[0]?.query ?? "", /kind = 'span'/);
   assert.doesNotMatch(calls[0]?.query ?? "", /ARRAY JOIN/);
   assert.equal("cursorKey0" in (calls[0]?.query_params ?? {}), false);
@@ -118,9 +119,9 @@ test("log ingestion processes every row for a selected timestamp", async () => {
   });
 
   assert.equal(await ingestor.tickLogs(), 2);
-  assert.match(calls[0]?.query ?? "", /GROUP BY Timestamp/);
-  // Reads the exception-only projection (kind='log'), not a full otel_logs scan.
-  assert.match(calls[0]?.query ?? "", /FROM otel_exceptions/);
+  assert.match(calls[0]?.query ?? "", /\(discovered_at, candidate_id\) >/);
+  // Reads the arrival-ordered issue-candidate projection, not raw telemetry.
+  assert.match(calls[0]?.query ?? "", /FROM otel_issue_candidates/);
   assert.match(calls[0]?.query ?? "", /kind = 'log'/);
   assert.equal("cursorKey0" in (calls[0]?.query_params ?? {}), false);
   assert.equal(calls[0]?.query_params?.cursorTs, "2026-05-23 10:00:00.000");
@@ -152,11 +153,132 @@ test("span ingestion bounds discovery to a configured window and advances empty 
   assert.equal(await ingestor.tickSpans(), 0);
   assert.match(
     calls[0]?.query ?? "",
-    /Timestamp <= parseDateTime64BestEffort\({untilTs:String}, 6\)/,
+    /discovered_at < parseDateTime64BestEffort\({untilTs:String}, 3\)/,
   );
   assert.equal(calls[0]?.query_params?.cursorTs, "2026-05-23 10:00:00.000");
   assert.equal(calls[0]?.query_params?.untilTs, "2026-05-23 10:01:00.000");
   assert.equal(state.get("fingerprint")?.cursor.toISOString(), "2026-05-23T10:01:00.000Z");
+});
+
+test("span ingestion starts an absent arrival cursor at the current horizon", async () => {
+  const { database, state } = fakeDb();
+  state.delete("fingerprint");
+  const calls: QueryCall[] = [];
+  const clickhouse = {
+    async query(input: QueryCall) {
+      calls.push(input);
+      return {
+        async json() {
+          return [];
+        },
+      };
+    },
+  };
+  const ingestor = createTelemetryIngestor({
+    clickhouse,
+    database,
+    batchSize: 500,
+    now: () => new Date("2026-05-23T10:10:00.000Z"),
+    async handleIssueTransition() {},
+  });
+
+  assert.equal(await ingestor.tickSpans(), 0);
+  assert.equal(calls[0]?.query_params?.cursorTs, "1970-01-01 00:00:00.000000");
+  assert.equal(calls[0]?.query_params?.untilTs, "2026-05-23 10:10:00.000");
+  assert.equal(state.get("fingerprint")?.cursor.toISOString(), "2026-05-23T10:10:00.000Z");
+});
+
+test("span ingestion discovers a delayed event by arrival time without changing its event time", async () => {
+  const { database, state } = fakeDb();
+  const calls: QueryCall[] = [];
+  let tick = 0;
+  let currentTime = new Date("2026-05-23T10:06:00.000Z");
+  const delayedRow = {
+    ...spanRow({ traceId: "trace-delayed", spanId: "span-delayed", message: "late error" }),
+    ts: "2026-05-23 10:02:00.000000",
+    cursor_ts: "2026-05-23 10:06:30.000",
+  };
+  const clickhouse = {
+    async query(input: QueryCall) {
+      calls.push(input);
+      const rows = tick === 0 ? [] : [delayedRow];
+      tick += 1;
+      return {
+        async json() {
+          return rows;
+        },
+      };
+    },
+  };
+  const ingestor = createTelemetryIngestor({
+    clickhouse,
+    database,
+    batchSize: 1,
+    discoveryWindowMs: 5 * 60_000,
+    now: () => currentTime,
+    async handleIssueTransition() {},
+  });
+
+  assert.equal(await ingestor.tickSpans(), 0);
+  assert.equal(calls[0]?.query_params?.untilTs, "2026-05-23 10:05:00.000");
+  assert.equal(state.get("fingerprint")?.cursor.toISOString(), "2026-05-23T10:05:00.000Z");
+
+  currentTime = new Date("2026-05-23T10:07:00.000Z");
+  assert.equal(await ingestor.tickSpans(), 1);
+  assert.match(calls[1]?.query ?? "", /\(discovered_at, candidate_id\) >/);
+  assert.match(calls[1]?.query ?? "", /toString\(Timestamp\) AS ts/);
+  assert.match(calls[1]?.query ?? "", /toString\(discovered_at\) AS cursor_ts/);
+  assert.equal(calls[1]?.query_params?.cursorTs, "2026-05-23 10:05:00.000");
+  assert.equal(calls[1]?.query_params?.untilTs, "2026-05-23 10:07:00.000");
+  assert.equal(state.get("fingerprint")?.cursor.toISOString(), "2026-05-23T10:06:30.000Z");
+});
+
+test("span ingestion resumes within a shared arrival timestamp by candidate id", async () => {
+  const { database, state } = fakeDb();
+  const calls: QueryCall[] = [];
+  const firstId = "11111111-1111-4111-8111-111111111111";
+  const secondId = "22222222-2222-4222-8222-222222222222";
+  const rows = [
+    {
+      ...spanRow({ traceId: "trace-a", spanId: "span-a", message: "first" }),
+      cursor_ts: "2026-05-23 10:01:00.000",
+      cursor_key: firstId,
+    },
+    {
+      ...spanRow({ traceId: "trace-b", spanId: "span-b", message: "second" }),
+      cursor_ts: "2026-05-23 10:01:00.000",
+      cursor_key: secondId,
+    },
+  ];
+  let callCount = 0;
+  const clickhouse = {
+    async query(input: QueryCall) {
+      calls.push(input);
+      const row = rows[callCount] ? [rows[callCount]] : [];
+      callCount += 1;
+      return {
+        async json() {
+          return row;
+        },
+      };
+    },
+  };
+  const ingestor = createTelemetryIngestor({
+    clickhouse,
+    database,
+    batchSize: 1,
+    now: () => new Date("2026-05-23T10:02:00.000Z"),
+    async handleIssueTransition() {},
+  });
+
+  assert.equal(await ingestor.tickSpans(), 1);
+  assert.equal(state.get("fingerprint")?.cursorKey, firstId);
+
+  assert.equal(await ingestor.tickSpans(), 1);
+  assert.match(calls[1]?.query ?? "", /candidate_id/);
+  assert.equal(calls[1]?.query_params?.cursorKey, firstId);
+  assert.equal(state.get("fingerprint")?.cursor.toISOString(), "2026-05-23T10:01:00.000Z");
+  assert.equal(state.get("fingerprint")?.cursorKey, secondId);
 });
 
 test("log ingestion bounds discovery to a configured window and advances empty windows", async () => {
@@ -184,11 +306,56 @@ test("log ingestion bounds discovery to a configured window and advances empty w
   assert.equal(await ingestor.tickLogs(), 0);
   assert.match(
     calls[0]?.query ?? "",
-    /Timestamp <= parseDateTime64BestEffort\({untilTs:String}, 6\)/,
+    /discovered_at < parseDateTime64BestEffort\({untilTs:String}, 3\)/,
   );
   assert.equal(calls[0]?.query_params?.cursorTs, "2026-05-23 10:00:00.000");
   assert.equal(calls[0]?.query_params?.untilTs, "2026-05-23 10:01:00.000");
   assert.equal(state.get("fingerprint-logs")?.cursor.toISOString(), "2026-05-23T10:01:00.000Z");
+});
+
+test("log ingestion discovers a delayed event by arrival time without changing its event time", async () => {
+  const { database, state } = fakeDb();
+  const calls: QueryCall[] = [];
+  let tick = 0;
+  let currentTime = new Date("2026-05-23T10:06:00.000Z");
+  const delayedRow = {
+    ...logRow({ traceId: "trace-delayed", spanId: "span-delayed", body: "late error" }),
+    ts: "2026-05-23 10:02:00.000000",
+    cursor_ts: "2026-05-23 10:06:30.000",
+  };
+  const clickhouse = {
+    async query(input: QueryCall) {
+      calls.push(input);
+      const rows = tick === 0 ? [] : [delayedRow];
+      tick += 1;
+      return {
+        async json() {
+          return rows;
+        },
+      };
+    },
+  };
+  const ingestor = createTelemetryIngestor({
+    clickhouse,
+    database,
+    batchSize: 1,
+    discoveryWindowMs: 5 * 60_000,
+    now: () => currentTime,
+    async handleIssueTransition() {},
+  });
+
+  assert.equal(await ingestor.tickLogs(), 0);
+  assert.equal(calls[0]?.query_params?.untilTs, "2026-05-23 10:05:00.000");
+  assert.equal(state.get("fingerprint-logs")?.cursor.toISOString(), "2026-05-23T10:05:00.000Z");
+
+  currentTime = new Date("2026-05-23T10:07:00.000Z");
+  assert.equal(await ingestor.tickLogs(), 1);
+  assert.match(calls[1]?.query ?? "", /\(discovered_at, candidate_id\) >/);
+  assert.match(calls[1]?.query ?? "", /toString\(Timestamp\) AS ts/);
+  assert.match(calls[1]?.query ?? "", /toString\(discovered_at\) AS cursor_ts/);
+  assert.equal(calls[1]?.query_params?.cursorTs, "2026-05-23 10:05:00.000");
+  assert.equal(calls[1]?.query_params?.untilTs, "2026-05-23 10:07:00.000");
+  assert.equal(state.get("fingerprint-logs")?.cursor.toISOString(), "2026-05-23T10:06:30.000Z");
 });
 
 test("span ingestion rounds sub-millisecond discovery windows up to one millisecond", async () => {
@@ -226,10 +393,10 @@ const VALID_PROJECT_ID = "11111111-1111-4111-8111-111111111111";
 // the whole batch.
 function fakeDbWithProject(opts: { onExecute?: (call: number) => void }): {
   database: DB;
-  state: Map<string, { cursor: Date }>;
+  state: Map<string, { cursor: Date; cursorKey?: string }>;
   executeCalls: () => number;
 } {
-  const state = new Map<string, { cursor: Date }>();
+  const state = new Map<string, { cursor: Date; cursorKey?: string }>();
   state.set("fingerprint", { cursor: new Date("2026-05-23T10:00:00.000Z") });
   state.set("fingerprint-logs", { cursor: new Date("2026-05-23T10:00:00.000Z") });
   let calls = 0;
@@ -277,10 +444,10 @@ function fakeDbWithProject(opts: { onExecute?: (call: number) => void }): {
     },
     insert() {
       return {
-        values(values: { name: string; cursor: Date }) {
+        values(values: { name: string; cursor: Date; cursorKey?: string }) {
           return {
             async onConflictDoUpdate() {
-              state.set(values.name, { cursor: values.cursor });
+              state.set(values.name, { cursor: values.cursor, cursorKey: values.cursorKey });
             },
           };
         },
@@ -311,6 +478,7 @@ test("log ingestion isolates a failing row and still advances past it", async ()
       project_id: VALID_PROJECT_ID,
       exc_type: "HealthyError",
       ts: "2026-05-23 10:00:01.000000",
+      cursor_ts: "2026-05-23 10:00:01.000",
     },
   ];
   let callCount = 0;
@@ -349,11 +517,13 @@ test("log ingestion collapses same-fingerprint rows into a single upsert", async
       ...logRow({ traceId: "t2", spanId: "s2", body: "boom" }),
       project_id: VALID_PROJECT_ID,
       ts: "2026-05-23 10:00:01.000000",
+      cursor_ts: "2026-05-23 10:00:01.000",
     },
     {
       ...logRow({ traceId: "t3", spanId: "s3", body: "boom" }),
       project_id: VALID_PROJECT_ID,
       ts: "2026-05-23 10:00:02.000000",
+      cursor_ts: "2026-05-23 10:00:02.000",
     },
   ];
   let callCount = 0;
@@ -383,6 +553,8 @@ test("log ingestion collapses same-fingerprint rows into a single upsert", async
 function spanRow(opts: { traceId: string; spanId: string; message: string }) {
   return {
     ts: "2026-05-23 10:00:00.000000",
+    cursor_ts: "2026-05-23 10:00:00.000",
+    cursor_key: "11111111-1111-4111-8111-111111111111",
     project_id: "not-a-project",
     service: "api",
     span_name: "request",
@@ -399,6 +571,8 @@ function spanRow(opts: { traceId: string; spanId: string; message: string }) {
 function logRow(opts: { traceId: string; spanId: string; body: string }) {
   return {
     ts: "2026-05-23 10:00:00.000000",
+    cursor_ts: "2026-05-23 10:00:00.000",
+    cursor_key: "11111111-1111-4111-8111-111111111111",
     project_id: "not-a-project",
     service: "api",
     severity: "ERROR",

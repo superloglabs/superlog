@@ -24,6 +24,7 @@
     "test:agent-run-queue": "tsx --test src/agent-runs/queue.test.ts",
     "test:trace-context": "tsx --test src/infra/clickhouse/trace-context.test.ts",
     "test:queue-health": "tsx --test src/queue-health.test.ts",
+    "test:telemetry-ingest": "tsx --test src/telemetry/ingest.test.ts",
     "test:agent-run-start": "tsx --test src/agent-runs/start.test.ts",
     "test:agent-run-status": "tsx --test src/agent-runs/status.test.ts",
     "test:agent-run-sync": "tsx --test src/agent-runs/sync.test.ts",

@@ -118,6 +118,24 @@ if ! grep -Fq 'ENGINE = MergeTree' <<< "$rendered"; then
   exit 1
 fi
 
+rendered="$($REPO_ROOT/scripts/clickhouse-apply-local-migrations.sh --render \
+  "$REPO_ROOT/infra/clickhouse/migrations/008_otel_issue_candidates.sql")"
+
+if grep -qE 'ON CLUSTER|ReplicatedMergeTree' <<< "$rendered"; then
+  echo "expected the issue-candidate migration to render for single-node ClickHouse" >&2
+  exit 1
+fi
+
+if ! grep -Fq 'CREATE TABLE IF NOT EXISTS superlog.otel_issue_candidates' <<< "$rendered"; then
+  echo "expected the migration to create the arrival-ordered issue-candidate table" >&2
+  exit 1
+fi
+
+if ! grep -Fq 'FROM superlog.otel_exceptions' <<< "$rendered"; then
+  echo "expected issue candidates to cascade from the exception projection" >&2
+  exit 1
+fi
+
 fake_bin="$TMP_HOME/bin"
 fake_env="$TMP_HOME/stack.env"
 fake_attempts="$TMP_HOME/portless-attempts"

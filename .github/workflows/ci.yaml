@@ -60,5 +60,7 @@ jobs:
           done
       - name: Run Standard Packages Tests
         run: pnpm -r --filter '!@superlog/db' --if-present test
+      - name: Run telemetry ingestion tests
+        run: pnpm --filter @superlog/worker test:telemetry-ingest
       - name: Run Database Package Tests
         run: pnpm --filter @superlog/db test

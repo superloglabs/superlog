@@ -16,6 +16,7 @@ const SPAN_CURSOR = "fingerprint";
 const LOG_CURSOR = "fingerprint-logs";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ZERO_CURSOR = "1970-01-01 00:00:00.000000";
+const ZERO_CURSOR_KEY = "00000000-0000-0000-0000-000000000000";
 const DEFAULT_DISCOVERY_WINDOW_MS = 5 * 60 * 1000;
 
 type TelemetryKind = "span" | "log";
@@ -26,7 +27,7 @@ const batchRows = meter.createCounter("superlog.worker.telemetry.batch_rows", {
 });
 const batchFull = meter.createCounter("superlog.worker.telemetry.batch_full", {
   description:
-    "Telemetry ingest batches that selected BATCH_SIZE timestamp groups, indicating backlog pressure.",
+    "Telemetry ingest batches that selected BATCH_SIZE rows, indicating backlog pressure.",
 });
 const batchDurationMs = meter.createHistogram("superlog.worker.telemetry.batch_duration_ms", {
   description: "Wall-clock duration of a telemetry ingest batch.",
@@ -61,6 +62,8 @@ type ClickHouseClientLike = {
 
 type CHSpanRow = {
   ts: string;
+  cursor_ts: string;
+  cursor_key: string;
   project_id: string;
   service: string;
   span_name: string;
@@ -75,6 +78,8 @@ type CHSpanRow = {
 
 type CHLogRow = {
   ts: string;
+  cursor_ts: string;
+  cursor_key: string;
   project_id: string;
   service: string;
   severity: string;
@@ -251,21 +256,25 @@ function buildIssueTitle(fp: Fingerprint, message: string | null): string {
   return fp.exceptionType;
 }
 
-async function getCursor(database: DB, name: string): Promise<string> {
+type DiscoveryCursor = { ts: string; key: string };
+
+async function getCursor(database: DB, name: string): Promise<DiscoveryCursor> {
   const row = await database.query.workerState.findFirst({
     where: (workerState, { eq }) => eq(workerState.name, name),
   });
-  return row ? dateToChString(row.cursor) : ZERO_CURSOR;
+  return row
+    ? { ts: dateToChString(row.cursor), key: row.cursorKey ?? ZERO_CURSOR_KEY }
+    : { ts: ZERO_CURSOR, key: ZERO_CURSOR_KEY };
 }
 
-async function setCursor(database: DB, name: string, cursorCh: string) {
-  const d = chStringToDate(cursorCh);
+async function setCursor(database: DB, name: string, cursor: DiscoveryCursor) {
+  const d = chStringToDate(cursor.ts);
   await database
     .insert(schema.workerState)
-    .values({ name, cursor: d, updatedAt: new Date() })
+    .values({ name, cursor: d, cursorKey: cursor.key, updatedAt: new Date() })
     .onConflictDoUpdate({
       target: schema.workerState.name,
-      set: { cursor: d, updatedAt: new Date() },
+      set: { cursor: d, cursorKey: cursor.key, updatedAt: new Date() },
     });
 }
 
@@ -500,17 +509,31 @@ async function upsertIssue(
   });
 }
 
-function boundedCursorParams(
-  cursor: string,
+function boundedArrivalCursorParams(
+  cursor: DiscoveryCursor,
   discoveryWindowMs: number,
   now: Clock,
-): { cursorTs: string; untilTs: string } {
-  const cursorMs = chStringToDate(cursor).getTime();
-  const untilMs = Math.max(cursorMs, Math.min(cursorMs + discoveryWindowMs, now().getTime()));
+): { cursorTs: string; cursorKey: string; untilTs: string } {
+  const cursorMs = chStringToDate(cursor.ts).getTime();
+  const nowMs = now().getTime();
+  // A fresh arrival projection has no historical backfill, so a missing cursor
+  // can safely begin at the current horizon. Crawling from Unix epoch in five-
+  // minute windows would otherwise take years before the first candidate.
+  const untilMs =
+    cursor.ts === ZERO_CURSOR && cursor.key === ZERO_CURSOR_KEY
+      ? nowMs
+      : Math.max(cursorMs, Math.min(cursorMs + discoveryWindowMs, nowMs));
   return {
-    cursorTs: cursor,
+    cursorTs: cursor.ts,
+    cursorKey: cursor.key,
     untilTs: dateToChString(new Date(untilMs)),
   };
+}
+
+function advanceToWindowEnd(cursor: DiscoveryCursor, window: { untilTs: string }): DiscoveryCursor {
+  // Preserve the tie-breaker if the clock has not moved beyond the cursor yet.
+  // Resetting it at the same timestamp would replay already-processed rows.
+  return window.untilTs === cursor.ts ? cursor : { ts: window.untilTs, key: ZERO_CURSOR_KEY };
 }
 
 function recordBatchMetrics(input: {
@@ -523,10 +546,6 @@ function recordBatchMetrics(input: {
   batchRows.add(input.rows, attrs);
   if (input.batchLimited) batchFull.add(1, attrs);
   batchDurationMs.record(input.durationMs, attrs);
-}
-
-function distinctTimestampCount(rows: Array<{ ts: string }>): number {
-  return new Set(rows.map((row) => row.ts)).size;
 }
 
 function parseChTimestampMs(ts: string | null | undefined): number | null {
@@ -544,7 +563,7 @@ async function loadBacklogStats(opts: {
 }): Promise<{ pendingRows: number; oldestPendingAgeMs: number; cursorLagMs: number }> {
   const cursorName = opts.kind === "span" ? SPAN_CURSOR : LOG_CURSOR;
   const cursor = await getCursor(opts.database, cursorName);
-  const cursorWindow = boundedCursorParams(cursor, opts.discoveryWindowMs, opts.now);
+  const cursorWindow = boundedArrivalCursorParams(cursor, opts.discoveryWindowMs, opts.now);
   const result = await opts.clickhouse.query({
     query: opts.kind === "span" ? spanBacklogStatsQuery() : logBacklogStatsQuery(),
     query_params: cursorWindow,
@@ -558,7 +577,7 @@ async function loadBacklogStats(opts: {
   }
   const oldestMs = parseChTimestampMs(row.oldest_pending_ts);
   const latestMs = parseChTimestampMs(row.latest_pending_ts);
-  const cursorMs = parseChTimestampMs(cursor);
+  const cursorMs = parseChTimestampMs(cursor.ts);
   return {
     pendingRows,
     oldestPendingAgeMs: oldestMs === null ? 0 : Math.max(0, Date.now() - oldestMs),
@@ -566,21 +585,22 @@ async function loadBacklogStats(opts: {
   };
 }
 
-// Backlog stats + the tick fetches below read otel_exceptions (the
-// exception-only projection, see migrations/004_otel_exceptions.sql) instead of
-// ARRAY JOIN-scanning otel_traces / full-scanning otel_logs. Membership in
-// otel_exceptions already mirrors the old predicates (span `exception` events;
-// logs SeverityNumber>=17), so the `kind` filter is the only scope needed.
+// Backlog stats + the tick fetches below read the arrival-ordered issue-candidate
+// projection. Timestamp remains the event time used for incident chronology;
+// discovered_at is only the durable discovery cursor.
 function spanBacklogStatsQuery(): string {
   return `
     SELECT
       count() AS pending_rows,
-      toString(min(Timestamp)) AS oldest_pending_ts,
-      toString(max(Timestamp)) AS latest_pending_ts
-    FROM otel_exceptions
+      toString(min(discovered_at)) AS oldest_pending_ts,
+      toString(max(discovered_at)) AS latest_pending_ts
+    FROM otel_issue_candidates
     WHERE kind = 'span'
-      AND Timestamp > parseDateTime64BestEffort({cursorTs:String}, 6)
-      AND Timestamp <= parseDateTime64BestEffort({untilTs:String}, 6)
+      AND (discovered_at, candidate_id) > (
+        parseDateTime64BestEffort({cursorTs:String}, 3),
+        toUUID({cursorKey:String})
+      )
+      AND discovered_at < parseDateTime64BestEffort({untilTs:String}, 3)
       AND project_id != ''
   `;
 }
@@ -589,12 +609,15 @@ function logBacklogStatsQuery(): string {
   return `
     SELECT
       count() AS pending_rows,
-      toString(min(Timestamp)) AS oldest_pending_ts,
-      toString(max(Timestamp)) AS latest_pending_ts
-    FROM otel_exceptions
+      toString(min(discovered_at)) AS oldest_pending_ts,
+      toString(max(discovered_at)) AS latest_pending_ts
+    FROM otel_issue_candidates
     WHERE kind = 'log'
-      AND Timestamp > parseDateTime64BestEffort({cursorTs:String}, 6)
-      AND Timestamp <= parseDateTime64BestEffort({untilTs:String}, 6)
+      AND (discovered_at, candidate_id) > (
+        parseDateTime64BestEffort({cursorTs:String}, 3),
+        toUUID({cursorKey:String})
+      )
+      AND discovered_at < parseDateTime64BestEffort({untilTs:String}, 3)
       AND project_id != ''
   `;
 }
@@ -611,25 +634,16 @@ async function tickSpans(opts: {
     span.setAttribute("events.kind", "span");
     const startedAt = performance.now();
     let rowsProcessed = 0;
-    let selectedTimestampCount = 0;
+    let selectedRowCount = 0;
     try {
       const cursor = await getCursor(opts.database, SPAN_CURSOR);
-      const cursorWindow = boundedCursorParams(cursor, opts.discoveryWindowMs, opts.now);
+      const cursorWindow = boundedArrivalCursorParams(cursor, opts.discoveryWindowMs, opts.now);
       const result = await opts.clickhouse.query({
         query: `
-      WITH selected_timestamps AS (
-        SELECT Timestamp
-        FROM otel_exceptions
-        WHERE kind = 'span'
-          AND Timestamp > parseDateTime64BestEffort({cursorTs:String}, 6)
-          AND Timestamp <= parseDateTime64BestEffort({untilTs:String}, 6)
-          AND project_id != ''
-        GROUP BY Timestamp
-        ORDER BY Timestamp ASC
-        LIMIT {limit:UInt32}
-      )
       SELECT
         toString(Timestamp) AS ts,
+        toString(discovered_at) AS cursor_ts,
+        toString(candidate_id) AS cursor_key,
         project_id,
         service,
         span_name,
@@ -640,11 +654,16 @@ async function tickSpans(opts: {
         exception_type AS exc_type,
         exception_message AS exc_message,
         exception_stacktrace AS exc_stack
-      FROM otel_exceptions
+      FROM otel_issue_candidates
       WHERE kind = 'span'
         AND project_id != ''
-        AND Timestamp IN (SELECT Timestamp FROM selected_timestamps)
-      ORDER BY Timestamp ASC, project_id ASC, service ASC, trace_id ASC, span_id ASC, exc_type ASC, exc_message ASC, exc_stack ASC
+        AND (discovered_at, candidate_id) > (
+          parseDateTime64BestEffort({cursorTs:String}, 3),
+          toUUID({cursorKey:String})
+        )
+        AND discovered_at < parseDateTime64BestEffort({untilTs:String}, 3)
+      ORDER BY discovered_at ASC, candidate_id ASC
+      LIMIT {limit:UInt32}
     `,
         query_params: { ...cursorWindow, limit: opts.batchSize },
         format: "JSONEachRow",
@@ -652,10 +671,10 @@ async function tickSpans(opts: {
 
       const rows = (await result.json()) as CHSpanRow[];
       rowsProcessed = rows.length;
-      selectedTimestampCount = distinctTimestampCount(rows);
+      selectedRowCount = rows.length;
       span.setAttribute("events.rows", rows.length);
       if (rows.length === 0) {
-        await setCursor(opts.database, SPAN_CURSOR, cursorWindow.untilTs);
+        await setCursor(opts.database, SPAN_CURSOR, advanceToWindowEnd(cursor, cursorWindow));
         return 0;
       }
 
@@ -674,7 +693,7 @@ async function tickSpans(opts: {
       for (const row of rows) {
         // Advance past every selected row up front (even skipped/failed ones) so
         // the batch can never wedge the cursor; the upserts happen afterward.
-        nextCursor = row.ts;
+        nextCursor = { ts: row.cursor_ts, key: row.cursor_key };
         if (!validProjectIds.has(row.project_id)) {
           skippedUnknownProjects += 1;
           continue;
@@ -724,7 +743,9 @@ async function tickSpans(opts: {
       }
       await flushIssueGroups(opts.database, groups, opts.handleIssueTransition);
       logSkippedEvents("span", skippedUnknownProjects, skippedByFilter);
-      if (selectedTimestampCount < opts.batchSize) nextCursor = cursorWindow.untilTs;
+      if (selectedRowCount < opts.batchSize) {
+        nextCursor = advanceToWindowEnd(cursor, cursorWindow);
+      }
       await setCursor(opts.database, SPAN_CURSOR, nextCursor);
       return rows.length;
     } catch (err) {
@@ -738,7 +759,7 @@ async function tickSpans(opts: {
       recordBatchMetrics({
         kind: "span",
         rows: rowsProcessed,
-        batchLimited: selectedTimestampCount >= opts.batchSize,
+        batchLimited: selectedRowCount >= opts.batchSize,
         durationMs: performance.now() - startedAt,
       });
       span.end();
@@ -758,25 +779,16 @@ async function tickLogs(opts: {
     span.setAttribute("events.kind", "log");
     const startedAt = performance.now();
     let rowsProcessed = 0;
-    let selectedTimestampCount = 0;
+    let selectedRowCount = 0;
     try {
       const cursor = await getCursor(opts.database, LOG_CURSOR);
-      const cursorWindow = boundedCursorParams(cursor, opts.discoveryWindowMs, opts.now);
+      const cursorWindow = boundedArrivalCursorParams(cursor, opts.discoveryWindowMs, opts.now);
       const result = await opts.clickhouse.query({
         query: `
-      WITH selected_timestamps AS (
-        SELECT Timestamp
-        FROM otel_exceptions
-        WHERE kind = 'log'
-          AND Timestamp > parseDateTime64BestEffort({cursorTs:String}, 6)
-          AND Timestamp <= parseDateTime64BestEffort({untilTs:String}, 6)
-          AND project_id != ''
-        GROUP BY Timestamp
-        ORDER BY Timestamp ASC
-        LIMIT {limit:UInt32}
-      )
       SELECT
         toString(Timestamp) AS ts,
+        toString(discovered_at) AS cursor_ts,
+        toString(candidate_id) AS cursor_key,
         project_id,
         service,
         severity,
@@ -788,11 +800,16 @@ async function tickLogs(opts: {
         resource_attrs,
         exception_type AS exc_type,
         exception_stacktrace AS exc_stack
-      FROM otel_exceptions
+      FROM otel_issue_candidates
       WHERE kind = 'log'
         AND project_id != ''
-        AND Timestamp IN (SELECT Timestamp FROM selected_timestamps)
-      ORDER BY Timestamp ASC, project_id ASC, service ASC, trace_id ASC, span_id ASC, leftPad(toString(severity_number), 3, '0') ASC, severity ASC, body ASC, exc_type ASC, exc_stack ASC
+        AND (discovered_at, candidate_id) > (
+          parseDateTime64BestEffort({cursorTs:String}, 3),
+          toUUID({cursorKey:String})
+        )
+        AND discovered_at < parseDateTime64BestEffort({untilTs:String}, 3)
+      ORDER BY discovered_at ASC, candidate_id ASC
+      LIMIT {limit:UInt32}
     `,
         query_params: { ...cursorWindow, limit: opts.batchSize },
         format: "JSONEachRow",
@@ -800,10 +817,10 @@ async function tickLogs(opts: {
 
       const rows = (await result.json()) as CHLogRow[];
       rowsProcessed = rows.length;
-      selectedTimestampCount = distinctTimestampCount(rows);
+      selectedRowCount = rows.length;
       span.setAttribute("events.rows", rows.length);
       if (rows.length === 0) {
-        await setCursor(opts.database, LOG_CURSOR, cursorWindow.untilTs);
+        await setCursor(opts.database, LOG_CURSOR, advanceToWindowEnd(cursor, cursorWindow));
         return 0;
       }
 
@@ -822,7 +839,7 @@ async function tickLogs(opts: {
       for (const row of rows) {
         // Advance past every selected row up front (even skipped/failed ones) so
         // the batch can never wedge the cursor; the upserts happen afterward.
-        nextCursor = row.ts;
+        nextCursor = { ts: row.cursor_ts, key: row.cursor_key };
         if (!validProjectIds.has(row.project_id)) {
           skippedUnknownProjects += 1;
           continue;
@@ -874,7 +891,9 @@ async function tickLogs(opts: {
       }
       await flushIssueGroups(opts.database, groups, opts.handleIssueTransition);
       logSkippedEvents("log", skippedUnknownProjects, skippedByFilter);
-      if (selectedTimestampCount < opts.batchSize) nextCursor = cursorWindow.untilTs;
+      if (selectedRowCount < opts.batchSize) {
+        nextCursor = advanceToWindowEnd(cursor, cursorWindow);
+      }
       await setCursor(opts.database, LOG_CURSOR, nextCursor);
       return rows.length;
     } catch (err) {
@@ -888,7 +907,7 @@ async function tickLogs(opts: {
       recordBatchMetrics({
         kind: "log",
         rows: rowsProcessed,
-        batchLimited: selectedTimestampCount >= opts.batchSize,
+        batchLimited: selectedRowCount >= opts.batchSize,
         durationMs: performance.now() - startedAt,
       });
       span.end();
