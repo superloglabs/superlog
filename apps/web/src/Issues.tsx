@@ -20,6 +20,8 @@ import { type EvidenceLinkContext, EvidenceMarkdown } from "./EvidenceMarkdown.t
 import { FeedbackTrigger } from "./FeedbackDialog.tsx";
 import { LogDrawer } from "./LogDetail.tsx";
 import { TraceDrawer } from "./TraceDetail.tsx";
+import { useAlertSeries } from "./alerts/api.ts";
+import type { AlertPreviewSeries, AlertSeriesRow } from "./alerts/types.ts";
 import {
   type AgentRun,
   type AgentRunEventActor,
@@ -54,6 +56,7 @@ import {
   useUnsilenceIssue,
   useUpdateIncident,
 } from "./api.ts";
+import { CountChart } from "./dashboards/widgets/CountChart.tsx";
 import {
   Btn,
   Chip,
@@ -63,6 +66,7 @@ import {
   Tabs,
 } from "./design/ui.tsx";
 import { type IncidentStatusAction, getIncidentStatusActions } from "./incident-status-action.ts";
+import { IncidentDetailScrollArea } from "./incidents/IncidentDetailScrollArea.tsx";
 import {
   IncidentActivityFeed,
   IncidentSummaryTelemetry,
@@ -1756,6 +1760,10 @@ export function IncidentDetailContent({
                     renderIssueCard={(issueId, options) => {
                       const issue = issues.find((i) => i.id === issueId);
                       if (!issue) return null;
+                      // If an alert episode raised this issue, draw the alert's
+                      // metric-vs-threshold graph instead of the occurrence graph.
+                      const alertId =
+                        alertEpisodes.find((ep) => ep.issueId === issueId)?.alertId ?? null;
                       return (
                         <div className="rounded-lg border border-border bg-surface px-3 py-2">
                           <IssueCard
@@ -1764,6 +1772,8 @@ export function IncidentDetailContent({
                             occurrenceBuckets={
                               options?.showOccurrences ? occurrenceBuckets : undefined
                             }
+                            projectId={incident.projectId}
+                            alertId={alertId}
                           />
                         </div>
                       );
@@ -2817,23 +2827,27 @@ function IssueCard({
   issue,
   onViewIssue,
   occurrenceBuckets,
+  projectId,
+  alertId,
 }: {
   issue: Issue;
   onViewIssue: (id: string) => void;
   occurrenceBuckets?: { day: string; count: number }[];
+  projectId?: string;
+  // When this issue was raised by one of the project's alerts, the alert's id.
+  // The right-side graph then shows the alert's evaluated signal against its
+  // threshold instead of raw occurrence counts.
+  alertId?: string | null;
 }) {
+  const hasOccurrences = !!occurrenceBuckets && occurrenceBuckets.length > 0;
+  const showAlertGraph = !!alertId && !!projectId;
+  const showGraph = showAlertGraph || hasOccurrences;
   return (
     <button
       onClick={() => onViewIssue(issue.id)}
       className="block w-full min-w-0 text-left transition-colors hover:text-muted"
     >
-      <div
-        className={
-          occurrenceBuckets && occurrenceBuckets.length > 0
-            ? "flex flex-col gap-3 sm:flex-row sm:gap-4"
-            : undefined
-        }
-      >
+      <div className={showGraph ? "flex flex-col gap-3 sm:flex-row sm:gap-4" : undefined}>
         <div className="min-w-0 flex-1">
           <div className="mb-0.5 flex items-center gap-2">
             <KindChip issue={issue} />
@@ -2843,24 +2857,86 @@ function IssueCard({
             </span>
           </div>
           <p className="truncate text-[12px] text-fg">{issue.message ?? issue.title}</p>
-          {occurrenceBuckets && occurrenceBuckets.length > 0 && (
+          {showGraph && (
             <p className="mt-3 text-[10px] text-subtle">
               First {fmtRelative(issue.firstSeen)} · Last {fmtRelative(issue.lastSeen)}
             </p>
           )}
         </div>
-        {occurrenceBuckets && occurrenceBuckets.length > 0 && (
+        {showAlertGraph ? (
+          <AlertThresholdGraph projectId={projectId} alertId={alertId} />
+        ) : hasOccurrences ? (
           <IssueOccurrenceGraph buckets={occurrenceBuckets} />
-        )}
+        ) : null}
       </div>
     </button>
   );
 }
 
+// Stable accessor so CountChart's series memo doesn't recompute each render.
+const alertSeriesValue = (r: AlertSeriesRow) => r.value;
+
+// The alert's evaluated signal over recent history with a dashed threshold
+// line — shown in place of the occurrence graph on an alert-raised issue card,
+// where "occurrences" is always 0 and the metric-vs-threshold view is what
+// actually explains the firing. Same footprint as IssueOccurrenceGraph.
+function AlertThresholdGraph({ projectId, alertId }: { projectId: string; alertId: string }) {
+  const series = useAlertSeries(projectId, alertId);
+  return (
+    <div className="border-t border-border pt-2.5 sm:w-44 sm:flex-none sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0">
+      {series.isLoading ? (
+        <div className="h-[76px] text-[10px] text-subtle">Loading signal…</div>
+      ) : series.error || !series.data || series.data.rows.length === 0 ? (
+        <div className="h-[76px] text-[10px] text-subtle">No signal data.</div>
+      ) : (
+        <AlertThresholdGraphBody series={series.data} />
+      )}
+    </div>
+  );
+}
+
+function AlertThresholdGraphBody({ series }: { series: AlertPreviewSeries }) {
+  const cmp = series.comparator === "lt" ? "<" : ">";
+  return (
+    <>
+      <div className="flex items-center justify-between text-[10px] text-subtle">
+        <span className="truncate">{series.label}</span>
+        <span className="font-sans tabular-nums text-fg">
+          {cmp} {formatAlertNum(series.threshold)}
+        </span>
+      </div>
+      <div
+        className="mt-2 h-16 w-full"
+        role="img"
+        aria-label={`${series.label} against a threshold of ${formatAlertNum(series.threshold)}`}
+      >
+        <CountChart
+          rows={series.rows}
+          value={alertSeriesValue}
+          range={series.range}
+          step={series.step}
+          // Bars, not a line: a single evaluation (the common case on a
+          // freshly-fired alert) has one data point, which a line can't draw.
+          chartType="bar"
+          limit={1}
+          showXAxis={false}
+          showYAxis={false}
+          showLegend={false}
+          legendPosition="side"
+          threshold={series.threshold}
+          thresholdLabel={`${cmp} ${formatAlertNum(series.threshold)}`}
+        />
+      </div>
+    </>
+  );
+}
+
+function formatAlertNum(n: number): string {
+  return Number.isInteger(n) ? n.toLocaleString() : n.toFixed(2);
+}
+
 function formatOccurrenceDate(day: string) {
-  const [year = Number.NaN, month = Number.NaN, date = Number.NaN] = day
-    .split("-")
-    .map(Number);
+  const [year = Number.NaN, month = Number.NaN, date = Number.NaN] = day.split("-").map(Number);
   const parsed =
     Number.isFinite(year) && Number.isFinite(month) && Number.isFinite(date)
       ? new Date(year, month - 1, date)

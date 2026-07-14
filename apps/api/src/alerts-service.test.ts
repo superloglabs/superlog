@@ -7,9 +7,8 @@ import { HTTPException } from "hono/http-exception";
 // (the postgres client connects lazily, so these pure-function tests never open
 // a socket). Same dynamic-import pattern as incidents/detail.test.ts.
 process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
-const { validateAlertInput, alertInputToFilter, summarizeEvaluation } = await import(
-  "./alerts-service.js"
-);
+const { validateAlertInput, alertInputToFilter, summarizeEvaluation, alertRecordToInput } =
+  await import("./alerts-service.js");
 
 type AlertInput = Parameters<typeof validateAlertInput>[0];
 
@@ -187,4 +186,59 @@ test("summarizeEvaluation falls back to single mode when groupBy is missing", ()
     total: 99,
   });
   assert.deepEqual(result, { mode: "single", value: 99, breaches: 1 });
+});
+
+test("alertRecordToInput maps a metric alert row to the preview input shape", () => {
+  const input = alertRecordToInput({
+    name: "queue depth",
+    source: "metric",
+    metricName: "pgboss.oldest_pending_ms",
+    filter: { service: "worker", resourceAttrs: [{ key: "env", value: "prod" }] },
+    groupBy: null,
+    groupMode: "single",
+    aggregation: "avg",
+    comparator: "gt",
+    threshold: 300000,
+    windowMinutes: 5,
+  });
+  assert.deepEqual(input, {
+    name: "queue depth",
+    source: "metric",
+    metricName: "pgboss.oldest_pending_ms",
+    filter: { service: "worker", resourceAttrs: [{ key: "env", value: "prod" }] },
+    groupBy: null,
+    groupMode: "single",
+    aggregation: "avg",
+    comparator: "gt",
+    threshold: 300000,
+    windowMinutes: 5,
+  });
+  // Round-trips through the filter extractor the series builder uses.
+  assert.deepEqual(alertInputToFilter(input), {
+    resourceAttrs: [{ key: "env", value: "prod" }],
+    service: "worker",
+    severity: undefined,
+    spanName: undefined,
+    statusCode: undefined,
+    minDurationMs: undefined,
+  });
+});
+
+test("alertRecordToInput passes through the stored default empty jsonb filter", () => {
+  const input = alertRecordToInput({
+    name: "error rate",
+    source: "logs",
+    metricName: null,
+    // Stored default for the `filter` column is `{}` (never null in practice).
+    filter: {},
+    groupBy: "service.name",
+    groupMode: "per_group",
+    aggregation: "count",
+    comparator: "gt",
+    threshold: 10,
+    windowMinutes: 15,
+  });
+  assert.deepEqual(input.filter, {});
+  assert.equal(input.source, "logs");
+  assert.equal(input.groupMode, "per_group");
 });

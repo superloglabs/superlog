@@ -2493,6 +2493,9 @@ export type IncidentAlertEpisode = {
   endedAt: string | null;
   peakObservedValue: number;
   seq: number;
+  // The issue this episode raised. Lets the incident timeline match the
+  // triggering issue card to its alert and draw the metric-vs-threshold graph.
+  issueId: string | null;
 };
 
 export type IncidentPullRequest = {
