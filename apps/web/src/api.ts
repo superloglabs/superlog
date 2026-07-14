@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { incidentPollIntervalMs } from "./incidents/agent-run-polling.ts";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4100";
+const API_URL = import.meta.env?.VITE_API_URL ?? "http://localhost:4100";
 
 export type Me = {
   user: { id: string; email: string; name: string; isStaff: boolean; impersonating: boolean };
@@ -229,7 +229,7 @@ export function useSubmitFeedback() {
 // Anonymous PR-link submissions go to a different (public) endpoint that
 // doesn't require credentials, so we use plain fetch instead of the
 // cookie-bearing useFetcher.
-const API_URL_FOR_FEEDBACK = import.meta.env.VITE_API_URL ?? "http://localhost:4100";
+const API_URL_FOR_FEEDBACK = import.meta.env?.VITE_API_URL ?? "http://localhost:4100";
 export function submitPrFeedback(opts: {
   owner: string;
   repo: string;

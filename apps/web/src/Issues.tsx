@@ -1531,6 +1531,8 @@ export function IncidentDetailContent({
   retryingPrDelivery = false,
   summaryTelemetry,
   occurrenceBuckets,
+  pullRequests,
+  readOnly = false,
 }: {
   incident: Incident;
   issues: Issue[];
@@ -1555,6 +1557,10 @@ export function IncidentDetailContent({
   /** Telemetry widgets the agent quoted in its summary, rendered inside the Summary section. */
   summaryTelemetry?: ReactNode;
   occurrenceBuckets?: { day: string; count: number }[];
+  /** Preloaded PRs for read-model consumers that cannot call product APIs. */
+  pullRequests?: IncidentPullRequest[];
+  /** Render the canonical incident UI without controls that mutate customer data. */
+  readOnly?: boolean;
 }) {
   const [detailTab, setDetailTab] = useState<IncidentDetailTab>("activity");
   // A run paused on `ask_human` stores its question on the run result, not as an
@@ -1590,7 +1596,7 @@ export function IncidentDetailContent({
         <span className="text-subtle">›</span>
         <span className="min-w-0 flex-1 truncate text-[13px] text-fg">{incident.title}</span>
         <div className="flex shrink-0 items-center gap-3">
-          {notAnIssueAction && (
+          {!readOnly && notAnIssueAction && (
             <Btn
               variant={notAnIssueAction.variant}
               size="sm"
@@ -1600,7 +1606,7 @@ export function IncidentDetailContent({
               {notAnIssueAction.label}
             </Btn>
           )}
-          {problemResolvedAction && (
+          {!readOnly && problemResolvedAction && (
             <Btn
               variant={problemResolvedAction.variant}
               size="sm"
@@ -1643,24 +1649,27 @@ export function IncidentDetailContent({
                 agentRun={agentRun}
                 className="w-full justify-center"
               />
-              <FeedbackTrigger
-                kind="incident"
-                refId={incident.id}
-                projectId={incident.projectId}
-                className="w-full justify-center"
-              />
-              {otherStatusActions.map((action) => (
-                <Btn
-                  key={action.label}
-                  variant={action.variant}
-                  size="sm"
-                  onClick={() => onStatusAction(action)}
-                  loading={updatingIncident}
+              {!readOnly && (
+                <FeedbackTrigger
+                  kind="incident"
+                  refId={incident.id}
+                  projectId={incident.projectId}
                   className="w-full justify-center"
-                >
-                  {action.label}
-                </Btn>
-              ))}
+                />
+              )}
+              {!readOnly &&
+                otherStatusActions.map((action) => (
+                  <Btn
+                    key={action.label}
+                    variant={action.variant}
+                    size="sm"
+                    onClick={() => onStatusAction(action)}
+                    loading={updatingIncident}
+                    className="w-full justify-center"
+                  >
+                    {action.label}
+                  </Btn>
+                ))}
             </div>
             {updateIncidentError && (
               <p className="mt-3 rounded-sm border border-danger/40 bg-danger/10 px-3 py-2 text-[12px] text-danger">
@@ -1735,12 +1744,21 @@ export function IncidentDetailContent({
                   </div>
                 )}
 
-                {pendingResolutionProposal && onDecideProposal && (
+                {pendingResolutionProposal && (
                   <ResolutionProposalBanner
                     proposal={pendingResolutionProposal}
-                    onConfirm={() => onDecideProposal(pendingResolutionProposal.id, "confirm")}
-                    onDismiss={() => onDecideProposal(pendingResolutionProposal.id, "dismiss")}
+                    onConfirm={
+                      onDecideProposal
+                        ? () => onDecideProposal(pendingResolutionProposal.id, "confirm")
+                        : undefined
+                    }
+                    onDismiss={
+                      onDecideProposal
+                        ? () => onDecideProposal(pendingResolutionProposal.id, "dismiss")
+                        : undefined
+                    }
                     deciding={!!decidingProposal}
+                    readOnly={readOnly}
                   />
                 )}
 
@@ -1763,11 +1781,16 @@ export function IncidentDetailContent({
             )}
 
             {detailTab === "pr" && (
-              <IncidentPullRequestPanel projectId={incident.projectId} incidentId={incident.id} />
+              <IncidentPullRequestPanel
+                projectId={incident.projectId}
+                incidentId={incident.id}
+                pullRequests={pullRequests}
+                readOnly={readOnly}
+              />
             )}
           </IncidentDetailScrollArea>
 
-          {detailTab === "activity" && (
+          {detailTab === "activity" && !readOnly && (
             <IncidentChatComposer
               projectId={incident.projectId}
               incidentId={incident.id}
@@ -2065,25 +2088,29 @@ function IncidentDetailTabs({
 function IncidentPullRequestPanel({
   projectId,
   incidentId,
+  pullRequests,
+  readOnly,
+}: {
+  projectId: string;
+  incidentId: string;
+  pullRequests?: IncidentPullRequest[];
+  readOnly: boolean;
+}) {
+  if (pullRequests) {
+    return <IncidentPullRequestView pullRequests={pullRequests} readOnly={readOnly} />;
+  }
+  return <ProductIncidentPullRequestPanel projectId={projectId} incidentId={incidentId} />;
+}
+
+function ProductIncidentPullRequestPanel({
+  projectId,
+  incidentId,
 }: {
   projectId: string;
   incidentId: string;
 }) {
   const prs = useIncidentPullRequests(projectId, incidentId);
   const mergePr = useMergeIncidentPullRequest(projectId, incidentId);
-  const [selectedPrId, setSelectedPrId] = useState<string | null>(null);
-
-  const selectedPr = prs.data?.find((pr) => pr.id === selectedPrId) ?? prs.data?.[0] ?? null;
-
-  useEffect(() => {
-    if (!prs.data?.length) {
-      setSelectedPrId(null);
-      return;
-    }
-    if (!selectedPrId || !prs.data.some((pr) => pr.id === selectedPrId)) {
-      setSelectedPrId(prs.data[0]!.id);
-    }
-  }, [prs.data, selectedPrId]);
 
   if (prs.isLoading) {
     return <p className="text-[12px] text-muted">Loading PR…</p>;
@@ -2091,7 +2118,45 @@ function IncidentPullRequestPanel({
   if (prs.error) {
     return <p className="text-[12px] text-danger">Failed to load PR: {String(prs.error)}</p>;
   }
-  if (!prs.data || prs.data.length === 0) {
+  return (
+    <IncidentPullRequestView
+      pullRequests={prs.data ?? []}
+      readOnly={false}
+      merging={mergePr.isPending}
+      mergeError={mergePr.error}
+      onMerge={(prId) => mergePr.mutate({ prId })}
+    />
+  );
+}
+
+export function IncidentPullRequestView({
+  pullRequests,
+  readOnly,
+  merging = false,
+  mergeError = null,
+  onMerge,
+}: {
+  pullRequests: IncidentPullRequest[];
+  readOnly: boolean;
+  merging?: boolean;
+  mergeError?: Error | null;
+  onMerge?: (prId: string) => void;
+}) {
+  const [selectedPrId, setSelectedPrId] = useState<string | null>(null);
+
+  const selectedPr = pullRequests.find((pr) => pr.id === selectedPrId) ?? pullRequests[0] ?? null;
+
+  useEffect(() => {
+    if (!pullRequests.length) {
+      setSelectedPrId(null);
+      return;
+    }
+    if (!selectedPrId || !pullRequests.some((pr) => pr.id === selectedPrId)) {
+      setSelectedPrId(pullRequests[0]!.id);
+    }
+  }, [pullRequests, selectedPrId]);
+
+  if (pullRequests.length === 0) {
     return (
       <div className="rounded-md border border-border bg-surface p-4">
         <p className="text-[12px] text-muted">No PR has been opened for this incident.</p>
@@ -2120,12 +2185,12 @@ function IncidentPullRequestPanel({
           <Chip tone={selectedPr.state === "merged" ? "success" : "neutral"} dot>
             {selectedPr.state}
           </Chip>
-          {selectedPr.state === "open" && (
+          {!readOnly && selectedPr.state === "open" && onMerge && (
             <Btn
               size="sm"
               variant="primary"
-              loading={mergePr.isPending}
-              onClick={() => mergePr.mutate({ prId: selectedPr.id })}
+              loading={merging}
+              onClick={() => onMerge(selectedPr.id)}
             >
               Merge PR
             </Btn>
@@ -2133,9 +2198,9 @@ function IncidentPullRequestPanel({
         </div>
       </div>
 
-      {prs.data.length > 1 && (
+      {pullRequests.length > 1 && (
         <div className="flex gap-2 overflow-x-auto pb-1">
-          {prs.data.map((pr) => (
+          {pullRequests.map((pr) => (
             <button
               key={pr.id}
               type="button"
@@ -2152,9 +2217,9 @@ function IncidentPullRequestPanel({
         </div>
       )}
 
-      {mergePr.error && (
+      {mergeError && (
         <p className="rounded-sm border border-danger/40 bg-danger/10 px-3 py-2 text-[12px] text-danger">
-          Merge failed: {String(mergePr.error)}
+          Merge failed: {String(mergeError)}
         </p>
       )}
 
@@ -2385,11 +2450,13 @@ export function ResolutionProposalBanner({
   onConfirm,
   onDismiss,
   deciding,
+  readOnly = false,
 }: {
   proposal: PendingResolutionProposal;
-  onConfirm: () => void;
-  onDismiss: () => void;
-  deciding: boolean;
+  onConfirm?: () => void;
+  onDismiss?: () => void;
+  deciding?: boolean;
+  readOnly?: boolean;
 }) {
   return (
     <div className="rounded-md border border-border bg-surface p-4">
@@ -2407,14 +2474,16 @@ export function ResolutionProposalBanner({
         {sentenceCase(humanizeReasonCode(proposal.proposedReasonCode))}
       </p>
       <p className="mb-3 text-[13px] leading-relaxed text-muted">{proposal.proposedReasonText}</p>
-      <div className="flex items-center justify-end gap-2">
-        <Btn variant="ghost" size="sm" onClick={onDismiss} loading={deciding}>
-          Dismiss
-        </Btn>
-        <Btn variant="primary" size="sm" onClick={onConfirm} loading={deciding}>
-          Confirm resolution
-        </Btn>
-      </div>
+      {!readOnly && onConfirm && onDismiss && (
+        <div className="flex items-center justify-end gap-2">
+          <Btn variant="ghost" size="sm" onClick={onDismiss} loading={deciding}>
+            Dismiss
+          </Btn>
+          <Btn variant="primary" size="sm" onClick={onConfirm} loading={deciding}>
+            Confirm resolution
+          </Btn>
+        </div>
+      )}
     </div>
   );
 }

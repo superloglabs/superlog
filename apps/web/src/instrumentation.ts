@@ -10,7 +10,7 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BatchSpanProcessor, WebTracerProvider } from "@opentelemetry/sdk-trace-web";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 
-const env = import.meta.env as Record<string, string | undefined>;
+const env = (import.meta.env ?? {}) as Record<string, string | undefined>;
 
 const endpoint = env.VITE_OTEL_EXPORTER_OTLP_ENDPOINT;
 const headersRaw = env.VITE_OTEL_EXPORTER_OTLP_HEADERS;
@@ -18,8 +18,7 @@ const serviceName = env.VITE_OTEL_SERVICE_NAME ?? "@superlog/web";
 // Always stamp an `env` resource attribute so every browser span is filterable
 // by deployment environment. VITE_SUPERLOG_ENV is the explicit knob; MODE is
 // vite's build mode (production/development); "development" is the last resort.
-const deploymentEnv =
-  env.VITE_SUPERLOG_ENV || (import.meta.env.MODE as string | undefined) || "development";
+const deploymentEnv = env.VITE_SUPERLOG_ENV || env.MODE || "development";
 
 function parseHeaders(raw: string | undefined): Record<string, string> {
   if (!raw) return {};

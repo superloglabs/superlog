@@ -9,7 +9,7 @@ import type {
   WidgetType,
 } from "./types.ts";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4100";
+const API_URL = import.meta.env?.VITE_API_URL ?? "http://localhost:4100";
 
 function useFetcher() {
   return async function fetcher<T>(path: string, init: RequestInit = {}): Promise<T> {
