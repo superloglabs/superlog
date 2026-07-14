@@ -166,39 +166,37 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
       setPendingOrgSwitch({ targetOrgId: orgId });
       return;
     }
-    // Switching to a *different* org flips Better Auth's active organization.
-    // A client-side navigate can't win here: setActive moves the session to the
-    // new org (and trips ActiveOrgSync's queryClient.clear()) before the URL
-    // catches up, and in that window ProjectRouteBoundary sees new-org `me`
-    // against the old URL and "reconciles" by reloading back to the old org —
-    // reverting the switch. React Router's navigate() also doesn't commit
-    // synchronously, so any lock racing that commit is fragile.
+    // Switching to a *different* org is URL-first and deliberately does NOT
+    // touch the session here. We resolve the target org's canonical route (its
+    // slug + a project slug) from a read-only endpoint, then navigate there.
+    // ProjectRouteBoundary then sees the new URL against the still-current
+    // session and switches the active org to match the URL — its normal,
+    // revert-free reconciliation (the same path used when a scoped URL is
+    // opened directly).
     //
-    // So do a hard navigation instead: set the active org, read its active
-    // project from the server, then load the new scoped URL directly. The full
-    // reload boots with session and URL already agreeing on the new org, so
-    // there's nothing to reconcile — the same clean-slate reload ProjectRoute-
-    // Boundary itself uses for cross-tenant changes (which cross-org switches
-    // already incur today).
+    // The tempting shortcut — call setActive first, then navigate — is racy:
+    // setActive moves the session to the new org (and trips ActiveOrgSync's
+    // queryClient.clear()) before the URL catches up, and in that window the
+    // boundary sees new-org `me` on the old URL and reconciles *backwards*,
+    // reverting the switch. Not switching the session until the URL leads
+    // removes that window entirely.
     try {
-      await authClient.organization.setActive({ organizationId: orgId });
-      const next = await fetcher<Me>("/api/me");
-      if (next.org && next.project) {
-        const dest = canonicalProjectLocation(
-          { orgSlug: next.org.slug, projectSlug: next.project.slug },
+      const route = await fetcher<{ orgSlug: string; projectSlug: string }>(
+        `/api/me/org-route?orgId=${encodeURIComponent(orgId)}`,
+      );
+      navigate(
+        canonicalProjectLocation(
+          { orgSlug: route.orgSlug, projectSlug: route.projectSlug },
           {
             pathname: appPathFromProjectRoute(location.pathname),
             search: location.search,
             hash: location.hash,
           },
-        );
-        window.location.assign(`${dest.pathname}${dest.search}${dest.hash}`);
-        return;
-      }
+        ),
+        { replace: true },
+      );
     } catch {
-      // Best effort: if the switch fails partway, fall through and close. The
-      // session may be on the new org while the URL isn't; the route boundary
-      // reconciles that on the next render.
+      // Best effort: if route resolution fails, leave the user where they are.
     }
     onClose();
   };

@@ -156,3 +156,73 @@ test("PUT /api/me/active-context rejects an org and project slug from different 
 
   assert.equal(response.status, 404);
 });
+
+test("GET /api/me/org-route resolves a member org's route without touching the session", async () => {
+  const current = await seedContext();
+  const target = await seedContext("target-project");
+  await db
+    .insert(schema.orgMembers)
+    .values({ orgId: target.org.id, userId: current.user.id, role: "member" });
+  await db
+    .update(schema.sessions)
+    .set({ activeOrganizationId: current.org.id })
+    .where(eq(schema.sessions.id, current.session.id));
+
+  const app = new Hono<{ Variables: Vars }>();
+  app.use("*", (c, next) => {
+    c.set("userId", current.user.id);
+    c.set("sessionId", current.session.id);
+    c.set("orgId", current.org.id);
+    return next();
+  });
+  mountProjectRouteContext(app);
+
+  const response = await app.request(`/api/me/org-route?orgId=${target.org.id}`);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    orgSlug: target.org.slug,
+    projectSlug: target.project.slug,
+  });
+  // Read-only: the session's active org is untouched, so ProjectRouteBoundary
+  // (not this endpoint) drives the switch once the URL leads.
+  const session = await db.query.sessions.findFirst({
+    where: eq(schema.sessions.id, current.session.id),
+  });
+  assert.equal(session?.activeOrganizationId, current.org.id);
+});
+
+test("GET /api/me/org-route hides orgs the user isn't a member of", async () => {
+  const current = await seedContext();
+  const foreign = await seedContext("foreign-project");
+
+  const app = new Hono<{ Variables: Vars }>();
+  app.use("*", (c, next) => {
+    c.set("userId", current.user.id);
+    c.set("sessionId", current.session.id);
+    c.set("orgId", current.org.id);
+    return next();
+  });
+  mountProjectRouteContext(app);
+
+  const response = await app.request(`/api/me/org-route?orgId=${foreign.org.id}`);
+
+  // Must not fall back to the caller's own org — a non-member org is a 404.
+  assert.equal(response.status, 404);
+});
+
+test("GET /api/me/org-route requires an orgId", async () => {
+  const current = await seedContext();
+
+  const app = new Hono<{ Variables: Vars }>();
+  app.use("*", (c, next) => {
+    c.set("userId", current.user.id);
+    c.set("sessionId", current.session.id);
+    c.set("orgId", current.org.id);
+    return next();
+  });
+  mountProjectRouteContext(app);
+
+  const response = await app.request("/api/me/org-route");
+  assert.equal(response.status, 400);
+});

@@ -148,13 +148,6 @@ function ActiveOrgSync() {
     }
     if (previous.current !== current) {
       previous.current = current;
-      // Drop all cached data on a tenant switch. This is deliberately a hard
-      // reset rather than invalidation: several active-org endpoints are cached
-      // under org-less keys (e.g. ["org-agent-settings"], ["integrations"]) and
-      // rely on server-side active-org scoping, so keeping them would let the
-      // previous org's data render for the new org while it refetches. The org
-      // switcher navigates from its async click handler (not a mount-dependent
-      // effect), so the switch survives this teardown.
       queryClient.clear();
     }
   }, [isPending, data?.session?.activeOrganizationId, queryClient]);
