@@ -29,14 +29,21 @@ const IGNORE_PATH = [
 ];
 
 const NUL_BYTE = String.fromCharCode(0);
+// Lone (unpaired) UTF-16 surrogates: a high surrogate not followed by a low one,
+// or a low surrogate not preceded by a high one. Valid surrogate pairs (real
+// astral-plane characters like emoji) are left untouched.
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+const REPLACEMENT_CHAR = "�";
 
-// Postgres `text` and `jsonb` columns reject the NUL byte (0x00) with
-// `22021 invalid byte sequence for encoding "UTF8": 0x00`. Telemetry can carry
-// a raw NUL inside an exception message, body, or stack frame, and these
-// fingerprint outputs flow straight into the issues upsert — so strip NUL
-// before it can poison a parameter. Passes null/undefined through unchanged.
-export function stripNullBytes<T extends string | null | undefined>(value: T): T {
-  return (typeof value === "string" ? value.split(NUL_BYTE).join("") : value) as T;
+// Make a string safe to persist in Postgres `text`/`jsonb`. Postgres rejects
+// two things telemetry can carry inside an exception message, body, or stack
+// frame: the NUL byte (0x00 → `22021 invalid byte sequence for encoding
+// "UTF8"`) and lone UTF-16 surrogates (→ `22P05 untranslatable_character`).
+// These values flow straight into the issues upsert, so strip NUL and replace
+// lone surrogates with U+FFFD. Passes null/undefined through unchanged.
+export function sanitizeForPg<T extends string | null | undefined>(value: T): T {
+  if (typeof value !== "string") return value;
+  return value.split(NUL_BYTE).join("").replace(LONE_SURROGATE, REPLACEMENT_CHAR) as T;
 }
 
 export function fingerprint(input: {
@@ -55,11 +62,11 @@ export function fingerprint(input: {
   const hash = createHash("sha256").update(canonical).digest("hex").slice(0, HASH_LEN);
 
   // The hash is hex (always safe); the human-readable fields below are persisted
-  // to Postgres, so they must be NUL-free.
-  const safeFrames = normalized.map((frame) => stripNullBytes(frame));
+  // to Postgres, so they must be free of NUL bytes and lone surrogates.
+  const safeFrames = normalized.map((frame) => sanitizeForPg(frame));
   return {
     hash,
-    exceptionType: stripNullBytes(type),
+    exceptionType: sanitizeForPg(type),
     topFrame: safeFrames[0] ?? null,
     normalizedFrames: safeFrames,
   };
@@ -81,7 +88,7 @@ export function fingerprintLog(input: LogFingerprintInput): Fingerprint {
 
   return {
     hash,
-    exceptionType: stripNullBytes(type),
+    exceptionType: sanitizeForPg(type),
     topFrame: null,
     normalizedFrames: [],
   };
