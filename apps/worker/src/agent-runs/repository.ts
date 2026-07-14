@@ -1,4 +1,10 @@
-import { type AgentRunResult, type DB, mergeIncidentsInTx, schema } from "@superlog/db";
+import {
+  type AgentPullRequestLifecycleContinuation,
+  type AgentRunResult,
+  type DB,
+  mergeIncidentsInTx,
+  schema,
+} from "@superlog/db";
 import { and, asc, eq } from "drizzle-orm";
 import type { LifecycleEventKind } from "./domain.js";
 
@@ -57,6 +63,94 @@ export function createAgentRunRepository(db: DB) {
         .update(schema.agentRuns)
         .set({ ...updates, updatedAt: updates.updatedAt ?? new Date() })
         .where(eq(schema.agentRuns.id, id));
+    },
+
+    async handoffRunningRunToFollowUp(opts: {
+      id: string;
+      incidentId: string;
+      runtime: string;
+      interactions: AgentPullRequestLifecycleContinuation["interaction"][];
+      failureResult: AgentRunResult;
+      now: Date;
+    }): Promise<
+      | { kind: "enqueued"; agentRunId: string }
+      | { kind: "superseded" }
+      | { kind: "incident_not_open"; incidentStatus: schema.IncidentStatus | null }
+    > {
+      return db.transaction(async (tx) => {
+        const incidents = await tx
+          .select({ status: schema.incidents.status })
+          .from(schema.incidents)
+          .where(eq(schema.incidents.id, opts.incidentId))
+          .orderBy(asc(schema.incidents.id))
+          .for("update");
+        const incidentStatus = incidents[0]?.status ?? null;
+        if (incidentStatus !== "open") {
+          return { kind: "incident_not_open", incidentStatus };
+        }
+
+        const [terminalized] = await tx
+          .update(schema.agentRuns)
+          .set({
+            state: "failed",
+            failureReason: "resume_failed",
+            completedAt: opts.now,
+            updatedAt: opts.now,
+            result: opts.failureResult,
+          })
+          .where(
+            and(
+              eq(schema.agentRuns.id, opts.id),
+              eq(schema.agentRuns.incidentId, opts.incidentId),
+              eq(schema.agentRuns.state, "running"),
+            ),
+          )
+          .returning({ id: schema.agentRuns.id });
+        if (!terminalized) return { kind: "superseded" };
+
+        const trigger = opts.interactions.some((interaction) => interaction.channel === "pr_closed")
+          ? "pr_closed"
+          : "pr_merged";
+        const [followUp] = await tx
+          .insert(schema.agentRuns)
+          .values({
+            incidentId: opts.incidentId,
+            runtime: opts.runtime,
+            state: "queued",
+            trigger,
+            triggerDetail: { interactions: opts.interactions },
+          })
+          .returning({ id: schema.agentRuns.id });
+        if (!followUp) throw new Error("failed to enqueue pull request lifecycle follow-up");
+
+        await tx
+          .insert(schema.incidentEvents)
+          .values({
+            agentRunId: opts.id,
+            incidentId: opts.incidentId,
+            kind: "terminal_failure",
+            summary: opts.failureResult.summary,
+            detail: { reason: "resume_failed", category: "infrastructure" },
+            dedupeKey: `terminal:failed:resume_failed:${opts.id}:pr_lifecycle_handoff`,
+            processedAt: opts.now,
+          })
+          .onConflictDoNothing();
+        await tx
+          .insert(schema.incidentEvents)
+          .values({
+            agentRunId: followUp.id,
+            incidentId: opts.incidentId,
+            kind: "follow_up_queued",
+            summary: `Follow-up investigation queued: an agent pull request was ${
+              trigger === "pr_closed" ? "closed" : "merged"
+            }.`,
+            detail: { trigger, interactions: opts.interactions },
+            dedupeKey: `follow_up:${followUp.id}`,
+            processedAt: opts.now,
+          })
+          .onConflictDoNothing();
+        return { kind: "enqueued", agentRunId: followUp.id };
+      });
     },
 
     // Conditional transition: applies `updates` only while the run is still

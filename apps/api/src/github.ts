@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import {
+  type AgentPullRequestLifecycleContinuation,
+  buildAgentPullRequestLifecycleContinuation,
   db,
   decideInboundContinuation,
   listAccessibleGithubInstallsForProject,
@@ -735,10 +737,7 @@ async function handleAgentPrWebhook(
 // session (or already had, on redelivery).
 async function resumeIncidentSessionForPrEvent(opts: {
   agentPr: schema.AgentPullRequest;
-  channel: "pr_merged" | "pr_closed";
-  author: string | null;
-  text: string;
-  dedupeKey: string;
+  continuation: AgentPullRequestLifecycleContinuation;
 }): Promise<boolean> {
   const incident = await db.query.incidents.findFirst({
     where: eq(schema.incidents.id, opts.agentPr.incidentId),
@@ -771,14 +770,8 @@ async function resumeIncidentSessionForPrEvent(opts: {
 
   const result = await recordInboundInteraction(db, {
     incidentId: incident.id,
-    interaction: {
-      channel: opts.channel,
-      author: opts.author,
-      text: opts.text,
-      url: opts.agentPr.url,
-      occurredAt: new Date().toISOString(),
-    },
-    dedupeKey: opts.dedupeKey,
+    interaction: opts.continuation.interaction,
+    dedupeKey: opts.continuation.dedupeKey,
     confirmed: true,
   });
   if (result.outcome === "duplicate") return true;
@@ -796,14 +789,20 @@ async function resumeOrResolveIncidentForMergedAgentPr(opts: {
   mergedByLogin: string | null;
 }): Promise<void> {
   const { agentPr, mergedByLogin } = opts;
+  const continuation = buildAgentPullRequestLifecycleContinuation({
+    pullRequest: {
+      ...agentPr,
+      state: "merged",
+      mergedAt: opts.mergedAt,
+      mergedByLogin,
+    },
+    actorLogin: mergedByLogin,
+    occurredAt: opts.mergedAt,
+  });
+  if (!continuation) throw new Error("merged PR did not produce a lifecycle continuation");
   const resumed = await resumeIncidentSessionForPrEvent({
     agentPr,
-    channel: "pr_merged",
-    author: mergedByLogin,
-    text: `Your PR #${agentPr.prNumber} (${agentPr.repoFullName}, branch \`${agentPr.branchName}\`) was merged${
-      mergedByLogin ? ` by @${mergedByLogin}` : ""
-    }. If this completes the remediation, make sure every linked issue is classified and call resolve_incident; if more work remains (other PRs still open, issues unclassified), continue it.`,
-    dedupeKey: `agent_pr_merged:${agentPr.id}`,
+    continuation,
   }).catch((err) => {
     log.warn(
       { err, agent_pr_id: agentPr.id, incident_id: agentPr.incidentId },
@@ -825,14 +824,19 @@ async function maybeResumeIncidentForClosedAgentPr(opts: {
   closedAt: Date;
 }): Promise<void> {
   const { agentPr, closedByLogin } = opts;
+  const continuation = buildAgentPullRequestLifecycleContinuation({
+    pullRequest: {
+      ...agentPr,
+      state: "closed",
+      closedAt: opts.closedAt,
+    },
+    actorLogin: closedByLogin,
+    occurredAt: opts.closedAt,
+  });
+  if (!continuation) throw new Error("closed PR did not produce a lifecycle continuation");
   await resumeIncidentSessionForPrEvent({
     agentPr,
-    channel: "pr_closed",
-    author: closedByLogin,
-    text: `Your PR #${agentPr.prNumber} (${agentPr.repoFullName}, branch \`${agentPr.branchName}\`) was closed without being merged${
-      closedByLogin ? ` by @${closedByLogin}` : ""
-    }. Read the PR conversation for the close context: if it shows the incident is actually noise, classify the issues accordingly and call resolve_incident; if the fix is still needed, decide the next step (an adjusted PR, or ask_human).`,
-    dedupeKey: `agent_pr_closed:${agentPr.id}:${opts.closedAt.getTime()}`,
+    continuation,
   }).catch((err) => {
     log.warn(
       { err, agent_pr_id: agentPr.id, incident_id: agentPr.incidentId },

@@ -198,6 +198,11 @@ export {
   type RequestFollowUpResult,
 } from "./agent-follow-up.js";
 export {
+  buildAgentPullRequestLifecycleContinuation,
+  type AgentPullRequestLifecycleContinuation,
+  type AgentPullRequestLifecycleRecord,
+} from "./agent-pr-lifecycle-continuation.js";
+export {
   decideChatInbound,
   findChatByAnchor,
   findLinearChatSession,

@@ -1,4 +1,13 @@
-import { type AgentRunResult, db, schema } from "@superlog/db";
+import {
+  type AgentPullRequestLifecycleContinuation,
+  type AgentPullRequestLifecycleRecord,
+  type AgentRunResult,
+  buildAgentPullRequestLifecycleContinuation,
+  db,
+  recordInboundInteraction,
+  resolveIncident,
+  schema,
+} from "@superlog/db";
 import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { TERMINAL_OUTCOME_NUDGE_MARKER, assembleAgentRunResult } from "../agent-outcome-tools.js";
 import type { AgentRunContext } from "../agent-run-context.js";
@@ -53,18 +62,26 @@ export function shouldFailForRuntimeBudget(args: {
   return !args.hasResult && args.activeRuntimeMinutes >= args.maxRuntimeMinutes;
 }
 
-export function planPullRequestAwaitingEvents(
+export function planPullRequestAwaitingEvents<
+  PullRequest extends { state: schema.AgentPrState; url: string },
+>(
   result: AgentRunResult,
-  deliveredPullRequests: Array<{ state: schema.AgentPrState; url: string }>,
-): { shouldFail: boolean; shouldComplete: boolean; openPrUrls: string[] } {
+  deliveredPullRequests: PullRequest[],
+): {
+  shouldFail: boolean;
+  openPrUrls: string[];
+  settledPullRequests: PullRequest[];
+} {
   const isExternalCause = result.waitReason === "external_cause";
   const openPrUrls = deliveredPullRequests
     .filter((pullRequest) => pullRequest.state === "open")
     .map((pullRequest) => pullRequest.url);
   return {
     shouldFail: !isExternalCause && deliveredPullRequests.length === 0,
-    shouldComplete: !isExternalCause && deliveredPullRequests.length > 0 && openPrUrls.length === 0,
     openPrUrls,
+    settledPullRequests: isExternalCause
+      ? []
+      : deliveredPullRequests.filter((pullRequest) => pullRequest.state !== "open"),
   };
 }
 
@@ -203,6 +220,81 @@ export async function steerIdleRunnerWithPendingContext(opts: {
   await opts.markEventsProcessed(opts.pendingContextEvents.map((event) => event.id));
   await opts.notifySteered(opts.incidentId);
   return "steered";
+}
+
+export type SettledPullRequestLifecycle = AgentPullRequestLifecycleRecord;
+
+export type SettledPullRequestContinuationOutcome =
+  | "steered"
+  | "busy"
+  | "deferred"
+  | "terminated"
+  | "unavailable"
+  | "not_applicable";
+
+export type PullRequestLifecycleRecordOutcome = "recorded" | "duplicate" | "unavailable";
+
+export type SettledPullRequestFallbackPlan =
+  | { kind: "resolve_merged"; pullRequest: SettledPullRequestLifecycle }
+  | { kind: "follow_up" };
+
+export function planSettledPullRequestFallback(
+  settledPullRequests: SettledPullRequestLifecycle[],
+  openPrUrls: string[],
+): SettledPullRequestFallbackPlan {
+  if (
+    openPrUrls.length === 0 &&
+    settledPullRequests.length > 0 &&
+    settledPullRequests.every((pullRequest) => pullRequest.state === "merged")
+  ) {
+    return {
+      kind: "resolve_merged",
+      pullRequest: settledPullRequests[0] as SettledPullRequestLifecycle,
+    };
+  }
+  return { kind: "follow_up" };
+}
+
+export async function continueSettledPullRequestLifecycle(opts: {
+  snapshotStatus: string;
+  settledPullRequests: SettledPullRequestLifecycle[];
+  now: Date;
+  recordInteraction(
+    continuation: AgentPullRequestLifecycleContinuation,
+  ): Promise<PullRequestLifecycleRecordOutcome>;
+  loadPendingContextEvents(): Promise<PendingContextEvent[]>;
+  runner: { steer(sessionId: string, message: string): Promise<void> };
+  sessionId: string;
+  incidentId: string;
+  markEventsProcessed(ids: string[]): Promise<void>;
+  notifySteered(incidentId: string): Promise<void>;
+}): Promise<SettledPullRequestContinuationOutcome> {
+  const continuations = opts.settledPullRequests.flatMap((pullRequest) => {
+    const continuation = buildAgentPullRequestLifecycleContinuation({
+      pullRequest,
+      fallbackOccurredAt: opts.now,
+    });
+    return continuation ? [continuation] : [];
+  });
+  if (continuations.length === 0) return "not_applicable";
+  if (opts.snapshotStatus === "terminated") return "terminated";
+
+  const recordOutcomes: PullRequestLifecycleRecordOutcome[] = [];
+  for (const continuation of continuations) {
+    recordOutcomes.push(await opts.recordInteraction(continuation));
+  }
+  const pendingContextEvents = await opts.loadPendingContextEvents();
+  const steerOutcome = await steerIdleRunnerWithPendingContext({
+    snapshotStatus: opts.snapshotStatus,
+    pendingContextEvents,
+    runner: opts.runner,
+    sessionId: opts.sessionId,
+    incidentId: opts.incidentId,
+    markEventsProcessed: opts.markEventsProcessed,
+    notifySteered: opts.notifySteered,
+  });
+  if (steerOutcome !== "not_applicable") return steerOutcome;
+  return recordOutcomes.every((outcome) => outcome === "unavailable") ? "unavailable" : "deferred";
 }
 
 type MobileRegressionToolLookupState = "enabled" | "disabled" | "failed";
@@ -663,9 +755,13 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
               repoFullName: true,
               branchName: true,
               baseBranch: true,
+              prNumber: true,
               title: true,
               url: true,
               state: true,
+              mergedAt: true,
+              closedAt: true,
+              mergedByLogin: true,
               createdAt: true,
             },
             orderBy: [asc(schema.agentPullRequests.createdAt), asc(schema.agentPullRequests.id)],
@@ -709,14 +805,116 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         const reconciledResult = reconcileDeliveredPullRequests(snapshot.result, outcomePrs, {
           currentAgentRunId: ctx.agentRun.id,
         });
-        if (waitPlan.shouldComplete) {
-          const completed = await completeWithoutPullRequest(
-            ctx,
-            { ...reconciledResult, state: "complete" },
+        if (waitPlan.settledPullRequests.length > 0) {
+          const continuationOutcome = await continueSettledPullRequestLifecycle({
+            snapshotStatus: snapshot.status,
+            settledPullRequests: waitPlan.settledPullRequests,
+            now: new Date(),
+            recordInteraction: async (continuation) => {
+              const recorded = await recordInboundInteraction(db, {
+                incidentId: ctx.incident.id,
+                interaction: continuation.interaction,
+                dedupeKey: continuation.dedupeKey,
+                confirmed: true,
+              });
+              if (recorded.outcome === "skipped") return "unavailable";
+              return recorded.outcome === "duplicate" ? "duplicate" : "recorded";
+            },
+            loadPendingContextEvents: () =>
+              db.query.incidentEvents.findMany({
+                where: and(
+                  eq(schema.incidentEvents.agentRunId, ctx.agentRun.id),
+                  eq(schema.incidentEvents.kind, "human_reply"),
+                  isNull(schema.incidentEvents.processedAt),
+                ),
+                orderBy: [asc(schema.incidentEvents.createdAt)],
+              }),
+            runner,
             sessionId,
-            nextRuntimeMinutes,
+            incidentId: ctx.incident.id,
+            markEventsProcessed: async (ids) => {
+              await db
+                .update(schema.incidentEvents)
+                .set({ processedAt: new Date() })
+                .where(inArray(schema.incidentEvents.id, ids));
+            },
+            notifySteered: async () => {},
+          });
+          if (continuationOutcome !== "terminated" && continuationOutcome !== "unavailable") {
+            return;
+          }
+
+          const fallback = planSettledPullRequestFallback(
+            waitPlan.settledPullRequests,
+            waitPlan.openPrUrls,
           );
-          if (completed) await meterAgentRun("complete_with_pr");
+          if (fallback.kind === "resolve_merged") {
+            const mergedAt = fallback.pullRequest.mergedAt ?? new Date();
+            await resolveIncident({
+              incidentId: ctx.incident.id,
+              kind: "agent_pr_merged",
+              reasonCode: "agent_pr_merged",
+              reasonText: `Resolved because agent PR #${fallback.pullRequest.prNumber} (${fallback.pullRequest.repoFullName}) was merged${
+                fallback.pullRequest.mergedByLogin
+                  ? ` by @${fallback.pullRequest.mergedByLogin}`
+                  : ""
+              }.`,
+              agentRunId: ctx.agentRun.id,
+              eventSummary: `Incident resolved because PR #${fallback.pullRequest.prNumber} was merged.`,
+              eventDetail: {
+                agentPrId: fallback.pullRequest.id,
+                repoFullName: fallback.pullRequest.repoFullName,
+                prNumber: fallback.pullRequest.prNumber,
+                prUrl: fallback.pullRequest.url,
+                mergedByLogin: fallback.pullRequest.mergedByLogin,
+              },
+              eventDedupeKey: `incident_resolved:agent_pr:${fallback.pullRequest.id}`,
+              resolvedAt: mergedAt,
+            });
+            const completed = await completeWithoutPullRequest(
+              ctx,
+              { ...reconciledResult, state: "complete" },
+              sessionId,
+              nextRuntimeMinutes,
+            );
+            if (completed) await meterAgentRun("complete_with_pr");
+            return;
+          }
+
+          const interactions = waitPlan.settledPullRequests.flatMap((pullRequest) => {
+            const continuation = buildAgentPullRequestLifecycleContinuation({
+              pullRequest,
+              fallbackOccurredAt: new Date(),
+            });
+            return continuation ? [continuation.interaction] : [];
+          });
+          const handoff = await agentRunLifecycle.handoffTerminatedSessionToFollowUp({
+            id: ctx.agentRun.id,
+            incidentId: ctx.incident.id,
+            currentState: ctx.agentRun.state,
+            runtime: ctx.agentRun.runtime,
+            interactions,
+            existingResult: reconciledResult,
+          });
+          if (handoff.kind === "enqueued") {
+            logger.info(
+              {
+                agent_run_id: ctx.agentRun.id,
+                follow_up_agent_run_id: handoff.agentRunId,
+                incident_id: ctx.incident.id,
+                settled_pull_request_count: waitPlan.settledPullRequests.length,
+              },
+              "queued pull request lifecycle follow-up after the provider session ended",
+            );
+          } else if (handoff.kind === "incident_not_open") {
+            const completed = await completeWithoutPullRequest(
+              ctx,
+              { ...reconciledResult, state: "complete" },
+              sessionId,
+              nextRuntimeMinutes,
+            );
+            if (completed) await meterAgentRun("complete_with_pr");
+          }
           return;
         }
         await applyIncidentMetadataFromResult(ctx, reconciledResult);

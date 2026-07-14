@@ -1,4 +1,9 @@
-import type { AgentRunResult, DB, schema } from "@superlog/db";
+import type {
+  AgentPullRequestLifecycleContinuation,
+  AgentRunResult,
+  DB,
+  schema,
+} from "@superlog/db";
 import {
   ACTIVE_STATES,
   type AgentRunState,
@@ -217,6 +222,48 @@ export function createAgentRunLifecycle(db: DB) {
         state: "resuming",
         failureReason: null,
         completedAt: null,
+      });
+    },
+
+    /**
+     * A provider session can terminate after delivering PRs but before their
+     * recovered merge/close lifecycle event reaches the model. Replace that
+     * dead running leg with one queued follow-up in a single transaction: if
+     * successor creation fails, the source run remains running rather than
+     * leaving an open Incident with no active investigation.
+     */
+    async handoffTerminatedSessionToFollowUp(opts: {
+      id: string;
+      incidentId: string;
+      currentState: AgentRunState | string;
+      runtime: string;
+      interactions: AgentPullRequestLifecycleContinuation["interaction"][];
+      existingResult: AgentRunResult;
+    }): Promise<
+      | { kind: "enqueued"; agentRunId: string }
+      | { kind: "superseded" }
+      | { kind: "incident_not_open"; incidentStatus: schema.IncidentStatus | null }
+    > {
+      assertAgentRunSourceState("handoffTerminatedSessionToFollowUp", opts.currentState, [
+        "running",
+      ]);
+      if (opts.interactions.length === 0) {
+        throw new Error("handoffTerminatedSessionToFollowUp requires lifecycle context");
+      }
+      const summary = "Provider session ended before the pull request lifecycle follow-up.";
+      const failureResult: AgentRunResult = {
+        ...opts.existingResult,
+        state: "failed",
+        summary,
+        failureReason: "resume_failed",
+      };
+      return repository.handoffRunningRunToFollowUp({
+        id: opts.id,
+        incidentId: opts.incidentId,
+        runtime: opts.runtime,
+        interactions: opts.interactions,
+        failureResult,
+        now: new Date(),
       });
     },
 

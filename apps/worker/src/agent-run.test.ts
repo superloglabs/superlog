@@ -748,6 +748,137 @@ test("pauseForEvents that lost the race writes no event and reports run_not_runn
   );
 });
 
+test("handoffTerminatedSessionToFollowUp atomically replaces a running run with one queued continuation", async () => {
+  const { db, calls } = recordingDb({
+    insertReturningRow: { id: "follow-up-1" },
+    lockedIncidents: [{ id: "inc-1", status: "open" } as schema.Incident],
+  });
+  const lifecycle = createAgentRunLifecycle(db);
+  const interaction = {
+    channel: "pr_closed" as const,
+    author: null,
+    text: "PR #2 closed without merging.",
+    url: "https://github.com/acme/web/pull/2",
+    occurredAt: "2026-07-15T08:45:00.000Z",
+  };
+  const mergedInteraction = {
+    channel: "pr_merged" as const,
+    author: "octocat",
+    text: "PR #1 merged.",
+    url: "https://github.com/acme/api/pull/1",
+    occurredAt: "2026-07-15T08:30:00.000Z",
+  };
+
+  const outcome = await lifecycle.handoffTerminatedSessionToFollowUp({
+    id: "run-1",
+    incidentId: "inc-1",
+    currentState: "running",
+    runtime: "anthropic",
+    interactions: [mergedInteraction, interaction],
+    existingResult: {
+      state: "awaiting_events",
+      summary: "Delivered remediation.",
+      rootCause: { text: "The retry omitted an idempotency key.", confidence: 9 },
+      handoffNotes: "Checked the queue consumer and ruled out duplicate delivery.",
+      proposedTitle: "Retry checkout requests safely",
+    },
+  });
+
+  assert.deepEqual(outcome, { kind: "enqueued", agentRunId: "follow-up-1" });
+  assert.deepEqual(
+    calls.map((call) => call.op),
+    [
+      "transaction.begin",
+      "incident.lock",
+      "update.where",
+      "insert.returning",
+      "insert.onConflictDoNothing",
+      "insert.onConflictDoNothing",
+      "transaction.end",
+    ],
+  );
+  const runWrites = calls.filter(
+    (call): call is Extract<RecordedCall, { op: "update.where" | "insert.returning" }> =>
+      (call.op === "update.where" || call.op === "insert.returning") &&
+      call.table === schema.agentRuns,
+  );
+  assert.equal(runWrites[0]?.values.state, "failed");
+  assert.deepEqual(runWrites[0]?.values.result, {
+    state: "failed",
+    summary: "Provider session ended before the pull request lifecycle follow-up.",
+    failureReason: "resume_failed",
+    rootCause: { text: "The retry omitted an idempotency key.", confidence: 9 },
+    handoffNotes: "Checked the queue consumer and ruled out duplicate delivery.",
+    proposedTitle: "Retry checkout requests safely",
+  });
+  assert.deepEqual(runWrites[1]?.values, {
+    incidentId: "inc-1",
+    runtime: "anthropic",
+    state: "queued",
+    trigger: "pr_closed",
+    triggerDetail: { interactions: [mergedInteraction, interaction] },
+  });
+});
+
+test("handoffTerminatedSessionToFollowUp leaves the winning active run untouched after a race", async () => {
+  const { db, calls } = recordingDb({
+    updateReturningRows: [],
+    lockedIncidents: [{ id: "inc-1", status: "open" } as schema.Incident],
+  });
+  const lifecycle = createAgentRunLifecycle(db);
+
+  const outcome = await lifecycle.handoffTerminatedSessionToFollowUp({
+    id: "run-1",
+    incidentId: "inc-1",
+    currentState: "running",
+    runtime: "anthropic",
+    interactions: [
+      {
+        channel: "pr_closed",
+        author: null,
+        text: "PR #2 closed without merging.",
+        occurredAt: "2026-07-15T08:45:00.000Z",
+      },
+    ],
+    existingResult: { state: "awaiting_events", summary: "Delivered remediation." },
+  });
+
+  assert.deepEqual(outcome, { kind: "superseded" });
+  assert.deepEqual(
+    calls.map((call) => call.op),
+    ["transaction.begin", "incident.lock", "update.where", "transaction.end"],
+  );
+});
+
+test("handoffTerminatedSessionToFollowUp does not queue work after Incident resolution wins", async () => {
+  const { db, calls } = recordingDb({
+    lockedIncidents: [{ id: "inc-1", status: "resolved" } as schema.Incident],
+  });
+  const lifecycle = createAgentRunLifecycle(db);
+
+  const outcome = await lifecycle.handoffTerminatedSessionToFollowUp({
+    id: "run-1",
+    incidentId: "inc-1",
+    currentState: "running",
+    runtime: "anthropic",
+    interactions: [
+      {
+        channel: "pr_closed",
+        author: null,
+        text: "PR #2 closed without merging.",
+        occurredAt: "2026-07-15T08:45:00.000Z",
+      },
+    ],
+    existingResult: { state: "awaiting_events", summary: "Delivered remediation." },
+  });
+
+  assert.deepEqual(outcome, { kind: "incident_not_open", incidentStatus: "resolved" });
+  assert.deepEqual(
+    calls.map((call) => call.op),
+    ["transaction.begin", "incident.lock", "transaction.end"],
+  );
+});
+
 test("pauseForEvents reports incident_not_open without parking after resolution wins", async () => {
   const { db, calls } = recordingDb({
     lockedIncidents: [{ id: "inc-1", status: "resolved" } as schema.Incident],
