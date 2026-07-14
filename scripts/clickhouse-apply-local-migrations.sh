@@ -32,7 +32,10 @@ clickhouse_client() {
 }
 
 query() {
-  clickhouse_client --query "$1"
+  # clickhouse-client keeps reading INSERT data from an inherited interactive
+  # stdin even when VALUES are already present in --query. Bootstrap is often
+  # launched from a PTY, so close stdin to keep ledger inserts non-interactive.
+  clickhouse_client --query "$1" </dev/null
 }
 
 echo "==> waiting for collector ClickHouse tables"
