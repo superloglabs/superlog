@@ -96,17 +96,55 @@ const MESSAGE_BUCKET_MAX = 160;
 export function messageBucketFor(message: string | null | undefined): string {
   if (!message) return "";
   let s = unwrapAnthropicErrorMessage(message);
-  s = s.replace(/https?:\/\/\S+/gi, "<url>");
+  s = collapseUrls(s);
   s = collapseRequestPaths(s);
   s = s.replace(/\b[\w.+-]+@[\w.-]+\.\w+\b/g, "<email>");
   s = s.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>");
   s = s.replace(/\b\d{4}-\d{2}-\d{2}[T ][\d:.]+Z?(?:[+-]\d{2}:?\d{2})?\b/g, "<ts>");
   s = s.replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g, "<ip>");
   s = s.replace(/\b0x[0-9a-f]+\b/gi, "<hex>");
+  s = collapseScopedIds(s);
+  s = s.replace(HEX_RUN, "<hex>");
   s = s.replace(/\b[A-Za-z0-9_]{20,}\b/g, "<id>");
+  s = s.replace(ID_TOKEN, "<id>");
   s = s.replace(/\b\d+\b/g, "<n>");
   s = s.replace(/\s+/g, " ").trim().toLowerCase();
   return s.length > MESSAGE_BUCKET_MAX ? s.slice(0, MESSAGE_BUCKET_MAX) : s;
+}
+
+// Hex runs of 8+ chars are identifiers (request-id tails, short digests),
+// never words. The old 20-char bound let serverless request IDs — whose hex
+// tail is typically 12 chars — through, so every request log line minted a
+// unique fingerprint. The lookahead requires at least one a-f char so pure
+// numbers keep normalizing to `<n>` (no hash churn for numeric messages).
+const HEX_RUN = /\b(?=\d*[a-f])[0-9a-f]{8,}\b/gi;
+
+// The guiding rule for every collapse here: erase UNBOUNDED-cardinality
+// tokens (paths, query strings, request ids, numbers) and keep BOUNDED
+// discriminators. A URL's host names which dependency failed — collapsing
+// `OutOfMemory: http://web.company.com` and `http://api.company.com` onto one
+// fingerprint would merge two different errors — while its path/query vary
+// per request. So keep the host, drop the rest. Id-shaped host labels
+// (`customer-7973d118dc17.workers.dev`) still collapse because the hex/id
+// rules run over the kept host text afterwards.
+function collapseUrls(s: string): string {
+  return s.replace(/https?:\/\/([^\s/:?#]+)\S*/gi, (_m, host: string) => `<url:${host}>`);
+}
+
+// Tokens mixing letters with TWO OR MORE separate digit runs (h4p45, 5t6gm)
+// are id shapes: machine/instance tokens in request IDs. One digit run is
+// meaningful vocabulary (utf8, sha256, base64, es2022) and must survive; the
+// leading lookahead also keeps pure numbers out (they stay `<n>`).
+const ID_TOKEN = /\b(?=\d*[a-z])(?:[a-z]*\d+){2,}[a-z]*\b/gi;
+
+// `scope::token` pairs that contain a digit are request/instance IDs
+// (`sin1::sv2np-1783721553799-7973d118dc17`); ones without a digit are
+// vocabulary (C++ `std::bad_alloc`, Ruby `Net::ReadTimeout`) and survive.
+// Checked on the matched token itself via the replace callback, not a
+// lookahead, so a digit elsewhere in the message can't trigger a collapse.
+const SCOPED_TOKEN = /\b[a-z0-9]+::[a-z0-9][a-z0-9-]*\b/gi;
+function collapseScopedIds(s: string): string {
+  return s.replace(SCOPED_TOKEN, (token) => (/\d/.test(token) ? "<id>" : token));
 }
 
 // Collapse leading-slash request paths to a single `<path>` token. A route
@@ -131,7 +169,7 @@ function unwrapAnthropicErrorMessage(raw: string): string {
 
 export function normalizeMessage(body: string): string {
   let s = body;
-  s = s.replace(/https?:\/\/\S+/gi, "<url>");
+  s = collapseUrls(s);
   s = collapseRequestPaths(s);
   s = s.replace(/\b[\w.+-]+@[\w.-]+\.\w+\b/g, "<email>");
   s = s.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>");
@@ -140,7 +178,9 @@ export function normalizeMessage(body: string): string {
   s = s.replace(/\b0x[0-9a-f]+\b/gi, "<hex>");
   s = s.replace(/"(?:[^"\\]|\\.)*"/g, "<str>");
   s = s.replace(/'(?:[^'\\]|\\.)*'/g, "<str>");
-  s = s.replace(/\b[0-9a-f]{20,}\b/gi, "<hex>");
+  s = collapseScopedIds(s);
+  s = s.replace(HEX_RUN, "<hex>");
+  s = s.replace(ID_TOKEN, "<id>");
   s = s.replace(/\b\d+\b/g, "<n>");
   s = s.replace(/\s+/g, " ").trim().toLowerCase();
   return s;
