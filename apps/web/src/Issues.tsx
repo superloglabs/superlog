@@ -2085,7 +2085,7 @@ function IncidentDetailTabs({
   );
 }
 
-function IncidentPullRequestPanel({
+export function IncidentPullRequestPanel({
   projectId,
   incidentId,
   pullRequests,
@@ -2096,8 +2096,8 @@ function IncidentPullRequestPanel({
   pullRequests?: IncidentPullRequest[];
   readOnly: boolean;
 }) {
-  if (pullRequests) {
-    return <IncidentPullRequestView pullRequests={pullRequests} readOnly={readOnly} />;
+  if (pullRequests || readOnly) {
+    return <IncidentPullRequestView pullRequests={pullRequests ?? []} readOnly={readOnly} />;
   }
   return <ProductIncidentPullRequestPanel projectId={projectId} incidentId={incidentId} />;
 }

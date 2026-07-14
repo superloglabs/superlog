@@ -4,7 +4,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
-import { IncidentDetailContent, ResolutionProposalBanner } from "./Issues.tsx";
+import {
+  IncidentDetailContent,
+  IncidentPullRequestPanel,
+  ResolutionProposalBanner,
+} from "./Issues.tsx";
 import type { Incident, PendingResolutionProposal } from "./api.ts";
 
 test("read-only incident detail preserves the product layout without mutation controls", () => {
@@ -94,4 +98,24 @@ test("read-only recovery proposal keeps its findings without decision controls",
   assert.match(html, /The error rate returned to its baseline/);
   assert.doesNotMatch(html, />Dismiss</);
   assert.doesNotMatch(html, />Confirm resolution</);
+});
+
+test("read-only PR panel never falls back to the interactive product loader", () => {
+  const queryClient = new QueryClient();
+
+  const html = renderToStaticMarkup(
+    createElement(
+      QueryClientProvider,
+      { client: queryClient },
+      createElement(IncidentPullRequestPanel, {
+        projectId: "project-1",
+        incidentId: "incident-1",
+        readOnly: true,
+      }),
+    ),
+  );
+
+  assert.match(html, /No PR has been opened for this incident/);
+  assert.doesNotMatch(html, /Loading PR/);
+  assert.doesNotMatch(html, /Merge PR/);
 });
