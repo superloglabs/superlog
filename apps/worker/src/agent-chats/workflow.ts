@@ -149,7 +149,11 @@ export async function processQueuedAgentChat(
       orgId: context.orgId,
       projectName: context.projectName,
       question: message,
-      requester: chat.createdBySlackUserId ? `<@${chat.createdBySlackUserId}>` : null,
+      requester: chat.createdBySlackUserId
+        ? `<@${chat.createdBySlackUserId}>`
+        : chat.createdByLinearUserId
+          ? `Linear user ${chat.createdByLinearUserId}`
+          : null,
       repoCandidates,
       mcpResource: deps.mcpResource,
       customInstructions: context.customInstructions,
@@ -313,7 +317,13 @@ export async function syncRunningAgentChat(
 // between turns, so keep the attribution visible to the agent.
 export function combineChatMessages(messages: AgentChatMessage[]): string {
   return messages
-    .map((m) => (m.authorSlackUserId ? `<@${m.authorSlackUserId}>: ${m.text}` : m.text))
+    .map((m) =>
+      m.authorSlackUserId
+        ? `<@${m.authorSlackUserId}>: ${m.text}`
+        : m.authorLinearUserId
+          ? `Linear user ${m.authorLinearUserId}: ${m.text}`
+          : m.text,
+    )
     .join("\n\n");
 }
 

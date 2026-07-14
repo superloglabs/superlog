@@ -1,7 +1,9 @@
 import { strict as assert } from "node:assert";
+import crypto from "node:crypto";
 import { test } from "node:test";
 
 process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
+process.env.BETTER_AUTH_SECRET ??= "linear-test-secret-that-is-at-least-32-characters";
 
 test("buildLinearAuthorizeUrl requests app-actor authorization", async () => {
   const { buildLinearAuthorizeUrl } = await import("./linear.js");
@@ -20,10 +22,105 @@ test("buildLinearAuthorizeUrl requests app-actor authorization", async () => {
     url.searchParams.get("redirect_uri"),
     "https://api.superlog.sh/linear/oauth/callback",
   );
-  assert.equal(url.searchParams.get("scope"), "read,write,issues:create,comments:create");
+  assert.equal(
+    url.searchParams.get("scope"),
+    "read,write,issues:create,comments:create,app:mentionable,app:assignable",
+  );
   assert.equal(url.searchParams.get("state"), "signed-state");
   assert.equal(url.searchParams.get("prompt"), "consent");
   assert.equal(url.searchParams.get("actor"), "app");
+  assert.equal(url.searchParams.get("scope")?.includes("app:mentionable"), true);
+  assert.equal(url.searchParams.get("scope")?.includes("app:assignable"), true);
+});
+
+test("a Linear agent session created from a comment opens a chat", async () => {
+  const { classifyLinearAgentSessionEvent } = await import("./linear.js");
+
+  assert.deepEqual(
+    classifyLinearAgentSessionEvent({
+      type: "AgentSessionEvent",
+      action: "created",
+      promptContext: '<issue identifier="ENG-1"><title>Checkout is slow</title></issue>',
+      agentSession: {
+        id: "session-1",
+        issueId: "issue-1",
+        commentId: "comment-1",
+      },
+    }),
+    {
+      kind: "chat",
+      agentSessionId: "session-1",
+      issueId: "issue-1",
+      prompt: '<issue identifier="ENG-1"><title>Checkout is slow</title></issue>',
+    },
+  );
+});
+
+test("a Linear agent session created from an issue opens an incident", async () => {
+  const { classifyLinearAgentSessionEvent } = await import("./linear.js");
+
+  assert.deepEqual(
+    classifyLinearAgentSessionEvent({
+      type: "AgentSessionEvent",
+      action: "created",
+      promptContext: "Investigate checkout failures",
+      agentSession: { id: "session-2", issueId: "issue-2" },
+    }),
+    {
+      kind: "incident",
+      agentSessionId: "session-2",
+      issueId: "issue-2",
+      prompt: "Investigate checkout failures",
+    },
+  );
+});
+
+test("a prompted Linear agent session continues its existing conversation", async () => {
+  const { classifyLinearAgentSessionEvent } = await import("./linear.js");
+
+  assert.deepEqual(
+    classifyLinearAgentSessionEvent({
+      type: "AgentSessionEvent",
+      action: "prompted",
+      agentSession: { id: "session-3", issueId: "issue-3" },
+      agentActivity: { id: "activity-1", content: { type: "prompt", body: "Check deploys too" } },
+    }),
+    {
+      kind: "continuation",
+      agentSessionId: "session-3",
+      activityId: "activity-1",
+      prompt: "Check deploys too",
+    },
+  );
+});
+
+test("an application AgentSession webhook authenticates with the shared secret and app identity", async () => {
+  const { authenticateLinearWebhook } = await import("./linear.js");
+  const rawBody = JSON.stringify({
+    type: "AgentSessionEvent",
+    action: "created",
+    webhookId: "application-webhook",
+    organizationId: "workspace-1",
+    appUserId: "app-user-1",
+  });
+  const secret = "shared-application-webhook-secret";
+  const signature = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+  const installation = { id: "installation-1" } as never;
+
+  const result = await authenticateLinearWebhook({
+    payload: JSON.parse(rawBody),
+    rawBody,
+    signature,
+    appWebhookSecret: secret,
+    findByWebhookId: async () => null,
+    findByAgentIdentity: async (workspaceId, appUserId) => {
+      assert.equal(workspaceId, "workspace-1");
+      assert.equal(appUserId, "app-user-1");
+      return installation;
+    },
+  });
+
+  assert.deepEqual(result, { ok: true, installation });
 });
 
 test("completed is the only Linear state type that accepts the investigation", async () => {

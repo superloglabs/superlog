@@ -1,5 +1,6 @@
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import {
+  createLinearAgentActivity,
   db,
   listAccessibleGithubInstallsForProject,
   listActiveAgentChats,
@@ -116,7 +117,7 @@ const deps: AgentChatWorkflowDeps = {
   },
   async postReply(chat, text, dedupeId) {
     if (!dedupeId) {
-      await postAgentChatMessage(chat, text);
+      await postAgentChatReply(chat, text);
       return;
     }
     await postReplyExactlyOnce(chat, text, dedupeId, 0);
@@ -143,6 +144,28 @@ const deps: AgentChatWorkflowDeps = {
 // this window — by the time a claim looks stale, no original post can still
 // be in flight, so the takeover can't race a slow post into a duplicate.
 const OUTBOUND_CLAIM_TAKEOVER_MS = 2 * 60 * 1000;
+
+async function postAgentChatReply(chat: schema.AgentChat, text: string): Promise<string> {
+  if (chat.provider !== "linear") return postAgentChatMessage(chat, text);
+  const session = await db.query.linearAgentSessions.findFirst({
+    where: eq(schema.linearAgentSessions.agentChatId, chat.id),
+  });
+  if (!session) throw new ChatDeliveryUnavailableError("Linear agent session is missing");
+  const installation = await db.query.linearInstallations.findFirst({
+    where: and(
+      eq(schema.linearInstallations.id, session.installationId),
+      isNull(schema.linearInstallations.revokedAt),
+    ),
+  });
+  if (!installation) throw new ChatDeliveryUnavailableError("Linear installation is unavailable");
+  const activity = await createLinearAgentActivity({
+    accessToken: installation.accessToken,
+    agentSessionId: session.agentSessionId,
+    type: "response",
+    body: text,
+  });
+  return activity.id;
+}
 
 // Deliver one reply at most once across concurrent dispatchers and provider
 // ack retries. The claim row (unique on chatId + `outbound:<replyId>`) has
@@ -185,7 +208,7 @@ async function postReplyExactlyOnce(
       ),
     });
     // Posted by an earlier pass or another worker — done, safe to ack.
-    if (existing?.slackMessageTs) return;
+    if (existing?.providerMessageId ?? existing?.slackMessageTs) return;
     if (existing && Date.now() - existing.createdAt.getTime() < OUTBOUND_CLAIM_TAKEOVER_MS) {
       throw new Error("chat reply delivery in flight by another dispatcher; retrying next tick");
     }
@@ -197,6 +220,7 @@ async function postReplyExactlyOnce(
         .where(
           and(
             eq(schema.agentChatMessages.id, existing.id),
+            isNull(schema.agentChatMessages.providerMessageId),
             isNull(schema.agentChatMessages.slackMessageTs),
           ),
         );
@@ -209,7 +233,7 @@ async function postReplyExactlyOnce(
 
   let postedTs: string;
   try {
-    postedTs = await postAgentChatMessage(chat, text);
+    postedTs = await postAgentChatReply(chat, text);
   } catch (err) {
     await db
       .delete(schema.agentChatMessages)
@@ -219,7 +243,7 @@ async function postReplyExactlyOnce(
   }
   await db
     .update(schema.agentChatMessages)
-    .set({ slackMessageTs: postedTs })
+    .set({ providerMessageId: postedTs })
     .where(eq(schema.agentChatMessages.id, claim.id));
 }
 

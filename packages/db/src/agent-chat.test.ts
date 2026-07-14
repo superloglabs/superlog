@@ -1,11 +1,22 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { PGlite } from "@electric-sql/pglite";
+import { drizzle } from "drizzle-orm/pglite";
+import { migrate } from "drizzle-orm/pglite/migrator";
 import {
   decideChatInbound,
   mentionsBot,
+  recordInboundLinearChatMessage,
   resolveChatInstallation,
   stripBotMention,
 } from "./agent-chat.js";
+import type { DB } from "./client.js";
+import * as schema from "./schema.js";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const MIGRATIONS = path.resolve(HERE, "../migrations");
 
 // --- mention parsing -------------------------------------------------------
 
@@ -173,4 +184,59 @@ test("queued and running chats absorb the message without a state change", () =>
     decideChatInbound({ chatEnabled: true, existingChat: { id: "chat-1", state: "running" } }),
     { action: "append", chatId: "chat-1", requeue: false },
   );
+});
+
+test("a Linear mention creates one durable provider chat and dedupes webhook retries", async () => {
+  const client = new PGlite();
+  const db = drizzle(client, { schema }) as unknown as DB;
+  await migrate(db as never, { migrationsFolder: MIGRATIONS });
+  try {
+    const [org] = await db
+      .insert(schema.orgs)
+      .values({ name: "Acme", slug: "acme-linear-chat" })
+      .returning();
+    assert.ok(org);
+    const [project] = await db
+      .insert(schema.projects)
+      .values({ orgId: org.id, name: "App", slug: "app" })
+      .returning();
+    assert.ok(project);
+    const [installation] = await db
+      .insert(schema.linearInstallations)
+      .values({
+        projectId: project.id,
+        workspaceId: "workspace-1",
+        accessToken: "token",
+      })
+      .returning();
+    assert.ok(installation);
+
+    const input = {
+      projectId: project.id,
+      installationId: installation.id,
+      agentSessionId: "session-1",
+      issueId: "issue-1",
+      issueIdentifier: "ENG-1",
+      issueTitle: "Checkout is slow",
+      issueUrl: "https://linear.app/acme/issue/ENG-1",
+      authorLinearUserId: "user-1",
+      text: "Investigate the latest deploy",
+      activityId: "created:session-1",
+    };
+    const first = await recordInboundLinearChatMessage(db, input);
+    assert.equal(first.outcome, "accepted");
+    assert.equal(first.outcome === "accepted" && first.created, true);
+    assert.deepEqual(await recordInboundLinearChatMessage(db, input), { outcome: "duplicate" });
+
+    const sessions = await db.query.linearAgentSessions.findMany();
+    const chats = await db.query.agentChats.findMany();
+    const messages = await db.query.agentChatMessages.findMany();
+    assert.equal(sessions.length, 1);
+    assert.equal(chats.length, 1);
+    assert.equal(chats[0]?.provider, "linear");
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0]?.authorLinearUserId, "user-1");
+  } finally {
+    await client.close();
+  }
 });

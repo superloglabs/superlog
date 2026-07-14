@@ -17,6 +17,7 @@ import { mergeAgentPullRequest, pushPatchToExistingAgentPr } from "../github-app
 import { buildContextIncidentUrl } from "../incident-route.js";
 import { downloadAgentPatchFile } from "../infra/agent-runner/patch-files.js";
 import { openAgentRunPullRequest } from "../infra/github/pull-requests.js";
+import { postLinearIncidentResponse } from "../infra/linear/agent-session.js";
 import {
   incidentBlocks,
   postIncidentThreadMessage,
@@ -311,6 +312,10 @@ export async function completeWithPullRequest(
         },
         "agent run complete (existing pr updated)",
       );
+      await postLinearIncidentResponse(
+        ctx.incident.id,
+        `${result.summary}\n\nUpdated pull request: ${existingPr.url}`,
+      );
       return;
     }
     // No open PR to land on (closed meanwhile, or the prior run never opened
@@ -531,6 +536,10 @@ export async function completeWithPullRequest(
       },
       "failed to update PR-ready Slack root message",
     ),
+  );
+  await postLinearIncidentResponse(
+    ctx.incident.id,
+    `${result.summary}\n\nProposed fix: ${opened.prUrl}`,
   );
 }
 

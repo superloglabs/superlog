@@ -199,11 +199,13 @@ export {
 export {
   decideChatInbound,
   findChatByAnchor,
+  findLinearChatSession,
   listActiveAgentChats,
   listPendingChatMessages,
   markChatMessagesProcessed,
   mentionsBot,
   recordInboundChatMessage,
+  recordInboundLinearChatMessage,
   resolveChatInstallation,
   stripBotMention,
   type ChatInboundInput,
@@ -212,6 +214,7 @@ export {
   type ChatInstallationResolution,
   type RecordInboundChatMessageArgs,
   type RecordInboundChatMessageResult,
+  type RecordInboundLinearChatMessageArgs,
 } from "./agent-chat.js";
 export {
   isActiveIncidentState,
@@ -262,6 +265,10 @@ export {
 } from "./incident-pr-resolution.js";
 export { resolveIncidentOrg } from "./incident-org.js";
 export {
+  createIncidentFromLinearSession,
+  type CreateLinearIncidentInput,
+} from "./linear-agent-session.js";
+export {
   encryptIntegrationSecret,
   decryptIntegrationSecret,
   type IntegrationSecretCipher,
@@ -279,6 +286,8 @@ export {
   searchLinearIssues,
   createLinearIssue,
   createLinearComment,
+  createLinearAgentActivity,
+  updateLinearAgentSession,
 } from "./linear.js";
 export type {
   LinearTokenResponse,
@@ -286,6 +295,7 @@ export type {
   LinearWebhook,
   LinearTeam,
   LinearIssueRef,
+  LinearAgentActivityType,
 } from "./linear.js";
 export { exchangeNotionCode, revokeNotionToken, notionOwnerEmail } from "./notion.js";
 export type { NotionTokenResponse, NotionOwnerUser } from "./notion.js";

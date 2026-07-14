@@ -9,6 +9,10 @@ import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import { buildContextIncidentUrl } from "../incident-route.js";
 import {
+  postLinearIncidentElicitation,
+  postLinearIncidentError,
+} from "../infra/linear/agent-session.js";
+import {
   incidentBlocks,
   postIncidentThreadMessage,
   updateIncidentMainMessage,
@@ -179,6 +183,7 @@ export async function failAgentRun(
   const emoji =
     category === "agent" ? ":mag:" : category === "deliverable" ? ":x:" : ":rotating_light:";
   await postIncidentThreadMessage(ctx.incident.id, `${emoji} ${summary}`);
+  await postLinearIncidentError(ctx.incident.id, summary);
   const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
   await updateIncidentMainMessage(
     ctx.incident.id,
@@ -227,6 +232,7 @@ export async function moveAgentRunToAwaitingHuman(
     ),
   );
   await postIncidentThreadMessage(ctx.incident.id, `:speech_balloon: ${summary}\n${question}`);
+  await postLinearIncidentElicitation(ctx.incident.id, question);
   const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
   await updateIncidentMainMessage(
     ctx.incident.id,

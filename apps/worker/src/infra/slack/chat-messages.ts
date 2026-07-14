@@ -16,6 +16,9 @@ const CHAT_POST_TIMEOUT_MS = 30 * 1000;
 // Returns the posted message's ts (callers use it as the durable
 // proof-of-delivery marker).
 export async function postAgentChatMessage(chat: AgentChat, text: string): Promise<string> {
+  if (!chat.slackChannelId) {
+    throw new ChatDeliveryUnavailableError(`chat ${chat.id} has no Slack channel`);
+  }
   const target = await resolveChatSlackTarget(chat);
   if (!target) {
     throw new ChatDeliveryUnavailableError(
@@ -40,6 +43,7 @@ export async function postAgentChatMessage(chat: AgentChat, text: string): Promi
 }
 
 async function resolveChatSlackTarget(chat: AgentChat): Promise<SlackTarget | null> {
+  if (!chat.slackTeamId || !chat.slackChannelId) return null;
   const pinned = chat.slackInstallationId
     ? await db.query.slackInstallations.findFirst({
         where: and(

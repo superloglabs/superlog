@@ -259,6 +259,55 @@ export async function createLinearComment(args: {
   }
 }
 
+export type LinearAgentActivityType = "thought" | "response" | "elicitation" | "error";
+
+export async function createLinearAgentActivity(args: {
+  accessToken: string;
+  agentSessionId: string;
+  type: LinearAgentActivityType;
+  body: string;
+  ephemeral?: boolean;
+}): Promise<{ id: string }> {
+  const data = await linearGraphql<{
+    agentActivityCreate: {
+      success?: boolean;
+      agentActivity?: { id?: string };
+    };
+  }>(
+    args.accessToken,
+    "mutation($input: AgentActivityCreateInput!) { agentActivityCreate(input: $input) { success agentActivity { id } } }",
+    {
+      input: {
+        agentSessionId: args.agentSessionId,
+        content: { type: args.type, body: args.body },
+        ...(args.ephemeral === undefined ? {} : { ephemeral: args.ephemeral }),
+      },
+    },
+    "agentActivityCreate",
+  );
+  const id = data.agentActivityCreate.agentActivity?.id;
+  if (!data.agentActivityCreate.success || !id) {
+    throw new Error(`linear agentActivityCreate did not succeed: ${JSON.stringify(data)}`);
+  }
+  return { id };
+}
+
+export async function updateLinearAgentSession(args: {
+  accessToken: string;
+  agentSessionId: string;
+  externalUrls: Array<{ label: string; url: string }>;
+}): Promise<void> {
+  const data = await linearGraphql<{ agentSessionUpdate: { success?: boolean } }>(
+    args.accessToken,
+    "mutation($id: String!, $input: AgentSessionUpdateInput!) { agentSessionUpdate(id: $id, input: $input) { success } }",
+    { id: args.agentSessionId, input: { externalUrls: args.externalUrls } },
+    "agentSessionUpdate",
+  );
+  if (!data.agentSessionUpdate.success) {
+    throw new Error(`linear agentSessionUpdate did not succeed: ${JSON.stringify(data)}`);
+  }
+}
+
 /**
  * Returns a usable access token for the installation, refreshing in place if it's
  * within REFRESH_GRACE_MS of expiry. Persists rotated refresh tokens.

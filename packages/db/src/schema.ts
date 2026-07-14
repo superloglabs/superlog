@@ -216,25 +216,32 @@ export type AgentRunConfidence = {
 export type AgentRunTrigger =
   | "incident"
   | "manual"
+  | "linear"
   | "pr_comment"
   | "pr_merged"
   | "pr_closed"
   | "feedback"
   | "slack_reply"
+  | "linear_reply"
   | "web_chat"
   | "issue_joined";
 
 // Triggers that start an *initial* investigation (vs. a follow-up revived by a
-// human interaction after a prior run): "incident" (auto, from telemetry) and
-// "manual" (a user-started investigation from a typed prompt).
-export const INITIAL_AGENT_RUN_TRIGGERS: readonly AgentRunTrigger[] = ["incident", "manual"];
+// human interaction after a prior run): "incident" (auto, from telemetry),
+// "manual" (a user-started investigation from a typed prompt), and "linear"
+// (a delegated Linear issue).
+export const INITIAL_AGENT_RUN_TRIGGERS: readonly AgentRunTrigger[] = [
+  "incident",
+  "manual",
+  "linear",
+];
 
 export function isFollowUpTrigger(trigger: AgentRunTrigger): boolean {
   return !INITIAL_AGENT_RUN_TRIGGERS.includes(trigger);
 }
 
 // Follow-up runs are revived by an inbound interaction on one of these channels.
-export type AgentRunFollowUpTrigger = Exclude<AgentRunTrigger, "incident" | "manual">;
+export type AgentRunFollowUpTrigger = Exclude<AgentRunTrigger, "incident" | "manual" | "linear">;
 
 export type AgentRunFollowUpInteraction = {
   channel: AgentRunFollowUpTrigger;
@@ -251,7 +258,8 @@ export type AgentRunTriggerDetail = {
   interactions: AgentRunFollowUpInteraction[];
 };
 
-// Lifecycle of a Slack Q&A chat (one row per Slack thread / DM channel).
+// Lifecycle of a provider Q&A chat (one row per Slack thread / DM channel or
+// Linear AgentSession).
 // queued: an unanswered inbound message is waiting for the worker (covers
 // both "no session yet" and "idle session to resume"). running: the session
 // is working a turn. idle: answered, waiting for the next human message.
@@ -782,7 +790,9 @@ export const incidents = pgTable(
     // billing enforcement is on (see apps/worker billing/investigation-gate).
     // NULL when an investigation was queued or was never blocked; cleared back
     // to NULL once a run is successfully queued.
-    autoInvestigateBlockedReason: text("auto_investigate_blocked_reason").$type<IncidentAutoInvestigateBlockedReason>(),
+    autoInvestigateBlockedReason: text(
+      "auto_investigate_blocked_reason",
+    ).$type<IncidentAutoInvestigateBlockedReason>(),
     // Last time the autorecovery sweep evaluated this incident (regardless of
     // outcome — proposed, still-happening, below-confidence, or skipped). The
     // sweep orders candidates by this column (NULLS FIRST) so it drains the
@@ -1027,8 +1037,9 @@ export const agentRuns = pgTable(
     // interactions accumulate while the run is still queued (e.g. a PR
     // review burst becomes one run, not one per comment).
     triggerDetail: jsonb("trigger_detail").$type<AgentRunTriggerDetail>(),
-    // The user's free-text brief for a manual ("manual" trigger) investigation,
-    // injected into the agent's initial prompt. Null for auto incident runs.
+    // The user's free-text brief for a manual or delegated Linear
+    // investigation, injected into the agent's initial prompt. Null for auto
+    // telemetry incident runs.
     prompt: text("prompt"),
     providerSessionId: text("provider_session_id"),
     providerThreadId: text("provider_thread_id"),
@@ -1121,13 +1132,14 @@ export const incidentEvents = pgTable(
   }),
 );
 
-// A Slack Q&A conversation with the agent, started by mentioning the bot in a
-// channel (or messaging it in a DM) — deliberately NOT an incident and NOT an
+// A Q&A conversation with the agent, started by mentioning it in a connected
+// provider — deliberately NOT an incident and NOT an
 // agent_run: the investigation pipeline (PR delivery, noise verdicts, incident
 // anchoring) is incident-shaped end to end, while a chat is just a durable
 // provider session that answers questions about the project's code and
 // telemetry. One row per conversation; the (channel, thread) anchor is how
-// inbound Slack events find it, mirroring incidents_slack_thread_idx.
+// inbound Slack events find it; Linear conversations are anchored through
+// linear_agent_sessions.
 export const agentChats = pgTable(
   "agent_chats",
   {
@@ -1135,6 +1147,7 @@ export const agentChats = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
+    provider: text("provider").$type<"slack" | "linear">().notNull().default("slack"),
     // Pinned at creation so replies keep working when the project's Slack
     // route changes later; nulled if the installation row is deleted (the
     // team-wide fallback lookup still works via slackTeamId).
@@ -1142,13 +1155,14 @@ export const agentChats = pgTable(
       (): AnyPgColumn => slackInstallations.id,
       { onDelete: "set null" },
     ),
-    slackTeamId: text("slack_team_id").notNull(),
-    slackChannelId: text("slack_channel_id").notNull(),
+    slackTeamId: text("slack_team_id"),
+    slackChannelId: text("slack_channel_id"),
     // Thread anchor. NULL for DM chats: a DM channel is one continuous
     // conversation with no thread anchoring, so the channel id alone is the
     // key and replies post to the channel root.
     slackThreadTs: text("slack_thread_ts"),
     createdBySlackUserId: text("created_by_slack_user_id"),
+    createdByLinearUserId: text("created_by_linear_user_id"),
     // First question, truncated — display/debug label only.
     title: text("title"),
     runtime: text("runtime").notNull().default(DEFAULT_AGENT_RUN_PROVIDER),
@@ -1180,19 +1194,18 @@ export const agentChats = pgTable(
     // the composite one.
     threadUniq: uniqueIndex("agent_chats_thread_idx")
       .on(t.slackTeamId, t.slackChannelId, t.slackThreadTs)
-      .where(sql`slack_thread_ts IS NOT NULL`),
+      .where(sql`provider = 'slack' AND slack_thread_ts IS NOT NULL`),
     dmChannelUniq: uniqueIndex("agent_chats_dm_channel_idx")
       .on(t.slackTeamId, t.slackChannelId)
-      .where(sql`slack_thread_ts IS NULL`),
+      .where(sql`provider = 'slack' AND slack_thread_ts IS NULL`),
     providerSessionUniq: uniqueIndex("agent_chats_provider_session_idx").on(t.providerSessionId),
     // The worker tick scans active chats oldest-updated first.
     stateIdx: index("agent_chats_state_idx").on(t.state, t.updatedAt),
   }),
 );
 
-// Inbound queue for a chat: one row per human Slack message, deduped on the
-// Slack event/message id so Events API retries (and the app_mention +
-// message double delivery for one mention) can't double-feed the session.
+// Inbound queue for a chat: one row per human provider message, deduped on a
+// provider event/message id so webhook retries can't double-feed the session.
 // `processedAt` is stamped when the worker delivers the text into the
 // provider session (resume/steer) — the same pending-marker pattern as
 // incident_events.human_reply.
@@ -1204,8 +1217,10 @@ export const agentChatMessages = pgTable(
       .notNull()
       .references(() => agentChats.id, { onDelete: "cascade" }),
     authorSlackUserId: text("author_slack_user_id"),
+    authorLinearUserId: text("author_linear_user_id"),
     text: text("text").notNull(),
     slackMessageTs: text("slack_message_ts"),
+    providerMessageId: text("provider_message_id"),
     dedupeKey: text("dedupe_key").notNull(),
     processedAt: timestamp("processed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -1808,6 +1823,7 @@ export const linearInstallations = pgTable(
       onDelete: "set null",
     }),
     actorEmail: text("actor_email"),
+    appUserId: text("app_user_id"),
     accessToken: text("access_token").notNull(),
     refreshToken: text("refresh_token"),
     accessExpiresAt: timestamp("access_expires_at", { withTimezone: true }),
@@ -1826,6 +1842,47 @@ export const linearInstallations = pgTable(
     activeUniq: uniqueIndex("linear_installations_project_active_idx")
       .on(t.projectId)
       .where(sql`revoked_at IS NULL`),
+  }),
+);
+
+// Linear's AgentSession is the provider-side conversation envelope created
+// when the app is mentioned or delegated an issue. This anti-corruption table
+// maps that envelope to exactly one local aggregate: Q&A chat for a mention,
+// incident for a delegation. The issue itself remains the incident's external
+// root and is also recorded as the run's known Linear ticket.
+export const linearAgentSessions = pgTable(
+  "linear_agent_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    installationId: uuid("installation_id")
+      .notNull()
+      .references(() => linearInstallations.id, { onDelete: "cascade" }),
+    agentSessionId: text("agent_session_id").notNull(),
+    kind: text("kind").$type<"chat" | "incident">().notNull(),
+    issueId: text("issue_id").notNull(),
+    issueIdentifier: text("issue_identifier"),
+    issueTitle: text("issue_title"),
+    issueUrl: text("issue_url"),
+    incidentId: uuid("incident_id").references(() => incidents.id, { onDelete: "cascade" }),
+    agentChatId: uuid("agent_chat_id").references(() => agentChats.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    installationSessionUniq: uniqueIndex("linear_agent_sessions_install_session_idx").on(
+      t.installationId,
+      t.agentSessionId,
+    ),
+    incidentUniq: uniqueIndex("linear_agent_sessions_incident_idx")
+      .on(t.incidentId)
+      .where(sql`incident_id IS NOT NULL`),
+    chatUniq: uniqueIndex("linear_agent_sessions_chat_idx")
+      .on(t.agentChatId)
+      .where(sql`agent_chat_id IS NOT NULL`),
+    rootCheck: check(
+      "linear_agent_sessions_root_check",
+      sql`(kind = 'chat' AND agent_chat_id IS NOT NULL AND incident_id IS NULL) OR (kind = 'incident' AND incident_id IS NOT NULL AND agent_chat_id IS NULL)`,
+    ),
   }),
 );
 
@@ -2628,15 +2685,16 @@ export const renderInstallations = pgTable(
     renderOwnerName: text("render_owner_name"),
     // Snapshot of the workspace's services, refreshed by the puller. Display +
     // pull-planning only, never authorization.
-    services: jsonb("services").$type<
-      Array<{
-        id: string;
-        name: string;
-        type: string;
-        region: string | null;
-        suspended: boolean;
-      }>
-    >(),
+    services:
+      jsonb("services").$type<
+        Array<{
+          id: string;
+          name: string;
+          type: string;
+          region: string | null;
+          suspended: boolean;
+        }>
+      >(),
     // The user's Render API key, encrypted at rest. No expiry, no refresh; the
     // user revokes it from Render's dashboard (which strands the install until
     // reconnect).
@@ -2781,6 +2839,7 @@ export type DashboardWidget = typeof dashboardWidgets.$inferSelect;
 export type GithubInstallation = typeof githubInstallations.$inferSelect;
 export type ProjectGithubRepo = typeof projectGithubRepos.$inferSelect;
 export type LinearInstallation = typeof linearInstallations.$inferSelect;
+export type LinearAgentSession = typeof linearAgentSessions.$inferSelect;
 export type NotionInstallation = typeof notionInstallations.$inferSelect;
 export type OrgAgentSettings = typeof orgAgentSettings.$inferSelect;
 export type AgentMemory = typeof agentMemories.$inferSelect;

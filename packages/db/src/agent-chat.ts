@@ -253,6 +253,7 @@ async function insertChatForAnchor(
 ): Promise<schema.AgentChat | null> {
   const values = {
     projectId: args.projectId,
+    provider: "slack" as const,
     slackInstallationId: args.slackInstallationId,
     slackTeamId: args.slackTeamId,
     slackChannelId: args.slackChannelId,
@@ -274,7 +275,7 @@ async function insertChatForAnchor(
             schema.agentChats.slackChannelId,
             schema.agentChats.slackThreadTs,
           ],
-          where: sql`${schema.agentChats.slackThreadTs} is not null`,
+          where: sql`${schema.agentChats.provider} = 'slack' and ${schema.agentChats.slackThreadTs} is not null`,
         })
         .returning()
     : await db
@@ -282,10 +283,147 @@ async function insertChatForAnchor(
         .values(values)
         .onConflictDoNothing({
           target: [schema.agentChats.slackTeamId, schema.agentChats.slackChannelId],
-          where: sql`${schema.agentChats.slackThreadTs} is null`,
+          where: sql`${schema.agentChats.provider} = 'slack' and ${schema.agentChats.slackThreadTs} is null`,
         })
         .returning();
   return inserted ?? null;
+}
+
+export type RecordInboundLinearChatMessageArgs = {
+  projectId: string;
+  installationId: string;
+  agentSessionId: string;
+  issueId: string;
+  issueIdentifier?: string | null;
+  issueTitle?: string | null;
+  issueUrl?: string | null;
+  authorLinearUserId: string | null;
+  text: string;
+  activityId: string;
+  now?: Date;
+};
+
+export async function findLinearChatSession(
+  db: DB,
+  installationId: string,
+  agentSessionId: string,
+): Promise<{ session: schema.LinearAgentSession; chat: schema.AgentChat } | null> {
+  const session = await db.query.linearAgentSessions.findFirst({
+    where: and(
+      eq(schema.linearAgentSessions.installationId, installationId),
+      eq(schema.linearAgentSessions.agentSessionId, agentSessionId),
+      eq(schema.linearAgentSessions.kind, "chat"),
+    ),
+  });
+  if (!session?.agentChatId) return null;
+  const chat = await db.query.agentChats.findFirst({
+    where: eq(schema.agentChats.id, session.agentChatId),
+  });
+  return chat ? { session, chat } : null;
+}
+
+// Linear mentions use the same durable chat aggregate as Slack while keeping
+// provider payloads out of the domain. The AgentSession mapping is the
+// anti-corruption layer and the provider activity id is the retry key.
+export async function recordInboundLinearChatMessage(
+  db: DB,
+  args: RecordInboundLinearChatMessageArgs,
+): Promise<RecordInboundChatMessageResult> {
+  const now = args.now ?? new Date();
+  const project = await db.query.projects.findFirst({
+    where: eq(schema.projects.id, args.projectId),
+    columns: { id: true },
+  });
+  if (!project) return { outcome: "skipped", reason: "project_not_found" };
+  const automation = await db.query.projectAutomationSettings.findFirst({
+    where: eq(schema.projectAutomationSettings.projectId, args.projectId),
+    columns: { chatEnabled: true, agentRunProvider: true },
+  });
+
+  let owned = await findLinearChatSession(db, args.installationId, args.agentSessionId);
+  const verdict = decideChatInbound({
+    chatEnabled: automation?.chatEnabled ?? true,
+    existingChat: owned ? { id: owned.chat.id, state: owned.chat.state } : null,
+  });
+  if (verdict.action === "skip") return { outcome: "skipped", reason: verdict.reason };
+
+  let created = false;
+  if (!owned) {
+    try {
+      owned = await db.transaction(async (tx) => {
+        const [chat] = await tx
+          .insert(schema.agentChats)
+          .values({
+            projectId: args.projectId,
+            provider: "linear",
+            slackInstallationId: null,
+            slackTeamId: null,
+            slackChannelId: null,
+            slackThreadTs: null,
+            createdByLinearUserId: args.authorLinearUserId,
+            title: (args.issueTitle ?? args.text).slice(0, CHAT_TITLE_MAX),
+            ...(automation?.agentRunProvider ? { runtime: automation.agentRunProvider } : {}),
+          })
+          .returning();
+        if (!chat) throw new Error("failed to create Linear agent chat");
+        const [session] = await tx
+          .insert(schema.linearAgentSessions)
+          .values({
+            installationId: args.installationId,
+            agentSessionId: args.agentSessionId,
+            kind: "chat",
+            issueId: args.issueId,
+            issueIdentifier: args.issueIdentifier ?? null,
+            issueTitle: args.issueTitle ?? null,
+            issueUrl: args.issueUrl ?? null,
+            agentChatId: chat.id,
+          })
+          .returning();
+        if (!session) throw new Error("failed to map Linear agent chat");
+        return { session, chat };
+      });
+      created = true;
+    } catch (err) {
+      const code =
+        (err as { code?: string; cause?: { code?: string } }).code ??
+        (err as { cause?: { code?: string } }).cause?.code;
+      if (code !== "23505") throw err;
+      owned = await findLinearChatSession(db, args.installationId, args.agentSessionId);
+    }
+  }
+  if (!owned) throw new Error("Linear agent chat missing after insert");
+
+  const [recorded] = await db
+    .insert(schema.agentChatMessages)
+    .values({
+      chatId: owned.chat.id,
+      authorLinearUserId: args.authorLinearUserId,
+      text: args.text,
+      dedupeKey: `linear:${args.activityId}`,
+    })
+    .onConflictDoNothing({
+      target: [schema.agentChatMessages.chatId, schema.agentChatMessages.dedupeKey],
+    })
+    .returning({ id: schema.agentChatMessages.id });
+  if (!recorded) return { outcome: "duplicate" };
+
+  if (verdict.action === "append" && verdict.requeue) {
+    await db
+      .update(schema.agentChats)
+      .set({ state: "queued", failureReason: null, updatedAt: now })
+      .where(
+        and(
+          eq(schema.agentChats.id, owned.chat.id),
+          inArray(schema.agentChats.state, ["idle", "failed"]),
+        ),
+      );
+  } else {
+    await db
+      .update(schema.agentChats)
+      .set({ updatedAt: now })
+      .where(eq(schema.agentChats.id, owned.chat.id));
+  }
+  return { outcome: "accepted", chatId: owned.chat.id, created };
 }
 
 // --- worker-side helpers ----------------------------------------------------

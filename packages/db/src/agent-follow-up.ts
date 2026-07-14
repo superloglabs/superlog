@@ -1,5 +1,5 @@
 // Talking to an investigation: a human interaction (PR comment, feedback,
-// Slack reply) after a run finished should continue the SAME durable provider
+// Slack or Linear reply) after a run finished should continue the SAME durable provider
 // session — resume it in place, keep the repo mounted, keep committing to the
 // same PR — rather than spinning up a fresh investigation. `decideInboundContinuation`
 // is the routing seam: resume the live session, steer it if it's mid-turn, or
@@ -439,6 +439,8 @@ function followUpQueuedSummary(trigger: AgentRunFollowUpTrigger): string {
       return "Follow-up investigation queued from user feedback.";
     case "slack_reply":
       return "Follow-up investigation queued from a Slack reply.";
+    case "linear_reply":
+      return "Follow-up investigation queued from a Linear prompt.";
     case "web_chat":
       return "Follow-up investigation queued from an incident chat message.";
     case "issue_joined":

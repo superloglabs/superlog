@@ -1,19 +1,26 @@
 import crypto from "node:crypto";
 import {
   captureAgentPrLifecycleEvent,
+  createIncidentFromLinearSession,
   createIncidentLifecycle,
+  createLinearAgentActivity,
   createLinearWebhook,
   daysBetween,
   db,
   deleteLinearWebhook,
+  enqueueIncidentCreated,
   exchangeLinearCode,
   fetchLinearViewer,
   linearTicketAcceptanceUnit,
+  recordInboundInteraction,
+  recordInboundLinearChatMessage,
+  resolveDefaultAgentRunProvider,
   resolveIncidentOrg,
   revokeLinearToken,
   schema,
+  updateLinearAgentSession,
 } from "@superlog/db";
-import { and, eq, isNull, ne, or } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, or } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
 import { closeAgentPullRequestOnGithub } from "./github.js";
@@ -24,7 +31,7 @@ import { resolveActiveOrgContext } from "./org-context.js";
 const log = logger.child({ scope: "linear" });
 const incidentLifecycle = createIncidentLifecycle(db);
 
-const SCOPES = "read,write,issues:create,comments:create";
+const SCOPES = "read,write,issues:create,comments:create,app:mentionable,app:assignable";
 
 type Vars = { userId: string; orgId: string | null };
 
@@ -48,6 +55,7 @@ export function buildLinearAuthorizeUrl(args: {
 export function mountLinearPublic(app: Hono<any>): void {
   const clientId = process.env.LINEAR_CLIENT_ID;
   const clientSecret = process.env.LINEAR_CLIENT_SECRET;
+  const appWebhookSecret = process.env.LINEAR_WEBHOOK_SECRET;
   const redirectUrl =
     process.env.LINEAR_OAUTH_REDIRECT_URL ?? "http://localhost:4100/linear/oauth/callback";
   const stateSecret = process.env.STATE_SIGNING_SECRET;
@@ -103,6 +111,7 @@ export function mountLinearPublic(app: Hono<any>): void {
       workspaceName: viewer.organization.name,
       workspaceUrlKey: viewer.organization.urlKey,
       actorEmail: viewer.email,
+      appUserId: viewer.id,
       accessToken: token.access_token,
       refreshToken: token.refresh_token ?? null,
       accessExpiresAt: expiresAt,
@@ -139,17 +148,32 @@ export function mountLinearPublic(app: Hono<any>): void {
     const webhookId = typeof parsed.webhookId === "string" ? parsed.webhookId : null;
     if (!webhookId) return c.json({ error: "missing webhookId" }, 400);
 
-    const install = await db.query.linearInstallations.findFirst({
-      where: eq(schema.linearInstallations.webhookId, webhookId),
+    const auth = await authenticateLinearWebhook({
+      payload: parsed,
+      rawBody,
+      signature: sigHeader,
+      appWebhookSecret,
+      findByWebhookId: (id) =>
+        db.query.linearInstallations.findFirst({
+          where: eq(schema.linearInstallations.webhookId, id),
+        }),
+      findByAgentIdentity: (workspaceId, appUserId) =>
+        db.query.linearInstallations.findFirst({
+          where: and(
+            eq(schema.linearInstallations.workspaceId, workspaceId),
+            eq(schema.linearInstallations.appUserId, appUserId),
+            isNull(schema.linearInstallations.revokedAt),
+          ),
+          orderBy: [desc(schema.linearInstallations.updatedAt)],
+        }),
     });
-    if (!install || !install.webhookSecret) {
-      log.warn({ webhook_id: webhookId }, "linear webhook from unknown installation");
-      return c.json({ error: "unknown webhook" }, 404);
+    if (!auth.ok) {
+      log.warn({ webhook_id: webhookId, delivery }, `linear webhook ${auth.reason}`);
+      return auth.reason === "bad signature"
+        ? c.json({ error: "bad signature" }, 401)
+        : c.json({ error: "unknown webhook" }, 404);
     }
-    if (!verifyLinearSignature(rawBody, sigHeader, install.webhookSecret)) {
-      log.warn({ webhook_id: webhookId, delivery }, "linear webhook signature failed");
-      return c.json({ error: "bad signature" }, 401);
-    }
+    const install = auth.installation;
 
     try {
       await handleLinearWebhook(parsed, install, delivery);
@@ -168,6 +192,7 @@ type LinearWebhookPayload = {
   webhookId?: string;
   webhookTimestamp?: number;
   createdAt?: string;
+  url?: string;
   updatedFrom?: Record<string, unknown> | null;
   data?: {
     id?: string;
@@ -182,7 +207,81 @@ type LinearWebhookPayload = {
     user?: LinearWebhookActor;
   };
   actor?: LinearWebhookActor;
+  organizationId?: string;
+  appUserId?: string;
+  oauthClientId?: string;
+  promptContext?: string;
+  agentSession?: {
+    id?: string;
+    issueId?: string;
+    commentId?: string | null;
+    sourceCommentId?: string | null;
+    creatorId?: string | null;
+    issue?: {
+      id?: string;
+      identifier?: string;
+      title?: string;
+      description?: string | null;
+      url?: string;
+    };
+  };
+  agentActivity?: {
+    id?: string;
+    userId?: string;
+    content?: { type?: string; body?: string };
+  };
 };
+
+export type LinearAgentSessionEventClassification =
+  | {
+      kind: "chat";
+      agentSessionId: string;
+      issueId: string;
+      prompt: string;
+    }
+  | {
+      kind: "incident";
+      agentSessionId: string;
+      issueId: string;
+      prompt: string;
+    }
+  | {
+      kind: "continuation";
+      agentSessionId: string;
+      activityId: string;
+      prompt: string;
+    }
+  | { kind: "ignore" };
+
+export function classifyLinearAgentSessionEvent(
+  payload: LinearWebhookPayload,
+): LinearAgentSessionEventClassification {
+  if (payload.type !== "AgentSessionEvent") return { kind: "ignore" };
+  const agentSessionId = payload.agentSession?.id;
+  if (!agentSessionId) return { kind: "ignore" };
+
+  if (payload.action === "prompted") {
+    const activityId = payload.agentActivity?.id;
+    const prompt = payload.agentActivity?.content?.body?.trim();
+    return activityId && prompt
+      ? { kind: "continuation", agentSessionId, activityId, prompt }
+      : { kind: "ignore" };
+  }
+
+  if (payload.action !== "created") return { kind: "ignore" };
+  const issueId = payload.agentSession?.issueId;
+  const prompt = payload.promptContext?.trim();
+  if (!issueId || !prompt) return { kind: "ignore" };
+  const isMention = Boolean(
+    payload.agentSession?.commentId ?? payload.agentSession?.sourceCommentId,
+  );
+  return {
+    kind: isMention ? "chat" : "incident",
+    agentSessionId,
+    issueId,
+    prompt,
+  };
+}
 
 export function isLinearCompletedState(stateType: string | null | undefined): boolean {
   return stateType === "completed";
@@ -214,6 +313,56 @@ function verifyLinearSignature(body: string, header: string, secret: string): bo
   return crypto.timingSafeEqual(providedBuf, expectedBuf);
 }
 
+type LinearWebhookAuthArgs = {
+  payload: LinearWebhookPayload;
+  rawBody: string;
+  signature: string;
+  appWebhookSecret?: string;
+  findByWebhookId: (webhookId: string) => Promise<schema.LinearInstallation | null | undefined>;
+  findByAgentIdentity: (
+    workspaceId: string,
+    appUserId: string,
+  ) => Promise<schema.LinearInstallation | null | undefined>;
+};
+
+export async function authenticateLinearWebhook(
+  args: LinearWebhookAuthArgs,
+): Promise<
+  | { ok: true; installation: schema.LinearInstallation }
+  | { ok: false; reason: "unknown installation" | "bad signature" }
+> {
+  const webhookId = args.payload.webhookId;
+  if (webhookId) {
+    const installation = await args.findByWebhookId(webhookId);
+    if (
+      installation?.webhookSecret &&
+      verifyLinearSignature(args.rawBody, args.signature, installation.webhookSecret)
+    ) {
+      return { ok: true, installation };
+    }
+  }
+
+  if (
+    args.payload.type === "AgentSessionEvent" &&
+    args.appWebhookSecret &&
+    args.payload.organizationId &&
+    args.payload.appUserId
+  ) {
+    if (!verifyLinearSignature(args.rawBody, args.signature, args.appWebhookSecret)) {
+      return { ok: false, reason: "bad signature" };
+    }
+    const installation = await args.findByAgentIdentity(
+      args.payload.organizationId,
+      args.payload.appUserId,
+    );
+    return installation
+      ? { ok: true, installation }
+      : { ok: false, reason: "unknown installation" };
+  }
+
+  return { ok: false, reason: "unknown installation" };
+}
+
 async function handleLinearWebhook(
   payload: LinearWebhookPayload,
   install: schema.LinearInstallation,
@@ -222,6 +371,11 @@ async function handleLinearWebhook(
   const type = payload.type;
   const action = payload.action;
   if (!type || !action) return;
+
+  if (type === "AgentSessionEvent") {
+    await handleLinearAgentSessionEvent(payload, install);
+    return;
+  }
 
   const issueId =
     type === "Issue"
@@ -306,6 +460,167 @@ async function handleLinearWebhook(
       occurredAt,
     })
     .onConflictDoNothing();
+}
+
+async function handleLinearAgentSessionEvent(
+  payload: LinearWebhookPayload,
+  install: schema.LinearInstallation,
+): Promise<void> {
+  const classification = classifyLinearAgentSessionEvent(payload);
+  if (classification.kind === "ignore") return;
+  const issue = payload.agentSession?.issue;
+
+  if (classification.kind === "chat") {
+    const recorded = await recordInboundLinearChatMessage(db, {
+      projectId: install.projectId,
+      installationId: install.id,
+      agentSessionId: classification.agentSessionId,
+      issueId: classification.issueId,
+      issueIdentifier: issue?.identifier ?? null,
+      issueTitle: issue?.title ?? null,
+      issueUrl: issue?.url ?? payload.url ?? null,
+      authorLinearUserId: payload.agentSession?.creatorId ?? null,
+      text: classification.prompt,
+      activityId: `session:${classification.agentSessionId}`,
+    });
+    if (recorded.outcome === "accepted") {
+      await acknowledgeLinearSession(install, classification.agentSessionId, "chat");
+    }
+    return;
+  }
+
+  if (classification.kind === "incident") {
+    const result = await createLinearRootIncident({
+      install,
+      agentSessionId: classification.agentSessionId,
+      issueId: classification.issueId,
+      issueIdentifier: issue?.identifier ?? null,
+      issueTitle: issue?.title ?? null,
+      issueUrl: issue?.url ?? payload.url ?? null,
+      prompt: classification.prompt,
+    });
+    if (result.created) {
+      await enqueueIncidentCreated(result.incident.id).catch((err) =>
+        log.warn(
+          { err, incident_id: result.incident.id },
+          "failed to enqueue Linear incident webhook",
+        ),
+      );
+      await acknowledgeLinearSession(install, classification.agentSessionId, "incident");
+      const incidentUrl = await linearIncidentUrl(result.incident);
+      if (incidentUrl) {
+        await updateLinearAgentSession({
+          accessToken: install.accessToken,
+          agentSessionId: classification.agentSessionId,
+          externalUrls: [{ label: "View incident", url: incidentUrl }],
+        });
+      }
+    }
+    return;
+  }
+
+  const chat = await db.query.linearAgentSessions.findFirst({
+    where: and(
+      eq(schema.linearAgentSessions.installationId, install.id),
+      eq(schema.linearAgentSessions.agentSessionId, classification.agentSessionId),
+    ),
+  });
+  if (!chat) return;
+  if (chat.kind === "chat") {
+    const recorded = await recordInboundLinearChatMessage(db, {
+      projectId: install.projectId,
+      installationId: install.id,
+      agentSessionId: classification.agentSessionId,
+      issueId: chat.issueId,
+      issueIdentifier: chat.issueIdentifier,
+      issueTitle: chat.issueTitle,
+      issueUrl: chat.issueUrl,
+      authorLinearUserId: payload.agentActivity?.userId ?? payload.agentSession?.creatorId ?? null,
+      text: classification.prompt,
+      activityId: classification.activityId,
+    });
+    if (recorded.outcome === "accepted") {
+      await acknowledgeLinearSession(install, classification.agentSessionId, "chat");
+    }
+    return;
+  }
+  if (!chat.incidentId) return;
+  const recorded = await recordInboundInteraction(db, {
+    incidentId: chat.incidentId,
+    interaction: {
+      channel: "linear_reply",
+      author: payload.agentActivity?.userId ?? payload.agentSession?.creatorId ?? null,
+      text: classification.prompt,
+      url: chat.issueUrl,
+      occurredAt: payload.createdAt ?? new Date().toISOString(),
+    },
+    detail: {
+      linearAgentSessionId: classification.agentSessionId,
+      linearActivityId: classification.activityId,
+    },
+    dedupeKey: `linear_prompt:${classification.activityId}`,
+  });
+  if (recorded.outcome === "accepted") {
+    await acknowledgeLinearSession(install, classification.agentSessionId, "incident");
+  }
+}
+
+async function createLinearRootIncident(args: {
+  install: schema.LinearInstallation;
+  agentSessionId: string;
+  issueId: string;
+  issueIdentifier: string | null;
+  issueTitle: string | null;
+  issueUrl: string | null;
+  prompt: string;
+}): Promise<{ incident: schema.Incident; created: boolean }> {
+  const automation = await db.query.projectAutomationSettings.findFirst({
+    where: eq(schema.projectAutomationSettings.projectId, args.install.projectId),
+    columns: { agentRunEnabled: true, agentRunProvider: true },
+  });
+  if (automation?.agentRunEnabled === false) {
+    throw new Error("incident agent runs are disabled for this project");
+  }
+  const runtime = automation?.agentRunProvider ?? resolveDefaultAgentRunProvider();
+  return createIncidentFromLinearSession(db, {
+    installation: args.install,
+    agentSessionId: args.agentSessionId,
+    issueId: args.issueId,
+    issueIdentifier: args.issueIdentifier,
+    issueTitle: args.issueTitle,
+    issueUrl: args.issueUrl,
+    prompt: args.prompt,
+    runtime,
+  });
+}
+
+async function acknowledgeLinearSession(
+  install: schema.LinearInstallation,
+  agentSessionId: string,
+  kind: "chat" | "incident",
+): Promise<void> {
+  await createLinearAgentActivity({
+    accessToken: install.accessToken,
+    agentSessionId,
+    type: "thought",
+    body: kind === "incident" ? "I’m starting an investigation now." : "I’m looking into that now.",
+    ephemeral: true,
+  });
+}
+
+async function linearIncidentUrl(incident: schema.Incident): Promise<string | null> {
+  const project = await db.query.projects.findFirst({
+    where: eq(schema.projects.id, incident.projectId),
+    columns: { slug: true, orgId: true },
+  });
+  if (!project) return null;
+  const org = await db.query.orgs.findFirst({
+    where: eq(schema.orgs.id, project.orgId),
+    columns: { slug: true },
+  });
+  if (!org) return null;
+  const origin = process.env.WEB_ORIGIN ?? "http://localhost:5173";
+  return `${origin.replace(/\/$/, "")}/org/${encodeURIComponent(org.slug)}/project/${encodeURIComponent(project.slug)}/incidents/${encodeURIComponent(incident.id)}`;
 }
 
 async function acceptCompletedLinearTicket(args: {
@@ -476,6 +791,7 @@ async function upsertInstallation(v: {
   workspaceName: string | null;
   workspaceUrlKey: string | null;
   actorEmail: string | null;
+  appUserId: string;
   accessToken: string;
   refreshToken: string | null;
   accessExpiresAt: Date | null;
@@ -502,6 +818,7 @@ async function upsertInstallation(v: {
       workspaceName: v.workspaceName,
       workspaceUrlKey: v.workspaceUrlKey,
       actorEmail: v.actorEmail,
+      appUserId: v.appUserId,
       accessToken: v.accessToken,
       refreshToken: v.refreshToken,
       accessExpiresAt: v.accessExpiresAt,
@@ -530,7 +847,7 @@ async function registerLinearWebhookSafely(
     const webhook = await createLinearWebhook({
       accessToken,
       url: `${apiBase}/linear/webhook`,
-      resourceTypes: ["Issue", "Comment"],
+      resourceTypes: ["Issue", "Comment", "AgentSessionEvent"],
       label: "Superlog",
     });
     return webhook;

@@ -18,6 +18,7 @@ import {
   resolutionReasonLabel,
 } from "../incident-result-policy.js";
 import { buildContextIncidentUrl } from "../incident-route.js";
+import { postLinearIncidentResponse } from "../infra/linear/agent-session.js";
 import {
   incidentBlocks,
   postIncidentThreadMessage,
@@ -340,6 +341,7 @@ export async function completeWithIncidentResolution(
     }),
   );
   await replyToPrOriginIfNeeded(ctx, result.summary);
+  await postLinearIncidentResponse(ctx.incident.id, result.summary);
 }
 
 export async function completeWithoutPullRequest(
@@ -504,4 +506,5 @@ export async function completeWithoutPullRequest(
     }),
   );
   await replyToPrOriginIfNeeded(ctx, result.summary);
+  await postLinearIncidentResponse(ctx.incident.id, result.summary);
 }
