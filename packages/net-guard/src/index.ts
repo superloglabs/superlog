@@ -204,6 +204,14 @@ function lookupAll(
 // WebhookDestinationError on any violation. Used for fail-fast validation when a
 // webhook is created/updated; the delivery dispatcher re-validates and pins.
 export async function assertPublicWebhookUrl(raw: string, signal?: AbortSignal): Promise<void> {
+  return assertPublicUrl(raw, signal, allowPrivateDestinations());
+}
+
+async function assertPublicUrl(
+  raw: string,
+  signal: AbortSignal | undefined,
+  allowPrivate: boolean,
+): Promise<void> {
   let u: URL;
   try {
     u = new URL(raw);
@@ -216,7 +224,7 @@ export async function assertPublicWebhookUrl(raw: string, signal?: AbortSignal):
   if (u.username !== "" || u.password !== "") {
     throw new WebhookDestinationError("url must not contain credentials");
   }
-  if (allowPrivateDestinations()) return;
+  if (allowPrivate) return;
 
   const host = u.hostname.replace(/^\[/, "").replace(/\]$/, "");
   if (isIP(host)) {
@@ -252,10 +260,6 @@ function guardedDispatcher(): Agent {
     connect: {
       // biome-ignore lint/suspicious/noExplicitAny: matches Node's overloaded lookup signature
       lookup(hostname: string, options: any, callback: any) {
-        if (allowPrivateDestinations()) {
-          lookup(hostname, options, callback);
-          return;
-        }
         lookup(hostname, { ...options, all: true }, (err, addresses) => {
           if (err) return callback(err, undefined, undefined);
           const list = addresses as unknown as { address: string; family: number }[];
@@ -298,7 +302,7 @@ export async function guardedPublicFetch(
   init: GuardedPublicFetchInit = {},
 ): Promise<Response> {
   const destination = url.toString();
-  await assertPublicWebhookUrl(destination, init.signal);
+  await assertPublicUrl(destination, init.signal, false);
   const options = {
     ...init,
     redirect: "manual",
@@ -315,5 +319,12 @@ export async function guardedPublicFetch(
 // are never followed — a 3xx is returned as-is (and treated as a non-2xx
 // failure by the caller) so a redirect can't bounce us to an internal host.
 export async function webhookFetch(url: string, init: WebhookFetchInit): Promise<Response> {
-  return guardedPublicFetch(url, init);
+  if (!allowPrivateDestinations()) return guardedPublicFetch(url, init);
+  await assertPublicWebhookUrl(url, init.signal);
+  const options = {
+    ...init,
+    redirect: "manual",
+  } as unknown as NonNullable<Parameters<typeof undiciFetch>[1]>;
+  const response = await undiciFetch(url, options);
+  return response as unknown as Response;
 }

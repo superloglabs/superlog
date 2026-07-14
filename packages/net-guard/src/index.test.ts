@@ -152,7 +152,13 @@ describe("assertPublicWebhookUrl", () => {
 });
 
 describe("guardedPublicFetch", () => {
-  it("rejects private destinations at the outbound connection boundary", async () => {
+  const origEnv = process.env.WEBHOOK_ALLOW_PRIVATE_DESTINATIONS;
+  afterEach(() => {
+    process.env.WEBHOOK_ALLOW_PRIVATE_DESTINATIONS = origEnv ?? "";
+  });
+
+  it("rejects private destinations even when private webhook delivery is enabled", async () => {
+    process.env.WEBHOOK_ALLOW_PRIVATE_DESTINATIONS = "1";
     await assert.rejects(
       () => guardedPublicFetch("https://127.0.0.1/mcp", { method: "POST" }),
       WebhookDestinationError,
