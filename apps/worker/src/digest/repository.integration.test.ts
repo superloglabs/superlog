@@ -203,3 +203,31 @@ test("weekly summary counts incident activity and the current status of issues t
     issues: { open: 2, underObservation: 1, silenced: 1, resolved: 2 },
   });
 });
+
+// The production postgres-js driver rejects Date instances bound through raw
+// sql`` fragments (ERR_INVALID_ARG_TYPE at Bind time) — only params bound via
+// column operators get mapped to ISO strings. PGlite accepts Dates, so this
+// asserts at the driver boundary instead of relying on the query to throw.
+test("weekly summary never hands raw Date params to the driver", async () => {
+  const captured: unknown[][] = [];
+  const recordingClient = Object.create(client) as PGlite;
+  recordingClient.query = ((query: string, params?: unknown[], options?: unknown) => {
+    captured.push(params ?? []);
+    return client.query(query, params, options as never);
+  }) as PGlite["query"];
+  const recordingRepo = createDigestRepository(
+    drizzle(recordingClient, { schema }) as unknown as DB,
+  );
+
+  await recordingRepo.gatherWeeklySummary(
+    projectId,
+    { intervalMs: 7 * 86_400_000 },
+    new Date("2026-07-14T10:00:00Z"),
+  );
+
+  assert.ok(captured.length > 0, "expected the summary to issue queries");
+  assert.deepEqual(
+    captured.flat().filter((param) => param instanceof Date),
+    [],
+  );
+});
