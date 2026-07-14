@@ -25,3 +25,10 @@ test("buildLinearAuthorizeUrl requests app-actor authorization", async () => {
   assert.equal(url.searchParams.get("prompt"), "consent");
   assert.equal(url.searchParams.get("actor"), "app");
 });
+
+test("completed is the only Linear state type that accepts the investigation", async () => {
+  const { isLinearCompletedState } = await import("./linear.js");
+  assert.equal(isLinearCompletedState("completed"), true);
+  assert.equal(isLinearCompletedState("started"), false);
+  assert.equal(isLinearCompletedState(undefined), false);
+});

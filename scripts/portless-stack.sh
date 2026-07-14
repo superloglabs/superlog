@@ -97,6 +97,7 @@ fi
 
 STACK_DIR="$REPO_ROOT/tmp/portless-stacks/$STACK_NAME"
 ENV_FILE="$STACK_DIR/env"
+OVERMIND_ENV_CHECKSUM_FILE="$STACK_DIR/overmind-env.checksum"
 LOG_DIR="$STACK_DIR/logs"
 OVERMIND_SOCKET="$STACK_DIR/overmind.sock"
 # macOS limits unix-socket paths to ~104 bytes. When the worktree path makes
@@ -109,6 +110,14 @@ COMPOSE_PROJECT="superlog-portless-$STACK_NAME"
 
 checksum="$(printf '%s' "$STACK_NAME" | cksum | awk '{print $1}')"
 offset=$(( checksum % 1000 ))
+if [[ -n "${SUPERLOG_PORTLESS_OFFSET:-}" ]]; then
+  if [[ ! "$SUPERLOG_PORTLESS_OFFSET" =~ ^[0-9]+$ ]] ||
+    (( SUPERLOG_PORTLESS_OFFSET < 0 || SUPERLOG_PORTLESS_OFFSET > 999 )); then
+    echo "SUPERLOG_PORTLESS_OFFSET must be an integer from 0 to 999" >&2
+    exit 1
+  fi
+  offset="$SUPERLOG_PORTLESS_OFFSET"
+fi
 
 POSTGRES_HOST_PORT=$(( 15432 + offset ))
 CLICKHOUSE_HTTP_HOST_PORT=$(( 18123 + offset ))
@@ -217,6 +226,18 @@ run_with_env() {
   "$@"
 }
 
+wait_for_overmind_stop() {
+  local attempt
+  for attempt in {1..50}; do
+    if ! overmind status --socket "$OVERMIND_SOCKET" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "overmind did not stop at $OVERMIND_SOCKET" >&2
+  return 1
+}
+
 print_summary() {
   printf 'stack:      %s\n' "$STACK_NAME"
   printf 'web:        %s\n' "$WEB_URL"
@@ -297,13 +318,31 @@ start_stack() {
 
   run_with_env pnpm --filter @superlog/db db:migrate
 
+  local desired_env_checksum running_env_checksum=""
+  desired_env_checksum="$(cksum "$ENV_FILE" | awk '{print $1 ":" $2}')"
+  if [[ -f "$OVERMIND_ENV_CHECKSUM_FILE" ]]; then
+    running_env_checksum="$(tr -d '[:space:]' < "$OVERMIND_ENV_CHECKSUM_FILE")"
+  fi
+
+  local overmind_running=0
   if overmind status --socket "$OVERMIND_SOCKET" >/dev/null 2>&1; then
-    echo "==> overmind already running at $OVERMIND_SOCKET"
-  else
+    overmind_running=1
+    if [[ "$running_env_checksum" != "$desired_env_checksum" ]]; then
+      echo "==> overmind environment changed; restarting services"
+      overmind quit --socket "$OVERMIND_SOCKET" >/dev/null 2>&1 || true
+      wait_for_overmind_stop
+      overmind_running=0
+    else
+      echo "==> overmind already running at $OVERMIND_SOCKET"
+    fi
+  fi
+
+  if [[ "$overmind_running" -eq 0 ]]; then
     SUPERLOG_STACK_ENV_FILE="$ENV_FILE" \
       SUPERLOG_LOG_DIR="$LOG_DIR" \
       overmind start -D --procfile Procfile.portless --socket "$OVERMIND_SOCKET" --no-port
   fi
+  printf '%s\n' "$desired_env_checksum" > "$OVERMIND_ENV_CHECKSUM_FILE"
 
   print_summary
 }
@@ -312,6 +351,7 @@ stop_stack() {
   write_env_file
 
   overmind quit --socket "$OVERMIND_SOCKET" >/dev/null 2>&1 || true
+  rm -f "$OVERMIND_ENV_CHECKSUM_FILE"
   compose down
 }
 

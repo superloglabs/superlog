@@ -1,0 +1,2 @@
+ALTER TABLE "project_automation_settings" ADD COLUMN "approval_prompts_enabled" boolean DEFAULT true NOT NULL;--> statement-breakpoint
+ALTER TABLE "project_automation_settings" ADD COLUMN "create_linear_ticket_on_resolve" boolean DEFAULT true NOT NULL;

@@ -701,6 +701,13 @@
       "when": 1784021018932,
       "tag": "0099_tired_beast",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1784031052730,
+      "tag": "0100_soft_magik",
+      "breakpoints": true
     }
   ]
 }

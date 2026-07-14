@@ -77,7 +77,7 @@ export function createOutcomeActionExecutor(
     // unacked (the backend's dispatch loop also guards this, but the contract
     // shouldn't depend on it).
     try {
-      return await executeValidatedCall(ctx, sessionId, validated);
+      return await executeValidatedCall(ctx, sessionId, validated, call.findings);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.error(
@@ -93,6 +93,7 @@ async function executeValidatedCall(
   ctx: AgentRunContext,
   sessionId: string,
   validated: Extract<ReturnType<typeof validateOutcomeToolInput>, { ok: true }>,
+  findings: OutcomeActionCall["findings"],
 ): Promise<OutcomeActionExecution> {
   switch (validated.tool) {
     case "propose_pr": {
@@ -109,7 +110,7 @@ async function executeValidatedCall(
           },
         };
       }
-      const delivery = await deliverProposedPullRequest(ctx, payload, sessionId);
+      const delivery = await deliverProposedPullRequest(ctx, payload, sessionId, findings);
       if (!delivery.ok) {
         return { handled: true, ok: false, payload: { ok: false, errors: [delivery.error] } };
       }

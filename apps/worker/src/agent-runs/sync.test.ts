@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TERMINAL_OUTCOME_NUDGE_MARKER } from "../agent-outcome-tools.js";
 import {
+  isCompleteInvestigationAllowed,
   isSessionBusyError,
   mobileRegressionGateState,
   mobileRegressionGateTerminatedSummary,
@@ -12,6 +13,32 @@ import {
   steerIdleRunnerWithPendingContext,
   terminalOutcomeNudgePrompt,
 } from "./sync.js";
+
+test("complete_investigation is rejected when an intervention is available", () => {
+  const result = {
+    state: "complete" as const,
+    summary: "Findings ready.",
+    completionKind: "investigation_complete" as const,
+  };
+  assert.equal(
+    isCompleteInvestigationAllowed(result, {
+      prPolicy: "always",
+      githubConnected: true,
+      approvalPromptsEnabled: false,
+      approvalPromptToolsAvailable: false,
+    }),
+    false,
+  );
+  assert.equal(
+    isCompleteInvestigationAllowed(result, {
+      prPolicy: "never",
+      githubConnected: true,
+      approvalPromptsEnabled: true,
+      approvalPromptToolsAvailable: false,
+    }),
+    true,
+  );
+});
 
 test("steerIdleRunnerWithPendingContext steers idle sessions with joined context deltas", async () => {
   const steered: Array<{ sessionId: string; message: string }> = [];
@@ -362,6 +389,12 @@ test("terminalOutcomeNudgePrompt names every outcome tool", () => {
   ]) {
     assert.ok(prompt.includes(name), `missing ${name}`);
   }
+});
+
+test("terminalOutcomeNudgePrompt uses complete_investigation when interventions are disabled", () => {
+  const prompt = terminalOutcomeNudgePrompt({ completeInvestigationAvailable: true });
+  assert.match(prompt, /complete_investigation/);
+  assert.doesNotMatch(prompt, /propose_pr/);
 });
 
 test("isSessionBusyError matches the mid-flight steer rejection only", () => {

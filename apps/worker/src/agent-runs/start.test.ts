@@ -325,6 +325,8 @@ function makeContext(opts: { githubInstalled?: boolean } = {}): AgentRunContext 
     linearTicketInstructions: [],
     linearDefaultTeamId: null,
     prPolicy: "on_ready_to_pr",
+    approvalPromptsEnabled: true,
+    createLinearTicketOnResolve: true,
     prBaseBranch: "development",
     autoMergeFixPrs: "never",
     autoMergeMethod: "squash",

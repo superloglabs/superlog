@@ -5,6 +5,7 @@ import {
   formatIncidentDuration,
   formatIncidentLocalTimestamp,
   incidentDisplayStatus,
+  latestIncidentLinearTicket,
 } from "./incident-detail-view-model.ts";
 
 const now = Date.parse("2026-07-01T16:39:01.388Z");
@@ -137,4 +138,30 @@ test("formatIncidentLocalTimestamp uses the visitor's timezone", () => {
     }),
     "Jun 30, 2026, 09:39 PDT",
   );
+});
+
+test("latestIncidentLinearTicket selects the newest recorded ticket for the sidebar", () => {
+  const latest = latestIncidentLinearTicket([
+    {
+      id: "row-1",
+      agentRunId: "run-1",
+      identifier: "ENG-41",
+      url: "https://linear.app/acme/issue/ENG-41",
+      state: "In Progress",
+      stateType: "started",
+      createdAt: "2026-07-01T10:00:00.000Z",
+    },
+    {
+      id: "row-2",
+      agentRunId: "run-2",
+      identifier: "ENG-42",
+      url: "https://linear.app/acme/issue/ENG-42",
+      state: "Todo",
+      stateType: "unstarted",
+      createdAt: "2026-07-02T10:00:00.000Z",
+    },
+  ]);
+
+  assert.equal(latest?.identifier, "ENG-42");
+  assert.equal(latestIncidentLinearTicket([]), null);
 });

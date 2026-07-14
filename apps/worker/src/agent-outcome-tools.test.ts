@@ -10,6 +10,7 @@ import {
   assembleAgentRunResult,
   isActionOutcomeToolName,
   mergeFindings,
+  outcomeToolDefinitionsForCapabilities,
   validateOutcomeToolInput,
 } from "./agent-outcome-tools.js";
 import type { AgentRunFindings } from "./agent-outcome-tools.js";
@@ -34,8 +35,8 @@ const PROPOSE_PR_INPUT = {
   patchFilePath: "/mnt/session/outputs/superlog-batch-vendor-lookups.patch",
 };
 
-test("exposes all seven tools with API-safe schemas", () => {
-  assert.equal(OUTCOME_TOOL_NAMES.length, 7);
+test("exposes the default seven tools with API-safe schemas", () => {
+  assert.equal(OUTCOME_TOOL_NAMES.length, 8);
   assert.equal(OUTCOME_TOOL_DEFINITIONS.length, 7);
   for (const def of OUTCOME_TOOL_DEFINITIONS) {
     // Some runner APIs reject any top-level composition keyword
@@ -50,15 +51,42 @@ test("exposes all seven tools with API-safe schemas", () => {
   }
 });
 
-test("splits the contract into action tools and exactly two terminal tools", () => {
+test("splits the contract into action tools and terminal tools", () => {
   assert.deepEqual(
     [...ACTION_OUTCOME_TOOL_NAMES],
     ["propose_pr", "silence_as_noise", "place_under_observation", "resolve_issue"],
   );
-  assert.deepEqual([...TERMINAL_OUTCOME_TOOL_NAMES], ["resolve_incident", "ask_human"]);
-  assert.ok(!(TERMINAL_OUTCOME_TOOL_NAMES as readonly string[]).includes(REPORT_FINDINGS_TOOL_NAME));
+  assert.deepEqual(
+    [...TERMINAL_OUTCOME_TOOL_NAMES],
+    ["resolve_incident", "complete_investigation", "ask_human"],
+  );
+  assert.ok(
+    !(TERMINAL_OUTCOME_TOOL_NAMES as readonly string[]).includes(REPORT_FINDINGS_TOOL_NAME),
+  );
   assert.ok(isActionOutcomeToolName("propose_pr"));
   assert.ok(!isActionOutcomeToolName("resolve_incident"));
+});
+
+test("offers complete_investigation only when no intervention tool is available", () => {
+  const withPrs = outcomeToolDefinitionsForCapabilities({
+    prCreation: true,
+    approvalPrompts: false,
+  }).map((definition) => definition.name);
+  assert.ok(withPrs.includes("propose_pr"));
+  assert.ok(!withPrs.includes("complete_investigation"));
+
+  const ticketOnly = outcomeToolDefinitionsForCapabilities({
+    prCreation: false,
+    approvalPrompts: false,
+  }).map((definition) => definition.name);
+  assert.ok(!ticketOnly.includes("propose_pr"));
+  assert.ok(ticketOnly.includes("complete_investigation"));
+
+  const withApprovals = outcomeToolDefinitionsForCapabilities({
+    prCreation: false,
+    approvalPrompts: true,
+  }).map((definition) => definition.name);
+  assert.ok(!withApprovals.includes("complete_investigation"));
 });
 
 // The load-bearing guidance in tool descriptions. Losing any of these
@@ -94,7 +122,11 @@ test("resolve_incident description requires per-issue classification first", () 
 test("rejects retired tools (incl. mark_already_resolved) with redirect guidance", () => {
   assert.ok((RETIRED_OUTCOME_TOOL_NAMES as readonly string[]).includes("mark_already_resolved"));
   for (const name of RETIRED_OUTCOME_TOOL_NAMES) {
-    const v = validateOutcomeToolInput(name, { reason: "upstream_recovered", evidence: "e" }, { hasFindings: true });
+    const v = validateOutcomeToolInput(
+      name,
+      { reason: "upstream_recovered", evidence: "e" },
+      { hasFindings: true },
+    );
     assert.equal(v.ok, false, name);
     if (!v.ok) {
       const text = v.errors.join(" ");
@@ -142,7 +174,11 @@ test("rejects a bad severity with a model-readable message", () => {
 test("classification tools take free-text reasons and require issueId", () => {
   const ok = validateOutcomeToolInput(
     "silence_as_noise",
-    { issueId: "issue-1", reason: "Expected 404s from bot traffic probing /wp-admin", evidence: "e" },
+    {
+      issueId: "issue-1",
+      reason: "Expected 404s from bot traffic probing /wp-admin",
+      evidence: "e",
+    },
     { hasFindings: true },
   );
   assert.equal(ok.ok, true);
@@ -169,10 +205,17 @@ test("requires findings before action tools and resolve_incident", () => {
     ["resolve_issue", { issueId: "i", reason: "recovered", evidence: "e" }],
     [
       "place_under_observation",
-      { issueId: "i", reason: "one-off", evidence: "e", escalateOn: "additional_events", threshold: 10 },
+      {
+        issueId: "i",
+        reason: "one-off",
+        evidence: "e",
+        escalateOn: "additional_events",
+        threshold: 10,
+      },
     ],
     ["propose_pr", PROPOSE_PR_INPUT],
     ["resolve_incident", { reason: "all done", evidence: "e" }],
+    ["complete_investigation", {}],
   ];
   for (const [name, input] of cases) {
     const v = validateOutcomeToolInput(name, input, { hasFindings: false });
@@ -181,9 +224,26 @@ test("requires findings before action tools and resolve_incident", () => {
   }
 });
 
+test("complete_investigation finishes without resolving the incident", () => {
+  const validation = validateOutcomeToolInput("complete_investigation", {}, { hasFindings: true });
+  assert.equal(validation.ok, true);
+
+  const result = assembleAgentRunResult({
+    findings: FINDINGS,
+    terminal: { name: "complete_investigation", payload: {} },
+  });
+  assert.equal(result.state, "complete");
+  assert.equal(result.completionKind, "investigation_complete");
+  assert.equal(result.incidentResolution, undefined);
+});
+
 test("allows ask_human without findings", () => {
   assert.equal(
-    validateOutcomeToolInput("ask_human", { question: "which repo owns api-gw?" }, { hasFindings: false }).ok,
+    validateOutcomeToolInput(
+      "ask_human",
+      { question: "which repo owns api-gw?" },
+      { hasFindings: false },
+    ).ok,
     true,
   );
 });
@@ -199,7 +259,13 @@ test("validates place_under_observation trigger fields", () => {
 
   const badThreshold = validateOutcomeToolInput(
     "place_under_observation",
-    { issueId: "i", reason: "one-off", evidence: "e", escalateOn: "additional_events", threshold: 0 },
+    {
+      issueId: "i",
+      reason: "one-off",
+      evidence: "e",
+      escalateOn: "additional_events",
+      threshold: 0,
+    },
     { hasFindings: true },
   );
   assert.equal(badThreshold.ok, false);

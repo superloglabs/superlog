@@ -71,6 +71,21 @@ test("accepted event includes days_to_accept and merged_by", () => {
   assert.equal(ev.properties?.merged_by, "octocat");
 });
 
+test("accepted event records Linear as an acceptance source", () => {
+  const rec = recorder();
+  setAnalyticsClientForTests(rec);
+
+  captureAgentPrLifecycleEvent({
+    kind: "accepted",
+    pr,
+    org,
+    daysToOutcome: 1,
+    acceptanceSource: "linear",
+  });
+
+  assert.equal(rec.events[0]?.properties?.acceptance_source, "linear");
+});
+
 test("rejected event includes the reason and days_to_reject", () => {
   const rec = recorder();
   setAnalyticsClientForTests(rec);

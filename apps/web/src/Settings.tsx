@@ -12,7 +12,6 @@ import {
   type IssueFilterConfig,
   type IssueFilterPreviewEvent,
   type LinearTicketInstruction,
-  type LinearTicketPolicy,
   type PrPolicy,
   type RenderOwner,
   type RepoBranch,
@@ -2570,6 +2569,8 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
     linearTicketPolicy: "on_ready_to_pr",
     linearTicketInstructions: [],
     prPolicy: "on_ready_to_pr",
+    approvalPromptsEnabled: true,
+    createLinearTicketOnResolve: true,
     prBaseBranch: null,
     autoMergeFixPrs: "never",
     autoMergeMethod: "squash",
@@ -2614,10 +2615,24 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
               onSave={(v) => patch({ customInstructions: v })}
             />
             <ToolsSection disabled={!investigateOn} />
+            <div className="flex items-start justify-between gap-4 rounded-md border border-border px-3 py-3">
+              <div>
+                <div className="text-[12.5px] font-medium text-foreground">Approval prompts</div>
+                <p className="mt-1 text-[12px] text-muted">
+                  Let the agent request approval before changing connected infrastructure or other
+                  external systems. Turn this off for findings-and-ticket-only investigations.
+                </p>
+              </div>
+              <Toggle
+                checked={data.approvalPromptsEnabled}
+                disabled={!investigateOn || save.isPending}
+                onChange={(v) => patch({ approvalPromptsEnabled: v })}
+              />
+            </div>
           </div>
         </FlowNode>
 
-        <FlowConnector active={downstreamEligible && data.linearTicketPolicy !== "never"} />
+        <FlowConnector active={downstreamEligible && linearConnected} />
 
         <FlowNode
           step={3}
@@ -2635,21 +2650,13 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
               <Chip tone="warning" dot>
                 Linear not connected
               </Chip>
-            ) : data.linearTicketPolicy === "never" ? (
-              <Chip tone="muted" dot>
-                Off
-              </Chip>
-            ) : data.linearTicketPolicy === "always" ? (
-              <Chip tone="success" dot>
-                Every incident
-              </Chip>
             ) : (
               <Chip tone="success" dot>
-                On identified fix
+                On handoff
               </Chip>
             )
           }
-          spineActive={downstreamEligible && linearConnected && data.linearTicketPolicy !== "never"}
+          spineActive={downstreamEligible && linearConnected}
           off={!downstreamEligible}
         >
           {!linearConnected ? (
@@ -2660,31 +2667,32 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
             </div>
           ) : (
             <div className="space-y-4">
-              <PolicyControls
-                value={data.linearTicketPolicy}
-                disabled={!downstreamEligible || save.isPending}
-                onChange={(v) => patch({ linearTicketPolicy: v as LinearTicketPolicy })}
-                labels={{
-                  on_ready_to_pr: "Only when the fix is identifiable",
-                  always: "Every incident",
-                  never: "Never",
-                }}
-                hints={{
-                  on_ready_to_pr:
-                    "The agent files a ticket only after pinpointing a concrete fix or root cause.",
-                  always:
-                    "The agent ensures every incident has a Linear ticket — useful for audit trails.",
-                  never:
-                    "Linear stays connected, but the agent will not touch it during agent_runs.",
-                }}
-              />
-              {data.linearTicketPolicy !== "never" && (
-                <LinearTicketInstructionsField
-                  value={data.linearTicketInstructions}
+              <p className="text-[12.5px] text-muted">
+                Each findings-only handoff creates a new Linear ticket with a link back to the
+                incident. Paused and failed investigations do not create tickets; resolve-time
+                filing is controlled below.
+              </p>
+              <div className="flex items-start justify-between gap-4 rounded-md border border-border px-3 py-3">
+                <div>
+                  <div className="text-[12.5px] font-medium text-foreground">
+                    Also create a ticket on incident resolution
+                  </div>
+                  <p className="mt-1 text-[12px] text-muted">
+                    Applies when the agent finishes with resolve_incident instead of handing off an
+                    open incident.
+                  </p>
+                </div>
+                <Toggle
+                  checked={data.createLinearTicketOnResolve}
                   disabled={!downstreamEligible || save.isPending}
-                  onSave={(v) => patch({ linearTicketInstructions: v })}
+                  onChange={(v) => patch({ createLinearTicketOnResolve: v })}
                 />
-              )}
+              </div>
+              <LinearTicketInstructionsField
+                value={data.linearTicketInstructions}
+                disabled={!downstreamEligible || save.isPending}
+                onSave={(v) => patch({ linearTicketInstructions: v })}
+              />
             </div>
           )}
         </FlowNode>
@@ -3571,47 +3579,6 @@ function AutoMergeControls({
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-function PolicyControls<T extends string>({
-  value,
-  disabled,
-  onChange,
-  labels,
-  hints,
-}: {
-  value: T;
-  disabled: boolean;
-  onChange: (v: T) => void;
-  labels: Record<string, string>;
-  hints: Record<string, string>;
-}) {
-  const options = ["on_ready_to_pr", "always", "never"] as const;
-  return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap gap-1.5">
-        {options.map((opt) => {
-          const active = value === opt;
-          return (
-            <button
-              key={opt}
-              type="button"
-              disabled={disabled}
-              onClick={() => onChange(opt as T)}
-              className={`rounded-sm border px-2.5 py-1 font-sans text-[11px] tracking-tight transition-colors ${
-                active
-                  ? "border-accent bg-accent-soft text-accent"
-                  : "border-border bg-surface-2 text-muted hover:text-fg"
-              } ${disabled ? "cursor-not-allowed opacity-60" : ""}`}
-            >
-              {labels[opt]}
-            </button>
-          );
-        })}
-      </div>
-      <p className="text-[12px] text-muted">{hints[value]}</p>
     </div>
   );
 }

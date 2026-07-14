@@ -1568,6 +1568,8 @@ export type AgentSettings = {
   linearTicketPolicy: LinearTicketPolicy;
   linearTicketInstructions: LinearTicketInstruction[];
   prPolicy: PrPolicy;
+  approvalPromptsEnabled: boolean;
+  createLinearTicketOnResolve: boolean;
   prBaseBranch: string | null;
   autoMergeFixPrs: AutoMergePolicy;
   autoMergeMethod: AutoMergeMethod;
@@ -2420,6 +2422,7 @@ export type IncidentDetail = {
   agentRun: AgentRun | null;
   // Full agent-run history for this incident, newest first.
   agentRuns: AgentRun[];
+  linearTickets: IncidentLinearTicket[];
   // Timeline events scoped to the latest run, plus PR/Linear ticket events.
   // Empty array when there is no agent run yet.
   timeline: IncidentEvent[];
@@ -2427,6 +2430,16 @@ export type IncidentDetail = {
   // back-link. Empty for incidents not raised by an alert.
   alertEpisodes: IncidentAlertEpisode[];
   pendingResolutionProposal: PendingResolutionProposal | null;
+};
+
+export type IncidentLinearTicket = {
+  id: string;
+  agentRunId: string;
+  ticketIdentifier: string | null;
+  url: string | null;
+  state: string | null;
+  stateType: "open" | "completed" | "canceled" | "unstarted" | "started" | null;
+  createdAt: string;
 };
 
 export type IncidentAlertEpisode = {

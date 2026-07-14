@@ -45,6 +45,8 @@ export type AgentRunContext = {
   linearTicketInstructions: schema.LinearTicketInstruction[];
   linearDefaultTeamId: string | null;
   prPolicy: schema.PrPolicy;
+  approvalPromptsEnabled: boolean;
+  createLinearTicketOnResolve: boolean;
   prBaseBranch: string | null;
   autoMergeFixPrs: schema.AutoMergePolicy;
   autoMergeMethod: schema.AutoMergeMethod;
@@ -152,6 +154,8 @@ export async function getProjectAutomation(projectId: string): Promise<{
   linearTicketInstructions: schema.LinearTicketInstruction[];
   linearDefaultTeamId: string | null;
   prPolicy: schema.PrPolicy;
+  approvalPromptsEnabled: boolean;
+  createLinearTicketOnResolve: boolean;
   prBaseBranch: string | null;
   autoMergeFixPrs: schema.AutoMergePolicy;
   autoMergeMethod: schema.AutoMergeMethod;
@@ -171,6 +175,8 @@ export async function getProjectAutomation(projectId: string): Promise<{
     linearTicketInstructions: row?.linearTicketInstructions ?? [],
     linearDefaultTeamId: row?.linearDefaultTeamId ?? null,
     prPolicy: row?.prPolicy ?? "on_ready_to_pr",
+    approvalPromptsEnabled: row?.approvalPromptsEnabled ?? true,
+    createLinearTicketOnResolve: row?.createLinearTicketOnResolve ?? true,
     prBaseBranch: schema.normalizePrBaseBranch(row?.prBaseBranch),
     autoMergeFixPrs: row?.autoMergeFixPrs ?? "never",
     autoMergeMethod: row?.autoMergeMethod ?? "squash",
@@ -258,6 +264,8 @@ export async function loadAgentRunContext(
     linearTicketInstructions: automation.linearTicketInstructions,
     linearDefaultTeamId: automation.linearDefaultTeamId,
     prPolicy: automation.prPolicy,
+    approvalPromptsEnabled: automation.approvalPromptsEnabled,
+    createLinearTicketOnResolve: automation.createLinearTicketOnResolve,
     prBaseBranch: automation.prBaseBranch,
     autoMergeFixPrs: automation.autoMergeFixPrs,
     autoMergeMethod: automation.autoMergeMethod,

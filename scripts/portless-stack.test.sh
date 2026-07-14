@@ -39,4 +39,21 @@ if [[ "$(tr -d '[:space:]' < "$TMP_HOME/.portless/proxy.port")" != "2443" ]]; th
   exit 1
 fi
 
+output="$(
+  HOME="$TMP_HOME" SUPERLOG_PORTLESS_OFFSET=999 \
+    "$REPO_ROOT/scripts/portless-stack.sh" env --name "$STACK_NAME"
+)"
+
+if ! grep -Fqx "postgres:   localhost:16431" <<< "$output"; then
+  echo "expected an explicit stack offset to avoid a hashed host-port collision" >&2
+  printf '%s\n' "$output" >&2
+  exit 1
+fi
+
+if ! grep -Fq 'overmind environment changed; restarting services' \
+  "$REPO_ROOT/scripts/portless-stack.sh"; then
+  echo "expected stack startup to restart overmind after a generated env change" >&2
+  exit 1
+fi
+
 echo "portless-stack proxy port: ok"

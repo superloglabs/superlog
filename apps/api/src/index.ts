@@ -1209,6 +1209,8 @@ async function getProjectAutomation(projectId: string): Promise<{
   linearTicketPolicy: schema.LinearTicketPolicy;
   linearTicketInstructions: schema.LinearTicketInstruction[];
   prPolicy: schema.PrPolicy;
+  approvalPromptsEnabled: boolean;
+  createLinearTicketOnResolve: boolean;
   prBaseBranch: string | null;
   autoMergeFixPrs: schema.AutoMergePolicy;
   autoMergeMethod: schema.AutoMergeMethod;
@@ -1228,6 +1230,8 @@ async function getProjectAutomation(projectId: string): Promise<{
     linearTicketPolicy: row?.linearTicketPolicy ?? "on_ready_to_pr",
     linearTicketInstructions: row?.linearTicketInstructions ?? [],
     prPolicy: row?.prPolicy ?? "on_ready_to_pr",
+    approvalPromptsEnabled: row?.approvalPromptsEnabled ?? true,
+    createLinearTicketOnResolve: row?.createLinearTicketOnResolve ?? true,
     prBaseBranch: schema.normalizePrBaseBranch(row?.prBaseBranch),
     autoMergeFixPrs: row?.autoMergeFixPrs ?? "never",
     autoMergeMethod: row?.autoMergeMethod ?? "squash",
@@ -1756,6 +1760,8 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     linearTicketPolicy?: unknown;
     linearTicketInstructions?: unknown;
     prPolicy?: unknown;
+    approvalPromptsEnabled?: unknown;
+    createLinearTicketOnResolve?: unknown;
     prBaseBranch?: unknown;
     autoMergeFixPrs?: unknown;
     autoMergeMethod?: unknown;
@@ -1811,6 +1817,14 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     typeof body.prPolicy === "string" && VALID_AGENT_POLICIES.has(body.prPolicy)
       ? (body.prPolicy as schema.PrPolicy)
       : current.prPolicy;
+  const approvalPromptsEnabled =
+    typeof body.approvalPromptsEnabled === "boolean"
+      ? body.approvalPromptsEnabled
+      : current.approvalPromptsEnabled;
+  const createLinearTicketOnResolve =
+    typeof body.createLinearTicketOnResolve === "boolean"
+      ? body.createLinearTicketOnResolve
+      : current.createLinearTicketOnResolve;
   const prBaseBranch = parsePrBaseBranch(body.prBaseBranch, current.prBaseBranch);
   const autoMergeFixPrs: schema.AutoMergePolicy =
     typeof body.autoMergeFixPrs === "string" && VALID_AUTO_MERGE_POLICIES.has(body.autoMergeFixPrs)
@@ -1867,6 +1881,8 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     linearTicketPolicy,
     linearTicketInstructions,
     prPolicy,
+    approvalPromptsEnabled,
+    createLinearTicketOnResolve,
     prBaseBranch,
     autoMergeFixPrs,
     autoMergeMethod,
@@ -1890,6 +1906,8 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
         linearTicketPolicy,
         linearTicketInstructions,
         prPolicy,
+        approvalPromptsEnabled,
+        createLinearTicketOnResolve,
         prBaseBranch,
         autoMergeFixPrs,
         autoMergeMethod,
@@ -2116,7 +2134,7 @@ app.get("/api/projects/:projectId/incidents/:incidentId", async (c) => {
   const incident = await getProjectIncident(projectId, incidentId);
   if (!incident) throw new HTTPException(404, { message: "incident not found" });
 
-  const [links, agentRuns] = await Promise.all([
+  const [links, agentRuns, linearTickets] = await Promise.all([
     db.query.incidentIssues.findMany({
       where: eq(schema.incidentIssues.incidentId, incidentId),
       orderBy: [desc(schema.incidentIssues.createdAt)],
@@ -2124,6 +2142,10 @@ app.get("/api/projects/:projectId/incidents/:incidentId", async (c) => {
     db.query.agentRuns.findMany({
       where: eq(schema.agentRuns.incidentId, incident.id),
       orderBy: [desc(schema.agentRuns.createdAt)],
+    }),
+    db.query.agentLinearTickets.findMany({
+      where: eq(schema.agentLinearTickets.incidentId, incident.id),
+      orderBy: [desc(schema.agentLinearTickets.createdAt)],
     }),
   ]);
   const issues =
@@ -2154,6 +2176,7 @@ app.get("/api/projects/:projectId/incidents/:incidentId", async (c) => {
     issues,
     agentRun: latestAgentRun,
     agentRuns,
+    linearTickets,
     timeline,
     alertEpisodes,
     pendingResolutionProposal: pendingProposalMap.get(incident.id) ?? null,
