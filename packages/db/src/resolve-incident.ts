@@ -142,8 +142,24 @@ export async function mergeIncidentsInTx(
 ): Promise<void> {
   assertIncidentSourceState("mergeIncidentsInTx", opts.sourceIncident.status, ["open"]);
   assertIncidentSourceState("mergeIncidentsInTx", opts.targetIncident.status, ["open"]);
+  const repository = createIncidentRepository(db);
+  const locked = await repository.lockIncidentsInTx(tx, [
+    opts.sourceIncident.id,
+    opts.targetIncident.id,
+  ]);
+  const sourceIncident = locked.find((incident) => incident.id === opts.sourceIncident.id);
+  const targetIncident = locked.find((incident) => incident.id === opts.targetIncident.id);
+  if (!sourceIncident || !targetIncident) {
+    throw new Error("mergeIncidentsInTx: source or target incident no longer exists");
+  }
+  assertIncidentSourceState("mergeIncidentsInTx", sourceIncident.status, ["open"]);
+  assertIncidentSourceState("mergeIncidentsInTx", targetIncident.status, ["open"]);
   const now = opts.mergedAt ?? new Date();
-  await createIncidentRepository(db).mergeOpenIncidentsInTx(tx, { ...opts, mergedAt: now });
+  await repository.mergeOpenIncidentsInTx(tx, {
+    sourceIncident,
+    targetIncident,
+    mergedAt: now,
+  });
 }
 
 export type IncidentLifecycle = ReturnType<typeof createIncidentLifecycle>;

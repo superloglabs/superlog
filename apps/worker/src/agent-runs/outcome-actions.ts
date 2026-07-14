@@ -15,6 +15,7 @@ import {
   type PullRequestProposal,
   type ResolveIncidentPayload,
   isDispatchedOutcomeToolName,
+  isRetiredOutcomeToolName,
   validateOutcomeToolInput,
 } from "../agent-outcome-tools.js";
 import type { AgentRunContext } from "../agent-run-context.js";
@@ -28,6 +29,7 @@ import {
   deliverProposedPullRequest,
   preflightProposedPullRequest,
 } from "./pr-delivery.js";
+import { agentResolveEventDedupeKey } from "./resolution-completion.js";
 
 const incidentLifecycle = createIncidentLifecycle(db);
 
@@ -114,9 +116,10 @@ export async function executeProposedPullRequestBatch<Prepared>(
 // Orgs with the Revyl integration must attach a mobile regression-test
 // decision to mobile-looking PRs. Enforced at dispatch time so the agent is
 // told immediately, instead of the old post-hoc completion-repair steer.
-async function missingMobileTestDecision(
+export async function missingMobileTestDecision(
   ctx: AgentRunContext,
   payload: PullRequestProposal,
+  loadIntegrations: typeof loadEnabledIntegrationsForOrg = loadEnabledIntegrationsForOrg,
 ): Promise<boolean> {
   if (payload.mobileTestStatus) return false;
   if (
@@ -125,14 +128,16 @@ async function missingMobileTestDecision(
     return false;
   }
   try {
-    const integrations = await loadEnabledIntegrationsForOrg(ctx.project.orgId);
+    const integrations = await loadIntegrations(ctx.project.orgId);
     return hasRevylCreateTestIntegration(integrations);
   } catch (err) {
     logger.error(
       { err, orgId: ctx.project.orgId },
-      "failed to load integrations for mobile regression gate; skipping the gate",
+      "failed to load integrations for mobile regression gate",
     );
-    return false;
+    throw new Error(
+      "Could not verify the mobile regression integration. Retry propose_pr once the integration lookup recovers.",
+    );
   }
 }
 
@@ -144,7 +149,7 @@ export function createOutcomeActionExecutor(
   sessionId: string,
 ): (call: OutcomeActionCall) => Promise<OutcomeActionExecution> {
   return async (call) => {
-    if (!isDispatchedOutcomeToolName(call.name)) {
+    if (!isDispatchedOutcomeToolName(call.name) && !isRetiredOutcomeToolName(call.name)) {
       return { handled: false };
     }
 
@@ -267,12 +272,12 @@ async function executeValidatedCall(
         agentRunId: ctx.agentRun.id,
         eventSummary: "Incident resolved by the investigating agent.",
         eventDetail: { reason: payload.reason, evidence: payload.evidence },
-        eventDedupeKey: `incident_resolved:agent_run:${ctx.agentRun.id}:resolve_incident`,
+        eventDedupeKey: agentResolveEventDedupeKey(ctx.agentRun.id),
         issueOutcomes,
       });
       // Success is final even when another concurrent path already closed the
-      // Incident. The requested atomic mutation either committed in full or
-      // the lifecycle threw and this call is error-acked.
+      // Incident. Completion uses the run-scoped resolution event to retain
+      // classifications only when this call's atomic mutation committed.
       return {
         handled: true,
         ok: true,

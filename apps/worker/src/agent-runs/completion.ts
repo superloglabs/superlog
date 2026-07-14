@@ -29,6 +29,12 @@ import { enqueueAgentRunCompleted } from "../webhooks.js";
 import { shouldCreateLinearTicketForTerminalOutcome } from "./completion-policy.js";
 import { recordFiledLinearTicket } from "./deliverable-records.js";
 import { scheduleLinearHandoff } from "./linear-handoff.js";
+import {
+  agentResolveEventDedupeKey,
+  resolutionCompletionCopy,
+  resolutionCompletionResult,
+  shouldUpdateResolutionMainMessage,
+} from "./resolution-completion.js";
 import { isAlertIncident, truncateSlackText } from "./result-metadata.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
@@ -229,10 +235,11 @@ async function resolveIncidentFromAgentRunConclusion(
 // resolve_incident call. The human-readable why lives in reasonText.
 export const AGENT_RESOLVED_REASON_CODE = "agent_resolved";
 
-// Terminal resolve completion: dispatch has already applied every Issue
-// outcome and the Incident resolution in one transaction. This records the
-// run metadata and closes any PRs the agent left open (it resolved without
-// them, so they're abandoned).
+// Terminal resolve completion: dispatch attempted every Issue outcome and the
+// Incident resolution in one transaction. Its run-scoped lifecycle event is
+// the proof that this run won the race; if another path closed the Incident
+// first, persist only this run's findings. Either way, reconcile and close any
+// PRs the now-resolved Incident left open.
 export async function completeWithIncidentResolution(
   ctx: AgentRunContext,
   result: AgentRunResult,
@@ -243,15 +250,27 @@ export async function completeWithIncidentResolution(
   if (!resolution) {
     throw new Error("completeWithIncidentResolution requires result.incidentResolution");
   }
+  const committedResolutionEvent = await db.query.incidentEvents.findFirst({
+    where: and(
+      eq(schema.incidentEvents.incidentId, ctx.incident.id),
+      eq(schema.incidentEvents.agentRunId, ctx.agentRun.id),
+      eq(schema.incidentEvents.kind, "incident_resolved"),
+      eq(schema.incidentEvents.dedupeKey, agentResolveEventDedupeKey(ctx.agentRun.id)),
+    ),
+    columns: { id: true },
+  });
+  const resolutionCommittedByRun = Boolean(committedResolutionEvent);
+  const completionResult = resolutionCompletionResult(result, resolutionCommittedByRun);
+  const copy = resolutionCompletionCopy(resolutionCommittedByRun, resolution.reason);
   await agentRunLifecycle.completeWithoutPullRequest({
     id: ctx.agentRun.id,
     currentState: ctx.agentRun.state,
-    result,
+    result: completionResult,
   });
   const metadataOutcome = await incidentLifecycle.applyAgentRunResult({
     incident: ctx.incident,
     agentRunId: ctx.agentRun.id,
-    result,
+    result: completionResult,
   });
   if (metadataOutcome.updated) {
     const refreshed = await db.query.incidents.findFirst({
@@ -270,9 +289,9 @@ export async function completeWithIncidentResolution(
     ),
   );
 
-  // resolve_incident commits its Issue classifications + Incident resolution
-  // before the runner receives the final ack. Completion only persists the
-  // run result and reconciles dependent deliverables.
+  // A winning resolve_incident commits its Issue classifications + Incident
+  // resolution before the runner receives the final ack. Completion only
+  // persists the proven result and reconciles dependent deliverables.
   await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
   const refreshed = await db.query.incidents.findFirst({
     where: eq(schema.incidents.id, ctx.incident.id),
@@ -288,7 +307,7 @@ export async function completeWithIncidentResolution(
     ctx.createLinearTicketOnResolve,
   );
   const deliveredTicket = shouldCreateTicket
-    ? await scheduleLinearHandoff(ctx, result, "resolve_incident")
+    ? await scheduleLinearHandoff(ctx, completionResult, "resolve_incident")
     : null;
 
   logger.info(
@@ -299,38 +318,40 @@ export async function completeWithIncidentResolution(
       session_id: sessionId,
       runtime_minutes: runtimeMinutes,
       resolved,
+      resolution_committed_by_run: resolutionCommittedByRun,
     },
-    "agent run complete (incident resolved by agent)",
+    copy.logMessage,
   );
 
   const evidence = resolution.evidence?.trim();
-  const lines = [
-    `:white_check_mark: Investigation resolved this incident: ${resolution.reason}`,
-    result.summary,
-  ];
-  if (evidence) lines.push(`Evidence: ${truncateSlackText(evidence, 1800)}`);
+  const lines = [copy.threadLead, completionResult.summary];
+  if (resolutionCommittedByRun && evidence) {
+    lines.push(`Evidence: ${truncateSlackText(evidence, 1800)}`);
+  }
   if (deliveredTicket?.url) {
     lines.push(`Linear: <${deliveredTicket.url}|${deliveredTicket.identifier}>`);
   }
   await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
-  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
-  await updateIncidentMainMessage(
-    ctx.incident.id,
-    `:white_check_mark: ${ctx.incident.title} — Incident resolved`,
-    incidentBlocks({
-      emoji: "white_check_mark",
-      status: "Incident resolved by the agent",
-      title: ctx.incident.title,
-      tagline: truncateSlackText(result.summary),
-      projectName: ctx.project.name,
-      service: ctx.incident.service,
-      buttons: [{ text: "View incident", url: incidentUrl, actionId: "view_incident" }],
-      links: deliveredTicket?.url ? [{ text: "View ticket", url: deliveredTicket.url }] : [],
-      incidentId: ctx.incident.id,
-    }),
-  );
-  await replyToPrOriginIfNeeded(ctx, result.summary);
-  await postLinearIncidentResponse(ctx.incident.id, result.summary);
+  if (shouldUpdateResolutionMainMessage(resolutionCommittedByRun)) {
+    const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
+    await updateIncidentMainMessage(
+      ctx.incident.id,
+      `:white_check_mark: ${ctx.incident.title} — Incident resolved`,
+      incidentBlocks({
+        emoji: "white_check_mark",
+        status: copy.status,
+        title: ctx.incident.title,
+        tagline: truncateSlackText(completionResult.summary),
+        projectName: ctx.project.name,
+        service: ctx.incident.service,
+        buttons: [{ text: "View incident", url: incidentUrl, actionId: "view_incident" }],
+        links: deliveredTicket?.url ? [{ text: "View ticket", url: deliveredTicket.url }] : [],
+        incidentId: ctx.incident.id,
+      }),
+    );
+  }
+  await replyToPrOriginIfNeeded(ctx, completionResult.summary);
+  await postLinearIncidentResponse(ctx.incident.id, completionResult.summary);
 }
 
 export async function completeWithoutPullRequest(

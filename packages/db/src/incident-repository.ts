@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "./client.js";
 import * as schema from "./schema.js";
 
@@ -19,6 +19,19 @@ export type IncidentRepository = ReturnType<typeof createIncidentRepository>;
 export type LockedOpenIncident = Pick<schema.Incident, "id" | "service">;
 
 export type LinkableIssue = Pick<schema.Issue, "id" | "lastSeen" | "service">;
+
+async function lockIncidentsByIdInTx(tx: Tx, incidentIds: string[]): Promise<schema.Incident[]> {
+  const ids = [...new Set(incidentIds)].sort();
+  if (ids.length === 0) return [];
+  // A merge takes two Incident locks. Always acquire them in database ID
+  // order so opposing A→B / B→A attempts cannot deadlock each other.
+  return tx
+    .select()
+    .from(schema.incidents)
+    .where(inArray(schema.incidents.id, ids))
+    .orderBy(asc(schema.incidents.id))
+    .for("update");
+}
 
 export function createIncidentRepository(database: DB) {
   return {
@@ -46,13 +59,12 @@ export function createIncidentRepository(database: DB) {
     },
 
     async lockOpenIncidentInTx(tx: Tx, incidentId: string): Promise<LockedOpenIncident | null> {
-      const rows = await tx
-        .select({ id: schema.incidents.id, service: schema.incidents.service })
-        .from(schema.incidents)
-        .where(and(eq(schema.incidents.id, incidentId), eq(schema.incidents.status, "open")))
-        .limit(1)
-        .for("update");
-      return rows[0] ?? null;
+      const incident = (await lockIncidentsByIdInTx(tx, [incidentId]))[0];
+      return incident?.status === "open" ? incident : null;
+    },
+
+    lockIncidentsInTx(tx: Tx, incidentIds: string[]): Promise<schema.Incident[]> {
+      return lockIncidentsByIdInTx(tx, incidentIds);
     },
 
     async linkIssueInTx(

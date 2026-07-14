@@ -70,6 +70,8 @@ export const RETIRED_OUTCOME_TOOL_NAMES = [
   "resolve_issue",
 ] as const;
 
+export type RetiredOutcomeToolName = (typeof RETIRED_OUTCOME_TOOL_NAMES)[number];
+
 export const OUTCOME_TOOL_NAMES = [
   REPORT_FINDINGS_TOOL_NAME,
   ...TERMINAL_OUTCOME_TOOL_NAMES,
@@ -89,6 +91,10 @@ export const TERMINAL_OUTCOME_NUDGE_MARKER =
 
 export function isDispatchedOutcomeToolName(name: string): name is DispatchedOutcomeToolName {
   return (DISPATCHED_OUTCOME_TOOL_NAMES as readonly string[]).includes(name);
+}
+
+export function isRetiredOutcomeToolName(name: string): name is RetiredOutcomeToolName {
+  return (RETIRED_OUTCOME_TOOL_NAMES as readonly string[]).includes(name);
 }
 
 export function isTerminalOutcomeToolName(name: string): name is TerminalOutcomeToolName {

@@ -2,7 +2,11 @@ import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PullRequestProposal } from "../agent-outcome-tools.js";
-import { executeProposedPullRequestBatch } from "./outcome-actions.js";
+import {
+  createOutcomeActionExecutor,
+  executeProposedPullRequestBatch,
+  missingMobileTestDecision,
+} from "./outcome-actions.js";
 
 const proposals: PullRequestProposal[] = [
   {
@@ -77,4 +81,40 @@ test("delivery reports every entry and permits retrying only external failures",
   assert.equal(result.ok, false);
   assert.equal(result.pullRequests[0]?.status, "delivered");
   assert.equal(result.pullRequests[1]?.status, "delivery_failed");
+});
+
+test("the mobile regression gate retries when integration lookup fails", async () => {
+  const proposal = proposals[0];
+  assert.ok(proposal);
+  await assert.rejects(
+    missingMobileTestDecision(
+      {
+        project: { orgId: "org-1" },
+        incident: { service: "ios" },
+      } as Parameters<typeof missingMobileTestDecision>[0],
+      {
+        ...proposal,
+        changedFiles: ["ios/CheckoutView.swift"],
+      },
+      async () => {
+        throw new Error("integration store unavailable");
+      },
+    ),
+    /could not verify the mobile regression integration/i,
+  );
+});
+
+test("retired outcome tools are handled with migration guidance", async () => {
+  const execute = createOutcomeActionExecutor({} as never, "session-1");
+  const result = await execute({
+    name: "silence_as_noise",
+    input: { issueId: "issue-1" },
+    hasFindings: true,
+    findings: null,
+  });
+
+  assert.equal(result.handled, true);
+  if (!result.handled) return;
+  assert.equal(result.ok, false);
+  assert.match(JSON.stringify(result.payload), /resolve_incident\.issueOutcomes/);
 });

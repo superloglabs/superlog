@@ -16,6 +16,7 @@ import { tryMergeAfterAgentRun } from "./merge.js";
 import { hasRevylCreateTestIntegration, looksLikeMobileChange } from "./mobile-regression.js";
 import { createOutcomeActionExecutor } from "./outcome-actions.js";
 import { completeWithPullRequest, resolvePullRequestBaseBranch } from "./pr-delivery.js";
+import { reconcileDeliveredPullRequests } from "./pr-result-reconciliation.js";
 import { applyIncidentMetadataFromResult } from "./result-metadata.js";
 import {
   awaitingHumanSecondsFromEvents,
@@ -573,7 +574,14 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
             eq(schema.agentPullRequests.incidentId, ctx.incident.id),
             eq(schema.agentPullRequests.state, "open"),
           ),
-          columns: { url: true },
+          columns: {
+            repoFullName: true,
+            branchName: true,
+            baseBranch: true,
+            title: true,
+            url: true,
+          },
+          orderBy: [asc(schema.agentPullRequests.createdAt), asc(schema.agentPullRequests.id)],
         });
         const isExternalCause = snapshot.result.waitReason === "external_cause";
         if (!isExternalCause && openPrs.length === 0) {
@@ -587,18 +595,19 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           return;
         }
 
-        await applyIncidentMetadataFromResult(ctx, snapshot.result);
+        const reconciledResult = reconcileDeliveredPullRequests(snapshot.result, openPrs);
+        await applyIncidentMetadataFromResult(ctx, reconciledResult);
         const openPrUrls = openPrs.map((pr) => pr.url);
         const parked = await moveAgentRunToAwaitingEvents(
           ctx,
-          snapshot.result,
+          reconciledResult,
           openPrUrls,
           openPrUrls.length === 0
             ? undefined
             : async () => {
                 const linearTicket = await scheduleLinearHandoff(
                   ctx,
-                  snapshot.result as AgentRunResult,
+                  reconciledResult,
                   `awaiting_events:${openPrUrls.join(",")}`,
                 );
                 return linearTicket
@@ -722,14 +731,24 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           eq(schema.agentPullRequests.incidentId, ctx.incident.id),
           eq(schema.agentPullRequests.state, "open"),
         ),
-        columns: { url: true },
+        columns: {
+          repoFullName: true,
+          branchName: true,
+          baseBranch: true,
+          title: true,
+          url: true,
+        },
+        orderBy: [asc(schema.agentPullRequests.createdAt), asc(schema.agentPullRequests.id)],
       });
       if (openPrs.length > 0) {
-        const parkedResult = assembleAgentRunResult({
-          findings: snapshot.pendingOutcome?.findings ?? null,
-          terminal: null,
-          actions: snapshot.pendingOutcome?.actions ?? [],
-        });
+        const parkedResult = reconcileDeliveredPullRequests(
+          assembleAgentRunResult({
+            findings: snapshot.pendingOutcome?.findings ?? null,
+            terminal: null,
+            actions: snapshot.pendingOutcome?.actions ?? [],
+          }),
+          openPrs,
+        );
         // Land the turn's findings on the incident before parking, so the
         // dashboard shows them while the run waits. Skipped when the turn
         // recorded no findings — an empty summary must not blank out

@@ -86,6 +86,7 @@ function recordingDb(
   opts: {
     insertReturningRow?: Record<string, unknown>;
     updateReturningRows?: Array<Record<string, unknown>>;
+    lockedIncidents?: schema.Incident[];
   } = {},
 ): {
   db: DB;
@@ -124,6 +125,25 @@ function recordingDb(
     },
   });
   const db = {
+    select() {
+      return {
+        from() {
+          return {
+            where() {
+              return {
+                orderBy() {
+                  return {
+                    async for() {
+                      return opts.lockedIncidents ?? [];
+                    },
+                  };
+                },
+              };
+            },
+          };
+        },
+      };
+    },
     insert: insertChain,
     update: updateChain,
     delete(_table: unknown) {
@@ -383,15 +403,23 @@ test("completeWithPullRequest writes selected repo + emits pr_opened", async () 
 });
 
 test("completeViaMerge runs a transaction touching all four tables and emits one event", async () => {
-  const { db, calls } = recordingDb();
+  const sourceIncident = makeIncident("inc-source", {
+    issueCount: 2,
+    lastSeen: new Date(2_000),
+  });
+  const targetIncident = makeIncident("inc-target", {
+    issueCount: 5,
+    lastSeen: new Date(1_000),
+  });
+  const { db, calls } = recordingDb({ lockedIncidents: [sourceIncident, targetIncident] });
   const lifecycle = createAgentRunLifecycle(db);
 
   await lifecycle.completeViaMerge({
     id: "inv-1",
     currentState: "running",
     result: makeResult("complete"),
-    sourceIncident: makeIncident("inc-source", { issueCount: 2, lastSeen: new Date(2_000) }),
-    targetIncident: makeIncident("inc-target", { issueCount: 5, lastSeen: new Date(1_000) }),
+    sourceIncident,
+    targetIncident,
     evidence: "shared frame foo()",
   });
 

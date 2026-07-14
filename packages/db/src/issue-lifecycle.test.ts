@@ -13,7 +13,7 @@ import * as schema from "./schema.js";
 // time without a connection string. postgres-js connects lazily and every test
 // here passes an explicit pglite DB, so a dummy value is enough.
 process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
-const { createIncidentLifecycle } = await import("./resolve-incident.js");
+const { createIncidentLifecycle, mergeIncidentsInTx } = await import("./resolve-incident.js");
 
 // End-to-end lifecycle semantics on a real (in-process) Postgres:
 //   - resolveIncident cascades the issue disposition (resolve / silence /
@@ -89,6 +89,59 @@ async function eventKinds(db: DB, incidentId: string): Promise<string[]> {
     where: eq(schema.incidentEvents.incidentId, incidentId),
   });
   return rows.map((r) => r.kind).sort();
+}
+
+async function assertStaleClosedMergeRollsBack(closedParticipant: "source" | "target") {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { incident: source } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: `fp-stale-${closedParticipant}-source`,
+    });
+    const { incident: target } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: `fp-stale-${closedParticipant}-target`,
+    });
+    const agentRun = one(
+      await db
+        .insert(schema.agentRuns)
+        .values({ incidentId: source.id, runtime: "test", state: "running" })
+        .returning(),
+    );
+    await createIncidentLifecycle(db).resolve({
+      incidentId: closedParticipant === "source" ? source.id : target.id,
+      kind: "dashboard_manual",
+      reasonCode: "problem_resolved",
+      reasonText: null,
+    });
+
+    await assert.rejects(
+      db.transaction(async (tx) => {
+        await tx
+          .update(schema.agentRuns)
+          .set({ state: "complete" })
+          .where(eq(schema.agentRuns.id, agentRun.id));
+        await mergeIncidentsInTx(tx, { sourceIncident: source, targetIncident: target });
+      }),
+      /mergeIncidentsInTx: cannot transition incident from "resolved"/,
+    );
+
+    const sourceAfter = one(
+      await db.select().from(schema.incidents).where(eq(schema.incidents.id, source.id)),
+    );
+    const targetAfter = one(
+      await db.select().from(schema.incidents).where(eq(schema.incidents.id, target.id)),
+    );
+    const runAfter = one(
+      await db.select().from(schema.agentRuns).where(eq(schema.agentRuns.id, agentRun.id)),
+    );
+    assert.equal(sourceAfter.status, closedParticipant === "source" ? "resolved" : "open");
+    assert.equal(sourceAfter.mergedIntoId, null);
+    assert.equal(targetAfter.status, closedParticipant === "target" ? "resolved" : "open");
+    assert.equal(targetAfter.issueCount, target.issueCount);
+    assert.equal(runAfter.state, "running");
+  } finally {
+    await client.close();
+  }
 }
 
 test("resolve with default outcome marks current issues resolved", async () => {
@@ -339,6 +392,14 @@ test("an Issue cannot be linked after Incident resolution wins the lifecycle loc
   } finally {
     await client.close();
   }
+});
+
+test("merge reloads a stale target and rolls back the caller transaction when it has closed", async () => {
+  await assertStaleClosedMergeRollsBack("target");
+});
+
+test("merge reloads a stale source and rolls back the caller transaction when it has closed", async () => {
+  await assertStaleClosedMergeRollsBack("source");
 });
 
 test("resolving an old incident does not touch issues that recurred into a newer one", async () => {
