@@ -2,17 +2,30 @@ import { logger } from "../logger.js";
 import { recordTickHeartbeat } from "../queue-health.js";
 import type { WorkerTickResult } from "./tick.js";
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    signal?.addEventListener("abort", finish, { once: true });
+  });
 }
 
 export async function runWorker(opts: {
   pollIntervalMs: number;
   batchSize: number;
+  signal?: AbortSignal;
   tick(): Promise<WorkerTickResult>;
 }): Promise<void> {
   logger.info({ pollMs: opts.pollIntervalMs, batchSize: opts.batchSize }, "worker up");
-  while (true) {
+  while (!opts.signal?.aborted) {
     try {
       const { spans, logs, agentRuns, alerts, digests, webhooks, autorecoveryProposals } =
         await opts.tick();
@@ -45,6 +58,6 @@ export async function runWorker(opts: {
     } catch (err) {
       logger.error({ err }, "tick failed");
     }
-    await sleep(opts.pollIntervalMs);
+    await sleep(opts.pollIntervalMs, opts.signal);
   }
 }
