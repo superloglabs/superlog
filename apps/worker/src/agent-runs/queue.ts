@@ -50,6 +50,21 @@ const MAX_CONCURRENCY = 50;
 // re-enqueues the run.
 const DEFAULT_JOB_TIMEOUT_MS = 180_000;
 
+// How long pg-boss allows a job to stay in the `active` state before expiring
+// it and freeing the stately-policy slot for the next queued job. Must exceed
+// DEFAULT_JOB_TIMEOUT_MS so a job that reaches its internal timeout can still
+// complete its handler and be marked done by pg-boss before the expiry fires.
+//
+// The value matters most during rolling deployments: when a worker is killed
+// while a job is active, pg-boss leaves that job in `active` state until this
+// deadline. The stately policy blocks any pending job for the same run during
+// that window, so a long expiry (the 15-minute pg-boss default) means every
+// run processed by the dying worker is stuck for up to 15 minutes — long
+// enough to breach the "oldest pending >5 min" alert. Setting expiry to a
+// small multiple of the job timeout keeps the window proportional: at most
+// ~3.5 minutes, well below the 5-minute alert threshold.
+const ADVANCE_EXPIRE_IN_SECONDS = 210; // 3.5 min — slightly above DEFAULT_JOB_TIMEOUT_MS (3 min)
+
 export type AgentRunQueueBoss = {
   createQueue(name: string, options?: unknown): Promise<unknown>;
   work(
@@ -141,7 +156,10 @@ export async function registerAgentRunQueue(
   const logger = deps.logger ?? defaultLogger;
   const concurrency = clampConcurrency(deps.concurrency);
 
-  await boss.createQueue(AGENT_RUN_ADVANCE_QUEUE, { policy: "stately" });
+  await boss.createQueue(AGENT_RUN_ADVANCE_QUEUE, {
+    policy: "stately",
+    expireInSeconds: ADVANCE_EXPIRE_IN_SECONDS,
+  });
   await boss.createQueue(AGENT_RUN_SWEEP_QUEUE, { policy: "exclusive" });
 
   await boss.work(AGENT_RUN_SWEEP_QUEUE, { batchSize: 1 }, async () => {

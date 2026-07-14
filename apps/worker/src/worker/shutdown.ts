@@ -1,4 +1,12 @@
-const DEFAULT_JOB_DRAIN_TIMEOUT_MS = 90_000;
+// Allow enough time for in-flight advance jobs to reach their internal 180 s
+// timeout before the pg-boss graceful stop force-expires them. If the boss
+// stops before the handler returns, pg-boss leaves the job in `active` state
+// for up to its queue-level expireInSeconds (currently 210 s), blocking the
+// next pending job for that run via the stately policy. Giving the drain
+// 200 s lets the internal timeout fire first, completing the pg-boss job
+// cleanly and avoiding the orphaned-active-job backlog during deployments.
+// NOTE: the deployment's container stopTimeout must exceed this value.
+const DEFAULT_JOB_DRAIN_TIMEOUT_MS = 200_000;
 
 type JobRunner = {
   stop(options: { graceful: boolean; timeout: number }): Promise<void>;
