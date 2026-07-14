@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCustomer } from "autumn-js/react";
 import { usePostHog } from "posthog-js/react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Link, Navigate, Route, Routes, matchPath, useLocation } from "react-router-dom";
 import { AcceptInvitation } from "./AcceptInvitation.tsx";
 import { Activate } from "./Activate.tsx";
 import { Blog } from "./Blog.tsx";
@@ -19,6 +19,8 @@ import { Overview } from "./Overview.tsx";
 import { PrFeedback } from "./PrFeedback.tsx";
 import { Pricing } from "./Pricing.tsx";
 import { PrivacyPolicy } from "./PrivacyPolicy.tsx";
+import { ProjectRouteBoundary } from "./ProjectRouteBoundary.tsx";
+import { ProjectRouteProvider, useProjectPath } from "./ProjectRouteContext.tsx";
 import { RailwayCallback } from "./RailwayCallback.tsx";
 import { ResetPassword } from "./ResetPassword.tsx";
 import { Roadmap } from "./Roadmap.tsx";
@@ -38,6 +40,11 @@ import { ThemeToggle } from "./design/ui.tsx";
 import { McpInstallPill } from "./onboarding/McpInstallPill.tsx";
 import { OnboardingGate } from "./onboarding/OnboardingGate.tsx";
 import { useDemoExploration } from "./onboarding/demoExploration.tsx";
+import {
+  appLocationFromProjectRoute,
+  appPathFromProjectRoute,
+  canonicalProjectLocation,
+} from "./project-route.ts";
 import {
   APP_FRAME_CLASS,
   PAGE_SCROLL_CONTAINER_CLASS,
@@ -202,6 +209,8 @@ function SignupRoute() {
 function AuthenticatedApp() {
   const { data, isPending } = useSession();
   const me = useMe();
+  const location = useLocation();
+  const { pathname } = location;
   useGlobalKeybinds(!!data);
   const impersonating = me.data?.user.impersonating === true;
   // Billing top bar: a Free org that has exhausted a hard-capped signal has its
@@ -221,7 +230,26 @@ function AuthenticatedApp() {
     ["spans", "logs", "metric_points"].some((f) => signalAtHardCap(check, f));
   if (isPending) return null;
   if (!data) return <Landing />;
-  return (
+  const scopedRoute = matchPath("/org/:orgSlug/project/:projectSlug/*", pathname);
+  const orgSlug = scopedRoute?.params.orgSlug;
+  const projectSlug = scopedRoute?.params.projectSlug;
+  if (!orgSlug && me.data?.org && me.data.project) {
+    return (
+      <Navigate
+        replace
+        to={canonicalProjectLocation(
+          { orgSlug: me.data.org.slug, projectSlug: me.data.project.slug },
+          { pathname, search: location.search, hash: location.hash },
+        )}
+      />
+    );
+  }
+  const appLocation = appLocationFromProjectRoute({
+    pathname,
+    search: location.search,
+    hash: location.hash,
+  });
+  const app = (
     <OnboardingGate>
       <div className={APP_FRAME_CLASS}>
         <TopRibbon
@@ -231,7 +259,7 @@ function AuthenticatedApp() {
         />
         <ProductShell toolbar={<ProductToolbar />}>
           <RouteContainer>
-            <Routes>
+            <Routes location={appLocation}>
               <Route path="/explore/*" element={<Explore />} />
               <Route path="/incidents" element={<Issues />} />
               <Route path="/incidents/:id" element={<Issues />} />
@@ -251,6 +279,18 @@ function AuthenticatedApp() {
       <CommandPalette />
       <McpInstallPill />
     </OnboardingGate>
+  );
+  const projectApp =
+    orgSlug && projectSlug ? (
+      <ProjectRouteProvider slugs={{ orgSlug, projectSlug }}>{app}</ProjectRouteProvider>
+    ) : (
+      app
+    );
+  if (!orgSlug || !projectSlug) return projectApp;
+  return (
+    <ProjectRouteBoundary me={me.data} slugs={{ orgSlug, projectSlug }}>
+      {projectApp}
+    </ProjectRouteBoundary>
   );
 }
 
@@ -340,12 +380,13 @@ function ImpersonationBar({ email }: { email: string }) {
 }
 
 function BillingLimitBar() {
+  const projectPath = useProjectPath();
   return (
     <div className="flex h-7 w-full items-center justify-center gap-2 bg-danger px-3 text-[11px] text-white">
       <span className="font-semibold">Ingest paused</span>
       <span className="opacity-90">You’ve hit your Free plan limits.</span>
       <Link
-        to="/settings?scope=org&section=billing"
+        to={projectPath("/settings?scope=org&section=billing")}
         className="font-medium underline underline-offset-2 hover:opacity-80"
       >
         Add a card to switch to pay-as-you-go →
@@ -356,8 +397,9 @@ function BillingLimitBar() {
 
 function RouteContainer({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
-  const detailWorkspace = isDetailWorkspacePath(pathname);
-  const wide = pathname.startsWith("/dashboards/");
+  const appPath = appPathFromProjectRoute(pathname);
+  const detailWorkspace = isDetailWorkspacePath(appPath);
+  const wide = appPath.startsWith("/dashboards/");
   if (detailWorkspace) {
     return <div className="flex min-h-0 flex-1 flex-col">{children}</div>;
   }

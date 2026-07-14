@@ -37,6 +37,7 @@ export function shouldRunResolvedIncidentSideEffects(opts: {
 export async function runResolvedIncidentSideEffects(opts: {
   incident: ResolvedIncidentSideEffectIncident;
   projectName: string;
+  projectRoute: { orgSlug: string; projectSlug: string };
   deps: ResolvedIncidentSideEffectDeps;
 }): Promise<CloseIncidentOpenPullRequestsResult> {
   let closed: CloseIncidentOpenPullRequestsResult;
@@ -50,6 +51,7 @@ export async function runResolvedIncidentSideEffects(opts: {
   const slackRoot = buildResolvedIncidentSlackRoot({
     incident: opts.incident,
     projectName: opts.projectName,
+    projectRoute: opts.projectRoute,
   });
   try {
     await opts.deps.updateSlackRootMessage({
@@ -79,13 +81,17 @@ export async function runResolvedIncidentSideEffectsForIncident(opts: {
   const project = await db.query.projects.findFirst({
     where: eq(schema.projects.id, incident.projectId),
   });
+  if (!project) return null;
+  const org = await db.query.orgs.findFirst({ where: eq(schema.orgs.id, project.orgId) });
+  if (!org) return null;
   return runResolvedIncidentSideEffects({
     incident: {
       id: incident.id,
       title: incident.title,
       service: incident.service,
     },
-    projectName: project?.name ?? incident.projectId,
+    projectName: project.name,
+    projectRoute: { orgSlug: org.slug, projectSlug: project.slug },
     deps: createResolvedIncidentSideEffectDeps({
       closePullRequest: opts.closePullRequest,
     }),
@@ -95,8 +101,12 @@ export async function runResolvedIncidentSideEffectsForIncident(opts: {
 export function buildResolvedIncidentSlackRoot(opts: {
   incident: ResolvedIncidentSideEffectIncident;
   projectName: string;
+  projectRoute: { orgSlug: string; projectSlug: string };
 }): ResolvedIncidentSlackRoot {
-  const incidentUrl = escapeSlackLinkUrl(`${WEB_ORIGIN}/incidents/${opts.incident.id}`);
+  const origin = WEB_ORIGIN.replace(/\/$/, "");
+  const incidentUrl = escapeSlackLinkUrl(
+    `${origin}/org/${encodeURIComponent(opts.projectRoute.orgSlug)}/project/${encodeURIComponent(opts.projectRoute.projectSlug)}/incidents/${encodeURIComponent(opts.incident.id)}`,
+  );
   const titleLabel = escapeSlackLinkText(opts.incident.title);
   const lines = [
     ":white_check_mark: *Incident resolved*",

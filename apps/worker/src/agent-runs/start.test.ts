@@ -317,10 +317,16 @@ function makeContext(opts: { githubInstalled?: boolean } = {}): AgentRunContext 
       title: "Incident",
       service: "api",
     } as schema.Incident,
+    org: {
+      id: "org-1",
+      name: "Org",
+      slug: "org",
+    } as typeof schema.orgs.$inferSelect,
     project: {
       id: "project-1",
       orgId: "org-1",
       name: "Project",
+      slug: "project",
     } as schema.Project,
     automation: {
       autoInvestigateIssuesEnabled: true,

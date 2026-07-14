@@ -1520,6 +1520,20 @@ export function useSetActiveProject() {
   });
 }
 
+export function useSetActiveContext() {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: (input: { orgSlug: string; projectSlug: string }) =>
+      fetcher<{
+        org: { id: string; name: string; slug: string };
+        project: { id: string; name: string; slug: string };
+      }>("/api/me/active-context", {
+        method: "PUT",
+        body: JSON.stringify(input),
+      }),
+  });
+}
+
 // Pin a project as the favorite (opens by default on a fresh session), or pass
 // null to clear the favorite. The server pins the active org alongside it.
 export function useSetFavoriteProject() {

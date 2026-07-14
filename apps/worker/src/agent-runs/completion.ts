@@ -17,6 +17,7 @@ import {
   noiseReasonLabel,
   resolutionReasonLabel,
 } from "../incident-result-policy.js";
+import { buildContextIncidentUrl } from "../incident-route.js";
 import {
   incidentBlocks,
   postIncidentThreadMessage,
@@ -322,7 +323,7 @@ export async function completeWithIncidentResolution(
     lines.push(`Linear: <${deliveredTicket.url}|${deliveredTicket.identifier}>`);
   }
   await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
-  const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
+  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
   await updateIncidentMainMessage(
     ctx.incident.id,
     `:white_check_mark: ${ctx.incident.title} — Incident resolved`,
@@ -470,7 +471,7 @@ export async function completeWithoutPullRequest(
       : ":memo:";
     await postIncidentThreadMessage(ctx.incident.id, `${badge} ${result.summary}`);
   }
-  const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
+  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
   const status =
     noiseReason && noiseApplied
       ? `${isAlertIncident(ctx) ? "Alert" : "Incident"} marked as noise - ${noiseReasonLabel(noiseReason)}`

@@ -75,7 +75,6 @@ import {
 import { mountIngestFilters } from "./ingest-filters.js";
 import { sanitizeIssueFilterConfig } from "./issue-filter-service.js";
 import { mountLinearAuthed, mountLinearPublic } from "./linear.js";
-import { mountNotionAuthed, mountNotionPublic } from "./notion.js";
 import { logger } from "./logger.js";
 import { mountManagementApi, mountOrgKeyManagementAuthed } from "./management.js";
 import {
@@ -100,6 +99,7 @@ import {
   queryTracesAggregated,
 } from "./mcp/clickhouse.js";
 import { mountMcpAuthed, mountMcpPublic } from "./mcp/index.js";
+import { mountNotionAuthed, mountNotionPublic } from "./notion.js";
 import { resolveActiveOrgContext, resolveMaybeActiveOrgContext } from "./org-context.js";
 import { ORG_NAME_MAX, createOrgWithDefaults, mountOrgCrud } from "./orgs.js";
 import { mountPersonalAccessTokens } from "./personal-access-tokens.js";
@@ -108,12 +108,13 @@ import {
   VALID_MANUAL_MERGE_METHODS,
   mergeAgentPullRequestAndResolveIncident,
 } from "./pr-merge-service.js";
+import { mountProjectMcpRelayPublic } from "./project-mcp-relay.js";
 import {
   mountProjectMcpOAuthPublic,
   mountProjectMcpServersAuthed,
   mountProjectMcpServersManagement,
 } from "./project-mcp-servers.js";
-import { mountProjectMcpRelayPublic } from "./project-mcp-relay.js";
+import { mountProjectRouteContext } from "./project-route-context.js";
 import { mountRailwayAuthed, mountRailwayPublic } from "./railway.js";
 import { mountRenderAuthed } from "./render.js";
 import { mountSettingsAuthed } from "./settings.js";
@@ -161,6 +162,7 @@ const SIGNUP_INTENT_TTL_MS = 30 * 60 * 1000;
 
 type Vars = {
   userId: string;
+  sessionId?: string;
   orgId: string | null;
   impersonating?: boolean;
   // Set by the demoOverlay middleware (apps/api/src/demo.ts): the project id
@@ -321,6 +323,7 @@ app.use("/api/*", async (c, next) => {
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
   if (!session) return c.json({ error: "unauthenticated" }, 401);
   c.set("userId", session.user.id);
+  c.set("sessionId", session.session.id);
   c.set("orgId", session.session.activeOrganizationId ?? null);
   // Better Auth's admin plugin sets impersonatedBy on the session row when an
   // admin is acting as another user; surface it on `c.var` so /api/me can
@@ -338,6 +341,7 @@ app.use("/api/projects/:projectId/*", demoOverlay());
 
 mountMcpAuthed(app);
 mountPersonalAccessTokens(app);
+mountProjectRouteContext(app);
 mountGithubAuthed(app);
 mountLinearAuthed(app);
 mountNotionAuthed(app);

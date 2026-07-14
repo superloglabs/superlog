@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AddFilter, MetricNamePicker } from "../Explore.tsx";
 import { type ExploreRange, type ResourceAttr, useExploreAttributeKeys, useMe } from "../api.ts";
+import { CountChart } from "../dashboards/widgets/CountChart.tsx";
 import { Dropdown } from "../design/Dropdown.tsx";
 import { Btn, Chip, Input, PillToggle, Tile } from "../design/ui.tsx";
-import { CountChart } from "../dashboards/widgets/CountChart.tsx";
+import { type ProjectRouteSlugs, buildProjectPath } from "../project-route.ts";
 import { SettingsCard, SettingsCardFooter, SettingsRow } from "../settings/rows.tsx";
 import {
   useAlert,
@@ -41,17 +42,31 @@ export function AlertEdit() {
       <div className="font-mono text-[11px] uppercase tracking-[0.2em] text-muted">loading…</div>
     );
   }
-  if (me.error || !me.data || !me.data.project) {
+  if (me.error || !me.data || !me.data.org || !me.data.project) {
     return (
       <div className="font-mono text-[11px] text-danger">
         error: {String(me.error ?? "no session")}
       </div>
     );
   }
-  return <AlertEditInner projectId={me.data.project.id} alertId={id} />;
+  return (
+    <AlertEditInner
+      projectId={me.data.project.id}
+      alertId={id}
+      slugs={{ orgSlug: me.data.org.slug, projectSlug: me.data.project.slug }}
+    />
+  );
 }
 
-function AlertEditInner({ projectId, alertId }: { projectId: string; alertId?: string }) {
+function AlertEditInner({
+  projectId,
+  alertId,
+  slugs,
+}: {
+  projectId: string;
+  alertId?: string;
+  slugs: ProjectRouteSlugs;
+}) {
   const navigate = useNavigate();
   const editing = !!alertId;
   const existing = useAlert(projectId, alertId);
@@ -149,10 +164,10 @@ function AlertEditInner({ projectId, alertId }: { projectId: string; alertId?: s
       await update.mutateAsync(body);
     } else {
       const created = await create.mutateAsync(body);
-      navigate(`/alerts/${created.id}`, { replace: true });
+      navigate(buildProjectPath(slugs, `/alerts/${created.id}`), { replace: true });
       return;
     }
-    navigate("/alerts");
+    navigate(buildProjectPath(slugs, "/alerts"));
   };
 
   // Keep the preview in sync with the rule as you edit it. Debounced so typing
@@ -424,7 +439,11 @@ function AlertEditInner({ projectId, alertId }: { projectId: string; alertId?: s
               Fill in the required fields to continue
             </span>
           )}
-          <Btn variant="ghost" size="sm" onClick={() => navigate("/alerts")}>
+          <Btn
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate(buildProjectPath(slugs, "/alerts"))}
+          >
             Cancel
           </Btn>
           <Btn
@@ -438,7 +457,7 @@ function AlertEditInner({ projectId, alertId }: { projectId: string; alertId?: s
         </SettingsCardFooter>
       </SettingsCard>
 
-      {editing && alertId && <EpisodesTile projectId={projectId} alertId={alertId} />}
+      {editing && alertId && <EpisodesTile projectId={projectId} alertId={alertId} slugs={slugs} />}
     </div>
   );
 }
@@ -507,7 +526,15 @@ function formatNum(n: number): string {
 // An alert's contiguous activations. Each row links to the incident it raised
 // so you can jump from "the alert fired" to "what we did about it". Styled to
 // match the settings cards (Tile header + divide-y rows, no mono/caps).
-function EpisodesTile({ projectId, alertId }: { projectId: string; alertId: string }) {
+function EpisodesTile({
+  projectId,
+  alertId,
+  slugs,
+}: {
+  projectId: string;
+  alertId: string;
+  slugs: ProjectRouteSlugs;
+}) {
   const episodes = useAlertEpisodes(projectId, alertId);
   const rows = episodes.data ?? [];
   return (
@@ -527,7 +554,7 @@ function EpisodesTile({ projectId, alertId }: { projectId: string; alertId: stri
       ) : (
         <ul className="divide-y divide-border">
           {rows.map((ep) => (
-            <EpisodeRow key={ep.id} ep={ep} />
+            <EpisodeRow key={ep.id} ep={ep} slugs={slugs} />
           ))}
         </ul>
       )}
@@ -535,7 +562,7 @@ function EpisodesTile({ projectId, alertId }: { projectId: string; alertId: stri
   );
 }
 
-function EpisodeRow({ ep }: { ep: AlertEpisode }) {
+function EpisodeRow({ ep, slugs }: { ep: AlertEpisode; slugs: ProjectRouteSlugs }) {
   const firing = ep.state === "firing";
   const body = (
     <>
@@ -578,7 +605,7 @@ function EpisodeRow({ ep }: { ep: AlertEpisode }) {
     return (
       <li>
         <Link
-          to={`/incidents/${ep.incident.id}`}
+          to={buildProjectPath(slugs, `/incidents/${ep.incident.id}`)}
           className="flex items-center justify-between gap-3 px-5 py-3 transition-colors hover:bg-surface-2"
         >
           {body}

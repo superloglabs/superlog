@@ -3,6 +3,7 @@ import { IncidentRow } from "./Issues.tsx";
 import { useCloudConnections, useIncidents, useMe } from "./api.ts";
 import { PageHeader } from "./design/ui.tsx";
 import { SetupTodos } from "./onboarding/SetupTodos.tsx";
+import { type ProjectRouteSlugs, buildProjectPath } from "./project-route.ts";
 import { ServiceMap } from "./service-map/ServiceMap.tsx";
 
 const ACTIVE_INCIDENT_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -17,7 +18,7 @@ export function Overview() {
   if (me.error) {
     return <div className="text-[12px] text-danger">Error: {String(me.error)}</div>;
   }
-  if (!me.data || !me.data.project) return null;
+  if (!me.data || !me.data.org || !me.data.project) return null;
   const projectId = me.data.project.id;
 
   return (
@@ -27,7 +28,10 @@ export function Overview() {
         description="Project health, recent critical activity, and the connections that shape your system."
       />
       <SetupTodos projectId={projectId} />
-      <ActiveIncidentsSection projectId={projectId} />
+      <ActiveIncidentsSection
+        projectId={projectId}
+        slugs={{ orgSlug: me.data.org.slug, projectSlug: me.data.project.slug }}
+      />
       <ServiceMapSection projectId={projectId} />
     </div>
   );
@@ -41,7 +45,13 @@ function ServiceMapSection({ projectId }: { projectId: string }) {
   return <ServiceMap projectId={projectId} />;
 }
 
-function ActiveIncidentsSection({ projectId }: { projectId: string }) {
+function ActiveIncidentsSection({
+  projectId,
+  slugs,
+}: {
+  projectId: string;
+  slugs: ProjectRouteSlugs;
+}) {
   const navigate = useNavigate();
   const incidents = useIncidents(projectId, "open");
 
@@ -81,7 +91,7 @@ function ActiveIncidentsSection({ projectId }: { projectId: string }) {
               key={row.incident.id}
               row={row}
               selected={false}
-              onClick={() => navigate(`/incidents/${row.incident.id}`)}
+              onClick={() => navigate(buildProjectPath(slugs, `/incidents/${row.incident.id}`))}
             />
           ))}
         </div>

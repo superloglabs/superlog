@@ -10,6 +10,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import { type LinkedIncidentIssue, loadLinkedIncidentIssues } from "../incident-intake.js";
+import { buildContextIncidentUrl, buildIncidentUrl } from "../incident-route.js";
 import {
   incidentBlocks,
   postIncidentThreadMessage,
@@ -329,8 +330,12 @@ async function applyMergeOutcome(opts: {
     "agent run merged into existing incident",
   );
 
-  const targetUrl = `${WEB_ORIGIN}/incidents/${target.id}`;
-  const sourceUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
+  const targetUrl = buildIncidentUrl(WEB_ORIGIN, {
+    orgSlug: ctx.org.slug,
+    projectSlug: ctx.project.slug,
+    incidentId: target.id,
+  });
+  const sourceUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
   const targetLabel = target.codename || target.title;
   const sourceLabel = ctx.incident.codename || ctx.incident.title;
 

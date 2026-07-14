@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useProjectPath } from "./ProjectRouteContext.tsx";
 import { type ImpersonationTarget, useImpersonationTargets, useMe } from "./api.ts";
 import { authClient } from "./auth-client.ts";
 
@@ -32,6 +33,7 @@ export function CommandPalette() {
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const navigate = useNavigate();
+  const projectPath = useProjectPath();
   // Both isStaff and isImpersonating come from /api/me so they agree on the
   // current acting-as user. Reading impersonatedBy off the raw session object
   // would diverge from the staff check (which already runs against the
@@ -75,13 +77,55 @@ export function CommandPalette() {
   const items = useMemo<Item[]>(() => {
     if (mode === "root") {
       const navItems: Item[] = [
-        { id: "nav-overview", label: "Overview", group: "Navigate", haystack: "overview home", onSelect: () => navigate("/") },
-        { id: "nav-incidents", label: "Incidents", group: "Navigate", haystack: "incidents", onSelect: () => navigate("/incidents") },
-        { id: "nav-errors", label: "Errors", group: "Navigate", haystack: "errors issues", onSelect: () => navigate("/issues") },
-        { id: "nav-alerts", label: "Alerts", group: "Navigate", haystack: "alerts", onSelect: () => navigate("/alerts") },
-        { id: "nav-explore", label: "Explore", group: "Navigate", haystack: "explore traces logs metrics", onSelect: () => navigate("/explore") },
-        { id: "nav-dashboards", label: "Dashboards", group: "Navigate", haystack: "dashboards", onSelect: () => navigate("/dashboards") },
-        { id: "nav-settings", label: "Settings", group: "Navigate", haystack: "settings preferences", onSelect: () => navigate("/settings") },
+        {
+          id: "nav-overview",
+          label: "Overview",
+          group: "Navigate",
+          haystack: "overview home",
+          onSelect: () => navigate(projectPath("/")),
+        },
+        {
+          id: "nav-incidents",
+          label: "Incidents",
+          group: "Navigate",
+          haystack: "incidents",
+          onSelect: () => navigate(projectPath("/incidents")),
+        },
+        {
+          id: "nav-errors",
+          label: "Errors",
+          group: "Navigate",
+          haystack: "errors issues",
+          onSelect: () => navigate(projectPath("/issues")),
+        },
+        {
+          id: "nav-alerts",
+          label: "Alerts",
+          group: "Navigate",
+          haystack: "alerts",
+          onSelect: () => navigate(projectPath("/alerts")),
+        },
+        {
+          id: "nav-explore",
+          label: "Explore",
+          group: "Navigate",
+          haystack: "explore traces logs metrics",
+          onSelect: () => navigate(projectPath("/explore")),
+        },
+        {
+          id: "nav-dashboards",
+          label: "Dashboards",
+          group: "Navigate",
+          haystack: "dashboards",
+          onSelect: () => navigate(projectPath("/dashboards")),
+        },
+        {
+          id: "nav-settings",
+          label: "Settings",
+          group: "Navigate",
+          haystack: "settings preferences",
+          onSelect: () => navigate(projectPath("/settings")),
+        },
       ];
       const adminItems: Item[] = isStaff
         ? [
@@ -139,7 +183,8 @@ export function CommandPalette() {
         id: `imp-${info.userId}`,
         label,
         sublabel: orgNames.join(", "),
-        haystack: `${info.email} ${info.name ?? ""} ${orgNames.join(" ")} ${orgSlugs.join(" ")}`.toLowerCase(),
+        haystack:
+          `${info.email} ${info.name ?? ""} ${orgNames.join(" ")} ${orgSlugs.join(" ")}`.toLowerCase(),
         onSelect: async () => {
           // Same pattern as stopImpersonating: error lands in result.error,
           // not as a throw. Don't reload if the impersonation didn't take.
@@ -157,7 +202,7 @@ export function CommandPalette() {
     }
     out.sort((a, b) => a.label.localeCompare(b.label));
     return out;
-  }, [mode, navigate, isStaff, isImpersonating, targets.data, me.data?.user.id]);
+  }, [mode, navigate, projectPath, isStaff, isImpersonating, targets.data, me.data?.user.id]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

@@ -62,6 +62,8 @@ const BASE_ARGS = {
   incidentId: "inc-1",
   agentRunId: "run-1",
   incidentTitle: "Checkout requests fail under load",
+  orgSlug: "acme",
+  projectSlug: "shop",
   hasInstall: true,
   defaultTeamId: null,
   prUrls: [],
@@ -193,13 +195,20 @@ test("skips delivery when the workspace has no teams", async () => {
 
 test("ticket description includes every open PR link", () => {
   const desc = ticketDescription(
-    { incidentId: "inc-1", agentRunId: "run-1", incidentTitle: "t" },
+    {
+      incidentId: "inc-1",
+      agentRunId: "run-1",
+      incidentTitle: "t",
+      orgSlug: "acme",
+      projectSlug: "shop",
+    },
     RESULT,
     ["https://github.com/acme/shop/pull/12", "https://github.com/acme/api/pull/15"],
   );
   assert.ok(desc.includes("Proposed fixes:"));
   assert.ok(desc.includes("- https://github.com/acme/shop/pull/12"));
   assert.ok(desc.includes("- https://github.com/acme/api/pull/15"));
+  assert.ok(desc.includes("/org/acme/project/shop/incidents/inc-1"));
   assert.ok(desc.includes(investigationMarker("inc-1", "run-1")));
 });
 

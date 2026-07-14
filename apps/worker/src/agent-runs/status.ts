@@ -7,6 +7,7 @@ import {
 } from "@superlog/db";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
+import { buildContextIncidentUrl } from "../incident-route.js";
 import {
   incidentBlocks,
   postIncidentThreadMessage,
@@ -178,7 +179,7 @@ export async function failAgentRun(
   const emoji =
     category === "agent" ? ":mag:" : category === "deliverable" ? ":x:" : ":rotating_light:";
   await postIncidentThreadMessage(ctx.incident.id, `${emoji} ${summary}`);
-  const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
+  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
   await updateIncidentMainMessage(
     ctx.incident.id,
     `:x: ${ctx.incident.title} — Investigation failed`,
@@ -226,7 +227,7 @@ export async function moveAgentRunToAwaitingHuman(
     ),
   );
   await postIncidentThreadMessage(ctx.incident.id, `:speech_balloon: ${summary}\n${question}`);
-  const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
+  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
   await updateIncidentMainMessage(
     ctx.incident.id,
     `:speech_balloon: ${ctx.incident.title} — Awaiting human input`,
@@ -278,7 +279,7 @@ export async function moveAgentRunToAwaitingEvents(
     ctx.incident.id,
     awaitingEventsSlackMessage(openPrUrls, linearTicket),
   );
-  const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
+  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
   await updateIncidentMainMessage(
     ctx.incident.id,
     `:hourglass_flowing_sand: ${ctx.incident.title} — Waiting on PR review`,
@@ -349,7 +350,7 @@ export async function moveAgentRunToBlockedNoGithub(
       "failed to enqueue incident.updated webhook (agent_awaiting_input)",
     ),
   );
-  const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
+  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
   const installUrl = `${WEB_ORIGIN}/settings?tab=github`;
   const tagline = "Connect a GitHub repo so we can investigate.";
   await postIncidentThreadMessage(

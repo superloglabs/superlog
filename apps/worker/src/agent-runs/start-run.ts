@@ -2,6 +2,7 @@ import { db, enqueueAgentRunStarted } from "@superlog/db";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { listAccessibleGithubRepositories, scoreRepos } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
+import { buildContextIncidentUrl } from "../incident-route.js";
 import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
 import {
   createRepositoryReadToken,
@@ -59,7 +60,7 @@ async function notifyAgentRunStarted(
     ctx.incident.id,
     `:mag: Investigation started across ${repoCandidateCount} candidate repos.`,
   );
-  const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
+  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
   await updateIncidentMainMessage(
     ctx.incident.id,
     `:rotating_light: ${ctx.incident.title} — Investigation ongoing`,

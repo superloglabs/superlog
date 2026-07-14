@@ -1,5 +1,6 @@
 import { db, environmentFromResourceAttrs, schema } from "@superlog/db";
 import { and, eq, isNull, sql } from "drizzle-orm";
+import { buildIncidentUrl } from "../../incident-route.js";
 import { logger } from "../../logger.js";
 import { isStaleSlackAnchorError } from "../../slack-pinning.js";
 import {
@@ -12,6 +13,18 @@ import {
 } from "./api.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
+
+async function incidentUrlForProject(projectId: string, incidentId: string): Promise<string> {
+  const [route] = await db
+    .select({ orgSlug: schema.orgs.slug, projectSlug: schema.projects.slug })
+    .from(schema.projects)
+    .innerJoin(schema.orgs, eq(schema.orgs.id, schema.projects.orgId))
+    .where(eq(schema.projects.id, projectId))
+    .limit(1);
+  return route
+    ? buildIncidentUrl(WEB_ORIGIN, { ...route, incidentId })
+    : `${WEB_ORIGIN}/incidents/${incidentId}`;
+}
 
 async function fetchSlackTarget(projectId: string): Promise<SlackTarget | null> {
   const rows = await db.execute<{
@@ -349,7 +362,7 @@ export async function postIncidentRootMessage(opts: {
   if (opts.incident.slackThreadTs) return;
   const target = await fetchSlackTarget(opts.projectId);
   if (!target) return;
-  const incidentUrl = `${WEB_ORIGIN}/incidents/${opts.incident.id}`;
+  const incidentUrl = await incidentUrlForProject(opts.projectId, opts.incident.id);
   const text = `:rotating_light: New incident: ${opts.firstIssue.title}`;
   const blocks = incidentBlocks({
     emoji: "rotating_light",
@@ -377,7 +390,7 @@ async function createIncidentRootInCurrentRoute(
   const project = await db.query.projects.findFirst({
     where: eq(schema.projects.id, incident.projectId),
   });
-  const incidentUrl = `${WEB_ORIGIN}/incidents/${incident.id}`;
+  const incidentUrl = await incidentUrlForProject(incident.projectId, incident.id);
   const text = `:rotating_light: Incident: ${incident.title}`;
   const blocks = incidentBlocks({
     emoji: "rotating_light",

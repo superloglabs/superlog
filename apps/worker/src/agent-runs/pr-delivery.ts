@@ -14,6 +14,7 @@ import {
 } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import { mergeAgentPullRequest, pushPatchToExistingAgentPr } from "../github-app.js";
+import { buildContextIncidentUrl } from "../incident-route.js";
 import { downloadAgentPatchFile } from "../infra/agent-runner/patch-files.js";
 import { openAgentRunPullRequest } from "../infra/github/pull-requests.js";
 import {
@@ -183,7 +184,7 @@ export async function completeWithPullRequest(
 
   const prTitle = buildPrTitle({ ctx, result, pr });
   const prBody = buildPrBody({
-    incidentUrl: `${WEB_ORIGIN}/incidents/${ctx.incident.id}`,
+    incidentUrl: buildContextIncidentUrl(WEB_ORIGIN, ctx),
     result,
     pr,
   });
@@ -497,7 +498,7 @@ export async function completeWithPullRequest(
       "failed to post PR-ready Slack thread message",
     ),
   );
-  const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
+  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
   await updateIncidentMainMessage(
     ctx.incident.id,
     `:bulb: PR Ready: ${ctx.incident.title}`,
@@ -620,7 +621,7 @@ export async function deliverProposedPullRequest(
       : DEFAULT_COMMIT_AUTHOR;
   const prTitle = buildPrTitle({ ctx, result: { summary: pr.title }, pr });
   const prBody = buildPrBody({
-    incidentUrl: `${WEB_ORIGIN}/incidents/${ctx.incident.id}`,
+    incidentUrl: buildContextIncidentUrl(WEB_ORIGIN, ctx),
     result: { summary: pr.body },
     pr,
   });
@@ -785,7 +786,7 @@ export async function deliverProposedPullRequest(
     ctx.incident.id,
     `:bulb: Opened PR ${opened.prUrl}${ticketLine}`,
   ).catch(() => {});
-  const incidentUrl = `${WEB_ORIGIN}/incidents/${ctx.incident.id}`;
+  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
   await updateIncidentMainMessage(
     ctx.incident.id,
     `:bulb: PR Ready: ${ctx.incident.title}`,

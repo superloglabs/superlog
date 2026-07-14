@@ -2,6 +2,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import GridLayout, { type Layout, type LayoutItem, useContainerWidth } from "react-grid-layout";
 import { verticalCompactor } from "react-grid-layout";
 import { Link, useParams } from "react-router-dom";
+import { useProjectPath } from "../ProjectRouteContext.tsx";
 import { type ExploreRange, useMe } from "../api.ts";
 import {
   RANGE_PRESETS,
@@ -81,6 +82,7 @@ function DashboardViewInner({
   projectId: string;
   dashboardId: string;
 }) {
+  const projectPath = useProjectPath();
   const dashboard = useDashboard(projectId, dashboardId);
   const [selection, setSelection] = useState<RangeSelection>(
     RANGE_PRESETS[1] ?? RANGE_PRESETS[0] ?? DEFAULT_RANGE_SELECTION,
@@ -137,7 +139,7 @@ function DashboardViewInner({
       <section className="flex items-end justify-between gap-4">
         <div className="min-w-0 flex-1">
           <Link
-            to="/dashboards"
+            to={projectPath("/dashboards")}
             className="inline-flex items-center gap-1.5 text-[13px] text-muted hover:text-fg"
           >
             <span aria-hidden>←</span>

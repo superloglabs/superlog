@@ -1,4 +1,5 @@
 import { Link, useNavigate } from "react-router-dom";
+import { useProjectPath } from "../ProjectRouteContext.tsx";
 import { useMe } from "../api.ts";
 import { RowMenu } from "../design/RowMenu.tsx";
 import {
@@ -33,13 +34,14 @@ function AlertsListInner({ projectId }: { projectId: string }) {
   const list = useAlerts(projectId);
   const remove = useDeleteAlert(projectId);
   const navigate = useNavigate();
+  const projectPath = useProjectPath();
 
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Alerts"
         description="Turn important telemetry thresholds into focused, actionable notifications."
-        actions={<Btn onClick={() => navigate("/alerts/new")}>New alert</Btn>}
+        actions={<Btn onClick={() => navigate(projectPath("/alerts/new"))}>New alert</Btn>}
       />
 
       <DataList label="Alert rules">
@@ -58,7 +60,11 @@ function AlertsListInner({ projectId }: { projectId: string }) {
           <div className="px-5 py-12 text-center">
             <div className="text-[12px] text-subtle">No alerts yet</div>
             <div className="mt-3">
-              <Btn variant="secondary" size="sm" onClick={() => navigate("/alerts/new")}>
+              <Btn
+                variant="secondary"
+                size="sm"
+                onClick={() => navigate(projectPath("/alerts/new"))}
+              >
                 Create your first alert
               </Btn>
             </div>
@@ -71,7 +77,7 @@ function AlertsListInner({ projectId }: { projectId: string }) {
           >
             <DataListCell className="min-w-0">
               <Link
-                to={`/alerts/${a.id}`}
+                to={projectPath(`/alerts/${a.id}`)}
                 className="block truncate text-[13px] font-medium text-fg hover:underline"
               >
                 {a.name}

@@ -9,6 +9,8 @@ import { SirenIcon } from "@phosphor-icons/react/dist/csr/Siren";
 import { SquaresFourIcon } from "@phosphor-icons/react/dist/csr/SquaresFour";
 import { type ReactNode, useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
+import { useProjectPath } from "../ProjectRouteContext.tsx";
+import { appPathFromProjectRoute } from "../project-route.ts";
 import { readSidebarCollapsed, writeSidebarCollapsed } from "./sidebarCollapsed.ts";
 import { Wordmark } from "./ui.tsx";
 
@@ -48,12 +50,14 @@ export function ProductShell({
   children: ReactNode;
 }) {
   const { pathname } = useLocation();
+  const projectPath = useProjectPath();
+  const appPath = appPathFromProjectRoute(pathname);
   const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
   useEffect(() => {
     writeSidebarCollapsed(collapsed);
   }, [collapsed]);
   const current = [...NAVIGATION_GROUPS.flatMap((group) => group.items), SETTINGS_ITEM].find(
-    (item) => isActive(item, pathname),
+    (item) => isActive(item, appPath),
   );
 
   return (
@@ -64,7 +68,9 @@ export function ProductShell({
           collapsed ? "w-16 px-2" : "w-56 px-4"
         }`}
       >
-        <div className={`flex items-center ${collapsed ? "justify-center" : "justify-between px-2"}`}>
+        <div
+          className={`flex items-center ${collapsed ? "justify-center" : "justify-between px-2"}`}
+        >
           {!collapsed && <Wordmark size="sm" />}
           <button
             type="button"
@@ -89,7 +95,8 @@ export function ProductShell({
                   <NavigationLink
                     key={item.href}
                     item={item}
-                    pathname={pathname}
+                    pathname={appPath}
+                    href={projectPath(item.href)}
                     collapsed={collapsed}
                   />
                 ))}
@@ -99,7 +106,12 @@ export function ProductShell({
         </nav>
 
         <div className="mt-auto border-t border-border pt-3">
-          <NavigationLink item={SETTINGS_ITEM} pathname={pathname} collapsed={collapsed} />
+          <NavigationLink
+            item={SETTINGS_ITEM}
+            pathname={appPath}
+            href={projectPath(SETTINGS_ITEM.href)}
+            collapsed={collapsed}
+          />
         </div>
       </aside>
 
@@ -116,7 +128,7 @@ export function ProductShell({
             </div>
             <div className="flex shrink-0 items-center gap-2">{toolbar}</div>
           </div>
-          <MobileNavigation pathname={pathname} />
+          <MobileNavigation pathname={appPath} projectPath={projectPath} />
         </header>
         <div className="flex min-h-0 flex-1 flex-col">{children}</div>
       </div>
@@ -127,17 +139,19 @@ export function ProductShell({
 function NavigationLink({
   item,
   pathname,
+  href,
   collapsed,
 }: {
   item: NavigationItem;
   pathname: string;
+  href: string;
   collapsed?: boolean;
 }) {
   const active = isActive(item, pathname);
   const Icon = item.icon;
   return (
     <Link
-      to={item.href}
+      to={href}
       aria-current={active ? "page" : undefined}
       title={collapsed ? item.label : undefined}
       className={`flex items-center rounded-md py-1.5 text-[13px] transition-colors ${
@@ -150,7 +164,13 @@ function NavigationLink({
   );
 }
 
-function MobileNavigation({ pathname }: { pathname: string }) {
+function MobileNavigation({
+  pathname,
+  projectPath,
+}: {
+  pathname: string;
+  projectPath: (appPath: string) => string;
+}) {
   const items = [...NAVIGATION_GROUPS.flatMap((group) => group.items), SETTINGS_ITEM];
   return (
     <nav
@@ -163,7 +183,7 @@ function MobileNavigation({ pathname }: { pathname: string }) {
           return (
             <Link
               key={item.href}
-              to={item.href}
+              to={projectPath(item.href)}
               aria-current={active ? "page" : undefined}
               className={`rounded-md px-2.5 py-1 text-[12px] ${
                 active ? "bg-surface-3 text-fg" : "text-muted"

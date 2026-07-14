@@ -13,6 +13,7 @@ import {
   YAxis,
 } from "recharts";
 import { LogDrawer } from "./LogDetail.tsx";
+import { useProjectPath } from "./ProjectRouteContext.tsx";
 import { TraceDrawer } from "./TraceDetail.tsx";
 import { ExploreFacets, SEVERITY_OPTIONS, STATUS_OPTIONS } from "./ExploreFacets.tsx";
 import { facetDisplayName } from "./FacetValues.tsx";
@@ -103,15 +104,16 @@ function sourceFromPath(pathname: string): Source | null {
 
 function ExploreInner({ projectId }: { projectId: string }) {
   const navigate = useNavigate();
+  const projectPath = useProjectPath();
   const { pathname } = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const sourceFromUrl = sourceFromPath(pathname);
 
   useEffect(() => {
     if (sourceFromUrl === null) {
-      navigate("/explore/logs", { replace: true });
+      navigate(projectPath("/explore/logs"), { replace: true });
     }
-  }, [sourceFromUrl, navigate]);
+  }, [sourceFromUrl, navigate, projectPath]);
 
   const source: Source = sourceFromUrl ?? "logs";
 
@@ -455,7 +457,7 @@ function ExploreInner({ projectId }: { projectId: string }) {
         }}
         onOpenIssue={(id) => {
           closeLog();
-          navigate(`/issues/${id}`);
+          navigate(projectPath(`/issues/${id}`));
         }}
         onAddFilter={addFilter}
       />
@@ -472,6 +474,7 @@ function ExploreInner({ projectId }: { projectId: string }) {
 // ResourcesPanel — inventory of AWS resources discovered for the project.
 
 function ResourcesPanel({ projectId }: { projectId: string }) {
+  const projectPath = useProjectPath();
   const resources = useCloudResources(projectId);
   const connections = useCloudConnections(projectId);
   const sync = useSyncCloudConnection(projectId);
@@ -512,7 +515,7 @@ function ResourcesPanel({ projectId }: { projectId: string }) {
             No AWS account connected yet. Connect one to inventory your resources.
           </p>
           <NavLink
-            to="/settings?scope=project&section=integrations"
+            to={projectPath("/settings?scope=project&section=integrations")}
             className="inline-block rounded-sm bg-accent px-3 py-1.5 text-[13px] font-medium text-bg"
           >
             Connect AWS
@@ -621,12 +624,13 @@ const TABS: { source: Source; label: string }[] = [
 ];
 
 export function ExploreTabs() {
+  const projectPath = useProjectPath();
   return (
     <nav className="flex items-center gap-1">
       {TABS.map((t) => (
         <NavLink
           key={t.source}
-          to={`/explore/${t.source}`}
+          to={projectPath(`/explore/${t.source}`)}
           className={({ isActive }) =>
             isActive
               ? "rounded-md bg-surface-3 px-3 py-1.5 text-[13px] font-medium tracking-tight text-fg"

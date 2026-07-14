@@ -2,6 +2,7 @@ import { CreditCardIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type CSSProperties, type ReactNode, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { useProjectPath } from "../ProjectRouteContext.tsx";
 
 // ---------------------------------------------------------------------------
 // Canonical shared primitives — used across the app and the /design sheet.
@@ -673,6 +674,7 @@ export function OutOfCreditsBadge() {
 }
 
 export function OutOfCreditsBanner() {
+  const projectPath = useProjectPath();
   return (
     <div
       className="rounded-md border p-4"
@@ -696,7 +698,7 @@ export function OutOfCreditsBanner() {
       </p>
       <div className="flex items-center justify-end">
         <Link
-          to="/settings?scope=org&section=billing"
+          to={projectPath("/settings?scope=org&section=billing")}
           className="inline-flex items-center rounded-md bg-fg px-3 py-1.5 text-[13px] font-medium text-bg transition-opacity hover:opacity-90"
         >
           Manage billing

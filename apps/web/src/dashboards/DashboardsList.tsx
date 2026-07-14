@@ -1,4 +1,5 @@
 import { Link, useNavigate } from "react-router-dom";
+import { useProjectPath } from "../ProjectRouteContext.tsx";
 import { useMe } from "../api.ts";
 import { RowMenu } from "../design/RowMenu.tsx";
 import {
@@ -39,10 +40,11 @@ function DashboardsListInner({ projectId }: { projectId: string }) {
   const create = useCreateDashboard(projectId);
   const remove = useDeleteDashboard(projectId);
   const navigate = useNavigate();
+  const projectPath = useProjectPath();
 
   const handleCreate = async () => {
     const dashboard = await create.mutateAsync(randomName());
-    navigate(`/dashboards/${dashboard.id}`);
+    navigate(projectPath(`/dashboards/${dashboard.id}`));
   };
 
   return (
@@ -83,7 +85,7 @@ function DashboardsListInner({ projectId }: { projectId: string }) {
           >
             <DataListCell className="min-w-0">
               <Link
-                to={`/dashboards/${d.id}`}
+                to={projectPath(`/dashboards/${d.id}`)}
                 className="block truncate text-[13px] font-medium text-fg hover:underline"
               >
                 {d.name}

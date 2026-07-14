@@ -31,6 +31,7 @@ export type ScoredGithubRepo = InstalledGithubRepo & { score: number };
 export type AgentRunContext = {
   agentRun: schema.AgentRun;
   incident: schema.Incident;
+  org: typeof schema.orgs.$inferSelect;
   project: schema.Project;
   automation: {
     autoInvestigateIssuesEnabled: boolean;
@@ -195,6 +196,10 @@ export async function loadAgentRunContext(
     where: eq(schema.projects.id, incident.projectId),
   });
   if (!project) return null;
+  const org = await db.query.orgs.findFirst({
+    where: eq(schema.orgs.id, project.orgId),
+  });
+  if (!org) return null;
   const automation = await getProjectAutomation(project.id);
   const issueIds = await db
     .select({ issueId: schema.incidentIssues.issueId })
@@ -255,6 +260,7 @@ export async function loadAgentRunContext(
   return {
     agentRun,
     incident,
+    org,
     project,
     automation,
     githubInstalls,

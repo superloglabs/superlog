@@ -82,6 +82,12 @@ import { IncidentDetailScrollArea } from "./incidents/IncidentDetailScrollArea.t
 import { TriggeredByAlertMetaRow } from "./incidents/TriggeredByAlertMetaRow.tsx";
 import { getIssueIncidentLinkState } from "./issue-incident-link-state.ts";
 import { IssueDetailView } from "./issues/IssueDetailView.tsx";
+import { useProjectPath } from "./ProjectRouteContext.tsx";
+import {
+  appPathFromProjectRoute,
+  buildProjectPath,
+  type ProjectRouteSlugs,
+} from "./project-route.ts";
 import {
   IncidentDetailSkeleton,
   IncidentListSkeleton,
@@ -95,26 +101,26 @@ type IssueFilter = "active" | "silenced" | "all";
 type IncidentStatus = "open" | "resolved" | "autoresolved_noise" | "all";
 type Tab = "issues" | "incidents";
 
-function tabBasePath(tab: Tab) {
-  return tab === "issues" ? "/issues" : "/incidents";
+function tabBasePath(tab: Tab, slugs: ProjectRouteSlugs) {
+  return buildProjectPath(slugs, tab === "issues" ? "/issues" : "/incidents");
 }
 
 function useTab(): Tab {
   const location = useLocation();
-  return location.pathname.startsWith("/issues") ? "issues" : "incidents";
+  return appPathFromProjectRoute(location.pathname).startsWith("/issues") ? "issues" : "incidents";
 }
 
-function useNav() {
+function useNav(slugs: ProjectRouteSlugs) {
   const navigate = useNavigate();
   const params = useParams<{ id?: string }>();
   const tab = useTab();
   const id = params.id ?? null;
 
   function openItem(itemId: string, targetTab: Tab = tab) {
-    navigate(`${tabBasePath(targetTab)}/${itemId}`);
+    navigate(`${tabBasePath(targetTab, slugs)}/${itemId}`);
   }
   function closeItem() {
-    navigate(tabBasePath(tab), { replace: true });
+    navigate(tabBasePath(tab, slugs), { replace: true });
   }
   return { tab, id, openItem, closeItem };
 }
@@ -155,17 +161,23 @@ export function Issues() {
   if (me.error || !me.data || !me.data.project) {
     return <div className="text-[13px] text-danger">Error: {String(me.error ?? "no session")}</div>;
   }
-  return <IssuesShell projectId={me.data.project.id} />;
+  if (!me.data.org) return null;
+  return (
+    <IssuesShell
+      projectId={me.data.project.id}
+      slugs={{ orgSlug: me.data.org.slug, projectSlug: me.data.project.slug }}
+    />
+  );
 }
 
-function IssuesShell({ projectId }: { projectId: string }) {
+function IssuesShell({ projectId, slugs }: { projectId: string; slugs: ProjectRouteSlugs }) {
   const tab = useTab();
   const params = useParams<{ id?: string }>();
   const navigate = useNavigate();
   const labels: Record<Tab, string> = { incidents: "Incidents", issues: "Errors" };
 
   if (tab === "incidents" && params.id) {
-    return <IncidentsTab projectId={projectId} />;
+    return <IncidentsTab projectId={projectId} slugs={slugs} />;
   }
 
   if (tab === "issues" && params.id) {
@@ -173,8 +185,10 @@ function IssuesShell({ projectId }: { projectId: string }) {
       <IssueDetailPage
         projectId={projectId}
         issueId={params.id}
-        onClose={() => navigate("/issues")}
-        onViewIncident={(incidentId) => navigate(`/incidents/${incidentId}`)}
+        onClose={() => navigate(buildProjectPath(slugs, "/issues"))}
+        onViewIncident={(incidentId) =>
+          navigate(buildProjectPath(slugs, `/incidents/${incidentId}`))
+        }
       />
     );
   }
@@ -191,9 +205,9 @@ function IssuesShell({ projectId }: { projectId: string }) {
       />
       <div className="mt-6">
         {tab === "issues" ? (
-          <IssuesTab projectId={projectId} />
+          <IssuesTab projectId={projectId} slugs={slugs} />
         ) : (
-          <IncidentsTab projectId={projectId} />
+          <IncidentsTab projectId={projectId} slugs={slugs} />
         )}
       </div>
     </div>
@@ -209,10 +223,10 @@ type EventTarget =
   | { kind: "log"; log: LogRow }
   | null;
 
-function IssuesTab({ projectId }: { projectId: string }) {
+function IssuesTab({ projectId, slugs }: { projectId: string; slugs: ProjectRouteSlugs }) {
   const [filter, setFilter] = useState<IssueFilter>("active");
   const [eventTarget, setEventTarget] = useState<EventTarget>(null);
-  const { id: selectedId, openItem, closeItem } = useNav();
+  const { id: selectedId, openItem, closeItem } = useNav(slugs);
   const issues = useIssues(projectId, filter, { groupingFilter: "ungrouped" });
   const silence = useSilenceIssue(projectId);
   const unsilence = useUnsilenceIssue(projectId);
@@ -780,10 +794,10 @@ function groupIncidents(rows: IncidentListItem[]): IncidentGroup[] {
   return groups;
 }
 
-function IncidentsTab({ projectId }: { projectId: string }) {
+function IncidentsTab({ projectId, slugs }: { projectId: string; slugs: ProjectRouteSlugs }) {
   const [status, setStatus] = useState<IncidentStatus>("open");
   const [newInvestigationOpen, setNewInvestigationOpen] = useState(false);
-  const { id: selectedId, openItem, closeItem } = useNav();
+  const { id: selectedId, openItem, closeItem } = useNav(slugs);
   const incidents = useIncidents(projectId, status);
   const resolveAllRecovery = useResolveAllRecoveryDetected(projectId);
 
@@ -1485,6 +1499,7 @@ function PeakMarker({ value }: { value: number }) {
 }
 
 function TriggeredByAlertEpisodes({ episodes }: { episodes: IncidentAlertEpisode[] }) {
+  const projectPath = useProjectPath();
   return (
     <ul className="divide-y divide-border border border-border">
       {episodes.map((ep) => {
@@ -1492,7 +1507,7 @@ function TriggeredByAlertEpisodes({ episodes }: { episodes: IncidentAlertEpisode
         return (
           <li key={ep.id} className="px-3 py-2">
             <Link
-              to={`/alerts/${ep.alertId}`}
+              to={projectPath(`/alerts/${ep.alertId}`)}
               className="block w-full min-w-0 overflow-hidden text-left transition-colors hover:text-muted"
             >
               <div className="mb-0.5 flex items-center gap-2">
@@ -2858,9 +2873,7 @@ function IssueCard({
 }
 
 function formatOccurrenceDate(day: string) {
-  const [year = Number.NaN, month = Number.NaN, date = Number.NaN] = day
-    .split("-")
-    .map(Number);
+  const [year = Number.NaN, month = Number.NaN, date = Number.NaN] = day.split("-").map(Number);
   const parsed =
     Number.isFinite(year) && Number.isFinite(month) && Number.isFinite(date)
       ? new Date(year, month - 1, date)

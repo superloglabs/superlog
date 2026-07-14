@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
+import { ProjectRouteProvider } from "../ProjectRouteContext.tsx";
 import { ProductShell } from "./ProductShell.tsx";
 import { readSidebarCollapsed, writeSidebarCollapsed } from "./sidebarCollapsed.ts";
 
@@ -40,6 +41,23 @@ test("the shell renders a collapse toggle and expanded nav labels by default", (
   assert.match(html, /aria-label="Collapse sidebar"/);
   assert.match(html, /aria-pressed="false"/);
   assert.match(html, />Overview<\/span>/);
+});
+
+test("primary navigation emits canonical project URLs", () => {
+  const html = renderToStaticMarkup(
+    <MemoryRouter initialEntries={["/org/superlog/project/demo-project/explore/logs"]}>
+      <ProjectRouteProvider slugs={{ orgSlug: "superlog", projectSlug: "demo-project" }}>
+        <ProductShell>
+          <main>Explore page</main>
+        </ProductShell>
+      </ProjectRouteProvider>
+    </MemoryRouter>,
+  );
+
+  assert.match(html, /href="\/org\/superlog\/project\/demo-project"/);
+  for (const appPath of ["incidents", "issues", "alerts", "explore", "dashboards", "settings"]) {
+    assert.match(html, new RegExp(`href="/org/superlog/project/demo-project/${appPath}"`));
+  }
 });
 
 test("sidebar collapse state round-trips through localStorage", () => {
@@ -95,8 +113,8 @@ test("errors and incidents are separate primary navigation destinations", () => 
 test("the command palette mirrors the incidents and errors navigation", async () => {
   const source = await readFile(new URL("../CommandPalette.tsx", import.meta.url), "utf8");
 
-  assert.match(source, /label: "Incidents"[^\n]*navigate\("\/incidents"\)/);
-  assert.match(source, /label: "Errors"[^\n]*navigate\("\/issues"\)/);
+  assert.match(source, /label: "Incidents"[^\n]*navigate\(projectPath\("\/incidents"\)\)/);
+  assert.match(source, /label: "Errors"[^\n]*navigate\(projectPath\("\/issues"\)\)/);
   assert.doesNotMatch(source, /label: "Issues"/);
 });
 

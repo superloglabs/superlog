@@ -19,6 +19,7 @@ import {
 } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
+import { buildIncidentUrl } from "../incident-route.js";
 import { logger } from "../logger.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
@@ -42,7 +43,13 @@ export type DeliveredLinearTicket = {
 };
 
 export function ticketDescription(
-  args: { incidentId: string; agentRunId: string; incidentTitle: string },
+  args: {
+    incidentId: string;
+    agentRunId: string;
+    incidentTitle: string;
+    orgSlug: string;
+    projectSlug: string;
+  },
   result: AgentRunResult,
   prUrls: string[],
 ): string {
@@ -58,7 +65,14 @@ export function ticketDescription(
     lines.push("", prUrls.length === 1 ? "Proposed fix:" : "Proposed fixes:");
     lines.push(...prUrls.map((url) => `- ${url}`));
   }
-  lines.push("", `[Incident on Superlog](${WEB_ORIGIN}/incidents/${args.incidentId})`);
+  lines.push(
+    "",
+    `[Incident on Superlog](${buildIncidentUrl(WEB_ORIGIN, {
+      orgSlug: args.orgSlug,
+      projectSlug: args.projectSlug,
+      incidentId: args.incidentId,
+    })})`,
+  );
   lines.push("", investigationMarker(args.incidentId, args.agentRunId));
   return lines.join("\n");
 }
@@ -101,6 +115,8 @@ export async function deliverLinearTicketWithDeps(
     incidentId: string;
     agentRunId: string;
     incidentTitle: string;
+    orgSlug: string;
+    projectSlug: string;
     hasInstall: boolean;
     defaultTeamId: string | null;
     prUrls: string[];
@@ -167,6 +183,8 @@ export async function deliverLinearTicketWithDeps(
           incidentId: args.incidentId,
           agentRunId: args.agentRunId,
           incidentTitle: args.incidentTitle,
+          orgSlug: args.orgSlug,
+          projectSlug: args.projectSlug,
         },
         result,
         args.prUrls,
@@ -271,6 +289,8 @@ export async function deliverLinearTicket(
       incidentId: ctx.incident.id,
       agentRunId: ctx.agentRun.id,
       incidentTitle: ctx.incident.title,
+      orgSlug: ctx.org.slug,
+      projectSlug: ctx.project.slug,
       hasInstall: !!install,
       defaultTeamId: ctx.linearDefaultTeamId,
       prUrls: opts.prUrls,

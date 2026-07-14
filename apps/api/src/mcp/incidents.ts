@@ -48,7 +48,7 @@ export function registerIncidentTools(
     {
       title: "Get incident",
       description:
-        "Fetch one incident by its id — the uuid in a superlog.sh/incidents/<id> link — and everything needed to explain it. " +
+        "Fetch one incident by its id — the uuid at the end of a superlog.sh/org/<org>/project/<project>/incidents/<id> link — and everything needed to explain it. " +
         "No project_id is required; the project is resolved from the incident. Returns: the incident summary with the agent's findings (root_cause_text, agent_summary, estimated_impact_text) and its project_id; every linked issue with a stored telemetry `sample` (trace_id, span_id, stacktrace, span/log/resource attributes); and a pointer to the latest investigation run. " +
         "To pull live telemetry, take a sample's trace_id and call query_traces, or filter query_logs/query_traces by the issue's service + exception type — passing the returned project_id.",
       inputSchema: {

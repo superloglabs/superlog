@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   type Me,
   useMe,
@@ -10,6 +10,7 @@ import {
 } from "./api.ts";
 import { authClient, useActiveOrganization, useListOrganizations } from "./auth-client.ts";
 import { ScrollArea } from "./design/scroll-area.tsx";
+import { appPathFromProjectRoute, canonicalProjectLocation } from "./project-route.ts";
 
 const ON_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || "");
 
@@ -89,6 +90,7 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
   const setFavoriteProject = useSetFavoriteProject();
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [step, setStep] = useState<Step>("orgs");
   const [pendingOrgSwitch, setPendingOrgSwitch] = useState<{
@@ -108,6 +110,24 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
   }, [query, step]);
 
   const activeOrgId = activeOrgQuery.data?.id ?? me.org.id;
+  const activeOrgSlug = orgsQuery.data?.find((org) => org.id === activeOrgId)?.slug ?? me.org.slug;
+
+  const navigateToProject = useCallback(
+    (projectSlug: string) => {
+      navigate(
+        canonicalProjectLocation(
+          { orgSlug: activeOrgSlug, projectSlug },
+          {
+            pathname: appPathFromProjectRoute(location.pathname),
+            search: location.search,
+            hash: location.hash,
+          },
+        ),
+        { replace: true },
+      );
+    },
+    [activeOrgSlug, location.hash, location.pathname, location.search, navigate],
+  );
 
   useEffect(() => {
     if (!pendingOrgSwitch) return;
@@ -116,12 +136,21 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
     const list = projects.data.projects;
     setPendingOrgSwitch(null);
     if (list.length <= 1) {
+      const project = list[0];
+      if (project) navigateToProject(project.slug);
       onClose();
     } else {
       setStep("projects");
       setQuery("");
     }
-  }, [pendingOrgSwitch, activeOrgId, projects.isFetching, projects.data, onClose]);
+  }, [
+    pendingOrgSwitch,
+    activeOrgId,
+    projects.isFetching,
+    projects.data,
+    navigateToProject,
+    onClose,
+  ]);
 
   const switchOrgAndDrill = async (orgId: string) => {
     setPendingOrgSwitch({ targetOrgId: orgId });
@@ -146,11 +175,14 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
   };
 
   const pickProject = async (projectId: string) => {
+    const project = projects.data?.projects.find((candidate) => candidate.id === projectId);
     if (projectId === me.project.id) {
+      if (project) navigateToProject(project.slug);
       onClose();
       return;
     }
     await setActiveProject.mutateAsync(projectId);
+    if (project) navigateToProject(project.slug);
     onClose();
   };
 
