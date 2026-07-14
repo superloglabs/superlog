@@ -923,9 +923,14 @@ export type OpenedAgentPullRequest = {
   authorAvatarUrl: string | null;
   branchName: string;
   baseBranch: string;
+  state: "open" | "closed" | "merged";
+  mergedAt: Date | null;
 };
 
-function openedAgentPullRequest(delivered: GithubDeliveredPullRequest): OpenedAgentPullRequest {
+export function openedAgentPullRequest(
+  delivered: GithubDeliveredPullRequest,
+): OpenedAgentPullRequest {
+  const mergedAt = delivered.mergedAt ? new Date(delivered.mergedAt) : null;
   return {
     prUrl: delivered.prUrl,
     prNumber: delivered.prNumber,
@@ -936,6 +941,8 @@ function openedAgentPullRequest(delivered: GithubDeliveredPullRequest): OpenedAg
     authorAvatarUrl: delivered.authorAvatarUrl,
     branchName: delivered.branchName,
     baseBranch: delivered.baseBranch,
+    state: mergedAt ? "merged" : delivered.state,
+    mergedAt,
   };
 }
 

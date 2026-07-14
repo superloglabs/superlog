@@ -155,6 +155,7 @@ export type PullRequestMutationReconciliationDecision =
 export function decidePullRequestMutationReconciliation(input: {
   incidentStatus: schema.IncidentStatus | null;
   canonicalState: schema.AgentPrState | null;
+  deliveredState?: schema.AgentPrState;
 }): PullRequestMutationReconciliationDecision {
   if (input.incidentStatus !== "open") {
     return {
@@ -164,7 +165,17 @@ export function decidePullRequestMutationReconciliation(input: {
       canonicalState: input.canonicalState,
     };
   }
-  if (input.canonicalState !== "open") {
+  // recordOpenedAgentPullRequest supplies the provider's current state. When
+  // this exact PR already belongs to the Incident, a state mismatch means its
+  // lifecycle webhook is still converging the canonical row; compensating the
+  // recovered PR would fight that transition (and cannot undo a merge).
+  // Follow-up pushes omit deliveredState and retain the strict open-state gate.
+  const canonicalCanConvergeFromWebhook =
+    input.deliveredState !== undefined && input.canonicalState !== null;
+  if (
+    input.canonicalState !== (input.deliveredState ?? "open") &&
+    !canonicalCanConvergeFromWebhook
+  ) {
     return {
       kind: "close_pull_request",
       reason: "canonical_not_open",
@@ -273,6 +284,8 @@ export async function recordOpenedAgentPullRequest(
     authorLogin: string | null;
     authorGithubId: number | null;
     authorAvatarUrl: string | null;
+    state: schema.AgentPrState;
+    mergedAt: Date | null;
     deliveryIdentity?: PullRequestDeliveryIdentity;
   },
   deps: PullRequestRecordDependencies = {},
@@ -310,8 +323,9 @@ export async function recordOpenedAgentPullRequest(
         branchName: opts.branchName,
         baseBranch: opts.baseBranch,
         headSha: opts.headSha,
-        state: "open",
+        state: opts.state,
         title: opts.title,
+        mergedAt: opts.mergedAt,
         lastSyncedAt: now,
       })
       .onConflictDoNothing({
@@ -335,6 +349,7 @@ export async function recordOpenedAgentPullRequest(
     const decision = decidePullRequestMutationReconciliation({
       incidentStatus,
       canonicalState,
+      deliveredState: opts.state,
     });
 
     if (inserted[0] && row) {

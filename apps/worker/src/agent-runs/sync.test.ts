@@ -513,25 +513,32 @@ test("partialPullRequestRetryNudgePrompt requires exactly the pending repositori
   assert.doesNotMatch(prompt, /resolve_incident|report_external_cause|ask_human/);
 });
 
-test("partial PR delivery cannot enter the legacy open-PR parking path", () => {
+test("blocking PR delivery cannot enter the legacy open-PR parking path", () => {
   assert.equal(
     shouldParkCompatibilityPullRequests({
       openPullRequestCount: 1,
-      hasPartialPullRequestDelivery: false,
+      blockingPullRequestDeliveryKind: null,
     }),
     true,
   );
-  assert.equal(
-    shouldParkCompatibilityPullRequests({
-      openPullRequestCount: 1,
-      hasPartialPullRequestDelivery: true,
-    }),
-    false,
-  );
+  for (const blockingPullRequestDeliveryKind of [
+    "retry_required",
+    "incident_not_open",
+    "manual_reconciliation_required",
+  ] as const) {
+    assert.equal(
+      shouldParkCompatibilityPullRequests({
+        openPullRequestCount: 1,
+        blockingPullRequestDeliveryKind,
+      }),
+      false,
+      blockingPullRequestDeliveryKind,
+    );
+  }
   assert.equal(
     shouldParkCompatibilityPullRequests({
       openPullRequestCount: 0,
-      hasPartialPullRequestDelivery: false,
+      blockingPullRequestDeliveryKind: null,
     }),
     false,
   );

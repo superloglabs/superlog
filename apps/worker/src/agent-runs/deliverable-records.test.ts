@@ -24,9 +24,15 @@ type RecordedCall =
 function recordingPullRequestDb(opts: {
   incidentStatus: schema.IncidentStatus;
   canonicalState?: schema.AgentPrState;
+  pullRequestInsertConflicts?: boolean;
   recordedDeliveryDetail?: Record<string, unknown>;
-}): { database: DB; calls: RecordedCall[] } {
+}): {
+  database: DB;
+  calls: RecordedCall[];
+  insertedPullRequest: () => Record<string, unknown> | null;
+} {
   const calls: RecordedCall[] = [];
+  let insertedPullRequestValues: Record<string, unknown> | null = null;
   const database = {
     select() {
       return {
@@ -46,13 +52,15 @@ function recordingPullRequestDb(opts: {
     },
     insert(table: unknown) {
       return {
-        values() {
+        values(values: Record<string, unknown>) {
           if (table === schema.agentPullRequests) {
+            insertedPullRequestValues = values;
             return {
               onConflictDoNothing() {
                 return {
                   async returning() {
                     calls.push("pull_request.insert");
+                    if (opts.pullRequestInsertConflicts) return [];
                     return [
                       {
                         id: "pr-record-1",
@@ -132,7 +140,11 @@ function recordingPullRequestDb(opts: {
       return result;
     },
   } as unknown as DB;
-  return { database, calls };
+  return {
+    database,
+    calls,
+    insertedPullRequest: () => insertedPullRequestValues,
+  };
 }
 
 const openedPullRequest = {
@@ -150,6 +162,8 @@ const openedPullRequest = {
   authorLogin: "octocat",
   authorGithubId: 1,
   authorAvatarUrl: null,
+  state: "open" as const,
+  mergedAt: null,
 };
 
 test("resolveIncidentOrgBestEffort preserves ticket completion when org lookup fails", async () => {
@@ -248,6 +262,55 @@ test("an opened PR and its per-entry delivery receipt commit under the same inci
     "delivery_receipt.insert",
     "transaction.end",
   ]);
+});
+
+test("receipt-loss recovery records an already-merged pull request as terminal", async () => {
+  const mergedAt = new Date("2026-07-14T12:00:00Z");
+  const { database, insertedPullRequest } = recordingPullRequestDb({
+    incidentStatus: "open",
+    canonicalState: "merged",
+  });
+
+  const result = await recordOpenedAgentPullRequest(
+    {
+      ...openedPullRequest,
+      state: "merged",
+      mergedAt,
+    },
+    { database, recordCreatedMetric: async () => {} },
+  );
+
+  assert.equal(result.kind, "deliver");
+  assert.equal(insertedPullRequest()?.state, "merged");
+  assert.equal(insertedPullRequest()?.mergedAt, mergedAt);
+});
+
+test("terminal recovery commits its receipt while the webhook transition is pending", async () => {
+  const mergedAt = new Date("2026-07-14T12:00:00Z");
+  const { database, calls } = recordingPullRequestDb({
+    incidentStatus: "open",
+    canonicalState: "open",
+    pullRequestInsertConflicts: true,
+  });
+
+  const result = await recordOpenedAgentPullRequest(
+    {
+      ...openedPullRequest,
+      state: "merged",
+      mergedAt,
+      deliveryIdentity: {
+        deliveryId: "d4e5f60718293a4b",
+        inputHash: "proposal-sha256",
+        requestedBranchName: "ash/fix-api",
+      },
+    },
+    { database, recordCreatedMetric: async () => {} },
+  );
+
+  assert.equal(result.kind, "deliver");
+  assert.equal(result.newlyInserted, false);
+  assert.equal(calls.includes("pull_request.update"), false);
+  assert.ok(calls.includes("delivery_receipt.insert"));
 });
 
 test("a post-commit metric failure cannot unwind a recorded PR delivery", async () => {

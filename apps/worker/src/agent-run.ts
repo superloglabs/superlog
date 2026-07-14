@@ -273,7 +273,7 @@ export function createAgentRunLifecycle(db: DB) {
       currentState: AgentRunState | string;
       currentResumeCount: number;
       continuation?: boolean;
-    }): Promise<void> {
+    }): Promise<boolean> {
       assertAgentRunSourceState("resumeRunning", opts.currentState, [
         "awaiting_human",
         "awaiting_events",
@@ -282,11 +282,16 @@ export function createAgentRunLifecycle(db: DB) {
       const nextResumeCount = opts.continuation
         ? opts.currentResumeCount
         : opts.currentResumeCount + 1;
-      await repository.updateRun(opts.id, {
-        state: "running",
-        resumeCount: nextResumeCount,
-        startedAt: new Date(),
-      });
+      const resumed = await repository.updateRunIfState(
+        opts.id,
+        opts.currentState as AgentRunState,
+        {
+          state: "running",
+          resumeCount: nextResumeCount,
+          startedAt: new Date(),
+        },
+      );
+      if (!resumed) return false;
       await repository.insertEvent({
         agentRunId: opts.id,
         kind: "resumed",
@@ -299,6 +304,7 @@ export function createAgentRunLifecycle(db: DB) {
           : `resumed:${nextResumeCount}`,
         processed: true,
       });
+      return true;
     },
 
     /**

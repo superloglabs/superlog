@@ -409,6 +409,26 @@ test("resumeRunning increments resumeCount and emits a resumed event", async () 
   assertEventInsertedOnce(calls, "resumed");
 });
 
+test("resumeRunning cannot resurrect a run after a concurrent terminal transition", async () => {
+  const { db, calls } = recordingDb({ updateReturningRows: [] });
+  const lifecycle = createAgentRunLifecycle(db);
+
+  const resumed = await lifecycle.resumeRunning({
+    id: "inv-1",
+    currentState: "awaiting_events",
+    currentResumeCount: 1,
+    continuation: true,
+  });
+
+  assert.equal(resumed, false);
+  assert.equal(
+    calls.some(
+      (call) => call.op === "insert.onConflictDoNothing" && call.table === schema.incidentEvents,
+    ),
+    false,
+  );
+});
+
 test("startPrRetry re-enters running and clears the previous failure stamp", async () => {
   const { db, calls } = recordingDb();
   const lifecycle = createAgentRunLifecycle(db);

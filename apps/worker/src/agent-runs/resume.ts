@@ -7,17 +7,64 @@ import {
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
+import type { AgentRunnerBackend } from "../agent-runner-backend.js";
 import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
 import { logger } from "../logger.js";
 import { failAgentRun, isTransientError } from "./status.js";
 
 const agentRunLifecycle = createAgentRunLifecycle(db);
 
-async function loadUnprocessedHumanReplies(agentRunId: string) {
+export type PendingResumeInput = Pick<schema.IncidentEvent, "id" | "kind" | "summary" | "detail">;
+
+export async function resumeDurableAgentRun(opts: {
+  sessionId: string;
+  inputs: PendingResumeInput[];
+  runner: Pick<AgentRunnerBackend, "resume" | "steer">;
+  transitionToRunning(): Promise<boolean>;
+  markProcessed(ids: string[]): Promise<void>;
+}): Promise<"resumed" | "superseded"> {
+  // If both a human reply and incident context arrived while parked, resume
+  // with the human reply alone. The untouched context event is then steered
+  // by the ordinary running-sync path on its next pass, preserving the right
+  // framing for both inputs instead of presenting system context as human text.
+  const humanInputs = opts.inputs.filter((event) => event.kind === "human_reply");
+  const deliveryInputs = humanInputs.length > 0 ? humanInputs : opts.inputs;
+  const combined = deliveryInputs
+    .map((event) => event.summary ?? "")
+    .filter(Boolean)
+    .reverse()
+    .join("\n\n");
+  const onlyIncidentContext = deliveryInputs.every(
+    (event) => event.kind === "incident_context_changed",
+  );
+
+  if (onlyIncidentContext) {
+    await opts.runner.steer(opts.sessionId, combined || "New issues joined the incident.");
+  } else {
+    await opts.runner.resume(opts.sessionId, combined);
+  }
+
+  const resumed = await opts.transitionToRunning();
+  await opts.markProcessed(deliveryInputs.map((event) => event.id));
+  return resumed ? "resumed" : "superseded";
+}
+
+export function resumeInputEventKinds(
+  agentRun: Pick<schema.AgentRun, "state" | "result">,
+): Array<"human_reply" | "incident_context_changed"> {
+  if (agentRun.state === "awaiting_events" && agentRun.result?.waitReason === "external_cause") {
+    return ["human_reply", "incident_context_changed"];
+  }
+  return ["human_reply"];
+}
+
+async function loadUnprocessedResumeInputs(
+  agentRun: Pick<schema.AgentRun, "id" | "state" | "result">,
+) {
   return db.query.incidentEvents.findMany({
     where: and(
-      eq(schema.incidentEvents.agentRunId, agentRunId),
-      eq(schema.incidentEvents.kind, "human_reply"),
+      eq(schema.incidentEvents.agentRunId, agentRun.id),
+      inArray(schema.incidentEvents.kind, resumeInputEventKinds(agentRun)),
       isNull(schema.incidentEvents.processedAt),
     ),
     orderBy: [desc(schema.incidentEvents.createdAt)],
@@ -32,11 +79,14 @@ async function markProcessed(ids: string[]): Promise<void> {
     .where(inArray(schema.incidentEvents.id, ids));
 }
 
-// Resume a run from human input. Handles two source states:
+// Resume a run from pending input. Handles two source states:
 //   - `awaiting_human`: the agent paused to ask a question (the classic resume).
 //   - `resuming`: a previously-terminal run that an inbound message reactivated
 //     (talking to a finished investigation). The durable provider session is
 //     continued in place — no re-investigation.
+// An external-cause `awaiting_events` run additionally treats newly-arrived
+// incident context as resumable input, so fresh evidence wakes the parked
+// investigation without requiring an unrelated human reply.
 // When the provider session can't be resumed (never created, or reclaimed by
 // the provider after its TTL) we fall back to a cold-start follow-up run that
 // re-seeds the prior context, so the human's message is never silently lost.
@@ -54,17 +104,17 @@ export async function resumeAgentRunFromHumanInput(ctx: AgentRunContext): Promis
     // reply so the next tick reloads ctx with the repo the human named. A
     // `resuming` run always has a session (we only reactivate when one exists),
     // but guard with a cold-start fallback in case it doesn't.
-    const humanReplies = await loadUnprocessedHumanReplies(ctx.agentRun.id);
-    if (humanReplies.length === 0) return;
+    const resumeInputs = await loadUnprocessedResumeInputs(ctx.agentRun);
+    if (resumeInputs.length === 0) return;
     if (isContinuation) {
-      await coldStartFallback(ctx, humanReplies);
+      await coldStartFallback(ctx, resumeInputs);
       return;
     }
     await agentRunLifecycle.requeueAfterHumanReply({
       id: ctx.agentRun.id,
       currentState: ctx.agentRun.state,
     });
-    await markProcessed(humanReplies.map((event) => event.id));
+    await markProcessed(resumeInputs.map((event) => event.id));
     return;
   }
 
@@ -80,24 +130,36 @@ export async function resumeAgentRunFromHumanInput(ctx: AgentRunContext): Promis
     return;
   }
 
-  const humanReplies = await loadUnprocessedHumanReplies(ctx.agentRun.id);
-  if (humanReplies.length === 0) return;
-
-  const combined = humanReplies
-    .map((event) => event.summary ?? "")
-    .filter(Boolean)
-    .reverse()
-    .join("\n\n");
+  const resumeInputs = await loadUnprocessedResumeInputs(ctx.agentRun);
+  if (resumeInputs.length === 0) return;
 
   try {
     const runner = await getAgentRunnerBackend(ctx.agentRun.runtime);
-    await runner.resume(sessionId, combined);
-    await agentRunLifecycle.resumeRunning({
-      id: ctx.agentRun.id,
-      currentState: ctx.agentRun.state,
-      currentResumeCount: ctx.agentRun.resumeCount,
-      continuation: isContinuation,
+    const outcome = await resumeDurableAgentRun({
+      sessionId,
+      inputs: resumeInputs,
+      runner,
+      transitionToRunning: () =>
+        agentRunLifecycle.resumeRunning({
+          id: ctx.agentRun.id,
+          currentState: ctx.agentRun.state,
+          currentResumeCount: ctx.agentRun.resumeCount,
+          continuation: isContinuation,
+        }),
+      markProcessed,
     });
+    if (outcome === "superseded") {
+      logger.info(
+        {
+          scope: "agent_run",
+          agent_run_id: ctx.agentRun.id,
+          incident_id: ctx.incident.id,
+          session_id: sessionId,
+        },
+        "resume input reached the durable session after the run had already transitioned",
+      );
+      return;
+    }
     logger.info(
       {
         scope: "agent_run",
@@ -106,11 +168,10 @@ export async function resumeAgentRunFromHumanInput(ctx: AgentRunContext): Promis
         session_id: sessionId,
         continuation: isContinuation,
         resume_count: ctx.agentRun.resumeCount + 1,
-        reply_count: humanReplies.length,
+        input_count: resumeInputs.length,
       },
-      "agent run resumed from human input",
+      "agent run resumed from pending input",
     );
-    await markProcessed(humanReplies.map((event) => event.id));
   } catch (err) {
     if (isTransientError(err)) {
       logger.error(
@@ -145,7 +206,7 @@ export async function resumeAgentRunFromHumanInput(ctx: AgentRunContext): Promis
         },
         "could not resume durable session; falling back to a cold-start follow-up",
       );
-      await coldStartFallback(ctx, humanReplies);
+      await coldStartFallback(ctx, resumeInputs);
       return;
     }
     await failAgentRun(ctx, "resume_failed", "Failed to resume agent run.", { err });
@@ -157,14 +218,14 @@ export async function resumeAgentRunFromHumanInput(ctx: AgentRunContext): Promis
 // message, so the conversation continues even across a lost session.
 async function coldStartFallback(
   ctx: AgentRunContext,
-  humanReplies: Awaited<ReturnType<typeof loadUnprocessedHumanReplies>>,
+  resumeInputs: Awaited<ReturnType<typeof loadUnprocessedResumeInputs>>,
 ): Promise<void> {
-  const combined = humanReplies
+  const combined = resumeInputs
     .map((event) => event.summary ?? "")
     .filter(Boolean)
     .reverse()
     .join("\n\n");
-  const first = humanReplies[humanReplies.length - 1];
+  const first = resumeInputs[resumeInputs.length - 1];
   const origin = (first?.detail as { origin?: AgentRunFollowUpInteraction } | null)?.origin ?? null;
 
   await agentRunLifecycle.fail({
@@ -204,5 +265,5 @@ async function coldStartFallback(
     );
   }
 
-  await markProcessed(humanReplies.map((event) => event.id));
+  await markProcessed(resumeInputs.map((event) => event.id));
 }

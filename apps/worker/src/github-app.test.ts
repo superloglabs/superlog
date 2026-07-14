@@ -16,6 +16,7 @@ import {
   isGitPushBranchCollision,
   isMissingRemoteBranchFailure,
   isRetryableGitPushFailure,
+  openedAgentPullRequest,
   recoverPullRequestDelivery,
   redactGitSecrets,
 } from "./github-app.js";
@@ -253,6 +254,10 @@ test("delivery recovery finds a merged PR even after its branch was deleted", as
   if (recovered?.kind !== "pull_request") return;
   assert.equal(recovered.pullRequest.prNumber, 42);
   assert.equal(recovered.pullRequest.state, "closed");
+
+  const opened = openedAgentPullRequest(recovered.pullRequest);
+  assert.equal(opened.state, "merged");
+  assert.deepEqual(opened.mergedAt, new Date("2026-07-14T12:00:00Z"));
 });
 
 test("delivery recovery resumes a pushed branch that has no PR yet", async () => {

@@ -476,6 +476,8 @@ export async function completeWithPullRequest(
         authorLogin: opened.authorLogin,
         authorGithubId: opened.authorGithubId,
         authorAvatarUrl: opened.authorAvatarUrl,
+        state: opened.state,
+        mergedAt: opened.mergedAt,
         deliveryIdentity,
       }),
   });
@@ -1263,6 +1265,8 @@ export async function deliverProposedPullRequest(
         authorLogin: opened.authorLogin,
         authorGithubId: opened.authorGithubId,
         authorAvatarUrl: opened.authorAvatarUrl,
+        state: opened.state,
+        mergedAt: opened.mergedAt,
         ...(deliveryIdentity ? { deliveryIdentity } : {}),
       }),
   });

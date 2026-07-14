@@ -325,9 +325,13 @@ export function partialPullRequestRetryNudgePrompt(pendingRepoFullNames: string[
 
 export function shouldParkCompatibilityPullRequests(args: {
   openPullRequestCount: number;
-  hasPartialPullRequestDelivery: boolean;
+  blockingPullRequestDeliveryKind:
+    | "retry_required"
+    | "incident_not_open"
+    | "manual_reconciliation_required"
+    | null;
 }): boolean {
-  return args.openPullRequestCount > 0 && !args.hasPartialPullRequestDelivery;
+  return args.openPullRequestCount > 0 && args.blockingPullRequestDeliveryKind === null;
 }
 
 export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
@@ -872,7 +876,9 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       if (
         shouldParkCompatibilityPullRequests({
           openPullRequestCount: openPrs.length,
-          hasPartialPullRequestDelivery: Boolean(snapshot.partialPullRequestDelivery),
+          blockingPullRequestDeliveryKind:
+            snapshot.blockingPullRequestDelivery?.kind ??
+            (snapshot.partialPullRequestDelivery ? "retry_required" : null),
         })
       ) {
         const parkedResult = reconcileDeliveredPullRequests(

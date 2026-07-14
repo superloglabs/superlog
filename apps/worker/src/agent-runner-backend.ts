@@ -199,6 +199,16 @@ export type AgentRunnerSnapshot = {
     }>;
     pendingRepoFullNames: string[];
   } | null;
+  // Present for every incomplete or safety-blocked PR delivery. Optional so
+  // runners without the outcome toolset remain source-compatible.
+  blockingPullRequestDelivery?: {
+    kind: "retry_required" | "incident_not_open" | "manual_reconciliation_required";
+    delivered: Array<{
+      repoFullName: string;
+      branchName: string;
+      url: string | null;
+    }>;
+  } | null;
   // Custom tools the runtime had no handler for. The collector ack's them
   // with an error result so the session can leave requires_action; sync.ts
   // then fails the run with `unknown_custom_tool` so we can audit them later.
