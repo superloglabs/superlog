@@ -1,11 +1,9 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
-import {
-  parseVercelLogDrainBody,
-  vercelLogsToOtlp,
-} from "./vercel-log-drain.js";
+import { stampIssueFingerprints } from "./ingest-fingerprints.js";
 import { otlpLogsToRows } from "./otlp-clickhouse.js";
+import { parseVercelLogDrainBody, vercelLogsToOtlp } from "./vercel-log-drain.js";
 
 const vercelLogs = [
   {
@@ -72,11 +70,56 @@ test("vercelLogsToOtlp maps Vercel logs to OTLP JSON logs", () => {
 test("mapped Vercel logs become ClickHouse log rows with service and tenant attributes", () => {
   const rows = otlpLogsToRows(vercelLogsToOtlp(vercelLogs), "superlog-project");
   assert.equal(rows.length, 1);
-  const row = rows[0]!;
+  const [row] = rows;
+  assert.ok(row);
   assert.equal(row.ServiceName, "my-app");
   assert.equal(row.Body, "API request failed");
   assert.equal(row.ResourceAttributes["superlog.project_id"], "superlog-project");
   assert.equal(row.ResourceAttributes["service.name"], "my-app");
   assert.equal(row.ResourceAttributes["vercel.project_id"], "gdufoJxB6b9b1fEqr1jUtFkyavUU");
   assert.equal(row.LogAttributes["vercel.deployment_id"], "dpl_233NRGRjVZX1caZrXWtz5g1TAksD");
+});
+
+test("Vercel runtime request envelopes receive stable fingerprints through OTLP", () => {
+  const envelope = (id: string, path: string, duration: number) =>
+    [
+      `START RequestId: ${id}`,
+      `[GET] ${path} status=503`,
+      `END RequestId: ${id}`,
+      `REPORT RequestId: ${id} Duration: ${duration} ms Billed Duration: ${duration} ms Memory Size: 2048 MB Max Memory Used: 701 MB`,
+    ].join("\n");
+  const payload = vercelLogsToOtlp([
+    {
+      ...vercelLogs[0],
+      message: envelope("sin1::request-a", "/collections/summer", 25_880),
+    },
+    {
+      ...vercelLogs[0],
+      message: envelope("gru1::request-b", "/collections/kids", 26_703),
+    },
+  ]);
+
+  const stamped = stampIssueFingerprints({
+    path: "/v1/logs",
+    contentType: "application/json",
+    body: Buffer.from(JSON.stringify(payload)),
+  });
+  const output = JSON.parse(stamped.body.toString("utf8"));
+  const fingerprints = output.resourceLogs.map(
+    (resourceLog: {
+      scopeLogs: Array<{
+        logRecords: Array<{
+          attributes: Array<{ key: string; value?: { stringValue?: string } }>;
+        }>;
+      }>;
+    }) =>
+      resourceLog.scopeLogs[0]?.logRecords[0]?.attributes.find(
+        (attribute) => attribute.key === "superlog.issue_fingerprint",
+      )?.value?.stringValue,
+  );
+
+  assert.equal(stamped.stampedCount, 2);
+  assert.equal(typeof fingerprints[0], "string");
+  assert.equal(typeof fingerprints[1], "string");
+  assert.equal(fingerprints[0], fingerprints[1]);
 });

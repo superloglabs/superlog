@@ -126,10 +126,13 @@ function unwrapAnthropicErrorMessage(raw: string): string {
   // SDK errors land as `<status> <json>`; pull `error.message` if present so we
   // hash the human-readable failure, not the JSON wrapper.
   const m = raw.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-  return m && m[1] ? m[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\") : raw;
+  return m?.[1] ? m[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\") : raw;
 }
 
 export function normalizeMessage(body: string): string {
+  const vercelRuntimeRequest = normalizeVercelRuntimeRequest(body);
+  if (vercelRuntimeRequest) return vercelRuntimeRequest;
+
   let s = body;
   s = s.replace(/https?:\/\/\S+/gi, "<url>");
   s = collapseRequestPaths(s);
@@ -144,6 +147,22 @@ export function normalizeMessage(body: string): string {
   s = s.replace(/\b\d+\b/g, "<n>");
   s = s.replace(/\s+/g, " ").trim().toLowerCase();
   return s;
+}
+
+// Vercel log drains can emit one four-line runtime envelope per request. Its
+// request ID, path, timings, and memory figures are occurrence metadata, not
+// error identity. Keep the match anchored and require the same request ID on
+// START/END/REPORT so application output is never mistaken for the envelope.
+const VERCEL_RUNTIME_REQUEST_ENVELOPE =
+  /^\s*START RequestId:\s*(\S+)\s*\r?\n\[([A-Z]+)\]\s+\S+\s+status=(\d{3})\s*\r?\nEND RequestId:\s*\1\s*\r?\nREPORT RequestId:\s*\1(?:\s+[^\r\n]*)?\s*$/i;
+
+function normalizeVercelRuntimeRequest(body: string): string | null {
+  const match = body.match(VERCEL_RUNTIME_REQUEST_ENVELOPE);
+  const method = match?.[2];
+  const status = match?.[3];
+  return method && status
+    ? `vercel runtime request method=${method.toLowerCase()} status=${status}`
+    : null;
 }
 
 function parseFrames(stacktrace: string): Frame[] {
@@ -162,7 +181,6 @@ function parseFrames(stacktrace: string): Frame[] {
     const bare = body.match(/^(.+?):\d+:\d+$/);
     if (bare) {
       out.push({ fn: null, path: bare[1] ?? "" });
-      continue;
     }
   }
   return out;

@@ -48,6 +48,125 @@ test("messageBucketFor still separates genuinely different messages", () => {
   );
 });
 
+const VERCEL_LOG = {
+  service: "storefront",
+  severity: "ERROR",
+  exceptionType: "ERROR",
+  stacktrace: null,
+};
+
+function vercelRuntimeEnvelope(input: {
+  id: string;
+  method?: string;
+  path?: string;
+  status?: number;
+  report?: string;
+}): string {
+  const method = input.method ?? "GET";
+  const path = input.path ?? "/collections/summer";
+  const status = input.status ?? 503;
+  const report =
+    input.report ??
+    "Duration: 25880 ms Billed Duration: 25880 ms Memory Size: 2048 MB Max Memory Used: 673 MB";
+  return [
+    `START RequestId: ${input.id}`,
+    `[${method}] ${path} status=${status}`,
+    `END RequestId: ${input.id}`,
+    `REPORT RequestId: ${input.id} ${report}`,
+  ].join("\n");
+}
+
+test("fingerprintLog groups equivalent Vercel runtime request envelopes", () => {
+  const first = fingerprintLog({
+    ...VERCEL_LOG,
+    body: vercelRuntimeEnvelope({
+      id: "sin1::wgjjq-1783721543178-bb29a25d147a",
+      path: "/collections/summer?direction=next&filter.p.product_type=Topical",
+    }),
+  });
+  const second = fingerprintLog({
+    ...VERCEL_LOG,
+    body: vercelRuntimeEnvelope({
+      id: "gru1::sv2np-1783721551971-8ab18e6846a0",
+      path: "/collections/kids?filter.p.product_type=Shampoo",
+      report:
+        "Duration: 26703 ms Billed Duration: 26703 ms Memory Size: 2048 MB Max Memory Used: 701 MB",
+    }),
+  });
+
+  assert.equal(first.hash, second.hash);
+});
+
+test("fingerprintLog separates Vercel runtime request envelopes by status", () => {
+  const unavailable = fingerprintLog({
+    ...VERCEL_LOG,
+    body: vercelRuntimeEnvelope({
+      id: "sin1::wgjjq-1783721543178-bb29a25d147a",
+      status: 503,
+    }),
+  });
+  const internalError = fingerprintLog({
+    ...VERCEL_LOG,
+    body: vercelRuntimeEnvelope({
+      id: "gru1::sv2np-1783721551971-8ab18e6846a0",
+      status: 500,
+    }),
+  });
+
+  assert.notEqual(unavailable.hash, internalError.hash);
+});
+
+test("fingerprintLog accepts scoped and opaque Vercel request IDs", () => {
+  const scoped = fingerprintLog({
+    ...VERCEL_LOG,
+    body: vercelRuntimeEnvelope({ id: "sin1::wgjjq-1783721543178-bb29a25d147a" }),
+  });
+  const opaque = fingerprintLog({
+    ...VERCEL_LOG,
+    body: vercelRuntimeEnvelope({ id: "3f0f7fc2-c088-4e5f-a829-14d3fd5bf8a1" }).replaceAll(
+      "\n",
+      "\r\n",
+    ),
+  });
+
+  assert.equal(scoped.hash, opaque.hash);
+});
+
+test("fingerprintLog separates Vercel runtime request envelopes by method", () => {
+  const get = fingerprintLog({
+    ...VERCEL_LOG,
+    body: vercelRuntimeEnvelope({ id: "sin1::request-a", method: "GET" }),
+  });
+  const post = fingerprintLog({
+    ...VERCEL_LOG,
+    body: vercelRuntimeEnvelope({ id: "sin1::request-b", method: "POST" }),
+  });
+
+  assert.notEqual(get.hash, post.hash);
+});
+
+test("fingerprintLog preserves application output inside a runtime invocation", () => {
+  const requestId = "sin1::request-a";
+  const withApplicationOutput = (output: string) =>
+    [
+      `START RequestId: ${requestId}`,
+      "[GET] /collections/summer status=503",
+      output,
+      `END RequestId: ${requestId}`,
+      `REPORT RequestId: ${requestId} Duration: 25880 ms`,
+    ].join("\n");
+  const timeout = fingerprintLog({
+    ...VERCEL_LOG,
+    body: withApplicationOutput("database connection timed out"),
+  });
+  const invalidResponse = fingerprintLog({
+    ...VERCEL_LOG,
+    body: withApplicationOutput("upstream returned invalid JSON"),
+  });
+
+  assert.notEqual(timeout.hash, invalidResponse.hash);
+});
+
 // Postgres text and jsonb columns reject the NUL byte (0x00) — it raises
 // `22021 invalid byte sequence for encoding "UTF8": 0x00`. Telemetry can carry
 // a raw NUL in a message or stack frame; the fingerprint outputs feed straight
