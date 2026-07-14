@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { Issue } from "../api.ts";
+import type { IncidentEvent, Issue } from "../api.ts";
 import { Btn, Chip } from "../design/ui.tsx";
 
 export type IssueDetailViewProps = {
@@ -10,6 +10,7 @@ export type IssueDetailViewProps = {
   onOpenEvidence?: () => void;
   evidenceLabel?: string;
   silenceUpdating?: boolean;
+  timelineEvents?: IncidentEvent[];
   linkedIncident?: ReactNode;
   feedbackAction?: ReactNode;
 };
@@ -22,6 +23,7 @@ export function IssueDetailView({
   onOpenEvidence,
   evidenceLabel = "Open event",
   silenceUpdating = false,
+  timelineEvents = [],
   linkedIncident,
   feedbackAction,
 }: IssueDetailViewProps) {
@@ -144,6 +146,8 @@ export function IssueDetailView({
               </div>
             </section>
 
+            <IssueActivityTimeline issueId={issue.id} events={timelineEvents} />
+
             <section className="border-t border-border pt-7">
               <SectionLabel>Latest evidence</SectionLabel>
               <div className="mt-4 overflow-hidden rounded-lg border border-border bg-surface">
@@ -181,6 +185,51 @@ export function IssueDetailView({
         </main>
       </div>
     </div>
+  );
+}
+
+function IssueActivityTimeline({ issueId, events }: { issueId: string; events: IncidentEvent[] }) {
+  const items = events.flatMap((event) => {
+    const presentation =
+      event.kind === "issue_silenced"
+        ? { status: "Silenced", tone: "neutral" as const }
+        : event.kind === "issue_observed"
+          ? { status: "Under observation", tone: "warning" as const }
+          : event.kind === "issue_resolved"
+            ? { status: "Resolved", tone: "success" as const }
+            : null;
+    if (!presentation || event.detail?.issueId !== issueId) return [];
+    const reason = typeof event.detail.reason === "string" ? event.detail.reason.trim() : "";
+    const evidence = typeof event.detail.evidence === "string" ? event.detail.evidence.trim() : "";
+    return [{ event, reason, evidence, ...presentation }];
+  });
+  if (items.length === 0) return null;
+
+  return (
+    <section className="border-t border-border pt-7">
+      <SectionLabel>Activity</SectionLabel>
+      <div className="relative mt-5 space-y-5 pl-6">
+        {items.length > 1 && (
+          <div className="absolute bottom-2 left-[5px] top-2 w-px bg-border" aria-hidden="true" />
+        )}
+        {items.map(({ event, reason, evidence, status, tone }) => (
+          <article key={event.id} className="relative">
+            <span
+              className="absolute -left-6 top-1.5 h-2.5 w-2.5 rounded-full border-2 border-border-strong bg-bg"
+              aria-hidden="true"
+            />
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Chip tone={tone}>{status}</Chip>
+              <time className="text-[11px] text-subtle" dateTime={event.createdAt}>
+                {formatTimestamp(event.createdAt)}
+              </time>
+            </div>
+            {reason && <p className="mt-2 text-[13px] leading-5 text-fg">{reason}</p>}
+            {evidence && <p className="mt-1.5 text-[12px] leading-5 text-muted">{evidence}</p>}
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 

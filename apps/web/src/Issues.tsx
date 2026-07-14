@@ -414,6 +414,7 @@ function IssueDetailPage({
   onViewIncident: (incidentId: string) => void;
 }) {
   const q = useIssue(projectId, issueId);
+  const activity = useIssueAgentRun(projectId, issueId);
   const silence = useSilenceIssue(projectId);
   const unsilence = useUnsilenceIssue(projectId);
   const [eventTarget, setEventTarget] = useState<EventTarget>(null);
@@ -443,6 +444,7 @@ function IssueDetailPage({
         silenceUpdating={toggleSilence.isPending}
         onOpenEvidence={latestEvent ? () => setEventTarget(latestEvent) : undefined}
         evidenceLabel={latestEvent?.kind === "trace" ? "Open latest trace" : "Open latest log"}
+        timelineEvents={activity.data?.events ?? []}
         linkedIncident={
           <IssueIncidentLink
             projectId={projectId}
