@@ -151,18 +151,102 @@ export function normalizeMessage(body: string): string {
 
 // Vercel log drains can emit one four-line runtime envelope per request. Its
 // request ID, path, timings, and memory figures are occurrence metadata, not
-// error identity. Keep the match anchored and require the same request ID on
-// START/END/REPORT so application output is never mistaken for the envelope.
-const VERCEL_RUNTIME_REQUEST_ENVELOPE =
-  /^\s*START RequestId:\s*(\S+)\s*\r?\n\[([A-Z]+)\]\s+\S+\s+status=(\d{3})\s*\r?\nEND RequestId:\s*\1\s*\r?\nREPORT RequestId:\s*\1(?:\s+[^\r\n]*)?\s*$/i;
+// error identity. Recognize exactly four lines and require the same request ID
+// on START/END/REPORT so application output is never mistaken for the envelope.
+const START_REQUEST_ID = "START RequestId:";
+const END_REQUEST_ID = "END RequestId:";
+const REPORT_REQUEST_ID = "REPORT RequestId:";
 
 function normalizeVercelRuntimeRequest(body: string): string | null {
-  const match = body.match(VERCEL_RUNTIME_REQUEST_ENVELOPE);
-  const method = match?.[2];
-  const status = match?.[3];
-  return method && status
-    ? `vercel runtime request method=${method.toLowerCase()} status=${status}`
+  const lines = body
+    .trim()
+    .split("\n")
+    .map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+  if (lines.length !== 4) return null;
+
+  const [startLine, requestLine, endLine, reportLine] = lines;
+  if (!startLine || !requestLine || !endLine || !reportLine) return null;
+
+  const requestId = requestIdFromLine(startLine, START_REQUEST_ID);
+  if (!requestId || requestIdFromLine(endLine, END_REQUEST_ID) !== requestId) return null;
+  if (reportRequestId(reportLine) !== requestId) return null;
+
+  const request = parseVercelRequestLine(requestLine);
+  return request
+    ? `vercel runtime request method=${request.method.toLowerCase()} status=${request.status}`
     : null;
+}
+
+function requestIdFromLine(line: string, prefix: string): string | null {
+  if (!line.startsWith(prefix)) return null;
+  const requestId = line.slice(prefix.length).trim();
+  return requestId && !hasWhitespace(requestId) ? requestId : null;
+}
+
+function reportRequestId(line: string): string | null {
+  if (!line.startsWith(REPORT_REQUEST_ID)) return null;
+  const rest = line.slice(REPORT_REQUEST_ID.length).trimStart();
+  if (!rest) return null;
+  const boundary = firstWhitespaceIndex(rest);
+  return boundary === -1 ? rest : rest.slice(0, boundary);
+}
+
+function parseVercelRequestLine(line: string): { method: string; status: string } | null {
+  if (!line.startsWith("[")) return null;
+  const methodEnd = line.indexOf("]");
+  if (methodEnd <= 1) return null;
+
+  const method = line.slice(1, methodEnd);
+  if (!isAsciiLetters(method) || !isWhitespace(line[methodEnd + 1])) return null;
+
+  let pathStart = methodEnd + 1;
+  while (isWhitespace(line[pathStart])) pathStart += 1;
+
+  const statusStart = line.lastIndexOf("status=");
+  if (statusStart <= pathStart || !isWhitespace(line[statusStart - 1])) return null;
+
+  let pathEnd = statusStart;
+  while (pathEnd > pathStart && isWhitespace(line[pathEnd - 1])) pathEnd -= 1;
+  const path = line.slice(pathStart, pathEnd);
+  const status = line.slice(statusStart + "status=".length).trim();
+  if (!path || hasWhitespace(path) || !isThreeDigits(status)) return null;
+
+  return { method, status };
+}
+
+function firstWhitespaceIndex(value: string): number {
+  for (let index = 0; index < value.length; index += 1) {
+    if (isWhitespace(value[index])) return index;
+  }
+  return -1;
+}
+
+function hasWhitespace(value: string): boolean {
+  return firstWhitespaceIndex(value) !== -1;
+}
+
+function isWhitespace(value: string | undefined): boolean {
+  return value !== undefined && value.trim() === "";
+}
+
+function isAsciiLetters(value: string): boolean {
+  if (!value) return false;
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    const isUppercase = code >= 65 && code <= 90;
+    const isLowercase = code >= 97 && code <= 122;
+    if (!isUppercase && !isLowercase) return false;
+  }
+  return true;
+}
+
+function isThreeDigits(value: string): boolean {
+  if (value.length !== 3) return false;
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    if (code < 48 || code > 57) return false;
+  }
+  return true;
 }
 
 function parseFrames(stacktrace: string): Frame[] {
