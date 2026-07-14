@@ -52,6 +52,9 @@
     "test:agent-pr-sweep": "tsx --test src/agent-pr-sweep.test.ts",
     "test:notion-integration": "tsx --test src/notion-integration.test.ts",
     "test:autorecovery-repository": "tsx --test src/autorecovery/repository.integration.test.ts",
+    "test:agent-runs-domain": "tsx --test src/agent-runs/domain.test.ts",
+    "test:digest-policy": "tsx --test src/digest/policy.test.ts",
+    "test:incident-result-policy": "tsx --test src/incident-result-policy.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
