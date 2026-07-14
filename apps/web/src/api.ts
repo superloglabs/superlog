@@ -75,7 +75,7 @@ function clearPendingSignupSource() {
   }
 }
 
-function useFetcher() {
+export function useFetcher() {
   return async function fetcher<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers: Record<string, string> = {
       ...((init.headers as Record<string, string> | undefined) ?? {}),

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   type Me,
+  useFetcher,
   useMe,
   useOrgProjects,
   useSetActiveProject,
@@ -88,6 +89,7 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
   const projects = useOrgProjects();
   const setActiveProject = useSetActiveProject();
   const setFavoriteProject = useSetFavoriteProject();
+  const fetcher = useFetcher();
   const qc = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -129,6 +131,11 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
     [activeOrgSlug, location.hash, location.pathname, location.search, navigate],
   );
 
+  // Drilling into the *current* org's project list. This only runs for a
+  // same-org click (switchOrgAndDrill sets pendingOrgSwitch only then), so the
+  // active org and its projects are already loaded and the dropdown stays
+  // mounted. A different-org switch is handled entirely in switchOrgAndDrill
+  // because that path tears this component down (see below).
   useEffect(() => {
     if (!pendingOrgSwitch) return;
     if (activeOrgId !== pendingOrgSwitch.targetOrgId) return;
@@ -153,13 +160,46 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
   ]);
 
   const switchOrgAndDrill = async (orgId: string) => {
-    setPendingOrgSwitch({ targetOrgId: orgId });
-    if (activeOrgId === orgId) return;
+    // Clicking the current org just drills into its project list — no session
+    // change, so the dropdown stays mounted and the effect above takes over.
+    if (activeOrgId === orgId) {
+      setPendingOrgSwitch({ targetOrgId: orgId });
+      return;
+    }
+    // Switching to a *different* org flips Better Auth's active organization,
+    // which trips ActiveOrgSync's queryClient.clear() and unmounts this
+    // dropdown. We must not defer the navigation to an effect — it would be torn
+    // down before it runs, leaving the stale (old-org) URL to win route
+    // reconciliation and revert the switch. Instead do the whole switch here in
+    // the async handler: this promise keeps running past the unmount and
+    // navigate() still updates the router. Read the new org's active project
+    // straight from the server (uncached, so it's unaffected by clear()'s
+    // timing) and land on it; the new URL then drives the app into the new org.
     await authClient.organization.setActive({ organizationId: orgId });
-    await Promise.all([
-      qc.invalidateQueries({ queryKey: ["me"] }),
-      qc.invalidateQueries({ queryKey: ["org-projects"] }),
-    ]);
+    let next: Me;
+    try {
+      next = await fetcher<Me>("/api/me");
+    } catch {
+      // Best effort: if /api/me fails right after the switch, bail rather than
+      // navigate somewhere wrong. The session is already on the new org, so a
+      // manual reload lands correctly.
+      onClose();
+      return;
+    }
+    if (next.org && next.project) {
+      navigate(
+        canonicalProjectLocation(
+          { orgSlug: next.org.slug, projectSlug: next.project.slug },
+          {
+            pathname: appPathFromProjectRoute(location.pathname),
+            search: location.search,
+            hash: location.hash,
+          },
+        ),
+        { replace: true },
+      );
+    }
+    onClose();
   };
 
   const manageOrg = async (orgId: string) => {
