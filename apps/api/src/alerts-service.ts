@@ -420,14 +420,19 @@ export type AlertPreviewSeries = {
 // The time series the alert evaluates, bucketed at the alert's own window so
 // each point is exactly one evaluation ("count over the window" / "metric agg
 // over the window"). Used by the preview graph to show the signal against the
-// threshold line over the recent past. Collapses groups to a single overview
-// series (groupBy is ignored here — per-group preview would need a series each).
+// threshold line over the recent past.
+//
+// By default it collapses all groups into a single overview series. Pass a
+// non-empty `groupKey` (for a per-group alert) to plot only that group's
+// signal — the incident card uses this so it shows the exact group that
+// breached, not the aggregate across every group.
 const PREVIEW_BUCKETS = 24;
 
 export async function previewAlertSeries(
   ch: ClickHouseClient,
   projectId: string,
   input: AlertInput,
+  groupKey?: string,
 ): Promise<AlertPreviewSeries> {
   validateAlertInput(input);
   const windowMinutes = input.windowMinutes ?? 5;
@@ -436,8 +441,15 @@ export async function previewAlertSeries(
   const range = { since, until: new Date(now).toISOString() };
   const step = { n: windowMinutes, unit: "MINUTE" as const };
   const filter = alertInputToFilter(input);
-  const label =
+  // Only scope to a single group when the alert actually groups and a group was
+  // named; otherwise fall back to the aggregate overview.
+  const scopedGroup = groupKey && input.groupBy ? groupKey : undefined;
+  const groupBy = scopedGroup ? input.groupBy || undefined : undefined;
+  const baseLabel =
     input.source === "metric" ? (input.metricName ?? "metric") : `${input.source} count`;
+  const label = scopedGroup ? `${baseLabel} · ${scopedGroup}` : baseLabel;
+  const keep = (rowGroup: string | null | undefined) =>
+    scopedGroup === undefined || (rowGroup ?? "") === scopedGroup;
 
   const byBucket = new Map<string, number>();
   if (input.source === "metric") {
@@ -447,11 +459,14 @@ export async function previewAlertSeries(
         projectId,
         input.metricName,
         { range, service: filter.service, resourceAttrs: filter.resourceAttrs },
-        undefined,
+        groupBy,
         step,
         input.aggregation as MetricAggregation,
       );
-      for (const r of rows) byBucket.set(r.bucket, (byBucket.get(r.bucket) ?? 0) + r.value);
+      for (const r of rows) {
+        if (!keep(r.group)) continue;
+        byBucket.set(r.bucket, (byBucket.get(r.bucket) ?? 0) + r.value);
+      }
     }
   } else {
     const rows = await countSeries(
@@ -467,10 +482,13 @@ export async function previewAlertSeries(
         statusCode: filter.statusCode,
         minDurationMs: filter.minDurationMs,
       },
-      undefined,
+      groupBy,
       step,
     );
-    for (const r of rows) byBucket.set(r.bucket, (byBucket.get(r.bucket) ?? 0) + r.count);
+    for (const r of rows) {
+      if (!keep(r.group)) continue;
+      byBucket.set(r.bucket, (byBucket.get(r.bucket) ?? 0) + r.count);
+    }
   }
 
   const rows: AlertSeriesRow[] = [...byBucket.entries()]
@@ -527,12 +545,13 @@ export async function previewAlertSeriesById(
   ch: ClickHouseClient,
   projectId: string,
   id: string,
+  groupKey?: string,
 ): Promise<AlertPreviewSeries | null> {
   const alert = await db.query.alerts.findFirst({
     where: and(eq(schema.alerts.id, id), eq(schema.alerts.projectId, projectId)),
   });
   if (!alert) return null;
-  return previewAlertSeries(ch, projectId, alertRecordToInput(alert));
+  return previewAlertSeries(ch, projectId, alertRecordToInput(alert), groupKey);
 }
 
 export async function listAlertEpisodes(

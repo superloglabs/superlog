@@ -59,13 +59,18 @@ export function useAlertEpisodes(projectId: string | undefined, id: string | und
 export function useAlertSeries(
   projectId: string | undefined,
   alertId: string | undefined,
-  options: { enabled?: boolean } = {},
+  options: { enabled?: boolean; groupKey?: string | null } = {},
 ) {
   const fetcher = useFetcher();
+  const groupKey = options.groupKey || undefined;
   return useQuery({
-    queryKey: ["alert-series", projectId, alertId],
-    queryFn: () =>
-      fetcher<AlertPreviewSeries>(`/api/projects/${projectId}/alerts/${alertId}/series`),
+    queryKey: ["alert-series", projectId, alertId, groupKey ?? null],
+    queryFn: () => {
+      const qs = groupKey ? `?groupKey=${encodeURIComponent(groupKey)}` : "";
+      return fetcher<AlertPreviewSeries>(
+        `/api/projects/${projectId}/alerts/${alertId}/series${qs}`,
+      );
+    },
     enabled: !!projectId && !!alertId && options.enabled !== false,
   });
 }

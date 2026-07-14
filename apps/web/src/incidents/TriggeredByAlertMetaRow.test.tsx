@@ -16,6 +16,7 @@ function episode(overrides: Partial<IncidentAlertEpisode> = {}): IncidentAlertEp
     endedAt: null,
     peakObservedValue: 812,
     seq: 1,
+    issueId: null,
     ...overrides,
   };
 }
