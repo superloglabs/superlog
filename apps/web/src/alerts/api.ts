@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { alertSeriesPath } from "./series-path.ts";
 import type {
   Alert,
   AlertCreateBody,
@@ -62,15 +63,10 @@ export function useAlertSeries(
   options: { enabled?: boolean; groupKey?: string | null } = {},
 ) {
   const fetcher = useFetcher();
-  const groupKey = options.groupKey || undefined;
+  const groupKey = options.groupKey ?? undefined;
   return useQuery({
     queryKey: ["alert-series", projectId, alertId, groupKey ?? null],
-    queryFn: () => {
-      const qs = groupKey ? `?groupKey=${encodeURIComponent(groupKey)}` : "";
-      return fetcher<AlertPreviewSeries>(
-        `/api/projects/${projectId}/alerts/${alertId}/series${qs}`,
-      );
-    },
+    queryFn: () => fetcher<AlertPreviewSeries>(alertSeriesPath(projectId, alertId, groupKey)),
     enabled: !!projectId && !!alertId && options.enabled !== false,
   });
 }

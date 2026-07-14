@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import type { ClickHouseClient } from "@clickhouse/client";
 import { HTTPException } from "hono/http-exception";
 
 // alerts-service.ts transitively imports the db client, which throws at import
@@ -7,8 +8,13 @@ import { HTTPException } from "hono/http-exception";
 // (the postgres client connects lazily, so these pure-function tests never open
 // a socket). Same dynamic-import pattern as incidents/detail.test.ts.
 process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
-const { validateAlertInput, alertInputToFilter, summarizeEvaluation, alertRecordToInput } =
-  await import("./alerts-service.js");
+const {
+  validateAlertInput,
+  alertInputToFilter,
+  summarizeEvaluation,
+  alertRecordToInput,
+  previewAlertSeries,
+} = await import("./alerts-service.js");
 
 type AlertInput = Parameters<typeof validateAlertInput>[0];
 
@@ -241,4 +247,42 @@ test("alertRecordToInput passes through the stored default empty jsonb filter", 
   assert.deepEqual(input.filter, {});
   assert.equal(input.source, "logs");
   assert.equal(input.groupMode, "per_group");
+});
+
+test("previewAlertSeries scopes an explicitly empty per-group key", async () => {
+  let query = "";
+  let params: Record<string, unknown> | undefined;
+  const ch = {
+    async query(input: { query: string; query_params?: Record<string, unknown> }) {
+      query = input.query;
+      params = input.query_params;
+      return {
+        async json() {
+          return [
+            { bucket: "2026-07-14 10:00:00", group_key: "", c: 2 },
+            { bucket: "2026-07-14 10:00:00", group_key: "checkout", c: 7 },
+          ];
+        },
+      };
+    },
+  } as unknown as ClickHouseClient;
+
+  const result = await previewAlertSeries(
+    ch,
+    "project-1",
+    baseInput({
+      source: "logs",
+      groupMode: "per_group",
+      groupBy: "attr:team",
+      windowMinutes: 5,
+    }),
+    "",
+  );
+
+  assert.match(query, /LogAttributes\[\{groupKey:String\}\]/);
+  assert.equal(params?.groupKey, "team");
+  assert.deepEqual(
+    result.rows.map((row) => row.value),
+    [2],
+  );
 });

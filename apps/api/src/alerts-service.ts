@@ -423,9 +423,9 @@ export type AlertPreviewSeries = {
 // threshold line over the recent past.
 //
 // By default it collapses all groups into a single overview series. Pass a
-// non-empty `groupKey` (for a per-group alert) to plot only that group's
-// signal — the incident card uses this so it shows the exact group that
-// breached, not the aggregate across every group.
+// `groupKey` (including an explicitly empty key) for a per-group alert to plot
+// only that group's signal — the incident card uses this so it shows the exact
+// group that breached, not the aggregate across every group.
 const PREVIEW_BUCKETS = 24;
 
 export async function previewAlertSeries(
@@ -442,12 +442,15 @@ export async function previewAlertSeries(
   const step = { n: windowMinutes, unit: "MINUTE" as const };
   const filter = alertInputToFilter(input);
   // Only scope to a single group when the alert actually groups and a group was
-  // named; otherwise fall back to the aggregate overview.
-  const scopedGroup = groupKey && input.groupBy ? groupKey : undefined;
-  const groupBy = scopedGroup ? input.groupBy || undefined : undefined;
+  // supplied; an empty string is a valid evaluated group key.
+  const scopedGroup = groupKey !== undefined && input.groupBy ? groupKey : undefined;
+  const groupBy = scopedGroup !== undefined ? input.groupBy || undefined : undefined;
   const baseLabel =
     input.source === "metric" ? (input.metricName ?? "metric") : `${input.source} count`;
-  const label = scopedGroup ? `${baseLabel} · ${scopedGroup}` : baseLabel;
+  const label =
+    scopedGroup !== undefined
+      ? `${baseLabel} · ${scopedGroup === "" ? "(empty)" : scopedGroup}`
+      : baseLabel;
   const keep = (rowGroup: string | null | undefined) =>
     scopedGroup === undefined || (rowGroup ?? "") === scopedGroup;
 

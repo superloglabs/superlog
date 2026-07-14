@@ -75,7 +75,7 @@ export function mountAlerts(app: Hono<{ Variables: Vars }>, opts: { ch: ClickHou
     await requireAccess(c, projectId);
     // Optional: scope the series to one group (a per-group alert episode's key)
     // so the incident card plots the exact group that breached.
-    const groupKey = c.req.query("groupKey") || undefined;
+    const groupKey = c.req.query("groupKey");
     const series = await previewAlertSeriesById(opts.ch, projectId, id, groupKey);
     if (series === null) throw new HTTPException(404, { message: "alert not found" });
     return c.json(series);
