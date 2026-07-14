@@ -93,20 +93,23 @@ export function createDigestRepository(db: DB): DigestRepository {
     },
 
     async gatherWeeklySummary(projectId, policy, now) {
+      // Bind timestamps through column operators (or as ISO strings below):
+      // Date instances interpolated straight into sql`` skip the column's
+      // driver mapping and the postgres-js driver rejects them at Bind time.
       const from = new Date(now.getTime() - policy.intervalMs);
       const [incidentCounts] = await db
         .select({
           opened: sql<number>`count(*) filter (
-            where ${schema.incidents.firstSeen} >= ${from}
-              and ${schema.incidents.firstSeen} <= ${now}
+            where ${gte(schema.incidents.firstSeen, from)}
+              and ${lte(schema.incidents.firstSeen, now)}
           )`.mapWith(Number),
           resolved: sql<number>`count(*) filter (
-            where ${schema.incidents.resolvedAt} >= ${from}
-              and ${schema.incidents.resolvedAt} <= ${now}
+            where ${gte(schema.incidents.resolvedAt, from)}
+              and ${lte(schema.incidents.resolvedAt, now)}
           )`.mapWith(Number),
           remainOpen: sql<number>`count(*) filter (
-            where ${schema.incidents.firstSeen} >= ${from}
-              and ${schema.incidents.firstSeen} <= ${now}
+            where ${gte(schema.incidents.firstSeen, from)}
+              and ${lte(schema.incidents.firstSeen, now)}
               and ${schema.incidents.status} = 'open'
           )`.mapWith(Number),
         })
@@ -129,11 +132,11 @@ export function createDigestRepository(db: DB): DigestRepository {
             sql`coalesce(
               ${schema.incidentEvents.processedAt},
               ${schema.incidentEvents.createdAt}
-            ) >= ${from}`,
+            ) >= ${from.toISOString()}`,
             sql`coalesce(
               ${schema.incidentEvents.processedAt},
               ${schema.incidentEvents.createdAt}
-            ) <= ${now}`,
+            ) <= ${now.toISOString()}`,
           ),
         );
       const classifiedIssueIds = lifecycleRows.flatMap((row) => {
