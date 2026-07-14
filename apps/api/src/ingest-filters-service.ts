@@ -62,7 +62,10 @@ export const ingestFilterStateSchema = z
   .object({
     otlp: z.object({ traces: z.boolean(), logs: z.boolean(), metrics: z.boolean() }).strict(),
     aws: z.object({ logs: z.boolean(), metrics: z.boolean() }).strict(),
-    gcp: z.object({ logs: z.boolean(), metrics: z.boolean() }).strict(),
+    gcp: z
+      .object({ logs: z.boolean(), metrics: z.boolean() })
+      .strict()
+      .default({ logs: true, metrics: true }),
     vercel: z.object({ traces: z.boolean(), logs: z.boolean() }).strict(),
     railway: z.object({ logs: z.boolean(), metrics: z.boolean() }).strict(),
     render: z.object({ logs: z.boolean(), metrics: z.boolean() }).strict(),

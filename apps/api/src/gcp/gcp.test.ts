@@ -174,20 +174,117 @@ test("completing an older OAuth tab does not revoke a newer pending connection",
   assert.ok(older && newer);
 
   const repository = new DrizzleGcpConnectionRepository();
-  await repository.markConnected(older.id, {
-    gcpProjectNumber: "123456789012",
-    topicName: `superlog-${older.id}`,
-    subscriptionName: `superlog-${older.id}`,
-    logSinkName: `superlog-${older.id}`,
-    logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
-    monitoringViewerGrantCreated: false,
-  });
+  await repository.markConnected(
+    older.id,
+    {
+      gcpProjectNumber: "123456789012",
+      topicName: `superlog-${older.id}`,
+      subscriptionName: `superlog-${older.id}`,
+      logSinkName: `superlog-${older.id}`,
+      logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+      monitoringViewerGrantCreated: false,
+    },
+    null,
+  );
 
   const stillPending = await db.query.gcpConnections.findFirst({
     where: eq(schema.gcpConnections.id, newer.id),
   });
   assert.equal(stillPending?.status, "pending");
   assert.equal(stillPending?.revokedAt, null);
+});
+
+test("connecting after an overlapping callback revokes only the connection that was cleaned up", async () => {
+  const { user, project } = await seedProject();
+  const inserted = await db
+    .insert(schema.gcpConnections)
+    .values([
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-old",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+        status: "connected",
+      },
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-overlap",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+        status: "connected",
+      },
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-new",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+      },
+    ])
+    .returning();
+  const old = inserted[0];
+  const overlapping = inserted[1];
+  const candidate = inserted[2];
+  assert.ok(old && overlapping && candidate);
+
+  await new DrizzleGcpConnectionRepository().markConnected(
+    candidate.id,
+    {
+      gcpProjectNumber: "123456789012",
+      topicName: `superlog-${candidate.id}`,
+      subscriptionName: `superlog-${candidate.id}`,
+      logSinkName: `superlog-${candidate.id}`,
+      logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+      monitoringViewerGrantCreated: true,
+    },
+    old.id,
+  );
+
+  const rows = await db.query.gcpConnections.findMany({
+    where: eq(schema.gcpConnections.projectId, project.id),
+  });
+  assert.ok(rows.find((row) => row.id === old.id)?.revokedAt);
+  assert.equal(rows.find((row) => row.id === overlapping.id)?.revokedAt, null);
+  assert.equal(rows.find((row) => row.id === candidate.id)?.status, "connected");
+});
+
+test("preserving a shared monitoring grant transfers cleanup ownership", async () => {
+  const first = await seedProject();
+  const second = await seedProject();
+  const [owner] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: first.project.id,
+      gcpProjectId: "shared-production",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: first.user.id,
+      status: "connected",
+      monitoringViewerGrantCreated: true,
+    })
+    .returning();
+  const [remaining] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: second.project.id,
+      gcpProjectId: "shared-production",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: second.user.id,
+      status: "connected",
+      monitoringViewerGrantCreated: false,
+    })
+    .returning();
+  assert.ok(owner && remaining);
+
+  const shouldRemove = await new DrizzleGcpConnectionRepository().prepareMonitoringGrantRemoval({
+    connectionId: owner.id,
+    gcpProjectId: owner.gcpProjectId,
+    grantCreated: true,
+  });
+
+  assert.equal(shouldRemove, false);
+  const transferred = await db.query.gcpConnections.findFirst({
+    where: eq(schema.gcpConnections.id, remaining.id),
+  });
+  assert.equal(transferred?.monitoringViewerGrantCreated, true);
 });
 
 test("a failed reconnect does not hide an older working GCP connection", async () => {

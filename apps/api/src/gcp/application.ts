@@ -69,10 +69,14 @@ export async function completeGcpConnect(input: {
         userAccessToken: accessToken,
         integrationProjectId: input.config.integrationProjectId,
         readerServiceAccountEmail: input.config.readerServiceAccountEmail,
-        provisioned: persistedProvisioningResult(superseded),
+        provisioned: await cleanupProvisioningResult(
+          superseded,
+          persistedProvisioningResult(superseded),
+          input.repository,
+        ),
       });
     }
-    return await input.repository.markConnected(connection.id, provisioned);
+    return await input.repository.markConnected(connection.id, provisioned, superseded?.id ?? null);
   } catch (error) {
     let message = error instanceof Error ? error.message : "GCP provisioning failed";
     if (accessToken && superseded && supersededCleanupAttempted) {
@@ -92,7 +96,7 @@ export async function completeGcpConnect(input: {
           userAccessToken: accessToken,
           integrationProjectId: input.config.integrationProjectId,
           readerServiceAccountEmail: input.config.readerServiceAccountEmail,
-          provisioned,
+          provisioned: await cleanupProvisioningResult(connection, provisioned, input.repository),
         });
       } catch (cleanupError) {
         const cleanupMessage =
@@ -103,6 +107,20 @@ export async function completeGcpConnect(input: {
     await input.repository.markFailed(connection.id, message);
     throw error;
   }
+}
+
+async function cleanupProvisioningResult(
+  connection: GcpConnectionRecord,
+  provisioned: ProvisionedGcpConnection,
+  repository: GcpConnectionRepository,
+): Promise<ProvisionedGcpConnection> {
+  if (!provisioned.monitoringViewerGrantCreated) return provisioned;
+  const removeGrant = await repository.prepareMonitoringGrantRemoval({
+    connectionId: connection.id,
+    gcpProjectId: connection.gcpProjectId,
+    grantCreated: provisioned.monitoringViewerGrantCreated,
+  });
+  return { ...provisioned, monitoringViewerGrantCreated: removeGrant };
 }
 
 function provisioningInput(

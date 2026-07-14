@@ -55,6 +55,36 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
     return row ? toDomain(row) : null;
   }
 
+  async prepareMonitoringGrantRemoval(input: {
+    connectionId: string;
+    gcpProjectId: string;
+    grantCreated: boolean;
+  }): Promise<boolean> {
+    if (!input.grantCreated) return false;
+    return db.transaction(async (tx) => {
+      const [remaining] = await tx
+        .select({ id: schema.gcpConnections.id })
+        .from(schema.gcpConnections)
+        .where(
+          and(
+            eq(schema.gcpConnections.gcpProjectId, input.gcpProjectId),
+            ne(schema.gcpConnections.id, input.connectionId),
+            eq(schema.gcpConnections.status, "connected"),
+            isNull(schema.gcpConnections.revokedAt),
+          ),
+        )
+        .orderBy(desc(schema.gcpConnections.createdAt))
+        .limit(1)
+        .for("update");
+      if (!remaining) return true;
+      await tx
+        .update(schema.gcpConnections)
+        .set({ monitoringViewerGrantCreated: true, updatedAt: new Date() })
+        .where(eq(schema.gcpConnections.id, remaining.id));
+      return false;
+    });
+  }
+
   async markProvisioning(id: string): Promise<void> {
     await db
       .update(schema.gcpConnections)
@@ -82,7 +112,11 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
       .where(eq(schema.gcpConnections.id, id));
   }
 
-  async markConnected(id: string, result: ProvisionedGcpConnection): Promise<GcpConnectionRecord> {
+  async markConnected(
+    id: string,
+    result: ProvisionedGcpConnection,
+    supersededConnectionId: string | null,
+  ): Promise<GcpConnectionRecord> {
     return db.transaction(async (tx) => {
       const [row] = await tx
         .update(schema.gcpConnections)
@@ -101,17 +135,19 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
         .where(eq(schema.gcpConnections.id, id))
         .returning();
       if (!row) throw new Error("GCP connection not found");
-      await tx
-        .update(schema.gcpConnections)
-        .set({ revokedAt: new Date(), updatedAt: new Date() })
-        .where(
-          and(
-            eq(schema.gcpConnections.projectId, row.projectId),
-            ne(schema.gcpConnections.id, row.id),
-            eq(schema.gcpConnections.status, "connected"),
-            isNull(schema.gcpConnections.revokedAt),
-          ),
-        );
+      if (supersededConnectionId) {
+        await tx
+          .update(schema.gcpConnections)
+          .set({ revokedAt: new Date(), updatedAt: new Date() })
+          .where(
+            and(
+              eq(schema.gcpConnections.id, supersededConnectionId),
+              eq(schema.gcpConnections.projectId, row.projectId),
+              eq(schema.gcpConnections.status, "connected"),
+              isNull(schema.gcpConnections.revokedAt),
+            ),
+          );
+      }
       return toDomain(row);
     });
   }

@@ -59,6 +59,9 @@ test("a local persistence failure removes newly provisioned Google resources", a
     async findCurrent() {
       return connection;
     },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
     async markProvisioning() {},
     async ensureIngestKey() {
       throw new Error("database unavailable");
@@ -151,9 +154,17 @@ test("replacing a connected GCP project removes its cloud resources before super
     async findCurrent() {
       return oldConnection;
     },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
     async markProvisioning() {},
     async ensureIngestKey() {},
-    async markConnected() {
+    async markConnected(
+      _id: string,
+      _result: ProvisionedGcpConnection,
+      supersededConnectionId: string | null,
+    ) {
+      assert.equal(supersededConnectionId, oldConnection.id);
       events.push("supersede-old-connection");
       return connected;
     },
@@ -191,6 +202,69 @@ test("replacing a connected GCP project removes its cloud resources before super
   assert.deepEqual(events, ["deprovision-old-connection-id", "supersede-old-connection"]);
 });
 
+test("replacement preserves a monitoring grant shared by another active connection", async () => {
+  const oldConnection: GcpConnectionRecord = {
+    ...connection,
+    id: "old-connection-id",
+    gcpProjectId: "shared-production",
+    gcpProjectNumber: "987654321098",
+    status: "connected",
+    topicName: "superlog-old-connection-id",
+    subscriptionName: "superlog-old-connection-id",
+    logSinkName: "superlog-old-connection-id",
+    logSinkWriterIdentity: "serviceAccount:old-cloud-logs@system.gserviceaccount.com",
+    monitoringViewerGrantCreated: true,
+  };
+  const connected = { ...connection, ...provisioned, status: "connected" as const };
+  const repository = {
+    async findById() {
+      return connection;
+    },
+    async findCurrent() {
+      return oldConnection;
+    },
+    async prepareMonitoringGrantRemoval(input: {
+      connectionId: string;
+      gcpProjectId: string;
+      grantCreated: boolean;
+    }) {
+      assert.deepEqual(input, {
+        connectionId: oldConnection.id,
+        gcpProjectId: oldConnection.gcpProjectId,
+        grantCreated: true,
+      });
+      return false;
+    },
+    async markProvisioning() {},
+    async ensureIngestKey() {},
+    async markConnected() {
+      return connected;
+    },
+    async markFailed() {},
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async exchangeCode() {
+      return { accessToken: "temporary-user-token" };
+    },
+    async provision() {
+      return provisioned;
+    },
+    async deprovision(input: GcpDeprovisioningInput) {
+      if (input.connectionId === oldConnection.id) {
+        assert.equal(input.provisioned.monitoringViewerGrantCreated, false);
+      }
+    },
+  } as unknown as GcpGateway;
+
+  await completeGcpConnect({
+    connectionId: connection.id,
+    code: "code",
+    repository,
+    gateway,
+    config,
+  });
+});
+
 test("a failed database supersession restores the previous GCP resources", async () => {
   const events: string[] = [];
   const oldConnection: GcpConnectionRecord = {
@@ -210,6 +284,9 @@ test("a failed database supersession restores the previous GCP resources", async
     },
     async findCurrent() {
       return oldConnection;
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
     },
     async markProvisioning() {},
     async ensureIngestKey() {},

@@ -69,9 +69,18 @@ export interface GcpConnectionRepository {
   }): Promise<GcpConnectionRecord>;
   findById(id: string): Promise<GcpConnectionRecord | null>;
   findCurrent(projectId: string): Promise<GcpConnectionRecord | null>;
+  prepareMonitoringGrantRemoval(input: {
+    connectionId: string;
+    gcpProjectId: string;
+    grantCreated: boolean;
+  }): Promise<boolean>;
   markProvisioning(id: string): Promise<void>;
   ensureIngestKey(id: string, projectId: string): Promise<void>;
-  markConnected(id: string, result: ProvisionedGcpConnection): Promise<GcpConnectionRecord>;
+  markConnected(
+    id: string,
+    result: ProvisionedGcpConnection,
+    supersededConnectionId: string | null,
+  ): Promise<GcpConnectionRecord>;
   markFailed(id: string, error: string): Promise<void>;
 }
 
