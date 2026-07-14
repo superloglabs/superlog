@@ -138,6 +138,15 @@ export async function ensureIncidentForIssueWorkflow(
   transition: IssueIntakeTransition,
   deps: IntakeDeps,
 ): Promise<EnsureIncidentForIssueResult> {
+  // Serialize intake by trace id when present, so same-request symptoms — a span
+  // exception and its own log line, which are DIFFERENT issues — can't each open
+  // an incident under concurrent pg-boss jobs. Falls back to the issue id (the
+  // alert-episode / same-issue case). Used by both the recurrence path below and
+  // the create path at the tail.
+  const traceId = issueSample(issue)?.traceId;
+  const serializeKey = traceId ? `trace:${traceId}` : issue.id;
+  const serialize = deps.serializeCreate ?? ((_key, fn) => fn());
+
   const existingLink = await deps.repo.findLatestIncidentIssueLink(issue.id);
 
   if ((transition === "recurred" || transition === "escalated") && existingLink) {
@@ -153,21 +162,67 @@ export async function ensureIncidentForIssueWorkflow(
           recurrenceIncident: false,
         };
       }
-      const incident = await deps.lifecycle.openRecurrence({
-        previousIncident: previous,
-        issue,
-        origin: transition === "escalated" ? "escalation_trigger" : "resolved_issue_recurred",
-        environment: environmentFromResourceAttrs(issue.lastSample?.resourceAttrs),
+      // A recurrence opens a NEW incident chained to its predecessor — but if a
+      // sibling symptom of the SAME request has already opened (or recurred)
+      // an incident, join that instead so a span exception and its own log line
+      // don't recur into separate incidents. Serialize on the trace and
+      // re-check inside the lock so concurrent sibling recurrences converge.
+      return serialize(serializeKey, async () => {
+        // Re-read the latest link now that we hold the lock: a concurrent
+        // recurrence job for this same issue may have already opened the
+        // recurrence incident (this matters for no-trace issues, where the lock
+        // is keyed by issue id) — re-land on it instead of opening a second, and
+        // don't let the same-trace lookup below match the issue's own fresh
+        // incident. Mirrors the tail create path's `raceLink` re-check.
+        const raceLink = await deps.repo.findLatestIncidentIssueLink(issue.id);
+        if (raceLink) {
+          const landed = await deps.repo.findIncident(raceLink.incidentId);
+          if (landed?.status === "open") {
+            return {
+              incident: landed,
+              createdIncident: false,
+              linkedIssue: false,
+              recurrenceIncident: false,
+            };
+          }
+        }
+        if (traceId) {
+          const sameTrace = await findSameTraceMatchingIncident(issue, deps);
+          if (sameTrace) {
+            const linkedIssue = await deps.repo.linkIssueToIncident({
+              incident: sameTrace.incident,
+              issue,
+            });
+            await deps.repo.updateIssueGrouping(issue.id, {
+              state: "grouped",
+              source: "heuristic",
+              reason: sameTrace.reason,
+            });
+            const fresh = (await deps.repo.findIncident(sameTrace.incident.id)) ?? sameTrace.incident;
+            return {
+              incident: fresh,
+              createdIncident: false,
+              linkedIssue,
+              recurrenceIncident: false,
+            };
+          }
+        }
+        const incident = await deps.lifecycle.openRecurrence({
+          previousIncident: previous,
+          issue,
+          origin: transition === "escalated" ? "escalation_trigger" : "resolved_issue_recurred",
+          environment: environmentFromResourceAttrs(issue.lastSample?.resourceAttrs),
+        });
+        await deps.repo.updateIssueGrouping(issue.id, {
+          state: "standalone",
+          source: "heuristic",
+          reason:
+            transition === "escalated"
+              ? "Escalation trigger fired for an observed issue; chained to its previous incident."
+              : "Recurrence of a resolved issue; chained to its previous incident.",
+        });
+        return { incident, createdIncident: true, linkedIssue: true, recurrenceIncident: true };
       });
-      await deps.repo.updateIssueGrouping(issue.id, {
-        state: "standalone",
-        source: "heuristic",
-        reason:
-          transition === "escalated"
-            ? "Escalation trigger fired for an observed issue; chained to its previous incident."
-            : "Recurrence of a resolved issue; chained to its previous incident.",
-      });
-      return { incident, createdIncident: true, linkedIssue: true, recurrenceIncident: true };
     }
   }
 
@@ -214,17 +269,10 @@ export async function ensureIncidentForIssueWorkflow(
 
   // The tail below is the workflow's one read-then-create section: everything
   // above only joins existing incidents with idempotent writes. It runs under
-  // the optional serialization hook with a link re-check inside, so a racer
-  // that created the incident first wins and the loser re-lands on it. The
-  // grouping analysis (which can call an LLM) stays outside the hook.
-  //
-  // Key the lock by trace id when present, so same-request symptoms — a span
-  // exception and its own log line, which are DIFFERENT issues — serialize on
-  // the same lock (a per-issue lock wouldn't). Fall back to the issue id for
-  // no-trace issues (e.g. alert episodes).
-  const traceId = issueSample(issue)?.traceId;
-  const serializeKey = traceId ? `trace:${traceId}` : issue.id;
-  const serialize = deps.serializeCreate ?? ((_key, fn) => fn());
+  // the trace-keyed serialization hook (computed at the top) with same-trace and
+  // link re-checks inside, so a racer that created the incident first wins and
+  // the loser re-lands on it. The grouping analysis (which can call an LLM)
+  // stays outside the hook.
   return serialize(serializeKey, async () => {
     const raceLink = await deps.repo.findLatestIncidentIssueLink(issue.id);
     if (raceLink) {
