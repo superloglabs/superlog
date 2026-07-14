@@ -25,17 +25,9 @@ test("interactive incident detail retains every product action", () => {
   });
 });
 
-test("read-only PRs always use supplied data instead of the connected loader", () => {
-  assert.equal(
-    shouldUsePreloadedPullRequests({ readOnly: true, pullRequestsProvided: false }),
-    true,
-  );
-  assert.equal(
-    shouldUsePreloadedPullRequests({ readOnly: false, pullRequestsProvided: true }),
-    true,
-  );
-  assert.equal(
-    shouldUsePreloadedPullRequests({ readOnly: false, pullRequestsProvided: false }),
-    false,
-  );
+test("only read-only consumers render PRs straight from supplied data", () => {
+  assert.equal(shouldUsePreloadedPullRequests({ readOnly: true }), true);
+  // The product detail preloads PRs for tab visibility, but its panel must
+  // stay on the connected loader so merge keeps working.
+  assert.equal(shouldUsePreloadedPullRequests({ readOnly: false }), false);
 });
