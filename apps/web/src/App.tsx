@@ -148,7 +148,16 @@ function ActiveOrgSync() {
     }
     if (previous.current !== current) {
       previous.current = current;
-      queryClient.clear();
+      // Invalidate (refetch active queries) rather than clear() (drop all cached
+      // data). clear() momentarily makes ["me"] undefined, which unmounts the
+      // whole app subtree — ProjectRouteBoundary renders "Opening project…" and
+      // OrgProjectSwitcher renders its skeleton — tearing down the switcher's
+      // in-flight org-switch navigation before it runs. The stale URL (old org)
+      // then wins reconciliation and the switch silently reverts. Invalidation
+      // keeps the previous data mounted while everything refetches for the new
+      // tenant, so the switch completes. No cross-tenant bleed: org/project-scoped
+      // queries are keyed by id, so the new context reads fresh cache keys anyway.
+      void queryClient.invalidateQueries();
     }
   }, [isPending, data?.session?.activeOrganizationId, queryClient]);
 
