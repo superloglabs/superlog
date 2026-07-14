@@ -22,10 +22,10 @@ test("the GCP metrics job stays disabled without the integration-secrets key", (
 });
 
 test("metric intake acknowledges permanent rejections but retries transient failures", () => {
-  for (const status of [200, 400, 402, 404, 413]) {
+  for (const status of [200, 400, 402, 413]) {
     assert.equal(isMetricIntakeAcknowledged(status), true);
   }
-  for (const status of [408, 429, 500]) {
+  for (const status of [404, 408, 429, 500]) {
     assert.equal(isMetricIntakeAcknowledged(status), false);
   }
 });

@@ -15,7 +15,7 @@ const log = logger.child({ scope: "gcp-metrics-pull" });
 const DEFAULT_MONTHLY_SERIES_LIMIT = 100_000_000;
 
 export function isMetricIntakeAcknowledged(status: number): boolean {
-  return (status >= 200 && status < 300) || [400, 402, 404, 413].includes(status);
+  return (status >= 200 && status < 300) || [400, 402, 413].includes(status);
 }
 
 function intakeBaseUrl(env: NodeJS.ProcessEnv): string {
