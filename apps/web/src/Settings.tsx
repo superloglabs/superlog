@@ -6,7 +6,6 @@ import {
   type AutoMergePolicy,
   type CloudConnection,
   EMPTY_ISSUE_FILTER_CONFIG,
-  type IngestFilterState,
   type Integration,
   type IssueFilterClause,
   type IssueFilterConfig,
@@ -110,14 +109,49 @@ import {
 } from "./api";
 import { AWS_REGIONS } from "./awsRegions.ts";
 import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
-import { Btn, Chip, FieldLabel, Input, Label, PageHeader, Tile } from "./design/ui";
+import {
+  Btn,
+  Chip,
+  DataList,
+  DataListCell,
+  DataListHeader,
+  DataListHeaderCell,
+  DataListRow,
+  FieldLabel,
+  Input,
+  Label,
+  PageHeader,
+  SkeletonBlock,
+  Tile,
+} from "./design/ui";
 import { McpInstallPanel } from "./onboarding/McpInstallDialog.tsx";
 import { useDemoExploration } from "./onboarding/demoExploration.tsx";
-import { InfoIcon } from "./onboarding/icons.tsx";
+import {
+  AwsIcon,
+  CloudflareIcon,
+  GithubIcon,
+  InfoIcon,
+  OtelIcon,
+  RailwayIcon,
+  RenderIcon,
+  SlackIcon,
+  VercelIcon,
+} from "./onboarding/icons.tsx";
 import { renderErrorMessage } from "./onboarding/renderConnectModel.ts";
 import { VERCEL_PLAN_REQUIREMENT } from "./onboarding/vercelConnectModel.ts";
 import { AgentMemoriesCard } from "./settings/AgentMemoriesCard.tsx";
 import { AgentMcpServersCard } from "./settings/AgentMcpServersCard.tsx";
+import {
+  type IngestSignal,
+  type IngestSource,
+  isIngestSignalEnabled,
+  updateIngestSignal,
+} from "./settings/ingestFiltersModel.ts";
+import {
+  type IntegrationCatalogItem,
+  filterAvailableIntegrations,
+  partitionIntegrations,
+} from "./settings/integrationsCatalogModel.ts";
 import { BillingCard } from "./settings/BillingCard.tsx";
 import { CreateOrgCard } from "./settings/CreateOrgCard.tsx";
 import { OrgDangerCard } from "./settings/OrgDangerCard.tsx";
@@ -481,6 +515,14 @@ function SectionIcon({ scope, section }: { scope: SettingsScope; section: Sectio
           <path d="M12 18v4" />
         </svg>
       );
+    case "project:ingestion":
+      return (
+        <svg {...props} aria-hidden="true">
+          <ellipse cx="12" cy="5" rx="8" ry="3" />
+          <path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
+          <path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6" />
+        </svg>
+      );
     case "project:mcp-install":
       return (
         <svg {...props} aria-hidden="true">
@@ -680,19 +722,20 @@ function ProjectSectionView({
       );
     case "integrations":
       return (
-        <Section title="Integrations" subtitle="Per-project connections.">
-          <div className="flex flex-col gap-4">
-            <GithubCard />
-            <SlackCard projectId={projectId} />
-            <LinearCard />
-            <NotionCard />
-            <CloudflareCard projectId={projectId} />
-            <VercelCard projectId={projectId} />
-            <RailwayCard projectId={projectId} />
-            <RenderCard projectId={projectId} />
-            <AwsCard projectId={projectId} />
-            <IngestSourcesCard projectId={projectId} />
-          </div>
+        <Section
+          title="Integrations"
+          subtitle="Manage connected services and discover new ways to bring project context and telemetry into Superlog."
+        >
+          <IntegrationsBento projectId={projectId} />
+        </Section>
+      );
+    case "ingestion":
+      return (
+        <Section
+          title="Data controls"
+          subtitle="Choose which telemetry each connected source is allowed to ingest."
+        >
+          <IngestSourcesCard projectId={projectId} />
         </Section>
       );
     case "agent":
@@ -1042,6 +1085,406 @@ function GithubAuthorStatusBanner({ status }: { status: string }) {
 // ---------------------------------------------------------------------------
 // Integration cards
 // ---------------------------------------------------------------------------
+
+type ProjectIntegrationId =
+  | "github"
+  | "slack"
+  | "linear"
+  | "notion"
+  | "cloudflare"
+  | "vercel"
+  | "railway"
+  | "render"
+  | "aws";
+
+type IntegrationBentoItem = IntegrationCatalogItem & {
+  id: ProjectIntegrationId;
+  statusLabel: string;
+};
+
+function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
+  const github = useGithubInstallation();
+  const slack = useSlackInstallation(projectId, !!projectId);
+  const linear = useLinearInstallation();
+  const notion = useNotionInstallation();
+  const cloudflare = useCloudflareInstallation(projectId);
+  const vercel = useVercelInstallation(projectId);
+  const railway = useRailwayInstallation(projectId);
+  const render = useRenderInstallation(projectId);
+  const aws = useCloudConnections(projectId);
+
+  const [search, setSearch] = useState("");
+  const [selectedId, setSelectedId] = useState<ProjectIntegrationId | null>(null);
+
+  const githubAccounts = github.data?.installed ? github.data.installations.length : 0;
+  const railwayProjects = railway.data?.installed ? railway.data.grantedProjects.length : 0;
+  const renderServices = render.data?.installed
+    ? render.data.services.filter((service) => !service.suspended).length
+    : 0;
+  const awsConnections = aws.data ?? [];
+  const connectedAws = awsConnections.some((connection) => connection.status === "connected");
+
+  const items: IntegrationBentoItem[] = [
+    {
+      id: "github",
+      name: "GitHub",
+      description: "Open pull requests and control repository access for investigations.",
+      category: "Developer tools",
+      keywords: ["source control", "repositories", "pull requests", "code"],
+      installed: github.data?.installed === true,
+      statusLabel:
+        githubAccounts > 0
+          ? `${githubAccounts} ${githubAccounts === 1 ? "account" : "accounts"}`
+          : "Connected",
+    },
+    {
+      id: "slack",
+      name: "Slack",
+      description: "Post incident threads and keep investigation conversations moving.",
+      category: "Collaboration",
+      keywords: ["chat", "messages", "channels", "incidents"],
+      installed: slack.data?.installed === true,
+      statusLabel: slack.data?.installed ? (slack.data.teamName ?? "Workspace") : "Connected",
+    },
+    {
+      id: "linear",
+      name: "Linear",
+      description: "File and update issues as the agent investigates an incident.",
+      category: "Issue tracking",
+      keywords: ["tickets", "issues", "project management"],
+      installed: linear.data?.installed === true,
+      statusLabel:
+        linear.data?.installed && linear.data.needsReauth
+          ? "Needs reconnect"
+          : linear.data?.installed
+            ? (linear.data.workspaceName ?? "Workspace")
+            : "Connected",
+    },
+    {
+      id: "notion",
+      name: "Notion",
+      description: "Give investigations access to shared runbooks and architecture notes.",
+      category: "Knowledge",
+      keywords: ["docs", "wiki", "runbooks", "documentation"],
+      installed: notion.data?.installed === true,
+      statusLabel:
+        notion.data?.installed && notion.data.needsReauth
+          ? "Needs reconnect"
+          : notion.data?.installed
+            ? (notion.data.workspaceName ?? "Workspace")
+            : "Connected",
+    },
+    {
+      id: "cloudflare",
+      name: "Cloudflare",
+      description: "Stream Workers traces, logs, and metrics through Observability destinations.",
+      category: "Cloud & hosting",
+      keywords: ["workers", "observability", "telemetry", "serverless"],
+      installed: cloudflare.data?.installed === true,
+      statusLabel: cloudflare.data?.installed
+        ? (cloudflare.data.accountName ?? "Account")
+        : "Connected",
+    },
+    {
+      id: "vercel",
+      name: "Vercel",
+      description: "Bring deployment traces and logs in through managed drains.",
+      category: "Cloud & hosting",
+      keywords: ["deployments", "drains", "telemetry", "frontend"],
+      installed: vercel.data?.installed === true,
+      statusLabel: vercel.data?.installed ? (vercel.data.teamName ?? "Team") : "Connected",
+    },
+    {
+      id: "railway",
+      name: "Railway",
+      description: "Import service logs and infrastructure metrics from selected projects.",
+      category: "Cloud & hosting",
+      keywords: ["deployments", "services", "logs", "metrics"],
+      installed: railway.data?.installed === true,
+      statusLabel: railwayProjects === 1 ? "1 project" : `${railwayProjects || 0} projects`,
+    },
+    {
+      id: "render",
+      name: "Render",
+      description: "Connect a workspace to pull service logs and infrastructure metrics.",
+      category: "Cloud & hosting",
+      keywords: ["deployments", "services", "logs", "metrics"],
+      installed: render.data?.installed === true,
+      statusLabel: renderServices === 1 ? "1 service" : `${renderServices || 0} services`,
+    },
+    {
+      id: "aws",
+      name: "AWS",
+      description: "Inventory resources and stream CloudWatch telemetry through a read-only role.",
+      category: "Cloud & hosting",
+      keywords: ["amazon", "cloudwatch", "iam", "cloudformation", "metrics"],
+      installed: awsConnections.length > 0,
+      statusLabel: connectedAws ? "Connected" : "Setup in progress",
+    },
+  ];
+
+  const { configured } = partitionIntegrations(items);
+  const available = filterAvailableIntegrations(items, search);
+  const statusesLoading = [
+    github,
+    slack,
+    linear,
+    notion,
+    cloudflare,
+    vercel,
+    railway,
+    render,
+    aws,
+  ].some((query) => query.isLoading);
+  const selectedItem = items.find((item) => item.id === selectedId);
+
+  if (statusesLoading) {
+    return <IntegrationsBentoSkeleton />;
+  }
+
+  return (
+    <div className="space-y-8">
+      <div className="space-y-3">
+        <div className="flex items-end justify-between gap-4">
+          <div>
+            <h2 className="text-[15px] font-medium text-fg">Configured</h2>
+            <p className="mt-1 text-[12.5px] text-muted">
+              Services already connected to this project.
+            </p>
+          </div>
+          <span className="text-[12px] tabular-nums text-subtle">
+            {configured.length} connected
+          </span>
+        </div>
+        {configured.length > 0 ? (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {configured.map((item) => (
+              <IntegrationBentoCard
+                key={item.id}
+                item={item}
+                selected={selectedId === item.id}
+                onSelect={() => setSelectedId(item.id)}
+              />
+            ))}
+          </div>
+        ) : (
+          <Tile className="border-dashed py-8 text-center">
+            <p className="text-[13px] font-medium text-fg">No integrations connected yet</p>
+            <p className="mt-1 text-[12.5px] text-muted">
+              Choose one from the catalog below to get started.
+            </p>
+          </Tile>
+        )}
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="text-[15px] font-medium text-fg">Add an integration</h2>
+            <p className="mt-1 text-[12.5px] text-muted">
+              Connect another source of context, collaboration, or telemetry.
+            </p>
+          </div>
+          <div className="w-full sm:w-64">
+            <Input
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search integrations…"
+              aria-label="Search integrations"
+            />
+          </div>
+        </div>
+        {available.length > 0 ? (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {available.map((item) => (
+              <IntegrationBentoCard
+                key={item.id}
+                item={item}
+                selected={selectedId === item.id}
+                onSelect={() => setSelectedId(item.id)}
+              />
+            ))}
+          </div>
+        ) : (
+          <Tile className="border-dashed py-8 text-center">
+            <p className="text-[13px] font-medium text-fg">
+              {search.trim() ? "No integrations match that search" : "Everything is connected"}
+            </p>
+            <p className="mt-1 text-[12.5px] text-muted">
+              {search.trim()
+                ? "Try a provider name, category, or capability."
+                : "You have added every integration currently available."}
+            </p>
+          </Tile>
+        )}
+      </div>
+
+      {selectedId && selectedItem && (
+        <div className="space-y-3 border-t border-border pt-6">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-[15px] font-medium text-fg">Configure {selectedItem.name}</h2>
+              <p className="mt-1 text-[12.5px] text-muted">
+                {selectedItem.installed
+                  ? "Review the connection, update access, or disconnect it."
+                  : "Follow the steps below to add this integration."}
+              </p>
+            </div>
+            <Btn size="sm" variant="ghost" onClick={() => setSelectedId(null)}>
+              Close
+            </Btn>
+          </div>
+          <IntegrationConfiguration id={selectedId} projectId={projectId} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IntegrationsBentoSkeleton() {
+  const sections = [
+    ["configured-1", "configured-2"],
+    ["available-1", "available-2", "available-3", "available-4"],
+  ];
+
+  return (
+    <div className="space-y-8" aria-label="Loading integrations">
+      {sections.map((cardIds) => (
+        <div className="space-y-3" key={cardIds[0]}>
+          <SkeletonBlock className="h-4 w-28" />
+          <div className="grid gap-3 sm:grid-cols-2">
+            {cardIds.map((cardId) => (
+              <SkeletonBlock key={cardId} className="h-[142px] rounded-xl" />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function IntegrationBentoCard({
+  item,
+  selected,
+  onSelect,
+}: {
+  item: IntegrationBentoItem;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onSelect}
+      className={`group flex min-h-[142px] flex-col justify-between rounded-xl border bg-surface p-4 text-left transition-colors hover:border-border-strong hover:bg-surface-2/40 ${
+        selected ? "border-accent bg-accent-soft/30" : "border-border"
+      }`}
+    >
+      <span className="flex w-full items-start justify-between gap-3">
+        <IntegrationGlyph id={item.id} />
+        {item.installed && (
+          <Chip tone={item.statusLabel === "Needs reconnect" ? "warning" : "success"} dot>
+            {item.statusLabel}
+          </Chip>
+        )}
+      </span>
+      <span className="mt-5 block">
+        <span className="flex items-center justify-between gap-3">
+          <span className="text-[14px] font-medium text-fg">{item.name}</span>
+          <span className="text-[11px] text-subtle">{item.category}</span>
+        </span>
+        <span className="mt-1.5 block text-[12.5px] leading-5 text-muted">{item.description}</span>
+        <span className="mt-3 block text-[12px] font-medium text-fg">
+          {item.installed ? "Configure" : "+ Add integration"}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+function IntegrationGlyph({ id }: { id: ProjectIntegrationId }) {
+  const className =
+    "flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-surface-2 text-fg";
+  switch (id) {
+    case "github":
+      return (
+        <span className={className}>
+          <GithubIcon size={20} />
+        </span>
+      );
+    case "slack":
+      return (
+        <span className={className}>
+          <SlackIcon size={20} />
+        </span>
+      );
+    case "cloudflare":
+      return (
+        <span className={className}>
+          <CloudflareIcon size={20} />
+        </span>
+      );
+    case "vercel":
+      return (
+        <span className={className}>
+          <VercelIcon size={20} />
+        </span>
+      );
+    case "railway":
+      return (
+        <span className={className}>
+          <RailwayIcon size={20} />
+        </span>
+      );
+    case "render":
+      return (
+        <span className={className}>
+          <RenderIcon size={20} />
+        </span>
+      );
+    case "aws":
+      return (
+        <span className={className}>
+          <AwsIcon size={20} />
+        </span>
+      );
+    case "linear":
+      return <span className={`${className} text-[15px] font-semibold`}>L</span>;
+    case "notion":
+      return <span className={`${className} text-[15px] font-semibold`}>N</span>;
+  }
+}
+
+function IntegrationConfiguration({
+  id,
+  projectId,
+}: {
+  id: ProjectIntegrationId;
+  projectId: string | undefined;
+}) {
+  switch (id) {
+    case "github":
+      return <GithubCard />;
+    case "slack":
+      return <SlackCard projectId={projectId} />;
+    case "linear":
+      return <LinearCard />;
+    case "notion":
+      return <NotionCard />;
+    case "cloudflare":
+      return <CloudflareCard projectId={projectId} />;
+    case "vercel":
+      return <VercelCard projectId={projectId} />;
+    case "railway":
+      return <RailwayCard projectId={projectId} />;
+    case "render":
+      return <RenderCard projectId={projectId} />;
+    case "aws":
+      return <AwsCard projectId={projectId} />;
+  }
+}
 
 function GithubCard() {
   const [params] = useSearchParams();
@@ -2149,10 +2592,64 @@ const AWS_REGION_OPTIONS = AWS_REGIONS.map((r) => ({
   searchText: `${r.code} ${r.name}`,
 }));
 
-// Per-project ingest source toggles. Lets you turn a telemetry source (SDK/OTLP,
-// AWS CloudWatch, or Vercel Drains) on/off per signal; the proxy ack-drops
-// disabled telemetry at the edge so it's never stored or billed.
+type IngestSourceDefinition = {
+  source: IngestSource;
+  title: string;
+  hint: string;
+  signals: ReadonlyArray<{ key: IngestSignal; label: string }>;
+};
+
+const INGEST_SOURCE_DEFINITIONS = [
+  {
+    source: "otlp",
+    title: "SDK / OTLP",
+    hint: "Telemetry sent by your apps' OpenTelemetry exporters.",
+    signals: [
+      { key: "traces", label: "Traces" },
+      { key: "logs", label: "Logs" },
+      { key: "metrics", label: "Metrics" },
+    ],
+  },
+  {
+    source: "aws",
+    title: "AWS CloudWatch",
+    hint: "Metric streams and account logs from the connected AWS stack.",
+    signals: [
+      { key: "logs", label: "Logs" },
+      { key: "metrics", label: "Metrics" },
+    ],
+  },
+  {
+    source: "vercel",
+    title: "Vercel Drains",
+    hint: "Trace and log drains created by the connected Vercel integration.",
+    signals: [
+      { key: "traces", label: "Traces" },
+      { key: "logs", label: "Logs" },
+    ],
+  },
+  {
+    source: "railway",
+    title: "Railway",
+    hint: "Logs and infrastructure metrics from connected Railway projects.",
+    signals: [
+      { key: "logs", label: "Logs" },
+      { key: "metrics", label: "Metrics" },
+    ],
+  },
+  {
+    source: "render",
+    title: "Render",
+    hint: "Logs and infrastructure metrics from the connected Render workspace.",
+    signals: [
+      { key: "logs", label: "Logs" },
+      { key: "metrics", label: "Metrics" },
+    ],
+  },
+] as const satisfies ReadonlyArray<IngestSourceDefinition>;
+
 function IngestSourceRow({
+  source,
   title,
   hint,
   signals,
@@ -2160,31 +2657,86 @@ function IngestSourceRow({
   disabled,
   onToggle,
 }: {
+  source: IngestSource;
   title: string;
   hint: string;
-  signals: ReadonlyArray<{ key: string; label: string }>;
-  state: Record<string, boolean>;
+  signals: ReadonlyArray<{ key: IngestSignal; label: string }>;
+  state: Partial<Record<IngestSignal, boolean>>;
   disabled: boolean;
-  onToggle: (signal: string, next: boolean) => void;
+  onToggle: (signal: IngestSignal, next: boolean) => void;
 }) {
+  const enabledCount = signals.filter((signal) => state[signal.key] ?? true).length;
+
   return (
-    <div className="rounded-md border border-subtle p-3">
-      <div className="text-[13px] font-medium">{title}</div>
-      <div className="mb-2 text-[12px] text-muted">{hint}</div>
-      <div className="flex flex-wrap gap-x-5 gap-y-2">
+    <DataListRow className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+      <DataListCell className="flex min-w-0 items-center gap-3">
+        <IngestSourceIcon source={source} />
+        <span className="min-w-0">
+          <span className="flex items-center gap-2">
+            <span className="text-[13px] font-medium text-fg">{title}</span>
+            <Chip tone={enabledCount === 0 ? "muted" : "success"} dot>
+              {enabledCount}/{signals.length} on
+            </Chip>
+          </span>
+          <span className="mt-0.5 block text-[12px] leading-5 text-muted">{hint}</span>
+        </span>
+      </DataListCell>
+      <DataListCell className="flex flex-wrap items-center gap-x-5 gap-y-2 sm:justify-end">
         {signals.map((s) => (
-          <label key={s.key} className="flex items-center gap-2 text-[13px]">
+          <span
+            key={s.key}
+            className="flex min-w-[92px] items-center justify-between gap-3 text-[12.5px]"
+          >
+            <span className={state[s.key] === false ? "text-muted" : "text-fg"}>{s.label}</span>
             <Toggle
+              ariaLabel={`Ingest ${s.label.toLowerCase()} from ${title}`}
               checked={state[s.key] ?? true}
               onChange={(next) => onToggle(s.key, next)}
               disabled={disabled}
             />
-            <span className={state[s.key] === false ? "text-muted" : ""}>{s.label}</span>
-          </label>
+          </span>
         ))}
-      </div>
-    </div>
+      </DataListCell>
+    </DataListRow>
   );
+}
+
+function IngestSourceIcon({ source }: { source: IngestSource }) {
+  const className =
+    "flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-surface-2 text-fg";
+
+  switch (source) {
+    case "otlp":
+      return (
+        <span className={className}>
+          <OtelIcon size={18} />
+        </span>
+      );
+    case "aws":
+      return (
+        <span className={className}>
+          <AwsIcon size={18} />
+        </span>
+      );
+    case "vercel":
+      return (
+        <span className={className}>
+          <VercelIcon size={18} />
+        </span>
+      );
+    case "railway":
+      return (
+        <span className={className}>
+          <RailwayIcon size={18} />
+        </span>
+      );
+    case "render":
+      return (
+        <span className={className}>
+          <RenderIcon size={18} />
+        </span>
+      );
+  }
 }
 
 function IngestSourcesCard({ projectId }: { projectId: string | undefined }) {
@@ -2192,90 +2744,107 @@ function IngestSourcesCard({ projectId }: { projectId: string | undefined }) {
   const setFilters = useSetIngestFilters(projectId ?? "");
   const state = filters.data;
 
-  const setSignal = (
-    source: "otlp" | "aws" | "vercel" | "railway" | "render",
-    signal: string,
-    next: boolean,
-  ) => {
+  const setSignal = (source: IngestSource, signal: IngestSignal, next: boolean) => {
     if (!state) return;
-    const updated: IngestFilterState = {
-      ...state,
-      [source]: { ...state[source], [signal]: next },
-    };
-    setFilters.mutate(updated);
+    setFilters.mutate(updateIngestSignal(state, source, signal, next));
   };
 
+  const totalSignals = INGEST_SOURCE_DEFINITIONS.reduce(
+    (total, source) => total + source.signals.length,
+    0,
+  );
+  const enabledSignals = state
+    ? INGEST_SOURCE_DEFINITIONS.reduce(
+        (total, source) =>
+          total +
+          source.signals.filter((signal) => isIngestSignalEnabled(state, source.source, signal.key))
+            .length,
+        0,
+      )
+    : 0;
+
   return (
-    <Tile label="Ingestion">
-      <div className="space-y-3">
-        <p className="text-[13px] text-muted">
-          Choose which telemetry this project ingests. Anything turned off is dropped at the edge —
-          never stored or billed.
-        </p>
-        {!state ? (
-          <p className="text-[13px] text-muted">Loading…</p>
-        ) : (
-          <div className="space-y-2">
-            <IngestSourceRow
-              title="SDK / OTLP"
-              hint="Telemetry from your apps' OpenTelemetry exporters."
-              signals={[
-                { key: "traces", label: "Traces" },
-                { key: "logs", label: "Logs" },
-                { key: "metrics", label: "Metrics" },
-              ]}
-              state={state.otlp}
-              disabled={setFilters.isPending}
-              onToggle={(signal, next) => setSignal("otlp", signal, next)}
-            />
-            <IngestSourceRow
-              title="AWS CloudWatch"
-              hint="Metric streams + account logs delivered via the connected AWS stack."
-              signals={[
-                { key: "logs", label: "Logs" },
-                { key: "metrics", label: "Metrics" },
-              ]}
-              state={state.aws}
-              disabled={setFilters.isPending}
-              onToggle={(signal, next) => setSignal("aws", signal, next)}
-            />
-            <IngestSourceRow
-              title="Vercel Drains"
-              hint="Trace and log drains created by the connected Vercel integration."
-              signals={[
-                { key: "traces", label: "Traces" },
-                { key: "logs", label: "Logs" },
-              ]}
-              state={state.vercel}
-              disabled={setFilters.isPending}
-              onToggle={(signal, next) => setSignal("vercel", signal, next)}
-            />
-            <IngestSourceRow
-              title="Railway"
-              hint="Logs and infra metrics pulled from the connected Railway projects."
-              signals={[
-                { key: "logs", label: "Logs" },
-                { key: "metrics", label: "Metrics" },
-              ]}
-              state={state.railway}
-              disabled={setFilters.isPending}
-              onToggle={(signal, next) => setSignal("railway", signal, next)}
-            />
-            <IngestSourceRow
-              title="Render"
-              hint="Logs and infra metrics pulled from the connected Render workspace."
-              signals={[
-                { key: "logs", label: "Logs" },
-                { key: "metrics", label: "Metrics" },
-              ]}
-              state={state.render}
-              disabled={setFilters.isPending}
-              onToggle={(signal, next) => setSignal("render", signal, next)}
-            />
+    <div className="space-y-4">
+      <Tile className="bg-surface-2/30">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <Label>Edge policy</Label>
+            <p className="mt-2 max-w-2xl text-[13px] leading-5 text-muted">
+              Disabled signals are acknowledged and dropped before storage, so they never count
+              toward retention or billing.
+            </p>
           </div>
-        )}
+          <Chip tone="neutral" dot>
+            {state ? `${enabledSignals} of ${totalSignals} signals on` : "Loading policy"}
+          </Chip>
+        </div>
+      </Tile>
+
+      {filters.isError ? (
+        <Tile>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-[13px] font-medium text-fg">Couldn’t load data controls</p>
+              <p className="mt-1 text-[12px] text-muted">
+                The current ingest policy is unavailable. No changes have been made.
+              </p>
+            </div>
+            <Btn size="sm" variant="secondary" onClick={() => filters.refetch()}>
+              Retry
+            </Btn>
+          </div>
+        </Tile>
+      ) : (
+        <DataList label="Telemetry source controls">
+          <DataListHeader className="grid grid-cols-[minmax(0,1fr)_auto] gap-4">
+            <DataListHeaderCell>Source</DataListHeaderCell>
+            <DataListHeaderCell className="text-right">Signals ingested</DataListHeaderCell>
+          </DataListHeader>
+          {!state
+            ? INGEST_SOURCE_DEFINITIONS.map((source) => (
+                <DataListRow
+                  key={source.source}
+                  className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                >
+                  <DataListCell className="flex items-center gap-3">
+                    <SkeletonBlock className="h-9 w-9" />
+                    <span className="space-y-2">
+                      <SkeletonBlock className="h-3 w-28" />
+                      <SkeletonBlock className="h-3 w-52 max-w-full" />
+                    </span>
+                  </DataListCell>
+                  <DataListCell>
+                    <SkeletonBlock className="h-5 w-48" />
+                  </DataListCell>
+                </DataListRow>
+              ))
+            : INGEST_SOURCE_DEFINITIONS.map((source) => (
+                <IngestSourceRow
+                  key={source.source}
+                  {...source}
+                  state={state[source.source]}
+                  disabled={setFilters.isPending}
+                  onToggle={(signal, next) => setSignal(source.source, signal, next)}
+                />
+              ))}
+        </DataList>
+      )}
+
+      <div className="flex items-start gap-2 px-1 text-[12px] leading-5 text-muted">
+        <span className="mt-0.5 shrink-0 text-accent">
+          <InfoIcon size={13} />
+        </span>
+        <p>
+          Changes apply to new telemetry immediately. Previously stored data is not removed when a
+          signal is turned off.
+        </p>
       </div>
-    </Tile>
+      {setFilters.isError && (
+        <p className="px-1 text-[12px] text-warning">
+          The last change couldn’t be saved. Your previous policy is still active.
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -3482,10 +4051,12 @@ function FlowConnector({ active }: { active: boolean }) {
 }
 
 function Toggle({
+  ariaLabel,
   checked,
   disabled = false,
   onChange,
 }: {
+  ariaLabel?: string;
   checked: boolean;
   disabled?: boolean;
   onChange: (v: boolean) => void;
@@ -3494,6 +4065,7 @@ function Toggle({
     <button
       type="button"
       role="switch"
+      aria-label={ariaLabel}
       aria-checked={checked}
       disabled={disabled}
       onClick={() => onChange(!checked)}

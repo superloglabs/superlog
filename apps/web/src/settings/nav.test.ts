@@ -35,6 +35,7 @@ test("project nav: single flat group, Install MCP sits next to MCP tokens", () =
     "agent-memories",
     "agent-mcps",
     "integrations",
+    "ingestion",
     "issue-filter",
     "slack-channel",
     "api-keys",
