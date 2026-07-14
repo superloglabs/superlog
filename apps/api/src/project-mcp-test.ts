@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ProjectMcpServer, ProjectMcpServerRepository } from "@superlog/db";
-import { projectMcpFetch } from "./project-mcp-http.js";
+import { strictProjectMcpFetch } from "./project-mcp-http.js";
 
 export async function testProjectMcpServerConnection(input: {
   projectId: string;
@@ -28,7 +28,7 @@ export async function testProjectMcpServerConnection(input: {
     version: "1.0.0",
   });
   const transport = new StreamableHTTPClientTransport(endpoint, {
-    fetch: projectMcpFetch,
+    fetch: strictProjectMcpFetch,
     requestInit: {
       headers,
       redirect: "error",

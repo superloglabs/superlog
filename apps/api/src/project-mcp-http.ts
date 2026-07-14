@@ -19,7 +19,7 @@ export function createProjectMcpFetch(egress: GuardedEgress = guardedPublicFetch
   }) as typeof fetch;
 }
 
-export const projectMcpFetch = createProjectMcpFetch();
+export const strictProjectMcpFetch = createProjectMcpFetch();
 
 function assertProjectMcpHttpsUrl(url: URL): void {
   if (url.protocol !== "https:") throw new Error("MCP destination must use HTTPS");

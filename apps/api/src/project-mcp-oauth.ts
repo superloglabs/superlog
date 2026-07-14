@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { ProjectMcpServer, ProjectMcpServerRepository } from "@superlog/db";
 import { db, decryptIntegrationSecret, encryptIntegrationSecret, schema } from "@superlog/db";
 import { and, eq, isNull } from "drizzle-orm";
-import { projectMcpFetch } from "./project-mcp-http.js";
+import { strictProjectMcpFetch } from "./project-mcp-http.js";
 
 const OAUTH_ATTEMPT_TTL_MS = 10 * 60 * 1000;
 
@@ -382,7 +382,7 @@ export function createDrizzleProjectMcpOAuthAttemptStore(): ProjectMcpOAuthAttem
 }
 
 export function createFetchProjectMcpOAuthHttp(
-  fetchImpl: typeof fetch = projectMcpFetch,
+  fetchImpl: typeof fetch = strictProjectMcpFetch,
 ): ProjectMcpOAuthHttp {
   return {
     async discover(serverUrl) {
