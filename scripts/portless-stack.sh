@@ -112,11 +112,11 @@ checksum="$(printf '%s' "$STACK_NAME" | cksum | awk '{print $1}')"
 offset=$(( checksum % 1000 ))
 if [[ -n "${SUPERLOG_PORTLESS_OFFSET:-}" ]]; then
   if [[ ! "$SUPERLOG_PORTLESS_OFFSET" =~ ^[0-9]+$ ]] ||
-    (( SUPERLOG_PORTLESS_OFFSET < 0 || SUPERLOG_PORTLESS_OFFSET > 999 )); then
+    (( 10#$SUPERLOG_PORTLESS_OFFSET < 0 || 10#$SUPERLOG_PORTLESS_OFFSET > 999 )); then
     echo "SUPERLOG_PORTLESS_OFFSET must be an integer from 0 to 999" >&2
     exit 1
   fi
-  offset="$SUPERLOG_PORTLESS_OFFSET"
+  offset=$(( 10#$SUPERLOG_PORTLESS_OFFSET ))
 fi
 
 POSTGRES_HOST_PORT=$(( 15432 + offset ))

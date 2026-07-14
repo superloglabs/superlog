@@ -9,6 +9,16 @@ import { eq } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { recordPrCreatedMetric } from "../pr-metrics.js";
 
+export async function resolveIncidentOrgBestEffort(
+  resolve: () => Promise<{ id: string; name: string } | null>,
+): Promise<{ id: string; name: string } | null> {
+  try {
+    return await resolve();
+  } catch {
+    return null;
+  }
+}
+
 export async function recordFiledLinearTicket(
   ctx: AgentRunContext,
   ticket: schema.AgentRunLinearTicket | null | undefined,
@@ -55,7 +65,7 @@ export async function recordFiledLinearTicket(
     columns: { id: true },
   });
   if (!pr) {
-    const org = await resolveIncidentOrg(ctx.incident.id);
+    const org = await resolveIncidentOrgBestEffort(() => resolveIncidentOrg(ctx.incident.id));
     captureAgentPrLifecycleEvent({
       kind: "opened",
       pr: linearTicketAcceptanceUnit({

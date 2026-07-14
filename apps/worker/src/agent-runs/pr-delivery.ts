@@ -24,8 +24,9 @@ import {
 import { logger } from "../logger.js";
 import { enqueueAgentRunCompleted } from "../webhooks.js";
 import { recordFiledLinearTicket, recordOpenedAgentPullRequest } from "./deliverable-records.js";
-import { type DeliveredLinearTicket, deliverLinearTicket } from "./linear-delivery.js";
-import { linearTicketSlackReference, linkLinearTicketToPullRequests } from "./linear-pr-linking.js";
+import type { DeliveredLinearTicket } from "./linear-delivery.js";
+import { scheduleLinearHandoff } from "./linear-handoff.js";
+import { linearTicketSlackReference } from "./linear-pr-linking.js";
 import { buildPrBody, buildPrTitle } from "./pr-copy.js";
 import { summarizePrOpenFailure } from "./pr-open-failure.js";
 import { failAgentRun } from "./status.js";
@@ -63,20 +64,8 @@ async function deliverAndRecordLinearTicket(
   prUrl: string,
 ): Promise<DeliveredLinearTicket | null> {
   try {
-    const ticket = await deliverLinearTicket(ctx, result, { prUrls: [] });
-    if (ticket) {
-      await recordFiledLinearTicket(
-        ctx,
-        {
-          id: ticket.ticketId,
-          url: ticket.url,
-          createdByAgent: ticket.created,
-        },
-        { identifier: ticket.identifier },
-      );
-      await linkLinearTicketToPullRequests(ctx, ticket, [prUrl]);
-      return ticket;
-    }
+    const ticket = await scheduleLinearHandoff(ctx, result, `pr:${prUrl}`);
+    if (ticket) return ticket;
     if (result.linearTicket) {
       // Legacy in-flight run finishing on the old contract: preserve its
       // self-reported ticket link.

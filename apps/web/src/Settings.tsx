@@ -2570,7 +2570,7 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
     linearTicketInstructions: [],
     prPolicy: "on_ready_to_pr",
     approvalPromptsEnabled: true,
-    createLinearTicketOnResolve: true,
+    createLinearTicketOnResolve: false,
     prBaseBranch: null,
     autoMergeFixPrs: "never",
     autoMergeMethod: "squash",

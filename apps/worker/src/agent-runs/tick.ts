@@ -2,10 +2,8 @@ import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { db, schema } from "@superlog/db";
 import { asc, eq, inArray } from "drizzle-orm";
 import { loadAgentRunContext } from "../agent-run-context.js";
-import {
-  ACTIVE_STATES as AGENT_RUN_ACTIVE_STATES,
-  createAgentRunLifecycle,
-} from "../agent-run.js";
+import { ACTIVE_STATES as AGENT_RUN_ACTIVE_STATES, createAgentRunLifecycle } from "../agent-run.js";
+import { listPendingLinearHandoffRunIds, reconcilePendingLinearHandoff } from "./linear-handoff.js";
 import { retryQueuedPullRequestDelivery } from "./pr-delivery.js";
 import { resumeAgentRunFromHumanInput } from "./resume.js";
 import { startQueuedAgentRun } from "./start-run.js";
@@ -34,8 +32,13 @@ export async function tickAgentRuns(): Promise<number> {
       // monopolised every tick — a run that fell out of the top 20 once
       // (because newer incidents arrived) would never be re-synced and got
       // stuck in 'running' forever. asc(updatedAt) drains the queue instead.
+      const pendingHandoffIds = await listPendingLinearHandoffRunIds(AGENT_RUN_BATCH_SIZE);
       const rows = await db.query.agentRuns.findMany({
-        where: inArray(schema.agentRuns.state, [...AGENT_RUN_ACTIVE_STATES]),
+        where: (runs, { or }) =>
+          or(
+            inArray(runs.state, [...AGENT_RUN_ACTIVE_STATES]),
+            ...(pendingHandoffIds.length > 0 ? [inArray(runs.id, pendingHandoffIds)] : []),
+          ),
         orderBy: [asc(schema.agentRuns.updatedAt)],
         limit: AGENT_RUN_BATCH_SIZE,
       });
@@ -72,6 +75,7 @@ export async function tickAgentRuns(): Promise<number> {
           continue;
         }
         processed += 1;
+        await reconcilePendingLinearHandoff(ctx);
         if (ctx.agentRun.state === "queued" || ctx.agentRun.state === "repo_discovery") {
           await startQueuedAgentRun(ctx);
           continue;

@@ -1,9 +1,6 @@
 import { type AgentRunResult, db, schema } from "@superlog/db";
 import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
-import {
-  TERMINAL_OUTCOME_NUDGE_MARKER,
-  assembleAgentRunResult,
-} from "../agent-outcome-tools.js";
+import { TERMINAL_OUTCOME_NUDGE_MARKER, assembleAgentRunResult } from "../agent-outcome-tools.js";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import { type AgentRunOutcome, recordAgentRunCompletion } from "../ai-usage.js";
@@ -14,9 +11,7 @@ import { postIncidentThreadMessage } from "../infra/slack/incident-messages.js";
 import { type ResolvedIntegration, loadEnabledIntegrationsForOrg } from "../integrations.js";
 import { logger } from "../logger.js";
 import { completeWithIncidentResolution, completeWithoutPullRequest } from "./completion.js";
-import { recordFiledLinearTicket } from "./deliverable-records.js";
-import { deliverLinearTicket } from "./linear-delivery.js";
-import { linkLinearTicketToPullRequests } from "./linear-pr-linking.js";
+import { scheduleLinearHandoff } from "./linear-handoff.js";
 import { tryMergeAfterAgentRun } from "./merge.js";
 import { hasRevylCreateTestIntegration, looksLikeMobileChange } from "./mobile-regression.js";
 import { createOutcomeActionExecutor } from "./outcome-actions.js";
@@ -43,6 +38,15 @@ export function isCompleteInvestigationAllowed(
   },
 ): boolean {
   if (result.completionKind !== "investigation_complete") return true;
+  return completeInvestigationAvailable(capabilities);
+}
+
+export function completeInvestigationAvailable(capabilities: {
+  prPolicy: schema.PrPolicy;
+  githubConnected: boolean;
+  approvalPromptsEnabled: boolean;
+  approvalPromptToolsAvailable: boolean;
+}): boolean {
   const prCreation = capabilities.githubConnected && capabilities.prPolicy !== "never";
   const approvalPrompts =
     capabilities.approvalPromptsEnabled && capabilities.approvalPromptToolsAvailable;
@@ -565,8 +569,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           prPolicy: ctx.prPolicy,
           githubConnected: ctx.githubInstalls.length > 0,
           approvalPromptsEnabled: ctx.approvalPromptsEnabled,
-          // No approval-prompt action is registered in the current runtime.
-          approvalPromptToolsAvailable: false,
+          approvalPromptToolsAvailable: true,
         })
       ) {
         await failAgentRun(
@@ -694,20 +697,12 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           openPrUrls,
           async () => {
             try {
-              const linearTicket = await deliverLinearTicket(ctx, parkedResult, {
-                prUrls: [],
-              });
-              if (!linearTicket) return null;
-              await recordFiledLinearTicket(
+              const linearTicket = await scheduleLinearHandoff(
                 ctx,
-                {
-                  id: linearTicket.ticketId,
-                  url: linearTicket.url,
-                  createdByAgent: linearTicket.created,
-                },
-                { identifier: linearTicket.identifier },
+                parkedResult,
+                `awaiting_events:${openPrUrls.join(",")}`,
               );
-              await linkLinearTicketToPullRequests(ctx, linearTicket, openPrUrls);
+              if (!linearTicket) return null;
               return { identifier: linearTicket.identifier, url: linearTicket.url };
             } catch (err) {
               logger.warn(
@@ -770,8 +765,14 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         // landed. The delivered nudge is visible in the session's own event
         // stream, so a retry can detect it and keep the claim without
         // steering a duplicate.
-        const completeInvestigationAvailable = ctx.prPolicy === "never";
-        const nudgePrompt = terminalOutcomeNudgePrompt({ completeInvestigationAvailable });
+        const nudgePrompt = terminalOutcomeNudgePrompt({
+          completeInvestigationAvailable: completeInvestigationAvailable({
+            prPolicy: ctx.prPolicy,
+            githubConnected: ctx.githubInstalls.length > 0,
+            approvalPromptsEnabled: ctx.approvalPromptsEnabled,
+            approvalPromptToolsAvailable: true,
+          }),
+        });
         const nudgeAlreadyDelivered = snapshot.events.some(
           (event) =>
             event.type === "user.message" &&

@@ -68,6 +68,10 @@ export function isRevokedTokenError(err: unknown): boolean {
   return /invalid_grant|revoked|unauthorized|401/i.test(msg);
 }
 
+function isLinearIssueUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 // Should this completion produce/refresh a ticket at all?
 export function linearDeliveryAllowed(args: { hasInstall: boolean }): boolean {
   return args.hasInstall;
@@ -110,6 +114,17 @@ export async function deliverLinearTicketWithDeps(
   try {
     const known = await deps.findKnownTicket();
     if (known) {
+      if (!isLinearIssueUuid(known.ticketId)) {
+        const [resolved] = await deps.searchIssues(known.identifier ?? known.ticketId);
+        if (resolved) {
+          return {
+            ticketId: resolved.id,
+            identifier: resolved.identifier,
+            url: resolved.url ?? known.url,
+            created: false,
+          };
+        }
+      }
       return {
         ticketId: known.ticketId,
         identifier: known.identifier ?? known.ticketId,

@@ -1,5 +1,5 @@
 {
-  "id": "3ca7bfef-848a-410d-9a9d-2e1cc463248e",
+  "id": "bf418b0e-3a73-4271-8ecd-3e5f461a932a",
   "prevId": "67b8ce8a-9211-4864-a2ec-5021d76efb80",
   "version": "7",
   "dialect": "postgresql",
@@ -6769,7 +6769,7 @@
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
-          "default": true
+          "default": false
         },
         "pr_base_branch": {
           "name": "pr_base_branch",

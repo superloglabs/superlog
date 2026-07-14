@@ -34,7 +34,16 @@ test("complete_investigation is rejected when an intervention is available", () 
       prPolicy: "never",
       githubConnected: true,
       approvalPromptsEnabled: true,
-      approvalPromptToolsAvailable: false,
+      approvalPromptToolsAvailable: true,
+    }),
+    false,
+  );
+  assert.equal(
+    isCompleteInvestigationAllowed(result, {
+      prPolicy: "on_ready_to_pr",
+      githubConnected: false,
+      approvalPromptsEnabled: false,
+      approvalPromptToolsAvailable: true,
     }),
     true,
   );
@@ -363,7 +372,10 @@ test("shouldDeferSteering does not defer settled or concluded snapshots", () => 
     false,
   );
   assert.equal(
-    shouldDeferSteering({ result: { state: "complete", summary: "x" }, dispatchedToolCallCount: 1 }),
+    shouldDeferSteering({
+      result: { state: "complete", summary: "x" },
+      dispatchedToolCallCount: 1,
+    }),
     false,
   );
 });

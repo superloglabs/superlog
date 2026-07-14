@@ -73,7 +73,7 @@ test("cross-links each pull request and the Linear ticket", async () => {
     log: () => {},
   });
 
-  assert.equal(linked, 2);
+  assert.deepEqual(linked, { linkedPullRequests: 2, complete: true });
   assert.deepEqual(postedToGithub, PRS);
   assert.deepEqual(postedToLinear, PRS);
 });
@@ -96,7 +96,7 @@ test("does not post again when a pull request already has the ticket link", asyn
     log: () => {},
   });
 
-  assert.equal(linked, 0);
+  assert.deepEqual(linked, { linkedPullRequests: 0, complete: true });
   assert.equal(posted, false);
 });
 
@@ -114,6 +114,6 @@ test("releases a failed claim so a later sync can retry the comment", async () =
     log: () => {},
   });
 
-  assert.equal(linked, 0);
+  assert.deepEqual(linked, { linkedPullRequests: 0, complete: false });
   assert.deepEqual(released, ["pr-row-1:linear-uuid"]);
 });

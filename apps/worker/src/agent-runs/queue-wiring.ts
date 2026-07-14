@@ -5,6 +5,7 @@ import { asc, inArray } from "drizzle-orm";
 import { loadAgentRunContext } from "../agent-run-context.js";
 import { ACTIVE_STATES, createAgentRunLifecycle } from "../agent-run.js";
 import { setAgentRunJobDispatch } from "./enqueue.js";
+import { listPendingLinearHandoffRunIds, reconcilePendingLinearHandoff } from "./linear-handoff.js";
 import { retryQueuedPullRequestDelivery } from "./pr-delivery.js";
 import { type AgentRunQueueBoss, createAgentRunJobSender, registerAgentRunQueue } from "./queue.js";
 import { resumeAgentRunFromHumanInput } from "./resume.js";
@@ -36,14 +37,20 @@ export async function startAgentRunQueue(boss: AgentRunQueueBoss): Promise<void>
       });
     },
     listActiveRunIds: async () => {
-      const rows = await db
-        .select({ id: schema.agentRuns.id })
-        .from(schema.agentRuns)
-        .where(inArray(schema.agentRuns.state, [...ACTIVE_STATES]))
-        .orderBy(asc(schema.agentRuns.updatedAt));
-      return rows.map((row) => row.id);
+      const [rows, pendingHandoffs] = await Promise.all([
+        db
+          .select({ id: schema.agentRuns.id })
+          .from(schema.agentRuns)
+          .where(inArray(schema.agentRuns.state, [...ACTIVE_STATES]))
+          .orderBy(asc(schema.agentRuns.updatedAt)),
+        listPendingLinearHandoffRunIds(),
+      ]);
+      return [...new Set([...rows.map((row) => row.id), ...pendingHandoffs])];
     },
     handlers: {
+      reconcileHandoff: async (ctx) => {
+        await reconcilePendingLinearHandoff(ctx);
+      },
       start: startQueuedAgentRun,
       sync: syncRunningAgentRun,
       resume: resumeAgentRunFromHumanInput,

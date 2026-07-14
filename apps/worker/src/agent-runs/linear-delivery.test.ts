@@ -118,6 +118,33 @@ test("reuses the ticket already recorded for the same completed investigation", 
   assert.equal(deps.calls.createIssue.length, 0);
 });
 
+test("resolves a legacy recorded Linear identifier to the issue UUID", async () => {
+  const deps = makeDeps({
+    findKnownTicket: async () => ({
+      ticketId: "ENG-7",
+      identifier: "ENG-7",
+      url: "https://linear.app/eng/issue/ENG-7",
+    }),
+    searchIssues: async (term) => {
+      deps.calls.searchIssues.push(term);
+      return term === "ENG-7"
+        ? [
+            {
+              id: "0b6e7f7e-6f3a-4b8e-9a4e-2d1c3b4a5f6e",
+              identifier: "ENG-7",
+              url: "https://linear.app/eng/issue/ENG-7",
+            },
+          ]
+        : [];
+    },
+  });
+
+  const ticket = await deliverLinearTicketWithDeps(BASE_ARGS, RESULT, deps);
+
+  assert.equal(ticket?.ticketId, "0b6e7f7e-6f3a-4b8e-9a4e-2d1c3b4a5f6e");
+  assert.deepEqual(deps.calls.searchIssues, ["ENG-7"]);
+});
+
 test("dedupes a retried completion against its investigation marker", async () => {
   const deps = makeDeps({
     searchIssues: async (term) =>

@@ -6,6 +6,7 @@ import {
   formatIncidentLocalTimestamp,
   incidentDisplayStatus,
   latestIncidentLinearTicket,
+  linearTicketSidebarTarget,
 } from "./incident-detail-view-model.ts";
 
 const now = Date.parse("2026-07-01T16:39:01.388Z");
@@ -164,4 +165,11 @@ test("latestIncidentLinearTicket selects the newest recorded ticket for the side
 
   assert.equal(latest?.identifier, "ENG-42");
   assert.equal(latestIncidentLinearTicket([]), null);
+});
+
+test("linearTicketSidebarTarget preserves a recorded ticket without a provider URL", () => {
+  assert.deepEqual(
+    linearTicketSidebarTarget({ ticketIdentifier: "ENG-42", id: "row-uuid", url: null }),
+    { label: "ENG-42", url: null },
+  );
 });

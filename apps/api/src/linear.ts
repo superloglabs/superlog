@@ -188,6 +188,17 @@ export function isLinearCompletedState(stateType: string | null | undefined): bo
   return stateType === "completed";
 }
 
+export function linearCompletionPlan(
+  previousState: schema.AgentLinearTicketState | null,
+  nextState: string | null | undefined,
+): { processCompletion: boolean; recordAcceptance: boolean } {
+  const processCompletion = isLinearCompletedState(nextState);
+  return {
+    processCompletion,
+    recordAcceptance: processCompletion && previousState !== "completed",
+  };
+}
+
 function verifyLinearSignature(body: string, header: string, secret: string): boolean {
   if (!header) return false;
   const expected = crypto.createHmac("sha256", secret).update(body).digest("hex");
@@ -247,12 +258,12 @@ async function handleLinearWebhook(
       updates.assigneeName = data.assignee.name ?? null;
       updates.assigneeLinearId = data.assignee.id ?? null;
     }
-    const completedState = isLinearCompletedState(data.state?.type);
+    const completion = linearCompletionPlan(ticket.stateType, data.state?.type);
     const updated = await db
       .update(schema.agentLinearTickets)
       .set(updates)
       .where(
-        completedState
+        completion.recordAcceptance
           ? and(
               eq(schema.agentLinearTickets.id, ticket.id),
               or(
@@ -264,7 +275,7 @@ async function handleLinearWebhook(
       )
       .returning({ id: schema.agentLinearTickets.id });
 
-    if (completedState && updated.length > 0) {
+    if (completion.processCompletion) {
       await acceptCompletedLinearTicket({
         ticket: {
           ...ticket,
@@ -273,6 +284,7 @@ async function handleLinearWebhook(
           url: typeof data.url === "string" ? data.url : ticket.url,
         },
         occurredAt,
+        recordAcceptance: completion.recordAcceptance && updated.length > 0,
       });
     }
   }
@@ -299,23 +311,26 @@ async function handleLinearWebhook(
 async function acceptCompletedLinearTicket(args: {
   ticket: schema.AgentLinearTicket;
   occurredAt: Date;
+  recordAcceptance: boolean;
 }): Promise<void> {
-  const { ticket, occurredAt } = args;
+  const { ticket, occurredAt, recordAcceptance } = args;
   const agentPr = await db.query.agentPullRequests.findFirst({
     where: eq(schema.agentPullRequests.agentRunId, ticket.agentRunId),
     orderBy: [schema.agentPullRequests.createdAt],
   });
   const acceptanceUnit = agentPr ?? linearTicketAcceptanceUnit(ticket);
-  const org = await resolveIncidentOrg(ticket.incidentId);
-  captureAgentPrLifecycleEvent({
-    kind: "accepted",
-    pr: acceptanceUnit,
-    org,
-    daysToOutcome: daysBetween(agentPr?.createdAt ?? ticket.createdAt, occurredAt),
-    acceptanceSource: "linear",
-  });
+  if (recordAcceptance) {
+    const org = await resolveIncidentOrg(ticket.incidentId).catch(() => null);
+    captureAgentPrLifecycleEvent({
+      kind: "accepted",
+      pr: acceptanceUnit,
+      org,
+      daysToOutcome: daysBetween(agentPr?.createdAt ?? ticket.createdAt, occurredAt),
+      acceptanceSource: "linear",
+    });
+  }
 
-  const { resolved } = await incidentLifecycle.resolve({
+  await incidentLifecycle.resolve({
     incidentId: ticket.incidentId,
     kind: "linear_ticket_completed",
     reasonCode: "linear_ticket_completed",
@@ -330,19 +345,19 @@ async function acceptCompletedLinearTicket(args: {
     },
     eventDedupeKey: `incident_resolved:linear_ticket:${ticket.id}`,
   });
-  if (resolved) {
-    await runResolvedIncidentSideEffectsForIncident({
-      incidentId: ticket.incidentId,
-      closePullRequest: (pr) =>
-        closeAgentPullRequestOnGithub({
-          installationId: pr.githubInstallationId,
-          fallbackInstallationIds: pr.fallbackGithubInstallationIds,
-          repoFullName: pr.repoFullName,
-          prNumber: pr.prNumber,
-          prNodeId: pr.prNodeId,
-        }),
-    });
-  }
+  // These effects are idempotent and must be retried even if an earlier
+  // webhook attempt already won the incident-resolution write.
+  await runResolvedIncidentSideEffectsForIncident({
+    incidentId: ticket.incidentId,
+    closePullRequest: (pr) =>
+      closeAgentPullRequestOnGithub({
+        installationId: pr.githubInstallationId,
+        fallbackInstallationIds: pr.fallbackGithubInstallationIds,
+        repoFullName: pr.repoFullName,
+        prNumber: pr.prNumber,
+        prNodeId: pr.prNodeId,
+      }),
+  });
 }
 
 function describeLinearEvent(payload: LinearWebhookPayload): {

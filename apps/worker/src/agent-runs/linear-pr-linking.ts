@@ -53,14 +53,16 @@ export async function linkLinearTicketToPullRequestsWithDeps(
   ticket: DeliveredLinearTicket,
   pullRequests: PullRequestTicketLinkTarget[],
   deps: LinearPrLinkingDeps,
-): Promise<number> {
+): Promise<{ linkedPullRequests: number; complete: boolean }> {
   let linked = 0;
+  let complete = true;
   for (const pr of pullRequests) {
     if (await deps.claimGithub(pr, ticket)) {
       const result = await deps.postGithubComment(pr, linearTicketPrComment(ticket));
       if (result.ok) {
         linked += 1;
       } else {
+        complete = false;
         await deps.releaseGithub(pr, ticket);
         deps.log(
           {
@@ -78,6 +80,7 @@ export async function linkLinearTicketToPullRequestsWithDeps(
     if (await deps.claimLinear(pr, ticket)) {
       const result = await deps.postLinearComment(pr, pullRequestLinearComment(pr));
       if (!result.ok) {
+        complete = false;
         await deps.releaseLinear(pr, ticket);
         deps.log(
           {
@@ -93,7 +96,7 @@ export async function linkLinearTicketToPullRequestsWithDeps(
       }
     }
   }
-  return linked;
+  return { linkedPullRequests: linked, complete };
 }
 
 function providerEventId(direction: "github" | "linear", ticket: DeliveredLinearTicket): string {
@@ -104,8 +107,8 @@ export async function linkLinearTicketToPullRequests(
   ctx: AgentRunContext,
   ticket: DeliveredLinearTicket,
   prUrls: string[],
-): Promise<number> {
-  if (prUrls.length === 0) return 0;
+): Promise<{ linkedPullRequests: number; complete: boolean }> {
+  if (prUrls.length === 0) return { linkedPullRequests: 0, complete: true };
   const pullRequests = await db
     .select({
       id: schema.agentPullRequests.id,

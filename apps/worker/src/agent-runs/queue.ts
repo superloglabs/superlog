@@ -72,6 +72,7 @@ export type AgentRunQueueDeps = {
   failContextUnavailable(run: schema.AgentRun): Promise<void>;
   listActiveRunIds(): Promise<string[]>;
   handlers: {
+    reconcileHandoff(ctx: AgentRunContext): Promise<void>;
     start(ctx: AgentRunContext): Promise<void>;
     sync(ctx: AgentRunContext): Promise<void>;
     resume(ctx: AgentRunContext): Promise<void>;
@@ -104,6 +105,7 @@ async function advanceRun(deps: AgentRunQueueDeps, data: AgentRunJobData): Promi
     await deps.failContextUnavailable(agentRun);
     return;
   }
+  await deps.handlers.reconcileHandoff(ctx);
   const state = ctx.agentRun.state;
   if (state === "queued" || state === "repo_discovery") {
     await deps.handlers.start(ctx);

@@ -176,7 +176,7 @@ export async function getProjectAutomation(projectId: string): Promise<{
     linearDefaultTeamId: row?.linearDefaultTeamId ?? null,
     prPolicy: row?.prPolicy ?? "on_ready_to_pr",
     approvalPromptsEnabled: row?.approvalPromptsEnabled ?? true,
-    createLinearTicketOnResolve: row?.createLinearTicketOnResolve ?? true,
+    createLinearTicketOnResolve: row?.createLinearTicketOnResolve ?? false,
     prBaseBranch: schema.normalizePrBaseBranch(row?.prBaseBranch),
     autoMergeFixPrs: row?.autoMergeFixPrs ?? "never",
     autoMergeMethod: row?.autoMergeMethod ?? "squash",

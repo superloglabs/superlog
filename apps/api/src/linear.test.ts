@@ -27,8 +27,16 @@ test("buildLinearAuthorizeUrl requests app-actor authorization", async () => {
 });
 
 test("completed is the only Linear state type that accepts the investigation", async () => {
-  const { isLinearCompletedState } = await import("./linear.js");
+  const { isLinearCompletedState, linearCompletionPlan } = await import("./linear.js");
   assert.equal(isLinearCompletedState("completed"), true);
   assert.equal(isLinearCompletedState("started"), false);
   assert.equal(isLinearCompletedState(undefined), false);
+  assert.deepEqual(linearCompletionPlan("started", "completed"), {
+    processCompletion: true,
+    recordAcceptance: true,
+  });
+  assert.deepEqual(linearCompletionPlan("completed", "completed"), {
+    processCompletion: true,
+    recordAcceptance: false,
+  });
 });

@@ -969,7 +969,7 @@ export const projectAutomationSettings = pgTable(
     // ticket for this terminal path as well.
     createLinearTicketOnResolve: boolean("create_linear_ticket_on_resolve")
       .notNull()
-      .default(true),
+      .default(false),
     prBaseBranch: text("pr_base_branch"),
     autoMergeFixPrs: text("auto_merge_fix_prs")
       .$type<"never" | "when_checks_pass" | "immediately">()
