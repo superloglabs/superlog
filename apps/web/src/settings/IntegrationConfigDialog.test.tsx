@@ -24,6 +24,9 @@ test("renders a modal dialog with the integration header and config content", ()
   // Both dismissal affordances are labelled: the scrim and the header X.
   assert.match(html, /aria-label="Close dialog"/);
   assert.match(html, /aria-label="Close"/);
+  // The panel is programmatically focusable so focus can move into the
+  // dialog on mount (focus trap behavior itself needs a real DOM).
+  assert.match(html, /tabindex="-1"/);
 });
 
 test("omits the status slot when none is given", () => {

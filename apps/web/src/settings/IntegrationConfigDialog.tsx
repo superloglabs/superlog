@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 
 /**
  * Centered modal that hosts a single integration's configuration. Opened by
@@ -20,13 +20,55 @@ export function IntegrationConfigDialog({
   onClose: () => void;
   children: ReactNode;
 }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      // Keep Tab cycling inside the panel while the dialog is open.
+      if (e.key !== "Tab") return;
+      const panel = panelRef.current;
+      if (!panel) return;
+      const focusables = Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      const first = focusables.at(0);
+      const last = focusables.at(-1);
+      if (!first || !last) {
+        e.preventDefault();
+        panel.focus();
+        return;
+      }
+      const active = document.activeElement;
+      const inside = active instanceof HTMLElement && panel.contains(active);
+      if (e.shiftKey) {
+        if (!inside || active === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else if (!inside || active === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // Move focus into the dialog on mount; restore it to the trigger on close.
+  useEffect(() => {
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    panelRef.current?.focus();
+    return () => {
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  }, []);
 
   // Lock body scroll while open.
   useEffect(() => {
@@ -51,7 +93,11 @@ export function IntegrationConfigDialog({
         onClick={onClose}
         className="absolute inset-0 cursor-default border-0 bg-black/60 backdrop-blur-sm"
       />
-      <div className="relative flex max-h-[80vh] w-full max-w-[640px] flex-col overflow-hidden rounded-[14px] border border-border-strong bg-surface shadow-[0_24px_60px_rgba(0,0,0,0.5)]">
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className="relative flex max-h-[80vh] w-full max-w-[640px] flex-col overflow-hidden rounded-[14px] border border-border-strong bg-surface shadow-[0_24px_60px_rgba(0,0,0,0.5)] focus:outline-none"
+      >
         <div className="flex items-start gap-3 border-b border-border px-[22px] py-[18px]">
           {glyph}
           <div className="min-w-0 flex-1">
