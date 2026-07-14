@@ -3,7 +3,7 @@
 // The single-Issue classifier below remains for durable legacy runs that were
 // already in flight under the retired action-by-action contract.
 
-import { desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { DB } from "./client.js";
 import {
   buildIssueObservePatch,
@@ -240,4 +240,117 @@ export async function listUnclassifiedIncidentIssues(
   return open
     .filter((row) => latestByIssue.get(row.id)?.incidentId === incidentId)
     .map(({ id, title }) => ({ id, title }));
+}
+
+export type SynthesizeLegacyIncidentIssueOutcomesResult =
+  | { ok: true; outcomes: schema.AgentRunIssueClassification[] }
+  | { ok: false; errors: string[] };
+
+const CLASSIFICATION_EVENT_KINDS = ["issue_silenced", "issue_observed", "issue_resolved"] as const;
+
+// Transitional read model for durable sessions created under the retired
+// action-by-action contract. The Issue row is authoritative for its current
+// lifecycle state; this run's matching classification event supplies the
+// human-readable reason/evidence that the atomic resolve contract requires.
+// New sessions never call this path and still have to submit issueOutcomes.
+export async function synthesizeLegacyIncidentIssueOutcomes(
+  database: DB,
+  opts: { incidentId: string; agentRunId: string },
+): Promise<SynthesizeLegacyIncidentIssueOutcomesResult> {
+  const linkedRows = await database
+    .select({ issue: schema.issues, link: schema.incidentIssues })
+    .from(schema.issues)
+    .innerJoin(schema.incidentIssues, eq(schema.incidentIssues.issueId, schema.issues.id))
+    .where(eq(schema.incidentIssues.incidentId, opts.incidentId))
+    .orderBy(asc(schema.incidentIssues.createdAt), asc(schema.incidentIssues.id));
+  const issueIds = linkedRows.map(({ issue }) => issue.id);
+  const allLinks =
+    issueIds.length > 0
+      ? await database.query.incidentIssues.findMany({
+          where: inArray(schema.incidentIssues.issueId, issueIds),
+        })
+      : [];
+  const latestLinkByIssue = new Map<string, (typeof allLinks)[number]>();
+  for (const link of allLinks) {
+    const current = latestLinkByIssue.get(link.issueId);
+    if (
+      !current ||
+      link.createdAt > current.createdAt ||
+      (link.createdAt.getTime() === current.createdAt.getTime() && link.id > current.id)
+    ) {
+      latestLinkByIssue.set(link.issueId, link);
+    }
+  }
+  const issues = linkedRows
+    .map(({ issue }) => issue)
+    .filter((issue) => latestLinkByIssue.get(issue.id)?.incidentId === opts.incidentId);
+
+  const events = await database.query.incidentEvents.findMany({
+    where: and(
+      eq(schema.incidentEvents.incidentId, opts.incidentId),
+      eq(schema.incidentEvents.agentRunId, opts.agentRunId),
+      inArray(schema.incidentEvents.kind, CLASSIFICATION_EVENT_KINDS),
+    ),
+    orderBy: [
+      desc(schema.incidentEvents.processedAt),
+      desc(schema.incidentEvents.createdAt),
+      desc(schema.incidentEvents.id),
+    ],
+  });
+
+  const outcomes: schema.AgentRunIssueClassification[] = [];
+  const errors: string[] = [];
+  for (const issue of issues) {
+    if (issue.status === "open") {
+      errors.push(
+        `Issue ${issue.id} ("${issue.title}") is still open and must be classified before resolving the Incident.`,
+      );
+      continue;
+    }
+    const expectedKind =
+      issue.status === "silenced"
+        ? "issue_silenced"
+        : issue.status === "under_observation"
+          ? "issue_observed"
+          : "issue_resolved";
+    const event = events.find(
+      (candidate) => candidate.kind === expectedKind && candidate.detail?.issueId === issue.id,
+    );
+    const reason = event?.detail?.reason;
+    const evidence = event?.detail?.evidence;
+    if (
+      typeof reason !== "string" ||
+      !reason.trim() ||
+      typeof evidence !== "string" ||
+      !evidence.trim()
+    ) {
+      errors.push(
+        `Issue ${issue.id} ("${issue.title}") has no ${expectedKind} classification evidence from this agent run.`,
+      );
+      continue;
+    }
+    const action =
+      issue.status === "silenced"
+        ? ("silence" as const)
+        : issue.status === "under_observation"
+          ? ("observe" as const)
+          : ("resolve" as const);
+    if (action === "observe" && !issue.escalationTrigger) {
+      errors.push(
+        `Issue ${issue.id} ("${issue.title}") is under observation without an escalation trigger.`,
+      );
+      continue;
+    }
+    outcomes.push({
+      issueId: issue.id,
+      action,
+      reason,
+      evidence,
+      ...(action === "observe" ? { trigger: issue.escalationTrigger } : {}),
+    });
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+  const complete = validateCompleteIncidentIssueOutcomes(issues, outcomes);
+  return complete.ok ? { ok: true, outcomes } : complete;
 }

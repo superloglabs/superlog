@@ -3,7 +3,40 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { schema } from "@superlog/db";
 import type { AgentRunContext } from "../agent-run-context.js";
-import { resolvePullRequestBaseBranch } from "./pr-delivery.js";
+import {
+  compensatePullRequestDelivery,
+  deliverProposedPullRequest,
+  preflightProposedPullRequest,
+  pullRequestDeliveryIdentityForLegacyCompletion,
+  resolvePullRequestBaseBranch,
+} from "./pr-delivery.js";
+
+test("legacy completion derives a stable opaque delivery identity per run and repository", () => {
+  const first = pullRequestDeliveryIdentityForLegacyCompletion({
+    agentRunId: "run-1",
+    repoFullName: "acme/api",
+    requestedBranchName: "superlog/fix-api",
+    input: { patch: "first patch" },
+  });
+  const replay = pullRequestDeliveryIdentityForLegacyCompletion({
+    agentRunId: "run-1",
+    repoFullName: "acme/api",
+    requestedBranchName: "superlog/fix-api",
+    input: { patch: "first patch" },
+  });
+  const conflictingInput = pullRequestDeliveryIdentityForLegacyCompletion({
+    agentRunId: "run-1",
+    repoFullName: "acme/api",
+    requestedBranchName: "superlog/fix-api",
+    input: { patch: "different patch" },
+  });
+
+  assert.deepEqual(replay, first);
+  assert.match(first.deliveryId, /^[a-zA-Z0-9_-]{8,128}$/);
+  assert.equal(conflictingInput.deliveryId, first.deliveryId);
+  assert.notEqual(conflictingInput.inputHash, first.inputHash);
+  assert.equal(first.requestedBranchName, "superlog/fix-api");
+});
 
 test("resolvePullRequestBaseBranch prefers the configured project branch", () => {
   const ctx = { prBaseBranch: "development" } as AgentRunContext;
@@ -24,4 +57,180 @@ test("resolvePullRequestBaseBranch lets GitHub use the repository default when b
   const pr = { baseBranch: "" } as schema.AgentRunPr;
 
   assert.equal(resolvePullRequestBaseBranch(ctx, pr), null);
+});
+
+const deliveredPullRequest = {
+  repoFullName: "acme/api",
+  branchName: "ash/fix-api",
+  prUrl: "https://github.com/acme/api/pull/42",
+  prNumber: 42,
+};
+
+test("successful compensation makes an unrecorded PR delivery explicitly retryable", async () => {
+  const calls: string[] = [];
+
+  const result = await compensatePullRequestDelivery({
+    pullRequest: deliveredPullRequest,
+    reason: { kind: "reconciliation_failed", error: "database unavailable" },
+    closePullRequest: async () => {
+      calls.push("github.close");
+      return { ok: true };
+    },
+    markCanonicalClosed: async () => {
+      calls.push("canonical.close");
+      throw new Error("database still unavailable");
+    },
+  });
+
+  assert.deepEqual(calls, ["github.close", "canonical.close"]);
+  assert.equal(result.ok, false);
+  assert.equal(result.deliveryStatus, "retryable");
+  assert.equal(result.retryable, true);
+  assert.equal(result.manualReconciliation, undefined);
+});
+
+test("failed PR-close compensation returns structured manual-reconciliation metadata", async () => {
+  let markCalled = false;
+
+  const result = await compensatePullRequestDelivery({
+    pullRequest: deliveredPullRequest,
+    reason: { kind: "reconciliation_failed", error: "insert timed out" },
+    closePullRequest: async () => ({ ok: false, error: "GitHub rate limited the close" }),
+    markCanonicalClosed: async () => {
+      markCalled = true;
+      return { canonicalRecordFound: false, canonicalState: null };
+    },
+  });
+
+  assert.equal(markCalled, false);
+  assert.equal(result.ok, false);
+  assert.equal(result.deliveryStatus, "manual_reconciliation_required");
+  assert.equal(result.retryable, false);
+  assert.deepEqual(result.manualReconciliation, {
+    actionRequired: "close_pull_request",
+    repoFullName: "acme/api",
+    branchName: "ash/fix-api",
+    prUrl: "https://github.com/acme/api/pull/42",
+    prNumber: 42,
+    reconciliationReason: "reconciliation_failed",
+    reconciliationError: "insert timed out",
+    closeError: "GitHub rate limited the close",
+    canonicalState: null,
+  });
+});
+
+const deliveryIdentity = {
+  deliveryId: "d4e5f60718293a4b",
+  inputHash: "proposal-sha256",
+  requestedBranchName: "ash/fix-api",
+};
+
+const recordedDelivery = {
+  repoFullName: "acme/api",
+  requestedBranchName: "ash/fix-api",
+  branchName: "ash/fix-api-retry-d4e5f607",
+  url: "https://github.com/acme/api/pull/42",
+  prNumber: 42,
+  updatedExisting: false,
+  headSha: "abc123",
+};
+
+const proposedPullRequest = {
+  repoFullName: "acme/api",
+  title: "Fix API retries",
+  body: "The retry loop now terminates.",
+  branchName: "ash/fix-api",
+  baseBranch: "main",
+  patchFilePath: "/mnt/session/outputs/api.patch",
+};
+
+test("preflight reconstructs a recorded entry before policy or provider checks", async () => {
+  const prepared = await preflightProposedPullRequest(
+    {
+      prPolicy: "never",
+      githubInstalls: [],
+      incident: { id: "incident-1" },
+      agentRun: { id: "run-1" },
+    } as unknown as AgentRunContext,
+    proposedPullRequest,
+    "session-1",
+    deliveryIdentity,
+    {
+      findRecordedDelivery: async () => recordedDelivery,
+      listRepositories: async () => {
+        throw new Error("provider lookup must not run");
+      },
+    },
+  );
+
+  assert.deepEqual(prepared, {
+    ok: true,
+    prepared: { kind: "recorded", delivery: recordedDelivery },
+  });
+});
+
+test("preflight recognizes a pushed delivery branch before reading or applying the patch", async () => {
+  let downloaded = false;
+  let validated = false;
+  const prepared = await preflightProposedPullRequest(
+    {
+      prPolicy: "always",
+      githubInstalls: [{ installation: { installationId: 99 } }],
+      incident: { id: "incident-1" },
+      agentRun: { id: "run-1" },
+    } as unknown as AgentRunContext,
+    proposedPullRequest,
+    "session-1",
+    deliveryIdentity,
+    {
+      findRecordedDelivery: async () => null,
+      listRepositories: async () => [
+        {
+          id: 123,
+          fullName: "acme/api",
+          private: false,
+          installation: { installationId: 99 } as never,
+        },
+      ],
+      findGithubDelivery: async () => ({
+        kind: "branch",
+        branchName: "ash/fix-api-retry-d4e5f607",
+        headSha: "abc123",
+        baseBranch: "main",
+      }),
+      downloadPatch: async () => {
+        downloaded = true;
+        return { patch: "diff", fileId: "file-1" };
+      },
+      validatePatch: async () => {
+        validated = true;
+      },
+    },
+  );
+
+  assert.deepEqual(prepared, { ok: true, prepared: { kind: "github_recovery" } });
+  assert.equal(downloaded, false);
+  assert.equal(validated, false);
+});
+
+test("delivery returns a recorded entry without repeating provider side effects", async () => {
+  const result = await deliverProposedPullRequest(
+    {
+      prPolicy: "never",
+      githubInstalls: [],
+    } as unknown as AgentRunContext,
+    proposedPullRequest,
+    "session-1",
+    null,
+    { kind: "recorded", delivery: recordedDelivery },
+    deliveryIdentity,
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    url: recordedDelivery.url,
+    prNumber: recordedDelivery.prNumber,
+    branchName: recordedDelivery.branchName,
+    updatedExisting: false,
+  });
 });

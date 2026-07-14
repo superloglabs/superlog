@@ -575,6 +575,11 @@ async function resolveIncidentInTx(
     processedAt: resolvedAt,
   });
 
+  // A run parked on PR review or another external event has no more work to
+  // await once its Incident closes. Conclude it in the same transaction so a
+  // committed resolution cannot leave an active investigation behind.
+  await repository.completeAwaitingEventRunsInTx(tx, input.incidentId, resolvedAt);
+
   return { resolved: true, resolvedIssueCount };
 }
 

@@ -8,11 +8,15 @@ import {
   type GithubDirEntry,
   MAX_REPO_INSTRUCTION_FILES,
   applyAgentPatch,
+  buildPullRequestDeliveryCommitMessage,
   collectRepoInstructionFiles,
+  commitMessageHasPullRequestDelivery,
+  findPullRequestDeliveryCommit,
   formatRetryBranchName,
   isGitPushBranchCollision,
   isMissingRemoteBranchFailure,
   isRetryableGitPushFailure,
+  recoverPullRequestDelivery,
   redactGitSecrets,
 } from "./github-app.js";
 
@@ -172,6 +176,134 @@ test("formatRetryBranchName appends a bounded retry suffix", () => {
     "superlog/fix-refresh-token-retry-abcdef12",
   );
   assert.equal(formatRetryBranchName("superlog/fix", "bad chars!"), "superlog/fix-retry-bad-char");
+});
+
+test("a pull request delivery marker is opaque, exact, and preserves the resolved base", () => {
+  const message = buildPullRequestDeliveryCommitMessage(
+    "Fix API retries",
+    "d4e5f60718293a4b",
+    "release/2026-07",
+  );
+
+  assert.equal(
+    message,
+    "Fix API retries\n\nDelivery-Id: d4e5f60718293a4b\nDelivery-Base: release/2026-07",
+  );
+  assert.equal(commitMessageHasPullRequestDelivery(message, "d4e5f60718293a4b"), true);
+  assert.equal(commitMessageHasPullRequestDelivery(message, "d4e5f60718293a4"), false);
+});
+
+test("existing-branch recovery matches the exact delivery marker, not an id prefix", () => {
+  assert.deepEqual(
+    findPullRequestDeliveryCommit(
+      [
+        {
+          sha: "wrong",
+          message: "Fix API retries\n\nDelivery-Id: d4e5f60718293a4b-extra",
+        },
+        {
+          sha: "right",
+          message: "Fix API retries\n\nDelivery-Id: d4e5f60718293a4b",
+        },
+      ],
+      "d4e5f60718293a4b",
+    ),
+    { sha: "right", message: "Fix API retries\n\nDelivery-Id: d4e5f60718293a4b" },
+  );
+});
+
+test("delivery recovery finds a merged PR even after its branch was deleted", async () => {
+  const lookedUpBranches: string[] = [];
+  const recovered = await recoverPullRequestDelivery({
+    deliveryId: "d4e5f60718293a4b",
+    requestedBranch: "ash/fix-api",
+    lookup: {
+      async listPullRequests(branchName) {
+        lookedUpBranches.push(branchName);
+        return branchName === "ash/fix-api-retry-d4e5f607"
+          ? [
+              {
+                prUrl: "https://github.com/acme/api/pull/42",
+                prNumber: 42,
+                prNodeId: "PR_42",
+                headSha: "abc123",
+                branchName,
+                baseBranch: "main",
+                state: "closed",
+                mergedAt: "2026-07-14T12:00:00Z",
+                authorLogin: "octocat",
+                authorGithubId: 1,
+                authorAvatarUrl: null,
+              },
+            ]
+          : [];
+      },
+      async listPullRequestCommitMessages(prNumber) {
+        assert.equal(prNumber, 42);
+        return ["Fix API retries\n\nDelivery-Id: d4e5f60718293a4b"];
+      },
+      async getBranchHead() {
+        return null;
+      },
+    },
+  });
+
+  assert.deepEqual(lookedUpBranches, ["ash/fix-api", "ash/fix-api-retry-d4e5f607"]);
+  assert.equal(recovered?.kind, "pull_request");
+  if (recovered?.kind !== "pull_request") return;
+  assert.equal(recovered.pullRequest.prNumber, 42);
+  assert.equal(recovered.pullRequest.state, "closed");
+});
+
+test("delivery recovery resumes a pushed branch that has no PR yet", async () => {
+  const recovered = await recoverPullRequestDelivery({
+    deliveryId: "d4e5f60718293a4b",
+    requestedBranch: "ash/fix-api",
+    lookup: {
+      async listPullRequests() {
+        return [];
+      },
+      async listPullRequestCommitMessages() {
+        return [];
+      },
+      async getBranchHead(branchName) {
+        return branchName === "ash/fix-api"
+          ? {
+              headSha: "abc123",
+              commitMessage:
+                "Fix API retries\n\nDelivery-Id: d4e5f60718293a4b\nDelivery-Base: development",
+            }
+          : null;
+      },
+    },
+  });
+
+  assert.deepEqual(recovered, {
+    kind: "branch",
+    branchName: "ash/fix-api",
+    headSha: "abc123",
+    baseBranch: "development",
+  });
+});
+
+test("an occupied deterministic fallback without the delivery marker is not adopted", async () => {
+  const recovered = await recoverPullRequestDelivery({
+    deliveryId: "d4e5f60718293a4b",
+    requestedBranch: "ash/fix-api",
+    lookup: {
+      async listPullRequests() {
+        return [];
+      },
+      async listPullRequestCommitMessages() {
+        return [];
+      },
+      async getBranchHead() {
+        return { headSha: "someone-elses-sha", commitMessage: "Unrelated work" };
+      },
+    },
+  });
+
+  assert.equal(recovered, null);
 });
 
 test("isMissingRemoteBranchFailure detects clone failures for deleted base branches", () => {

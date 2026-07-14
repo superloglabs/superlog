@@ -4,6 +4,7 @@ import { createClient } from "@clickhouse/client";
 import { serve } from "@hono/node-server";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import {
+  INTERNAL_INCIDENT_EVENT_KIND_SQL_PATTERN,
   ISSUE_STATUSES,
   type Issue,
   buildIssueReopenPatch,
@@ -26,7 +27,19 @@ import {
 } from "@superlog/db";
 import { fingerprint, fingerprintLog } from "@superlog/fingerprint";
 import { Autumn, AutumnError } from "autumn-js";
-import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  notLike,
+  or,
+} from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
@@ -3036,9 +3049,12 @@ async function loadIncidentTimeline(
     // resolves, sweep proposal confirmations, etc., don't have an
     // agent_run_id to anchor to).
     db.query.incidentEvents.findMany({
-      where: or(
-        eq(schema.incidentEvents.agentRunId, agentRunId),
-        eq(schema.incidentEvents.incidentId, incidentId),
+      where: and(
+        or(
+          eq(schema.incidentEvents.agentRunId, agentRunId),
+          eq(schema.incidentEvents.incidentId, incidentId),
+        ),
+        notLike(schema.incidentEvents.kind, INTERNAL_INCIDENT_EVENT_KIND_SQL_PATTERN),
       ),
       orderBy: [asc(schema.incidentEvents.createdAt)],
     }),

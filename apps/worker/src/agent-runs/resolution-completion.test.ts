@@ -24,6 +24,7 @@ const result: AgentRunResult = {
     reason: "The incident no longer needs action.",
     evidence: "The failing path is absent from the current code.",
   },
+  incidentResolutionEventDedupeKey: "incident_resolved:agent_run:run-1:resolve_incident:tool-use-1",
 };
 
 test("a run that committed the resolution retains its classifications", () => {
@@ -40,8 +41,12 @@ test("a run that lost the resolution race persists findings without phantom clas
 
 test("resolve dispatch and completion share one stable event key", () => {
   assert.equal(
-    agentResolveEventDedupeKey("run-1"),
-    "incident_resolved:agent_run:run-1:resolve_incident",
+    agentResolveEventDedupeKey("run-1", "tool-use-1"),
+    "incident_resolved:agent_run:run-1:resolve_incident:tool-use-1",
+  );
+  assert.notEqual(
+    agentResolveEventDedupeKey("run-1", "tool-use-1"),
+    agentResolveEventDedupeKey("run-1", "tool-use-2"),
   );
 });
 

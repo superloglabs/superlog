@@ -25,7 +25,10 @@ type GithubPullRequest = {
   html_url: string;
   number: number;
   node_id: string;
-  head: { sha: string };
+  head: { sha: string; ref?: string };
+  base?: { ref?: string };
+  state?: "open" | "closed";
+  merged_at?: string | null;
   user?: { login?: string; id?: number; avatar_url?: string } | null;
 };
 
@@ -88,6 +91,115 @@ export function formatRetryBranchName(
     .replace(/^-+|-+$/g, "")
     .slice(0, 8);
   return `${branchName}-retry-${suffix || crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+}
+
+function assertPullRequestDeliveryId(deliveryId: string): void {
+  if (!/^[a-zA-Z0-9_-]{8,128}$/.test(deliveryId)) {
+    throw new Error("pull request delivery id must be an opaque 8-128 character identifier");
+  }
+}
+
+export function pullRequestDeliveryMarker(deliveryId: string): string {
+  assertPullRequestDeliveryId(deliveryId);
+  return `Delivery-Id: ${deliveryId}`;
+}
+
+export function buildPullRequestDeliveryCommitMessage(
+  title: string,
+  deliveryId: string,
+  baseBranch?: string | null,
+): string {
+  const lines = [title, "", pullRequestDeliveryMarker(deliveryId)];
+  if (baseBranch) lines.push(`Delivery-Base: ${baseBranch}`);
+  return lines.join("\n");
+}
+
+export function commitMessageHasPullRequestDelivery(
+  commitMessage: string,
+  deliveryId: string,
+): boolean {
+  const marker = pullRequestDeliveryMarker(deliveryId);
+  return commitMessage.split(/\r?\n/).some((line) => line.trim() === marker);
+}
+
+export function findPullRequestDeliveryCommit<T extends { sha: string; message: string }>(
+  commits: T[],
+  deliveryId: string,
+): T | null {
+  return (
+    commits.find((commit) => commitMessageHasPullRequestDelivery(commit.message, deliveryId)) ??
+    null
+  );
+}
+
+function deliveryBaseBranchFromCommitMessage(commitMessage: string): string | null {
+  for (const line of commitMessage.split(/\r?\n/)) {
+    if (!line.startsWith("Delivery-Base: ")) continue;
+    const baseBranch = line.slice("Delivery-Base: ".length).trim();
+    if (baseBranch) return baseBranch;
+  }
+  return null;
+}
+
+export type GithubDeliveredPullRequest = {
+  prUrl: string;
+  prNumber: number;
+  prNodeId: string;
+  headSha: string;
+  branchName: string;
+  baseBranch: string;
+  state: "open" | "closed";
+  mergedAt: string | null;
+  authorLogin: string | null;
+  authorGithubId: number | null;
+  authorAvatarUrl: string | null;
+};
+
+export type PullRequestDeliveryLookup = {
+  listPullRequests(branchName: string): Promise<GithubDeliveredPullRequest[]>;
+  listPullRequestCommitMessages(prNumber: number): Promise<string[]>;
+  getBranchHead(branchName: string): Promise<{ headSha: string; commitMessage: string } | null>;
+};
+
+export type RecoveredPullRequestDelivery =
+  | { kind: "pull_request"; pullRequest: GithubDeliveredPullRequest }
+  | { kind: "branch"; branchName: string; headSha: string; baseBranch: string | null };
+
+export async function recoverPullRequestDelivery(opts: {
+  deliveryId: string;
+  requestedBranch: string;
+  lookup: PullRequestDeliveryLookup;
+}): Promise<RecoveredPullRequestDelivery | null> {
+  assertPullRequestDeliveryId(opts.deliveryId);
+  const branches = [
+    opts.requestedBranch,
+    formatRetryBranchName(opts.requestedBranch, opts.deliveryId),
+  ].filter((branch, index, all) => all.indexOf(branch) === index);
+
+  for (const branchName of branches) {
+    const pullRequests = await opts.lookup.listPullRequests(branchName);
+    for (const pullRequest of pullRequests) {
+      const messages = await opts.lookup.listPullRequestCommitMessages(pullRequest.prNumber);
+      if (
+        messages.some((message) => commitMessageHasPullRequestDelivery(message, opts.deliveryId))
+      ) {
+        return { kind: "pull_request", pullRequest };
+      }
+    }
+  }
+
+  for (const branchName of branches) {
+    const branch = await opts.lookup.getBranchHead(branchName);
+    if (branch && commitMessageHasPullRequestDelivery(branch.commitMessage, opts.deliveryId)) {
+      return {
+        kind: "branch",
+        branchName,
+        headSha: branch.headSha,
+        baseBranch: deliveryBaseBranchFromCommitMessage(branch.commitMessage),
+      };
+    }
+  }
+  return null;
 }
 
 function githubGitAuthEnv(token: string): NodeJS.ProcessEnv {
@@ -648,6 +760,8 @@ async function pushBranchWithCollisionFallback(opts: {
   env: NodeJS.ProcessEnv;
   branchName: string;
   repoFullName: string;
+  deliveryId?: string;
+  recoverBeforeFallback?: () => Promise<boolean>;
 }): Promise<string> {
   const push = (branchName: string) =>
     ensureGitPushOk(["push", "origin", `HEAD:refs/heads/${branchName}`], {
@@ -662,8 +776,13 @@ async function pushBranchWithCollisionFallback(opts: {
   } catch (err) {
     const detail = publicGitErrorDetail(err);
     if (!isGitPushBranchCollision(detail)) throw err;
+    // A concurrent delivery may have won the requested branch between our
+    // initial recovery lookup and push. Recover its marker before creating a
+    // fallback branch; the outer delivery flow will then reuse/open that
+    // exact branch instead of producing a second PR.
+    if (opts.recoverBeforeFallback && (await opts.recoverBeforeFallback())) throw err;
 
-    const fallbackBranchName = formatRetryBranchName(opts.branchName);
+    const fallbackBranchName = formatRetryBranchName(opts.branchName, opts.deliveryId);
     logger.warn(
       {
         scope: "github-app.git",
@@ -677,6 +796,201 @@ async function pushBranchWithCollisionFallback(opts: {
     await push(fallbackBranchName);
     return fallbackBranchName;
   }
+}
+
+function githubPullRequestDelivery(
+  pr: GithubPullRequest,
+  fallback: { branchName: string; baseBranch: string },
+): GithubDeliveredPullRequest {
+  return {
+    prUrl: pr.html_url,
+    prNumber: pr.number,
+    prNodeId: pr.node_id,
+    headSha: pr.head.sha,
+    branchName: pr.head.ref ?? fallback.branchName,
+    baseBranch: pr.base?.ref ?? fallback.baseBranch,
+    state: pr.state ?? "open",
+    mergedAt: pr.merged_at ?? null,
+    authorLogin: pr.user?.login ?? null,
+    authorGithubId: pr.user?.id ?? null,
+    authorAvatarUrl: pr.user?.avatar_url ?? null,
+  };
+}
+
+function isGithubNotFound(err: unknown): boolean {
+  return err instanceof Error && /github GET .* failed: 404(?:\s|$)/.test(err.message);
+}
+
+function githubPullRequestDeliveryLookup(opts: {
+  repoFullName: string;
+  fallbackBaseBranch: string;
+  token: string;
+}): PullRequestDeliveryLookup {
+  const owner = opts.repoFullName.split("/")[0] ?? "";
+  return {
+    async listPullRequests(branchName) {
+      const query = new URLSearchParams({
+        state: "all",
+        head: `${owner}:${branchName}`,
+        per_page: "100",
+      });
+      const pullRequests = await githubRequest<GithubPullRequest[]>(
+        `/repos/${opts.repoFullName}/pulls?${query.toString()}`,
+        { bearerToken: opts.token },
+      );
+      return pullRequests.map((pr) =>
+        githubPullRequestDelivery(pr, {
+          branchName,
+          baseBranch: opts.fallbackBaseBranch,
+        }),
+      );
+    },
+    async listPullRequestCommitMessages(prNumber) {
+      const messages: string[] = [];
+      for (let page = 1; page <= 10; page++) {
+        const commits = await githubRequest<Array<{ commit?: { message?: string | null } | null }>>(
+          `/repos/${opts.repoFullName}/pulls/${prNumber}/commits?per_page=100&page=${page}`,
+          { bearerToken: opts.token },
+        );
+        for (const commit of commits) {
+          if (typeof commit.commit?.message === "string") messages.push(commit.commit.message);
+        }
+        if (commits.length < 100) break;
+      }
+      return messages;
+    },
+    async getBranchHead(branchName) {
+      try {
+        const branch = await githubRequest<{ commit: { sha: string } }>(
+          `/repos/${opts.repoFullName}/branches/${encodeURIComponent(branchName)}`,
+          { bearerToken: opts.token },
+        );
+        const commit = await githubRequest<{ commit?: { message?: string | null } | null }>(
+          `/repos/${opts.repoFullName}/commits/${encodeURIComponent(branch.commit.sha)}`,
+          { bearerToken: opts.token },
+        );
+        return {
+          headSha: branch.commit.sha,
+          commitMessage: commit.commit?.message ?? "",
+        };
+      } catch (err) {
+        if (isGithubNotFound(err)) return null;
+        throw err;
+      }
+    },
+  };
+}
+
+async function recoverPullRequestDeliveryWithToken(opts: {
+  repoFullName: string;
+  requestedBranch: string;
+  fallbackBaseBranch: string;
+  deliveryId: string;
+  token: string;
+}): Promise<RecoveredPullRequestDelivery | null> {
+  return recoverPullRequestDelivery({
+    deliveryId: opts.deliveryId,
+    requestedBranch: opts.requestedBranch,
+    lookup: githubPullRequestDeliveryLookup(opts),
+  });
+}
+
+export async function findGithubPullRequestDelivery(opts: {
+  installationId: number;
+  repositoryId?: number;
+  repoFullName: string;
+  requestedBranch: string;
+  baseBranch: string;
+  deliveryId: string;
+}): Promise<RecoveredPullRequestDelivery | null> {
+  const token = await createGithubWriteToken(opts.installationId, opts.repositoryId);
+  return recoverPullRequestDeliveryWithToken({
+    repoFullName: opts.repoFullName,
+    requestedBranch: opts.requestedBranch,
+    fallbackBaseBranch: opts.baseBranch,
+    deliveryId: opts.deliveryId,
+    token,
+  });
+}
+
+export type OpenedAgentPullRequest = {
+  prUrl: string;
+  prNumber: number;
+  prNodeId: string;
+  headSha: string;
+  authorLogin: string | null;
+  authorGithubId: number | null;
+  authorAvatarUrl: string | null;
+  branchName: string;
+  baseBranch: string;
+};
+
+function openedAgentPullRequest(delivered: GithubDeliveredPullRequest): OpenedAgentPullRequest {
+  return {
+    prUrl: delivered.prUrl,
+    prNumber: delivered.prNumber,
+    prNodeId: delivered.prNodeId,
+    headSha: delivered.headSha,
+    authorLogin: delivered.authorLogin,
+    authorGithubId: delivered.authorGithubId,
+    authorAvatarUrl: delivered.authorAvatarUrl,
+    branchName: delivered.branchName,
+    baseBranch: delivered.baseBranch,
+  };
+}
+
+async function openGithubPullRequestWithToken(opts: {
+  repoFullName: string;
+  title: string;
+  body: string;
+  headBranch: string;
+  baseBranch: string;
+  token: string;
+}): Promise<OpenedAgentPullRequest> {
+  const pr = await githubRequest<GithubPullRequest>(`/repos/${opts.repoFullName}/pulls`, {
+    method: "POST",
+    bearerToken: opts.token,
+    body: {
+      title: opts.title,
+      head: opts.headBranch,
+      base: opts.baseBranch,
+      body: opts.body,
+      maintainer_can_modify: false,
+    },
+  });
+
+  const feedbackOrigin = process.env.WEB_ORIGIN ?? "https://superlog.sh";
+  const feedbackFooter = renderFeedbackFooter({
+    webOrigin: feedbackOrigin,
+    repoFullName: opts.repoFullName,
+    prNumber: pr.number,
+  });
+  if (feedbackFooter) {
+    try {
+      await githubRequest(`/repos/${opts.repoFullName}/pulls/${pr.number}`, {
+        method: "PATCH",
+        bearerToken: opts.token,
+        body: { body: `${opts.body}${feedbackFooter}` },
+      });
+    } catch (err) {
+      logger.warn(
+        {
+          scope: "github-app",
+          err,
+          pr_number: pr.number,
+          repo: opts.repoFullName,
+        },
+        "feedback footer patch failed",
+      );
+    }
+  }
+
+  return openedAgentPullRequest(
+    githubPullRequestDelivery(pr, {
+      branchName: opts.headBranch,
+      baseBranch: opts.baseBranch,
+    }),
+  );
 }
 
 // Read-only delivery preflight for a batched propose_pr call. It clones the
@@ -739,25 +1053,53 @@ export async function applyPatchAndOpenPr(opts: {
   body: string;
   baseBranch?: string | null;
   commitAuthor?: { name: string; email: string } | null;
-}): Promise<{
-  prUrl: string;
-  prNumber: number;
-  prNodeId: string;
-  headSha: string;
-  authorLogin: string | null;
-  authorGithubId: number | null;
-  authorAvatarUrl: string | null;
-  branchName: string;
-  baseBranch: string;
-}> {
+  deliveryId?: string;
+}): Promise<OpenedAgentPullRequest> {
   const repo = await getGithubRepoInfo(opts.installationId, opts.repoFullName, opts.repositoryId);
   const preferredBaseBranch = opts.baseBranch?.trim() || repo.default_branch;
   const workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-pr-"));
   const writeToken = await createGithubWriteToken(opts.installationId, opts.repositoryId);
   const gitAuthEnv = githubGitAuthEnv(writeToken);
   const repoDir = path.join(workdir, "repo");
+  const recover = () =>
+    opts.deliveryId
+      ? recoverPullRequestDeliveryWithToken({
+          repoFullName: opts.repoFullName,
+          requestedBranch: opts.branchName,
+          fallbackBaseBranch: preferredBaseBranch,
+          deliveryId: opts.deliveryId,
+          token: writeToken,
+        })
+      : Promise.resolve(null);
+  const openRecoveredBranch = async (
+    recovered: Extract<RecoveredPullRequestDelivery, { kind: "branch" }>,
+  ) =>
+    openGithubPullRequestWithToken({
+      repoFullName: opts.repoFullName,
+      title: opts.title,
+      body: opts.body,
+      headBranch: recovered.branchName,
+      baseBranch: recovered.baseBranch ?? preferredBaseBranch,
+      token: writeToken,
+    });
 
   try {
+    const existing = await recover();
+    if (existing?.kind === "pull_request") {
+      return openedAgentPullRequest(existing.pullRequest);
+    }
+    if (existing?.kind === "branch") {
+      try {
+        return await openRecoveredBranch(existing);
+      } catch (err) {
+        const afterAmbiguousOpen = await recover();
+        if (afterAmbiguousOpen?.kind === "pull_request") {
+          return openedAgentPullRequest(afterAmbiguousOpen.pullRequest);
+        }
+        throw err;
+      }
+    }
+
     const baseBranch = await cloneRepositoryAtBaseBranch({
       repoFullName: opts.repoFullName,
       repoDir,
@@ -789,73 +1131,58 @@ export async function applyPatchAndOpenPr(opts: {
       throw new Error("patch produced no working tree changes");
     }
 
-    await ensureGitOk(["commit", "--no-verify", "-m", opts.title], { cwd: repoDir });
-    const headBranch = await pushBranchWithCollisionFallback({
-      repoDir,
-      env: gitAuthEnv,
-      branchName: opts.branchName,
-      repoFullName: opts.repoFullName,
-    });
+    const commitMessage = opts.deliveryId
+      ? buildPullRequestDeliveryCommitMessage(opts.title, opts.deliveryId, baseBranch)
+      : opts.title;
+    await ensureGitOk(["commit", "--no-verify", "-m", commitMessage], { cwd: repoDir });
 
-    const prBody = opts.body;
-    const pr = await githubRequest<GithubPullRequest>(`/repos/${opts.repoFullName}/pulls`, {
-      method: "POST",
-      bearerToken: writeToken,
-      body: {
-        title: opts.title,
-        head: headBranch,
-        base: baseBranch,
-        body: prBody,
-        maintainer_can_modify: false,
-      },
-    });
-
-    // Append a feedback link to the PR body now that we know the PR
-    // number. Done as a follow-up PATCH (rather than baked into the
-    // initial POST) because the link is keyed by pr.number — which the
-    // server only assigns on creation. Best-effort: a 4xx here doesn't
-    // unwind the PR, the link is just nice-to-have.
-    const feedbackOrigin = process.env.WEB_ORIGIN ?? "https://superlog.sh";
-    const feedbackFooter = renderFeedbackFooter({
-      webOrigin: feedbackOrigin,
-      repoFullName: opts.repoFullName,
-      prNumber: pr.number,
-    });
-    if (feedbackFooter) {
-      try {
-        await githubRequest(`/repos/${opts.repoFullName}/pulls/${pr.number}`, {
-          method: "PATCH",
-          bearerToken: writeToken,
-          body: { body: `${prBody}${feedbackFooter}` },
-        });
-      } catch (err) {
-        // The PR is already open — the footer is decorative, so we don't
-        // unwind. But surface a WARN so a consistent failure mode (token
-        // missing contents:write, rate-limited, etc.) is detectable in
-        // logs instead of silently producing PRs without the link.
-        logger.warn(
-          {
-            scope: "github-app",
-            err,
-            pr_number: pr.number,
-            repo: opts.repoFullName,
-          },
-          "feedback footer patch failed",
-        );
+    let headBranch: string;
+    try {
+      headBranch = await pushBranchWithCollisionFallback({
+        repoDir,
+        env: gitAuthEnv,
+        branchName: opts.branchName,
+        repoFullName: opts.repoFullName,
+        ...(opts.deliveryId ? { deliveryId: opts.deliveryId } : {}),
+        ...(opts.deliveryId
+          ? { recoverBeforeFallback: async () => (await recover()) !== null }
+          : {}),
+      });
+    } catch (err) {
+      const afterAmbiguousPush = await recover();
+      if (afterAmbiguousPush?.kind === "pull_request") {
+        return openedAgentPullRequest(afterAmbiguousPush.pullRequest);
       }
+      if (afterAmbiguousPush?.kind === "branch") {
+        try {
+          return await openRecoveredBranch(afterAmbiguousPush);
+        } catch (openErr) {
+          const afterAmbiguousOpen = await recover();
+          if (afterAmbiguousOpen?.kind === "pull_request") {
+            return openedAgentPullRequest(afterAmbiguousOpen.pullRequest);
+          }
+          throw openErr;
+        }
+      }
+      throw err;
     }
 
-    return {
-      prUrl: pr.html_url,
-      prNumber: pr.number,
-      prNodeId: pr.node_id,
-      headSha: pr.head.sha,
-      authorLogin: pr.user?.login ?? null,
-      authorGithubId: pr.user?.id ?? null,
-      authorAvatarUrl: pr.user?.avatar_url ?? null,
-      branchName: headBranch,
-      baseBranch,
-    };
+    try {
+      return await openGithubPullRequestWithToken({
+        repoFullName: opts.repoFullName,
+        title: opts.title,
+        body: opts.body,
+        headBranch,
+        baseBranch,
+        token: writeToken,
+      });
+    } catch (err) {
+      const afterAmbiguousOpen = await recover();
+      if (afterAmbiguousOpen?.kind === "pull_request") {
+        return openedAgentPullRequest(afterAmbiguousOpen.pullRequest);
+      }
+      throw err;
+    }
   } finally {
     await rm(workdir, { recursive: true, force: true }).catch(() => {});
   }
@@ -865,8 +1192,9 @@ export async function applyPatchAndOpenPr(opts: {
 // EXISTING agent PR branch (no new branch, no new PR) and reply on the PR.
 // The patch is expected to be based on the PR branch head — the follow-up
 // prompt instructs the agent to work on that branch. A non-fast-forward
-// push (someone pushed to the branch meanwhile) throws; the caller fails
-// the run rather than guessing at a merge.
+// push (someone pushed to the branch meanwhile) throws unless that winner's
+// commit carries this delivery's exact marker, in which case the retry
+// recovers the delivered head without pushing a second commit.
 export async function pushPatchToExistingAgentPr(opts: {
   installationId: number;
   repositoryId?: number;
@@ -877,11 +1205,27 @@ export async function pushPatchToExistingAgentPr(opts: {
   commitTitle: string;
   commentBody: string | null;
   commitAuthor?: { name: string; email: string } | null;
-}): Promise<{ headSha: string }> {
+  deliveryId?: string;
+}): Promise<{ headSha: string; recoveredDelivery?: boolean }> {
   const workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-pr-update-"));
   const writeToken = await createGithubWriteToken(opts.installationId, opts.repositoryId);
   const gitAuthEnv = githubGitAuthEnv(writeToken);
   const repoDir = path.join(workdir, "repo");
+  const recoverDeliveredHead = async (ref: string): Promise<string | null> => {
+    if (!opts.deliveryId) return null;
+    const history = await ensureGitOk(["log", "--format=%H%x00%B%x00", ref], {
+      cwd: repoDir,
+    });
+    const fields = history.stdout.split("\0");
+    const commits: Array<{ sha: string; message: string }> = [];
+    for (let index = 0; index + 1 < fields.length; index += 2) {
+      const sha = fields[index]?.trim();
+      const message = fields[index + 1]?.trim();
+      if (sha && message) commits.push({ sha, message });
+    }
+    if (!findPullRequestDeliveryCommit(commits, opts.deliveryId)) return null;
+    return (await ensureGitOk(["rev-parse", ref], { cwd: repoDir })).stdout.trim();
+  };
 
   try {
     await ensureGitOk(
@@ -898,6 +1242,10 @@ export async function pushPatchToExistingAgentPr(opts: {
       ],
       { env: gitAuthEnv, suppressOutputOnError: true },
     );
+    if (opts.deliveryId) {
+      const recoveredHeadSha = await recoverDeliveredHead("HEAD");
+      if (recoveredHeadSha) return { headSha: recoveredHeadSha, recoveredDelivery: true };
+    }
     const gitIdentity = resolveGitIdentity(opts.commitAuthor);
     await ensureGitOk(["config", "user.name", gitIdentity.name], { cwd: repoDir });
     await ensureGitOk(["config", "user.email", gitIdentity.email], { cwd: repoDir });
@@ -913,12 +1261,46 @@ export async function pushPatchToExistingAgentPr(opts: {
     if (!status.stdout.trim()) {
       throw new Error("patch produced no working tree changes");
     }
-    await ensureGitOk(["commit", "--no-verify", "-m", opts.commitTitle], { cwd: repoDir });
-    await ensureGitPushOk(["push", "origin", `HEAD:refs/heads/${opts.branchName}`], {
-      cwd: repoDir,
-      env: gitAuthEnv,
-      suppressOutputOnError: true,
-    });
+    const commitMessage = opts.deliveryId
+      ? buildPullRequestDeliveryCommitMessage(opts.commitTitle, opts.deliveryId)
+      : opts.commitTitle;
+    await ensureGitOk(["commit", "--no-verify", "-m", commitMessage], { cwd: repoDir });
+    try {
+      await ensureGitPushOk(["push", "origin", `HEAD:refs/heads/${opts.branchName}`], {
+        cwd: repoDir,
+        env: gitAuthEnv,
+        suppressOutputOnError: true,
+      });
+    } catch (err) {
+      if (opts.deliveryId) {
+        try {
+          await ensureGitOk(
+            [
+              "fetch",
+              "origin",
+              `+refs/heads/${opts.branchName}:refs/remotes/origin/${opts.branchName}`,
+            ],
+            { cwd: repoDir, env: gitAuthEnv, suppressOutputOnError: true },
+          );
+          const recoveredHeadSha = await recoverDeliveredHead(`origin/${opts.branchName}`);
+          if (recoveredHeadSha) {
+            return { headSha: recoveredHeadSha, recoveredDelivery: true };
+          }
+        } catch (recoveryError) {
+          logger.warn(
+            {
+              scope: "github-app.git",
+              repo: opts.repoFullName,
+              branch: opts.branchName,
+              recovery_error:
+                recoveryError instanceof Error ? recoveryError.message : String(recoveryError),
+            },
+            "failed to inspect existing PR branch after an ambiguous delivery push",
+          );
+        }
+      }
+      throw err;
+    }
     const headSha = (await ensureGitOk(["rev-parse", "HEAD"], { cwd: repoDir })).stdout.trim();
 
     if (opts.commentBody) {

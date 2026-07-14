@@ -46,8 +46,6 @@ export const REPORT_FINDINGS_TOOL_NAME = "report_findings";
 // acked only after the operation succeeds; an error ack keeps the turn active.
 export const DISPATCHED_OUTCOME_TOOL_NAMES = ["propose_pr", "resolve_incident"] as const;
 
-export type DispatchedOutcomeToolName = (typeof DISPATCHED_OUTCOME_TOOL_NAMES)[number];
-
 export const TERMINAL_OUTCOME_TOOL_NAMES = [
   "propose_pr",
   "complete_investigation",
@@ -72,6 +70,23 @@ export const RETIRED_OUTCOME_TOOL_NAMES = [
 
 export type RetiredOutcomeToolName = (typeof RETIRED_OUTCOME_TOOL_NAMES)[number];
 
+// Compatibility-only dispatched actions for durable sessions whose immutable
+// toolset predates atomic per-Issue outcomes. They are intentionally absent
+// from OUTCOME_TOOL_DEFINITIONS and outcomeToolDefinitionsForCapabilities, so
+// no newly-created session can discover or call them from its advertised
+// contract.
+export const LEGACY_ISSUE_ACTION_TOOL_NAMES = [
+  "silence_as_noise",
+  "place_under_observation",
+  "resolve_issue",
+] as const;
+
+export type LegacyIssueActionToolName = (typeof LEGACY_ISSUE_ACTION_TOOL_NAMES)[number];
+
+export type DispatchedOutcomeToolName =
+  | (typeof DISPATCHED_OUTCOME_TOOL_NAMES)[number]
+  | LegacyIssueActionToolName;
+
 export const OUTCOME_TOOL_NAMES = [
   REPORT_FINDINGS_TOOL_NAME,
   ...TERMINAL_OUTCOME_TOOL_NAMES,
@@ -90,7 +105,14 @@ export const TERMINAL_OUTCOME_NUDGE_MARKER =
   "You ended your turn without concluding the investigation, so it has no recorded outcome and nothing is pending.";
 
 export function isDispatchedOutcomeToolName(name: string): name is DispatchedOutcomeToolName {
-  return (DISPATCHED_OUTCOME_TOOL_NAMES as readonly string[]).includes(name);
+  return (
+    (DISPATCHED_OUTCOME_TOOL_NAMES as readonly string[]).includes(name) ||
+    isLegacyIssueActionToolName(name)
+  );
+}
+
+export function isLegacyIssueActionToolName(name: string): name is LegacyIssueActionToolName {
+  return (LEGACY_ISSUE_ACTION_TOOL_NAMES as readonly string[]).includes(name);
 }
 
 export function isRetiredOutcomeToolName(name: string): name is RetiredOutcomeToolName {
@@ -328,7 +350,6 @@ const RESOLVE_INCIDENT_DEFINITION: OutcomeToolDefinition = {
       },
       issueOutcomes: {
         type: "array",
-        minItems: 1,
         items: {
           type: "object",
           properties: {
@@ -467,6 +488,32 @@ type ValidatedTerminalOutcome = TerminalOutcome extends infer Outcome
 export type ValidateOutcome =
   | { ok: true; tool: "report_findings"; payload: AgentRunFindings }
   | ValidatedTerminalOutcome
+  | { ok: false; errors: string[] };
+
+export type LegacySilenceAsNoisePayload = {
+  issueId: string;
+  reason: string;
+  evidence: string;
+};
+
+export type LegacyPlaceUnderObservationPayload = LegacySilenceAsNoisePayload & {
+  escalateOn: (typeof ESCALATE_ON)[number];
+  threshold: number;
+};
+
+export type LegacyResolveIssuePayload = LegacySilenceAsNoisePayload;
+
+export type LegacyResolveIncidentPayload = Pick<ResolveIncidentPayload, "reason" | "evidence">;
+
+export type ValidatedLegacyOutcome =
+  | { ok: true; tool: "silence_as_noise"; payload: LegacySilenceAsNoisePayload }
+  | {
+      ok: true;
+      tool: "place_under_observation";
+      payload: LegacyPlaceUnderObservationPayload;
+    }
+  | { ok: true; tool: "resolve_issue"; payload: LegacyResolveIssuePayload }
+  | { ok: true; tool: "resolve_incident"; payload: LegacyResolveIncidentPayload }
   | { ok: false; errors: string[] };
 
 // Tools that conclude with findings humans will read — these refuse to run
@@ -672,6 +719,76 @@ function validateIssueOutcome(
   return { payload: { issueId, status, reason, evidence }, errors: [] };
 }
 
+// Durable pre-deploy sessions retain the exact tool schemas they were created
+// with. Keep their parser separate from validateOutcomeToolInput so accepting
+// those immutable calls cannot weaken the strict contract advertised to new
+// sessions (especially resolve_incident.issueOutcomes).
+export function validateLegacyOutcomeToolInput(
+  name: string,
+  rawInput: unknown,
+  ctx: { hasFindings: boolean },
+): ValidatedLegacyOutcome {
+  if (!isLegacyIssueActionToolName(name) && name !== "resolve_incident") {
+    return { ok: false, errors: [`Unknown legacy outcome tool \`${name}\`.`] };
+  }
+  if (!isRecord(rawInput)) {
+    return { ok: false, errors: ["Tool input must be a JSON object, not a string or array."] };
+  }
+  if (!ctx.hasFindings) {
+    return {
+      ok: false,
+      errors: [
+        `Call \`${REPORT_FINDINGS_TOOL_NAME}\` first to record summary/title/root cause, then call \`${name}\` again.`,
+      ],
+    };
+  }
+
+  const input = rawInput;
+  const errors: string[] = [];
+  const reason = pushRequiredString(errors, input, "reason");
+  const evidence = pushRequiredString(errors, input, "evidence");
+  if (name === "resolve_incident") {
+    if (errors.length > 0) return { ok: false, errors };
+    return {
+      ok: true,
+      tool: name,
+      payload: { reason: reason as string, evidence: evidence as string },
+    };
+  }
+
+  const issueId = pushRequiredString(errors, input, "issueId");
+  if (name === "place_under_observation") {
+    const escalateOn = requiredEnum(errors, input, "escalateOn", ESCALATE_ON);
+    const threshold = input.threshold;
+    if (typeof threshold !== "number" || !Number.isInteger(threshold) || threshold < 1) {
+      errors.push(`\`threshold\` must be an integer >= 1; you sent ${JSON.stringify(threshold)}.`);
+    }
+    if (errors.length > 0) return { ok: false, errors };
+    return {
+      ok: true,
+      tool: name,
+      payload: {
+        issueId: issueId as string,
+        reason: reason as string,
+        evidence: evidence as string,
+        escalateOn: escalateOn as LegacyPlaceUnderObservationPayload["escalateOn"],
+        threshold: threshold as number,
+      },
+    };
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+  return {
+    ok: true,
+    tool: name,
+    payload: {
+      issueId: issueId as string,
+      reason: reason as string,
+      evidence: evidence as string,
+    },
+  };
+}
+
 export function validateOutcomeToolInput(
   name: string,
   rawInput: unknown,
@@ -778,8 +895,8 @@ export function validateOutcomeToolInput(
     case "resolve_incident": {
       const reason = pushRequiredString(errors, input, "reason");
       const evidence = pushRequiredString(errors, input, "evidence");
-      if (!Array.isArray(input.issueOutcomes) || input.issueOutcomes.length === 0) {
-        errors.push("`issueOutcomes` must be a non-empty array with one outcome per linked Issue.");
+      if (!Array.isArray(input.issueOutcomes)) {
+        errors.push("`issueOutcomes` must be an array with one outcome per linked Issue.");
       }
       const issueOutcomes: ResolveIncidentIssueOutcome[] = [];
       if (Array.isArray(input.issueOutcomes)) {
@@ -908,21 +1025,15 @@ export type ActionOutcome =
   | { name: "propose_pr"; payload: ProposePrPayload | PullRequestProposal }
   | {
       name: "silence_as_noise";
-      payload: { issueId: string; reason: string; evidence: string };
+      payload: LegacySilenceAsNoisePayload;
     }
   | {
       name: "place_under_observation";
-      payload: {
-        issueId: string;
-        reason: string;
-        evidence: string;
-        escalateOn: (typeof ESCALATE_ON)[number];
-        threshold: number;
-      };
+      payload: LegacyPlaceUnderObservationPayload;
     }
   | {
       name: "resolve_issue";
-      payload: { issueId: string; reason: string; evidence: string };
+      payload: LegacyResolveIssuePayload;
     };
 
 export type ExecutedAction = ActionOutcome;
@@ -993,6 +1104,7 @@ export function assembleAgentRunResult(args: {
     const existingIdx = prs.findIndex(
       (pr) => pr.selectedRepoFullName === p.repoFullName && pr.branchName === p.branchName,
     );
+    const mobile = mobileTestFromPr(p);
     const pr: AgentRunPr = {
       selectedRepoFullName: p.repoFullName,
       branchName: p.branchName,
@@ -1003,9 +1115,9 @@ export function assembleAgentRunResult(args: {
       openStatus: "opened",
     };
     if (p.changedFiles) pr.changedFiles = p.changedFiles;
+    if (mobile) pr.mobileRegressionTest = mobile;
     if (existingIdx >= 0) prs[existingIdx] = pr;
     else prs.push(pr);
-    const mobile = mobileTestFromPr(p);
     if (mobile) result.mobileRegressionTest = mobile;
   };
   for (const action of actions) {

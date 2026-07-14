@@ -7,11 +7,12 @@ import {
   schema,
 } from "@superlog/db";
 import type { AgentRunContext } from "../agent-run-context.js";
-import { createAgentRunLifecycle } from "../agent-run.js";
+import { type PauseForEventsOutcome, createAgentRunLifecycle } from "../agent-run.js";
 import { buildContextIncidentUrl } from "../incident-route.js";
 import {
   postLinearIncidentElicitation,
   postLinearIncidentError,
+  postLinearIncidentResponse,
 } from "../infra/linear/agent-session.js";
 import {
   incidentBlocks,
@@ -211,12 +212,14 @@ export async function moveAgentRunToAwaitingHuman(
   ctx: AgentRunContext,
   question: string,
   summary: string,
+  result?: AgentRunResult,
 ): Promise<void> {
   await agentRunLifecycle.pauseForHuman({
     id: ctx.agentRun.id,
     currentState: ctx.agentRun.state,
     summary,
     question,
+    result,
   });
   await enqueueAgentRunAwaitingInput(ctx.agentRun.id, {
     reason: "repository_selection",
@@ -254,75 +257,244 @@ export async function moveAgentRunToAwaitingHuman(
   );
 }
 
+export async function publishAwaitingEventsUpdateIfCurrent(opts: {
+  isCurrent(): Promise<boolean>;
+  publish(): Promise<void>;
+  reconcileStalePublication(): Promise<void>;
+}): Promise<"skipped" | "published" | "reconciled"> {
+  if (!(await opts.isCurrent())) return "skipped";
+
+  let publicationFailed = false;
+  let publicationError: unknown;
+  try {
+    await opts.publish();
+  } catch (err) {
+    publicationFailed = true;
+    publicationError = err;
+  }
+
+  if (!(await opts.isCurrent())) {
+    await opts.reconcileStalePublication();
+    if (publicationFailed) throw publicationError;
+    return "reconciled";
+  }
+  if (publicationFailed) throw publicationError;
+  return "published";
+}
+
+export type AwaitingEventsCompensationPresentation = {
+  emoji: string;
+  label: string;
+  summary: string;
+};
+
+export function awaitingEventsCompensationPresentation(opts: {
+  incidentStatus: schema.Incident["status"];
+  agentRunState: schema.AgentRun["state"] | null;
+}): AwaitingEventsCompensationPresentation | null {
+  if (opts.incidentStatus !== "open") {
+    const closed =
+      opts.incidentStatus === "autoresolved_noise"
+        ? { emoji: "no_bell", label: "Incident marked as noise" }
+        : opts.incidentStatus === "merged"
+          ? { emoji: "twisted_rightwards_arrows", label: "Incident merged" }
+          : { emoji: "white_check_mark", label: "Incident resolved" };
+    return {
+      ...closed,
+      summary: `${closed.label} while the previous waiting update was publishing.`,
+    };
+  }
+
+  const current = (() => {
+    switch (opts.agentRunState) {
+      case "queued":
+        return { emoji: "hourglass_flowing_sand", label: "Investigation queued" };
+      case "repo_discovery":
+        return { emoji: "mag", label: "Selecting a repository" };
+      case "running":
+        return { emoji: "arrow_forward", label: "Investigation resumed" };
+      case "awaiting_human":
+        return { emoji: "speech_balloon", label: "Awaiting human input" };
+      case "resuming":
+        return { emoji: "arrow_forward", label: "Investigation resuming" };
+      case "pr_retry_queued":
+        return { emoji: "arrows_counterclockwise", label: "PR delivery retry queued" };
+      case "blocked_no_github":
+        return { emoji: "no_entry", label: "Investigation blocked" };
+      case "complete":
+        return { emoji: "white_check_mark", label: "Investigation complete" };
+      case "failed":
+        return { emoji: "x", label: "Investigation failed" };
+      case "awaiting_events":
+      case null:
+        return null;
+      default:
+        return { emoji: "information_source", label: "Investigation updated" };
+    }
+  })();
+  if (!current) return null;
+  return {
+    ...current,
+    summary: `${current.label} while the previous waiting update was publishing.`,
+  };
+}
+
+async function reconcileStaleAwaitingEventsPublication(ctx: AgentRunContext): Promise<void> {
+  const [incident, agentRun] = await Promise.all([
+    db.query.incidents.findFirst({
+      where: (incidents, { eq }) => eq(incidents.id, ctx.incident.id),
+    }),
+    db.query.agentRuns.findFirst({
+      where: (agentRuns, { eq }) => eq(agentRuns.id, ctx.agentRun.id),
+      columns: { state: true, result: true },
+    }),
+  ]);
+  if (!incident) return;
+
+  const presentation = awaitingEventsCompensationPresentation({
+    incidentStatus: incident.status,
+    agentRunState: agentRun?.state ?? null,
+  });
+  if (!presentation) return;
+
+  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
+  const tagline =
+    incident.status === "open"
+      ? (agentRun?.result?.summary ?? presentation.summary)
+      : (incident.agentSummary ??
+        incident.resolvedReasonText ??
+        agentRun?.result?.summary ??
+        presentation.summary);
+
+  // Resolution or a resume may commit while the non-transactional provider
+  // calls are in flight. Re-publish the aggregate's durable current state so
+  // the waiting update cannot remain the final Slack/Linear state.
+  await postIncidentThreadMessage(incident.id, `:${presentation.emoji}: ${presentation.summary}`);
+  await updateIncidentMainMessage(
+    incident.id,
+    `:${presentation.emoji}: ${incident.title} — ${presentation.label}`,
+    incidentBlocks({
+      emoji: presentation.emoji,
+      status: presentation.label,
+      title: incident.title,
+      titleUrl: incidentUrl,
+      tagline,
+      projectName: ctx.project.name,
+      service: incident.service,
+      buttons: [],
+      incidentId: incident.id,
+      showResolveButton: incident.status === "open",
+      showFeedbackButtons: incident.status !== "open",
+    }),
+  );
+  await postLinearIncidentResponse(incident.id, presentation.summary);
+}
+
 // Park a run after a terminal-for-turn outcome while it waits on PR lifecycle
 // events or an external cause. The durable session resumes from inbound
-// context. Returns false when a concurrent pass already moved the run.
+// context. The discriminated outcome lets sync distinguish a competing pass
+// from Incident resolution winning the shared row-lock protocol.
 export async function moveAgentRunToAwaitingEvents(
   ctx: AgentRunContext,
   result: AgentRunResult,
   openPrUrls: string[],
   loadLinearTicket: () => Promise<{ identifier: string; url: string | null } | null> = async () =>
     null,
-): Promise<boolean> {
-  const parked = await agentRunLifecycle.pauseForEvents({
+): Promise<PauseForEventsOutcome> {
+  const outcome = await agentRunLifecycle.pauseForEvents({
     id: ctx.agentRun.id,
+    incidentId: ctx.incident.id,
     currentState: ctx.agentRun.state,
     result,
   });
-  if (!parked) {
+  if (outcome.kind !== "parked") {
     logger.info(
-      { scope: "agent_run", agent_run_id: ctx.agentRun.id, incident_id: ctx.incident.id },
-      "skipping awaiting_events park; a concurrent pass already transitioned the run",
+      {
+        scope: "agent_run",
+        agent_run_id: ctx.agentRun.id,
+        incident_id: ctx.incident.id,
+        park_outcome: outcome.kind,
+        incident_status: outcome.kind === "incident_not_open" ? outcome.incidentStatus : undefined,
+      },
+      outcome.kind === "incident_not_open"
+        ? "skipping awaiting_events park; incident is no longer open"
+        : "skipping awaiting_events park; a concurrent pass already transitioned the run",
     );
-    return false;
+    return outcome;
   }
   // Cross-provider side effects happen only after this sync pass wins the
-  // conditional state transition. A concurrent terminal outcome must not
-  // accidentally file a waiting ticket from the losing pass.
-  const linearTicket = await loadLinearTicket();
-  const externalCause = result.waitReason === "external_cause" ? result.externalCause : null;
-  await postIncidentThreadMessage(
-    ctx.incident.id,
-    awaitingEventsSlackMessage(openPrUrls, linearTicket, externalCause),
-  );
-  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
-  const isExternalCause = !!externalCause;
-  await updateIncidentMainMessage(
-    ctx.incident.id,
-    isExternalCause
-      ? `:warning: ${ctx.incident.title} — Waiting on external cause`
-      : `:hourglass_flowing_sand: ${ctx.incident.title} — Waiting on PR review`,
-    incidentBlocks({
-      emoji: isExternalCause ? "warning" : "hourglass_flowing_sand",
-      status: isExternalCause ? "Waiting on external cause" : "Waiting on PR review",
-      title: ctx.incident.title,
-      tagline: isExternalCause
-        ? `${externalCause.source}: ${externalCause.cause}`
-        : result.summary || "The investigation opened PRs and is waiting for review or merge.",
-      projectName: ctx.project.name,
-      service: ctx.incident.service,
-      buttons: [
-        { text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" },
-        ...(openPrUrls[0] ? [{ text: "View PR", url: openPrUrls[0], actionId: "view_pr" }] : []),
-        ...(linearTicket?.url
-          ? [
-              {
-                text: `View ${linearTicket.identifier}`,
-                url: linearTicket.url,
-                actionId: "view_linear",
-              },
-            ]
-          : []),
-      ],
-      incidentId: ctx.incident.id,
-      showResolveButton: true,
-      // The one-click merge action targets "the incident's latest open PR",
-      // so with several PRs out it would merge only one and resolve the whole
-      // incident — only offer it when the target is unambiguous.
-      showMergePrButton: openPrUrls.length === 1,
-    }),
-  );
-  return true;
+  // conditional state transition and a fresh aggregate snapshot still owns
+  // the waiting state. A second snapshot compensates if resolution commits
+  // while the provider calls are in flight.
+  const publication = await publishAwaitingEventsUpdateIfCurrent({
+    isCurrent: () =>
+      agentRunLifecycle.canPublishAwaitingEventsUpdate({
+        id: ctx.agentRun.id,
+        incidentId: ctx.incident.id,
+      }),
+    publish: async () => {
+      const linearTicket = await loadLinearTicket();
+      const externalCause = result.waitReason === "external_cause" ? result.externalCause : null;
+      await postIncidentThreadMessage(
+        ctx.incident.id,
+        awaitingEventsSlackMessage(openPrUrls, linearTicket, externalCause),
+      );
+      const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
+      const isExternalCause = !!externalCause;
+      await updateIncidentMainMessage(
+        ctx.incident.id,
+        isExternalCause
+          ? `:warning: ${ctx.incident.title} — Waiting on external cause`
+          : `:hourglass_flowing_sand: ${ctx.incident.title} — Waiting on PR review`,
+        incidentBlocks({
+          emoji: isExternalCause ? "warning" : "hourglass_flowing_sand",
+          status: isExternalCause ? "Waiting on external cause" : "Waiting on PR review",
+          title: ctx.incident.title,
+          tagline: isExternalCause
+            ? `${externalCause.source}: ${externalCause.cause}`
+            : result.summary || "The investigation opened PRs and is waiting for review or merge.",
+          projectName: ctx.project.name,
+          service: ctx.incident.service,
+          buttons: [
+            { text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" },
+            ...(openPrUrls[0]
+              ? [{ text: "View PR", url: openPrUrls[0], actionId: "view_pr" }]
+              : []),
+            ...(linearTicket?.url
+              ? [
+                  {
+                    text: `View ${linearTicket.identifier}`,
+                    url: linearTicket.url,
+                    actionId: "view_linear",
+                  },
+                ]
+              : []),
+          ],
+          incidentId: ctx.incident.id,
+          showResolveButton: true,
+          // The one-click merge action targets "the incident's latest open PR",
+          // so with several PRs out it would merge only one and resolve the whole
+          // incident — only offer it when the target is unambiguous.
+          showMergePrButton: openPrUrls.length === 1,
+        }),
+      );
+    },
+    reconcileStalePublication: () => reconcileStaleAwaitingEventsPublication(ctx),
+  });
+  if (publication !== "published") {
+    logger.info(
+      {
+        scope: "agent_run.awaiting_events",
+        agent_run_id: ctx.agentRun.id,
+        incident_id: ctx.incident.id,
+        publication,
+      },
+      publication === "skipped"
+        ? "skipped stale awaiting-events provider update"
+        : "reconciled awaiting-events provider update after aggregate state changed",
+    );
+  }
+  return outcome;
 }
 
 export function awaitingEventsSlackMessage(

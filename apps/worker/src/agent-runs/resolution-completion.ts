@@ -1,7 +1,7 @@
 import type { AgentRunResult } from "@superlog/db";
 
-export function agentResolveEventDedupeKey(agentRunId: string): string {
-  return `incident_resolved:agent_run:${agentRunId}:resolve_incident`;
+export function agentResolveEventDedupeKey(agentRunId: string, toolUseId: string): string {
+  return `incident_resolved:agent_run:${agentRunId}:resolve_incident:${toolUseId}`;
 }
 
 export function resolutionCompletionResult(
@@ -12,6 +12,7 @@ export function resolutionCompletionResult(
 
   const {
     incidentResolution: _incidentResolution,
+    incidentResolutionEventDedupeKey: _incidentResolutionEventDedupeKey,
     issueClassifications: _issueClassifications,
     ...findings
   } = result;

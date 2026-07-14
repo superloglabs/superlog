@@ -146,6 +146,7 @@ export type AgentRunnerStartInput = {
 // report_findings call has been seen earlier in the current turn — the
 // executor's validation needs it for the findings-first gate.
 export type OutcomeActionCall = {
+  toolUseId: string;
   name: string;
   input: unknown;
   hasFindings: boolean;
@@ -155,7 +156,15 @@ export type OutcomeActionCall = {
 export type OutcomeActionExecution =
   // handled: the executor ran (or rejected) the action; ack `payload` back
   // into the session with is_error = !ok.
-  | { handled: true; ok: boolean; payload: Record<string, unknown> }
+  | {
+      handled: true;
+      deferAck?: false;
+      ok: boolean;
+      payload: Record<string, unknown>;
+    }
+  // The action may have mutated external state, but its durable receipt could
+  // not be confirmed. Leave the call pending so an exact replay can recover.
+  | { handled: true; deferAck: true }
   // Not an outcome action — the dispatch loop tries its other handlers.
   | { handled: false };
 
@@ -179,6 +188,17 @@ export type AgentRunnerSnapshot = {
     findings: AgentRunFindings | null;
     actions: ExecutedAction[];
   };
+  // Present while a batched propose_pr has delivered at least one repository
+  // but still owes exact retries for the remaining repositories. Optional so
+  // runners without the outcome toolset remain source-compatible.
+  partialPullRequestDelivery?: {
+    delivered: Array<{
+      repoFullName: string;
+      branchName: string;
+      url: string | null;
+    }>;
+    pendingRepoFullNames: string[];
+  } | null;
   // Custom tools the runtime had no handler for. The collector ack's them
   // with an error result so the session can leave requires_action; sync.ts
   // then fails the run with `unknown_custom_tool` so we can audit them later.

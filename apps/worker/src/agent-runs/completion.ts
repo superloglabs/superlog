@@ -30,7 +30,6 @@ import { shouldCreateLinearTicketForTerminalOutcome } from "./completion-policy.
 import { recordFiledLinearTicket } from "./deliverable-records.js";
 import { scheduleLinearHandoff } from "./linear-handoff.js";
 import {
-  agentResolveEventDedupeKey,
   resolutionCompletionCopy,
   resolutionCompletionResult,
   shouldUpdateResolutionMainMessage,
@@ -245,28 +244,32 @@ export async function completeWithIncidentResolution(
   result: AgentRunResult,
   sessionId: string,
   runtimeMinutes: number,
-): Promise<void> {
+): Promise<boolean> {
   const resolution = result.incidentResolution;
   if (!resolution) {
     throw new Error("completeWithIncidentResolution requires result.incidentResolution");
   }
-  const committedResolutionEvent = await db.query.incidentEvents.findFirst({
-    where: and(
-      eq(schema.incidentEvents.incidentId, ctx.incident.id),
-      eq(schema.incidentEvents.agentRunId, ctx.agentRun.id),
-      eq(schema.incidentEvents.kind, "incident_resolved"),
-      eq(schema.incidentEvents.dedupeKey, agentResolveEventDedupeKey(ctx.agentRun.id)),
-    ),
-    columns: { id: true },
-  });
+  const resolutionEventDedupeKey = result.incidentResolutionEventDedupeKey;
+  const committedResolutionEvent = resolutionEventDedupeKey
+    ? await db.query.incidentEvents.findFirst({
+        where: and(
+          eq(schema.incidentEvents.incidentId, ctx.incident.id),
+          eq(schema.incidentEvents.agentRunId, ctx.agentRun.id),
+          eq(schema.incidentEvents.kind, "incident_resolved"),
+          eq(schema.incidentEvents.dedupeKey, resolutionEventDedupeKey),
+        ),
+        columns: { id: true },
+      })
+    : null;
   const resolutionCommittedByRun = Boolean(committedResolutionEvent);
   const completionResult = resolutionCompletionResult(result, resolutionCommittedByRun);
   const copy = resolutionCompletionCopy(resolutionCommittedByRun, resolution.reason);
-  await agentRunLifecycle.completeWithoutPullRequest({
+  const completed = await agentRunLifecycle.completeWithoutPullRequest({
     id: ctx.agentRun.id,
     currentState: ctx.agentRun.state,
     result: completionResult,
   });
+  if (!completed) return false;
   const metadataOutcome = await incidentLifecycle.applyAgentRunResult({
     incident: ctx.incident,
     agentRunId: ctx.agentRun.id,
@@ -352,6 +355,7 @@ export async function completeWithIncidentResolution(
   }
   await replyToPrOriginIfNeeded(ctx, completionResult.summary);
   await postLinearIncidentResponse(ctx.incident.id, completionResult.summary);
+  return true;
 }
 
 export async function completeWithoutPullRequest(
@@ -359,7 +363,7 @@ export async function completeWithoutPullRequest(
   result: AgentRunResult,
   sessionId: string,
   runtimeMinutes: number,
-): Promise<void> {
+): Promise<boolean> {
   const noiseReason = completedNoiseReason(result);
   const resolutionReason = noiseReason ? null : completedResolutionReason(result);
   // Set once the noise verdict was actually recorded against an open incident
@@ -367,11 +371,12 @@ export async function completeWithoutPullRequest(
   // "marked as noise" messaging below must not claim a state change that
   // never happened.
   let noiseApplied = false;
-  await agentRunLifecycle.completeWithoutPullRequest({
+  const completed = await agentRunLifecycle.completeWithoutPullRequest({
     id: ctx.agentRun.id,
     currentState: ctx.agentRun.state,
     result,
   });
+  if (!completed) return false;
   const metadataOutcome = await incidentLifecycle.applyAgentRunResult({
     incident: ctx.incident,
     agentRunId: ctx.agentRun.id,
@@ -517,4 +522,5 @@ export async function completeWithoutPullRequest(
   );
   await replyToPrOriginIfNeeded(ctx, result.summary);
   await postLinearIncidentResponse(ctx.incident.id, result.summary);
+  return true;
 }

@@ -27,8 +27,9 @@
 // each *delivery* (incl. retries / redelivers) carries its own
 // `Superlog-Delivery` id added at send time.
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, notLike } from "drizzle-orm";
 import type { DB } from "./client.js";
+import { INTERNAL_INCIDENT_EVENT_KIND_SQL_PATTERN } from "./incident-event-visibility.js";
 import * as schema from "./schema.js";
 
 // The default database singleton is imported lazily so that this module —
@@ -640,7 +641,10 @@ export async function buildAgentRunCompletedPayload(
 
   const [eventRows, prRows, ticketRows] = await Promise.all([
     database.query.incidentEvents.findMany({
-      where: eq(schema.incidentEvents.agentRunId, agentRunId),
+      where: and(
+        eq(schema.incidentEvents.agentRunId, agentRunId),
+        notLike(schema.incidentEvents.kind, INTERNAL_INCIDENT_EVENT_KIND_SQL_PATTERN),
+      ),
       orderBy: (t, { asc }) => [asc(t.createdAt)],
     }),
     database.query.agentPullRequests.findMany({

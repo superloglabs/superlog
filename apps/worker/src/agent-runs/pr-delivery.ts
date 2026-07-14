@@ -14,6 +14,8 @@ import {
 } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import {
+  closeAgentPullRequestOnGithub,
+  findGithubPullRequestDelivery,
   mergeAgentPullRequest,
   pushPatchToExistingAgentPr,
   validateAgentPatchApplicability,
@@ -29,10 +31,21 @@ import {
 } from "../infra/slack/incident-messages.js";
 import { logger } from "../logger.js";
 import { enqueueAgentRunCompleted } from "../webhooks.js";
-import { recordFiledLinearTicket, recordOpenedAgentPullRequest } from "./deliverable-records.js";
+import {
+  type MarkAgentPullRequestClosedResult,
+  type PullRequestDeliveryIdentity,
+  type PullRequestMutationReconciliation,
+  type RecordedPullRequestDelivery,
+  findRecordedPullRequestDelivery,
+  markAgentPullRequestClosedAfterDeliveryAbort,
+  recordFiledLinearTicket,
+  recordOpenedAgentPullRequest,
+  recordUpdatedAgentPullRequest,
+} from "./deliverable-records.js";
 import type { DeliveredLinearTicket } from "./linear-delivery.js";
 import { scheduleLinearHandoff } from "./linear-handoff.js";
 import { linearTicketSlackReference } from "./linear-pr-linking.js";
+import { outcomeActionInputHash } from "./outcome-action-receipts.js";
 import { buildPrBody, buildPrTitle } from "./pr-copy.js";
 import { summarizePrOpenFailure } from "./pr-open-failure.js";
 import { failAgentRun } from "./status.js";
@@ -110,18 +123,37 @@ export function resolvePullRequestBaseBranch(
   return normalizePrBaseBranch(ctx.prBaseBranch) ?? normalizePrBaseBranch(pr.baseBranch);
 }
 
+export function pullRequestDeliveryIdentityForLegacyCompletion(args: {
+  agentRunId: string;
+  repoFullName: string;
+  requestedBranchName: string;
+  input: unknown;
+}): PullRequestDeliveryIdentity {
+  return {
+    // The provider marker must survive retries of the same durable run and
+    // repository, even when two pollers reach delivery concurrently.
+    deliveryId: outcomeActionInputHash({
+      scope: "legacy_pull_request_delivery",
+      agentRunId: args.agentRunId,
+      repoFullName: args.repoFullName,
+    }),
+    inputHash: outcomeActionInputHash(args.input),
+    requestedBranchName: args.requestedBranchName,
+  };
+}
+
 export async function completeWithPullRequest(
   ctx: AgentRunContext,
   result: AgentRunResult,
   pr: schema.AgentRunPr,
   sessionId: string,
   runtimeMinutes: number,
-): Promise<void> {
+): Promise<boolean> {
   if (ctx.githubInstalls.length === 0) {
     await failAgentRun(ctx, "pr_open_failed", "Cannot open a PR without a GitHub installation.", {
       existingResult: result,
     });
-    return;
+    return false;
   }
 
   let repoMeta: InstalledGithubRepo | undefined;
@@ -135,7 +167,7 @@ export async function completeWithPullRequest(
       "Cannot open a PR because GitHub repositories could not be listed.",
       { existingResult: result, err },
     );
-    return;
+    return false;
   }
   if (!repoMeta) {
     await failAgentRun(
@@ -144,7 +176,7 @@ export async function completeWithPullRequest(
       `Cannot open a PR because GitHub no longer grants access to ${pr.selectedRepoFullName}.`,
       { existingResult: result },
     );
-    return;
+    return false;
   }
   const proposedBranch = pr.branchName?.trim();
   const branchName = proposedBranch
@@ -171,7 +203,7 @@ export async function completeWithPullRequest(
         "Failed to download the patch file for PR creation.",
         { existingResult: result, err },
       );
-      return;
+      return false;
     }
   }
 
@@ -184,7 +216,7 @@ export async function completeWithPullRequest(
         existingResult: result,
       },
     );
-    return;
+    return false;
   }
 
   const prTitle = buildPrTitle({ ctx, result, pr });
@@ -197,6 +229,35 @@ export async function completeWithPullRequest(
   // later "retry PR" can re-attempt delivery from the patch on record without
   // depending on the agent session (which may have expired) to re-download it.
   const resultWithPatch: AgentRunResult = { ...result, pr: { ...pr, patch, patchFileId } };
+  const deliveryIdentity = pullRequestDeliveryIdentityForLegacyCompletion({
+    agentRunId: ctx.agentRun.id,
+    repoFullName: pr.selectedRepoFullName,
+    requestedBranchName: branchName,
+    input: {
+      patch,
+      branchName,
+      baseBranch: resolvePullRequestBaseBranch(ctx, pr),
+      title: prTitle,
+      body: prBody,
+    },
+  });
+  let recordedDelivery: RecordedPullRequestDelivery | null;
+  try {
+    recordedDelivery = await findRecordedPullRequestDelivery({
+      incidentId: ctx.incident.id,
+      agentRunId: ctx.agentRun.id,
+      identity: deliveryIdentity,
+      repoFullName: pr.selectedRepoFullName,
+    });
+  } catch (err) {
+    await failAgentRun(
+      ctx,
+      "pr_open_failed",
+      "Cannot resume PR delivery because its durable receipt conflicts with this result.",
+      { existingResult: resultWithPatch, err },
+    );
+    return false;
+  }
 
   // Land onto the incident's still-open PR whenever one exists: a resumed or
   // follow-up turn pushes the patch as an additional commit on the existing
@@ -208,6 +269,9 @@ export async function completeWithPullRequest(
       where: and(
         eq(schema.agentPullRequests.incidentId, ctx.incident.id),
         eq(schema.agentPullRequests.repoFullName, pr.selectedRepoFullName),
+        ...(recordedDelivery
+          ? [eq(schema.agentPullRequests.prNumber, recordedDelivery.prNumber)]
+          : []),
         eq(schema.agentPullRequests.state, "open"),
       ),
       orderBy: [desc(schema.agentPullRequests.createdAt)],
@@ -231,20 +295,48 @@ export async function completeWithPullRequest(
                   email: repoMeta.installation.commitAuthorEmail,
                 }
               : DEFAULT_COMMIT_AUTHOR,
+          deliveryId: deliveryIdentity.deliveryId,
         });
       } catch (err) {
         await failAgentRun(ctx, "pr_open_failed", summarizePrOpenFailure(err), {
           existingResult: resultWithPatch,
           err,
         });
-        return;
+        return false;
       }
 
-      const now = new Date();
-      await db
-        .update(schema.agentPullRequests)
-        .set({ headSha: pushed.headSha, lastSyncedAt: now, updatedAt: now })
-        .where(eq(schema.agentPullRequests.id, existingPr.id));
+      const reconciled = await reconcileGithubPullRequestMutation({
+        pullRequest: {
+          repoFullName: existingPr.repoFullName,
+          branchName: existingPr.branchName,
+          prUrl: existingPr.url,
+          prNumber: existingPr.prNumber,
+          prNodeId: existingPr.prNodeId,
+        },
+        installationId: repoMeta.installation.installationId,
+        fallbackInstallationIds: ctx.githubInstalls.map(
+          ({ installation }) => installation.installationId,
+        ),
+        canonicalRecordRequiredOnFailure: true,
+        reconcile: () =>
+          recordUpdatedAgentPullRequest({
+            incidentId: ctx.incident.id,
+            agentRunId: ctx.agentRun.id,
+            agentPullRequestId: existingPr.id,
+            repoFullName: existingPr.repoFullName,
+            prNumber: existingPr.prNumber,
+            headSha: pushed.headSha,
+            url: existingPr.url,
+            branchName: existingPr.branchName,
+            deliveryIdentity,
+          }),
+      });
+      if (!reconciled.ok) {
+        await failAgentRun(ctx, "pr_open_failed", reconciled.error, {
+          existingResult: resultWithPatch,
+        });
+        return false;
+      }
 
       const followUpResult: AgentRunResult = {
         ...result,
@@ -258,7 +350,7 @@ export async function completeWithPullRequest(
           url: existingPr.url,
         },
       };
-      await agentRunLifecycle.completeWithPullRequest({
+      const completed = await agentRunLifecycle.completeWithPullRequest({
         id: ctx.agentRun.id,
         currentState: ctx.agentRun.state,
         result: followUpResult,
@@ -266,6 +358,8 @@ export async function completeWithPullRequest(
         selectedBaseBranch: existingPr.baseBranch,
         prUrl: existingPr.url,
       });
+      // A concurrent sync pass already owns all completion-side effects.
+      if (!completed) return false;
       await incidentLifecycle
         .applyAgentRunResult({
           incident: ctx.incident,
@@ -320,7 +414,7 @@ export async function completeWithPullRequest(
         ctx.incident.id,
         `${result.summary}\n\nUpdated pull request: ${existingPr.url}`,
       );
-      return;
+      return true;
     }
     // No open PR to land on (closed meanwhile, or the prior run never opened
     // one) — fall through to the normal open-a-new-PR path.
@@ -343,13 +437,53 @@ export async function completeWithPullRequest(
               email: repoMeta.installation.commitAuthorEmail,
             }
           : DEFAULT_COMMIT_AUTHOR,
+      deliveryId: deliveryIdentity.deliveryId,
     });
   } catch (err) {
     await failAgentRun(ctx, "pr_open_failed", summarizePrOpenFailure(err), {
       existingResult: resultWithPatch,
       err,
     });
-    return;
+    return false;
+  }
+
+  const reconciled = await reconcileGithubPullRequestMutation({
+    pullRequest: {
+      repoFullName: pr.selectedRepoFullName,
+      branchName: opened.branchName,
+      prUrl: opened.prUrl,
+      prNumber: opened.prNumber,
+      prNodeId: opened.prNodeId,
+    },
+    installationId: repoMeta.installation.installationId,
+    fallbackInstallationIds: ctx.githubInstalls.map(
+      ({ installation }) => installation.installationId,
+    ),
+    canonicalRecordRequiredOnFailure: false,
+    reconcile: () =>
+      recordOpenedAgentPullRequest({
+        incidentId: ctx.incident.id,
+        agentRunId: ctx.agentRun.id,
+        installationRowId: repoMeta.installation.id,
+        repoFullName: pr.selectedRepoFullName,
+        prNumber: opened.prNumber,
+        prNodeId: opened.prNodeId,
+        url: opened.prUrl,
+        branchName: opened.branchName,
+        baseBranch: opened.baseBranch,
+        headSha: opened.headSha,
+        title: prTitle,
+        authorLogin: opened.authorLogin,
+        authorGithubId: opened.authorGithubId,
+        authorAvatarUrl: opened.authorAvatarUrl,
+        deliveryIdentity,
+      }),
+  });
+  if (!reconciled.ok) {
+    await failAgentRun(ctx, "pr_open_failed", reconciled.error, {
+      existingResult: resultWithPatch,
+    });
+    return false;
   }
 
   const updatedResult: AgentRunResult = {
@@ -364,7 +498,7 @@ export async function completeWithPullRequest(
       url: opened.prUrl,
     },
   };
-  await agentRunLifecycle.completeWithPullRequest({
+  const completed = await agentRunLifecycle.completeWithPullRequest({
     id: ctx.agentRun.id,
     currentState: ctx.agentRun.state,
     result: updatedResult,
@@ -372,6 +506,9 @@ export async function completeWithPullRequest(
     selectedBaseBranch: opened.baseBranch,
     prUrl: opened.prUrl,
   });
+  // GitHub/canonical delivery precedes the run transition, but every
+  // completion notification belongs exclusively to the transition winner.
+  if (!completed) return false;
   await incidentLifecycle
     .applyAgentRunResult({
       incident: ctx.incident,
@@ -397,33 +534,6 @@ export async function completeWithPullRequest(
         err: err instanceof Error ? err.message : String(err),
       },
       "failed to enqueue agent run.completed webhook",
-    ),
-  );
-  await recordOpenedAgentPullRequest({
-    incidentId: ctx.incident.id,
-    agentRunId: ctx.agentRun.id,
-    installationRowId: repoMeta.installation.id,
-    repoFullName: pr.selectedRepoFullName,
-    prNumber: opened.prNumber,
-    prNodeId: opened.prNodeId,
-    url: opened.prUrl,
-    branchName: opened.branchName,
-    baseBranch: opened.baseBranch,
-    headSha: opened.headSha,
-    title: prTitle,
-    authorLogin: opened.authorLogin,
-    authorGithubId: opened.authorGithubId,
-    authorAvatarUrl: opened.authorAvatarUrl,
-  }).catch((err) =>
-    logger.error(
-      {
-        scope: "agent_run.pr_delivery",
-        agent_run_id: ctx.agentRun.id,
-        incident_id: ctx.incident.id,
-        pr_url: opened.prUrl,
-        err: err instanceof Error ? err.message : String(err),
-      },
-      "failed to record opened agent pull request",
     ),
   );
   if (ctx.autoMergeFixPrs !== "never") {
@@ -545,11 +655,48 @@ export async function completeWithPullRequest(
     ctx.incident.id,
     `${result.summary}\n\nProposed fix: ${opened.prUrl}`,
   );
+  return true;
 }
 
 // ---------------------------------------------------------------------------
 // Terminal-for-turn PR delivery
 // ---------------------------------------------------------------------------
+
+export type PullRequestManualReconciliation = {
+  actionRequired: "close_pull_request" | "sync_canonical_state";
+  repoFullName: string;
+  branchName: string;
+  prUrl: string;
+  prNumber: number;
+  reconciliationReason: "incident_not_open" | "reconciliation_failed";
+  reconciliationError: string | null;
+  closeError: string | null;
+  canonicalState: schema.AgentPrState | null;
+};
+
+export type ProposedPullRequestCompensationFailure =
+  | {
+      ok: false;
+      error: string;
+      deliveryStatus: "retryable";
+      retryable: true;
+      manualReconciliation?: never;
+    }
+  | {
+      ok: false;
+      error: string;
+      deliveryStatus: "incident_not_open";
+      retryable: false;
+      incidentStatus: schema.IncidentStatus | null;
+      manualReconciliation?: never;
+    }
+  | {
+      ok: false;
+      error: string;
+      deliveryStatus: "manual_reconciliation_required";
+      retryable: false;
+      manualReconciliation: PullRequestManualReconciliation;
+    };
 
 export type ProposedPullRequestDeliveryResult =
   | {
@@ -561,9 +708,232 @@ export type ProposedPullRequestDeliveryResult =
       // PR with the same branch, instead of opening a new one.
       updatedExisting: boolean;
     }
-  | { ok: false; error: string };
+  | {
+      ok: false;
+      error: string;
+      deliveryStatus?: never;
+      retryable?: never;
+      manualReconciliation?: never;
+    }
+  | ProposedPullRequestCompensationFailure;
 
-export type PreparedProposedPullRequest = { patch: string };
+type PullRequestDeliveryCompensationReason =
+  | { kind: "incident_not_open"; incidentStatus: schema.IncidentStatus | null }
+  | {
+      kind: "reconciliation_failed";
+      error: string;
+      canonicalRecordRequired?: boolean;
+    };
+
+type PullRequestDeliveryCoordinates = {
+  repoFullName: string;
+  branchName: string;
+  prUrl: string;
+  prNumber: number;
+};
+
+function reconciliationError(reason: PullRequestDeliveryCompensationReason): string | null {
+  return reason.kind === "reconciliation_failed" ? reason.error : null;
+}
+
+function manualReconciliationFailure(opts: {
+  pullRequest: PullRequestDeliveryCoordinates;
+  reason: PullRequestDeliveryCompensationReason;
+  actionRequired: PullRequestManualReconciliation["actionRequired"];
+  closeError: string | null;
+  canonicalState: schema.AgentPrState | null;
+  error: string;
+}): ProposedPullRequestCompensationFailure {
+  return {
+    ok: false,
+    deliveryStatus: "manual_reconciliation_required",
+    retryable: false,
+    error: opts.error,
+    manualReconciliation: {
+      actionRequired: opts.actionRequired,
+      ...opts.pullRequest,
+      reconciliationReason: opts.reason.kind,
+      reconciliationError: reconciliationError(opts.reason),
+      closeError: opts.closeError,
+      canonicalState: opts.canonicalState,
+    },
+  };
+}
+
+function retryableCompensationFailure(opts: {
+  pullRequest: PullRequestDeliveryCoordinates;
+  error: string;
+}): ProposedPullRequestCompensationFailure {
+  return {
+    ok: false,
+    deliveryStatus: "retryable",
+    retryable: true,
+    error: `The PR at ${opts.pullRequest.prUrl} was closed after its canonical record could not be reconciled (${opts.error}). It is safe to retry this PR delivery.`,
+  };
+}
+
+export async function compensatePullRequestDelivery(opts: {
+  pullRequest: PullRequestDeliveryCoordinates;
+  reason: PullRequestDeliveryCompensationReason;
+  closePullRequest: () => Promise<{ ok: true } | { ok: false; error: string }>;
+  markCanonicalClosed: () => Promise<MarkAgentPullRequestClosedResult>;
+}): Promise<ProposedPullRequestCompensationFailure> {
+  const closed = await opts.closePullRequest();
+  if (!closed.ok) {
+    return manualReconciliationFailure({
+      pullRequest: opts.pullRequest,
+      reason: opts.reason,
+      actionRequired: "close_pull_request",
+      closeError: closed.error,
+      canonicalState: null,
+      error: `The PR at ${opts.pullRequest.prUrl} could not be closed after delivery reconciliation failed. Manual reconciliation is required before retrying.`,
+    });
+  }
+
+  let canonical: MarkAgentPullRequestClosedResult;
+  try {
+    canonical = await opts.markCanonicalClosed();
+  } catch (err) {
+    if (opts.reason.kind === "reconciliation_failed" && !opts.reason.canonicalRecordRequired) {
+      return retryableCompensationFailure({
+        pullRequest: opts.pullRequest,
+        error: opts.reason.error,
+      });
+    }
+    return manualReconciliationFailure({
+      pullRequest: opts.pullRequest,
+      reason: opts.reason,
+      actionRequired: "sync_canonical_state",
+      closeError: null,
+      canonicalState: null,
+      error: `The PR at ${opts.pullRequest.prUrl} was closed, but its canonical record could not be updated (${err instanceof Error ? err.message : String(err)}). Manual reconciliation is required before retrying.`,
+    });
+  }
+
+  const canonicalMayRemainOpen =
+    canonical.canonicalRecordFound && canonical.canonicalState === "open";
+  const canonicalWasRequired =
+    opts.reason.kind === "incident_not_open" || opts.reason.canonicalRecordRequired === true;
+  if (canonicalMayRemainOpen || (canonicalWasRequired && !canonical.canonicalRecordFound)) {
+    return manualReconciliationFailure({
+      pullRequest: opts.pullRequest,
+      reason: opts.reason,
+      actionRequired: "sync_canonical_state",
+      closeError: null,
+      canonicalState: canonical.canonicalState,
+      error: `The PR at ${opts.pullRequest.prUrl} was closed, but its canonical state could not be verified. Manual reconciliation is required before retrying.`,
+    });
+  }
+
+  if (opts.reason.kind === "incident_not_open") {
+    return {
+      ok: false,
+      deliveryStatus: "incident_not_open",
+      retryable: false,
+      incidentStatus: opts.reason.incidentStatus,
+      error: `The incident was already ${opts.reason.incidentStatus ?? "unavailable"}; ${opts.pullRequest.prUrl} was closed and was not delivered.`,
+    };
+  }
+  return retryableCompensationFailure({
+    pullRequest: opts.pullRequest,
+    error: opts.reason.error,
+  });
+}
+
+async function reconcileGithubPullRequestMutation(opts: {
+  pullRequest: PullRequestDeliveryCoordinates & { prNodeId: string | null };
+  installationId: number;
+  fallbackInstallationIds: number[];
+  canonicalRecordRequiredOnFailure: boolean;
+  reconcile: () => Promise<PullRequestMutationReconciliation>;
+}): Promise<
+  | { ok: true; deliveryReceipt?: PullRequestMutationReconciliation["deliveryReceipt"] }
+  | ProposedPullRequestCompensationFailure
+> {
+  let reconciliation: PullRequestMutationReconciliation;
+  try {
+    reconciliation = await opts.reconcile();
+  } catch (err) {
+    return compensateGithubPullRequestMutation({
+      ...opts,
+      reason: {
+        kind: "reconciliation_failed",
+        error: err instanceof Error ? err.message : String(err),
+        canonicalRecordRequired: opts.canonicalRecordRequiredOnFailure,
+      },
+    });
+  }
+  if (reconciliation.kind === "deliver") {
+    return {
+      ok: true,
+      ...(reconciliation.deliveryReceipt
+        ? { deliveryReceipt: reconciliation.deliveryReceipt }
+        : {}),
+    };
+  }
+
+  const reason: PullRequestDeliveryCompensationReason =
+    reconciliation.reason === "incident_not_open"
+      ? {
+          kind: "incident_not_open",
+          incidentStatus: reconciliation.incidentStatus,
+        }
+      : {
+          kind: "reconciliation_failed",
+          error: `Canonical PR state is ${reconciliation.canonicalState ?? "missing"}.`,
+          canonicalRecordRequired: reconciliation.agentPullRequestId !== null,
+        };
+  return compensateGithubPullRequestMutation({ ...opts, reason });
+}
+
+async function compensateGithubPullRequestMutation(opts: {
+  pullRequest: PullRequestDeliveryCoordinates & { prNodeId: string | null };
+  installationId: number;
+  fallbackInstallationIds: number[];
+  reason: PullRequestDeliveryCompensationReason;
+}): Promise<ProposedPullRequestCompensationFailure> {
+  const { prNodeId, ...pullRequest } = opts.pullRequest;
+  return compensatePullRequestDelivery({
+    pullRequest,
+    reason: opts.reason,
+    closePullRequest: () =>
+      closeAgentPullRequestOnGithub({
+        installationId: opts.installationId,
+        fallbackInstallationIds: opts.fallbackInstallationIds,
+        repoFullName: pullRequest.repoFullName,
+        prNumber: pullRequest.prNumber,
+        prNodeId,
+      }),
+    markCanonicalClosed: () =>
+      markAgentPullRequestClosedAfterDeliveryAbort({
+        repoFullName: pullRequest.repoFullName,
+        prNumber: pullRequest.prNumber,
+        reason:
+          opts.reason.kind === "incident_not_open" ? "incident_not_open" : "reconciliation_failed",
+      }),
+  });
+}
+
+export type PreparedProposedPullRequest =
+  | { kind: "patch"; patch: string }
+  | { kind: "recorded"; delivery: RecordedPullRequestDelivery }
+  | { kind: "github_recovery" };
+
+type ProposedPullRequestPreflightDependencies = {
+  findRecordedDelivery: typeof findRecordedPullRequestDelivery;
+  listRepositories: typeof listAccessibleGithubRepositories;
+  findGithubDelivery: typeof findGithubPullRequestDelivery;
+  downloadPatch: typeof downloadAgentPatchFile;
+  validatePatch: typeof validateAgentPatchApplicability;
+};
+
+const proposedPullRequestPreflightDependencies: ProposedPullRequestPreflightDependencies = {
+  findRecordedDelivery: findRecordedPullRequestDelivery,
+  listRepositories: listAccessibleGithubRepositories,
+  findGithubDelivery: findGithubPullRequestDelivery,
+  downloadPatch: downloadAgentPatchFile,
+  validatePatch: validateAgentPatchApplicability,
+};
 
 export async function preflightProposedPullRequest(
   ctx: AgentRunContext,
@@ -574,7 +944,22 @@ export async function preflightProposedPullRequest(
     patchFilePath: string;
   },
   sessionId: string,
+  deliveryIdentity?: PullRequestDeliveryIdentity,
+  dependencyOverrides: Partial<ProposedPullRequestPreflightDependencies> = {},
 ): Promise<{ ok: true; prepared: PreparedProposedPullRequest } | { ok: false; error: string }> {
+  const dependencies = {
+    ...proposedPullRequestPreflightDependencies,
+    ...dependencyOverrides,
+  };
+  if (deliveryIdentity) {
+    const recorded = await dependencies.findRecordedDelivery({
+      incidentId: ctx.incident.id,
+      agentRunId: ctx.agentRun.id,
+      identity: deliveryIdentity,
+      repoFullName: pr.repoFullName,
+    });
+    if (recorded) return { ok: true, prepared: { kind: "recorded", delivery: recorded } };
+  }
   if (ctx.prPolicy === "never") {
     return { ok: false, error: "This organization's policy is do-not-PR." };
   }
@@ -584,7 +969,7 @@ export async function preflightProposedPullRequest(
 
   let repoMeta: InstalledGithubRepo | undefined;
   try {
-    const repos = await listAccessibleGithubRepositories(ctx);
+    const repos = await dependencies.listRepositories(ctx);
     repoMeta = repos.find((repo) => repo.fullName === pr.repoFullName);
   } catch (err) {
     return {
@@ -599,10 +984,29 @@ export async function preflightProposedPullRequest(
     };
   }
 
+  if (deliveryIdentity) {
+    try {
+      const recovered = await dependencies.findGithubDelivery({
+        installationId: repoMeta.installation.installationId,
+        repositoryId: repoMeta.id,
+        repoFullName: pr.repoFullName,
+        requestedBranch: pr.branchName,
+        baseBranch: (resolvePullRequestBaseBranch(ctx, pr) ?? pr.baseBranch.trim()) || "main",
+        deliveryId: deliveryIdentity.deliveryId,
+      });
+      if (recovered) return { ok: true, prepared: { kind: "github_recovery" } };
+    } catch (err) {
+      return {
+        ok: false,
+        error: `Cannot recover a prior PR delivery (${err instanceof Error ? err.message : String(err)}). Try again.`,
+      };
+    }
+  }
+
   let patch: string;
   try {
     patch = (
-      await downloadAgentPatchFile({
+      await dependencies.downloadPatch({
         sessionId,
         patchFileId: null,
         patchFilePath: pr.patchFilePath,
@@ -625,7 +1029,7 @@ export async function preflightProposedPullRequest(
     orderBy: [desc(schema.agentPullRequests.createdAt)],
   });
   try {
-    await validateAgentPatchApplicability({
+    await dependencies.validatePatch({
       installationId: repoMeta.installation.installationId,
       repositoryId: repoMeta.id,
       repoFullName: pr.repoFullName,
@@ -636,7 +1040,7 @@ export async function preflightProposedPullRequest(
   } catch (err) {
     return { ok: false, error: summarizePrOpenFailure(err) };
   }
-  return { ok: true, prepared: { patch } };
+  return { ok: true, prepared: { kind: "patch", patch } };
 }
 
 // Apply the agent's patch and open (or update) a PR before the terminal ack.
@@ -658,7 +1062,17 @@ export async function deliverProposedPullRequest(
   sessionId: string,
   findings: AgentRunFindings | null,
   prepared?: PreparedProposedPullRequest,
+  deliveryIdentity?: PullRequestDeliveryIdentity,
 ): Promise<ProposedPullRequestDeliveryResult> {
+  if (prepared?.kind === "recorded") {
+    return {
+      ok: true,
+      url: prepared.delivery.url,
+      prNumber: prepared.delivery.prNumber,
+      branchName: prepared.delivery.branchName,
+      updatedExisting: prepared.delivery.updatedExisting,
+    };
+  }
   if (ctx.prPolicy === "never") {
     return {
       ok: false,
@@ -687,8 +1101,8 @@ export async function deliverProposedPullRequest(
     };
   }
 
-  let patch = prepared?.patch;
-  if (!patch) {
+  let patch = prepared?.kind === "patch" ? prepared.patch : null;
+  if (!patch && prepared?.kind !== "github_recovery") {
     try {
       const downloaded = await downloadAgentPatchFile({
         sessionId,
@@ -703,6 +1117,7 @@ export async function deliverProposedPullRequest(
       };
     }
   }
+  patch ??= "";
 
   const commitAuthor =
     repoMeta.installation.commitAuthorName && repoMeta.installation.commitAuthorEmail
@@ -747,27 +1162,53 @@ export async function deliverProposedPullRequest(
         commitTitle: prTitle,
         commentBody: pr.body,
         commitAuthor,
+        ...(deliveryIdentity ? { deliveryId: deliveryIdentity.deliveryId } : {}),
       });
     } catch (err) {
       return { ok: false, error: summarizePrOpenFailure(err) };
     }
-    const now = new Date();
-    await db
-      .update(schema.agentPullRequests)
-      .set({ headSha: pushed.headSha, lastSyncedAt: now, updatedAt: now })
-      .where(eq(schema.agentPullRequests.id, existingPr.id));
-    const linearTicket = await deliverAndRecordLinearTicket(ctx, ticketResult, existingPr.url);
-    const ticketLine = linearTicket ? `\n${linearTicketSlackReference(linearTicket)}` : "";
-    await postIncidentThreadMessage(
-      ctx.incident.id,
-      `:arrows_counterclockwise: Pushed an update to PR ${existingPr.url}${ticketLine}`,
-    ).catch(() => {});
+    const reconciled = await reconcileGithubPullRequestMutation({
+      pullRequest: {
+        repoFullName: existingPr.repoFullName,
+        branchName: existingPr.branchName,
+        prUrl: existingPr.url,
+        prNumber: existingPr.prNumber,
+        prNodeId: existingPr.prNodeId,
+      },
+      installationId: repoMeta.installation.installationId,
+      fallbackInstallationIds: ctx.githubInstalls.map(
+        ({ installation }) => installation.installationId,
+      ),
+      canonicalRecordRequiredOnFailure: true,
+      reconcile: () =>
+        recordUpdatedAgentPullRequest({
+          incidentId: ctx.incident.id,
+          agentRunId: ctx.agentRun.id,
+          agentPullRequestId: existingPr.id,
+          repoFullName: existingPr.repoFullName,
+          prNumber: existingPr.prNumber,
+          headSha: pushed.headSha,
+          url: existingPr.url,
+          branchName: existingPr.branchName,
+          ...(deliveryIdentity ? { deliveryIdentity } : {}),
+        }),
+    });
+    if (!reconciled.ok) return reconciled;
+    if (!deliveryIdentity || reconciled.deliveryReceipt?.newlyRecorded !== false) {
+      const linearTicket = await deliverAndRecordLinearTicket(ctx, ticketResult, existingPr.url);
+      const ticketLine = linearTicket ? `\n${linearTicketSlackReference(linearTicket)}` : "";
+      await postIncidentThreadMessage(
+        ctx.incident.id,
+        `:arrows_counterclockwise: Pushed an update to PR ${existingPr.url}${ticketLine}`,
+      ).catch(() => {});
+    }
+    const delivered = reconciled.deliveryReceipt?.delivery;
     return {
       ok: true,
-      url: existingPr.url,
-      prNumber: existingPr.prNumber,
-      branchName: existingPr.branchName,
-      updatedExisting: true,
+      url: delivered?.url ?? existingPr.url,
+      prNumber: delivered?.prNumber ?? existingPr.prNumber,
+      branchName: delivered?.branchName ?? existingPr.branchName,
+      updatedExisting: delivered?.updatedExisting ?? true,
     };
   }
 
@@ -783,6 +1224,7 @@ export async function deliverProposedPullRequest(
       title: prTitle,
       body: prBody,
       commitAuthor,
+      ...(deliveryIdentity ? { deliveryId: deliveryIdentity.deliveryId } : {}),
     });
   } catch (err) {
     return { ok: false, error: summarizePrOpenFailure(err) };
@@ -792,53 +1234,72 @@ export async function deliverProposedPullRequest(
   // webhooks, and same-branch follow-up pushes key on — an unrecorded PR is
   // invisible to all of them, so recording must succeed before the tool can
   // report success.
-  try {
-    await recordOpenedAgentPullRequest({
-      incidentId: ctx.incident.id,
-      agentRunId: ctx.agentRun.id,
-      installationRowId: repoMeta.installation.id,
+  const reconciled = await reconcileGithubPullRequestMutation({
+    pullRequest: {
       repoFullName: pr.repoFullName,
+      branchName: opened.branchName,
+      prUrl: opened.prUrl,
       prNumber: opened.prNumber,
       prNodeId: opened.prNodeId,
-      url: opened.prUrl,
-      branchName: opened.branchName,
-      baseBranch: opened.baseBranch,
-      headSha: opened.headSha,
-      title: prTitle,
-      authorLogin: opened.authorLogin,
-      authorGithubId: opened.authorGithubId,
-      authorAvatarUrl: opened.authorAvatarUrl,
-    });
-  } catch (err) {
+    },
+    installationId: repoMeta.installation.installationId,
+    fallbackInstallationIds: ctx.githubInstalls.map(
+      ({ installation }) => installation.installationId,
+    ),
+    canonicalRecordRequiredOnFailure: false,
+    reconcile: () =>
+      recordOpenedAgentPullRequest({
+        incidentId: ctx.incident.id,
+        agentRunId: ctx.agentRun.id,
+        installationRowId: repoMeta.installation.id,
+        repoFullName: pr.repoFullName,
+        prNumber: opened.prNumber,
+        prNodeId: opened.prNodeId,
+        url: opened.prUrl,
+        branchName: opened.branchName,
+        baseBranch: opened.baseBranch,
+        headSha: opened.headSha,
+        title: prTitle,
+        authorLogin: opened.authorLogin,
+        authorGithubId: opened.authorGithubId,
+        authorAvatarUrl: opened.authorAvatarUrl,
+        ...(deliveryIdentity ? { deliveryIdentity } : {}),
+      }),
+  });
+  if (!reconciled.ok) {
     logger.error(
       {
         scope: "agent_run.pr_delivery",
         agent_run_id: ctx.agentRun.id,
         incident_id: ctx.incident.id,
         pr_url: opened.prUrl,
-        err: err instanceof Error ? err.message : String(err),
+        delivery_status: reconciled.deliveryStatus,
+        manual_reconciliation: reconciled.manualReconciliation ?? null,
       },
-      "failed to record opened agent pull request",
+      "opened agent pull request did not survive delivery reconciliation",
     );
-    return {
-      ok: false,
-      error: `The PR was opened at ${opened.prUrl} but could not be recorded on the incident, so Superlog cannot track it. Do not open another PR for this change — include the PR URL in your findings and use ask_human to have the tracking reconciled.`,
-    };
+    return reconciled;
   }
-  await agentRunLifecycle.appendAgentEvent({
-    agentRunId: ctx.agentRun.id,
-    kind: "pr_opened",
-    summary: `Opened PR: ${opened.prUrl}`,
-    providerEventId: `pr_opened:${opened.prUrl}`,
-    detail: { url: opened.prUrl },
-  });
+  const shouldPublishDelivery =
+    !deliveryIdentity || reconciled.deliveryReceipt?.newlyRecorded !== false;
+  if (shouldPublishDelivery) {
+    await agentRunLifecycle.appendAgentEvent({
+      agentRunId: ctx.agentRun.id,
+      kind: "pr_opened",
+      summary: `Opened PR: ${opened.prUrl}`,
+      providerEventId: `pr_opened:${opened.prUrl}`,
+      detail: { url: opened.prUrl },
+    });
+  }
 
   // The first successfully-recorded PR is the ticket creation boundary.
   // Later PRs reuse the run-scoped ticket, then independently cross-link in
   // both directions.
-  const linearTicket = await deliverAndRecordLinearTicket(ctx, ticketResult, opened.prUrl);
+  const linearTicket = shouldPublishDelivery
+    ? await deliverAndRecordLinearTicket(ctx, ticketResult, opened.prUrl)
+    : null;
 
-  if (ctx.autoMergeFixPrs !== "never") {
+  if (shouldPublishDelivery && ctx.autoMergeFixPrs !== "never") {
     try {
       const outcome = await mergeAgentPullRequest({
         installationId: repoMeta.installation.installationId,
@@ -873,47 +1334,50 @@ export async function deliverProposedPullRequest(
     }
   }
 
-  const ticketLine = linearTicket ? `\n${linearTicketSlackReference(linearTicket)}` : "";
-  await postIncidentThreadMessage(
-    ctx.incident.id,
-    `:bulb: Opened PR ${opened.prUrl}${ticketLine}`,
-  ).catch(() => {});
-  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
-  await updateIncidentMainMessage(
-    ctx.incident.id,
-    `:bulb: PR Ready: ${ctx.incident.title}`,
-    incidentBlocks({
-      emoji: "bulb",
-      status: "PR Ready",
-      title: ctx.incident.title,
-      tagline: pr.title,
-      projectName: ctx.project.name,
-      service: ctx.incident.service,
-      buttons: [
-        { text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" },
-        { text: "View PR", url: opened.prUrl, actionId: "view_pr" },
-        ...(linearTicket?.url
-          ? [
-              {
-                text: `View ${linearTicket.identifier}`,
-                url: linearTicket.url,
-                actionId: "view_linear",
-              },
-            ]
-          : []),
-      ],
-      incidentId: ctx.incident.id,
-      showResolveButton: true,
-      showMergePrButton: true,
-    }),
-  ).catch(() => {});
+  if (shouldPublishDelivery) {
+    const ticketLine = linearTicket ? `\n${linearTicketSlackReference(linearTicket)}` : "";
+    await postIncidentThreadMessage(
+      ctx.incident.id,
+      `:bulb: Opened PR ${opened.prUrl}${ticketLine}`,
+    ).catch(() => {});
+    const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
+    await updateIncidentMainMessage(
+      ctx.incident.id,
+      `:bulb: PR Ready: ${ctx.incident.title}`,
+      incidentBlocks({
+        emoji: "bulb",
+        status: "PR Ready",
+        title: ctx.incident.title,
+        tagline: pr.title,
+        projectName: ctx.project.name,
+        service: ctx.incident.service,
+        buttons: [
+          { text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" },
+          { text: "View PR", url: opened.prUrl, actionId: "view_pr" },
+          ...(linearTicket?.url
+            ? [
+                {
+                  text: `View ${linearTicket.identifier}`,
+                  url: linearTicket.url,
+                  actionId: "view_linear",
+                },
+              ]
+            : []),
+        ],
+        incidentId: ctx.incident.id,
+        showResolveButton: true,
+        showMergePrButton: true,
+      }),
+    ).catch(() => {});
+  }
 
+  const delivered = reconciled.deliveryReceipt?.delivery;
   return {
     ok: true,
-    url: opened.prUrl,
-    prNumber: opened.prNumber,
-    branchName: opened.branchName,
-    updatedExisting: false,
+    url: delivered?.url ?? opened.prUrl,
+    prNumber: delivered?.prNumber ?? opened.prNumber,
+    branchName: delivered?.branchName ?? opened.branchName,
+    updatedExisting: delivered?.updatedExisting ?? false,
   };
 }
 

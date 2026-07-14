@@ -3,7 +3,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import type { DB } from "./client.js";
@@ -170,6 +170,186 @@ test("resolve with default outcome marks current issues resolved", async () => {
   }
 });
 
+test("resolving an incident completes parked agent runs without losing their deliverables", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-complete-parked-run",
+    });
+    const parkedResult: schema.AgentRunResult = {
+      state: "awaiting_events",
+      summary: "Opened the fix and waited for review.",
+      prs: [
+        {
+          selectedRepoFullName: "acme/checkout",
+          branchName: "fix/checkout",
+          baseBranch: "main",
+          title: "Fix checkout",
+          openStatus: "opened",
+          url: "https://example.test/acme/checkout/pull/42",
+        },
+      ],
+    };
+    const run = one(
+      await db
+        .insert(schema.agentRuns)
+        .values({
+          incidentId: incident.id,
+          runtime: "test",
+          state: "awaiting_events",
+          result: parkedResult,
+        })
+        .returning(),
+    );
+    const resolvedAt = new Date("2026-07-14T12:00:00.000Z");
+
+    await createIncidentLifecycle(db).resolve({
+      incidentId: incident.id,
+      kind: "dashboard_manual",
+      reasonCode: "problem_resolved",
+      reasonText: null,
+      resolvedAt,
+    });
+
+    const runAfter = one(
+      await db.select().from(schema.agentRuns).where(eq(schema.agentRuns.id, run.id)),
+    );
+    assert.equal(runAfter.state, "complete");
+    assert.deepEqual(runAfter.completedAt, resolvedAt);
+    assert.deepEqual(runAfter.result, { ...parkedResult, state: "complete" });
+    const completionEvent = one(
+      await db
+        .select()
+        .from(schema.incidentEvents)
+        .where(eq(schema.incidentEvents.agentRunId, run.id)),
+    );
+    assert.equal(completionEvent.kind, "agent_run_completed");
+    assert.equal(completionEvent.dedupeKey, `completed:${run.id}`);
+    assert.deepEqual(completionEvent.processedAt, resolvedAt);
+  } finally {
+    await client.close();
+  }
+});
+
+test("resolving an incident leaves non-parked agent runs unchanged", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-preserve-other-runs",
+    });
+    const terminalAt = new Date("2026-07-13T12:00:00.000Z");
+    const originalRuns = await db
+      .insert(schema.agentRuns)
+      .values([
+        { incidentId: incident.id, runtime: "test", state: "queued" },
+        { incidentId: incident.id, runtime: "test", state: "running" },
+        {
+          incidentId: incident.id,
+          runtime: "test",
+          state: "awaiting_human",
+          result: {
+            state: "awaiting_human",
+            summary: "Need a deployment detail.",
+            question: "Which environment changed?",
+          },
+        },
+        {
+          incidentId: incident.id,
+          runtime: "test",
+          state: "complete",
+          completedAt: terminalAt,
+          result: { state: "complete", summary: "Already complete." },
+        },
+        {
+          incidentId: incident.id,
+          runtime: "test",
+          state: "failed",
+          completedAt: terminalAt,
+          result: { state: "failed", summary: "Already failed." },
+        },
+      ])
+      .returning();
+
+    await createIncidentLifecycle(db).resolve({
+      incidentId: incident.id,
+      kind: "dashboard_manual",
+      reasonCode: "problem_resolved",
+      reasonText: null,
+      resolvedAt: new Date("2026-07-14T12:00:00.000Z"),
+    });
+
+    for (const original of originalRuns) {
+      const after = one(
+        await db.select().from(schema.agentRuns).where(eq(schema.agentRuns.id, original.id)),
+      );
+      assert.equal(after.state, original.state);
+      assert.deepEqual(after.result, original.result);
+      assert.deepEqual(after.completedAt, original.completedAt);
+    }
+  } finally {
+    await client.close();
+  }
+});
+
+test("repeated resolution does not complete a parked run twice", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-idempotent-parked-run-completion",
+    });
+    const run = one(
+      await db
+        .insert(schema.agentRuns)
+        .values({
+          incidentId: incident.id,
+          runtime: "test",
+          state: "awaiting_events",
+          result: { state: "awaiting_events", summary: "Waiting for review." },
+        })
+        .returning(),
+    );
+    const firstResolvedAt = new Date("2026-07-14T12:00:00.000Z");
+    const lifecycle = createIncidentLifecycle(db);
+
+    const first = await lifecycle.resolve({
+      incidentId: incident.id,
+      kind: "dashboard_manual",
+      reasonCode: "problem_resolved",
+      reasonText: null,
+      resolvedAt: firstResolvedAt,
+    });
+    const repeated = await lifecycle.resolve({
+      incidentId: incident.id,
+      kind: "dashboard_manual",
+      reasonCode: "problem_resolved",
+      reasonText: null,
+      resolvedAt: new Date("2026-07-14T13:00:00.000Z"),
+    });
+
+    assert.equal(first.resolved, true);
+    assert.equal(repeated.resolved, false);
+    const runAfter = one(
+      await db.select().from(schema.agentRuns).where(eq(schema.agentRuns.id, run.id)),
+    );
+    assert.deepEqual(runAfter.completedAt, firstResolvedAt);
+    const completionEvents = await db
+      .select()
+      .from(schema.incidentEvents)
+      .where(
+        and(
+          eq(schema.incidentEvents.agentRunId, run.id),
+          eq(schema.incidentEvents.kind, "agent_run_completed"),
+        ),
+      );
+    assert.equal(completionEvents.length, 1);
+  } finally {
+    await client.close();
+  }
+});
+
 test("resolve with silence outcome silences current issues", async () => {
   const { db, client } = await freshDb();
   try {
@@ -304,6 +484,45 @@ test("agent resolve applies distinct issue outcomes and closes the incident atom
       await db.select().from(schema.incidents).where(eq(schema.incidents.id, incident.id)),
     );
     assert.equal(incidentAfter.status, "resolved");
+  } finally {
+    await client.close();
+  }
+});
+
+test("agent resolve accepts an exact empty outcome set for an Incident with no Issues", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const now = new Date("2026-07-14T12:00:00.000Z");
+    const incident = one(
+      await db
+        .insert(schema.incidents)
+        .values({
+          projectId: project.id,
+          title: "Delegated investigation",
+          codename: "zero-issue-agent-resolve",
+          status: "open",
+          firstSeen: now,
+          lastSeen: now,
+        })
+        .returning(),
+    );
+
+    const result = await createIncidentLifecycle(db).resolve({
+      incidentId: incident.id,
+      kind: "agent_classification",
+      reasonCode: "agent_resolved",
+      reasonText: "The delegated investigation is complete.",
+      issueOutcomes: [],
+      resolvedAt: now,
+    });
+
+    assert.deepEqual(result, { resolved: true, resolvedIssueCount: 0 });
+    const after = one(
+      await db.select().from(schema.incidents).where(eq(schema.incidents.id, incident.id)),
+    );
+    assert.equal(after.status, "resolved");
+    assert.ok((await eventKinds(db, incident.id)).includes("incident_resolved"));
   } finally {
     await client.close();
   }

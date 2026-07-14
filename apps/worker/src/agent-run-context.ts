@@ -1,11 +1,12 @@
 import {
   type AccessibleGithubInstall,
+  INTERNAL_INCIDENT_EVENT_KIND_SQL_PATTERN,
   db,
   listAccessibleGithubInstallsForProject,
   resolveDefaultAgentRunProvider,
   schema,
 } from "@superlog/db";
-import { and, asc, desc, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, notLike } from "drizzle-orm";
 import { listActiveAgentMemories } from "./agent-memory-tools.js";
 import { buildAgentRunInstructions } from "./agent-run-instructions.js";
 import type {
@@ -245,7 +246,10 @@ export async function loadAgentRunContext(
         orderBy: [desc(schema.agentRuns.createdAt)],
       })) ?? null;
     const events = await db.query.incidentEvents.findMany({
-      where: eq(schema.incidentEvents.incidentId, incident.id),
+      where: and(
+        eq(schema.incidentEvents.incidentId, incident.id),
+        notLike(schema.incidentEvents.kind, INTERNAL_INCIDENT_EVENT_KIND_SQL_PATTERN),
+      ),
       orderBy: [asc(schema.incidentEvents.createdAt)],
       columns: { kind: true, summary: true },
     });

@@ -8,7 +8,10 @@ import {
   assertAgentRunSourceState,
   isActiveState,
 } from "./agent-runs/domain.js";
-import { createAgentRunRepository } from "./agent-runs/repository.js";
+import {
+  type PauseForEventsRepositoryOutcome,
+  createAgentRunRepository,
+} from "./agent-runs/repository.js";
 
 export {
   ACTIVE_STATES,
@@ -18,6 +21,7 @@ export {
   TERMINAL_STATES,
   isActiveState,
 } from "./agent-runs/domain.js";
+export type { PauseForEventsRepositoryOutcome as PauseForEventsOutcome } from "./agent-runs/repository.js";
 
 export type AgentRunLifecycle = ReturnType<typeof createAgentRunLifecycle>;
 
@@ -102,13 +106,21 @@ export function createAgentRunLifecycle(db: DB) {
       currentState: AgentRunState | string;
       summary: string;
       question: string;
+      result?: AgentRunResult;
     }): Promise<void> {
       assertAgentRunSourceState("pauseForHuman", opts.currentState, ["running", "repo_discovery"]);
-      const result: AgentRunResult = {
-        state: "awaiting_human",
-        summary: opts.summary,
-        question: opts.question,
-      };
+      const result: AgentRunResult = opts.result
+        ? {
+            ...opts.result,
+            state: "awaiting_human",
+            summary: opts.summary,
+            question: opts.question,
+          }
+        : {
+            state: "awaiting_human",
+            summary: opts.summary,
+            question: opts.question,
+          };
       await repository.updateRun(opts.id, {
         state: "awaiting_human",
         result,
@@ -117,7 +129,12 @@ export function createAgentRunLifecycle(db: DB) {
         agentRunId: opts.id,
         kind: "awaiting_human",
         summary: opts.summary,
-        detail: { question: opts.question },
+        detail: {
+          question: opts.question,
+          ...(result.manualReconciliation
+            ? { manualReconciliation: result.manualReconciliation }
+            : {}),
+        },
         dedupeKey: `awaiting_human:${opts.question}`,
         processed: true,
       });
@@ -137,27 +154,32 @@ export function createAgentRunLifecycle(db: DB) {
      */
     async pauseForEvents(opts: {
       id: string;
+      incidentId: string;
       currentState: AgentRunState | string;
       result: AgentRunResult;
-    }): Promise<boolean> {
+    }): Promise<PauseForEventsRepositoryOutcome> {
       assertAgentRunSourceState("pauseForEvents", opts.currentState, ["running"]);
-      const won = await repository.updateRunIfState(opts.id, "running", {
-        state: "awaiting_events",
-        result: opts.result,
-      });
-      if (!won) return false;
       const externalSource =
         opts.result.waitReason === "external_cause" ? opts.result.externalCause?.source : null;
-      await repository.insertEvent({
-        agentRunId: opts.id,
-        kind: "awaiting_events",
-        summary: externalSource
+      return repository.pauseForEventsIfIncidentOpen({
+        id: opts.id,
+        incidentId: opts.incidentId,
+        result: opts.result,
+        eventSummary: externalSource
           ? `Investigation is waiting on an external change from ${externalSource}.`
           : "Investigation is waiting on PR review/merge events.",
-        dedupeKey: `awaiting_events:${opts.id}:${Date.now()}`,
-        processed: true,
+        now: new Date(),
       });
-      return true;
+    },
+
+    // Provider updates are intentionally outside the park transaction. Take a
+    // fresh aggregate snapshot before publishing so a resolution that committed
+    // immediately after the park suppresses stale waiting-state messages.
+    async canPublishAwaitingEventsUpdate(opts: {
+      id: string;
+      incidentId: string;
+    }): Promise<boolean> {
+      return repository.canPublishAwaitingEventsUpdate(opts);
     },
 
     /**
@@ -312,24 +334,15 @@ export function createAgentRunLifecycle(db: DB) {
       selectedRepoFullName: string;
       selectedBaseBranch: string;
       prUrl: string;
-    }): Promise<void> {
+    }): Promise<boolean> {
       assertAgentRunSourceState("completeWithPullRequest", opts.currentState, ["running"]);
-      const now = new Date();
-      await repository.updateRun(opts.id, {
-        state: "complete",
+      return repository.completeRunWithPullRequestIfRunning({
+        id: opts.id,
+        result: opts.result,
         selectedRepoFullName: opts.selectedRepoFullName,
         selectedBaseBranch: opts.selectedBaseBranch,
-        completedAt: now,
-        updatedAt: now,
-        result: opts.result,
-      });
-      await repository.insertEvent({
-        agentRunId: opts.id,
-        kind: "pr_opened",
-        summary: `Opened PR: ${opts.prUrl}`,
-        detail: { url: opts.prUrl },
-        dedupeKey: `pr:${opts.prUrl}`,
-        processed: true,
+        prUrl: opts.prUrl,
+        now: new Date(),
       });
     },
 
@@ -343,21 +356,12 @@ export function createAgentRunLifecycle(db: DB) {
       id: string;
       currentState: AgentRunState | string;
       result: AgentRunResult;
-    }): Promise<void> {
+    }): Promise<boolean> {
       assertAgentRunSourceState("completeWithoutPullRequest", opts.currentState, ["running"]);
-      const now = new Date();
-      await repository.updateRun(opts.id, {
-        state: "complete",
+      return repository.completeRunIfRunning({
+        id: opts.id,
         result: opts.result,
-        completedAt: now,
-        updatedAt: now,
-      });
-      await repository.insertEvent({
-        agentRunId: opts.id,
-        kind: "agent_run_completed",
-        summary: opts.result.summary,
-        dedupeKey: `completed:${opts.id}`,
-        processed: true,
+        now: new Date(),
       });
     },
 

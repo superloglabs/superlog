@@ -3,9 +3,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PullRequestProposal } from "../agent-outcome-tools.js";
 import {
+  type OutcomeActionReceiptLock,
+  outcomeActionInputHash,
+} from "./outcome-action-receipts.js";
+import {
   createOutcomeActionExecutor,
   executeProposedPullRequestBatch,
   missingMobileTestDecision,
+  proposedPullRequestBatchErrors,
+  pullRequestDeliveryIdentityForOutcomeAction,
 } from "./outcome-actions.js";
 
 const proposals: PullRequestProposal[] = [
@@ -26,6 +32,34 @@ const proposals: PullRequestProposal[] = [
     patchFilePath: "/mnt/session/outputs/worker.patch",
   },
 ];
+
+const manualReconciliation = {
+  actionRequired: "close_pull_request" as const,
+  repoFullName: "acme/api",
+  branchName: "superlog/fix-api-retries",
+  prUrl: "https://github.com/acme/api/pull/42",
+  prNumber: 42,
+  reconciliationReason: "reconciliation_failed" as const,
+  reconciliationError: "canonical write timed out",
+  closeError: "GitHub rate limited the close",
+  canonicalState: null,
+};
+
+const receiptContext = {
+  incident: { id: "incident-1" },
+  agentRun: { id: "run-1" },
+} as Parameters<typeof createOutcomeActionExecutor>[0];
+
+const noReceiptLock: OutcomeActionReceiptLock = {
+  async exclusive(_args, task) {
+    return task({
+      async load() {
+        return null;
+      },
+      async save() {},
+    });
+  },
+};
 
 test("the whole PR batch is preflighted before any repository is changed", async () => {
   const calls: string[] = [];
@@ -53,6 +87,7 @@ test("the whole PR batch is preflighted before any repository is changed", async
   assert.equal(result.pullRequests.length, 2);
   assert.equal(result.pullRequests[0]?.status, "not_delivered");
   assert.equal(result.pullRequests[1]?.status, "validation_failed");
+  assert.match(proposedPullRequestBatchErrors(result)[0] ?? "", /retry every.*entry/i);
 });
 
 test("delivery reports every entry and permits retrying only external failures", async () => {
@@ -81,6 +116,103 @@ test("delivery reports every entry and permits retrying only external failures",
   assert.equal(result.ok, false);
   assert.equal(result.pullRequests[0]?.status, "delivered");
   assert.equal(result.pullRequests[1]?.status, "delivery_failed");
+  assert.match(proposedPullRequestBatchErrors(result)[0] ?? "", /not delivered/i);
+});
+
+test("a compensated delivery failure preserves its explicit retryable status", async () => {
+  const [proposal] = proposals;
+  assert.ok(proposal);
+  const result = await executeProposedPullRequestBatch([proposal], {
+    preflight: async () => ({ ok: true, prepared: "patch" }),
+    deliver: async () => ({
+      ok: false,
+      error: "The just-opened PR was closed after recording failed.",
+      deliveryStatus: "retryable",
+      retryable: true,
+    }),
+  });
+
+  assert.deepEqual(result.pullRequests, [
+    {
+      repoFullName: proposal.repoFullName,
+      branchName: proposal.branchName,
+      status: "delivery_failed",
+      deliveryStatus: "retryable",
+      retryable: true,
+      error: "The just-opened PR was closed after recording failed.",
+    },
+  ]);
+  assert.match(proposedPullRequestBatchErrors(result)[0] ?? "", /retry/i);
+});
+
+test("incident-not-open stops the batch and forbids another PR attempt", async () => {
+  const deliveredRepos: string[] = [];
+  const result = await executeProposedPullRequestBatch(proposals, {
+    preflight: async () => ({ ok: true, prepared: "patch" }),
+    deliver: async (proposal) => {
+      deliveredRepos.push(proposal.repoFullName);
+      return {
+        ok: false,
+        error: "Incident resolution won; the PR was closed.",
+        deliveryStatus: "incident_not_open",
+        retryable: false,
+        incidentStatus: "resolved",
+      };
+    },
+  });
+
+  assert.deepEqual(deliveredRepos, ["acme/api"]);
+  assert.equal(result.pullRequests[0]?.deliveryStatus, "incident_not_open");
+  assert.equal(result.pullRequests[0]?.retryable, false);
+  assert.equal(result.pullRequests[1]?.status, "not_delivered");
+  assert.match(proposedPullRequestBatchErrors(result).join(" "), /do not retry/i);
+  assert.match(proposedPullRequestBatchErrors(result).join(" "), /resolve_incident|ask_human/i);
+});
+
+test("manual reconciliation metadata survives the batch boundary and blocks later mutations", async () => {
+  const deliveredRepos: string[] = [];
+  const result = await executeProposedPullRequestBatch(proposals, {
+    preflight: async () => ({ ok: true, prepared: "patch" }),
+    deliver: async (proposal) => {
+      deliveredRepos.push(proposal.repoFullName);
+      return {
+        ok: false,
+        error: "The PR may still be open and requires a human.",
+        deliveryStatus: "manual_reconciliation_required",
+        retryable: false,
+        manualReconciliation,
+      };
+    },
+  });
+
+  assert.deepEqual(deliveredRepos, ["acme/api"]);
+  assert.deepEqual(result.pullRequests[0]?.manualReconciliation, manualReconciliation);
+  assert.equal(result.pullRequests[0]?.deliveryStatus, "manual_reconciliation_required");
+  assert.equal(result.pullRequests[1]?.status, "not_delivered");
+  assert.match(proposedPullRequestBatchErrors(result).join(" "), /do not retry|do not.*mutation/i);
+  assert.match(proposedPullRequestBatchErrors(result).join(" "), /ask_human/i);
+});
+
+test("a thrown delivery preserves earlier successful entries", async () => {
+  const result = await executeProposedPullRequestBatch(proposals, {
+    preflight: async (proposal) => ({ ok: true, prepared: proposal.repoFullName }),
+    deliver: async (proposal) => {
+      if (proposal.repoFullName === "acme/worker") throw new Error("provider timeout");
+      return {
+        ok: true,
+        url: "https://github.com/acme/api/pull/12",
+        prNumber: 12,
+        branchName: proposal.branchName,
+        updatedExisting: false,
+      };
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.pullRequests[0]?.status, "delivered");
+  assert.equal(result.pullRequests[0]?.prUrl, "https://github.com/acme/api/pull/12");
+  assert.equal(result.pullRequests[1]?.status, "delivery_failed");
+  assert.match(result.pullRequests[1]?.error ?? "", /provider timeout/);
 });
 
 test("the mobile regression gate retries when integration lookup fails", async () => {
@@ -105,16 +237,246 @@ test("the mobile regression gate retries when integration lookup fails", async (
 });
 
 test("retired outcome tools are handled with migration guidance", async () => {
-  const execute = createOutcomeActionExecutor({} as never, "session-1");
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock);
   const result = await execute({
-    name: "silence_as_noise",
-    input: { issueId: "issue-1" },
+    toolUseId: "tool-use-1",
+    name: "mark_already_resolved",
+    input: { reason: "The upstream recovered.", evidence: "The signal cleared." },
     hasFindings: true,
     findings: null,
   });
 
   assert.equal(result.handled, true);
-  if (!result.handled) return;
+  if (!result.handled || result.deferAck) return;
   assert.equal(result.ok, false);
   assert.match(JSON.stringify(result.payload), /resolve_incident\.issueOutcomes/);
+});
+
+test("a durable legacy issue action is applied idempotently without ending the turn", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
+    async classifyIncidentIssue(_database, input) {
+      calls.push(input);
+      return {
+        ok: true,
+        issueTitle: "Expected probe",
+        status: "silenced",
+        alreadyClassified: true,
+      };
+    },
+  });
+
+  const result = await execute({
+    toolUseId: "legacy-action-1",
+    name: "silence_as_noise",
+    input: {
+      issueId: "issue-1",
+      reason: "Expected probe traffic.",
+      evidence: "The handler returned its documented no-op response.",
+    },
+    hasFindings: true,
+    findings: null,
+  });
+
+  assert.equal(result.handled, true);
+  if (!result.handled || result.deferAck) return;
+  assert.equal(result.ok, true);
+  assert.equal(result.payload.final, undefined);
+  assert.equal(result.payload.alreadyClassified, true);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0]?.action, { kind: "silence" });
+});
+
+test("legacy resolve synthesizes complete issue outcomes and uses tool-specific atomic proof", async () => {
+  const resolveCalls: Array<Record<string, unknown>> = [];
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
+    async synthesizeLegacyIncidentIssueOutcomes() {
+      return {
+        ok: true,
+        outcomes: [
+          {
+            issueId: "issue-1",
+            action: "observe",
+            reason: "Watch the one-off.",
+            evidence: "Only one occurrence was observed.",
+            trigger: { kind: "count", count: 25 },
+          },
+          {
+            issueId: "issue-2",
+            action: "resolve",
+            reason: "The transient condition recovered.",
+            evidence: "The error remained absent for 30 minutes.",
+          },
+        ],
+      };
+    },
+    async resolveIncident(input) {
+      resolveCalls.push(input as unknown as Record<string, unknown>);
+      return { resolved: true, resolvedIssueCount: 2 };
+    },
+  });
+
+  const result = await execute({
+    toolUseId: "legacy-resolve-1",
+    name: "resolve_incident",
+    input: {
+      reason: "Every legacy classification is complete.",
+      evidence: "The failing signal has remained at zero for 30 minutes.",
+    },
+    hasFindings: true,
+    findings: null,
+  });
+
+  assert.equal(result.handled, true);
+  if (!result.handled || result.deferAck) return;
+  assert.equal(result.ok, true);
+  assert.equal(result.payload.final, true);
+  assert.equal(
+    result.payload.incidentResolutionEventDedupeKey,
+    "incident_resolved:agent_run:run-1:resolve_incident:legacy-resolve-1",
+  );
+  assert.deepEqual(result.payload.issueOutcomes, [
+    {
+      issueId: "issue-1",
+      status: "under_observation",
+      reason: "Watch the one-off.",
+      evidence: "Only one occurrence was observed.",
+      escalateOn: "additional_events",
+      threshold: 25,
+    },
+    {
+      issueId: "issue-2",
+      status: "resolved",
+      reason: "The transient condition recovered.",
+      evidence: "The error remained absent for 30 minutes.",
+    },
+  ]);
+  assert.equal(resolveCalls.length, 1);
+  assert.deepEqual(resolveCalls[0]?.issueOutcomes, [
+    {
+      issueId: "issue-1",
+      action: "observe",
+      reason: "Watch the one-off.",
+      evidence: "Only one occurrence was observed.",
+      trigger: { kind: "count", count: 25 },
+    },
+    {
+      issueId: "issue-2",
+      action: "resolve",
+      reason: "The transient condition recovered.",
+      evidence: "The error remained absent for 30 minutes.",
+    },
+  ]);
+});
+
+test("a replayed tool use returns its durable execution receipt without repeating side effects", async () => {
+  let saved = false;
+  const receiptLock: OutcomeActionReceiptLock = {
+    async exclusive(args, task) {
+      assert.equal(args.toolUseId, "tool-use-replayed");
+      assert.equal(args.toolName, "propose_pr");
+      return task({
+        async load() {
+          return {
+            version: 1,
+            toolName: "propose_pr",
+            inputHash: outcomeActionInputHash({}),
+            ok: true,
+            payload: {
+              ok: true,
+              final: true,
+              pullRequests: [
+                {
+                  repoFullName: "acme/api",
+                  branchName: "superlog/fix-api-retries",
+                  status: "delivered",
+                  prUrl: "https://github.com/acme/api/pull/12",
+                },
+              ],
+            },
+          };
+        },
+        async save() {
+          saved = true;
+        },
+      });
+    },
+  };
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", receiptLock);
+
+  const result = await execute({
+    toolUseId: "tool-use-replayed",
+    name: "propose_pr",
+    input: {},
+    hasFindings: false,
+    findings: null,
+  });
+
+  assert.equal(result.handled, true);
+  if (!result.handled || result.deferAck) return;
+  assert.equal(result.ok, true);
+  assert.equal(saved, false);
+  assert.equal(Array.isArray(result.payload.pullRequests), true);
+});
+
+test("PR delivery identity is stable and scoped to run, tool use, and repository", () => {
+  const proposal = proposals[0];
+  assert.ok(proposal);
+
+  const first = pullRequestDeliveryIdentityForOutcomeAction("run-1", "tool-1", proposal);
+  const replay = pullRequestDeliveryIdentityForOutcomeAction("run-1", "tool-1", {
+    ...proposal,
+  });
+
+  assert.deepEqual(replay, first);
+  assert.match(first.deliveryId, /^[a-f0-9]{64}$/);
+  assert.equal(first.inputHash, outcomeActionInputHash(proposal));
+  assert.equal(first.requestedBranchName, proposal.branchName);
+  assert.notEqual(
+    pullRequestDeliveryIdentityForOutcomeAction("run-1", "tool-2", proposal).deliveryId,
+    first.deliveryId,
+  );
+  assert.notEqual(
+    pullRequestDeliveryIdentityForOutcomeAction("run-1", "tool-1", {
+      ...proposal,
+      repoFullName: "acme/other",
+    }).deliveryId,
+    first.deliveryId,
+  );
+});
+
+test("propose_pr passes the same delivery identity through preflight and delivery", async () => {
+  const proposal = proposals[0];
+  assert.ok(proposal);
+  const identities: unknown[] = [];
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
+    async preflightProposedPullRequest(_ctx, _proposal, _sessionId, identity) {
+      identities.push(identity);
+      return { ok: true, prepared: { kind: "patch", patch: "diff --git a/a b/a" } };
+    },
+    async deliverProposedPullRequest(_ctx, _proposal, _sessionId, _findings, _prepared, identity) {
+      identities.push(identity);
+      return {
+        ok: true,
+        url: "https://github.com/acme/api/pull/12",
+        prNumber: 12,
+        branchName: proposal.branchName,
+        updatedExisting: false,
+      };
+    },
+  });
+
+  const result = await execute({
+    toolUseId: "proposal-tool-1",
+    name: "propose_pr",
+    input: { pullRequests: [proposal] },
+    hasFindings: true,
+    findings: { summary: "API retries fail after a provider timeout." },
+  });
+
+  assert.equal(result.handled, true);
+  if (!result.handled || result.deferAck) return;
+  assert.equal(result.ok, true);
+  assert.equal(identities.length, 2);
+  assert.deepEqual(identities[1], identities[0]);
 });

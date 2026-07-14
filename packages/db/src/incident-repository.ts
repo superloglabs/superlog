@@ -148,6 +148,54 @@ export function createIncidentRepository(database: DB) {
       return updated.length > 0;
     },
 
+    async completeAwaitingEventRunsInTx(
+      tx: Tx,
+      incidentId: string,
+      completedAt: Date,
+    ): Promise<void> {
+      const parkedRuns = await tx
+        .select({ id: schema.agentRuns.id, result: schema.agentRuns.result })
+        .from(schema.agentRuns)
+        .where(
+          and(
+            eq(schema.agentRuns.incidentId, incidentId),
+            eq(schema.agentRuns.state, "awaiting_events"),
+          ),
+        )
+        .for("update");
+
+      for (const run of parkedRuns) {
+        const result: schema.AgentRunResult = run.result
+          ? { ...run.result, state: "complete" }
+          : {
+              state: "complete",
+              summary: "Incident resolved while this investigation was awaiting events.",
+            };
+        await tx
+          .update(schema.agentRuns)
+          .set({
+            state: "complete",
+            result,
+            completedAt,
+            updatedAt: completedAt,
+          })
+          .where(eq(schema.agentRuns.id, run.id));
+        await tx
+          .insert(schema.incidentEvents)
+          .values({
+            agentRunId: run.id,
+            incidentId,
+            kind: "agent_run_completed",
+            summary: result.summary,
+            detail: { reason: "incident_resolved" },
+            dedupeKey: `completed:${run.id}`,
+            processedAt: completedAt,
+            createdAt: completedAt,
+          })
+          .onConflictDoNothing();
+      }
+    },
+
     listIncidentIssueLinksInTx(tx: Tx, incidentId: string): Promise<schema.IncidentIssue[]> {
       return tx.query.incidentIssues.findMany({
         where: eq(schema.incidentIssues.incidentId, incidentId),

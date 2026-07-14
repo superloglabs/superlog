@@ -4,11 +4,88 @@ import { test } from "node:test";
 import {
   WALL_CLOCK_MULTIPLIER,
   agentRunErrorLogMeta,
+  awaitingEventsCompensationPresentation,
   awaitingEventsSlackMessage,
   awaitingHumanSecondsFromEvents,
   exceededWallClockBudget,
   isTransientError,
+  publishAwaitingEventsUpdateIfCurrent,
 } from "./status.js";
+
+test("an open incident resumed during waiting publication compensates to running provider state", () => {
+  assert.deepEqual(
+    awaitingEventsCompensationPresentation({
+      incidentStatus: "open",
+      agentRunState: "running",
+    }),
+    {
+      emoji: "arrow_forward",
+      label: "Investigation resumed",
+      summary: "Investigation resumed while the previous waiting update was publishing.",
+    },
+  );
+});
+
+test("resolution immediately after parking suppresses waiting provider updates", async () => {
+  let published = 0;
+  let reconciled = 0;
+
+  const outcome = await publishAwaitingEventsUpdateIfCurrent({
+    isCurrent: async () => false,
+    publish: async () => {
+      published += 1;
+    },
+    reconcileStalePublication: async () => {
+      reconciled += 1;
+    },
+  });
+
+  assert.equal(outcome, "skipped");
+  assert.equal(published, 0);
+  assert.equal(reconciled, 0);
+});
+
+test("resolution during waiting publication compensates the stale provider state", async () => {
+  const ownership = [true, false];
+  let published = 0;
+  let reconciled = 0;
+
+  const outcome = await publishAwaitingEventsUpdateIfCurrent({
+    isCurrent: async () => ownership.shift() ?? false,
+    publish: async () => {
+      published += 1;
+    },
+    reconcileStalePublication: async () => {
+      reconciled += 1;
+    },
+  });
+
+  assert.equal(outcome, "reconciled");
+  assert.equal(published, 1);
+  assert.equal(reconciled, 1);
+});
+
+test("resume after the eligibility check replaces the waiting provider state", async () => {
+  const ownership = [true, false];
+  let providerLabel = "Waiting on PR review";
+
+  const outcome = await publishAwaitingEventsUpdateIfCurrent({
+    isCurrent: async () => ownership.shift() ?? false,
+    publish: async () => {
+      providerLabel = "Waiting on PR review";
+    },
+    reconcileStalePublication: async () => {
+      providerLabel =
+        awaitingEventsCompensationPresentation({
+          incidentStatus: "open",
+          agentRunState: "running",
+        })?.label ?? providerLabel;
+    },
+  });
+
+  assert.equal(outcome, "reconciled");
+  assert.equal(providerLabel, "Investigation resumed");
+});
 
 test("awaiting PR review Slack copy includes PRs and the Linear ticket", () => {
   assert.equal(

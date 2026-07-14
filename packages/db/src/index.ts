@@ -227,6 +227,11 @@ export {
   type AgentRunIncidentPatch,
 } from "./incident-state.js";
 export {
+  INTERNAL_INCIDENT_EVENT_KIND_PREFIX,
+  INTERNAL_INCIDENT_EVENT_KIND_SQL_PATTERN,
+  isVisibleIncidentEventKind,
+} from "./incident-event-visibility.js";
+export {
   buildIssueObservePatch,
   buildIssueReopenPatch,
   buildIssueResolvePatch,
@@ -242,8 +247,10 @@ export {
 export {
   classifyIncidentIssue,
   listUnclassifiedIncidentIssues,
+  synthesizeLegacyIncidentIssueOutcomes,
   type ClassifyIncidentIssueResult,
   type IssueClassificationAction,
+  type SynthesizeLegacyIncidentIssueOutcomesResult,
 } from "./issue-classification.js";
 export {
   confirmResolutionProposal,

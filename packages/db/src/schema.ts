@@ -100,8 +100,27 @@ export type AgentRunPr = {
   validationCommands?: string[];
   validationSummary?: string | null;
   changedFiles?: string[];
+  // Per-repository mobile regression decision for batched PR outcomes.
+  // `AgentRunResult.mobileRegressionTest` remains the legacy singular mirror.
+  mobileRegressionTest?: AgentRunMobileRegressionTest | null;
   openStatus: "pending" | "opened";
   url?: string | null;
+};
+
+// Manual recovery contract for a GitHub PR mutation whose compensating close
+// could not be verified. Persisted with an awaiting_human result so a resumed
+// turn and every UI/API reader retain the exact repository operation a person
+// must reconcile; this is JSON-only metadata and requires no schema migration.
+export type AgentRunPullRequestManualReconciliation = {
+  actionRequired: "close_pull_request" | "sync_canonical_state";
+  repoFullName: string;
+  branchName: string;
+  prUrl: string;
+  prNumber: number;
+  reconciliationReason: "incident_not_open" | "reconciliation_failed";
+  reconciliationError: string | null;
+  closeError: string | null;
+  canonicalState: AgentPrState | null;
 };
 
 export type AgentRunLinearTicket = {
@@ -300,6 +319,7 @@ export type AgentRunResult = {
   waitReason?: "external_cause" | null;
   externalCause?: AgentRunExternalCause | null;
   question?: string | null;
+  manualReconciliation?: AgentRunPullRequestManualReconciliation | null;
   failureReason?: AgentRunFailureReason | null;
   // Legacy single-PR record (pre multi-PR contract). New runs record opened
   // PRs as agent_pull_requests rows (the source of truth) and mirror them in
@@ -308,6 +328,10 @@ export type AgentRunResult = {
   prs?: AgentRunPr[] | null;
   issueClassifications?: AgentRunIssueClassification[] | null;
   incidentResolution?: AgentRunIncidentResolution | null;
+  // Stable receipt for the exact resolve_incident tool use whose atomic
+  // lifecycle transaction this result describes. Run IDs are reused across
+  // resumed turns, so completion must prove against this per-call key.
+  incidentResolutionEventDedupeKey?: string | null;
   linearTicket?: AgentRunLinearTicket | null;
   rootCauseConfidence?: "high" | "medium" | "low" | null;
   // Concise human-readable replacement for incident.title — applied by the worker if present.

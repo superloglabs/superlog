@@ -1,8 +1,16 @@
 import { type AgentRunResult, type DB, mergeIncidentsInTx, schema } from "@superlog/db";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import type { LifecycleEventKind } from "./domain.js";
 
 export type AgentRunRepository = ReturnType<typeof createAgentRunRepository>;
+
+export type PauseForEventsRepositoryOutcome =
+  | { kind: "parked" }
+  | { kind: "run_not_running" }
+  | {
+      kind: "incident_not_open";
+      incidentStatus: schema.Incident["status"] | null;
+    };
 
 export function createAgentRunRepository(db: DB) {
   async function insertEvent(opts: {
@@ -66,6 +74,151 @@ export function createAgentRunRepository(db: DB) {
         .where(and(eq(schema.agentRuns.id, id), eq(schema.agentRuns.state, fromState)))
         .returning({ id: schema.agentRuns.id });
       return updated.length > 0;
+    },
+
+    // Serialize the park decision with Incident resolution. The lock order is
+    // deliberately Incident first, AgentRun second: resolveIncidentInTx uses
+    // that same order before completing already-parked runs, so the two paths
+    // cannot deadlock or strand a running run after resolution wins.
+    async pauseForEventsIfIncidentOpen(opts: {
+      id: string;
+      incidentId: string;
+      result: AgentRunResult;
+      eventSummary: string;
+      now: Date;
+    }): Promise<PauseForEventsRepositoryOutcome> {
+      return db.transaction(async (tx) => {
+        const incidents = await tx
+          .select({ status: schema.incidents.status })
+          .from(schema.incidents)
+          .where(eq(schema.incidents.id, opts.incidentId))
+          .orderBy(asc(schema.incidents.id))
+          .for("update");
+        const incidentStatus = incidents[0]?.status ?? null;
+        if (incidentStatus !== "open") {
+          return { kind: "incident_not_open", incidentStatus };
+        }
+
+        const updated = await tx
+          .update(schema.agentRuns)
+          .set({
+            state: "awaiting_events",
+            result: opts.result,
+            updatedAt: opts.now,
+          })
+          .where(
+            and(
+              eq(schema.agentRuns.id, opts.id),
+              eq(schema.agentRuns.incidentId, opts.incidentId),
+              eq(schema.agentRuns.state, "running"),
+            ),
+          )
+          .returning({ id: schema.agentRuns.id });
+        if (!updated[0]) return { kind: "run_not_running" };
+
+        await tx
+          .insert(schema.incidentEvents)
+          .values({
+            agentRunId: opts.id,
+            incidentId: opts.incidentId,
+            kind: "awaiting_events",
+            summary: opts.eventSummary,
+            dedupeKey: `awaiting_events:${opts.id}:${opts.now.getTime()}`,
+            processedAt: opts.now,
+          })
+          .onConflictDoNothing();
+        return { kind: "parked" };
+      });
+    },
+
+    async canPublishAwaitingEventsUpdate(opts: {
+      id: string;
+      incidentId: string;
+    }): Promise<boolean> {
+      const current = await db
+        .select({ id: schema.agentRuns.id })
+        .from(schema.agentRuns)
+        .innerJoin(schema.incidents, eq(schema.incidents.id, schema.agentRuns.incidentId))
+        .where(
+          and(
+            eq(schema.agentRuns.id, opts.id),
+            eq(schema.agentRuns.incidentId, opts.incidentId),
+            eq(schema.agentRuns.state, "awaiting_events"),
+            eq(schema.incidents.status, "open"),
+          ),
+        )
+        .limit(1);
+      return current.length > 0;
+    },
+
+    async completeRunIfRunning(opts: {
+      id: string;
+      result: AgentRunResult;
+      now: Date;
+    }): Promise<boolean> {
+      return db.transaction(async (tx) => {
+        const updated = await tx
+          .update(schema.agentRuns)
+          .set({
+            state: "complete",
+            result: opts.result,
+            completedAt: opts.now,
+            updatedAt: opts.now,
+          })
+          .where(and(eq(schema.agentRuns.id, opts.id), eq(schema.agentRuns.state, "running")))
+          .returning({ id: schema.agentRuns.id });
+        if (!updated[0]) return false;
+
+        await tx
+          .insert(schema.incidentEvents)
+          .values({
+            agentRunId: opts.id,
+            kind: "agent_run_completed",
+            summary: opts.result.summary,
+            dedupeKey: `completed:${opts.id}`,
+            processedAt: opts.now,
+          })
+          .onConflictDoNothing();
+        return true;
+      });
+    },
+
+    async completeRunWithPullRequestIfRunning(opts: {
+      id: string;
+      result: AgentRunResult;
+      selectedRepoFullName: string;
+      selectedBaseBranch: string;
+      prUrl: string;
+      now: Date;
+    }): Promise<boolean> {
+      return db.transaction(async (tx) => {
+        const updated = await tx
+          .update(schema.agentRuns)
+          .set({
+            state: "complete",
+            selectedRepoFullName: opts.selectedRepoFullName,
+            selectedBaseBranch: opts.selectedBaseBranch,
+            completedAt: opts.now,
+            updatedAt: opts.now,
+            result: opts.result,
+          })
+          .where(and(eq(schema.agentRuns.id, opts.id), eq(schema.agentRuns.state, "running")))
+          .returning({ id: schema.agentRuns.id });
+        if (!updated[0]) return false;
+
+        await tx
+          .insert(schema.incidentEvents)
+          .values({
+            agentRunId: opts.id,
+            kind: "pr_opened",
+            summary: `Opened PR: ${opts.prUrl}`,
+            detail: { url: opts.prUrl },
+            dedupeKey: `pr:${opts.prUrl}`,
+            processedAt: opts.now,
+          })
+          .onConflictDoNothing();
+        return true;
+      });
     },
 
     insertEvent,

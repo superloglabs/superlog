@@ -2,7 +2,7 @@ import { type AgentRunResult, db, schema } from "@superlog/db";
 import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { TERMINAL_OUTCOME_NUDGE_MARKER, assembleAgentRunResult } from "../agent-outcome-tools.js";
 import type { AgentRunContext } from "../agent-run-context.js";
-import { createAgentRunLifecycle } from "../agent-run.js";
+import { type PauseForEventsOutcome, createAgentRunLifecycle } from "../agent-run.js";
 import { type AgentRunOutcome, recordAgentRunCompletion } from "../ai-usage.js";
 import { investigationGate } from "../billing/investigation-gate.js";
 import { usageNotifier } from "../billing/usage-notifier-infra.js";
@@ -16,7 +16,10 @@ import { tryMergeAfterAgentRun } from "./merge.js";
 import { hasRevylCreateTestIntegration, looksLikeMobileChange } from "./mobile-regression.js";
 import { createOutcomeActionExecutor } from "./outcome-actions.js";
 import { completeWithPullRequest, resolvePullRequestBaseBranch } from "./pr-delivery.js";
-import { reconcileDeliveredPullRequests } from "./pr-result-reconciliation.js";
+import {
+  reconcileDeliveredPullRequests,
+  selectDeliveredPullRequestsForOutcome,
+} from "./pr-result-reconciliation.js";
 import { applyIncidentMetadataFromResult } from "./result-metadata.js";
 import {
   awaitingHumanSecondsFromEvents,
@@ -28,6 +31,60 @@ import {
 } from "./status.js";
 
 export { hasRevylCreateTestIntegration } from "./mobile-regression.js";
+
+export async function meterAgentRunCompletionIfClaimed(
+  claimed: boolean,
+  meter: () => Promise<void>,
+): Promise<boolean> {
+  if (!claimed) return false;
+  await meter();
+  return true;
+}
+
+export function shouldFailForRuntimeBudget(args: {
+  activeRuntimeMinutes: number;
+  maxRuntimeMinutes: number;
+  hasResult: boolean;
+}): boolean {
+  return !args.hasResult && args.activeRuntimeMinutes >= args.maxRuntimeMinutes;
+}
+
+export function planPullRequestAwaitingEvents(
+  result: AgentRunResult,
+  deliveredPullRequests: Array<{ state: schema.AgentPrState; url: string }>,
+): { shouldFail: boolean; shouldComplete: boolean; openPrUrls: string[] } {
+  const isExternalCause = result.waitReason === "external_cause";
+  const openPrUrls = deliveredPullRequests
+    .filter((pullRequest) => pullRequest.state === "open")
+    .map((pullRequest) => pullRequest.url);
+  return {
+    shouldFail: !isExternalCause && deliveredPullRequests.length === 0,
+    shouldComplete: !isExternalCause && deliveredPullRequests.length > 0 && openPrUrls.length === 0,
+    openPrUrls,
+  };
+}
+
+export type AwaitingEventsTransitionPlan =
+  | { kind: "parked" }
+  | { kind: "skip" }
+  | {
+      kind: "complete";
+      incidentStatus: schema.IncidentStatus | null;
+      result: AgentRunResult;
+    };
+
+export function planAwaitingEventsTransition(
+  result: AgentRunResult,
+  outcome: PauseForEventsOutcome,
+): AwaitingEventsTransitionPlan {
+  if (outcome.kind === "parked") return { kind: "parked" };
+  if (outcome.kind === "run_not_running") return { kind: "skip" };
+  return {
+    kind: "complete",
+    incidentStatus: outcome.incidentStatus,
+    result: { ...result, state: "complete" },
+  };
+}
 
 export function isCompleteInvestigationAllowed(
   result: AgentRunResult,
@@ -254,6 +311,25 @@ export function terminalOutcomeNudgePrompt(
   ].join("\n");
 }
 
+const PARTIAL_PULL_REQUEST_RETRY_NUDGE_MARKER = "[superlog:partial-pull-request-retry-nudge]";
+
+export function partialPullRequestRetryNudgePrompt(pendingRepoFullNames: string[]): string {
+  return [
+    TERMINAL_OUTCOME_NUDGE_MARKER,
+    `${PARTIAL_PULL_REQUEST_RETRY_NUDGE_MARKER} ${JSON.stringify(pendingRepoFullNames)}`,
+    `Retry \`propose_pr\` now with exactly these pending repositories: ${pendingRepoFullNames.join(
+      ", ",
+    )}. Do not repeat repositories that were already delivered.`,
+  ].join("\n");
+}
+
+export function shouldParkCompatibilityPullRequests(args: {
+  openPullRequestCount: number;
+  hasPartialPullRequestDelivery: boolean;
+}): boolean {
+  return args.openPullRequestCount > 0 && !args.hasPartialPullRequestDelivery;
+}
+
 export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
   const sessionId = ctx.agentRun.providerSessionId;
   if (!sessionId) {
@@ -298,7 +374,13 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
     }
 
     const nextRuntimeMinutes = Math.ceil(snapshot.activeSeconds / 60);
-    if (nextRuntimeMinutes >= ctx.automation.maxRuntimeMinutes) {
+    if (
+      shouldFailForRuntimeBudget({
+        activeRuntimeMinutes: nextRuntimeMinutes,
+        maxRuntimeMinutes: ctx.automation.maxRuntimeMinutes,
+        hasResult: snapshot.result !== null,
+      })
+    ) {
       await failAgentRun(
         ctx,
         "runtime_budget_exhausted",
@@ -365,6 +447,30 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       .update(schema.agentRuns)
       .set(baseUpdate)
       .where(eq(schema.agentRuns.id, ctx.agentRun.id));
+
+    // Emit AI-cost metering only after the paired DB state transition commits.
+    // A transient failure leaves the AgentRun in its current state, so a later
+    // tick can retry without double-counting cumulative provider usage.
+    const meterAgentRun = async (
+      outcome: AgentRunOutcome,
+      hasPr = outcome === "complete_with_pr",
+    ): Promise<void> => {
+      await recordAgentRunCompletion({
+        orgId: ctx.project.orgId,
+        projectId: ctx.project.id,
+        incidentId: ctx.incident.id,
+        model: snapshot.modelUsage.model,
+        callSite: "agent_run",
+        usage: snapshot.modelUsage,
+        activeSeconds: snapshot.activeSeconds,
+        outcome,
+        hasPr,
+      });
+      if (outcome === "complete_with_pr" || outcome === "complete_no_pr") {
+        await investigationGate.recordInvestigation(ctx.project.orgId);
+        void usageNotifier?.notify(ctx.project.orgId);
+      }
+    };
 
     if (
       shouldDeferSteering({
@@ -518,41 +624,12 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         });
       }
 
-      // Helper for AI-cost metering. We emit ONLY after the paired DB state
-      // transition commits — a transient DB failure leaves the agentRun
-      // in its current state, the next tick re-enters this block with the
-      // same Anthropic snapshot, and we'd double-count cumulative counters.
-      const meterAgentRun = async (
-        outcome: AgentRunOutcome,
-        hasPr = outcome === "complete_with_pr",
-      ): Promise<void> => {
-        await recordAgentRunCompletion({
-          orgId: ctx.project.orgId,
-          projectId: ctx.project.id,
-          incidentId: ctx.incident.id,
-          model: snapshot.modelUsage.model,
-          callSite: "agent_run",
-          usage: snapshot.modelUsage,
-          activeSeconds: snapshot.activeSeconds,
-          outcome,
-          hasPr,
-        });
-        // Consume one investigation credit per COMPLETED run (the billable
-        // unit). Failed / awaiting_human runs don't burn a credit. Fail-open:
-        // recordInvestigation never throws (see investigation-gate.ts).
-        if (outcome === "complete_with_pr" || outcome === "complete_no_pr") {
-          await investigationGate.recordInvestigation(ctx.project.orgId);
-          // Re-check usage after consuming a credit so investigation 50/85/100%
-          // thresholds fire promptly. Fire-and-forget; the notifier dedupes.
-          void usageNotifier?.notify(ctx.project.orgId);
-        }
-      };
-
       if (snapshot.result.state === "awaiting_human") {
         await moveAgentRunToAwaitingHuman(
           ctx,
           snapshot.result.question ?? "Reply in this thread with the missing context.",
           snapshot.result.summary,
+          snapshot.result,
         );
         await meterAgentRun("awaiting_human");
         return;
@@ -569,53 +646,87 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       }
 
       if (snapshot.result.state === "awaiting_events") {
-        const openPrs = await db.query.agentPullRequests.findMany({
-          where: and(
-            eq(schema.agentPullRequests.incidentId, ctx.incident.id),
-            eq(schema.agentPullRequests.state, "open"),
-          ),
+        const deliveredPrs = await db.query.agentPullRequests.findMany({
+          where: eq(schema.agentPullRequests.incidentId, ctx.incident.id),
           columns: {
+            id: true,
+            agentRunId: true,
             repoFullName: true,
             branchName: true,
             baseBranch: true,
             title: true,
             url: true,
+            state: true,
+            createdAt: true,
           },
           orderBy: [asc(schema.agentPullRequests.createdAt), asc(schema.agentPullRequests.id)],
         });
-        const isExternalCause = snapshot.result.waitReason === "external_cause";
-        if (!isExternalCause && openPrs.length === 0) {
+        const outcomePrs = selectDeliveredPullRequestsForOutcome(
+          snapshot.result,
+          deliveredPrs,
+          ctx.agentRun.id,
+        );
+        const waitPlan = planPullRequestAwaitingEvents(snapshot.result, outcomePrs);
+        if (waitPlan.shouldFail) {
           await failAgentRun(
             ctx,
             "sync_failed",
-            "A PR outcome finished without a recorded open PR to wait on.",
+            "A PR outcome finished without a recorded delivered PR.",
             { existingResult: snapshot.result },
           );
           await meterAgentRun("failed");
           return;
         }
 
-        const reconciledResult = reconcileDeliveredPullRequests(snapshot.result, openPrs);
+        const reconciledResult = reconcileDeliveredPullRequests(snapshot.result, outcomePrs, {
+          currentAgentRunId: ctx.agentRun.id,
+        });
+        if (waitPlan.shouldComplete) {
+          const completed = await completeWithoutPullRequest(
+            ctx,
+            { ...reconciledResult, state: "complete" },
+            sessionId,
+            nextRuntimeMinutes,
+          );
+          if (completed) await meterAgentRun("complete_with_pr");
+          return;
+        }
         await applyIncidentMetadataFromResult(ctx, reconciledResult);
-        const openPrUrls = openPrs.map((pr) => pr.url);
-        const parked = await moveAgentRunToAwaitingEvents(
+        const parkOutcome = await moveAgentRunToAwaitingEvents(
           ctx,
           reconciledResult,
-          openPrUrls,
-          openPrUrls.length === 0
+          waitPlan.openPrUrls,
+          waitPlan.openPrUrls.length === 0
             ? undefined
             : async () => {
                 const linearTicket = await scheduleLinearHandoff(
                   ctx,
                   reconciledResult,
-                  `awaiting_events:${openPrUrls.join(",")}`,
+                  `awaiting_events:${waitPlan.openPrUrls.join(",")}`,
                 );
                 return linearTicket
                   ? { identifier: linearTicket.identifier, url: linearTicket.url }
                   : null;
               },
         );
-        if (parked) await meterAgentRun("awaiting_events", openPrUrls.length > 0);
+        const transition = planAwaitingEventsTransition(reconciledResult, parkOutcome);
+        if (transition.kind === "complete") {
+          const completed = await agentRunLifecycle.completeWithoutPullRequest({
+            id: ctx.agentRun.id,
+            currentState: ctx.agentRun.state,
+            result: transition.result,
+          });
+          if (completed) {
+            await meterAgentRun(
+              outcomePrs.length > 0 ? "complete_with_pr" : "complete_no_pr",
+              outcomePrs.length > 0,
+            );
+          }
+          return;
+        }
+        if (transition.kind === "parked") {
+          await meterAgentRun("awaiting_events", waitPlan.openPrUrls.length > 0);
+        }
         return;
       }
 
@@ -645,8 +756,13 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           where: eq(schema.agentPullRequests.incidentId, ctx.incident.id),
           columns: { id: true },
         }));
-        await completeWithIncidentResolution(ctx, snapshot.result, sessionId, nextRuntimeMinutes);
-        await meterAgentRun(hasPr ? "complete_with_pr" : "complete_no_pr");
+        const completed = await completeWithIncidentResolution(
+          ctx,
+          snapshot.result,
+          sessionId,
+          nextRuntimeMinutes,
+        );
+        if (completed) await meterAgentRun(hasPr ? "complete_with_pr" : "complete_no_pr");
         return;
       }
 
@@ -681,11 +797,24 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           pr.openStatus === "pending" &&
           ctx.prPolicy !== "never";
         if (shouldOpenPr && pr) {
-          await completeWithPullRequest(ctx, snapshot.result, pr, sessionId, nextRuntimeMinutes);
-          await meterAgentRun("complete_with_pr");
+          const completed = await completeWithPullRequest(
+            ctx,
+            snapshot.result,
+            pr,
+            sessionId,
+            nextRuntimeMinutes,
+          );
+          await meterAgentRunCompletionIfClaimed(completed, () =>
+            meterAgentRun("complete_with_pr"),
+          );
         } else {
-          await completeWithoutPullRequest(ctx, snapshot.result, sessionId, nextRuntimeMinutes);
-          await meterAgentRun("complete_no_pr");
+          const completed = await completeWithoutPullRequest(
+            ctx,
+            snapshot.result,
+            sessionId,
+            nextRuntimeMinutes,
+          );
+          if (completed) await meterAgentRun("complete_no_pr");
         }
         return;
       }
@@ -740,7 +869,12 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         },
         orderBy: [asc(schema.agentPullRequests.createdAt), asc(schema.agentPullRequests.id)],
       });
-      if (openPrs.length > 0) {
+      if (
+        shouldParkCompatibilityPullRequests({
+          openPullRequestCount: openPrs.length,
+          hasPartialPullRequestDelivery: Boolean(snapshot.partialPullRequestDelivery),
+        })
+      ) {
         const parkedResult = reconcileDeliveredPullRequests(
           assembleAgentRunResult({
             findings: snapshot.pendingOutcome?.findings ?? null,
@@ -757,7 +891,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           await applyIncidentMetadataFromResult(ctx, parkedResult);
         }
         const openPrUrls = openPrs.map((pr) => pr.url);
-        const parked = await moveAgentRunToAwaitingEvents(
+        const parkOutcome = await moveAgentRunToAwaitingEvents(
           ctx,
           parkedResult,
           openPrUrls,
@@ -784,21 +918,19 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
             }
           },
         );
+        const transition = planAwaitingEventsTransition(parkedResult, parkOutcome);
+        if (transition.kind === "complete") {
+          const completed = await agentRunLifecycle.completeWithoutPullRequest({
+            id: ctx.agentRun.id,
+            currentState: ctx.agentRun.state,
+            result: transition.result,
+          });
+          if (completed) await meterAgentRun("complete_with_pr");
+          return;
+        }
         // A lost park means a concurrent pass owns this turn's conclusion —
         // it also records the usage, so a duplicate here would double-meter.
-        if (parked) {
-          await recordAgentRunCompletion({
-            orgId: ctx.project.orgId,
-            projectId: ctx.project.id,
-            incidentId: ctx.incident.id,
-            model: snapshot.modelUsage.model,
-            callSite: "agent_run",
-            usage: snapshot.modelUsage,
-            activeSeconds: snapshot.activeSeconds,
-            outcome: "awaiting_events",
-            hasPr: true,
-          });
-        }
+        if (transition.kind === "parked") await meterAgentRun("awaiting_events", true);
         return;
       }
     }
@@ -812,7 +944,14 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       // index on (agent_run_id, provider_event_id) makes exactly one insert
       // win. If the steer then fails, the one-shot nudge is spent — the
       // wall-clock/runtime backstops still own the run.
-      const nudgeEventId = `terminal_nudge:${sessionId}`;
+      const pendingRepoFullNames = snapshot.partialPullRequestDelivery?.pendingRepoFullNames ?? [];
+      const partialRetryPrompt =
+        pendingRepoFullNames.length > 0
+          ? partialPullRequestRetryNudgePrompt(pendingRepoFullNames)
+          : null;
+      const nudgeEventId = partialRetryPrompt
+        ? `partial_pr_retry_nudge:${sessionId}:${pendingRepoFullNames.join(",")}`
+        : `terminal_nudge:${sessionId}`;
       const claimed = await db
         .insert(schema.incidentEvents)
         .values({
@@ -831,19 +970,24 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         // landed. The delivered nudge is visible in the session's own event
         // stream, so a retry can detect it and keep the claim without
         // steering a duplicate.
-        const nudgePrompt = terminalOutcomeNudgePrompt({
-          completeInvestigationAvailable: completeInvestigationAvailable({
-            prPolicy: ctx.prPolicy,
-            githubConnected: ctx.githubInstalls.length > 0,
-            approvalPromptsEnabled: ctx.approvalPromptsEnabled,
-            approvalPromptToolsAvailable: true,
-          }),
-        });
+        const nudgePrompt =
+          partialRetryPrompt ??
+          terminalOutcomeNudgePrompt({
+            completeInvestigationAvailable: completeInvestigationAvailable({
+              prPolicy: ctx.prPolicy,
+              githubConnected: ctx.githubInstalls.length > 0,
+              approvalPromptsEnabled: ctx.approvalPromptsEnabled,
+              approvalPromptToolsAvailable: true,
+            }),
+          });
+        const redeliveryMarker = partialRetryPrompt
+          ? `${PARTIAL_PULL_REQUEST_RETRY_NUDGE_MARKER} ${JSON.stringify(pendingRepoFullNames)}`
+          : TERMINAL_OUTCOME_NUDGE_MARKER;
         const nudgeAlreadyDelivered = snapshot.events.some(
           (event) =>
             event.type === "user.message" &&
             !!event.summary &&
-            event.summary.includes(TERMINAL_OUTCOME_NUDGE_MARKER),
+            event.summary.includes(redeliveryMarker),
         );
         if (!nudgeAlreadyDelivered) {
           try {

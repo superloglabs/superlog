@@ -79,6 +79,8 @@ type RecordedCall =
   | { op: "insert.returning"; table: unknown; values: Record<string, unknown> }
   | { op: "insert.onConflictDoNothing"; table: unknown; values: Record<string, unknown> }
   | { op: "update.where"; table: unknown; values: Record<string, unknown> }
+  | { op: "awaiting_events.current" }
+  | { op: "incident.lock" }
   | { op: "transaction.begin" }
   | { op: "transaction.end" };
 
@@ -87,6 +89,7 @@ function recordingDb(
     insertReturningRow?: Record<string, unknown>;
     updateReturningRows?: Array<Record<string, unknown>>;
     lockedIncidents?: schema.Incident[];
+    awaitingEventsCurrentRows?: Array<{ id: string }>;
   } = {},
 ): {
   db: DB;
@@ -129,11 +132,24 @@ function recordingDb(
       return {
         from() {
           return {
+            innerJoin() {
+              return {
+                where() {
+                  return {
+                    async limit() {
+                      calls.push({ op: "awaiting_events.current" });
+                      return opts.awaitingEventsCurrentRows ?? [];
+                    },
+                  };
+                },
+              };
+            },
             where() {
               return {
                 orderBy() {
                   return {
                     async for() {
+                      calls.push({ op: "incident.lock" });
                       return opts.lockedIncidents ?? [];
                     },
                   };
@@ -153,10 +169,11 @@ function recordingDb(
     async execute() {
       return [];
     },
-    async transaction(fn: (tx: unknown) => Promise<void>) {
+    async transaction<T>(fn: (tx: unknown) => Promise<T>) {
       calls.push({ op: "transaction.begin" });
-      await fn(db);
+      const result = await fn(db);
       calls.push({ op: "transaction.end" });
+      return result;
     },
   } as unknown as DB;
   return { db, calls };
@@ -340,6 +357,42 @@ test("pauseForHuman writes the awaiting_human result and emits one event", async
   assertEventInsertedOnce(calls, "awaiting_human");
 });
 
+test("pauseForHuman preserves the full assembled result for manual PR reconciliation", async () => {
+  const { db, calls } = recordingDb();
+  const lifecycle = createAgentRunLifecycle(db);
+  const assembledResult = {
+    state: "awaiting_human" as const,
+    summary: "The PR close needs a human.",
+    question: "Please close PR #42 and confirm its canonical state.",
+    rootCause: { text: "Canonical recording timed out.", confidence: 8 },
+    manualReconciliation: {
+      actionRequired: "close_pull_request" as const,
+      repoFullName: "acme/api",
+      branchName: "superlog/fix-api",
+      prUrl: "https://github.com/acme/api/pull/42",
+      prNumber: 42,
+      reconciliationReason: "reconciliation_failed" as const,
+      reconciliationError: "insert timed out",
+      closeError: "GitHub rate limited the close",
+      canonicalState: null,
+    },
+  };
+
+  await lifecycle.pauseForHuman({
+    id: "inv-1",
+    currentState: "running",
+    summary: assembledResult.summary,
+    question: assembledResult.question,
+    result: assembledResult,
+  });
+
+  assert.deepEqual(lastUpdateValues(calls, schema.agentRuns).result, assembledResult);
+  assert.deepEqual(eventInsertValues(calls).detail, {
+    question: assembledResult.question,
+    manualReconciliation: assembledResult.manualReconciliation,
+  });
+});
+
 test("resumeRunning increments resumeCount and emits a resumed event", async () => {
   const { db, calls } = recordingDb();
   const lifecycle = createAgentRunLifecycle(db);
@@ -375,20 +428,38 @@ test("completeWithoutPullRequest emits agent_run_completed (fills the audit gap)
   const { db, calls } = recordingDb();
   const lifecycle = createAgentRunLifecycle(db);
 
-  await lifecycle.completeWithoutPullRequest({
+  const completed = await lifecycle.completeWithoutPullRequest({
     id: "inv-1",
     currentState: "running",
     result: makeResult("complete"),
   });
 
+  assert.equal(completed, true);
   assertEventInsertedOnce(calls, "agent_run_completed");
+});
+
+test("completeWithoutPullRequest reports a lost transition without duplicating its event", async () => {
+  const { db, calls } = recordingDb({ updateReturningRows: [] });
+  const lifecycle = createAgentRunLifecycle(db);
+
+  const completed = await lifecycle.completeWithoutPullRequest({
+    id: "inv-1",
+    currentState: "running",
+    result: makeResult("complete"),
+  });
+
+  assert.equal(completed, false);
+  assert.equal(
+    calls.find((call) => call.op === "insert.onConflictDoNothing"),
+    undefined,
+  );
 });
 
 test("completeWithPullRequest writes selected repo + emits pr_opened", async () => {
   const { db, calls } = recordingDb();
   const lifecycle = createAgentRunLifecycle(db);
 
-  await lifecycle.completeWithPullRequest({
+  const completed = await lifecycle.completeWithPullRequest({
     id: "inv-1",
     currentState: "running",
     result: makeResult("complete"),
@@ -397,9 +468,30 @@ test("completeWithPullRequest writes selected repo + emits pr_opened", async () 
     prUrl: "https://example.test/pr/42",
   });
 
+  assert.equal(completed, true);
   const values = lastUpdateValues(calls, schema.agentRuns);
   assert.equal(values.selectedRepoFullName, "org/repo");
   assertEventInsertedOnce(calls, "pr_opened");
+});
+
+test("completeWithPullRequest reports a lost transition without duplicating pr_opened", async () => {
+  const { db, calls } = recordingDb({ updateReturningRows: [] });
+  const lifecycle = createAgentRunLifecycle(db);
+
+  const completed = await lifecycle.completeWithPullRequest({
+    id: "inv-1",
+    currentState: "running",
+    result: makeResult("complete"),
+    selectedRepoFullName: "org/repo",
+    selectedBaseBranch: "main",
+    prUrl: "https://example.test/pr/42",
+  });
+
+  assert.equal(completed, false);
+  assert.equal(
+    calls.find((call) => call.op === "insert.onConflictDoNothing"),
+    undefined,
+  );
 });
 
 test("completeViaMerge runs a transaction touching all four tables and emits one event", async () => {
@@ -543,13 +635,31 @@ function makeIncident(id: string, opts: { issueCount: number; lastSeen: Date }):
 // ─── pauseForEvents race guard ───────────────────────────────────────────
 
 test("pauseForEvents parks the run and reports it won the transition", async () => {
-  const { db, calls } = recordingDb();
+  const { db, calls } = recordingDb({
+    lockedIncidents: [{ id: "inc-1", status: "open" } as schema.Incident],
+  });
   const lifecycle = createAgentRunLifecycle(db);
   const result: AgentRunResult = { state: "awaiting_events", summary: "waiting on PRs" };
 
-  const won = await lifecycle.pauseForEvents({ id: "run-1", currentState: "running", result });
+  const outcome = await lifecycle.pauseForEvents({
+    id: "run-1",
+    incidentId: "inc-1",
+    currentState: "running",
+    result,
+  });
 
-  assert.equal(won, true);
+  assert.deepEqual(outcome, { kind: "parked" });
+  assert.deepEqual(
+    calls.map((call) => call.op),
+    [
+      "transaction.begin",
+      "incident.lock",
+      "update.where",
+      "insert.onConflictDoNothing",
+      "transaction.end",
+    ],
+    "the Incident lock must be acquired before the AgentRun transition and event",
+  );
   const update = calls.find((c) => c.op === "update.where");
   assert.equal(
     (update as { values: Record<string, unknown> } | undefined)?.values.state,
@@ -563,7 +673,9 @@ test("pauseForEvents parks the run and reports it won the transition", async () 
 });
 
 test("pauseForEvents records an external-cause wait without claiming it is waiting on a PR", async () => {
-  const { db, calls } = recordingDb();
+  const { db, calls } = recordingDb({
+    lockedIncidents: [{ id: "inc-1", status: "open" } as schema.Incident],
+  });
   const lifecycle = createAgentRunLifecycle(db);
   const result: AgentRunResult = {
     state: "awaiting_events",
@@ -577,7 +689,12 @@ test("pauseForEvents records an external-cause wait without claiming it is waiti
     },
   };
 
-  await lifecycle.pauseForEvents({ id: "run-1", currentState: "running", result });
+  await lifecycle.pauseForEvents({
+    id: "run-1",
+    incidentId: "inc-1",
+    currentState: "running",
+    result,
+  });
 
   const event = calls.find((c) => c.op === "insert.onConflictDoNothing");
   assert.equal(
@@ -586,19 +703,61 @@ test("pauseForEvents records an external-cause wait without claiming it is waiti
   );
 });
 
-test("pauseForEvents that lost the race writes no event and reports false", async () => {
+test("pauseForEvents that lost the race writes no event and reports run_not_running", async () => {
   // Two sync passes can both observe the session idle; the transition is
   // folded into the UPDATE's WHERE (state must still be 'running'), so the
   // loser sees zero updated rows and must skip its side effects.
-  const { db, calls } = recordingDb({ updateReturningRows: [] });
+  const { db, calls } = recordingDb({
+    updateReturningRows: [],
+    lockedIncidents: [{ id: "inc-1", status: "open" } as schema.Incident],
+  });
   const lifecycle = createAgentRunLifecycle(db);
   const result: AgentRunResult = { state: "awaiting_events", summary: "waiting on PRs" };
 
-  const won = await lifecycle.pauseForEvents({ id: "run-1", currentState: "running", result });
+  const outcome = await lifecycle.pauseForEvents({
+    id: "run-1",
+    incidentId: "inc-1",
+    currentState: "running",
+    result,
+  });
 
-  assert.equal(won, false);
+  assert.deepEqual(outcome, { kind: "run_not_running" });
   assert.equal(
     calls.find((c) => c.op === "insert.onConflictDoNothing"),
     undefined,
   );
+});
+
+test("pauseForEvents reports incident_not_open without parking after resolution wins", async () => {
+  const { db, calls } = recordingDb({
+    lockedIncidents: [{ id: "inc-1", status: "resolved" } as schema.Incident],
+  });
+  const lifecycle = createAgentRunLifecycle(db);
+  const result: AgentRunResult = { state: "awaiting_events", summary: "waiting on PRs" };
+
+  const outcome = await lifecycle.pauseForEvents({
+    id: "run-1",
+    incidentId: "inc-1",
+    currentState: "running",
+    result,
+  });
+
+  assert.deepEqual(outcome, { kind: "incident_not_open", incidentStatus: "resolved" });
+  assert.deepEqual(
+    calls.map((call) => call.op),
+    ["transaction.begin", "incident.lock", "transaction.end"],
+  );
+});
+
+test("awaiting-events provider updates lose ownership after resolution completes the run", async () => {
+  const { db, calls } = recordingDb({ awaitingEventsCurrentRows: [] });
+  const lifecycle = createAgentRunLifecycle(db);
+
+  const current = await lifecycle.canPublishAwaitingEventsUpdate({
+    id: "run-1",
+    incidentId: "inc-1",
+  });
+
+  assert.equal(current, false);
+  assert.equal(calls.filter((call) => call.op === "awaiting_events.current").length, 1);
 });

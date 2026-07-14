@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   DISPATCHED_OUTCOME_TOOL_NAMES,
+  LEGACY_ISSUE_ACTION_TOOL_NAMES,
   OUTCOME_TOOL_DEFINITIONS,
   OUTCOME_TOOL_NAMES,
   REPORT_FINDINGS_TOOL_NAME,
@@ -9,8 +10,10 @@ import {
   TERMINAL_OUTCOME_TOOL_NAMES,
   assembleAgentRunResult,
   isDispatchedOutcomeToolName,
+  isLegacyIssueActionToolName,
   mergeFindings,
   outcomeToolDefinitionsForCapabilities,
+  validateLegacyOutcomeToolInput,
   validateOutcomeToolInput,
 } from "./agent-outcome-tools.js";
 import type {
@@ -210,6 +213,50 @@ test("rejects retired tools (incl. mark_already_resolved) with redirect guidance
   }
 });
 
+test("validates immutable legacy issue actions without relaxing the advertised contract", () => {
+  assert.ok(!OUTCOME_TOOL_DEFINITIONS.some((definition) => definition.name === "resolve_issue"));
+  assert.deepEqual(
+    [...LEGACY_ISSUE_ACTION_TOOL_NAMES],
+    ["silence_as_noise", "place_under_observation", "resolve_issue"],
+  );
+  assert.ok(isLegacyIssueActionToolName("resolve_issue"));
+  assert.ok(isDispatchedOutcomeToolName("resolve_issue"));
+
+  const action = validateLegacyOutcomeToolInput(
+    "resolve_issue",
+    {
+      issueId: "issue-1",
+      reason: "The transient condition cleared.",
+      evidence: "No failures occurred in the following 30-minute window.",
+    },
+    { hasFindings: true },
+  );
+  assert.equal(action.ok, true);
+  if (action.ok) assert.equal(action.tool, "resolve_issue");
+
+  const legacyResolve = validateLegacyOutcomeToolInput(
+    "resolve_incident",
+    {
+      reason: "All classified issues are complete.",
+      evidence: "The failing signal has remained at zero for 30 minutes.",
+    },
+    { hasFindings: true },
+  );
+  assert.equal(legacyResolve.ok, true);
+  if (legacyResolve.ok) assert.equal(legacyResolve.tool, "resolve_incident");
+
+  const strictResolve = validateOutcomeToolInput(
+    "resolve_incident",
+    {
+      reason: "All classified issues are complete.",
+      evidence: "The failing signal has remained at zero for 30 minutes.",
+    },
+    { hasFindings: true },
+  );
+  assert.equal(strictResolve.ok, false);
+  if (!strictResolve.ok) assert.match(strictResolve.errors.join(" "), /issueOutcomes/);
+});
+
 test("accepts a full report_findings payload", () => {
   const v = validateOutcomeToolInput(REPORT_FINDINGS_TOOL_NAME, FINDINGS, { hasFindings: false });
   assert.equal(v.ok, true);
@@ -351,6 +398,23 @@ test("validates resolve_incident issue outcomes", () => {
   assert.equal(strayObservationFields.ok, false);
   if (!strayObservationFields.ok)
     assert.match(strayObservationFields.errors.join(" "), /forbidden/);
+});
+
+test("resolve_incident accepts an empty outcome set for zero-Issue incidents", () => {
+  const definition = OUTCOME_TOOL_DEFINITIONS.find((item) => item.name === "resolve_incident");
+  assert.ok(definition);
+  assert.equal(definition.input_schema.properties.issueOutcomes?.minItems, undefined);
+
+  const validation = validateOutcomeToolInput(
+    "resolve_incident",
+    {
+      reason: "The delegated investigation is complete.",
+      evidence: "The external ticket reached its completed state.",
+      issueOutcomes: [],
+    },
+    { hasFindings: true },
+  );
+  assert.equal(validation.ok, true);
 });
 
 test("report_external_cause records why the open incident is waiting", () => {
@@ -520,7 +584,7 @@ test("keeps legacy action-only turns readable while durable sessions drain", () 
   assert.equal(result.incidentResolution, undefined);
 });
 
-test("propose_pr mobile decision lands on the result", () => {
+test("each proposed PR retains its own mobile regression decision", () => {
   const result = assembleAgentRunResult({
     findings: FINDINGS,
     terminal: {
@@ -533,15 +597,31 @@ test("propose_pr mobile decision lands on the result", () => {
             mobileTestStatus: "not_applicable",
             mobileTestReason: "backend-only change",
           },
+          {
+            ...PROPOSE_PR_INPUT,
+            repoFullName: "acme/mobile",
+            patchFilePath: "/mnt/session/outputs/mobile.patch",
+            changedFiles: ["ios/CheckoutView.swift"],
+            mobileTestStatus: "created",
+            mobileTestId: "test-mobile-1",
+          },
         ],
       },
     },
   });
   assert.deepEqual(result.mobileRegressionTest, {
+    status: "created",
+    testId: "test-mobile-1",
+  });
+  assert.deepEqual(result.prs?.[0]?.changedFiles, ["app/checkout.tsx"]);
+  assert.deepEqual(result.prs?.[0]?.mobileRegressionTest, {
     status: "not_applicable",
     reason: "backend-only change",
   });
-  assert.deepEqual(result.prs?.[0]?.changedFiles, ["app/checkout.tsx"]);
+  assert.deepEqual(result.prs?.[1]?.mobileRegressionTest, {
+    status: "created",
+    testId: "test-mobile-1",
+  });
 });
 
 test("derives the legacy rootCauseConfidence bucket from the numeric confidence", () => {

@@ -5,14 +5,109 @@ import { TERMINAL_OUTCOME_NUDGE_MARKER } from "../agent-outcome-tools.js";
 import {
   isCompleteInvestigationAllowed,
   isSessionBusyError,
+  meterAgentRunCompletionIfClaimed,
   mobileRegressionGateState,
   mobileRegressionGateTerminatedSummary,
   mobileRegressionRepairPrompt,
   needsMobileRegressionRepair,
+  partialPullRequestRetryNudgePrompt,
+  planAwaitingEventsTransition,
+  planPullRequestAwaitingEvents,
   shouldDeferSteering,
+  shouldFailForRuntimeBudget,
+  shouldParkCompatibilityPullRequests,
   steerIdleRunnerWithPendingContext,
   terminalOutcomeNudgePrompt,
 } from "./sync.js";
+
+test("completion metering runs only for the sync pass that claimed the transition", async () => {
+  let metered = 0;
+  const meter = async () => {
+    metered += 1;
+  };
+
+  assert.equal(await meterAgentRunCompletionIfClaimed(false, meter), false);
+  assert.equal(metered, 0);
+  assert.equal(await meterAgentRunCompletionIfClaimed(true, meter), true);
+  assert.equal(metered, 1);
+});
+
+test("an incident-closed park outcome completes the terminal result instead of awaiting events", () => {
+  const result = {
+    state: "awaiting_events" as const,
+    summary: "Opened the fix and waited for review.",
+  };
+
+  assert.deepEqual(
+    planAwaitingEventsTransition(result, {
+      kind: "incident_not_open",
+      incidentStatus: "resolved",
+    }),
+    {
+      kind: "complete",
+      incidentStatus: "resolved",
+      result: { ...result, state: "complete" },
+    },
+  );
+  assert.deepEqual(planAwaitingEventsTransition(result, { kind: "parked" }), {
+    kind: "parked",
+  });
+  assert.deepEqual(planAwaitingEventsTransition(result, { kind: "run_not_running" }), {
+    kind: "skip",
+  });
+});
+
+test("delivered PRs satisfy terminal sync while only open PRs remain wait targets", () => {
+  const result = {
+    state: "awaiting_events" as const,
+    summary: "Delivered remediation.",
+  };
+  const deliveredPullRequests = [
+    { state: "merged" as const, url: "https://github.com/acme/api/pull/1" },
+    { state: "closed" as const, url: "https://github.com/acme/web/pull/2" },
+    { state: "open" as const, url: "https://github.com/acme/worker/pull/3" },
+  ];
+
+  assert.deepEqual(planPullRequestAwaitingEvents(result, deliveredPullRequests), {
+    shouldFail: false,
+    shouldComplete: false,
+    openPrUrls: ["https://github.com/acme/worker/pull/3"],
+  });
+  assert.deepEqual(planPullRequestAwaitingEvents(result, deliveredPullRequests.slice(0, 2)), {
+    shouldFail: false,
+    shouldComplete: true,
+    openPrUrls: [],
+  });
+  assert.deepEqual(planPullRequestAwaitingEvents(result, []), {
+    shouldFail: true,
+    shouldComplete: false,
+    openPrUrls: [],
+  });
+  assert.deepEqual(planPullRequestAwaitingEvents({ ...result, waitReason: "external_cause" }, []), {
+    shouldFail: false,
+    shouldComplete: false,
+    openPrUrls: [],
+  });
+});
+
+test("a terminal result wins when it lands at the runtime budget boundary", () => {
+  assert.equal(
+    shouldFailForRuntimeBudget({
+      activeRuntimeMinutes: 30,
+      maxRuntimeMinutes: 30,
+      hasResult: true,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldFailForRuntimeBudget({
+      activeRuntimeMinutes: 30,
+      maxRuntimeMinutes: 30,
+      hasResult: false,
+    }),
+    true,
+  );
+});
 
 test("complete_investigation is rejected when an intervention is available", () => {
   const result = {
@@ -405,6 +500,41 @@ test("terminalOutcomeNudgePrompt uses complete_investigation when interventions 
   const prompt = terminalOutcomeNudgePrompt({ completeInvestigationAvailable: true });
   assert.match(prompt, /complete_investigation/);
   assert.doesNotMatch(prompt, /propose_pr/);
+});
+
+test("partialPullRequestRetryNudgePrompt requires exactly the pending repositories", () => {
+  const prompt = partialPullRequestRetryNudgePrompt(["acme/worker", "acme/web"]);
+
+  assert.equal(prompt.split("\n")[0], TERMINAL_OUTCOME_NUDGE_MARKER);
+  assert.match(prompt, /retry.*propose_pr/i);
+  assert.match(prompt, /acme\/worker/);
+  assert.match(prompt, /acme\/web/);
+  assert.match(prompt, /exactly/i);
+  assert.doesNotMatch(prompt, /resolve_incident|report_external_cause|ask_human/);
+});
+
+test("partial PR delivery cannot enter the legacy open-PR parking path", () => {
+  assert.equal(
+    shouldParkCompatibilityPullRequests({
+      openPullRequestCount: 1,
+      hasPartialPullRequestDelivery: false,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldParkCompatibilityPullRequests({
+      openPullRequestCount: 1,
+      hasPartialPullRequestDelivery: true,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldParkCompatibilityPullRequests({
+      openPullRequestCount: 0,
+      hasPartialPullRequestDelivery: false,
+    }),
+    false,
+  );
 });
 
 test("isSessionBusyError matches the mid-flight steer rejection only", () => {
