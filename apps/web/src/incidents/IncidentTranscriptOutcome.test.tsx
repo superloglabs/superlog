@@ -95,6 +95,25 @@ test("observation records show the escalation trigger in operator language", () 
   assert.doesNotMatch(html, /events_per_minute/);
 });
 
+test("resolved issue records show the recorded reasoning and evidence", () => {
+  const html = renderToStaticMarkup(
+    <IncidentActivityFeed
+      events={[
+        outcomeToolEvent("resolve-issue", "resolve_issue", {
+          issueId: "issue-4",
+          reason: "The deployed retry guard removed the failing path.",
+          evidence: "No failures occurred in 2,400 requests after deployment.",
+        }),
+      ]}
+    />,
+  );
+
+  assert.match(html, /Resolved issue/);
+  assert.match(html, /issue-4/);
+  assert.match(html, /The deployed retry guard removed the failing path\./);
+  assert.match(html, /No failures occurred in 2,400 requests after deployment\./);
+});
+
 test("memory list records show every returned memory in full", () => {
   const listEvent = {
     ...outcomeToolEvent("list-memories", "list_memories", {}),

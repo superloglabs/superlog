@@ -820,6 +820,14 @@ const OUTCOME_RECORD_PRESENTATION: Record<string, OutcomeRecordPresentation> = {
       },
     ],
   },
+  resolve_issue: {
+    title: "Resolved issue",
+    fields: [
+      { key: "issueId", label: "Issue" },
+      { key: "reason", label: "Reasoning" },
+      { key: "evidence", label: "Evidence" },
+    ],
+  },
   resolve_incident: {
     title: "Resolved incident",
     fields: [
