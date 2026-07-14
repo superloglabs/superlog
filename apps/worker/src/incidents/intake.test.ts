@@ -60,7 +60,7 @@ function makeRepo(opts: {
   incidentById?: Map<string, schema.Incident>;
   openCandidates?: { withService: schema.Incident[]; withoutService: schema.Incident[] };
   project?: schema.Project;
-  linkInsertsSuccess?: boolean;
+  linkOutcomes?: Array<"linked" | "already_linked" | "incident_closed">;
   alertEpisode?: schema.AlertEpisode;
   openIncidentForAlert?: schema.Incident;
   latestIncidentForAlert?: schema.Incident;
@@ -113,7 +113,7 @@ function makeRepo(opts: {
     },
     async linkIssueToIncident(input) {
       opts.calls.push(`linkIssueToIncident:${input.issue.id}->${input.incident.id}`);
-      return opts.linkInsertsSuccess ?? true;
+      return opts.linkOutcomes?.shift() ?? "linked";
     },
     async updateIssueGrouping(issueId, input) {
       opts.calls.push(
@@ -531,6 +531,39 @@ test("intake: alert episode joins the open incident already driven by the same a
   assert.ok(!calls.some((c) => c.startsWith("createOpen")));
   assert.ok(!calls.some((c) => c.startsWith("openRecurrence")));
   assert.ok(!calls.some((c) => c.startsWith("updateIssueGrouping:iss-new:pending")));
+});
+
+test("intake: a candidate that closes while linking is regrouped from fresh state", async () => {
+  const calls: string[] = [];
+  const stale = makeIncident({ id: "inc-stale" });
+  const base = makeRepo({
+    calls,
+    alertEpisode: makeEpisode(),
+    linkOutcomes: ["incident_closed", "linked"],
+  });
+  let alertLookupCount = 0;
+  const repo: IntakeRepository = {
+    ...base,
+    async findOpenIncidentForAlert(alertId, groupKey) {
+      calls.push(`findOpenIncidentForAlert:${alertId}:${groupKey || "*"}`);
+      alertLookupCount += 1;
+      return alertLookupCount === 1 ? stale : undefined;
+    },
+  };
+
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue({ kind: "alert" }),
+    "new",
+    makeDeps({ repo, lifecycle: makeLifecycle({ calls }), calls }),
+  );
+
+  assert.equal(result.incident.id, "inc-new");
+  assert.equal(result.createdIncident, true);
+  assert.equal(result.linkedIssue, true);
+  assert.deepEqual(
+    calls.filter((call) => call.startsWith("linkIssueToIncident:")),
+    ["linkIssueToIncident:iss-new->inc-stale", "linkIssueToIncident:iss-new->inc-new"],
+  );
 });
 
 test("intake: alert episode whose previous incident is closed opens a chained recurrence", async () => {

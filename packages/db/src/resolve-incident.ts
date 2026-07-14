@@ -118,6 +118,8 @@ export type ApplyAgentRunResultOutcome = {
   noiseResolved: boolean;
 };
 
+export type LinkIssueToOpenIncidentResult = "linked" | "already_linked" | "incident_closed";
+
 export async function validateIncidentIssueOutcomes(
   database: DB,
   incidentId: string,
@@ -208,6 +210,23 @@ export function createIncidentLifecycle(database: DB = db) {
     // atomically — no orphan incident on partial failure.
     createOpenInTx(tx: Tx, opts: CreateOpenIncidentOpts): Promise<schema.Incident> {
       return allocateOpenIncidentInTx(tx, opts);
+    },
+
+    // Linking and resolving both take the Incident row lock before inspecting
+    // its Issue set. Whichever lifecycle transition wins is therefore
+    // definitive: a winning link is visible to resolution validation, while a
+    // winning resolution prevents the late Issue from joining a closed
+    // aggregate.
+    async linkIssueToOpenIncident(opts: {
+      incidentId: string;
+      issue: Pick<schema.Issue, "id" | "lastSeen" | "service">;
+    }): Promise<LinkIssueToOpenIncidentResult> {
+      return repository.transaction(async (tx) => {
+        const incident = await repository.lockOpenIncidentInTx(tx, opts.incidentId);
+        if (!incident) return "incident_closed";
+        const linked = await repository.linkIssueInTx(tx, incident, opts.issue, new Date());
+        return linked ? "linked" : "already_linked";
+      });
     },
 
     async resolve(input: ResolveIncidentInput): Promise<ResolveIncidentResult> {
@@ -423,6 +442,11 @@ async function resolveIncidentInTx(
     throw new Error("issueOutcome and issueOutcomes are mutually exclusive");
   }
   const resolvedAt = input.resolvedAt ?? new Date();
+  // Serialize against Issue linking before taking the complete Issue snapshot.
+  // A linker that commits first is included in validation; a resolver that
+  // commits first leaves no open Incident for a late linker to target.
+  const incident = await repository.lockOpenIncidentInTx(tx, input.incidentId);
+  if (!incident) return { resolved: false, resolvedIssueCount: 0 };
   // Validate the entire set before flipping either the Incident or an Issue.
   // The surrounding transaction remains the final safety net if any later
   // write fails.

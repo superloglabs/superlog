@@ -16,6 +16,10 @@ export type InsertIncidentEventInput = {
 
 export type IncidentRepository = ReturnType<typeof createIncidentRepository>;
 
+export type LockedOpenIncident = Pick<schema.Incident, "id" | "service">;
+
+export type LinkableIssue = Pick<schema.Issue, "id" | "lastSeen" | "service">;
+
 export function createIncidentRepository(database: DB) {
   return {
     transaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
@@ -39,6 +43,41 @@ export function createIncidentRepository(database: DB) {
         .update(schema.incidents)
         .set({ ...updates, updatedAt })
         .where(eq(schema.incidents.id, incidentId));
+    },
+
+    async lockOpenIncidentInTx(tx: Tx, incidentId: string): Promise<LockedOpenIncident | null> {
+      const rows = await tx
+        .select({ id: schema.incidents.id, service: schema.incidents.service })
+        .from(schema.incidents)
+        .where(and(eq(schema.incidents.id, incidentId), eq(schema.incidents.status, "open")))
+        .limit(1)
+        .for("update");
+      return rows[0] ?? null;
+    },
+
+    async linkIssueInTx(
+      tx: Tx,
+      incident: LockedOpenIncident,
+      issue: LinkableIssue,
+      updatedAt: Date,
+    ): Promise<boolean> {
+      const inserted = await tx
+        .insert(schema.incidentIssues)
+        .values({ incidentId: incident.id, issueId: issue.id })
+        .onConflictDoNothing()
+        .returning({ id: schema.incidentIssues.id });
+      if (!inserted[0]) return false;
+
+      await tx
+        .update(schema.incidents)
+        .set({
+          lastSeen: sql`GREATEST(${schema.incidents.lastSeen}, ${issue.lastSeen.toISOString()}::timestamptz)`,
+          issueCount: sql`${schema.incidents.issueCount} + 1`,
+          service: incident.service ?? issue.service,
+          updatedAt,
+        })
+        .where(eq(schema.incidents.id, incident.id));
+      return true;
     },
 
     findLatestAgentRunIdInTx(tx: Tx, incidentId: string): Promise<{ id: string } | undefined> {

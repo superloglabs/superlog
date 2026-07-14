@@ -254,6 +254,7 @@ export {
   validateIncidentIssueOutcomes,
   type ApplyAgentRunResultOutcome,
   type IncidentLifecycle,
+  type LinkIssueToOpenIncidentResult,
   type ResolutionProposalActor,
   type ResolveIncidentInput,
   type ResolveIncidentResult,

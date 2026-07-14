@@ -239,8 +239,8 @@ async function executeValidatedCall(
           ? {
               trigger:
                 outcome.escalateOn === "events_per_minute"
-                  ? { kind: "rate" as const, perMinute: outcome.threshold as number }
-                  : { kind: "count" as const, count: outcome.threshold as number },
+                  ? { kind: "rate" as const, perMinute: outcome.threshold }
+                  : { kind: "count" as const, count: outcome.threshold },
             }
           : {}),
       }));

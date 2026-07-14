@@ -278,14 +278,25 @@ const PROPOSE_PR_DEFINITION: OutcomeToolDefinition = {
 
 export type IssueOutcomeStatus = "resolved" | "silenced" | "under_observation";
 
-export type ResolveIncidentIssueOutcome = {
+type ResolveIncidentIssueOutcomeBase = {
   issueId: string;
-  status: IssueOutcomeStatus;
   reason: string;
   evidence: string;
-  escalateOn?: (typeof ESCALATE_ON)[number];
-  threshold?: number;
 };
+
+export type ResolveIncidentIssueOutcome = ResolveIncidentIssueOutcomeBase &
+  (
+    | {
+        status: Exclude<IssueOutcomeStatus, "under_observation">;
+        escalateOn?: never;
+        threshold?: never;
+      }
+    | {
+        status: "under_observation";
+        escalateOn: (typeof ESCALATE_ON)[number];
+        threshold: number;
+      }
+  );
 
 export type ResolveIncidentPayload = {
   reason: string;
@@ -623,7 +634,7 @@ function validateIssueOutcome(
   const reason = required("reason");
   const evidence = required("evidence");
 
-  let escalateOn: ResolveIncidentIssueOutcome["escalateOn"];
+  let escalateOn: (typeof ESCALATE_ON)[number] | undefined;
   let threshold: number | undefined;
   if (status === "under_observation") {
     escalateOn = requiredEnum(errors, raw, "escalateOn", ESCALATE_ON) ?? undefined;
@@ -642,16 +653,17 @@ function validateIssueOutcome(
     );
   }
 
-  if (errors.length > 0) return { payload: null, errors };
-  const payload: ResolveIncidentIssueOutcome = {
-    issueId: issueId as string,
-    status: status as IssueOutcomeStatus,
-    reason: reason as string,
-    evidence: evidence as string,
-  };
-  if (escalateOn) payload.escalateOn = escalateOn;
-  if (threshold !== undefined) payload.threshold = threshold;
-  return { payload, errors: [] };
+  if (errors.length > 0 || !issueId || !status || !reason || !evidence) {
+    return { payload: null, errors };
+  }
+  if (status === "under_observation") {
+    if (!escalateOn || threshold === undefined) return { payload: null, errors };
+    return {
+      payload: { issueId, status, reason, evidence, escalateOn, threshold },
+      errors: [],
+    };
+  }
+  return { payload: { issueId, status, reason, evidence }, errors: [] };
 }
 
 export function validateOutcomeToolInput(
@@ -874,7 +886,10 @@ function mobileTestFromPr(payload: PullRequestProposal): AgentRunMobileRegressio
 }
 
 export function escalationTriggerFromObservation(
-  payload: Required<Pick<ResolveIncidentIssueOutcome, "escalateOn" | "threshold">>,
+  payload: Pick<
+    Extract<ResolveIncidentIssueOutcome, { status: "under_observation" }>,
+    "escalateOn" | "threshold"
+  >,
 ): IssueEscalationTrigger {
   return payload.escalateOn === "events_per_minute"
     ? { kind: "rate", perMinute: payload.threshold }
@@ -1027,15 +1042,8 @@ export function assembleAgentRunResult(args: {
         reason: outcome.reason,
         evidence: outcome.evidence,
       };
-      if (
-        outcome.status === "under_observation" &&
-        outcome.escalateOn !== undefined &&
-        outcome.threshold !== undefined
-      ) {
-        classification.trigger = escalationTriggerFromObservation({
-          escalateOn: outcome.escalateOn,
-          threshold: outcome.threshold,
-        });
+      if (outcome.status === "under_observation") {
+        classification.trigger = escalationTriggerFromObservation(outcome);
       }
       classificationsByIssue.set(outcome.issueId, classification);
     }

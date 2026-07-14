@@ -1,4 +1,11 @@
-import { type DB, buildIssueReopenPatch, db, schema } from "@superlog/db";
+import {
+  type DB,
+  type LinkIssueToOpenIncidentResult,
+  buildIssueReopenPatch,
+  createIncidentLifecycle,
+  db,
+  schema,
+} from "@superlog/db";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { IssueGroupingSource, IssueGroupingState, LinkedIncidentIssue } from "./domain.js";
 
@@ -7,6 +14,8 @@ const INCIDENT_GROUPING_CANDIDATE_LIMIT = parsePositiveInt(
   200,
   1000,
 );
+
+const incidentLifecycle = createIncidentLifecycle(db);
 
 function parsePositiveInt(value: string | undefined, fallback: number, max: number): number {
   if (value === undefined) return fallback;
@@ -232,21 +241,9 @@ export async function findLatestIncidentForAlert(
 export async function linkIssueToIncident(opts: {
   incident: schema.Incident;
   issue: schema.Issue;
-}): Promise<boolean> {
-  const inserted = await db
-    .insert(schema.incidentIssues)
-    .values({ incidentId: opts.incident.id, issueId: opts.issue.id })
-    .onConflictDoNothing()
-    .returning();
-  if (!inserted[0]) return false;
-  await db
-    .update(schema.incidents)
-    .set({
-      lastSeen: sql`GREATEST(${schema.incidents.lastSeen}, ${opts.issue.lastSeen.toISOString()}::timestamptz)`,
-      issueCount: sql`${schema.incidents.issueCount} + 1`,
-      service: opts.incident.service ?? opts.issue.service,
-      updatedAt: new Date(),
-    })
-    .where(eq(schema.incidents.id, opts.incident.id));
-  return true;
+}): Promise<LinkIssueToOpenIncidentResult> {
+  return incidentLifecycle.linkIssueToOpenIncident({
+    incidentId: opts.incident.id,
+    issue: opts.issue,
+  });
 }

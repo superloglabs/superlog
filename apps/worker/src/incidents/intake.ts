@@ -58,7 +58,7 @@ export type IntakeRepository = {
   linkIssueToIncident(opts: {
     incident: schema.Incident;
     issue: schema.Issue;
-  }): Promise<boolean>;
+  }): Promise<LinkIssueToIncidentOutcome>;
   updateIssueGrouping(
     issueId: string,
     opts: {
@@ -76,6 +76,8 @@ export type IntakeRepository = {
     },
   ): Promise<void>;
 };
+
+export type LinkIssueToIncidentOutcome = "linked" | "already_linked" | "incident_closed";
 
 export type IntakeLifecycle = {
   openRecurrence(opts: {
@@ -135,7 +137,46 @@ type Grouping = {
   failedReason: string | null;
 };
 
+class IncidentClosedDuringLink extends Error {
+  constructor(readonly incidentId: string) {
+    super(`Incident ${incidentId} closed while linking an Issue`);
+  }
+}
+
 export async function ensureIncidentForIssueWorkflow(
+  issue: schema.Issue,
+  transition: IssueIntakeTransition,
+  deps: IntakeDeps,
+): Promise<EnsureIncidentForIssueResult> {
+  // A candidate can close after grouping selects it but before the Issue link
+  // is written. The repository reports that lifecycle race explicitly. Unwind
+  // any serialization transaction, then rerun from fresh Incident state; each
+  // retry observes at least one additional closed candidate, so the workflow
+  // makes progress without dropping this at-most-once transition.
+  for (;;) {
+    try {
+      return await ensureIncidentForIssueAttempt(issue, transition, deps);
+    } catch (err) {
+      if (!(err instanceof IncidentClosedDuringLink)) throw err;
+      deps.logger.warn(
+        { issueId: issue.id, incidentId: err.incidentId },
+        "Incident closed while linking Issue; regrouping against fresh state",
+      );
+    }
+  }
+}
+
+async function linkIssueToOpenIncident(
+  repo: IntakeRepository,
+  incident: schema.Incident,
+  issue: schema.Issue,
+): Promise<boolean> {
+  const outcome = await repo.linkIssueToIncident({ incident, issue });
+  if (outcome === "incident_closed") throw new IncidentClosedDuringLink(incident.id);
+  return outcome === "linked";
+}
+
+async function ensureIncidentForIssueAttempt(
   issue: schema.Issue,
   transition: IssueIntakeTransition,
   deps: IntakeDeps,
@@ -229,7 +270,7 @@ export async function ensureIncidentForIssueWorkflow(
           }
         }
         if (matched) {
-          const linkedIssue = await deps.repo.linkIssueToIncident({ incident: matched, issue });
+          const linkedIssue = await linkIssueToOpenIncident(deps.repo, matched, issue);
           await deps.repo.reopenIssue(issue.id);
           await markIssueGrouping(issue.id, grouping, deps.repo);
           const fresh = (await deps.repo.findIncident(matched.id)) ?? matched;
@@ -275,7 +316,7 @@ export async function ensureIncidentForIssueWorkflow(
   const alertContext = issue.kind === "alert" ? await loadAlertIncidentContext(issue, deps) : null;
   if (alertContext?.openIncident) {
     const open = alertContext.openIncident;
-    const linkedIssue = await deps.repo.linkIssueToIncident({ incident: open, issue });
+    const linkedIssue = await linkIssueToOpenIncident(deps.repo, open, issue);
     await deps.repo.updateIssueGrouping(issue.id, {
       state: "grouped",
       source: "heuristic",
@@ -374,7 +415,7 @@ export async function ensureIncidentForIssueWorkflow(
       createdIncident = true;
     }
 
-    const linkedIssue = await deps.repo.linkIssueToIncident({ incident, issue });
+    const linkedIssue = await linkIssueToOpenIncident(deps.repo, incident, issue);
     await markIssueGrouping(issue.id, grouping, deps.repo);
     const freshIncident = (await deps.repo.findIncident(incident.id)) ?? incident;
     return { incident: freshIncident, createdIncident, linkedIssue, recurrenceIncident: false };

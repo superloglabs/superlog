@@ -297,6 +297,50 @@ test("an invalid agent issue outcome leaves every issue and the incident unchang
   }
 });
 
+test("an Issue cannot be linked after Incident resolution wins the lifecycle lock", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-link-after-resolve",
+    });
+    const lifecycle = createIncidentLifecycle(db);
+    await lifecycle.resolve({
+      incidentId: incident.id,
+      kind: "dashboard_manual",
+      reasonCode: "problem_resolved",
+      reasonText: null,
+    });
+    const lateIssue = one(
+      await db
+        .insert(schema.issues)
+        .values({
+          projectId: project.id,
+          fingerprint: "fp-too-late",
+          kind: "log",
+          exceptionType: "Error",
+          title: "late error",
+          firstSeen: new Date(),
+          lastSeen: new Date(),
+        })
+        .returning(),
+    );
+
+    const linked = await lifecycle.linkIssueToOpenIncident({
+      incidentId: incident.id,
+      issue: lateIssue,
+    });
+
+    assert.equal(linked, "incident_closed");
+    const links = await db.query.incidentIssues.findMany({
+      where: eq(schema.incidentIssues.issueId, lateIssue.id),
+    });
+    assert.deepEqual(links, []);
+  } finally {
+    await client.close();
+  }
+});
+
 test("resolving an old incident does not touch issues that recurred into a newer one", async () => {
   const { db, client } = await freshDb();
   try {

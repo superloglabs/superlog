@@ -13,7 +13,11 @@ import {
   outcomeToolDefinitionsForCapabilities,
   validateOutcomeToolInput,
 } from "./agent-outcome-tools.js";
-import type { AgentRunFindings, ResolveIncidentPayload } from "./agent-outcome-tools.js";
+import type {
+  AgentRunFindings,
+  ResolveIncidentIssueOutcome,
+  ResolveIncidentPayload,
+} from "./agent-outcome-tools.js";
 
 const FINDINGS: AgentRunFindings = {
   summary: "Cart pricing requests time out under load.",
@@ -47,6 +51,17 @@ const BATCH_PROPOSE_PR_INPUT = {
     },
   ],
 };
+
+test("validated observation outcomes require their escalation fields in the type", () => {
+  // @ts-expect-error validated observation outcomes always require a trigger and threshold
+  const invalid: ResolveIncidentIssueOutcome = {
+    issueId: "issue-1",
+    status: "under_observation",
+    reason: "Watch for recurrence.",
+    evidence: "The current window is healthy.",
+  };
+  assert.equal(invalid.status, "under_observation");
+});
 
 const RESOLVE_INCIDENT_INPUT = {
   reason: "The required work is complete and no further action is needed.",
