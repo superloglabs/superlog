@@ -52,7 +52,12 @@ export function resolveSlackResolveClickDisposition(status: string): SlackResolv
 }
 
 export function isRevokedSlackAuthError(error: string): boolean {
-  return error === "not_authed" || error === "token_revoked" || error === "invalid_auth";
+  return (
+    error === "not_authed" ||
+    error === "token_revoked" ||
+    error === "invalid_auth" ||
+    error === "account_inactive"
+  );
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
