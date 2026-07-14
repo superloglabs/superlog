@@ -96,6 +96,31 @@ test("a signal count failure preserves its cursor and does not block later signa
   assert.ok(cursors.get("usage-meter-metric_points") instanceof Date);
 });
 
+test("an org lookup failure preserves its cursor and does not block later signals", async () => {
+  const {
+    deps: d,
+    tracks,
+    cursors,
+  } = deps({
+    countByProject: async (signal) => new Map([[`project-${signal}`, 10]]),
+    resolveOrgIds: async (projectIds) => {
+      if (projectIds.includes("project-logs")) throw new Error("postgres timeout");
+      return new Map(projectIds.map((projectId) => [projectId, "orgA"]));
+    },
+  });
+
+  const reported = await meterTelemetryUsageTick(d);
+
+  assert.equal(reported, 2);
+  assert.deepEqual(
+    tracks.map((track) => track.featureId),
+    ["spans", "metric_points"],
+  );
+  assert.ok(cursors.get("usage-meter-spans") instanceof Date);
+  assert.equal(cursors.has("usage-meter-logs"), false);
+  assert.ok(cursors.get("usage-meter-metric_points") instanceof Date);
+});
+
 test("does not scan past now (window capped at current time)", async () => {
   const counted: Array<{ after: string; until: string }> = [];
   const { deps: d } = deps({

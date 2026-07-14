@@ -67,13 +67,14 @@ export async function meterTelemetryUsageTick(deps: UsageMeterDeps): Promise<num
         cursor.toISOString(),
         until.toISOString(),
       );
-      // Persist the cursor BEFORE issuing the non-idempotent track() calls. track()
-      // is additive, so a setCursor failure AFTER tracking would replay this window
-      // next tick and double-charge. Advancing first makes it strictly at-most-once:
-      // a track failure below under-reports one window rather than risk double-count.
+      const orgMap = perProject.size > 0 ? await deps.resolveOrgIds([...perProject.keys()]) : null;
+      // Complete the idempotent reads before advancing, then persist the cursor
+      // BEFORE issuing the non-idempotent track() calls. track() is additive, so
+      // a setCursor failure AFTER tracking would replay this window next tick and
+      // double-charge. Advancing first makes tracking strictly at-most-once: a
+      // track failure below under-reports one window rather than risk double-count.
       await deps.setCursor(cursorName, until);
-      if (perProject.size > 0) {
-        const orgMap = await deps.resolveOrgIds([...perProject.keys()]);
+      if (orgMap) {
         for (const [orgId, value] of aggregateByOrg(perProject, orgMap)) {
           try {
             await deps.track(orgId, SIGNAL_FEATURE_IDS[signal], value);
