@@ -32,9 +32,10 @@ export type RecurringStepSpec = RecurringStep & {
 // in the tick whenever pg-boss is up — even a step whose own registration
 // failed. Falling back locally would run the step concurrently with another
 // process's live chain (double webhook deliveries, duplicate transitions), so
-// a failed step goes dormant on this process instead: the failure is logged
-// at error level, and a queue left without any consumer pages via the
-// stuck-queue alerting on the queue-health metrics.
+// a failed step is instead dormant on this process while its registration is
+// retried in the background (below) until it succeeds: a transient failure
+// heals within a minute, and a persistent one logs an error on every attempt
+// while stuck-queue alerting catches a queue left without any consumer.
 export const RECURRING_TICK_STEPS: readonly SkippableTickStep[] = [
   "agent_chats",
   "webhooks",
@@ -42,6 +43,8 @@ export const RECURRING_TICK_STEPS: readonly SkippableTickStep[] = [
   "digests",
   "observation",
 ];
+
+const REGISTRATION_RETRY_MS = 60_000;
 
 export function buildRecurringSteps(deps: RecurringStepsDeps): RecurringStepSpec[] {
   return [
@@ -84,29 +87,45 @@ export function buildRecurringSteps(deps: RecurringStepsDeps): RecurringStepSpec
 }
 
 // Register every step's chain, one failure at a time: one step's registration
-// failure must not block the others. Returns the successfully registered tick
-// steps; a failed step is NOT retried or run locally (see RECURRING_TICK_STEPS
-// for why there is no per-step tick fallback while pg-boss is up).
+// failure must not block the others. A failed step is never run locally (see
+// RECURRING_TICK_STEPS); instead its registration keeps retrying in the
+// background — sequential attempts via a self-scheduling timeout, so two
+// attempts can't race a consumer onto the queue twice. Registration is
+// idempotent (createQueue/updateQueue/schedule upsert, the seed send dedupes
+// on the chain key), which is what makes the retry safe after a partial
+// failure. Returns the steps that registered on the first attempt.
 export async function startRecurringSteps(
   boss: RecurringBoss,
   deps: RecurringStepsDeps,
   logger: LoggerLike = defaultLogger,
+  retryDelayMs: number = REGISTRATION_RETRY_MS,
 ): Promise<Set<SkippableTickStep>> {
   const migrated = new Set<SkippableTickStep>();
   for (const step of buildRecurringSteps(deps)) {
-    try {
-      await registerRecurringStep(boss, step, logger);
-      migrated.add(step.tickStep);
-    } catch (err) {
-      logger.error(
-        {
-          scope: "worker.recurring",
-          step: step.queue,
-          err: err instanceof Error ? err.message : String(err),
-        },
-        "recurring step failed to register; it is dormant on this process until the next boot",
-      );
-    }
+    const attempt = async (): Promise<boolean> => {
+      try {
+        await registerRecurringStep(boss, step, logger);
+        migrated.add(step.tickStep);
+        return true;
+      } catch (err) {
+        logger.error(
+          {
+            scope: "worker.recurring",
+            step: step.queue,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "recurring step failed to register; dormant on this process, retrying in the background",
+        );
+        return false;
+      }
+    };
+    const scheduleRetry = (): void => {
+      const timer = setTimeout(async () => {
+        if (!(await attempt())) scheduleRetry();
+      }, retryDelayMs);
+      timer.unref?.();
+    };
+    if (!(await attempt())) scheduleRetry();
   }
   return migrated;
 }

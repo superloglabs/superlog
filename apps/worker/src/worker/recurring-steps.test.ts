@@ -49,21 +49,41 @@ test("latency-sensitive sweeps keep a sub-minute cadence", () => {
   assert.ok((byQueue.get("alert-evaluation") ?? 61) < 60, "alert evaluation must stay snappy");
 });
 
-test("one step's registration failure doesn't block the rest", async () => {
+test("a failed registration doesn't block the rest and is retried in the background", async () => {
+  let digestCreateAttempts = 0;
+  const consumers: string[] = [];
   const boss: RecurringBoss = {
     async createQueue(name) {
-      if (name === "digest-sweep") throw new Error("createQueue refused");
+      if (name === "digest-sweep") {
+        digestCreateAttempts += 1;
+        if (digestCreateAttempts === 1) throw new Error("createQueue refused");
+      }
     },
     async updateQueue() {},
-    async work() {},
+    async work(name) {
+      consumers.push(name);
+    },
     async send() {
       return "job-id";
     },
     async schedule() {},
   };
 
-  const migrated = await startRecurringSteps(boss, depsOf(), quietLogger);
+  const migrated = await startRecurringSteps(boss, depsOf(), quietLogger, 5);
 
+  // The failed step must not block the others — and must NOT be reported as
+  // registered (the caller never runs it locally; see RECURRING_TICK_STEPS).
   assert.ok(!migrated.has("digests"), "the failed step must be reported unregistered");
   assert.deepEqual([...migrated].sort(), ["agent_chats", "alerts", "observation", "webhooks"]);
+  assert.ok(!consumers.includes("digest-sweep"));
+
+  // The background retry completes the registration once the failure clears,
+  // so a transient error doesn't leave the step dark until the next boot.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(digestCreateAttempts >= 2, "registration must be retried");
+  assert.deepEqual(
+    consumers.filter((name) => name === "digest-sweep"),
+    ["digest-sweep"],
+    "the retried step must get exactly one consumer",
+  );
 });
