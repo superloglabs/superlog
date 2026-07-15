@@ -11,8 +11,15 @@ import { tickDigests } from "../digest.js";
 import type { handleIssueTransition } from "../incidents/workflow.js";
 import { logger as defaultLogger } from "../logger.js";
 import { tickObservedIssues } from "../observation.js";
+import { loadQueueHealthCounts } from "../queue-health.js";
 import { tickWebhooks } from "../webhooks.js";
-import { type RecurringBoss, type RecurringStep, registerRecurringStep } from "./recurring.js";
+import {
+  type ChainCounts,
+  type RecurringBoss,
+  type RecurringStep,
+  registerRecurringReviver,
+  registerRecurringStep,
+} from "./recurring.js";
 import type { SkippableTickStep } from "./tick.js";
 
 type ClickHouseClientLike = Parameters<typeof tickAlerts>[0];
@@ -92,6 +99,8 @@ export type StartRecurringStepsOptions = {
   // Threaded through to every step's pass (see RegisterRecurringStepOptions);
   // also stops the background registration retry on a draining process.
   shutdown?: AbortSignal;
+  // Test seam; defaults to the queue-health loader.
+  loadChainCounts?: () => Promise<ChainCounts[]>;
 };
 
 // Register every step's chain, one failure at a time: one step's registration
@@ -99,9 +108,9 @@ export type StartRecurringStepsOptions = {
 // RECURRING_TICK_STEPS); instead its registration keeps retrying in the
 // background — sequential attempts via a self-scheduling timeout, so two
 // attempts can't race a consumer onto the queue twice. Registration is
-// idempotent (createQueue/updateQueue/schedule upsert, the seed send dedupes
-// on the chain key), which is what makes the retry safe after a partial
-// failure. Returns the steps that registered on the first attempt.
+// idempotent (createQueue/updateQueue upsert, the seed send dedupes on the
+// chain key), which is what makes the retry safe after a partial failure.
+// Returns the steps that registered on the first attempt.
 export async function startRecurringSteps(
   boss: RecurringBoss,
   deps: RecurringStepsDeps,
@@ -136,6 +145,19 @@ export async function startRecurringSteps(
       timer.unref?.();
     };
     if (!(await attempt())) scheduleRetry();
+  }
+
+  // The shared dead-chain reviver (see recurring.ts). Its own failure is
+  // non-fatal: every healthy chain self-perpetuates without it; it only
+  // narrows the crash window between a pass and its reschedule.
+  try {
+    const loadCounts = opts.loadChainCounts ?? loadQueueHealthCounts;
+    await registerRecurringReviver(boss, buildRecurringSteps(deps), loadCounts, logger);
+  } catch (err) {
+    logger.error(
+      { scope: "worker.recurring", err: err instanceof Error ? err.message : String(err) },
+      "recurring reviver failed to register; chains rely on their own rescheduling",
+    );
   }
   return migrated;
 }

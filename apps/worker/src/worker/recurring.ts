@@ -11,10 +11,13 @@
 //   - The chain itself: every pass reschedules in `finally`, so a failed pass
 //     still continues the chain (each pass is an idempotent sweep — "retrying"
 //     a failure IS the next pass, which is why the queue sets retryLimit 0).
-//   - A minute cron reviver per queue: if the chain dies anyway (process crash
-//     between a pass completing and its reschedule landing), the cron's send
-//     re-seeds it. On a healthy chain the send collapses against the queued
-//     successor via the singleton key.
+//   - A shared minute-cron reviver (registerRecurringReviver): if a chain dies
+//     anyway (process crash between a pass completing and its reschedule
+//     landing), the reviver re-seeds it. It seeds ONLY chains with no queued
+//     and no active job: an unconditional seed during a legitimately long
+//     pass would park a pending job behind the active one for the pass's
+//     whole duration — tripping stuck-queue alerting on a healthy queue — and
+//     its dedupe would swallow the successor's intended interval.
 //
 // Passes never overlap, across processes included: the `stately` policy plus
 // one fixed singleton key allows at most one ACTIVE job per queue anywhere in
@@ -30,6 +33,7 @@
 import { logger as defaultLogger } from "../logger.js";
 
 export const RECURRING_CHAIN_KEY = "chain";
+export const RECURRING_REVIVER_QUEUE = "recurring-reviver";
 const REVIVER_SCHEDULE = "* * * * *";
 
 // Soft deadline: a pass running longer than this is logged (it shows up next
@@ -55,6 +59,7 @@ export type RecurringBoss = {
   ): Promise<unknown>;
   send(name: string, data: object, options?: object): Promise<unknown>;
   schedule(name: string, cron: string, data?: unknown, options?: unknown): Promise<unknown>;
+  unschedule(name: string, key?: string): Promise<unknown>;
 };
 
 type LoggerLike = Pick<typeof defaultLogger, "info" | "warn" | "error">;
@@ -106,7 +111,10 @@ export async function registerRecurringStep(
   // keep the mutable lease settings in sync across deploys while leaving the
   // immutable policy on the create path.
   await boss.updateQueue(step.queue, lease);
-  await boss.schedule(step.queue, REVIVER_SCHEDULE, {}, { singletonKey: RECURRING_CHAIN_KEY });
+  // Earlier revisions revived via an unconditional per-queue cron; its
+  // schedule row persists in the database, so remove it or long passes keep
+  // tripping the false-pending problem the shared reviver exists to avoid.
+  await boss.unschedule(step.queue);
   await boss.send(step.queue, {}, { singletonKey: RECURRING_CHAIN_KEY });
 
   await boss.work(step.queue, { batchSize: 1 }, async () => {
@@ -130,7 +138,7 @@ export async function registerRecurringStep(
             step: step.queue,
             err: err instanceof Error ? err.message : String(err),
           },
-          "failed to reschedule recurring step; the reviver cron restores it within a minute",
+          "failed to reschedule recurring step; the reviver restores it within a minute",
         );
       }
     }
@@ -182,4 +190,57 @@ export async function registerRecurringStep(
       if (onAbort) shutdown?.removeEventListener("abort", onAbort);
     }
   }
+}
+
+// Live queued/active job counts for a chain queue; zero/zero means the chain
+// is dead. Injected so the mechanism stays free of the database dependency
+// (recurring-steps.ts wires it to the queue-health loader).
+export type ChainCounts = { queue: string; pending: number; active: number };
+
+// One shared minute cron that re-seeds DEAD chains only (see header). A
+// missing entry in the counts means the queue has no live jobs at all — the
+// loader only returns queues with queued/retry/active rows — so it is seeded.
+// Seeding is idempotent (chain singleton key), so racing a just-landed
+// reschedule is harmless; seeds for steps whose consumer never registered sit
+// inert until a healthy process picks them up.
+export async function registerRecurringReviver(
+  boss: RecurringBoss,
+  steps: ReadonlyArray<Pick<RecurringStep, "queue">>,
+  loadChainCounts: () => Promise<ChainCounts[]>,
+  logger: LoggerLike = defaultLogger,
+): Promise<void> {
+  await boss.createQueue(RECURRING_REVIVER_QUEUE, { policy: "exclusive" });
+  await boss.schedule(RECURRING_REVIVER_QUEUE, REVIVER_SCHEDULE);
+  await boss.work(RECURRING_REVIVER_QUEUE, { batchSize: 1 }, async () => {
+    let counts: Map<string, ChainCounts>;
+    try {
+      counts = new Map((await loadChainCounts()).map((c) => [c.queue, c]));
+    } catch (err) {
+      logger.error(
+        { scope: "worker.recurring", err: err instanceof Error ? err.message : String(err) },
+        "reviver failed to load chain counts; retrying next minute",
+      );
+      return;
+    }
+    for (const step of steps) {
+      const c = counts.get(step.queue);
+      if (c && (c.pending > 0 || c.active > 0)) continue;
+      try {
+        await boss.send(step.queue, {}, { singletonKey: RECURRING_CHAIN_KEY });
+        logger.warn(
+          { scope: "worker.recurring", step: step.queue },
+          "revived a dead recurring chain",
+        );
+      } catch (err) {
+        logger.error(
+          {
+            scope: "worker.recurring",
+            step: step.queue,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "failed to revive a dead recurring chain; retrying next minute",
+        );
+      }
+    }
+  });
 }

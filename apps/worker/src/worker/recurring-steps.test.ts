@@ -67,6 +67,7 @@ test("a failed registration doesn't block the rest and is retried in the backgro
       return "job-id";
     },
     async schedule() {},
+    async unschedule() {},
   };
 
   const migrated = await startRecurringSteps(boss, depsOf(), {
@@ -89,6 +90,12 @@ test("a failed registration doesn't block the rest and is retried in the backgro
     ["digest-sweep"],
     "the retried step must get exactly one consumer",
   );
+
+  // The shared dead-chain reviver rides along, once.
+  assert.deepEqual(
+    consumers.filter((name) => name === "recurring-reviver"),
+    ["recurring-reviver"],
+  );
 });
 
 test("registration retries stop once shutdown begins", async () => {
@@ -106,6 +113,7 @@ test("registration retries stop once shutdown begins", async () => {
       return "job-id";
     },
     async schedule() {},
+    async unschedule() {},
   };
   const shutdown = new AbortController();
 

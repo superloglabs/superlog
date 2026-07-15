@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  type ChainCounts,
   RECURRING_CHAIN_KEY,
+  RECURRING_REVIVER_QUEUE,
   type RecurringBoss,
   type RecurringStep,
   passExpireSeconds,
+  registerRecurringReviver,
   registerRecurringStep,
 } from "./recurring.js";
 
@@ -42,6 +45,9 @@ function fakeBoss() {
       ops.push(`schedule:${name}`);
       schedules.push({ name, cron, options });
     },
+    async unschedule(name) {
+      ops.push(`unschedule:${name}`);
+    },
   };
   return { boss, sent, queues, queueUpdates, schedules, workers, workOptions, ops };
 }
@@ -57,7 +63,7 @@ function stepOf(overrides: Partial<RecurringStep> = {}): RecurringStep {
   };
 }
 
-test("registration creates a stately queue, a minute reviver, a seed job, and the consumer last", async () => {
+test("registration creates a stately queue, a seed job, and the consumer last", async () => {
   const fb = fakeBoss();
   await registerRecurringStep(fb.boss, stepOf(), { logger: quietLogger });
 
@@ -73,12 +79,12 @@ test("registration creates a stately queue, a minute reviver, a seed job, and th
   // by earlier deploys.
   assert.deepEqual(fb.queueUpdates, [{ name: "test-step", options: lease }]);
 
-  // The reviver cron re-seeds the chain if it ever dies (crash between a pass
-  // and its reschedule). Its send must carry the chain singleton key so a
-  // healthy chain absorbs it as a no-op.
-  assert.deepEqual(fb.schedules, [
-    { name: "test-step", cron: "* * * * *", options: { singletonKey: RECURRING_CHAIN_KEY } },
-  ]);
+  // No per-queue cron: an unconditional minute seed parks a pending job
+  // behind a long-but-healthy active pass (false stuck-queue alerts) — dead
+  // chains are revived by the shared reviver instead, and the legacy
+  // per-queue schedule row is removed from earlier revisions.
+  assert.deepEqual(fb.schedules, []);
+  assert.ok(fb.ops.includes("unschedule:test-step"));
 
   // The seed starts the chain immediately at boot.
   assert.deepEqual(fb.sent, [
@@ -90,6 +96,65 @@ test("registration creates a stately queue, a minute reviver, a seed job, and th
   // The consumer is registered LAST so a partial registration never leaves a
   // live consumer on a half-configured queue.
   assert.equal(fb.ops.at(-1), "work:test-step");
+});
+
+test("the reviver seeds only dead chains", async () => {
+  const fb = fakeBoss();
+  const counts: ChainCounts[] = [
+    { queue: "busy-step", pending: 0, active: 1 }, // long pass in flight
+    { queue: "waiting-step", pending: 1, active: 0 }, // successor scheduled
+    { queue: "drained-step", pending: 0, active: 0 }, // dead
+    // "missing-step" absent entirely — also dead
+  ];
+  await registerRecurringReviver(
+    fb.boss,
+    [
+      { queue: "busy-step" },
+      { queue: "waiting-step" },
+      { queue: "drained-step" },
+      { queue: "missing-step" },
+    ],
+    async () => counts,
+    quietLogger,
+  );
+
+  assert.deepEqual(fb.queues, [
+    { name: RECURRING_REVIVER_QUEUE, options: { policy: "exclusive" } },
+  ]);
+  assert.equal(fb.schedules[0]?.name, RECURRING_REVIVER_QUEUE);
+  assert.equal(fb.schedules[0]?.cron, "* * * * *");
+  const reviver = fb.workers.get(RECURRING_REVIVER_QUEUE);
+  assert.ok(reviver);
+
+  await reviver([{ id: "revive-1", data: {} }]);
+
+  // A chain with an active pass or a queued successor must NOT get a seed —
+  // that pending job would age behind the pass and trip stuck-queue alerts.
+  assert.deepEqual(
+    fb.sent.map((s) => [s.name, s.options]),
+    [
+      ["drained-step", { singletonKey: RECURRING_CHAIN_KEY }],
+      ["missing-step", { singletonKey: RECURRING_CHAIN_KEY }],
+    ],
+  );
+});
+
+test("a reviver counts-load failure is swallowed and retried next minute", async () => {
+  const fb = fakeBoss();
+  await registerRecurringReviver(
+    fb.boss,
+    [{ queue: "some-step" }],
+    async () => {
+      throw new Error("pg down");
+    },
+    quietLogger,
+  );
+  const reviver = fb.workers.get(RECURRING_REVIVER_QUEUE);
+  assert.ok(reviver);
+
+  await reviver([{ id: "revive-1", data: {} }]); // must not throw
+
+  assert.deepEqual(fb.sent, [], "nothing may be seeded on unknown chain state");
 });
 
 test("expiry stays a comfortable multiple of the warn deadline, with a floor", () => {
