@@ -8,6 +8,7 @@ import {
   ingestFilterKey,
   ingestFilterStateSchema,
 } from "./ingest-filters-service.js";
+import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 
 type Vars = { userId: string; orgId: string | null };
@@ -24,6 +25,10 @@ export function mountIngestFilters(app: Hono<{ Variables: Vars }>) {
     });
     if (project.orgId !== ctx.org.id) throw new HTTPException(403, { message: "forbidden" });
     return { project, user: ctx.user };
+  };
+
+  const requireManagerAccess = async (c: Context<{ Variables: Vars }>, projectId: string) => {
+    return requireProjectManagerContext(c, projectId);
   };
 
   const loadDisabled = async (projectId: string): Promise<Set<string>> => {
@@ -45,7 +50,7 @@ export function mountIngestFilters(app: Hono<{ Variables: Vars }>) {
   // persist the disabled pairs, so the whole set is rewritten transactionally.
   app.put("/api/projects/:projectId/ingest-filters", async (c) => {
     const projectId = c.req.param("projectId");
-    await requireAccess(c, projectId);
+    await requireManagerAccess(c, projectId);
     const parsed = ingestFilterStateSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) throw new HTTPException(400, { message: "invalid body" });
 

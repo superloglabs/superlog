@@ -48,7 +48,11 @@ import {
   updateProjectInputSchema,
 } from "./management-schemas.js";
 import { getTraceDetail, queryLogs, queryMetrics } from "./mcp/clickhouse.js";
-import { resolveActiveOrgContext } from "./org-context.js";
+import {
+  OrgAuthorizationError,
+  requireOrgManagerAccess,
+  resolveOrgAccess,
+} from "./org-authorization.js";
 import {
   sourceMapObjectStoreFromEnv,
   sourceMapUploadSchema,
@@ -1296,8 +1300,7 @@ async function assertReturnUrlAllowed(orgId: string, returnUrl: string): Promise
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
 export function mountOrgKeyManagementAuthed(app: Hono<any>): void {
   app.get("/api/org/api-keys", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ keys: [] });
+    const ctx = await requireOrgManager(c);
     const rows = await db.query.orgApiKeys.findMany({
       where: eq(schema.orgApiKeys.orgId, ctx.orgId),
       orderBy: [desc(schema.orgApiKeys.createdAt)],
@@ -1315,8 +1318,7 @@ export function mountOrgKeyManagementAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/org/api-keys", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) throw new HTTPException(404, { message: "no org for user" });
+    const ctx = await requireOrgManager(c);
     const body = (await c.req.json().catch(() => ({}))) as { name?: unknown };
     const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : "API key";
     const minted = await mintOrgApiKey({
@@ -1340,8 +1342,7 @@ export function mountOrgKeyManagementAuthed(app: Hono<any>): void {
   });
 
   app.delete("/api/org/api-keys/:id", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) throw new HTTPException(404, { message: "no org for user" });
+    const ctx = await requireOrgManager(c);
     const id = c.req.param("id");
     // Scope by org_id so users can't revoke keys from other orgs by ID guess.
     const result = await db
@@ -1375,8 +1376,7 @@ export function mountOrgKeyManagementAuthed(app: Hono<any>): void {
   });
 
   app.put("/api/org/return-url-hosts", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) throw new HTTPException(404, { message: "no org for user" });
+    const ctx = await requireOrgManager(c);
     const body = (await c.req.json().catch(() => ({}))) as { hosts?: unknown };
     if (!Array.isArray(body.hosts)) {
       throw new HTTPException(400, { message: "hosts must be a string[]" });
@@ -1408,8 +1408,7 @@ export function mountOrgKeyManagementAuthed(app: Hono<any>): void {
   // key. Lets a dashboard admin set up the org-level GitHub install without
   // first minting a management key just to run one curl.
   app.post("/api/org/github/install-url", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) throw new HTTPException(404, { message: "no org for user" });
+    const ctx = await requireOrgManager(c);
     const result = buildGithubMgmtInstallUrl({
       scope: "org",
       orgId: ctx.orgId,
@@ -1445,8 +1444,7 @@ export function mountOrgKeyManagementAuthed(app: Hono<any>): void {
   });
 
   app.delete("/api/org/github/installations/:rowId", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) throw new HTTPException(404, { message: "no org for user" });
+    const ctx = await requireOrgManager(c);
     return c.json(await revokeOrgScopedInstallation(ctx.orgId, c.req.param("rowId")));
   });
 
@@ -1457,8 +1455,7 @@ export function mountOrgKeyManagementAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/org/projects/:projectId/github/repos", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) throw new HTTPException(404, { message: "no org for user" });
+    const ctx = await requireOrgManager(c);
     const body = (await c.req.json().catch(() => ({}))) as {
       installation_id?: unknown;
       repo_id?: unknown;
@@ -1469,8 +1466,7 @@ export function mountOrgKeyManagementAuthed(app: Hono<any>): void {
   });
 
   app.delete("/api/org/projects/:projectId/github/repos/:repoId", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) throw new HTTPException(404, { message: "no org for user" });
+    const ctx = await requireOrgManager(c);
     return c.json(
       await revokeProjectRepoGrant({
         orgId: ctx.orgId,
@@ -1504,13 +1500,22 @@ async function requireProjectInOrg(orgId: string, projectId: string): Promise<sc
 
 async function resolveUserOrg(
   c: Context<{ Variables: DashboardVars }>,
-): Promise<{ userId: string; orgId: string } | null> {
-  const userId = c.var.userId;
-  if (!userId) return null;
-  const ctx = await resolveActiveOrgContext({
-    userId,
-    preferredOrgId: c.var.orgId,
-  }).catch(() => null);
-  if (!ctx) return null;
-  return { userId: ctx.user.id, orgId: ctx.org.id };
+): Promise<{ userId: string; orgId: string; role: string } | null> {
+  return resolveOrgAccess({ userId: c.var.userId, preferredOrgId: c.var.orgId });
+}
+
+async function requireOrgManager(
+  c: Context<{ Variables: DashboardVars }>,
+): Promise<{ userId: string; orgId: string; role: string }> {
+  try {
+    return await requireOrgManagerAccess({
+      userId: c.var.userId,
+      preferredOrgId: c.var.orgId,
+    });
+  } catch (error) {
+    if (error instanceof OrgAuthorizationError) {
+      throw new HTTPException(error.code === "no_org" ? 404 : 403, { message: error.message });
+    }
+    throw error;
+  }
 }

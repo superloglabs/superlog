@@ -23,7 +23,7 @@ after(async () => {
   }
 });
 
-async function seedProject() {
+async function seedProject(role: "owner" | "admin" | "member" = "owner") {
   const tag = `if-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
   const [org] = await db.insert(schema.orgs).values({ name: tag, slug: tag }).returning();
   if (!org) throw new Error("seed org failed");
@@ -33,7 +33,7 @@ async function seedProject() {
     .values({ email: `${tag}@example.com` })
     .returning();
   if (!user) throw new Error("seed user failed");
-  await db.insert(schema.orgMembers).values({ orgId: org.id, userId: user.id, role: "owner" });
+  await db.insert(schema.orgMembers).values({ orgId: org.id, userId: user.id, role });
   const [project] = await db
     .insert(schema.projects)
     .values({ orgId: org.id, name: "test", slug: tag })
@@ -41,6 +41,34 @@ async function seedProject() {
   if (!project) throw new Error("seed project failed");
   return { org, user, project };
 }
+
+test("an ordinary member cannot disable telemetry ingestion", async () => {
+  const { org, user, project } = await seedProject("member");
+  const app = appFor(user.id, org.id);
+
+  const res = await app.request(`/api/projects/${project.id}/ingest-filters`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      otlp: { traces: false, logs: false, metrics: false },
+      aws: { logs: false, metrics: false },
+      gcp: { logs: false, metrics: false },
+      vercel: { traces: false, logs: false },
+      railway: { logs: false, metrics: false },
+      render: { logs: false, metrics: false },
+    }),
+  });
+
+  assert.equal(res.status, 403);
+  assert.equal(
+    (
+      await db.query.projectIngestFilters.findMany({
+        where: eq(schema.projectIngestFilters.projectId, project.id),
+      })
+    ).length,
+    0,
+  );
+});
 
 function appFor(userId: string, orgId: string) {
   const app = new Hono<{ Variables: Vars }>();

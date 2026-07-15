@@ -30,6 +30,8 @@ import {
 } from "./github-pr-provider.js";
 import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolution-side-effects.js";
 import { logger } from "./logger.js";
+import { requireProjectManagerContext } from "./org-authorization-http.js";
+import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 import { recordPrClosedMetric, recordPrMergedMetric } from "./pr-metrics.js";
 
@@ -153,8 +155,23 @@ export function mountGithubPublic(app: Hono<any>): void {
     const decoded = verifyState(state, stateSecret);
     if (!decoded) return c.json({ error: "invalid state" }, 400);
 
+    const webState = decoded.kind === "web" ? verifyGithubWebState(state, stateSecret) : null;
+    if (
+      decoded.kind === "web" &&
+      (!webState ||
+        !(await hasProjectManagerAccess({
+          userId: webState.userId,
+          preferredOrgId: null,
+          projectId: webState.projectId,
+        })))
+    ) {
+      const callbackWebOrigin = resolveCallbackWebOrigin(c, webOrigin);
+      return c.redirect(`${callbackWebOrigin}/?gh=error`, 302);
+    }
+
     // "cli" kind: value is userCode → resolve org+project from device.
-    // "web" kind: value is projectId → resolve org from the project row.
+    // "web" kind: state binds project + initiating manager; resolve the org
+    // from that project only after rechecking the manager's current role.
     let orgId: string | null;
     let projectId: string | null;
     if (decoded.kind === "cli") {
@@ -163,7 +180,7 @@ export function mountGithubPublic(app: Hono<any>): void {
       projectId = device?.projectId ?? null;
     } else {
       const project = await db.query.projects.findFirst({
-        where: eq(schema.projects.id, decoded.value),
+        where: eq(schema.projects.id, webState?.projectId ?? ""),
       });
       orgId = project?.orgId ?? null;
       projectId = project?.id ?? null;
@@ -1873,7 +1890,7 @@ export function mountGithubAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/github/skip", async (c) => {
-    const ctx = await resolveUserOrg(c);
+    const ctx = await resolveUserOrgManager(c);
     if (!ctx) return c.json({ error: "no org for user" }, 404);
     await db
       .update(schema.orgs)
@@ -1900,12 +1917,21 @@ export function mountGithubAuthed(app: Hono<any>): void {
     const installs = await listAccessibleGithubInstallsForProject(active.projectId);
     if (installs.length > 0) return c.redirect(`${webOrigin}/`, 302);
 
+    try {
+      await requireProjectManagerContext(c, active.projectId);
+    } catch {
+      return c.redirect(`${webOrigin}/`, 302);
+    }
+
     if (!appSlug || !stateSecret) {
       // GitHub app not configured in this env — just send the user home so
       // they aren't stuck on a blank page.
       return c.redirect(`${webOrigin}/`, 302);
     }
-    const state = signState("web", active.projectId, stateSecret);
+    const state = signGithubWebState(
+      { projectId: active.projectId, userId: c.var.userId as string },
+      stateSecret,
+    );
     const url = new URL(`https://github.com/apps/${appSlug}/installations/new`);
     url.searchParams.set("state", state);
     return c.redirect(url.toString(), 302);
@@ -1920,10 +1946,12 @@ export function mountGithubAuthed(app: Hono<any>): void {
       c.var.orgId as string | null | undefined,
     );
     if (!active) return c.json({ error: "no org for user" }, 404);
+    await requireProjectManagerContext(c, active.projectId);
 
-    // "web" state value is now the projectId; the callback resolves the org
-    // from the project row.
-    const state = signState("web", active.projectId, stateSecret);
+    const state = signGithubWebState(
+      { projectId: active.projectId, userId: c.var.userId as string },
+      stateSecret,
+    );
     const url = new URL(`https://github.com/apps/${appSlug}/installations/new`);
     url.searchParams.set("state", state);
     log.info(
@@ -1934,7 +1962,7 @@ export function mountGithubAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/github/repo-access", async (c) => {
-    const ctx = await resolveUserOrg(c);
+    const ctx = await resolveUserOrgManager(c);
     if (!ctx) return c.json({ error: "no org for user" }, 404);
 
     const body = (await c.req.json().catch(() => null)) as {
@@ -1983,7 +2011,7 @@ export function mountGithubAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/github/author-login-url", async (c) => {
-    const ctx = await resolveUserOrg(c);
+    const ctx = await resolveUserOrgManager(c);
     if (!ctx) return c.json({ error: "no org for user" }, 404);
 
     if (!oauthClientId || !oauthClientSecret || !stateSecret) {
@@ -1994,7 +2022,10 @@ export function mountGithubAuthed(app: Hono<any>): void {
         { org_id: ctx.orgId, project_id: ctx.projectId },
         "github oauth not configured; falling back to app installation flow",
       );
-      const state = signState("web", ctx.projectId, stateSecret);
+      const state = signGithubWebState(
+        { projectId: ctx.projectId, userId: ctx.userId },
+        stateSecret,
+      );
       const url = new URL(`https://github.com/apps/${appSlug}/installations/new`);
       url.searchParams.set("state", state);
       return c.json({ url: url.toString() });
@@ -2013,7 +2044,7 @@ export function mountGithubAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/github/access-login-url", async (c) => {
-    const ctx = await resolveUserOrg(c);
+    const ctx = await resolveUserOrgManager(c);
     if (!ctx) return c.json({ error: "no org for user" }, 404);
 
     if (!oauthClientId || !oauthClientSecret || !stateSecret) {
@@ -2024,7 +2055,10 @@ export function mountGithubAuthed(app: Hono<any>): void {
         { org_id: ctx.orgId, project_id: ctx.projectId },
         "github oauth not configured; falling back to app installation flow",
       );
-      const state = signState("web", ctx.projectId, stateSecret);
+      const state = signGithubWebState(
+        { projectId: ctx.projectId, userId: ctx.userId },
+        stateSecret,
+      );
       const url = new URL(`https://github.com/apps/${appSlug}/installations/new`);
       url.searchParams.set("state", state);
       return c.json({ url: url.toString() });
@@ -2043,7 +2077,7 @@ export function mountGithubAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/github/commit-author/reset", async (c) => {
-    const ctx = await resolveUserOrg(c);
+    const ctx = await resolveUserOrgManager(c);
     if (!ctx) return c.json({ error: "no org for user" }, 404);
 
     await db
@@ -2100,6 +2134,15 @@ export function mountGithubAuthorOAuth(app: Hono<any>): void {
 
     const decoded = verifyAuthorState(state, stateSecret);
     if (!decoded) return c.json({ error: "invalid state" }, 400);
+    if (
+      !(await hasProjectManagerAccess({
+        userId: decoded.userId,
+        preferredOrgId: decoded.orgId,
+        projectId: decoded.projectId,
+      }))
+    ) {
+      return c.redirect(`${webOrigin}/settings?github_author=error`, 302);
+    }
 
     let token: string;
     try {
@@ -2423,6 +2466,15 @@ async function resolveUserOrg(
   return { userId: ctx.user.id, orgId: ctx.org.id, projectId: ctx.project.id };
 }
 
+async function resolveUserOrgManager(
+  c: Context<{ Variables: Vars }>,
+): Promise<{ userId: string; orgId: string; projectId: string } | null> {
+  const ctx = await resolveUserOrg(c);
+  if (!ctx) return null;
+  await requireProjectManagerContext(c, ctx.projectId);
+  return ctx;
+}
+
 type AuthorStatePayload = {
   orgId: string;
   projectId: string;
@@ -2466,6 +2518,35 @@ function verifyAuthorState(state: string, secret: string): AuthorStatePayload | 
 
 type StateKind = "cli" | "web";
 
+export type GithubWebStatePayload = { projectId: string; userId: string };
+
+export function signGithubWebState(payload: GithubWebStatePayload, secret: string): string {
+  const value = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  return signState("web", value, secret);
+}
+
+export function verifyGithubWebState(state: string, secret: string): GithubWebStatePayload | null {
+  const decoded = verifyState(state, secret);
+  if (!decoded || decoded.kind !== "web") return null;
+  try {
+    const payload = JSON.parse(Buffer.from(decoded.value, "base64url").toString("utf8")) as {
+      projectId?: unknown;
+      userId?: unknown;
+    };
+    if (
+      typeof payload.projectId !== "string" ||
+      !payload.projectId ||
+      typeof payload.userId !== "string" ||
+      !payload.userId
+    ) {
+      return null;
+    }
+    return { projectId: payload.projectId, userId: payload.userId };
+  } catch {
+    return null;
+  }
+}
+
 function signState(kind: StateKind, value: string, secret: string): string {
   const payload = `${kind}.${value}.${Date.now()}`;
   const sig = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
@@ -2477,7 +2558,10 @@ function verifyState(state: string, secret: string): { kind: StateKind; value: s
   if (!payloadB64 || !sig) return null;
   const payload = Buffer.from(payloadB64, "base64url").toString("utf8");
   const expected = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
-  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  const provided = Buffer.from(sig);
+  const expectedBuf = Buffer.from(expected);
+  if (provided.length !== expectedBuf.length) return null;
+  if (!crypto.timingSafeEqual(provided, expectedBuf)) return null;
   const [kind, value, tsRaw] = payload.split(".");
   if ((kind !== "cli" && kind !== "web") || !value || !tsRaw) return null;
   const ts = Number(tsRaw);

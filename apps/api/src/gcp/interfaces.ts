@@ -2,6 +2,8 @@ import { db, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { requireProjectManagerContext } from "../org-authorization-http.js";
+import { hasProjectManagerAccess } from "../org-authorization.js";
 import { resolveActiveOrgContext } from "../org-context.js";
 import { type GcpApplicationConfig, completeGcpConnect, startGcpConnect } from "./application.js";
 import type { GcpConnectionRecord, GcpConnectionRepository, GcpGateway } from "./domain.js";
@@ -83,6 +85,11 @@ async function requireProjectAccess(c: Context<{ Variables: Vars }>, projectId: 
   return { projectId, userId: context.user.id };
 }
 
+async function requireProjectManager(c: Context<{ Variables: Vars }>, projectId: string) {
+  const { access } = await requireProjectManagerContext(c, projectId);
+  return { projectId, userId: access.userId };
+}
+
 function monthlySeriesLimit(env: NodeJS.ProcessEnv = process.env): number {
   const parsed = Number(env.GCP_METRICS_MONTHLY_SERIES_LIMIT ?? "100000000");
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 100_000_000;
@@ -121,7 +128,7 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
   app.post("/api/projects/:projectId/gcp/install-url", async (c) => {
     if (!config || !gateway || !stateSecret)
       return c.json({ error: "GCP connect not configured" }, 503);
-    const context = await requireProjectAccess(c, c.req.param("projectId"));
+    const context = await requireProjectManager(c, c.req.param("projectId"));
     const parsedBody = await c.req.json().catch(() => ({}));
     const body =
       parsedBody && typeof parsedBody === "object"
@@ -164,6 +171,17 @@ export function mountGcpPublic(app: Hono<{ Variables: Vars }>, input: Dependenci
     const code = c.req.query("code");
     const state = verifyGcpState(c.req.query("state") ?? "", stateSecret);
     if (!code || !state) return c.redirect(outcomeUrl("error"), 302);
+    const connection = await repository.findById(state.connectionId);
+    if (
+      !connection ||
+      !(await hasProjectManagerAccess({
+        userId: connection.createdBy,
+        preferredOrgId: null,
+        projectId: connection.projectId,
+      }))
+    ) {
+      return c.redirect(outcomeUrl("error"), 302);
+    }
     try {
       await completeGcpConnect({
         connectionId: state.connectionId,

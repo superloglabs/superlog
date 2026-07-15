@@ -26,6 +26,8 @@ import { getDeviceFlow, getSkillDeviceForIntegration } from "./gateway.js";
 import { closeAgentPullRequestOnGithub, reopenAgentPullRequestOnGithub } from "./github.js";
 import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolution-side-effects.js";
 import { logger } from "./logger.js";
+import { requireProjectManagerContext } from "./org-authorization-http.js";
+import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 import { mergeAgentPullRequestAndResolveIncident } from "./pr-merge-service.js";
 import { classifyIncidentSlackReply } from "./slack-reply-intent.js";
@@ -133,6 +135,16 @@ export function mountSlackPublic(app: Hono<any>): void {
     }
     const orgId = decoded.orgId;
     const projectId = decoded.projectId;
+    if (
+      decoded.userId &&
+      !(await hasProjectManagerAccess({
+        userId: decoded.userId,
+        preferredOrgId: decoded.orgId,
+        projectId: decoded.projectId,
+      }))
+    ) {
+      return c.redirect(`${callbackWebOrigin}/?slack=error`, 302);
+    }
     log.info(
       { org_id: orgId, project_id: projectId, host: c.req.header("host") ?? null },
       "slack oauth callback received",
@@ -1095,7 +1107,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
       return c.json({ error: "slack not configured" }, 503);
     }
     const projectId = c.req.param("projectId");
-    const ctx = await requireProjectAccess(c, projectId);
+    const ctx = await requireProjectManager(c, projectId);
     const callbackRedirectUrl = resolveSlackRedirectUrl(c, redirectUrl);
     const state = signState({ orgId: ctx.orgId, projectId, userId: ctx.userId }, stateSecret);
     const url = new URL("https://slack.com/oauth/v2/authorize");
@@ -1112,7 +1124,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
 
   app.post("/api/projects/:projectId/slack/uninstall", async (c) => {
     const projectId = c.req.param("projectId");
-    await requireProjectAccess(c, projectId);
+    await requireProjectManager(c, projectId);
     const row = await findInstallation(projectId);
     if (!row) return c.json({ ok: true });
 
@@ -1169,7 +1181,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
       return c.json({ error: "slack not configured" }, 503);
     }
     const callbackRedirectUrl = resolveSlackRedirectUrl(c, redirectUrl);
-    const ctx = await resolveUserOrg(c);
+    const ctx = await resolveUserOrgManager(c);
     if (!ctx) return c.json({ error: "no org for user" }, 404);
 
     const state = signState(
@@ -1189,7 +1201,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/slack/uninstall", async (c) => {
-    const ctx = await resolveUserOrg(c);
+    const ctx = await resolveUserOrgManager(c);
     if (!ctx) return c.json({ error: "no org for user" }, 404);
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ ok: true });
@@ -1245,7 +1257,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
 
   app.put("/api/projects/:projectId/slack-route", async (c) => {
     const projectId = c.req.param("projectId");
-    await requireProjectAccess(c, projectId);
+    await requireProjectManager(c, projectId);
     const install = await findInstallation(projectId);
     if (!install) return c.json({ error: "slack not installed" }, 400);
 
@@ -1278,7 +1290,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
 
   app.delete("/api/projects/:projectId/slack-route", async (c) => {
     const projectId = c.req.param("projectId");
-    await requireProjectAccess(c, projectId);
+    await requireProjectManager(c, projectId);
     const install = await findInstallation(projectId);
     if (install) {
       await db
@@ -1303,7 +1315,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
   // partial unique index.
   app.put("/api/projects/:projectId/slack-chat-default", async (c) => {
     const projectId = c.req.param("projectId");
-    await requireProjectAccess(c, projectId);
+    await requireProjectManager(c, projectId);
     const install = await findInstallation(projectId);
     if (!install) return c.json({ error: "slack not installed" }, 400);
 
@@ -1696,6 +1708,23 @@ async function requireProjectAccess(
   });
   if (!project) throw new HTTPException(404, { message: "project not found" });
   if (project.orgId !== ctx.orgId) throw new HTTPException(403, { message: "forbidden" });
+  return ctx;
+}
+
+async function requireProjectManager(
+  c: Context<{ Variables: Vars }>,
+  projectId: string,
+): Promise<{ userId: string; orgId: string }> {
+  const { access } = await requireProjectManagerContext(c, projectId);
+  return { userId: access.userId, orgId: access.orgId };
+}
+
+async function resolveUserOrgManager(
+  c: Context<{ Variables: Vars }>,
+): Promise<{ userId: string; orgId: string; projectId: string } | null> {
+  const ctx = await resolveUserOrg(c);
+  if (!ctx) return null;
+  await requireProjectManagerContext(c, ctx.projectId);
   return ctx;
 }
 

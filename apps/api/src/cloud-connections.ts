@@ -30,6 +30,7 @@ import {
   enrichConnectionResources,
   syncConnectionResources,
 } from "./cloud-resources-service.js";
+import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 
 type Vars = { userId: string; orgId: string | null };
@@ -220,6 +221,11 @@ export function mountCloudConnectionsAuthed(
     return { project, user: ctx.user };
   };
 
+  const requireManagerAccess = async (c: Context<{ Variables: Vars }>, projectId: string) => {
+    const { access, project } = await requireProjectManagerContext(c, projectId);
+    return { project, user: { id: access.userId } };
+  };
+
   // Decrypt a persisted stream key + look up its prefix for display. `revoked`
   // is true when the underlying api key is missing or has been revoked, so the
   // stored secret would no longer authenticate and must be re-minted.
@@ -340,7 +346,7 @@ export function mountCloudConnectionsAuthed(
   // customer deploys the stack and reported back at verify.
   app.post("/api/projects/:projectId/cloud-connections", async (c) => {
     const projectId = c.req.param("projectId");
-    const { user } = await requireAccess(c, projectId);
+    const { user } = await requireManagerAccess(c, projectId);
     if (!config) throw new HTTPException(500, { message: "AWS connect is not configured" });
     const parsed = createSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) throw new HTTPException(400, { message: "invalid body" });
@@ -408,7 +414,7 @@ export function mountCloudConnectionsAuthed(
   app.post("/api/projects/:projectId/cloud-connections/:id/verify", async (c) => {
     const projectId = c.req.param("projectId");
     const id = c.req.param("id");
-    await requireAccess(c, projectId);
+    await requireManagerAccess(c, projectId);
     const parsed = verifySchema.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) throw new HTTPException(400, { message: "invalid body" });
 
@@ -437,7 +443,7 @@ export function mountCloudConnectionsAuthed(
     id: string,
     kind: "metrics" | "logs",
   ) => {
-    await requireAccess(c, projectId);
+    await requireManagerAccess(c, projectId);
 
     // Configuration check first (independent of the specific connection): in
     // legacy mode this signal's template + intake URL must be set, else 501.
@@ -594,7 +600,7 @@ export function mountCloudConnectionsAuthed(
   app.delete("/api/projects/:projectId/cloud-connections/:id", async (c) => {
     const projectId = c.req.param("projectId");
     const id = c.req.param("id");
-    await requireAccess(c, projectId);
+    await requireManagerAccess(c, projectId);
     await db
       .update(schema.cloudConnections)
       .set({ revokedAt: new Date(), updatedAt: new Date() })
@@ -635,7 +641,7 @@ export function mountCloudConnectionsAuthed(
   app.post("/api/projects/:projectId/cloud-connections/:id/sync", async (c) => {
     const projectId = c.req.param("projectId");
     const id = c.req.param("id");
-    await requireAccess(c, projectId);
+    await requireManagerAccess(c, projectId);
 
     const row = await db.query.cloudConnections.findFirst({
       where: and(

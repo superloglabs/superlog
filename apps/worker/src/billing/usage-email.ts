@@ -1,29 +1,40 @@
-// Renderer for the usage-limit notification email: compiles the checked-in MJML
-// template (usage-email.mjml) to an HTML shell once, then fills it with the org's
-// usage table and the variant-specific copy. The Resend send lives in
-// usage-notifier-infra.ts.
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+// Renderer for the usage-limit notification email. The shell is intentionally
+// plain checked-in HTML: compiling a static MJML file at runtime brought a large
+// parser/minifier dependency tree into the worker and exposed file-include code
+// that the product never needs. The Resend send lives in usage-notifier-infra.ts.
 import type { FeatureBalance } from "@superlog/billing";
-import mjml2html from "mjml";
 import { USAGE_FEATURE_IDS, featureLabel } from "./usage-notifier.js";
 
 const COBALT = "#485ae2";
 const RED = "#d63840";
 const MUTED = "#9c9fa6";
 
-// Compile usage-email.mjml → HTML once (lazily), keeping the {{placeholders}}
-// intact for per-send interpolation. The template is static, so one compile per
-// process is plenty.
-let shellCache: string | null = null;
-function shell(): string {
-  if (shellCache !== null) return shellCache;
-  const src = readFileSync(fileURLToPath(new URL("./usage-email.mjml", import.meta.url)), "utf8");
-  // @types/mjml types the result as a Promise, but mjml2html is synchronous.
-  const { html } = mjml2html(src, { validationLevel: "soft" }) as unknown as { html: string };
-  shellCache = html;
-  return html;
-}
+const EMAIL_SHELL = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Your Superlog plan usage</title>
+</head>
+<body style="margin:0;background:#fff;color:#232326;font-family:'Inter Display',Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:#fff;border-collapse:collapse;">
+    <tr><td align="center" style="padding:28px 16px 32px;">
+      <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="max-width:600px;border-collapse:collapse;">
+        <tr><td style="padding:0 0 26px;"><img src="https://images.vialoops.com/cmowh1ofc04l30i53nid5hp2v/cmqz06roj2wy30j1a8ze0gr60.png" alt="superlog" width="150" style="display:block;border:0;width:150px;max-width:100%;"></td></tr>
+        <tr><td style="padding:0 0 10px;color:#18181b;font-size:23px;font-weight:600;line-height:30px;letter-spacing:-.02em;">{{headline}}</td></tr>
+        <tr><td style="padding:0 0 26px;color:#5b5e66;font-size:15px;line-height:23px;">{{intro}}</td></tr>
+        <tr><td style="padding:0 0 8px;color:#5b5e66;font-size:13px;line-height:20px;">Usage this cycle</td></tr>
+        <tr><td><table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:#f3f3f4;border-radius:14px;border-collapse:separate;">{{usageRows}}</table></td></tr>
+        <tr><td style="padding:33px 0 42px;"><table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;"><tr>
+          <td valign="middle" style="vertical-align:middle;font-size:15px;color:#5b5e66;line-height:22px;padding-right:18px;">{{ctaCopy}}</td>
+          <td valign="middle" style="vertical-align:middle;text-align:right;white-space:nowrap;"><a href="{{ctaUrl}}" style="display:inline-block;background:#485ae2;color:#fff;font-size:16px;font-weight:500;text-decoration:none;padding:6px 11px;border-radius:8px;"><span style="font-size:16px;vertical-align:-1px;">&#8593;</span>&nbsp;{{ctaLabel}}</a></td>
+        </tr></table></td></tr>
+        <tr><td style="font-size:12px;color:#9c9fa6;line-height:18px;">You're getting this because your Superlog organization is on the Free plan. Manage your plan anytime in organization billing settings.</td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
 
 function esc(value: string): string {
   return value
@@ -123,8 +134,7 @@ function variantCopy(input: UsageEmailInput): VariantCopy {
 
 export function renderUsageEmail(input: UsageEmailInput): { subject: string; html: string } {
   const copy = variantCopy(input);
-  const html = shell()
-    .replace("{{headline}}", esc(copy.headline))
+  const html = EMAIL_SHELL.replace("{{headline}}", esc(copy.headline))
     .replace("{{intro}}", copy.intro)
     .replace("{{usageRows}}", usageRowsHtml(input.balances, input.feature))
     .replace("{{ctaCopy}}", esc(copy.ctaCopy))

@@ -118,6 +118,7 @@ import {
 } from "./mcp/clickhouse.js";
 import { mountMcpAuthed, mountMcpPublic } from "./mcp/index.js";
 import { mountNotionAuthed, mountNotionPublic } from "./notion.js";
+import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { resolveActiveOrgContext, resolveMaybeActiveOrgContext } from "./org-context.js";
 import { ORG_NAME_MAX, createOrgWithDefaults, mountOrgCrud } from "./orgs.js";
 import { mountPersonalAccessTokens } from "./personal-access-tokens.js";
@@ -135,6 +136,7 @@ import {
 import { mountProjectRouteContext } from "./project-route-context.js";
 import { mountRailwayAuthed, mountRailwayPublic } from "./railway.js";
 import { mountRenderAuthed } from "./render.js";
+import { mountApiRequestSecurity, requestBodyLimit } from "./request-body-limits.js";
 import { mountSettingsAuthed } from "./settings.js";
 import { normalizeSignupIntentKeyHash, normalizeSignupIntentKeyPrefix } from "./signup-intents.js";
 import { mountSlackAuthed, mountSlackPublic } from "./slack.js";
@@ -191,21 +193,14 @@ const app = new Hono<{ Variables: Vars }>();
 const incidentLifecycle = createIncidentLifecycle(db);
 const sourceMapObjectStore = sourceMapObjectStoreFromEnv(process.env);
 
-app.use(
-  "/api/*",
-  cors({
-    origin: WEB_CORS_ORIGINS,
-    credentials: true,
-    allowHeaders: [
-      "authorization",
-      "content-type",
-      "traceparent",
-      "tracestate",
-      "x-superlog-signup-source",
-    ],
-    allowMethods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  }),
-);
+mountApiRequestSecurity(app, WEB_CORS_ORIGINS);
+app.use("/mcp", requestBodyLimit(8 * 1024 * 1024));
+app.use("/oauth/*", requestBodyLimit(64 * 1024));
+app.use("/activate/*", requestBodyLimit(64 * 1024));
+app.use("/feedback/*", requestBodyLimit(64 * 1024));
+app.use("/slack/*", requestBodyLimit(2 * 1024 * 1024));
+app.use("/linear/*", requestBodyLimit(2 * 1024 * 1024));
+app.use("/github/*", requestBodyLimit(32 * 1024 * 1024));
 
 app.use("/api/*", createApiHttpObservabilityMiddleware());
 
@@ -738,7 +733,7 @@ app.post("/api/signup-intents/:intentId/claim", async (c) => {
 
 app.post("/api/projects/:projectId/keys", async (c) => {
   const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  await requireProjectManager(c, projectId);
   return tracer.startActiveSpan("apikey.create", async (span) => {
     span.setAttribute("tenant.project_id", projectId);
     try {
@@ -786,7 +781,7 @@ app.get("/api/projects/:projectId/keys", async (c) => {
 app.delete("/api/projects/:projectId/keys/:keyId", async (c) => {
   const projectId = c.req.param("projectId");
   const keyId = c.req.param("keyId");
-  await requireProjectAccess(c, projectId);
+  await requireProjectManager(c, projectId);
   await db
     .update(schema.apiKeys)
     .set({ revokedAt: new Date() })
@@ -1220,6 +1215,13 @@ async function requireProjectAccess(
       span.end();
     }
   });
+}
+
+async function requireProjectManager(
+  c: Context<{ Variables: Vars }>,
+  projectId: string,
+): Promise<void> {
+  await requireProjectManagerContext(c, projectId);
 }
 
 async function getProjectAutomation(projectId: string): Promise<{
@@ -1794,7 +1796,7 @@ app.get("/api/projects/:projectId/github/branches", async (c) => {
 
 app.patch("/api/projects/:projectId/automation", async (c) => {
   const projectId = c.req.param("projectId");
-  await requireProjectAccess(c, projectId);
+  await requireProjectManager(c, projectId);
 
   const current = await getProjectAutomation(projectId);
   const body = (await c.req.json().catch(() => ({}))) as {

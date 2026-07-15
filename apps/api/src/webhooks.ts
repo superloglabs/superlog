@@ -12,6 +12,7 @@ import { and, desc, eq } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 
 type Vars = { userId: string; orgId: string | null };
@@ -81,6 +82,10 @@ export function mountWebhooks(app: Hono<any>): void {
     return project;
   }
 
+  async function requireProjectManager(c: Context<{ Variables: Vars }>, projectId: string) {
+    return (await requireProjectManagerContext(c, projectId)).project;
+  }
+
   app.get("/api/projects/:projectId/webhooks", async (c) => {
     const projectId = c.req.param("projectId");
     await requireProjectAccess(c, projectId);
@@ -103,7 +108,7 @@ export function mountWebhooks(app: Hono<any>): void {
 
   app.post("/api/projects/:projectId/webhooks", async (c) => {
     const projectId = c.req.param("projectId");
-    await requireProjectAccess(c, projectId);
+    await requireProjectManager(c, projectId);
     const body = (await c.req.json().catch(() => ({}))) as {
       url?: unknown;
       description?: unknown;
@@ -139,7 +144,7 @@ export function mountWebhooks(app: Hono<any>): void {
   app.patch("/api/projects/:projectId/webhooks/:id", async (c) => {
     const projectId = c.req.param("projectId");
     const id = c.req.param("id");
-    await requireProjectAccess(c, projectId);
+    await requireProjectManager(c, projectId);
     const body = (await c.req.json().catch(() => ({}))) as {
       url?: unknown;
       description?: unknown;
@@ -178,7 +183,7 @@ export function mountWebhooks(app: Hono<any>): void {
   app.post("/api/projects/:projectId/webhooks/:id/rotate-secret", async (c) => {
     const projectId = c.req.param("projectId");
     const id = c.req.param("id");
-    await requireProjectAccess(c, projectId);
+    await requireProjectManager(c, projectId);
     const secret = generateWebhookSecret();
     const [row] = await db
       .update(schema.webhookEndpoints)
@@ -194,7 +199,7 @@ export function mountWebhooks(app: Hono<any>): void {
   app.delete("/api/projects/:projectId/webhooks/:id", async (c) => {
     const projectId = c.req.param("projectId");
     const id = c.req.param("id");
-    await requireProjectAccess(c, projectId);
+    await requireProjectManager(c, projectId);
     await db
       .delete(schema.webhookEndpoints)
       .where(
@@ -206,7 +211,7 @@ export function mountWebhooks(app: Hono<any>): void {
   app.post("/api/projects/:projectId/webhooks/:id/test", async (c) => {
     const projectId = c.req.param("projectId");
     const id = c.req.param("id");
-    await requireProjectAccess(c, projectId);
+    await requireProjectManager(c, projectId);
     const endpoint = await db.query.webhookEndpoints.findFirst({
       where: and(
         eq(schema.webhookEndpoints.id, id),
@@ -267,7 +272,7 @@ export function mountWebhooks(app: Hono<any>): void {
     const projectId = c.req.param("projectId");
     const id = c.req.param("id");
     const deliveryId = c.req.param("deliveryId");
-    await requireProjectAccess(c, projectId);
+    await requireProjectManager(c, projectId);
     // Scope the endpoint to projectId so a caller can't redeliver under another
     // project's endpoint by guessing its id + deliveryId.
     const endpoint = await db.query.webhookEndpoints.findFirst({
