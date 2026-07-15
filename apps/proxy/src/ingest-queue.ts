@@ -54,6 +54,7 @@ const MAX_COLLECTOR_ERROR_BODY_CHARS = 1_000;
 // 10 entries, and (for sends) at most 256 KiB of total payload across entries.
 const SQS_BATCH_MAX_ENTRIES = 10;
 const SQS_BATCH_MAX_PAYLOAD_BYTES = 256 * 1024;
+const SHUTDOWN_RECEIVE_ABORT_SLACK_MS = 5_000;
 // How long a pending send may wait for batch-mates before it is flushed anyway.
 // Each SQS request is billed individually, so coalescing sends into
 // SendMessageBatch cuts the request bill up to 10x; the linger is the latency
@@ -653,8 +654,9 @@ export class IngestQueue {
   // Set by stop(); flips the consume loops out of their receive cycle so a
   // rolling deploy can drain cleanly instead of abandoning in-flight messages.
   private shuttingDown = false;
-  // Aborts an idle long-poll ReceiveMessage immediately on stop() so draining
-  // does not wait out the full waitTimeSeconds before the loop notices.
+  // Healthy long polls are allowed to finish during shutdown. This controller
+  // is aborted only after their configured server-side wait plus network slack,
+  // bounding the drain if an HTTP connection stalls indefinitely.
   private readonly shutdownController = new AbortController();
   // Resolves once every consume loop has exited; stop() awaits it.
   private consumersDone: Promise<void> | null = null;
@@ -679,31 +681,48 @@ export class IngestQueue {
 
   /**
    * Drain the consumer for a graceful shutdown (e.g. SIGTERM from an ECS rolling
-   * deploy). Stops issuing new ReceiveMessage calls, aborts any idle long-poll,
-   * and waits for in-flight messages to finish processing — each delivered
-   * message is deleted before its loop exits. Without this, a deploy kills the
-   * task mid-batch and the received-but-undeleted messages stay invisible for the
-   * full visibility timeout before redelivering, which pins SQS
-   * ApproximateAgeOfOldestMessage into a sawtooth and trips the ingest-lag page.
+   * deploy). Stops issuing new ReceiveMessage calls and waits for outstanding
+   * long polls plus in-flight messages to finish — each delivered message is
+   * deleted before its loop exits. Long polls must not be aborted immediately:
+   * SQS can assign a message to a server-side receive after an immediate local
+   * abort, leaving it invisible without a live client to receive its receipt
+   * handle. A delayed abort after the normal poll window bounds genuinely
+   * stalled connections. ECS's stop timeout comfortably exceeds that window.
    * Idempotent.
    */
   async stop(): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
-    this.shutdownController.abort();
     this.logger.info(
       { queueUrl: this.config.queueUrl },
       "ingest queue consumer draining in-flight messages",
     );
+    // Start the receive deadline when shutdown begins, independently of any
+    // producer sends that are also draining. Healthy receives get their full
+    // server-side long-poll window plus network slack.
+    const abortTimer = this.consumersDone
+      ? setTimeout(() => {
+          this.logger.warn(
+            { queueUrl: this.config.queueUrl },
+            "aborting stalled SQS receive after shutdown drain deadline",
+          );
+          this.shutdownController.abort();
+        }, this.config.waitTimeSeconds * 1_000 + SHUTDOWN_RECEIVE_ABORT_SLACK_MS)
+      : null;
+    abortTimer?.unref?.();
     // Flush any sends still waiting on the linger timer so a producer-only
     // proxy doesn't drop the tail of accepted requests on SIGTERM. The entry
     // promises are awaited by their HTTP handlers; allSettled only waits for
     // the wire calls to finish.
-    this.flushPendingSends();
-    await Promise.allSettled([...this.inFlightSends]);
-    // consumersDone never rejects (see startConsumer); a loop failure is logged
-    // and surfaced as a non-zero exit there.
-    await this.consumersDone;
+    try {
+      this.flushPendingSends();
+      await Promise.allSettled([...this.inFlightSends]);
+      // consumersDone never rejects (see startConsumer); a loop failure is
+      // logged and surfaced as a non-zero exit there.
+      await this.consumersDone;
+    } finally {
+      if (abortTimer) clearTimeout(abortTimer);
+    }
     this.logger.info({ queueUrl: this.config.queueUrl }, "ingest queue consumer drained");
   }
 
@@ -732,10 +751,7 @@ export class IngestQueue {
           { abortSignal: this.shutdownController.signal },
         );
       } catch (err) {
-        // stop() aborts the in-flight long-poll; that surfaces here as an abort
-        // error. Exit cleanly when draining; otherwise preserve the previous
-        // crash-on-unexpected-failure behaviour.
-        if (this.shuttingDown) break;
+        if (this.shuttingDown && this.shutdownController.signal.aborted) break;
         throw err;
       }
 

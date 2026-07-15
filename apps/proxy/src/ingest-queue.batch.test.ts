@@ -186,8 +186,9 @@ test("cleans up the uploaded S3 object when its batched send fails", async () =>
 });
 
 /** Fake SQS for the consumer side: delivers one fixed batch on the first receive,
- *  then blocks like a real long-poll until aborted. Deletes must arrive as
- *  DeleteMessageBatch; entries whose receipt handle is in `failReceipts` fail. */
+ *  then completes later polls empty after a short delay, like a scaled-down SQS
+ *  long poll. Deletes must arrive as DeleteMessageBatch; entries whose receipt
+ *  handle is in `failReceipts` fail. */
 class FakeConsumerSqs {
   deleteBatches: string[][] = [];
   singleDeletes: string[] = [];
@@ -197,23 +198,15 @@ class FakeConsumerSqs {
   constructor(private readonly messages: Array<{ MessageId: string; ReceiptHandle: string; Body: string }>) {}
 
   // biome-ignore lint/suspicious/noExplicitAny: minimal AWS client test double
-  async send(cmd: any, opts?: { abortSignal?: AbortSignal }): Promise<unknown> {
+  async send(cmd: any): Promise<unknown> {
     const name = cmd.constructor.name;
     if (name === "ReceiveMessageCommand") {
       if (!this.delivered) {
         this.delivered = true;
         return { Messages: this.messages };
       }
-      return await new Promise((_resolve, reject) => {
-        const signal = opts?.abortSignal;
-        const abort = () => {
-          const err = new Error("Request aborted");
-          err.name = "AbortError";
-          reject(err);
-        };
-        if (signal?.aborted) return abort();
-        signal?.addEventListener("abort", abort, { once: true });
-      });
+      await delay(5);
+      return { Messages: [] };
     }
     if (name === "DeleteMessageBatchCommand") {
       const entries = cmd.input.Entries as Array<{ Id: string; ReceiptHandle: string }>;

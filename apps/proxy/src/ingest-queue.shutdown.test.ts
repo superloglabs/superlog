@@ -32,36 +32,33 @@ const inlineBody = encodeIngestMessage(
 ).messageBody;
 
 /**
- * Fake SQS that delivers exactly one message on the first ReceiveMessage and
- * then blocks (like a real 20s long-poll) until the consumer's AbortController
- * fires — at which point it rejects with an AbortError, exactly as the AWS SDK
- * does when send() is aborted. Records every DeleteMessage.
+ * Models the shutdown race at the SQS boundary. A long poll may still be live
+ * server-side when a client aborts it. If SQS assigns a message after that
+ * abort, the message is invisible but the dead client never receives its
+ * receipt handle. Keeping the client request alive lets the consumer process
+ * and delete that final message before it exits.
  */
-class FakeConsumerSqs {
+class FakeLongPollSqs {
   receiveCount = 0;
   deleted: string[] = [];
-  private delivered = false;
+  aborted = false;
+  private resolveReceive: ((value: unknown) => void) | null = null;
 
   // biome-ignore lint/suspicious/noExplicitAny: minimal AWS client test double
   async send(cmd: any, opts?: { abortSignal?: AbortSignal }): Promise<unknown> {
     const name = cmd.constructor.name;
     if (name === "ReceiveMessageCommand") {
       this.receiveCount++;
-      if (!this.delivered) {
-        this.delivered = true;
-        return {
-          Messages: [{ MessageId: "m-1", ReceiptHandle: "r-1", Body: inlineBody }],
-        };
-      }
-      return await new Promise((_resolve, reject) => {
-        const signal = opts?.abortSignal;
+      return await new Promise((resolve, reject) => {
+        this.resolveReceive = resolve;
         const abort = () => {
+          this.aborted = true;
           const err = new Error("Request aborted");
           err.name = "AbortError";
           reject(err);
         };
-        if (signal?.aborted) return abort();
-        signal?.addEventListener("abort", abort, { once: true });
+        if (opts?.abortSignal?.aborted) return abort();
+        opts?.abortSignal?.addEventListener("abort", abort, { once: true });
       });
     }
     if (name === "DeleteMessageBatchCommand") {
@@ -70,6 +67,12 @@ class FakeConsumerSqs {
       return { Successful: entries.map((entry) => ({ Id: entry.Id })), Failed: [] };
     }
     throw new Error(`unexpected SQS command: ${name}`);
+  }
+
+  deliverDuringShutdown(): void {
+    this.resolveReceive?.({
+      Messages: [{ MessageId: "m-1", ReceiptHandle: "r-1", Body: inlineBody }],
+    });
   }
 }
 
@@ -81,36 +84,65 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<voi
   }
 }
 
-test("stop() drains the in-flight message and halts polling", async () => {
+test("stop() drains a message assigned to an outstanding long poll during shutdown", async () => {
   const queue = new IngestQueue(config, noopLogger);
-  const sqs = new FakeConsumerSqs();
-  (queue as unknown as { sqs: FakeConsumerSqs }).sqs = sqs;
+  const sqs = new FakeLongPollSqs();
+  (queue as unknown as { sqs: FakeLongPollSqs }).sqs = sqs;
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () => new Response(new Uint8Array(0), { status: 200 })) as typeof fetch;
 
   try {
     queue.startConsumer("http://collector.local");
+    await waitFor(() => sqs.receiveCount === 1);
 
-    // The first delivered message must be forwarded to the collector and then
-    // deleted from SQS before we initiate shutdown.
-    await waitFor(() => sqs.deleted.length === 1);
-    assert.deepEqual(sqs.deleted, ["r-1"]);
+    const stopping = queue.stop();
+    sqs.deliverDuringShutdown();
+    await stopping;
 
-    const receivesBeforeStop = sqs.receiveCount;
-    await queue.stop();
-
-    // After draining, the loop must not issue any further ReceiveMessage calls.
-    await delay(50);
+    assert.equal(sqs.aborted, false, "shutdown must not abandon the outstanding SQS long poll");
+    assert.deepEqual(sqs.deleted, ["r-1"], "the final message must be delivered and deleted");
     assert.equal(
       sqs.receiveCount,
-      receivesBeforeStop,
-      "consumer must stop polling once stop() resolves",
+      1,
+      "the consumer must not start another poll while shutting down",
     );
-    assert.equal(sqs.deleted.length, 1, "the in-flight message must remain deleted exactly once");
 
     // stop() is idempotent.
     await queue.stop();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("stop() bounds a stalled receive while a producer send is still draining", async () => {
+  const queue = new IngestQueue({ ...config, waitTimeSeconds: 0 }, noopLogger);
+  const sqs = new FakeLongPollSqs();
+  (queue as unknown as { sqs: FakeLongPollSqs }).sqs = sqs;
+  let finishSend: (() => void) | undefined;
+  const pendingSend = new Promise<void>((resolve) => {
+    finishSend = resolve;
+  });
+  (queue as unknown as { inFlightSends: Set<Promise<void>> }).inFlightSends.add(pendingSend);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(new Uint8Array(0), { status: 200 })) as typeof fetch;
+
+  try {
+    queue.startConsumer("http://collector.local");
+    await waitFor(() => sqs.receiveCount === 1);
+
+    const stopping = queue.stop();
+    await delay(5_100);
+    const abortedAfterDeadline = sqs.aborted;
+    finishSend?.();
+
+    // Let the old implementation finish so the failing regression test does
+    // not leave its consumer loop running forever.
+    if (!abortedAfterDeadline) sqs.deliverDuringShutdown();
+    await stopping;
+
+    assert.equal(abortedAfterDeadline, true, "a stalled receive must not block shutdown forever");
   } finally {
     globalThis.fetch = originalFetch;
   }
