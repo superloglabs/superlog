@@ -3243,7 +3243,7 @@ export function useExploreSeries(
   return useQuery({
     queryKey: ["explore", "series", projectId, source, filter, groupBy ?? ""],
     queryFn: () =>
-      fetcher<{ step: string; rows: SeriesRow[] }>(`/api/projects/${projectId}/explore/series`, {
+      fetcher<{ step: string; rows: SeriesRow[]; sampled: boolean }>(`/api/projects/${projectId}/explore/series`, {
         method: "POST",
         body: JSON.stringify({ source, groupBy: groupBy ?? "", filter }),
       }),

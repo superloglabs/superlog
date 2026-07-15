@@ -983,3 +983,38 @@ test("countSeries falls back to the raw table when the rollup table is absent", 
 
   assert.match(capture.query ?? "", /FROM otel_traces/);
 });
+
+test("countSeries exact scan path (no scanCap) does not use inner subquery limit", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await countSeries(
+    fakeClickhouse(capture),
+    "project-1",
+    "logs",
+    { range: HOUR_RANGE, search: "error" },
+    undefined,
+    { n: 15, unit: "MINUTE" },
+  );
+
+  assert.match(capture.query ?? "", /FROM otel_logs/);
+  assert.doesNotMatch(capture.query ?? "", /LIMIT 1000000/);
+  assert.doesNotMatch(capture.query ?? "", /sum\(count\(\)\) OVER \(\)/);
+});
+
+test("countSeries capped scan path (with scanCap) uses subquery limit and UNION ALL metadata count", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await countSeries(
+    fakeClickhouse(capture),
+    "project-1",
+    "logs",
+    { range: HOUR_RANGE, search: "error" },
+    undefined,
+    { n: 15, unit: "MINUTE" },
+    1_000_000,
+  );
+
+  assert.match(capture.query ?? "", /FROM \(\s*SELECT [\s\S]*FROM otel_logs\s*WHERE [\s\S]*LIMIT 1000000\s*\)/);
+  assert.match(capture.query ?? "", /UNION ALL/);
+  assert.match(capture.query ?? "", /LIMIT 1000001/);
+});

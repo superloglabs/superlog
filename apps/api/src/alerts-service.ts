@@ -133,7 +133,7 @@ export async function evaluateAlertQuery(
       groupCounts.set(key, (groupCounts.get(key) ?? 0) + 1);
     }
   } else {
-    const rows = await countSeries(
+    const { rows } = await countSeries(
       ch,
       alert.projectId,
       alert.source,
@@ -472,7 +472,7 @@ export async function previewAlertSeries(
       }
     }
   } else {
-    const rows = await countSeries(
+    const { rows } = await countSeries(
       ch,
       projectId,
       input.source,

@@ -1851,7 +1851,14 @@ function ChartPanel({
     <Tile>
       {showControls && (
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <span className="font-sans text-[12px] font-medium text-subtle">Chart</span>
+          <div className="flex items-center gap-2">
+            <span className="font-sans text-[12px] font-medium text-subtle">Chart</span>
+            {countSeries.data?.sampled && (
+              <span className="text-[10px] text-warning bg-warning/10 border border-warning/20 px-1.5 py-0.5 rounded font-medium">
+                Sampled (over 1M rows)
+              </span>
+            )}
+          </div>
           <GroupBySelect
             projectId={projectId}
             range={range}

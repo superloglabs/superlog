@@ -1575,10 +1575,12 @@ export async function countSeries(
   filter: SeriesFilter,
   groupBy: string | undefined,
   step: Step,
-): Promise<{ bucket: string; group: string; count: number }[]> {
+  scanCap?: number,
+): Promise<{ rows: { bucket: string; group: string; count: number }[]; sampled: boolean }> {
   const folded = foldServiceAttrFilter(filter);
   if (folded && rollupEligible(folded, groupBy, step) && (await rollupAvailable(ch))) {
-    return countSeriesFromRollup(ch, projectId, source, folded, groupBy, step);
+    const rows = await countSeriesFromRollup(ch, projectId, source, folded, groupBy, step);
+    return { rows, sampled: false };
   }
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(filter.range);
   const split = splitAttrs(filter.resourceAttrs);
@@ -1589,27 +1591,122 @@ export async function countSeries(
       : attrConds(split.span, "SpanAttributes", "event_attr");
   const field = fieldConds(split.field, source === "logs" ? "logs" : "traces");
   const table = source === "logs" ? "otel_logs" : "otel_traces";
-  const conds: string[] = [
+
+  const baseConds: string[] = [
     "ResourceAttributes['superlog.project_id'] = {projectId:String}",
     `Timestamp >= ${sinceExpr}`,
     `Timestamp <= ${untilExpr}`,
+  ];
+  if (filter.service) baseConds.push("ServiceName = {service:String}");
+
+  const group = groupExprForAttribute(groupBy, source);
+
+  if (scanCap !== undefined && scanCap > 0) {
+    const selectCols = source === "logs"
+      ? "Timestamp, ServiceName, ResourceAttributes, LogAttributes, SeverityText, SeverityNumber, Body, TraceId, SpanId"
+      : "Timestamp, ServiceName, ResourceAttributes, SpanAttributes, SpanName, StatusCode, Duration, TraceId, SpanId";
+
+    const filterConds: string[] = [
+      ...attr.conds,
+      ...eventAttr.conds,
+      ...field.conds,
+    ];
+    if (source === "logs") {
+      if (filter.severity) filterConds.push("upper(SeverityText) = upper({severity:String})");
+      if (filter.search) filterConds.push("positionCaseInsensitive(Body, {search:String}) > 0");
+    } else {
+      if (filter.spanName) filterConds.push("SpanName = {spanName:String}");
+      if (filter.statusCode) filterConds.push("StatusCode = {statusCode:String}");
+      if (typeof filter.minDurationMs === "number") {
+        filterConds.push("Duration >= {minDurationNs:UInt64}");
+      }
+    }
+
+    const whereSql = filterConds.length > 0 ? `WHERE ${filterConds.join(" AND ")}` : "";
+
+    const query = `
+      (
+        SELECT
+          0 AS is_metadata,
+          toString(toStartOfInterval(Timestamp, INTERVAL ${step.n} ${step.unit})) AS bucket,
+          ${group.expr} AS group_key,
+          count() AS c
+        FROM (
+          SELECT ${selectCols}
+          FROM ${table}
+          WHERE ${baseConds.join(" AND ")}
+          LIMIT ${scanCap}
+        )
+        ${whereSql}
+        GROUP BY bucket, group_key
+        ORDER BY bucket ASC
+        LIMIT 10000
+      )
+      UNION ALL
+      (
+        SELECT
+          1 AS is_metadata,
+          '' AS bucket,
+          '' AS group_key,
+          count() AS c
+        FROM (
+          SELECT 1
+          FROM ${table}
+          WHERE ${baseConds.join(" AND ")}
+          LIMIT ${scanCap + 1}
+        )
+      )
+    `;
+
+    const r = await ch.query({
+      query,
+      query_params: {
+        projectId,
+        since: sinceSql,
+        until: untilSql,
+        service: filter.service ?? "",
+        severity: filter.severity ?? "",
+        search: filter.search ?? "",
+        spanName: filter.spanName ?? "",
+        statusCode: filter.statusCode ?? "",
+        minDurationNs: Math.round((filter.minDurationMs ?? 0) * 1_000_000),
+        ...attr.params,
+        ...eventAttr.params,
+        ...field.params,
+        ...group.params,
+      },
+      format: "JSONEachRow",
+    });
+    const rows = (await r.json()) as {
+      is_metadata: string | number;
+      bucket: string;
+      group_key: string;
+      c: string | number;
+    }[];
+    const dataRows = rows.filter((row) => Number(row.is_metadata) === 0);
+    const metaRow = rows.find((row) => Number(row.is_metadata) === 1);
+    const totalCount = Number(metaRow?.c ?? 0);
+    const mapped = dataRows.map((row) => ({ bucket: row.bucket, group: row.group_key, count: Number(row.c) }));
+    return { rows: mapped, sampled: totalCount > scanCap };
+  }
+
+  // Exact scan path (used by alerts)
+  const exactConds: string[] = [
+    ...baseConds,
     ...attr.conds,
     ...eventAttr.conds,
     ...field.conds,
   ];
-  if (filter.service) conds.push("ServiceName = {service:String}");
   if (source === "logs") {
-    if (filter.severity) conds.push("upper(SeverityText) = upper({severity:String})");
-    if (filter.search) conds.push("positionCaseInsensitive(Body, {search:String}) > 0");
+    if (filter.severity) exactConds.push("upper(SeverityText) = upper({severity:String})");
+    if (filter.search) exactConds.push("positionCaseInsensitive(Body, {search:String}) > 0");
   } else {
-    if (filter.spanName) conds.push("SpanName = {spanName:String}");
-    if (filter.statusCode) conds.push("StatusCode = {statusCode:String}");
+    if (filter.spanName) exactConds.push("SpanName = {spanName:String}");
+    if (filter.statusCode) exactConds.push("StatusCode = {statusCode:String}");
     if (typeof filter.minDurationMs === "number") {
-      conds.push("Duration >= {minDurationNs:UInt64}");
+      exactConds.push("Duration >= {minDurationNs:UInt64}");
     }
   }
-
-  const group = groupExprForAttribute(groupBy, source);
 
   const query = `
     SELECT
@@ -1617,7 +1714,7 @@ export async function countSeries(
       ${group.expr} AS group_key,
       count() AS c
     FROM ${table}
-    WHERE ${conds.join(" AND ")}
+    WHERE ${exactConds.join(" AND ")}
     GROUP BY bucket, group_key
     ORDER BY bucket ASC
     LIMIT 10000
@@ -1643,7 +1740,8 @@ export async function countSeries(
     format: "JSONEachRow",
   });
   const rows = (await r.json()) as { bucket: string; group_key: string; c: string | number }[];
-  return rows.map((row) => ({ bucket: row.bucket, group: row.group_key, count: Number(row.c) }));
+  const mapped = rows.map((row) => ({ bucket: row.bucket, group: row.group_key, count: Number(row.c) }));
+  return { rows: mapped, sampled: false };
 }
 
 // -----------------------------------------------------------------------------

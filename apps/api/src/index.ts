@@ -1000,7 +1000,7 @@ app.post("/api/projects/:projectId/explore/series", async (c) => {
   const filter = body.filter ?? {};
   const rangeSeconds = estimateRangeSeconds(filter.range);
   const step = pickStep(rangeSeconds);
-  const rows = await countSeries(
+  const { rows, sampled } = await countSeries(
     ch,
     projectId,
     source,
@@ -1016,8 +1016,9 @@ app.post("/api/projects/:projectId/explore/series", async (c) => {
     },
     body.groupBy || undefined,
     step,
+    1_000_000,
   );
-  return c.json({ step: `${step.n} ${step.unit}`, rows });
+  return c.json({ step: `${step.n} ${step.unit}`, rows, sampled });
 });
 
 app.get("/api/projects/:projectId/explore/metric-names", async (c) => {
