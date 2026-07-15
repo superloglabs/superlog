@@ -1,5 +1,6 @@
-import type { MiddlewareHandler } from "hono";
+import type { Env, Hono, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { cors } from "hono/cors";
 
 export const DEFAULT_API_BODY_BYTES = 2 * 1024 * 1024;
 export const MCP_RELAY_BODY_BYTES = 8 * 1024 * 1024;
@@ -26,3 +27,25 @@ export const apiRequestBodyLimit: MiddlewareHandler = (c, next) => {
   }
   return defaultApiBodyLimit(c, next);
 };
+
+export function mountApiRequestSecurity<E extends Env>(
+  app: Hono<E>,
+  allowedOrigins: string[],
+): void {
+  app.use(
+    "/api/*",
+    cors({
+      origin: allowedOrigins,
+      credentials: true,
+      allowHeaders: [
+        "authorization",
+        "content-type",
+        "traceparent",
+        "tracestate",
+        "x-superlog-signup-source",
+      ],
+      allowMethods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    }),
+  );
+  app.use("/api/*", apiRequestBodyLimit);
+}

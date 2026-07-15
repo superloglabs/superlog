@@ -136,7 +136,7 @@ import {
 import { mountProjectRouteContext } from "./project-route-context.js";
 import { mountRailwayAuthed, mountRailwayPublic } from "./railway.js";
 import { mountRenderAuthed } from "./render.js";
-import { apiRequestBodyLimit, requestBodyLimit } from "./request-body-limits.js";
+import { mountApiRequestSecurity, requestBodyLimit } from "./request-body-limits.js";
 import { mountSettingsAuthed } from "./settings.js";
 import { normalizeSignupIntentKeyHash, normalizeSignupIntentKeyPrefix } from "./signup-intents.js";
 import { mountSlackAuthed, mountSlackPublic } from "./slack.js";
@@ -193,7 +193,7 @@ const app = new Hono<{ Variables: Vars }>();
 const incidentLifecycle = createIncidentLifecycle(db);
 const sourceMapObjectStore = sourceMapObjectStoreFromEnv(process.env);
 
-app.use("/api/*", apiRequestBodyLimit);
+mountApiRequestSecurity(app, WEB_CORS_ORIGINS);
 app.use("/mcp", requestBodyLimit(8 * 1024 * 1024));
 app.use("/oauth/*", requestBodyLimit(64 * 1024));
 app.use("/activate/*", requestBodyLimit(64 * 1024));
@@ -201,22 +201,6 @@ app.use("/feedback/*", requestBodyLimit(64 * 1024));
 app.use("/slack/*", requestBodyLimit(2 * 1024 * 1024));
 app.use("/linear/*", requestBodyLimit(2 * 1024 * 1024));
 app.use("/github/*", requestBodyLimit(32 * 1024 * 1024));
-
-app.use(
-  "/api/*",
-  cors({
-    origin: WEB_CORS_ORIGINS,
-    credentials: true,
-    allowHeaders: [
-      "authorization",
-      "content-type",
-      "traceparent",
-      "tracestate",
-      "x-superlog-signup-source",
-    ],
-    allowMethods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  }),
-);
 
 app.use("/api/*", createApiHttpObservabilityMiddleware());
 
