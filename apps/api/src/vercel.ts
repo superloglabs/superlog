@@ -27,6 +27,8 @@ import { and, desc, eq, isNull, ne } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { logger } from "./logger.js";
+import { requireProjectManagerContext } from "./org-authorization-http.js";
+import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 import {
   VERCEL_SIGNALS,
@@ -83,6 +85,11 @@ async function requireProjectAccess(
   const ctx = await resolveActiveOrgContext({ userId, preferredOrgId: c.var.orgId });
   if (project.orgId !== ctx.org.id) throw new HTTPException(403, { message: "forbidden" });
   return { userId: ctx.user.id, orgId: ctx.org.id, projectId };
+}
+
+async function requireProjectManager(c: Context<{ Variables: Vars }>, projectId: string) {
+  const { access } = await requireProjectManagerContext(c, projectId);
+  return { userId: access.userId, orgId: access.orgId, projectId };
 }
 
 // The single active install for a project. We enforce one active configuration
@@ -241,6 +248,15 @@ export function mountVercelPublic(
     const decoded = verifyState(state, stateSecret);
     if (!decoded) {
       log.warn("vercel oauth callback rejected: invalid or expired state");
+      return c.redirect(`${webOrigin}${connectResultPath("error")}`, 302);
+    }
+    if (
+      !(await hasProjectManagerAccess({
+        userId: decoded.userId,
+        preferredOrgId: decoded.orgId,
+        projectId: decoded.projectId,
+      }))
+    ) {
       return c.redirect(`${webOrigin}${connectResultPath("error")}`, 302);
     }
 
@@ -504,7 +520,7 @@ export function mountVercelAuthed(
     if (!config || !stateSecret) {
       return c.json({ error: "vercel not configured" }, 503);
     }
-    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
+    const ctx = await requireProjectManager(c, c.req.param("projectId"));
 
     const state = signState(
       { orgId: ctx.orgId, projectId: ctx.projectId, userId: ctx.userId },
@@ -516,7 +532,7 @@ export function mountVercelAuthed(
   });
 
   app.post("/api/projects/:projectId/vercel/uninstall", async (c) => {
-    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
+    const ctx = await requireProjectManager(c, c.req.param("projectId"));
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ ok: true });
 

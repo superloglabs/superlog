@@ -41,6 +41,7 @@ import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { logger } from "./logger.js";
+import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 
 const log = logger.child({ scope: "render" });
@@ -106,6 +107,11 @@ async function requireProjectAccess(
   const ctx = await resolveActiveOrgContext({ userId, preferredOrgId: c.var.orgId });
   if (project.orgId !== ctx.org.id) throw new HTTPException(403, { message: "forbidden" });
   return { userId: ctx.user.id, orgId: ctx.org.id, projectId };
+}
+
+async function requireProjectManager(c: Context<{ Variables: Vars }>, projectId: string) {
+  const { access } = await requireProjectManagerContext(c, projectId);
+  return { userId: access.userId, orgId: access.orgId, projectId };
 }
 
 // The single active install for a project (enforced at provision time by the
@@ -349,7 +355,7 @@ export function mountRenderAuthed(
   // dialog's picker. The key is used for one listing call and discarded.
   app.post("/api/projects/:projectId/render/owners", async (c) => {
     if (!secretsConfigured()) return c.json({ error: "render not configured" }, 503);
-    await requireProjectAccess(c, c.req.param("projectId"));
+    await requireProjectManager(c, c.req.param("projectId"));
     const apiKey = readApiKey(await c.req.json().catch(() => null));
     if (!apiKey) return c.json({ error: "missing apiKey" }, 400);
 
@@ -371,7 +377,7 @@ export function mountRenderAuthed(
 
   app.post("/api/projects/:projectId/render/connect", async (c) => {
     if (!secretsConfigured()) return c.json({ error: "render not configured" }, 503);
-    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
+    const ctx = await requireProjectManager(c, c.req.param("projectId"));
     const body = (await c.req.json().catch(() => null)) as { ownerId?: unknown } | null;
     const apiKey = readApiKey(body);
     const ownerId = typeof body?.ownerId === "string" && body.ownerId ? body.ownerId : null;
@@ -542,7 +548,7 @@ export function mountRenderAuthed(
   });
 
   app.post("/api/projects/:projectId/render/uninstall", async (c) => {
-    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
+    const ctx = await requireProjectManager(c, c.req.param("projectId"));
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ ok: true });
     // Deprovision on Render's side while the stored key is still ours to use,

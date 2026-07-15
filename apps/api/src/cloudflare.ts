@@ -50,6 +50,8 @@ import {
   wireObservabilityDestinations,
 } from "./cloudflare-service.js";
 import { logger } from "./logger.js";
+import { requireProjectManagerContext } from "./org-authorization-http.js";
+import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 
 const log = logger.child({ scope: "cloudflare" });
@@ -89,6 +91,11 @@ async function requireProjectAccess(
   const ctx = await resolveActiveOrgContext({ userId, preferredOrgId: c.var.orgId });
   if (project.orgId !== ctx.org.id) throw new HTTPException(403, { message: "forbidden" });
   return { userId: ctx.user.id, orgId: ctx.org.id, projectId };
+}
+
+async function requireProjectManager(c: Context<{ Variables: Vars }>, projectId: string) {
+  const { access } = await requireProjectManagerContext(c, projectId);
+  return { userId: access.userId, orgId: access.orgId, projectId };
 }
 
 // The single active install for a project. We enforce one active Cloudflare
@@ -378,6 +385,15 @@ export function mountCloudflarePublic(
     const decoded = verifyState(state, stateSecret);
     if (!decoded) {
       log.warn("cloudflare oauth callback rejected: invalid or expired state");
+      return c.redirect(`${webOrigin}/?cloudflare=error`, 302);
+    }
+    if (
+      !(await hasProjectManagerAccess({
+        userId: decoded.userId,
+        preferredOrgId: decoded.orgId,
+        projectId: decoded.projectId,
+      }))
+    ) {
       return c.redirect(`${webOrigin}/?cloudflare=error`, 302);
     }
 
@@ -679,7 +695,7 @@ export function mountCloudflareAuthed(
     if (!config || !stateSecret) {
       return c.json({ error: "cloudflare not configured" }, 503);
     }
-    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
+    const ctx = await requireProjectManager(c, c.req.param("projectId"));
 
     const state = signState(
       { orgId: ctx.orgId, projectId: ctx.projectId, userId: ctx.userId },
@@ -696,7 +712,7 @@ export function mountCloudflareAuthed(
   });
 
   app.post("/api/projects/:projectId/cloudflare/uninstall", async (c) => {
-    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
+    const ctx = await requireProjectManager(c, c.req.param("projectId"));
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ ok: true });
 
@@ -762,7 +778,7 @@ export function mountCloudflareAuthed(
 
   // Wire every current worker in the account to our destinations (one-shot).
   app.post("/api/projects/:projectId/cloudflare/workers/wire-all", async (c) => {
-    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
+    const ctx = await requireProjectManager(c, c.req.param("projectId"));
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ error: "not connected" }, 404);
     const accessToken = await accessTokenFor(row);
@@ -786,7 +802,7 @@ export function mountCloudflareAuthed(
   // when off, wiring is manual via the list. Enabling also runs one wire pass
   // immediately so the effect is visible without waiting for the next reconcile.
   app.post("/api/projects/:projectId/cloudflare/auto-wire", async (c) => {
-    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
+    const ctx = await requireProjectManager(c, c.req.param("projectId"));
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ error: "not connected" }, 404);
     const body = await c.req.json().catch(() => ({}));
@@ -820,7 +836,7 @@ export function mountCloudflareAuthed(
   // apply the additive (wire) or subtractive (unwire) transform, and PATCH only
   // when it actually changes.
   app.post("/api/projects/:projectId/cloudflare/workers/:script/wire", async (c) => {
-    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
+    const ctx = await requireProjectManager(c, c.req.param("projectId"));
     const script = c.req.param("script");
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ error: "not connected" }, 404);
@@ -855,7 +871,7 @@ export function mountCloudflareAuthed(
   });
 
   app.post("/api/projects/:projectId/cloudflare/workers/:script/unwire", async (c) => {
-    const ctx = await requireProjectAccess(c, c.req.param("projectId"));
+    const ctx = await requireProjectManager(c, c.req.param("projectId"));
     const script = c.req.param("script");
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ error: "not connected" }, 404);

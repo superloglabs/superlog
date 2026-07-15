@@ -8,6 +8,7 @@ import {
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
+import { HTTPException } from "hono/http-exception";
 import {
   AGENT_MEMORY_BODY_MAX_LEN,
   AGENT_MEMORY_TITLE_MAX_LEN,
@@ -22,6 +23,10 @@ import {
 } from "./agent-memories-service.js";
 import { requestDigestRunForProject } from "./digest-run-request.js";
 import { INTEGRATION_MANIFESTS } from "./integrations-manifest.js";
+import {
+  requireOrgManagerContext,
+  requireProjectManagerContext,
+} from "./org-authorization-http.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 import { clampProjectContext } from "./project-context-service.js";
 
@@ -64,8 +69,7 @@ export function mountSettingsAuthed(app: Hono<any>): void {
   });
 
   app.put("/api/org/agent-settings", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ error: "no org for user" }, 404);
+    const ctx = await requireOrgManager(c);
     const body = (await c.req.json().catch(() => ({}))) as {
       customInstructions?: unknown;
     };
@@ -94,8 +98,7 @@ export function mountSettingsAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/org/projects/:projectId/agent-memories", async (c) => {
-    const scope = await resolveProjectScope(c);
-    if (!scope) return c.json({ error: "project not found" }, 404);
+    const scope = await requireProjectManagerScope(c);
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const kind = parseMemoryKind(body.kind);
     if (!kind)
@@ -117,8 +120,7 @@ export function mountSettingsAuthed(app: Hono<any>): void {
   });
 
   app.put("/api/org/projects/:projectId/agent-memories/:id", async (c) => {
-    const scope = await resolveProjectScope(c);
-    if (!scope) return c.json({ error: "project not found" }, 404);
+    const scope = await requireProjectManagerScope(c);
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const patch: {
       kind?: schema.AgentMemoryKind;
@@ -155,8 +157,7 @@ export function mountSettingsAuthed(app: Hono<any>): void {
   });
 
   app.delete("/api/org/projects/:projectId/agent-memories/:id", async (c) => {
-    const scope = await resolveProjectScope(c);
-    if (!scope) return c.json({ error: "project not found" }, 404);
+    const scope = await requireProjectManagerScope(c);
     const ok = await deleteAgentMemory(scope.orgId, scope.projectId, c.req.param("id"));
     if (!ok) return c.json({ error: "memory not found" }, 404);
     return c.json({ ok: true });
@@ -173,8 +174,7 @@ export function mountSettingsAuthed(app: Hono<any>): void {
   });
 
   app.put("/api/projects/:projectId/digest", async (c) => {
-    const scope = await resolveProjectScope(c);
-    if (!scope) return c.json({ error: "project not found" }, 404);
+    const scope = await requireProjectManagerScope(c);
     await adoptLegacyOrgDigestSettings(db, scope.projectId);
     const body = (await c.req.json().catch(() => ({}))) as {
       enabled?: unknown;
@@ -243,8 +243,7 @@ export function mountSettingsAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/projects/:projectId/digest/run-now", async (c) => {
-    const scope = await resolveProjectScope(c);
-    if (!scope) return c.json({ error: "project not found" }, 404);
+    const scope = await requireProjectManagerScope(c);
     await adoptLegacyOrgDigestSettings(db, scope.projectId);
     const result = await requestDigestRunForProject(scope.projectId, {
       async findConfiguration(projectId) {
@@ -289,8 +288,7 @@ export function mountSettingsAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/org/projects", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ error: "no org for user" }, 404);
+    const ctx = await requireOrgManager(c);
     const body = (await c.req.json().catch(() => ({}))) as {
       name?: unknown;
       slug?: unknown;
@@ -339,8 +337,7 @@ export function mountSettingsAuthed(app: Hono<any>): void {
   });
 
   app.patch("/api/org/projects/:projectId", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ error: "no org for user" }, 404);
+    const ctx = await requireOrgManager(c);
     const projectId = c.req.param("projectId");
     const target = await db.query.projects.findFirst({
       where: and(eq(schema.projects.id, projectId), eq(schema.projects.orgId, ctx.orgId)),
@@ -406,8 +403,7 @@ export function mountSettingsAuthed(app: Hono<any>): void {
   });
 
   app.delete("/api/org/projects/:projectId", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ error: "no org for user" }, 404);
+    const ctx = await requireOrgManager(c);
     const projectId = c.req.param("projectId");
 
     // The count-check and the delete must be atomic, or two concurrent
@@ -486,8 +482,7 @@ export function mountSettingsAuthed(app: Hono<any>): void {
   });
 
   app.put("/api/org/integrations/:slug", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ error: "no org for user" }, 404);
+    const ctx = await requireOrgManager(c);
     const slug = c.req.param("slug");
     const manifest = INTEGRATION_MANIFESTS[slug];
     if (!manifest) return c.json({ error: "unknown integration" }, 404);
@@ -586,8 +581,7 @@ export function mountSettingsAuthed(app: Hono<any>): void {
   });
 
   app.delete("/api/org/integrations/:slug", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ error: "no org for user" }, 404);
+    const ctx = await requireOrgManager(c);
     const slug = c.req.param("slug");
     if (!INTEGRATION_MANIFESTS[slug]) return c.json({ error: "unknown integration" }, 404);
     await db
@@ -627,4 +621,19 @@ async function resolveProjectScope(
   });
   if (!project) return null;
   return { ...ctx, projectId: project.id };
+}
+
+async function requireProjectManagerScope(
+  c: Context<{ Variables: Vars }>,
+): Promise<{ userId: string; orgId: string; projectId: string }> {
+  const projectId = c.req.param("projectId");
+  if (!projectId) throw new HTTPException(404, { message: "project not found" });
+  const { access, project } = await requireProjectManagerContext(c, projectId);
+  return { userId: access.userId, orgId: access.orgId, projectId: project.id };
+}
+
+async function requireOrgManager(
+  c: Context<{ Variables: Vars }>,
+): Promise<{ userId: string; orgId: string; role: string }> {
+  return requireOrgManagerContext(c);
 }

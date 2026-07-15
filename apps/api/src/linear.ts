@@ -27,6 +27,8 @@ import type { Context } from "hono";
 import { closeAgentPullRequestOnGithub, reopenAgentPullRequestOnGithub } from "./github.js";
 import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolution-side-effects.js";
 import { logger } from "./logger.js";
+import { requireProjectManagerContext } from "./org-authorization-http.js";
+import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 
 const log = logger.child({ scope: "linear" });
@@ -79,6 +81,15 @@ export function mountLinearPublic(app: Hono<any>): void {
 
     const decoded = verifyState(state, stateSecret);
     if (!decoded) return c.json({ error: "invalid state" }, 400);
+    if (
+      !(await hasProjectManagerAccess({
+        userId: decoded.userId,
+        preferredOrgId: decoded.orgId,
+        projectId: decoded.projectId,
+      }))
+    ) {
+      return c.redirect(`${webOrigin}/settings?linear=error`, 302);
+    }
 
     let token: Awaited<ReturnType<typeof exchangeLinearCode>>;
     try {
@@ -765,7 +776,7 @@ export function mountLinearAuthed(app: Hono<any>): void {
     if (!clientId || !stateSecret) {
       return c.json({ error: "linear not configured" }, 503);
     }
-    const ctx = await resolveUserOrg(c);
+    const ctx = await resolveUserOrgManager(c);
     if (!ctx) return c.json({ error: "no org for user" }, 404);
 
     const state = signState(
@@ -776,7 +787,7 @@ export function mountLinearAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/linear/uninstall", async (c) => {
-    const ctx = await resolveUserOrg(c);
+    const ctx = await resolveUserOrgManager(c);
     if (!ctx) return c.json({ error: "no org for user" }, 404);
     const row = await findCurrentInstallation(ctx.projectId);
     if (!row) return c.json({ ok: true });
@@ -890,6 +901,15 @@ async function resolveUserOrg(
   }).catch(() => null);
   if (!ctx) return null;
   return { userId: ctx.user.id, orgId: ctx.org.id, projectId: ctx.project.id };
+}
+
+async function resolveUserOrgManager(
+  c: Context<{ Variables: Vars }>,
+): Promise<{ userId: string; orgId: string; projectId: string } | null> {
+  const ctx = await resolveUserOrg(c);
+  if (!ctx) return null;
+  await requireProjectManagerContext(c, ctx.projectId);
+  return ctx;
 }
 
 type StatePayload = { orgId: string; projectId: string; userId: string };
