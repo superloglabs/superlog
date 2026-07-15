@@ -69,7 +69,10 @@ test("a failed registration doesn't block the rest and is retried in the backgro
     async schedule() {},
   };
 
-  const migrated = await startRecurringSteps(boss, depsOf(), quietLogger, 5);
+  const migrated = await startRecurringSteps(boss, depsOf(), {
+    logger: quietLogger,
+    retryDelayMs: 5,
+  });
 
   // The failed step must not block the others — and must NOT be reported as
   // registered (the caller never runs it locally; see RECURRING_TICK_STEPS).
@@ -86,4 +89,36 @@ test("a failed registration doesn't block the rest and is retried in the backgro
     ["digest-sweep"],
     "the retried step must get exactly one consumer",
   );
+});
+
+test("registration retries stop once shutdown begins", async () => {
+  let attempts = 0;
+  const boss: RecurringBoss = {
+    async createQueue(name) {
+      if (name === "digest-sweep") {
+        attempts += 1;
+        throw new Error("createQueue refused");
+      }
+    },
+    async updateQueue() {},
+    async work() {},
+    async send() {
+      return "job-id";
+    },
+    async schedule() {},
+  };
+  const shutdown = new AbortController();
+
+  await startRecurringSteps(boss, depsOf(), {
+    logger: quietLogger,
+    retryDelayMs: 5,
+    shutdown: shutdown.signal,
+  });
+  shutdown.abort();
+  const attemptsAtShutdown = attempts;
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  // A retry already sleeping may fire once more at most; the chain of retries
+  // must not keep hammering a draining process.
+  assert.ok(attempts <= attemptsAtShutdown + 1, "retries must stop after shutdown");
 });

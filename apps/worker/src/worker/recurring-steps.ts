@@ -86,6 +86,14 @@ export function buildRecurringSteps(deps: RecurringStepsDeps): RecurringStepSpec
   ];
 }
 
+export type StartRecurringStepsOptions = {
+  logger?: LoggerLike;
+  retryDelayMs?: number;
+  // Threaded through to every step's pass (see RegisterRecurringStepOptions);
+  // also stops the background registration retry on a draining process.
+  shutdown?: AbortSignal;
+};
+
 // Register every step's chain, one failure at a time: one step's registration
 // failure must not block the others. A failed step is never run locally (see
 // RECURRING_TICK_STEPS); instead its registration keeps retrying in the
@@ -97,14 +105,15 @@ export function buildRecurringSteps(deps: RecurringStepsDeps): RecurringStepSpec
 export async function startRecurringSteps(
   boss: RecurringBoss,
   deps: RecurringStepsDeps,
-  logger: LoggerLike = defaultLogger,
-  retryDelayMs: number = REGISTRATION_RETRY_MS,
+  opts: StartRecurringStepsOptions = {},
 ): Promise<Set<SkippableTickStep>> {
+  const logger = opts.logger ?? defaultLogger;
+  const retryDelayMs = opts.retryDelayMs ?? REGISTRATION_RETRY_MS;
   const migrated = new Set<SkippableTickStep>();
   for (const step of buildRecurringSteps(deps)) {
     const attempt = async (): Promise<boolean> => {
       try {
-        await registerRecurringStep(boss, step, logger);
+        await registerRecurringStep(boss, step, { logger, shutdown: opts.shutdown });
         migrated.add(step.tickStep);
         return true;
       } catch (err) {
@@ -121,6 +130,7 @@ export async function startRecurringSteps(
     };
     const scheduleRetry = (): void => {
       const timer = setTimeout(async () => {
+        if (opts.shutdown?.aborted) return;
         if (!(await attempt())) scheduleRetry();
       }, retryDelayMs);
       timer.unref?.();

@@ -71,6 +71,19 @@ export type RecurringStep = {
   passWarnAfterMs?: number;
 };
 
+export type RegisterRecurringStepOptions = {
+  logger?: LoggerLike;
+  // Aborted when the process starts draining (SIGTERM). An in-flight pass is
+  // then handed back: the handler resolves so pg-boss completes the job and
+  // the reschedule lands, instead of the process dying with the job still
+  // ACTIVE — which would leave the stately singleton blocking every other
+  // process's chain until job expiry (up to tens of minutes for the
+  // long-lease steps). The abandoned pass keeps running only until the
+  // process exits, so the residual overlap window is bounded by the drain
+  // timeout — the same window the tick loop had on deploys.
+  shutdown?: AbortSignal;
+};
+
 // Register one step's chain. The consumer comes LAST so a partial
 // registration never leaves a live consumer on a half-configured queue;
 // everything else a partial registration can leave behind (queue, reviver
@@ -81,8 +94,10 @@ export type RecurringStep = {
 export async function registerRecurringStep(
   boss: RecurringBoss,
   step: RecurringStep,
-  logger: LoggerLike = defaultLogger,
+  opts: RegisterRecurringStepOptions = {},
 ): Promise<void> {
+  const logger = opts.logger ?? defaultLogger;
+  const shutdown = opts.shutdown;
   const warnAfterMs = step.passWarnAfterMs ?? DEFAULT_PASS_WARN_AFTER_MS;
   const lease = { retryLimit: 0, expireInSeconds: passExpireSeconds(warnAfterMs) };
 
@@ -96,7 +111,9 @@ export async function registerRecurringStep(
 
   await boss.work(step.queue, { batchSize: 1 }, async () => {
     try {
-      await runPassToSettlement();
+      // Don't start new work on a draining process; the successor scheduled
+      // below runs on whichever process is alive after the deploy.
+      if (!shutdown?.aborted) await runPassToSettlement();
     } finally {
       // Reschedule unconditionally — the chain must survive pass failures. A
       // send failure is only logged: the minute reviver restores the chain.
@@ -121,7 +138,8 @@ export async function registerRecurringStep(
 
   // Run one pass and hold the pg-boss job active until it settles — that hold
   // is what blocks the successor fleet-wide (see header). Errors are logged
-  // and swallowed: the next pass is the retry.
+  // and swallowed: the next pass is the retry. The one exception to the hold
+  // is process shutdown (see RegisterRecurringStepOptions.shutdown).
   async function runPassToSettlement(): Promise<void> {
     const warnTimer = setTimeout(() => {
       logger.warn(
@@ -129,20 +147,39 @@ export async function registerRecurringStep(
         "recurring step pass running past its deadline; the chain waits for it",
       );
     }, warnAfterMs);
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<"aborted">((resolve) => {
+      if (!shutdown) return; // never resolves
+      onAbort = () => resolve("aborted");
+      if (shutdown.aborted) onAbort();
+      else shutdown.addEventListener("abort", onAbort, { once: true });
+    });
+    const pass = Promise.resolve()
+      .then(step.run)
+      .then(() => "done" as const)
+      .catch((err) => {
+        logger.error(
+          {
+            scope: "worker.recurring",
+            step: step.queue,
+            err: err instanceof Error ? err.message : String(err),
+            stack: err instanceof Error ? err.stack : undefined,
+          },
+          "recurring step pass failed",
+        );
+        return "done" as const;
+      });
     try {
-      await step.run();
-    } catch (err) {
-      logger.error(
-        {
-          scope: "worker.recurring",
-          step: step.queue,
-          err: err instanceof Error ? err.message : String(err),
-          stack: err instanceof Error ? err.stack : undefined,
-        },
-        "recurring step pass failed",
-      );
+      const outcome = await Promise.race([pass, aborted]);
+      if (outcome === "aborted") {
+        logger.warn(
+          { scope: "worker.recurring", step: step.queue },
+          "abandoning in-flight pass for shutdown; the successor resumes after the deploy",
+        );
+      }
     } finally {
       clearTimeout(warnTimer);
+      if (onAbort) shutdown?.removeEventListener("abort", onAbort);
     }
   }
 }

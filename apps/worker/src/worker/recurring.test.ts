@@ -59,7 +59,7 @@ function stepOf(overrides: Partial<RecurringStep> = {}): RecurringStep {
 
 test("registration creates a stately queue, a minute reviver, a seed job, and the consumer last", async () => {
   const fb = fakeBoss();
-  await registerRecurringStep(fb.boss, stepOf(), quietLogger);
+  await registerRecurringStep(fb.boss, stepOf(), { logger: quietLogger });
 
   // `stately` allows one queued + one active job per singleton key: the
   // running pass and its already-scheduled successor coexist, while reviver
@@ -113,7 +113,7 @@ test("a completed pass reschedules itself after the interval", async () => {
         passes += 1;
       },
     }),
-    quietLogger,
+    { logger: quietLogger },
   );
   const worker = fb.workers.get("test-step");
   assert.ok(worker);
@@ -142,9 +142,11 @@ test("a failing pass is logged and still reschedules", async () => {
       },
     }),
     {
-      ...quietLogger,
-      error: (...args: unknown[]) => {
-        errors.push(String(args[1]));
+      logger: {
+        ...quietLogger,
+        error: (...args: unknown[]) => {
+          errors.push(String(args[1]));
+        },
       },
     },
   );
@@ -166,9 +168,11 @@ test("the job stays active until the pass settles — a slow pass warns but is n
     releaseHung = resolve;
   });
   await registerRecurringStep(fb.boss, stepOf({ run: () => hung, passWarnAfterMs: 5 }), {
-    ...quietLogger,
-    warn: (...args: unknown[]) => {
-      warnings.push(String(args[1]));
+    logger: {
+      ...quietLogger,
+      warn: (...args: unknown[]) => {
+        warnings.push(String(args[1]));
+      },
     },
   });
   const worker = fb.workers.get("test-step");
@@ -205,9 +209,60 @@ test("a reschedule failure is swallowed — the reviver cron restores the chain"
     }
     throw new Error("pg down");
   };
-  await registerRecurringStep(fb.boss, stepOf(), quietLogger);
+  await registerRecurringStep(fb.boss, stepOf(), { logger: quietLogger });
   const worker = fb.workers.get("test-step");
   assert.ok(worker);
 
   await worker([{ id: "job-1", data: {} }]); // must not throw
+});
+
+test("shutdown hands an in-flight pass back so the job completes and reschedules", async () => {
+  const fb = fakeBoss();
+  const shutdown = new AbortController();
+  const never = new Promise<void>(() => {});
+  await registerRecurringStep(fb.boss, stepOf({ run: () => never }), {
+    logger: quietLogger,
+    shutdown: shutdown.signal,
+  });
+  const worker = fb.workers.get("test-step");
+  assert.ok(worker);
+  fb.sent.length = 0;
+
+  // The pass hangs; without the abort the handler would (correctly) wait
+  // forever. On shutdown it must resolve — a process dying with the job still
+  // ACTIVE would block the chain fleet-wide until job expiry.
+  let handlerSettled = false;
+  const handlerRun = worker([{ id: "job-1", data: {} }]).then(() => {
+    handlerSettled = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(handlerSettled, false);
+
+  shutdown.abort();
+  await handlerRun;
+  assert.equal(fb.sent.length, 1, "the successor must still be scheduled");
+});
+
+test("no new pass starts on a draining process, but the chain still reschedules", async () => {
+  const fb = fakeBoss();
+  const shutdown = new AbortController();
+  let passes = 0;
+  await registerRecurringStep(
+    fb.boss,
+    stepOf({
+      run: async () => {
+        passes += 1;
+      },
+    }),
+    { logger: quietLogger, shutdown: shutdown.signal },
+  );
+  const worker = fb.workers.get("test-step");
+  assert.ok(worker);
+  fb.sent.length = 0;
+
+  shutdown.abort();
+  await worker([{ id: "job-1", data: {} }]);
+
+  assert.equal(passes, 0, "a draining process must not start new work");
+  assert.equal(fb.sent.length, 1, "the successor runs on whichever process survives");
 });

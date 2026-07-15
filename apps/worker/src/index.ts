@@ -126,12 +126,20 @@ registerTelemetryIngestMetrics({
 // The tick runs the steps itself only when pg-boss is unavailable entirely.
 // Once the telemetry scan migrates too, the tick disappears.
 const skipSteps = new Set<SkippableTickStep>();
+// Aborted at drain so in-flight chain passes hand their jobs back before the
+// process exits — a job left ACTIVE by a dying process would block the chain
+// fleet-wide until expiry (up to tens of minutes for the long-lease steps).
+const recurringShutdown = new AbortController();
 if (agentRunQueueReady) skipSteps.add("agent_runs");
 if (jobBoss) {
-  await startRecurringSteps(jobBoss, {
-    clickhouse: ch,
-    onIssueTransition: dispatchIssueTransition,
-  });
+  await startRecurringSteps(
+    jobBoss,
+    {
+      clickhouse: ch,
+      onIssueTransition: dispatchIssueTransition,
+    },
+    { shutdown: recurringShutdown.signal },
+  );
   for (const step of RECURRING_TICK_STEPS) skipSteps.add(step);
 }
 
@@ -159,6 +167,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   shuttingDown = true;
   logger.info({ signal }, "received shutdown signal; draining");
 
+  recurringShutdown.abort();
   const exitCode = await shutdownWorkerProcess({
     drain: () =>
       drainWorker({
