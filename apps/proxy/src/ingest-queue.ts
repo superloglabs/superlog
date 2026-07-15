@@ -697,16 +697,9 @@ export class IngestQueue {
       { queueUrl: this.config.queueUrl },
       "ingest queue consumer draining in-flight messages",
     );
-    // Flush any sends still waiting on the linger timer so a producer-only
-    // proxy doesn't drop the tail of accepted requests on SIGTERM. The entry
-    // promises are awaited by their HTTP handlers; allSettled only waits for
-    // the wire calls to finish.
-    this.flushPendingSends();
-    await Promise.allSettled([...this.inFlightSends]);
-    // consumersDone never rejects (see startConsumer); a loop failure is logged
-    // and surfaced as a non-zero exit there. Give healthy receives their full
-    // server-side long-poll window, then abort only a connection that is still
-    // stalled beyond an additional network grace period.
+    // Start the receive deadline when shutdown begins, independently of any
+    // producer sends that are also draining. Healthy receives get their full
+    // server-side long-poll window plus network slack.
     const abortTimer = this.consumersDone
       ? setTimeout(() => {
           this.logger.warn(
@@ -717,7 +710,15 @@ export class IngestQueue {
         }, this.config.waitTimeSeconds * 1_000 + SHUTDOWN_RECEIVE_ABORT_SLACK_MS)
       : null;
     abortTimer?.unref?.();
+    // Flush any sends still waiting on the linger timer so a producer-only
+    // proxy doesn't drop the tail of accepted requests on SIGTERM. The entry
+    // promises are awaited by their HTTP handlers; allSettled only waits for
+    // the wire calls to finish.
     try {
+      this.flushPendingSends();
+      await Promise.allSettled([...this.inFlightSends]);
+      // consumersDone never rejects (see startConsumer); a loop failure is
+      // logged and surfaced as a non-zero exit there.
       await this.consumersDone;
     } finally {
       if (abortTimer) clearTimeout(abortTimer);

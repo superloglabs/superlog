@@ -115,10 +115,15 @@ test("stop() drains a message assigned to an outstanding long poll during shutdo
   }
 });
 
-test("stop() aborts a stalled receive after the normal long-poll window", async () => {
+test("stop() bounds a stalled receive while a producer send is still draining", async () => {
   const queue = new IngestQueue({ ...config, waitTimeSeconds: 0 }, noopLogger);
   const sqs = new FakeLongPollSqs();
   (queue as unknown as { sqs: FakeLongPollSqs }).sqs = sqs;
+  let finishSend: (() => void) | undefined;
+  const pendingSend = new Promise<void>((resolve) => {
+    finishSend = resolve;
+  });
+  (queue as unknown as { inFlightSends: Set<Promise<void>> }).inFlightSends.add(pendingSend);
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () => new Response(new Uint8Array(0), { status: 200 })) as typeof fetch;
@@ -130,6 +135,7 @@ test("stop() aborts a stalled receive after the normal long-poll window", async 
     const stopping = queue.stop();
     await delay(5_100);
     const abortedAfterDeadline = sqs.aborted;
+    finishSend?.();
 
     // Let the old implementation finish so the failing regression test does
     // not leave its consumer loop running forever.
