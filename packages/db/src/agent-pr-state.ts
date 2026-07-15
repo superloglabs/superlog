@@ -110,7 +110,13 @@ export async function applyAgentPullRequestStateInTx(
     lastSyncedAt: observedAt,
     updatedAt: observedAt,
   };
-  if (input.providerUpdatedAt !== undefined && !isOlderProviderObservation) {
+  const advancesProviderOrdering =
+    input.targetState !== undefined || input.providerSnapshotAuthoritative === true;
+  if (
+    input.providerUpdatedAt !== undefined &&
+    !isOlderProviderObservation &&
+    advancesProviderOrdering
+  ) {
     updates.providerUpdatedAt = input.providerUpdatedAt;
   }
   if (input.headSha !== undefined) updates.headSha = input.headSha;

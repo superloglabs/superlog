@@ -216,6 +216,95 @@ test("local reconciliation time cannot hide later provider close and reopen obse
   }
 });
 
+test("a newer metadata observation cannot hide a delayed provider close", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const { incident, pullRequest } = await seedPullRequest(db);
+    const providerClosedAt = new Date("2026-07-15T10:00:01.000Z");
+    const providerEditedAt = new Date("2026-07-15T10:00:02.000Z");
+
+    const edited = await applyAgentPullRequestState(db, {
+      incidentId: incident.id,
+      agentPrId: pullRequest.id,
+      observedAt: new Date("2026-07-15T10:05:02.000Z"),
+      providerUpdatedAt: providerEditedAt,
+      title: "Updated title",
+    });
+    assert.equal(edited.pullRequest?.title, "Updated title");
+    assert.equal(edited.pullRequest?.providerUpdatedAt, null);
+
+    const delayedClose = await applyAgentPullRequestState(db, {
+      incidentId: incident.id,
+      agentPrId: pullRequest.id,
+      targetState: "closed",
+      observedAt: new Date("2026-07-15T10:05:03.000Z"),
+      providerUpdatedAt: providerClosedAt,
+      closedAt: providerClosedAt,
+    });
+
+    assert.equal(delayedClose.stateChanged, true);
+    assert.equal(delayedClose.pullRequest?.state, "closed");
+    assert.equal(delayedClose.pullRequest?.title, "Updated title");
+    assert.equal(
+      delayedClose.pullRequest?.providerUpdatedAt?.toISOString(),
+      providerClosedAt.toISOString(),
+    );
+  } finally {
+    await client.close();
+  }
+});
+
+test("a newer metadata observation cannot hide a delayed provider reopen", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const { incident, pullRequest } = await seedPullRequest(db);
+    const providerInitiallyClosedAt = new Date("2026-07-15T10:00:00.000Z");
+    const providerReopenedAt = new Date("2026-07-15T10:00:01.000Z");
+    const providerEditedAt = new Date("2026-07-15T10:00:02.000Z");
+
+    await applyAgentPullRequestState(db, {
+      incidentId: incident.id,
+      agentPrId: pullRequest.id,
+      targetState: "closed",
+      observedAt: new Date("2026-07-15T10:05:00.000Z"),
+      providerUpdatedAt: providerInitiallyClosedAt,
+      closedAt: providerInitiallyClosedAt,
+    });
+    const edited = await applyAgentPullRequestState(db, {
+      incidentId: incident.id,
+      agentPrId: pullRequest.id,
+      observedAt: new Date("2026-07-15T10:05:02.000Z"),
+      providerUpdatedAt: providerEditedAt,
+      title: "Updated title",
+    });
+    assert.equal(edited.pullRequest?.title, "Updated title");
+    assert.equal(
+      edited.pullRequest?.providerUpdatedAt?.toISOString(),
+      providerInitiallyClosedAt.toISOString(),
+    );
+
+    const delayedReopen = await applyAgentPullRequestState(db, {
+      incidentId: incident.id,
+      agentPrId: pullRequest.id,
+      targetState: "open",
+      observedAt: new Date("2026-07-15T10:05:03.000Z"),
+      providerUpdatedAt: providerReopenedAt,
+      closedAt: null,
+    });
+
+    assert.equal(delayedReopen.stateChanged, true);
+    assert.equal(delayedReopen.pullRequest?.state, "open");
+    assert.equal(delayedReopen.pullRequest?.closedAt, null);
+    assert.equal(delayedReopen.pullRequest?.title, "Updated title");
+    assert.equal(
+      delayedReopen.pullRequest?.providerUpdatedAt?.toISOString(),
+      providerReopenedAt.toISOString(),
+    );
+  } finally {
+    await client.close();
+  }
+});
+
 test("an equal provider timestamp with conflicting state requires authoritative reconciliation", async () => {
   const { db, client } = await freshDb();
   try {
