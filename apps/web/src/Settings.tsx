@@ -32,6 +32,7 @@ import {
   useDeleteOrgProject,
   useDeleteSlackRoute,
   useDeleteWebhook,
+  useGcpConnection,
   useGithubBranches,
   useGithubInstallation,
   useGrantOrgRepoToProject,
@@ -79,6 +80,7 @@ import {
   useSlackInstallation,
   useSlackRoute,
   useStartCloudflareInstall,
+  useStartGcpConnect,
   useStartGithubAccessLogin,
   useStartGithubAuthorLogin,
   useStartGithubInstall,
@@ -124,6 +126,7 @@ import {
   SkeletonBlock,
   Tile,
 } from "./design/ui";
+import { gcpConnectAction } from "./gcp-settings-model.ts";
 import { McpInstallPanel } from "./onboarding/McpInstallDialog.tsx";
 import { useDemoExploration } from "./onboarding/demoExploration.tsx";
 import {
@@ -1124,6 +1127,7 @@ type ProjectIntegrationId =
   | "vercel"
   | "railway"
   | "render"
+  | "gcp"
   | "aws";
 
 type IntegrationBentoItem = IntegrationCatalogItem & {
@@ -1140,6 +1144,7 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
   const vercel = useVercelInstallation(projectId);
   const railway = useRailwayInstallation(projectId);
   const render = useRenderInstallation(projectId);
+  const gcp = useGcpConnection(projectId);
   const aws = useCloudConnections(projectId);
 
   const [search, setSearch] = useState("");
@@ -1242,6 +1247,18 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
       statusLabel: renderServices === 1 ? "1 service" : `${renderServices || 0} services`,
     },
     {
+      id: "gcp",
+      name: "Google Cloud",
+      description: "Stream Cloud Logging and pull a bounded set of Cloud Monitoring metrics.",
+      category: "Cloud & hosting",
+      keywords: ["gcp", "google", "cloud logging", "cloud monitoring", "metrics"],
+      installed: gcp.data?.connected === true,
+      statusLabel:
+        gcp.data && "status" in gcp.data && gcp.data.status !== "connected"
+          ? "Setup in progress"
+          : "Connected",
+    },
+    {
       id: "aws",
       name: "AWS",
       description: "Inventory resources and stream CloudWatch telemetry through a read-only role.",
@@ -1263,6 +1280,7 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
     vercel,
     railway,
     render,
+    gcp,
     aws,
   ].some((query) => query.isLoading);
   const selectedItem = items.find((item) => item.id === selectedId);
@@ -1509,6 +1527,8 @@ function IntegrationConfiguration({
       return <RailwayCard projectId={projectId} />;
     case "render":
       return <RenderCard projectId={projectId} />;
+    case "gcp":
+      return <GcpCard projectId={projectId} />;
     case "aws":
       return <AwsCard projectId={projectId} />;
   }
@@ -2620,6 +2640,15 @@ const INGEST_SOURCE_DEFINITIONS = [
     ],
   },
   {
+    source: "gcp",
+    title: "Google Cloud",
+    hint: "Cloud Logging and bounded Cloud Monitoring metrics from the connected GCP project.",
+    signals: [
+      { key: "logs", label: "Logs" },
+      { key: "metrics", label: "Metrics" },
+    ],
+  },
+  {
     source: "vercel",
     title: "Vercel Drains",
     hint: "Trace and log drains created by the connected Vercel integration.",
@@ -2845,6 +2874,83 @@ function IngestSourcesCard({ projectId }: { projectId: string | undefined }) {
         </p>
       )}
     </div>
+  );
+}
+
+function GcpCard({ projectId }: { projectId: string | undefined }) {
+  const connection = useGcpConnection(projectId);
+  const start = useStartGcpConnect(projectId);
+  const capabilities = useSystemCapabilities();
+  const [gcpProjectId, setGcpProjectId] = useState("");
+  const row =
+    connection.data?.connected !== undefined && "status" in connection.data
+      ? connection.data
+      : null;
+  const configured = capabilities.data?.gcpConnect ?? true;
+  const connectAction = gcpConnectAction(row?.status ?? null);
+
+  return (
+    <Tile label="Google Cloud">
+      <div className="space-y-3">
+        <p className="text-[13px] text-muted">
+          Connect a GCP project through Google OAuth. We create its Cloud Logging route, then read a
+          curated set of Cloud Monitoring metrics with a hard monthly series ceiling. No Terraform
+          or service-account key is required.
+        </p>
+        <div className="rounded-md border border-[rgba(65,209,149,0.25)] bg-[rgba(65,209,149,0.05)] px-3 py-2 text-[12.5px] text-fg">
+          Customer incremental GCP cost: <strong>$0</strong>. Superlog owns and pays for Pub/Sub and
+          Monitoring API reads. Metric reads stop at{" "}
+          {row?.metricsMonthlySeriesLimit.toLocaleString() ?? "100,000,000"} returned series per
+          month (at most about $50 at current list price, paid by Superlog). Existing Cloud Logging
+          ingestion or retention charges are unchanged.
+        </div>
+        <div>
+          {row?.status === "connected" ? (
+            <Chip tone="success" dot>
+              {row.gcpProjectId}
+            </Chip>
+          ) : row ? (
+            <Chip tone={row.status === "failed" ? "danger" : "muted"} dot>
+              {row.status === "failed" ? "Setup failed" : "Setup in progress"}
+            </Chip>
+          ) : (
+            <Chip tone="muted" dot>
+              Not connected
+            </Chip>
+          )}
+        </div>
+        {row?.lastError && <p className="text-[12.5px] text-danger">{row.lastError}</p>}
+        {!configured && (
+          <p className="text-[12.5px] text-muted">
+            GCP connect is not configured on this deployment.
+          </p>
+        )}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <Input
+            value={gcpProjectId}
+            onChange={(event) => setGcpProjectId(event.target.value)}
+            placeholder={row?.gcpProjectId ?? "my-gcp-project-id"}
+            aria-label={connectAction.inputLabel}
+            className="min-w-0 flex-1 font-mono"
+          />
+          <Btn
+            size="sm"
+            variant="primary"
+            loading={start.isPending}
+            disabled={
+              !projectId || !configured || start.isPending || gcpProjectId.trim().length < 6
+            }
+            onClick={async () => {
+              const { url } = await start.mutateAsync(gcpProjectId.trim());
+              window.location.href = url;
+            }}
+          >
+            {connectAction.buttonLabel}
+          </Btn>
+        </div>
+        {start.error && <p className="text-[12.5px] text-danger">{String(start.error)}</p>}
+      </div>
+    </Tile>
   );
 }
 

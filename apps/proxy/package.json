@@ -34,6 +34,7 @@
     "@superlog/fingerprint": "workspace:*",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
+    "google-auth-library": "^10.9.0",
     "hono": "^4.6.12",
     "pino": "^10.3.1",
     "protobufjs": "^7.4.0"

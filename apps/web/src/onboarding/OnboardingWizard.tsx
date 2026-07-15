@@ -75,8 +75,8 @@ export function OnboardingWizard({
   // Null until the user has created their first org. While null, the wizard
   // only renders the create-org step regardless of `mode`.
   projectId: string | null;
-  // Whether the *real* project has ingested telemetry (from the ingest key's
-  // last_used_at). This is the honest "events arrived" signal — unlike the stats
+  // Whether the *real* project has ingested telemetry (from the proxy's
+  // project-level marker). This is the honest "events arrived" signal — unlike the stats
   // endpoint, which is demo-overlaid for un-ingested projects and would otherwise
   // make the wizard claim "first events received" while showing demo data.
   hasIngested: boolean;

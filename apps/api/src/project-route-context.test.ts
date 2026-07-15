@@ -156,3 +156,108 @@ test("PUT /api/me/active-context rejects an org and project slug from different 
 
   assert.equal(response.status, 404);
 });
+
+test("GET /api/me/org-route resolves a member org's route without touching the session", async () => {
+  const current = await seedContext();
+  const target = await seedContext("target-project");
+  await db
+    .insert(schema.orgMembers)
+    .values({ orgId: target.org.id, userId: current.user.id, role: "member" });
+  await db
+    .update(schema.sessions)
+    .set({ activeOrganizationId: current.org.id })
+    .where(eq(schema.sessions.id, current.session.id));
+
+  const app = new Hono<{ Variables: Vars }>();
+  app.use("*", (c, next) => {
+    c.set("userId", current.user.id);
+    c.set("sessionId", current.session.id);
+    c.set("orgId", current.org.id);
+    return next();
+  });
+  mountProjectRouteContext(app);
+
+  const response = await app.request(`/api/me/org-route?orgId=${target.org.id}`);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    org: { id: target.org.id, name: target.org.name, slug: target.org.slug },
+    defaultProjectSlug: target.project.slug,
+    projects: [{ id: target.project.id, name: target.project.name, slug: target.project.slug }],
+  });
+  // Read-only: the session's active org is untouched, so ProjectRouteBoundary
+  // (not this endpoint) drives the switch once the URL leads.
+  const session = await db.query.sessions.findFirst({
+    where: eq(schema.sessions.id, current.session.id),
+  });
+  assert.equal(session?.activeOrganizationId, current.org.id);
+});
+
+test("GET /api/me/org-route lists a multi-project org's projects in stable creation order", async () => {
+  const current = await seedContext();
+  const target = await seedContext("first-project");
+  await db
+    .insert(schema.orgMembers)
+    .values({ orgId: target.org.id, userId: current.user.id, role: "member" });
+  // Add a second, later project so the picker has more than one to show.
+  const [second] = await db
+    .insert(schema.projects)
+    .values({ orgId: target.org.id, name: "Second project", slug: "second-project" })
+    .returning();
+  if (!second) throw new Error("seed second project failed");
+
+  const app = new Hono<{ Variables: Vars }>();
+  app.use("*", (c, next) => {
+    c.set("userId", current.user.id);
+    c.set("sessionId", current.session.id);
+    c.set("orgId", current.org.id);
+    return next();
+  });
+  mountProjectRouteContext(app);
+
+  const response = await app.request(`/api/me/org-route?orgId=${target.org.id}`);
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    projects: { slug: string }[];
+    defaultProjectSlug: string;
+  };
+  assert.deepEqual(
+    body.projects.map((p) => p.slug),
+    ["first-project", "second-project"],
+  );
+});
+
+test("GET /api/me/org-route hides orgs the user isn't a member of", async () => {
+  const current = await seedContext();
+  const foreign = await seedContext("foreign-project");
+
+  const app = new Hono<{ Variables: Vars }>();
+  app.use("*", (c, next) => {
+    c.set("userId", current.user.id);
+    c.set("sessionId", current.session.id);
+    c.set("orgId", current.org.id);
+    return next();
+  });
+  mountProjectRouteContext(app);
+
+  const response = await app.request(`/api/me/org-route?orgId=${foreign.org.id}`);
+
+  // Must not fall back to the caller's own org — a non-member org is a 404.
+  assert.equal(response.status, 404);
+});
+
+test("GET /api/me/org-route requires an orgId", async () => {
+  const current = await seedContext();
+
+  const app = new Hono<{ Variables: Vars }>();
+  app.use("*", (c, next) => {
+    c.set("userId", current.user.id);
+    c.set("sessionId", current.session.id);
+    c.set("orgId", current.org.id);
+    return next();
+  });
+  mountProjectRouteContext(app);
+
+  const response = await app.request("/api/me/org-route");
+  assert.equal(response.status, 400);
+});

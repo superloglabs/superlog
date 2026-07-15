@@ -64,6 +64,7 @@ test("defaults to everything enabled (no rows)", async () => {
   assert.deepEqual(await getState(app, project.id), {
     otlp: { traces: true, logs: true, metrics: true },
     aws: { logs: true, metrics: true },
+    gcp: { logs: true, metrics: true },
     vercel: { traces: true, logs: true },
     railway: { logs: true, metrics: true },
     render: { logs: true, metrics: true },
@@ -77,6 +78,7 @@ test("PUT disables a pair, persists one sparse row, and reflects in GET", async 
   const desired: IngestFilterState = {
     otlp: { traces: true, logs: true, metrics: true },
     aws: { logs: false, metrics: true },
+    gcp: { logs: true, metrics: true },
     vercel: { traces: true, logs: true },
     railway: { logs: true, metrics: true },
     render: { logs: true, metrics: true },
@@ -117,6 +119,7 @@ test("PUT is a full replace — re-enabling clears the row", async () => {
   await put({
     otlp: { traces: false, logs: true, metrics: true },
     aws: { logs: false, metrics: true },
+    gcp: { logs: true, metrics: true },
     vercel: { traces: true, logs: true },
     railway: { logs: true, metrics: true },
     render: { logs: true, metrics: true },
@@ -124,6 +127,7 @@ test("PUT is a full replace — re-enabling clears the row", async () => {
   await put({
     otlp: { traces: true, logs: true, metrics: true },
     aws: { logs: true, metrics: true },
+    gcp: { logs: true, metrics: true },
     vercel: { traces: true, logs: true },
     railway: { logs: true, metrics: true },
     render: { logs: true, metrics: true },

@@ -2,10 +2,52 @@ import { db, schema } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import type { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { resolveMaybeActiveOrgContext } from "./org-context.js";
 
 type Vars = { userId: string; sessionId?: string; orgId: string | null };
 
 export function mountProjectRouteContext(app: Hono<{ Variables: Vars }>) {
+  // Resolve an org's canonical route for a member, WITHOUT mutating the
+  // session. Returns the org slug, a sensible default project slug, and the
+  // org's project list. The org/project switcher calls this on a cross-org
+  // switch: with one project it navigates straight there; with several it lets
+  // the user pick. It then navigates and lets ProjectRouteBoundary move the
+  // active org to match the URL. Keeping this read-only is what makes the switch
+  // race-free — the session only changes once the URL already names the target
+  // org, so there's no transient mismatch to reconcile backwards.
+  app.get("/api/me/org-route", async (c) => {
+    const orgId = c.req.query("orgId")?.trim();
+    if (!orgId) throw new HTTPException(400, { message: "orgId required" });
+
+    const ctx = await resolveMaybeActiveOrgContext({
+      userId: c.var.userId,
+      preferredOrgId: orgId,
+    });
+    // resolveMaybeActiveOrgContext falls back to the user's first membership
+    // when `orgId` isn't one of theirs, so confirm it actually resolved the
+    // requested org. A non-member and a missing org look identical.
+    if (!ctx.org || ctx.org.id !== orgId) {
+      throw new HTTPException(404, { message: "organization not found" });
+    }
+
+    // Stable order so the picker (and the default-project fallback below) don't
+    // land on an arbitrary row.
+    const projects = await db.query.projects.findMany({
+      where: eq(schema.projects.orgId, orgId),
+      orderBy: (p, { asc }) => asc(p.createdAt),
+      columns: { id: true, name: true, slug: true },
+    });
+
+    return c.json({
+      org: { id: ctx.org.id, name: ctx.org.name, slug: ctx.org.slug },
+      // ctx.project prefers the user's active project when it belongs to this
+      // org, else the first project (resolveProjectForOrg), so it's the natural
+      // landing spot for a single-gesture switch.
+      defaultProjectSlug: ctx.project.slug,
+      projects,
+    });
+  });
+
   app.put("/api/me/active-context", async (c) => {
     const sessionId = c.var.sessionId;
     if (!sessionId) throw new HTTPException(401, { message: "authenticated session required" });

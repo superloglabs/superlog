@@ -1,0 +1,1 @@
+ALTER TABLE "gcp_connections" ADD COLUMN "metrics_cursors" jsonb;

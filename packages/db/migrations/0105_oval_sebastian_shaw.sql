@@ -1,0 +1,1 @@
+ALTER TABLE "gcp_connections" ADD COLUMN "monitoring_viewer_grant_created" boolean DEFAULT false NOT NULL;

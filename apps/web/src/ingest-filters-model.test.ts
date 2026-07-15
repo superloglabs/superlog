@@ -6,6 +6,7 @@ import { updateIngestSignal } from "./settings/ingestFiltersModel.ts";
 const filters: IngestFilterState = {
   otlp: { traces: true, logs: true, metrics: true },
   aws: { logs: true, metrics: true },
+  gcp: { logs: true, metrics: true },
   vercel: { traces: true, logs: true },
   railway: { logs: true, metrics: true },
   render: { logs: true, metrics: true },

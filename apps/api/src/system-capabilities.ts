@@ -20,6 +20,8 @@ export type SystemCapabilities = {
   // The Render connector has no OAuth client at all (the user pastes an API
   // key), so it only needs the at-rest encryption key.
   renderConnect: boolean;
+  // API-first GCP setup: OAuth plus integration-owned Pub/Sub configuration.
+  gcpConnect: boolean;
 };
 
 type CapabilityEnv = Partial<
@@ -39,6 +41,14 @@ type CapabilityEnv = Partial<
     | "RAILWAY_CLIENT_SECRET"
     | "STATE_SIGNING_SECRET"
     | "AGENT_SECRETS_KEY"
+    | "GCP_OAUTH_CLIENT_ID"
+    | "GCP_OAUTH_CLIENT_SECRET"
+    | "GCP_OAUTH_REDIRECT_URI"
+    | "GCP_INTEGRATION_PROJECT_ID"
+    | "GCP_READER_SERVICE_ACCOUNT_EMAIL"
+    | "GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL"
+    | "GCP_PUBSUB_PUSH_ENDPOINT"
+    | "GCP_PUBSUB_PUSH_AUDIENCE"
   >
 >;
 
@@ -81,6 +91,19 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
   // signed state. Storing the pasted key still needs the at-rest encryption
   // key, so that's the whole gate.
   const renderConnect = !!env.AGENT_SECRETS_KEY;
+  const gcpPushAudience = env.GCP_PUBSUB_PUSH_AUDIENCE ?? env.GCP_PUBSUB_PUSH_ENDPOINT;
+  const gcpConnect = !!(
+    env.GCP_OAUTH_CLIENT_ID &&
+    env.GCP_OAUTH_CLIENT_SECRET &&
+    env.GCP_OAUTH_REDIRECT_URI &&
+    env.GCP_INTEGRATION_PROJECT_ID &&
+    env.GCP_READER_SERVICE_ACCOUNT_EMAIL &&
+    env.GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL &&
+    env.GCP_PUBSUB_PUSH_ENDPOINT &&
+    gcpPushAudience &&
+    env.STATE_SIGNING_SECRET &&
+    env.AGENT_SECRETS_KEY
+  );
 
   return {
     edition,
@@ -92,6 +115,7 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
     vercelConnect,
     railwayConnect,
     renderConnect,
+    gcpConnect,
   };
 }
 

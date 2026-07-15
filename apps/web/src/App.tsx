@@ -11,6 +11,7 @@ import { Changelog } from "./Changelog.tsx";
 import { CommandPalette } from "./CommandPalette.tsx";
 import { Explore } from "./Explore.tsx";
 import { ForgotPassword } from "./ForgotPassword.tsx";
+import { GcpCallback } from "./GcpCallback.tsx";
 import { Issues } from "./Issues.tsx";
 import { Landing } from "./Landing.tsx";
 import { OauthConsent } from "./OauthConsent.tsx";
@@ -184,6 +185,7 @@ export function App() {
             tab (the install opens via window.open). */}
         <Route path="/connect/vercel" element={<VercelCallback />} />
         <Route path="/connect/railway" element={<RailwayCallback />} />
+        <Route path="/connect/gcp" element={<GcpCallback />} />
         <Route path="*" element={<AuthenticatedApp />} />
       </Routes>
     </>

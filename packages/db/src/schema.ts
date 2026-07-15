@@ -2517,6 +2517,72 @@ export const cloudStreamKeys = pgTable(
 
 export type CloudStreamKey = typeof cloudStreamKeys.$inferSelect;
 
+/**
+ * A customer GCP project connected to a Superlog project. The customer's
+ * short-lived OAuth token is deliberately never persisted: it is used during
+ * setup to create the Logging sink and grant the read-only service identity,
+ * then discarded. Pub/Sub resources live in the integration operator's GCP
+ * project, so their metered usage is not charged to the customer project.
+ */
+export type GcpConnectionStatus = "pending" | "provisioning" | "connected" | "failed";
+
+export const gcpConnections = pgTable(
+  "gcp_connections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    gcpProjectId: text("gcp_project_id").notNull(),
+    gcpProjectNumber: text("gcp_project_number"),
+    status: text("status").$type<GcpConnectionStatus>().notNull().default("pending"),
+    // Names of the per-connection resources owned by the integration project.
+    topicName: text("topic_name"),
+    subscriptionName: text("subscription_name"),
+    // Customer-owned route and the Google-managed identity that publishes it.
+    logSinkName: text("log_sink_name"),
+    logSinkWriterIdentity: text("log_sink_writer_identity"),
+    // Ownership provenance: only remove the monitoring grant on replacement
+    // when this connection originally created it.
+    monitoringViewerGrantCreated: boolean("monitoring_viewer_grant_created")
+      .notNull()
+      .default(false),
+    // Persisted for audit/display only; this is our read-only identity, not a
+    // customer secret or key.
+    readerServiceAccountEmail: text("reader_service_account_email").notNull(),
+    apiKeyId: uuid("api_key_id").references(() => apiKeys.id, { onDelete: "set null" }),
+    ingestKeyCiphertext: bytea("ingest_key_ciphertext"),
+    ingestKeyNonce: bytea("ingest_key_nonce"),
+    ingestKeyKeyVersion: integer("ingest_key_key_version"),
+    lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
+    lastLogReceivedAt: timestamp("last_log_received_at", { withTimezone: true }),
+    lastMetricsReceivedAt: timestamp("last_metrics_received_at", { withTimezone: true }),
+    // Legacy summary checkpoint retained for status display; delivery uses the
+    // per-metric map so a faster metric cannot hide a lagging metric type.
+    metricsCursor: timestamp("metrics_cursor", { withTimezone: true }),
+    metricsCursors: jsonb("metrics_cursors").$type<Record<string, string>>(),
+    // Monthly returned-series counter enforces the customer cost ceiling.
+    metricsBudgetMonth: text("metrics_budget_month"),
+    metricsSeriesRead: bigint("metrics_series_read", { mode: "number" }).notNull().default(0),
+    lastError: text("last_error"),
+    createdBy: uuid("created_by")
+      .notNull()
+      .references(() => users.id),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    projectIdx: index("gcp_connections_project_idx").on(t.projectId),
+    customerProjectIdx: index("gcp_connections_customer_project_idx").on(t.gcpProjectId),
+    activeProjectCustomerUniq: uniqueIndex("gcp_connections_active_project_customer_idx")
+      .on(t.projectId, t.gcpProjectId)
+      .where(sql`revoked_at IS NULL`),
+  }),
+);
+
+export type GcpConnection = typeof gcpConnections.$inferSelect;
+
 // A connected Cloudflare account via self-managed OAuth (GA 2026-06). One row per
 // (project, Cloudflare account). Access/refresh tokens are encrypted at rest with
 // the same AES-256-GCM scheme as the AWS-connect external ID. On connect we use
@@ -2817,7 +2883,9 @@ export const projectIngestFilters = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    source: text("source").$type<"otlp" | "aws" | "vercel" | "railway" | "render">().notNull(),
+    source: text("source")
+      .$type<"otlp" | "aws" | "gcp" | "vercel" | "railway" | "render">()
+      .notNull(),
     signal: text("signal").$type<"traces" | "logs" | "metrics">().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },

@@ -1,8 +1,5 @@
 import "./env.js";
 import { Readable } from "node:stream";
-// Telemetry flush is owned by shutdown() below (the single SIGTERM owner), not by
-// tracing.ts, so the OTel flush can't race the ingest drain and exit early.
-import { shutdownTelemetry } from "./telemetry-shutdown.js";
 import { serve } from "@hono/node-server";
 import { type Span, SpanStatusCode, metrics, trace } from "@opentelemetry/api";
 import {
@@ -14,11 +11,13 @@ import {
 } from "@superlog/db";
 import { db } from "@superlog/db";
 import { and, eq, isNull } from "drizzle-orm";
+import { OAuth2Client } from "google-auth-library";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { createIngestEntitlementGate, signalForPath } from "./billing/ingest-entitlement.js";
 import { EmptyBodyError, PayloadTooLargeError } from "./body-capture.js";
+import { ClickHouseIngestWriter, getIngestClickHouseConfig } from "./clickhouse-writer.js";
 import { EMPTY_BODY_ERROR_MESSAGE, isDeclaredEmptyBody } from "./empty-body-guard.js";
 import {
   FIREHOSE_ACCESS_KEY_HEADER,
@@ -28,11 +27,15 @@ import {
   firehoseResponseBody,
   parseAccountIdFromFirehoseArn,
 } from "./firehose.js";
-import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import {
-  ClickHouseIngestWriter,
-  getIngestClickHouseConfig,
-} from "./clickhouse-writer.js";
+  type GcpIdTokenVerifier,
+  acknowledgeGcpPubSubDelivery,
+  authenticateGcpPubSubPush,
+  gcpPubSubLogToOtlp,
+  resolveGcpPubSubPushAudience,
+} from "./gcp-pubsub.js";
+import { mountGcpMetricsPullRoute } from "./gcp-pull-routes.js";
+import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import { IngestQueue, getIngestQueueConfig } from "./ingest-queue.js";
 import {
   type IngestSource,
@@ -46,6 +49,9 @@ import { decodeOtlpMetricsPayload } from "./otlp-decode.js";
 import { stampRenderStreamMetrics } from "./render-metrics-stream.js";
 import { createRenderSyslogServer, renderSyslogToOtlp } from "./render-syslog.js";
 import { Semaphore } from "./semaphore.js";
+// Telemetry flush is owned by shutdown() below (the single SIGTERM owner), not by
+// tracing.ts, so the OTel flush can't race the ingest drain and exit early.
+import { shutdownTelemetry } from "./telemetry-shutdown.js";
 import { lookupOrgForProject, recordIngestRequest } from "./tenant-metrics.js";
 import { parseVercelLogDrainBody, vercelLogsToOtlp } from "./vercel-log-drain.js";
 
@@ -81,7 +87,10 @@ const ingestRowWriter =
     : undefined;
 if (ingestRowWriter) {
   logger.info(
-    { database: ingestClickHouseConfig?.database, insertQuorum: ingestClickHouseConfig?.insertQuorum },
+    {
+      database: ingestClickHouseConfig?.database,
+      insertQuorum: ingestClickHouseConfig?.insertQuorum,
+    },
     "ingest direct-to-clickhouse writes enabled for logs and traces",
   );
 }
@@ -105,6 +114,20 @@ const ingestSourceFilter = createIngestSourceFilter({
     return new Set(rows.map((r) => ingestFilterKey(r.source, r.signal)));
   },
 });
+
+const GCP_PUBSUB_PUSH_AUDIENCE = resolveGcpPubSubPushAudience(process.env);
+const GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL = process.env.GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL;
+const googleOidcClient = new OAuth2Client();
+const gcpIdTokenVerifier: GcpIdTokenVerifier = {
+  async verify({ idToken, audience }) {
+    const ticket = await googleOidcClient.verifyIdToken({ idToken, audience });
+    const payload = ticket.getPayload();
+    return {
+      email: payload?.email ?? null,
+      emailVerified: payload?.email_verified === true,
+    };
+  },
+};
 
 // Map an OTLP ingest path to its telemetry signal for the source filter.
 function otlpSignalForPath(path: string): TelemetrySignal | null {
@@ -172,13 +195,10 @@ ingestMeter
 // /v1/* guard below). A rising rate on one signal = a client looping empty
 // OTLP exports. No tenant attribute: we reject before resolving the key, which
 // is the whole point.
-const emptyBodyRejections = ingestMeter.createCounter(
-  "superlog.proxy.ingest.empty_body_rejected",
-  {
-    description:
-      "OTLP ingest requests fast-rejected pre-auth for a declared-empty (Content-Length: 0) body.",
-  },
-);
+const emptyBodyRejections = ingestMeter.createCounter("superlog.proxy.ingest.empty_body_rejected", {
+  description:
+    "OTLP ingest requests fast-rejected pre-auth for a declared-empty (Content-Length: 0) body.",
+});
 
 // Hard per-request body ceiling for the no-queue (direct) path. The queue path
 // enforces its own copy via IngestQueueConfig.maxBodyBytes; both read the same
@@ -353,6 +373,10 @@ app.use("/vercel/drains/*", validateIngestKey);
 app.use("/railway/pull/*", validateIngestKey);
 app.use("/render/pull/*", validateIngestKey);
 app.use("/render/stream/*", validateIngestKey);
+mountGcpMetricsPullRoute(app, {
+  validateIngestKey,
+  forward: (c) => forward(c, "/v1/metrics", "resourceMetrics", { source: "gcp" }),
+});
 
 app.post("/v1/traces", (c) => forward(c, "/v1/traces", "resourceSpans"));
 app.post("/v1/logs", (c) => forward(c, "/v1/logs", "resourceLogs"));
@@ -378,7 +402,9 @@ app.post("/vercel/drains/logs", (c) =>
 // installation's ingest key — same tenant resolution and per-source filter
 // discipline as the Vercel drains, just pushed by our own worker instead of
 // the vendor.
-app.post("/railway/pull/logs", (c) => forward(c, "/v1/logs", "resourceLogs", { source: "railway" }));
+app.post("/railway/pull/logs", (c) =>
+  forward(c, "/v1/logs", "resourceLogs", { source: "railway" }),
+);
 app.post("/railway/pull/metrics", (c) =>
   forward(c, "/v1/metrics", "resourceMetrics", { source: "railway" }),
 );
@@ -426,6 +452,59 @@ app.post("/aws/firehose/metrics", (c) =>
   forwardFirehose(c, FIREHOSE_METRICS_COLLECTOR_URL, "metrics"),
 );
 app.post("/aws/firehose/logs", (c) => forwardFirehose(c, FIREHOSE_LOGS_COLLECTOR_URL, "logs"));
+
+// Cloud Logging delivers each LogEntry through a per-connection Pub/Sub push
+// subscription owned by the integration project. Google signs the request with
+// the configured push service account; only after audience + email verification
+// do we resolve the connection id to a tenant and enter the normal bounded
+// ingest pipeline. No customer-controlled project id is trusted from the body.
+app.post("/gcp/pubsub/:connectionId", async (c) => {
+  if (!GCP_PUBSUB_PUSH_AUDIENCE || !GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL) {
+    return c.json({ error: "GCP Pub/Sub intake is not configured" }, 503);
+  }
+  try {
+    await authenticateGcpPubSubPush({
+      authorization: c.req.header("authorization"),
+      audience: GCP_PUBSUB_PUSH_AUDIENCE,
+      serviceAccountEmail: GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL,
+      verifier: gcpIdTokenVerifier,
+    });
+  } catch (error) {
+    logger.warn(
+      { err: error instanceof Error ? error.message : String(error) },
+      "rejecting unauthenticated GCP Pub/Sub push",
+    );
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const connection = await db.query.gcpConnections.findFirst({
+    where: and(
+      eq(schema.gcpConnections.id, c.req.param("connectionId")),
+      eq(schema.gcpConnections.status, "connected"),
+      isNull(schema.gcpConnections.revokedAt),
+    ),
+  });
+  if (!connection) {
+    return acknowledgeGcpPubSubDelivery(c.json({ error: "GCP connection not found" }, 404));
+  }
+
+  const response = await forward(c, "/v1/logs", "resourceLogs", {
+    source: "gcp",
+    trustedProjectId: connection.projectId,
+    bodyTransform: (body) => ({
+      body: Buffer.from(JSON.stringify(gcpPubSubLogToOtlp(body, connection.gcpProjectId))),
+      contentType: "application/json",
+    }),
+  });
+  if (response.ok) {
+    void db
+      .update(schema.gcpConnections)
+      .set({ lastLogReceivedAt: new Date(), updatedAt: new Date() })
+      .where(eq(schema.gcpConnections.id, connection.id))
+      .catch((err: unknown) => logger.warn({ err }, "failed to update GCP log receipt time"));
+  }
+  return acknowledgeGcpPubSubDelivery(response);
+});
 
 app.get("/health", (c) => c.json({ ok: true }));
 
@@ -523,6 +602,10 @@ function isTestKey(key: string | null): boolean {
 
 type ForwardOptions = {
   source?: IngestSource;
+  // A vendor-authenticated route can pin the tenant without presenting a
+  // project ingest key. Only set after verifying the vendor's signed identity
+  // and resolving a connected integration row.
+  trustedProjectId?: string;
   bodyTransform?: (
     body: Buffer,
     contentType: string,
@@ -538,7 +621,7 @@ async function forward(
 ) {
   return tracer.startActiveSpan("ingest.forward", async (span) => {
     const startedAt = performance.now();
-    const projectId = c.var.projectId;
+    const projectId = opts.trustedProjectId ?? c.var.projectId;
     const source = opts.source ?? "otlp";
     let contentType = c.req.header("content-type") ?? "application/x-protobuf";
     let contentEncoding = c.req.header("content-encoding");

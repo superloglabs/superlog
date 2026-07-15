@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   type Me,
+  useFetcher,
   useMe,
   useOrgProjects,
   useSetActiveProject,
@@ -82,12 +83,15 @@ export function OrgProjectSwitcher() {
 
 type Step = "orgs" | "projects";
 
+type SwitchProject = { id: string; name: string; slug: string };
+
 function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void }) {
   const orgsQuery = useListOrganizations();
   const activeOrgQuery = useActiveOrganization();
   const projects = useOrgProjects();
   const setActiveProject = useSetActiveProject();
   const setFavoriteProject = useSetFavoriteProject();
+  const fetcher = useFetcher();
   const qc = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -99,6 +103,15 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
   const [copied, setCopied] = useState(false);
+  // Set while drilling into a *different* org's projects (a cross-org switch to
+  // a multi-project org). Its projects come from the read-only org-route
+  // endpoint, not useOrgProjects (which is scoped to the active org), and
+  // picking one navigates URL-first without touching the session.
+  const [crossOrg, setCrossOrg] = useState<{
+    orgSlug: string;
+    orgName: string;
+    projects: SwitchProject[];
+  } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -112,11 +125,11 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
   const activeOrgId = activeOrgQuery.data?.id ?? me.org.id;
   const activeOrgSlug = orgsQuery.data?.find((org) => org.id === activeOrgId)?.slug ?? me.org.slug;
 
-  const navigateToProject = useCallback(
-    (projectSlug: string) => {
+  const navigateToOrgProject = useCallback(
+    (orgSlug: string, projectSlug: string) => {
       navigate(
         canonicalProjectLocation(
-          { orgSlug: activeOrgSlug, projectSlug },
+          { orgSlug, projectSlug },
           {
             pathname: appPathFromProjectRoute(location.pathname),
             search: location.search,
@@ -126,9 +139,19 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
         { replace: true },
       );
     },
-    [activeOrgSlug, location.hash, location.pathname, location.search, navigate],
+    [location.hash, location.pathname, location.search, navigate],
   );
 
+  const navigateToProject = useCallback(
+    (projectSlug: string) => navigateToOrgProject(activeOrgSlug, projectSlug),
+    [activeOrgSlug, navigateToOrgProject],
+  );
+
+  // Drilling into the *current* org's project list. This only runs for a
+  // same-org click (switchOrgAndDrill sets pendingOrgSwitch only then), so the
+  // active org and its projects are already loaded and the dropdown stays
+  // mounted. A different-org switch is handled entirely in switchOrgAndDrill
+  // because that path tears this component down (see below).
   useEffect(() => {
     if (!pendingOrgSwitch) return;
     if (activeOrgId !== pendingOrgSwitch.targetOrgId) return;
@@ -153,13 +176,49 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
   ]);
 
   const switchOrgAndDrill = async (orgId: string) => {
-    setPendingOrgSwitch({ targetOrgId: orgId });
-    if (activeOrgId === orgId) return;
-    await authClient.organization.setActive({ organizationId: orgId });
-    await Promise.all([
-      qc.invalidateQueries({ queryKey: ["me"] }),
-      qc.invalidateQueries({ queryKey: ["org-projects"] }),
-    ]);
+    // Clicking the current org just drills into its project list — no session
+    // change, so the dropdown stays mounted and the effect above takes over.
+    if (activeOrgId === orgId) {
+      setPendingOrgSwitch({ targetOrgId: orgId });
+      return;
+    }
+    // Switching to a *different* org is URL-first and deliberately does NOT
+    // touch the session here. We resolve the target org's canonical route (its
+    // slug + a project slug) from a read-only endpoint, then navigate there.
+    // ProjectRouteBoundary then sees the new URL against the still-current
+    // session and switches the active org to match the URL — its normal,
+    // revert-free reconciliation (the same path used when a scoped URL is
+    // opened directly).
+    //
+    // The tempting shortcut — call setActive first, then navigate — is racy:
+    // setActive moves the session to the new org (and trips ActiveOrgSync's
+    // queryClient.clear()) before the URL catches up, and in that window the
+    // boundary sees new-org `me` on the old URL and reconciles *backwards*,
+    // reverting the switch. Not switching the session until the URL leads
+    // removes that window entirely.
+    let route: {
+      org: { id: string; name: string; slug: string };
+      defaultProjectSlug: string;
+      projects: SwitchProject[];
+    };
+    try {
+      route = await fetcher(`/api/me/org-route?orgId=${encodeURIComponent(orgId)}`);
+    } catch {
+      // Best effort: if route resolution fails, leave the user where they are.
+      onClose();
+      return;
+    }
+    // One project: switch straight to it. Several: drill into a picker for the
+    // target org (the dropdown stays mounted since we haven't touched the
+    // session), mirroring the same-org drill-down.
+    if (route.projects.length <= 1) {
+      navigateToOrgProject(route.org.slug, route.defaultProjectSlug);
+      onClose();
+      return;
+    }
+    setCrossOrg({ orgSlug: route.org.slug, orgName: route.org.name, projects: route.projects });
+    setStep("projects");
+    setQuery("");
   };
 
   const manageOrg = async (orgId: string) => {
@@ -175,6 +234,15 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
   };
 
   const pickProject = async (projectId: string) => {
+    // Cross-org pick: navigate URL-first to the chosen project in the target
+    // org. Don't set the active project here — ProjectRouteBoundary moves both
+    // org and project to match the URL.
+    if (crossOrg) {
+      const project = crossOrg.projects.find((candidate) => candidate.id === projectId);
+      if (project) navigateToOrgProject(crossOrg.orgSlug, project.slug);
+      onClose();
+      return;
+    }
     const project = projects.data?.projects.find((candidate) => candidate.id === projectId);
     if (projectId === me.project.id) {
       if (project) navigateToProject(project.slug);
@@ -199,6 +267,7 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
     setStep("orgs");
     setQuery("");
     setPendingOrgSwitch(null);
+    setCrossOrg(null);
   };
 
   const copyId = async () => {
@@ -227,9 +296,11 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
     [orgRows, q],
   );
 
-  const projectList = projects.data?.projects ?? [
-    { id: me.project.id, name: me.project.name, slug: me.project.slug },
-  ];
+  const projectList: SwitchProject[] = crossOrg
+    ? crossOrg.projects
+    : (projects.data?.projects ?? [
+        { id: me.project.id, name: me.project.name, slug: me.project.slug },
+      ]);
   const matchedProjects = useMemo(
     () =>
       q
@@ -277,7 +348,7 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
   };
 
   const isSwitching = !!pendingOrgSwitch;
-  const drilledHeader = step === "projects" ? me.org.name : null;
+  const drilledHeader = step === "projects" ? (crossOrg?.orgName ?? me.org.name) : null;
 
   return (
     <div className="absolute right-0 top-full z-40 mt-2 w-80 overflow-hidden rounded-lg border border-border bg-surface shadow-[0_10px_30px_-10px_rgba(0,0,0,0.4)]">
@@ -337,32 +408,38 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
               {matchedProjects.map((p, i) => (
                 <FilterRow
                   key={p.id}
-                  active={p.id === me.project.id}
+                  // Cross-org rows have no "active"/favorite state: they belong
+                  // to a different org than the current session.
+                  active={!crossOrg && p.id === me.project.id}
                   highlighted={highlight === i}
                   onClick={() => void pickProject(p.id)}
                   primary={p.name}
                   secondary={p.slug}
                   query={q}
-                  isFavorite={p.id === favoriteProjectId}
-                  onToggleFavorite={() => toggleFavorite(p.id)}
+                  isFavorite={!crossOrg && p.id === favoriteProjectId}
+                  onToggleFavorite={crossOrg ? undefined : () => toggleFavorite(p.id)}
                 />
               ))}
             </ul>
           </ScrollArea>
-          <div className="h-px bg-border" />
-          <div className="px-3 py-2.5">
-            <div className="text-[11px] font-medium text-subtle">Project ID</div>
-            <button
-              type="button"
-              onClick={copyId}
-              className="mt-1 flex w-full items-center justify-between gap-2 text-left font-mono text-[11px] tabular-nums text-muted hover:text-fg"
-            >
-              <span className="truncate">{me.project.id}</span>
-              <span className="shrink-0 font-sans text-[11px] text-subtle">
-                {copied ? "Copied" : "Copy"}
-              </span>
-            </button>
-          </div>
+          {!crossOrg && (
+            <>
+              <div className="h-px bg-border" />
+              <div className="px-3 py-2.5">
+                <div className="text-[11px] font-medium text-subtle">Project ID</div>
+                <button
+                  type="button"
+                  onClick={copyId}
+                  className="mt-1 flex w-full items-center justify-between gap-2 text-left font-mono text-[11px] tabular-nums text-muted hover:text-fg"
+                >
+                  <span className="truncate">{me.project.id}</span>
+                  <span className="shrink-0 font-sans text-[11px] text-subtle">
+                    {copied ? "Copied" : "Copy"}
+                  </span>
+                </button>
+              </div>
+            </>
+          )}
         </>
       )}
 
