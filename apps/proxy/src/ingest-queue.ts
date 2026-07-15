@@ -653,9 +653,6 @@ export class IngestQueue {
   // Set by stop(); flips the consume loops out of their receive cycle so a
   // rolling deploy can drain cleanly instead of abandoning in-flight messages.
   private shuttingDown = false;
-  // Aborts an idle long-poll ReceiveMessage immediately on stop() so draining
-  // does not wait out the full waitTimeSeconds before the loop notices.
-  private readonly shutdownController = new AbortController();
   // Resolves once every consume loop has exited; stop() awaits it.
   private consumersDone: Promise<void> | null = null;
 
@@ -679,18 +676,16 @@ export class IngestQueue {
 
   /**
    * Drain the consumer for a graceful shutdown (e.g. SIGTERM from an ECS rolling
-   * deploy). Stops issuing new ReceiveMessage calls, aborts any idle long-poll,
-   * and waits for in-flight messages to finish processing — each delivered
-   * message is deleted before its loop exits. Without this, a deploy kills the
-   * task mid-batch and the received-but-undeleted messages stay invisible for the
-   * full visibility timeout before redelivering, which pins SQS
-   * ApproximateAgeOfOldestMessage into a sawtooth and trips the ingest-lag page.
-   * Idempotent.
+   * deploy). Stops issuing new ReceiveMessage calls and waits for outstanding
+   * long polls plus in-flight messages to finish — each delivered message is
+   * deleted before its loop exits. The long polls must not be client-aborted:
+   * SQS can assign a message to a server-side receive after the local abort,
+   * leaving it invisible without a live client to receive its receipt handle.
+   * ECS's stop timeout comfortably exceeds the long-poll wait. Idempotent.
    */
   async stop(): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
-    this.shutdownController.abort();
     this.logger.info(
       { queueUrl: this.config.queueUrl },
       "ingest queue consumer draining in-flight messages",
@@ -720,24 +715,14 @@ export class IngestQueue {
     );
 
     while (!this.shuttingDown) {
-      let result: ReceiveMessageCommandOutput;
-      try {
-        result = await this.sqs.send(
-          new ReceiveMessageCommand({
-            QueueUrl: this.config.queueUrl,
-            MaxNumberOfMessages: this.config.batchSize,
-            WaitTimeSeconds: this.config.waitTimeSeconds,
-            VisibilityTimeout: this.config.visibilityTimeoutSeconds,
-          }),
-          { abortSignal: this.shutdownController.signal },
-        );
-      } catch (err) {
-        // stop() aborts the in-flight long-poll; that surfaces here as an abort
-        // error. Exit cleanly when draining; otherwise preserve the previous
-        // crash-on-unexpected-failure behaviour.
-        if (this.shuttingDown) break;
-        throw err;
-      }
+      const result: ReceiveMessageCommandOutput = await this.sqs.send(
+        new ReceiveMessageCommand({
+          QueueUrl: this.config.queueUrl,
+          MaxNumberOfMessages: this.config.batchSize,
+          WaitTimeSeconds: this.config.waitTimeSeconds,
+          VisibilityTimeout: this.config.visibilityTimeoutSeconds,
+        }),
+      );
 
       // A batch received just before stop() is still drained: we finish
       // processing (and deleting) it before the while-condition exits the loop.
