@@ -81,8 +81,10 @@ function makeDeps(overrides: DepsOverrides = {}) {
       (async () => {
         calls.push("fail_context_unavailable");
       }),
+    hasDetachedSessionTermination: overrides.hasDetachedSessionTermination ?? (async () => false),
     listActiveRunIds: overrides.listActiveRunIds ?? (async () => []),
     handlers: {
+      terminateSession: overrides.handlers?.terminateSession ?? handler("terminate_session"),
       reconcileHandoff: overrides.handlers?.reconcileHandoff ?? handler("reconcile_handoff"),
       start: overrides.handlers?.start ?? handler("start"),
       sync: overrides.handlers?.sync ?? handler("sync"),
@@ -163,6 +165,45 @@ test("advance worker dispatches by run state", async () => {
       `state ${state} must reconcile before dispatching ${expected}`,
     );
   }
+});
+
+test("advance worker retries durable provider-session termination before state dispatch", async () => {
+  const fb = fakeBoss();
+  const { deps, calls } = makeDeps({
+    loadRun: async (id) =>
+      ({
+        ...runOf(id, "complete"),
+        providerSessionId: "session-1",
+        providerSessionStatus: "termination_pending",
+      }) as schema.AgentRun,
+  });
+  await registerAgentRunQueue(fb.boss, deps);
+  const worker = fb.workers.get(AGENT_RUN_ADVANCE_QUEUE);
+  assert.ok(worker);
+
+  await worker([{ id: "job-1", data: { agentRunId: "run-1" } }]);
+
+  assert.deepEqual(calls, ["terminate_session"]);
+});
+
+test("advance worker retries a detached provider session without touching the owned run", async () => {
+  const fb = fakeBoss();
+  const { deps, calls } = makeDeps({
+    loadRun: async (id) =>
+      ({
+        ...runOf(id, "running"),
+        providerSessionId: "owned-session",
+        providerSessionStatus: "running",
+      }) as schema.AgentRun,
+    hasDetachedSessionTermination: async () => true,
+  });
+  await registerAgentRunQueue(fb.boss, deps);
+  const worker = fb.workers.get(AGENT_RUN_ADVANCE_QUEUE);
+  assert.ok(worker);
+
+  await worker([{ id: "job-1", data: { agentRunId: "run-1" } }]);
+
+  assert.deepEqual(calls, ["terminate_session"]);
 });
 
 test("advance worker reconciles terminal handoffs and skips missing or malformed jobs", async () => {

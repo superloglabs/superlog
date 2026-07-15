@@ -35,7 +35,7 @@ test("resolveDefaultAgentRunProvider rejects invalid env values loudly", () => {
   );
 });
 
-test("agent runtime validation accepts public and closed-overlay providers", () => {
+test("agent runtime validation accepts built-in and deployment-provided providers", () => {
   assert.deepEqual([...AGENT_RUN_PROVIDERS], ["community", "anthropic", "disabled"]);
   assert.equal(isAgentRunProvider("community"), true);
   assert.equal(isAgentRunProvider("anthropic"), true);

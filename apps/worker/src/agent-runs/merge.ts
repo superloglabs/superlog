@@ -296,6 +296,7 @@ async function applyMergeOutcome(opts: {
     sourceIncident: ctx.incident,
     targetIncident: target,
     evidence,
+    providerSessionIdToTerminate: sessionId,
   });
   // We deliberately do not relay a completed-investigation update for a merge
   // (the run didn't finish investigating a new problem). Instead we emit an

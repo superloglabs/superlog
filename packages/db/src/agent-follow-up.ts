@@ -13,7 +13,7 @@
 // Shared between the API (webhooks/interactivity) and the worker (context
 // assembly), hence it lives in the db package next to the other cross-app
 // domain logic.
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { DB } from "./client.js";
 import * as schema from "./schema.js";
 import { isFollowUpTrigger } from "./schema.js";
@@ -24,6 +24,59 @@ import type {
   AgentRunTriggerDetail,
 } from "./schema.js";
 
+type AgentFollowUpTransaction = Parameters<Parameters<DB["transaction"]>[0]>[0];
+
+type LockedAgentFollowUpAggregate = {
+  incident: {
+    id: string;
+    projectId: string;
+    status: schema.IncidentStatus;
+  };
+  runs: Array<{
+    id: string;
+    state: schema.AgentRun["state"];
+    trigger: AgentRunTrigger;
+    triggerDetail: AgentRunTriggerDetail | null;
+    providerSessionId: string | null;
+    completedAt: Date | null;
+    runtime: string;
+  }>;
+};
+
+async function lockAgentFollowUpAggregate(
+  tx: AgentFollowUpTransaction,
+  incidentId: string,
+): Promise<LockedAgentFollowUpAggregate | null> {
+  const incidents = await tx
+    .select({
+      id: schema.incidents.id,
+      projectId: schema.incidents.projectId,
+      status: schema.incidents.status,
+    })
+    .from(schema.incidents)
+    .where(eq(schema.incidents.id, incidentId))
+    .orderBy(schema.incidents.id)
+    .for("update");
+  const incident = incidents[0];
+  if (!incident) return null;
+
+  const runs = await tx
+    .select({
+      id: schema.agentRuns.id,
+      state: schema.agentRuns.state,
+      trigger: schema.agentRuns.trigger,
+      triggerDetail: schema.agentRuns.triggerDetail,
+      providerSessionId: schema.agentRuns.providerSessionId,
+      completedAt: schema.agentRuns.completedAt,
+      runtime: schema.agentRuns.runtime,
+    })
+    .from(schema.agentRuns)
+    .where(eq(schema.agentRuns.incidentId, incidentId))
+    .orderBy(desc(schema.agentRuns.createdAt), desc(schema.agentRuns.id))
+    .for("update");
+  return { incident, runs };
+}
+
 export const MAX_FOLLOW_UP_RUNS = 3;
 export const FOLLOW_UP_MAX_AGE_DAYS = 14;
 
@@ -33,9 +86,19 @@ const EXECUTING_STATES = [
   "running",
   "awaiting_human",
   "awaiting_events",
+  "resuming",
   "pr_retry_queued",
   "blocked_no_github",
 ];
+
+const STARTED_FOLLOW_UP_STATES = new Set([
+  "repo_discovery",
+  "running",
+  "awaiting_human",
+  "awaiting_events",
+  "resuming",
+  "pr_retry_queued",
+]);
 
 // States where the agent is actively working a turn — a new message should be
 // steered into the live session, not stacked behind it.
@@ -156,45 +219,193 @@ export function evaluateFollowUpEligibility(input: FollowUpEligibilityInput): Fo
 export type RequestFollowUpResult =
   | { outcome: "enqueued"; agentRunId: string }
   | { outcome: "appended"; agentRunId: string }
-  | { outcome: "skipped"; reason: Extract<FollowUpVerdict, { action: "skip" }>["reason"] };
+  | {
+      outcome: "skipped";
+      reason: Extract<FollowUpVerdict, { action: "skip" }>["reason"] | "incident_not_open";
+    };
+
+type RequestFollowUpArgs = {
+  incidentId: string;
+  trigger: AgentRunFollowUpTrigger;
+  interaction: AgentRunFollowUpInteraction;
+  confirmed?: boolean;
+  now?: Date;
+};
+
+const RESTARTABLE_AGENT_RUN_STATES = [
+  "queued",
+  "repo_discovery",
+  "running",
+  "awaiting_human",
+  "awaiting_events",
+  "resuming",
+  "pr_retry_queued",
+  "blocked_no_github",
+];
+
+export type RestartAgentRunResult =
+  | { outcome: "restarted"; agentRun: schema.AgentRun }
+  | { outcome: "incident_not_open" }
+  | { outcome: "no_prior_run" };
+
+export async function restartAgentRun(
+  db: DB,
+  args: { incidentId: string; runtime: string; now?: Date },
+): Promise<RestartAgentRunResult> {
+  const now = args.now ?? new Date();
+  return db.transaction(async (tx) => {
+    const aggregate = await lockAgentFollowUpAggregate(tx, args.incidentId);
+    if (!aggregate || aggregate.runs.length === 0) return { outcome: "no_prior_run" };
+    if (aggregate.incident.status !== "open") return { outcome: "incident_not_open" };
+    const latest = aggregate.runs[0];
+    if (!latest) return { outcome: "no_prior_run" };
+
+    const superseded = await tx
+      .update(schema.agentRuns)
+      .set({ state: "superseded", completedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(schema.agentRuns.incidentId, args.incidentId),
+          inArray(schema.agentRuns.state, RESTARTABLE_AGENT_RUN_STATES),
+        ),
+      )
+      .returning({
+        id: schema.agentRuns.id,
+        providerSessionId: schema.agentRuns.providerSessionId,
+        providerSessionStatus: schema.agentRuns.providerSessionStatus,
+      });
+    const sessionsToTerminate = superseded.filter(
+      (run) => run.providerSessionId && run.providerSessionStatus !== "terminated",
+    );
+    if (sessionsToTerminate.length > 0) {
+      await tx
+        .update(schema.agentRuns)
+        .set({ providerSessionStatus: "termination_pending", updatedAt: now })
+        .where(
+          inArray(
+            schema.agentRuns.id,
+            sessionsToTerminate.map((run) => run.id),
+          ),
+        );
+    }
+    if (superseded.length > 0) {
+      await tx.insert(schema.incidentEvents).values(
+        superseded.map((run) => ({
+          incidentId: args.incidentId,
+          agentRunId: run.id,
+          kind: "agent_run_superseded",
+          summary: "Investigation superseded by a restart.",
+          dedupeKey: `superseded:${run.id}:${now.getTime()}`,
+          processedAt: now,
+        })),
+      );
+    }
+
+    const [created] = await tx
+      .insert(schema.agentRuns)
+      .values({
+        incidentId: args.incidentId,
+        runtime: args.runtime,
+        state: "queued",
+      })
+      .returning();
+    if (!created) throw new Error("failed to restart agent run");
+    if (superseded.length > 0) {
+      // A lifecycle delivery is deduped across the whole Incident. Keep its
+      // unprocessed input attached to the run that can still consume it;
+      // otherwise a webhook redelivery would correctly dedupe against an
+      // event stranded on a superseded predecessor and no run would act.
+      await tx
+        .update(schema.incidentEvents)
+        .set({ agentRunId: created.id })
+        .where(
+          and(
+            inArray(
+              schema.incidentEvents.agentRunId,
+              superseded.map((run) => run.id),
+            ),
+            eq(schema.incidentEvents.kind, "human_reply"),
+            isNull(schema.incidentEvents.processedAt),
+          ),
+        );
+    }
+    await tx.insert(schema.incidentEvents).values({
+      incidentId: args.incidentId,
+      agentRunId: created.id,
+      kind: "agent_run_restarted",
+      summary: "Investigation restarted.",
+      detail: {
+        restartedFromAgentRunId: latest.id,
+        restartedFromState: latest.state,
+      },
+      dedupeKey: `restart:${created.id}`,
+      processedAt: now,
+    });
+    return { outcome: "restarted", agentRun: created };
+  });
+}
+
+async function listOpenPullRequestContext(
+  db: AgentFollowUpTransaction,
+  incidentId: string,
+): Promise<schema.AgentRunFollowUpPullRequest[]> {
+  const rows = await db.query.agentPullRequests.findMany({
+    where: and(
+      eq(schema.agentPullRequests.incidentId, incidentId),
+      eq(schema.agentPullRequests.state, "open"),
+    ),
+    orderBy: [asc(schema.agentPullRequests.createdAt), asc(schema.agentPullRequests.id)],
+    columns: {
+      id: true,
+      repoFullName: true,
+      prNumber: true,
+      url: true,
+      branchName: true,
+      baseBranch: true,
+      state: true,
+    },
+  });
+  return rows.map((pullRequest) => ({
+    agentPrId: pullRequest.id,
+    repoFullName: pullRequest.repoFullName,
+    prNumber: pullRequest.prNumber,
+    url: pullRequest.url,
+    branchName: pullRequest.branchName,
+    baseBranch: pullRequest.baseBranch,
+    state: pullRequest.state,
+  }));
+}
 
 // Evaluate and act: insert a queued follow-up run (with a follow_up_queued
 // timeline event), append the interaction to an already-queued follow-up, or
-// skip. Callers pass the interaction from their channel verbatim.
+// skip. The Incident and all of its AgentRuns form the serialization boundary:
+// two public callers cannot both enqueue from the same terminal predecessor or
+// overwrite one another while appending to a queued successor.
 export async function requestFollowUpAgentRun(
   db: DB,
-  args: {
-    incidentId: string;
-    trigger: AgentRunFollowUpTrigger;
-    interaction: AgentRunFollowUpInteraction;
-    confirmed?: boolean;
-    now?: Date;
-  },
+  args: RequestFollowUpArgs,
+): Promise<RequestFollowUpResult> {
+  return db.transaction(async (tx) => {
+    const aggregate = await lockAgentFollowUpAggregate(tx, args.incidentId);
+    if (!aggregate) return { outcome: "skipped", reason: "no_prior_run" };
+    return requestFollowUpAgentRunInTx(tx, args, aggregate);
+  });
+}
+
+async function requestFollowUpAgentRunInTx(
+  db: AgentFollowUpTransaction,
+  args: RequestFollowUpArgs,
+  aggregate: LockedAgentFollowUpAggregate,
 ): Promise<RequestFollowUpResult> {
   const now = args.now ?? new Date();
-
-  const incident = await db.query.incidents.findFirst({
-    where: eq(schema.incidents.id, args.incidentId),
-    columns: { id: true, projectId: true },
-  });
-  if (!incident) return { outcome: "skipped", reason: "no_prior_run" };
+  const { incident, runs } = aggregate;
+  if (incident.status !== "open") {
+    return { outcome: "skipped", reason: "incident_not_open" };
+  }
 
   const automation = await db.query.projectAutomationSettings.findFirst({
     where: eq(schema.projectAutomationSettings.projectId, incident.projectId),
     columns: { agentRunEnabled: true, autoFollowUpEnabled: true, agentRunProvider: true },
-  });
-
-  const runs = await db.query.agentRuns.findMany({
-    where: eq(schema.agentRuns.incidentId, args.incidentId),
-    orderBy: [desc(schema.agentRuns.createdAt)],
-    columns: {
-      id: true,
-      state: true,
-      trigger: true,
-      triggerDetail: true,
-      completedAt: true,
-      runtime: true,
-    },
   });
   const activeRun =
     runs.find((run) => run.state === "queued" || EXECUTING_STATES.includes(run.state)) ?? null;
@@ -214,11 +425,14 @@ export async function requestFollowUpAgentRun(
   });
 
   if (verdict.action === "skip") return { outcome: "skipped", reason: verdict.reason };
+  const pullRequests = await listOpenPullRequestContext(db, args.incidentId);
 
   if (verdict.action === "append") {
     const existing = activeRun?.triggerDetail ?? { interactions: [] };
     const detail: AgentRunTriggerDetail = {
+      ...existing,
       interactions: [...existing.interactions, args.interaction],
+      pullRequests,
     };
     // The state predicate guards against the run leaving `queued` between
     // our read and this write; .returning() tells us whether we actually
@@ -242,7 +456,7 @@ export async function requestFollowUpAgentRun(
       ...(runtime ? { runtime } : {}),
       state: "queued",
       trigger: args.trigger,
-      triggerDetail: { interactions: [args.interaction] },
+      triggerDetail: { interactions: [args.interaction], pullRequests },
     })
     .returning({ id: schema.agentRuns.id });
   if (!created) throw new Error("failed to enqueue follow-up agent run");
@@ -252,7 +466,7 @@ export async function requestFollowUpAgentRun(
     incidentId: args.incidentId,
     kind: "follow_up_queued",
     summary: followUpQueuedSummary(args.trigger),
-    detail: { trigger: args.trigger, interaction: args.interaction },
+    detail: { trigger: args.trigger, interaction: args.interaction, pullRequests },
     dedupeKey: `follow_up:${created.id}`,
     processedAt: now,
   });
@@ -281,49 +495,31 @@ export async function recordInboundInteraction(
     // Channel-specific event detail (Slack ids, etc.); `origin` is merged in.
     detail?: Record<string, unknown>;
     confirmed?: boolean;
+    // PR merge/close lifecycle delivery may continue an existing durable
+    // session (including a queued handoff successor), but must not create a
+    // brand-new investigation. Evaluated only after the Incident lock and
+    // fresh run read so the deterministic fallback cannot race a handoff.
+    existingSessionOnly?: boolean;
     now?: Date;
   },
 ): Promise<RecordInboundInteractionResult> {
   const now = args.now ?? new Date();
-  const incident = await db.query.incidents.findFirst({
-    where: eq(schema.incidents.id, args.incidentId),
-    columns: { id: true, projectId: true },
-  });
-  if (!incident) return { outcome: "skipped", reason: "no_prior_run" };
+  return db.transaction(async (tx) => {
+    // Shared lock order with resolution and dead-session handoff: Incident
+    // first, then its AgentRuns. Any reply that wins before handoff is copied
+    // by that handoff; any reply that wins after sees the queued successor.
+    const aggregate = await lockAgentFollowUpAggregate(tx, args.incidentId);
+    if (!aggregate) return { outcome: "skipped", reason: "no_prior_run" };
+    const { incident } = aggregate;
+    if (incident.status !== "open") {
+      return { outcome: "skipped", reason: "incident_not_open" };
+    }
+    const latestRun = aggregate.runs[0] ?? null;
 
-  const automation = await db.query.projectAutomationSettings.findFirst({
-    where: eq(schema.projectAutomationSettings.projectId, incident.projectId),
-    columns: { agentRunEnabled: true, autoFollowUpEnabled: true },
-  });
-
-  const latestRun = await db.query.agentRuns.findFirst({
-    where: eq(schema.agentRuns.incidentId, args.incidentId),
-    orderBy: [desc(schema.agentRuns.createdAt)],
-    columns: { id: true, state: true, providerSessionId: true },
-  });
-
-  const verdict = decideInboundContinuation({
-    agentRunEnabled: automation?.agentRunEnabled ?? true,
-    autoFollowUpEnabled: automation?.autoFollowUpEnabled ?? true,
-    confirmed: args.confirmed ?? false,
-    latestRun: latestRun ?? null,
-  });
-
-  if (verdict.action === "skip") return { outcome: "skipped", reason: verdict.reason };
-
-  if (verdict.action === "cold_start") {
-    // Idempotency for provider/webhook retries: cold-start enqueues/appends a
-    // run, which the dedupe key doesn't otherwise guard. Two layers, both
-    // BEFORE we enqueue so a retry can never double-process one message:
-    //   1. Incident-scoped read — catches a sequential retry whose latest run
-    //      changed (the prior attempt's marker now sits on a different run).
-    //   2. Atomic claim insert against the current latest run — the unique
-    //      (agentRunId, dedupeKey) index lets only one of N concurrent racers
-    //      win; the losers get an empty `.returning()` and bail. cold_start
-    //      only arises when a latest run exists, so there is always a run to
-    //      claim against. The marker is pre-processed so it's never re-consumed
-    //      as a pending human reply.
-    const seen = await db.query.incidentEvents.findFirst({
+    // Incident-scoped idempotency survives a handoff that changes the target
+    // AgentRun; the row-level partial unique index alone only dedupes within
+    // one run.
+    const seen = await tx.query.incidentEvents.findFirst({
       where: and(
         eq(schema.incidentEvents.incidentId, args.incidentId),
         eq(schema.incidentEvents.dedupeKey, args.dedupeKey),
@@ -332,99 +528,139 @@ export async function recordInboundInteraction(
     });
     if (seen) return { outcome: "duplicate" };
 
-    // Claim the dedupe key atomically (the unique (agentRunId, dedupeKey) index
-    // lets only one concurrent racer win). We RELEASE the claim if the enqueue
-    // then fails or is skipped, so the key is only durably consumed once the
-    // follow-up actually exists — a transient failure or a later state change
-    // can be retried instead of silently dropped.
-    let claimId: string | null = null;
-    if (latestRun) {
-      const [claim] = await db
-        .insert(schema.incidentEvents)
-        .values({
-          agentRunId: latestRun.id,
-          incidentId: args.incidentId,
-          kind: "human_reply",
-          summary: args.interaction.text,
-          detail: { ...(args.detail ?? {}), origin: args.interaction },
-          dedupeKey: args.dedupeKey,
-          processedAt: now,
-        })
-        .onConflictDoNothing({
-          // Matches the PARTIAL unique index incident_events_dedupe_idx
-          // (WHERE agent_run_id IS NOT NULL) — Postgres only binds ON CONFLICT
-          // to a partial index when the predicate is repeated here.
-          target: [schema.incidentEvents.agentRunId, schema.incidentEvents.dedupeKey],
-          where: sql`${schema.incidentEvents.agentRunId} is not null`,
-        })
-        .returning({ id: schema.incidentEvents.id });
-      if (!claim) return { outcome: "duplicate" };
-      claimId = claim.id;
-    }
+    const automation = await tx.query.projectAutomationSettings.findFirst({
+      where: eq(schema.projectAutomationSettings.projectId, incident.projectId),
+      columns: { agentRunEnabled: true, autoFollowUpEnabled: true },
+    });
+    const verdict = decideInboundContinuation({
+      agentRunEnabled: automation?.agentRunEnabled ?? true,
+      autoFollowUpEnabled: automation?.autoFollowUpEnabled ?? true,
+      confirmed: args.confirmed ?? false,
+      latestRun,
+    });
+    if (verdict.action === "skip") return { outcome: "skipped", reason: verdict.reason };
 
-    const releaseClaim = async () => {
-      if (claimId) {
-        await db.delete(schema.incidentEvents).where(eq(schema.incidentEvents.id, claimId));
+    if (verdict.action === "cold_start") {
+      const canAppendLockedSuccessor =
+        latestRun?.state === "queued" && isFollowUpTrigger(latestRun.trigger);
+      const canLeavePendingForStartedRun =
+        latestRun !== null &&
+        isFollowUpTrigger(latestRun.trigger) &&
+        STARTED_FOLLOW_UP_STATES.has(latestRun.state);
+      if (args.existingSessionOnly && canLeavePendingForStartedRun) {
+        // The queued successor may have started between handoff and this
+        // transaction. Its row is locked now, so attach the lifecycle message
+        // as pending context instead of treating the durable target as absent
+        // and falling through to deterministic resolution.
+        const [recorded] = await tx
+          .insert(schema.incidentEvents)
+          .values({
+            agentRunId: latestRun.id,
+            incidentId: args.incidentId,
+            kind: "human_reply",
+            summary: args.interaction.text,
+            detail: { ...(args.detail ?? {}), origin: args.interaction },
+            dedupeKey: args.dedupeKey,
+          })
+          .onConflictDoNothing({
+            target: [schema.incidentEvents.agentRunId, schema.incidentEvents.dedupeKey],
+            where: sql`${schema.incidentEvents.agentRunId} is not null`,
+          })
+          .returning({ id: schema.incidentEvents.id });
+        if (!recorded) return { outcome: "duplicate" };
+        return { outcome: "accepted", action: "steer" };
       }
-    };
+      if (args.existingSessionOnly && !canAppendLockedSuccessor) {
+        return { outcome: "skipped", reason: "no_resumable_session" };
+      }
 
-    let result: RequestFollowUpResult;
-    try {
-      result = await requestFollowUpAgentRun(db, {
+      // Claim the dedupe key before enqueue/append. It is processed because
+      // the interaction itself is carried in triggerDetail, not consumed as a
+      // pending steer. Release it when the follow-up action is skipped or
+      // throws so a transient failure remains retryable.
+      let claimId: string | null = null;
+      if (latestRun) {
+        const [claim] = await tx
+          .insert(schema.incidentEvents)
+          .values({
+            agentRunId: latestRun.id,
+            incidentId: args.incidentId,
+            kind: "human_reply",
+            summary: args.interaction.text,
+            detail: { ...(args.detail ?? {}), origin: args.interaction },
+            dedupeKey: args.dedupeKey,
+            processedAt: now,
+          })
+          .onConflictDoNothing({
+            target: [schema.incidentEvents.agentRunId, schema.incidentEvents.dedupeKey],
+            where: sql`${schema.incidentEvents.agentRunId} is not null`,
+          })
+          .returning({ id: schema.incidentEvents.id });
+        if (!claim) return { outcome: "duplicate" };
+        claimId = claim.id;
+      }
+
+      const releaseClaim = async () => {
+        if (claimId) {
+          await tx.delete(schema.incidentEvents).where(eq(schema.incidentEvents.id, claimId));
+        }
+      };
+      let result: RequestFollowUpResult;
+      try {
+        result = await requestFollowUpAgentRunInTx(
+          tx,
+          {
+            incidentId: args.incidentId,
+            trigger: args.interaction.channel,
+            interaction: args.interaction,
+            confirmed: args.confirmed,
+            now,
+          },
+          aggregate,
+        );
+      } catch (err) {
+        await releaseClaim();
+        throw err;
+      }
+      if (result.outcome === "skipped") {
+        await releaseClaim();
+        return { outcome: "skipped", reason: result.reason };
+      }
+      return { outcome: "accepted", action: "cold_start", agentRunId: result.agentRunId };
+    }
+
+    // resume | steer: the locked run cannot become the failed predecessor
+    // while this event is inserted.
+    const [recorded] = await tx
+      .insert(schema.incidentEvents)
+      .values({
+        agentRunId: verdict.runId,
         incidentId: args.incidentId,
-        trigger: args.interaction.channel,
-        interaction: args.interaction,
-        confirmed: args.confirmed,
-        now,
-      });
-    } catch (err) {
-      await releaseClaim();
-      throw err;
+        kind: "human_reply",
+        summary: args.interaction.text,
+        detail: { ...(args.detail ?? {}), origin: args.interaction },
+        dedupeKey: args.dedupeKey,
+      })
+      .onConflictDoNothing({
+        target: [schema.incidentEvents.agentRunId, schema.incidentEvents.dedupeKey],
+        where: sql`${schema.incidentEvents.agentRunId} is not null`,
+      })
+      .returning({ id: schema.incidentEvents.id });
+    if (!recorded) return { outcome: "duplicate" };
+
+    if (verdict.action === "resume") {
+      await tx
+        .update(schema.agentRuns)
+        .set({ state: "resuming", completedAt: null, failureReason: null, updatedAt: now })
+        .where(
+          and(
+            eq(schema.agentRuns.id, verdict.runId),
+            inArray(schema.agentRuns.state, ["complete", "failed"]),
+          ),
+        );
     }
-    if (result.outcome === "skipped") {
-      await releaseClaim();
-      return { outcome: "skipped", reason: result.reason };
-    }
-    return { outcome: "accepted", action: "cold_start", agentRunId: result.agentRunId };
-  }
-
-  // resume | steer: record the message against the run, carrying its origin.
-  const [recorded] = await db
-    .insert(schema.incidentEvents)
-    .values({
-      agentRunId: verdict.runId,
-      incidentId: args.incidentId,
-      kind: "human_reply",
-      summary: args.interaction.text,
-      detail: { ...(args.detail ?? {}), origin: args.interaction },
-      dedupeKey: args.dedupeKey,
-    })
-    .onConflictDoNothing({
-      // Matches the PARTIAL unique index incident_events_dedupe_idx
-      // (WHERE agent_run_id IS NOT NULL); the predicate must be repeated for
-      // Postgres to bind ON CONFLICT to a partial index.
-      target: [schema.incidentEvents.agentRunId, schema.incidentEvents.dedupeKey],
-      where: sql`${schema.incidentEvents.agentRunId} is not null`,
-    })
-    .returning({ id: schema.incidentEvents.id });
-  if (!recorded) return { outcome: "duplicate" };
-
-  if (verdict.action === "resume") {
-    // Reactivate a terminal run so the tick resumes its session in place. The
-    // state-guarded WHERE is a no-op for awaiting_human (already active) and
-    // TOCTOU-safe if the run moved since we read it.
-    await db
-      .update(schema.agentRuns)
-      .set({ state: "resuming", completedAt: null, failureReason: null, updatedAt: now })
-      .where(
-        and(
-          eq(schema.agentRuns.id, verdict.runId),
-          inArray(schema.agentRuns.state, ["complete", "failed"]),
-        ),
-      );
-  }
-
-  return { outcome: "accepted", action: verdict.action };
+    return { outcome: "accepted", action: verdict.action };
+  });
 }
 
 function followUpQueuedSummary(trigger: AgentRunFollowUpTrigger): string {

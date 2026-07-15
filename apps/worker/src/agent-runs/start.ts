@@ -18,7 +18,13 @@ export const TELEMETRY_INVESTIGATION_HINT =
   "When an issue sample includes a session.id attribute, use it to query preceding traces and logs from the same user/app session before focusing only on the failing trace or log line.";
 
 export type StartQueuedAgentRunDeps = {
-  lifecycle: Pick<AgentRunLifecycle, "beginRepoDiscovery" | "startRunning">;
+  lifecycle: Pick<
+    AgentRunLifecycle,
+    | "beginRepoDiscovery"
+    | "startRunning"
+    | "recordDetachedSessionTerminationPending"
+    | "markDetachedSessionTerminated"
+  >;
   getRunnerBackend(runtime: string): AgentRunnerBackend | Promise<AgentRunnerBackend>;
   listRepositories(ctx: AgentRunContext): Promise<InstalledGithubRepo[]>;
   scoreRepositories(repos: InstalledGithubRepo[], ctx: AgentRunContext): ScoredGithubRepo[];
@@ -33,17 +39,17 @@ export type StartQueuedAgentRunDeps = {
     reason: schema.AgentRunFailureReason,
     summary: string,
     detail?: { err?: unknown },
-  ): Promise<void>;
+  ): Promise<boolean>;
   blockForGithub(
     ctx: AgentRunContext,
     reason: "no_github_install" | "no_accessible_repos",
     summary: string,
-  ): Promise<void>;
+  ): Promise<boolean>;
   pauseForRepositorySelection(
     ctx: AgentRunContext,
     question: string,
     summary: string,
-  ): Promise<void>;
+  ): Promise<boolean>;
   notifyStarted(ctx: AgentRunContext, repoCandidateCount: number): Promise<void>;
 };
 
@@ -51,17 +57,19 @@ export async function startQueuedAgentRunWorkflow(
   ctx: AgentRunContext,
   deps: StartQueuedAgentRunDeps,
 ): Promise<void> {
+  const beganRepoDiscovery = await deps.lifecycle.beginRepoDiscovery({
+    id: ctx.agentRun.id,
+    incidentId: ctx.incident.id,
+    currentState: ctx.agentRun.state,
+  });
+  if (!beganRepoDiscovery) return;
+  ctx.agentRun = { ...ctx.agentRun, state: "repo_discovery" };
+
   const runner = await selectRunnerBackend(ctx, deps);
   if (!runner) return;
 
   const repos = await discoverAccessibleRepositories(ctx, deps);
   if (!repos) return;
-
-  await deps.lifecycle.beginRepoDiscovery({
-    id: ctx.agentRun.id,
-    currentState: ctx.agentRun.state,
-  });
-  ctx.agentRun = { ...ctx.agentRun, state: "repo_discovery" };
 
   const scored = deps.scoreRepositories(repos, ctx);
   if (scored.length === 0) {
@@ -85,13 +93,59 @@ export async function startQueuedAgentRunWorkflow(
     }
 
     const session = await startRunnerSession(ctx, runner, repoCandidates, deps);
-    await deps.lifecycle.startRunning({
+    const started = await deps.lifecycle.startRunning({
       id: ctx.agentRun.id,
+      incidentId: ctx.incident.id,
       currentState: "repo_discovery",
       providerSessionId: session.sessionId,
       providerSessionStatus: "running",
       repoCandidateCount: repoCandidates.length,
     });
+    if (!started) {
+      try {
+        await deps.lifecycle.recordDetachedSessionTerminationPending({
+          id: ctx.agentRun.id,
+          incidentId: ctx.incident.id,
+          runtime: ctx.agentRun.runtime,
+          providerSessionId: session.sessionId,
+        });
+      } catch (recordErr) {
+        try {
+          await runner.terminate(session.sessionId);
+          logger.error(
+            {
+              recordErr,
+              agent_run_id: ctx.agentRun.id,
+              incident_id: ctx.incident.id,
+              provider_session_id: session.sessionId,
+            },
+            "terminated an unowned provider session after cleanup persistence failed",
+          );
+          return;
+        } catch (terminateErr) {
+          logger.error(
+            {
+              recordErr,
+              terminateErr,
+              agent_run_id: ctx.agentRun.id,
+              incident_id: ctx.incident.id,
+              provider_session_id: session.sessionId,
+            },
+            "provider session cleanup and its durable fallback both failed",
+          );
+          throw new AggregateError(
+            [recordErr, terminateErr],
+            "failed to retain or terminate an unowned provider session",
+          );
+        }
+      }
+      await runner.terminate(session.sessionId);
+      await deps.lifecycle.markDetachedSessionTerminated({
+        id: ctx.agentRun.id,
+        providerSessionId: session.sessionId,
+      });
+      return;
+    }
     logStarted(ctx, runner, session.sessionId, repoCandidates.length);
     await deps.notifyStarted(ctx, repoCandidates.length);
   } catch (err) {

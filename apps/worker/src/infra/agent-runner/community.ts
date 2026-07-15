@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentRunnerBackend, AgentRunnerSnapshot } from "../../agent-runner-backend.js";
 
@@ -48,6 +48,9 @@ export const communityRunnerBackend: AgentRunnerBackend = {
   },
   async collect(sessionId) {
     return readSnapshot(sessionId);
+  },
+  async terminate(sessionId) {
+    await rm(snapshotPath(sessionId), { force: true });
   },
   async startChat() {
     // Chats need resumable provider sessions, which the static community

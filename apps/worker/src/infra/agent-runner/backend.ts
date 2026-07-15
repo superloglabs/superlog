@@ -15,6 +15,9 @@ const disabledRunnerBackend: AgentRunnerBackend = {
   async start() {
     throw new Error("agent runner backend is disabled");
   },
+  async terminate() {
+    throw new Error("agent runner backend is disabled");
+  },
   async startChat() {
     throw new Error("agent runner backend is disabled");
   },
@@ -82,6 +85,7 @@ function isAgentRunnerBackend(value: unknown): value is AgentRunnerBackend {
     typeof backend.name === "string" &&
     typeof backend.maxRepoResources === "number" &&
     typeof backend.start === "function" &&
+    typeof backend.terminate === "function" &&
     typeof backend.startChat === "function" &&
     typeof backend.sendChatMessage === "function" &&
     typeof backend.collect === "function" &&

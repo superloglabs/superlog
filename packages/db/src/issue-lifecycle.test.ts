@@ -13,7 +13,13 @@ import * as schema from "./schema.js";
 // time without a connection string. postgres-js connects lazily and every test
 // here passes an explicit pglite DB, so a dummy value is enough.
 process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
-const { createIncidentLifecycle, mergeIncidentsInTx } = await import("./resolve-incident.js");
+const {
+  createIncidentLifecycle,
+  mergeIncidentsInTx,
+  finalizeFulfilledAgentPullRequestBatches,
+  reserveAgentPullRequestBatch,
+  reconcileAgentRunCompletedByResolution,
+} = await import("./resolve-incident.js");
 
 // End-to-end lifecycle semantics on a real (in-process) Postgres:
 //   - resolveIncident cascades the issue disposition (resolve / silence /
@@ -138,7 +144,7 @@ async function assertStaleClosedMergeRollsBack(closedParticipant: "source" | "ta
     assert.equal(sourceAfter.mergedIntoId, null);
     assert.equal(targetAfter.status, closedParticipant === "target" ? "resolved" : "open");
     assert.equal(targetAfter.issueCount, target.issueCount);
-    assert.equal(runAfter.state, "running");
+    assert.equal(runAfter.state, closedParticipant === "source" ? "complete" : "running");
   } finally {
     await client.close();
   }
@@ -232,7 +238,209 @@ test("resolving an incident completes parked agent runs without losing their del
   }
 });
 
-test("resolving an incident leaves non-parked agent runs unchanged", async () => {
+test("resolving an incident completes queued and repo-discovery runs before they can start", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-complete-not-started-runs",
+    });
+    const runs = await db
+      .insert(schema.agentRuns)
+      .values([
+        { incidentId: incident.id, runtime: "test", state: "queued" },
+        { incidentId: incident.id, runtime: "test", state: "repo_discovery" },
+      ])
+      .returning();
+    const resolvedAt = new Date("2026-07-14T12:00:00.000Z");
+
+    await createIncidentLifecycle(db).resolve({
+      incidentId: incident.id,
+      kind: "dashboard_manual",
+      reasonCode: "problem_resolved",
+      reasonText: null,
+      resolvedAt,
+    });
+
+    for (const run of runs) {
+      const after = one(
+        await db.select().from(schema.agentRuns).where(eq(schema.agentRuns.id, run.id)),
+      );
+      assert.equal(after.state, "complete");
+      assert.deepEqual(after.completedAt, resolvedAt);
+      assert.deepEqual(after.result, {
+        state: "complete",
+        summary: "Incident resolved; no further investigation is needed.",
+      });
+      const completionEvents = await db
+        .select()
+        .from(schema.incidentEvents)
+        .where(
+          and(
+            eq(schema.incidentEvents.agentRunId, run.id),
+            eq(schema.incidentEvents.kind, "agent_run_completed"),
+          ),
+        );
+      assert.equal(completionEvents.length, 1);
+    }
+  } finally {
+    await client.close();
+  }
+});
+
+test("resolving an incident completes every non-terminal run except its resolver", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-complete-all-active-runs",
+    });
+    const runs = await db
+      .insert(schema.agentRuns)
+      .values([
+        { incidentId: incident.id, runtime: "test", state: "running", trigger: "incident" },
+        {
+          incidentId: incident.id,
+          runtime: "test",
+          state: "awaiting_human",
+          result: {
+            state: "awaiting_human",
+            summary: "Need deployment context.",
+            question: "Which environment changed?",
+          },
+        },
+        { incidentId: incident.id, runtime: "test", state: "resuming" },
+        { incidentId: incident.id, runtime: "test", state: "pr_retry_queued" },
+        { incidentId: incident.id, runtime: "test", state: "blocked_no_github" },
+      ])
+      .returning();
+    const resolvedAt = new Date("2026-07-14T12:00:00.000Z");
+
+    await createIncidentLifecycle(db).resolve({
+      incidentId: incident.id,
+      kind: "dashboard_manual",
+      reasonCode: "problem_resolved",
+      reasonText: null,
+      resolvedAt,
+    });
+
+    for (const run of runs) {
+      const after = one(
+        await db.select().from(schema.agentRuns).where(eq(schema.agentRuns.id, run.id)),
+      );
+      assert.equal(after.state, "complete", `${run.state} should be superseded`);
+      assert.deepEqual(after.completedAt, resolvedAt);
+      assert.equal(after.result?.state, "complete");
+    }
+  } finally {
+    await client.close();
+  }
+});
+
+test("a superseded result cannot overwrite Incident metadata after resolution", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-closed-metadata-guard",
+    });
+    const run = one(
+      await db
+        .insert(schema.agentRuns)
+        .values({ incidentId: incident.id, runtime: "test", state: "complete" })
+        .returning(),
+    );
+    const lifecycle = createIncidentLifecycle(db);
+    await lifecycle.resolve({
+      incidentId: incident.id,
+      kind: "dashboard_manual",
+      reasonCode: "problem_resolved",
+      reasonText: null,
+    });
+
+    const outcome = await lifecycle.applyAgentRunResult({
+      incident,
+      agentRunId: run.id,
+      result: {
+        state: "complete",
+        summary: "Stale findings from a superseded pass.",
+        proposedTitle: "Stale title from superseded pass",
+        severity: "SEV-1",
+      },
+    });
+
+    assert.deepEqual(outcome, { updated: false, noiseResolved: false });
+    const after = one(
+      await db.select().from(schema.incidents).where(eq(schema.incidents.id, incident.id)),
+    );
+    assert.equal(after.title, incident.title);
+    assert.equal(after.severity, incident.severity);
+  } finally {
+    await client.close();
+  }
+});
+
+test("resolution completes another running follow-up but preserves the resolving run", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-complete-racing-follow-up",
+    });
+    const [resolvingRun, racingFollowUp] = await db
+      .insert(schema.agentRuns)
+      .values([
+        {
+          incidentId: incident.id,
+          runtime: "test",
+          state: "running",
+          trigger: "pr_merged",
+        },
+        {
+          incidentId: incident.id,
+          runtime: "test",
+          state: "running",
+          trigger: "slack_reply",
+          providerSessionId: "session-racing-follow-up",
+          providerSessionStatus: "running",
+        },
+      ])
+      .returning();
+    assert.ok(resolvingRun);
+    assert.ok(racingFollowUp);
+    const resolvedAt = new Date("2026-07-14T12:00:00.000Z");
+
+    await createIncidentLifecycle(db).resolve({
+      incidentId: incident.id,
+      kind: "agent_pr_merged",
+      reasonCode: "agent_pr_merged",
+      reasonText: null,
+      agentRunId: resolvingRun.id,
+      resolvedAt,
+    });
+
+    const resolvingRunAfter = one(
+      await db.select().from(schema.agentRuns).where(eq(schema.agentRuns.id, resolvingRun.id)),
+    );
+    assert.equal(resolvingRunAfter.state, "running");
+    assert.equal(resolvingRunAfter.completedAt, null);
+
+    const racingFollowUpAfter = one(
+      await db.select().from(schema.agentRuns).where(eq(schema.agentRuns.id, racingFollowUp.id)),
+    );
+    assert.equal(racingFollowUpAfter.state, "complete");
+    assert.equal(racingFollowUpAfter.providerSessionStatus, "termination_pending");
+    assert.deepEqual(racingFollowUpAfter.completedAt, resolvedAt);
+    assert.deepEqual(racingFollowUpAfter.result, {
+      state: "complete",
+      summary: "Incident resolved; no further investigation is needed.",
+    });
+  } finally {
+    await client.close();
+  }
+});
+
+test("resolution preserves terminal audit state while retiring every unreachable session", async () => {
   const { db, client } = await freshDb();
   try {
     const project = await seedProject(db);
@@ -243,22 +451,19 @@ test("resolving an incident leaves non-parked agent runs unchanged", async () =>
     const originalRuns = await db
       .insert(schema.agentRuns)
       .values([
-        { incidentId: incident.id, runtime: "test", state: "queued" },
-        { incidentId: incident.id, runtime: "test", state: "running" },
         {
           incidentId: incident.id,
           runtime: "test",
-          state: "awaiting_human",
-          result: {
-            state: "awaiting_human",
-            summary: "Need a deployment detail.",
-            question: "Which environment changed?",
-          },
+          state: "running",
+          providerSessionId: "session-resolver",
+          providerSessionStatus: "running",
         },
         {
           incidentId: incident.id,
           runtime: "test",
           state: "complete",
+          providerSessionId: "session-complete",
+          providerSessionStatus: "idle",
           completedAt: terminalAt,
           result: { state: "complete", summary: "Already complete." },
         },
@@ -266,8 +471,18 @@ test("resolving an incident leaves non-parked agent runs unchanged", async () =>
           incidentId: incident.id,
           runtime: "test",
           state: "failed",
+          providerSessionId: "session-failed",
+          providerSessionStatus: "idle",
           completedAt: terminalAt,
           result: { state: "failed", summary: "Already failed." },
+        },
+        {
+          incidentId: incident.id,
+          runtime: "test",
+          state: "superseded",
+          providerSessionId: "session-superseded",
+          providerSessionStatus: "idle",
+          completedAt: terminalAt,
         },
       ])
       .returning();
@@ -277,6 +492,7 @@ test("resolving an incident leaves non-parked agent runs unchanged", async () =>
       kind: "dashboard_manual",
       reasonCode: "problem_resolved",
       reasonText: null,
+      agentRunId: originalRuns[0]?.id,
       resolvedAt: new Date("2026-07-14T12:00:00.000Z"),
     });
 
@@ -287,7 +503,300 @@ test("resolving an incident leaves non-parked agent runs unchanged", async () =>
       assert.equal(after.state, original.state);
       assert.deepEqual(after.result, original.result);
       assert.deepEqual(after.completedAt, original.completedAt);
+      assert.equal(
+        after.providerSessionStatus,
+        original.id === originalRuns[0]?.id ? "running" : "termination_pending",
+      );
     }
+  } finally {
+    await client.close();
+  }
+});
+
+test("a terminal snapshot reconciles once after an external resolver wins", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-reconcile-completion-race",
+    });
+    const run = one(
+      await db
+        .insert(schema.agentRuns)
+        .values({
+          incidentId: incident.id,
+          runtime: "test",
+          state: "running",
+          providerSessionId: "session-reconcile",
+          providerSessionStatus: "running",
+        })
+        .returning(),
+    );
+    await createIncidentLifecycle(db).resolve({
+      incidentId: incident.id,
+      kind: "dashboard_manual",
+      reasonCode: "problem_resolved",
+      reasonText: null,
+    });
+
+    const result: schema.AgentRunResult = {
+      state: "complete",
+      summary: "Collected the real terminal findings.",
+      rootCause: { text: "A dependency timed out.", confidence: 9 },
+      rootCauseConfidence: "high",
+    };
+    const first = await reconcileAgentRunCompletedByResolution(db, {
+      agentRunId: run.id,
+      result,
+      cumulativeRuntimeMinutes: 4,
+    });
+    const repeated = await reconcileAgentRunCompletedByResolution(db, {
+      agentRunId: run.id,
+      result: { ...result, summary: "Duplicate collector result." },
+      cumulativeRuntimeMinutes: 5,
+    });
+
+    assert.equal(first, true);
+    assert.equal(repeated, false);
+    const after = one(
+      await db.select().from(schema.agentRuns).where(eq(schema.agentRuns.id, run.id)),
+    );
+    assert.deepEqual(after.result, result);
+    assert.equal(after.cumulativeRuntimeMinutes, 4);
+    assert.equal(after.providerSessionStatus, "termination_pending");
+  } finally {
+    await client.close();
+  }
+});
+
+test("all-merged resolution waits for every repository reserved by a terminal PR batch", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-pr-batch-reservation",
+    });
+    const [run] = await db
+      .insert(schema.agentRuns)
+      .values({ incidentId: incident.id, runtime: "test", state: "running" })
+      .returning();
+    assert.ok(run);
+    const [installation] = await db
+      .insert(schema.githubInstallations)
+      .values({
+        orgId: project.orgId,
+        projectId: project.id,
+        installationId: 919191,
+        accountLogin: "acme",
+        accountType: "Organization",
+        repos: [],
+      })
+      .returning();
+    assert.ok(installation);
+    const reservedAt = new Date("2026-07-14T12:00:00.000Z");
+    await db.insert(schema.agentPullRequests).values({
+      incidentId: incident.id,
+      agentRunId: run.id,
+      installationId: installation.id,
+      repoFullName: "acme/api",
+      prNumber: 1,
+      url: "https://github.com/acme/api/pull/1",
+      branchName: "ash/fix-api",
+      baseBranch: "main",
+      state: "merged",
+      updatedAt: new Date(reservedAt.getTime() - 1_000),
+    });
+    await db.insert(schema.agentPullRequests).values({
+      incidentId: incident.id,
+      agentRunId: run.id,
+      installationId: installation.id,
+      repoFullName: "acme/web",
+      prNumber: 2,
+      url: "https://github.com/acme/web/pull/2",
+      branchName: "ash/old-web-fix",
+      baseBranch: "main",
+      state: "merged",
+      updatedAt: new Date(reservedAt.getTime() - 1_000),
+    });
+    await reserveAgentPullRequestBatch(db, {
+      incidentId: incident.id,
+      agentRunId: run.id,
+      batchKey: "tool-batch-1",
+      deliveries: [
+        { repoFullName: "acme/api", deliveryId: "delivery-api-original" },
+        { repoFullName: "acme/web", deliveryId: "delivery-web-original" },
+      ],
+      now: reservedAt,
+    });
+
+    assert.equal(
+      await finalizeFulfilledAgentPullRequestBatches(db, {
+        incidentId: incident.id,
+        agentRunId: run.id,
+        deliveries: [
+          { repoFullName: "acme/api", deliveryId: "delivery-api-original" },
+          { repoFullName: "acme/web", deliveryId: "delivery-web-original" },
+        ],
+        now: new Date(reservedAt.getTime() + 500),
+      }),
+      0,
+      "older PRs in the same repositories must not fulfill a new batch",
+    );
+
+    const lifecycle = createIncidentLifecycle(db);
+    const partial = await lifecycle.resolveIfAllAgentPullRequestsMerged({
+      incidentId: incident.id,
+      kind: "agent_pr_merged",
+      reasonCode: "agent_pr_merged",
+      reasonText: "All fixes merged.",
+    });
+    assert.equal(partial.disposition, "pull_requests_pending");
+
+    const successor = one(
+      await db
+        .insert(schema.agentRuns)
+        .values({ incidentId: incident.id, runtime: "test", state: "running" })
+        .returning(),
+    );
+    await db.insert(schema.incidentEvents).values([
+      {
+        incidentId: incident.id,
+        agentRunId: run.id,
+        kind: "internal_agent_outcome_pr_delivery",
+        detail: { repoFullName: "acme/api", deliveryId: "delivery-api-original" },
+        dedupeKey: "delivery-receipt-api-original",
+        processedAt: new Date(reservedAt.getTime() + 1_000),
+        createdAt: new Date(reservedAt.getTime() + 1_000),
+      },
+      {
+        incidentId: incident.id,
+        agentRunId: successor.id,
+        kind: "internal_agent_outcome_pr_delivery",
+        detail: { repoFullName: "acme/web", deliveryId: "delivery-web-retry" },
+        dedupeKey: "delivery-receipt-web-retry",
+        processedAt: new Date(reservedAt.getTime() + 2_000),
+        createdAt: new Date(reservedAt.getTime() + 2_000),
+      },
+    ]);
+    assert.equal(
+      await finalizeFulfilledAgentPullRequestBatches(db, {
+        incidentId: incident.id,
+        agentRunId: successor.id,
+        deliveries: [{ repoFullName: "acme/web", deliveryId: "delivery-web-retry" }],
+        now: new Date(reservedAt.getTime() + 3_000),
+      }),
+      1,
+    );
+    const complete = await lifecycle.resolveIfAllAgentPullRequestsMerged({
+      incidentId: incident.id,
+      kind: "agent_pr_merged",
+      reasonCode: "agent_pr_merged",
+      reasonText: "All fixes merged.",
+    });
+    assert.equal(complete.disposition, "resolved");
+  } finally {
+    await client.close();
+  }
+});
+
+test("a winning non-PR resolution abandons incomplete PR batch reservations", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-pr-batch-abandoned-by-resolution",
+    });
+    const run = one(
+      await db
+        .insert(schema.agentRuns)
+        .values({ incidentId: incident.id, runtime: "test", state: "running" })
+        .returning(),
+    );
+    await reserveAgentPullRequestBatch(db, {
+      incidentId: incident.id,
+      agentRunId: run.id,
+      batchKey: "tool-batch-abandoned",
+      deliveries: [
+        { repoFullName: "acme/api", deliveryId: "delivery-api" },
+        { repoFullName: "acme/web", deliveryId: "delivery-web" },
+      ],
+    });
+
+    const resolved = await createIncidentLifecycle(db).resolve({
+      incidentId: incident.id,
+      kind: "dashboard_manual",
+      reasonCode: "problem_resolved",
+      reasonText: "No code change is needed.",
+    });
+
+    assert.equal(resolved.resolved, true);
+    const reservation = one(
+      await db
+        .select({ processedAt: schema.incidentEvents.processedAt })
+        .from(schema.incidentEvents)
+        .where(
+          and(
+            eq(schema.incidentEvents.incidentId, incident.id),
+            eq(schema.incidentEvents.kind, "internal_agent_pr_batch_pending"),
+          ),
+        ),
+    );
+    assert.ok(reservation.processedAt);
+  } finally {
+    await client.close();
+  }
+});
+
+test("manual reopen retires a stale PR batch reservation inherited from a merge", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-reopen-stale-pr-batch",
+    });
+    const run = one(
+      await db
+        .insert(schema.agentRuns)
+        .values({ incidentId: incident.id, runtime: "test", state: "running" })
+        .returning(),
+    );
+    await reserveAgentPullRequestBatch(db, {
+      incidentId: incident.id,
+      agentRunId: run.id,
+      batchKey: "tool-batch-before-merge",
+      deliveries: [
+        { repoFullName: "acme/api", deliveryId: "delivery-api" },
+        { repoFullName: "acme/web", deliveryId: "delivery-web" },
+      ],
+    });
+    const mergedAt = new Date("2026-07-14T15:00:00.000Z");
+    const merged = one(
+      await db
+        .update(schema.incidents)
+        .set({ status: "merged", mergedAt, updatedAt: mergedAt })
+        .where(eq(schema.incidents.id, incident.id))
+        .returning(),
+    );
+
+    const reopened = await createIncidentLifecycle(db).reopenManually({
+      incident: merged,
+      actor: {},
+      reopenedAt: new Date(mergedAt.getTime() + 1_000),
+    });
+
+    assert.equal(reopened.reopened, true);
+    const reservation = one(
+      await db
+        .select({ processedAt: schema.incidentEvents.processedAt })
+        .from(schema.incidentEvents)
+        .where(
+          and(
+            eq(schema.incidentEvents.incidentId, incident.id),
+            eq(schema.incidentEvents.kind, "internal_agent_pr_batch_pending"),
+          ),
+        ),
+    );
+    assert.ok(reservation.processedAt);
   } finally {
     await client.close();
   }

@@ -7,7 +7,11 @@ import {
   schema,
 } from "@superlog/db";
 import type { AgentRunContext } from "../agent-run-context.js";
-import { type PauseForEventsOutcome, createAgentRunLifecycle } from "../agent-run.js";
+import {
+  type AgentRunLifecycle,
+  type PauseForEventsOutcome,
+  createAgentRunLifecycle,
+} from "../agent-run.js";
 import { buildContextIncidentUrl } from "../incident-route.js";
 import {
   postLinearIncidentElicitation,
@@ -20,9 +24,71 @@ import {
   updateIncidentMainMessage,
 } from "../infra/slack/incident-messages.js";
 import { logger } from "../logger.js";
+import { applyIncidentMetadataFromResult } from "./result-metadata.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 const agentRunLifecycle = createAgentRunLifecycle(db);
+
+export type ConditionalAgentRunStatusDeps = {
+  lifecycle: Pick<
+    AgentRunLifecycle,
+    "fail" | "pauseForHuman" | "blockForGithub" | "canPublishStatusUpdate"
+  >;
+  enqueueAgentRunFailed: typeof enqueueAgentRunFailed;
+  enqueueAgentRunAwaitingInput: typeof enqueueAgentRunAwaitingInput;
+  postIncidentThreadMessage: typeof postIncidentThreadMessage;
+  postLinearIncidentError: typeof postLinearIncidentError;
+  postLinearIncidentElicitation: typeof postLinearIncidentElicitation;
+  updateIncidentMainMessage: typeof updateIncidentMainMessage;
+  applyIncidentMetadata(ctx: AgentRunContext, result: AgentRunResult): Promise<void>;
+  reconcileStalePublication(ctx: AgentRunContext): Promise<void>;
+  logError(bindings: Record<string, unknown>, message: string): void;
+};
+
+const defaultConditionalAgentRunStatusDeps: ConditionalAgentRunStatusDeps = {
+  lifecycle: agentRunLifecycle,
+  enqueueAgentRunFailed,
+  enqueueAgentRunAwaitingInput,
+  postIncidentThreadMessage,
+  postLinearIncidentError,
+  postLinearIncidentElicitation,
+  updateIncidentMainMessage,
+  applyIncidentMetadata: applyAndRefreshIncidentMetadata,
+  reconcileStalePublication: reconcileStaleAgentRunPublication,
+  logError(bindings, message) {
+    logger.error(bindings, message);
+  },
+};
+
+async function applyAndRefreshIncidentMetadata(
+  ctx: AgentRunContext,
+  result: AgentRunResult,
+): Promise<void> {
+  if (!(await applyIncidentMetadataFromResult(ctx, result))) return;
+  const refreshed = await db.query.incidents.findFirst({
+    where: (incidents, { eq }) => eq(incidents.id, ctx.incident.id),
+  });
+  if (refreshed) ctx.incident = refreshed;
+}
+
+async function publishStatusIfCurrent(
+  ctx: AgentRunContext,
+  state: schema.AgentRun["state"],
+  deps: ConditionalAgentRunStatusDeps,
+  publish: () => Promise<void>,
+): Promise<boolean> {
+  const publication = await publishAwaitingEventsUpdateIfCurrent({
+    isCurrent: () =>
+      deps.lifecycle.canPublishStatusUpdate({
+        id: ctx.agentRun.id,
+        incidentId: ctx.incident.id,
+        state,
+      }),
+    publish,
+    reconcileStalePublication: () => deps.reconcileStalePublication(ctx),
+  });
+  return publication === "published";
+}
 
 // How much wall-clock slack we give a run beyond its provider-active budget
 // before we give up. The provider-side budget (snapshot.activeSeconds) is the
@@ -145,26 +211,10 @@ export async function failAgentRun(
   reason: schema.AgentRunFailureReason,
   summary: string,
   detail?: { existingResult?: AgentRunResult | null; err?: unknown },
-): Promise<void> {
+  deps: ConditionalAgentRunStatusDeps = defaultConditionalAgentRunStatusDeps,
+): Promise<boolean> {
   const category = schema.agentRunFailureCategory(reason);
-  logger.error(
-    {
-      error: agentRunErrorLogMeta(detail?.err),
-      scope: "agent_run",
-      agent_run_id: ctx.agentRun.id,
-      incident_id: ctx.incident.id,
-      project_id: ctx.project.id,
-      org_id: ctx.project.orgId,
-      provider_session_id: ctx.agentRun.providerSessionId,
-      from_state: ctx.agentRun.state,
-      reason,
-      category,
-      runtime_minutes: ctx.agentRun.cumulativeRuntimeMinutes,
-      resume_count: ctx.agentRun.resumeCount,
-    },
-    agentRunFailureLogMessage(reason),
-  );
-  await agentRunLifecycle.fail({
+  const failed = await deps.lifecycle.fail({
     id: ctx.agentRun.id,
     currentState: ctx.agentRun.state,
     reason,
@@ -172,40 +222,64 @@ export async function failAgentRun(
     category,
     existingResult: detail?.existingResult ?? null,
   });
-  await enqueueAgentRunFailed(ctx.agentRun.id).catch((err) =>
-    logger.error(
+  if (!failed) return false;
+  await publishStatusIfCurrent(ctx, "failed", deps, async () => {
+    if (detail?.existingResult) {
+      await deps.applyIncidentMetadata(ctx, detail.existingResult);
+    }
+    deps.logError(
       {
-        scope: "webhooks.enqueue",
+        error: agentRunErrorLogMeta(detail?.err),
+        scope: "agent_run",
         agent_run_id: ctx.agentRun.id,
-        err: err instanceof Error ? err.message : String(err),
+        incident_id: ctx.incident.id,
+        project_id: ctx.project.id,
+        org_id: ctx.project.orgId,
+        provider_session_id: ctx.agentRun.providerSessionId,
+        from_state: ctx.agentRun.state,
+        reason,
+        category,
+        runtime_minutes: ctx.agentRun.cumulativeRuntimeMinutes,
+        resume_count: ctx.agentRun.resumeCount,
       },
-      "failed to enqueue incident.updated webhook (agent_failed)",
-    ),
-  );
-  const emoji =
-    category === "agent" ? ":mag:" : category === "deliverable" ? ":x:" : ":rotating_light:";
-  await postIncidentThreadMessage(ctx.incident.id, `${emoji} ${summary}`);
-  await postLinearIncidentError(ctx.incident.id, summary);
-  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
-  await updateIncidentMainMessage(
-    ctx.incident.id,
-    `:x: ${ctx.incident.title} — Investigation failed`,
-    incidentBlocks({
-      emoji: "x",
-      status: `Investigation failed · ${reason}`,
-      title: ctx.incident.title,
-      titleUrl: incidentUrl,
-      tagline: summary,
-      projectName: ctx.project.name,
-      service: ctx.incident.service,
-      buttons: [],
-      incidentId: ctx.incident.id,
-      showResolveButton: true,
-      // No thumbs: the run errored out, so there are no investigation findings
-      // to rate. A 👎 here would conflate "unhelpful findings" with "the run
-      // crashed" and muddy the helpful/unhelpful signal.
-    }),
-  );
+      agentRunFailureLogMessage(reason),
+    );
+    await deps.enqueueAgentRunFailed(ctx.agentRun.id).catch((err) =>
+      deps.logError(
+        {
+          scope: "webhooks.enqueue",
+          agent_run_id: ctx.agentRun.id,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "failed to enqueue incident.updated webhook (agent_failed)",
+      ),
+    );
+    const emoji =
+      category === "agent" ? ":mag:" : category === "deliverable" ? ":x:" : ":rotating_light:";
+    await deps.postIncidentThreadMessage(ctx.incident.id, `${emoji} ${summary}`);
+    await deps.postLinearIncidentError(ctx.incident.id, summary);
+    const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
+    await deps.updateIncidentMainMessage(
+      ctx.incident.id,
+      `:x: ${ctx.incident.title} — Investigation failed`,
+      incidentBlocks({
+        emoji: "x",
+        status: `Investigation failed · ${reason}`,
+        title: ctx.incident.title,
+        titleUrl: incidentUrl,
+        tagline: summary,
+        projectName: ctx.project.name,
+        service: ctx.incident.service,
+        buttons: [],
+        incidentId: ctx.incident.id,
+        showResolveButton: true,
+        // No thumbs: the run errored out, so there are no investigation findings
+        // to rate. A 👎 here would conflate "unhelpful findings" with "the run
+        // crashed" and muddy the helpful/unhelpful signal.
+      }),
+    );
+  });
+  return true;
 }
 
 export async function moveAgentRunToAwaitingHuman(
@@ -213,48 +287,59 @@ export async function moveAgentRunToAwaitingHuman(
   question: string,
   summary: string,
   result?: AgentRunResult,
-): Promise<void> {
-  await agentRunLifecycle.pauseForHuman({
+  deps: ConditionalAgentRunStatusDeps = defaultConditionalAgentRunStatusDeps,
+): Promise<boolean> {
+  const paused = await deps.lifecycle.pauseForHuman({
     id: ctx.agentRun.id,
     currentState: ctx.agentRun.state,
     summary,
     question,
     result,
   });
-  await enqueueAgentRunAwaitingInput(ctx.agentRun.id, {
-    reason: "repository_selection",
-    summary,
-    question,
-  }).catch((err) =>
-    logger.error(
-      {
-        scope: "webhooks.enqueue",
-        agent_run_id: ctx.agentRun.id,
-        err: err instanceof Error ? err.message : String(err),
-      },
-      "failed to enqueue incident.updated webhook (agent_awaiting_input)",
-    ),
-  );
-  await postIncidentThreadMessage(ctx.incident.id, `:speech_balloon: ${summary}\n${question}`);
-  await postLinearIncidentElicitation(ctx.incident.id, question);
-  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
-  await updateIncidentMainMessage(
-    ctx.incident.id,
-    `:speech_balloon: ${ctx.incident.title} — Awaiting human input`,
-    incidentBlocks({
-      emoji: "speech_balloon",
-      status: "Awaiting human input",
-      title: ctx.incident.title,
-      titleUrl: incidentUrl,
-      tagline: question,
-      projectName: ctx.project.name,
-      service: ctx.incident.service,
-      buttons: [],
-      incidentId: ctx.incident.id,
-      showResolveButton: true,
-      showFeedbackButtons: true,
-    }),
-  );
+  if (!paused) return false;
+  await publishStatusIfCurrent(ctx, "awaiting_human", deps, async () => {
+    if (result) await deps.applyIncidentMetadata(ctx, result);
+    await deps
+      .enqueueAgentRunAwaitingInput(ctx.agentRun.id, {
+        reason: "repository_selection",
+        summary,
+        question,
+      })
+      .catch((err) =>
+        deps.logError(
+          {
+            scope: "webhooks.enqueue",
+            agent_run_id: ctx.agentRun.id,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "failed to enqueue incident.updated webhook (agent_awaiting_input)",
+        ),
+      );
+    await deps.postIncidentThreadMessage(
+      ctx.incident.id,
+      `:speech_balloon: ${summary}\n${question}`,
+    );
+    await deps.postLinearIncidentElicitation(ctx.incident.id, question);
+    const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
+    await deps.updateIncidentMainMessage(
+      ctx.incident.id,
+      `:speech_balloon: ${ctx.incident.title} — Awaiting human input`,
+      incidentBlocks({
+        emoji: "speech_balloon",
+        status: "Awaiting human input",
+        title: ctx.incident.title,
+        titleUrl: incidentUrl,
+        tagline: question,
+        projectName: ctx.project.name,
+        service: ctx.incident.service,
+        buttons: [],
+        incidentId: ctx.incident.id,
+        showResolveButton: true,
+        showFeedbackButtons: true,
+      }),
+    );
+  });
+  return true;
 }
 
 export async function publishAwaitingEventsUpdateIfCurrent(opts: {
@@ -291,6 +376,7 @@ export type AwaitingEventsCompensationPresentation = {
 export function awaitingEventsCompensationPresentation(opts: {
   incidentStatus: schema.Incident["status"];
   agentRunState: schema.AgentRun["state"] | null;
+  agentRunResult?: AgentRunResult | null;
 }): AwaitingEventsCompensationPresentation | null {
   if (opts.incidentStatus !== "open") {
     const closed =
@@ -326,6 +412,9 @@ export function awaitingEventsCompensationPresentation(opts: {
       case "failed":
         return { emoji: "x", label: "Investigation failed" };
       case "awaiting_events":
+        return opts.agentRunResult?.waitReason === "external_cause"
+          ? { emoji: "warning", label: "Waiting on external cause" }
+          : { emoji: "hourglass_flowing_sand", label: "Waiting on PR review" };
       case null:
         return null;
       default:
@@ -339,14 +428,15 @@ export function awaitingEventsCompensationPresentation(opts: {
   };
 }
 
-async function reconcileStaleAwaitingEventsPublication(ctx: AgentRunContext): Promise<void> {
+export async function reconcileStaleAgentRunPublication(ctx: AgentRunContext): Promise<void> {
   const [incident, agentRun] = await Promise.all([
     db.query.incidents.findFirst({
       where: (incidents, { eq }) => eq(incidents.id, ctx.incident.id),
     }),
     db.query.agentRuns.findFirst({
-      where: (agentRuns, { eq }) => eq(agentRuns.id, ctx.agentRun.id),
+      where: (agentRuns, { eq }) => eq(agentRuns.incidentId, ctx.incident.id),
       columns: { state: true, result: true },
+      orderBy: (agentRuns, { desc }) => [desc(agentRuns.createdAt), desc(agentRuns.id)],
     }),
   ]);
   if (!incident) return;
@@ -354,6 +444,7 @@ async function reconcileStaleAwaitingEventsPublication(ctx: AgentRunContext): Pr
   const presentation = awaitingEventsCompensationPresentation({
     incidentStatus: incident.status,
     agentRunState: agentRun?.state ?? null,
+    agentRunResult: agentRun?.result ?? null,
   });
   if (!presentation) return;
 
@@ -400,6 +491,7 @@ export async function moveAgentRunToAwaitingEvents(
   openPrUrls: string[],
   loadLinearTicket: () => Promise<{ identifier: string; url: string | null } | null> = async () =>
     null,
+  applyMetadata = true,
 ): Promise<PauseForEventsOutcome> {
   const outcome = await agentRunLifecycle.pauseForEvents({
     id: ctx.agentRun.id,
@@ -433,6 +525,7 @@ export async function moveAgentRunToAwaitingEvents(
         incidentId: ctx.incident.id,
       }),
     publish: async () => {
+      if (applyMetadata) await applyAndRefreshIncidentMetadata(ctx, result);
       const linearTicket = await loadLinearTicket();
       const externalCause = result.waitReason === "external_cause" ? result.externalCause : null;
       await postIncidentThreadMessage(
@@ -479,7 +572,7 @@ export async function moveAgentRunToAwaitingEvents(
         }),
       );
     },
-    reconcileStalePublication: () => reconcileStaleAwaitingEventsPublication(ctx),
+    reconcileStalePublication: () => reconcileStaleAgentRunPublication(ctx),
   });
   if (publication !== "published") {
     logger.info(
@@ -516,50 +609,57 @@ export async function moveAgentRunToBlockedNoGithub(
   ctx: AgentRunContext,
   reason: "no_github_install" | "no_accessible_repos",
   summary: string,
-): Promise<void> {
-  await agentRunLifecycle.blockForGithub({
+  deps: ConditionalAgentRunStatusDeps = defaultConditionalAgentRunStatusDeps,
+): Promise<boolean> {
+  const blocked = await deps.lifecycle.blockForGithub({
     id: ctx.agentRun.id,
     currentState: ctx.agentRun.state,
     summary,
     reason,
   });
-  await enqueueAgentRunAwaitingInput(ctx.agentRun.id, {
-    reason,
-    summary,
-    question: null,
-  }).catch((err) =>
-    logger.error(
-      {
-        scope: "webhooks.enqueue",
-        agent_run_id: ctx.agentRun.id,
-        err: err instanceof Error ? err.message : String(err),
-      },
-      "failed to enqueue incident.updated webhook (agent_awaiting_input)",
-    ),
-  );
-  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
-  const installUrl = `${WEB_ORIGIN}/settings?tab=github`;
-  const tagline = "Connect a GitHub repo so we can investigate.";
-  await postIncidentThreadMessage(
-    ctx.incident.id,
-    `:no_entry: ${summary}\nConnect GitHub: ${installUrl}`,
-  );
-  await updateIncidentMainMessage(
-    ctx.incident.id,
-    `:no_entry: ${ctx.incident.title} — Investigation blocked`,
-    incidentBlocks({
-      emoji: "no_entry",
-      status: "Investigation blocked — connect GitHub",
-      title: ctx.incident.title,
-      titleUrl: incidentUrl,
-      tagline,
-      projectName: ctx.project.name,
-      service: ctx.incident.service,
-      buttons: [{ text: "Connect GitHub", url: installUrl, actionId: "connect_github" }],
-      incidentId: ctx.incident.id,
-      showResolveButton: true,
-      // No thumbs: the investigation is blocked before it can start (no GitHub
-      // repo connected), so there's nothing to rate yet.
-    }),
-  );
+  if (!blocked) return false;
+  await publishStatusIfCurrent(ctx, "blocked_no_github", deps, async () => {
+    await deps
+      .enqueueAgentRunAwaitingInput(ctx.agentRun.id, {
+        reason,
+        summary,
+        question: null,
+      })
+      .catch((err) =>
+        deps.logError(
+          {
+            scope: "webhooks.enqueue",
+            agent_run_id: ctx.agentRun.id,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "failed to enqueue incident.updated webhook (agent_awaiting_input)",
+        ),
+      );
+    const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
+    const installUrl = `${WEB_ORIGIN}/settings?tab=github`;
+    const tagline = "Connect a GitHub repo so we can investigate.";
+    await deps.postIncidentThreadMessage(
+      ctx.incident.id,
+      `:no_entry: ${summary}\nConnect GitHub: ${installUrl}`,
+    );
+    await deps.updateIncidentMainMessage(
+      ctx.incident.id,
+      `:no_entry: ${ctx.incident.title} — Investigation blocked`,
+      incidentBlocks({
+        emoji: "no_entry",
+        status: "Investigation blocked — connect GitHub",
+        title: ctx.incident.title,
+        titleUrl: incidentUrl,
+        tagline,
+        projectName: ctx.project.name,
+        service: ctx.incident.service,
+        buttons: [{ text: "Connect GitHub", url: installUrl, actionId: "connect_github" }],
+        incidentId: ctx.incident.id,
+        showResolveButton: true,
+        // No thumbs: the investigation is blocked before it can start (no GitHub
+        // repo connected), so there's nothing to rate yet.
+      }),
+    );
+  });
+  return true;
 }

@@ -3,10 +3,106 @@ import { test } from "node:test";
 import type { AgentRunResult } from "@superlog/db";
 import {
   agentResolveEventDedupeKey,
+  closedElsewhereCopyAfterNoiseRace,
+  completionIntendsIncidentClosure,
+  incidentAlreadyClosedCompletionCopy,
+  mergedPullRequestResolutionCopy,
   resolutionCompletionCopy,
   resolutionCompletionResult,
+  shouldRetireProviderSession,
   shouldUpdateResolutionMainMessage,
+  supersededSnapshotCompletionResult,
 } from "./resolution-completion.js";
+
+test("noise and resolution completions retire their provider session without an explicit outcome", () => {
+  assert.equal(
+    completionIntendsIncidentClosure({
+      hasIncidentOutcome: false,
+      noiseReason: "not_actionable",
+      resolutionReason: null,
+    }),
+    true,
+  );
+  assert.equal(
+    completionIntendsIncidentClosure({
+      hasIncidentOutcome: false,
+      noiseReason: null,
+      resolutionReason: "fixed_in_current_code",
+    }),
+    true,
+  );
+  assert.equal(
+    completionIntendsIncidentClosure({
+      hasIncidentOutcome: true,
+      noiseReason: null,
+      resolutionReason: null,
+    }),
+    true,
+  );
+  assert.equal(
+    completionIntendsIncidentClosure({
+      hasIncidentOutcome: false,
+      noiseReason: null,
+      resolutionReason: null,
+    }),
+    false,
+  );
+});
+
+test("a manual resolution that wins before noise metadata suppresses generic completion copy", () => {
+  assert.deepEqual(
+    closedElsewhereCopyAfterNoiseRace({
+      noiseReason: "not_actionable",
+      noiseApplied: false,
+      incidentStatus: "resolved",
+    }),
+    incidentAlreadyClosedCompletionCopy(),
+  );
+  assert.equal(
+    closedElsewhereCopyAfterNoiseRace({
+      noiseReason: "not_actionable",
+      noiseApplied: false,
+      incidentStatus: "open",
+    }),
+    null,
+  );
+  assert.equal(
+    closedElsewhereCopyAfterNoiseRace({
+      noiseReason: "not_actionable",
+      noiseApplied: true,
+      incidentStatus: "resolved",
+    }),
+    null,
+  );
+});
+
+test("merged fallback publishes Incident-resolved copy", () => {
+  const copy = mergedPullRequestResolutionCopy({
+    prNumber: 42,
+    repoFullName: "acme/api",
+  });
+
+  assert.deepEqual(copy, {
+    threadLead:
+      ":white_check_mark: All agent pull requests are merged; incident resolved by PR #42 (acme/api).",
+    status: "Incident resolved - all agent pull requests merged",
+    mainTextSuffix: "Incident resolved",
+  });
+  assert.doesNotMatch(`${copy.threadLead} ${copy.status}`, /investigation complete/i);
+});
+
+test("merged fallback that loses the resolution race uses thread-only closed-elsewhere copy", () => {
+  const copy = incidentAlreadyClosedCompletionCopy();
+
+  assert.deepEqual(copy, {
+    logMessage: "agent run complete after incident closed by another path",
+    threadLead:
+      ":white_check_mark: Investigation finished after this incident was closed by another path.",
+    status: "Incident closed outside this run",
+    updateMainMessage: false,
+  });
+  assert.doesNotMatch(`${copy.threadLead} ${copy.status}`, /investigation complete/i);
+});
 
 const result: AgentRunResult = {
   state: "complete",
@@ -37,6 +133,30 @@ test("a run that lost the resolution race persists findings without phantom clas
     summary: "Found and classified the failure.",
     rootCauseConfidence: "high",
   });
+});
+
+test("an externally completed nonterminal snapshot is normalized for durable reconciliation", () => {
+  assert.deepEqual(
+    supersededSnapshotCompletionResult({
+      state: "awaiting_human",
+      summary: "I still found the failing dependency.",
+      question: "Which region failed?",
+      rootCauseConfidence: "medium",
+    }),
+    {
+      state: "complete",
+      summary: "I still found the failing dependency.",
+      question: "Which region failed?",
+      rootCauseConfidence: "medium",
+    },
+  );
+});
+
+test("provider sessions retire only after the Incident becomes terminal", () => {
+  assert.equal(shouldRetireProviderSession("open"), false);
+  assert.equal(shouldRetireProviderSession("resolved"), true);
+  assert.equal(shouldRetireProviderSession("merged"), true);
+  assert.equal(shouldRetireProviderSession("autoresolved_noise"), true);
 });
 
 test("resolve dispatch and completion share one stable event key", () => {

@@ -1,8 +1,9 @@
-import type {
-  AgentPullRequestLifecycleContinuation,
-  AgentRunResult,
-  DB,
-  schema,
+import {
+  type AgentPullRequestLifecycleContinuation,
+  type AgentRunResult,
+  type DB,
+  reconcileAgentRunCompletedByResolution,
+  type schema,
 } from "@superlog/db";
 import {
   ACTIVE_STATES,
@@ -62,13 +63,20 @@ export function createAgentRunLifecycle(db: DB) {
      */
     async beginRepoDiscovery(opts: {
       id: string;
+      incidentId: string;
       currentState: AgentRunState | string;
-    }): Promise<void> {
+    }): Promise<boolean> {
       assertAgentRunSourceState("beginRepoDiscovery", opts.currentState, [
         "queued",
         "repo_discovery",
       ]);
-      await repository.updateRun(opts.id, { state: "repo_discovery" });
+      return repository.updateRunIfStateAndIncidentOpen({
+        id: opts.id,
+        incidentId: opts.incidentId,
+        fromState: opts.currentState as "queued" | "repo_discovery",
+        updates: { state: "repo_discovery" },
+        now: new Date(),
+      });
     },
 
     /**
@@ -77,20 +85,28 @@ export function createAgentRunLifecycle(db: DB) {
      */
     async startRunning(opts: {
       id: string;
+      incidentId: string;
       currentState: AgentRunState | string;
       providerSessionId: string;
       providerSessionStatus?: string | null;
       repoCandidateCount: number;
-    }): Promise<void> {
+    }): Promise<boolean> {
       assertAgentRunSourceState("startRunning", opts.currentState, ["repo_discovery"]);
       const now = new Date();
-      await repository.updateRun(opts.id, {
-        state: "running",
-        providerSessionId: opts.providerSessionId,
-        providerSessionStatus: opts.providerSessionStatus ?? "running",
-        startedAt: now,
-        updatedAt: now,
+      const started = await repository.updateRunIfStateAndIncidentOpen({
+        id: opts.id,
+        incidentId: opts.incidentId,
+        fromState: "repo_discovery",
+        updates: {
+          state: "running",
+          providerSessionId: opts.providerSessionId,
+          providerSessionStatus: opts.providerSessionStatus ?? "running",
+          startedAt: now,
+          updatedAt: now,
+        },
+        now,
       });
+      if (!started) return false;
       await repository.insertEvent({
         agentRunId: opts.id,
         kind: "agent_run_started",
@@ -98,6 +114,65 @@ export function createAgentRunLifecycle(db: DB) {
         dedupeKey: `started:${opts.providerSessionId}`,
         processed: true,
       });
+      return true;
+    },
+
+    async recordSessionTerminationPending(opts: {
+      id: string;
+      providerSessionId: string;
+    }): Promise<void> {
+      await repository.recordSessionTerminationPending({ ...opts, now: new Date() });
+    },
+
+    async recordDetachedSessionTerminationPending(opts: {
+      id: string;
+      incidentId: string;
+      runtime: string;
+      providerSessionId: string;
+    }): Promise<void> {
+      await repository.recordDetachedSessionTerminationPending(opts);
+    },
+
+    async markDetachedSessionTerminated(opts: {
+      id: string;
+      providerSessionId: string;
+    }): Promise<void> {
+      await repository.markDetachedSessionTerminated({ ...opts, now: new Date() });
+    },
+
+    async recordCollectedSnapshotIfCurrent(opts: {
+      id: string;
+      incidentId: string;
+      currentState: AgentRunState | string;
+      updates: Partial<schema.AgentRun>;
+    }): Promise<boolean> {
+      assertAgentRunSourceState("recordCollectedSnapshotIfCurrent", opts.currentState, ["running"]);
+      return repository.updateRunIfState(opts.id, "running", opts.updates);
+    },
+
+    async reconcileCompletedByResolution(opts: {
+      id: string;
+      result: AgentRunResult;
+      cumulativeRuntimeMinutes?: number;
+      lastSyncedAt?: Date;
+      selectedRepoFullName?: string | null;
+      selectedBaseBranch?: string | null;
+    }): Promise<boolean> {
+      return reconcileAgentRunCompletedByResolution(db, {
+        agentRunId: opts.id,
+        result: opts.result,
+        cumulativeRuntimeMinutes: opts.cumulativeRuntimeMinutes,
+        lastSyncedAt: opts.lastSyncedAt,
+        selectedRepoFullName: opts.selectedRepoFullName,
+        selectedBaseBranch: opts.selectedBaseBranch,
+      });
+    },
+
+    async markSessionTerminated(opts: {
+      id: string;
+      providerSessionId: string;
+    }): Promise<void> {
+      await repository.markSessionTerminated({ ...opts, now: new Date() });
     },
 
     /**
@@ -112,7 +187,7 @@ export function createAgentRunLifecycle(db: DB) {
       summary: string;
       question: string;
       result?: AgentRunResult;
-    }): Promise<void> {
+    }): Promise<boolean> {
       assertAgentRunSourceState("pauseForHuman", opts.currentState, ["running", "repo_discovery"]);
       const result: AgentRunResult = opts.result
         ? {
@@ -126,10 +201,15 @@ export function createAgentRunLifecycle(db: DB) {
             summary: opts.summary,
             question: opts.question,
           };
-      await repository.updateRun(opts.id, {
-        state: "awaiting_human",
-        result,
-      });
+      const paused = await repository.updateRunIfState(
+        opts.id,
+        opts.currentState as "running" | "repo_discovery",
+        {
+          state: "awaiting_human",
+          result,
+        },
+      );
+      if (!paused) return false;
       await repository.insertEvent({
         agentRunId: opts.id,
         kind: "awaiting_human",
@@ -143,6 +223,7 @@ export function createAgentRunLifecycle(db: DB) {
         dedupeKey: `awaiting_human:${opts.question}`,
         processed: true,
       });
+      return true;
     },
 
     /**
@@ -184,7 +265,15 @@ export function createAgentRunLifecycle(db: DB) {
       id: string;
       incidentId: string;
     }): Promise<boolean> {
-      return repository.canPublishAwaitingEventsUpdate(opts);
+      return repository.canPublishStatusUpdate({ ...opts, state: "awaiting_events" });
+    },
+
+    async canPublishStatusUpdate(opts: {
+      id: string;
+      incidentId: string;
+      state: schema.AgentRun["state"];
+    }): Promise<boolean> {
+      return repository.canPublishStatusUpdate(opts);
     },
 
     /**
@@ -196,10 +285,17 @@ export function createAgentRunLifecycle(db: DB) {
      */
     async requeueAfterHumanReply(opts: {
       id: string;
+      incidentId: string;
       currentState: AgentRunState | string;
-    }): Promise<void> {
+    }): Promise<boolean> {
       assertAgentRunSourceState("requeueAfterHumanReply", opts.currentState, ["awaiting_human"]);
-      await repository.updateRun(opts.id, { state: "queued" });
+      return repository.updateRunIfStateAndIncidentOpen({
+        id: opts.id,
+        incidentId: opts.incidentId,
+        fromState: "awaiting_human",
+        updates: { state: "queued" },
+        now: new Date(),
+      });
     },
 
     /**
@@ -279,9 +375,14 @@ export function createAgentRunLifecycle(db: DB) {
       currentState: AgentRunState | string;
       summary: string;
       reason: "no_github_install" | "no_accessible_repos";
-    }): Promise<void> {
+    }): Promise<boolean> {
       assertAgentRunSourceState("blockForGithub", opts.currentState, ["queued", "repo_discovery"]);
-      await repository.updateRun(opts.id, { state: "blocked_no_github" });
+      const blocked = await repository.updateRunIfState(
+        opts.id,
+        opts.currentState as "queued" | "repo_discovery",
+        { state: "blocked_no_github" },
+      );
+      if (!blocked) return false;
       await repository.insertEvent({
         agentRunId: opts.id,
         kind: "blocked_no_github",
@@ -293,6 +394,7 @@ export function createAgentRunLifecycle(db: DB) {
         detail: { reason: opts.reason },
         processed: true,
       });
+      return true;
     },
 
     // Note: the `blocked_no_github → queued` transition is implemented in
@@ -329,29 +431,19 @@ export function createAgentRunLifecycle(db: DB) {
       const nextResumeCount = opts.continuation
         ? opts.currentResumeCount
         : opts.currentResumeCount + 1;
-      const resumed = await repository.updateRunIfState(
-        opts.id,
-        opts.currentState as AgentRunState,
-        {
-          state: "running",
-          resumeCount: nextResumeCount,
-          startedAt: new Date(),
-        },
-      );
-      if (!resumed) return false;
-      await repository.insertEvent({
-        agentRunId: opts.id,
-        kind: "resumed",
-        summary: "Investigation resumed with human input.",
+      const now = new Date();
+      return repository.resumeRunIfState({
+        id: opts.id,
+        fromState: opts.currentState as AgentRunState,
+        resumeCount: nextResumeCount,
         // Continuations don't advance the counter, so the count alone can't
         // dedupe them — suffix a timestamp so each continuation resume still
         // records a fresh audit event.
         dedupeKey: opts.continuation
-          ? `resumed:${nextResumeCount}:${Date.now()}`
+          ? `resumed:${nextResumeCount}:${now.getTime()}`
           : `resumed:${nextResumeCount}`,
-        processed: true,
+        now,
       });
-      return true;
     },
 
     /**
@@ -363,15 +455,22 @@ export function createAgentRunLifecycle(db: DB) {
      */
     async startPrRetry(opts: {
       id: string;
+      incidentId: string;
       currentState: AgentRunState | string;
-    }): Promise<void> {
+    }): Promise<boolean> {
       assertAgentRunSourceState("startPrRetry", opts.currentState, ["pr_retry_queued"]);
       const now = new Date();
-      await repository.updateRun(opts.id, {
-        state: "running",
-        failureReason: null,
-        completedAt: null,
-        updatedAt: now,
+      return repository.updateRunIfStateAndIncidentOpen({
+        id: opts.id,
+        incidentId: opts.incidentId,
+        fromState: "pr_retry_queued",
+        updates: {
+          state: "running",
+          failureReason: null,
+          completedAt: null,
+          updatedAt: now,
+        },
+        now,
       });
     },
 
@@ -389,13 +488,20 @@ export function createAgentRunLifecycle(db: DB) {
       prUrl: string;
     }): Promise<boolean> {
       assertAgentRunSourceState("completeWithPullRequest", opts.currentState, ["running"]);
-      return repository.completeRunWithPullRequestIfRunning({
+      const completed = await repository.completeRunWithPullRequestIfRunning({
         id: opts.id,
         result: opts.result,
         selectedRepoFullName: opts.selectedRepoFullName,
         selectedBaseBranch: opts.selectedBaseBranch,
         prUrl: opts.prUrl,
         now: new Date(),
+      });
+      if (completed) return true;
+      return reconcileAgentRunCompletedByResolution(db, {
+        agentRunId: opts.id,
+        result: opts.result,
+        selectedRepoFullName: opts.selectedRepoFullName,
+        selectedBaseBranch: opts.selectedBaseBranch,
       });
     },
 
@@ -409,12 +515,19 @@ export function createAgentRunLifecycle(db: DB) {
       id: string;
       currentState: AgentRunState | string;
       result: AgentRunResult;
+      providerSessionIdToTerminate?: string;
     }): Promise<boolean> {
       assertAgentRunSourceState("completeWithoutPullRequest", opts.currentState, ["running"]);
-      return repository.completeRunIfRunning({
+      const completed = await repository.completeRunIfRunning({
         id: opts.id,
         result: opts.result,
+        providerSessionIdToTerminate: opts.providerSessionIdToTerminate,
         now: new Date(),
+      });
+      if (completed) return true;
+      return reconcileAgentRunCompletedByResolution(db, {
+        agentRunId: opts.id,
+        result: opts.result,
       });
     },
 
@@ -431,6 +544,7 @@ export function createAgentRunLifecycle(db: DB) {
       sourceIncident: schema.Incident;
       targetIncident: schema.Incident;
       evidence: string;
+      providerSessionIdToTerminate?: string;
     }): Promise<void> {
       assertAgentRunSourceState("completeViaMerge", opts.currentState, ["running"]);
       const now = new Date();
@@ -438,6 +552,7 @@ export function createAgentRunLifecycle(db: DB) {
         id: opts.id,
         result: opts.result,
         completedAt: now,
+        providerSessionIdToTerminate: opts.providerSessionIdToTerminate,
         sourceIncident: opts.sourceIncident,
         targetIncident: opts.targetIncident,
       });
@@ -469,7 +584,7 @@ export function createAgentRunLifecycle(db: DB) {
       summary: string;
       category: "agent" | "deliverable" | "infrastructure" | string;
       existingResult?: AgentRunResult | null;
-    }): Promise<void> {
+    }): Promise<boolean> {
       assertAgentRunSourceState("fail", opts.currentState, [
         "queued",
         "repo_discovery",
@@ -495,13 +610,18 @@ export function createAgentRunLifecycle(db: DB) {
         linearTicket: existing?.linearTicket ?? null,
         rootCauseConfidence: existing?.rootCauseConfidence ?? null,
       };
-      await repository.updateRun(opts.id, {
-        state: "failed",
-        failureReason: opts.reason,
-        completedAt: now,
-        updatedAt: now,
-        result,
-      });
+      const failed = await repository.updateRunIfState(
+        opts.id,
+        opts.currentState as AgentRunState,
+        {
+          state: "failed",
+          failureReason: opts.reason,
+          completedAt: now,
+          updatedAt: now,
+          result,
+        },
+      );
+      if (!failed) return false;
       await repository.insertEvent({
         agentRunId: opts.id,
         kind: "terminal_failure",
@@ -510,6 +630,7 @@ export function createAgentRunLifecycle(db: DB) {
         dedupeKey: `terminal:failed:${opts.reason}:${opts.summary}`,
         processed: true,
       });
+      return true;
     },
 
     // ─── Non-transition events ───────────────────────────────────────────
@@ -533,16 +654,18 @@ export function createAgentRunLifecycle(db: DB) {
      * tick can fold the new context into the agent steer message.
      */
     async appendContextChangeEvent(opts: {
+      incidentId: string;
       agentRunId: string;
       summary: string;
       dedupeKey: string;
-    }): Promise<void> {
-      await repository.insertEvent({
+    }): Promise<boolean> {
+      return repository.appendContextChangeEventIfCurrent({
+        incidentId: opts.incidentId,
         agentRunId: opts.agentRunId,
-        kind: "incident_context_changed",
+        activeStates: ACTIVE_STATES,
         summary: opts.summary,
         dedupeKey: opts.dedupeKey,
-        // intentionally not processed: tickAgentRuns consumes these
+        now: new Date(),
       });
     },
 

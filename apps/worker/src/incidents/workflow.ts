@@ -23,7 +23,10 @@ import {
   postIncidentThreadMessage,
 } from "../infra/slack/incident-messages.js";
 import { logger } from "../logger.js";
-import { decideIssueArrivalRouting } from "./issue-routing.js";
+import {
+  canQueueInvestigationForLockedIncident,
+  decideIssueArrivalRouting,
+} from "./issue-routing.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 const agentRunLifecycle = createAgentRunLifecycle(db);
@@ -34,7 +37,8 @@ export type ReopenedIncidentQueueStatus =
   | "existing_active"
   | "suppressed"
   | "disabled"
-  | "no_credits";
+  | "no_credits"
+  | "incident_closed";
 
 async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
   agentRun: schema.AgentRun | null;
@@ -64,33 +68,45 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
   // gate — it's already running and only needs a context update, not a fresh
   // credit. Gating first would wrongly suppress updates to active runs once
   // credits are exhausted. (The transaction below re-checks under a row lock.)
-  const activeRun = await db.query.agentRuns.findFirst({
+  const observedActiveRun = await db.query.agentRuns.findFirst({
     where: and(
       eq(schema.agentRuns.incidentId, incident.id),
       inArray(schema.agentRuns.state, [...AGENT_RUN_ACTIVE_STATES]),
     ),
     orderBy: [desc(schema.agentRuns.createdAt)],
   });
-  if (activeRun) return { agentRun: activeRun, queueStatus: "existing_active" };
+  let creditApproved = false;
+  const authorizeNewRun = async (): Promise<"incident_closed" | "no_credits" | null> => {
+    // Investigation credit gate (Autumn). The org is the Autumn customer. Free
+    // orgs that have spent their monthly credits are blocked here; paid plans
+    // allow overage so the gate returns true. Fails open if billing is unset or
+    // unreachable (see investigation-gate.ts) — we never block on billing errors.
+    const project = await db.query.projects.findFirst({
+      where: eq(schema.projects.id, incident.projectId),
+      columns: { orgId: true },
+    });
+    if (!project?.orgId || (await investigationGate.canRunInvestigation(project.orgId))) {
+      creditApproved = true;
+      return null;
+    }
 
-  // Investigation credit gate (Autumn). The org is the Autumn customer. Free
-  // orgs that have spent their monthly credits are blocked here; paid plans
-  // allow overage so the gate returns true. Fails open if billing is unset or
-  // unreachable (see investigation-gate.ts) — we never block on billing errors.
-  const project = await db.query.projects.findFirst({
-    where: eq(schema.projects.id, incident.projectId),
-    columns: { orgId: true },
-  });
-  if (project?.orgId && !(await investigationGate.canRunInvestigation(project.orgId))) {
-    // Persist the block reason so the dashboard can show "out of credits" on the
-    // incident (badge on the list row, banner on the detail view) rather than a
-    // bare "not queued". Cleared back to NULL when a run is later queued.
-    if (incident.autoInvestigateBlockedReason !== "no_credits") {
-      await db
+    // Persist the block only while the Incident is still open. Resolution uses
+    // the same lock, so an external gate response cannot revive stale UI state.
+    const marked = await db.transaction(async (tx) => {
+      const locked = await tx
+        .select({ status: schema.incidents.status })
+        .from(schema.incidents)
+        .where(eq(schema.incidents.id, incident.id))
+        .for("update");
+      if (!canQueueInvestigationForLockedIncident(locked[0]?.status ?? null)) return false;
+      await tx
         .update(schema.incidents)
         .set({ autoInvestigateBlockedReason: "no_credits" })
         .where(eq(schema.incidents.id, incident.id));
-    }
+      return true;
+    });
+    if (!marked) return "incident_closed";
+
     logger.info(
       { scope: "agent_run", incidentId: incident.id, orgId: project.orgId },
       "skipping auto-agent run; org is out of investigation credits",
@@ -100,18 +116,31 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
     // blocked incident. The per-incident "not started" Slack line is added
     // separately by the caller. Fire-and-forget.
     void usageNotifier?.notify(project.orgId);
-    return { agentRun: null, queueStatus: "no_credits" };
+    return "no_credits";
+  };
+
+  // The optimistic read only decides whether the external credit check can be
+  // skipped. The authoritative active-run decision always happens under the
+  // Incident lock below. If the observed run finished before that lock, check
+  // credits and retry instead of queueing an unmetered successor.
+  if (!observedActiveRun) {
+    const blocked = await authorizeNewRun();
+    if (blocked) return { agentRun: null, queueStatus: blocked };
   }
 
-  const result = await db.transaction(
-    async (
-      tx,
-    ): Promise<{ agentRun: schema.AgentRun | null; queueStatus: ReopenedIncidentQueueStatus }> => {
-      await tx
-        .select({ id: schema.incidents.id })
+  type QueueAttempt =
+    | { agentRun: schema.AgentRun | null; queueStatus: ReopenedIncidentQueueStatus }
+    | { agentRun: null; queueStatus: "needs_credit_check" };
+  const attemptQueue = (): Promise<QueueAttempt> =>
+    db.transaction(async (tx): Promise<QueueAttempt> => {
+      const lockedIncidents = await tx
+        .select({ status: schema.incidents.status })
         .from(schema.incidents)
         .where(eq(schema.incidents.id, incident.id))
         .for("update");
+      if (!canQueueInvestigationForLockedIncident(lockedIncidents[0]?.status ?? null)) {
+        return { agentRun: null, queueStatus: "incident_closed" };
+      }
 
       const existing = await tx.query.agentRuns.findFirst({
         where: and(
@@ -121,6 +150,7 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
         orderBy: [desc(schema.agentRuns.createdAt)],
       });
       if (existing) return { agentRun: existing, queueStatus: "existing_active" };
+      if (!creditApproved) return { agentRun: null, queueStatus: "needs_credit_check" };
 
       const queued = await createAgentRunLifecycle(tx as unknown as DB).enqueue({
         incidentId: incident.id,
@@ -138,8 +168,16 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
       }
 
       return { agentRun: queued, queueStatus: "queued" };
-    },
-  );
+    });
+  let result = await attemptQueue();
+  if (result.queueStatus === "needs_credit_check") {
+    const blocked = await authorizeNewRun();
+    if (blocked) return { agentRun: null, queueStatus: blocked };
+    result = await attemptQueue();
+    if (result.queueStatus === "needs_credit_check") {
+      throw new Error("credit authorization did not settle investigation queueing");
+    }
+  }
   if (result.queueStatus === "queued" && result.agentRun) {
     // Post-commit: put the new run on the advance queue now so the
     // investigation starts in seconds. Best-effort — the minute sweep picks
@@ -260,7 +298,8 @@ export async function handleIssueTransition(
     );
   }
   if (agentRun && linkedIssue && !createdIncident && isActiveAgentRunState(agentRun.state)) {
-    await agentRunLifecycle.appendContextChangeEvent({
+    const appended = await agentRunLifecycle.appendContextChangeEvent({
+      incidentId: incident.id,
       agentRunId: agentRun.id,
       // Include the issue id: this summary is steered verbatim into the running
       // agent, and resolve_incident.issueOutcomes keys on it. Without the id the
@@ -268,6 +307,7 @@ export async function handleIssueTransition(
       summary: `${transition === "new" ? "New" : "Regressed"} issue joined the incident (issue id: ${issue.id}): ${issue.title}`,
       dedupeKey: `issue:${issue.id}:joined`,
     });
+    if (!appended) return;
     await postIncidentThreadMessage(
       incident.id,
       `:information_source: ${transition === "new" ? "New" : "Regressed"} issue joined the incident: *${issue.title}*`,

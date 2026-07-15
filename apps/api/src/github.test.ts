@@ -65,7 +65,12 @@ test("merged agent PR resolves incident, cascades linked issues, and writes time
   const issue = await db.query.issues.findFirst({
     where: eq(schema.issues.id, fixture.issueId),
   });
-  assert.ok(issue);
+  assert.equal(issue?.status, "resolved");
+
+  const agentRun = await db.query.agentRuns.findFirst({
+    where: eq(schema.agentRuns.id, fixture.agentRunId),
+  });
+  assert.equal(agentRun?.state, "complete");
 
   const resolvedEvents = await db.query.incidentEvents.findMany({
     where: and(
@@ -102,6 +107,14 @@ test("merged agent PR resolves incident, cascades linked issues, and writes time
     installation: { id: fixture.installationId },
   });
   assert.equal(duplicate.status, 200);
+  const sparseDuplicate = await postGithub(app, "pull_request", `gh-${fixture.tag}-merged-sparse`, {
+    action: "closed",
+    repository: { full_name: fixture.repoFullName },
+    pull_request: { number: fixture.prNumber, merged: true },
+    sender: { login: "alice", id: 100 },
+    installation: { id: fixture.installationId },
+  });
+  assert.equal(sparseDuplicate.status, 200);
 
   const resolvedEventsAfterDuplicate = await db.query.incidentEvents.findMany({
     where: and(
@@ -110,6 +123,179 @@ test("merged agent PR resolves incident, cascades linked issues, and writes time
     ),
   });
   assert.equal(resolvedEventsAfterDuplicate.length, 1);
+  const prAfterDuplicate = await db.query.agentPullRequests.findFirst({
+    where: eq(schema.agentPullRequests.id, fixture.agentPrId),
+  });
+  assert.equal(prAfterDuplicate?.mergedByLogin, "alice");
+  assert.equal(prAfterDuplicate?.mergedAt?.toISOString(), mergedAt);
+  assert.equal(prAfterDuplicate?.closedAt?.toISOString(), mergedAt);
+});
+
+test("merged agent PR leaves the Incident open while a sibling PR remains open", async () => {
+  const fixture = await seedAgentPrFixture("merged-with-open-sibling");
+  const primaryPr = await db.query.agentPullRequests.findFirst({
+    where: eq(schema.agentPullRequests.id, fixture.agentPrId),
+  });
+  assert.ok(primaryPr);
+  const siblingNumber = fixture.prNumber + 1;
+  await db.insert(schema.agentPullRequests).values({
+    incidentId: fixture.incidentId,
+    agentRunId: fixture.agentRunId,
+    installationId: primaryPr.installationId,
+    repoFullName: `${fixture.repoFullName}-worker`,
+    prNumber: siblingNumber,
+    prNodeId: `PR_${fixture.tag}_sibling`,
+    url: `https://github.com/${fixture.repoFullName}-worker/pull/${siblingNumber}`,
+    branchName: `${fixture.branchName}-worker`,
+    baseBranch: "main",
+    state: "open",
+  });
+  const app = new Hono();
+  mountGithubPublic(app);
+
+  const mergedAt = new Date().toISOString();
+  const res = await postGithub(app, "pull_request", `gh-${fixture.tag}-merged`, {
+    action: "closed",
+    repository: { full_name: fixture.repoFullName },
+    pull_request: {
+      number: fixture.prNumber,
+      merged: true,
+      merged_at: mergedAt,
+      closed_at: mergedAt,
+      merged_by: { login: "alice", id: 100 },
+      head: { sha: "cafebabe", ref: fixture.branchName },
+    },
+    sender: { login: "alice", id: 100 },
+    installation: { id: fixture.installationId },
+  });
+
+  assert.equal(res.status, 200);
+  const incident = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.id, fixture.incidentId),
+  });
+  assert.equal(incident?.status, "open");
+  const pullRequests = await db.query.agentPullRequests.findMany({
+    where: eq(schema.agentPullRequests.incidentId, fixture.incidentId),
+    columns: { state: true },
+  });
+  assert.deepEqual(pullRequests.map((pr) => pr.state).sort(), ["merged", "open"]);
+  const resolvedEvent = await db.query.incidentEvents.findFirst({
+    where: and(
+      eq(schema.incidentEvents.agentRunId, fixture.agentRunId),
+      eq(schema.incidentEvents.kind, "incident_resolved"),
+    ),
+  });
+  assert.equal(resolvedEvent, undefined);
+});
+
+test("delayed close and reopen webhooks cannot regress an already merged agent PR", async () => {
+  const fixture = await seedAgentPrFixture("merged-monotonic");
+  const app = new Hono();
+  mountGithubPublic(app);
+  const mergedAt = new Date().toISOString();
+
+  assert.equal(
+    (
+      await postGithub(app, "pull_request", `gh-${fixture.tag}-merged`, {
+        action: "closed",
+        repository: { full_name: fixture.repoFullName },
+        pull_request: {
+          number: fixture.prNumber,
+          merged: true,
+          merged_at: mergedAt,
+          closed_at: mergedAt,
+          merged_by: { login: "alice", id: 100 },
+        },
+        sender: { login: "alice", id: 100 },
+        installation: { id: fixture.installationId },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await postGithub(app, "pull_request", `gh-${fixture.tag}-late-close`, {
+        action: "closed",
+        repository: { full_name: fixture.repoFullName },
+        pull_request: {
+          number: fixture.prNumber,
+          merged: false,
+          closed_at: new Date().toISOString(),
+        },
+        sender: { login: "bob", id: 101 },
+        installation: { id: fixture.installationId },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await postGithub(app, "pull_request", `gh-${fixture.tag}-late-reopen`, {
+        action: "reopened",
+        repository: { full_name: fixture.repoFullName },
+        pull_request: { number: fixture.prNumber, merged: false },
+        sender: { login: "bob", id: 101 },
+        installation: { id: fixture.installationId },
+      })
+    ).status,
+    200,
+  );
+
+  const pullRequest = await db.query.agentPullRequests.findFirst({
+    where: eq(schema.agentPullRequests.id, fixture.agentPrId),
+  });
+  assert.equal(pullRequest?.state, "merged");
+  assert.equal(pullRequest?.mergedByLogin, "alice");
+  assert.equal(pullRequest?.mergedAt?.toISOString(), mergedAt);
+});
+
+test("merged agent PR reaches a surviving session once and does not auto-resolve on redelivery", async () => {
+  const fixture = await seedAgentPrFixture("merged-live-session");
+  await db
+    .update(schema.agentRuns)
+    .set({ state: "awaiting_events", providerSessionId: `session-${fixture.tag}` })
+    .where(eq(schema.agentRuns.id, fixture.agentRunId));
+  const app = new Hono();
+  mountGithubPublic(app);
+
+  const mergedAt = new Date().toISOString();
+  const delivery = `gh-${fixture.tag}-merged`;
+  const payload = {
+    action: "closed",
+    repository: { full_name: fixture.repoFullName },
+    pull_request: {
+      number: fixture.prNumber,
+      merged: true,
+      merged_at: mergedAt,
+      closed_at: mergedAt,
+      merged_by: { login: "alice", id: 100 },
+      head: { sha: "cafebabe", ref: fixture.branchName },
+    },
+    sender: { login: "alice", id: 100 },
+    installation: { id: fixture.installationId },
+  };
+
+  assert.equal((await postGithub(app, "pull_request", delivery, payload)).status, 200);
+  assert.equal((await postGithub(app, "pull_request", delivery, payload)).status, 200);
+
+  const incident = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.id, fixture.incidentId),
+  });
+  assert.equal(incident?.status, "open");
+  const continuationEvents = await db.query.incidentEvents.findMany({
+    where: and(
+      eq(schema.incidentEvents.agentRunId, fixture.agentRunId),
+      eq(schema.incidentEvents.kind, "human_reply"),
+    ),
+  });
+  assert.equal(continuationEvents.length, 1);
+  const resolvedEvent = await db.query.incidentEvents.findFirst({
+    where: and(
+      eq(schema.incidentEvents.incidentId, fixture.incidentId),
+      eq(schema.incidentEvents.kind, "incident_resolved"),
+    ),
+  });
+  assert.equal(resolvedEvent, undefined);
 });
 
 test("closed unmerged agent PR does not resolve incident or linked issue", async () => {
@@ -146,7 +332,7 @@ test("closed unmerged agent PR does not resolve incident or linked issue", async
   const issue = await db.query.issues.findFirst({
     where: eq(schema.issues.id, fixture.issueId),
   });
-  assert.ok(issue);
+  assert.equal(issue?.status, "open");
 
   const resolvedEvent = await db.query.incidentEvents.findFirst({
     where: and(
@@ -174,10 +360,7 @@ async function seedAgentPrFixture(label: string): Promise<{
   const installationId = Math.floor(Date.now() / 1000) + Math.floor(Math.random() * 1_000_000);
   const prNumber = Math.floor(Math.random() * 10_000) + 1;
 
-  const [org] = await db
-    .insert(schema.orgs)
-    .values({ name: tag, slug: tag })
-    .returning();
+  const [org] = await db.insert(schema.orgs).values({ name: tag, slug: tag }).returning();
   if (!org) throw new Error("failed to seed org");
   orgIds.push(org.id);
 

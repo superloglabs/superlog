@@ -1,6 +1,7 @@
 import type {
   AgentMemoryKind,
   AgentRunFollowUpInteraction,
+  AgentRunFollowUpPullRequest,
   AgentRunResult,
   AgentRunTrigger,
   PrPolicy,
@@ -96,6 +97,9 @@ export type AgentRunnerPredecessorIncident = {
 export type AgentRunnerFollowUp = {
   trigger: Exclude<AgentRunTrigger, "incident">;
   interactions: AgentRunFollowUpInteraction[];
+  // All currently-open PRs on the Incident, including PRs delivered by an
+  // earlier run in the same investigation.
+  pullRequests: AgentRunFollowUpPullRequest[];
   priorRun: {
     state: "complete" | "failed";
     summary: string;
@@ -260,6 +264,10 @@ export type AgentRunnerBackend = {
   name: string;
   maxRepoResources: number;
   start(input: AgentRunnerStartInput): Promise<{ sessionId: string }>;
+  // Release a session that is no longer reachable from an open Incident.
+  // Implementations must be idempotent: an already-absent provider session is
+  // success so a delete followed by a failed DB acknowledgement can retry.
+  terminate(sessionId: string): Promise<void>;
   // Chat sessions reuse collect(); creation and messaging differ (chat prompt
   // + reply tool instead of the investigation outcome toolset — resume/steer
   // wrap messages in investigation framing a chat must not inherit).

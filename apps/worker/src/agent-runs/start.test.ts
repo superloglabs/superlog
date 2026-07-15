@@ -6,6 +6,70 @@ import type { AgentRunContext, InstalledGithubRepo } from "../agent-run-context.
 import type { AgentRunnerBackend, AgentRunnerStartInput } from "../agent-runner-backend.js";
 import { type StartQueuedAgentRunDeps, startQueuedAgentRunWorkflow } from "./start.js";
 
+test("startQueuedAgentRunWorkflow stops before external work when the Incident no longer owns the queued run", async () => {
+  const calls: string[] = [];
+  const deps = makeDeps(calls);
+  deps.lifecycle.beginRepoDiscovery = async () => {
+    calls.push("beginRepoDiscovery");
+    return false;
+  };
+
+  await startQueuedAgentRunWorkflow(makeContext(), deps);
+
+  assert.deepEqual(calls, ["beginRepoDiscovery"]);
+});
+
+test("startQueuedAgentRunWorkflow terminates the unowned session when resolution wins during discovery", async () => {
+  const calls: string[] = [];
+  const deps = makeDeps(calls);
+  deps.lifecycle.startRunning = async (opts) => {
+    calls.push(`startRunning:${opts.providerSessionId}:${opts.repoCandidateCount}`);
+    return false;
+  };
+
+  await startQueuedAgentRunWorkflow(makeContext(), deps);
+
+  assert.ok(calls.includes("runner.start:1"));
+  assert.ok(calls.includes("startRunning:session-1:1"));
+  assert.ok(calls.includes("detached_termination.pending:session-1"));
+  assert.ok(calls.includes("runner.terminate:session-1"));
+  assert.ok(calls.includes("detached_termination.complete:session-1"));
+  assert.equal(calls.includes("notifyStarted:1"), false);
+});
+
+test("startQueuedAgentRunWorkflow leaves a durable retry marker when session termination fails", async () => {
+  const calls: string[] = [];
+  const deps = makeDeps(calls);
+  deps.lifecycle.startRunning = async () => false;
+  const runner = await deps.getRunnerBackend("anthropic");
+  runner.terminate = async (sessionId) => {
+    calls.push(`runner.terminate:${sessionId}`);
+    throw new Error("provider unavailable");
+  };
+
+  await startQueuedAgentRunWorkflow(makeContext(), deps);
+
+  assert.ok(calls.includes("detached_termination.pending:session-1"));
+  assert.ok(calls.includes("runner.terminate:session-1"));
+  assert.equal(calls.includes("detached_termination.complete:session-1"), false);
+});
+
+test("startQueuedAgentRunWorkflow still terminates the losing session when outbox persistence fails", async () => {
+  const calls: string[] = [];
+  const deps = makeDeps(calls);
+  deps.lifecycle.startRunning = async () => false;
+  deps.lifecycle.recordDetachedSessionTerminationPending = async (opts) => {
+    calls.push(`detached_termination.pending_failed:${opts.providerSessionId}`);
+    throw new Error("database unavailable");
+  };
+
+  await startQueuedAgentRunWorkflow(makeContext(), deps);
+
+  assert.ok(calls.includes("detached_termination.pending_failed:session-1"));
+  assert.ok(calls.includes("runner.terminate:session-1"));
+  assert.equal(calls.includes("detached_termination.complete:session-1"), false);
+});
+
 test("startQueuedAgentRunWorkflow blocks before repo discovery when GitHub is not installed", async () => {
   const calls: string[] = [];
   const ctx = makeContext({ githubInstalled: false });
@@ -13,6 +77,7 @@ test("startQueuedAgentRunWorkflow blocks before repo discovery when GitHub is no
   await startQueuedAgentRunWorkflow(ctx, makeDeps(calls));
 
   assert.deepEqual(calls, [
+    "beginRepoDiscovery",
     "getRunnerBackend",
     "blockForGithub:no_github_install:Investigation blocked: no GitHub App install for this project.",
   ]);
@@ -30,9 +95,9 @@ test("startQueuedAgentRunWorkflow asks for human repo selection when scoring pro
   );
 
   assert.deepEqual(calls, [
+    "beginRepoDiscovery",
     "getRunnerBackend",
     "listRepositories",
-    "beginRepoDiscovery",
     "pauseForRepositorySelection",
   ]);
   assert.equal(ctx.agentRun.state, "repo_discovery");
@@ -45,9 +110,9 @@ test("startQueuedAgentRunWorkflow starts runner with capped repo candidates", as
   await startQueuedAgentRunWorkflow(ctx, makeDeps(calls));
 
   assert.deepEqual(calls, [
+    "beginRepoDiscovery",
     "getRunnerBackend",
     "listRepositories",
-    "beginRepoDiscovery",
     "createRepositoryReadToken:repo-1",
     "buildIssueSummaries",
     "runner.start:1",
@@ -211,6 +276,7 @@ test("startQueuedAgentRunWorkflow fails cleanly when async backend selection rej
   );
 
   assert.deepEqual(calls, [
+    "beginRepoDiscovery",
     "getRunnerBackend",
     "fail:unsupported_provider:Investigation provider missing-runtime is not supported.",
   ]);
@@ -234,6 +300,9 @@ function makeDeps(
       calls.push(`followUp:${input.followUp ? input.followUp.trigger : "none"}`);
       onStart?.(input);
       return { sessionId: "session-1" };
+    },
+    async terminate(sessionId) {
+      calls.push(`runner.terminate:${sessionId}`);
     },
     async startChat() {
       throw new Error("not used");
@@ -262,9 +331,17 @@ function makeDeps(
     lifecycle: {
       async beginRepoDiscovery() {
         calls.push("beginRepoDiscovery");
+        return true;
       },
       async startRunning(opts: { providerSessionId: string; repoCandidateCount: number }) {
         calls.push(`startRunning:${opts.providerSessionId}:${opts.repoCandidateCount}`);
+        return true;
+      },
+      async recordDetachedSessionTerminationPending(opts: { providerSessionId: string }) {
+        calls.push(`detached_termination.pending:${opts.providerSessionId}`);
+      },
+      async markDetachedSessionTerminated(opts: { providerSessionId: string }) {
+        calls.push(`detached_termination.complete:${opts.providerSessionId}`);
       },
     } as StartQueuedAgentRunDeps["lifecycle"],
     getRunnerBackend() {
@@ -291,12 +368,15 @@ function makeDeps(
     },
     async fail(_ctx, reason, summary) {
       calls.push(`fail:${reason}:${summary}`);
+      return true;
     },
     async blockForGithub(_ctx, reason, summary) {
       calls.push(`blockForGithub:${reason}:${summary}`);
+      return true;
     },
     async pauseForRepositorySelection() {
       calls.push("pauseForRepositorySelection");
+      return true;
     },
     async notifyStarted(_ctx, repoCandidateCount) {
       calls.push(`notifyStarted:${repoCandidateCount}`);

@@ -137,3 +137,18 @@ test("completed is the only Linear state type that accepts the investigation", a
     recordAcceptance: false,
   });
 });
+
+test("Linear completion attributes the event without preserving the originating run", async () => {
+  const { linearTicketResolutionInput } = await import("./linear.js");
+  const input = linearTicketResolutionInput({
+    id: "ticket-row-1",
+    incidentId: "incident-1",
+    agentRunId: "run-1",
+    ticketId: "linear-id-1",
+    ticketIdentifier: "ENG-42",
+    url: "https://linear.app/acme/issue/ENG-42",
+  } as never);
+
+  assert.equal(input.agentRunId, "run-1");
+  assert.equal(input.resolvingAgentRunId, null);
+});

@@ -1,11 +1,15 @@
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { db, schema } from "@superlog/db";
-import { asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
 import { loadAgentRunContext } from "../agent-run-context.js";
 import { ACTIVE_STATES as AGENT_RUN_ACTIVE_STATES, createAgentRunLifecycle } from "../agent-run.js";
 import { listPendingLinearHandoffRunIds, reconcilePendingLinearHandoff } from "./linear-handoff.js";
 import { retryQueuedPullRequestDelivery } from "./pr-delivery.js";
 import { resumeAgentRunFromHumanInput } from "./resume.js";
+import {
+  listPendingDetachedAgentRunIds,
+  terminatePendingAgentRunSessions,
+} from "./session-termination.js";
 import { startQueuedAgentRun } from "./start-run.js";
 import { syncRunningAgentRun } from "./sync.js";
 
@@ -33,11 +37,19 @@ export async function tickAgentRuns(): Promise<number> {
       // (because newer incidents arrived) would never be re-synced and got
       // stuck in 'running' forever. asc(updatedAt) drains the queue instead.
       const pendingHandoffIds = await listPendingLinearHandoffRunIds(AGENT_RUN_BATCH_SIZE);
+      const pendingDetachedSessionIds = await listPendingDetachedAgentRunIds(AGENT_RUN_BATCH_SIZE);
       const rows = await db.query.agentRuns.findMany({
         where: (runs, { or }) =>
           or(
             inArray(runs.state, [...AGENT_RUN_ACTIVE_STATES]),
+            and(
+              eq(runs.providerSessionStatus, "termination_pending"),
+              isNotNull(runs.providerSessionId),
+            ),
             ...(pendingHandoffIds.length > 0 ? [inArray(runs.id, pendingHandoffIds)] : []),
+            ...(pendingDetachedSessionIds.length > 0
+              ? [inArray(runs.id, pendingDetachedSessionIds)]
+              : []),
           ),
         orderBy: [asc(schema.agentRuns.updatedAt)],
         limit: AGENT_RUN_BATCH_SIZE,
@@ -45,6 +57,22 @@ export async function tickAgentRuns(): Promise<number> {
 
       let processed = 0;
       for (const agentRun of rows) {
+        // Touch before every provider call, including termination. A provider
+        // outage must rotate this row to the back of the fairness queue rather
+        // than aborting the same oldest row at the start of every batch.
+        await db
+          .update(schema.agentRuns)
+          .set({ updatedAt: new Date() })
+          .where(eq(schema.agentRuns.id, agentRun.id));
+        if (
+          (agentRun.providerSessionStatus === "termination_pending" &&
+            agentRun.providerSessionId) ||
+          pendingDetachedSessionIds.includes(agentRun.id)
+        ) {
+          await terminatePendingAgentRunSessions(agentRun);
+          processed += 1;
+          continue;
+        }
         // Always bump updated_at for the rows we visit, regardless of what
         // the handler does. Handlers can return without writing (transient
         // errors, awaiting_human with no pending reply, queued runs missing
@@ -52,10 +80,6 @@ export async function tickAgentRuns(): Promise<number> {
         // top the asc(updatedAt) queue every tick and starve the rest of
         // the backlog. Doing this first also keeps the order stable if a
         // handler later writes a fresher updated_at.
-        await db
-          .update(schema.agentRuns)
-          .set({ updatedAt: new Date() })
-          .where(eq(schema.agentRuns.id, agentRun.id));
         const ctx = await loadAgentRunContext(agentRun);
         if (!ctx) {
           // loadAgentRunContext returns null only when the run's incident or

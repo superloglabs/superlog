@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decideIssueArrivalRouting } from "./issue-routing.js";
+import {
+  canQueueInvestigationForLockedIncident,
+  decideIssueArrivalRouting,
+} from "./issue-routing.js";
 
 const base = {
   createdIncident: false,
@@ -22,4 +25,11 @@ test("investigates when there is no terminal run yet (none/active/dormant)", () 
 
 test("does not steer while suppressed by a fixed_in_current_code cooldown", () => {
   assert.equal(decideIssueArrivalRouting({ ...base, suppressed: true }), "investigate");
+});
+
+test("a locked Incident must still be open before an investigation is queued", () => {
+  assert.equal(canQueueInvestigationForLockedIncident("open"), true);
+  assert.equal(canQueueInvestigationForLockedIncident("resolved"), false);
+  assert.equal(canQueueInvestigationForLockedIncident("merged"), false);
+  assert.equal(canQueueInvestigationForLockedIncident(null), false);
 });

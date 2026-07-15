@@ -7,9 +7,64 @@ import {
   compensatePullRequestDelivery,
   deliverProposedPullRequest,
   preflightProposedPullRequest,
+  publishPullRequestUpdateIfCurrent,
   pullRequestDeliveryIdentityForLegacyCompletion,
   resolvePullRequestBaseBranch,
 } from "./pr-delivery.js";
+
+test("a stale run cannot publish pull request status", async () => {
+  const calls: string[] = [];
+  const published = await publishPullRequestUpdateIfCurrent(
+    {
+      incident: { id: "incident-1" },
+      agentRun: { id: "run-1" },
+    } as AgentRunContext,
+    "complete",
+    async () => {
+      calls.push("publish");
+    },
+    {
+      canPublish: async (input) => {
+        calls.push(`check:${input.state}`);
+        return false;
+      },
+      reconcile: async () => {
+        calls.push("reconcile");
+      },
+    },
+  );
+
+  assert.equal(published, false);
+  assert.deepEqual(calls, ["check:complete"]);
+});
+
+test("pull request publication compensates when ownership changes in flight", async () => {
+  const calls: string[] = [];
+  let current = true;
+  const published = await publishPullRequestUpdateIfCurrent(
+    {
+      incident: { id: "incident-1" },
+      agentRun: { id: "run-1" },
+    } as AgentRunContext,
+    "running",
+    async () => {
+      calls.push("publish");
+      current = false;
+    },
+    {
+      canPublish: async (input) => {
+        calls.push(`check:${input.state}:${current}`);
+        return current;
+      },
+      reconcile: async () => {
+        calls.push("reconcile");
+      },
+    },
+  );
+
+  assert.equal(published, false);
+  assert.deepEqual(calls, ["check:running:true", "publish", "check:running:false", "reconcile"]);
+});
 
 test("legacy completion derives a stable opaque delivery identity per run and repository", () => {
   const first = pullRequestDeliveryIdentityForLegacyCompletion({

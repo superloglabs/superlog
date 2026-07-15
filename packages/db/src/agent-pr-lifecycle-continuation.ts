@@ -1,5 +1,16 @@
 import type { AgentPrState, AgentRunFollowUpInteraction } from "./schema.js";
 
+// A merged PR is sufficient to resolve only when it represents the complete
+// Incident delivery. Keep this incident-wide rule shared by webhook, manual
+// merge, and worker recovery paths so batched PRs cannot drift semantically.
+export function areAllIncidentPullRequestsMerged(
+  pullRequests: Array<{ state: AgentPrState }>,
+): boolean {
+  return (
+    pullRequests.length > 0 && pullRequests.every((pullRequest) => pullRequest.state === "merged")
+  );
+}
+
 export type AgentPullRequestLifecycleRecord = {
   id: string;
   state: AgentPrState;

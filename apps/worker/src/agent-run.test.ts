@@ -11,6 +11,7 @@ import {
   createAgentRunLifecycle,
   isActiveState,
 } from "./agent-run.js";
+import { isAgentRunAggregateCurrent } from "./agent-runs/repository.js";
 
 // ─── State enum sanity ──────────────────────────────────────────────────
 
@@ -47,6 +48,27 @@ test("isActiveState returns false for unknown state strings", () => {
   assert.equal(isActiveState("ready_to_pr"), false); // dropped per ADR reconciliation
 });
 
+test("status publication ownership follows the Incident's latest run", () => {
+  assert.equal(
+    isAgentRunAggregateCurrent({
+      incidentStatus: "open",
+      expectedRunId: "run-old",
+      expectedState: "complete",
+      latestRun: { id: "run-new", state: "queued" },
+    }),
+    false,
+  );
+  assert.equal(
+    isAgentRunAggregateCurrent({
+      incidentStatus: "open",
+      expectedRunId: "run-new",
+      expectedState: "queued",
+      latestRun: { id: "run-new", state: "queued" },
+    }),
+    true,
+  );
+});
+
 function lastUpdateValues(calls: RecordedCall[], table: unknown): Record<string, unknown> {
   const updates = calls.filter(
     (c): c is Extract<RecordedCall, { op: "update.where" }> =>
@@ -80,7 +102,11 @@ type RecordedCall =
   | { op: "insert.onConflictDoNothing"; table: unknown; values: Record<string, unknown> }
   | { op: "update.where"; table: unknown; values: Record<string, unknown> }
   | { op: "awaiting_events.current" }
+  | { op: "status_publication.incident" }
+  | { op: "status_publication.latest_run" }
   | { op: "incident.lock" }
+  | { op: "open_pull_requests.read" }
+  | { op: "pending_human_replies.lock" }
   | { op: "transaction.begin" }
   | { op: "transaction.end" };
 
@@ -89,7 +115,18 @@ function recordingDb(
     insertReturningRow?: Record<string, unknown>;
     updateReturningRows?: Array<Record<string, unknown>>;
     lockedIncidents?: schema.Incident[];
+    pendingHumanReplies?: Array<
+      Pick<schema.IncidentEvent, "id" | "detail" | "summary" | "createdAt">
+    >;
+    openPullRequests?: Array<
+      Pick<
+        schema.AgentPullRequest,
+        "id" | "repoFullName" | "prNumber" | "url" | "branchName" | "baseBranch" | "state"
+      >
+    >;
     awaitingEventsCurrentRows?: Array<{ id: string }>;
+    statusPublicationIncident?: Pick<schema.Incident, "status"> | null;
+    statusPublicationLatestRun?: Pick<schema.AgentRun, "id" | "state"> | null;
   } = {},
 ): {
   db: DB;
@@ -128,9 +165,29 @@ function recordingDb(
     },
   });
   const db = {
+    query: {
+      incidents: {
+        async findFirst() {
+          calls.push({ op: "status_publication.incident" });
+          return opts.statusPublicationIncident ?? null;
+        },
+      },
+      agentRuns: {
+        async findFirst() {
+          calls.push({ op: "status_publication.latest_run" });
+          return opts.statusPublicationLatestRun ?? null;
+        },
+      },
+      agentPullRequests: {
+        async findMany() {
+          calls.push({ op: "open_pull_requests.read" });
+          return opts.openPullRequests ?? [];
+        },
+      },
+    },
     select() {
       return {
-        from() {
+        from(table: unknown) {
           return {
             innerJoin() {
               return {
@@ -146,9 +203,16 @@ function recordingDb(
             },
             where() {
               return {
+                async for() {
+                  return [];
+                },
                 orderBy() {
                   return {
                     async for() {
+                      if (table === schema.incidentEvents) {
+                        calls.push({ op: "pending_human_replies.lock" });
+                        return opts.pendingHumanReplies ?? [];
+                      }
                       calls.push({ op: "incident.lock" });
                       return opts.lockedIncidents ?? [];
                     },
@@ -197,7 +261,7 @@ function failOnAnyDbAccess(): DB {
 test("beginRepoDiscovery rejects from running and aborts before db write", async () => {
   const lifecycle = createAgentRunLifecycle(failOnAnyDbAccess());
   await assert.rejects(
-    () => lifecycle.beginRepoDiscovery({ id: "i1", currentState: "running" }),
+    () => lifecycle.beginRepoDiscovery({ id: "i1", incidentId: "inc-1", currentState: "running" }),
     /cannot transition from "running"/,
   );
 });
@@ -208,6 +272,7 @@ test("startRunning rejects from queued (must go via repo_discovery first)", asyn
     () =>
       lifecycle.startRunning({
         id: "i1",
+        incidentId: "inc-1",
         currentState: "queued",
         providerSessionId: "sess",
         repoCandidateCount: 0,
@@ -233,7 +298,12 @@ test("pauseForHuman rejects from awaiting_human (already paused)", async () => {
 test("requeueAfterHumanReply rejects from running", async () => {
   const lifecycle = createAgentRunLifecycle(failOnAnyDbAccess());
   await assert.rejects(
-    () => lifecycle.requeueAfterHumanReply({ id: "i1", currentState: "running" }),
+    () =>
+      lifecycle.requeueAfterHumanReply({
+        id: "i1",
+        incidentId: "inc-1",
+        currentState: "running",
+      }),
     /cannot transition from "running"/,
   );
 });
@@ -254,7 +324,7 @@ test("resumeRunning rejects from queued", async () => {
 test("startPrRetry rejects from failed until the API queues the retry first", async () => {
   const lifecycle = createAgentRunLifecycle(failOnAnyDbAccess());
   await assert.rejects(
-    () => lifecycle.startPrRetry({ id: "i1", currentState: "failed" }),
+    () => lifecycle.startPrRetry({ id: "i1", incidentId: "inc-1", currentState: "failed" }),
     /cannot transition from "failed"/,
   );
 });
@@ -324,11 +394,14 @@ test("enqueue inserts the row and emits exactly one agent_run_queued event", asy
 });
 
 test("startRunning sets state and emits exactly one agent_run_started event", async () => {
-  const { db, calls } = recordingDb();
+  const { db, calls } = recordingDb({
+    lockedIncidents: [{ id: "inc-1", status: "open" } as schema.Incident],
+  });
   const lifecycle = createAgentRunLifecycle(db);
 
   await lifecycle.startRunning({
     id: "inv-1",
+    incidentId: "inc-1",
     currentState: "repo_discovery",
     providerSessionId: "sess-abc",
     providerSessionStatus: "running",
@@ -338,6 +411,74 @@ test("startRunning sets state and emits exactly one agent_run_started event", as
   const values = lastUpdateValues(calls, schema.agentRuns);
   assert.equal(values.state, "running");
   assertEventInsertedOnce(calls, "agent_run_started");
+});
+
+test("queued start transitions cannot overwrite resolution-completed runs", async () => {
+  for (const transition of ["beginRepoDiscovery", "startRunning"] as const) {
+    const { db, calls } = recordingDb({
+      lockedIncidents: [{ id: "inc-1", status: "resolved" } as schema.Incident],
+    });
+    const lifecycle = createAgentRunLifecycle(db);
+
+    const transitioned =
+      transition === "beginRepoDiscovery"
+        ? await lifecycle.beginRepoDiscovery({
+            id: "inv-1",
+            incidentId: "inc-1",
+            currentState: "queued",
+          })
+        : await lifecycle.startRunning({
+            id: "inv-1",
+            incidentId: "inc-1",
+            currentState: "repo_discovery",
+            providerSessionId: "session-1",
+            repoCandidateCount: 1,
+          });
+
+    assert.equal(transitioned, false);
+    assert.deepEqual(
+      calls.map((call) => call.op),
+      ["transaction.begin", "incident.lock", "transaction.end"],
+      transition,
+    );
+  }
+});
+
+test("repo-discovery terminal dispositions lose cleanly to concurrent resolution", async () => {
+  for (const transition of ["pauseForHuman", "blockForGithub", "fail"] as const) {
+    const { db, calls } = recordingDb({ updateReturningRows: [] });
+    const lifecycle = createAgentRunLifecycle(db);
+
+    const transitioned =
+      transition === "pauseForHuman"
+        ? await lifecycle.pauseForHuman({
+            id: "inv-1",
+            currentState: "repo_discovery",
+            summary: "Repository ownership is unclear.",
+            question: "Which repository owns this incident?",
+          })
+        : transition === "blockForGithub"
+          ? await lifecycle.blockForGithub({
+              id: "inv-1",
+              currentState: "repo_discovery",
+              summary: "No repositories are accessible.",
+              reason: "no_accessible_repos",
+            })
+          : await lifecycle.fail({
+              id: "inv-1",
+              currentState: "repo_discovery",
+              reason: "github_repo_discovery_failed",
+              summary: "Repository discovery failed.",
+              category: "infrastructure",
+            });
+
+    assert.equal(transitioned, false);
+    assert.equal(
+      calls.some((call) => call.op === "insert.onConflictDoNothing"),
+      false,
+      transition,
+    );
+  }
 });
 
 test("pauseForHuman writes the awaiting_human result and emits one event", async () => {
@@ -407,6 +548,8 @@ test("resumeRunning increments resumeCount and emits a resumed event", async () 
   assert.equal(values.state, "running");
   assert.equal(values.resumeCount, 2);
   assertEventInsertedOnce(calls, "resumed");
+  assert.equal(calls[0]?.op, "transaction.begin");
+  assert.equal(calls.at(-1)?.op, "transaction.end");
 });
 
 test("resumeRunning cannot resurrect a run after a concurrent terminal transition", async () => {
@@ -430,18 +573,113 @@ test("resumeRunning cannot resurrect a run after a concurrent terminal transitio
 });
 
 test("startPrRetry re-enters running and clears the previous failure stamp", async () => {
-  const { db, calls } = recordingDb();
+  const { db, calls } = recordingDb({
+    lockedIncidents: [{ id: "inc-1", status: "open" } as schema.Incident],
+  });
   const lifecycle = createAgentRunLifecycle(db);
 
-  await lifecycle.startPrRetry({
+  const started = await lifecycle.startPrRetry({
     id: "inv-1",
+    incidentId: "inc-1",
     currentState: "pr_retry_queued",
   });
 
+  assert.equal(started, true);
   const values = lastUpdateValues(calls, schema.agentRuns);
   assert.equal(values.state, "running");
   assert.equal(values.failureReason, null);
   assert.equal(values.completedAt, null);
+});
+
+test("requeue and PR retry cannot resurrect runs on a resolved Incident", async () => {
+  const { db } = recordingDb({
+    lockedIncidents: [{ id: "inc-1", status: "resolved" } as schema.Incident],
+  });
+  const lifecycle = createAgentRunLifecycle(db);
+
+  assert.equal(
+    await lifecycle.requeueAfterHumanReply({
+      id: "inv-1",
+      incidentId: "inc-1",
+      currentState: "awaiting_human",
+    }),
+    false,
+  );
+  assert.equal(
+    await lifecycle.startPrRetry({
+      id: "inv-1",
+      incidentId: "inc-1",
+      currentState: "pr_retry_queued",
+    }),
+    false,
+  );
+});
+
+test("a losing start records detached-session cleanup without replacing the owned session", async () => {
+  const { db, calls } = recordingDb();
+  const lifecycle = createAgentRunLifecycle(db);
+
+  await lifecycle.recordDetachedSessionTerminationPending({
+    id: "inv-1",
+    incidentId: "inc-1",
+    runtime: "test-runtime",
+    providerSessionId: "losing-session",
+  });
+
+  assert.equal(
+    calls.some((call) => call.op === "update.where" && call.table === schema.agentRuns),
+    false,
+  );
+  assert.deepEqual(eventInsertValues(calls), {
+    agentRunId: "inv-1",
+    incidentId: "inc-1",
+    kind: "internal_agent_session_termination_pending",
+    summary: "Provider session is pending termination.",
+    detail: {
+      runtime: "test-runtime",
+      providerSessionId: "losing-session",
+    },
+    providerEventId: null,
+    dedupeKey: "session_termination:losing-session",
+    processedAt: null,
+  });
+});
+
+test("a stale collector cannot overwrite a run already terminalized by Incident resolution", async () => {
+  const { db, calls } = recordingDb({ updateReturningRows: [] });
+  const lifecycle = createAgentRunLifecycle(db);
+
+  const recorded = await lifecycle.recordCollectedSnapshotIfCurrent({
+    id: "inv-1",
+    incidentId: "inc-1",
+    currentState: "running",
+    updates: {
+      providerSessionStatus: "idle",
+      cumulativeRuntimeMinutes: 3,
+    },
+  });
+
+  assert.equal(recorded, false);
+  assert.equal(
+    calls.some((call) => call.op === "update.where"),
+    true,
+  );
+});
+
+test("the current resolver can persist its snapshot after closing the Incident", async () => {
+  const { db } = recordingDb({
+    lockedIncidents: [{ id: "inc-1", status: "resolved" } as schema.Incident],
+  });
+  const lifecycle = createAgentRunLifecycle(db);
+
+  const recorded = await lifecycle.recordCollectedSnapshotIfCurrent({
+    id: "inv-1",
+    incidentId: "inc-1",
+    currentState: "running",
+    updates: { providerSessionStatus: "idle" },
+  });
+
+  assert.equal(recorded, true);
 });
 
 test("completeWithoutPullRequest emits agent_run_completed (fills the audit gap)", async () => {
@@ -472,6 +710,24 @@ test("completeWithoutPullRequest reports a lost transition without duplicating i
   assert.equal(
     calls.find((call) => call.op === "insert.onConflictDoNothing"),
     undefined,
+  );
+});
+
+test("completion can atomically retire a resolver session after the Incident closes", async () => {
+  const { db, calls } = recordingDb();
+  const lifecycle = createAgentRunLifecycle(db);
+
+  const completed = await lifecycle.completeWithoutPullRequest({
+    id: "inv-1",
+    currentState: "running",
+    result: makeResult("complete"),
+    providerSessionIdToTerminate: "session-resolver",
+  });
+
+  assert.equal(completed, true);
+  assert.equal(
+    lastUpdateValues(calls, schema.agentRuns).providerSessionStatus,
+    "termination_pending",
   );
 });
 
@@ -540,6 +796,11 @@ test("completeViaMerge runs a transaction touching all four tables and emits one
   const endIdx = calls.findIndex((c) => c.op === "transaction.end");
   assert.ok(beginIdx >= 0 && endIdx > beginIdx);
   const inTx = calls.slice(beginIdx + 1, endIdx);
+  const incidentLockIndex = inTx.findIndex((call) => call.op === "incident.lock");
+  const agentRunUpdateIndex = inTx.findIndex(
+    (call) => call.op === "update.where" && call.table === schema.agentRuns,
+  );
+  assert.ok(incidentLockIndex >= 0 && incidentLockIndex < agentRunUpdateIndex);
   const tablesTouched = inTx
     .filter((c) => c.op === "update.where")
     .map((c) => (c as { table: unknown }).table);
@@ -559,20 +820,46 @@ test("completeViaMerge runs a transaction touching all four tables and emits one
 });
 
 test("appendContextChangeEvent leaves incident_context_changed unprocessed for runner steering", async () => {
-  const { db, calls } = recordingDb();
+  const { db, calls } = recordingDb({
+    lockedIncidents: [{ id: "inc-1", status: "open" } as schema.Incident],
+  });
   const lifecycle = createAgentRunLifecycle(db);
 
-  await lifecycle.appendContextChangeEvent({
+  const appended = await lifecycle.appendContextChangeEvent({
+    incidentId: "inc-1",
     agentRunId: "inv-1",
     summary: "New issue joined this incident.",
     dedupeKey: "context:issue-1",
   });
 
+  assert.equal(appended, true);
   const event = eventInsertValues(calls);
   assert.equal(event.kind, "incident_context_changed");
   assert.equal(event.agentRunId, "inv-1");
   assert.equal(event.summary, "New issue joined this incident.");
   assert.equal(event.processedAt, null);
+});
+
+test("appendContextChangeEvent rejects stale context after Incident resolution", async () => {
+  const { db, calls } = recordingDb({
+    lockedIncidents: [{ id: "inc-1", status: "resolved" } as schema.Incident],
+  });
+  const lifecycle = createAgentRunLifecycle(db);
+
+  const appended = await lifecycle.appendContextChangeEvent({
+    incidentId: "inc-1",
+    agentRunId: "inv-1",
+    summary: "New issue joined this incident.",
+    dedupeKey: "context:issue-1",
+  });
+
+  assert.equal(appended, false);
+  assert.equal(
+    calls.some(
+      (call) => call.op === "insert.onConflictDoNothing" && call.table === schema.incidentEvents,
+    ),
+    false,
+  );
 });
 
 test("fail records failureReason in both the row and the result, emits one event", async () => {
@@ -749,9 +1036,44 @@ test("pauseForEvents that lost the race writes no event and reports run_not_runn
 });
 
 test("handoffTerminatedSessionToFollowUp atomically replaces a running run with one queued continuation", async () => {
+  const pendingReply = {
+    channel: "slack_reply" as const,
+    author: "alice",
+    text: "Please preserve the worker fix too.",
+    occurredAt: "2026-07-15T08:35:00.000Z",
+  };
+  const pullRequests = [
+    {
+      agentPrId: "agent-pr-3",
+      repoFullName: "acme/worker",
+      prNumber: 3,
+      url: "https://github.com/acme/worker/pull/3",
+      branchName: "ash/fix-worker",
+      baseBranch: "main",
+      state: "open" as const,
+    },
+  ];
   const { db, calls } = recordingDb({
     insertReturningRow: { id: "follow-up-1" },
     lockedIncidents: [{ id: "inc-1", status: "open" } as schema.Incident],
+    pendingHumanReplies: [
+      {
+        id: "reply-event-1",
+        detail: { origin: pendingReply },
+        summary: pendingReply.text,
+        createdAt: new Date(pendingReply.occurredAt),
+      },
+      {
+        id: "legacy-reply-event",
+        detail: null,
+        summary: "Legacy reply without origin metadata.",
+        createdAt: new Date("2026-07-15T08:40:00.000Z"),
+      },
+    ],
+    openPullRequests: pullRequests.map(({ agentPrId, ...pullRequest }) => ({
+      id: agentPrId,
+      ...pullRequest,
+    })),
   });
   const lifecycle = createAgentRunLifecycle(db);
   const interaction = {
@@ -767,6 +1089,12 @@ test("handoffTerminatedSessionToFollowUp atomically replaces a running run with 
     text: "PR #1 merged.",
     url: "https://github.com/acme/api/pull/1",
     occurredAt: "2026-07-15T08:30:00.000Z",
+  };
+  const legacyPendingReply = {
+    channel: "slack_reply" as const,
+    author: null,
+    text: "Legacy reply without origin metadata.",
+    occurredAt: "2026-07-15T08:40:00.000Z",
   };
 
   const outcome = await lifecycle.handoffTerminatedSessionToFollowUp({
@@ -791,7 +1119,10 @@ test("handoffTerminatedSessionToFollowUp atomically replaces a running run with 
       "transaction.begin",
       "incident.lock",
       "update.where",
+      "pending_human_replies.lock",
+      "open_pull_requests.read",
       "insert.returning",
+      "update.where",
       "insert.onConflictDoNothing",
       "insert.onConflictDoNothing",
       "transaction.end",
@@ -816,8 +1147,113 @@ test("handoffTerminatedSessionToFollowUp atomically replaces a running run with 
     runtime: "anthropic",
     state: "queued",
     trigger: "pr_closed",
-    triggerDetail: { interactions: [mergedInteraction, interaction] },
+    triggerDetail: {
+      interactions: [mergedInteraction, pendingReply, legacyPendingReply, interaction],
+      pullRequests,
+    },
   });
+  const pendingReplyUpdate = calls.find(
+    (call): call is Extract<RecordedCall, { op: "update.where" }> =>
+      call.op === "update.where" && call.table === schema.incidentEvents,
+  );
+  assert.deepEqual(pendingReplyUpdate?.values, {
+    processedAt: pendingReplyUpdate?.values.processedAt,
+  });
+  assert.ok(pendingReplyUpdate?.values.processedAt instanceof Date);
+});
+
+test("handoffTerminatedSessionToFollowUp preserves identical pending event rows once each", async () => {
+  const repeatedInteraction = {
+    channel: "pr_merged" as const,
+    author: "octocat",
+    text: "PR #1 merged.",
+    url: "https://github.com/acme/api/pull/1",
+    occurredAt: "2026-07-15T08:30:00.000Z",
+  };
+  const { db, calls } = recordingDb({
+    insertReturningRow: { id: "follow-up-1" },
+    lockedIncidents: [{ id: "inc-1", status: "open" } as schema.Incident],
+    pendingHumanReplies: [
+      {
+        id: "reply-event-1",
+        detail: { origin: repeatedInteraction },
+        summary: repeatedInteraction.text,
+        createdAt: new Date(repeatedInteraction.occurredAt),
+      },
+      {
+        id: "reply-event-2",
+        detail: { origin: repeatedInteraction },
+        summary: repeatedInteraction.text,
+        createdAt: new Date(repeatedInteraction.occurredAt),
+      },
+    ],
+  });
+
+  await createAgentRunLifecycle(db).handoffTerminatedSessionToFollowUp({
+    id: "run-1",
+    incidentId: "inc-1",
+    currentState: "running",
+    runtime: "anthropic",
+    interactions: [repeatedInteraction],
+    existingResult: { state: "awaiting_events", summary: "Delivered remediation." },
+  });
+
+  const successor = calls.find(
+    (call): call is Extract<RecordedCall, { op: "insert.returning" }> =>
+      call.op === "insert.returning" && call.table === schema.agentRuns,
+  );
+  assert.deepEqual((successor?.values.triggerDetail as schema.AgentRunTriggerDetail).interactions, [
+    repeatedInteraction,
+    repeatedInteraction,
+  ]);
+});
+
+test("handoffTerminatedSessionToFollowUp snapshots open PRs after locking the Incident", async () => {
+  const currentPullRequestRows = [
+    {
+      id: "agent-pr-current",
+      repoFullName: "acme/current",
+      prNumber: 12,
+      url: "https://github.com/acme/current/pull/12",
+      branchName: "ash/current-fix",
+      baseBranch: "main",
+      state: "open" as const,
+    },
+  ];
+  const { db, calls } = recordingDb({
+    insertReturningRow: { id: "follow-up-1" },
+    lockedIncidents: [{ id: "inc-1", status: "open" } as schema.Incident],
+    openPullRequests: currentPullRequestRows,
+  });
+
+  await createAgentRunLifecycle(db).handoffTerminatedSessionToFollowUp({
+    id: "run-1",
+    incidentId: "inc-1",
+    currentState: "running",
+    runtime: "anthropic",
+    interactions: [
+      {
+        channel: "pr_closed",
+        author: null,
+        text: "PR #11 closed without merging.",
+        occurredAt: "2026-07-15T08:45:00.000Z",
+      },
+    ],
+    existingResult: { state: "awaiting_events", summary: "Delivered remediation." },
+  });
+
+  assert.ok(calls.some((call) => call.op === "open_pull_requests.read"));
+  const successor = calls.find(
+    (call): call is Extract<RecordedCall, { op: "insert.returning" }> =>
+      call.op === "insert.returning" && call.table === schema.agentRuns,
+  );
+  assert.deepEqual(
+    (successor?.values.triggerDetail as schema.AgentRunTriggerDetail).pullRequests,
+    currentPullRequestRows.map(({ id, ...pullRequest }) => ({
+      agentPrId: id,
+      ...pullRequest,
+    })),
+  );
 });
 
 test("handoffTerminatedSessionToFollowUp leaves the winning active run untouched after a race", async () => {
@@ -901,7 +1337,10 @@ test("pauseForEvents reports incident_not_open without parking after resolution 
 });
 
 test("awaiting-events provider updates lose ownership after resolution completes the run", async () => {
-  const { db, calls } = recordingDb({ awaitingEventsCurrentRows: [] });
+  const { db, calls } = recordingDb({
+    statusPublicationIncident: { status: "resolved" },
+    statusPublicationLatestRun: { id: "run-1", state: "complete" },
+  });
   const lifecycle = createAgentRunLifecycle(db);
 
   const current = await lifecycle.canPublishAwaitingEventsUpdate({
@@ -910,5 +1349,8 @@ test("awaiting-events provider updates lose ownership after resolution completes
   });
 
   assert.equal(current, false);
-  assert.equal(calls.filter((call) => call.op === "awaiting_events.current").length, 1);
+  assert.deepEqual(
+    calls.map((call) => call.op),
+    ["status_publication.incident", "status_publication.latest_run"],
+  );
 });

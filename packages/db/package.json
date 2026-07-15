@@ -6,6 +6,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./agent-pr-retry-domain": "./src/agent-pr-retry-domain.ts",
     "./schema": "./src/schema.ts",
     "./keys": "./src/keys.ts"
   },

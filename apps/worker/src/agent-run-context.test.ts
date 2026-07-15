@@ -63,6 +63,26 @@ test("buildFollowUpContext carries prior findings, handoff notes, PR, and timeli
           occurredAt: "2026-06-10T12:00:00Z",
         },
       ],
+      pullRequests: [
+        {
+          agentPrId: "agent-pr-12",
+          repoFullName: "acme/api",
+          prNumber: 12,
+          url: "https://github.com/acme/api/pull/12",
+          branchName: "superlog/fix-cart-npe",
+          baseBranch: "main",
+          state: "open",
+        },
+        {
+          agentPrId: "agent-pr-19",
+          repoFullName: "acme/worker",
+          prNumber: 19,
+          url: "https://github.com/acme/worker/pull/19",
+          branchName: "superlog/fix-cart-worker",
+          baseBranch: "main",
+          state: "open",
+        },
+      ],
     },
     priorRun,
     events: [
@@ -76,6 +96,26 @@ test("buildFollowUpContext carries prior findings, handoff notes, PR, and timeli
   assert.equal(followUp.trigger, "pr_comment");
   assert.equal(followUp.interactions.length, 1);
   assert.equal(followUp.interactions[0]?.path, "src/cart.ts");
+  assert.deepEqual(followUp.pullRequests, [
+    {
+      agentPrId: "agent-pr-12",
+      repoFullName: "acme/api",
+      prNumber: 12,
+      url: "https://github.com/acme/api/pull/12",
+      branchName: "superlog/fix-cart-npe",
+      baseBranch: "main",
+      state: "open",
+    },
+    {
+      agentPrId: "agent-pr-19",
+      repoFullName: "acme/worker",
+      prNumber: 19,
+      url: "https://github.com/acme/worker/pull/19",
+      branchName: "superlog/fix-cart-worker",
+      baseBranch: "main",
+      state: "open",
+    },
+  ]);
   assert.deepEqual(followUp.priorRun, {
     state: "complete",
     summary: "Fixed the checkout NPE.",
@@ -102,6 +142,7 @@ test("buildFollowUpContext tolerates a missing prior run and empty detail", () =
   assert.ok(followUp);
   assert.equal(followUp.priorRun, null);
   assert.deepEqual(followUp.interactions, []);
+  assert.deepEqual(followUp.pullRequests, []);
   assert.deepEqual(followUp.timeline, []);
 });
 

@@ -273,8 +273,23 @@ export type AgentRunFollowUpInteraction = {
   occurredAt: string;
 };
 
+// Durable identity for every still-open pull request carried into a cold-start
+// follow-up. A batched delivery can outlive the provider session, so the
+// successor must not have to infer the remaining work from the legacy single
+// `result.pr` field.
+export type AgentRunFollowUpPullRequest = {
+  agentPrId: string;
+  repoFullName: string;
+  prNumber: number;
+  url: string;
+  branchName: string;
+  baseBranch: string;
+  state: AgentPrState;
+};
+
 export type AgentRunTriggerDetail = {
   interactions: AgentRunFollowUpInteraction[];
+  pullRequests?: AgentRunFollowUpPullRequest[];
 };
 
 // Lifecycle of a provider Q&A chat (one row per Slack thread / DM channel or

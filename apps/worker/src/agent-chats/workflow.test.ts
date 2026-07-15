@@ -105,6 +105,9 @@ function makeHarness(opts: {
     async start() {
       throw new Error("not used");
     },
+    async terminate() {
+      throw new Error("not used");
+    },
     async startChat(input) {
       calls.push(`startChat:${input.question}`);
       opts.onStartChat?.(input);

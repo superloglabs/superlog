@@ -48,7 +48,11 @@ import { linearTicketSlackReference } from "./linear-pr-linking.js";
 import { outcomeActionInputHash } from "./outcome-action-receipts.js";
 import { buildPrBody, buildPrTitle } from "./pr-copy.js";
 import { summarizePrOpenFailure } from "./pr-open-failure.js";
-import { failAgentRun } from "./status.js";
+import {
+  failAgentRun,
+  publishAwaitingEventsUpdateIfCurrent,
+  reconcileStaleAgentRunPublication,
+} from "./status.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 const DEFAULT_COMMIT_AUTHOR = {
@@ -57,6 +61,34 @@ const DEFAULT_COMMIT_AUTHOR = {
 };
 const agentRunLifecycle = createAgentRunLifecycle(db);
 const incidentLifecycle = createIncidentLifecycle(db);
+
+type PullRequestPublicationDependencies = {
+  canPublish(input: {
+    id: string;
+    incidentId: string;
+    state: schema.AgentRun["state"];
+  }): Promise<boolean>;
+  reconcile(ctx: AgentRunContext): Promise<void>;
+};
+
+const pullRequestPublicationDependencies: PullRequestPublicationDependencies = {
+  canPublish: (input) => agentRunLifecycle.canPublishStatusUpdate(input),
+  reconcile: reconcileStaleAgentRunPublication,
+};
+
+export async function publishPullRequestUpdateIfCurrent(
+  ctx: AgentRunContext,
+  state: schema.AgentRun["state"],
+  publish: () => Promise<void>,
+  deps: PullRequestPublicationDependencies = pullRequestPublicationDependencies,
+): Promise<boolean> {
+  const outcome = await publishAwaitingEventsUpdateIfCurrent({
+    isCurrent: () => deps.canPublish({ id: ctx.agentRun.id, incidentId: ctx.incident.id, state }),
+    publish,
+    reconcileStalePublication: () => deps.reconcile(ctx),
+  });
+  return outcome === "published";
+}
 
 // Reply posted on the existing PR after a follow-up run pushes new commits.
 function buildFollowUpPrComment(ctx: AgentRunContext, result: AgentRunResult): string {
@@ -360,23 +392,6 @@ export async function completeWithPullRequest(
       });
       // A concurrent sync pass already owns all completion-side effects.
       if (!completed) return false;
-      await incidentLifecycle
-        .applyAgentRunResult({
-          incident: ctx.incident,
-          agentRunId: ctx.agentRun.id,
-          result: followUpResult,
-        })
-        .catch((err) =>
-          logger.error(
-            {
-              scope: "agent_run.pr_delivery",
-              agent_run_id: ctx.agentRun.id,
-              incident_id: ctx.incident.id,
-              err: err instanceof Error ? err.message : String(err),
-            },
-            "failed to apply incident metadata after updating PR",
-          ),
-        );
       await enqueueAgentRunCompleted(ctx.agentRun.id).catch((err) =>
         logger.error(
           {
@@ -387,33 +402,52 @@ export async function completeWithPullRequest(
           "failed to enqueue agent run.completed webhook",
         ),
       );
-      const linearTicket = await deliverAndRecordLinearTicket(ctx, result, existingPr.url);
-      await notifyFollowUpPrUpdated(ctx, existingPr.url, linearTicket).catch((err) =>
-        logger.warn(
+      await publishPullRequestUpdateIfCurrent(ctx, "complete", async () => {
+        await incidentLifecycle
+          .applyAgentRunResult({
+            incident: ctx.incident,
+            agentRunId: ctx.agentRun.id,
+            result: followUpResult,
+          })
+          .catch((err) =>
+            logger.error(
+              {
+                scope: "agent_run.pr_delivery",
+                agent_run_id: ctx.agentRun.id,
+                incident_id: ctx.incident.id,
+                err: err instanceof Error ? err.message : String(err),
+              },
+              "failed to apply incident metadata after updating PR",
+            ),
+          );
+        const linearTicket = await deliverAndRecordLinearTicket(ctx, result, existingPr.url);
+        await notifyFollowUpPrUpdated(ctx, existingPr.url, linearTicket).catch((err) =>
+          logger.warn(
+            {
+              scope: "agent_run.pr_delivery",
+              agent_run_id: ctx.agentRun.id,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "failed to post follow-up PR update to Slack",
+          ),
+        );
+        logger.info(
           {
-            scope: "agent_run.pr_delivery",
+            scope: "agent_run",
             agent_run_id: ctx.agentRun.id,
-            err: err instanceof Error ? err.message : String(err),
+            incident_id: ctx.incident.id,
+            session_id: sessionId,
+            runtime_minutes: runtimeMinutes,
+            selected_repo: pr.selectedRepoFullName,
+            pr_url: existingPr.url,
           },
-          "failed to post follow-up PR update to Slack",
-        ),
-      );
-      logger.info(
-        {
-          scope: "agent_run",
-          agent_run_id: ctx.agentRun.id,
-          incident_id: ctx.incident.id,
-          session_id: sessionId,
-          runtime_minutes: runtimeMinutes,
-          selected_repo: pr.selectedRepoFullName,
-          pr_url: existingPr.url,
-        },
-        "agent run complete (existing pr updated)",
-      );
-      await postLinearIncidentResponse(
-        ctx.incident.id,
-        `${result.summary}\n\nUpdated pull request: ${existingPr.url}`,
-      );
+          "agent run complete (existing pr updated)",
+        );
+        await postLinearIncidentResponse(
+          ctx.incident.id,
+          `${result.summary}\n\nUpdated pull request: ${existingPr.url}`,
+        );
+      });
       return true;
     }
     // No open PR to land on (closed meanwhile, or the prior run never opened
@@ -511,23 +545,6 @@ export async function completeWithPullRequest(
   // GitHub/canonical delivery precedes the run transition, but every
   // completion notification belongs exclusively to the transition winner.
   if (!completed) return false;
-  await incidentLifecycle
-    .applyAgentRunResult({
-      incident: ctx.incident,
-      agentRunId: ctx.agentRun.id,
-      result: updatedResult,
-    })
-    .catch((err) =>
-      logger.error(
-        {
-          scope: "agent_run.pr_delivery",
-          agent_run_id: ctx.agentRun.id,
-          incident_id: ctx.incident.id,
-          err: err instanceof Error ? err.message : String(err),
-        },
-        "failed to apply incident metadata after opening PR",
-      ),
-    );
   await enqueueAgentRunCompleted(ctx.agentRun.id).catch((err) =>
     logger.error(
       {
@@ -538,125 +555,151 @@ export async function completeWithPullRequest(
       "failed to enqueue agent run.completed webhook",
     ),
   );
-  if (ctx.autoMergeFixPrs !== "never") {
-    try {
-      const outcome = await mergeAgentPullRequest({
-        installationId: repoMeta.installation.installationId,
-        repositoryId: repoMeta.id,
-        repoFullName: pr.selectedRepoFullName,
-        prNumber: opened.prNumber,
-        prNodeId: opened.prNodeId,
-        policy: ctx.autoMergeFixPrs,
-        method: ctx.autoMergeMethod,
-      });
-      logger.info(
-        {
-          scope: "agent_run.pr_delivery.auto_merge",
-          agent_run_id: ctx.agentRun.id,
-          incident_id: ctx.incident.id,
-          pr_url: opened.prUrl,
-          policy: ctx.autoMergeFixPrs,
-          method: ctx.autoMergeMethod,
-          outcome: outcome.kind,
-        },
-        "auto-merge applied",
+  await publishPullRequestUpdateIfCurrent(ctx, "complete", async () => {
+    await incidentLifecycle
+      .applyAgentRunResult({
+        incident: ctx.incident,
+        agentRunId: ctx.agentRun.id,
+        result: updatedResult,
+      })
+      .catch((err) =>
+        logger.error(
+          {
+            scope: "agent_run.pr_delivery",
+            agent_run_id: ctx.agentRun.id,
+            incident_id: ctx.incident.id,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "failed to apply incident metadata after opening PR",
+        ),
       );
-      const note =
-        outcome.kind === "merged"
-          ? `:white_check_mark: Auto-merged PR (${ctx.autoMergeMethod})`
-          : outcome.kind === "auto_merge_enabled"
-            ? `:hourglass_flowing_sand: Auto-merge enabled — will land once checks pass (${ctx.autoMergeMethod})`
-            : null;
-      if (note) {
-        await postIncidentThreadMessage(ctx.incident.id, note).catch(() => {});
+    if (
+      ctx.autoMergeFixPrs !== "never" &&
+      (await agentRunLifecycle.canPublishStatusUpdate({
+        id: ctx.agentRun.id,
+        incidentId: ctx.incident.id,
+        state: "complete",
+      }))
+    ) {
+      try {
+        const outcome = await mergeAgentPullRequest({
+          installationId: repoMeta.installation.installationId,
+          repositoryId: repoMeta.id,
+          repoFullName: pr.selectedRepoFullName,
+          prNumber: opened.prNumber,
+          prNodeId: opened.prNodeId,
+          policy: ctx.autoMergeFixPrs,
+          method: ctx.autoMergeMethod,
+        });
+        logger.info(
+          {
+            scope: "agent_run.pr_delivery.auto_merge",
+            agent_run_id: ctx.agentRun.id,
+            incident_id: ctx.incident.id,
+            pr_url: opened.prUrl,
+            policy: ctx.autoMergeFixPrs,
+            method: ctx.autoMergeMethod,
+            outcome: outcome.kind,
+          },
+          "auto-merge applied",
+        );
+        const note =
+          outcome.kind === "merged"
+            ? `:white_check_mark: Auto-merged PR (${ctx.autoMergeMethod})`
+            : outcome.kind === "auto_merge_enabled"
+              ? `:hourglass_flowing_sand: Auto-merge enabled — will land once checks pass (${ctx.autoMergeMethod})`
+              : null;
+        if (note) {
+          await postIncidentThreadMessage(ctx.incident.id, note).catch(() => {});
+        }
+      } catch (err) {
+        logger.warn(
+          {
+            scope: "agent_run.pr_delivery.auto_merge",
+            agent_run_id: ctx.agentRun.id,
+            incident_id: ctx.incident.id,
+            pr_url: opened.prUrl,
+            policy: ctx.autoMergeFixPrs,
+            method: ctx.autoMergeMethod,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "auto-merge attempt failed; leaving PR open for human merge",
+        );
+        const reason = err instanceof Error ? err.message : String(err);
+        await postIncidentThreadMessage(
+          ctx.incident.id,
+          `:warning: Auto-merge failed (${reason.slice(0, 200)}). PR is open for manual review.`,
+        ).catch(() => {});
       }
-    } catch (err) {
-      logger.warn(
+    }
+    const linearTicket = await deliverAndRecordLinearTicket(ctx, result, opened.prUrl);
+    logger.info(
+      {
+        scope: "agent_run",
+        agent_run_id: ctx.agentRun.id,
+        incident_id: ctx.incident.id,
+        session_id: sessionId,
+        runtime_minutes: runtimeMinutes,
+        selected_repo: pr.selectedRepoFullName,
+        pr_url: opened.prUrl,
+      },
+      "agent run complete (pr opened)",
+    );
+    const ticketLine = linearTicket ? `\n${linearTicketSlackReference(linearTicket)}` : "";
+    await postIncidentThreadMessage(
+      ctx.incident.id,
+      `:bulb: Opened PR ${opened.prUrl}${ticketLine}`,
+    ).catch((err) =>
+      logger.error(
         {
-          scope: "agent_run.pr_delivery.auto_merge",
+          scope: "agent_run.pr_delivery",
           agent_run_id: ctx.agentRun.id,
           incident_id: ctx.incident.id,
           pr_url: opened.prUrl,
-          policy: ctx.autoMergeFixPrs,
-          method: ctx.autoMergeMethod,
           err: err instanceof Error ? err.message : String(err),
         },
-        "auto-merge attempt failed; leaving PR open for human merge",
-      );
-      const reason = err instanceof Error ? err.message : String(err);
-      await postIncidentThreadMessage(
-        ctx.incident.id,
-        `:warning: Auto-merge failed (${reason.slice(0, 200)}). PR is open for manual review.`,
-      ).catch(() => {});
-    }
-  }
-  const linearTicket = await deliverAndRecordLinearTicket(ctx, result, opened.prUrl);
-  logger.info(
-    {
-      scope: "agent_run",
-      agent_run_id: ctx.agentRun.id,
-      incident_id: ctx.incident.id,
-      session_id: sessionId,
-      runtime_minutes: runtimeMinutes,
-      selected_repo: pr.selectedRepoFullName,
-      pr_url: opened.prUrl,
-    },
-    "agent run complete (pr opened)",
-  );
-  const ticketLine = linearTicket ? `\n${linearTicketSlackReference(linearTicket)}` : "";
-  await postIncidentThreadMessage(
-    ctx.incident.id,
-    `:bulb: Opened PR ${opened.prUrl}${ticketLine}`,
-  ).catch((err) =>
-    logger.error(
-      {
-        scope: "agent_run.pr_delivery",
-        agent_run_id: ctx.agentRun.id,
-        incident_id: ctx.incident.id,
-        pr_url: opened.prUrl,
-        err: err instanceof Error ? err.message : String(err),
-      },
-      "failed to post PR-ready Slack thread message",
-    ),
-  );
-  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
-  await updateIncidentMainMessage(
-    ctx.incident.id,
-    `:bulb: PR Ready: ${ctx.incident.title}`,
-    incidentBlocks({
-      emoji: "bulb",
-      status: "PR Ready",
-      title: ctx.incident.title,
-      titleUrl: incidentUrl,
-      tagline: result.summary || undefined,
-      projectName: ctx.project.name,
-      service: ctx.incident.service,
-      buttons: [],
-      links: [
-        { text: "View PR", url: opened.prUrl },
-        ...(linearTicket?.url ? [{ text: "View ticket", url: linearTicket.url }] : []),
-      ],
-      incidentId: ctx.incident.id,
-      showResolveButton: true,
-      showMergePrButton: true,
-      showFeedbackButtons: true,
-    }),
-  ).catch((err) =>
-    logger.error(
-      {
-        scope: "agent_run.pr_delivery",
-        agent_run_id: ctx.agentRun.id,
-        incident_id: ctx.incident.id,
-        pr_url: opened.prUrl,
-        err: err instanceof Error ? err.message : String(err),
-      },
-      "failed to update PR-ready Slack root message",
-    ),
-  );
-  await postLinearIncidentResponse(
-    ctx.incident.id,
-    `${result.summary}\n\nProposed fix: ${opened.prUrl}`,
-  );
+        "failed to post PR-ready Slack thread message",
+      ),
+    );
+    const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
+    await updateIncidentMainMessage(
+      ctx.incident.id,
+      `:bulb: PR Ready: ${ctx.incident.title}`,
+      incidentBlocks({
+        emoji: "bulb",
+        status: "PR Ready",
+        title: ctx.incident.title,
+        titleUrl: incidentUrl,
+        tagline: result.summary || undefined,
+        projectName: ctx.project.name,
+        service: ctx.incident.service,
+        buttons: [],
+        links: [
+          { text: "View PR", url: opened.prUrl },
+          ...(linearTicket?.url ? [{ text: "View ticket", url: linearTicket.url }] : []),
+        ],
+        incidentId: ctx.incident.id,
+        showResolveButton: true,
+        showMergePrButton: true,
+        showFeedbackButtons: true,
+      }),
+    ).catch((err) =>
+      logger.error(
+        {
+          scope: "agent_run.pr_delivery",
+          agent_run_id: ctx.agentRun.id,
+          incident_id: ctx.incident.id,
+          pr_url: opened.prUrl,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "failed to update PR-ready Slack root message",
+      ),
+    );
+    await postLinearIncidentResponse(
+      ctx.incident.id,
+      `${result.summary}\n\nProposed fix: ${opened.prUrl}`,
+    );
+  });
   return true;
 }
 
@@ -1197,12 +1240,14 @@ export async function deliverProposedPullRequest(
     });
     if (!reconciled.ok) return reconciled;
     if (!deliveryIdentity || reconciled.deliveryReceipt?.newlyRecorded !== false) {
-      const linearTicket = await deliverAndRecordLinearTicket(ctx, ticketResult, existingPr.url);
-      const ticketLine = linearTicket ? `\n${linearTicketSlackReference(linearTicket)}` : "";
-      await postIncidentThreadMessage(
-        ctx.incident.id,
-        `:arrows_counterclockwise: Pushed an update to PR ${existingPr.url}${ticketLine}`,
-      ).catch(() => {});
+      await publishPullRequestUpdateIfCurrent(ctx, "running", async () => {
+        const linearTicket = await deliverAndRecordLinearTicket(ctx, ticketResult, existingPr.url);
+        const ticketLine = linearTicket ? `\n${linearTicketSlackReference(linearTicket)}` : "";
+        await postIncidentThreadMessage(
+          ctx.incident.id,
+          `:arrows_counterclockwise: Pushed an update to PR ${existingPr.url}${ticketLine}`,
+        ).catch(() => {});
+      });
     }
     const delivered = reconciled.deliveryReceipt?.delivery;
     return {
@@ -1287,92 +1332,99 @@ export async function deliverProposedPullRequest(
   const shouldPublishDelivery =
     !deliveryIdentity || reconciled.deliveryReceipt?.newlyRecorded !== false;
   if (shouldPublishDelivery) {
-    await agentRunLifecycle.appendAgentEvent({
-      agentRunId: ctx.agentRun.id,
-      kind: "pr_opened",
-      summary: `Opened PR: ${opened.prUrl}`,
-      providerEventId: `pr_opened:${opened.prUrl}`,
-      detail: { url: opened.prUrl },
-    });
-  }
-
-  // The first successfully-recorded PR is the ticket creation boundary.
-  // Later PRs reuse the run-scoped ticket, then independently cross-link in
-  // both directions.
-  const linearTicket = shouldPublishDelivery
-    ? await deliverAndRecordLinearTicket(ctx, ticketResult, opened.prUrl)
-    : null;
-
-  if (shouldPublishDelivery && ctx.autoMergeFixPrs !== "never") {
-    try {
-      const outcome = await mergeAgentPullRequest({
-        installationId: repoMeta.installation.installationId,
-        repositoryId: repoMeta.id,
-        repoFullName: pr.repoFullName,
-        prNumber: opened.prNumber,
-        prNodeId: opened.prNodeId,
-        policy: ctx.autoMergeFixPrs,
-        method: ctx.autoMergeMethod,
+    await publishPullRequestUpdateIfCurrent(ctx, "running", async () => {
+      await agentRunLifecycle.appendAgentEvent({
+        agentRunId: ctx.agentRun.id,
+        kind: "pr_opened",
+        summary: `Opened PR: ${opened.prUrl}`,
+        providerEventId: `pr_opened:${opened.prUrl}`,
+        detail: { url: opened.prUrl },
       });
-      const note =
-        outcome.kind === "merged"
-          ? `:white_check_mark: Auto-merged PR (${ctx.autoMergeMethod})`
-          : outcome.kind === "auto_merge_enabled"
-            ? `:hourglass_flowing_sand: Auto-merge enabled — will land once checks pass (${ctx.autoMergeMethod})`
-            : null;
-      if (note) {
-        const ticketLine = linearTicket ? `\n${linearTicketSlackReference(linearTicket)}` : "";
-        await postIncidentThreadMessage(ctx.incident.id, `${note}${ticketLine}`).catch(() => {});
-      }
-    } catch (err) {
-      logger.warn(
-        {
-          scope: "agent_run.pr_delivery.auto_merge",
-          agent_run_id: ctx.agentRun.id,
-          incident_id: ctx.incident.id,
-          pr_url: opened.prUrl,
-          err: err instanceof Error ? err.message : String(err),
-        },
-        "auto-merge attempt failed; leaving PR open for human merge",
-      );
-    }
-  }
 
-  if (shouldPublishDelivery) {
-    const ticketLine = linearTicket ? `\n${linearTicketSlackReference(linearTicket)}` : "";
-    await postIncidentThreadMessage(
-      ctx.incident.id,
-      `:bulb: Opened PR ${opened.prUrl}${ticketLine}`,
-    ).catch(() => {});
-    const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
-    await updateIncidentMainMessage(
-      ctx.incident.id,
-      `:bulb: PR Ready: ${ctx.incident.title}`,
-      incidentBlocks({
-        emoji: "bulb",
-        status: "PR Ready",
-        title: ctx.incident.title,
-        tagline: pr.title,
-        projectName: ctx.project.name,
-        service: ctx.incident.service,
-        buttons: [
-          { text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" },
-          { text: "View PR", url: opened.prUrl, actionId: "view_pr" },
-          ...(linearTicket?.url
-            ? [
-                {
-                  text: `View ${linearTicket.identifier}`,
-                  url: linearTicket.url,
-                  actionId: "view_linear",
-                },
-              ]
-            : []),
-        ],
-        incidentId: ctx.incident.id,
-        showResolveButton: true,
-        showMergePrButton: true,
-      }),
-    ).catch(() => {});
+      // The first successfully-recorded PR is the ticket creation boundary.
+      // Later PRs reuse the run-scoped ticket, then independently cross-link
+      // in both directions.
+      const linearTicket = await deliverAndRecordLinearTicket(ctx, ticketResult, opened.prUrl);
+
+      if (
+        ctx.autoMergeFixPrs !== "never" &&
+        (await agentRunLifecycle.canPublishStatusUpdate({
+          id: ctx.agentRun.id,
+          incidentId: ctx.incident.id,
+          state: "running",
+        }))
+      ) {
+        try {
+          const outcome = await mergeAgentPullRequest({
+            installationId: repoMeta.installation.installationId,
+            repositoryId: repoMeta.id,
+            repoFullName: pr.repoFullName,
+            prNumber: opened.prNumber,
+            prNodeId: opened.prNodeId,
+            policy: ctx.autoMergeFixPrs,
+            method: ctx.autoMergeMethod,
+          });
+          const note =
+            outcome.kind === "merged"
+              ? `:white_check_mark: Auto-merged PR (${ctx.autoMergeMethod})`
+              : outcome.kind === "auto_merge_enabled"
+                ? `:hourglass_flowing_sand: Auto-merge enabled — will land once checks pass (${ctx.autoMergeMethod})`
+                : null;
+          if (note) {
+            const ticketLine = linearTicket ? `\n${linearTicketSlackReference(linearTicket)}` : "";
+            await postIncidentThreadMessage(ctx.incident.id, `${note}${ticketLine}`).catch(
+              () => {},
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            {
+              scope: "agent_run.pr_delivery.auto_merge",
+              agent_run_id: ctx.agentRun.id,
+              incident_id: ctx.incident.id,
+              pr_url: opened.prUrl,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "auto-merge attempt failed; leaving PR open for human merge",
+          );
+        }
+      }
+
+      const ticketLine = linearTicket ? `\n${linearTicketSlackReference(linearTicket)}` : "";
+      await postIncidentThreadMessage(
+        ctx.incident.id,
+        `:bulb: Opened PR ${opened.prUrl}${ticketLine}`,
+      ).catch(() => {});
+      const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
+      await updateIncidentMainMessage(
+        ctx.incident.id,
+        `:bulb: PR Ready: ${ctx.incident.title}`,
+        incidentBlocks({
+          emoji: "bulb",
+          status: "PR Ready",
+          title: ctx.incident.title,
+          tagline: pr.title,
+          projectName: ctx.project.name,
+          service: ctx.incident.service,
+          buttons: [
+            { text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" },
+            { text: "View PR", url: opened.prUrl, actionId: "view_pr" },
+            ...(linearTicket?.url
+              ? [
+                  {
+                    text: `View ${linearTicket.identifier}`,
+                    url: linearTicket.url,
+                    actionId: "view_linear",
+                  },
+                ]
+              : []),
+          ],
+          incidentId: ctx.incident.id,
+          showResolveButton: true,
+          showMergePrButton: true,
+        }),
+      ).catch(() => {});
+    });
   }
 
   const delivered = reconciled.deliveryReceipt?.delivery;
@@ -1398,10 +1450,12 @@ export async function retryQueuedPullRequestDelivery(ctx: AgentRunContext): Prom
     return;
   }
 
-  await agentRunLifecycle.startPrRetry({
+  const started = await agentRunLifecycle.startPrRetry({
     id: ctx.agentRun.id,
+    incidentId: ctx.incident.id,
     currentState: ctx.agentRun.state,
   });
+  if (!started) return;
 
   ctx.agentRun = {
     ...ctx.agentRun,

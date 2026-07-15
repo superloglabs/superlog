@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildAgentPullRequestLifecycleContinuation } from "./agent-pr-lifecycle-continuation.js";
+import {
+  areAllIncidentPullRequestsMerged,
+  buildAgentPullRequestLifecycleContinuation,
+} from "./agent-pr-lifecycle-continuation.js";
+
+test("all Incident PRs must be merged before merge fallback may resolve", () => {
+  assert.equal(areAllIncidentPullRequestsMerged([]), false);
+  assert.equal(areAllIncidentPullRequestsMerged([{ state: "merged" }]), true);
+  assert.equal(areAllIncidentPullRequestsMerged([{ state: "merged" }, { state: "merged" }]), true);
+  assert.equal(areAllIncidentPullRequestsMerged([{ state: "merged" }, { state: "open" }]), false);
+  assert.equal(areAllIncidentPullRequestsMerged([{ state: "merged" }, { state: "closed" }]), false);
+});
 
 test("buildAgentPullRequestLifecycleContinuation describes merged and closed PR events", () => {
   const merged = buildAgentPullRequestLifecycleContinuation({

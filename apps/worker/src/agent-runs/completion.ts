@@ -30,15 +30,39 @@ import { shouldCreateLinearTicketForTerminalOutcome } from "./completion-policy.
 import { recordFiledLinearTicket } from "./deliverable-records.js";
 import { scheduleLinearHandoff } from "./linear-handoff.js";
 import {
+  closedElsewhereCopyAfterNoiseRace,
+  completionIntendsIncidentClosure,
+  incidentAlreadyClosedCompletionCopy,
+  mergedPullRequestResolutionCopy,
   resolutionCompletionCopy,
   resolutionCompletionResult,
+  shouldRetireProviderSession,
   shouldUpdateResolutionMainMessage,
 } from "./resolution-completion.js";
 import { isAlertIncident, truncateSlackText } from "./result-metadata.js";
+import {
+  publishAwaitingEventsUpdateIfCurrent,
+  reconcileStaleAgentRunPublication,
+} from "./status.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 const agentRunLifecycle = createAgentRunLifecycle(db);
 const incidentLifecycle = createIncidentLifecycle(db);
+
+async function refreshIncidentAndRetireSessionIfClosed(
+  ctx: AgentRunContext,
+  sessionId: string,
+): Promise<void> {
+  const refreshed = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.id, ctx.incident.id),
+  });
+  if (refreshed) ctx.incident = refreshed;
+  if (!shouldRetireProviderSession(ctx.incident.status)) return;
+  await agentRunLifecycle.recordSessionTerminationPending({
+    id: ctx.agentRun.id,
+    providerSessionId: sessionId,
+  });
+}
 
 // Channel-in = channel-out: when this turn was triggered by a PR comment, post
 // the agent's reply back onto the PR (in addition to the Slack incident thread,
@@ -142,7 +166,7 @@ export async function replyToPrOriginIfNeeded(
   }
 }
 
-async function closeOpenPullRequestsForResolvedIncident(incidentId: string): Promise<void> {
+export async function closeOpenPullRequestsForResolvedIncident(incidentId: string): Promise<void> {
   await closeIncidentOpenPullRequestsAfterResolution({
     incidentId,
     closePullRequest: (pr) =>
@@ -268,6 +292,7 @@ export async function completeWithIncidentResolution(
     id: ctx.agentRun.id,
     currentState: ctx.agentRun.state,
     result: completionResult,
+    providerSessionIdToTerminate: sessionId,
   });
   if (!completed) return false;
   const metadataOutcome = await incidentLifecycle.applyAgentRunResult({
@@ -296,10 +321,7 @@ export async function completeWithIncidentResolution(
   // resolution before the runner receives the final ack. Completion only
   // persists the proven result and reconciles dependent deliverables.
   await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
-  const refreshed = await db.query.incidents.findFirst({
-    where: eq(schema.incidents.id, ctx.incident.id),
-  });
-  if (refreshed) ctx.incident = refreshed;
+  await refreshIncidentAndRetireSessionIfClosed(ctx, sessionId);
   const resolved = ctx.incident.status === "resolved";
 
   // Linear ticket: file/update deterministically from the findings. The
@@ -363,18 +385,42 @@ export async function completeWithoutPullRequest(
   result: AgentRunResult,
   sessionId: string,
   runtimeMinutes: number,
+  opts?: {
+    incidentOutcome?:
+      | {
+          kind: "all_pull_requests_merged";
+          prNumber: number;
+          repoFullName: string;
+        }
+      | { kind: "incident_already_closed" };
+  },
 ): Promise<boolean> {
   const noiseReason = completedNoiseReason(result);
   const resolutionReason = noiseReason ? null : completedResolutionReason(result);
+  const mergedResolutionCopy =
+    opts?.incidentOutcome?.kind === "all_pull_requests_merged"
+      ? mergedPullRequestResolutionCopy(opts.incidentOutcome)
+      : null;
+  const alreadyClosedCopy =
+    opts?.incidentOutcome?.kind === "incident_already_closed"
+      ? incidentAlreadyClosedCompletionCopy()
+      : null;
+  let closedElsewhereCopy = alreadyClosedCopy;
   // Set once the noise verdict was actually recorded against an open incident
   // (applyAgentRunResult ignores verdicts on already-closed incidents) — the
   // "marked as noise" messaging below must not claim a state change that
   // never happened.
   let noiseApplied = false;
+  const intendsIncidentClosure = completionIntendsIncidentClosure({
+    hasIncidentOutcome: Boolean(opts?.incidentOutcome),
+    noiseReason,
+    resolutionReason,
+  });
   const completed = await agentRunLifecycle.completeWithoutPullRequest({
     id: ctx.agentRun.id,
     currentState: ctx.agentRun.state,
     result,
+    ...(intendsIncidentClosure ? { providerSessionIdToTerminate: sessionId } : {}),
   });
   if (!completed) return false;
   const metadataOutcome = await incidentLifecycle.applyAgentRunResult({
@@ -398,6 +444,83 @@ export async function completeWithoutPullRequest(
       "failed to enqueue agent run.completed webhook",
     ),
   );
+  const isPlainOpenCompletion =
+    !resolutionReason && !noiseReason && !mergedResolutionCopy && !alreadyClosedCopy;
+  if (isPlainOpenCompletion) {
+    const publication = await publishAwaitingEventsUpdateIfCurrent({
+      isCurrent: () =>
+        agentRunLifecycle.canPublishStatusUpdate({
+          id: ctx.agentRun.id,
+          incidentId: ctx.incident.id,
+          state: "complete",
+        }),
+      publish: async () => {
+        const deliveredTicket = await scheduleLinearHandoff(
+          ctx,
+          result,
+          result.completionKind ?? "complete_without_pr",
+        );
+        if (!deliveredTicket && result.linearTicket) {
+          await recordFiledLinearTicket(ctx, result.linearTicket);
+        }
+        const ticket = deliveredTicket
+          ? { identifier: deliveredTicket.identifier, url: deliveredTicket.url }
+          : result.linearTicket
+            ? { identifier: result.linearTicket.id, url: result.linearTicket.url ?? null }
+            : null;
+        logger.info(
+          {
+            scope: "agent_run",
+            agent_run_id: ctx.agentRun.id,
+            incident_id: ctx.incident.id,
+            session_id: sessionId,
+            runtime_minutes: runtimeMinutes,
+            has_ticket: !!ticket,
+          },
+          "agent run complete",
+        );
+        const badge = ticket
+          ? `:ticket: Filed ${ticket.identifier}${ticket.url ? `: ${ticket.url}` : ""}`
+          : ":memo:";
+        await postIncidentThreadMessage(ctx.incident.id, `${badge} ${result.summary}`);
+        const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
+        await updateIncidentMainMessage(
+          ctx.incident.id,
+          `:white_check_mark: ${ctx.incident.title} — Investigation complete`,
+          incidentBlocks({
+            emoji: "white_check_mark",
+            status: ticket
+              ? `Investigation complete · Linear ${ticket.identifier}`
+              : "Investigation complete",
+            title: ctx.incident.title,
+            titleUrl: incidentUrl,
+            tagline: truncateSlackText(result.summary),
+            projectName: ctx.project.name,
+            service: ctx.incident.service,
+            buttons: [],
+            links: ticket?.url ? [{ text: "View ticket", url: ticket.url }] : [],
+            incidentId: ctx.incident.id,
+            showFeedbackButtons: true,
+          }),
+        );
+        await replyToPrOriginIfNeeded(ctx, result.summary);
+        await postLinearIncidentResponse(ctx.incident.id, result.summary);
+      },
+      reconcileStalePublication: () => reconcileStaleAgentRunPublication(ctx),
+    });
+    if (publication !== "published") {
+      logger.info(
+        {
+          scope: "agent_run.completion",
+          agent_run_id: ctx.agentRun.id,
+          incident_id: ctx.incident.id,
+          publication,
+        },
+        "suppressed stale investigation-complete provider update",
+      );
+    }
+    return true;
+  }
   // The platform files/updates the Linear ticket deterministically from the
   // run's findings (after the metadata pass, so the ticket carries the
   // agent-proposed title). The agent no longer self-reports ticket ids —
@@ -420,6 +543,8 @@ export async function completeWithoutPullRequest(
     const { resolved } = await resolveIncidentFromAgentRunConclusion(ctx, result, resolutionReason);
     if (resolved) {
       await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
+    } else {
+      closedElsewhereCopy = incidentAlreadyClosedCompletionCopy();
     }
     const refreshed = await db.query.incidents.findFirst({
       where: eq(schema.incidents.id, ctx.incident.id),
@@ -430,12 +555,20 @@ export async function completeWithoutPullRequest(
     const { resolved } = await resolveIncidentAsNoise(ctx, result, noiseReason);
     if (resolved) {
       await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
+    } else {
+      closedElsewhereCopy = incidentAlreadyClosedCompletionCopy();
     }
     const refreshed = await db.query.incidents.findFirst({
       where: eq(schema.incidents.id, ctx.incident.id),
     });
     if (refreshed) ctx.incident = refreshed;
   }
+  await refreshIncidentAndRetireSessionIfClosed(ctx, sessionId);
+  closedElsewhereCopy ??= closedElsewhereCopyAfterNoiseRace({
+    noiseReason,
+    noiseApplied,
+    incidentStatus: ctx.incident.status,
+  });
   logger.info(
     {
       scope: "agent_run",
@@ -445,11 +578,33 @@ export async function completeWithoutPullRequest(
       runtime_minutes: runtimeMinutes,
       has_ticket: !!ticketDisplay,
       resolved_by_agent: !!resolutionReason,
+      resolved_by_pr_merge: !!mergedResolutionCopy,
+      incident_already_closed: !!closedElsewhereCopy,
     },
-    "agent run complete",
+    closedElsewhereCopy?.logMessage ?? "agent run complete",
   );
   const ticket = ticketDisplay;
-  if (noiseReason && noiseApplied) {
+  if (mergedResolutionCopy) {
+    const lines = [mergedResolutionCopy.threadLead, result.summary];
+    if (ticket) {
+      lines.push(
+        ticket.url
+          ? `Linear: <${ticket.url}|${ticket.identifier}>`
+          : `Linear: ${ticket.identifier}`,
+      );
+    }
+    await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
+  } else if (closedElsewhereCopy) {
+    const lines = [closedElsewhereCopy.threadLead, result.summary];
+    if (ticket) {
+      lines.push(
+        ticket.url
+          ? `Linear: <${ticket.url}|${ticket.identifier}>`
+          : `Linear: ${ticket.identifier}`,
+      );
+    }
+    await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
+  } else if (noiseReason && noiseApplied) {
     const label = noiseReasonLabel(noiseReason);
     const evidence = result.noiseClassification?.evidence?.trim();
     const target = isAlertIncident(ctx) ? "alert" : "incident";
@@ -488,38 +643,42 @@ export async function completeWithoutPullRequest(
       : ":memo:";
     await postIncidentThreadMessage(ctx.incident.id, `${badge} ${result.summary}`);
   }
-  const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
-  const status =
-    noiseReason && noiseApplied
-      ? `${isAlertIncident(ctx) ? "Alert" : "Incident"} marked as noise - ${noiseReasonLabel(noiseReason)}`
-      : resolutionReason
-        ? `Incident resolved - ${resolutionReasonLabel(resolutionReason)}`
-        : ticket
-          ? `Investigation complete · Linear ${ticket.identifier}`
-          : "Investigation complete";
-  const text =
-    noiseReason && noiseApplied
-      ? `:no_bell: ${ctx.incident.title} — ${isAlertIncident(ctx) ? "Alert" : "Incident"} marked as noise`
-      : resolutionReason
-        ? `:white_check_mark: ${ctx.incident.title} — Incident resolved`
-        : `:white_check_mark: ${ctx.incident.title} — Investigation complete`;
-  await updateIncidentMainMessage(
-    ctx.incident.id,
-    text,
-    incidentBlocks({
-      emoji: noiseReason && noiseApplied ? "no_bell" : "white_check_mark",
-      status,
-      title: ctx.incident.title,
-      titleUrl: incidentUrl,
-      tagline: truncateSlackText(result.summary),
-      projectName: ctx.project.name,
-      service: ctx.incident.service,
-      buttons: [],
-      links: ticket?.url ? [{ text: "View ticket", url: ticket.url }] : [],
-      incidentId: ctx.incident.id,
-      showFeedbackButtons: true,
-    }),
-  );
+  if (closedElsewhereCopy?.updateMainMessage !== false) {
+    const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
+    const status = mergedResolutionCopy
+      ? mergedResolutionCopy.status
+      : noiseReason && noiseApplied
+        ? `${isAlertIncident(ctx) ? "Alert" : "Incident"} marked as noise - ${noiseReasonLabel(noiseReason)}`
+        : resolutionReason
+          ? `Incident resolved - ${resolutionReasonLabel(resolutionReason)}`
+          : ticket
+            ? `Investigation complete · Linear ${ticket.identifier}`
+            : "Investigation complete";
+    const text = mergedResolutionCopy
+      ? `:white_check_mark: ${ctx.incident.title} — ${mergedResolutionCopy.mainTextSuffix}`
+      : noiseReason && noiseApplied
+        ? `:no_bell: ${ctx.incident.title} — ${isAlertIncident(ctx) ? "Alert" : "Incident"} marked as noise`
+        : resolutionReason
+          ? `:white_check_mark: ${ctx.incident.title} — Incident resolved`
+          : `:white_check_mark: ${ctx.incident.title} — Investigation complete`;
+    await updateIncidentMainMessage(
+      ctx.incident.id,
+      text,
+      incidentBlocks({
+        emoji: noiseReason && noiseApplied ? "no_bell" : "white_check_mark",
+        status,
+        title: ctx.incident.title,
+        titleUrl: incidentUrl,
+        tagline: truncateSlackText(result.summary),
+        projectName: ctx.project.name,
+        service: ctx.incident.service,
+        buttons: [],
+        links: ticket?.url ? [{ text: "View ticket", url: ticket.url }] : [],
+        incidentId: ctx.incident.id,
+        showFeedbackButtons: true,
+      }),
+    );
+  }
   await replyToPrOriginIfNeeded(ctx, result.summary);
   await postLinearIncidentResponse(ctx.incident.id, result.summary);
   return true;

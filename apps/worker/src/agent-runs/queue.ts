@@ -72,8 +72,10 @@ export type AgentRunQueueDeps = {
   // Permanent condition (incident/project deleted): the run can never make
   // progress, so failing it is the only way it leaves the active set.
   failContextUnavailable(run: schema.AgentRun): Promise<void>;
+  hasDetachedSessionTermination(agentRunId: string): Promise<boolean>;
   listActiveRunIds(): Promise<string[]>;
   handlers: {
+    terminateSession(run: schema.AgentRun): Promise<void>;
     reconcileHandoff(ctx: AgentRunContext): Promise<void>;
     start(ctx: AgentRunContext): Promise<void>;
     sync(ctx: AgentRunContext): Promise<void>;
@@ -102,6 +104,17 @@ function clampConcurrency(value: number | undefined): number {
 async function advanceRun(deps: AgentRunQueueDeps, data: AgentRunJobData): Promise<void> {
   const agentRun = await deps.loadRun(data.agentRunId);
   if (!agentRun) return;
+  const hasDetachedSessionTermination =
+    agentRun.providerSessionStatus === "termination_pending"
+      ? false
+      : await deps.hasDetachedSessionTermination(agentRun.id);
+  if (
+    (agentRun.providerSessionStatus === "termination_pending" && agentRun.providerSessionId) ||
+    hasDetachedSessionTermination
+  ) {
+    await deps.handlers.terminateSession(agentRun);
+    return;
+  }
   const ctx = await deps.loadContext(agentRun);
   if (!ctx) {
     await deps.failContextUnavailable(agentRun);

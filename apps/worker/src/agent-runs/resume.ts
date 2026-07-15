@@ -110,11 +110,13 @@ export async function resumeAgentRunFromHumanInput(ctx: AgentRunContext): Promis
       await coldStartFallback(ctx, resumeInputs);
       return;
     }
-    await agentRunLifecycle.requeueAfterHumanReply({
+    const requeued = await agentRunLifecycle.requeueAfterHumanReply({
       id: ctx.agentRun.id,
+      incidentId: ctx.incident.id,
       currentState: ctx.agentRun.state,
     });
     await markProcessed(resumeInputs.map((event) => event.id));
+    if (!requeued) return;
     return;
   }
 

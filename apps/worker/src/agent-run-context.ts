@@ -125,6 +125,7 @@ export function buildFollowUpContext(args: {
   return {
     trigger: args.trigger,
     interactions: args.triggerDetail?.interactions ?? [],
+    pullRequests: args.triggerDetail?.pullRequests ?? [],
     priorRun:
       args.priorRun && result && (priorState === "complete" || priorState === "failed")
         ? {

@@ -1,16 +1,18 @@
 import crypto from "node:crypto";
 import {
   type AgentPullRequestLifecycleContinuation,
+  type ResolveIncidentAfterAgentPullRequestsMergedResult,
+  applyAgentPullRequestState,
   buildAgentPullRequestLifecycleContinuation,
   db,
-  decideInboundContinuation,
   listAccessibleGithubInstallsForProject,
   recordInboundInteraction,
-  resolveIncident,
+  resolveIncidentIfAllAgentPullRequestsMerged,
   schema,
   syncLoopsContactsForOrg,
+  unblockAgentRunsAfterGithubAccess,
 } from "@superlog/db";
-import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
 import {
@@ -23,7 +25,6 @@ import { type RepoBranch, type RepoBranchInfo, mergeRepoBranches } from "./githu
 import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolution-side-effects.js";
 import { logger } from "./logger.js";
 import { resolveActiveOrgContext } from "./org-context.js";
-import { prTerminalTransition } from "./pr-metrics-transition.js";
 import { recordPrClosedMetric, recordPrMergedMetric } from "./pr-metrics.js";
 
 const log = logger.child({ scope: "github" });
@@ -460,8 +461,9 @@ async function handleWebhook(
 }
 
 // Requeue any agentRuns sitting in `blocked_no_github` under the given
-// project(s). Cheap and idempotent — single bulk UPDATE + batched event
-// inserts. Callers: install webhook (resolves project IDs from
+// project(s). The DB application service locks each candidate Incident first,
+// then performs an idempotent bulk update plus batched event inserts. Callers:
+// install webhook (resolves project IDs from
 // installationId) and the OAuth install callback (knows projectId directly,
 // avoids a webhook/callback race on first-time installs where the github
 // installations row may not exist yet when the webhook arrives).
@@ -469,39 +471,10 @@ export async function resumeBlockedAgentRunsForProjects(
   projectIds: string[],
   trigger: "github_install" | "github_repos_added",
 ): Promise<void> {
-  if (projectIds.length === 0) return;
-  const blocked = await db
-    .select({ id: schema.agentRuns.id })
-    .from(schema.agentRuns)
-    .innerJoin(schema.incidents, eq(schema.incidents.id, schema.agentRuns.incidentId))
-    .where(
-      and(
-        eq(schema.agentRuns.state, "blocked_no_github"),
-        inArray(schema.incidents.projectId, projectIds),
-      ),
-    );
-  if (blocked.length === 0) return;
-
-  const ids = blocked.map((row) => row.id);
-  const now = new Date();
-  await db
-    .update(schema.agentRuns)
-    .set({ state: "queued", updatedAt: now })
-    .where(inArray(schema.agentRuns.id, ids));
-  await db
-    .insert(schema.incidentEvents)
-    .values(
-      ids.map((id) => ({
-        agentRunId: id,
-        kind: "unblocked",
-        summary: "Investigation requeued.",
-        detail: { trigger },
-        dedupeKey: `unblocked:${id}:${now.getTime()}`,
-        processedAt: now,
-      })),
-    )
-    .onConflictDoNothing();
-  log.info({ projectIds, trigger, count: ids.length }, "resumed blocked agent_runs");
+  const result = await unblockAgentRunsAfterGithubAccess(db, { projectIds, trigger });
+  if (result.unblockedCount > 0) {
+    log.info({ projectIds, trigger, count: result.unblockedCount }, "resumed blocked agent_runs");
+  }
 }
 
 // Org-scoped resume — fans out across every project in the org. Used for
@@ -625,82 +598,66 @@ async function handleAgentPrWebhook(
   if (event === "pull_request") {
     const action = payload.action ?? "";
     const pr = payload.pull_request ?? {};
-    let mergedResolution: { mergedAt: Date; mergedByLogin: string | null } | null = null;
-    const updates: Partial<typeof schema.agentPullRequests.$inferInsert> = {
-      lastSyncedAt: now,
-      updatedAt: now,
-    };
-    if (pr.head?.sha) updates.headSha = pr.head.sha;
-    if (typeof pr.title === "string") updates.title = pr.title;
-    // Decide whether this delivery looks like a brand-new terminal transition
-    // from the row we read. This is only a first cut — the read is stale under
-    // concurrent deliveries, so the actual once-only guarantee comes from the
-    // conditional UPDATE below, not from this check.
-    const countTransition = prTerminalTransition({
-      action,
-      merged: Boolean(pr.merged),
-      prevState: agentPrRow.state,
-    });
+    let mergedResolution: { mergedAt: Date } | null = null;
+    let targetState: schema.AgentPrState | undefined;
+    let closedAt: Date | null | undefined;
+    let mergedAt: Date | null | undefined;
+    let mergedByLogin: string | null | undefined;
+    let mergedByGithubId: number | null | undefined;
     if (action === "closed") {
       if (pr.merged) {
-        updates.state = "merged";
-        if (pr.merged_at) updates.mergedAt = new Date(pr.merged_at);
-        updates.closedAt = pr.closed_at ? new Date(pr.closed_at) : now;
-        updates.mergedByLogin = pr.merged_by?.login ?? null;
-        updates.mergedByGithubId = pr.merged_by?.id ?? null;
+        targetState = "merged";
+        mergedAt = pr.merged_at ? new Date(pr.merged_at) : undefined;
+        closedAt = pr.closed_at ? new Date(pr.closed_at) : undefined;
+        mergedByLogin = pr.merged_by ? (pr.merged_by.login ?? null) : undefined;
+        mergedByGithubId = pr.merged_by ? (pr.merged_by.id ?? null) : undefined;
         mergedResolution = {
-          mergedAt: updates.mergedAt ?? updates.closedAt ?? now,
-          mergedByLogin: updates.mergedByLogin ?? null,
+          mergedAt: mergedAt ?? closedAt ?? now,
         };
       } else {
-        updates.state = "closed";
-        updates.closedAt = pr.closed_at ? new Date(pr.closed_at) : now;
+        targetState = "closed";
+        closedAt = pr.closed_at ? new Date(pr.closed_at) : now;
       }
     } else if (action === "reopened") {
-      updates.state = "open";
-      updates.closedAt = null;
+      targetState = "open";
+      closedAt = null;
     }
-    // For a terminal transition, fold the prior-state predicate into the WHERE
-    // so only one of N concurrent deliveries actually flips the row. `.returning`
-    // tells us which one won; the counter is incremented exactly once off that,
-    // not off the stale read above. Non-terminal updates (reopened, push-only
-    // field writes) stay unconditional.
-    const updated = await db
-      .update(schema.agentPullRequests)
-      .set(updates)
-      .where(
-        countTransition
-          ? and(
-              eq(schema.agentPullRequests.id, agentPrRow.id),
-              ne(schema.agentPullRequests.state, countTransition),
-            )
-          : eq(schema.agentPullRequests.id, agentPrRow.id),
-      )
-      .returning({ id: schema.agentPullRequests.id });
-    const wonTransition = updated.length > 0;
-    if (countTransition === "merged" && wonTransition) {
+    const mutation = await applyAgentPullRequestState(db, {
+      incidentId: agentPrRow.incidentId,
+      agentPrId: agentPrRow.id,
+      targetState,
+      observedAt: now,
+      ...(pr.head?.sha ? { headSha: pr.head.sha } : {}),
+      ...(typeof pr.title === "string" ? { title: pr.title } : {}),
+      mergedAt,
+      closedAt,
+      mergedByLogin,
+      mergedByGithubId,
+    });
+    const canonicalPr = mutation.pullRequest ?? agentPrRow;
+    if (targetState === "merged" && mutation.stateChanged) {
       await recordPrMergedMetric({
-        agentPr: agentPrRow,
-        resolvedAt: updates.mergedAt ?? updates.closedAt ?? now,
-        mergedByLogin: updates.mergedByLogin ?? null,
+        agentPr: canonicalPr,
+        resolvedAt: mergedAt ?? closedAt ?? now,
+        mergedByLogin: canonicalPr.mergedByLogin,
       });
-    } else if (countTransition === "closed" && wonTransition) {
+    } else if (targetState === "closed" && mutation.stateChanged) {
       await recordPrClosedMetric({
-        agentPr: agentPrRow,
-        resolvedAt: updates.closedAt ?? now,
+        agentPr: canonicalPr,
+        resolvedAt: closedAt ?? now,
       });
     }
-    if (mergedResolution) {
+    if (mergedResolution && canonicalPr.state === "merged") {
       await resumeOrResolveIncidentForMergedAgentPr({
-        agentPr: agentPrRow,
+        agentPr: canonicalPr,
         mergedAt: mergedResolution.mergedAt,
-        mergedByLogin: mergedResolution.mergedByLogin,
+        mergedByLogin: canonicalPr.mergedByLogin,
       });
-    } else if (updates.state === "closed" && wonTransition) {
+    } else if (targetState === "closed" && canonicalPr.state === "closed") {
       await maybeResumeIncidentForClosedAgentPr({
-        agentPr: agentPrRow,
+        agentPr: canonicalPr,
         closedByLogin: payload.sender?.login ?? null,
-        closedAt: updates.closedAt ?? now,
+        closedAt: closedAt ?? now,
       });
     }
   } else if (event === "push") {
@@ -739,43 +696,15 @@ async function resumeIncidentSessionForPrEvent(opts: {
   agentPr: schema.AgentPullRequest;
   continuation: AgentPullRequestLifecycleContinuation;
 }): Promise<boolean> {
-  const incident = await db.query.incidents.findFirst({
-    where: eq(schema.incidents.id, opts.agentPr.incidentId),
-    columns: { id: true, status: true, projectId: true },
-  });
-  // Only open incidents have a decision left to make. Also guards the
-  // self-inflicted case: resolving an incident closes its remaining open PRs,
-  // and those `closed` webhooks must not re-ping the session.
-  if (!incident || incident.status !== "open") return false;
-
-  const automation = await db.query.projectAutomationSettings.findFirst({
-    where: eq(schema.projectAutomationSettings.projectId, incident.projectId),
-    columns: { agentRunEnabled: true, autoFollowUpEnabled: true },
-  });
-  const latestRun = await db.query.agentRuns.findFirst({
-    where: eq(schema.agentRuns.incidentId, incident.id),
-    orderBy: [desc(schema.agentRuns.createdAt)],
-    columns: { id: true, state: true, providerSessionId: true },
-  });
-  // Pre-route so a merge/close never cold-starts a fresh investigation: with
-  // no resumable session the caller falls back to its deterministic behavior
-  // (auto-resolve for merges, nothing for closes).
-  const verdict = decideInboundContinuation({
-    agentRunEnabled: automation?.agentRunEnabled ?? true,
-    autoFollowUpEnabled: automation?.autoFollowUpEnabled ?? true,
-    confirmed: true,
-    latestRun: latestRun ?? null,
-  });
-  if (verdict.action !== "resume" && verdict.action !== "steer") return false;
-
   const result = await recordInboundInteraction(db, {
-    incidentId: incident.id,
+    incidentId: opts.agentPr.incidentId,
     interaction: opts.continuation.interaction,
     dedupeKey: opts.continuation.dedupeKey,
     confirmed: true,
+    existingSessionOnly: true,
   });
   if (result.outcome === "duplicate") return true;
-  return result.outcome === "accepted" && result.action !== "cold_start";
+  return result.outcome === "accepted";
 }
 
 // An agent PR merged. Resume the durable session so the agent decides whether
@@ -783,11 +712,16 @@ async function resumeIncidentSessionForPrEvent(opts: {
 // when no session can be resumed, fall back to resolving the incident
 // directly — an incident must never stay open forever because its session
 // expired.
-async function resumeOrResolveIncidentForMergedAgentPr(opts: {
+export type MergedAgentPullRequestContinuationDisposition =
+  | "continued_in_session"
+  | ResolveIncidentAfterAgentPullRequestsMergedResult["disposition"];
+
+export async function resumeOrResolveIncidentForMergedAgentPr(opts: {
   agentPr: schema.AgentPullRequest;
   mergedAt: Date;
   mergedByLogin: string | null;
-}): Promise<void> {
+  source?: string;
+}): Promise<MergedAgentPullRequestContinuationDisposition> {
   const { agentPr, mergedByLogin } = opts;
   const continuation = buildAgentPullRequestLifecycleContinuation({
     pullRequest: {
@@ -810,8 +744,9 @@ async function resumeOrResolveIncidentForMergedAgentPr(opts: {
     );
     return false;
   });
-  if (resumed) return;
-  await resolveIncidentForMergedAgentPr(opts);
+  if (resumed) return "continued_in_session";
+  const resolution = await resolveIncidentForMergedAgentPr(opts);
+  return resolution.disposition;
 }
 
 // An agent PR was closed without merging. Resume the session so the agent can
@@ -850,16 +785,18 @@ async function resolveIncidentForMergedAgentPr(opts: {
   agentPr: schema.AgentPullRequest;
   mergedAt: Date;
   mergedByLogin: string | null;
-}): Promise<void> {
+  source?: string;
+}): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult> {
   const { agentPr, mergedAt, mergedByLogin } = opts;
-  const { resolved } = await resolveIncident({
+  const resolution = await resolveIncidentIfAllAgentPullRequestsMerged({
     incidentId: agentPr.incidentId,
     kind: "agent_pr_merged",
     reasonCode: "agent_pr_merged",
     reasonText: `Resolved because agent PR #${agentPr.prNumber} (${agentPr.repoFullName}) was merged${
       mergedByLogin ? ` by @${mergedByLogin}` : ""
-    }.`,
+    }${!mergedByLogin && opts.source ? ` (${opts.source})` : ""}.`,
     agentRunId: agentPr.agentRunId,
+    resolvingAgentRunId: null,
     eventSummary: `Incident resolved because PR #${agentPr.prNumber} was merged.`,
     eventDetail: {
       agentPrId: agentPr.id,
@@ -867,11 +804,12 @@ async function resolveIncidentForMergedAgentPr(opts: {
       prNumber: agentPr.prNumber,
       prUrl: agentPr.url,
       mergedByLogin,
+      ...(opts.source ? { source: opts.source } : {}),
     },
     eventDedupeKey: `incident_resolved:agent_pr:${agentPr.id}`,
     resolvedAt: mergedAt,
   });
-  if (resolved) {
+  if (resolution.disposition === "resolved") {
     await runResolvedIncidentSideEffectsForIncident({
       incidentId: agentPr.incidentId,
       closePullRequest: (pr) =>
@@ -884,6 +822,7 @@ async function resolveIncidentForMergedAgentPr(opts: {
         }),
     });
   }
+  return resolution;
 }
 
 type EligiblePrComment = {

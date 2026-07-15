@@ -1,5 +1,20 @@
 import type { AgentRunResult } from "@superlog/db";
 
+export function mergedPullRequestResolutionCopy(opts: {
+  prNumber: number;
+  repoFullName: string;
+}): {
+  threadLead: string;
+  status: string;
+  mainTextSuffix: string;
+} {
+  return {
+    threadLead: `:white_check_mark: All agent pull requests are merged; incident resolved by PR #${opts.prNumber} (${opts.repoFullName}).`,
+    status: "Incident resolved - all agent pull requests merged",
+    mainTextSuffix: "Incident resolved",
+  };
+}
+
 export function agentResolveEventDedupeKey(agentRunId: string, toolUseId: string): string {
   return `incident_resolved:agent_run:${agentRunId}:resolve_incident:${toolUseId}`;
 }
@@ -17,6 +32,23 @@ export function resolutionCompletionResult(
     ...findings
   } = result;
   return findings;
+}
+
+export function supersededSnapshotCompletionResult(result: AgentRunResult): AgentRunResult {
+  const completed = { ...result, state: "complete" as const };
+  return result.incidentResolution ? resolutionCompletionResult(completed, false) : completed;
+}
+
+export function shouldRetireProviderSession(incidentStatus: string): boolean {
+  return incidentStatus !== "open";
+}
+
+export function completionIntendsIncidentClosure(opts: {
+  hasIncidentOutcome: boolean;
+  noiseReason: string | null;
+  resolutionReason: string | null;
+}): boolean {
+  return opts.hasIncidentOutcome || Boolean(opts.noiseReason) || Boolean(opts.resolutionReason);
 }
 
 export type ResolutionCompletionCopy = {
@@ -47,4 +79,24 @@ export function resolutionCompletionCopy(
 
 export function shouldUpdateResolutionMainMessage(resolutionCommittedByRun: boolean): boolean {
   return resolutionCommittedByRun;
+}
+
+export function incidentAlreadyClosedCompletionCopy(): ResolutionCompletionCopy & {
+  updateMainMessage: false;
+} {
+  return {
+    ...resolutionCompletionCopy(false, ""),
+    updateMainMessage: false,
+  };
+}
+
+export function closedElsewhereCopyAfterNoiseRace(opts: {
+  noiseReason: string | null;
+  noiseApplied: boolean;
+  incidentStatus: string;
+}): ReturnType<typeof incidentAlreadyClosedCompletionCopy> | null {
+  if (!opts.noiseReason || opts.noiseApplied || !shouldRetireProviderSession(opts.incidentStatus)) {
+    return null;
+  }
+  return incidentAlreadyClosedCompletionCopy();
 }

@@ -1,11 +1,13 @@
-// Shared "merge an agent PR and resolve its incident" flow, used by the
-// dashboard merge endpoint and the Slack Merge-PR button. GitHub is the source
-// of truth for the merge itself; on success we mark the PR row merged, record
-// a pr_merged event, and resolve the incident as agent_pr_merged (which also
-// marks the incident's issues resolved).
-import { db, resolveIncident, schema } from "@superlog/db";
+// Shared manual agent-PR merge flow, used by the dashboard endpoint and Slack
+// Merge-PR button. A single PR in a batched delivery is not the Incident's
+// resolution boundary: resolve only after every Incident PR is merged.
+import { applyAgentPullRequestState, db, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
-import { mergeGithubPullRequest } from "./github.js";
+import {
+  type MergedAgentPullRequestContinuationDisposition,
+  mergeGithubPullRequest,
+  resumeOrResolveIncidentForMergedAgentPr,
+} from "./github.js";
 
 export type ManualMergeMethod = "squash" | "merge" | "rebase";
 export const VALID_MANUAL_MERGE_METHODS: ReadonlySet<string> = new Set([
@@ -14,9 +16,50 @@ export const VALID_MANUAL_MERGE_METHODS: ReadonlySet<string> = new Set([
   "rebase",
 ]);
 
+export type ManualAgentPullRequestMergeDisposition =
+  | "resolved"
+  | "waiting_for_pull_requests"
+  | "already_resolved"
+  | "continued_in_session";
+
 export type MergeAgentPrOutcome =
-  | { ok: true; sha: string | null; pr: schema.AgentPullRequest }
+  | {
+      ok: true;
+      sha: string | null;
+      pr: schema.AgentPullRequest;
+      incidentDisposition: ManualAgentPullRequestMergeDisposition;
+    }
   | { ok: false; reason: "pr_not_open" | "installation_unavailable" };
+
+export async function resolveIncidentAfterManualAgentPullRequestMerge(
+  opts: {
+    pr: schema.AgentPullRequest;
+    source: string;
+    mergedAt: Date;
+  },
+  deps: {
+    continueOrResolveMergedPullRequest(opts: {
+      agentPr: schema.AgentPullRequest;
+      mergedAt: Date;
+      mergedByLogin: string | null;
+      source?: string;
+    }): Promise<MergedAgentPullRequestContinuationDisposition>;
+  },
+): Promise<ManualAgentPullRequestMergeDisposition> {
+  const pr = opts.pr;
+  const disposition = await deps.continueOrResolveMergedPullRequest({
+    agentPr: pr,
+    mergedAt: opts.mergedAt,
+    mergedByLogin: null,
+    source: opts.source,
+  });
+  if (disposition === "continued_in_session") return disposition;
+  if (disposition === "pull_requests_pending") {
+    return "waiting_for_pull_requests";
+  }
+  if (disposition === "incident_not_open") return "already_resolved";
+  return "resolved";
+}
 
 export async function mergeAgentPullRequestAndResolveIncident(opts: {
   pr: schema.AgentPullRequest;
@@ -42,18 +85,16 @@ export async function mergeAgentPullRequestAndResolveIncident(opts: {
   });
 
   const now = new Date();
-  const [updatedPr] = await db
-    .update(schema.agentPullRequests)
-    .set({
-      state: "merged",
-      mergedAt: now,
-      closedAt: now,
-      headSha: merged.sha ?? pr.headSha,
-      lastSyncedAt: now,
-      updatedAt: now,
-    })
-    .where(eq(schema.agentPullRequests.id, pr.id))
-    .returning();
+  const mutation = await applyAgentPullRequestState(db, {
+    incidentId: pr.incidentId,
+    agentPrId: pr.id,
+    targetState: "merged",
+    observedAt: now,
+    mergedAt: now,
+    closedAt: now,
+    headSha: merged.sha ?? pr.headSha,
+  });
+  const updatedPr = mutation.pullRequest ?? pr;
 
   await db
     .insert(schema.agentPrEvents)
@@ -73,23 +114,21 @@ export async function mergeAgentPullRequestAndResolveIncident(opts: {
     })
     .onConflictDoNothing();
 
-  await resolveIncident({
-    incidentId: pr.incidentId,
-    kind: "agent_pr_merged",
-    reasonCode: "agent_pr_merged",
-    reasonText: `Resolved because agent PR #${pr.prNumber} (${pr.repoFullName}) was merged (${opts.source}).`,
-    agentRunId: pr.agentRunId,
-    eventSummary: `Incident resolved because PR #${pr.prNumber} was merged.`,
-    eventDetail: {
-      agentPrId: pr.id,
-      repoFullName: pr.repoFullName,
-      prNumber: pr.prNumber,
-      prUrl: pr.url,
+  const incidentDisposition = await resolveIncidentAfterManualAgentPullRequestMerge(
+    {
+      pr: updatedPr,
       source: opts.source,
+      mergedAt: now,
     },
-    eventDedupeKey: `incident_resolved:agent_pr:${pr.id}`,
-    resolvedAt: now,
-  });
+    {
+      continueOrResolveMergedPullRequest: resumeOrResolveIncidentForMergedAgentPr,
+    },
+  );
 
-  return { ok: true, sha: merged.sha ?? null, pr: updatedPr ?? pr };
+  return {
+    ok: true,
+    sha: merged.sha ?? null,
+    pr: updatedPr,
+    incidentDisposition,
+  };
 }

@@ -51,7 +51,8 @@ export type LifecycleEventKind =
   | "merged_into_incident"
   | "agent_run_completed"
   | "repo_selected"
-  | "incident_context_changed";
+  | "incident_context_changed"
+  | "internal_agent_session_termination_pending";
 
 export class IllegalAgentRunTransitionError extends Error {
   constructor(method: string, from: string, allowedFrom: readonly AgentRunState[]) {

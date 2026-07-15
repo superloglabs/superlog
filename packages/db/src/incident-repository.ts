@@ -100,6 +100,16 @@ export function createIncidentRepository(database: DB) {
       });
     },
 
+    listAgentPullRequestStatesInTx(
+      tx: Tx,
+      incidentId: string,
+    ): Promise<Array<{ state: schema.AgentPrState }>> {
+      return tx.query.agentPullRequests.findMany({
+        where: eq(schema.agentPullRequests.incidentId, incidentId),
+        columns: { state: true },
+      });
+    },
+
     async insertEventInTx(tx: Tx, opts: InsertIncidentEventInput): Promise<void> {
       const now = opts.processedAt ?? new Date();
       await tx
@@ -148,28 +158,41 @@ export function createIncidentRepository(database: DB) {
       return updated.length > 0;
     },
 
-    async completeAwaitingEventRunsInTx(
+    async completeRunsSupersededByResolutionInTx(
       tx: Tx,
       incidentId: string,
       completedAt: Date,
+      resolvingAgentRunId?: string | null,
     ): Promise<void> {
-      const parkedRuns = await tx
-        .select({ id: schema.agentRuns.id, result: schema.agentRuns.result })
+      const incidentRuns = await tx
+        .select({
+          id: schema.agentRuns.id,
+          state: schema.agentRuns.state,
+          result: schema.agentRuns.result,
+          providerSessionId: schema.agentRuns.providerSessionId,
+          providerSessionStatus: schema.agentRuns.providerSessionStatus,
+        })
         .from(schema.agentRuns)
-        .where(
-          and(
-            eq(schema.agentRuns.incidentId, incidentId),
-            eq(schema.agentRuns.state, "awaiting_events"),
-          ),
-        )
+        .where(eq(schema.agentRuns.incidentId, incidentId))
         .for("update");
 
-      for (const run of parkedRuns) {
+      for (const run of incidentRuns) {
+        if (run.id === resolvingAgentRunId) continue;
+        const isActive = !["complete", "failed", "superseded"].includes(run.state);
+        if (!isActive) {
+          if (run.providerSessionId && run.providerSessionStatus !== "terminated") {
+            await tx
+              .update(schema.agentRuns)
+              .set({ providerSessionStatus: "termination_pending", updatedAt: completedAt })
+              .where(eq(schema.agentRuns.id, run.id));
+          }
+          continue;
+        }
         const result: schema.AgentRunResult = run.result
           ? { ...run.result, state: "complete" }
           : {
               state: "complete",
-              summary: "Incident resolved while this investigation was awaiting events.",
+              summary: "Incident resolved; no further investigation is needed.",
             };
         await tx
           .update(schema.agentRuns)
@@ -178,6 +201,9 @@ export function createIncidentRepository(database: DB) {
             result,
             completedAt,
             updatedAt: completedAt,
+            ...(run.providerSessionId && run.providerSessionStatus !== "terminated"
+              ? { providerSessionStatus: "termination_pending" }
+              : {}),
           })
           .where(eq(schema.agentRuns.id, run.id));
         await tx

@@ -1,7 +1,7 @@
 // Production wiring for the agent-run queue: binds queue.ts (pure, tested
 // against fakes) to the real database, context loader, and state handlers.
 import { db, schema } from "@superlog/db";
-import { asc, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, or } from "drizzle-orm";
 import { loadAgentRunContext } from "../agent-run-context.js";
 import { ACTIVE_STATES, createAgentRunLifecycle } from "../agent-run.js";
 import { setAgentRunJobDispatch } from "./enqueue.js";
@@ -9,6 +9,11 @@ import { listPendingLinearHandoffRunIds, reconcilePendingLinearHandoff } from ".
 import { retryQueuedPullRequestDelivery } from "./pr-delivery.js";
 import { type AgentRunQueueBoss, createAgentRunJobSender, registerAgentRunQueue } from "./queue.js";
 import { resumeAgentRunFromHumanInput } from "./resume.js";
+import {
+  hasPendingDetachedAgentRunSession,
+  listPendingDetachedAgentRunIds,
+  terminatePendingAgentRunSessions,
+} from "./session-termination.js";
 import { startQueuedAgentRun } from "./start-run.js";
 import { syncRunningAgentRun } from "./sync.js";
 
@@ -36,18 +41,33 @@ export async function startAgentRunQueue(boss: AgentRunQueueBoss): Promise<void>
         category: "infra",
       });
     },
+    hasDetachedSessionTermination: hasPendingDetachedAgentRunSession,
     listActiveRunIds: async () => {
-      const [rows, pendingHandoffs] = await Promise.all([
+      const [rows, pendingHandoffs, pendingDetachedSessions] = await Promise.all([
         db
           .select({ id: schema.agentRuns.id })
           .from(schema.agentRuns)
-          .where(inArray(schema.agentRuns.state, [...ACTIVE_STATES]))
+          .where(
+            or(
+              inArray(schema.agentRuns.state, [...ACTIVE_STATES]),
+              and(
+                eq(schema.agentRuns.providerSessionStatus, "termination_pending"),
+                isNotNull(schema.agentRuns.providerSessionId),
+              ),
+            ),
+          )
           .orderBy(asc(schema.agentRuns.updatedAt)),
         listPendingLinearHandoffRunIds(),
+        listPendingDetachedAgentRunIds(),
       ]);
-      return [...new Set([...rows.map((row) => row.id), ...pendingHandoffs])];
+      return [
+        ...new Set([...rows.map((row) => row.id), ...pendingHandoffs, ...pendingDetachedSessions]),
+      ];
     },
     handlers: {
+      terminateSession: async (agentRun) => {
+        await terminatePendingAgentRunSessions(agentRun);
+      },
       reconcileHandoff: async (ctx) => {
         await reconcilePendingLinearHandoff(ctx);
       },

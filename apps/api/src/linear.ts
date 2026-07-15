@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import {
+  type ResolveIncidentInput,
   captureAgentPrLifecycleEvent,
   createIncidentFromLinearSession,
   createIncidentLifecycle,
@@ -623,6 +624,30 @@ async function linearIncidentUrl(incident: schema.Incident): Promise<string | nu
   return `${origin.replace(/\/$/, "")}/org/${encodeURIComponent(org.slug)}/project/${encodeURIComponent(project.slug)}/incidents/${encodeURIComponent(incident.id)}`;
 }
 
+export function linearTicketResolutionInput(
+  ticket: schema.AgentLinearTicket,
+): ResolveIncidentInput {
+  const identifier = ticket.ticketIdentifier ?? ticket.ticketId;
+  return {
+    incidentId: ticket.incidentId,
+    kind: "linear_ticket_completed",
+    reasonCode: "linear_ticket_completed",
+    reasonText: `Resolved because Linear ticket ${identifier} entered a completed state.`,
+    agentRunId: ticket.agentRunId,
+    // The ticket points back to the run for audit attribution, but its external
+    // completion is not that run actively resolving the Incident.
+    resolvingAgentRunId: null,
+    eventSummary: `Incident resolved because Linear ticket ${identifier} was completed.`,
+    eventDetail: {
+      agentLinearTicketId: ticket.id,
+      ticketId: ticket.ticketId,
+      ticketIdentifier: ticket.ticketIdentifier,
+      ticketUrl: ticket.url,
+    },
+    eventDedupeKey: `incident_resolved:linear_ticket:${ticket.id}`,
+  };
+}
+
 async function acceptCompletedLinearTicket(args: {
   ticket: schema.AgentLinearTicket;
   occurredAt: Date;
@@ -645,21 +670,7 @@ async function acceptCompletedLinearTicket(args: {
     });
   }
 
-  await incidentLifecycle.resolve({
-    incidentId: ticket.incidentId,
-    kind: "linear_ticket_completed",
-    reasonCode: "linear_ticket_completed",
-    reasonText: `Resolved because Linear ticket ${ticket.ticketIdentifier ?? ticket.ticketId} entered a completed state.`,
-    agentRunId: ticket.agentRunId,
-    eventSummary: `Incident resolved because Linear ticket ${ticket.ticketIdentifier ?? ticket.ticketId} was completed.`,
-    eventDetail: {
-      agentLinearTicketId: ticket.id,
-      ticketId: ticket.ticketId,
-      ticketIdentifier: ticket.ticketIdentifier,
-      ticketUrl: ticket.url,
-    },
-    eventDedupeKey: `incident_resolved:linear_ticket:${ticket.id}`,
-  });
+  await incidentLifecycle.resolve(linearTicketResolutionInput(ticket));
   // These effects are idempotent and must be retried even if an earlier
   // webhook attempt already won the incident-resolution write.
   await runResolvedIncidentSideEffectsForIncident({

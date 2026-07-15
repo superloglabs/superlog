@@ -464,6 +464,16 @@ test("propose_pr passes the same delivery identity through preflight and deliver
         updatedExisting: false,
       };
     },
+    async finalizeFulfilledAgentPullRequestBatches() {
+      return 0;
+    },
+    async resolveIncidentIfAllAgentPullRequestsMerged() {
+      return {
+        disposition: "pull_requests_pending" as const,
+        resolved: false as const,
+        resolvedIssueCount: 0 as const,
+      };
+    },
   });
 
   const result = await execute({
@@ -479,4 +489,263 @@ test("propose_pr passes the same delivery identity through preflight and deliver
   assert.equal(result.ok, true);
   assert.equal(identities.length, 2);
   assert.deepEqual(identities[1], identities[0]);
+});
+
+test("multi-repository propose_pr reserves the full batch before delivery and finalizes afterward", async () => {
+  const calls: string[] = [];
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
+    async reserveAgentPullRequestBatch(_db, input) {
+      calls.push(`reserve:${input.deliveries.map(({ repoFullName }) => repoFullName).join(",")}`);
+      return true;
+    },
+    async finalizeFulfilledAgentPullRequestBatches() {
+      calls.push("finalize");
+      return 1;
+    },
+    async resolveIncidentIfAllAgentPullRequestsMerged() {
+      calls.push("resolve_if_all_merged");
+      return {
+        disposition: "pull_requests_pending" as const,
+        resolved: false as const,
+        resolvedIssueCount: 0 as const,
+      };
+    },
+    async preflightProposedPullRequest(_ctx, proposal) {
+      calls.push(`preflight:${proposal.repoFullName}`);
+      return { ok: true, prepared: { kind: "patch", patch: "diff --git a/a b/a" } };
+    },
+    async deliverProposedPullRequest(_ctx, proposal) {
+      calls.push(`deliver:${proposal.repoFullName}`);
+      return {
+        ok: true,
+        url: `https://github.com/${proposal.repoFullName}/pull/12`,
+        prNumber: 12,
+        branchName: proposal.branchName,
+        updatedExisting: false,
+      };
+    },
+  });
+
+  const result = await execute({
+    toolUseId: "proposal-tool-batch",
+    name: "propose_pr",
+    input: { pullRequests: proposals },
+    hasFindings: true,
+    findings: { summary: "Two repositories require coordinated fixes." },
+  });
+
+  assert.equal(result.handled, true);
+  assert.deepEqual(calls, [
+    "preflight:acme/api",
+    "preflight:acme/worker",
+    "reserve:acme/api,acme/worker",
+    "deliver:acme/api",
+    "deliver:acme/worker",
+    "finalize",
+    "resolve_if_all_merged",
+  ]);
+});
+
+test("an exact recorded batch replay succeeds after the Incident has already resolved", async () => {
+  const calls: string[] = [];
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
+    async reserveAgentPullRequestBatch() {
+      calls.push("reserve");
+      return false;
+    },
+    async finalizeFulfilledAgentPullRequestBatches() {
+      calls.push("finalize");
+      return 0;
+    },
+    async resolveIncidentIfAllAgentPullRequestsMerged() {
+      calls.push("resolve_if_all_merged");
+      return {
+        disposition: "incident_not_open" as const,
+        resolved: false as const,
+        resolvedIssueCount: 0 as const,
+      };
+    },
+    async preflightProposedPullRequest(_ctx, proposal) {
+      calls.push(`preflight:${proposal.repoFullName}`);
+      return {
+        ok: true,
+        prepared: {
+          kind: "recorded" as const,
+          delivery: {
+            repoFullName: proposal.repoFullName,
+            requestedBranchName: proposal.branchName,
+            branchName: proposal.branchName,
+            url: `https://github.com/${proposal.repoFullName}/pull/12`,
+            prNumber: 12,
+            updatedExisting: false,
+            headSha: "abc123",
+          },
+        },
+      };
+    },
+    async deliverProposedPullRequest(_ctx, proposal) {
+      calls.push(`deliver:${proposal.repoFullName}`);
+      return {
+        ok: true,
+        url: `https://github.com/${proposal.repoFullName}/pull/12`,
+        prNumber: 12,
+        branchName: proposal.branchName,
+        updatedExisting: false,
+      };
+    },
+  });
+
+  const result = await execute({
+    toolUseId: "proposal-tool-recorded-replay",
+    name: "propose_pr",
+    input: { pullRequests: proposals },
+    hasFindings: true,
+    findings: { summary: "Both fixes were delivered before the acknowledgement was saved." },
+  });
+
+  assert.equal(result.handled, true);
+  if (!result.handled || result.deferAck) return;
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls, [
+    "preflight:acme/api",
+    "preflight:acme/worker",
+    "deliver:acme/api",
+    "deliver:acme/worker",
+    "finalize",
+    "resolve_if_all_merged",
+  ]);
+});
+
+test("a post-delivery batch finalization failure defers the acknowledgement", async () => {
+  const calls: string[] = [];
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
+    async reserveAgentPullRequestBatch() {
+      calls.push("reserve");
+      return true;
+    },
+    async finalizeFulfilledAgentPullRequestBatches() {
+      calls.push("finalize");
+      throw new Error("database temporarily unavailable");
+    },
+    async preflightProposedPullRequest(_ctx, proposal) {
+      calls.push(`preflight:${proposal.repoFullName}`);
+      return { ok: true, prepared: { kind: "patch" as const, patch: "diff" } };
+    },
+    async deliverProposedPullRequest(_ctx, proposal) {
+      calls.push(`deliver:${proposal.repoFullName}`);
+      return {
+        ok: true,
+        url: `https://github.com/${proposal.repoFullName}/pull/12`,
+        prNumber: 12,
+        branchName: proposal.branchName,
+        updatedExisting: false,
+      };
+    },
+  });
+
+  const result = await execute({
+    toolUseId: "proposal-tool-finalize-retry",
+    name: "propose_pr",
+    input: { pullRequests: proposals },
+    hasFindings: true,
+    findings: { summary: "Both fixes need durable reconciliation." },
+  });
+
+  assert.deepEqual(result, { handled: true, deferAck: true });
+  assert.deepEqual(calls, [
+    "preflight:acme/api",
+    "preflight:acme/worker",
+    "reserve",
+    "deliver:acme/api",
+    "deliver:acme/worker",
+    "finalize",
+  ]);
+});
+
+test("a single-repository retry repeats merge resolution after finalization already committed", async () => {
+  const proposal = proposals[0];
+  assert.ok(proposal);
+  let finalizeCalls = 0;
+  let resolveCalls = 0;
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
+    async finalizeFulfilledAgentPullRequestBatches() {
+      finalizeCalls += 1;
+      return finalizeCalls === 1 ? 1 : 0;
+    },
+    async resolveIncidentIfAllAgentPullRequestsMerged() {
+      resolveCalls += 1;
+      if (resolveCalls === 1) throw new Error("resolution transaction interrupted");
+      return {
+        disposition: "pull_requests_pending" as const,
+        resolved: false as const,
+        resolvedIssueCount: 0 as const,
+      };
+    },
+    async preflightProposedPullRequest() {
+      return { ok: true, prepared: { kind: "patch" as const, patch: "diff" } };
+    },
+    async deliverProposedPullRequest() {
+      return {
+        ok: true,
+        url: "https://github.com/acme/api/pull/12",
+        prNumber: 12,
+        branchName: proposal.branchName,
+        updatedExisting: false,
+      };
+    },
+  });
+  const call = {
+    toolUseId: "proposal-tool-single-retry",
+    name: "propose_pr" as const,
+    input: { pullRequests: [proposal] },
+    hasFindings: true,
+    findings: { summary: "The final repository fix was delivered." },
+  };
+
+  assert.deepEqual(await execute(call), { handled: true, deferAck: true });
+  const replay = await execute(call);
+
+  assert.equal(replay.handled, true);
+  if (!replay.handled || replay.deferAck) return;
+  assert.equal(replay.ok, true);
+  assert.equal(finalizeCalls, 2);
+  assert.equal(resolveCalls, 2);
+});
+
+test("a failed single-repository delivery cannot resolve from older merged PRs", async () => {
+  const proposal = proposals[0];
+  assert.ok(proposal);
+  let resolveCalls = 0;
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
+    async finalizeFulfilledAgentPullRequestBatches() {
+      return 0;
+    },
+    async resolveIncidentIfAllAgentPullRequestsMerged() {
+      resolveCalls += 1;
+      return {
+        disposition: "resolved" as const,
+        resolved: true as const,
+        resolvedIssueCount: 1,
+      };
+    },
+    async preflightProposedPullRequest() {
+      return { ok: true, prepared: { kind: "patch" as const, patch: "diff" } };
+    },
+    async deliverProposedPullRequest() {
+      return { ok: false, error: "GitHub rejected the patch" };
+    },
+  });
+
+  const result = await execute({
+    toolUseId: "proposal-tool-single-failure",
+    name: "propose_pr",
+    input: { pullRequests: [proposal] },
+    hasFindings: true,
+    findings: { summary: "A second fix is still required." },
+  });
+
+  assert.equal(result.handled, true);
+  if (!result.handled || result.deferAck) return;
+  assert.equal(result.ok, false);
+  assert.equal(resolveCalls, 0);
 });

@@ -703,9 +703,16 @@ async function handleSlackMergePr(
       );
       return;
     }
-    await runSlackResolvedIncidentSideEffects(incidentId);
+    const suffix =
+      outcome.incidentDisposition === "resolved"
+        ? "incident resolved."
+        : outcome.incidentDisposition === "already_resolved"
+          ? "incident was already resolved."
+          : outcome.incidentDisposition === "continued_in_session"
+            ? "investigation continued with the merge event."
+            : "waiting on the remaining pull requests.";
     await reply(
-      `:twisted_rightwards_arrows: PR #${pr.prNumber} merged by ${attribution} — incident resolved.`,
+      `:twisted_rightwards_arrows: PR #${pr.prNumber} merged by ${attribution} — ${suffix}`,
     );
   } catch (err) {
     log.warn(

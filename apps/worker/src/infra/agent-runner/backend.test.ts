@@ -124,9 +124,9 @@ test("getAgentRunnerBackend returns a built-in disabled backend for community in
   );
 });
 
-test("getAgentRunnerBackend loads the closed-overlay anthropic backend from configured module", async () => {
+test("getAgentRunnerBackend loads the external runtime from its configured module", async () => {
   process.env.AGENT_RUNNER_ANTHROPIC_MODULE =
-    "data:text/javascript,export const agentRunnerBackend = { name: 'anthropic', maxRepoResources: 7, async start() { return { sessionId: 's' }; }, async startChat() { return { sessionId: 'c' }; }, async sendChatMessage() {}, async collect() { throw new Error('not used'); }, async resume() {}, async steer() {}, async dispatchIntegrationToolCalls() { return 2; }, async dispatchChatToolCalls() { return { handled: 0, repliesThisTurn: 0 }; } };";
+    "data:text/javascript,export const agentRunnerBackend = { name: 'anthropic', maxRepoResources: 7, async start() { return { sessionId: 's' }; }, async terminate() {}, async startChat() { return { sessionId: 'c' }; }, async sendChatMessage() {}, async collect() { throw new Error('not used'); }, async resume() {}, async steer() {}, async dispatchIntegrationToolCalls() { return 2; }, async dispatchChatToolCalls() { return { handled: 0, repliesThisTurn: 0 }; } };";
 
   const backend = await getAgentRunnerBackend("anthropic");
 
@@ -146,7 +146,17 @@ test("getAgentRunnerBackend loads the closed-overlay anthropic backend from conf
   );
 });
 
-test("getAgentRunnerBackend rejects anthropic runtime when no closed-overlay module is configured", async () => {
+test("getAgentRunnerBackend rejects a configured backend without session termination support", async () => {
+  process.env.AGENT_RUNNER_ANTHROPIC_MODULE =
+    "data:text/javascript,export const agentRunnerBackend = { name: 'anthropic', maxRepoResources: 7, async start() { return { sessionId: 's' }; }, async startChat() { return { sessionId: 'c' }; }, async sendChatMessage() {}, async collect() { throw new Error('not used'); }, async resume() {}, async steer() {}, async dispatchIntegrationToolCalls() { return 0; }, async dispatchChatToolCalls() { return { handled: 0, repliesThisTurn: 0 }; } };";
+
+  await assert.rejects(
+    () => getAgentRunnerBackend("anthropic"),
+    /must export an AgentRunnerBackend/,
+  );
+});
+
+test("getAgentRunnerBackend rejects an external runtime without a configured module", async () => {
   Reflect.deleteProperty(process.env, "AGENT_RUNNER_ANTHROPIC_MODULE");
 
   await assert.rejects(

@@ -15,6 +15,7 @@ import {
   planAwaitingEventsTransition,
   planPullRequestAwaitingEvents,
   planSettledPullRequestFallback,
+  selectDeliveredPullRequestsForCurrentTurn,
   shouldDeferSteering,
   shouldFailForRuntimeBudget,
   shouldParkCompatibilityPullRequests,
@@ -101,6 +102,74 @@ test("delivered PRs satisfy terminal sync while only open PRs remain wait target
       settledPullRequests: [],
     },
   );
+});
+
+test("a resumed same-run turn excludes pull request receipts from the prior turn", () => {
+  const firstPullRequest = {
+    id: "pr-1",
+    agentRunId: "run-1",
+    repoFullName: "acme/api",
+    branchName: "ash/fix-api",
+    baseBranch: "main",
+    title: "Fix API",
+    url: "https://github.com/acme/api/pull/1",
+    state: "merged" as const,
+  };
+  const secondPullRequest = {
+    id: "pr-2",
+    agentRunId: "run-1",
+    repoFullName: "acme/web",
+    branchName: "ash/fix-web",
+    baseBranch: "main",
+    title: "Fix web",
+    url: "https://github.com/acme/web/pull/2",
+    state: "open" as const,
+  };
+  const receiptDetail = (
+    deliveryId: string,
+    pullRequest: { id: string; repoFullName: string; branchName: string; url: string },
+  ) => ({
+    deliveryId,
+    inputHash: `input-${deliveryId}`,
+    repoFullName: pullRequest.repoFullName,
+    requestedBranchName: pullRequest.branchName,
+    branchName: pullRequest.branchName,
+    url: pullRequest.url,
+    prNumber: pullRequest.id === "pr-1" ? 1 : 2,
+    updatedExisting: false,
+    headSha: `sha-${deliveryId}`,
+  });
+
+  const selected = selectDeliveredPullRequestsForCurrentTurn(
+    {
+      state: "awaiting_events",
+      summary: "Delivered the follow-up web fix.",
+      prs: [
+        {
+          selectedRepoFullName: secondPullRequest.repoFullName,
+          branchName: secondPullRequest.branchName,
+          baseBranch: "main",
+          url: secondPullRequest.url,
+          openStatus: "opened",
+        },
+      ],
+    },
+    [firstPullRequest, secondPullRequest],
+    "run-1",
+    [
+      {
+        detail: receiptDetail("delivery-1", firstPullRequest),
+        createdAt: new Date("2026-07-15T08:00:00.000Z"),
+      },
+      {
+        detail: receiptDetail("delivery-2", secondPullRequest),
+        createdAt: new Date("2026-07-15T10:00:00.000Z"),
+      },
+    ],
+    new Date("2026-07-15T09:00:00.000Z"),
+  );
+
+  assert.deepEqual(selected, [secondPullRequest]);
 });
 
 test("a recovered merged PR continues its lifecycle instead of completing the run", () => {
@@ -270,6 +339,7 @@ test("an unavailable recovered PR lifecycle resolves only an entirely merged del
     url: "https://github.com/acme/api/pull/1",
     repoFullName: "acme/api",
     branchName: "ash/fix-api",
+    baseBranch: "main",
     prNumber: 1,
     mergedAt: new Date("2026-07-15T08:30:00.000Z"),
     closedAt: null,
@@ -283,21 +353,29 @@ test("an unavailable recovered PR lifecycle resolves only an entirely merged del
     closedAt: new Date("2026-07-15T08:45:00.000Z"),
     mergedByLogin: null,
   };
+  const open = {
+    ...merged,
+    id: "agent-pr-open",
+    state: "open" as const,
+    url: "https://github.com/acme/worker/pull/3",
+    repoFullName: "acme/worker",
+    branchName: "ash/fix-worker",
+    prNumber: 3,
+    mergedAt: null,
+    mergedByLogin: null,
+  };
 
-  assert.deepEqual(planSettledPullRequestFallback([merged], []), {
+  assert.deepEqual(planSettledPullRequestFallback([merged], [merged]), {
     kind: "resolve_merged",
     pullRequest: merged,
   });
-  assert.deepEqual(planSettledPullRequestFallback([closed, merged], []), { kind: "follow_up" });
-  assert.deepEqual(
-    planSettledPullRequestFallback([merged], ["https://github.com/acme/web/pull/2"]),
-    { kind: "follow_up" },
-  );
-  assert.deepEqual(planSettledPullRequestFallback([closed], []), { kind: "follow_up" });
-  assert.deepEqual(
-    planSettledPullRequestFallback([closed], ["https://github.com/acme/web/pull/2"]),
-    { kind: "follow_up" },
-  );
+  assert.deepEqual(planSettledPullRequestFallback([merged], [open, merged]), {
+    kind: "follow_up",
+  });
+  assert.deepEqual(planSettledPullRequestFallback([closed, merged], [closed, merged]), {
+    kind: "follow_up",
+  });
+  assert.deepEqual(planSettledPullRequestFallback([closed], [closed]), { kind: "follow_up" });
 });
 
 test("a terminal result wins when it lands at the runtime budget boundary", () => {

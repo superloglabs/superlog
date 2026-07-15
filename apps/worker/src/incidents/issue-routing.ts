@@ -32,3 +32,10 @@ export function decideIssueArrivalRouting(input: IssueArrivalRoutingInput): Issu
   if (input.suppressed) return "investigate";
   return "steer";
 }
+
+// The application service checks this only after acquiring the Incident row
+// lock. Resolution and investigation queueing therefore have one serialized
+// decision point: whichever transaction wins determines whether work starts.
+export function canQueueInvestigationForLockedIncident(status: string | null): boolean {
+  return status === "open";
+}

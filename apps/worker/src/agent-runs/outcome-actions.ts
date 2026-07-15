@@ -15,6 +15,9 @@ import {
   classifyIncidentIssue,
   createIncidentLifecycle,
   db,
+  finalizeFulfilledAgentPullRequestBatches,
+  reserveAgentPullRequestBatch,
+  resolveIncidentIfAllAgentPullRequestsMerged,
   type schema,
   synthesizeLegacyIncidentIssueOutcomes,
   validateIncidentIssueOutcomes,
@@ -59,6 +62,9 @@ export type OutcomeActionDependencies = {
   classifyIncidentIssue: typeof classifyIncidentIssue;
   synthesizeLegacyIncidentIssueOutcomes: typeof synthesizeLegacyIncidentIssueOutcomes;
   resolveIncident(input: ResolveIncidentInput): Promise<ResolveIncidentResult>;
+  reserveAgentPullRequestBatch: typeof reserveAgentPullRequestBatch;
+  finalizeFulfilledAgentPullRequestBatches: typeof finalizeFulfilledAgentPullRequestBatches;
+  resolveIncidentIfAllAgentPullRequestsMerged: typeof resolveIncidentIfAllAgentPullRequestsMerged;
   preflightProposedPullRequest: typeof preflightProposedPullRequest;
   deliverProposedPullRequest: typeof deliverProposedPullRequest;
 };
@@ -67,6 +73,9 @@ const databaseOutcomeActionDependencies: OutcomeActionDependencies = {
   classifyIncidentIssue,
   synthesizeLegacyIncidentIssueOutcomes,
   resolveIncident: (input) => incidentLifecycle.resolve(input),
+  reserveAgentPullRequestBatch,
+  finalizeFulfilledAgentPullRequestBatches,
+  resolveIncidentIfAllAgentPullRequestsMerged,
   preflightProposedPullRequest,
   deliverProposedPullRequest,
 };
@@ -138,6 +147,8 @@ export async function executeProposedPullRequestBatch<Prepared>(
       proposal: PullRequestProposal,
       prepared: Prepared,
     ): Promise<ProposedPullRequestDeliveryResult>;
+    beforeDelivery?(prepared: Prepared[]): Promise<{ ok: true } | { ok: false; error: string }>;
+    afterDelivery?(deliveries: ProposedPullRequestDeliveryResult[]): Promise<void>;
   },
 ): Promise<ProposedPullRequestBatchResult> {
   const preflights = await Promise.all(proposals.map((proposal) => deps.preflight(proposal)));
@@ -160,6 +171,27 @@ export async function executeProposedPullRequestBatch<Prepared>(
               error: "The batch was not delivered because another patch failed validation.",
             };
       }),
+    };
+  }
+
+  const ready = await deps.beforeDelivery?.(
+    preflights.map((preflight) => {
+      if (!preflight.ok) throw new Error("validated preflight unexpectedly missing");
+      return preflight.prepared;
+    }),
+  );
+  if (ready && !ready.ok) {
+    return {
+      ok: false,
+      pullRequests: proposals.map((proposal) => ({
+        repoFullName: proposal.repoFullName,
+        branchName: proposal.branchName,
+        status: "not_delivered" as const,
+        error: ready.error,
+        deliveryStatus: "incident_not_open" as const,
+        retryable: false,
+        incidentStatus: null,
+      })),
     };
   }
 
@@ -186,6 +218,7 @@ export async function executeProposedPullRequestBatch<Prepared>(
       });
     }
   }
+  await deps.afterDelivery?.(deliveries);
   return {
     ok: deliveries.every((delivery) => delivery.ok),
     pullRequests: proposals.map((proposal, index) => {
@@ -367,24 +400,83 @@ async function executeValidatedCall(
         }
       }
 
-      const batch = await executeProposedPullRequestBatch(payload.pullRequests, {
-        preflight: (proposal) =>
-          dependencies.preflightProposedPullRequest(
-            ctx,
-            proposal,
-            sessionId,
-            pullRequestDeliveryIdentityForOutcomeAction(ctx.agentRun.id, toolUseId, proposal),
-          ),
-        deliver: (proposal, prepared) =>
-          dependencies.deliverProposedPullRequest(
-            ctx,
-            proposal,
-            sessionId,
-            findings,
-            prepared,
-            pullRequestDeliveryIdentityForOutcomeAction(ctx.agentRun.id, toolUseId, proposal),
-          ),
-      });
+      const deliveries = payload.pullRequests.map((proposal) => ({
+        repoFullName: proposal.repoFullName,
+        deliveryId: pullRequestDeliveryIdentityForOutcomeAction(
+          ctx.agentRun.id,
+          toolUseId,
+          proposal,
+        ).deliveryId,
+      }));
+      let batch: ProposedPullRequestBatchResult;
+      try {
+        batch = await executeProposedPullRequestBatch(payload.pullRequests, {
+          preflight: (proposal) =>
+            dependencies.preflightProposedPullRequest(
+              ctx,
+              proposal,
+              sessionId,
+              pullRequestDeliveryIdentityForOutcomeAction(ctx.agentRun.id, toolUseId, proposal),
+            ),
+          deliver: (proposal, prepared) =>
+            dependencies.deliverProposedPullRequest(
+              ctx,
+              proposal,
+              sessionId,
+              findings,
+              prepared,
+              pullRequestDeliveryIdentityForOutcomeAction(ctx.agentRun.id, toolUseId, proposal),
+            ),
+          beforeDelivery: async (prepared) => {
+            if (payload.pullRequests.length < 2) return { ok: true };
+            if (prepared.every((entry) => entry.kind === "recorded")) return { ok: true };
+            const reserved = await dependencies.reserveAgentPullRequestBatch(db, {
+              incidentId: ctx.incident.id,
+              agentRunId: ctx.agentRun.id,
+              batchKey: `${ctx.agentRun.id}:${toolUseId}`,
+              deliveries,
+            });
+            return reserved
+              ? { ok: true }
+              : {
+                  ok: false,
+                  error: "The Incident is no longer open, so this PR batch was not delivered.",
+                };
+          },
+          afterDelivery: async (deliveryResults) => {
+            await dependencies.finalizeFulfilledAgentPullRequestBatches(db, {
+              incidentId: ctx.incident.id,
+              agentRunId: ctx.agentRun.id,
+              deliveries,
+            });
+            const currentBatchDelivered =
+              deliveryResults.length === payload.pullRequests.length &&
+              deliveryResults.every((delivery) => delivery.ok);
+            if (!currentBatchDelivered) return;
+            await dependencies.resolveIncidentIfAllAgentPullRequestsMerged({
+              incidentId: ctx.incident.id,
+              kind: "agent_pr_merged",
+              reasonCode: "agent_pr_merged",
+              reasonText: "All agent pull requests were merged.",
+              agentRunId: ctx.agentRun.id,
+              resolvingAgentRunId: ctx.agentRun.id,
+              eventSummary: "Incident resolved because all agent pull requests were merged.",
+              eventDedupeKey: `incident_resolved:agent_pr_batch:${ctx.agentRun.id}:${toolUseId}`,
+            });
+          },
+        });
+      } catch (err) {
+        logger.warn(
+          {
+            err,
+            agentRunId: ctx.agentRun.id,
+            incidentId: ctx.incident.id,
+            toolUseId,
+          },
+          "PR batch reconciliation is pending; deferring outcome acknowledgement",
+        );
+        return { handled: true, deferAck: true };
+      }
       if (!batch.ok) {
         return {
           handled: true,

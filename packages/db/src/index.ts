@@ -102,6 +102,7 @@ export type {
   NewAgentMemory,
   AgentRunTrigger,
   AgentRunFollowUpInteraction,
+  AgentRunFollowUpPullRequest,
   AgentRunTriggerDetail,
   AgentRunResult,
   AgentRunPr,
@@ -187,7 +188,9 @@ export {
   evaluateFollowUpEligibility,
   decideInboundContinuation,
   recordInboundInteraction,
+  restartAgentRun,
   requestFollowUpAgentRun,
+  type RestartAgentRunResult,
   FOLLOW_UP_MAX_AGE_DAYS,
   MAX_FOLLOW_UP_RUNS,
   type FollowUpEligibilityInput,
@@ -198,6 +201,21 @@ export {
   type RequestFollowUpResult,
 } from "./agent-follow-up.js";
 export {
+  type GithubAccessUnblockTrigger,
+  unblockAgentRunsAfterGithubAccess,
+} from "./agent-run-unblock.js";
+export {
+  queueAgentPullRequestRetry,
+  type QueueAgentPullRequestRetryResult,
+} from "./agent-pr-retry.js";
+export { agentPullRequestRetryEligibility } from "./agent-pr-retry-domain.js";
+export {
+  applyAgentPullRequestState,
+  type ApplyAgentPullRequestStateInput,
+  type ApplyAgentPullRequestStateResult,
+} from "./agent-pr-state.js";
+export {
+  areAllIncidentPullRequestsMerged,
   buildAgentPullRequestLifecycleContinuation,
   type AgentPullRequestLifecycleContinuation,
   type AgentPullRequestLifecycleRecord,
@@ -260,15 +278,20 @@ export {
 export {
   confirmResolutionProposal,
   createIncidentLifecycle,
+  finalizeFulfilledAgentPullRequestBatches,
   dismissResolutionProposal,
   mergeIncidentsInTx,
   resolveIncident,
+  resolveIncidentIfAllAgentPullRequestsMerged,
+  reconcileAgentRunCompletedByResolution,
   validateIncidentIssueOutcomes,
+  reserveAgentPullRequestBatch,
   type ApplyAgentRunResultOutcome,
   type IncidentLifecycle,
   type LinkIssueToOpenIncidentResult,
   type ResolutionProposalActor,
   type ResolveIncidentInput,
+  type ResolveIncidentAfterAgentPullRequestsMergedResult,
   type ResolveIncidentResult,
   type ResolveIssueOutcome,
 } from "./resolve-incident.js";
