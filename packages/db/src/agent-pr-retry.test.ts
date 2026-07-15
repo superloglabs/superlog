@@ -58,6 +58,11 @@ async function seedRetryableRun(db: DB, incidentStatus: schema.IncidentStatus = 
       runtime: "test",
       state: "failed",
       failureReason: "pr_open_failed",
+      // Pin createdAt: the "latest run" ordering compares it against
+      // successors the tests create at NOW + ε, so leaving the column on its
+      // wall-clock default made those successors stop being "newer" the
+      // moment real time passed the fixture NOW.
+      createdAt: NOW,
       completedAt: NOW,
       result: {
         state: "failed",
