@@ -6,6 +6,7 @@ process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
 process.env.BETTER_AUTH_SECRET ??= "test-better-auth-secret-with-enough-length";
 
 const { resolveIncidentAfterManualAgentPullRequestMerge } = await import("./pr-merge-service.js");
+const { resumeOrResolveIncidentForMergedAgentPr } = await import("./github.js");
 
 const mergedAt = new Date("2026-07-15T10:00:00.000Z");
 const pr = {
@@ -82,6 +83,23 @@ test("manual merge reports already resolved when another resolver won", async ()
   assert.equal(resolved, "already_resolved");
 });
 
+test("manual merge reports already resolved when its resolution event belonged to an earlier epoch", async () => {
+  const resolved = await resolveIncidentAfterManualAgentPullRequestMerge(
+    {
+      pr,
+      source: "dashboard",
+      mergedAt,
+    },
+    {
+      async continueOrResolveMergedPullRequest() {
+        return "resolution_event_already_consumed";
+      },
+    },
+  );
+
+  assert.equal(resolved, "already_resolved");
+});
+
 test("manual merge gives a surviving session the merge event before deterministic resolution", async () => {
   const calls: string[] = [];
   const deps = {
@@ -98,4 +116,33 @@ test("manual merge gives a surviving session the merge event before deterministi
 
   assert.equal(disposition, "continued_in_session");
   assert.deepEqual(calls, ["continue"]);
+});
+
+test("a transient session-routing failure does not fall back to merge resolution", async () => {
+  let resolutionAttempted = false;
+
+  await assert.rejects(
+    resumeOrResolveIncidentForMergedAgentPr(
+      {
+        agentPr: pr,
+        mergedAt,
+        mergedByLogin: null,
+      },
+      {
+        async continueInSession() {
+          throw new Error("database temporarily unavailable");
+        },
+        async resolveWithoutSession() {
+          resolutionAttempted = true;
+          return {
+            disposition: "resolved" as const,
+            resolved: true as const,
+            resolvedIssueCount: 1,
+          };
+        },
+      },
+    ),
+    /database temporarily unavailable/,
+  );
+  assert.equal(resolutionAttempted, false);
 });

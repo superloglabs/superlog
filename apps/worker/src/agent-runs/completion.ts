@@ -1,15 +1,22 @@
 import {
   type AgentRunResult,
+  type IncidentResolutionProof,
   type ResolveIssueOutcome,
   closeIncidentOpenPullRequestsAfterResolution,
   createIncidentLifecycle,
   db,
+  isIncidentResolutionProofCurrent,
+  resolveAgentIncident,
   schema,
 } from "@superlog/db";
 import { and, desc, eq } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
-import { closeAgentPullRequestOnGithub, postAgentPrComment } from "../github-app.js";
+import {
+  closeAgentPullRequestOnGithub,
+  postAgentPrComment,
+  reopenAgentPullRequestOnGithub,
+} from "../github-app.js";
 import { FIXED_IN_CURRENT_CODE_COOLDOWN_MS } from "../incident-cooldown.js";
 import {
   completedNoiseReason,
@@ -33,12 +40,15 @@ import {
   closedElsewhereCopyAfterNoiseRace,
   completionIntendsIncidentClosure,
   incidentAlreadyClosedCompletionCopy,
+  legacyResolutionEventDedupeKey,
   mergedPullRequestResolutionCopy,
+  planLegacyTerminalResolutionCompletion,
   resolutionCompletionCopy,
   resolutionCompletionResult,
   shouldRetireProviderSession,
   shouldUpdateResolutionMainMessage,
 } from "./resolution-completion.js";
+import { reconcileIncidentResolutionFollowUp } from "./resolution-follow-up.js";
 import { isAlertIncident, truncateSlackText } from "./result-metadata.js";
 import {
   publishAwaitingEventsUpdateIfCurrent,
@@ -166,9 +176,13 @@ export async function replyToPrOriginIfNeeded(
   }
 }
 
-export async function closeOpenPullRequestsForResolvedIncident(incidentId: string): Promise<void> {
+export async function closeOpenPullRequestsForResolvedIncident(
+  incidentId: string,
+  resolutionProof?: IncidentResolutionProof,
+): Promise<void> {
   await closeIncidentOpenPullRequestsAfterResolution({
     incidentId,
+    resolutionProof,
     closePullRequest: (pr) =>
       closeAgentPullRequestOnGithub({
         installationId: pr.githubInstallationId,
@@ -177,6 +191,16 @@ export async function closeOpenPullRequestsForResolvedIncident(incidentId: strin
         prNumber: pr.prNumber,
         prNodeId: pr.prNodeId,
       }),
+    reopenPullRequest: resolutionProof
+      ? (pr) =>
+          reopenAgentPullRequestOnGithub({
+            installationId: pr.githubInstallationId,
+            fallbackInstallationIds: pr.fallbackGithubInstallationIds,
+            repoFullName: pr.repoFullName,
+            prNumber: pr.prNumber,
+            prNodeId: pr.prNodeId,
+          })
+      : undefined,
     onCloseFailure: ({ pr, error }) =>
       logger.warn(
         {
@@ -199,32 +223,39 @@ async function resolveIncidentAsNoise(
   ctx: AgentRunContext,
   result: AgentRunResult,
   noiseReason: schema.IncidentNoiseReason,
-): Promise<{ resolved: boolean; resolvedIssueCount: number }> {
+) {
   const action = result.noiseClassification?.action ?? null;
   const issueOutcome: ResolveIssueOutcome =
     action?.kind === "observe" ? { kind: "observe", trigger: action.trigger } : { kind: "silence" };
-  return incidentLifecycle.resolve({
+  const eventDedupeKey = legacyResolutionEventDedupeKey(ctx.agentRun.id, "noise");
+  const resolution = await resolveAgentIncident(db, {
     incidentId: ctx.incident.id,
     kind: "agent_classification",
     reasonCode: noiseReason,
     reasonText: result.noiseClassification?.evidence?.trim() ?? null,
     agentRunId: ctx.agentRun.id,
+    resolvingAgentRunId: ctx.agentRun.id,
     eventSummary: "Incident resolved because the agent run classified it as noise.",
     eventDetail: {
       noiseReason,
       evidence: result.noiseClassification?.evidence ?? null,
       issueOutcome: issueOutcome.kind,
     },
-    eventDedupeKey: `incident_resolved:agent_run:${ctx.agentRun.id}:noise`,
+    eventDedupeKey,
     issueOutcome,
+    agentRunResult: result,
   });
+  return {
+    ...resolution,
+    resolutionProof: { agentRunId: ctx.agentRun.id, eventDedupeKey },
+  };
 }
 
 async function resolveIncidentFromAgentRunConclusion(
   ctx: AgentRunContext,
   result: AgentRunResult,
   reason: schema.IncidentResolutionReason,
-): Promise<{ resolved: boolean; resolvedIssueCount: number }> {
+) {
   const now = new Date();
   const evidence = result.resolutionClassification?.evidence?.trim() ?? null;
   // For `fixed_in_current_code`, prod will keep producing the same exception
@@ -236,22 +267,29 @@ async function resolveIncidentFromAgentRunConclusion(
       ? new Date(now.getTime() + FIXED_IN_CURRENT_CODE_COOLDOWN_MS)
       : null;
 
-  return incidentLifecycle.resolve({
+  const eventDedupeKey = legacyResolutionEventDedupeKey(ctx.agentRun.id, "already_resolved");
+  const resolution = await resolveAgentIncident(db, {
     incidentId: ctx.incident.id,
     kind: "agent_classification",
     reasonCode: reason,
     reasonText: evidence,
     agentRunId: ctx.agentRun.id,
+    resolvingAgentRunId: ctx.agentRun.id,
     eventSummary: "Incident resolved because the agent run found it was already resolved.",
     eventDetail: {
       legacyReason: "agent_already_resolved",
       resolutionReason: reason,
       evidence,
     },
-    eventDedupeKey: `incident_resolved:agent_run:${ctx.agentRun.id}:already_resolved`,
+    eventDedupeKey,
     resolvedAt: now,
     autoInvestigateSuppressedUntil,
+    agentRunResult: result,
   });
+  return {
+    ...resolution,
+    resolutionProof: { agentRunId: ctx.agentRun.id, eventDedupeKey },
+  };
 }
 
 // Reason code stored on incidents resolved by the agent's terminal
@@ -286,6 +324,10 @@ export async function completeWithIncidentResolution(
       })
     : null;
   const resolutionCommittedByRun = Boolean(committedResolutionEvent);
+  const resolutionProof: IncidentResolutionProof | null =
+    committedResolutionEvent && resolutionEventDedupeKey
+      ? { agentRunId: ctx.agentRun.id, eventDedupeKey: resolutionEventDedupeKey }
+      : null;
   const completionResult = resolutionCompletionResult(result, resolutionCommittedByRun);
   const copy = resolutionCompletionCopy(resolutionCommittedByRun, resolution.reason);
   const completed = await agentRunLifecycle.completeWithoutPullRequest({
@@ -295,17 +337,10 @@ export async function completeWithIncidentResolution(
     providerSessionIdToTerminate: sessionId,
   });
   if (!completed) return false;
-  const metadataOutcome = await incidentLifecycle.applyAgentRunResult({
-    incident: ctx.incident,
-    agentRunId: ctx.agentRun.id,
-    result: completionResult,
-  });
-  if (metadataOutcome.updated) {
-    const refreshed = await db.query.incidents.findFirst({
-      where: eq(schema.incidents.id, ctx.incident.id),
-    });
-    if (refreshed) ctx.incident = refreshed;
-  }
+  // A current resolution is closed, so open-only metadata application would
+  // be a no-op. If the Incident was manually reopened, applying this old
+  // snapshot would instead overwrite the new epoch's findings; never do that
+  // from delayed terminal reconciliation.
   await enqueueAgentRunCompleted(ctx.agentRun.id).catch((err) =>
     logger.error(
       {
@@ -317,66 +352,97 @@ export async function completeWithIncidentResolution(
     ),
   );
 
-  // A winning resolve_incident commits its Issue classifications + Incident
-  // resolution before the runner receives the final ack. Completion only
-  // persists the proven result and reconciles dependent deliverables.
-  await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
-  await refreshIncidentAndRetireSessionIfClosed(ctx, sessionId);
-  const resolved = ctx.incident.status === "resolved";
+  const isCurrentResolution = resolutionProof
+    ? () =>
+        isIncidentResolutionProofCurrent({
+          incidentId: ctx.incident.id,
+          resolutionProof,
+        })
+    : async () => {
+        const current = await db.query.incidents.findFirst({
+          where: eq(schema.incidents.id, ctx.incident.id),
+          columns: { status: true },
+        });
+        return current ? shouldRetireProviderSession(current.status) : false;
+      };
+  const publication = await reconcileIncidentResolutionFollowUp({
+    isCurrentResolution,
+    closePullRequests: () =>
+      resolutionProof
+        ? closeOpenPullRequestsForResolvedIncident(ctx.incident.id, resolutionProof)
+        : Promise.resolve(),
+    publish: async () => {
+      await refreshIncidentAndRetireSessionIfClosed(ctx, sessionId);
+      const resolved = ctx.incident.status === "resolved";
 
-  // Linear ticket: file/update deterministically from the findings. The
-  // reconciliation boundary links every PR recorded for the incident and
-  // remains pending when either provider is temporarily unavailable.
-  const shouldCreateTicket = shouldCreateLinearTicketForTerminalOutcome(
-    "resolve_incident",
-    ctx.createLinearTicketOnResolve,
-  );
-  const deliveredTicket = shouldCreateTicket
-    ? await scheduleLinearHandoff(ctx, completionResult, "resolve_incident")
-    : null;
+      // Linear ticket: file/update deterministically from the findings. The
+      // reconciliation boundary links every PR recorded for the incident and
+      // remains pending when either provider is temporarily unavailable.
+      const shouldCreateTicket = shouldCreateLinearTicketForTerminalOutcome(
+        "resolve_incident",
+        ctx.createLinearTicketOnResolve,
+      );
+      const deliveredTicket = shouldCreateTicket
+        ? await scheduleLinearHandoff(ctx, completionResult, "resolve_incident")
+        : null;
 
-  logger.info(
-    {
-      scope: "agent_run",
-      agent_run_id: ctx.agentRun.id,
-      incident_id: ctx.incident.id,
-      session_id: sessionId,
-      runtime_minutes: runtimeMinutes,
-      resolved,
-      resolution_committed_by_run: resolutionCommittedByRun,
+      logger.info(
+        {
+          scope: "agent_run",
+          agent_run_id: ctx.agentRun.id,
+          incident_id: ctx.incident.id,
+          session_id: sessionId,
+          runtime_minutes: runtimeMinutes,
+          resolved,
+          resolution_committed_by_run: resolutionCommittedByRun,
+        },
+        copy.logMessage,
+      );
+
+      const evidence = resolution.evidence?.trim();
+      const lines = [copy.threadLead, completionResult.summary];
+      if (resolutionCommittedByRun && evidence) {
+        lines.push(`Evidence: ${truncateSlackText(evidence, 1800)}`);
+      }
+      if (deliveredTicket?.url) {
+        lines.push(`Linear: <${deliveredTicket.url}|${deliveredTicket.identifier}>`);
+      }
+      await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
+      if (shouldUpdateResolutionMainMessage(resolutionCommittedByRun)) {
+        const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
+        await updateIncidentMainMessage(
+          ctx.incident.id,
+          `:white_check_mark: ${ctx.incident.title} — Incident resolved`,
+          incidentBlocks({
+            emoji: "white_check_mark",
+            status: copy.status,
+            title: ctx.incident.title,
+            tagline: truncateSlackText(completionResult.summary),
+            projectName: ctx.project.name,
+            service: ctx.incident.service,
+            buttons: [{ text: "View incident", url: incidentUrl, actionId: "view_incident" }],
+            links: deliveredTicket?.url ? [{ text: "View ticket", url: deliveredTicket.url }] : [],
+            incidentId: ctx.incident.id,
+          }),
+        );
+      }
+      await replyToPrOriginIfNeeded(ctx, completionResult.summary);
+      await postLinearIncidentResponse(ctx.incident.id, completionResult.summary);
     },
-    copy.logMessage,
-  );
-
-  const evidence = resolution.evidence?.trim();
-  const lines = [copy.threadLead, completionResult.summary];
-  if (resolutionCommittedByRun && evidence) {
-    lines.push(`Evidence: ${truncateSlackText(evidence, 1800)}`);
-  }
-  if (deliveredTicket?.url) {
-    lines.push(`Linear: <${deliveredTicket.url}|${deliveredTicket.identifier}>`);
-  }
-  await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
-  if (shouldUpdateResolutionMainMessage(resolutionCommittedByRun)) {
-    const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
-    await updateIncidentMainMessage(
-      ctx.incident.id,
-      `:white_check_mark: ${ctx.incident.title} — Incident resolved`,
-      incidentBlocks({
-        emoji: "white_check_mark",
-        status: copy.status,
-        title: ctx.incident.title,
-        tagline: truncateSlackText(completionResult.summary),
-        projectName: ctx.project.name,
-        service: ctx.incident.service,
-        buttons: [{ text: "View incident", url: incidentUrl, actionId: "view_incident" }],
-        links: deliveredTicket?.url ? [{ text: "View ticket", url: deliveredTicket.url }] : [],
-        incidentId: ctx.incident.id,
-      }),
+    reconcileStalePublication: () => reconcileStaleAgentRunPublication(ctx),
+  });
+  await refreshIncidentAndRetireSessionIfClosed(ctx, sessionId);
+  if (publication !== "published") {
+    logger.info(
+      {
+        scope: "agent_run.completion",
+        agent_run_id: ctx.agentRun.id,
+        incident_id: ctx.incident.id,
+        publication,
+      },
+      "suppressed stale incident-resolution provider update",
     );
   }
-  await replyToPrOriginIfNeeded(ctx, completionResult.summary);
-  await postLinearIncidentResponse(ctx.incident.id, completionResult.summary);
   return true;
 }
 
@@ -391,6 +457,7 @@ export async function completeWithoutPullRequest(
           kind: "all_pull_requests_merged";
           prNumber: number;
           repoFullName: string;
+          resolutionProof: IncidentResolutionProof;
         }
       | { kind: "incident_already_closed" };
   },
@@ -406,11 +473,30 @@ export async function completeWithoutPullRequest(
       ? incidentAlreadyClosedCompletionCopy()
       : null;
   let closedElsewhereCopy = alreadyClosedCopy;
-  // Set once the noise verdict was actually recorded against an open incident
-  // (applyAgentRunResult ignores verdicts on already-closed incidents) — the
-  // "marked as noise" messaging below must not claim a state change that
-  // never happened.
+  let resolutionProof =
+    opts?.incidentOutcome?.kind === "all_pull_requests_merged"
+      ? opts.incidentOutcome.resolutionProof
+      : null;
   let noiseApplied = false;
+  // Legacy pre-cutover snapshots encoded terminal intent in their result
+  // instead of dispatching resolve_incident. Run the same aggregate guard as
+  // the terminal tool before completing the AgentRun: otherwise completion
+  // would erase the only active-run proof the guard needs.
+  const legacyResolution = resolutionReason
+    ? await resolveIncidentFromAgentRunConclusion(ctx, result, resolutionReason)
+    : noiseReason
+      ? await resolveIncidentAsNoise(ctx, result, noiseReason)
+      : null;
+  const legacyCompletion = legacyResolution
+    ? planLegacyTerminalResolutionCompletion(result, legacyResolution.disposition)
+    : null;
+  const completionResult = legacyCompletion?.result ?? result;
+  if (legacyResolution?.disposition === "resolved") {
+    resolutionProof = legacyResolution.resolutionProof;
+    noiseApplied = noiseReason !== null;
+  } else if (legacyResolution?.disposition === "incident_not_open") {
+    closedElsewhereCopy = incidentAlreadyClosedCompletionCopy();
+  }
   const intendsIncidentClosure = completionIntendsIncidentClosure({
     hasIncidentOutcome: Boolean(opts?.incidentOutcome),
     noiseReason,
@@ -419,15 +505,24 @@ export async function completeWithoutPullRequest(
   const completed = await agentRunLifecycle.completeWithoutPullRequest({
     id: ctx.agentRun.id,
     currentState: ctx.agentRun.state,
-    result,
-    ...(intendsIncidentClosure ? { providerSessionIdToTerminate: sessionId } : {}),
+    result: completionResult,
+    ...((legacyCompletion?.shouldTerminateSession ?? intendsIncidentClosure)
+      ? { providerSessionIdToTerminate: sessionId }
+      : {}),
   });
   if (!completed) return false;
-  const metadataOutcome = await incidentLifecycle.applyAgentRunResult({
-    incident: ctx.incident,
-    agentRunId: ctx.agentRun.id,
-    result,
-  });
+  // An obsolete run may be delayed from the previous resolution epoch. Its
+  // findings are stale too, not just its terminal verdict, so never flatten
+  // any part of that snapshot onto the reopened Incident.
+  const metadataOutcome =
+    legacyResolution?.disposition === "agent_run_not_current" ||
+    legacyResolution?.disposition === "resolution_event_already_consumed"
+      ? { updated: false }
+      : await incidentLifecycle.applyAgentRunResult({
+          incident: ctx.incident,
+          agentRunId: ctx.agentRun.id,
+          result: completionResult,
+        });
   if (metadataOutcome.updated) {
     const refreshed = await db.query.incidents.findFirst({
       where: eq(schema.incidents.id, ctx.incident.id),
@@ -457,16 +552,19 @@ export async function completeWithoutPullRequest(
       publish: async () => {
         const deliveredTicket = await scheduleLinearHandoff(
           ctx,
-          result,
-          result.completionKind ?? "complete_without_pr",
+          completionResult,
+          completionResult.completionKind ?? "complete_without_pr",
         );
-        if (!deliveredTicket && result.linearTicket) {
-          await recordFiledLinearTicket(ctx, result.linearTicket);
+        if (!deliveredTicket && completionResult.linearTicket) {
+          await recordFiledLinearTicket(ctx, completionResult.linearTicket);
         }
         const ticket = deliveredTicket
           ? { identifier: deliveredTicket.identifier, url: deliveredTicket.url }
-          : result.linearTicket
-            ? { identifier: result.linearTicket.id, url: result.linearTicket.url ?? null }
+          : completionResult.linearTicket
+            ? {
+                identifier: completionResult.linearTicket.id,
+                url: completionResult.linearTicket.url ?? null,
+              }
             : null;
         logger.info(
           {
@@ -482,7 +580,7 @@ export async function completeWithoutPullRequest(
         const badge = ticket
           ? `:ticket: Filed ${ticket.identifier}${ticket.url ? `: ${ticket.url}` : ""}`
           : ":memo:";
-        await postIncidentThreadMessage(ctx.incident.id, `${badge} ${result.summary}`);
+        await postIncidentThreadMessage(ctx.incident.id, `${badge} ${completionResult.summary}`);
         const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
         await updateIncidentMainMessage(
           ctx.incident.id,
@@ -494,7 +592,7 @@ export async function completeWithoutPullRequest(
               : "Investigation complete",
             title: ctx.incident.title,
             titleUrl: incidentUrl,
-            tagline: truncateSlackText(result.summary),
+            tagline: truncateSlackText(completionResult.summary),
             projectName: ctx.project.name,
             service: ctx.incident.service,
             buttons: [],
@@ -503,8 +601,8 @@ export async function completeWithoutPullRequest(
             showFeedbackButtons: true,
           }),
         );
-        await replyToPrOriginIfNeeded(ctx, result.summary);
-        await postLinearIncidentResponse(ctx.incident.id, result.summary);
+        await replyToPrOriginIfNeeded(ctx, completionResult.summary);
+        await postLinearIncidentResponse(ctx.incident.id, completionResult.summary);
       },
       reconcileStalePublication: () => reconcileStaleAgentRunPublication(ctx),
     });
@@ -521,165 +619,186 @@ export async function completeWithoutPullRequest(
     }
     return true;
   }
-  // The platform files/updates the Linear ticket deterministically from the
-  // run's findings (after the metadata pass, so the ticket carries the
-  // agent-proposed title). The agent no longer self-reports ticket ids —
-  // except legacy in-flight runs finishing on the old contract, whose
-  // self-reported ticket link is preserved below.
-  const deliveredTicket = await scheduleLinearHandoff(
-    ctx,
-    result,
-    result.completionKind ?? "complete_without_pr",
-  );
-  if (!deliveredTicket && result.linearTicket) {
-    await recordFiledLinearTicket(ctx, result.linearTicket);
-  }
-  const ticketDisplay = deliveredTicket
-    ? { identifier: deliveredTicket.identifier, url: deliveredTicket.url }
-    : result.linearTicket
-      ? { identifier: result.linearTicket.id, url: result.linearTicket.url ?? null }
-      : null;
-  if (resolutionReason) {
-    const { resolved } = await resolveIncidentFromAgentRunConclusion(ctx, result, resolutionReason);
-    if (resolved) {
-      await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
-    } else {
-      closedElsewhereCopy = incidentAlreadyClosedCompletionCopy();
-    }
-    const refreshed = await db.query.incidents.findFirst({
-      where: eq(schema.incidents.id, ctx.incident.id),
-    });
-    if (refreshed) ctx.incident = refreshed;
-  } else if (noiseReason && metadataOutcome.noiseResolved) {
-    noiseApplied = true;
-    const { resolved } = await resolveIncidentAsNoise(ctx, result, noiseReason);
-    if (resolved) {
-      await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
-    } else {
-      closedElsewhereCopy = incidentAlreadyClosedCompletionCopy();
-    }
-    const refreshed = await db.query.incidents.findFirst({
-      where: eq(schema.incidents.id, ctx.incident.id),
-    });
-    if (refreshed) ctx.incident = refreshed;
-  }
   await refreshIncidentAndRetireSessionIfClosed(ctx, sessionId);
   closedElsewhereCopy ??= closedElsewhereCopyAfterNoiseRace({
     noiseReason,
     noiseApplied,
     incidentStatus: ctx.incident.status,
   });
-  logger.info(
-    {
-      scope: "agent_run",
-      agent_run_id: ctx.agentRun.id,
-      incident_id: ctx.incident.id,
-      session_id: sessionId,
-      runtime_minutes: runtimeMinutes,
-      has_ticket: !!ticketDisplay,
-      resolved_by_agent: !!resolutionReason,
-      resolved_by_pr_merge: !!mergedResolutionCopy,
-      incident_already_closed: !!closedElsewhereCopy,
-    },
-    closedElsewhereCopy?.logMessage ?? "agent run complete",
-  );
-  const ticket = ticketDisplay;
-  if (mergedResolutionCopy) {
-    const lines = [mergedResolutionCopy.threadLead, result.summary];
-    if (ticket) {
-      lines.push(
-        ticket.url
-          ? `Linear: <${ticket.url}|${ticket.identifier}>`
-          : `Linear: ${ticket.identifier}`,
+  const publish = async (): Promise<void> => {
+    // The platform files/updates the Linear ticket deterministically from the
+    // run's findings. Keep this provider mutation inside the same epoch guard
+    // as Slack and Linear response copy so a reopened Incident cannot receive
+    // stale terminal follow-ups from a delayed completion snapshot.
+    const deliveredTicket = await scheduleLinearHandoff(
+      ctx,
+      completionResult,
+      completionResult.completionKind ?? "complete_without_pr",
+    );
+    if (!deliveredTicket && completionResult.linearTicket) {
+      await recordFiledLinearTicket(ctx, completionResult.linearTicket);
+    }
+    const ticket = deliveredTicket
+      ? { identifier: deliveredTicket.identifier, url: deliveredTicket.url }
+      : completionResult.linearTicket
+        ? {
+            identifier: completionResult.linearTicket.id,
+            url: completionResult.linearTicket.url ?? null,
+          }
+        : null;
+    logger.info(
+      {
+        scope: "agent_run",
+        agent_run_id: ctx.agentRun.id,
+        incident_id: ctx.incident.id,
+        session_id: sessionId,
+        runtime_minutes: runtimeMinutes,
+        has_ticket: !!ticket,
+        resolved_by_agent: !!resolutionReason,
+        resolved_by_pr_merge: !!mergedResolutionCopy,
+        incident_already_closed: !!closedElsewhereCopy,
+      },
+      closedElsewhereCopy?.logMessage ?? "agent run complete",
+    );
+    if (mergedResolutionCopy) {
+      const lines = [mergedResolutionCopy.threadLead, completionResult.summary];
+      if (ticket) {
+        lines.push(
+          ticket.url
+            ? `Linear: <${ticket.url}|${ticket.identifier}>`
+            : `Linear: ${ticket.identifier}`,
+        );
+      }
+      await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
+    } else if (closedElsewhereCopy) {
+      const lines = [closedElsewhereCopy.threadLead, completionResult.summary];
+      if (ticket) {
+        lines.push(
+          ticket.url
+            ? `Linear: <${ticket.url}|${ticket.identifier}>`
+            : `Linear: ${ticket.identifier}`,
+        );
+      }
+      await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
+    } else if (noiseReason && noiseApplied) {
+      const label = noiseReasonLabel(noiseReason);
+      const evidence = completionResult.noiseClassification?.evidence?.trim();
+      const target = isAlertIncident(ctx) ? "alert" : "incident";
+      const lines = [
+        `:no_bell: Investigation confirmed this ${target} is noise (${label}).`,
+        completionResult.summary,
+      ];
+      if (evidence) lines.push(`Evidence: ${truncateSlackText(evidence, 1800)}`);
+      if (ticket) {
+        lines.push(
+          ticket.url
+            ? `Linear: <${ticket.url}|${ticket.identifier}>`
+            : `Linear: ${ticket.identifier}`,
+        );
+      }
+      await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
+    } else if (resolutionReason) {
+      const label = resolutionReasonLabel(resolutionReason);
+      const evidence = completionResult.resolutionClassification?.evidence?.trim();
+      const lines = [
+        `:white_check_mark: Investigation confirmed this incident is already resolved (${label}).`,
+        completionResult.summary,
+      ];
+      if (evidence) lines.push(`Evidence: ${truncateSlackText(evidence, 1800)}`);
+      if (ticket) {
+        lines.push(
+          ticket.url
+            ? `Linear: <${ticket.url}|${ticket.identifier}>`
+            : `Linear: ${ticket.identifier}`,
+        );
+      }
+      await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
+    } else {
+      const badge = ticket
+        ? `:ticket: Filed ${ticket.identifier}${ticket.url ? `: ${ticket.url}` : ""}`
+        : ":memo:";
+      await postIncidentThreadMessage(ctx.incident.id, `${badge} ${completionResult.summary}`);
+    }
+    if (closedElsewhereCopy?.updateMainMessage !== false) {
+      const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
+      const status = mergedResolutionCopy
+        ? mergedResolutionCopy.status
+        : noiseReason && noiseApplied
+          ? `${isAlertIncident(ctx) ? "Alert" : "Incident"} marked as noise - ${noiseReasonLabel(noiseReason)}`
+          : resolutionReason
+            ? `Incident resolved - ${resolutionReasonLabel(resolutionReason)}`
+            : ticket
+              ? `Investigation complete · Linear ${ticket.identifier}`
+              : "Investigation complete";
+      const text = mergedResolutionCopy
+        ? `:white_check_mark: ${ctx.incident.title} — ${mergedResolutionCopy.mainTextSuffix}`
+        : noiseReason && noiseApplied
+          ? `:no_bell: ${ctx.incident.title} — ${isAlertIncident(ctx) ? "Alert" : "Incident"} marked as noise`
+          : resolutionReason
+            ? `:white_check_mark: ${ctx.incident.title} — Incident resolved`
+            : `:white_check_mark: ${ctx.incident.title} — Investigation complete`;
+      await updateIncidentMainMessage(
+        ctx.incident.id,
+        text,
+        incidentBlocks({
+          emoji: noiseReason && noiseApplied ? "no_bell" : "white_check_mark",
+          status,
+          title: ctx.incident.title,
+          titleUrl: incidentUrl,
+          tagline: truncateSlackText(completionResult.summary),
+          projectName: ctx.project.name,
+          service: ctx.incident.service,
+          buttons: [],
+          links: ticket?.url ? [{ text: "View ticket", url: ticket.url }] : [],
+          incidentId: ctx.incident.id,
+          showFeedbackButtons: true,
+        }),
       );
     }
-    await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
-  } else if (closedElsewhereCopy) {
-    const lines = [closedElsewhereCopy.threadLead, result.summary];
-    if (ticket) {
-      lines.push(
-        ticket.url
-          ? `Linear: <${ticket.url}|${ticket.identifier}>`
-          : `Linear: ${ticket.identifier}`,
-      );
-    }
-    await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
-  } else if (noiseReason && noiseApplied) {
-    const label = noiseReasonLabel(noiseReason);
-    const evidence = result.noiseClassification?.evidence?.trim();
-    const target = isAlertIncident(ctx) ? "alert" : "incident";
-    const lines = [
-      `:no_bell: Investigation confirmed this ${target} is noise (${label}).`,
-      result.summary,
-    ];
-    if (evidence) lines.push(`Evidence: ${truncateSlackText(evidence, 1800)}`);
-    if (ticket) {
-      lines.push(
-        ticket.url
-          ? `Linear: <${ticket.url}|${ticket.identifier}>`
-          : `Linear: ${ticket.identifier}`,
-      );
-    }
-    await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
-  } else if (resolutionReason) {
-    const label = resolutionReasonLabel(resolutionReason);
-    const evidence = result.resolutionClassification?.evidence?.trim();
-    const lines = [
-      `:white_check_mark: Investigation confirmed this incident is already resolved (${label}).`,
-      result.summary,
-    ];
-    if (evidence) lines.push(`Evidence: ${truncateSlackText(evidence, 1800)}`);
-    if (ticket) {
-      lines.push(
-        ticket.url
-          ? `Linear: <${ticket.url}|${ticket.identifier}>`
-          : `Linear: ${ticket.identifier}`,
-      );
-    }
-    await postIncidentThreadMessage(ctx.incident.id, lines.join("\n"));
-  } else {
-    const badge = ticket
-      ? `:ticket: Filed ${ticket.identifier}${ticket.url ? `: ${ticket.url}` : ""}`
-      : ":memo:";
-    await postIncidentThreadMessage(ctx.incident.id, `${badge} ${result.summary}`);
-  }
-  if (closedElsewhereCopy?.updateMainMessage !== false) {
-    const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
-    const status = mergedResolutionCopy
-      ? mergedResolutionCopy.status
-      : noiseReason && noiseApplied
-        ? `${isAlertIncident(ctx) ? "Alert" : "Incident"} marked as noise - ${noiseReasonLabel(noiseReason)}`
-        : resolutionReason
-          ? `Incident resolved - ${resolutionReasonLabel(resolutionReason)}`
-          : ticket
-            ? `Investigation complete · Linear ${ticket.identifier}`
-            : "Investigation complete";
-    const text = mergedResolutionCopy
-      ? `:white_check_mark: ${ctx.incident.title} — ${mergedResolutionCopy.mainTextSuffix}`
-      : noiseReason && noiseApplied
-        ? `:no_bell: ${ctx.incident.title} — ${isAlertIncident(ctx) ? "Alert" : "Incident"} marked as noise`
-        : resolutionReason
-          ? `:white_check_mark: ${ctx.incident.title} — Incident resolved`
-          : `:white_check_mark: ${ctx.incident.title} — Investigation complete`;
-    await updateIncidentMainMessage(
-      ctx.incident.id,
-      text,
-      incidentBlocks({
-        emoji: noiseReason && noiseApplied ? "no_bell" : "white_check_mark",
-        status,
-        title: ctx.incident.title,
-        titleUrl: incidentUrl,
-        tagline: truncateSlackText(result.summary),
-        projectName: ctx.project.name,
-        service: ctx.incident.service,
-        buttons: [],
-        links: ticket?.url ? [{ text: "View ticket", url: ticket.url }] : [],
-        incidentId: ctx.incident.id,
-        showFeedbackButtons: true,
-      }),
+    await replyToPrOriginIfNeeded(ctx, completionResult.summary);
+    await postLinearIncidentResponse(ctx.incident.id, completionResult.summary);
+  };
+
+  const publication = resolutionProof
+    ? await reconcileIncidentResolutionFollowUp({
+        isCurrentResolution: () =>
+          isIncidentResolutionProofCurrent({
+            incidentId: ctx.incident.id,
+            resolutionProof,
+          }),
+        closePullRequests: () =>
+          closeOpenPullRequestsForResolvedIncident(ctx.incident.id, resolutionProof),
+        publish,
+        reconcileStalePublication: () => reconcileStaleAgentRunPublication(ctx),
+      })
+    : await publishAwaitingEventsUpdateIfCurrent({
+        isCurrent: async () => {
+          const [canPublish, incident] = await Promise.all([
+            agentRunLifecycle.canPublishStatusUpdate({
+              id: ctx.agentRun.id,
+              incidentId: ctx.incident.id,
+              state: "complete",
+            }),
+            db.query.incidents.findFirst({
+              where: eq(schema.incidents.id, ctx.incident.id),
+              columns: { status: true },
+            }),
+          ]);
+          return canPublish && incident !== undefined && incident.status !== "open";
+        },
+        publish,
+        reconcileStalePublication: () => reconcileStaleAgentRunPublication(ctx),
+      });
+  if (publication !== "published") {
+    logger.info(
+      {
+        scope: "agent_run.completion",
+        agent_run_id: ctx.agentRun.id,
+        incident_id: ctx.incident.id,
+        publication,
+      },
+      "suppressed stale terminal completion provider update",
     );
   }
-  await replyToPrOriginIfNeeded(ctx, result.summary);
-  await postLinearIncidentResponse(ctx.incident.id, result.summary);
   return true;
 }

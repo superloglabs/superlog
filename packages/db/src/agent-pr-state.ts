@@ -7,7 +7,8 @@ export type ApplyAgentPullRequestStateInput = {
   agentPrId: string;
   targetState?: schema.AgentPrState;
   observedAt?: Date;
-  lastSyncedAt?: Date;
+  providerUpdatedAt?: Date;
+  providerSnapshotAuthoritative?: boolean;
   headSha?: string | null;
   title?: string | null;
   mergedAt?: Date | null;
@@ -20,78 +21,138 @@ export type ApplyAgentPullRequestStateResult = {
   pullRequest: schema.AgentPullRequest | null;
   previousState: schema.AgentPrState | null;
   stateChanged: boolean;
+  providerReconciliationRequired: boolean;
 };
+
+export type AgentPullRequestStateTx = Parameters<Parameters<DB["transaction"]>[0]>[0];
 
 export async function applyAgentPullRequestState(
   database: DB,
   input: ApplyAgentPullRequestStateInput,
 ): Promise<ApplyAgentPullRequestStateResult> {
+  return database.transaction((tx) => applyAgentPullRequestStateInTx(tx, input));
+}
+
+export async function applyAgentPullRequestStateInTx(
+  tx: AgentPullRequestStateTx,
+  input: ApplyAgentPullRequestStateInput,
+): Promise<ApplyAgentPullRequestStateResult> {
   const observedAt = input.observedAt ?? new Date();
-  return database.transaction(async (tx) => {
-    const [incident] = await tx
-      .select({ id: schema.incidents.id })
-      .from(schema.incidents)
-      .where(eq(schema.incidents.id, input.incidentId))
-      .orderBy(asc(schema.incidents.id))
-      .for("update");
-    if (!incident) return { pullRequest: null, previousState: null, stateChanged: false };
-
-    const [current] = await tx
-      .select()
-      .from(schema.agentPullRequests)
-      .where(
-        and(
-          eq(schema.agentPullRequests.id, input.agentPrId),
-          eq(schema.agentPullRequests.incidentId, incident.id),
-        ),
-      )
-      .for("update");
-    if (!current) return { pullRequest: null, previousState: null, stateChanged: false };
-
-    const updates: Partial<typeof schema.agentPullRequests.$inferInsert> = {
-      lastSyncedAt: input.lastSyncedAt ?? observedAt,
-      updatedAt: observedAt,
-    };
-    if (input.headSha !== undefined) updates.headSha = input.headSha;
-    if (input.title !== undefined) updates.title = input.title;
-
-    let stateChanged = false;
-    if (input.targetState === "merged") {
-      // Merged is terminal and may supersede either an open or an earlier
-      // unmerged close. A redelivered merge can still enrich its metadata.
-      stateChanged = current.state !== "merged";
-      updates.state = "merged";
-      if (input.mergedAt !== undefined) updates.mergedAt = input.mergedAt;
-      if (input.closedAt !== undefined) {
-        updates.closedAt = input.closedAt;
-      } else if (stateChanged) {
-        updates.closedAt = observedAt;
-      }
-      if (input.mergedByLogin !== undefined) updates.mergedByLogin = input.mergedByLogin;
-      if (input.mergedByGithubId !== undefined) {
-        updates.mergedByGithubId = input.mergedByGithubId;
-      }
-    } else if (input.targetState === "closed" && current.state === "open") {
-      stateChanged = true;
-      updates.state = "closed";
-      if (input.closedAt !== undefined) updates.closedAt = input.closedAt;
-    } else if (input.targetState === "open" && current.state === "closed") {
-      // A reopened delivery is meaningful only for a prior unmerged close.
-      // In particular, it can never reopen a merged PR.
-      stateChanged = true;
-      updates.state = "open";
-      updates.closedAt = null;
-    }
-
-    const [updated] = await tx
-      .update(schema.agentPullRequests)
-      .set(updates)
-      .where(eq(schema.agentPullRequests.id, current.id))
-      .returning();
+  const [incident] = await tx
+    .select({ id: schema.incidents.id })
+    .from(schema.incidents)
+    .where(eq(schema.incidents.id, input.incidentId))
+    .orderBy(asc(schema.incidents.id))
+    .for("update");
+  if (!incident) {
     return {
-      pullRequest: updated ?? current,
-      previousState: current.state,
-      stateChanged,
+      pullRequest: null,
+      previousState: null,
+      stateChanged: false,
+      providerReconciliationRequired: false,
     };
-  });
+  }
+
+  const [current] = await tx
+    .select()
+    .from(schema.agentPullRequests)
+    .where(
+      and(
+        eq(schema.agentPullRequests.id, input.agentPrId),
+        eq(schema.agentPullRequests.incidentId, incident.id),
+      ),
+    )
+    .for("update");
+  if (!current) {
+    return {
+      pullRequest: null,
+      previousState: null,
+      stateChanged: false,
+      providerReconciliationRequired: false,
+    };
+  }
+
+  const isOlderProviderObservation =
+    input.providerUpdatedAt !== undefined &&
+    current.providerUpdatedAt !== null &&
+    input.providerUpdatedAt < current.providerUpdatedAt;
+  // Provider deliveries are not ordered by arrival time. Ignore an older
+  // non-terminal observation wholesale so it cannot regress state,
+  // metadata, or the watermark. A merge remains terminal and may supersede
+  // any reversible observation, while retaining the newer watermark.
+  if (input.targetState !== "merged" && isOlderProviderObservation) {
+    return {
+      pullRequest: current,
+      previousState: current.state,
+      stateChanged: false,
+      providerReconciliationRequired: false,
+    };
+  }
+  const hasAmbiguousProviderState =
+    !input.providerSnapshotAuthoritative &&
+    input.providerUpdatedAt !== undefined &&
+    current.providerUpdatedAt !== null &&
+    input.providerUpdatedAt.getTime() === current.providerUpdatedAt.getTime() &&
+    input.targetState !== undefined &&
+    input.targetState !== "merged" &&
+    current.state !== "merged" &&
+    input.targetState !== current.state;
+  if (hasAmbiguousProviderState) {
+    return {
+      pullRequest: current,
+      previousState: current.state,
+      stateChanged: false,
+      providerReconciliationRequired: true,
+    };
+  }
+
+  const updates: Partial<typeof schema.agentPullRequests.$inferInsert> = {
+    lastSyncedAt: observedAt,
+    updatedAt: observedAt,
+  };
+  if (input.providerUpdatedAt !== undefined && !isOlderProviderObservation) {
+    updates.providerUpdatedAt = input.providerUpdatedAt;
+  }
+  if (input.headSha !== undefined) updates.headSha = input.headSha;
+  if (input.title !== undefined) updates.title = input.title;
+
+  let stateChanged = false;
+  if (input.targetState === "merged") {
+    // Merged is terminal and may supersede either an open or an earlier
+    // unmerged close. A redelivered merge can still enrich its metadata.
+    stateChanged = current.state !== "merged";
+    updates.state = "merged";
+    if (input.mergedAt !== undefined) updates.mergedAt = input.mergedAt;
+    if (input.closedAt !== undefined) {
+      updates.closedAt = input.closedAt;
+    } else if (stateChanged) {
+      updates.closedAt = observedAt;
+    }
+    if (input.mergedByLogin !== undefined) updates.mergedByLogin = input.mergedByLogin;
+    if (input.mergedByGithubId !== undefined) {
+      updates.mergedByGithubId = input.mergedByGithubId;
+    }
+  } else if (input.targetState === "closed" && current.state === "open") {
+    stateChanged = true;
+    updates.state = "closed";
+    if (input.closedAt !== undefined) updates.closedAt = input.closedAt;
+  } else if (input.targetState === "open" && current.state === "closed") {
+    // A reopened delivery is meaningful only for a prior unmerged close.
+    // In particular, it can never reopen a merged PR.
+    stateChanged = true;
+    updates.state = "open";
+    updates.closedAt = null;
+  }
+
+  const [updated] = await tx
+    .update(schema.agentPullRequests)
+    .set(updates)
+    .where(eq(schema.agentPullRequests.id, current.id))
+    .returning();
+  return {
+    pullRequest: updated ?? current,
+    previousState: current.state,
+    stateChanged,
+    providerReconciliationRequired: false,
+  };
 }

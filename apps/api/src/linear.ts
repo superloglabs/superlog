@@ -24,7 +24,7 @@ import {
 import { and, desc, eq, isNull, ne, or } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
-import { closeAgentPullRequestOnGithub } from "./github.js";
+import { closeAgentPullRequestOnGithub, reopenAgentPullRequestOnGithub } from "./github.js";
 import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolution-side-effects.js";
 import { logger } from "./logger.js";
 import { resolveActiveOrgContext } from "./org-context.js";
@@ -670,20 +670,31 @@ async function acceptCompletedLinearTicket(args: {
     });
   }
 
-  await incidentLifecycle.resolve(linearTicketResolutionInput(ticket));
+  const resolution = await incidentLifecycle.resolveWithProof(linearTicketResolutionInput(ticket));
   // These effects are idempotent and must be retried even if an earlier
   // webhook attempt already won the incident-resolution write.
-  await runResolvedIncidentSideEffectsForIncident({
-    incidentId: ticket.incidentId,
-    closePullRequest: (pr) =>
-      closeAgentPullRequestOnGithub({
-        installationId: pr.githubInstallationId,
-        fallbackInstallationIds: pr.fallbackGithubInstallationIds,
-        repoFullName: pr.repoFullName,
-        prNumber: pr.prNumber,
-        prNodeId: pr.prNodeId,
-      }),
-  });
+  if (resolution.resolutionProof) {
+    await runResolvedIncidentSideEffectsForIncident({
+      incidentId: ticket.incidentId,
+      resolutionProof: resolution.resolutionProof,
+      closePullRequest: (pr) =>
+        closeAgentPullRequestOnGithub({
+          installationId: pr.githubInstallationId,
+          fallbackInstallationIds: pr.fallbackGithubInstallationIds,
+          repoFullName: pr.repoFullName,
+          prNumber: pr.prNumber,
+          prNodeId: pr.prNodeId,
+        }),
+      reopenPullRequest: (pr) =>
+        reopenAgentPullRequestOnGithub({
+          installationId: pr.githubInstallationId,
+          fallbackInstallationIds: pr.fallbackGithubInstallationIds,
+          repoFullName: pr.repoFullName,
+          prNumber: pr.prNumber,
+          prNodeId: pr.prNodeId,
+        }),
+    });
+  }
 }
 
 function describeLinearEvent(payload: LinearWebhookPayload): {

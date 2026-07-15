@@ -2,6 +2,10 @@ import { and, eq, inArray, isNull } from "drizzle-orm";
 import { areAllIncidentPullRequestsMerged } from "./agent-pr-lifecycle-continuation.js";
 import { type DB, db } from "./client.js";
 import { generateCodename } from "./codename.js";
+import {
+  type IncidentResolutionProof,
+  loadCurrentIncidentResolutionProof,
+} from "./incident-pr-resolution.js";
 import { type Tx, createIncidentRepository } from "./incident-repository.js";
 import {
   assertIncidentSourceState,
@@ -108,6 +112,11 @@ export type ResolveIncidentInput = {
   // Agent terminal contract: exactly one independently chosen disposition
   // for every current issue. Mutually exclusive with issueOutcome.
   issueOutcomes?: schema.AgentRunIssueClassification[];
+  // Compatibility-only result metadata for a stored pre-cutover terminal
+  // snapshot. When provided, findings and the legacy noise/resolution verdict
+  // commit in the same aggregate transaction as the guarded resolution, so a
+  // blocked close cannot leave classification metadata on an open Incident.
+  agentRunResult?: schema.AgentRunResult;
 };
 
 export type ResolveIncidentResult = {
@@ -117,7 +126,29 @@ export type ResolveIncidentResult = {
   resolved: boolean;
   // How many linked issues were also marked resolved.
   resolvedIssueCount: number;
+  // Present only when a stable terminal decision key was already consumed by
+  // an older resolution epoch. The Incident may be open again, but replaying
+  // that old decision must not close it.
+  rejectionReason?: "resolution_event_already_consumed";
 };
+
+export type ResolveIncidentWithProofResult = ResolveIncidentResult & {
+  resolutionProof: IncidentResolutionProof | null;
+};
+
+function materializeIncidentResolutionEpoch(input: ResolveIncidentInput): {
+  input: ResolveIncidentInput;
+  resolutionProof: IncidentResolutionProof;
+} {
+  const resolvedAt = input.resolvedAt ?? new Date();
+  const eventDedupeKey =
+    input.eventDedupeKey ??
+    `incident_resolved:${input.kind}:${input.incidentId}:${resolvedAt.getTime()}`;
+  return {
+    input: { ...input, eventDedupeKey, resolvedAt },
+    resolutionProof: { agentRunId: input.agentRunId ?? null, eventDedupeKey },
+  };
+}
 
 export type ResolveIncidentAfterAgentPullRequestsMergedResult =
   | {
@@ -126,7 +157,43 @@ export type ResolveIncidentAfterAgentPullRequestsMergedResult =
       resolvedIssueCount: number;
     }
   | {
-      disposition: "pull_requests_pending" | "incident_not_open";
+      disposition:
+        | "pull_requests_pending"
+        | "incident_not_open"
+        | "resolution_event_already_consumed";
+      resolved: false;
+      resolvedIssueCount: 0;
+    };
+
+export type ResolveAgentIncidentResult =
+  | {
+      disposition: "resolved";
+      resolved: true;
+      resolvedIssueCount: number;
+    }
+  | {
+      disposition: "incident_not_open";
+      resolved: false;
+      resolvedIssueCount: 0;
+    }
+  | {
+      disposition: "agent_run_not_current";
+      resolved: false;
+      resolvedIssueCount: 0;
+    }
+  | {
+      disposition: "resolution_event_already_consumed";
+      resolved: false;
+      resolvedIssueCount: 0;
+    }
+  | {
+      disposition: "pull_requests_open";
+      resolved: false;
+      resolvedIssueCount: 0;
+      pullRequests: Array<Pick<schema.AgentPullRequest, "repoFullName" | "prNumber" | "url">>;
+    }
+  | {
+      disposition: "pull_request_delivery_pending";
       resolved: false;
       resolvedIssueCount: 0;
     };
@@ -429,6 +496,11 @@ async function allocateOpenIncidentInTx(
 
 export function createIncidentLifecycle(database: DB = db) {
   const repository = createIncidentRepository(database);
+  const resolve = async (input: ResolveIncidentInput): Promise<ResolveIncidentResult> => {
+    const result = await repository.transaction((tx) => resolveIncidentInTx(tx, input, repository));
+    if (result.resolved) await emitIncidentResolved(database, input.incidentId);
+    return result;
+  };
 
   return {
     // Open an incident in its own transaction.
@@ -460,12 +532,17 @@ export function createIncidentLifecycle(database: DB = db) {
       });
     },
 
-    async resolve(input: ResolveIncidentInput): Promise<ResolveIncidentResult> {
-      const result = await repository.transaction((tx) =>
-        resolveIncidentInTx(tx, input, repository),
-      );
-      if (result.resolved) await emitIncidentResolved(database, input.incidentId);
-      return result;
+    resolve,
+
+    async resolveWithProof(input: ResolveIncidentInput): Promise<ResolveIncidentWithProofResult> {
+      const epoch = materializeIncidentResolutionEpoch(input);
+      const result = await resolve(epoch.input);
+      return {
+        ...result,
+        resolutionProof: result.resolved
+          ? epoch.resolutionProof
+          : await loadCurrentIncidentResolutionProof({ incidentId: input.incidentId, database }),
+      };
     },
 
     async resolveIfAllAgentPullRequestsMerged(
@@ -508,6 +585,13 @@ export function createIncidentLifecycle(database: DB = db) {
           };
         }
         const resolution = await resolveIncidentInTx(tx, input, repository, incident);
+        if (resolution.rejectionReason === "resolution_event_already_consumed") {
+          return {
+            disposition: "resolution_event_already_consumed" as const,
+            resolved: false as const,
+            resolvedIssueCount: 0 as const,
+          };
+        }
         return resolution.resolved
           ? {
               disposition: "resolved" as const,
@@ -680,7 +764,12 @@ export function createIncidentLifecycle(database: DB = db) {
         "merged",
       ]);
       const now = opts.reopenedAt ?? new Date();
-      await repository.transaction(async (tx) => {
+      const previousStatus = await repository.transaction(async (tx) => {
+        const current = (await repository.lockIncidentsInTx(tx, [opts.incident.id]))[0];
+        const snapshotMatchesCurrentEpoch =
+          current?.status === opts.incident.status &&
+          (current.resolvedAt?.getTime() ?? null) === (opts.incident.resolvedAt?.getTime() ?? null);
+        if (!current || !snapshotMatchesCurrentEpoch) return null;
         await repository.updateIncidentInTx(tx, opts.incident.id, buildManualReopenPatch(), now);
         await tx
           .update(schema.incidentEvents)
@@ -700,16 +789,18 @@ export function createIncidentLifecycle(database: DB = db) {
             reason: "manual",
             reopenedByUserId: opts.actor.userId ?? null,
             reopenedBySlackUserId: opts.actor.slackUserId ?? null,
-            previousIncidentStatus: opts.incident.status,
+            previousIncidentStatus: current.status,
             ...opts.detail,
           },
           dedupeKey: `incident_reopened:manual:${opts.incident.id}:${now.getTime()}`,
           processedAt: now,
         });
+        return current.status;
       });
+      if (!previousStatus) return { reopened: false };
       await emitIncidentReopened(database, opts.incident.id, {
         reason: "manual",
-        previousStatus: opts.incident.status,
+        previousStatus,
       });
       return { reopened: true };
     },
@@ -730,6 +821,91 @@ export function createIncidentLifecycle(database: DB = db) {
 // the cascade.
 export async function resolveIncident(input: ResolveIncidentInput): Promise<ResolveIncidentResult> {
   return createIncidentLifecycle(db).resolve(input);
+}
+
+export async function resolveIncidentWithProof(
+  input: ResolveIncidentInput,
+): Promise<ResolveIncidentWithProofResult> {
+  return createIncidentLifecycle(db).resolveWithProof(input);
+}
+
+// Agent-authored resolution is a distinct use case: an open pull request is
+// still active remediation, so the Incident aggregate cannot close yet. The
+// Incident lock is shared with canonical PR recording, making the winner
+// definitive when delivery and resolution race.
+export async function resolveAgentIncident(
+  database: DB,
+  input: ResolveIncidentInput & { kind: "agent_classification"; agentRunId: string },
+): Promise<ResolveAgentIncidentResult> {
+  const repository = createIncidentRepository(database);
+  const result = await repository.transaction(async (tx) => {
+    const incident = await repository.lockOpenIncidentInTx(tx, input.incidentId);
+    if (!incident) {
+      return {
+        disposition: "incident_not_open" as const,
+        resolved: false as const,
+        resolvedIssueCount: 0 as const,
+      };
+    }
+    // A terminal tool use belongs to the currently-running turn, not merely
+    // to an AgentRun id that once belonged to this Incident. Manual resolve
+    // completes active runs; if the Incident is later reopened, a delayed
+    // snapshot from that old provider session must not close the new epoch.
+    // Lock the latest run while holding the Incident lock so a concurrent
+    // completion cannot invalidate this ownership check before resolution.
+    const currentRun = await repository.lockLatestAgentRunInTx(tx, input.incidentId);
+    if (currentRun?.id !== input.agentRunId || currentRun.state !== "running") {
+      return {
+        disposition: "agent_run_not_current" as const,
+        resolved: false as const,
+        resolvedIssueCount: 0 as const,
+      };
+    }
+    const pullRequests = await repository.listOpenAgentPullRequestsInTx(tx, input.incidentId);
+    if (pullRequests.length > 0) {
+      return {
+        disposition: "pull_requests_open" as const,
+        resolved: false as const,
+        resolvedIssueCount: 0 as const,
+        pullRequests,
+      };
+    }
+    const deliveryPending = await repository.hasUnprocessedIncidentEventKindInTx(
+      tx,
+      input.incidentId,
+      AGENT_PULL_REQUEST_BATCH_RESERVATION_KIND,
+    );
+    if (deliveryPending) {
+      return {
+        disposition: "pull_request_delivery_pending" as const,
+        resolved: false as const,
+        resolvedIssueCount: 0 as const,
+      };
+    }
+    const resolution = await resolveIncidentInTx(tx, input, repository, incident);
+    if (resolution.rejectionReason === "resolution_event_already_consumed") {
+      return {
+        disposition: "resolution_event_already_consumed" as const,
+        resolved: false as const,
+        resolvedIssueCount: 0 as const,
+      };
+    }
+    return resolution.resolved
+      ? {
+          disposition: "resolved" as const,
+          resolved: true as const,
+          resolvedIssueCount: resolution.resolvedIssueCount,
+        }
+      : {
+          disposition: "incident_not_open" as const,
+          resolved: false as const,
+          resolvedIssueCount: 0 as const,
+        };
+  });
+  if (result.disposition === "resolved") {
+    await emitIncidentResolved(database, input.incidentId);
+  }
+  return result;
 }
 
 export async function resolveIncidentIfAllAgentPullRequestsMerged(
@@ -757,6 +933,16 @@ async function resolveIncidentInTx(
   // commits first leaves no open Incident for a late linker to target.
   const incident = lockedIncident ?? (await repository.lockOpenIncidentInTx(tx, input.incidentId));
   if (!incident) return { resolved: false, resolvedIssueCount: 0 };
+  if (
+    input.eventDedupeKey &&
+    (await repository.hasIncidentResolutionEventInTx(tx, input.incidentId, input.eventDedupeKey))
+  ) {
+    return {
+      resolved: false,
+      resolvedIssueCount: 0,
+      rejectionReason: "resolution_event_already_consumed",
+    };
+  }
   // Validate the entire set before flipping either the Incident or an Issue.
   // The surrounding transaction remains the final safety net if any later
   // write fails.
@@ -778,6 +964,32 @@ async function resolveIncidentInTx(
     autoInvestigateSuppressedUntil: input.autoInvestigateSuppressedUntil,
   });
   if (!didResolve) return { resolved: false, resolvedIssueCount: 0 };
+
+  if (input.agentRunResult && input.agentRunId) {
+    const { updates, noiseReason } = buildAgentRunIncidentPatch({
+      incident,
+      result: input.agentRunResult,
+      agentRunId: input.agentRunId,
+      now: resolvedAt,
+    });
+    if (Object.keys(updates).length > 0) {
+      await repository.updateIncidentInTx(tx, input.incidentId, updates, resolvedAt);
+    }
+    if (noiseReason) {
+      await repository.insertEventInTx(tx, {
+        incidentId: input.incidentId,
+        agentRunId: input.agentRunId,
+        kind: "incident_noise_classified",
+        summary: "Incident marked as noise by agent run.",
+        detail: {
+          reason: noiseReason,
+          evidence: input.agentRunResult.noiseClassification?.evidence ?? null,
+        },
+        dedupeKey: `incident_noise:${input.agentRunId}:${noiseReason}`,
+        processedAt: resolvedAt,
+      });
+    }
+  }
 
   // A different terminal disposition won while a PR batch was only partly
   // delivered. Retire its internal reservation in the same transaction so a
@@ -924,6 +1136,14 @@ export type ResolutionProposalActor = {
   displayName?: string | null;
 };
 
+export type ResolutionProposalDecisionResult = {
+  ok: boolean;
+  reason?: string;
+  incidentId?: string;
+  resolved?: boolean;
+  resolutionProof?: IncidentResolutionProof | null;
+};
+
 function attributionPhrase(actor: ResolutionProposalActor): string {
   if (actor.userId) {
     return `Confirmed in the dashboard by ${actor.displayName ?? actor.userId}.`;
@@ -937,7 +1157,7 @@ function attributionPhrase(actor: ResolutionProposalActor): string {
 export async function confirmResolutionProposal(opts: {
   proposalId: string;
   actor: ResolutionProposalActor;
-}): Promise<{ ok: boolean; reason?: string; incidentId?: string; resolved?: boolean }> {
+}): Promise<ResolutionProposalDecisionResult> {
   // Wrap the proposal flip + the incident resolve in one transaction so
   // we can't end up with a "confirmed" proposal whose incident is still
   // open (would happen if resolveIncident throws between the two writes).
@@ -978,35 +1198,47 @@ export async function confirmResolutionProposal(opts: {
       if (!existing) return { ok: false, reason: "unknown_proposal" };
       return { ok: false, reason: `already_${existing.decision}` };
     }
+    const resolutionEpoch = materializeIncidentResolutionEpoch({
+      incidentId: row.incidentId,
+      kind: "autorecovery_confirmed",
+      reasonCode: row.proposedReasonCode,
+      reasonText: `${row.proposedReasonText} (${attributionPhrase(opts.actor)})`,
+      resolvedByUserId: opts.actor.userId ?? null,
+      resolvedBySlackUserId: opts.actor.slackUserId ?? null,
+      resolvedAt: decidedAt,
+    });
     const resolveResult = await resolveIncidentInTx(
       tx,
-      {
-        incidentId: row.incidentId,
-        kind: "autorecovery_confirmed",
-        reasonCode: row.proposedReasonCode,
-        reasonText: `${row.proposedReasonText} (${attributionPhrase(opts.actor)})`,
-        resolvedByUserId: opts.actor.userId ?? null,
-        resolvedBySlackUserId: opts.actor.slackUserId ?? null,
-        resolvedAt: decidedAt,
-      },
+      resolutionEpoch.input,
       createIncidentRepository(db),
     );
     // `resolved` is false when the incident was already closed by a concurrent
     // path (manual resolve, PR merge, …) — resolveIncidentInTx is a no-op then.
     // Only signal a resolve when this call actually flipped the status, so we
     // don't emit a duplicate incident.updated webhook.
-    return { ok: true, incidentId: row.incidentId, resolved: resolveResult.resolved };
+    return {
+      ok: true,
+      incidentId: row.incidentId,
+      resolved: resolveResult.resolved,
+      resolutionProof: resolveResult.resolved ? resolutionEpoch.resolutionProof : null,
+    };
   });
   if (outcome.ok && outcome.resolved && outcome.incidentId) {
     await emitIncidentResolved(db, outcome.incidentId);
   }
-  return outcome;
+  if (!outcome.ok || !outcome.incidentId) return outcome;
+  return {
+    ...outcome,
+    resolutionProof:
+      outcome.resolutionProof ??
+      (await loadCurrentIncidentResolutionProof({ incidentId: outcome.incidentId, database: db })),
+  };
 }
 
 export async function dismissResolutionProposal(opts: {
   proposalId: string;
   actor: ResolutionProposalActor;
-}): Promise<{ ok: boolean; reason?: string; incidentId?: string }> {
+}): Promise<ResolutionProposalDecisionResult> {
   // Conditional UPDATE — see confirmResolutionProposal for the race
   // semantics. Dismiss has no follow-on incident write so it doesn't
   // need a transaction; the atomic UPDATE is sufficient.

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   DISPATCHED_OUTCOME_TOOL_NAMES,
-  LEGACY_ISSUE_ACTION_TOOL_NAMES,
   OUTCOME_TOOL_DEFINITIONS,
   OUTCOME_TOOL_NAMES,
   REPORT_FINDINGS_TOOL_NAME,
@@ -10,7 +9,6 @@ import {
   TERMINAL_OUTCOME_TOOL_NAMES,
   assembleAgentRunResult,
   isDispatchedOutcomeToolName,
-  isLegacyIssueActionToolName,
   mergeFindings,
   outcomeToolDefinitionsForCapabilities,
   validateLegacyOutcomeToolInput,
@@ -213,27 +211,8 @@ test("rejects retired tools (incl. mark_already_resolved) with redirect guidance
   }
 });
 
-test("validates immutable legacy issue actions without relaxing the advertised contract", () => {
-  assert.ok(!OUTCOME_TOOL_DEFINITIONS.some((definition) => definition.name === "resolve_issue"));
-  assert.deepEqual(
-    [...LEGACY_ISSUE_ACTION_TOOL_NAMES],
-    ["silence_as_noise", "place_under_observation", "resolve_issue"],
-  );
-  assert.ok(isLegacyIssueActionToolName("resolve_issue"));
-  assert.ok(isDispatchedOutcomeToolName("resolve_issue"));
-
-  const action = validateLegacyOutcomeToolInput(
-    "resolve_issue",
-    {
-      issueId: "issue-1",
-      reason: "The transient condition cleared.",
-      evidence: "No failures occurred in the following 30-minute window.",
-    },
-    { hasFindings: true },
-  );
-  assert.equal(action.ok, true);
-  if (action.ok) assert.equal(action.tool, "resolve_issue");
-
+test("validates immutable legacy resolve calls without relaxing the advertised contract", () => {
+  assert.ok(!isDispatchedOutcomeToolName("resolve_issue"));
   const legacyResolve = validateLegacyOutcomeToolInput(
     "resolve_incident",
     {

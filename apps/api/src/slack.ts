@@ -1,15 +1,17 @@
 import crypto from "node:crypto";
 import {
+  type IncidentResolutionProof,
   confirmResolutionProposal,
   db,
   dismissResolutionProposal,
   findChatByAnchor,
+  loadCurrentIncidentResolutionProof,
   mentionsBot,
   recordInboundChatMessage,
   recordInboundInteraction,
   requestFollowUpAgentRun,
   resolveChatInstallation,
-  resolveIncident,
+  resolveIncidentWithProof,
   schema,
   stripBotMention,
   syncLoopsContactsForOrg,
@@ -21,7 +23,7 @@ import { HTTPException } from "hono/http-exception";
 import { attachFeedbackDetail, recordFeedback } from "./feedback.js";
 import { resolveFeedbackIncidentId } from "./follow-up-offer.js";
 import { getDeviceFlow, getSkillDeviceForIntegration } from "./gateway.js";
-import { closeAgentPullRequestOnGithub } from "./github.js";
+import { closeAgentPullRequestOnGithub, reopenAgentPullRequestOnGithub } from "./github.js";
 import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolution-side-effects.js";
 import { logger } from "./logger.js";
 import { resolveActiveOrgContext } from "./org-context.js";
@@ -592,7 +594,10 @@ async function handleSlackResolveIncident(
       { incidentId, status: incident.status },
       "resolve_incident click on already-closed incident, refreshing side effects",
     );
-    await runSlackResolvedIncidentSideEffects(incidentId);
+    const resolutionProof = await loadCurrentIncidentResolutionProof({ incidentId });
+    if (resolutionProof) {
+      await runSlackResolvedIncidentSideEffects(incidentId, resolutionProof);
+    }
     return;
   }
 
@@ -600,7 +605,7 @@ async function handleSlackResolveIncident(
   const slackUserName = payload.user?.name ?? null;
   const attribution = slackUserId ? `<@${slackUserId}>` : (slackUserName ?? "a teammate");
 
-  const { resolved } = await resolveIncident({
+  const { resolved, resolutionProof } = await resolveIncidentWithProof({
     incidentId,
     kind: "slack_manual",
     reasonCode: resolution,
@@ -615,7 +620,9 @@ async function handleSlackResolveIncident(
     // resolves. Skip the investigation event to avoid coupling to a possibly-
     // unrelated latest investigation.
   });
-  await runSlackResolvedIncidentSideEffects(incidentId);
+  if (resolutionProof) {
+    await runSlackResolvedIncidentSideEffects(incidentId, resolutionProof);
+  }
 
   if (!resolved) {
     log.info({ incidentId }, "resolve_incident click lost race with concurrent close");
@@ -725,11 +732,23 @@ async function handleSlackMergePr(
   }
 }
 
-async function runSlackResolvedIncidentSideEffects(incidentId: string): Promise<void> {
+async function runSlackResolvedIncidentSideEffects(
+  incidentId: string,
+  resolutionProof: IncidentResolutionProof,
+): Promise<void> {
   await runResolvedIncidentSideEffectsForIncident({
     incidentId,
+    resolutionProof,
     closePullRequest: (pr) =>
       closeAgentPullRequestOnGithub({
+        installationId: pr.githubInstallationId,
+        fallbackInstallationIds: pr.fallbackGithubInstallationIds,
+        repoFullName: pr.repoFullName,
+        prNumber: pr.prNumber,
+        prNodeId: pr.prNodeId,
+      }),
+    reopenPullRequest: (pr) =>
+      reopenAgentPullRequestOnGithub({
         installationId: pr.githubInstallationId,
         fallbackInstallationIds: pr.fallbackGithubInstallationIds,
         repoFullName: pr.repoFullName,
@@ -767,11 +786,20 @@ async function handleProposalDecision(
     );
     return;
   }
-  if (decision === "confirm" && result.incidentId) {
+  if (decision === "confirm" && result.incidentId && result.resolutionProof) {
     await runResolvedIncidentSideEffectsForIncident({
       incidentId: result.incidentId,
+      resolutionProof: result.resolutionProof,
       closePullRequest: (pr) =>
         closeAgentPullRequestOnGithub({
+          installationId: pr.githubInstallationId,
+          fallbackInstallationIds: pr.fallbackGithubInstallationIds,
+          repoFullName: pr.repoFullName,
+          prNumber: pr.prNumber,
+          prNodeId: pr.prNodeId,
+        }),
+      reopenPullRequest: (pr) =>
+        reopenAgentPullRequestOnGithub({
           installationId: pr.githubInstallationId,
           fallbackInstallationIds: pr.fallbackGithubInstallationIds,
           repoFullName: pr.repoFullName,

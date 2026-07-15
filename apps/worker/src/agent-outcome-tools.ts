@@ -70,22 +70,7 @@ export const RETIRED_OUTCOME_TOOL_NAMES = [
 
 export type RetiredOutcomeToolName = (typeof RETIRED_OUTCOME_TOOL_NAMES)[number];
 
-// Compatibility-only dispatched actions for durable sessions whose immutable
-// toolset predates atomic per-Issue outcomes. They are intentionally absent
-// from OUTCOME_TOOL_DEFINITIONS and outcomeToolDefinitionsForCapabilities, so
-// no newly-created session can discover or call them from its advertised
-// contract.
-export const LEGACY_ISSUE_ACTION_TOOL_NAMES = [
-  "silence_as_noise",
-  "place_under_observation",
-  "resolve_issue",
-] as const;
-
-export type LegacyIssueActionToolName = (typeof LEGACY_ISSUE_ACTION_TOOL_NAMES)[number];
-
-export type DispatchedOutcomeToolName =
-  | (typeof DISPATCHED_OUTCOME_TOOL_NAMES)[number]
-  | LegacyIssueActionToolName;
+export type DispatchedOutcomeToolName = (typeof DISPATCHED_OUTCOME_TOOL_NAMES)[number];
 
 export const OUTCOME_TOOL_NAMES = [
   REPORT_FINDINGS_TOOL_NAME,
@@ -105,14 +90,7 @@ export const TERMINAL_OUTCOME_NUDGE_MARKER =
   "You ended your turn without concluding the investigation, so it has no recorded outcome and nothing is pending.";
 
 export function isDispatchedOutcomeToolName(name: string): name is DispatchedOutcomeToolName {
-  return (
-    (DISPATCHED_OUTCOME_TOOL_NAMES as readonly string[]).includes(name) ||
-    isLegacyIssueActionToolName(name)
-  );
-}
-
-export function isLegacyIssueActionToolName(name: string): name is LegacyIssueActionToolName {
-  return (LEGACY_ISSUE_ACTION_TOOL_NAMES as readonly string[]).includes(name);
+  return (DISPATCHED_OUTCOME_TOOL_NAMES as readonly string[]).includes(name);
 }
 
 export function isRetiredOutcomeToolName(name: string): name is RetiredOutcomeToolName {
@@ -506,13 +484,6 @@ export type LegacyResolveIssuePayload = LegacySilenceAsNoisePayload;
 export type LegacyResolveIncidentPayload = Pick<ResolveIncidentPayload, "reason" | "evidence">;
 
 export type ValidatedLegacyOutcome =
-  | { ok: true; tool: "silence_as_noise"; payload: LegacySilenceAsNoisePayload }
-  | {
-      ok: true;
-      tool: "place_under_observation";
-      payload: LegacyPlaceUnderObservationPayload;
-    }
-  | { ok: true; tool: "resolve_issue"; payload: LegacyResolveIssuePayload }
   | { ok: true; tool: "resolve_incident"; payload: LegacyResolveIncidentPayload }
   | { ok: false; errors: string[] };
 
@@ -728,7 +699,7 @@ export function validateLegacyOutcomeToolInput(
   rawInput: unknown,
   ctx: { hasFindings: boolean },
 ): ValidatedLegacyOutcome {
-  if (!isLegacyIssueActionToolName(name) && name !== "resolve_incident") {
+  if (name !== "resolve_incident") {
     return { ok: false, errors: [`Unknown legacy outcome tool \`${name}\`.`] };
   }
   if (!isRecord(rawInput)) {
@@ -747,42 +718,11 @@ export function validateLegacyOutcomeToolInput(
   const errors: string[] = [];
   const reason = pushRequiredString(errors, input, "reason");
   const evidence = pushRequiredString(errors, input, "evidence");
-  if (name === "resolve_incident") {
-    if (errors.length > 0) return { ok: false, errors };
-    return {
-      ok: true,
-      tool: name,
-      payload: { reason: reason as string, evidence: evidence as string },
-    };
-  }
-
-  const issueId = pushRequiredString(errors, input, "issueId");
-  if (name === "place_under_observation") {
-    const escalateOn = requiredEnum(errors, input, "escalateOn", ESCALATE_ON);
-    const threshold = input.threshold;
-    if (typeof threshold !== "number" || !Number.isInteger(threshold) || threshold < 1) {
-      errors.push(`\`threshold\` must be an integer >= 1; you sent ${JSON.stringify(threshold)}.`);
-    }
-    if (errors.length > 0) return { ok: false, errors };
-    return {
-      ok: true,
-      tool: name,
-      payload: {
-        issueId: issueId as string,
-        reason: reason as string,
-        evidence: evidence as string,
-        escalateOn: escalateOn as LegacyPlaceUnderObservationPayload["escalateOn"],
-        threshold: threshold as number,
-      },
-    };
-  }
-
   if (errors.length > 0) return { ok: false, errors };
   return {
     ok: true,
-    tool: name,
+    tool: "resolve_incident",
     payload: {
-      issueId: issueId as string,
       reason: reason as string,
       evidence: evidence as string,
     },

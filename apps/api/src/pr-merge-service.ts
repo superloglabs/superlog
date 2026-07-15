@@ -57,7 +57,9 @@ export async function resolveIncidentAfterManualAgentPullRequestMerge(
   if (disposition === "pull_requests_pending") {
     return "waiting_for_pull_requests";
   }
-  if (disposition === "incident_not_open") return "already_resolved";
+  if (disposition === "incident_not_open" || disposition === "resolution_event_already_consumed") {
+    return "already_resolved";
+  }
   return "resolved";
 }
 

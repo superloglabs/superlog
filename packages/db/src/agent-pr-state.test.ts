@@ -159,3 +159,146 @@ test("reopened changes state only from closed to open", async () => {
     await client.close();
   }
 });
+
+test("local reconciliation time cannot hide later provider close and reopen observations", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const { incident, pullRequest } = await seedPullRequest(db);
+    const localReconciliationAt = new Date("2026-07-15T10:05:00.987Z");
+    await db
+      .update(schema.agentPullRequests)
+      .set({ lastSyncedAt: localReconciliationAt })
+      .where(eq(schema.agentPullRequests.id, pullRequest.id));
+
+    const providerClosedAt = new Date("2026-07-15T10:00:01.000Z");
+    const closed = await applyAgentPullRequestState(db, {
+      incidentId: incident.id,
+      agentPrId: pullRequest.id,
+      targetState: "closed",
+      observedAt: new Date("2026-07-15T10:05:01.123Z"),
+      providerUpdatedAt: providerClosedAt,
+      closedAt: providerClosedAt,
+    });
+    assert.equal(closed.stateChanged, true);
+    assert.equal(closed.pullRequest?.state, "closed");
+
+    const providerReopenedAt = new Date("2026-07-15T10:00:02.000Z");
+    const reopened = await applyAgentPullRequestState(db, {
+      incidentId: incident.id,
+      agentPrId: pullRequest.id,
+      targetState: "open",
+      observedAt: new Date("2026-07-15T10:05:02.456Z"),
+      providerUpdatedAt: providerReopenedAt,
+      closedAt: null,
+    });
+    assert.equal(reopened.stateChanged, true);
+    assert.equal(reopened.pullRequest?.state, "open");
+
+    const staleClose = await applyAgentPullRequestState(db, {
+      incidentId: incident.id,
+      agentPrId: pullRequest.id,
+      targetState: "closed",
+      observedAt: new Date("2026-07-15T10:05:03.789Z"),
+      providerUpdatedAt: providerClosedAt,
+      closedAt: providerClosedAt,
+    });
+    assert.equal(staleClose.stateChanged, false);
+    assert.equal(staleClose.pullRequest?.state, "open");
+
+    const after = await db.query.agentPullRequests.findFirst({
+      where: eq(schema.agentPullRequests.id, pullRequest.id),
+    });
+    assert.equal(after?.state, "open");
+    assert.equal(after?.providerUpdatedAt?.toISOString(), providerReopenedAt.toISOString());
+    assert.equal(after?.lastSyncedAt?.toISOString(), "2026-07-15T10:05:02.456Z");
+  } finally {
+    await client.close();
+  }
+});
+
+test("an equal provider timestamp with conflicting state requires authoritative reconciliation", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const { incident, pullRequest } = await seedPullRequest(db);
+    const providerUpdatedAt = new Date("2026-07-15T10:00:01.000Z");
+    await db
+      .update(schema.agentPullRequests)
+      .set({ providerUpdatedAt })
+      .where(eq(schema.agentPullRequests.id, pullRequest.id));
+
+    const result = await applyAgentPullRequestState(db, {
+      incidentId: incident.id,
+      agentPrId: pullRequest.id,
+      targetState: "closed",
+      observedAt: new Date("2026-07-15T10:05:01.000Z"),
+      providerUpdatedAt,
+      closedAt: providerUpdatedAt,
+    });
+
+    assert.equal(result.providerReconciliationRequired, true);
+    assert.equal(result.stateChanged, false);
+    assert.equal(result.pullRequest?.state, "open");
+    const after = await db.query.agentPullRequests.findFirst({
+      where: eq(schema.agentPullRequests.id, pullRequest.id),
+    });
+    assert.equal(after?.state, "open");
+  } finally {
+    await client.close();
+  }
+});
+
+test("an equal provider timestamp also reconciles a conflicting reopen", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const { incident, pullRequest } = await seedPullRequest(db);
+    const providerUpdatedAt = new Date("2026-07-15T10:00:01.000Z");
+    await db
+      .update(schema.agentPullRequests)
+      .set({ state: "closed", providerUpdatedAt, closedAt: providerUpdatedAt })
+      .where(eq(schema.agentPullRequests.id, pullRequest.id));
+
+    const result = await applyAgentPullRequestState(db, {
+      incidentId: incident.id,
+      agentPrId: pullRequest.id,
+      targetState: "open",
+      observedAt: new Date("2026-07-15T10:05:01.000Z"),
+      providerUpdatedAt,
+      closedAt: null,
+    });
+
+    assert.equal(result.providerReconciliationRequired, true);
+    assert.equal(result.stateChanged, false);
+    assert.equal(result.pullRequest?.state, "closed");
+    assert.equal(result.pullRequest?.closedAt?.toISOString(), providerUpdatedAt.toISOString());
+  } finally {
+    await client.close();
+  }
+});
+
+test("an authoritative provider snapshot resolves an equal-timestamp state conflict", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const { incident, pullRequest } = await seedPullRequest(db);
+    const providerUpdatedAt = new Date("2026-07-15T10:00:01.000Z");
+    await db
+      .update(schema.agentPullRequests)
+      .set({ providerUpdatedAt })
+      .where(eq(schema.agentPullRequests.id, pullRequest.id));
+
+    const result = await applyAgentPullRequestState(db, {
+      incidentId: incident.id,
+      agentPrId: pullRequest.id,
+      targetState: "closed",
+      observedAt: new Date("2026-07-15T10:05:01.000Z"),
+      providerUpdatedAt,
+      providerSnapshotAuthoritative: true,
+      closedAt: providerUpdatedAt,
+    });
+
+    assert.equal(result.providerReconciliationRequired, false);
+    assert.equal(result.stateChanged, true);
+    assert.equal(result.pullRequest?.state, "closed");
+  } finally {
+    await client.close();
+  }
+});

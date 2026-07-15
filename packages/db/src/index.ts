@@ -211,9 +211,18 @@ export {
 export { agentPullRequestRetryEligibility } from "./agent-pr-retry-domain.js";
 export {
   applyAgentPullRequestState,
+  applyAgentPullRequestStateInTx,
   type ApplyAgentPullRequestStateInput,
   type ApplyAgentPullRequestStateResult,
+  type AgentPullRequestStateTx,
 } from "./agent-pr-state.js";
+export {
+  type AgentPullRequestProviderMutation,
+  type AgentPullRequestProviderObservation,
+  type AgentPullRequestProviderReconciliation,
+  type AgentPullRequestProviderState,
+  reconcileAgentPullRequestProviderObservation,
+} from "./agent-pr-provider-reconciliation.js";
 export {
   areAllIncidentPullRequestsMerged,
   buildAgentPullRequestLifecycleContinuation,
@@ -281,7 +290,9 @@ export {
   finalizeFulfilledAgentPullRequestBatches,
   dismissResolutionProposal,
   mergeIncidentsInTx,
+  resolveAgentIncident,
   resolveIncident,
+  resolveIncidentWithProof,
   resolveIncidentIfAllAgentPullRequestsMerged,
   reconcileAgentRunCompletedByResolution,
   validateIncidentIssueOutcomes,
@@ -290,16 +301,24 @@ export {
   type IncidentLifecycle,
   type LinkIssueToOpenIncidentResult,
   type ResolutionProposalActor,
+  type ResolutionProposalDecisionResult,
+  type ResolveAgentIncidentResult,
   type ResolveIncidentInput,
   type ResolveIncidentAfterAgentPullRequestsMergedResult,
   type ResolveIncidentResult,
+  type ResolveIncidentWithProofResult,
   type ResolveIssueOutcome,
 } from "./resolve-incident.js";
 export {
   closeIncidentOpenPullRequestsAfterResolution,
+  isIncidentResolutionProofCurrent,
+  loadCurrentIncidentResolutionProof,
   type CloseIncidentOpenPullRequestsResult,
   type CloseIncidentPullRequest,
+  type CloseIncidentPullRequestResult,
   type IncidentOpenPullRequestToClose,
+  type IncidentPullRequestProviderObservation,
+  type IncidentResolutionProof,
 } from "./incident-pr-resolution.js";
 export { resolveIncidentOrg } from "./incident-org.js";
 export {

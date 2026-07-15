@@ -20,11 +20,7 @@ import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
 import { postIncidentThreadMessage } from "../infra/slack/incident-messages.js";
 import { type ResolvedIntegration, loadEnabledIntegrationsForOrg } from "../integrations.js";
 import { logger } from "../logger.js";
-import {
-  closeOpenPullRequestsForResolvedIncident,
-  completeWithIncidentResolution,
-  completeWithoutPullRequest,
-} from "./completion.js";
+import { completeWithIncidentResolution, completeWithoutPullRequest } from "./completion.js";
 import {
   PULL_REQUEST_DELIVERY_EVENT_KIND,
   pullRequestDeliveryUrlFromReceiptDetail,
@@ -948,7 +944,6 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
               resolvedAt: mergedAt,
             });
             if (resolution.disposition === "resolved") {
-              await closeOpenPullRequestsForResolvedIncident(ctx.incident.id);
               const completed = await completeWithoutPullRequest(
                 ctx,
                 { ...reconciledResult, state: "complete" },
@@ -959,6 +954,10 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
                     kind: "all_pull_requests_merged",
                     prNumber: fallback.pullRequest.prNumber,
                     repoFullName: fallback.pullRequest.repoFullName,
+                    resolutionProof: {
+                      agentRunId: ctx.agentRun.id,
+                      eventDedupeKey: `incident_resolved:agent_pr:${fallback.pullRequest.id}`,
+                    },
                   },
                 },
               );

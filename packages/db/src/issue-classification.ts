@@ -5,6 +5,7 @@
 
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { DB } from "./client.js";
+import { createIncidentRepository } from "./incident-repository.js";
 import {
   buildIssueObservePatch,
   buildIssueResolvePatch,
@@ -79,7 +80,11 @@ export type ClassifyIncidentIssueResult =
   | { ok: true; issueTitle: string; status: schema.IssueStatus; alreadyClassified: boolean }
   | {
       ok: false;
-      error: "issue_not_found" | "not_linked_to_incident" | "alert_issue_not_suppressible";
+      error:
+        | "incident_not_open"
+        | "issue_not_found"
+        | "not_linked_to_incident"
+        | "alert_issue_not_suppressible";
       message: string;
     };
 
@@ -99,8 +104,22 @@ export async function classifyIncidentIssue(
   },
 ): Promise<ClassifyIncidentIssueResult> {
   const now = opts.now ?? new Date();
+  const repository = createIncidentRepository(database);
 
-  return database.transaction(async (tx) => {
+  return repository.transaction(async (tx) => {
+    // Compatibility actions share the Incident aggregate lock with Issue
+    // linking and terminal resolution. A resolution that commits first makes
+    // the old action corrective/non-terminal; an action that commits first is
+    // included in the resolver's subsequent Issue snapshot.
+    const incident = await repository.lockOpenIncidentInTx(tx, opts.incidentId);
+    if (!incident) {
+      return {
+        ok: false as const,
+        error: "incident_not_open" as const,
+        message:
+          "This Incident is no longer open, so its Issues cannot be classified from this run.",
+      };
+    }
     const issue = await tx.query.issues.findFirst({
       where: eq(schema.issues.id, opts.issueId),
     });

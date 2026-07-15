@@ -3,6 +3,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import type { DB } from "./client.js";
@@ -157,6 +158,78 @@ test("legacy resolution reconstructs a complete outcome set from this run's clas
       [...synthesized.outcomes].sort((a, b) => a.issueId.localeCompare(b.issueId)),
       expected.sort((a, b) => a.issueId.localeCompare(b.issueId)),
     );
+  } finally {
+    await client.close();
+  }
+});
+
+test("a legacy issue action cannot classify through a closed Incident aggregate", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const org = one(
+      await db.insert(schema.orgs).values({ name: "Acme", slug: "acme-closed" }).returning(),
+    );
+    const project = one(
+      await db
+        .insert(schema.projects)
+        .values({ orgId: org.id, name: "P", slug: "p-closed" })
+        .returning(),
+    );
+    const now = new Date("2026-07-14T12:00:00.000Z");
+    const incident = one(
+      await db
+        .insert(schema.incidents)
+        .values({
+          projectId: project.id,
+          title: "Already resolved checkout failure",
+          codename: "closed-legacy-action",
+          status: "resolved",
+          firstSeen: now,
+          lastSeen: now,
+          resolvedAt: now,
+          resolvedByKind: "dashboard_manual",
+          resolvedReasonCode: "problem_resolved",
+        })
+        .returning(),
+    );
+    const issue = one(
+      await db
+        .insert(schema.issues)
+        .values({
+          projectId: project.id,
+          fingerprint: "late-legacy-classification",
+          kind: "log",
+          exceptionType: "LateLegacyAction",
+          title: "Late legacy action",
+          firstSeen: now,
+          lastSeen: now,
+        })
+        .returning(),
+    );
+    await db.insert(schema.incidentIssues).values({ incidentId: incident.id, issueId: issue.id });
+
+    const result = await classifyIncidentIssue(db, {
+      incidentId: incident.id,
+      issueId: issue.id,
+      action: { kind: "silence" },
+      reason: "The old session called its retired classification tool late.",
+      evidence: "The Incident was already resolved before this call arrived.",
+      now: new Date(now.getTime() + 1_000),
+    });
+
+    assert.deepEqual(result, {
+      ok: false,
+      error: "incident_not_open",
+      message: "This Incident is no longer open, so its Issues cannot be classified from this run.",
+    });
+    const issueAfter = one(
+      await db.select().from(schema.issues).where(eq(schema.issues.id, issue.id)),
+    );
+    assert.equal(issueAfter.status, "open");
+    const classificationEvents = await db.query.incidentEvents.findMany({
+      where: eq(schema.incidentEvents.incidentId, incident.id),
+    });
+    assert.equal(classificationEvents.length, 0);
   } finally {
     await client.close();
   }

@@ -6,7 +6,9 @@ import {
   closedElsewhereCopyAfterNoiseRace,
   completionIntendsIncidentClosure,
   incidentAlreadyClosedCompletionCopy,
+  legacyResolutionEventDedupeKey,
   mergedPullRequestResolutionCopy,
+  planLegacyTerminalResolutionCompletion,
   resolutionCompletionCopy,
   resolutionCompletionResult,
   shouldRetireProviderSession,
@@ -168,6 +170,101 @@ test("resolve dispatch and completion share one stable event key", () => {
     agentResolveEventDedupeKey("run-1", "tool-use-1"),
     agentResolveEventDedupeKey("run-1", "tool-use-2"),
   );
+});
+
+test("legacy resolution and noise completion keep stable epoch proof keys", () => {
+  assert.equal(
+    legacyResolutionEventDedupeKey("run-1", "already_resolved"),
+    "incident_resolved:agent_run:run-1:already_resolved",
+  );
+  assert.equal(
+    legacyResolutionEventDedupeKey("run-1", "noise"),
+    "incident_resolved:agent_run:run-1:noise",
+  );
+});
+
+test("a PR-blocked legacy terminal result becomes a non-claiming completion", () => {
+  const legacyResult: AgentRunResult = {
+    state: "complete",
+    summary: "The stale session classified the signal.",
+    noiseClassification: {
+      reason: "expected_probe",
+      evidence: "The endpoint returned the documented response.",
+    },
+    resolutionClassification: {
+      reason: "upstream_recovered",
+      evidence: "The upstream signal disappeared.",
+    },
+    issueClassifications: [
+      {
+        issueId: "issue-1",
+        action: "silence",
+        reason: "The legacy action committed before the PR opened.",
+        evidence: "The classification event is durable.",
+      },
+    ],
+  };
+
+  const plan = planLegacyTerminalResolutionCompletion(legacyResult, "pull_requests_open");
+
+  assert.equal(plan.resolutionCommitted, false);
+  assert.equal(plan.blocked, true);
+  assert.equal(plan.shouldTerminateSession, false);
+  assert.deepEqual(plan.result, {
+    state: "complete",
+    summary: legacyResult.summary,
+    issueClassifications: legacyResult.issueClassifications,
+  });
+});
+
+test("a successful legacy terminal resolution retains its verdict and retires the session", () => {
+  const legacyResult: AgentRunResult = {
+    state: "complete",
+    summary: "The signal is expected.",
+    noiseClassification: {
+      reason: "expected_probe",
+      evidence: "The response matches the documented probe behavior.",
+    },
+  };
+
+  const plan = planLegacyTerminalResolutionCompletion(legacyResult, "resolved");
+
+  assert.deepEqual(plan, {
+    result: legacyResult,
+    resolutionCommitted: true,
+    blocked: false,
+    shouldTerminateSession: true,
+  });
+});
+
+test("a stale legacy run drops its Incident verdict and retires its obsolete session", () => {
+  const legacyResult: AgentRunResult = {
+    state: "complete",
+    summary: "This snapshot belongs to the prior Incident epoch.",
+    resolutionClassification: {
+      reason: "upstream_recovered",
+      evidence: "The old investigation observed a recovery.",
+    },
+  };
+
+  const plan = planLegacyTerminalResolutionCompletion(legacyResult, "agent_run_not_current");
+
+  assert.equal(plan.resolutionCommitted, false);
+  assert.equal(plan.blocked, false);
+  assert.equal(plan.shouldTerminateSession, true);
+  assert.deepEqual(plan.result, {
+    state: "complete",
+    summary: legacyResult.summary,
+  });
+
+  const replayedDecision = planLegacyTerminalResolutionCompletion(
+    legacyResult,
+    "resolution_event_already_consumed",
+  );
+  assert.equal(replayedDecision.resolutionCommitted, false);
+  assert.equal(replayedDecision.blocked, false);
+  assert.equal(replayedDecision.shouldTerminateSession, true);
+  assert.deepEqual(replayedDecision.result, plan.result);
 });
 
 test("a competing resolution is not attributed to this run", () => {

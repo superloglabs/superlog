@@ -19,6 +19,63 @@ export function agentResolveEventDedupeKey(agentRunId: string, toolUseId: string
   return `incident_resolved:agent_run:${agentRunId}:resolve_incident:${toolUseId}`;
 }
 
+export function legacyResolutionEventDedupeKey(
+  agentRunId: string,
+  outcome: "already_resolved" | "noise",
+): string {
+  return `incident_resolved:agent_run:${agentRunId}:${outcome}`;
+}
+
+type LegacyTerminalResolutionDisposition =
+  | "resolved"
+  | "incident_not_open"
+  | "agent_run_not_current"
+  | "resolution_event_already_consumed"
+  | "pull_requests_open"
+  | "pull_request_delivery_pending";
+
+export function planLegacyTerminalResolutionCompletion(
+  result: AgentRunResult,
+  disposition: LegacyTerminalResolutionDisposition,
+): {
+  result: AgentRunResult;
+  resolutionCommitted: boolean;
+  blocked: boolean;
+  shouldTerminateSession: boolean;
+} {
+  if (disposition === "resolved") {
+    return {
+      result,
+      resolutionCommitted: true,
+      blocked: false,
+      shouldTerminateSession: true,
+    };
+  }
+
+  // A stored pre-cutover terminal snapshot can no longer receive a corrective
+  // tool acknowledgement. Preserve its durable findings (and any issue actions
+  // that really committed), but never persist the stale Incident-level verdict
+  // as though this run won the resolution transaction.
+  const {
+    incidentResolution: _incidentResolution,
+    incidentResolutionEventDedupeKey: _incidentResolutionEventDedupeKey,
+    noiseClassification: _noiseClassification,
+    resolutionClassification: _resolutionClassification,
+    ...nonClaimingResult
+  } = result;
+  const blocked =
+    disposition === "pull_requests_open" || disposition === "pull_request_delivery_pending";
+  return {
+    result: nonClaimingResult,
+    resolutionCommitted: false,
+    blocked,
+    shouldTerminateSession:
+      disposition === "incident_not_open" ||
+      disposition === "agent_run_not_current" ||
+      disposition === "resolution_event_already_consumed",
+  };
+}
+
 export function resolutionCompletionResult(
   result: AgentRunResult,
   resolutionCommittedByRun: boolean,

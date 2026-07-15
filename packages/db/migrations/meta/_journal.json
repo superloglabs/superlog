@@ -750,6 +750,13 @@
       "when": 1784064654915,
       "tag": "0106_typical_bruce_banner",
       "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1784082513308,
+      "tag": "0107_unique_ghost_rider",
+      "breakpoints": true
     }
   ]
 }

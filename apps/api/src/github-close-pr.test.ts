@@ -65,12 +65,30 @@ test("closeGithubPullRequestWithToken falls back to repo URL when node close fai
 
 test("closeGithubPullRequestWithInstallations tries fallback installations", async () => {
   const tokenAttempts: number[] = [];
-  const fetchImpl: typeof fetch = async (_input, init) => {
+  const requests: Array<{ method: string; url: string }> = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    requests.push({ method: init?.method ?? "GET", url: String(input) });
     assert.equal(
       init?.headers && new Headers(init.headers).get("authorization"),
       "Bearer token-202",
     );
-    return jsonResponse({ data: { closePullRequest: { pullRequest: { id: "PR_node_1" } } } });
+    if ((init?.method ?? "GET") === "GET") {
+      return jsonResponse({
+        state: "closed",
+        merged: false,
+        updated_at: "2026-07-15T11:04:30Z",
+        closed_at: "2026-07-15T11:04:30Z",
+        merged_at: null,
+        merged_by: null,
+      });
+    }
+    return jsonResponse({
+      data: {
+        closePullRequest: {
+          pullRequest: { id: "PR_node_1", updatedAt: "2026-07-15T11:04:30Z" },
+        },
+      },
+    });
   };
 
   const result = await closeGithubPullRequestWithInstallations({
@@ -87,6 +105,18 @@ test("closeGithubPullRequestWithInstallations tries fallback installations", asy
     },
   });
 
-  assert.deepEqual(result, { ok: true });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(typeof result.loadAuthoritativeObservation, "function");
+  const authoritative = await result.loadAuthoritativeObservation?.();
+  assert.equal(authoritative?.targetState, "closed");
+  assert.equal(authoritative?.providerUpdatedAt?.toISOString(), "2026-07-15T11:04:30.000Z");
   assert.deepEqual(tokenAttempts, [101, 202]);
+  assert.deepEqual(requests, [
+    { method: "POST", url: "https://api.github.com/graphql" },
+    {
+      method: "GET",
+      url: "https://api.github.com/repos/old-owner/old-repo/pulls/241",
+    },
+  ]);
 });

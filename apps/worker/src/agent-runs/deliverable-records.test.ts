@@ -15,10 +15,12 @@ import {
 type RecordedCall =
   | "transaction.begin"
   | "incident.lock"
+  | "pull_request.lookup"
   | "pull_request.insert"
   | "pull_request.update"
   | "pull_request.close"
   | "pull_request_event.insert"
+  | "delivery_receipt.lookup"
   | "delivery_receipt.insert"
   | "transaction.end";
 
@@ -26,6 +28,8 @@ function recordingPullRequestDb(opts: {
   incidentStatus: schema.IncidentStatus;
   canonicalState?: schema.AgentPrState;
   pullRequestInsertConflicts?: boolean;
+  pullRequestVisibleAfterIncidentLock?: boolean;
+  recordedDeliveryVisibleAfterIncidentLock?: boolean;
   recordedDeliveryDetail?: Record<string, unknown>;
 }): {
   database: DB;
@@ -33,6 +37,7 @@ function recordingPullRequestDb(opts: {
   insertedPullRequest: () => Record<string, unknown> | null;
 } {
   const calls: RecordedCall[] = [];
+  let incidentLocked = false;
   let insertedPullRequestValues: Record<string, unknown> | null = null;
   const database = {
     select() {
@@ -43,6 +48,7 @@ function recordingPullRequestDb(opts: {
               return {
                 async for() {
                   calls.push("incident.lock");
+                  incidentLocked = true;
                   return [{ status: opts.incidentStatus }];
                 },
               };
@@ -121,11 +127,19 @@ function recordingPullRequestDb(opts: {
     query: {
       incidentEvents: {
         async findFirst() {
+          if (opts.recordedDeliveryVisibleAfterIncidentLock) {
+            calls.push("delivery_receipt.lookup");
+            if (!incidentLocked) return undefined;
+          }
           return opts.recordedDeliveryDetail ? { detail: opts.recordedDeliveryDetail } : undefined;
         },
       },
       agentPullRequests: {
         async findFirst() {
+          if (opts.pullRequestVisibleAfterIncidentLock) {
+            calls.push("pull_request.lookup");
+            if (!incidentLocked) return undefined;
+          }
           return {
             id: "pr-record-1",
             incidentId: "incident-1",
@@ -327,14 +341,15 @@ test("a post-commit metric failure cannot unwind a recorded PR delivery", async 
   assert.equal(result.kind, "deliver");
 });
 
-test("a recorded per-entry delivery is reconstructed only for the same input", async () => {
+test("committed delivery recovery waits for the Incident lock before reading its receipt", async () => {
   const identity = {
     deliveryId: "d4e5f60718293a4b",
     inputHash: "proposal-sha256",
     requestedBranchName: "ash/fix-api",
   };
-  const { database } = recordingPullRequestDb({
+  const { database, calls } = recordingPullRequestDb({
     incidentStatus: "open",
+    recordedDeliveryVisibleAfterIncidentLock: true,
     recordedDeliveryDetail: {
       ...identity,
       repoFullName: "acme/api",
@@ -369,6 +384,49 @@ test("a recorded per-entry delivery is reconstructed only for the same input", a
   );
 
   assert.equal(recovered?.branchName, "ash/fix-api-retry-d4e5f607");
+  assert.deepEqual(calls, [
+    "transaction.begin",
+    "incident.lock",
+    "delivery_receipt.lookup",
+    "transaction.end",
+    "transaction.begin",
+    "incident.lock",
+    "delivery_receipt.lookup",
+  ]);
+});
+
+test("a receipt for a compensated closed PR is not replayable as a successful delivery", async () => {
+  const identity = {
+    deliveryId: "d4e5f60718293a4b",
+    inputHash: "proposal-sha256",
+    requestedBranchName: "ash/fix-api",
+  };
+  const { database } = recordingPullRequestDb({
+    incidentStatus: "open",
+    canonicalState: "closed",
+    recordedDeliveryDetail: {
+      ...identity,
+      repoFullName: "acme/api",
+      branchName: "ash/fix-api",
+      url: "https://github.com/acme/api/pull/42",
+      prNumber: 42,
+      updatedExisting: false,
+      headSha: "abc123",
+    },
+  });
+
+  await assert.rejects(
+    findRecordedPullRequestDelivery(
+      {
+        incidentId: "incident-1",
+        agentRunId: "run-1",
+        repoFullName: "acme/api",
+        identity,
+      },
+      database,
+    ),
+    /closed pull request cannot be replayed as delivered/,
+  );
 });
 
 test("a delivery receipt exposes its canonical pull request URL", () => {
@@ -453,20 +511,56 @@ test("an existing PR update atomically records the exact delivery entry", async 
 });
 
 test("marking an aborted delivery closes its canonical record and records the transition", async () => {
-  const { database, calls } = recordingPullRequestDb({ incidentStatus: "resolved" });
+  const { database, calls } = recordingPullRequestDb({
+    incidentStatus: "resolved",
+    // Model a competing recordOpenedAgentPullRequest transaction: its insert
+    // becomes visible only after this transaction acquires the shared Incident
+    // lock and therefore waits for that transaction to commit.
+    pullRequestVisibleAfterIncidentLock: true,
+  });
+  const providerUpdatedAt = new Date("2026-07-14T12:00:00.000Z");
+  let appliedProviderUpdatedAt: Date | undefined;
 
   const result = await markAgentPullRequestClosedAfterDeliveryAbort(
     {
+      incidentId: "incident-1",
       repoFullName: "acme/api",
       prNumber: 42,
       reason: "incident_not_open",
+      providerObservation: {
+        targetState: "closed",
+        observedAt: providerUpdatedAt,
+        providerUpdatedAt,
+        closedAt: providerUpdatedAt,
+      },
     },
-    { database, now: () => new Date("2026-07-14T12:00:00.000Z") },
+    {
+      database,
+      async applyPullRequestStateInTx(_tx, input) {
+        calls.push("pull_request.close");
+        appliedProviderUpdatedAt = input.providerUpdatedAt;
+        return {
+          pullRequest: { state: "closed" } as schema.AgentPullRequest,
+          previousState: "open",
+          stateChanged: true,
+          providerReconciliationRequired: false,
+        };
+      },
+    },
   );
 
-  assert.deepEqual(result, { canonicalRecordFound: true, canonicalState: "closed" });
+  assert.deepEqual(result, {
+    canonicalRecordFound: true,
+    canonicalState: "closed",
+    pullRequestState: "closed",
+    stateChanged: true,
+    providerReconciliationRequired: false,
+  });
+  assert.equal(appliedProviderUpdatedAt, providerUpdatedAt);
   assert.deepEqual(calls, [
     "transaction.begin",
+    "incident.lock",
+    "pull_request.lookup",
     "pull_request.close",
     "pull_request_event.insert",
     "transaction.end",

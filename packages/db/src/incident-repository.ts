@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { DB } from "./client.js";
 import * as schema from "./schema.js";
 
@@ -16,7 +16,7 @@ export type InsertIncidentEventInput = {
 
 export type IncidentRepository = ReturnType<typeof createIncidentRepository>;
 
-export type LockedOpenIncident = Pick<schema.Incident, "id" | "service">;
+export type LockedOpenIncident = schema.Incident;
 
 export type LinkableIssue = Pick<schema.Issue, "id" | "lastSeen" | "service">;
 
@@ -92,12 +92,18 @@ export function createIncidentRepository(database: DB) {
       return true;
     },
 
-    findLatestAgentRunIdInTx(tx: Tx, incidentId: string): Promise<{ id: string } | undefined> {
-      return tx.query.agentRuns.findFirst({
-        where: eq(schema.agentRuns.incidentId, incidentId),
-        orderBy: (agentRuns, { desc }) => [desc(agentRuns.createdAt)],
-        columns: { id: true },
-      });
+    async lockLatestAgentRunInTx(
+      tx: Tx,
+      incidentId: string,
+    ): Promise<Pick<schema.AgentRun, "id" | "state"> | null> {
+      const [run] = await tx
+        .select({ id: schema.agentRuns.id, state: schema.agentRuns.state })
+        .from(schema.agentRuns)
+        .where(eq(schema.agentRuns.incidentId, incidentId))
+        .orderBy(desc(schema.agentRuns.createdAt), desc(schema.agentRuns.id))
+        .limit(1)
+        .for("update");
+      return run ?? null;
     },
 
     listAgentPullRequestStatesInTx(
@@ -108,6 +114,52 @@ export function createIncidentRepository(database: DB) {
         where: eq(schema.agentPullRequests.incidentId, incidentId),
         columns: { state: true },
       });
+    },
+
+    listOpenAgentPullRequestsInTx(
+      tx: Tx,
+      incidentId: string,
+    ): Promise<Array<Pick<schema.AgentPullRequest, "repoFullName" | "prNumber" | "url">>> {
+      return tx.query.agentPullRequests.findMany({
+        where: and(
+          eq(schema.agentPullRequests.incidentId, incidentId),
+          eq(schema.agentPullRequests.state, "open"),
+        ),
+        orderBy: [asc(schema.agentPullRequests.createdAt), asc(schema.agentPullRequests.id)],
+        columns: { repoFullName: true, prNumber: true, url: true },
+      });
+    },
+
+    async hasUnprocessedIncidentEventKindInTx(
+      tx: Tx,
+      incidentId: string,
+      kind: string,
+    ): Promise<boolean> {
+      const event = await tx.query.incidentEvents.findFirst({
+        where: and(
+          eq(schema.incidentEvents.incidentId, incidentId),
+          eq(schema.incidentEvents.kind, kind),
+          isNull(schema.incidentEvents.processedAt),
+        ),
+        columns: { id: true },
+      });
+      return event !== undefined;
+    },
+
+    async hasIncidentResolutionEventInTx(
+      tx: Tx,
+      incidentId: string,
+      dedupeKey: string,
+    ): Promise<boolean> {
+      const event = await tx.query.incidentEvents.findFirst({
+        where: and(
+          eq(schema.incidentEvents.incidentId, incidentId),
+          eq(schema.incidentEvents.kind, "incident_resolved"),
+          eq(schema.incidentEvents.dedupeKey, dedupeKey),
+        ),
+        columns: { id: true },
+      });
+      return event !== undefined;
     },
 
     async insertEventInTx(tx: Tx, opts: InsertIncidentEventInput): Promise<void> {

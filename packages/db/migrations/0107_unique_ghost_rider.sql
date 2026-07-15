@@ -1,0 +1,1 @@
+ALTER TABLE "agent_pull_requests" ADD COLUMN "provider_updated_at" timestamp with time zone;

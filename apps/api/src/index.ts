@@ -20,7 +20,7 @@ import {
   queueAgentPullRequestRetry,
   recordInboundInteraction,
   resolveDefaultAgentRunProvider,
-  resolveIncident,
+  resolveIncidentWithProof,
   restartAgentRun,
   runMigrations,
   schema,
@@ -71,6 +71,7 @@ import {
   mountGithubAuthed,
   mountGithubAuthorOAuth,
   mountGithubPublic,
+  reopenAgentPullRequestOnGithub,
 } from "./github.js";
 import { createApiHttpObservabilityMiddleware } from "./http-observability.js";
 import { mountImpersonation } from "./impersonation.js";
@@ -1442,7 +1443,7 @@ app.patch("/api/projects/:projectId/incidents/:incidentId", async (c) => {
   if (status === "resolved") {
     // Route the dashboard's mark-resolved through the shared helper so the
     // resolved_* columns are populated exactly like every other resolve path.
-    await resolveIncident({
+    const resolveResult = await resolveIncidentWithProof({
       incidentId,
       kind: "dashboard_manual",
       reasonCode: resolution,
@@ -1453,11 +1454,23 @@ app.patch("/api/projects/:projectId/incidents/:incidentId", async (c) => {
       resolvedByUserId: c.var.userId,
       issueOutcome: resolution === "not_an_issue" ? { kind: "silence" } : { kind: "resolve" },
     });
-    if (shouldRunResolvedIncidentSideEffects({ requestedStatus: status, incidentExists: true })) {
+    if (
+      resolveResult.resolutionProof &&
+      shouldRunResolvedIncidentSideEffects({ requestedStatus: status, incidentExists: true })
+    ) {
       await runResolvedIncidentSideEffectsForIncident({
         incidentId,
+        resolutionProof: resolveResult.resolutionProof,
         closePullRequest: (pr) =>
           closeAgentPullRequestOnGithub({
+            installationId: pr.githubInstallationId,
+            fallbackInstallationIds: pr.fallbackGithubInstallationIds,
+            repoFullName: pr.repoFullName,
+            prNumber: pr.prNumber,
+            prNodeId: pr.prNodeId,
+          }),
+        reopenPullRequest: (pr) =>
+          reopenAgentPullRequestOnGithub({
             installationId: pr.githubInstallationId,
             fallbackInstallationIds: pr.fallbackGithubInstallationIds,
             repoFullName: pr.repoFullName,
@@ -1536,11 +1549,20 @@ async function decideResolutionProposal(
     }
     throw new HTTPException(400, { message: result.reason ?? "decision failed" });
   }
-  if (decision === "confirm" && result.incidentId) {
+  if (decision === "confirm" && result.incidentId && result.resolutionProof) {
     await runResolvedIncidentSideEffectsForIncident({
       incidentId: result.incidentId,
+      resolutionProof: result.resolutionProof,
       closePullRequest: (pr) =>
         closeAgentPullRequestOnGithub({
+          installationId: pr.githubInstallationId,
+          fallbackInstallationIds: pr.fallbackGithubInstallationIds,
+          repoFullName: pr.repoFullName,
+          prNumber: pr.prNumber,
+          prNodeId: pr.prNodeId,
+        }),
+      reopenPullRequest: (pr) =>
+        reopenAgentPullRequestOnGithub({
           installationId: pr.githubInstallationId,
           fallbackInstallationIds: pr.fallbackGithubInstallationIds,
           repoFullName: pr.repoFullName,

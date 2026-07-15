@@ -2,6 +2,7 @@ import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PullRequestProposal } from "../agent-outcome-tools.js";
+import { PullRequestDeliveryReceiptConflictError } from "./deliverable-records.js";
 import {
   type OutcomeActionReceiptLock,
   outcomeActionInputHash,
@@ -13,6 +14,7 @@ import {
   proposedPullRequestBatchErrors,
   pullRequestDeliveryIdentityForOutcomeAction,
 } from "./outcome-actions.js";
+import { PullRequestDeliveryRecoveryPendingError } from "./pr-delivery.js";
 
 const proposals: PullRequestProposal[] = [
   {
@@ -73,7 +75,7 @@ test("the whole PR batch is preflighted before any repository is changed", async
     deliver: async (proposal) => {
       calls.push(`deliver:${proposal.repoFullName}`);
       return {
-        ok: true,
+        ok: true as const,
         url: `https://github.com/${proposal.repoFullName}/pull/1`,
         prNumber: 1,
         branchName: proposal.branchName,
@@ -199,7 +201,7 @@ test("a thrown delivery preserves earlier successful entries", async () => {
     deliver: async (proposal) => {
       if (proposal.repoFullName === "acme/worker") throw new Error("provider timeout");
       return {
-        ok: true,
+        ok: true as const,
         url: "https://github.com/acme/api/pull/12",
         prNumber: 12,
         branchName: proposal.branchName,
@@ -252,10 +254,10 @@ test("retired outcome tools are handled with migration guidance", async () => {
   assert.match(JSON.stringify(result.payload), /resolve_incident\.issueOutcomes/);
 });
 
-test("a durable legacy issue action is applied idempotently without ending the turn", async () => {
+test("a durable legacy issue action is error-acked with classification-at-resolution guidance", async () => {
   const calls: Array<Record<string, unknown>> = [];
-  const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
-    async classifyIncidentIssue(_database, input) {
+  const dependencies = {
+    async classifyIncidentIssue(_database: unknown, input: Record<string, unknown>) {
       calls.push(input);
       return {
         ok: true,
@@ -264,7 +266,16 @@ test("a durable legacy issue action is applied idempotently without ending the t
         alreadyClassified: true,
       };
     },
-  });
+    async finalizeFulfilledAgentPullRequestBatches() {
+      return 0;
+    },
+  };
+  const execute = createOutcomeActionExecutor(
+    receiptContext,
+    "session-1",
+    noReceiptLock,
+    dependencies,
+  );
 
   const result = await execute({
     toolUseId: "legacy-action-1",
@@ -280,11 +291,146 @@ test("a durable legacy issue action is applied idempotently without ending the t
 
   assert.equal(result.handled, true);
   if (!result.handled || result.deferAck) return;
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, false);
   assert.equal(result.payload.final, undefined);
-  assert.equal(result.payload.alreadyClassified, true);
-  assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0]?.action, { kind: "silence" });
+  assert.match(JSON.stringify(result.payload), /resolve_incident\.issueOutcomes/);
+  assert.equal(calls.length, 0);
+});
+
+test("resolve_incident stays non-terminal while a canonical pull request is open", async () => {
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
+    async synthesizeLegacyIncidentIssueOutcomes() {
+      return { ok: true, outcomes: [] };
+    },
+    async resolveAgentIncident() {
+      return {
+        disposition: "pull_requests_open" as const,
+        resolved: false as const,
+        resolvedIssueCount: 0 as const,
+        pullRequests: [
+          {
+            repoFullName: "acme/api",
+            prNumber: 42,
+            url: "https://github.com/acme/api/pull/42",
+          },
+        ],
+      };
+    },
+  });
+
+  const result = await execute({
+    toolUseId: "resolve-with-open-pr",
+    name: "resolve_incident",
+    input: {
+      reason: "The patch is ready.",
+      evidence: "The regression test passes.",
+    },
+    hasFindings: true,
+    findings: null,
+  });
+
+  assert.equal(result.handled, true);
+  if (!result.handled || result.deferAck) return;
+  assert.equal(result.ok, false);
+  assert.equal(result.payload.final, undefined);
+  assert.match(JSON.stringify(result.payload), /acme\/api.*42/);
+  assert.match(JSON.stringify(result.payload), /open pull request/i);
+});
+
+test("resolve_incident stays non-terminal while pull request delivery is pending", async () => {
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
+    async synthesizeLegacyIncidentIssueOutcomes() {
+      return { ok: true, outcomes: [] };
+    },
+    async resolveAgentIncident() {
+      return {
+        disposition: "pull_request_delivery_pending" as const,
+        resolved: false as const,
+        resolvedIssueCount: 0 as const,
+      };
+    },
+  });
+
+  const result = await execute({
+    toolUseId: "resolve-during-pr-delivery",
+    name: "resolve_incident",
+    input: {
+      reason: "The patch is ready.",
+      evidence: "The regression test passes.",
+    },
+    hasFindings: true,
+    findings: null,
+  });
+
+  assert.equal(result.handled, true);
+  if (!result.handled || result.deferAck) return;
+  assert.equal(result.ok, false);
+  assert.equal(result.payload.final, undefined);
+  assert.match(JSON.stringify(result.payload), /still being delivered/i);
+});
+
+test("resolve_incident corrects a stale run after the Incident was reopened", async () => {
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
+    async synthesizeLegacyIncidentIssueOutcomes() {
+      return { ok: true, outcomes: [] };
+    },
+    async resolveAgentIncident() {
+      return {
+        disposition: "agent_run_not_current" as const,
+        resolved: false as const,
+        resolvedIssueCount: 0 as const,
+      };
+    },
+  });
+
+  const result = await execute({
+    toolUseId: "resolve-from-stale-run",
+    name: "resolve_incident",
+    input: {
+      reason: "The old investigation believes the work is complete.",
+      evidence: "This snapshot predates the manual reopen.",
+    },
+    hasFindings: true,
+    findings: null,
+  });
+
+  assert.equal(result.handled, true);
+  if (!result.handled || result.deferAck) return;
+  assert.equal(result.ok, false);
+  assert.equal(result.payload.final, undefined);
+  assert.match(JSON.stringify(result.payload), /no longer the current investigation/i);
+});
+
+test("resolve_incident rejects a terminal decision consumed by an older Incident epoch", async () => {
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
+    async synthesizeLegacyIncidentIssueOutcomes() {
+      return { ok: true, outcomes: [] };
+    },
+    async resolveAgentIncident() {
+      return {
+        disposition: "resolution_event_already_consumed" as const,
+        resolved: false as const,
+        resolvedIssueCount: 0 as const,
+      };
+    },
+  });
+
+  const result = await execute({
+    toolUseId: "replayed-resolution-decision",
+    name: "resolve_incident",
+    input: {
+      reason: "The prior epoch was complete.",
+      evidence: "This decision was already consumed before the manual reopen.",
+    },
+    hasFindings: true,
+    findings: null,
+  });
+
+  assert.equal(result.handled, true);
+  if (!result.handled || result.deferAck) return;
+  assert.equal(result.ok, false);
+  assert.equal(result.payload.final, undefined);
+  assert.match(JSON.stringify(result.payload), /earlier Incident epoch/i);
 });
 
 test("legacy resolve synthesizes complete issue outcomes and uses tool-specific atomic proof", async () => {
@@ -310,9 +456,13 @@ test("legacy resolve synthesizes complete issue outcomes and uses tool-specific 
         ],
       };
     },
-    async resolveIncident(input) {
+    async resolveAgentIncident(input) {
       resolveCalls.push(input as unknown as Record<string, unknown>);
-      return { resolved: true, resolvedIssueCount: 2 };
+      return {
+        disposition: "resolved" as const,
+        resolved: true as const,
+        resolvedIssueCount: 2,
+      };
     },
   });
 
@@ -467,13 +617,6 @@ test("propose_pr passes the same delivery identity through preflight and deliver
     async finalizeFulfilledAgentPullRequestBatches() {
       return 0;
     },
-    async resolveIncidentIfAllAgentPullRequestsMerged() {
-      return {
-        disposition: "pull_requests_pending" as const,
-        resolved: false as const,
-        resolvedIssueCount: 0 as const,
-      };
-    },
   });
 
   const result = await execute({
@@ -501,14 +644,6 @@ test("multi-repository propose_pr reserves the full batch before delivery and fi
     async finalizeFulfilledAgentPullRequestBatches() {
       calls.push("finalize");
       return 1;
-    },
-    async resolveIncidentIfAllAgentPullRequestsMerged() {
-      calls.push("resolve_if_all_merged");
-      return {
-        disposition: "pull_requests_pending" as const,
-        resolved: false as const,
-        resolvedIssueCount: 0 as const,
-      };
     },
     async preflightProposedPullRequest(_ctx, proposal) {
       calls.push(`preflight:${proposal.repoFullName}`);
@@ -542,11 +677,10 @@ test("multi-repository propose_pr reserves the full batch before delivery and fi
     "deliver:acme/api",
     "deliver:acme/worker",
     "finalize",
-    "resolve_if_all_merged",
   ]);
 });
 
-test("an exact recorded batch replay succeeds after the Incident has already resolved", async () => {
+test("an exact recorded batch replay succeeds without reserving or resolving again", async () => {
   const calls: string[] = [];
   const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
     async reserveAgentPullRequestBatch() {
@@ -556,14 +690,6 @@ test("an exact recorded batch replay succeeds after the Incident has already res
     async finalizeFulfilledAgentPullRequestBatches() {
       calls.push("finalize");
       return 0;
-    },
-    async resolveIncidentIfAllAgentPullRequestsMerged() {
-      calls.push("resolve_if_all_merged");
-      return {
-        disposition: "incident_not_open" as const,
-        resolved: false as const,
-        resolvedIssueCount: 0 as const,
-      };
     },
     async preflightProposedPullRequest(_ctx, proposal) {
       calls.push(`preflight:${proposal.repoFullName}`);
@@ -612,8 +738,71 @@ test("an exact recorded batch replay succeeds after the Incident has already res
     "deliver:acme/api",
     "deliver:acme/worker",
     "finalize",
-    "resolve_if_all_merged",
   ]);
+});
+
+test("a recorded propose_pr replay cannot auto-resolve merged PRs while its session can resume", async () => {
+  const proposal = proposals[0];
+  assert.ok(proposal);
+  let resolutionCalls = 0;
+  const dependencies = {
+    async finalizeFulfilledAgentPullRequestBatches() {
+      return 0;
+    },
+    async resolveIncidentIfAllAgentPullRequestsMerged() {
+      resolutionCalls += 1;
+      return {
+        disposition: "resolved" as const,
+        resolved: true as const,
+        resolvedIssueCount: 1,
+      };
+    },
+    async preflightProposedPullRequest() {
+      return {
+        ok: true as const,
+        prepared: {
+          kind: "recorded" as const,
+          delivery: {
+            repoFullName: proposal.repoFullName,
+            requestedBranchName: proposal.branchName,
+            branchName: proposal.branchName,
+            url: "https://github.com/acme/api/pull/12",
+            prNumber: 12,
+            updatedExisting: false,
+            headSha: "abc123",
+          },
+        },
+      };
+    },
+    async deliverProposedPullRequest() {
+      return {
+        ok: true as const,
+        url: "https://github.com/acme/api/pull/12",
+        prNumber: 12,
+        branchName: proposal.branchName,
+        updatedExisting: false,
+      };
+    },
+  };
+  const execute = createOutcomeActionExecutor(
+    receiptContext,
+    "session-1",
+    noReceiptLock,
+    dependencies,
+  );
+
+  const result = await execute({
+    toolUseId: "proposal-tool-recorded-merged-replay",
+    name: "propose_pr",
+    input: { pullRequests: [proposal] },
+    hasFindings: true,
+    findings: { summary: "The delivered fix merged before its acknowledgement was saved." },
+  });
+
+  assert.equal(result.handled, true);
+  if (!result.handled || result.deferAck) return;
+  assert.equal(result.ok, true);
+  assert.equal(resolutionCalls, 0);
 });
 
 test("a post-delivery batch finalization failure defers the acknowledgement", async () => {
@@ -662,24 +851,113 @@ test("a post-delivery batch finalization failure defers the acknowledgement", as
   ]);
 });
 
-test("a single-repository retry repeats merge resolution after finalization already committed", async () => {
+test("a pending delivery recovery keeps the same delivery identity unacknowledged", async () => {
+  const proposal = proposals[0];
+  assert.ok(proposal);
+  const deliveryIds: string[] = [];
+  let savedReceipts = 0;
+  let finalizationCalls = 0;
+  const receiptLock: OutcomeActionReceiptLock = {
+    async exclusive(_args, task) {
+      return task({
+        async load() {
+          return null;
+        },
+        async save() {
+          savedReceipts += 1;
+        },
+      });
+    },
+  };
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", receiptLock, {
+    async finalizeFulfilledAgentPullRequestBatches() {
+      finalizationCalls += 1;
+      return 0;
+    },
+    async preflightProposedPullRequest() {
+      return { ok: true, prepared: { kind: "patch" as const, patch: "diff" } };
+    },
+    async deliverProposedPullRequest(_ctx, _proposal, _sessionId, _findings, _prepared, identity) {
+      assert.ok(identity);
+      deliveryIds.push(identity.deliveryId);
+      throw new PullRequestDeliveryRecoveryPendingError("durable recovery read unavailable");
+    },
+  });
+  const call = {
+    toolUseId: "proposal-tool-recovery-pending",
+    name: "propose_pr" as const,
+    input: { pullRequests: [proposal] },
+    hasFindings: true,
+    findings: { summary: "The canonical delivery outcome is still being recovered." },
+  };
+
+  assert.deepEqual(await execute(call), { handled: true, deferAck: true });
+  assert.deepEqual(await execute(call), { handled: true, deferAck: true });
+  assert.equal(finalizationCalls, 0);
+  assert.equal(savedReceipts, 0);
+  assert.equal(deliveryIds.length, 2);
+  assert.equal(deliveryIds[1], deliveryIds[0]);
+});
+
+test("a stale delivery receipt conflict is acknowledged as manual instead of retried", async () => {
+  const proposal = proposals[0];
+  assert.ok(proposal);
+  let deliveryCalls = 0;
+  let savedReceipts = 0;
+  const receiptLock: OutcomeActionReceiptLock = {
+    async exclusive(_args, task) {
+      return task({
+        async load() {
+          return null;
+        },
+        async save() {
+          savedReceipts += 1;
+        },
+      });
+    },
+  };
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", receiptLock, {
+    async preflightProposedPullRequest() {
+      throw new PullRequestDeliveryReceiptConflictError(
+        "a closed pull request cannot be replayed as delivered",
+      );
+    },
+    async deliverProposedPullRequest() {
+      deliveryCalls += 1;
+      throw new Error("delivery must not run for a stale receipt");
+    },
+  });
+
+  const result = await execute({
+    toolUseId: "proposal-tool-stale-receipt",
+    name: "propose_pr",
+    input: { pullRequests: [proposal] },
+    hasFindings: true,
+    findings: { summary: "The prior delivery receipt points at a closed pull request." },
+  });
+
+  assert.equal(result.handled, true);
+  if (!result.handled || result.deferAck) {
+    assert.fail("a receipt invariant must be acknowledged instead of deferred");
+  }
+  assert.equal(result.ok, false);
+  const errors = result.payload.errors;
+  assert.ok(Array.isArray(errors));
+  assert.match(errors.join(" "), /manual reconciliation/i);
+  assert.match(errors.join(" "), /do not retry/i);
+  assert.equal(deliveryCalls, 0);
+  assert.equal(savedReceipts, 1);
+});
+
+test("a single-repository retry repeats batch finalization after a transient failure", async () => {
   const proposal = proposals[0];
   assert.ok(proposal);
   let finalizeCalls = 0;
-  let resolveCalls = 0;
   const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
     async finalizeFulfilledAgentPullRequestBatches() {
       finalizeCalls += 1;
-      return finalizeCalls === 1 ? 1 : 0;
-    },
-    async resolveIncidentIfAllAgentPullRequestsMerged() {
-      resolveCalls += 1;
-      if (resolveCalls === 1) throw new Error("resolution transaction interrupted");
-      return {
-        disposition: "pull_requests_pending" as const,
-        resolved: false as const,
-        resolvedIssueCount: 0 as const,
-      };
+      if (finalizeCalls === 1) throw new Error("batch finalization interrupted");
+      return 0;
     },
     async preflightProposedPullRequest() {
       return { ok: true, prepared: { kind: "patch" as const, patch: "diff" } };
@@ -709,24 +987,14 @@ test("a single-repository retry repeats merge resolution after finalization alre
   if (!replay.handled || replay.deferAck) return;
   assert.equal(replay.ok, true);
   assert.equal(finalizeCalls, 2);
-  assert.equal(resolveCalls, 2);
 });
 
 test("a failed single-repository delivery cannot resolve from older merged PRs", async () => {
   const proposal = proposals[0];
   assert.ok(proposal);
-  let resolveCalls = 0;
   const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
     async finalizeFulfilledAgentPullRequestBatches() {
       return 0;
-    },
-    async resolveIncidentIfAllAgentPullRequestsMerged() {
-      resolveCalls += 1;
-      return {
-        disposition: "resolved" as const,
-        resolved: true as const,
-        resolvedIssueCount: 1,
-      };
     },
     async preflightProposedPullRequest() {
       return { ok: true, prepared: { kind: "patch" as const, patch: "diff" } };
@@ -747,5 +1015,4 @@ test("a failed single-repository delivery cannot resolve from older merged PRs",
   assert.equal(result.handled, true);
   if (!result.handled || result.deferAck) return;
   assert.equal(result.ok, false);
-  assert.equal(resolveCalls, 0);
 });

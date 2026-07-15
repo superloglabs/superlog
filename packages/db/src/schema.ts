@@ -1317,6 +1317,10 @@ export const agentPullRequests = pgTable(
     // GitHub and a later merge supersedes both signals in the metric.
     negativeReactionAt: timestamp("negative_reaction_at", { withTimezone: true }),
     expiredAt: timestamp("expired_at", { withTimezone: true }),
+    // Monotonic watermark from GitHub's pull_request.updated_at. Keep this
+    // separate from lastSyncedAt: provider timestamps have second precision
+    // and may be behind the worker/API host clock used for local reconciliation.
+    providerUpdatedAt: timestamp("provider_updated_at", { withTimezone: true }),
     lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),

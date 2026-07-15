@@ -4,11 +4,14 @@ import { test } from "node:test";
 import type { schema } from "@superlog/db";
 import type { AgentRunContext } from "../agent-run-context.js";
 import {
+  PullRequestDeliveryRecoveryPendingError,
   compensatePullRequestDelivery,
   deliverProposedPullRequest,
   preflightProposedPullRequest,
   publishPullRequestUpdateIfCurrent,
   pullRequestDeliveryIdentityForLegacyCompletion,
+  reconcileGithubPullRequestMutation,
+  reconcilePullRequestDeliveryAbortClose,
   resolvePullRequestBaseBranch,
 } from "./pr-delivery.js";
 
@@ -123,25 +126,68 @@ const deliveredPullRequest = {
 
 test("successful compensation makes an unrecorded PR delivery explicitly retryable", async () => {
   const calls: string[] = [];
+  const providerUpdatedAt = new Date("2026-07-14T12:00:03.000Z");
+  let markedClose: { providerUpdatedAt?: Date } | undefined;
 
   const result = await compensatePullRequestDelivery({
     pullRequest: deliveredPullRequest,
     reason: { kind: "reconciliation_failed", error: "database unavailable" },
     closePullRequest: async () => {
       calls.push("github.close");
-      return { ok: true };
+      return { ok: true, providerUpdatedAt };
     },
-    markCanonicalClosed: async () => {
+    markCanonicalClosed: async (close) => {
       calls.push("canonical.close");
+      markedClose = close;
       throw new Error("database still unavailable");
     },
   });
 
   assert.deepEqual(calls, ["github.close", "canonical.close"]);
+  assert.equal(markedClose?.providerUpdatedAt, providerUpdatedAt);
   assert.equal(result.ok, false);
   assert.equal(result.deliveryStatus, "retryable");
   assert.equal(result.retryable, true);
   assert.equal(result.manualReconciliation, undefined);
+});
+
+test("an unwatermarked delivery-abort close reads provider authority before canonical state", async () => {
+  const providerUpdatedAt = new Date("2026-07-14T12:00:03.000Z");
+  let authoritativeReadCount = 0;
+  const applied: Array<{ state: string | undefined; authoritative: boolean }> = [];
+
+  const result = await reconcilePullRequestDeliveryAbortClose({
+    close: {
+      async loadAuthoritativeObservation() {
+        authoritativeReadCount += 1;
+        return {
+          targetState: "merged" as const,
+          observedAt: new Date("2026-07-14T12:00:04.000Z"),
+          providerUpdatedAt,
+          mergedAt: providerUpdatedAt,
+          closedAt: providerUpdatedAt,
+        };
+      },
+    },
+    observedAt: new Date("2026-07-14T12:00:02.000Z"),
+    async applyObservation(observation) {
+      applied.push({
+        state: observation.targetState,
+        authoritative: observation.providerSnapshotAuthoritative === true,
+      });
+      return {
+        canonicalRecordFound: true,
+        canonicalState: "merged",
+        pullRequestState: "merged",
+        stateChanged: true,
+        providerReconciliationRequired: false,
+      };
+    },
+  });
+
+  assert.equal(authoritativeReadCount, 1);
+  assert.deepEqual(applied, [{ state: "merged", authoritative: true }]);
+  assert.equal(result.canonicalState, "merged");
 });
 
 test("failed PR-close compensation returns structured manual-reconciliation metadata", async () => {
@@ -153,7 +199,13 @@ test("failed PR-close compensation returns structured manual-reconciliation meta
     closePullRequest: async () => ({ ok: false, error: "GitHub rate limited the close" }),
     markCanonicalClosed: async () => {
       markCalled = true;
-      return { canonicalRecordFound: false, canonicalState: null };
+      return {
+        canonicalRecordFound: false,
+        canonicalState: null,
+        pullRequestState: null,
+        stateChanged: false,
+        providerReconciliationRequired: false,
+      };
     },
   });
 
@@ -179,6 +231,204 @@ const deliveryIdentity = {
   inputHash: "proposal-sha256",
   requestedBranchName: "ash/fix-api",
 };
+
+test("an ambiguous canonical commit recovers its durable delivery instead of closing the PR", async () => {
+  const calls: string[] = [];
+  const recordedDelivery = {
+    repoFullName: "acme/api",
+    requestedBranchName: "ash/fix-api",
+    branchName: "ash/fix-api",
+    url: "https://github.com/acme/api/pull/42",
+    prNumber: 42,
+    updatedExisting: false,
+    headSha: "abc123",
+  };
+
+  const result = await reconcileGithubPullRequestMutation(
+    {
+      incidentId: "incident-1",
+      agentRunId: "run-1",
+      deliveryIdentity,
+      pullRequest: {
+        ...deliveredPullRequest,
+        prNodeId: "PR_node_42",
+      },
+      installationId: 123,
+      fallbackInstallationIds: [],
+      canonicalRecordRequiredOnFailure: false,
+      async reconcile() {
+        calls.push("canonical.commit.ambiguous");
+        throw new Error("connection lost while committing");
+      },
+    },
+    {
+      async findRecordedDelivery() {
+        calls.push("delivery.recover");
+        return recordedDelivery;
+      },
+      async compensate() {
+        calls.push("github.close");
+        return {
+          ok: false,
+          deliveryStatus: "retryable",
+          retryable: true,
+          error: "compensated",
+        };
+      },
+    },
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls, ["canonical.commit.ambiguous", "delivery.recover"]);
+  if (result.ok) {
+    assert.deepEqual(result.deliveryReceipt, {
+      newlyRecorded: false,
+      delivery: recordedDelivery,
+    });
+  }
+});
+
+test("an absent commit-recovery receipt compensates the unrecorded pull request", async () => {
+  const calls: string[] = [];
+
+  const result = await reconcileGithubPullRequestMutation(
+    {
+      incidentId: "incident-1",
+      agentRunId: "run-1",
+      deliveryIdentity,
+      pullRequest: {
+        ...deliveredPullRequest,
+        prNodeId: "PR_node_42",
+      },
+      installationId: 123,
+      fallbackInstallationIds: [],
+      canonicalRecordRequiredOnFailure: false,
+      async reconcile() {
+        calls.push("canonical.commit.ambiguous");
+        throw new Error("connection lost while committing");
+      },
+    },
+    {
+      async findRecordedDelivery() {
+        calls.push("delivery.recover");
+        return null;
+      },
+      async compensate() {
+        calls.push("github.close");
+        return {
+          ok: false,
+          deliveryStatus: "retryable",
+          retryable: true,
+          error: "The unrecorded pull request was closed.",
+        };
+      },
+    },
+  );
+
+  assert.deepEqual(calls, ["canonical.commit.ambiguous", "delivery.recover", "github.close"]);
+  assert.deepEqual(result, {
+    ok: false,
+    deliveryStatus: "retryable",
+    retryable: true,
+    error: "The unrecorded pull request was closed.",
+  });
+});
+
+test("a conflicting recovered receipt requires manual reconciliation without closing either PR", async () => {
+  const calls: string[] = [];
+
+  const result = await reconcileGithubPullRequestMutation(
+    {
+      incidentId: "incident-1",
+      agentRunId: "run-1",
+      deliveryIdentity,
+      pullRequest: {
+        ...deliveredPullRequest,
+        prNodeId: "PR_node_42",
+      },
+      installationId: 123,
+      fallbackInstallationIds: [],
+      canonicalRecordRequiredOnFailure: false,
+      async reconcile() {
+        calls.push("canonical.commit.ambiguous");
+        throw new Error("connection lost while committing");
+      },
+    },
+    {
+      async findRecordedDelivery() {
+        calls.push("delivery.recover");
+        return {
+          repoFullName: "acme/api",
+          requestedBranchName: "ash/fix-api",
+          branchName: "ash/fix-api",
+          url: "https://github.com/acme/api/pull/99",
+          prNumber: 99,
+          updatedExisting: false,
+          headSha: "def456",
+        };
+      },
+      async compensate() {
+        calls.push("github.close");
+        return {
+          ok: false,
+          deliveryStatus: "retryable",
+          retryable: true,
+          error: "compensated",
+        };
+      },
+    },
+  );
+
+  assert.deepEqual(calls, ["canonical.commit.ambiguous", "delivery.recover"]);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.deliveryStatus, "manual_reconciliation_required");
+  assert.equal(result.retryable, false);
+  assert.equal(result.manualReconciliation.actionRequired, "sync_canonical_state");
+});
+
+test("a failed commit-recovery read remains pending without closing an ambiguous PR", async () => {
+  const calls: string[] = [];
+
+  await assert.rejects(
+    reconcileGithubPullRequestMutation(
+      {
+        incidentId: "incident-1",
+        agentRunId: "run-1",
+        deliveryIdentity,
+        pullRequest: {
+          ...deliveredPullRequest,
+          prNodeId: "PR_node_42",
+        },
+        installationId: 123,
+        fallbackInstallationIds: [],
+        canonicalRecordRequiredOnFailure: false,
+        async reconcile() {
+          calls.push("canonical.commit.ambiguous");
+          throw new Error("connection lost while committing");
+        },
+      },
+      {
+        async findRecordedDelivery() {
+          calls.push("delivery.recover");
+          throw new Error("database unavailable during recovery");
+        },
+        async compensate() {
+          calls.push("github.close");
+          return {
+            ok: false,
+            deliveryStatus: "retryable",
+            retryable: true,
+            error: "compensated",
+          };
+        },
+      },
+    ),
+    PullRequestDeliveryRecoveryPendingError,
+  );
+
+  assert.deepEqual(calls, ["canonical.commit.ambiguous", "delivery.recover"]);
+});
 
 const recordedDelivery = {
   repoFullName: "acme/api",

@@ -10,14 +10,10 @@
 // corrects itself within the same session.
 
 import {
-  type ResolveIncidentInput,
-  type ResolveIncidentResult,
-  classifyIncidentIssue,
-  createIncidentLifecycle,
   db,
   finalizeFulfilledAgentPullRequestBatches,
   reserveAgentPullRequestBatch,
-  resolveIncidentIfAllAgentPullRequestsMerged,
+  resolveAgentIncident,
   type schema,
   synthesizeLegacyIncidentIssueOutcomes,
   validateIncidentIssueOutcomes,
@@ -26,9 +22,8 @@ import {
   type ProposePrPayload,
   type PullRequestProposal,
   type ResolveIncidentPayload,
-  escalationTriggerFromObservation,
+  assembleAgentRunResult,
   isDispatchedOutcomeToolName,
-  isLegacyIssueActionToolName,
   isRetiredOutcomeToolName,
   validateLegacyOutcomeToolInput,
   validateOutcomeToolInput,
@@ -39,7 +34,10 @@ import { loadEnabledIntegrationsForOrg } from "../integrations.js";
 import { logger } from "../logger.js";
 import { AGENT_RESOLVED_REASON_CODE } from "./completion.js";
 import { createDatabaseOutcomeActionReceiptLock } from "./database-outcome-action-receipts.js";
-import type { PullRequestDeliveryIdentity } from "./deliverable-records.js";
+import {
+  type PullRequestDeliveryIdentity,
+  PullRequestDeliveryReceiptConflictError,
+} from "./deliverable-records.js";
 import { hasRevylCreateTestIntegration, looksLikeMobileChange } from "./mobile-regression.js";
 import {
   type OutcomeActionReceiptLock,
@@ -49,33 +47,33 @@ import {
 import {
   type ProposedPullRequestCompensationFailure,
   type ProposedPullRequestDeliveryResult,
+  PullRequestDeliveryRecoveryPendingError,
   type PullRequestManualReconciliation,
   deliverProposedPullRequest,
   preflightProposedPullRequest,
 } from "./pr-delivery.js";
 import { agentResolveEventDedupeKey } from "./resolution-completion.js";
 
-const incidentLifecycle = createIncidentLifecycle(db);
 const databaseOutcomeActionReceiptLock = createDatabaseOutcomeActionReceiptLock(db);
 
 export type OutcomeActionDependencies = {
-  classifyIncidentIssue: typeof classifyIncidentIssue;
   synthesizeLegacyIncidentIssueOutcomes: typeof synthesizeLegacyIncidentIssueOutcomes;
-  resolveIncident(input: ResolveIncidentInput): Promise<ResolveIncidentResult>;
+  resolveAgentIncident(
+    input: Parameters<typeof resolveAgentIncident>[1],
+  ): ReturnType<typeof resolveAgentIncident>;
+  validateIncidentIssueOutcomes: typeof validateIncidentIssueOutcomes;
   reserveAgentPullRequestBatch: typeof reserveAgentPullRequestBatch;
   finalizeFulfilledAgentPullRequestBatches: typeof finalizeFulfilledAgentPullRequestBatches;
-  resolveIncidentIfAllAgentPullRequestsMerged: typeof resolveIncidentIfAllAgentPullRequestsMerged;
   preflightProposedPullRequest: typeof preflightProposedPullRequest;
   deliverProposedPullRequest: typeof deliverProposedPullRequest;
 };
 
 const databaseOutcomeActionDependencies: OutcomeActionDependencies = {
-  classifyIncidentIssue,
   synthesizeLegacyIncidentIssueOutcomes,
-  resolveIncident: (input) => incidentLifecycle.resolve(input),
+  resolveAgentIncident: (input) => resolveAgentIncident(db, input),
+  validateIncidentIssueOutcomes,
   reserveAgentPullRequestBatch,
   finalizeFulfilledAgentPullRequestBatches,
-  resolveIncidentIfAllAgentPullRequestsMerged,
   preflightProposedPullRequest,
   deliverProposedPullRequest,
 };
@@ -212,6 +210,7 @@ export async function executeProposedPullRequestBatch<Prepared>(
         break;
       }
     } catch (err) {
+      if (err instanceof PullRequestDeliveryRecoveryPendingError) throw err;
       deliveries.push({
         ok: false,
         error: err instanceof Error ? err.message : String(err),
@@ -324,14 +323,13 @@ export function createOutcomeActionExecutor(
           typeof call.input === "object" &&
           !Array.isArray(call.input) &&
           !("issueOutcomes" in call.input);
-        const validated =
-          isLegacyIssueActionToolName(call.name) || legacyResolve
-            ? validateLegacyOutcomeToolInput(call.name, call.input, {
-                hasFindings: call.hasFindings,
-              })
-            : validateOutcomeToolInput(call.name, call.input, {
-                hasFindings: call.hasFindings,
-              });
+        const validated = legacyResolve
+          ? validateLegacyOutcomeToolInput(call.name, call.input, {
+              hasFindings: call.hasFindings,
+            })
+          : validateOutcomeToolInput(call.name, call.input, {
+              hasFindings: call.hasFindings,
+            });
         if (!validated.ok) {
           return {
             handled: true,
@@ -443,29 +441,27 @@ async function executeValidatedCall(
                   error: "The Incident is no longer open, so this PR batch was not delivered.",
                 };
           },
-          afterDelivery: async (deliveryResults) => {
+          afterDelivery: async () => {
             await dependencies.finalizeFulfilledAgentPullRequestBatches(db, {
               incidentId: ctx.incident.id,
               agentRunId: ctx.agentRun.id,
               deliveries,
             });
-            const currentBatchDelivered =
-              deliveryResults.length === payload.pullRequests.length &&
-              deliveryResults.every((delivery) => delivery.ok);
-            if (!currentBatchDelivered) return;
-            await dependencies.resolveIncidentIfAllAgentPullRequestsMerged({
-              incidentId: ctx.incident.id,
-              kind: "agent_pr_merged",
-              reasonCode: "agent_pr_merged",
-              reasonText: "All agent pull requests were merged.",
-              agentRunId: ctx.agentRun.id,
-              resolvingAgentRunId: ctx.agentRun.id,
-              eventSummary: "Incident resolved because all agent pull requests were merged.",
-              eventDedupeKey: `incident_resolved:agent_pr_batch:${ctx.agentRun.id}:${toolUseId}`,
-            });
           },
         });
       } catch (err) {
+        if (err instanceof PullRequestDeliveryReceiptConflictError) {
+          return {
+            handled: true,
+            ok: false,
+            payload: {
+              ok: false,
+              errors: [
+                `PR delivery receipt conflicts with canonical pull request state (${err.message}). Manual reconciliation is required. Do not retry propose_pr or perform another mutation; call ask_human with the reconciliation request.`,
+              ],
+            },
+          };
+        }
         logger.warn(
           {
             err,
@@ -495,42 +491,6 @@ async function executeValidatedCall(
           ok: true,
           final: true,
           pullRequests: batch.pullRequests,
-        },
-      };
-    }
-
-    case "silence_as_noise":
-    case "place_under_observation":
-    case "resolve_issue": {
-      const payload = validated.payload;
-      const action =
-        validated.tool === "silence_as_noise"
-          ? ({ kind: "silence" } as const)
-          : validated.tool === "place_under_observation"
-            ? ({
-                kind: "observe",
-                trigger: escalationTriggerFromObservation(validated.payload),
-              } as const)
-            : ({ kind: "resolve" } as const);
-      const result = await dependencies.classifyIncidentIssue(db, {
-        incidentId: ctx.incident.id,
-        issueId: payload.issueId,
-        agentRunId: ctx.agentRun.id,
-        action,
-        reason: payload.reason,
-        evidence: payload.evidence,
-      });
-      if (!result.ok) {
-        return { handled: true, ok: false, payload: { ok: false, errors: [result.message] } };
-      }
-      return {
-        handled: true,
-        ok: true,
-        payload: {
-          ok: true,
-          issueId: payload.issueId,
-          status: result.status,
-          alreadyClassified: result.alreadyClassified,
         },
       };
     }
@@ -604,7 +564,7 @@ async function executeValidatedCall(
               }
             : {}),
         }));
-        const issueValidation = await validateIncidentIssueOutcomes(
+        const issueValidation = await dependencies.validateIncidentIssueOutcomes(
           db,
           ctx.incident.id,
           issueOutcomes,
@@ -621,7 +581,20 @@ async function executeValidatedCall(
         }
       }
       const eventDedupeKey = agentResolveEventDedupeKey(ctx.agentRun.id, toolUseId);
-      const resolution = await dependencies.resolveIncident({
+      const terminalPayload: ResolveIncidentPayload =
+        "issueOutcomes" in payload
+          ? payload
+          : {
+              reason: payload.reason,
+              evidence: payload.evidence,
+              issueOutcomes: compatibilityIssueOutcomes ?? [],
+            };
+      const agentRunResult = assembleAgentRunResult({
+        findings,
+        terminal: { name: "resolve_incident", payload: terminalPayload },
+        incidentResolutionEventDedupeKey: eventDedupeKey,
+      });
+      const resolution = await dependencies.resolveAgentIncident({
         incidentId: ctx.incident.id,
         kind: "agent_classification",
         reasonCode: AGENT_RESOLVED_REASON_CODE,
@@ -631,7 +604,62 @@ async function executeValidatedCall(
         eventDetail: { reason: payload.reason, evidence: payload.evidence },
         eventDedupeKey,
         issueOutcomes,
+        agentRunResult,
       });
+      if (resolution.disposition === "pull_requests_open") {
+        const openPullRequests = resolution.pullRequests.map((pullRequest) => ({
+          repoFullName: pullRequest.repoFullName,
+          prNumber: pullRequest.prNumber,
+          url: pullRequest.url,
+        }));
+        return {
+          handled: true,
+          ok: false,
+          payload: {
+            ok: false,
+            errors: [
+              `The Incident still has ${openPullRequests.length} open pull request${openPullRequests.length === 1 ? "" : "s"}. Wait for each PR to merge or close before calling resolve_incident.`,
+            ],
+            openPullRequests,
+          },
+        };
+      }
+      if (resolution.disposition === "pull_request_delivery_pending") {
+        return {
+          handled: true,
+          ok: false,
+          payload: {
+            ok: false,
+            errors: [
+              "A pull request batch is still being delivered. Wait for delivery reconciliation before calling resolve_incident.",
+            ],
+          },
+        };
+      }
+      if (resolution.disposition === "agent_run_not_current") {
+        return {
+          handled: true,
+          ok: false,
+          payload: {
+            ok: false,
+            errors: [
+              "This agent run is no longer the current investigation for the Incident. Refresh the Incident context and do not resolve it from this stale run.",
+            ],
+          },
+        };
+      }
+      if (resolution.disposition === "resolution_event_already_consumed") {
+        return {
+          handled: true,
+          ok: false,
+          payload: {
+            ok: false,
+            errors: [
+              "This resolution decision belongs to an earlier Incident epoch and cannot be reused after the Incident was reopened. Refresh the Incident context before deciding what is needed now.",
+            ],
+          },
+        };
+      }
       // Success is final even when another concurrent path already closed the
       // Incident. Completion uses the run-scoped resolution event to retain
       // classifications only when this call's atomic mutation committed.

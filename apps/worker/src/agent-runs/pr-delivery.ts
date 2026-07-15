@@ -1,8 +1,10 @@
 import {
+  type AgentPullRequestProviderObservation,
   type AgentRunResult,
   createIncidentLifecycle,
   db,
   normalizePrBaseBranch,
+  reconcileAgentPullRequestProviderObservation,
   schema,
 } from "@superlog/db";
 import { and, desc, eq } from "drizzle-orm";
@@ -34,6 +36,7 @@ import { enqueueAgentRunCompleted } from "../webhooks.js";
 import {
   type MarkAgentPullRequestClosedResult,
   type PullRequestDeliveryIdentity,
+  PullRequestDeliveryReceiptConflictError,
   type PullRequestMutationReconciliation,
   type RecordedPullRequestDelivery,
   findRecordedPullRequestDelivery,
@@ -338,6 +341,9 @@ export async function completeWithPullRequest(
       }
 
       const reconciled = await reconcileGithubPullRequestMutation({
+        incidentId: ctx.incident.id,
+        agentRunId: ctx.agentRun.id,
+        deliveryIdentity,
         pullRequest: {
           repoFullName: existingPr.repoFullName,
           branchName: existingPr.branchName,
@@ -482,6 +488,9 @@ export async function completeWithPullRequest(
   }
 
   const reconciled = await reconcileGithubPullRequestMutation({
+    incidentId: ctx.incident.id,
+    agentRunId: ctx.agentRun.id,
+    deliveryIdentity,
     pullRequest: {
       repoFullName: pr.selectedRepoFullName,
       branchName: opened.branchName,
@@ -817,11 +826,15 @@ function retryableCompensationFailure(opts: {
   };
 }
 
-export async function compensatePullRequestDelivery(opts: {
+export class PullRequestDeliveryRecoveryPendingError extends Error {
+  override readonly name = "PullRequestDeliveryRecoveryPendingError";
+}
+
+export async function compensatePullRequestDelivery<CloseSuccess extends { ok: true }>(opts: {
   pullRequest: PullRequestDeliveryCoordinates;
   reason: PullRequestDeliveryCompensationReason;
-  closePullRequest: () => Promise<{ ok: true } | { ok: false; error: string }>;
-  markCanonicalClosed: () => Promise<MarkAgentPullRequestClosedResult>;
+  closePullRequest: () => Promise<CloseSuccess | { ok: false; error: string }>;
+  markCanonicalClosed: (close: CloseSuccess) => Promise<MarkAgentPullRequestClosedResult>;
 }): Promise<ProposedPullRequestCompensationFailure> {
   const closed = await opts.closePullRequest();
   if (!closed.ok) {
@@ -837,7 +850,7 @@ export async function compensatePullRequestDelivery(opts: {
 
   let canonical: MarkAgentPullRequestClosedResult;
   try {
-    canonical = await opts.markCanonicalClosed();
+    canonical = await opts.markCanonicalClosed(closed);
   } catch (err) {
     if (opts.reason.kind === "reconciliation_failed" && !opts.reason.canonicalRecordRequired) {
       return retryableCompensationFailure({
@@ -885,21 +898,137 @@ export async function compensatePullRequestDelivery(opts: {
   });
 }
 
-async function reconcileGithubPullRequestMutation(opts: {
-  pullRequest: PullRequestDeliveryCoordinates & { prNodeId: string | null };
-  installationId: number;
-  fallbackInstallationIds: number[];
-  canonicalRecordRequiredOnFailure: boolean;
-  reconcile: () => Promise<PullRequestMutationReconciliation>;
-}): Promise<
+export async function reconcilePullRequestDeliveryAbortClose(opts: {
+  close: {
+    providerUpdatedAt?: Date;
+    loadAuthoritativeObservation?: () => Promise<AgentPullRequestProviderObservation>;
+  };
+  observedAt: Date;
+  applyObservation(
+    observation: AgentPullRequestProviderObservation,
+  ): Promise<MarkAgentPullRequestClosedResult>;
+}): Promise<MarkAgentPullRequestClosedResult> {
+  const reconciliation = await reconcileAgentPullRequestProviderObservation(
+    {
+      targetState: "closed",
+      observedAt: opts.observedAt,
+      providerUpdatedAt: opts.close.providerUpdatedAt,
+      closedAt: opts.close.providerUpdatedAt ?? opts.observedAt,
+    },
+    {
+      applyObservation: opts.applyObservation,
+      loadAuthoritativeObservation: async () => {
+        if (!opts.close.loadAuthoritativeObservation) {
+          throw new Error("authoritative provider state is unavailable for the closed PR");
+        }
+        return opts.close.loadAuthoritativeObservation();
+      },
+    },
+  );
+  return reconciliation.mutation;
+}
+
+type ReconcileGithubPullRequestMutationDependencies = {
+  findRecordedDelivery: typeof findRecordedPullRequestDelivery;
+  compensate: typeof compensateGithubPullRequestMutation;
+};
+
+function recoveredDeliveryMatchesMutation(
+  delivery: RecordedPullRequestDelivery,
+  pullRequest: PullRequestDeliveryCoordinates,
+): boolean {
+  return (
+    delivery.repoFullName === pullRequest.repoFullName &&
+    delivery.prNumber === pullRequest.prNumber &&
+    delivery.url === pullRequest.prUrl &&
+    delivery.branchName === pullRequest.branchName
+  );
+}
+
+function committedDeliveryInvariantFailure(opts: {
+  pullRequest: PullRequestDeliveryCoordinates;
+  reconciliationError: string;
+  recoveryError: string;
+}): ProposedPullRequestCompensationFailure {
+  return manualReconciliationFailure({
+    pullRequest: opts.pullRequest,
+    reason: {
+      kind: "reconciliation_failed",
+      error: `${opts.reconciliationError}; durable delivery recovery conflicted (${opts.recoveryError})`,
+      canonicalRecordRequired: true,
+    },
+    actionRequired: "sync_canonical_state",
+    closeError: null,
+    canonicalState: null,
+    error: `The durable delivery record for ${opts.pullRequest.prUrl} conflicts with the pull request mutation. No compensating close was attempted; manual reconciliation is required.`,
+  });
+}
+
+export async function reconcileGithubPullRequestMutation(
+  opts: {
+    incidentId: string;
+    agentRunId: string;
+    deliveryIdentity?: PullRequestDeliveryIdentity;
+    pullRequest: PullRequestDeliveryCoordinates & { prNodeId: string | null };
+    installationId: number;
+    fallbackInstallationIds: number[];
+    canonicalRecordRequiredOnFailure: boolean;
+    reconcile: () => Promise<PullRequestMutationReconciliation>;
+  },
+  dependencyOverrides: Partial<ReconcileGithubPullRequestMutationDependencies> = {},
+): Promise<
   | { ok: true; deliveryReceipt?: PullRequestMutationReconciliation["deliveryReceipt"] }
   | ProposedPullRequestCompensationFailure
 > {
+  const dependencies: ReconcileGithubPullRequestMutationDependencies = {
+    findRecordedDelivery: findRecordedPullRequestDelivery,
+    compensate: compensateGithubPullRequestMutation,
+    ...dependencyOverrides,
+  };
   let reconciliation: PullRequestMutationReconciliation;
   try {
     reconciliation = await opts.reconcile();
   } catch (err) {
-    return compensateGithubPullRequestMutation({
+    if (opts.deliveryIdentity) {
+      let recovered: RecordedPullRequestDelivery | null;
+      try {
+        recovered = await dependencies.findRecordedDelivery({
+          incidentId: opts.incidentId,
+          agentRunId: opts.agentRunId,
+          identity: opts.deliveryIdentity,
+          repoFullName: opts.pullRequest.repoFullName,
+        });
+      } catch (recoveryError) {
+        const reconciliationError = err instanceof Error ? err.message : String(err);
+        const recoveryMessage =
+          recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
+        if (recoveryError instanceof PullRequestDeliveryReceiptConflictError) {
+          return committedDeliveryInvariantFailure({
+            pullRequest: opts.pullRequest,
+            reconciliationError,
+            recoveryError: recoveryMessage,
+          });
+        }
+        throw new PullRequestDeliveryRecoveryPendingError(
+          `Canonical reconciliation failed (${reconciliationError}) and durable delivery recovery is unavailable (${recoveryMessage}). No compensating close was attempted.`,
+          { cause: recoveryError },
+        );
+      }
+      if (recovered) {
+        if (!recoveredDeliveryMatchesMutation(recovered, opts.pullRequest)) {
+          return committedDeliveryInvariantFailure({
+            pullRequest: opts.pullRequest,
+            reconciliationError: err instanceof Error ? err.message : String(err),
+            recoveryError: "receipt coordinates do not match the pull request mutation",
+          });
+        }
+        return {
+          ok: true,
+          deliveryReceipt: { newlyRecorded: false, delivery: recovered },
+        };
+      }
+    }
+    return dependencies.compensate({
       ...opts,
       reason: {
         kind: "reconciliation_failed",
@@ -928,10 +1057,11 @@ async function reconcileGithubPullRequestMutation(opts: {
           error: `Canonical PR state is ${reconciliation.canonicalState ?? "missing"}.`,
           canonicalRecordRequired: reconciliation.agentPullRequestId !== null,
         };
-  return compensateGithubPullRequestMutation({ ...opts, reason });
+  return dependencies.compensate({ ...opts, reason });
 }
 
 async function compensateGithubPullRequestMutation(opts: {
+  incidentId: string;
   pullRequest: PullRequestDeliveryCoordinates & { prNodeId: string | null };
   installationId: number;
   fallbackInstallationIds: number[];
@@ -949,13 +1079,23 @@ async function compensateGithubPullRequestMutation(opts: {
         prNumber: pullRequest.prNumber,
         prNodeId,
       }),
-    markCanonicalClosed: () =>
-      markAgentPullRequestClosedAfterDeliveryAbort({
-        repoFullName: pullRequest.repoFullName,
-        prNumber: pullRequest.prNumber,
-        reason:
-          opts.reason.kind === "incident_not_open" ? "incident_not_open" : "reconciliation_failed",
-      }),
+    markCanonicalClosed: async (closed) => {
+      return reconcilePullRequestDeliveryAbortClose({
+        close: closed,
+        observedAt: new Date(),
+        applyObservation: (providerObservation) =>
+          markAgentPullRequestClosedAfterDeliveryAbort({
+            incidentId: opts.incidentId,
+            repoFullName: pullRequest.repoFullName,
+            prNumber: pullRequest.prNumber,
+            reason:
+              opts.reason.kind === "incident_not_open"
+                ? "incident_not_open"
+                : "reconciliation_failed",
+            providerObservation,
+          }),
+      });
+    },
   });
 }
 
@@ -1213,6 +1353,9 @@ export async function deliverProposedPullRequest(
       return { ok: false, error: summarizePrOpenFailure(err) };
     }
     const reconciled = await reconcileGithubPullRequestMutation({
+      incidentId: ctx.incident.id,
+      agentRunId: ctx.agentRun.id,
+      ...(deliveryIdentity ? { deliveryIdentity } : {}),
       pullRequest: {
         repoFullName: existingPr.repoFullName,
         branchName: existingPr.branchName,
@@ -1282,6 +1425,9 @@ export async function deliverProposedPullRequest(
   // invisible to all of them, so recording must succeed before the tool can
   // report success.
   const reconciled = await reconcileGithubPullRequestMutation({
+    incidentId: ctx.incident.id,
+    agentRunId: ctx.agentRun.id,
+    ...(deliveryIdentity ? { deliveryIdentity } : {}),
     pullRequest: {
       repoFullName: pr.repoFullName,
       branchName: opened.branchName,

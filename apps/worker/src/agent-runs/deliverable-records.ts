@@ -1,5 +1,8 @@
 import {
+  type AgentPullRequestProviderObservation,
+  type ApplyAgentPullRequestStateResult,
   type DB,
+  applyAgentPullRequestStateInTx,
   captureAgentPrLifecycleEvent,
   db,
   linearTicketAcceptanceUnit,
@@ -33,6 +36,10 @@ export type PullRequestDeliveryReceipt = {
 };
 
 export const PULL_REQUEST_DELIVERY_EVENT_KIND = "internal_agent_outcome_pr_delivery";
+
+export class PullRequestDeliveryReceiptConflictError extends Error {
+  override readonly name = "PullRequestDeliveryReceiptConflictError";
+}
 
 export function pullRequestDeliveryReceiptKey(deliveryId: string): string {
   return `internal_agent_outcome_pr_delivery:${deliveryId}`;
@@ -96,21 +103,57 @@ export async function findRecordedPullRequestDelivery(
   },
   database: DB = db,
 ): Promise<RecordedPullRequestDelivery | null> {
-  const event = await database.query.incidentEvents.findFirst({
-    where: and(
-      eq(schema.incidentEvents.incidentId, opts.incidentId),
-      eq(schema.incidentEvents.agentRunId, opts.agentRunId),
-      eq(schema.incidentEvents.kind, PULL_REQUEST_DELIVERY_EVENT_KIND),
-      eq(schema.incidentEvents.dedupeKey, pullRequestDeliveryReceiptKey(opts.identity.deliveryId)),
-    ),
-    columns: { detail: true },
+  return database.transaction(async (tx) => {
+    // Delivery recording holds this same lock through COMMIT. A recovery read
+    // therefore waits out an ambiguous COMMIT before deciding whether its
+    // receipt exists, instead of closing a PR whose durable delivery actually
+    // succeeded.
+    const [incident] = await tx
+      .select({ id: schema.incidents.id })
+      .from(schema.incidents)
+      .where(eq(schema.incidents.id, opts.incidentId))
+      .for("update");
+    if (!incident) return null;
+
+    const event = await tx.query.incidentEvents.findFirst({
+      where: and(
+        eq(schema.incidentEvents.incidentId, opts.incidentId),
+        eq(schema.incidentEvents.agentRunId, opts.agentRunId),
+        eq(schema.incidentEvents.kind, PULL_REQUEST_DELIVERY_EVENT_KIND),
+        eq(
+          schema.incidentEvents.dedupeKey,
+          pullRequestDeliveryReceiptKey(opts.identity.deliveryId),
+        ),
+      ),
+      columns: { detail: true },
+    });
+    const delivery = parseRecordedPullRequestDelivery(event?.detail, opts.identity);
+    if (!event) return null;
+    if (!delivery || delivery.repoFullName !== opts.repoFullName) {
+      throw new PullRequestDeliveryReceiptConflictError(
+        "pull request delivery receipt conflicted with different input",
+      );
+    }
+    const canonical = await tx.query.agentPullRequests.findFirst({
+      where: and(
+        eq(schema.agentPullRequests.incidentId, opts.incidentId),
+        eq(schema.agentPullRequests.repoFullName, delivery.repoFullName),
+        eq(schema.agentPullRequests.prNumber, delivery.prNumber),
+      ),
+      columns: { state: true },
+    });
+    if (!canonical) {
+      throw new PullRequestDeliveryReceiptConflictError(
+        "pull request delivery receipt has no canonical pull request",
+      );
+    }
+    if (canonical.state === "closed") {
+      throw new PullRequestDeliveryReceiptConflictError(
+        "a closed pull request cannot be replayed as delivered",
+      );
+    }
+    return delivery;
   });
-  const delivery = parseRecordedPullRequestDelivery(event?.detail, opts.identity);
-  if (!event) return null;
-  if (!delivery || delivery.repoFullName !== opts.repoFullName) {
-    throw new Error("pull request delivery receipt conflicted with different input");
-  }
-  return delivery;
 }
 
 type PullRequestRecordTx = Parameters<Parameters<DB["transaction"]>[0]>[0];
@@ -539,68 +582,114 @@ export async function recordUpdatedAgentPullRequest(
 }
 
 export type MarkAgentPullRequestClosedResult =
-  | { canonicalRecordFound: false; canonicalState: null }
-  | { canonicalRecordFound: true; canonicalState: schema.AgentPrState };
+  | {
+      canonicalRecordFound: false;
+      canonicalState: null;
+      pullRequestState: null;
+      stateChanged: false;
+      providerReconciliationRequired: false;
+    }
+  | {
+      canonicalRecordFound: true;
+      canonicalState: schema.AgentPrState;
+      pullRequestState: schema.AgentPrState;
+      stateChanged: boolean;
+      providerReconciliationRequired: boolean;
+    };
 
 export async function markAgentPullRequestClosedAfterDeliveryAbort(
   opts: {
+    incidentId: string;
     repoFullName: string;
     prNumber: number;
     reason: "incident_not_open" | "reconciliation_failed";
+    providerObservation: AgentPullRequestProviderObservation;
   },
-  deps: Pick<PullRequestRecordDependencies, "database" | "now"> = {},
+  deps: Pick<PullRequestRecordDependencies, "database"> & {
+    applyPullRequestStateInTx?: typeof applyAgentPullRequestStateInTx;
+  } = {},
 ): Promise<MarkAgentPullRequestClosedResult> {
   const database = deps.database ?? db;
-  const now = (deps.now ?? (() => new Date()))();
   return database.transaction(async (tx) => {
+    // recordOpenedAgentPullRequest takes this lock before inserting the
+    // canonical row. Acquiring the same aggregate lock before lookup makes an
+    // ambiguous insert commit visible to this transaction before it decides
+    // whether there is anything to compensate.
+    const incidents = await tx
+      .select({ id: schema.incidents.id })
+      .from(schema.incidents)
+      .where(eq(schema.incidents.id, opts.incidentId))
+      .for("update");
+    if (!incidents[0]) {
+      return {
+        canonicalRecordFound: false,
+        canonicalState: null,
+        pullRequestState: null,
+        stateChanged: false,
+        providerReconciliationRequired: false,
+      };
+    }
+
     const row = await tx.query.agentPullRequests.findFirst({
       where: and(
+        eq(schema.agentPullRequests.incidentId, opts.incidentId),
         eq(schema.agentPullRequests.repoFullName, opts.repoFullName),
         eq(schema.agentPullRequests.prNumber, opts.prNumber),
       ),
-      columns: { id: true, state: true },
+      columns: { id: true, incidentId: true, state: true },
     });
-    if (!row) return { canonicalRecordFound: false, canonicalState: null };
-    if (row.state !== "open") {
-      return { canonicalRecordFound: true, canonicalState: row.state };
+    if (!row) {
+      return {
+        canonicalRecordFound: false,
+        canonicalState: null,
+        pullRequestState: null,
+        stateChanged: false,
+        providerReconciliationRequired: false,
+      };
+    }
+    const mutation: ApplyAgentPullRequestStateResult = await (
+      deps.applyPullRequestStateInTx ?? applyAgentPullRequestStateInTx
+    )(tx, {
+      incidentId: opts.incidentId,
+      agentPrId: row.id,
+      ...opts.providerObservation,
+    });
+    if (!mutation.pullRequest) {
+      return {
+        canonicalRecordFound: false,
+        canonicalState: null,
+        pullRequestState: null,
+        stateChanged: false,
+        providerReconciliationRequired: false,
+      };
     }
 
-    const updated = await tx
-      .update(schema.agentPullRequests)
-      .set({ state: "closed", closedAt: now, lastSyncedAt: now, updatedAt: now })
-      .where(
-        and(eq(schema.agentPullRequests.id, row.id), eq(schema.agentPullRequests.state, "open")),
-      )
-      .returning({ id: schema.agentPullRequests.id, state: schema.agentPullRequests.state });
-    const closed = updated[0];
-    if (!closed) {
-      const refreshed = await tx.query.agentPullRequests.findFirst({
-        where: eq(schema.agentPullRequests.id, row.id),
-        columns: { state: true },
-      });
-      return refreshed
-        ? { canonicalRecordFound: true, canonicalState: refreshed.state }
-        : { canonicalRecordFound: false, canonicalState: null };
+    if (mutation.stateChanged && mutation.pullRequest.state === "closed") {
+      await tx
+        .insert(schema.agentPrEvents)
+        .values({
+          agentPrId: row.id,
+          kind: "pr_closed",
+          summary:
+            opts.reason === "incident_not_open"
+              ? `Closed PR #${opts.prNumber} because incident resolution won delivery reconciliation.`
+              : `Closed PR #${opts.prNumber} after delivery reconciliation failed.`,
+          payload: {
+            repoFullName: opts.repoFullName,
+            prNumber: opts.prNumber,
+            deliveryAbortReason: opts.reason,
+          },
+          providerEventId: `pr_closed:delivery_abort:${opts.reason}:${row.id}`,
+          occurredAt: opts.providerObservation.observedAt,
+        })
+        .onConflictDoNothing();
     }
-
-    await tx
-      .insert(schema.agentPrEvents)
-      .values({
-        agentPrId: row.id,
-        kind: "pr_closed",
-        summary:
-          opts.reason === "incident_not_open"
-            ? `Closed PR #${opts.prNumber} because incident resolution won delivery reconciliation.`
-            : `Closed PR #${opts.prNumber} after delivery reconciliation failed.`,
-        payload: {
-          repoFullName: opts.repoFullName,
-          prNumber: opts.prNumber,
-          deliveryAbortReason: opts.reason,
-        },
-        providerEventId: `pr_closed:delivery_abort:${opts.reason}:${row.id}`,
-        occurredAt: now,
-      })
-      .onConflictDoNothing();
-    return { canonicalRecordFound: true, canonicalState: closed.state };
+    return {
+      canonicalRecordFound: true,
+      canonicalState: mutation.pullRequest.state,
+      pullRequestState: mutation.pullRequest.state,
+      stateChanged: mutation.stateChanged,
+      providerReconciliationRequired: mutation.providerReconciliationRequired,
+    };
   });
 }

@@ -1,11 +1,13 @@
 import crypto from "node:crypto";
 import {
   type AgentPullRequestLifecycleContinuation,
+  type AgentPullRequestProviderObservation as GithubPullRequestProviderObservation,
   type ResolveIncidentAfterAgentPullRequestsMergedResult,
   applyAgentPullRequestState,
   buildAgentPullRequestLifecycleContinuation,
   db,
   listAccessibleGithubInstallsForProject,
+  reconcileAgentPullRequestProviderObservation,
   recordInboundInteraction,
   resolveIncidentIfAllAgentPullRequestsMerged,
   schema,
@@ -22,6 +24,10 @@ import {
 } from "./feedback.js";
 import { getDeviceFlow, getLinkedDevice, getSkillDeviceForIntegration } from "./gateway.js";
 import { type RepoBranch, type RepoBranchInfo, mergeRepoBranches } from "./github-branches.js";
+import {
+  type GithubPullRequestProviderSnapshot,
+  loadGithubPullRequestProviderObservation,
+} from "./github-pr-provider.js";
 import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolution-side-effects.js";
 import { logger } from "./logger.js";
 import { resolveActiveOrgContext } from "./org-context.js";
@@ -351,6 +357,7 @@ type WebhookPayload = {
     merged?: boolean;
     merged_at?: string | null;
     closed_at?: string | null;
+    updated_at?: string;
     merged_by?: GhActor;
     user?: GhActor;
     head?: { sha?: string; ref?: string };
@@ -598,7 +605,7 @@ async function handleAgentPrWebhook(
   if (event === "pull_request") {
     const action = payload.action ?? "";
     const pr = payload.pull_request ?? {};
-    let mergedResolution: { mergedAt: Date } | null = null;
+    const providerUpdatedAt = pr.updated_at ? new Date(pr.updated_at) : undefined;
     let targetState: schema.AgentPrState | undefined;
     let closedAt: Date | null | undefined;
     let mergedAt: Date | null | undefined;
@@ -611,9 +618,6 @@ async function handleAgentPrWebhook(
         closedAt = pr.closed_at ? new Date(pr.closed_at) : undefined;
         mergedByLogin = pr.merged_by ? (pr.merged_by.login ?? null) : undefined;
         mergedByGithubId = pr.merged_by ? (pr.merged_by.id ?? null) : undefined;
-        mergedResolution = {
-          mergedAt: mergedAt ?? closedAt ?? now,
-        };
       } else {
         targetState = "closed";
         closedAt = pr.closed_at ? new Date(pr.closed_at) : now;
@@ -622,42 +626,80 @@ async function handleAgentPrWebhook(
       targetState = "open";
       closedAt = null;
     }
-    const mutation = await applyAgentPullRequestState(db, {
-      incidentId: agentPrRow.incidentId,
-      agentPrId: agentPrRow.id,
+
+    const observation: GithubPullRequestProviderObservation = {
       targetState,
       observedAt: now,
+      providerUpdatedAt,
       ...(pr.head?.sha ? { headSha: pr.head.sha } : {}),
       ...(typeof pr.title === "string" ? { title: pr.title } : {}),
       mergedAt,
       closedAt,
       mergedByLogin,
       mergedByGithubId,
+    };
+    const reconciliation = await reconcileAgentPullRequestProviderObservation(observation, {
+      async applyObservation(nextObservation) {
+        const mutation = await applyAgentPullRequestState(db, {
+          incidentId: agentPrRow.incidentId,
+          agentPrId: agentPrRow.id,
+          ...nextObservation,
+        });
+        return {
+          ...mutation,
+          pullRequestState: mutation.pullRequest?.state ?? null,
+        };
+      },
+      async loadAuthoritativeObservation() {
+        let installationId = payload.installation?.id;
+        if (!installationId) {
+          const installation = await db.query.githubInstallations.findFirst({
+            where: eq(schema.githubInstallations.id, agentPrRow.installationId),
+            columns: { installationId: true },
+          });
+          installationId = installation?.installationId;
+        }
+        if (!installationId) {
+          throw new Error(`GitHub installation unavailable for agent PR ${agentPrRow.id}`);
+        }
+        return fetchAuthoritativeGithubPullRequestProviderObservation({
+          installationId,
+          repoFullName,
+          prNumber: agentPrRow.prNumber,
+          observedAt: new Date(),
+        });
+      },
     });
+    const { mutation, appliedObservation } = reconciliation;
     const canonicalPr = mutation.pullRequest ?? agentPrRow;
-    if (targetState === "merged" && mutation.stateChanged) {
+    const appliedState = appliedObservation.targetState;
+    const appliedMergedAt = appliedObservation.mergedAt;
+    const appliedClosedAt = appliedObservation.closedAt;
+    if (appliedState === "merged" && mutation.stateChanged) {
       await recordPrMergedMetric({
         agentPr: canonicalPr,
-        resolvedAt: mergedAt ?? closedAt ?? now,
+        resolvedAt: appliedMergedAt ?? appliedClosedAt ?? appliedObservation.observedAt,
         mergedByLogin: canonicalPr.mergedByLogin,
       });
-    } else if (targetState === "closed" && mutation.stateChanged) {
+    } else if (appliedState === "closed" && mutation.stateChanged) {
       await recordPrClosedMetric({
         agentPr: canonicalPr,
-        resolvedAt: closedAt ?? now,
+        resolvedAt: appliedClosedAt ?? appliedObservation.observedAt,
       });
     }
-    if (mergedResolution && canonicalPr.state === "merged") {
+    if (appliedState === "merged" && canonicalPr.state === "merged") {
       await resumeOrResolveIncidentForMergedAgentPr({
         agentPr: canonicalPr,
-        mergedAt: mergedResolution.mergedAt,
+        mergedAt: appliedMergedAt ?? appliedClosedAt ?? appliedObservation.observedAt,
         mergedByLogin: canonicalPr.mergedByLogin,
       });
-    } else if (targetState === "closed" && canonicalPr.state === "closed") {
+    } else if (appliedState === "closed" && canonicalPr.state === "closed") {
       await maybeResumeIncidentForClosedAgentPr({
         agentPr: canonicalPr,
-        closedByLogin: payload.sender?.login ?? null,
-        closedAt: closedAt ?? now,
+        closedByLogin: appliedObservation.providerSnapshotAuthoritative
+          ? null
+          : (payload.sender?.login ?? null),
+        closedAt: appliedClosedAt ?? appliedObservation.observedAt,
       });
     }
   } else if (event === "push") {
@@ -690,12 +732,15 @@ async function handleAgentPrWebhook(
 
 // Route a PR lifecycle event (merge/close) into the incident's durable
 // investigation session when one can be resumed: the agent — not the webhook —
-// decides whether the incident is done. Returns true when the event reached a
-// session (or already had, on redelivery).
+// decides whether the incident is done. The explicit unavailable outcome is the
+// only signal that permits deterministic merge resolution; infrastructure
+// failures throw so the caller can retry.
+type MergedAgentPullRequestSessionContinuation = "continued_in_session" | "no_resumable_session";
+
 async function resumeIncidentSessionForPrEvent(opts: {
   agentPr: schema.AgentPullRequest;
   continuation: AgentPullRequestLifecycleContinuation;
-}): Promise<boolean> {
+}): Promise<MergedAgentPullRequestSessionContinuation> {
   const result = await recordInboundInteraction(db, {
     incidentId: opts.agentPr.incidentId,
     interaction: opts.continuation.interaction,
@@ -703,8 +748,9 @@ async function resumeIncidentSessionForPrEvent(opts: {
     confirmed: true,
     existingSessionOnly: true,
   });
-  if (result.outcome === "duplicate") return true;
-  return result.outcome === "accepted";
+  return result.outcome === "duplicate" || result.outcome === "accepted"
+    ? "continued_in_session"
+    : "no_resumable_session";
 }
 
 // An agent PR merged. Resume the durable session so the agent decides whether
@@ -716,12 +762,30 @@ export type MergedAgentPullRequestContinuationDisposition =
   | "continued_in_session"
   | ResolveIncidentAfterAgentPullRequestsMergedResult["disposition"];
 
-export async function resumeOrResolveIncidentForMergedAgentPr(opts: {
+type MergedAgentPullRequestContinuationInput = {
   agentPr: schema.AgentPullRequest;
   mergedAt: Date;
   mergedByLogin: string | null;
   source?: string;
-}): Promise<MergedAgentPullRequestContinuationDisposition> {
+};
+
+type MergedAgentPullRequestContinuationDependencies = {
+  continueInSession(opts: {
+    agentPr: schema.AgentPullRequest;
+    continuation: AgentPullRequestLifecycleContinuation;
+  }): Promise<MergedAgentPullRequestSessionContinuation>;
+  resolveWithoutSession(
+    opts: MergedAgentPullRequestContinuationInput,
+  ): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult>;
+};
+
+export async function resumeOrResolveIncidentForMergedAgentPr(
+  opts: MergedAgentPullRequestContinuationInput,
+  dependencies: MergedAgentPullRequestContinuationDependencies = {
+    continueInSession: resumeIncidentSessionForPrEvent,
+    resolveWithoutSession: resolveIncidentForMergedAgentPr,
+  },
+): Promise<MergedAgentPullRequestContinuationDisposition> {
   const { agentPr, mergedByLogin } = opts;
   const continuation = buildAgentPullRequestLifecycleContinuation({
     pullRequest: {
@@ -734,18 +798,12 @@ export async function resumeOrResolveIncidentForMergedAgentPr(opts: {
     occurredAt: opts.mergedAt,
   });
   if (!continuation) throw new Error("merged PR did not produce a lifecycle continuation");
-  const resumed = await resumeIncidentSessionForPrEvent({
+  const continuationDisposition = await dependencies.continueInSession({
     agentPr,
     continuation,
-  }).catch((err) => {
-    log.warn(
-      { err, agent_pr_id: agentPr.id, incident_id: agentPr.incidentId },
-      "failed to resume session for merged agent PR; falling back to auto-resolve",
-    );
-    return false;
   });
-  if (resumed) return "continued_in_session";
-  const resolution = await resolveIncidentForMergedAgentPr(opts);
+  if (continuationDisposition === "continued_in_session") return continuationDisposition;
+  const resolution = await dependencies.resolveWithoutSession(opts);
   return resolution.disposition;
 }
 
@@ -788,6 +846,7 @@ async function resolveIncidentForMergedAgentPr(opts: {
   source?: string;
 }): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult> {
   const { agentPr, mergedAt, mergedByLogin } = opts;
+  const resolutionEventDedupeKey = `incident_resolved:agent_pr:${agentPr.id}`;
   const resolution = await resolveIncidentIfAllAgentPullRequestsMerged({
     incidentId: agentPr.incidentId,
     kind: "agent_pr_merged",
@@ -806,14 +865,26 @@ async function resolveIncidentForMergedAgentPr(opts: {
       mergedByLogin,
       ...(opts.source ? { source: opts.source } : {}),
     },
-    eventDedupeKey: `incident_resolved:agent_pr:${agentPr.id}`,
+    eventDedupeKey: resolutionEventDedupeKey,
     resolvedAt: mergedAt,
   });
   if (resolution.disposition === "resolved") {
     await runResolvedIncidentSideEffectsForIncident({
       incidentId: agentPr.incidentId,
+      resolutionProof: {
+        agentRunId: agentPr.agentRunId,
+        eventDedupeKey: resolutionEventDedupeKey,
+      },
       closePullRequest: (pr) =>
         closeAgentPullRequestOnGithub({
+          installationId: pr.githubInstallationId,
+          fallbackInstallationIds: pr.fallbackGithubInstallationIds,
+          repoFullName: pr.repoFullName,
+          prNumber: pr.prNumber,
+          prNodeId: pr.prNodeId,
+        }),
+      reopenPullRequest: (pr) =>
+        reopenAgentPullRequestOnGithub({
           installationId: pr.githubInstallationId,
           fallbackInstallationIds: pr.fallbackGithubInstallationIds,
           repoFullName: pr.repoFullName,
@@ -1177,12 +1248,21 @@ function signGithubAppJwt(appId: string, privateKey: string): string {
 }
 
 async function githubRequest<T>(pathname: string, bearerToken: string): Promise<T> {
-  const res = await fetch(`https://api.github.com${pathname}`, {
+  return githubGetWithToken(pathname, bearerToken, fetch, "superlog-api");
+}
+
+async function githubGetWithToken<T>(
+  pathname: string,
+  bearerToken: string,
+  fetchImpl: typeof fetch,
+  userAgent: string,
+): Promise<T> {
+  const res = await fetchImpl(`https://api.github.com${pathname}`, {
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${bearerToken}`,
       "x-github-api-version": "2022-11-28",
-      "user-agent": "superlog-api",
+      "user-agent": userAgent,
     },
   });
   if (!res.ok) {
@@ -1190,6 +1270,24 @@ async function githubRequest<T>(pathname: string, bearerToken: string): Promise<
     throw new Error(`github GET ${pathname} failed: ${res.status} ${text}`);
   }
   return (await res.json()) as T;
+}
+
+async function fetchAuthoritativeGithubPullRequestProviderObservation(opts: {
+  installationId: number;
+  repoFullName: string;
+  prNumber: number;
+  observedAt: Date;
+}): Promise<GithubPullRequestProviderSnapshot> {
+  const token = await createInstallationToken({
+    installationId: opts.installationId,
+    permissions: { contents: "read", pull_requests: "read" },
+  });
+  return loadGithubPullRequestProviderObservation({
+    repoFullName: opts.repoFullName,
+    prNumber: opts.prNumber,
+    observedAt: opts.observedAt,
+    request: (pathname) => githubRequest(pathname, token),
+  });
 }
 
 type GithubPermission = "read" | "write";
@@ -1300,12 +1398,30 @@ export async function closeAgentPullRequestOnGithub(opts: {
   repoFullName: string;
   prNumber: number;
   prNodeId?: string | null;
-}): Promise<{ ok: true } | { ok: false; error: string }> {
+}): Promise<GithubPullRequestStateMutationResult> {
   return closeGithubPullRequestWithInstallations({
     installationIds: [opts.installationId, ...(opts.fallbackInstallationIds ?? [])],
     repoFullName: opts.repoFullName,
     prNumber: opts.prNumber,
     prNodeId: opts.prNodeId,
+    userAgent: "superlog-api",
+    createWriteToken: createInstallationWriteToken,
+  });
+}
+
+export async function reopenAgentPullRequestOnGithub(opts: {
+  installationId: number;
+  fallbackInstallationIds?: number[];
+  repoFullName: string;
+  prNumber: number;
+  prNodeId?: string | null;
+}): Promise<GithubPullRequestStateMutationResult> {
+  return mutateGithubPullRequestStateWithInstallations({
+    installationIds: [opts.installationId, ...(opts.fallbackInstallationIds ?? [])],
+    repoFullName: opts.repoFullName,
+    prNumber: opts.prNumber,
+    prNodeId: opts.prNodeId,
+    state: "open",
     userAgent: "superlog-api",
     createWriteToken: createInstallationWriteToken,
   });
@@ -1319,20 +1435,46 @@ export async function closeGithubPullRequestWithInstallations(opts: {
   userAgent: string;
   fetchImpl?: typeof fetch;
   createWriteToken: (installationId: number) => Promise<string>;
-}): Promise<{ ok: true } | { ok: false; error: string }> {
+}): Promise<GithubPullRequestStateMutationResult> {
+  return mutateGithubPullRequestStateWithInstallations({ ...opts, state: "closed" });
+}
+
+async function mutateGithubPullRequestStateWithInstallations(opts: {
+  installationIds: number[];
+  repoFullName: string;
+  prNumber: number;
+  prNodeId?: string | null;
+  state: "open" | "closed";
+  userAgent: string;
+  fetchImpl?: typeof fetch;
+  createWriteToken: (installationId: number) => Promise<string>;
+}): Promise<GithubPullRequestStateMutationResult> {
   const errors: string[] = [];
   for (const installationId of dedupeInstallationIds(opts.installationIds)) {
     try {
       const token = await opts.createWriteToken(installationId);
-      const result = await closeGithubPullRequestWithToken({
+      const result = await mutateGithubPullRequestStateWithToken({
         token,
         repoFullName: opts.repoFullName,
         prNumber: opts.prNumber,
         prNodeId: opts.prNodeId,
+        state: opts.state,
         userAgent: opts.userAgent,
         fetchImpl: opts.fetchImpl,
       });
-      if (result.ok) return result;
+      if (result.ok) {
+        return {
+          ...result,
+          loadAuthoritativeObservation: () =>
+            loadGithubPullRequestProviderObservation({
+              repoFullName: opts.repoFullName,
+              prNumber: opts.prNumber,
+              observedAt: new Date(),
+              request: (pathname) =>
+                githubGetWithToken(pathname, token, opts.fetchImpl ?? fetch, opts.userAgent),
+            }),
+        };
+      }
       errors.push(`installation ${installationId}: ${result.error}`);
     } catch (err) {
       errors.push(
@@ -1350,9 +1492,34 @@ export async function closeGithubPullRequestWithToken(opts: {
   prNodeId?: string | null;
   userAgent: string;
   fetchImpl?: typeof fetch;
-}): Promise<{ ok: true } | { ok: false; error: string }> {
+}): Promise<GithubPullRequestStateMutationResult> {
+  return mutateGithubPullRequestStateWithToken({ ...opts, state: "closed" });
+}
+
+export async function reopenGithubPullRequestWithToken(opts: {
+  token: string;
+  repoFullName: string;
+  prNumber: number;
+  prNodeId?: string | null;
+  userAgent: string;
+  fetchImpl?: typeof fetch;
+}): Promise<GithubPullRequestStateMutationResult> {
+  return mutateGithubPullRequestStateWithToken({ ...opts, state: "open" });
+}
+
+async function mutateGithubPullRequestStateWithToken(opts: {
+  token: string;
+  repoFullName: string;
+  prNumber: number;
+  prNodeId?: string | null;
+  state: "open" | "closed";
+  userAgent: string;
+  fetchImpl?: typeof fetch;
+}): Promise<GithubPullRequestStateMutationResult> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const errors: string[] = [];
+  const operation = opts.state === "open" ? "reopenPullRequest" : "closePullRequest";
+  const operationName = opts.state === "open" ? "ReopenPullRequest" : "ClosePullRequest";
   if (opts.prNodeId) {
     const res = await fetchImpl("https://api.github.com/graphql", {
       method: "POST",
@@ -1364,9 +1531,9 @@ export async function closeGithubPullRequestWithToken(opts: {
         "user-agent": opts.userAgent,
       },
       body: JSON.stringify({
-        query: `mutation ClosePullRequest($pullRequestId: ID!) {
-          closePullRequest(input: { pullRequestId: $pullRequestId }) {
-            pullRequest { id closed }
+        query: `mutation ${operationName}($pullRequestId: ID!) {
+          ${operation}(input: { pullRequestId: $pullRequestId }) {
+            pullRequest { id closed updatedAt }
           }
         }`,
         variables: { pullRequestId: opts.prNodeId },
@@ -1375,9 +1542,13 @@ export async function closeGithubPullRequestWithToken(opts: {
     const text = await res.text().catch(() => "");
     if (res.ok) {
       const data = text ? parseGithubGraphqlResponse(text) : {};
-      if (!data.errors?.length) return { ok: true };
+      if (!data.errors?.length) {
+        const mutation =
+          opts.state === "open" ? data.data?.reopenPullRequest : data.data?.closePullRequest;
+        return githubPullRequestStateMutationSuccess(mutation?.pullRequest?.updatedAt);
+      }
     }
-    errors.push(`github GraphQL closePullRequest ${res.status} ${text}`);
+    errors.push(`github GraphQL ${operation} ${res.status} ${text}`);
   }
 
   const res = await fetchImpl(
@@ -1391,18 +1562,57 @@ export async function closeGithubPullRequestWithToken(opts: {
         "x-github-api-version": "2022-11-28",
         "user-agent": opts.userAgent,
       },
-      body: JSON.stringify({ state: "closed" }),
+      body: JSON.stringify({ state: opts.state }),
     },
   );
-  if (res.ok) return { ok: true };
   const text = await res.text().catch(() => "");
+  if (res.ok) {
+    const payload = parseGithubPullRequestResponse(text);
+    return githubPullRequestStateMutationSuccess(payload.updated_at);
+  }
   errors.push(`github PATCH /pulls/${opts.prNumber} ${res.status} ${text}`);
   return { ok: false, error: errors.join("; ") };
 }
 
-function parseGithubGraphqlResponse(text: string): { errors?: unknown[] } {
+export type GithubPullRequestStateMutationResult =
+  | {
+      ok: true;
+      providerUpdatedAt?: Date;
+      loadAuthoritativeObservation?: () => Promise<GithubPullRequestProviderSnapshot>;
+    }
+  | { ok: false; error: string };
+
+function githubPullRequestStateMutationSuccess(
+  providerUpdatedAt: string | null | undefined,
+): GithubPullRequestStateMutationResult {
+  if (!providerUpdatedAt) return { ok: true };
+  const parsed = new Date(providerUpdatedAt);
+  return Number.isNaN(parsed.getTime()) ? { ok: true } : { ok: true, providerUpdatedAt: parsed };
+}
+
+function parseGithubPullRequestResponse(text: string): { updated_at?: string | null } {
   try {
-    return JSON.parse(text) as { errors?: unknown[] };
+    return JSON.parse(text) as { updated_at?: string | null };
+  } catch {
+    return {};
+  }
+}
+
+function parseGithubGraphqlResponse(text: string): {
+  errors?: unknown[];
+  data?: {
+    closePullRequest?: { pullRequest?: { updatedAt?: string | null } | null } | null;
+    reopenPullRequest?: { pullRequest?: { updatedAt?: string | null } | null } | null;
+  };
+} {
+  try {
+    return JSON.parse(text) as {
+      errors?: unknown[];
+      data?: {
+        closePullRequest?: { pullRequest?: { updatedAt?: string | null } | null } | null;
+        reopenPullRequest?: { pullRequest?: { updatedAt?: string | null } | null } | null;
+      };
+    };
   } catch {
     return { errors: [{ message: "invalid json response" }] };
   }

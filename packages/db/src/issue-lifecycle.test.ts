@@ -802,6 +802,149 @@ test("manual reopen retires a stale PR batch reservation inherited from a merge"
   }
 });
 
+test("a stale manual reopen cannot retire a PR batch reserved after a newer reopen", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-stale-reopen-keeps-new-pr-batch",
+    });
+    const firstResolvedAt = new Date("2026-07-14T16:00:00.000Z");
+    await createIncidentLifecycle(db).resolve({
+      incidentId: incident.id,
+      kind: "dashboard_manual",
+      reasonCode: "problem_resolved",
+      reasonText: "The first investigation finished.",
+      resolvedAt: firstResolvedAt,
+    });
+    const staleClosedSnapshot = one(
+      await db.select().from(schema.incidents).where(eq(schema.incidents.id, incident.id)),
+    );
+    const lifecycle = createIncidentLifecycle(db);
+    assert.equal(
+      (
+        await lifecycle.reopenManually({
+          incident: staleClosedSnapshot,
+          actor: {},
+          reopenedAt: new Date("2026-07-14T16:01:00.000Z"),
+        })
+      ).reopened,
+      true,
+    );
+
+    const run = one(
+      await db
+        .insert(schema.agentRuns)
+        .values({ incidentId: incident.id, runtime: "test", state: "running" })
+        .returning(),
+    );
+    await reserveAgentPullRequestBatch(db, {
+      incidentId: incident.id,
+      agentRunId: run.id,
+      batchKey: "new-remediation-batch",
+      deliveries: [
+        { repoFullName: "acme/api", deliveryId: "delivery-api" },
+        { repoFullName: "acme/web", deliveryId: "delivery-web" },
+      ],
+      now: new Date("2026-07-14T16:02:00.000Z"),
+    });
+
+    const staleReopen = await lifecycle.reopenManually({
+      incident: staleClosedSnapshot,
+      actor: {},
+      reopenedAt: new Date("2026-07-14T16:03:00.000Z"),
+    });
+
+    assert.equal(staleReopen.reopened, false);
+    const reservation = one(
+      await db
+        .select({ processedAt: schema.incidentEvents.processedAt })
+        .from(schema.incidentEvents)
+        .where(
+          and(
+            eq(schema.incidentEvents.incidentId, incident.id),
+            eq(schema.incidentEvents.kind, "internal_agent_pr_batch_pending"),
+          ),
+        ),
+    );
+    assert.equal(reservation.processedAt, null);
+    const reopenEvents = await db.query.incidentEvents.findMany({
+      where: and(
+        eq(schema.incidentEvents.incidentId, incident.id),
+        eq(schema.incidentEvents.kind, "incident_reopened"),
+      ),
+    });
+    assert.equal(reopenEvents.length, 1);
+  } finally {
+    await client.close();
+  }
+});
+
+test("a stale manual reopen cannot reopen a newer closed resolution epoch", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-stale-reopen-keeps-new-resolution",
+    });
+    const lifecycle = createIncidentLifecycle(db);
+    await lifecycle.resolve({
+      incidentId: incident.id,
+      kind: "dashboard_manual",
+      reasonCode: "first_resolution",
+      reasonText: "The first investigation finished.",
+      resolvedAt: new Date("2026-07-14T17:00:00.000Z"),
+      issueOutcome: { kind: "none" },
+    });
+    const staleClosedSnapshot = one(
+      await db.select().from(schema.incidents).where(eq(schema.incidents.id, incident.id)),
+    );
+    assert.equal(
+      (
+        await lifecycle.reopenManually({
+          incident: staleClosedSnapshot,
+          actor: {},
+          reopenedAt: new Date("2026-07-14T17:01:00.000Z"),
+        })
+      ).reopened,
+      true,
+    );
+    const secondResolvedAt = new Date("2026-07-14T17:02:00.000Z");
+    const secondResolution = await lifecycle.resolve({
+      incidentId: incident.id,
+      kind: "dashboard_manual",
+      reasonCode: "second_resolution",
+      reasonText: "A later investigation finished.",
+      resolvedAt: secondResolvedAt,
+      issueOutcome: { kind: "none" },
+    });
+    assert.equal(secondResolution.resolved, true);
+
+    const staleReopen = await lifecycle.reopenManually({
+      incident: staleClosedSnapshot,
+      actor: {},
+      reopenedAt: new Date("2026-07-14T17:03:00.000Z"),
+    });
+
+    assert.equal(staleReopen.reopened, false);
+    const current = one(
+      await db.select().from(schema.incidents).where(eq(schema.incidents.id, incident.id)),
+    );
+    assert.equal(current.status, "resolved");
+    assert.equal(current.resolvedAt?.getTime(), secondResolvedAt.getTime());
+    assert.equal(current.resolvedReasonCode, "second_resolution");
+    const reopenEvents = await db.query.incidentEvents.findMany({
+      where: and(
+        eq(schema.incidentEvents.incidentId, incident.id),
+        eq(schema.incidentEvents.kind, "incident_reopened"),
+      ),
+    });
+    assert.equal(reopenEvents.length, 1);
+  } finally {
+    await client.close();
+  }
+});
+
 test("repeated resolution does not complete a parked run twice", async () => {
   const { db, client } = await freshDb();
   try {

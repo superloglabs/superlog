@@ -2,7 +2,7 @@ import "dotenv/config";
 import { strict as assert } from "node:assert";
 import crypto from "node:crypto";
 import { after, before, test } from "node:test";
-import { closeDb, db, runMigrations, schema } from "@superlog/db";
+import { closeDb, createIncidentLifecycle, db, runMigrations, schema } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { mountGithubPublic } from "./github.js";
@@ -131,6 +131,56 @@ test("merged agent PR resolves incident, cascades linked issues, and writes time
   assert.equal(prAfterDuplicate?.closedAt?.toISOString(), mergedAt);
 });
 
+test("a merged webhook redelivery cannot resolve a manually reopened incident again", async () => {
+  const fixture = await seedAgentPrFixture("merged-redelivery-after-reopen");
+  const app = new Hono();
+  mountGithubPublic(app);
+
+  const mergedAt = new Date();
+  const payload = {
+    action: "closed",
+    repository: { full_name: fixture.repoFullName },
+    pull_request: {
+      number: fixture.prNumber,
+      merged: true,
+      updated_at: mergedAt.toISOString(),
+      merged_at: mergedAt.toISOString(),
+      closed_at: mergedAt.toISOString(),
+      merged_by: { login: "alice", id: 100 },
+      head: { sha: "cafebabe", ref: fixture.branchName },
+    },
+    sender: { login: "alice", id: 100 },
+    installation: { id: fixture.installationId },
+  };
+
+  assert.equal(
+    (await postGithub(app, "pull_request", `gh-${fixture.tag}-merged-first`, payload)).status,
+    200,
+  );
+  const resolved = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.id, fixture.incidentId),
+  });
+  assert.equal(resolved?.status, "resolved");
+  assert.ok(resolved);
+
+  const reopen = await createIncidentLifecycle(db).reopenManually({
+    incident: resolved,
+    actor: {},
+    reopenedAt: new Date(mergedAt.getTime() + 1_000),
+  });
+  assert.deepEqual(reopen, { reopened: true });
+
+  assert.equal(
+    (await postGithub(app, "pull_request", `gh-${fixture.tag}-merged-redelivery`, payload)).status,
+    200,
+  );
+  const afterRedelivery = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.id, fixture.incidentId),
+  });
+  assert.equal(afterRedelivery?.status, "open");
+  assert.equal(afterRedelivery?.resolvedAt, null);
+});
+
 test("merged agent PR leaves the Incident open while a sibling PR remains open", async () => {
   const fixture = await seedAgentPrFixture("merged-with-open-sibling");
   const primaryPr = await db.query.agentPullRequests.findFirst({
@@ -193,6 +243,7 @@ test("delayed close and reopen webhooks cannot regress an already merged agent P
   const app = new Hono();
   mountGithubPublic(app);
   const mergedAt = new Date().toISOString();
+  const delayedAt = new Date(new Date(mergedAt).getTime() - 1_000).toISOString();
 
   assert.equal(
     (
@@ -202,6 +253,7 @@ test("delayed close and reopen webhooks cannot regress an already merged agent P
         pull_request: {
           number: fixture.prNumber,
           merged: true,
+          updated_at: mergedAt,
           merged_at: mergedAt,
           closed_at: mergedAt,
           merged_by: { login: "alice", id: 100 },
@@ -220,6 +272,7 @@ test("delayed close and reopen webhooks cannot regress an already merged agent P
         pull_request: {
           number: fixture.prNumber,
           merged: false,
+          updated_at: delayedAt,
           closed_at: new Date().toISOString(),
         },
         sender: { login: "bob", id: 101 },
@@ -233,7 +286,7 @@ test("delayed close and reopen webhooks cannot regress an already merged agent P
       await postGithub(app, "pull_request", `gh-${fixture.tag}-late-reopen`, {
         action: "reopened",
         repository: { full_name: fixture.repoFullName },
-        pull_request: { number: fixture.prNumber, merged: false },
+        pull_request: { number: fixture.prNumber, merged: false, updated_at: delayedAt },
         sender: { login: "bob", id: 101 },
         installation: { id: fixture.installationId },
       })
@@ -247,6 +300,242 @@ test("delayed close and reopen webhooks cannot regress an already merged agent P
   assert.equal(pullRequest?.state, "merged");
   assert.equal(pullRequest?.mergedByLogin, "alice");
   assert.equal(pullRequest?.mergedAt?.toISOString(), mergedAt);
+});
+
+test("a stale close cannot override a newer reopened observation", async () => {
+  const fixture = await seedAgentPrFixture("stale-close-after-reopen");
+  const app = new Hono();
+  mountGithubPublic(app);
+  const staleClosedAt = new Date(Date.now() + 1_000);
+  const reopenedAt = new Date(staleClosedAt.getTime() + 1_000);
+
+  assert.equal(
+    (
+      await postGithub(app, "pull_request", `gh-${fixture.tag}-reopened`, {
+        action: "reopened",
+        repository: { full_name: fixture.repoFullName },
+        pull_request: {
+          number: fixture.prNumber,
+          merged: false,
+          updated_at: reopenedAt.toISOString(),
+          title: "Fresh title from the reopened observation",
+          head: { sha: "fresh-reopened-head", ref: fixture.branchName },
+        },
+        sender: { login: "alice", id: 100 },
+        installation: { id: fixture.installationId },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await postGithub(app, "pull_request", `gh-${fixture.tag}-stale-close`, {
+        action: "closed",
+        repository: { full_name: fixture.repoFullName },
+        pull_request: {
+          number: fixture.prNumber,
+          merged: false,
+          updated_at: staleClosedAt.toISOString(),
+          closed_at: staleClosedAt.toISOString(),
+          title: "Stale close title",
+          head: { sha: "stale-close-head", ref: fixture.branchName },
+        },
+        sender: { login: "bob", id: 101 },
+        installation: { id: fixture.installationId },
+      })
+    ).status,
+    200,
+  );
+
+  const pullRequest = await db.query.agentPullRequests.findFirst({
+    where: eq(schema.agentPullRequests.id, fixture.agentPrId),
+  });
+  assert.equal(pullRequest?.state, "open");
+  assert.equal(pullRequest?.providerUpdatedAt?.toISOString(), reopenedAt.toISOString());
+  assert.equal(pullRequest?.title, "Fresh title from the reopened observation");
+  assert.equal(pullRequest?.headSha, "fresh-reopened-head");
+  assert.equal(pullRequest?.closedAt, null);
+});
+
+test("a stale reopen cannot override a newer closed observation", async () => {
+  const fixture = await seedAgentPrFixture("stale-reopen-after-close");
+  const app = new Hono();
+  mountGithubPublic(app);
+  const staleReopenedAt = new Date(Date.now() + 1_000);
+  const closedAt = new Date(staleReopenedAt.getTime() + 1_000);
+
+  assert.equal(
+    (
+      await postGithub(app, "pull_request", `gh-${fixture.tag}-closed`, {
+        action: "closed",
+        repository: { full_name: fixture.repoFullName },
+        pull_request: {
+          number: fixture.prNumber,
+          merged: false,
+          updated_at: closedAt.toISOString(),
+          closed_at: closedAt.toISOString(),
+          title: "Fresh title from the closed observation",
+          head: { sha: "fresh-closed-head", ref: fixture.branchName },
+        },
+        sender: { login: "alice", id: 100 },
+        installation: { id: fixture.installationId },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await postGithub(app, "pull_request", `gh-${fixture.tag}-stale-reopen`, {
+        action: "reopened",
+        repository: { full_name: fixture.repoFullName },
+        pull_request: {
+          number: fixture.prNumber,
+          merged: false,
+          updated_at: staleReopenedAt.toISOString(),
+          title: "Stale reopen title",
+          head: { sha: "stale-reopen-head", ref: fixture.branchName },
+        },
+        sender: { login: "bob", id: 101 },
+        installation: { id: fixture.installationId },
+      })
+    ).status,
+    200,
+  );
+
+  const pullRequest = await db.query.agentPullRequests.findFirst({
+    where: eq(schema.agentPullRequests.id, fixture.agentPrId),
+  });
+  assert.equal(pullRequest?.state, "closed");
+  assert.equal(pullRequest?.providerUpdatedAt?.toISOString(), closedAt.toISOString());
+  assert.equal(pullRequest?.title, "Fresh title from the closed observation");
+  assert.equal(pullRequest?.headSha, "fresh-closed-head");
+  assert.equal(pullRequest?.closedAt?.toISOString(), closedAt.toISOString());
+});
+
+test("stale PR metadata cannot lower the watermark and admit an older close", async () => {
+  const fixture = await seedAgentPrFixture("stale-metadata-before-close");
+  const app = new Hono();
+  mountGithubPublic(app);
+  const staleMetadataAt = new Date(Date.now() + 1_000);
+  const staleClosedAt = new Date(staleMetadataAt.getTime() + 1_000);
+  const reopenedAt = new Date(staleClosedAt.getTime() + 1_000);
+
+  assert.equal(
+    (
+      await postGithub(app, "pull_request", `gh-${fixture.tag}-reopened`, {
+        action: "reopened",
+        repository: { full_name: fixture.repoFullName },
+        pull_request: {
+          number: fixture.prNumber,
+          merged: false,
+          updated_at: reopenedAt.toISOString(),
+          title: "Fresh title from the latest observation",
+          head: { sha: "fresh-latest-head", ref: fixture.branchName },
+        },
+        sender: { login: "alice", id: 100 },
+        installation: { id: fixture.installationId },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await postGithub(app, "pull_request", `gh-${fixture.tag}-stale-metadata`, {
+        action: "synchronize",
+        repository: { full_name: fixture.repoFullName },
+        pull_request: {
+          number: fixture.prNumber,
+          merged: false,
+          updated_at: staleMetadataAt.toISOString(),
+          title: "Stale metadata title",
+          head: { sha: "stale-metadata-head", ref: fixture.branchName },
+        },
+        sender: { login: "bob", id: 101 },
+        installation: { id: fixture.installationId },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await postGithub(app, "pull_request", `gh-${fixture.tag}-stale-close`, {
+        action: "closed",
+        repository: { full_name: fixture.repoFullName },
+        pull_request: {
+          number: fixture.prNumber,
+          merged: false,
+          updated_at: staleClosedAt.toISOString(),
+          closed_at: staleClosedAt.toISOString(),
+          title: "Older close title",
+          head: { sha: "older-close-head", ref: fixture.branchName },
+        },
+        sender: { login: "carol", id: 102 },
+        installation: { id: fixture.installationId },
+      })
+    ).status,
+    200,
+  );
+
+  const pullRequest = await db.query.agentPullRequests.findFirst({
+    where: eq(schema.agentPullRequests.id, fixture.agentPrId),
+  });
+  assert.equal(pullRequest?.state, "open");
+  assert.equal(pullRequest?.providerUpdatedAt?.toISOString(), reopenedAt.toISOString());
+  assert.equal(pullRequest?.title, "Fresh title from the latest observation");
+  assert.equal(pullRequest?.headSha, "fresh-latest-head");
+  assert.equal(pullRequest?.closedAt, null);
+});
+
+test("a delivery without provider time cannot block a later GitHub state observation", async () => {
+  const fixture = await seedAgentPrFixture("missing-provider-time");
+  const app = new Hono();
+  mountGithubPublic(app);
+  const providerClosedAt = new Date(Date.now() - 60_000);
+
+  assert.equal(
+    (
+      await postGithub(app, "pull_request", `gh-${fixture.tag}-metadata`, {
+        action: "synchronize",
+        repository: { full_name: fixture.repoFullName },
+        pull_request: {
+          number: fixture.prNumber,
+          merged: false,
+          title: "Metadata without provider time",
+          head: { sha: "metadata-head", ref: fixture.branchName },
+        },
+        sender: { login: "alice", id: 100 },
+        installation: { id: fixture.installationId },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await postGithub(app, "pull_request", `gh-${fixture.tag}-closed`, {
+        action: "closed",
+        repository: { full_name: fixture.repoFullName },
+        pull_request: {
+          number: fixture.prNumber,
+          merged: false,
+          updated_at: providerClosedAt.toISOString(),
+          closed_at: providerClosedAt.toISOString(),
+          title: "Closed by the provider",
+          head: { sha: "closed-head", ref: fixture.branchName },
+        },
+        sender: { login: "bob", id: 101 },
+        installation: { id: fixture.installationId },
+      })
+    ).status,
+    200,
+  );
+
+  const pullRequest = await db.query.agentPullRequests.findFirst({
+    where: eq(schema.agentPullRequests.id, fixture.agentPrId),
+  });
+  assert.equal(pullRequest?.state, "closed");
+  assert.equal(pullRequest?.providerUpdatedAt?.toISOString(), providerClosedAt.toISOString());
+  assert.equal(pullRequest?.title, "Closed by the provider");
+  assert.equal(pullRequest?.headSha, "closed-head");
 });
 
 test("merged agent PR reaches a surviving session once and does not auto-resolve on redelivery", async () => {
@@ -310,6 +599,7 @@ test("closed unmerged agent PR does not resolve incident or linked issue", async
     pull_request: {
       number: fixture.prNumber,
       merged: false,
+      updated_at: closedAt,
       closed_at: closedAt,
       user: { login: "superlog-bot", id: 999 },
     },

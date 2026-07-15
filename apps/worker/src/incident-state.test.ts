@@ -17,6 +17,7 @@ type RecordedCall =
   | { op: "insert.returning"; table: unknown; values: Record<string, unknown> }
   | { op: "insert.onConflictDoNothing"; table: unknown; values: Record<string, unknown> }
   | { op: "update.where"; table: unknown; values: Record<string, unknown> }
+  | { op: "select.forUpdate"; table: unknown }
   | { op: "select.orderBy.forUpdate" }
   | { op: "execute" }
   | { op: "transaction.begin" }
@@ -30,6 +31,7 @@ function recordingDb(
     incidentIssueLinks?: schema.IncidentIssue[];
     currentIssues?: Array<Record<string, unknown>>;
     lockedIncidents?: schema.Incident[];
+    incidentResolutionEventExists?: boolean;
   } = {},
 ): {
   db: DB;
@@ -67,10 +69,14 @@ function recordingDb(
   const db = {
     select() {
       return {
-        from() {
+        from(table: unknown) {
           return {
             where() {
               return {
+                async for() {
+                  calls.push({ op: "select.forUpdate", table });
+                  return table === schema.agentRuns ? [] : (opts.lockedIncidents ?? []);
+                },
                 orderBy() {
                   return {
                     async for() {
@@ -110,6 +116,11 @@ function recordingDb(
       issues: {
         async findMany() {
           return opts.currentIssues ?? [];
+        },
+      },
+      incidentEvents: {
+        async findFirst() {
+          return opts.incidentResolutionEventExists ? { id: "event-1" } : undefined;
         },
       },
     },
@@ -510,11 +521,12 @@ test("merge rejects closed source or target incidents before writing", async () 
 });
 
 test("manual reopen clears both resolution and noise metadata", async () => {
-  const { db, calls } = recordingDb();
+  const incident = makeIncident("autoresolved_noise");
+  const { db, calls } = recordingDb({ lockedIncidents: [incident] });
   const lifecycle = createIncidentLifecycle(db);
 
   const result = await lifecycle.reopenManually({
-    incident: makeIncident("autoresolved_noise"),
+    incident,
     actor: { userId: "user-1" },
     summary: "Incident reopened from test.",
   });
