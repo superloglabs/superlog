@@ -57,6 +57,7 @@ export function buildAgentPullRequestLifecycleContinuation(args: {
     return {
       interaction: {
         channel: "pr_merged",
+        agentPrId: pullRequest.id,
         author: actorLogin,
         text: `Your PR #${pullRequest.prNumber} (${pullRequest.repoFullName}, branch \`${pullRequest.branchName}\`) was merged${
           actorLogin ? ` by @${actorLogin}` : ""
@@ -71,6 +72,7 @@ export function buildAgentPullRequestLifecycleContinuation(args: {
   return {
     interaction: {
       channel: "pr_closed",
+      agentPrId: pullRequest.id,
       author: actorLogin,
       text: `Your PR #${pullRequest.prNumber} (${pullRequest.repoFullName}, branch \`${pullRequest.branchName}\`) was closed without being merged${
         actorLogin ? ` by @${actorLogin}` : ""

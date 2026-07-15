@@ -1,7 +1,11 @@
 import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { resumeDurableAgentRun, resumeInputEventKinds } from "./resume.js";
+import {
+  recoverUnresumableContinuation,
+  resumeDurableAgentRun,
+  resumeInputEventKinds,
+} from "./resume.js";
 
 test("external-cause waits resume when incident context changes", () => {
   assert.deepEqual(
@@ -28,6 +32,141 @@ test("human waits still require a human reply", () => {
     }),
     ["human_reply"],
   );
+});
+
+test("an unresumable merged-PR continuation resolves before follow-up gates can drop it", async () => {
+  const calls: string[] = [];
+  const processed: string[][] = [];
+
+  const outcome = await recoverUnresumableContinuation({
+    inputs: [
+      {
+        id: "event-1",
+        kind: "human_reply",
+        summary: "PR #42 merged.",
+        detail: {
+          origin: {
+            channel: "pr_merged",
+            agentPrId: "agent-pr-42",
+            author: "octocat",
+            text: "PR #42 merged.",
+            url: "https://github.com/acme/api/pull/42",
+            occurredAt: "2026-07-15T10:00:00.000Z",
+          },
+        },
+      },
+    ],
+    async resolveMergedPullRequest(input) {
+      calls.push(`resolve:${input.agentPrId}`);
+      return {
+        disposition: "resolved",
+        resolved: true,
+        resolvedIssueCount: 1,
+      };
+    },
+    async failCurrentRun() {
+      calls.push("fail");
+    },
+    async requestFollowUp() {
+      calls.push("follow_up_disabled_or_capped");
+      return { outcome: "skipped", reason: "follow_up_cap_reached" };
+    },
+    async markProcessed(ids) {
+      calls.push("mark_processed");
+      processed.push(ids);
+    },
+  });
+
+  assert.deepEqual(outcome, { kind: "resolved" });
+  assert.deepEqual(calls, ["resolve:agent-pr-42", "mark_processed"]);
+  assert.deepEqual(processed, [["event-1"]]);
+});
+
+test("an unresumable merged-PR continuation cold-starts while sibling PRs remain", async () => {
+  const calls: string[] = [];
+  const input = {
+    id: "event-1",
+    kind: "human_reply" as const,
+    summary: "PR #42 merged.",
+    detail: {
+      origin: {
+        channel: "pr_merged" as const,
+        agentPrId: "agent-pr-42",
+        author: "octocat",
+        text: "PR #42 merged.",
+        occurredAt: "2026-07-15T10:00:00.000Z",
+      },
+    },
+  };
+
+  const outcome = await recoverUnresumableContinuation({
+    inputs: [input],
+    async resolveMergedPullRequest() {
+      calls.push("resolve");
+      return {
+        disposition: "pull_requests_pending",
+        resolved: false,
+        resolvedIssueCount: 0,
+      };
+    },
+    async failCurrentRun() {
+      calls.push("fail");
+    },
+    async requestFollowUp(interaction) {
+      calls.push(`follow_up:${interaction.agentPrId}`);
+      return { outcome: "skipped", reason: "auto_follow_up_disabled" };
+    },
+    async markProcessed(ids) {
+      calls.push(`mark_processed:${ids.join(",")}`);
+    },
+  });
+
+  assert.deepEqual(outcome, {
+    kind: "cold_start",
+    result: { outcome: "skipped", reason: "auto_follow_up_disabled" },
+    inputText: "PR #42 merged.",
+  });
+  assert.deepEqual(calls, ["resolve", "fail", "follow_up:agent-pr-42", "mark_processed:event-1"]);
+});
+
+test("a merge-resolution failure leaves the continuation retryable", async () => {
+  const sideEffects: string[] = [];
+
+  await assert.rejects(
+    recoverUnresumableContinuation({
+      inputs: [
+        {
+          id: "event-1",
+          kind: "human_reply",
+          summary: "PR #42 merged.",
+          detail: {
+            origin: {
+              channel: "pr_merged",
+              agentPrId: "agent-pr-42",
+              author: null,
+              text: "PR #42 merged.",
+              occurredAt: "2026-07-15T10:00:00.000Z",
+            },
+          },
+        },
+      ],
+      async resolveMergedPullRequest() {
+        throw new Error("database temporarily unavailable");
+      },
+      async failCurrentRun() {
+        sideEffects.push("fail");
+      },
+      async requestFollowUp() {
+        sideEffects.push("follow_up");
+        return { outcome: "enqueued", agentRunId: "follow-up-1" };
+      },
+      async markProcessed() {
+        sideEffects.push("mark_processed");
+      },
+    }),
+    /database temporarily unavailable/,
+  );
+  assert.deepEqual(sideEffects, []);
 });
 
 test("external-cause context resumes with incident framing and consumes the input", async () => {

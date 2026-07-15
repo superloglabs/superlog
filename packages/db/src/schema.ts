@@ -264,6 +264,10 @@ export type AgentRunFollowUpTrigger = Exclude<AgentRunTrigger, "incident" | "man
 
 export type AgentRunFollowUpInteraction = {
   channel: AgentRunFollowUpTrigger;
+  // Stable identity for PR lifecycle interactions. This lets a worker that
+  // discovers a reclaimed provider session apply the same incident-wide
+  // fallback as the webhook without inferring identity from display text.
+  agentPrId?: string;
   author: string | null;
   text: string;
   // PR comments: the comment URL and, for review comments, the file/line.

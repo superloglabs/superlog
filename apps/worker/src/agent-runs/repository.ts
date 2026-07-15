@@ -45,6 +45,7 @@ function combineFollowUpInteractions(
   const interactionKey = (interaction: schema.AgentRunFollowUpInteraction) =>
     JSON.stringify([
       interaction.channel,
+      interaction.agentPrId ?? null,
       interaction.author,
       interaction.text,
       interaction.url ?? null,

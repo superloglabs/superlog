@@ -30,6 +30,7 @@ test("buildAgentPullRequestLifecycleContinuation describes merged and closed PR 
   assert.deepEqual(merged, {
     interaction: {
       channel: "pr_merged",
+      agentPrId: "agent-pr-1",
       author: "octocat",
       text: "Your PR #1 (acme/api, branch `ash/fix-api`) was merged by @octocat. If this completes the remediation, make sure every linked issue is classified and call resolve_incident; if more work remains (other PRs still open, issues unclassified), continue it.",
       url: "https://github.com/acme/api/pull/1",
@@ -55,6 +56,7 @@ test("buildAgentPullRequestLifecycleContinuation describes merged and closed PR 
   assert.deepEqual(closed, {
     interaction: {
       channel: "pr_closed",
+      agentPrId: "agent-pr-2",
       author: "hubot",
       text: "Your PR #2 (acme/web, branch `ash/fix-web`) was closed without being merged by @hubot. Read the PR conversation for the close context: if it shows the incident is actually noise, classify the issues accordingly and call resolve_incident; if the fix is still needed, decide the next step (an adjusted PR, or ask_human).",
       url: "https://github.com/acme/web/pull/2",

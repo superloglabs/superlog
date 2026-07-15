@@ -1,7 +1,10 @@
 import {
   type AgentRunFollowUpInteraction,
+  type RequestFollowUpResult,
+  type ResolveIncidentAfterAgentPullRequestsMergedResult,
   db,
   requestFollowUpAgentRun,
+  resolveIncidentIfAllAgentPullRequestsMerged,
   schema,
 } from "@superlog/db";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
@@ -15,6 +18,87 @@ import { failAgentRun, isTransientError } from "./status.js";
 const agentRunLifecycle = createAgentRunLifecycle(db);
 
 export type PendingResumeInput = Pick<schema.IncidentEvent, "id" | "kind" | "summary" | "detail">;
+
+type MergedPullRequestContinuation = {
+  agentPrId: string;
+  occurredAt: string;
+};
+
+export type UnresumableContinuationRecoveryOutcome =
+  | { kind: "resolved" }
+  | { kind: "incident_not_open" }
+  | { kind: "cold_start"; result: RequestFollowUpResult; inputText: string };
+
+function interactionOrigin(input: PendingResumeInput): AgentRunFollowUpInteraction | null {
+  const origin = input.detail?.origin;
+  return origin && typeof origin === "object" && !Array.isArray(origin)
+    ? (origin as AgentRunFollowUpInteraction)
+    : null;
+}
+
+function mergedPullRequestContinuation(
+  inputs: PendingResumeInput[],
+): MergedPullRequestContinuation | null {
+  for (const input of [...inputs].reverse()) {
+    const origin = interactionOrigin(input);
+    if (
+      origin?.channel === "pr_merged" &&
+      typeof origin.agentPrId === "string" &&
+      origin.agentPrId.length > 0
+    ) {
+      return { agentPrId: origin.agentPrId, occurredAt: origin.occurredAt };
+    }
+  }
+  return null;
+}
+
+// A recorded lifecycle event only proves that the continuation is durable.
+// Once the provider proves the old session is permanently unavailable, apply
+// the same all-PRs-merged fallback as the webhook/recovery paths before trying
+// a gated cold-start follow-up. Transient provider errors never reach this use
+// case, so its input remains unprocessed and retryable in that case.
+export async function recoverUnresumableContinuation(opts: {
+  inputs: PendingResumeInput[];
+  resolveMergedPullRequest(
+    input: MergedPullRequestContinuation,
+  ): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult>;
+  failCurrentRun(): Promise<void>;
+  requestFollowUp(interaction: AgentRunFollowUpInteraction): Promise<RequestFollowUpResult>;
+  markProcessed(ids: string[]): Promise<void>;
+}): Promise<UnresumableContinuationRecoveryOutcome> {
+  const combined = opts.inputs
+    .map((event) => event.summary ?? "")
+    .filter(Boolean)
+    .reverse()
+    .join("\n\n");
+  const first = opts.inputs[opts.inputs.length - 1];
+  const origin = first ? interactionOrigin(first) : null;
+  const mergedContinuation = mergedPullRequestContinuation(opts.inputs);
+
+  if (mergedContinuation) {
+    const resolution = await opts.resolveMergedPullRequest(mergedContinuation);
+    if (resolution.disposition === "resolved") {
+      await opts.markProcessed(opts.inputs.map((event) => event.id));
+      return { kind: "resolved" };
+    }
+    if (resolution.disposition === "incident_not_open") {
+      await opts.markProcessed(opts.inputs.map((event) => event.id));
+      return { kind: "incident_not_open" };
+    }
+  }
+
+  await opts.failCurrentRun();
+  const result = await opts.requestFollowUp(
+    origin ?? {
+      channel: "slack_reply",
+      author: null,
+      text: combined,
+      occurredAt: new Date().toISOString(),
+    },
+  );
+  await opts.markProcessed(opts.inputs.map((event) => event.id));
+  return { kind: "cold_start", result, inputText: combined };
+}
 
 export async function resumeDurableAgentRun(opts: {
   sessionId: string;
@@ -215,57 +299,85 @@ export async function resumeAgentRunFromHumanInput(ctx: AgentRunContext): Promis
   }
 }
 
-// Session unresumable → mark this run terminal quietly (no failure card) and
-// enqueue a fresh follow-up run that carries the prior context + the human's
-// message, so the conversation continues even across a lost session.
+// Session unresumable → resolve a completed PR delivery deterministically, or
+// mark this run terminal quietly and enqueue a context-carrying follow-up.
 async function coldStartFallback(
   ctx: AgentRunContext,
   resumeInputs: Awaited<ReturnType<typeof loadUnprocessedResumeInputs>>,
 ): Promise<void> {
-  const combined = resumeInputs
-    .map((event) => event.summary ?? "")
-    .filter(Boolean)
-    .reverse()
-    .join("\n\n");
-  const first = resumeInputs[resumeInputs.length - 1];
-  const origin = (first?.detail as { origin?: AgentRunFollowUpInteraction } | null)?.origin ?? null;
-
-  await agentRunLifecycle.fail({
-    id: ctx.agentRun.id,
-    currentState: ctx.agentRun.state,
-    reason: "resume_failed",
-    summary: "Provider session expired; continuing as a fresh follow-up.",
-    category: "infrastructure",
-    existingResult: ctx.agentRun.result ?? null,
-  });
-
-  const result = await requestFollowUpAgentRun(db, {
-    incidentId: ctx.incident.id,
-    trigger: origin?.channel ?? "slack_reply",
-    interaction: origin ?? {
-      channel: "slack_reply",
-      author: null,
-      text: combined,
-      occurredAt: new Date().toISOString(),
+  const recovery = await recoverUnresumableContinuation({
+    inputs: resumeInputs,
+    async resolveMergedPullRequest(input) {
+      const agentPr = await db.query.agentPullRequests.findFirst({
+        where: and(
+          eq(schema.agentPullRequests.id, input.agentPrId),
+          eq(schema.agentPullRequests.incidentId, ctx.incident.id),
+        ),
+      });
+      if (!agentPr || agentPr.state !== "merged") {
+        return {
+          disposition: "pull_requests_pending",
+          resolved: false,
+          resolvedIssueCount: 0,
+        };
+      }
+      const occurredAt = new Date(input.occurredAt);
+      const resolvedAt =
+        agentPr.mergedAt ?? (Number.isFinite(occurredAt.getTime()) ? occurredAt : new Date());
+      return resolveIncidentIfAllAgentPullRequestsMerged({
+        incidentId: ctx.incident.id,
+        kind: "agent_pr_merged",
+        reasonCode: "agent_pr_merged",
+        reasonText: `Resolved because agent PR #${agentPr.prNumber} (${agentPr.repoFullName}) was merged${
+          agentPr.mergedByLogin ? ` by @${agentPr.mergedByLogin}` : ""
+        }.`,
+        agentRunId: agentPr.agentRunId,
+        resolvingAgentRunId: null,
+        eventSummary: `Incident resolved because PR #${agentPr.prNumber} was merged.`,
+        eventDetail: {
+          agentPrId: agentPr.id,
+          repoFullName: agentPr.repoFullName,
+          prNumber: agentPr.prNumber,
+          prUrl: agentPr.url,
+          mergedByLogin: agentPr.mergedByLogin,
+        },
+        eventDedupeKey: `incident_resolved:agent_pr:${agentPr.id}`,
+        resolvedAt,
+      });
     },
+    async failCurrentRun() {
+      await agentRunLifecycle.fail({
+        id: ctx.agentRun.id,
+        currentState: ctx.agentRun.state,
+        reason: "resume_failed",
+        summary: "Provider session expired; continuing as a fresh follow-up.",
+        category: "infrastructure",
+        existingResult: ctx.agentRun.result ?? null,
+      });
+    },
+    requestFollowUp: (interaction) =>
+      requestFollowUpAgentRun(db, {
+        incidentId: ctx.incident.id,
+        trigger: interaction.channel,
+        interaction,
+      }),
+    markProcessed,
   });
 
   // Don't silently swallow the human's message: if the fallback couldn't
   // enqueue (cap reached, gate off, another run already active), surface it
   // loudly. We still mark the replies processed so the now-failed run doesn't
   // re-attempt the dead session every tick.
-  if (result.outcome === "skipped") {
+  if (recovery.kind === "cold_start" && recovery.result.outcome === "skipped") {
     logger.warn(
       {
         scope: "agent_run",
         agent_run_id: ctx.agentRun.id,
         incident_id: ctx.incident.id,
-        reason: result.reason,
-        dropped_text: combined.slice(0, 500),
+        reason: recovery.result.reason,
+        dropped_text: recovery.inputText.slice(0, 500),
       },
       "cold-start fallback could not enqueue; human input not actioned",
     );
   }
-
-  await markProcessed(resumeInputs.map((event) => event.id));
 }
