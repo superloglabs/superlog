@@ -147,7 +147,7 @@ async function allocateOpenIncidentInTx(
   tx: Tx,
   opts: CreateOpenIncidentOpts,
 ): Promise<schema.Incident> {
-  for (let attempt = 0; attempt < 6; attempt++) {
+  for (let attempt = 0; attempt < 12; attempt++) {
     const codename = generateCodename();
     try {
       const created = await tx.transaction((sp) =>
@@ -175,7 +175,7 @@ async function allocateOpenIncidentInTx(
       if ((anyErr?.code ?? anyErr?.cause?.code) !== "23505") throw err;
     }
   }
-  throw new Error("failed to allocate a unique incident codename after 6 attempts");
+  throw new Error("failed to allocate a unique incident codename after 12 attempts");
 }
 
 export function createIncidentLifecycle(database: DB = db) {
