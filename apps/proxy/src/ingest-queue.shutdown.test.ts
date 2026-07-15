@@ -114,3 +114,30 @@ test("stop() drains a message assigned to an outstanding long poll during shutdo
     globalThis.fetch = originalFetch;
   }
 });
+
+test("stop() aborts a stalled receive after the normal long-poll window", async () => {
+  const queue = new IngestQueue({ ...config, waitTimeSeconds: 0 }, noopLogger);
+  const sqs = new FakeLongPollSqs();
+  (queue as unknown as { sqs: FakeLongPollSqs }).sqs = sqs;
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(new Uint8Array(0), { status: 200 })) as typeof fetch;
+
+  try {
+    queue.startConsumer("http://collector.local");
+    await waitFor(() => sqs.receiveCount === 1);
+
+    const stopping = queue.stop();
+    await delay(5_100);
+    const abortedAfterDeadline = sqs.aborted;
+
+    // Let the old implementation finish so the failing regression test does
+    // not leave its consumer loop running forever.
+    if (!abortedAfterDeadline) sqs.deliverDuringShutdown();
+    await stopping;
+
+    assert.equal(abortedAfterDeadline, true, "a stalled receive must not block shutdown forever");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

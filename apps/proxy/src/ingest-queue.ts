@@ -54,6 +54,7 @@ const MAX_COLLECTOR_ERROR_BODY_CHARS = 1_000;
 // 10 entries, and (for sends) at most 256 KiB of total payload across entries.
 const SQS_BATCH_MAX_ENTRIES = 10;
 const SQS_BATCH_MAX_PAYLOAD_BYTES = 256 * 1024;
+const SHUTDOWN_RECEIVE_ABORT_SLACK_MS = 5_000;
 // How long a pending send may wait for batch-mates before it is flushed anyway.
 // Each SQS request is billed individually, so coalescing sends into
 // SendMessageBatch cuts the request bill up to 10x; the linger is the latency
@@ -653,6 +654,10 @@ export class IngestQueue {
   // Set by stop(); flips the consume loops out of their receive cycle so a
   // rolling deploy can drain cleanly instead of abandoning in-flight messages.
   private shuttingDown = false;
+  // Healthy long polls are allowed to finish during shutdown. This controller
+  // is aborted only after their configured server-side wait plus network slack,
+  // bounding the drain if an HTTP connection stalls indefinitely.
+  private readonly shutdownController = new AbortController();
   // Resolves once every consume loop has exited; stop() awaits it.
   private consumersDone: Promise<void> | null = null;
 
@@ -678,10 +683,12 @@ export class IngestQueue {
    * Drain the consumer for a graceful shutdown (e.g. SIGTERM from an ECS rolling
    * deploy). Stops issuing new ReceiveMessage calls and waits for outstanding
    * long polls plus in-flight messages to finish — each delivered message is
-   * deleted before its loop exits. The long polls must not be client-aborted:
-   * SQS can assign a message to a server-side receive after the local abort,
-   * leaving it invisible without a live client to receive its receipt handle.
-   * ECS's stop timeout comfortably exceeds the long-poll wait. Idempotent.
+   * deleted before its loop exits. Long polls must not be aborted immediately:
+   * SQS can assign a message to a server-side receive after an immediate local
+   * abort, leaving it invisible without a live client to receive its receipt
+   * handle. A delayed abort after the normal poll window bounds genuinely
+   * stalled connections. ECS's stop timeout comfortably exceeds that window.
+   * Idempotent.
    */
   async stop(): Promise<void> {
     if (this.shuttingDown) return;
@@ -697,8 +704,24 @@ export class IngestQueue {
     this.flushPendingSends();
     await Promise.allSettled([...this.inFlightSends]);
     // consumersDone never rejects (see startConsumer); a loop failure is logged
-    // and surfaced as a non-zero exit there.
-    await this.consumersDone;
+    // and surfaced as a non-zero exit there. Give healthy receives their full
+    // server-side long-poll window, then abort only a connection that is still
+    // stalled beyond an additional network grace period.
+    const abortTimer = this.consumersDone
+      ? setTimeout(() => {
+          this.logger.warn(
+            { queueUrl: this.config.queueUrl },
+            "aborting stalled SQS receive after shutdown drain deadline",
+          );
+          this.shutdownController.abort();
+        }, this.config.waitTimeSeconds * 1_000 + SHUTDOWN_RECEIVE_ABORT_SLACK_MS)
+      : null;
+    abortTimer?.unref?.();
+    try {
+      await this.consumersDone;
+    } finally {
+      if (abortTimer) clearTimeout(abortTimer);
+    }
     this.logger.info({ queueUrl: this.config.queueUrl }, "ingest queue consumer drained");
   }
 
@@ -715,14 +738,21 @@ export class IngestQueue {
     );
 
     while (!this.shuttingDown) {
-      const result: ReceiveMessageCommandOutput = await this.sqs.send(
-        new ReceiveMessageCommand({
-          QueueUrl: this.config.queueUrl,
-          MaxNumberOfMessages: this.config.batchSize,
-          WaitTimeSeconds: this.config.waitTimeSeconds,
-          VisibilityTimeout: this.config.visibilityTimeoutSeconds,
-        }),
-      );
+      let result: ReceiveMessageCommandOutput;
+      try {
+        result = await this.sqs.send(
+          new ReceiveMessageCommand({
+            QueueUrl: this.config.queueUrl,
+            MaxNumberOfMessages: this.config.batchSize,
+            WaitTimeSeconds: this.config.waitTimeSeconds,
+            VisibilityTimeout: this.config.visibilityTimeoutSeconds,
+          }),
+          { abortSignal: this.shutdownController.signal },
+        );
+      } catch (err) {
+        if (this.shuttingDown && this.shutdownController.signal.aborted) break;
+        throw err;
+      }
 
       // A batch received just before stop() is still drained: we finish
       // processing (and deleting) it before the while-condition exits the loop.

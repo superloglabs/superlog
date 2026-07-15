@@ -1190,7 +1190,8 @@ logger.info(
 // the received-but-undeleted SQS messages stay invisible for the full visibility
 // timeout before redelivering — the sawtooth that pins ApproximateAgeOfOldestMessage
 // and trips the ingest-lag page on every deploy. ECS's stopTimeout bounds how long
-// we get; the consumer aborts its idle long-poll so the drain is fast in practice.
+// we get; the consumer lets a healthy long-poll finish and aborts only if it stalls
+// beyond its normal server-side wait plus network slack.
 let shuttingDown = false;
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;
