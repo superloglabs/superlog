@@ -16,7 +16,7 @@ import { registerQueueHealthMetrics } from "./queue-health.js";
 import { shutdownTelemetry } from "./telemetry-shutdown.js";
 import { createTelemetryIngestor, registerTelemetryIngestMetrics } from "./telemetry/ingest.js";
 import { registerTenantMetrics } from "./tenant-metrics.js";
-import { startRecurringSteps } from "./worker/recurring-steps.js";
+import { RECURRING_TICK_STEPS, startRecurringSteps } from "./worker/recurring-steps.js";
 import { runWorker } from "./worker/runtime.js";
 import { drainWorker, shutdownWorkerProcess } from "./worker/shutdown.js";
 import { type SkippableTickStep, createWorkerTick } from "./worker/tick.js";
@@ -118,17 +118,21 @@ registerTelemetryIngestMetrics({
 
 // Every remaining sub-cron periodic step runs as its own recurring pg-boss
 // chain (worker/recurring-steps.ts) so one slow step can't delay the others.
-// A step whose registration fails stays in the tick loop below — degraded
-// cadence, still running. Once the telemetry scan migrates too, the tick
-// disappears.
+// Whenever pg-boss is up, the chain-owned steps are skipped in the tick even
+// if their own registration failed: a local tick fallback could run the step
+// concurrently with another process's live chain (double webhook deliveries),
+// so a failed step goes dormant on this process instead — logged at error
+// level, with stuck-queue alerting catching a queue left without a consumer.
+// The tick runs the steps itself only when pg-boss is unavailable entirely.
+// Once the telemetry scan migrates too, the tick disappears.
 const skipSteps = new Set<SkippableTickStep>();
 if (agentRunQueueReady) skipSteps.add("agent_runs");
 if (jobBoss) {
-  const migrated = await startRecurringSteps(jobBoss, {
+  await startRecurringSteps(jobBoss, {
     clickhouse: ch,
     onIssueTransition: dispatchIssueTransition,
   });
-  for (const step of migrated) skipSteps.add(step);
+  for (const step of RECURRING_TICK_STEPS) skipSteps.add(step);
 }
 
 const tick = createWorkerTick({

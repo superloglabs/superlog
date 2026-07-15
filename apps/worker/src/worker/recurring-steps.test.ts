@@ -4,7 +4,11 @@ import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { RecurringStepsDeps } from "./recurring-steps.js";
-import { buildRecurringSteps, startRecurringSteps } from "./recurring-steps.js";
+import {
+  RECURRING_TICK_STEPS,
+  buildRecurringSteps,
+  startRecurringSteps,
+} from "./recurring-steps.js";
 import type { RecurringBoss } from "./recurring.js";
 
 const quietLogger = { info: () => {}, warn: () => {}, error: () => {} };
@@ -28,6 +32,14 @@ test("every remaining sub-cron tick step has a chain", () => {
       ["observation-sweep", "observation"],
     ],
   );
+  // The caller uses RECURRING_TICK_STEPS to skip chain-owned steps in the
+  // tick, so it must cover exactly the steps that get chains.
+  assert.deepEqual(
+    [...RECURRING_TICK_STEPS].sort(),
+    buildRecurringSteps(depsOf())
+      .map((s) => s.tickStep)
+      .sort(),
+  );
 });
 
 test("latency-sensitive sweeps keep a sub-minute cadence", () => {
@@ -37,7 +49,7 @@ test("latency-sensitive sweeps keep a sub-minute cadence", () => {
   assert.ok((byQueue.get("alert-evaluation") ?? 61) < 60, "alert evaluation must stay snappy");
 });
 
-test("a step that fails to register stays in the tick; the rest migrate", async () => {
+test("one step's registration failure doesn't block the rest", async () => {
   const boss: RecurringBoss = {
     async createQueue(name) {
       if (name === "digest-sweep") throw new Error("createQueue refused");
@@ -52,6 +64,6 @@ test("a step that fails to register stays in the tick; the rest migrate", async 
 
   const migrated = await startRecurringSteps(boss, depsOf(), quietLogger);
 
-  assert.ok(!migrated.has("digests"), "the failed step must stay in the tick");
+  assert.ok(!migrated.has("digests"), "the failed step must be reported unregistered");
   assert.deepEqual([...migrated].sort(), ["agent_chats", "alerts", "observation", "webhooks"]);
 });

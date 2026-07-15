@@ -71,12 +71,13 @@ export type RecurringStep = {
   passWarnAfterMs?: number;
 };
 
-// Register one step's chain. Call order is load-bearing: the consumer comes
-// LAST. When any earlier call throws, the caller keeps the step in the tick
-// loop — a live consumer at that point would run the step from two places at
-// once. Everything a partial registration can leave behind (queue, reviver
+// Register one step's chain. The consumer comes LAST so a partial
+// registration never leaves a live consumer on a half-configured queue;
+// everything else a partial registration can leave behind (queue, reviver
 // cron, seed job) is inert without a consumer and gets drained by the next
-// healthy boot.
+// healthy boot. A step whose registration throws is dormant on this process —
+// the caller must NOT run it anywhere else, because another process's chain
+// may be live (see recurring-steps.ts).
 export async function registerRecurringStep(
   boss: RecurringBoss,
   step: RecurringStep,

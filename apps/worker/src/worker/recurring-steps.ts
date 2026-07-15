@@ -24,10 +24,24 @@ export type RecurringStepsDeps = {
 };
 
 export type RecurringStepSpec = RecurringStep & {
-  // The tick step this chain replaces; the caller skips it in the tick loop
-  // once the chain is registered.
+  // The tick step this chain replaces.
   tickStep: SkippableTickStep;
 };
+
+// Every tick step owned by a recurring chain. The caller skips ALL of these
+// in the tick whenever pg-boss is up — even a step whose own registration
+// failed. Falling back locally would run the step concurrently with another
+// process's live chain (double webhook deliveries, duplicate transitions), so
+// a failed step goes dormant on this process instead: the failure is logged
+// at error level, and a queue left without any consumer pages via the
+// stuck-queue alerting on the queue-health metrics.
+export const RECURRING_TICK_STEPS: readonly SkippableTickStep[] = [
+  "agent_chats",
+  "webhooks",
+  "alerts",
+  "digests",
+  "observation",
+];
 
 export function buildRecurringSteps(deps: RecurringStepsDeps): RecurringStepSpec[] {
   return [
@@ -69,10 +83,10 @@ export function buildRecurringSteps(deps: RecurringStepsDeps): RecurringStepSpec
   ];
 }
 
-// Register every step's chain, one failure at a time: a step whose
-// registration throws stays in the tick loop (degraded cadence, still
-// running); the rest migrate. Returns the set of migrated tick steps for the
-// caller to skip.
+// Register every step's chain, one failure at a time: one step's registration
+// failure must not block the others. Returns the successfully registered tick
+// steps; a failed step is NOT retried or run locally (see RECURRING_TICK_STEPS
+// for why there is no per-step tick fallback while pg-boss is up).
 export async function startRecurringSteps(
   boss: RecurringBoss,
   deps: RecurringStepsDeps,
@@ -90,7 +104,7 @@ export async function startRecurringSteps(
           step: step.queue,
           err: err instanceof Error ? err.message : String(err),
         },
-        "recurring step failed to register; it stays in the tick loop",
+        "recurring step failed to register; it is dormant on this process until the next boot",
       );
     }
   }

@@ -26,9 +26,9 @@ export type WorkerTickResult = {
 
 // Steps that normally run out-of-band on pg-boss (agent runs on their own
 // advance queue, the rest as recurring chains — see worker/recurring-steps.ts)
-// and stay in the tick only as the fallback for a boot where registration
-// failed. The telemetry scan (spans/logs) is not skippable: it IS the tick
-// until its own migration.
+// and run in the tick only when pg-boss is unavailable to this process. The
+// telemetry scan (spans/logs) is not skippable: it IS the tick until its own
+// migration.
 export type SkippableTickStep =
   | "agent_runs"
   | "agent_chats"

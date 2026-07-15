@@ -87,9 +87,8 @@ test("registration creates a stately queue, a minute reviver, a seed job, and th
 
   assert.deepEqual(fb.workOptions.get("test-step"), { batchSize: 1 });
 
-  // The consumer is registered LAST: when any earlier call throws, the caller
-  // keeps the step in the tick loop — a live consumer at that point would run
-  // the step from two places at once.
+  // The consumer is registered LAST so a partial registration never leaves a
+  // live consumer on a half-configured queue.
   assert.equal(fb.ops.at(-1), "work:test-step");
 });
 
