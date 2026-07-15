@@ -438,17 +438,17 @@ function lockedInboundDb(opts: {
   return { db, calls, writes };
 }
 
-test("existing-session-only reply arriving after handoff appends to the locked queued successor", async () => {
+test("existing-session-only lifecycle delivery appends to the locked queued successor", async () => {
   const lifecycleInteraction = {
     channel: "pr_closed" as const,
     author: null,
-    text: "PR #2 was closed.",
+    text: "PR #1 was closed.",
     occurredAt: "2026-07-15T08:45:00.000Z",
   };
-  const reply = {
-    channel: "slack_reply" as const,
-    author: "alice",
-    text: "Please keep working on the remaining PR.",
+  const nextLifecycleInteraction = {
+    channel: "pr_merged" as const,
+    author: null,
+    text: "PR #2 was merged.",
     occurredAt: "2026-07-15T08:46:00.000Z",
   };
   const pullRequests = [
@@ -486,8 +486,8 @@ test("existing-session-only reply arriving after handoff appends to the locked q
 
   const result = await recordInboundInteraction(db, {
     incidentId: "incident-1",
-    interaction: reply,
-    dedupeKey: "slack:reply-1",
+    interaction: nextLifecycleInteraction,
+    dedupeKey: "agent_pr_merged:agent-pr-2",
     existingSessionOnly: true,
     now: NOW,
   });
@@ -504,11 +504,12 @@ test("existing-session-only reply arriving after handoff appends to the locked q
     (write) => write.table === schema.agentRuns && "triggerDetail" in write,
   );
   assert.deepEqual(successorUpdate?.triggerDetail, {
-    interactions: [lifecycleInteraction, reply],
+    interactions: [lifecycleInteraction, nextLifecycleInteraction],
     pullRequests,
   });
   const claim = writes.find((write) => write.table === schema.incidentEvents);
   assert.equal(claim?.agentRunId, "successor-1");
+  assert.deepEqual(claim?.detail, { origin: nextLifecycleInteraction });
   assert.equal(claim?.processedAt, NOW);
 });
 
