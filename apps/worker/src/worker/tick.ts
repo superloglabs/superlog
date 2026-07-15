@@ -24,20 +24,31 @@ export type WorkerTickResult = {
   observedEscalations: number;
 };
 
+// Steps that normally run out-of-band on pg-boss (agent runs on their own
+// advance queue, the rest as recurring chains — see worker/recurring-steps.ts)
+// and stay in the tick only as the fallback for a boot where registration
+// failed. The telemetry scan (spans/logs) is not skippable: it IS the tick
+// until its own migration.
+export type SkippableTickStep =
+  | "agent_runs"
+  | "agent_chats"
+  | "alerts"
+  | "digests"
+  | "webhooks"
+  | "observation";
+
 export function createWorkerTick(opts: {
   clickhouse: ClickHouseClientLike;
   telemetryIngestor: TelemetryIngestor;
   // Injected so callers can route transition side effects out-of-band (see
   // issue-transitions.ts); defaults to the direct inline workflow.
   handleIssueTransition?: typeof handleIssueTransition;
-  // Agent runs normally advance on their own pg-boss queue (agent-runs/
-  // queue.ts). The tick's batch rotation is kept only as the fallback for a
-  // boot where that queue failed to register — pass false once the queue is
-  // live so runs aren't advanced from two places at once.
-  includeAgentRuns?: boolean;
+  // Steps whose pg-boss registration succeeded — skipped here so a step never
+  // runs from two places at once.
+  skipSteps?: ReadonlySet<SkippableTickStep>;
 }): () => Promise<WorkerTickResult> {
   const onIssueTransition = opts.handleIssueTransition ?? handleIssueTransition;
-  const includeAgentRuns = opts.includeAgentRuns ?? true;
+  const skip = opts.skipSteps ?? new Set<SkippableTickStep>();
   return () =>
     tracer.startActiveSpan("worker.tick", async (span) => {
       async function safe<T>(name: string, run: () => Promise<T>, fallback: T): Promise<T> {
@@ -68,20 +79,18 @@ export function createWorkerTick(opts: {
       try {
         const spans = await safe("spans", opts.telemetryIngestor.tickSpans, 0);
         const logs = await safe("logs", opts.telemetryIngestor.tickLogs, 0);
-        const agentRuns = includeAgentRuns ? await safe("agent_runs", tickAgentRuns, 0) : 0;
-        const agentChats = await safe("agent_chats", tickAgentChats, 0);
-        const alerts = await safe(
-          "alerts",
-          () => tickAlerts(opts.clickhouse, onIssueTransition),
-          0,
-        );
-        const digests = await safe("digests", tickDigests, 0);
-        const webhooks = await safe("webhooks", tickWebhooks, 0);
-        const observedEscalations = await safe(
-          "observation",
-          () => tickObservedIssues(onIssueTransition),
-          0,
-        );
+        const agentRuns = skip.has("agent_runs") ? 0 : await safe("agent_runs", tickAgentRuns, 0);
+        const agentChats = skip.has("agent_chats")
+          ? 0
+          : await safe("agent_chats", tickAgentChats, 0);
+        const alerts = skip.has("alerts")
+          ? 0
+          : await safe("alerts", () => tickAlerts(opts.clickhouse, onIssueTransition), 0);
+        const digests = skip.has("digests") ? 0 : await safe("digests", tickDigests, 0);
+        const webhooks = skip.has("webhooks") ? 0 : await safe("webhooks", tickWebhooks, 0);
+        const observedEscalations = skip.has("observation")
+          ? 0
+          : await safe("observation", () => tickObservedIssues(onIssueTransition), 0);
         span.setAttribute("tick.spans", spans);
         span.setAttribute("tick.logs", logs);
         span.setAttribute("tick.agent_runs", agentRuns);

@@ -16,9 +16,10 @@ import { registerQueueHealthMetrics } from "./queue-health.js";
 import { shutdownTelemetry } from "./telemetry-shutdown.js";
 import { createTelemetryIngestor, registerTelemetryIngestMetrics } from "./telemetry/ingest.js";
 import { registerTenantMetrics } from "./tenant-metrics.js";
+import { startRecurringSteps } from "./worker/recurring-steps.js";
 import { runWorker } from "./worker/runtime.js";
 import { drainWorker, shutdownWorkerProcess } from "./worker/shutdown.js";
-import { createWorkerTick } from "./worker/tick.js";
+import { type SkippableTickStep, createWorkerTick } from "./worker/tick.js";
 
 logger.info({ scope: "boot" }, "env loaded");
 
@@ -115,11 +116,26 @@ registerTelemetryIngestMetrics({
   discoveryWindowMs: TELEMETRY_DISCOVERY_WINDOW_MS,
 });
 
+// Every remaining sub-cron periodic step runs as its own recurring pg-boss
+// chain (worker/recurring-steps.ts) so one slow step can't delay the others.
+// A step whose registration fails stays in the tick loop below — degraded
+// cadence, still running. Once the telemetry scan migrates too, the tick
+// disappears.
+const skipSteps = new Set<SkippableTickStep>();
+if (agentRunQueueReady) skipSteps.add("agent_runs");
+if (jobBoss) {
+  const migrated = await startRecurringSteps(jobBoss, {
+    clickhouse: ch,
+    onIssueTransition: dispatchIssueTransition,
+  });
+  for (const step of migrated) skipSteps.add(step);
+}
+
 const tick = createWorkerTick({
   clickhouse: ch,
   telemetryIngestor,
   handleIssueTransition: dispatchIssueTransition,
-  includeAgentRuns: !agentRunQueueReady,
+  skipSteps,
 });
 
 const workerController = new AbortController();
