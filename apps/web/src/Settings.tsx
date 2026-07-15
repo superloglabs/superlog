@@ -3322,11 +3322,22 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
           </div>
         </FlowNode>
 
-        <FlowConnector active={downstreamEligible && linearConnected} />
+        <FlowConnector
+          active={downstreamEligible && linearConnected && data.linearTicketPolicy !== "never"}
+        />
 
         <FlowNode
           step={3}
           title="File Linear ticket"
+          headerSlot={
+            linearConnected ? (
+              <Toggle
+                checked={data.linearTicketPolicy !== "never"}
+                disabled={!downstreamEligible || save.isPending}
+                onChange={(v) => patch({ linearTicketPolicy: v ? "on_ready_to_pr" : "never" })}
+              />
+            ) : undefined
+          }
           status={
             !downstreamEligible ? (
               <Chip tone="muted" dot>
@@ -3340,14 +3351,16 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
               <Chip tone="warning" dot>
                 Linear not connected
               </Chip>
-            ) : (
+            ) : data.linearTicketPolicy !== "never" ? (
               <Chip tone="success" dot>
                 On handoff
               </Chip>
-            )
+            ) : undefined
           }
-          spineActive={downstreamEligible && linearConnected}
-          off={!downstreamEligible}
+          spineActive={
+            downstreamEligible && linearConnected && data.linearTicketPolicy !== "never"
+          }
+          off={!downstreamEligible || data.linearTicketPolicy === "never"}
         >
           {!linearConnected ? (
             <div className="text-[12.5px] text-muted">
@@ -3358,9 +3371,10 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
           ) : (
             <div className="space-y-4">
               <p className="text-[12.5px] text-muted">
-                Each findings-only handoff creates a new Linear ticket with a link back to the
-                incident. Paused and failed investigations do not create tickets; resolve-time
-                filing is controlled below.
+                When on, a ticket is filed as soon as the agent opens a fix PR — or when it
+                completes an investigation without one — with a link back to the incident. Paused
+                and failed investigations do not create tickets; resolve-time filing is controlled
+                below.
               </p>
               <div className="flex items-start justify-between gap-4 rounded-md border border-border px-3 py-3">
                 <div>
@@ -3374,13 +3388,17 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
                 </div>
                 <Toggle
                   checked={data.createLinearTicketOnResolve}
-                  disabled={!downstreamEligible || save.isPending}
+                  disabled={
+                    !downstreamEligible || data.linearTicketPolicy === "never" || save.isPending
+                  }
                   onChange={(v) => patch({ createLinearTicketOnResolve: v })}
                 />
               </div>
               <LinearTicketInstructionsField
                 value={data.linearTicketInstructions}
-                disabled={!downstreamEligible || save.isPending}
+                disabled={
+                  !downstreamEligible || data.linearTicketPolicy === "never" || save.isPending
+                }
                 onSave={(v) => patch({ linearTicketInstructions: v })}
               />
             </div>

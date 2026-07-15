@@ -33,8 +33,8 @@ import {
 } from "../infra/slack/incident-messages.js";
 import { logger } from "../logger.js";
 import { enqueueAgentRunCompleted } from "../webhooks.js";
-import { shouldCreateLinearTicketForTerminalOutcome } from "./completion-policy.js";
-import { recordFiledLinearTicket } from "./deliverable-records.js";
+import { shouldDeliverLinearTicket } from "./completion-policy.js";
+import { recordFiledLinearTicket, runHasFiledLinearTicket } from "./deliverable-records.js";
 import { scheduleLinearHandoff } from "./linear-handoff.js";
 import {
   closedElsewhereCopyAfterNoiseRace,
@@ -378,10 +378,12 @@ export async function completeWithIncidentResolution(
       // Linear ticket: file/update deterministically from the findings. The
       // reconciliation boundary links every PR recorded for the incident and
       // remains pending when either provider is temporarily unavailable.
-      const shouldCreateTicket = shouldCreateLinearTicketForTerminalOutcome(
-        "resolve_incident",
-        ctx.createLinearTicketOnResolve,
-      );
+      const shouldCreateTicket = shouldDeliverLinearTicket({
+        policy: ctx.linearTicketPolicy,
+        boundary: "incident_resolved",
+        createOnResolve: ctx.createLinearTicketOnResolve,
+        runHasTicket: await runHasFiledLinearTicket(ctx.agentRun.id),
+      });
       const deliveredTicket = shouldCreateTicket
         ? await scheduleLinearHandoff(ctx, completionResult, "resolve_incident")
         : null;
@@ -645,12 +647,21 @@ export async function completeWithoutPullRequest(
     // The platform files/updates the Linear ticket deterministically from the
     // run's findings. Keep this provider mutation inside the same epoch guard
     // as Slack and Linear response copy so a reopened Incident cannot receive
-    // stale terminal follow-ups from a delayed completion snapshot.
-    const deliveredTicket = await scheduleLinearHandoff(
-      ctx,
-      completionResult,
-      completionResult.completionKind ?? "complete_without_pr",
-    );
+    // stale terminal follow-ups from a delayed completion snapshot. This
+    // publish path only runs for incident-closing completions, so ticket
+    // creation follows the resolve-time policy.
+    const deliveredTicket = shouldDeliverLinearTicket({
+      policy: ctx.linearTicketPolicy,
+      boundary: "incident_resolved",
+      createOnResolve: ctx.createLinearTicketOnResolve,
+      runHasTicket: await runHasFiledLinearTicket(ctx.agentRun.id),
+    })
+      ? await scheduleLinearHandoff(
+          ctx,
+          completionResult,
+          completionResult.completionKind ?? "complete_without_pr",
+        )
+      : null;
     if (!deliveredTicket && completionResult.linearTicket) {
       await recordFiledLinearTicket(ctx, completionResult.linearTicket);
     }

@@ -26,10 +26,10 @@ export type LinearHandoffSchedulingDeps = {
 };
 
 export async function scheduleLinearHandoffWithDeps(
-  input: { hasInstall: boolean },
+  input: { deliveryEnabled: boolean },
   deps: LinearHandoffSchedulingDeps,
 ): Promise<DeliveredLinearTicket | null> {
-  if (!input.hasInstall) return null;
+  if (!input.deliveryEnabled) return null;
   await deps.recordPending();
   await deps.dispatch().catch(() => undefined);
   return deps.reconcile();
@@ -37,7 +37,7 @@ export async function scheduleLinearHandoffWithDeps(
 
 export async function reconcileLinearHandoffWithDeps(
   input: {
-    hasInstall: boolean;
+    deliveryEnabled: boolean;
     pendingEventIds: string[];
     result: AgentRunResult;
     prUrls: string[];
@@ -45,7 +45,9 @@ export async function reconcileLinearHandoffWithDeps(
   deps: LinearHandoffReconciliationDeps,
 ): Promise<DeliveredLinearTicket | null> {
   if (input.pendingEventIds.length === 0) return null;
-  if (!input.hasInstall) {
+  // Disconnected Linear or a policy of never: retire the durable work instead
+  // of leaving it pending forever.
+  if (!input.deliveryEnabled) {
     await deps.markProcessed(input.pendingEventIds);
     return null;
   }
@@ -101,7 +103,7 @@ export async function reconcilePendingLinearHandoff(
   try {
     return await reconcileLinearHandoffWithDeps(
       {
-        hasInstall: !!ctx.linearInstall,
+        deliveryEnabled: !!ctx.linearInstall && ctx.linearTicketPolicy !== "never",
         pendingEventIds: pending.map((event) => event.id),
         result,
         prUrls,
@@ -148,7 +150,7 @@ export async function scheduleLinearHandoff(
   boundary: string,
 ): Promise<DeliveredLinearTicket | null> {
   return scheduleLinearHandoffWithDeps(
-    { hasInstall: !!ctx.linearInstall },
+    { deliveryEnabled: !!ctx.linearInstall && ctx.linearTicketPolicy !== "never" },
     {
       recordPending: async () => {
         await db

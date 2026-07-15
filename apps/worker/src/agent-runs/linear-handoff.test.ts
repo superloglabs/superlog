@@ -35,11 +35,11 @@ function makeDeps(overrides: Partial<LinearHandoffReconciliationDeps> = {}) {
   };
 }
 
-test("a project without Linear connected does not schedule a handoff", async () => {
+test("a project with delivery disabled (no install or policy never) does not schedule a handoff", async () => {
   const calls: string[] = [];
 
   const ticket = await scheduleLinearHandoffWithDeps(
-    { hasInstall: false },
+    { deliveryEnabled: false },
     {
       recordPending: async () => {
         calls.push("record_pending");
@@ -62,7 +62,7 @@ test("a connected Linear project schedules and reconciles its handoff", async ()
   const calls: string[] = [];
 
   const ticket = await scheduleLinearHandoffWithDeps(
-    { hasInstall: true },
+    { deliveryEnabled: true },
     {
       recordPending: async () => {
         calls.push("record_pending");
@@ -86,7 +86,7 @@ test("reconciliation keeps durable work pending when ticket delivery fails", asy
 
   const ticket = await reconcileLinearHandoffWithDeps(
     {
-      hasInstall: true,
+      deliveryEnabled: true,
       pendingEventIds: ["event-1"],
       result: RESULT,
       prUrls: ["https://github.com/acme/api/pull/1"],
@@ -105,7 +105,7 @@ test("reconciliation keeps durable work pending when either link direction fails
 
   await reconcileLinearHandoffWithDeps(
     {
-      hasInstall: true,
+      deliveryEnabled: true,
       pendingEventIds: ["event-1"],
       result: RESULT,
       prUrls: ["https://github.com/acme/api/pull/1"],
@@ -122,7 +122,7 @@ test("reconciliation links every PR and completes the durable work item", async 
 
   const ticket = await reconcileLinearHandoffWithDeps(
     {
-      hasInstall: true,
+      deliveryEnabled: true,
       pendingEventIds: ["event-1", "event-2"],
       result: RESULT,
       prUrls,
@@ -135,7 +135,7 @@ test("reconciliation links every PR and completes the durable work item", async 
   assert.deepEqual(calls.processed, [["event-1", "event-2"]]);
 });
 
-test("disconnected Linear marks the handoff as reconciled without provider calls", async () => {
+test("disabled delivery marks the handoff as reconciled without provider calls", async () => {
   let delivered = false;
   const { deps, calls } = makeDeps({
     deliverTicket: async () => {
@@ -146,7 +146,7 @@ test("disconnected Linear marks the handoff as reconciled without provider calls
 
   await reconcileLinearHandoffWithDeps(
     {
-      hasInstall: false,
+      deliveryEnabled: false,
       pendingEventIds: ["event-1"],
       result: RESULT,
       prUrls: [],

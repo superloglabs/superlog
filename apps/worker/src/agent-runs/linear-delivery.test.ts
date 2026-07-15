@@ -65,13 +65,30 @@ const BASE_ARGS = {
   orgSlug: "acme",
   projectSlug: "shop",
   hasInstall: true,
+  policy: "on_ready_to_pr" as const,
   defaultTeamId: null,
   prUrls: [],
 };
 
-test("a connected Linear integration always enables delivery", () => {
-  assert.equal(linearDeliveryAllowed({ hasInstall: false }), false);
-  assert.equal(linearDeliveryAllowed({ hasInstall: true }), true);
+test("delivery requires a connected install and a policy other than never", () => {
+  assert.equal(linearDeliveryAllowed({ hasInstall: false, policy: "on_ready_to_pr" }), false);
+  assert.equal(linearDeliveryAllowed({ hasInstall: true, policy: "on_ready_to_pr" }), true);
+  assert.equal(linearDeliveryAllowed({ hasInstall: true, policy: "always" }), true);
+  assert.equal(linearDeliveryAllowed({ hasInstall: true, policy: "never" }), false);
+});
+
+test("policy never suppresses delivery even when a ticket could be reused", async () => {
+  const deps = makeDeps({
+    findKnownTicket: async () => ({
+      ticketId: "0b6e7f7e-6f3a-4b8e-9a4e-2d1c3b4a5f6e",
+      identifier: "ENG-7",
+      url: "https://linear.app/eng/issue/ENG-7",
+    }),
+  });
+  const ticket = await deliverLinearTicketWithDeps({ ...BASE_ARGS, policy: "never" }, RESULT, deps);
+  assert.equal(ticket, null);
+  assert.equal(deps.calls.createIssue.length, 0);
+  assert.equal(deps.calls.searchIssues.length, 0);
 });
 
 test("creates a ticket with a completed-investigation marker when nothing exists", async () => {
