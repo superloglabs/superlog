@@ -3,6 +3,7 @@ import {
   type RequestFollowUpResult,
   type ResolveIncidentAfterAgentPullRequestsMergedResult,
   db,
+  isIncidentResolutionProofCurrent,
   requestFollowUpAgentRun,
   resolveIncidentIfAllAgentPullRequestsMerged,
   schema,
@@ -11,8 +12,11 @@ import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import type { AgentRunnerBackend } from "../agent-runner-backend.js";
+import { investigationGate } from "../billing/investigation-gate.js";
+import { usageNotifier } from "../billing/usage-notifier-infra.js";
 import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
 import { logger } from "../logger.js";
+import { completeWithoutPullRequest } from "./completion.js";
 import { failAgentRun, isTransientError } from "./status.js";
 
 const agentRunLifecycle = createAgentRunLifecycle(db);
@@ -28,6 +32,23 @@ export type UnresumableContinuationRecoveryOutcome =
   | { kind: "resolved" }
   | { kind: "incident_not_open" }
   | { kind: "cold_start"; result: RequestFollowUpResult; inputText: string };
+
+// A redelivery after resolution reports `incident_not_open`, so the PR event's
+// exact resolution proof — not that broad disposition — decides whether this
+// worker may publish or touch completion metadata. Accounting happens only on
+// the first `resolved` attempt; a failed publication can retry without charging
+// the investigation twice.
+export async function finalizeCurrentMergedPullRequestResolution(opts: {
+  disposition: "resolved" | "incident_not_open";
+  isCurrentResolution(): Promise<boolean>;
+  accountResolution(): Promise<void>;
+  finalizeRun(): Promise<void>;
+}): Promise<"finalized" | "stale"> {
+  if (!(await opts.isCurrentResolution())) return "stale";
+  if (opts.disposition === "resolved") await opts.accountResolution();
+  await opts.finalizeRun();
+  return "finalized";
+}
 
 function interactionOrigin(input: PendingResumeInput): AgentRunFollowUpInteraction | null {
   const origin = input.detail?.origin;
@@ -62,6 +83,10 @@ export async function recoverUnresumableContinuation(opts: {
   resolveMergedPullRequest(
     input: MergedPullRequestContinuation,
   ): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult>;
+  publishResolvedRun(
+    input: MergedPullRequestContinuation,
+    disposition: "resolved" | "incident_not_open",
+  ): Promise<void>;
   failCurrentRun(): Promise<void>;
   requestFollowUp(interaction: AgentRunFollowUpInteraction): Promise<RequestFollowUpResult>;
   markProcessed(ids: string[]): Promise<void>;
@@ -78,10 +103,12 @@ export async function recoverUnresumableContinuation(opts: {
   if (mergedContinuation) {
     const resolution = await opts.resolveMergedPullRequest(mergedContinuation);
     if (resolution.disposition === "resolved") {
+      await opts.publishResolvedRun(mergedContinuation, "resolved");
       await opts.markProcessed(opts.inputs.map((event) => event.id));
       return { kind: "resolved" };
     }
     if (resolution.disposition === "incident_not_open") {
+      await opts.publishResolvedRun(mergedContinuation, "incident_not_open");
       await opts.markProcessed(opts.inputs.map((event) => event.id));
       return { kind: "incident_not_open" };
     }
@@ -343,6 +370,58 @@ async function coldStartFallback(
         },
         eventDedupeKey: `incident_resolved:agent_pr:${agentPr.id}`,
         resolvedAt,
+      });
+    },
+    async publishResolvedRun(input, disposition) {
+      const agentPr = await db.query.agentPullRequests.findFirst({
+        where: and(
+          eq(schema.agentPullRequests.id, input.agentPrId),
+          eq(schema.agentPullRequests.incidentId, ctx.incident.id),
+        ),
+      });
+      if (!agentPr) {
+        throw new Error(`merged PR continuation ${input.agentPrId} no longer exists`);
+      }
+      const resolutionProof = {
+        agentRunId: agentPr.agentRunId,
+        eventDedupeKey: `incident_resolved:agent_pr:${agentPr.id}`,
+      };
+      await finalizeCurrentMergedPullRequestResolution({
+        disposition,
+        isCurrentResolution: () =>
+          isIncidentResolutionProofCurrent({
+            incidentId: ctx.incident.id,
+            resolutionProof,
+          }),
+        accountResolution: async () => {
+          await investigationGate.recordInvestigation(ctx.project.orgId);
+          void usageNotifier?.notify(ctx.project.orgId);
+        },
+        finalizeRun: async () => {
+          const finalized = await completeWithoutPullRequest(
+            ctx,
+            ctx.agentRun.result
+              ? { ...ctx.agentRun.result, state: "complete" }
+              : {
+                  state: "complete",
+                  summary: "Incident resolved after every agent pull request was merged.",
+                },
+            ctx.agentRun.providerSessionId,
+            ctx.agentRun.cumulativeRuntimeMinutes,
+            {
+              runCompletion: "already_committed_by_resolution",
+              incidentOutcome: {
+                kind: "all_pull_requests_merged",
+                prNumber: agentPr.prNumber,
+                repoFullName: agentPr.repoFullName,
+                resolutionProof,
+              },
+            },
+          );
+          if (!finalized) {
+            throw new Error("merged PR resolution did not atomically complete the agent run");
+          }
+        },
       });
     },
     async failCurrentRun() {

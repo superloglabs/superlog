@@ -2,10 +2,53 @@ import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  finalizeCurrentMergedPullRequestResolution,
   recoverUnresumableContinuation,
   resumeDurableAgentRun,
   resumeInputEventKinds,
 } from "./resume.js";
+
+test("a stale merged-PR proof cannot finalize or account another resolution epoch", async () => {
+  const calls: string[] = [];
+
+  const outcome = await finalizeCurrentMergedPullRequestResolution({
+    disposition: "incident_not_open",
+    async isCurrentResolution() {
+      calls.push("proof");
+      return false;
+    },
+    async accountResolution() {
+      calls.push("account");
+    },
+    async finalizeRun() {
+      calls.push("finalize");
+    },
+  });
+
+  assert.equal(outcome, "stale");
+  assert.deepEqual(calls, ["proof"]);
+});
+
+test("a current merged-PR proof republishes an incident-not-open retry without re-accounting", async () => {
+  const calls: string[] = [];
+
+  const outcome = await finalizeCurrentMergedPullRequestResolution({
+    disposition: "incident_not_open",
+    async isCurrentResolution() {
+      calls.push("proof");
+      return true;
+    },
+    async accountResolution() {
+      calls.push("account");
+    },
+    async finalizeRun() {
+      calls.push("finalize");
+    },
+  });
+
+  assert.equal(outcome, "finalized");
+  assert.deepEqual(calls, ["proof", "finalize"]);
+});
 
 test("external-cause waits resume when incident context changes", () => {
   assert.deepEqual(
@@ -37,6 +80,7 @@ test("human waits still require a human reply", () => {
 test("an unresumable merged-PR continuation resolves before follow-up gates can drop it", async () => {
   const calls: string[] = [];
   const processed: string[][] = [];
+  let runState = "awaiting_events";
 
   const outcome = await recoverUnresumableContinuation({
     inputs: [
@@ -58,11 +102,16 @@ test("an unresumable merged-PR continuation resolves before follow-up gates can 
     ],
     async resolveMergedPullRequest(input) {
       calls.push(`resolve:${input.agentPrId}`);
+      runState = "complete";
       return {
         disposition: "resolved",
         resolved: true,
         resolvedIssueCount: 1,
       };
+    },
+    async publishResolvedRun(input, disposition) {
+      assert.equal(runState, "complete");
+      calls.push(`publish_and_account:${input.agentPrId}:${disposition}`);
     },
     async failCurrentRun() {
       calls.push("fail");
@@ -78,7 +127,11 @@ test("an unresumable merged-PR continuation resolves before follow-up gates can 
   });
 
   assert.deepEqual(outcome, { kind: "resolved" });
-  assert.deepEqual(calls, ["resolve:agent-pr-42", "mark_processed"]);
+  assert.deepEqual(calls, [
+    "resolve:agent-pr-42",
+    "publish_and_account:agent-pr-42:resolved",
+    "mark_processed",
+  ]);
   assert.deepEqual(processed, [["event-1"]]);
 });
 
@@ -111,6 +164,9 @@ test("an unresumable merged-PR continuation cold-starts while sibling PRs remain
     },
     async failCurrentRun() {
       calls.push("fail");
+    },
+    async publishResolvedRun() {
+      calls.push("unexpected_publish");
     },
     async requestFollowUp(interaction) {
       calls.push(`follow_up:${interaction.agentPrId}`);
@@ -156,6 +212,9 @@ test("a merge-resolution failure leaves the continuation retryable", async () =>
       async failCurrentRun() {
         sideEffects.push("fail");
       },
+      async publishResolvedRun() {
+        sideEffects.push("publish");
+      },
       async requestFollowUp() {
         sideEffects.push("follow_up");
         return { outcome: "enqueued", agentRunId: "follow-up-1" };
@@ -167,6 +226,75 @@ test("a merge-resolution failure leaves the continuation retryable", async () =>
     /database temporarily unavailable/,
   );
   assert.deepEqual(sideEffects, []);
+});
+
+test("a merged-resolution publication failure leaves the continuation retryable", async () => {
+  const sideEffects: string[] = [];
+  let resolveAttempts = 0;
+  let publishAttempts = 0;
+  const publicationDispositions: string[] = [];
+  const inputs = [
+    {
+      id: "event-1",
+      kind: "human_reply" as const,
+      summary: "PR #42 merged.",
+      detail: {
+        origin: {
+          channel: "pr_merged" as const,
+          agentPrId: "agent-pr-42",
+          author: null,
+          text: "PR #42 merged.",
+          occurredAt: "2026-07-15T10:00:00.000Z",
+        },
+      },
+    },
+  ];
+  const dependencies = {
+    inputs,
+    async resolveMergedPullRequest() {
+      resolveAttempts += 1;
+      return resolveAttempts === 1
+        ? ({
+            disposition: "resolved",
+            resolved: true,
+            resolvedIssueCount: 1,
+          } as const)
+        : ({
+            disposition: "incident_not_open",
+            resolved: false,
+            resolvedIssueCount: 0,
+          } as const);
+    },
+    async publishResolvedRun(_input: unknown, disposition: "resolved" | "incident_not_open") {
+      publishAttempts += 1;
+      publicationDispositions.push(disposition);
+      if (publishAttempts === 1) throw new Error("Slack temporarily unavailable");
+    },
+    async failCurrentRun() {
+      sideEffects.push("fail");
+    },
+    async requestFollowUp() {
+      sideEffects.push("follow_up");
+      return { outcome: "enqueued" as const, agentRunId: "follow-up-1" };
+    },
+    async markProcessed(ids: string[]) {
+      sideEffects.push(`mark_processed:${ids.join(",")}`);
+    },
+  };
+
+  await assert.rejects(
+    recoverUnresumableContinuation(dependencies),
+    /Slack temporarily unavailable/,
+  );
+  assert.deepEqual(sideEffects, []);
+
+  const retry = await recoverUnresumableContinuation(dependencies);
+
+  assert.deepEqual(retry, { kind: "incident_not_open" });
+  assert.equal(resolveAttempts, 2);
+  assert.equal(publishAttempts, 2);
+  assert.deepEqual(publicationDispositions, ["resolved", "incident_not_open"]);
+  assert.deepEqual(sideEffects, ["mark_processed:event-1"]);
 });
 
 test("external-cause context resumes with incident framing and consumes the input", async () => {

@@ -61,13 +61,13 @@ const incidentLifecycle = createIncidentLifecycle(db);
 
 async function refreshIncidentAndRetireSessionIfClosed(
   ctx: AgentRunContext,
-  sessionId: string,
+  sessionId: string | null,
 ): Promise<void> {
   const refreshed = await db.query.incidents.findFirst({
     where: eq(schema.incidents.id, ctx.incident.id),
   });
   if (refreshed) ctx.incident = refreshed;
-  if (!shouldRetireProviderSession(ctx.incident.status)) return;
+  if (!sessionId || !shouldRetireProviderSession(ctx.incident.status)) return;
   await agentRunLifecycle.recordSessionTerminationPending({
     id: ctx.agentRun.id,
     providerSessionId: sessionId,
@@ -449,9 +449,13 @@ export async function completeWithIncidentResolution(
 export async function completeWithoutPullRequest(
   ctx: AgentRunContext,
   result: AgentRunResult,
-  sessionId: string,
+  sessionId: string | null,
   runtimeMinutes: number,
   opts?: {
+    // A deterministic resolution can atomically complete a parked/resuming
+    // run before provider publication starts. Reuse the same completion
+    // effects only after verifying that governed transition committed.
+    runCompletion?: "already_committed_by_resolution";
     incidentOutcome?:
       | {
           kind: "all_pull_requests_merged";
@@ -502,19 +506,31 @@ export async function completeWithoutPullRequest(
     noiseReason,
     resolutionReason,
   });
-  const completed = await agentRunLifecycle.completeWithoutPullRequest({
-    id: ctx.agentRun.id,
-    currentState: ctx.agentRun.state,
-    result: completionResult,
-    ...((legacyCompletion?.shouldTerminateSession ?? intendsIncidentClosure)
-      ? { providerSessionIdToTerminate: sessionId }
-      : {}),
-  });
+  const completed =
+    opts?.runCompletion === "already_committed_by_resolution"
+      ? Boolean(
+          await db.query.agentRuns.findFirst({
+            where: and(
+              eq(schema.agentRuns.id, ctx.agentRun.id),
+              eq(schema.agentRuns.state, "complete"),
+            ),
+            columns: { id: true },
+          }),
+        )
+      : await agentRunLifecycle.completeWithoutPullRequest({
+          id: ctx.agentRun.id,
+          currentState: ctx.agentRun.state,
+          result: completionResult,
+          ...((legacyCompletion?.shouldTerminateSession ?? intendsIncidentClosure) && sessionId
+            ? { providerSessionIdToTerminate: sessionId }
+            : {}),
+        });
   if (!completed) return false;
   // An obsolete run may be delayed from the previous resolution epoch. Its
   // findings are stale too, not just its terminal verdict, so never flatten
   // any part of that snapshot onto the reopened Incident.
   const metadataOutcome =
+    opts?.runCompletion === "already_committed_by_resolution" ||
     legacyResolution?.disposition === "agent_run_not_current" ||
     legacyResolution?.disposition === "resolution_event_already_consumed"
       ? { updated: false }
