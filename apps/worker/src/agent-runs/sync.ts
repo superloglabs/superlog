@@ -330,20 +330,6 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       return;
     }
 
-    // The collector already ack'd these with an error payload so the session
-    // can leave requires_action. There's no useful work left on this run.
-    // Distinct failure reason makes it easy to audit which agents are
-    // hallucinating non-existent tool names.
-    if (snapshot.unknownCustomTools.length > 0 && !snapshot.result) {
-      const names = snapshot.unknownCustomTools.map((t) => t.name).join(", ");
-      await failAgentRun(
-        ctx,
-        "unknown_custom_tool",
-        `Agent called a tool the runtime does not handle: ${names}`,
-      );
-      return;
-    }
-
     const baseUpdate: Partial<schema.AgentRun> = {
       providerSessionStatus: snapshot.status,
       cumulativeRuntimeMinutes: nextRuntimeMinutes,
@@ -364,6 +350,44 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       .update(schema.agentRuns)
       .set(baseUpdate)
       .where(eq(schema.agentRuns.id, ctx.agentRun.id));
+
+    // The collector already ack'd these with an error payload so the session
+    // can leave requires_action. Log the tool names for auditing so operators
+    // can find which tools the model hallucinated without querying the DB.
+    // When acks were sent this pass (which is always the case for unacked
+    // unknown tools), the model is about to resume with those error responses
+    // and may self-correct — return before steering so it gets one turn to
+    // recover instead of the run being aborted on first offence. Persistent
+    // hallucination is caught by the wall-clock budget. Only fail immediately
+    // if somehow no acks were sent (guarding against an unexpected code path).
+    if (snapshot.unknownCustomTools.length > 0 && !snapshot.result) {
+      const names = snapshot.unknownCustomTools.map((t) => t.name).join(", ");
+      logger.warn(
+        {
+          scope: "agent_run",
+          agent_run_id: ctx.agentRun.id,
+          incident_id: ctx.incident.id,
+          project_id: ctx.project.id,
+          org_id: ctx.project.orgId,
+          provider_session_id: ctx.agentRun.providerSessionId,
+          from_state: ctx.agentRun.state,
+          reason: "unknown_custom_tool",
+          category: "infra",
+          runtime_minutes: nextRuntimeMinutes,
+          resume_count: ctx.agentRun.resumeCount,
+          unknown_tool_names: snapshot.unknownCustomTools.map((t) => t.name),
+        },
+        `agent called unknown custom tools: ${names}`,
+      );
+      if ((snapshot.sentToolAckCount ?? 0) === 0) {
+        await failAgentRun(
+          ctx,
+          "unknown_custom_tool",
+          `Agent called a tool the runtime does not handle: ${names}`,
+        );
+      }
+      return;
+    }
 
     if (
       shouldDeferSteering({
