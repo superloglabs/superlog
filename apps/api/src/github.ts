@@ -46,6 +46,13 @@ const DEFAULT_COMMIT_AUTHOR = {
   email: "bot@superlog.sh",
 };
 const REVIEW_CONTINUATION_LIMIT_COMMENT = `Automated review follow-up has stopped after processing ${AGENT_PULL_REQUEST_REVIEW_CONTINUATION_LIMIT} PR review comments on this pull request. Further review comments will remain visible, but they will not resume the investigation automatically.`;
+const TRUSTED_PR_REVIEW_BOT_LOGINS = new Set([
+  "chatgpt-codex-connector[bot]",
+  "coderabbitai[bot]",
+  "cubic-dev-ai[bot]",
+  "cursor[bot]",
+  "github-copilot[bot]",
+]);
 
 type GithubPublicDependencies = {
   postAgentPrComment(opts: {
@@ -752,9 +759,11 @@ async function handleAgentPrWebhook(
   const { kind, summary, actor } = describeAgentPrEvent(event, payload);
   if (!kind) return;
 
+  const prComment = extractPrComment(event, payload);
   if (
     isAgentPullRequestReviewEventKind(kind) &&
-    extractPrComment(event, payload) !== null &&
+    prComment !== null &&
+    isPrContinuationEligibleCommenter(prComment) &&
     !isOwnGithubAppActor(actor?.login ?? null, dependencies.appSlug)
   ) {
     const reviewEvent = await recordAgentPullRequestReviewEvent(db, {
@@ -967,6 +976,7 @@ async function resolveIncidentForMergedAgentPr(opts: {
 type EligiblePrComment = {
   body: string;
   actor: GhActor;
+  authorAssociation: string | null;
   commentUrl: string | null;
   path: string | null;
   line: number | null;
@@ -980,6 +990,16 @@ function isOwnGithubAppActor(actorLogin: string | null, appSlug: string | undefi
   const normalizedActor = actorLogin.toLowerCase();
   const normalizedSlug = appSlug.toLowerCase();
   return normalizedActor === normalizedSlug || normalizedActor === `${normalizedSlug}[bot]`;
+}
+
+function isPrContinuationEligibleCommenter(comment: EligiblePrComment): boolean {
+  if (comment.actor?.type === "Bot") {
+    return TRUSTED_PR_REVIEW_BOT_LOGINS.has(comment.actor.login?.toLowerCase() ?? "");
+  }
+  return isFeedbackEligibleCommenter({
+    userType: comment.actor?.type ?? null,
+    authorAssociation: comment.authorAssociation,
+  });
 }
 
 async function postReviewContinuationLimitComment(opts: {
@@ -1018,6 +1038,7 @@ async function postReviewContinuationLimitComment(opts: {
 function extractPrComment(event: string, payload: WebhookPayload): EligiblePrComment | null {
   let body: string | null = null;
   let actor: GhActor = null;
+  let authorAssociation: string | null = null;
   let commentUrl: string | null = null;
   let path: string | null = null;
   let line: number | null = null;
@@ -1025,11 +1046,13 @@ function extractPrComment(event: string, payload: WebhookPayload): EligiblePrCom
   if (event === "issue_comment" && payload.action === "created") {
     body = payload.comment?.body ?? null;
     actor = payload.comment?.user ?? null;
+    authorAssociation = payload.comment?.author_association ?? null;
     commentUrl = payload.comment?.html_url ?? null;
     sourceId = payload.comment?.id != null ? `issue_comment:${payload.comment.id}` : null;
   } else if (event === "pull_request_review_comment" && payload.action === "created") {
     body = payload.comment?.body ?? null;
     actor = payload.comment?.user ?? null;
+    authorAssociation = payload.comment?.author_association ?? null;
     commentUrl = payload.comment?.html_url ?? null;
     path = payload.comment?.path ?? null;
     line = payload.comment?.line ?? null;
@@ -1037,6 +1060,7 @@ function extractPrComment(event: string, payload: WebhookPayload): EligiblePrCom
   } else if (event === "pull_request_review" && payload.action === "submitted") {
     body = payload.review?.body ?? null;
     actor = payload.review?.user ?? null;
+    authorAssociation = payload.review?.author_association ?? null;
     commentUrl = payload.review?.html_url ?? null;
     sourceId = payload.review?.id != null ? `review:${payload.review.id}` : null;
   } else {
@@ -1050,7 +1074,7 @@ function extractPrComment(event: string, payload: WebhookPayload): EligiblePrCom
   // feedback" link surfaced as feedback.
   if (body.includes(FEEDBACK_PR_FOOTER_MARKER)) return null;
 
-  return { body, actor, commentUrl, path, line, sourceId };
+  return { body, actor, authorAssociation, commentUrl, path, line, sourceId };
 }
 
 // Review feedback on an agent PR continues the SAME investigation session where

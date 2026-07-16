@@ -124,7 +124,7 @@ try {
       branchName,
       prNumber,
       installationId,
-      actor: "reviewer[bot]",
+      actor: "cursor[bot]",
     });
     assert.equal(response.status, 200);
 
@@ -290,7 +290,7 @@ try {
         branchName,
         prNumber,
         installationId,
-        actor: "reviewer[bot]",
+        actor: "cursor[bot]",
       }),
     ),
   );
