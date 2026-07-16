@@ -14,30 +14,11 @@ export type GcpApplicationConfig = {
   pushEndpoint: string;
 };
 
-export async function startGcpConnect(input: {
-  projectId: string;
-  userId: string;
-  gcpProjectId: string;
-  repository: GcpConnectionRepository;
-  gateway: GcpGateway;
-  config: GcpApplicationConfig;
-  signState: (connectionId: string) => string;
-}): Promise<{ connection: GcpConnectionRecord; url: string }> {
-  const connection = await input.repository.create({
-    projectId: input.projectId,
-    gcpProjectId: input.gcpProjectId,
-    readerServiceAccountEmail: input.config.readerServiceAccountEmail,
-    createdBy: input.userId,
-  });
-  return {
-    connection,
-    url: input.gateway.authorizationUrl({ state: input.signState(connection.id) }),
-  };
-}
-
 export async function completeGcpConnect(input: {
   connectionId: string;
-  code: string;
+  code?: string;
+  userAccessToken?: string;
+  gcpProjectNumber?: string;
   repository: GcpConnectionRepository;
   gateway: GcpGateway;
   config: GcpApplicationConfig;
@@ -54,11 +35,15 @@ export async function completeGcpConnect(input: {
   let provisioned: Awaited<ReturnType<GcpGateway["provision"]>> | null = null;
   let supersededCleanupAttempted = false;
   try {
-    // This token intentionally remains a local variable and is never passed to
-    // persistence. It exists only long enough to perform customer-authorized setup.
-    ({ accessToken } = await input.gateway.exchangeCode(input.code));
+    if (input.userAccessToken) {
+      accessToken = input.userAccessToken;
+    } else if (input.code) {
+      ({ accessToken } = await input.gateway.exchangeCode(input.code));
+    } else {
+      throw new Error("Google OAuth authorization is required");
+    }
     provisioned = await input.gateway.provision(
-      provisioningInput(connection, accessToken, input.config),
+      provisioningInput(connection, accessToken, input.config, input.gcpProjectNumber),
     );
     await input.repository.ensureIngestKey(connection.id, connection.projectId);
     if (superseded) {
@@ -137,10 +122,12 @@ function provisioningInput(
   connection: GcpConnectionRecord,
   accessToken: string,
   config: GcpApplicationConfig,
+  gcpProjectNumber?: string,
 ): GcpProvisioningInput {
   return {
     connectionId: connection.id,
     gcpProjectId: connection.gcpProjectId,
+    ...(gcpProjectNumber ? { gcpProjectNumber } : {}),
     userAccessToken: accessToken,
     integrationProjectId: config.integrationProjectId,
     readerServiceAccountEmail: connection.readerServiceAccountEmail,

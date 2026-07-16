@@ -26,6 +26,91 @@ test("customer authorization requests only the setup scopes the integration uses
   assert.equal(url.searchParams.get("state"), "signed-state");
 });
 
+test("project discovery returns every active project across Google result pages", async () => {
+  const requests: URL[] = [];
+  const fetchImpl: typeof fetch = async (input) => {
+    const url = new URL(
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+    );
+    requests.push(url);
+    if (url.searchParams.get("pageToken") === "next-page") {
+      return Response.json({
+        projects: [
+          {
+            name: "projects/222222222222",
+            projectId: "beta-production",
+            displayName: "Beta production",
+            state: "ACTIVE",
+          },
+        ],
+      });
+    }
+    return Response.json({
+      projects: [
+        {
+          name: "projects/111111111111",
+          projectId: "acme-production",
+          displayName: "Acme production",
+          state: "ACTIVE",
+        },
+      ],
+      nextPageToken: "next-page",
+    });
+  };
+  const gateway = new GoogleGcpGateway(config, fetchImpl);
+
+  assert.deepEqual(await gateway.listProjects("temporary-user-token"), [
+    {
+      projectId: "acme-production",
+      projectNumber: "111111111111",
+      displayName: "Acme production",
+    },
+    {
+      projectId: "beta-production",
+      projectNumber: "222222222222",
+      displayName: "Beta production",
+    },
+  ]);
+  assert.equal(requests.length, 2);
+  assert.ok(requests.every((url) => url.pathname === "/v3/projects:search"));
+  assert.ok(requests.every((url) => url.searchParams.get("query") === "state:ACTIVE"));
+  assert.equal(requests[1]?.searchParams.get("pageToken"), "next-page");
+});
+
+test("Google API failures identify the operation that failed", async () => {
+  const fetchImpl: typeof fetch = async (input, init = {}) => {
+    const url = new URL(
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+    );
+    if (url.pathname.endsWith("/sinks") && init.method === "POST") {
+      return Response.json({
+        name: "superlog-connection-id",
+        writerIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+      });
+    }
+    if (url.hostname === "pubsub.googleapis.com" && url.pathname.endsWith(":getIamPolicy")) {
+      return new Response(null, { status: 404 });
+    }
+    return Response.json({});
+  };
+  const gateway = new GoogleGcpGateway(config, fetchImpl, async () => "service-access-token");
+
+  await assert.rejects(
+    gateway.provision({
+      connectionId: "connection-id",
+      gcpProjectId: "acme-production",
+      gcpProjectNumber: "123456789012",
+      userAccessToken: "temporary-user-token",
+      integrationProjectId: config.integrationProjectId,
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      pushServiceAccountEmail: config.pushServiceAccountEmail,
+      pushAudience: config.pushAudience,
+      pushEndpoint: `${config.pushEndpoint}/connection-id`,
+    }),
+    /GET pubsub\.googleapis\.com\/v1\/projects\/superlog-observability\/topics\/superlog-connection-id:getIamPolicy failed \(404\)/,
+  );
+});
+
 test("provisioning keeps metered Pub/Sub resources and API quota in the integration project", async () => {
   const requests: Array<{ url: URL; init: RequestInit; body: Record<string, unknown> }> = [];
   const fetchImpl: typeof fetch = async (input, init = {}) => {
@@ -118,15 +203,24 @@ test("provisioning keeps metered Pub/Sub resources and API quota in the integrat
     ),
   );
 
-  const policyReads = requests.filter((request) => request.url.pathname.endsWith(":getIamPolicy"));
-  assert.equal(policyReads.length, 2);
-  assert.ok(
-    policyReads.every(
-      (request) =>
-        (request.body.options as { requestedPolicyVersion?: number } | undefined)
-          ?.requestedPolicyVersion === 3,
-    ),
+  const topicPolicyRead = requests.find(
+    (request) =>
+      request.url.hostname === "pubsub.googleapis.com" &&
+      request.url.pathname.endsWith(":getIamPolicy"),
   );
+  assert.ok(topicPolicyRead);
+  assert.equal(topicPolicyRead.init.method, "GET");
+  assert.equal(topicPolicyRead.url.searchParams.get("options.requestedPolicyVersion"), "3");
+  assert.deepEqual(topicPolicyRead.body, {});
+
+  const projectPolicyRead = requests.find(
+    (request) =>
+      request.url.hostname === "cloudresourcemanager.googleapis.com" &&
+      request.url.pathname.endsWith(":getIamPolicy"),
+  );
+  assert.ok(projectPolicyRead);
+  assert.equal(projectPolicyRead.init.method, "POST");
+  assert.deepEqual(projectPolicyRead.body, { options: { requestedPolicyVersion: 3 } });
 });
 
 test("provisioning reconciles an existing subscription push configuration", async () => {

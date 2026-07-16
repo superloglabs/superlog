@@ -154,7 +154,7 @@ export function buildActivityFeed(
       });
       continue;
     }
-    if (event.kind === "human_reply") {
+    if (event.kind === "human_reply" || event.kind === "github_comment") {
       const origin = (event.detail as { origin?: { author?: string | null } } | null)?.origin;
       const text = (event.summary ?? "").trim();
       if (text) {

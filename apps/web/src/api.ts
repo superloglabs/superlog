@@ -5,6 +5,11 @@ import type { SavedExploreViewState } from "./saved-view-state.ts";
 
 const API_URL = import.meta.env?.VITE_API_URL ?? "http://localhost:4100";
 
+export function apiRequestUrl(path: string, apiUrl = API_URL): string {
+	if (/^https?:\/\//i.test(path)) return path;
+	return `${apiUrl.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
+}
+
 export type Me = {
   user: { id: string; email: string; name: string; isStaff: boolean; impersonating: boolean };
   // Both null when the user signed up but hasn't created their first org yet.
@@ -24,6 +29,7 @@ export type Me = {
   // Whether billing hard-blocks are enforced. Metering runs regardless; this
   // gates the "Ingest paused" bar so we don't show it when nothing is blocked.
   billingEnforcement?: boolean;
+  features?: { anomalyScanner: boolean };
 };
 
 export type ApiKey = {
@@ -87,7 +93,7 @@ export function useFetcher() {
       const source = readPendingSignupSource();
       if (source) headers["x-superlog-signup-source"] = source;
     }
-    const res = await fetch(`${API_URL}${path}`, {
+    const res = await fetch(apiRequestUrl(path), {
       ...init,
       credentials: "include",
       headers,
@@ -1084,11 +1090,48 @@ export function useGcpConnection(projectId: string | undefined) {
 export function useStartGcpConnect(projectId: string | undefined) {
   const fetcher = useFetcher();
   return useMutation({
-    mutationFn: (gcpProjectId: string) =>
+    mutationFn: () =>
       fetcher<{ url: string }>(`/api/projects/${projectId}/gcp/install-url`, {
+        method: "POST",
+      }),
+  });
+}
+
+export type GcpProjectOption = {
+  projectId: string;
+  projectNumber: string;
+  displayName: string;
+};
+
+export type GcpAuthorizationSelection = {
+  id: string;
+  expiresAt: string;
+  projects: GcpProjectOption[];
+};
+
+export function useGcpAuthorizationSelection(authorizationId: string | null) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["gcp-authorization", authorizationId],
+    queryFn: () => fetcher<GcpAuthorizationSelection>(`/api/gcp/authorizations/${authorizationId}`),
+    enabled: !!authorizationId,
+    retry: false,
+  });
+}
+
+export function useConnectGcpAuthorization(authorizationId: string | null) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (gcpProjectId: string) =>
+      fetcher<{ connected: true }>(`/api/gcp/authorizations/${authorizationId}/connect`, {
         method: "POST",
         body: JSON.stringify({ gcpProjectId }),
       }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["gcp-connection"] });
+      qc.removeQueries({ queryKey: ["gcp-authorization", authorizationId] });
+    },
   });
 }
 
@@ -1831,6 +1874,136 @@ export function useDisconnectProjectMcpOAuth(projectId: string | undefined) {
         { method: "POST" },
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: projectMcpQueryKey(projectId) }),
+  });
+}
+
+export type AnomalyScannerSettings = {
+  enabled: boolean;
+  cadenceHours: number;
+  observationMinutes: number;
+  baselineHours: number;
+};
+
+export type AnomalyScanFinding = {
+  title: string;
+  summary?: string;
+  metricName: string;
+  service: string | null;
+  direction: "spike" | "drop" | "shift";
+  dimensions?: Record<string, string>;
+  observedValue?: number;
+  baselineValue?: number;
+  observedSince?: string;
+  observedUntil?: string;
+  evidence?: string;
+  codeEvidence?: Array<{
+    repository: string;
+    path: string;
+    line: number;
+    quote: string;
+    explanation: string;
+  }>;
+  incidentOutcome?: "opened" | "deduped";
+  issueId: string;
+  incidentId: string | null;
+};
+
+export type AnomalyScanAudit = {
+  version: 1;
+  baselineSince: string;
+  observedSince: string;
+  observedUntil: string;
+  metrics: Array<{
+    kind: string;
+    metricName: string;
+    service: string;
+    observedCount: number;
+    observedAverage: number | null;
+    observedMin: number | null;
+    observedMax: number | null;
+    baselineCount: number;
+    baselineAverage: number | null;
+    baselineMin: number | null;
+    baselineMax: number | null;
+  }>;
+  repositories: string[];
+  alertsCompared: Array<{ id: string; name: string; metricName: string | null }>;
+  incidentsCompared: Array<{ id: string; title: string; service: string | null }>;
+  decisions: Array<{
+    metricName: string;
+    service: string | null;
+    verdict: "finding" | "rejected";
+    reasonCode:
+      | "finding"
+      | "known_alert"
+      | "open_incident"
+      | "sparse_data"
+      | "counter_behavior"
+      | "transient_outlier"
+      | "normal_variation"
+      | "no_material_impact"
+      | "not_code_grounded"
+      | "other";
+    rationale: string;
+    codePaths: Array<{ repository: string; path: string; line: number | null }>;
+  }>;
+};
+
+export type AnomalyScan = {
+  id: string;
+  status: "running" | "completed" | "failed";
+  metricSeriesScanned: number;
+  findingsCount: number;
+  incidentsOpened: number;
+  incidentsDeduped: number;
+  findings: AnomalyScanFinding[];
+  audit: AnomalyScanAudit | null;
+  error: string | null;
+  startedAt: string;
+  completedAt: string | null;
+};
+
+export type AnomalyScannerData = {
+  settings: AnomalyScannerSettings;
+  scans: AnomalyScan[];
+};
+
+export function useAnomalyScanner(projectId: string | undefined, featureEnabled: boolean) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["anomaly-scanner", projectId],
+    queryFn: () => fetcher<AnomalyScannerData>(`/api/projects/${projectId}/anomaly-scanner`),
+    enabled: !!projectId && featureEnabled,
+    refetchInterval: (query) =>
+      query.state.data?.scans.some((scan) => scan.status === "running") ? 5_000 : false,
+  });
+}
+
+export function useAnomalyScan(
+  projectId: string | undefined,
+  scanId: string | undefined,
+  featureEnabled: boolean,
+) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["anomaly-scanner", projectId, "scan", scanId],
+    queryFn: () =>
+      fetcher<AnomalyScan>(`/api/projects/${projectId}/anomaly-scanner/scans/${scanId}`),
+    enabled: !!projectId && !!scanId && featureEnabled,
+    refetchInterval: (query) => (query.state.data?.status === "running" ? 5_000 : false),
+  });
+}
+
+export function useSaveAnomalyScannerSettings(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: Partial<AnomalyScannerSettings>) =>
+      fetcher<AnomalyScannerSettings>(`/api/projects/${projectId}/anomaly-scanner`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["anomaly-scanner", projectId] }),
   });
 }
 
@@ -2674,19 +2847,11 @@ export function useIncidentPullRequests(
 // `headSha` is part of the key: the PR list polls while a run is active and a
 // follow-up push moves the head, so the diff refetches exactly when a new
 // commit lands — without polling GitHub on a timer.
-export function useIncidentPullRequestDiff(
-  projectId: string,
-  incidentId: string,
-  prId: string,
-  headSha: string | null,
-) {
+export function useIncidentPullRequestDiff(path: string, headSha: string | null) {
   const fetcher = useFetcher();
   return useQuery({
-    queryKey: ["incident-pr-diff", projectId, incidentId, prId, headSha],
-    queryFn: () =>
-      fetcher<{ patch: string }>(
-        `/api/projects/${projectId}/incidents/${incidentId}/pull-requests/${prId}/diff`,
-      ),
+    queryKey: ["incident-pr-diff", path, headSha],
+    queryFn: () => fetcher<{ patch: string }>(path),
     // Keep showing the previous commit's diff while the new head's loads.
     placeholderData: (prev) => prev,
     staleTime: 60_000,

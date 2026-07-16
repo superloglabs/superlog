@@ -207,6 +207,29 @@ export async function listLinearTeams(accessToken: string): Promise<LinearTeam[]
   return data.teams.nodes;
 }
 
+/**
+ * Reads an AgentSession's `sourceMetadata.type` from Linear. A mention has
+ * `"comment"`; a delegation (issue assigned to the agent) has no source metadata and
+ * returns null. Used to classify a created AgentSessionEvent when the webhook body
+ * doesn't include sourceMetadata — the session's own `comment` thread is present for
+ * both and can't tell them apart.
+ */
+export async function fetchLinearAgentSessionSourceType(args: {
+  accessToken: string;
+  agentSessionId: string;
+}): Promise<string | null> {
+  const data = await linearGraphql<{
+    agentSession: { sourceMetadata?: { type?: unknown } | null } | null;
+  }>(
+    args.accessToken,
+    "query($id: String!) { agentSession(id: $id) { sourceMetadata } }",
+    { id: args.agentSessionId },
+    "agentSession query",
+  );
+  const type = data.agentSession?.sourceMetadata?.type;
+  return typeof type === "string" ? type : null;
+}
+
 export type LinearIssueRef = {
   id: string;
   identifier: string;

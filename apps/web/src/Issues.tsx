@@ -75,6 +75,7 @@ import {
 } from "./incidents/IncidentTranscript.tsx";
 import {
   getIncidentDetailAccess,
+  resolveIncidentPullRequestDiff,
   shouldUsePreloadedPullRequests,
 } from "./incidents/incident-detail-access.ts";
 import {
@@ -1572,6 +1573,7 @@ export function IncidentDetailContent({
   summaryTelemetry,
   occurrenceBuckets,
   pullRequests,
+  pullRequestDiffBasePath,
   readOnly = false,
 }: {
   incident: Incident;
@@ -1603,6 +1605,8 @@ export function IncidentDetailContent({
    * that cannot call product APIs also render the PR panel from this.
    */
   pullRequests?: IncidentPullRequest[];
+  /** Base API path used to load live diffs for supplied PRs with no recorded patch. */
+  pullRequestDiffBasePath?: string;
   /** Render the canonical incident UI without controls that mutate customer data. */
   readOnly?: boolean;
 }) {
@@ -1875,6 +1879,7 @@ export function IncidentDetailContent({
                 projectId={incident.projectId}
                 incidentId={incident.id}
                 pullRequests={pullRequests}
+                pullRequestDiffBasePath={pullRequestDiffBasePath}
                 readOnly={!access.canMergePullRequest}
               />
             )}
@@ -2181,15 +2186,23 @@ export function IncidentPullRequestPanel({
   projectId,
   incidentId,
   pullRequests,
+  pullRequestDiffBasePath,
   readOnly,
 }: {
   projectId: string;
   incidentId: string;
   pullRequests?: IncidentPullRequest[];
+  pullRequestDiffBasePath?: string;
   readOnly: boolean;
 }) {
   if (shouldUsePreloadedPullRequests({ readOnly })) {
-    return <IncidentPullRequestView pullRequests={pullRequests ?? []} readOnly={readOnly} />;
+    return (
+      <IncidentPullRequestView
+        pullRequests={pullRequests ?? []}
+        readOnly={readOnly}
+        diffBasePath={pullRequestDiffBasePath}
+      />
+    );
   }
   return <ProductIncidentPullRequestPanel projectId={projectId} incidentId={incidentId} />;
 }
@@ -2217,7 +2230,7 @@ function ProductIncidentPullRequestPanel({
       merging={mergePr.isPending}
       mergeError={mergePr.error}
       onMerge={(prId) => mergePr.mutate({ prId })}
-      diffSource={{ projectId, incidentId }}
+      diffBasePath={`/api/projects/${projectId}/incidents/${incidentId}/pull-requests`}
     />
   );
 }
@@ -2228,19 +2241,15 @@ export function IncidentPullRequestView({
   merging = false,
   mergeError = null,
   onMerge,
-  diffSource,
+  diffBasePath,
 }: {
   pullRequests: IncidentPullRequest[];
   readOnly: boolean;
   merging?: boolean;
   mergeError?: Error | null;
   onMerge?: (prId: string) => void;
-  /**
-   * Where to fetch the live diff when a PR has no recorded patch body.
-   * Omitted by read-only consumers that cannot call product APIs — they fall
-   * back to a GitHub link.
-   */
-  diffSource?: { projectId: string; incidentId: string };
+  /** Where to fetch the live diff when a PR has no recorded patch body. */
+  diffBasePath?: string;
 }) {
   const [selectedPrId, setSelectedPrId] = useState<string | null>(null);
 
@@ -2264,6 +2273,11 @@ export function IncidentPullRequestView({
     );
   }
   if (!selectedPr) return null;
+  const diffSource = resolveIncidentPullRequestDiff({
+    patch: selectedPr.patch,
+    diffBasePath,
+    pullRequestId: selectedPr.id,
+  });
 
   return (
     <div className="space-y-4">
@@ -2323,7 +2337,7 @@ export function IncidentPullRequestView({
         </p>
       )}
 
-      {selectedPr.patch ? (
+      {diffSource.kind === "recorded" ? (
         <Suspense
           fallback={
             <div className="min-h-[520px] rounded-md border border-border bg-surface p-4 text-[12px] text-muted">
@@ -2331,15 +2345,10 @@ export function IncidentPullRequestView({
             </div>
           }
         >
-          <IncidentPrDiffView patch={selectedPr.patch} patchKey={selectedPr.id} />
+          <IncidentPrDiffView patch={diffSource.patch} patchKey={selectedPr.id} />
         </Suspense>
-      ) : diffSource ? (
-        <IncidentPrRemoteDiff
-          key={selectedPr.id}
-          projectId={diffSource.projectId}
-          incidentId={diffSource.incidentId}
-          pr={selectedPr}
-        />
+      ) : diffSource.kind === "remote" ? (
+        <IncidentPrRemoteDiff key={selectedPr.id} path={diffSource.path} pr={selectedPr} />
       ) : (
         <IncidentPrDiffUnavailable pr={selectedPr} />
       )}
@@ -2350,15 +2359,13 @@ export function IncidentPullRequestView({
 // Loads the diff from GitHub through the API when the PR view carries no
 // recorded patch body (the normal case for PRs opened mid-run).
 function IncidentPrRemoteDiff({
-  projectId,
-  incidentId,
+  path,
   pr,
 }: {
-  projectId: string;
-  incidentId: string;
+  path: string;
   pr: IncidentPullRequest;
 }) {
-  const diff = useIncidentPullRequestDiff(projectId, incidentId, pr.id, pr.headSha);
+  const diff = useIncidentPullRequestDiff(path, pr.headSha);
   if (diff.isLoading) {
     return (
       <div className="min-h-[520px] rounded-md border border-border bg-surface p-4 text-[12px] text-muted">

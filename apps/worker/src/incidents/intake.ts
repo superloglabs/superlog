@@ -130,6 +130,15 @@ export type EnsureIncidentForIssueResult = {
   recurrenceIncident: boolean;
 };
 
+export type IssueIntakePreference = {
+  // A caller that already compared this issue with the current incident set
+  // may nominate its match. Intake still verifies that the row belongs to the
+  // same project and is open before linking; stale, closed, cross-project, or
+  // missing ids simply fall through to the normal grouping workflow.
+  preferredOpenIncidentId: string;
+  preferredMatchReason: string;
+};
+
 type Grouping = {
   match: IncidentMatch | null;
   standaloneSource: IssueGroupingSource;
@@ -147,6 +156,7 @@ export async function ensureIncidentForIssueWorkflow(
   issue: schema.Issue,
   transition: IssueIntakeTransition,
   deps: IntakeDeps,
+  preference?: IssueIntakePreference,
 ): Promise<EnsureIncidentForIssueResult> {
   // A candidate can close after grouping selects it but before the Issue link
   // is written. The repository reports that lifecycle race explicitly. Unwind
@@ -155,7 +165,7 @@ export async function ensureIncidentForIssueWorkflow(
   // makes progress without dropping this at-most-once transition.
   for (;;) {
     try {
-      return await ensureIncidentForIssueAttempt(issue, transition, deps);
+      return await ensureIncidentForIssueAttempt(issue, transition, deps, preference);
     } catch (err) {
       if (!(err instanceof IncidentClosedDuringLink)) throw err;
       deps.logger.warn(
@@ -180,6 +190,7 @@ async function ensureIncidentForIssueAttempt(
   issue: schema.Issue,
   transition: IssueIntakeTransition,
   deps: IntakeDeps,
+  preference?: IssueIntakePreference,
 ): Promise<EnsureIncidentForIssueResult> {
   // Serialize intake by trace id when present, so same-request symptoms — a span
   // exception and its own log line, which are DIFFERENT issues — can't each open
@@ -304,6 +315,25 @@ async function ensureIncidentForIssueAttempt(
         incident: freshIncident,
         createdIncident: false,
         linkedIssue: false,
+        recurrenceIncident: false,
+      };
+    }
+  }
+
+  if (preference) {
+    const preferred = await deps.repo.findIncident(preference.preferredOpenIncidentId);
+    if (preferred && preferred.projectId === issue.projectId && preferred.status === "open") {
+      const linkedIssue = await linkIssueToOpenIncident(deps.repo, preferred, issue);
+      await deps.repo.updateIssueGrouping(issue.id, {
+        state: "grouped",
+        source: "llm",
+        reason: preference.preferredMatchReason,
+      });
+      const freshIncident = (await deps.repo.findIncident(preferred.id)) ?? preferred;
+      return {
+        incident: freshIncident,
+        createdIncident: false,
+        linkedIssue,
         recurrenceIncident: false,
       };
     }

@@ -10,7 +10,9 @@ import {
   db,
   deleteLinearWebhook,
   enqueueIncidentCreated,
+  ensureFreshLinearToken,
   exchangeLinearCode,
+  fetchLinearAgentSessionSourceType,
   fetchLinearViewer,
   linearTicketAcceptanceUnit,
   recordInboundInteraction,
@@ -226,8 +228,16 @@ type LinearWebhookPayload = {
   agentSession?: {
     id?: string;
     issueId?: string;
+    // `comment` is the comment thread the session is attached to. It is present for
+    // BOTH a mention and a delegation (a delegation gets its own auto-created thread),
+    // so it must NOT be used to tell them apart.
     commentId?: string | null;
     sourceCommentId?: string | null;
+    // `sourceMetadata` records how the session was created. A mention has
+    // `{ type: "comment", ... }`; a delegation (issue assigned to the agent) has null.
+    // This is the reliable discriminator. May be omitted from the webhook body, in
+    // which case the handler resolves it from Linear.
+    sourceMetadata?: { type?: string | null } | null;
     creatorId?: string | null;
     issue?: {
       id?: string;
@@ -267,6 +277,7 @@ export type LinearAgentSessionEventClassification =
 
 export function classifyLinearAgentSessionEvent(
   payload: LinearWebhookPayload,
+  opts?: { sourceMetadataType?: string | null },
 ): LinearAgentSessionEventClassification {
   if (payload.type !== "AgentSessionEvent") return { kind: "ignore" };
   const agentSessionId = payload.agentSession?.id;
@@ -284,9 +295,16 @@ export function classifyLinearAgentSessionEvent(
   const issueId = payload.agentSession?.issueId;
   const prompt = payload.promptContext?.trim();
   if (!issueId || !prompt) return { kind: "ignore" };
-  const isMention = Boolean(
-    payload.agentSession?.commentId ?? payload.agentSession?.sourceCommentId,
-  );
+  // A mention (@superlog in a comment) is created with a triggering source comment,
+  // surfaced as sourceMetadata.type === "comment". A delegation (issue assigned to the
+  // agent) has no source comment (sourceMetadata is null) even though the session owns
+  // an auto-created comment thread. The caller may resolve sourceMetadata out of band
+  // (it can be absent from the webhook body); prefer that when provided.
+  const sourceMetadataType =
+    opts?.sourceMetadataType !== undefined
+      ? opts.sourceMetadataType
+      : (payload.agentSession?.sourceMetadata?.type ?? null);
+  const isMention = sourceMetadataType === "comment";
   return {
     kind: isMention ? "chat" : "incident",
     agentSessionId,
@@ -474,11 +492,68 @@ async function handleLinearWebhook(
     .onConflictDoNothing();
 }
 
+// Returns a usable Linear access token for the installation, refreshing in place when
+// the OAuth client creds are present (they are in prod). Mirrors the worker's
+// resolveAccessToken: without creds, fall back to the stored token as-is.
+async function resolveLinearAccessToken(install: schema.LinearInstallation): Promise<string> {
+  const clientId = process.env.LINEAR_CLIENT_ID;
+  const clientSecret = process.env.LINEAR_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return install.accessToken;
+  const fresh = await ensureFreshLinearToken({
+    installationId: install.id,
+    clientId,
+    clientSecret,
+  });
+  return fresh.accessToken;
+}
+
 async function handleLinearAgentSessionEvent(
   payload: LinearWebhookPayload,
   install: schema.LinearInstallation,
 ): Promise<void> {
-  const classification = classifyLinearAgentSessionEvent(payload);
+  // Resolve a fresh Linear token at most once and reuse it for every Linear write in
+  // this handler (metadata fetch, acknowledgement, external URL). The stored token can
+  // be expired; refreshing only for the fetch would leave the later writes on a stale
+  // token and 500 mid-handler — after the incident/chat already exists, so the retry
+  // takes the dedupe path and skips the acknowledgement and external URL entirely.
+  let cachedAccessToken: string | undefined;
+  const accessToken = async (): Promise<string> => {
+    cachedAccessToken ??= await resolveLinearAccessToken(install);
+    return cachedAccessToken;
+  };
+
+  // A created session is a mention (chat) or a delegation (incident). The reliable
+  // signal is agentSession.sourceMetadata.type ("comment" for a mention). If the
+  // webhook body omits sourceMetadata, resolve it from Linear rather than fall back to
+  // the session's own comment thread, which is present for both and misclassifies a
+  // delegation as a chat (the ENG-327 bug).
+  let sourceMetadataType: string | null | undefined;
+  if (payload.action === "created") {
+    const session = payload.agentSession;
+    if (session && "sourceMetadata" in session) {
+      sourceMetadataType = session.sourceMetadata?.type ?? null;
+    } else if (session?.id) {
+      // This fetch gates classification and runs before any DB write, so a stale
+      // access token would 500 the webhook and wedge retries. Refresh first.
+      sourceMetadataType = await fetchLinearAgentSessionSourceType({
+        accessToken: await accessToken(),
+        agentSessionId: session.id,
+      });
+    }
+    log.info(
+      {
+        agent_session_id: payload.agentSession?.id ?? null,
+        issue: payload.agentSession?.issue?.identifier ?? null,
+        source_metadata_type: sourceMetadataType ?? null,
+        had_comment: Boolean(payload.agentSession?.commentId),
+        resolved_via:
+          payload.agentSession && "sourceMetadata" in payload.agentSession ? "webhook" : "api",
+      },
+      "linear agent session created",
+    );
+  }
+
+  const classification = classifyLinearAgentSessionEvent(payload, { sourceMetadataType });
   if (classification.kind === "ignore") return;
   const issue = payload.agentSession?.issue;
 
@@ -496,7 +571,7 @@ async function handleLinearAgentSessionEvent(
       activityId: `session:${classification.agentSessionId}`,
     });
     if (recorded.outcome === "accepted") {
-      await acknowledgeLinearSession(install, classification.agentSessionId, "chat");
+      await acknowledgeLinearSession(await accessToken(), classification.agentSessionId, "chat");
     }
     return;
   }
@@ -518,11 +593,15 @@ async function handleLinearAgentSessionEvent(
           "failed to enqueue Linear incident webhook",
         ),
       );
-      await acknowledgeLinearSession(install, classification.agentSessionId, "incident");
+      await acknowledgeLinearSession(
+        await accessToken(),
+        classification.agentSessionId,
+        "incident",
+      );
       const incidentUrl = await linearIncidentUrl(result.incident);
       if (incidentUrl) {
         await updateLinearAgentSession({
-          accessToken: install.accessToken,
+          accessToken: await accessToken(),
           agentSessionId: classification.agentSessionId,
           externalUrls: [{ label: "View incident", url: incidentUrl }],
         });
@@ -552,7 +631,7 @@ async function handleLinearAgentSessionEvent(
       activityId: classification.activityId,
     });
     if (recorded.outcome === "accepted") {
-      await acknowledgeLinearSession(install, classification.agentSessionId, "chat");
+      await acknowledgeLinearSession(await accessToken(), classification.agentSessionId, "chat");
     }
     return;
   }
@@ -573,7 +652,7 @@ async function handleLinearAgentSessionEvent(
     dedupeKey: `linear_prompt:${classification.activityId}`,
   });
   if (recorded.outcome === "accepted") {
-    await acknowledgeLinearSession(install, classification.agentSessionId, "incident");
+    await acknowledgeLinearSession(await accessToken(), classification.agentSessionId, "incident");
   }
 }
 
@@ -607,12 +686,12 @@ async function createLinearRootIncident(args: {
 }
 
 async function acknowledgeLinearSession(
-  install: schema.LinearInstallation,
+  accessToken: string,
   agentSessionId: string,
   kind: "chat" | "incident",
 ): Promise<void> {
   await createLinearAgentActivity({
-    accessToken: install.accessToken,
+    accessToken,
     agentSessionId,
     type: "thought",
     body: kind === "incident" ? "I’m starting an investigation now." : "I’m looking into that now.",

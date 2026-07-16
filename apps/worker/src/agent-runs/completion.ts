@@ -1,5 +1,6 @@
 import {
   type AgentRunResult,
+  INBOUND_INTERACTION_EVENT_KINDS,
   type IncidentResolutionProof,
   type ResolveIssueOutcome,
   closeIncidentOpenPullRequestsAfterResolution,
@@ -9,7 +10,7 @@ import {
   resolveAgentIncident,
   schema,
 } from "@superlog/db";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import {
@@ -77,8 +78,8 @@ async function refreshIncidentAndRetireSessionIfClosed(
 // Channel-in = channel-out: when this turn was triggered by a PR comment, post
 // the agent's reply back onto the PR (in addition to the Slack incident thread,
 // which stays the system of record). The turn's origin is the run's trigger for
-// a cold-start follow-up, or the latest human_reply event for a resumed/steered
-// session. Best-effort — a failed PR post never blocks completion.
+// a cold-start follow-up, or the latest inbound interaction event for a
+// resumed/steered session. Best-effort — a failed PR post never blocks completion.
 // A GitHub comment/PR URL → (repo, PR number), so the reply can land on the
 // PR the human actually wrote on rather than "the incident's latest open PR".
 export function parsePrRefFromGithubUrl(
@@ -97,9 +98,9 @@ export async function replyToPrOriginIfNeeded(
   replyText: string,
 ): Promise<void> {
   let isPrOrigin = ctx.agentRun.trigger === "pr_comment";
-  // A cold-start pr_comment run has no human_reply event yet — its origin PR
-  // lives in the trigger detail. A later human_reply (resumed/steered
-  // session) still overrides below, since the latest interaction wins.
+  // A cold-start pr_comment run has no pending interaction event yet — its
+  // origin PR lives in the trigger detail. A later resumed/steered interaction
+  // still overrides below, since the latest interaction wins.
   let originUrl: string | null = isPrOrigin
     ? (ctx.agentRun.triggerDetail?.interactions?.find(
         (interaction) => interaction.channel === "pr_comment",
@@ -108,7 +109,7 @@ export async function replyToPrOriginIfNeeded(
   const lastReply = await db.query.incidentEvents.findFirst({
     where: and(
       eq(schema.incidentEvents.agentRunId, ctx.agentRun.id),
-      eq(schema.incidentEvents.kind, "human_reply"),
+      inArray(schema.incidentEvents.kind, [...INBOUND_INTERACTION_EVENT_KINDS]),
     ),
     orderBy: [desc(schema.incidentEvents.createdAt)],
     columns: { detail: true },

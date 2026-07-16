@@ -5,13 +5,11 @@ import { gcpConnectAction } from "./gcp-settings-model.js";
 test("a connected GCP integration offers a project replacement action", () => {
   assert.deepEqual(gcpConnectAction("connected"), {
     buttonLabel: "Change Google Cloud project",
-    inputLabel: "New Google Cloud project ID",
   });
 });
 
 test("an unconnected GCP integration offers the initial connect action", () => {
   assert.deepEqual(gcpConnectAction("failed"), {
     buttonLabel: "Connect Google Cloud",
-    inputLabel: "Google Cloud project ID",
   });
 });
