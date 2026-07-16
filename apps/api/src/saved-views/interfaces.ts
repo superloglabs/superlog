@@ -11,6 +11,23 @@ import { DrizzleSavedViewRepository } from "./repository.js";
 type Vars = { userId: string; orgId: string | null };
 
 const attrSchema = z.object({ key: z.string().min(1).max(200), value: z.string().max(500) });
+const exploreTimestampSchema = z
+  .string()
+  .max(64)
+  .refine((value) => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(value);
+    if (!match) return false;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const hour = Number(match[4]);
+    const minute = Number(match[5]);
+    const second = match[6] ? Number(match[6]) : 0;
+    if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return false;
+    const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+    const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    return day >= 1 && day <= (daysInMonth[month - 1] ?? 0) && Number.isFinite(Date.parse(value));
+  });
 const rangeSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("relative"),
@@ -19,8 +36,8 @@ const rangeSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("absolute"),
-    since: z.string().datetime(),
-    until: z.string().datetime(),
+    since: exploreTimestampSchema,
+    until: exploreTimestampSchema,
   }),
 ]);
 const stateSchema = z.object({

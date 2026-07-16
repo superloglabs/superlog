@@ -12,7 +12,9 @@ type SavedViewBody = {
   visibility: "personal" | "workspace";
   state: {
     source: "logs" | "traces";
-    range: { type: "relative"; seconds: number; label: string };
+    range:
+      | { type: "relative"; seconds: number; label: string }
+      | { type: "absolute"; since: string; until: string };
     attrs: { key: string; value: string }[];
     severity?: string;
     groupBy?: string;
@@ -100,6 +102,30 @@ test("a project member can save and list a personal log view", async () => {
     listed.map((view) => ({ id: view.id, name: view.name, ownedByMe: view.ownedByMe })),
     [{ id: created.id, name: "Production errors", ownedByMe: true }],
   );
+});
+
+test("a project member can save an absolute range accepted by Explore", async () => {
+  const { org, user, project } = await seedProject();
+  const app = appFor(user.id, org.id);
+  const state = {
+    source: "traces" as const,
+    range: {
+      type: "absolute" as const,
+      since: "2026-06-26 02:40:00",
+      until: "2026-06-26 03:40:00",
+    },
+    attrs: [],
+  };
+
+  const response = await app.request(`/api/projects/${project.id}/saved-views`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "Incident window", visibility: "personal", state }),
+  });
+
+  assert.equal(response.status, 200);
+  const created = (await response.json()) as SavedViewBody;
+  assert.deepEqual(created.state, state);
 });
 
 test("workspace views are shared with project members while personal views stay private", async () => {
