@@ -49,6 +49,7 @@ import { HTTPException } from "hono/http-exception";
 import { nanoid } from "nanoid";
 import { loadIncidentAlertEpisodes, loadTriggeringAlertForIssue } from "./alerts-service.js";
 import { mountAlerts } from "./alerts.js";
+import { mountAnomalyScanner } from "./anomaly-scanner.js";
 import { auth } from "./auth.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
@@ -376,6 +377,7 @@ mountIngestFilters(app);
 mountOrgCrud(app);
 mountTopology(app);
 mountAlerts(app, { ch });
+mountAnomalyScanner(app);
 mountWebhooks(app);
 mountFeedbackAuthed(app);
 mountImpersonation(app);
@@ -409,6 +411,7 @@ app.get("/api/me", async (c) => {
       project: null,
       favorite: { orgId: user.favoriteOrgId, projectId: user.favoriteProjectId },
       billingEnforcement,
+      features: { anomalyScanner: false },
     });
   }
 
@@ -447,6 +450,10 @@ app.get("/api/me", async (c) => {
   // hasn't ingested yet, i.e. the server is serving it demo data. The web uses it
   // to render the read-only sample-data experience + the persistent install nudge.
   const demoMode = demoProjectId() !== undefined && !hasIngested;
+  const orgAgentSettings = await db.query.orgAgentSettings.findFirst({
+    where: eq(schema.orgAgentSettings.orgId, org.id),
+    columns: { anomalyScannerEnabled: true },
+  });
 
   return c.json({
     user: {
@@ -461,6 +468,7 @@ app.get("/api/me", async (c) => {
     favorite: { orgId: user.favoriteOrgId, projectId: user.favoriteProjectId },
     demoMode,
     billingEnforcement,
+    features: { anomalyScanner: orgAgentSettings?.anomalyScannerEnabled ?? false },
   });
 });
 
