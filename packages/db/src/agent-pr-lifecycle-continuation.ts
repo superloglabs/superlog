@@ -11,6 +11,19 @@ export function areAllIncidentPullRequestsMerged(
   );
 }
 
+// A closed PR resolves the incident only once no delivery is still in play:
+// every incident PR must be settled (merged or closed). A human closing the
+// last live PR is their decision on the delivery itself — the incident
+// resolves rather than waiting for a confirmation nobody sends. Shared by the
+// webhook and worker recovery paths, like the merged predicate above.
+export function areAllIncidentPullRequestsSettled(
+  pullRequests: Array<{ state: AgentPrState }>,
+): boolean {
+  return (
+    pullRequests.length > 0 && pullRequests.every((pullRequest) => pullRequest.state !== "open")
+  );
+}
+
 export type AgentPullRequestLifecycleRecord = {
   id: string;
   state: AgentPrState;

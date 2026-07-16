@@ -4,10 +4,12 @@ import {
   type AgentRunResult,
   INBOUND_INTERACTION_EVENT_KINDS,
   areAllIncidentPullRequestsMerged,
+  areAllIncidentPullRequestsSettled,
   buildAgentPullRequestLifecycleContinuation,
   db,
   recordInboundInteraction,
   resolveIncidentIfAllAgentPullRequestsMerged,
+  resolveIncidentIfAllAgentPullRequestsSettled,
   schema,
 } from "@superlog/db";
 import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
@@ -239,6 +241,11 @@ export type PullRequestLifecycleRecordOutcome = "recorded" | "duplicate" | "unav
 
 export type SettledPullRequestFallbackPlan =
   | { kind: "resolve_merged"; pullRequest: SettledPullRequestLifecycle }
+  | {
+      kind: "resolve_settled";
+      pullRequest: SettledPullRequestLifecycle;
+      mergedPullRequest: SettledPullRequestLifecycle | null;
+    }
   | { kind: "follow_up" };
 
 export function planSettledPullRequestFallback(
@@ -250,6 +257,21 @@ export function planSettledPullRequestFallback(
   );
   if (mergedPullRequest && areAllIncidentPullRequestsMerged(incidentPullRequests)) {
     return { kind: "resolve_merged", pullRequest: mergedPullRequest };
+  }
+  // A settled close with no delivery left in play resolves the incident (the
+  // webhook applies the same policy; this is the recovery path for closes the
+  // webhook never delivered). A merged sibling means a fix landed — the
+  // resolution credits it instead of the close.
+  const closedPullRequest = settledPullRequests.find(
+    (pullRequest) => pullRequest.state === "closed",
+  );
+  if (closedPullRequest && areAllIncidentPullRequestsSettled(incidentPullRequests)) {
+    return {
+      kind: "resolve_settled",
+      pullRequest: closedPullRequest,
+      mergedPullRequest:
+        incidentPullRequests.find((pullRequest) => pullRequest.state === "merged") ?? null,
+    };
   }
   return { kind: "follow_up" };
 }
@@ -921,29 +943,75 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
             waitPlan.settledPullRequests,
             deliveredPrs,
           );
-          if (fallback.kind === "resolve_merged") {
-            const mergedAt = fallback.pullRequest.mergedAt ?? new Date();
-            const resolution = await resolveIncidentIfAllAgentPullRequestsMerged({
-              incidentId: ctx.incident.id,
-              kind: "agent_pr_merged",
-              reasonCode: "agent_pr_merged",
-              reasonText: `Resolved because agent PR #${fallback.pullRequest.prNumber} (${fallback.pullRequest.repoFullName}) was merged${
-                fallback.pullRequest.mergedByLogin
-                  ? ` by @${fallback.pullRequest.mergedByLogin}`
-                  : ""
-              }.`,
-              agentRunId: ctx.agentRun.id,
-              eventSummary: `Incident resolved because PR #${fallback.pullRequest.prNumber} was merged.`,
-              eventDetail: {
-                agentPrId: fallback.pullRequest.id,
-                repoFullName: fallback.pullRequest.repoFullName,
-                prNumber: fallback.pullRequest.prNumber,
-                prUrl: fallback.pullRequest.url,
-                mergedByLogin: fallback.pullRequest.mergedByLogin,
-              },
-              eventDedupeKey: `incident_resolved:agent_pr:${fallback.pullRequest.id}`,
-              resolvedAt: mergedAt,
-            });
+          if (fallback.kind === "resolve_merged" || fallback.kind === "resolve_settled") {
+            const settledAt =
+              fallback.kind === "resolve_merged"
+                ? (fallback.pullRequest.mergedAt ?? new Date())
+                : (fallback.pullRequest.closedAt ?? new Date());
+            const eventDedupeKey =
+              fallback.kind === "resolve_merged"
+                ? `incident_resolved:agent_pr:${fallback.pullRequest.id}`
+                : `incident_resolved:agent_pr_closed:${fallback.pullRequest.id}:${settledAt.getTime()}`;
+            const resolution =
+              fallback.kind === "resolve_merged"
+                ? await resolveIncidentIfAllAgentPullRequestsMerged({
+                    incidentId: ctx.incident.id,
+                    kind: "agent_pr_merged",
+                    reasonCode: "agent_pr_merged",
+                    reasonText: `Resolved because agent PR #${fallback.pullRequest.prNumber} (${fallback.pullRequest.repoFullName}) was merged${
+                      fallback.pullRequest.mergedByLogin
+                        ? ` by @${fallback.pullRequest.mergedByLogin}`
+                        : ""
+                    }.`,
+                    agentRunId: ctx.agentRun.id,
+                    eventSummary: `Incident resolved because PR #${fallback.pullRequest.prNumber} was merged.`,
+                    eventDetail: {
+                      agentPrId: fallback.pullRequest.id,
+                      repoFullName: fallback.pullRequest.repoFullName,
+                      prNumber: fallback.pullRequest.prNumber,
+                      prUrl: fallback.pullRequest.url,
+                      mergedByLogin: fallback.pullRequest.mergedByLogin,
+                    },
+                    eventDedupeKey,
+                    resolvedAt: settledAt,
+                  })
+                : await resolveIncidentIfAllAgentPullRequestsSettled(
+                    fallback.mergedPullRequest
+                      ? {
+                          incidentId: ctx.incident.id,
+                          kind: "agent_pr_merged",
+                          reasonCode: "agent_pr_merged",
+                          reasonText: `Resolved because agent PR #${fallback.mergedPullRequest.prNumber} (${fallback.mergedPullRequest.repoFullName}) was merged and the last live agent PR #${fallback.pullRequest.prNumber} was closed without merge.`,
+                          agentRunId: ctx.agentRun.id,
+                          eventSummary: `Incident resolved after PR #${fallback.pullRequest.prNumber} was closed; fix PR #${fallback.mergedPullRequest.prNumber} is merged.`,
+                          eventDetail: {
+                            agentPrId: fallback.pullRequest.id,
+                            repoFullName: fallback.pullRequest.repoFullName,
+                            prNumber: fallback.pullRequest.prNumber,
+                            prUrl: fallback.pullRequest.url,
+                            mergedAgentPrId: fallback.mergedPullRequest.id,
+                            mergedPrNumber: fallback.mergedPullRequest.prNumber,
+                          },
+                          eventDedupeKey,
+                          resolvedAt: settledAt,
+                        }
+                      : {
+                          incidentId: ctx.incident.id,
+                          kind: "agent_pr_closed",
+                          reasonCode: "agent_pr_closed",
+                          reasonText: `Resolved because agent PR #${fallback.pullRequest.prNumber} (${fallback.pullRequest.repoFullName}) was closed without merge and no agent PRs remain open.`,
+                          agentRunId: ctx.agentRun.id,
+                          eventSummary: `Incident resolved because PR #${fallback.pullRequest.prNumber} was closed without merge.`,
+                          eventDetail: {
+                            agentPrId: fallback.pullRequest.id,
+                            repoFullName: fallback.pullRequest.repoFullName,
+                            prNumber: fallback.pullRequest.prNumber,
+                            prUrl: fallback.pullRequest.url,
+                          },
+                          eventDedupeKey,
+                          resolvedAt: settledAt,
+                        },
+                  );
             if (resolution.disposition === "resolved") {
               const completed = await completeWithoutPullRequest(
                 ctx,
@@ -951,15 +1019,26 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
                 sessionId,
                 nextRuntimeMinutes,
                 {
-                  incidentOutcome: {
-                    kind: "all_pull_requests_merged",
-                    prNumber: fallback.pullRequest.prNumber,
-                    repoFullName: fallback.pullRequest.repoFullName,
-                    resolutionProof: {
-                      agentRunId: ctx.agentRun.id,
-                      eventDedupeKey: `incident_resolved:agent_pr:${fallback.pullRequest.id}`,
-                    },
-                  },
+                  incidentOutcome:
+                    fallback.kind === "resolve_merged"
+                      ? {
+                          kind: "all_pull_requests_merged",
+                          prNumber: fallback.pullRequest.prNumber,
+                          repoFullName: fallback.pullRequest.repoFullName,
+                          resolutionProof: {
+                            agentRunId: ctx.agentRun.id,
+                            eventDedupeKey,
+                          },
+                        }
+                      : {
+                          kind: "all_pull_requests_settled",
+                          prNumber: fallback.pullRequest.prNumber,
+                          repoFullName: fallback.pullRequest.repoFullName,
+                          resolutionProof: {
+                            agentRunId: ctx.agentRun.id,
+                            eventDedupeKey,
+                          },
+                        },
                 },
               );
               if (completed) await meterAgentRun("complete_with_pr");

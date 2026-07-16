@@ -204,6 +204,7 @@ export type IncidentResolutionClassification = {
 // status path.
 export type IncidentResolvedByKind =
   | "agent_pr_merged" // our agent opened a PR, GitHub said it merged
+  | "agent_pr_closed" // a human closed the last live agent PR without merging — treated as their decision on the delivery
   | "linear_ticket_completed" // the run's Linear handoff entered a completed state
   | "agent_classification" // agent run completed with resolutionClassification.reason set
   | "slack_manual" // human clicked the Resolve button in Slack

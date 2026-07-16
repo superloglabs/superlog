@@ -236,6 +236,7 @@ export {
 } from "./agent-pr-provider-reconciliation.js";
 export {
   areAllIncidentPullRequestsMerged,
+  areAllIncidentPullRequestsSettled,
   buildAgentPullRequestLifecycleContinuation,
   type AgentPullRequestLifecycleContinuation,
   type AgentPullRequestLifecycleRecord,
@@ -305,6 +306,7 @@ export {
   resolveIncident,
   resolveIncidentWithProof,
   resolveIncidentIfAllAgentPullRequestsMerged,
+  resolveIncidentIfAllAgentPullRequestsSettled,
   reconcileAgentRunCompletedByResolution,
   validateIncidentIssueOutcomes,
   reserveAgentPullRequestBatch,

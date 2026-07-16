@@ -15,6 +15,21 @@ export function mergedPullRequestResolutionCopy(opts: {
   };
 }
 
+export function settledPullRequestResolutionCopy(opts: {
+  prNumber: number;
+  repoFullName: string;
+}): {
+  threadLead: string;
+  status: string;
+  mainTextSuffix: string;
+} {
+  return {
+    threadLead: `:white_check_mark: PR #${opts.prNumber} (${opts.repoFullName}) was closed without merging and no agent pull request remains open; incident resolved.`,
+    status: "Incident resolved - agent pull requests closed without merge",
+    mainTextSuffix: "Incident resolved",
+  };
+}
+
 export function agentResolveEventDedupeKey(agentRunId: string, toolUseId: string): string {
   return `incident_resolved:agent_run:${agentRunId}:resolve_incident:${toolUseId}`;
 }

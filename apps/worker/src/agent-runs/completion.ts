@@ -46,6 +46,7 @@ import {
   planLegacyTerminalResolutionCompletion,
   resolutionCompletionCopy,
   resolutionCompletionResult,
+  settledPullRequestResolutionCopy,
   shouldRetireProviderSession,
   shouldUpdateResolutionMainMessage,
 } from "./resolution-completion.js";
@@ -459,7 +460,7 @@ export async function completeWithoutPullRequest(
     runCompletion?: "already_committed_by_resolution";
     incidentOutcome?:
       | {
-          kind: "all_pull_requests_merged";
+          kind: "all_pull_requests_merged" | "all_pull_requests_settled";
           prNumber: number;
           repoFullName: string;
           resolutionProof: IncidentResolutionProof;
@@ -472,14 +473,17 @@ export async function completeWithoutPullRequest(
   const mergedResolutionCopy =
     opts?.incidentOutcome?.kind === "all_pull_requests_merged"
       ? mergedPullRequestResolutionCopy(opts.incidentOutcome)
-      : null;
+      : opts?.incidentOutcome?.kind === "all_pull_requests_settled"
+        ? settledPullRequestResolutionCopy(opts.incidentOutcome)
+        : null;
   const alreadyClosedCopy =
     opts?.incidentOutcome?.kind === "incident_already_closed"
       ? incidentAlreadyClosedCompletionCopy()
       : null;
   let closedElsewhereCopy = alreadyClosedCopy;
   let resolutionProof =
-    opts?.incidentOutcome?.kind === "all_pull_requests_merged"
+    opts?.incidentOutcome?.kind === "all_pull_requests_merged" ||
+    opts?.incidentOutcome?.kind === "all_pull_requests_settled"
       ? opts.incidentOutcome.resolutionProof
       : null;
   let noiseApplied = false;

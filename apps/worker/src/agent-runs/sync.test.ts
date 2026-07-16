@@ -373,9 +373,18 @@ test("an unavailable recovered PR lifecycle resolves only an entirely merged del
     kind: "follow_up",
   });
   assert.deepEqual(planSettledPullRequestFallback([closed, merged], [closed, merged]), {
+    kind: "resolve_settled",
+    pullRequest: closed,
+    mergedPullRequest: merged,
+  });
+  assert.deepEqual(planSettledPullRequestFallback([closed], [closed]), {
+    kind: "resolve_settled",
+    pullRequest: closed,
+    mergedPullRequest: null,
+  });
+  assert.deepEqual(planSettledPullRequestFallback([closed], [open, closed]), {
     kind: "follow_up",
   });
-  assert.deepEqual(planSettledPullRequestFallback([closed], [closed]), { kind: "follow_up" });
 });
 
 test("a terminal result wins when it lands at the runtime budget boundary", () => {
