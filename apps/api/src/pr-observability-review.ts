@@ -6,9 +6,11 @@ export type ObservabilityReviewCommand = {
   headSha: string;
 };
 
-export type ObservabilityReviewScope = { orgId: string; projectId: string | null };
+export type ObservabilityReviewScope = { orgId: string; projectId: string };
 
-export type ObservabilityReviewEnqueue = ObservabilityReviewCommand & ObservabilityReviewScope;
+export type ObservabilityReviewEnqueue = ObservabilityReviewCommand & {
+  scopes: ObservabilityReviewScope[];
+};
 
 type PullRequestWebhookPayload = {
   action?: string;
@@ -56,12 +58,12 @@ export function observabilityReviewCommandFromWebhook(
 export async function enqueueObservabilityReview(
   command: ObservabilityReviewCommand,
   deps: {
-    findEnabledScope(command: ObservabilityReviewCommand): Promise<ObservabilityReviewScope | null>;
+    findEnabledScopes(command: ObservabilityReviewCommand): Promise<ObservabilityReviewScope[]>;
     insert(input: ObservabilityReviewEnqueue): Promise<void>;
   },
 ): Promise<boolean> {
-  const scope = await deps.findEnabledScope(command);
-  if (!scope) return false;
-  await deps.insert({ ...command, ...scope });
+  const scopes = await deps.findEnabledScopes(command);
+  if (scopes.length === 0) return false;
+  await deps.insert({ ...command, scopes });
   return true;
 }

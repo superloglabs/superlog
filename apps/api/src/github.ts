@@ -535,7 +535,7 @@ async function maybeEnqueuePrObservabilityReview(
   if (!command) return;
 
   const enqueued = await enqueueObservabilityReview(command, {
-    async findEnabledScope(input) {
+    async findEnabledScopes(input) {
       const installations = await db.query.githubInstallations.findMany({
         where: and(
           eq(schema.githubInstallations.installationId, input.installationId),
@@ -543,11 +543,16 @@ async function maybeEnqueuePrObservabilityReview(
           isNull(schema.githubInstallations.revokedAt),
         ),
       });
+      const scopes = new Map<string, { orgId: string; projectId: string }>();
       for (const installation of installations) {
         if (!isRepoEnabled(normalizeRepoAccess(installation.repoAccess), input.repoId)) continue;
         if (installation.projectId) {
           if (!installation.observabilityReviewEnabled) continue;
-          return { orgId: installation.orgId, projectId: installation.projectId };
+          scopes.set(installation.projectId, {
+            orgId: installation.orgId,
+            projectId: installation.projectId,
+          });
+          continue;
         }
         const grants = await db.query.projectGithubRepos.findMany({
           where: and(
@@ -563,23 +568,57 @@ async function maybeEnqueuePrObservabilityReview(
               eq(schema.projectGithubInstallationSettings.observabilityReviewEnabled, true),
             ),
           });
-          if (setting) return { orgId: installation.orgId, projectId: grant.projectId };
+          if (setting) {
+            scopes.set(grant.projectId, {
+              orgId: installation.orgId,
+              projectId: grant.projectId,
+            });
+          }
         }
       }
-      return null;
+      return [...scopes.values()];
     },
     async insert(input) {
-      await db
-        .insert(schema.prObservabilityReviews)
-        .values({
-          installationId: input.installationId,
-          orgId: input.orgId,
-          projectId: input.projectId,
-          repoFullName: input.repoFullName,
-          prNumber: input.prNumber,
-          headSha: input.headSha,
-        })
-        .onConflictDoNothing();
+      const [firstScope] = input.scopes;
+      if (!firstScope) return;
+      await db.transaction(async (tx) => {
+        const projectId = input.scopes.length === 1 ? firstScope.projectId : null;
+        const [review] = await tx
+          .insert(schema.prObservabilityReviews)
+          .values({
+            installationId: input.installationId,
+            orgId: firstScope.orgId,
+            projectId,
+            repoId: input.repoId,
+            repoFullName: input.repoFullName,
+            prNumber: input.prNumber,
+            headSha: input.headSha,
+          })
+          .onConflictDoUpdate({
+            target: [
+              schema.prObservabilityReviews.repoFullName,
+              schema.prObservabilityReviews.prNumber,
+              schema.prObservabilityReviews.headSha,
+            ],
+            set: {
+              orgId: firstScope.orgId,
+              projectId,
+              repoId: input.repoId,
+              updatedAt: new Date(),
+            },
+          })
+          .returning({ id: schema.prObservabilityReviews.id });
+        if (!review) return;
+        await tx
+          .insert(schema.prObservabilityReviewProjects)
+          .values(
+            input.scopes.map((scope) => ({
+              reviewId: review.id,
+              projectId: scope.projectId,
+            })),
+          )
+          .onConflictDoNothing();
+      });
     },
   });
   if (enqueued) {

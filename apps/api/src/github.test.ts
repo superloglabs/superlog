@@ -1051,6 +1051,12 @@ test("an org-scoped installation can enable observability reviews from an author
     githubRepoId: 99,
     githubRepoFullName: `${tag}/other-repo`,
   });
+  await db.insert(schema.projectGithubRepos).values({
+    projectId: otherProject.id,
+    installationId: installation.id,
+    githubRepoId: 17,
+    githubRepoFullName: `${tag}/repo`,
+  });
   const app = new Hono<{ Variables: { userId: string; orgId: string } }>();
   app.use("*", async (c, next) => {
     c.set("userId", user.id);
@@ -1112,6 +1118,12 @@ test("an org-scoped installation can enable observability reviews from an author
   });
   assert.equal(ungranted.length, 0);
 
+  await db.insert(schema.projectGithubInstallationSettings).values({
+    projectId: otherProject.id,
+    installationId: installation.id,
+    observabilityReviewEnabled: true,
+  });
+
   assert.equal(
     (
       await postGithub(
@@ -1127,7 +1139,14 @@ test("an org-scoped installation can enable observability reviews from an author
     where: eq(schema.prObservabilityReviews.repoFullName, `${tag}/repo`),
   });
   assert.equal(granted.length, 1);
-  assert.equal(granted[0]?.projectId, project.id);
+  assert.equal(granted[0]?.projectId, null);
+  const reviewScopes = await db.query.prObservabilityReviewProjects.findMany({
+    where: eq(schema.prObservabilityReviewProjects.reviewId, granted[0]?.id ?? ""),
+  });
+  assert.deepEqual(
+    reviewScopes.map((scope) => scope.projectId).sort(),
+    [project.id, otherProject.id].sort(),
+  );
 });
 
 async function seedAgentPrFixture(label: string): Promise<{

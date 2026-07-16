@@ -1731,6 +1731,7 @@ export const prObservabilityReviews = pgTable(
     installationId: bigint("installation_id", { mode: "number" }).notNull(),
     orgId: uuid("org_id").references(() => orgs.id, { onDelete: "set null" }),
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
+    repoId: bigint("repo_id", { mode: "number" }).notNull(),
     repoFullName: text("repo_full_name").notNull(),
     prNumber: integer("pr_number").notNull(),
     headSha: text("head_sha").notNull(),
@@ -1763,6 +1764,29 @@ export const prObservabilityReviews = pgTable(
     reactionSyncIdx: index("pr_observability_reviews_reaction_sync_idx")
       .on(t.lastReactionSyncedAt, t.completedAt)
       .where(sql`status = 'completed'`),
+  }),
+);
+
+// Every opted-in project represented by a single repository/head review.
+// The GitHub side effect remains one review while shared org installations
+// retain all project scopes that requested it.
+export const prObservabilityReviewProjects = pgTable(
+  "pr_observability_review_projects",
+  {
+    reviewId: uuid("review_id")
+      .notNull()
+      .references(() => prObservabilityReviews.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    reviewProjectUniq: uniqueIndex("pr_observability_review_projects_uniq").on(
+      t.reviewId,
+      t.projectId,
+    ),
+    projectIdx: index("pr_observability_review_projects_project_idx").on(t.projectId),
   }),
 );
 

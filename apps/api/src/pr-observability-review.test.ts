@@ -59,7 +59,7 @@ test("review enqueue is opt-in and persists the owning scope", async () => {
 
   assert.equal(
     await enqueueObservabilityReview(command, {
-      findEnabledScope: async () => null,
+      findEnabledScopes: async () => [],
       insert: async (input) => {
         inserted.push(input);
       },
@@ -68,7 +68,10 @@ test("review enqueue is opt-in and persists the owning scope", async () => {
   );
   assert.equal(
     await enqueueObservabilityReview(command, {
-      findEnabledScope: async () => ({ orgId: "org-1", projectId: "project-1" }),
+      findEnabledScopes: async () => [
+        { orgId: "org-1", projectId: "project-1" },
+        { orgId: "org-1", projectId: "project-2" },
+      ],
       insert: async (input) => {
         inserted.push(input);
       },
@@ -78,8 +81,10 @@ test("review enqueue is opt-in and persists the owning scope", async () => {
   assert.deepEqual(inserted, [
     {
       ...command,
-      orgId: "org-1",
-      projectId: "project-1",
+      scopes: [
+        { orgId: "org-1", projectId: "project-1" },
+        { orgId: "org-1", projectId: "project-2" },
+      ],
     },
   ]);
 });
