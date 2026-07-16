@@ -49,6 +49,17 @@ test("fingerprint groups equivalent browser Next.js chunk URLs across builds", (
   assert.equal(fingerprintFor("332dbc5711e5ed").hash, fingerprintFor("9f76a111d542c0").hash);
 });
 
+test("fingerprint ignores cache-busting suffixes on browser Next.js chunk URLs", () => {
+  const fingerprintFor = (suffix: string) =>
+    fingerprint({
+      type: "TypeError",
+      message: "Failed to render account page",
+      stacktrace: `    at renderAccount (https://example.com/_next/static/chunks/app/page-332dbc5711e5ed.js${suffix}:1:200)`,
+    });
+
+  assert.equal(fingerprintFor("?dpl=first").hash, fingerprintFor("#dpl=second").hash);
+});
+
 function iosHermesStack(input: { applicationId: string; bundleName: string }): string {
   const bundlePath =
     `/var/mobile/Containers/Data/Application/${input.applicationId}` +

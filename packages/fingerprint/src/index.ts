@@ -316,8 +316,8 @@ function normalizePath(p: string): string {
   // same source stack can therefore acquire a different path identity across
   // chunks (or builds), which must not create a fresh issue fingerprint.
   out = out.replace(
-    /(\/(?:\.next|_next)\/(?:server|static)\/(?:[^/]+\/)*[^/]*?)[0-9a-f]{8,}(?=(?:\._)?\.js(?:$|[?#]))/gi,
-    "$1<hash>",
+    /(\/(?:\.next|_next)\/(?:server|static)\/(?:[^/]+\/)*[^/]*?)[0-9a-f]{8,}((?:\._)?\.js)(?:[?#].*)?$/gi,
+    "$1<hash>$2",
   );
   out = out.replace(/^.*?\/((?:apps|packages|src|app|lib|pages)\/.*)$/, "$1");
   return out;
