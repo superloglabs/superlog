@@ -39,7 +39,7 @@ export function fieldColumnExpr(field: string, source: FieldFilterSource): strin
 const RELATIVE_TIME_EXPR_RE =
   /^now\(\)(?:\s*-\s*INTERVAL\s+(?:[1-9][0-9]*)\s+(?:SECOND|MINUTE|HOUR|DAY|WEEK|MONTH))?$/i;
 const ISO_TIME_BOUND_RE =
-  /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
+  /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
 
 function timeBoundExpr(value: string, paramName: "since" | "until"): string {
   const normalized = value.trim().replace(/\s+/g, " ");

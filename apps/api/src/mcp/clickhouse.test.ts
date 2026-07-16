@@ -187,6 +187,19 @@ test("telemetry queries reject malformed time bounds before querying ClickHouse"
   assert.equal(capture.query, undefined);
 });
 
+test("telemetry queries preserve space-separated saved-view time bounds", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await queryTraces(fakeClickhouse(capture), "project-1", {
+    range: { since: "2026-06-26 02:40:00", until: "2026-06-26 03:40:00" },
+    limit: 50,
+  });
+
+  assert.match(capture.query ?? "", /parseDateTime64BestEffortOrZero/);
+  assert.equal(capture.params?.since, "2026-06-26 02:40:00");
+  assert.equal(capture.params?.until, "2026-06-26 03:40:00");
+});
+
 test("listServices discovers services across traces, logs, and metrics", async () => {
   const queriedTables: string[] = [];
   const servicesByTable: Record<string, string[]> = {
