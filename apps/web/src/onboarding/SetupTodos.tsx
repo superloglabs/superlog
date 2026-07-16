@@ -75,6 +75,12 @@ function isStatsZero(stats: Stats | undefined): boolean {
   return stats.traces + stats.logs + stats.metrics === 0;
 }
 
+export function setupSignalsSettled(
+  signals: Array<{ data: unknown; error: unknown }>,
+): boolean {
+  return signals.every((signal) => signal.data !== undefined || signal.error != null);
+}
+
 export function SetupTodos({ projectId }: { projectId: string }) {
   const { exploring, stopExploring } = useDemoExploration();
   const github = useGithubInstallation();
@@ -97,7 +103,7 @@ export function SetupTodos({ projectId }: { projectId: string }) {
   // flag defaults to false) before they collapse to the empty state.
   // Background refetches keep `data` populated so this only blocks the very
   // first render.
-  if (!github.data || !slack.data || !stats.data || !mcp.data) {
+  if (!setupSignalsSettled([github, slack, stats, mcp])) {
     return null;
   }
 

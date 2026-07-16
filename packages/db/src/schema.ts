@@ -1780,7 +1780,11 @@ export type DashboardWidgetType =
   | "timeseries_metric"
   | "trace_table"
   | "log_table"
-  | "markdown";
+  | "markdown"
+  | "link"
+  | "setup_todos"
+  | "active_incidents"
+  | "service_map";
 
 export type DashboardWidgetConfig = {
   source?: "logs" | "traces";
@@ -1800,6 +1804,8 @@ export type DashboardWidgetConfig = {
   showYAxis?: boolean;
   showLegend?: boolean;
   markdown?: string;
+  url?: string;
+  description?: string;
 };
 
 export type DashboardWidgetLayout = {
@@ -1867,6 +1873,7 @@ export const dashboards = pgTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     slug: text("slug").notNull(),
+    isHome: boolean("is_home").notNull().default(false),
     variables: jsonb("variables").$type<DashboardVariable[]>().notNull().default(sql`'[]'::jsonb`),
     createdBy: uuid("created_by")
       .notNull()
@@ -1876,6 +1883,9 @@ export const dashboards = pgTable(
   },
   (t) => ({
     projectSlugUniq: uniqueIndex("dashboards_project_slug_idx").on(t.projectId, t.slug),
+    projectHomeUniq: uniqueIndex("dashboards_project_home_idx")
+      .on(t.projectId)
+      .where(sql`${t.isHome}`),
     projectIdx: index("dashboards_project_idx").on(t.projectId),
   }),
 );

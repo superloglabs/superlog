@@ -13,7 +13,10 @@ import { EdgeLegend, TopologyCanvas } from "./TopologyCanvas.tsx";
 // Production service map on the Overview page. Reads the persisted topology, applies
 // the LLM grouping, and shows the two-level drill (services → resources). The build
 // itself runs in the worker; here we just render + request (re)builds.
-export function ServiceMap({ projectId }: { projectId: string }) {
+export function ServiceMap({
+  projectId,
+  hideHeader = false,
+}: { projectId: string; hideHeader?: boolean }) {
   const { data, isLoading } = useTopology(projectId);
   const generate = useGenerateTopology(projectId);
   const [focused, setFocused] = useState<string | null>(null);
@@ -45,13 +48,15 @@ export function ServiceMap({ projectId }: { projectId: string }) {
 
   return (
     <section>
-      <Header
-        generatedAt={data?.generatedAt ?? null}
-        status={data?.status}
-        generating={generate.isPending || data?.status === "generating"}
-        onRegenerate={() => generate.mutate()}
-        showRegenerate={!empty}
-      />
+      {!hideHeader && (
+        <Header
+          generatedAt={data?.generatedAt ?? null}
+          status={data?.status}
+          generating={generate.isPending || data?.status === "generating"}
+          onRegenerate={() => generate.mutate()}
+          showRegenerate={!empty}
+        />
+      )}
 
       {isLoading ? (
         <Skeleton />

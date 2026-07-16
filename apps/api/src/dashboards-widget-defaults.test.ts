@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
+
+process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
+
+const {
   dashboardWidgetCreateSchema,
   dashboardWidgetLayoutSchema,
   dashboardWidgetTypeSchema,
   defaultWidgetLayout,
-} from "./dashboards-service.js";
+} = await import("./dashboards-service.js");
 
 const ALL_TYPES = dashboardWidgetTypeSchema.options;
 

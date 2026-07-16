@@ -137,6 +137,12 @@ test("isDemoBlockedWrite matches the full mutating project-route inventory", () 
     { method: "POST", path: "/api/projects/p1/alerts/a1/test", block: true },
     { method: "POST", path: "/api/projects/p1/issues/i1/silence", block: true },
     { method: "POST", path: "/api/projects/p1/issues/i1/unsilence", block: true },
+    // Home configuration belongs to the real project even while telemetry reads use demo data.
+    { method: "PUT", path: "/api/projects/p1/home/builtins/setup_todos", block: false },
+    { method: "POST", path: "/api/projects/p1/home/widgets", block: false },
+    { method: "POST", path: "/api/projects/p1/home/links", block: false },
+    { method: "PATCH", path: "/api/projects/p1/home/layout", block: false },
+    { method: "DELETE", path: "/api/projects/p1/home/items/w1", block: false },
     // install / integration path → must stay OPEN (how a user leaves demo mode)
     { method: "POST", path: "/api/projects/p1/keys", block: false },
     { method: "DELETE", path: "/api/projects/p1/keys/k1", block: false },

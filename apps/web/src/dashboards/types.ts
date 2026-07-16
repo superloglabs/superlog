@@ -8,7 +8,11 @@ export type WidgetType =
   | "timeseries_metric"
   | "trace_table"
   | "log_table"
-  | "markdown";
+  | "markdown"
+  | "link"
+  | "setup_todos"
+  | "active_incidents"
+  | "service_map";
 
 export type ChartType = "line" | "bar";
 
@@ -27,6 +31,8 @@ export type WidgetConfig = {
   showLegend?: boolean;
   legendPosition?: LegendPosition;
   markdown?: string;
+  url?: string;
+  description?: string;
 };
 
 export type LegendPosition = "side" | "bottom";
@@ -69,6 +75,7 @@ export type DashboardSummary = {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  isHome: boolean;
 };
 
 export type DashboardWithWidgets = DashboardSummary & { widgets: Widget[] };
@@ -88,6 +95,18 @@ export function defaultLayoutFor(type: WidgetType): WidgetLayout {
   // y=Infinity-ish: RGL compacts vertically so new widgets snap to the bottom.
   if (type === "markdown") {
     return { x: 0, y: 9999, w: 4, h: 5 };
+  }
+  if (type === "link") {
+    return { x: 0, y: 9999, w: 3, h: 2 };
+  }
+  if (type === "setup_todos") {
+    return { x: 0, y: 0, w: 12, h: 5 };
+  }
+  if (type === "active_incidents") {
+    return { x: 0, y: 5, w: 6, h: 3 };
+  }
+  if (type === "service_map") {
+    return { x: 6, y: 5, w: 6, h: 8 };
   }
   if (type === "trace_table" || type === "log_table") {
     return { x: 0, y: 9999, w: 12, h: 6 };

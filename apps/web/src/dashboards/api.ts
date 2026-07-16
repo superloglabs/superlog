@@ -44,6 +44,86 @@ export function useDashboard(projectId: string | undefined, id: string | undefin
   });
 }
 
+export function useHomeDashboard(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["home-dashboard", projectId],
+    queryFn: () => fetcher<DashboardWithWidgets>(`/api/projects/${projectId}/home`),
+    enabled: !!projectId,
+  });
+}
+
+export type HomeBuiltinType = "setup_todos" | "active_incidents" | "service_map";
+
+export function useSetHomeBuiltin(projectId: string) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ type, enabled }: { type: HomeBuiltinType; enabled: boolean }) =>
+      fetcher<DashboardWithWidgets>(`/api/projects/${projectId}/home/builtins/${type}`, {
+        method: "PUT",
+        body: JSON.stringify({ enabled }),
+      }),
+    onSuccess: (home) => qc.setQueryData(["home-dashboard", projectId], home),
+  });
+}
+
+export function useCreateHomeWidget(projectId: string) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      type: WidgetType;
+      title: string;
+      config: WidgetConfig;
+      layout: WidgetLayout;
+    }) =>
+      fetcher<Widget>(`/api/projects/${projectId}/home/widgets`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["home-dashboard", projectId] }),
+  });
+}
+
+export function useCreateHomeLink(projectId: string) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { title: string; url: string; description?: string }) =>
+      fetcher<Widget>(`/api/projects/${projectId}/home/links`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["home-dashboard", projectId] }),
+  });
+}
+
+export function useDeleteHomeItem(projectId: string) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetcher<{ ok: true }>(`/api/projects/${projectId}/home/items/${id}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["home-dashboard", projectId] }),
+  });
+}
+
+export function useUpdateHomeLayout(projectId: string) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (widgets: { id: string; layout: WidgetLayout }[]) =>
+      fetcher<{ ok: true }>(`/api/projects/${projectId}/home/layout`, {
+        method: "PATCH",
+        body: JSON.stringify({ widgets }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["home-dashboard", projectId] }),
+  });
+}
+
 export function useCreateDashboard(projectId: string) {
   const fetcher = useFetcher();
   const qc = useQueryClient();

@@ -5,19 +5,27 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import {
   addDashboardWidget,
+  addHomeDataWidget,
+  addHomeLink,
   createDashboard,
   dashboardCreateSchema,
   dashboardUpdateSchema,
   dashboardWidgetCreateSchema,
   dashboardWidgetLayoutSchema,
   dashboardWidgetUpdateSchema,
+  deleteHomeItem,
   deleteDashboard,
   deleteDashboardWidget,
   getDashboardWithWidgets,
+  getOrCreateHomeDashboard,
+  homeBuiltinTypeSchema,
+  homeDataWidgetCreateSchema,
+  homeLinkCreateSchema,
   listDashboardsForProject,
   updateDashboard,
   updateDashboardLayout,
   updateDashboardWidget,
+  setHomeBuiltin,
 } from "./dashboards-service.js";
 import { resolveEffectiveReadProjectId } from "./demo.js";
 import { resolveActiveOrgContext } from "./org-context.js";
@@ -49,6 +57,65 @@ export function mountDashboards(app: Hono<{ Variables: Vars }>) {
     const projectId = c.req.param("projectId");
     const { readProjectId } = await requireAccess(c, projectId);
     return c.json(await listDashboardsForProject(readProjectId));
+  });
+
+  app.get("/api/projects/:projectId/home", async (c) => {
+    const projectId = c.req.param("projectId");
+    const { user } = await requireAccess(c, projectId);
+    return c.json(await getOrCreateHomeDashboard(projectId, user.id));
+  });
+
+  app.put("/api/projects/:projectId/home/builtins/:type", async (c) => {
+    const projectId = c.req.param("projectId");
+    const { user } = await requireAccess(c, projectId);
+    const type = homeBuiltinTypeSchema.safeParse(c.req.param("type"));
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = z.object({ enabled: z.boolean() }).safeParse(body);
+    if (!type.success || !parsed.success) {
+      throw new HTTPException(400, { message: "invalid home built-in update" });
+    }
+    return c.json(await setHomeBuiltin(projectId, user.id, type.data, parsed.data.enabled));
+  });
+
+  app.post("/api/projects/:projectId/home/widgets", async (c) => {
+    const projectId = c.req.param("projectId");
+    const { user } = await requireAccess(c, projectId);
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = homeDataWidgetCreateSchema.safeParse(body);
+    if (!parsed.success) throw new HTTPException(400, { message: "invalid home widget" });
+    return c.json(await addHomeDataWidget(projectId, user.id, parsed.data));
+  });
+
+  app.post("/api/projects/:projectId/home/links", async (c) => {
+    const projectId = c.req.param("projectId");
+    const { user } = await requireAccess(c, projectId);
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = homeLinkCreateSchema.safeParse(body);
+    if (!parsed.success) throw new HTTPException(400, { message: "invalid home link" });
+    return c.json(await addHomeLink(projectId, user.id, parsed.data));
+  });
+
+  app.patch("/api/projects/:projectId/home/layout", async (c) => {
+    const projectId = c.req.param("projectId");
+    const { user } = await requireAccess(c, projectId);
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = z
+      .object({
+        widgets: z.array(z.object({ id: z.string().uuid(), layout: dashboardWidgetLayoutSchema })),
+      })
+      .safeParse(body);
+    if (!parsed.success) throw new HTTPException(400, { message: "invalid home layout" });
+    const home = await getOrCreateHomeDashboard(projectId, user.id);
+    await updateDashboardLayout(projectId, home.id, parsed.data.widgets);
+    return c.json({ ok: true });
+  });
+
+  app.delete("/api/projects/:projectId/home/items/:itemId", async (c) => {
+    const projectId = c.req.param("projectId");
+    const { user } = await requireAccess(c, projectId);
+    const deleted = await deleteHomeItem(projectId, user.id, c.req.param("itemId"));
+    if (!deleted) throw new HTTPException(404, { message: "home item not found" });
+    return c.json({ ok: true });
   });
 
   app.post("/api/projects/:projectId/dashboards", async (c) => {
