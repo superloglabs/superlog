@@ -11,7 +11,7 @@ export const LINEAR_HANDOFF_PENDING_EVENT = "linear_handoff_pending";
 
 export type LinearHandoffReconciliationDeps = {
   deliverTicket(result: AgentRunResult, prUrls: string[]): Promise<DeliveredLinearTicket | null>;
-  recordTicket(ticket: DeliveredLinearTicket): Promise<void>;
+  recordTicket(ticket: DeliveredLinearTicket): Promise<boolean>;
   linkPullRequests(
     ticket: DeliveredLinearTicket,
     prUrls: string[],
@@ -52,7 +52,8 @@ export async function reconcileLinearHandoffWithDeps(
 
   const ticket = await deps.deliverTicket(input.result, input.prUrls);
   if (!ticket) return null;
-  await deps.recordTicket(ticket);
+  const recorded = await deps.recordTicket(ticket);
+  if (!recorded) return ticket;
   const linking = await deps.linkPullRequests(ticket, input.prUrls);
   if (!linking.complete) return ticket;
   await deps.markProcessed(input.pendingEventIds);

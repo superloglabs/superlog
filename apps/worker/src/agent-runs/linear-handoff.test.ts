@@ -25,7 +25,7 @@ function makeDeps(overrides: Partial<LinearHandoffReconciliationDeps> = {}) {
         calls.deliveredPrUrls.push(prUrls);
         return TICKET;
       },
-      recordTicket: async () => {},
+      recordTicket: async () => true,
       linkPullRequests: async () => ({ linkedPullRequests: 2, complete: true }),
       markProcessed: async (ids: string[]) => {
         calls.processed.push(ids);
@@ -95,6 +95,23 @@ test("reconciliation keeps durable work pending when ticket delivery fails", asy
   );
 
   assert.equal(ticket, null);
+  assert.deepEqual(calls.processed, []);
+});
+
+test("reconciliation keeps durable work pending until the ticket is recorded locally", async () => {
+  const { deps, calls } = makeDeps({ recordTicket: async () => false });
+
+  const ticket = await reconcileLinearHandoffWithDeps(
+    {
+      hasInstall: true,
+      pendingEventIds: ["event-1"],
+      result: RESULT,
+      prUrls: [],
+    },
+    deps,
+  );
+
+  assert.equal(ticket, TICKET);
   assert.deepEqual(calls.processed, []);
 });
 

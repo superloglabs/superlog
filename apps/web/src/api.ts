@@ -1084,11 +1084,48 @@ export function useGcpConnection(projectId: string | undefined) {
 export function useStartGcpConnect(projectId: string | undefined) {
   const fetcher = useFetcher();
   return useMutation({
-    mutationFn: (gcpProjectId: string) =>
+    mutationFn: () =>
       fetcher<{ url: string }>(`/api/projects/${projectId}/gcp/install-url`, {
+        method: "POST",
+      }),
+  });
+}
+
+export type GcpProjectOption = {
+  projectId: string;
+  projectNumber: string;
+  displayName: string;
+};
+
+export type GcpAuthorizationSelection = {
+  id: string;
+  expiresAt: string;
+  projects: GcpProjectOption[];
+};
+
+export function useGcpAuthorizationSelection(authorizationId: string | null) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["gcp-authorization", authorizationId],
+    queryFn: () => fetcher<GcpAuthorizationSelection>(`/api/gcp/authorizations/${authorizationId}`),
+    enabled: !!authorizationId,
+    retry: false,
+  });
+}
+
+export function useConnectGcpAuthorization(authorizationId: string | null) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (gcpProjectId: string) =>
+      fetcher<{ connected: true }>(`/api/gcp/authorizations/${authorizationId}/connect`, {
         method: "POST",
         body: JSON.stringify({ gcpProjectId }),
       }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["gcp-connection"] });
+      qc.removeQueries({ queryKey: ["gcp-authorization", authorizationId] });
+    },
   });
 }
 

@@ -165,6 +165,9 @@ importers:
       '@superlog/render':
         specifier: workspace:*
         version: link:../../packages/render
+      '@superlog/telemetry-query':
+        specifier: workspace:*
+        version: link:../../packages/telemetry-query
       autumn-js:
         specifier: ^1.2.27
         version: 1.2.27(better-auth@1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(better-call@1.3.7(zod@4.4.3))(express@5.2.1)(hono@4.12.30)(next@15.5.20(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
@@ -523,6 +526,9 @@ importers:
       '@superlog/render':
         specifier: workspace:*
         version: link:../../packages/render
+      '@superlog/telemetry-query':
+        specifier: workspace:*
+        version: link:../../packages/telemetry-query
       '@superlog/topology':
         specifier: workspace:*
         version: link:../../packages/topology
@@ -680,6 +686,19 @@ importers:
       tsx:
         specifier: ^4.19.2
         version: 4.21.0
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
+  packages/telemetry-query:
+    dependencies:
+      '@clickhouse/client':
+        specifier: ^1.9.0
+        version: 1.18.3
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.1
+        version: 22.19.17
       typescript:
         specifier: ^5.7.2
         version: 5.9.3

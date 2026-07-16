@@ -2560,12 +2560,56 @@ export const cloudStreamKeys = pgTable(
 
 export type CloudStreamKey = typeof cloudStreamKeys.$inferSelect;
 
+export type GcpAuthorizationStatus = "pending" | "ready" | "consumed" | "failed";
+
+export type GcpAuthorizationProject = {
+  projectId: string;
+  projectNumber: string;
+  displayName: string;
+};
+
 /**
- * A customer GCP project connected to a Superlog project. The customer's
- * short-lived OAuth token is deliberately never persisted: it is used during
- * setup to create the Logging sink and grant the read-only service identity,
- * then discarded. Pub/Sub resources live in the integration operator's GCP
- * project, so their metered usage is not charged to the customer project.
+ * A short-lived, user-bound Google OAuth grant used only between project
+ * discovery and the user's explicit selection. Access tokens are encrypted,
+ * never returned to the browser, cleared on first use, and expire after ten
+ * minutes in the ready state. Refresh tokens are never requested or stored.
+ */
+export const gcpAuthorizationSessions = pgTable(
+  "gcp_authorization_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    status: text("status").$type<GcpAuthorizationStatus>().notNull().default("pending"),
+    projects: jsonb("projects").$type<GcpAuthorizationProject[]>().notNull().default([]),
+    accessTokenCiphertext: bytea("access_token_ciphertext"),
+    accessTokenNonce: bytea("access_token_nonce"),
+    accessTokenKeyVersion: integer("access_token_key_version"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    projectIdx: index("gcp_authorization_sessions_project_idx").on(t.projectId),
+    userIdx: index("gcp_authorization_sessions_user_idx").on(t.userId),
+    expiryIdx: index("gcp_authorization_sessions_expiry_idx").on(t.expiresAt),
+  }),
+);
+
+export type GcpAuthorizationSession = typeof gcpAuthorizationSessions.$inferSelect;
+
+/**
+ * A customer GCP project connected to a Superlog project. No user OAuth token
+ * is retained on the durable connection: setup consumes the separate,
+ * short-lived authorization session and discards its encrypted token. Pub/Sub
+ * resources live in the integration operator's GCP project, so their metered
+ * usage is not charged to the customer project.
  */
 export type GcpConnectionStatus = "pending" | "provisioning" | "connected" | "failed";
 

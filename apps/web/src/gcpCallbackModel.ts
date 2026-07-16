@@ -1,5 +1,5 @@
 export type GcpCallbackView = {
-  tone: "success" | "error";
+  tone: "success" | "neutral" | "error";
   title: string;
   body: string;
   backLabel: string;
@@ -7,6 +7,15 @@ export type GcpCallbackView = {
 };
 
 export function gcpCallbackView(outcome: string | null | undefined): GcpCallbackView {
+  if (outcome === "select") {
+    return {
+      tone: "neutral",
+      title: "Choose a Google Cloud project",
+      body: "Select one of the active projects available to your Google account.",
+      backLabel: "Back to settings",
+      backHref: "/settings",
+    };
+  }
   if (outcome === "connected") {
     return {
       tone: "success",

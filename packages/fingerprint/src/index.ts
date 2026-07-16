@@ -312,6 +312,21 @@ function normalizePath(p: string): string {
     // function names still identify the failing code across app releases.
     .replace(/(\/\.expo-internal\/)[^/]+\.(?:js)?bundle$/i, "$1<bundle>");
 
+  // Browser stack URLs can append deployment or cache metadata to any Next.js
+  // chunk, including stable filenames such as `main-app.js`. Strip that suffix
+  // before normalizing generated content hashes below.
+  out = out.replace(
+    /(\/(?:\.next|_next)\/(?:server|static)\/(?:[^/]+\/)*[^/?#]+(?:\._)?\.js)(?:[?#].*)$/gi,
+    "$1",
+  );
+
+  // Next.js/Turbopack puts content hashes in generated chunk filenames. The
+  // same source stack can therefore acquire a different path identity across
+  // chunks (or builds), which must not create a fresh issue fingerprint.
+  out = out.replace(
+    /(\/(?:\.next|_next)\/(?:server|static)\/(?:[^/]+\/)*[^/]*?)[0-9a-f]{8,}((?:\._)?\.js)$/gi,
+    "$1<hash>$2",
+  );
   out = out.replace(/^.*?\/((?:apps|packages|src|app|lib|pages)\/.*)$/, "$1");
   return out;
 }

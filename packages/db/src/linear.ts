@@ -207,7 +207,12 @@ export async function listLinearTeams(accessToken: string): Promise<LinearTeam[]
   return data.teams.nodes;
 }
 
-export type LinearIssueRef = { id: string; identifier: string; url: string };
+export type LinearIssueRef = {
+  id: string;
+  identifier: string;
+  url: string;
+  description?: string | null;
+};
 
 export async function searchLinearIssues(
   accessToken: string,
@@ -215,7 +220,7 @@ export async function searchLinearIssues(
 ): Promise<LinearIssueRef[]> {
   const data = await linearGraphql<{ searchIssues: { nodes: LinearIssueRef[] } }>(
     accessToken,
-    "query($term: String!) { searchIssues(term: $term, first: 5) { nodes { id identifier url } } }",
+    "query($term: String!) { searchIssues(term: $term, first: 5) { nodes { id identifier url description } } }",
     { term },
     "searchIssues query",
   );

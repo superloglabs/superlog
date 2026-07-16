@@ -2881,7 +2881,6 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
   const connection = useGcpConnection(projectId);
   const start = useStartGcpConnect(projectId);
   const capabilities = useSystemCapabilities();
-  const [gcpProjectId, setGcpProjectId] = useState("");
   const row =
     connection.data?.connected !== undefined && "status" in connection.data
       ? connection.data
@@ -2925,23 +2924,14 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
             GCP connect is not configured on this deployment.
           </p>
         )}
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <Input
-            value={gcpProjectId}
-            onChange={(event) => setGcpProjectId(event.target.value)}
-            placeholder={row?.gcpProjectId ?? "my-gcp-project-id"}
-            aria-label={connectAction.inputLabel}
-            className="min-w-0 flex-1 font-mono"
-          />
+        <div className="flex justify-end">
           <Btn
             size="sm"
             variant="primary"
             loading={start.isPending}
-            disabled={
-              !projectId || !configured || start.isPending || gcpProjectId.trim().length < 6
-            }
+            disabled={!projectId || !configured || start.isPending}
             onClick={async () => {
-              const { url } = await start.mutateAsync(gcpProjectId.trim());
+              const { url } = await start.mutateAsync();
               window.location.href = url;
             }}
           >
