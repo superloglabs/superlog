@@ -25,7 +25,7 @@ export type LinkableIssue = Pick<schema.Issue, "id" | "lastSeen" | "service">;
 // resolution (merged sibling vs plain close) from one consistent snapshot.
 export type IncidentAgentPullRequestSnapshot = Pick<
   schema.AgentPullRequest,
-  "id" | "state" | "prNumber" | "repoFullName" | "url" | "mergedAt"
+  "id" | "state" | "prNumber" | "repoFullName" | "url" | "mergedAt" | "closedAt"
 >;
 
 async function lockIncidentsByIdInTx(tx: Tx, incidentIds: string[]): Promise<schema.Incident[]> {
@@ -130,6 +130,7 @@ export function createIncidentRepository(database: DB) {
           repoFullName: true,
           url: true,
           mergedAt: true,
+          closedAt: true,
         },
       });
     },

@@ -11,6 +11,7 @@ import {
   completeAgentPullRequestReviewContinuationClaim,
   db,
   isAgentPullRequestReviewEventKind,
+  latestAgentPullRequestSettlementAt,
   listAccessibleGithubInstallsForProject,
   reconcileAgentPullRequestProviderObservation,
   recordAgentPullRequestReviewEvent,
@@ -999,7 +1000,10 @@ export async function resolveOrResumeIncidentForClosedAgentPr(
             : {}),
         },
         eventDedupeKey,
-        resolvedAt: closedAt,
+        // The delivery finished at the latest settle across the snapshot —
+        // stamping this close's time when a sibling settled later would
+        // backdate the resolution.
+        resolvedAt: latestAgentPullRequestSettlementAt(pullRequests) ?? closedAt,
       };
     },
   });

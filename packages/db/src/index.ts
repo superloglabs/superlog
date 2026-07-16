@@ -237,6 +237,7 @@ export {
 export {
   areAllIncidentPullRequestsMerged,
   areAllIncidentPullRequestsSettled,
+  latestAgentPullRequestSettlementAt,
   buildAgentPullRequestLifecycleContinuation,
   type AgentPullRequestLifecycleContinuation,
   type AgentPullRequestLifecycleRecord,

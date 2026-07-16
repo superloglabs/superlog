@@ -29,15 +29,20 @@ const closedSnapshot: IncidentAgentPullRequestSnapshot = {
   repoFullName: "acme/api",
   url: "https://github.com/acme/api/pull/42",
   mergedAt: null,
+  closedAt,
 };
 
+// Merged after the close settled: the resolution must be stamped at the merge,
+// not backdated to the close.
+const laterMergedAt = new Date("2026-07-16T10:00:00.000Z");
 const mergedSnapshot: IncidentAgentPullRequestSnapshot = {
   id: "agent-pr-2",
   state: "merged",
   prNumber: 40,
   repoFullName: "acme/api",
   url: "https://github.com/acme/api/pull/40",
-  mergedAt: new Date("2026-07-14T10:00:00.000Z"),
+  mergedAt: laterMergedAt,
+  closedAt: laterMergedAt,
 };
 
 test("a close that settles the last live PR resolves the incident without asking the session", async () => {
@@ -87,14 +92,19 @@ test("a close that settles the last live PR resolves the incident without asking
 });
 
 test("a close with a merged sibling in the locked snapshot resolves as agent_pr_merged", async () => {
-  const resolveInputs: Array<{ kind: string; reasonText: string }> = [];
+  const resolveInputs: Array<{ kind: string; reasonText: string; resolvedAt: Date | undefined }> =
+    [];
 
   const disposition = await resolveOrResumeIncidentForClosedAgentPr(
     { agentPr: closedPr, closedByLogin: "hubot", closedAt },
     {
       async resolveSettled(opts) {
         const input = opts.buildInput([mergedSnapshot, closedSnapshot]);
-        resolveInputs.push({ kind: input.kind, reasonText: input.reasonText ?? "" });
+        resolveInputs.push({
+          kind: input.kind,
+          reasonText: input.reasonText ?? "",
+          resolvedAt: input.resolvedAt,
+        });
         return { disposition: "resolved", resolved: true, resolvedIssueCount: 1 };
       },
       async runResolvedSideEffects() {},
@@ -108,6 +118,9 @@ test("a close with a merged sibling in the locked snapshot resolves as agent_pr_
   assert.equal(resolveInputs[0]?.kind, "agent_pr_merged");
   assert.match(resolveInputs[0]?.reasonText ?? "", /#40/);
   assert.match(resolveInputs[0]?.reasonText ?? "", /#42/);
+  // The sibling merged after this close: the resolution is stamped at the
+  // merge, not backdated to the close.
+  assert.deepEqual(resolveInputs[0]?.resolvedAt, laterMergedAt);
 });
 
 test("a close while another PR is still live falls back to the session continuation", async () => {

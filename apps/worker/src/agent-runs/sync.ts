@@ -7,6 +7,7 @@ import {
   areAllIncidentPullRequestsSettled,
   buildAgentPullRequestLifecycleContinuation,
   db,
+  latestAgentPullRequestSettlementAt,
   recordInboundInteraction,
   resolveIncidentIfAllAgentPullRequestsMerged,
   resolveIncidentIfAllAgentPullRequestsSettled,
@@ -979,6 +980,11 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
                             (a, b) => (a.mergedAt?.getTime() ?? 0) - (b.mergedAt?.getTime() ?? 0),
                           )
                           .at(-1) ?? null;
+                      // The delivery finished at the latest settle across the
+                      // snapshot — stamping the closed PR's time when the fix
+                      // merged later would backdate the resolution.
+                      const resolvedAt =
+                        latestAgentPullRequestSettlementAt(lockedPullRequests) ?? settledAt;
                       return mergedSibling
                         ? {
                             incidentId: ctx.incident.id,
@@ -996,7 +1002,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
                               mergedPrNumber: mergedSibling.prNumber,
                             },
                             eventDedupeKey,
-                            resolvedAt: settledAt,
+                            resolvedAt,
                           }
                         : {
                             incidentId: ctx.incident.id,
@@ -1012,7 +1018,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
                               prUrl: fallback.pullRequest.url,
                             },
                             eventDedupeKey,
-                            resolvedAt: settledAt,
+                            resolvedAt,
                           };
                     },
                   });
