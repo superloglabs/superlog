@@ -27,6 +27,28 @@ test("fingerprint groups equivalent Next.js stacks whose generated chunk hashes 
   assert.equal(first.hash, second.hash);
 });
 
+test("fingerprint groups equivalent Next.js static chunks whose content hashes differ", () => {
+  const fingerprintFor = (chunkHash: string) =>
+    fingerprint({
+      type: "TypeError",
+      message: "Failed to render account page",
+      stacktrace: `    at renderAccount (/var/task/apps/web/.next/static/chunks/webpack-${chunkHash}.js:1:200)`,
+    });
+
+  assert.equal(fingerprintFor("332dbc5711e5ed").hash, fingerprintFor("9f76a111d542c0").hash);
+});
+
+test("fingerprint groups equivalent browser Next.js chunk URLs across builds", () => {
+  const fingerprintFor = (chunkHash: string) =>
+    fingerprint({
+      type: "TypeError",
+      message: "Failed to render account page",
+      stacktrace: `    at renderAccount (https://example.com/_next/static/chunks/app/page-${chunkHash}.js:1:200)`,
+    });
+
+  assert.equal(fingerprintFor("332dbc5711e5ed").hash, fingerprintFor("9f76a111d542c0").hash);
+});
+
 function iosHermesStack(input: { applicationId: string; bundleName: string }): string {
   const bundlePath =
     `/var/mobile/Containers/Data/Application/${input.applicationId}` +
