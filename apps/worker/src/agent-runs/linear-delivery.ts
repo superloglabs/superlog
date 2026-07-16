@@ -24,9 +24,9 @@ import { logger } from "../logger.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 
-// Marker line embedded in every ticket description. It is scoped to the run,
-// rather than only the incident, so a delivery retry dedupes while a separate
-// completed investigation receives a new ticket.
+// Marker line embedded in every ticket description for provider-side
+// correlation and diagnostics. Delivery retries use the locally recorded
+// ticket as their source of truth instead of fuzzy provider search.
 export function investigationMarker(incidentId: string, agentRunId: string): string {
   return `superlog_incident_id=${incidentId} superlog_agent_run_id=${agentRunId}`;
 }
@@ -131,7 +131,10 @@ export async function deliverLinearTicketWithDeps(
     const known = await deps.findKnownTicket();
     if (known) {
       if (!isLinearIssueUuid(known.ticketId)) {
-        const [resolved] = await deps.searchIssues(known.identifier ?? known.ticketId);
+        const identifier = known.identifier ?? known.ticketId;
+        const resolved = (await deps.searchIssues(identifier)).find(
+          (issue) => issue.identifier === identifier,
+        );
         if (resolved) {
           return {
             ticketId: resolved.id,
@@ -145,18 +148,6 @@ export async function deliverLinearTicketWithDeps(
         ticketId: known.ticketId,
         identifier: known.identifier ?? known.ticketId,
         url: known.url,
-        created: false,
-      };
-    }
-
-    const [existing] = await deps.searchIssues(
-      investigationMarker(args.incidentId, args.agentRunId),
-    );
-    if (existing) {
-      return {
-        ticketId: existing.id,
-        identifier: existing.identifier,
-        url: existing.url,
         created: false,
       };
     }
