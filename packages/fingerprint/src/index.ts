@@ -133,6 +133,9 @@ export function normalizeMessage(body: string): string {
   const vercelRuntimeRequest = normalizeVercelRuntimeRequest(body);
   if (vercelRuntimeRequest) return vercelRuntimeRequest;
 
+  const psycopgError = normalizePsycopgError(body);
+  if (psycopgError) return psycopgError;
+
   let s = body;
   s = s.replace(/https?:\/\/\S+/gi, "<url>");
   s = collapseRequestPaths(s);
@@ -147,6 +150,25 @@ export function normalizeMessage(body: string): string {
   s = s.replace(/\b\d+\b/g, "<n>");
   s = s.replace(/\s+/g, " ").trim().toLowerCase();
   return s;
+}
+
+// Psycopg errors often arrive inside SQLAlchemy tracebacks or application log
+// prefixes. Everything after the first driver-error line (DETAIL, rendered
+// SQL, bound parameters) is occurrence metadata, not error identity.
+function normalizePsycopgError(body: string): string | null {
+  const match = body.match(/psycopg2\.errors\.([A-Za-z_][A-Za-z0-9_]*)(?::|\))\s*([^\r\n]*)/);
+  if (!match?.[1]) return null;
+
+  let s = `psycopg2.errors.${match[1]}: ${match[2] ?? ""}`;
+  s = s.replace(/https?:\/\/\S+/gi, "<url>");
+  s = s.replace(/\b[\w.+-]+@[\w.-]+\.\w+\b/g, "<email>");
+  s = s.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>");
+  s = s.replace(/\b\d{4}-\d{2}-\d{2}[T ][\d:.]+Z?(?:[+-]\d{2}:?\d{2})?\b/g, "<ts>");
+  s = s.replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g, "<ip>");
+  s = s.replace(/\b0x[0-9a-f]+\b/gi, "<hex>");
+  s = s.replace(/\b[0-9a-f]{20,}\b/gi, "<hex>");
+  s = s.replace(/\b\d+\b/g, "<n>");
+  return s.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 // Vercel log drains can emit one four-line runtime envelope per request. Its

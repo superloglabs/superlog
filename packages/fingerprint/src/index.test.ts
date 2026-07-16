@@ -311,6 +311,58 @@ test("fingerprintLog preserves application output inside a runtime invocation", 
   assert.notEqual(timeout.hash, invalidResponse.hash);
 });
 
+test("fingerprintLog groups SQLAlchemy integrity errors with different row values", () => {
+  const tracebackBodyFor = (input: { productName: string; productId: string }) =>
+    [
+      "Traceback (most recent call last):",
+      '  File "/srv/app/importer.py", line 42, in import_product',
+      "    session.flush()",
+      'sqlalchemy.exc.IntegrityError: (psycopg2.errors.NotNullViolation) null value in column "vendor_product_id" of relation "product_variants" violates not-null constraint',
+      `DETAIL:  Failing row contains (${input.productId}, ${input.productName}, null).`,
+      "[SQL: INSERT INTO product_variants (id, name, vendor_product_id) VALUES (%(id)s, %(name)s, %(vendor_product_id)s)]",
+      `[parameters: {'id': '${input.productId}', 'name': '${input.productName}', 'vendor_product_id': None}]`,
+      "(Background on this error at: https://sqlalche.me/e/20/gkpj)",
+    ].join("\n");
+  const handledBodyFor = (input: { orderNumber: string; productName: string }) =>
+    [
+      `Failed to store order ${input.orderNumber}: (psycopg2.errors.NotNullViolation) null value in column \"vendor_product_id\" of relation \"product_variants\" violates not-null constraint`,
+      `DETAIL:  Failing row contains (product-c, ${input.productName}, null).`,
+      "[SQL: INSERT INTO product_variants (id, name, vendor_product_id) VALUES (%(id)s, %(name)s, %(vendor_product_id)s)]",
+      `[parameters: {'id': 'product-c', 'name': '${input.productName}', 'vendor_product_id': None}]`,
+      "(Background on this error at: https://sqlalche.me/e/20/gkpj)",
+    ].join("\n");
+
+  const first = fingerprintLog({
+    service: "catalog-worker",
+    severity: "ERROR",
+    body: tracebackBodyFor({ productName: "Blue Fluoride Varnish", productId: "product-a" }),
+    exceptionType: "IntegrityError",
+    stacktrace: null,
+  });
+  const second = fingerprintLog({
+    service: "catalog-worker",
+    severity: "ERROR",
+    body: handledBodyFor({ orderNumber: "order-200", productName: "Mint Prophy Paste" }),
+    exceptionType: "IntegrityError",
+    stacktrace: null,
+  });
+
+  assert.equal(first.hash, second.hash);
+});
+
+test("fingerprintLog keeps different Postgres constraints separate", () => {
+  const fingerprintFor = (column: string) =>
+    fingerprintLog({
+      service: "catalog-worker",
+      severity: "ERROR",
+      body: `psycopg2.errors.NotNullViolation: null value in column "${column}" of relation "product_variants" violates not-null constraint`,
+      exceptionType: "IntegrityError",
+      stacktrace: null,
+    });
+
+  assert.notEqual(fingerprintFor("vendor_product_id").hash, fingerprintFor("vendor_item_id").hash);
+});
+
 // Postgres text and jsonb columns reject the NUL byte (0x00) — it raises
 // `22021 invalid byte sequence for encoding "UTF8": 0x00`. Telemetry can carry
 // a raw NUL in a message or stack frame; the fingerprint outputs feed straight
