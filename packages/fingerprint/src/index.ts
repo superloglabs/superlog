@@ -156,7 +156,9 @@ export function normalizeMessage(body: string): string {
 // prefixes. Everything after the first driver-error line (DETAIL, rendered
 // SQL, bound parameters) is occurrence metadata, not error identity.
 function normalizePsycopgError(body: string): string | null {
-  const match = body.match(/psycopg(?:2)?\.errors\.([A-Za-z_][A-Za-z0-9_]*)(?::|\))\s*([^\r\n]*)/);
+  const match = body.match(
+    /psycopg(?:2)?\.errors\.([A-Za-z_][A-Za-z0-9_]*)(?::|\))[ \t]*(.*?)(?=(?:(?:[ \t]|\\[rn])+(?:DETAIL:|\[SQL:|\[parameters:|\(Background on this error at:))|[\r\n]|$)/,
+  );
   if (!match?.[1]) return null;
 
   let s = `postgres.errors.${match[1]}: ${match[2] ?? ""}`;
