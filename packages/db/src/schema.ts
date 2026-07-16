@@ -367,6 +367,85 @@ export type AgentRunResult = {
   resolutionClassification?: IncidentResolutionClassification | null;
 };
 
+export type AnomalyScanStatus = "running" | "completed" | "failed";
+
+export type AnomalyScanFindingSummary = {
+  title: string;
+  metricName: string;
+  service: string | null;
+  direction: "spike" | "drop" | "shift";
+  summary?: string;
+  dimensions?: Record<string, string>;
+  observedValue?: number;
+  baselineValue?: number;
+  observedSince?: string;
+  observedUntil?: string;
+  evidence?: string;
+  codeEvidence?: Array<{
+    repository: string;
+    path: string;
+    line: number;
+    quote: string;
+    explanation: string;
+  }>;
+  incidentOutcome?: "opened" | "deduped";
+  issueId: string;
+  incidentId: string | null;
+};
+
+export type AnomalyScanAudit = {
+  version: 1;
+  baselineSince: string;
+  observedSince: string;
+  observedUntil: string;
+  metrics: Array<{
+    kind: string;
+    metricName: string;
+    service: string;
+    observedCount: number;
+    observedAverage: number | null;
+    observedMin: number | null;
+    observedMax: number | null;
+    baselineCount: number;
+    baselineAverage: number | null;
+    baselineMin: number | null;
+    baselineMax: number | null;
+  }>;
+  repositories: string[];
+  alertsCompared: Array<{
+    id: string;
+    name: string;
+    metricName: string | null;
+  }>;
+  incidentsCompared: Array<{
+    id: string;
+    title: string;
+    service: string | null;
+  }>;
+  decisions: Array<{
+    metricName: string;
+    service: string | null;
+    verdict: "finding" | "rejected";
+    reasonCode:
+      | "finding"
+      | "known_alert"
+      | "open_incident"
+      | "sparse_data"
+      | "counter_behavior"
+      | "transient_outlier"
+      | "normal_variation"
+      | "no_material_impact"
+      | "not_code_grounded"
+      | "other";
+    rationale: string;
+    codePaths: Array<{
+      repository: string;
+      path: string;
+      line: number | null;
+    }>;
+  }>;
+};
+
 export const orgs = pgTable("orgs", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
@@ -1001,6 +1080,12 @@ export const projectAutomationSettings = pgTable(
     maxHumanResumeCount: integer("max_human_resume_count").notNull().default(3),
     customInstructions: text("custom_instructions").notNull().default(""),
     agentRunEnabled: boolean("agent_run_enabled").notNull().default(true),
+    anomalyScannerEnabled: boolean("anomaly_scanner_enabled").notNull().default(true),
+    anomalyScannerCadenceHours: integer("anomaly_scanner_cadence_hours").notNull().default(6),
+    anomalyScannerObservationMinutes: integer("anomaly_scanner_observation_minutes")
+      .notNull()
+      .default(60),
+    anomalyScannerBaselineHours: integer("anomaly_scanner_baseline_hours").notNull().default(24),
     // Gate for follow-up runs auto-triggered by PR comments and Slack
     // replies after a prior run completed (feedback-triggered follow-ups
     // are always confirm-gated regardless).
@@ -1071,6 +1156,35 @@ export const projectAutomationSettings = pgTable(
   },
   (t) => ({
     projectUniq: uniqueIndex("project_automation_settings_project_idx").on(t.projectId),
+  }),
+);
+
+export const anomalyScanRuns = pgTable(
+  "anomaly_scan_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    status: text("status").$type<AnomalyScanStatus>().notNull().default("running"),
+    metricSeriesScanned: integer("metric_series_scanned").notNull().default(0),
+    findingsCount: integer("findings_count").notNull().default(0),
+    incidentsOpened: integer("incidents_opened").notNull().default(0),
+    incidentsDeduped: integer("incidents_deduped").notNull().default(0),
+    findings: jsonb("findings")
+      .$type<AnomalyScanFindingSummary[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    audit: jsonb("audit").$type<AnomalyScanAudit>(),
+    error: text("error"),
+    startedAt: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => ({
+    projectStartedIdx: index("anomaly_scan_runs_project_started_idx").on(t.projectId, t.startedAt),
   }),
 );
 
@@ -1262,7 +1376,7 @@ export const agentChats = pgTable(
 // provider event/message id so webhook retries can't double-feed the session.
 // `processedAt` is stamped when the worker delivers the text into the
 // provider session (resume/steer) — the same pending-marker pattern as
-// incident_events.human_reply.
+// source-specific incident interaction events.
 export const agentChatMessages = pgTable(
   "agent_chat_messages",
   {
@@ -2020,6 +2134,7 @@ export const orgAgentSettings = pgTable(
       .references(() => orgs.id, { onDelete: "cascade" }),
     customInstructions: text("custom_instructions").notNull().default(""),
     agentRunEnabled: boolean("agent_run_enabled").notNull().default(true),
+    anomalyScannerEnabled: boolean("anomaly_scanner_enabled").notNull().default(false),
     linearTicketPolicy: text("linear_ticket_policy")
       .$type<"never" | "on_ready_to_pr" | "always">()
       .notNull()
@@ -3029,6 +3144,7 @@ export type Incident = typeof incidents.$inferSelect;
 export type IncidentIssue = typeof incidentIssues.$inferSelect;
 export type IncidentResolutionProposal = typeof incidentResolutionProposals.$inferSelect;
 export type ProjectAutomationSetting = typeof projectAutomationSettings.$inferSelect;
+export type AnomalyScanRun = typeof anomalyScanRuns.$inferSelect;
 export type AgentRun = typeof agentRuns.$inferSelect;
 export type AgentChat = typeof agentChats.$inferSelect;
 export type AgentChatMessage = typeof agentChatMessages.$inferSelect;

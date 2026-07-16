@@ -2,6 +2,7 @@ import {
   type AgentPullRequestLifecycleContinuation,
   type AgentPullRequestLifecycleRecord,
   type AgentRunResult,
+  INBOUND_INTERACTION_EVENT_KINDS,
   areAllIncidentPullRequestsMerged,
   buildAgentPullRequestLifecycleContinuation,
   db,
@@ -650,7 +651,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
     const pendingHumanReplies = await db.query.incidentEvents.findMany({
       where: and(
         eq(schema.incidentEvents.agentRunId, ctx.agentRun.id),
-        eq(schema.incidentEvents.kind, "human_reply"),
+        inArray(schema.incidentEvents.kind, [...INBOUND_INTERACTION_EVENT_KINDS]),
         isNull(schema.incidentEvents.processedAt),
       ),
       // Oldest → newest so the steered conversation reads in chronological order.
@@ -896,7 +897,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
               db.query.incidentEvents.findMany({
                 where: and(
                   eq(schema.incidentEvents.agentRunId, ctx.agentRun.id),
-                  eq(schema.incidentEvents.kind, "human_reply"),
+                  inArray(schema.incidentEvents.kind, [...INBOUND_INTERACTION_EVENT_KINDS]),
                   isNull(schema.incidentEvents.processedAt),
                 ),
                 orderBy: [asc(schema.incidentEvents.createdAt)],

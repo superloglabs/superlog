@@ -31,6 +31,8 @@ import { TermsOfService } from "./TermsOfService.tsx";
 import { VercelCallback } from "./VercelCallback.tsx";
 import { AlertEdit } from "./alerts/AlertEdit.tsx";
 import { AlertsList } from "./alerts/AlertsList.tsx";
+import { AnomalyScanDetail } from "./anomaly-scanner/AnomalyScanDetail.tsx";
+import { AnomalyScanner } from "./anomaly-scanner/AnomalyScanner.tsx";
 import { useMe } from "./api.ts";
 import { authClient, useSession } from "./auth-client.ts";
 import { signalAtHardCap } from "./billing.ts";
@@ -259,7 +261,10 @@ function AuthenticatedApp() {
           email={data.user.email}
           billingPaused={billingPaused}
         />
-        <ProductShell toolbar={<ProductToolbar />}>
+        <ProductShell
+          toolbar={<ProductToolbar />}
+          anomalyScannerEnabled={me.data?.features?.anomalyScanner === true}
+        >
           <RouteContainer>
             <Routes location={appLocation}>
               <Route path="/explore/*" element={<Explore />} />
@@ -272,6 +277,26 @@ function AuthenticatedApp() {
               <Route path="/alerts/:id" element={<AlertEdit />} />
               <Route path="/dashboards" element={<DashboardsList />} />
               <Route path="/dashboards/:id" element={<DashboardView />} />
+              <Route
+                path="/anomaly-scanner"
+                element={
+                  me.data?.features?.anomalyScanner === true ? (
+                    <AnomalyScanner />
+                  ) : (
+                    <Navigate to="/" replace />
+                  )
+                }
+              />
+              <Route
+                path="/anomaly-scanner/scans/:scanId"
+                element={
+                  me.data?.features?.anomalyScanner === true ? (
+                    <AnomalyScanDetail />
+                  ) : (
+                    <Navigate to="/" replace />
+                  )
+                }
+              />
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<Overview />} />
             </Routes>

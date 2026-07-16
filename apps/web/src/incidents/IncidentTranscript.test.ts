@@ -84,6 +84,27 @@ test("buildActivityFeed shows the filed Linear ticket without the internal hando
   assert.deepEqual(feed, [{ type: "lifecycle", id: "linear-filed-1", event: filed }]);
 });
 
+test("buildActivityFeed keeps GitHub review comments in the investigation conversation", () => {
+  const feed = buildActivityFeed([
+    event({
+      id: "github-comment-1",
+      kind: "github_comment",
+      summary: "Add a regression test for this branch.",
+      detail: { origin: { author: "reviewer[bot]" } },
+    }),
+  ]);
+
+  assert.deepEqual(feed, [
+    {
+      type: "human",
+      id: "github-comment-1",
+      author: "reviewer[bot]",
+      text: "Add a regression test for this branch.",
+      createdAt: "2026-07-09T00:37:38.370Z",
+    },
+  ]);
+});
+
 test("buildActivityFeed turns ask_human into a question node with the exact prompt", () => {
   const feed = buildActivityFeed([
     event({
