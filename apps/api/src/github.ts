@@ -40,6 +40,10 @@ import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 import { recordPrClosedMetric, recordPrMergedMetric } from "./pr-metrics.js";
+import {
+  enqueueObservabilityReview,
+  observabilityReviewCommandFromWebhook,
+} from "./pr-observability-review.js";
 
 const log = logger.child({ scope: "github" });
 type Vars = { userId: string; orgId: string | null };
@@ -369,6 +373,7 @@ type GithubInstallationSummary = {
   accountLogin: string | null;
   accountType: string | null;
   enabled: boolean;
+  observabilityReviewEnabled: boolean;
   manageUrl: string;
   repos: GithubRepoSummary[];
 };
@@ -395,7 +400,7 @@ type WebhookPayload = {
   repositories_added?: GhRepo[];
   repositories_removed?: GhRepo[];
   // pull_request events / pull_request_review / pull_request_review_comment
-  repository?: { full_name?: string };
+  repository?: { id?: number; full_name?: string };
   pull_request?: {
     number?: number;
     node_id?: string;
@@ -409,6 +414,7 @@ type WebhookPayload = {
     user?: GhActor;
     head?: { sha?: string; ref?: string };
     base?: { ref?: string };
+    draft?: boolean;
     html_url?: string;
   };
   // issue_comment (only PR if issue.pull_request present)
@@ -453,6 +459,8 @@ async function handleWebhook(
   delivery: string | null,
   dependencies: GithubWebhookDependencies,
 ): Promise<void> {
+  await maybeEnqueuePrObservabilityReview(event, payload);
+
   if (
     event === "pull_request" ||
     event === "pull_request_review" ||
@@ -516,6 +524,54 @@ async function handleWebhook(
     if (payload.action === "added") {
       await resumeBlockedAgentRunsForInstallation(installationId, "github_repos_added");
     }
+  }
+}
+
+async function maybeEnqueuePrObservabilityReview(
+  event: string,
+  payload: WebhookPayload,
+): Promise<void> {
+  const command = observabilityReviewCommandFromWebhook(event, payload);
+  if (!command) return;
+
+  const enqueued = await enqueueObservabilityReview(command, {
+    async findEnabledScope(input) {
+      const installations = await db.query.githubInstallations.findMany({
+        where: and(
+          eq(schema.githubInstallations.installationId, input.installationId),
+          eq(schema.githubInstallations.observabilityReviewEnabled, true),
+          eq(schema.githubInstallations.agentEnabled, true),
+          isNull(schema.githubInstallations.revokedAt),
+        ),
+      });
+      const installation = installations.find((row) =>
+        isRepoEnabled(normalizeRepoAccess(row.repoAccess), input.repoId),
+      );
+      return installation ? { orgId: installation.orgId, projectId: installation.projectId } : null;
+    },
+    async insert(input) {
+      await db
+        .insert(schema.prObservabilityReviews)
+        .values({
+          installationId: input.installationId,
+          orgId: input.orgId,
+          projectId: input.projectId,
+          repoFullName: input.repoFullName,
+          prNumber: input.prNumber,
+          headSha: input.headSha,
+        })
+        .onConflictDoNothing();
+    },
+  });
+  if (enqueued) {
+    log.info(
+      {
+        repo: command.repoFullName,
+        pr_number: command.prNumber,
+        head_sha: command.headSha,
+      },
+      "observability review queued",
+    );
   }
 }
 
@@ -2000,6 +2056,7 @@ export function mountGithubAuthed(app: Hono<any>): void {
         accountLogin: row.accountLogin,
         accountType: row.accountType,
         enabled: row.agentEnabled,
+        observabilityReviewEnabled: row.observabilityReviewEnabled,
         manageUrl: githubInstallationManageUrl(row),
         repos: scopedRepos.map((repo) => ({
           ...repo,
@@ -2132,6 +2189,7 @@ export function mountGithubAuthed(app: Hono<any>): void {
     const body = (await c.req.json().catch(() => null)) as {
       installationId?: unknown;
       enabled?: unknown;
+      observabilityReviewEnabled?: unknown;
       repoId?: unknown;
       repoEnabled?: unknown;
     } | null;
@@ -2151,10 +2209,14 @@ export function mountGithubAuthed(app: Hono<any>): void {
 
     const patch: {
       agentEnabled?: boolean;
+      observabilityReviewEnabled?: boolean;
       repoAccess?: RepoAccess;
     } = {};
     if (typeof body?.enabled === "boolean") {
       patch.agentEnabled = body.enabled;
+    }
+    if (typeof body?.observabilityReviewEnabled === "boolean") {
+      patch.observabilityReviewEnabled = body.observabilityReviewEnabled;
     }
     if (body?.repoId !== undefined || body?.repoEnabled !== undefined) {
       const repoId = Number(body?.repoId);

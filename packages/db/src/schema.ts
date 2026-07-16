@@ -49,6 +49,25 @@ export type GithubRepoAccess = {
   disabledRepoIds?: number[];
 };
 
+export type PrObservabilitySignal = "logs" | "traces" | "metrics" | "cross-signal";
+export type PrObservabilityReviewStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "superseded";
+export type PrObservabilitySuggestion = {
+  signal: PrObservabilitySignal;
+  severity: "blocking" | "warning";
+  path: string;
+  line: number;
+  title: string;
+  body: string;
+  confidence: number;
+  githubCommentId: number;
+  githubCommentUrl: string;
+};
+
 export type AgentRunFailureReason =
   | "agent_no_findings"
   | "patch_validation_failed"
@@ -1668,6 +1687,9 @@ export const githubInstallations = pgTable(
     accountType: text("account_type"),
     repos: jsonb("repos").$type<{ id: number; fullName: string; private: boolean }[]>(),
     agentEnabled: boolean("agent_enabled").default(true).notNull(),
+    // Opt-in PR review bot. Kept separate from agentEnabled because reviewing
+    // incoming PRs and opening remediation PRs are independent capabilities.
+    observabilityReviewEnabled: boolean("observability_review_enabled").default(false).notNull(),
     repoAccess: jsonb("repo_access").$type<GithubRepoAccess>(),
     commitAuthorName: text("commit_author_name"),
     commitAuthorEmail: text("commit_author_email"),
@@ -1696,6 +1718,51 @@ export const githubInstallations = pgTable(
       .on(t.orgId, t.installationId)
       .where(sql`project_id IS NULL AND revoked_at IS NULL`),
     orgIdx: index("github_installations_org_idx").on(t.orgId),
+  }),
+);
+
+// Durable aggregate for one observability review of one immutable PR head.
+// Suggestions stay together as JSON because they are published and reaction-
+// synced as a unit; a new head gets a new row rather than mutating history.
+export const prObservabilityReviews = pgTable(
+  "pr_observability_reviews",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    installationId: bigint("installation_id", { mode: "number" }).notNull(),
+    orgId: uuid("org_id").references(() => orgs.id, { onDelete: "set null" }),
+    projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
+    repoFullName: text("repo_full_name").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    headSha: text("head_sha").notNull(),
+    status: text("status").$type<PrObservabilityReviewStatus>().notNull().default("queued"),
+    summary: text("summary"),
+    suggestions: jsonb("suggestions")
+      .$type<PrObservabilitySuggestion[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    processedReactionIds: jsonb("processed_reaction_ids")
+      .$type<number[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    failureMessage: text("failure_message"),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    lastReactionSyncedAt: timestamp("last_reaction_synced_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    headUniq: uniqueIndex("pr_observability_reviews_head_idx").on(
+      t.repoFullName,
+      t.prNumber,
+      t.headSha,
+    ),
+    queuedIdx: index("pr_observability_reviews_queued_idx")
+      .on(t.createdAt)
+      .where(sql`status = 'queued'`),
+    reactionSyncIdx: index("pr_observability_reviews_reaction_sync_idx")
+      .on(t.lastReactionSyncedAt, t.completedAt)
+      .where(sql`status = 'completed'`),
   }),
 );
 
@@ -2389,7 +2456,13 @@ export const alertEpisodes = pgTable(
 // id otherwise (PR webhook captures, /feedback/pr/* public submissions, and
 // Slack view_submission events all come in without a session).
 export type FeedbackKind = "incident" | "issue" | "pr";
-export type FeedbackSource = "dialog" | "slack_button" | "slack_rating" | "pr_comment" | "pr_link";
+export type FeedbackSource =
+  | "dialog"
+  | "slack_button"
+  | "slack_rating"
+  | "pr_comment"
+  | "pr_link"
+  | "pr_review_reaction";
 export type FeedbackStatus = "new" | "triaged" | "closed";
 // One-click sentiment on an incident's Slack thread (👍/👎). Nullable — most
 // feedback rows carry only free-form `body` with no structured rating.
@@ -2409,6 +2482,10 @@ export const feedback = pgTable(
     refId: text("ref_id").notNull(),
     refRepo: text("ref_repo"),
     source: text("source").$type<FeedbackSource>().notNull(),
+    // Stable provider event id for polling-based integrations. GitHub does not
+    // emit reaction webhooks, so the review worker polls and uses this key to
+    // make feedback inserts idempotent across job retries.
+    providerEventId: text("provider_event_id"),
     body: text("body").notNull(),
     rating: text("rating").$type<FeedbackRating>(),
     authorUserId: uuid("author_user_id").references(() => users.id, {
@@ -2429,6 +2506,9 @@ export const feedback = pgTable(
   (t) => ({
     statusCreatedIdx: index("feedback_status_created_idx").on(t.status, t.createdAt),
     kindRefIdx: index("feedback_kind_ref_idx").on(t.kind, t.refId),
+    providerEventUniq: uniqueIndex("feedback_provider_event_idx")
+      .on(t.providerEventId)
+      .where(sql`provider_event_id IS NOT NULL`),
   }),
 );
 
@@ -3042,6 +3122,7 @@ export type SavedView = typeof savedViews.$inferSelect;
 export type Dashboard = typeof dashboards.$inferSelect;
 export type DashboardWidget = typeof dashboardWidgets.$inferSelect;
 export type GithubInstallation = typeof githubInstallations.$inferSelect;
+export type PrObservabilityReview = typeof prObservabilityReviews.$inferSelect;
 export type ProjectGithubRepo = typeof projectGithubRepos.$inferSelect;
 export type LinearInstallation = typeof linearInstallations.$inferSelect;
 export type LinearAgentSession = typeof linearAgentSessions.$inferSelect;

@@ -956,6 +956,46 @@ test("closed unmerged agent PR does not resolve incident or linked issue", async
   assert.equal(resolvedEvent, undefined);
 });
 
+test("an opted-in pull request webhook queues one observability review per head", async () => {
+  const fixture = await seedAgentPrFixture("observability-review");
+  await db
+    .update(schema.githubInstallations)
+    .set({ observabilityReviewEnabled: true })
+    .where(eq(schema.githubInstallations.installationId, fixture.installationId));
+  const app = new Hono();
+  mountGithubPublic(app);
+  const payload = {
+    action: "opened",
+    repository: { id: 1, full_name: fixture.repoFullName },
+    pull_request: {
+      number: fixture.prNumber,
+      draft: false,
+      title: "Add a background job",
+      head: { sha: "review-head-1", ref: fixture.branchName },
+    },
+    installation: { id: fixture.installationId },
+  };
+
+  assert.equal(
+    (await postGithub(app, "pull_request", `gh-${fixture.tag}-review`, payload)).status,
+    200,
+  );
+  assert.equal(
+    (await postGithub(app, "pull_request", `gh-${fixture.tag}-review-redelivery`, payload)).status,
+    200,
+  );
+
+  const reviews = await db.query.prObservabilityReviews.findMany({
+    where: and(
+      eq(schema.prObservabilityReviews.repoFullName, fixture.repoFullName),
+      eq(schema.prObservabilityReviews.prNumber, fixture.prNumber),
+    ),
+  });
+  assert.equal(reviews.length, 1);
+  assert.equal(reviews[0]?.headSha, "review-head-1");
+  assert.equal(reviews[0]?.status, "queued");
+});
+
 async function seedAgentPrFixture(label: string): Promise<{
   tag: string;
   repoFullName: string;
