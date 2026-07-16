@@ -6,11 +6,21 @@ import {
   parseAnomalyScannerSettingsPatch,
   serializeAnomalyScanRun,
 } from "./anomaly-scanner-service.js";
+import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 
 type Vars = { userId: string; orgId: string | null };
 
-export function mountAnomalyScanner(app: Hono<{ Variables: Vars }>): void {
+type AnomalyScannerDependencies = {
+  requireProjectManagerContext: typeof requireProjectManagerContext;
+};
+
+const defaultDependencies: AnomalyScannerDependencies = { requireProjectManagerContext };
+
+export function mountAnomalyScanner(
+  app: Hono<{ Variables: Vars }>,
+  dependencies: AnomalyScannerDependencies = defaultDependencies,
+): void {
   app.get("/api/projects/:projectId/anomaly-scanner", async (c) => {
     const projectId = c.req.param("projectId");
     await requireAnomalyScannerAccess(c, projectId);
@@ -40,6 +50,7 @@ export function mountAnomalyScanner(app: Hono<{ Variables: Vars }>): void {
 
   app.patch("/api/projects/:projectId/anomaly-scanner", async (c) => {
     const projectId = c.req.param("projectId");
+    await dependencies.requireProjectManagerContext(c, projectId);
     await requireAnomalyScannerAccess(c, projectId);
     const parsed = parseAnomalyScannerSettingsPatch(await c.req.json().catch(() => null));
     if (!parsed.ok) throw new HTTPException(400, { message: parsed.error });
