@@ -132,6 +132,7 @@ import { useDemoExploration } from "./onboarding/demoExploration.tsx";
 import {
   AwsIcon,
   CloudflareIcon,
+  GcpIcon,
   GithubIcon,
   InfoIcon,
   OtelIcon,
@@ -1490,6 +1491,12 @@ function IntegrationGlyph({ id }: { id: ProjectIntegrationId }) {
           <RenderIcon size={20} />
         </span>
       );
+    case "gcp":
+      return (
+        <span className={className}>
+          <GcpIcon size={20} />
+        </span>
+      );
     case "aws":
       return (
         <span className={className}>
@@ -2763,6 +2770,12 @@ function IngestSourceIcon({ source }: { source: IngestSource }) {
       return (
         <span className={className}>
           <RenderIcon size={18} />
+        </span>
+      );
+    case "gcp":
+      return (
+        <span className={className}>
+          <GcpIcon size={18} />
         </span>
       );
   }
