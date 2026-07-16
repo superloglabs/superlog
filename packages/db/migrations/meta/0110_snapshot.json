@@ -1,5 +1,5 @@
 {
-  "id": "65336898-2e43-414e-bc10-b72c97267521",
+  "id": "140391ec-960d-44df-b031-3f8e25dd48d6",
   "prevId": "f52616a3-295c-4b4d-8395-c061ff4b86da",
   "version": "7",
   "dialect": "postgresql",
@@ -2225,6 +2225,154 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.anomaly_scan_runs": {
+      "name": "anomaly_scan_runs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "org_id": {
+          "name": "org_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'running'"
+        },
+        "metric_series_scanned": {
+          "name": "metric_series_scanned",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "findings_count": {
+          "name": "findings_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "incidents_opened": {
+          "name": "incidents_opened",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "incidents_deduped": {
+          "name": "incidents_deduped",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "findings": {
+          "name": "findings",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "audit": {
+          "name": "audit",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "anomaly_scan_runs_project_started_idx": {
+          "name": "anomaly_scan_runs_project_started_idx",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "started_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "anomaly_scan_runs_org_id_orgs_id_fk": {
+          "name": "anomaly_scan_runs_org_id_orgs_id_fk",
+          "tableFrom": "anomaly_scan_runs",
+          "tableTo": "orgs",
+          "columnsFrom": [
+            "org_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "anomaly_scan_runs_project_id_projects_id_fk": {
+          "name": "anomaly_scan_runs_project_id_projects_id_fk",
+          "tableFrom": "anomaly_scan_runs",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.api_keys": {
       "name": "api_keys",
       "schema": "",
@@ -3389,12 +3537,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "provider_event_id": {
-          "name": "provider_event_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "body": {
           "name": "body",
           "type": "text",
@@ -3497,22 +3639,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "feedback_provider_event_idx": {
-          "name": "feedback_provider_event_idx",
-          "columns": [
-            {
-              "expression": "provider_event_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "provider_event_id IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -4074,13 +4200,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
-        },
-        "observability_review_enabled": {
-          "name": "observability_review_enabled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         },
         "repo_access": {
           "name": "repo_access",
@@ -6576,6 +6695,13 @@
           "notNull": true,
           "default": true
         },
+        "anomaly_scanner_enabled": {
+          "name": "anomaly_scanner_enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "linear_ticket_policy": {
           "name": "linear_ticket_policy",
           "type": "text",
@@ -7359,220 +7485,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.pr_observability_reviews": {
-      "name": "pr_observability_reviews",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "installation_id": {
-          "name": "installation_id",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "org_id": {
-          "name": "org_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "repo_full_name": {
-          "name": "repo_full_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "pr_number": {
-          "name": "pr_number",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "head_sha": {
-          "name": "head_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'queued'"
-        },
-        "summary": {
-          "name": "summary",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "suggestions": {
-          "name": "suggestions",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "processed_reaction_ids": {
-          "name": "processed_reaction_ids",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "failure_message": {
-          "name": "failure_message",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "completed_at": {
-          "name": "completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_reaction_synced_at": {
-          "name": "last_reaction_synced_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "pr_observability_reviews_head_idx": {
-          "name": "pr_observability_reviews_head_idx",
-          "columns": [
-            {
-              "expression": "repo_full_name",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "pr_number",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "head_sha",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "pr_observability_reviews_queued_idx": {
-          "name": "pr_observability_reviews_queued_idx",
-          "columns": [
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "status = 'queued'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "pr_observability_reviews_reaction_sync_idx": {
-          "name": "pr_observability_reviews_reaction_sync_idx",
-          "columns": [
-            {
-              "expression": "last_reaction_synced_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "completed_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "status = 'completed'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "pr_observability_reviews_org_id_orgs_id_fk": {
-          "name": "pr_observability_reviews_org_id_orgs_id_fk",
-          "tableFrom": "pr_observability_reviews",
-          "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "pr_observability_reviews_project_id_projects_id_fk": {
-          "name": "pr_observability_reviews_project_id_projects_id_fk",
-          "tableFrom": "pr_observability_reviews",
-          "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.project_automation_settings": {
       "name": "project_automation_settings",
       "schema": "",
@@ -7631,6 +7543,34 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
+        },
+        "anomaly_scanner_enabled": {
+          "name": "anomaly_scanner_enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "anomaly_scanner_cadence_hours": {
+          "name": "anomaly_scanner_cadence_hours",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 6
+        },
+        "anomaly_scanner_observation_minutes": {
+          "name": "anomaly_scanner_observation_minutes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 60
+        },
+        "anomaly_scanner_baseline_hours": {
+          "name": "anomaly_scanner_baseline_hours",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 24
         },
         "auto_follow_up_enabled": {
           "name": "auto_follow_up_enabled",

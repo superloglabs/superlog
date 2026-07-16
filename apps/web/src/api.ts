@@ -29,6 +29,7 @@ export type Me = {
   // Whether billing hard-blocks are enforced. Metering runs regardless; this
   // gates the "Ingest paused" bar so we don't show it when nothing is blocked.
   billingEnforcement?: boolean;
+  features?: { anomalyScanner: boolean };
 };
 
 export type ApiKey = {
@@ -1875,6 +1876,136 @@ export function useDisconnectProjectMcpOAuth(projectId: string | undefined) {
         { method: "POST" },
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: projectMcpQueryKey(projectId) }),
+  });
+}
+
+export type AnomalyScannerSettings = {
+  enabled: boolean;
+  cadenceHours: number;
+  observationMinutes: number;
+  baselineHours: number;
+};
+
+export type AnomalyScanFinding = {
+  title: string;
+  summary?: string;
+  metricName: string;
+  service: string | null;
+  direction: "spike" | "drop" | "shift";
+  dimensions?: Record<string, string>;
+  observedValue?: number;
+  baselineValue?: number;
+  observedSince?: string;
+  observedUntil?: string;
+  evidence?: string;
+  codeEvidence?: Array<{
+    repository: string;
+    path: string;
+    line: number;
+    quote: string;
+    explanation: string;
+  }>;
+  incidentOutcome?: "opened" | "deduped";
+  issueId: string;
+  incidentId: string | null;
+};
+
+export type AnomalyScanAudit = {
+  version: 1;
+  baselineSince: string;
+  observedSince: string;
+  observedUntil: string;
+  metrics: Array<{
+    kind: string;
+    metricName: string;
+    service: string;
+    observedCount: number;
+    observedAverage: number | null;
+    observedMin: number | null;
+    observedMax: number | null;
+    baselineCount: number;
+    baselineAverage: number | null;
+    baselineMin: number | null;
+    baselineMax: number | null;
+  }>;
+  repositories: string[];
+  alertsCompared: Array<{ id: string; name: string; metricName: string | null }>;
+  incidentsCompared: Array<{ id: string; title: string; service: string | null }>;
+  decisions: Array<{
+    metricName: string;
+    service: string | null;
+    verdict: "finding" | "rejected";
+    reasonCode:
+      | "finding"
+      | "known_alert"
+      | "open_incident"
+      | "sparse_data"
+      | "counter_behavior"
+      | "transient_outlier"
+      | "normal_variation"
+      | "no_material_impact"
+      | "not_code_grounded"
+      | "other";
+    rationale: string;
+    codePaths: Array<{ repository: string; path: string; line: number | null }>;
+  }>;
+};
+
+export type AnomalyScan = {
+  id: string;
+  status: "running" | "completed" | "failed";
+  metricSeriesScanned: number;
+  findingsCount: number;
+  incidentsOpened: number;
+  incidentsDeduped: number;
+  findings: AnomalyScanFinding[];
+  audit: AnomalyScanAudit | null;
+  error: string | null;
+  startedAt: string;
+  completedAt: string | null;
+};
+
+export type AnomalyScannerData = {
+  settings: AnomalyScannerSettings;
+  scans: AnomalyScan[];
+};
+
+export function useAnomalyScanner(projectId: string | undefined, featureEnabled: boolean) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["anomaly-scanner", projectId],
+    queryFn: () => fetcher<AnomalyScannerData>(`/api/projects/${projectId}/anomaly-scanner`),
+    enabled: !!projectId && featureEnabled,
+    refetchInterval: (query) =>
+      query.state.data?.scans.some((scan) => scan.status === "running") ? 5_000 : false,
+  });
+}
+
+export function useAnomalyScan(
+  projectId: string | undefined,
+  scanId: string | undefined,
+  featureEnabled: boolean,
+) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["anomaly-scanner", projectId, "scan", scanId],
+    queryFn: () =>
+      fetcher<AnomalyScan>(`/api/projects/${projectId}/anomaly-scanner/scans/${scanId}`),
+    enabled: !!projectId && !!scanId && featureEnabled,
+    refetchInterval: (query) => (query.state.data?.status === "running" ? 5_000 : false),
+  });
+}
+
+export function useSaveAnomalyScannerSettings(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: Partial<AnomalyScannerSettings>) =>
+      fetcher<AnomalyScannerSettings>(`/api/projects/${projectId}/anomaly-scanner`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["anomaly-scanner", projectId] }),
   });
 }
 

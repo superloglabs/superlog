@@ -1,6 +1,6 @@
 {
-  "id": "0b061e42-a982-41ab-9e75-72aa4976105f",
-  "prevId": "65336898-2e43-414e-bc10-b72c97267521",
+  "id": "c3d77b4b-433c-4acc-a3a8-944509a172ee",
+  "prevId": "140391ec-960d-44df-b031-3f8e25dd48d6",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2216,6 +2216,154 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.anomaly_scan_runs": {
+      "name": "anomaly_scan_runs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "org_id": {
+          "name": "org_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'running'"
+        },
+        "metric_series_scanned": {
+          "name": "metric_series_scanned",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "findings_count": {
+          "name": "findings_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "incidents_opened": {
+          "name": "incidents_opened",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "incidents_deduped": {
+          "name": "incidents_deduped",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "findings": {
+          "name": "findings",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "audit": {
+          "name": "audit",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "anomaly_scan_runs_project_started_idx": {
+          "name": "anomaly_scan_runs_project_started_idx",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "started_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "anomaly_scan_runs_org_id_orgs_id_fk": {
+          "name": "anomaly_scan_runs_org_id_orgs_id_fk",
+          "tableFrom": "anomaly_scan_runs",
+          "tableTo": "orgs",
+          "columnsFrom": [
+            "org_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "anomaly_scan_runs_project_id_projects_id_fk": {
+          "name": "anomaly_scan_runs_project_id_projects_id_fk",
+          "tableFrom": "anomaly_scan_runs",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -6576,6 +6724,13 @@
           "notNull": true,
           "default": true
         },
+        "anomaly_scanner_enabled": {
+          "name": "anomaly_scanner_enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "linear_ticket_policy": {
           "name": "linear_ticket_policy",
           "type": "text",
@@ -7359,6 +7514,102 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.pr_observability_review_projects": {
+      "name": "pr_observability_review_projects",
+      "schema": "",
+      "columns": {
+        "review_id": {
+          "name": "review_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "pr_observability_review_projects_uniq": {
+          "name": "pr_observability_review_projects_uniq",
+          "columns": [
+            {
+              "expression": "review_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "pr_observability_review_projects_project_idx": {
+          "name": "pr_observability_review_projects_project_idx",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pr_observability_review_projects_review_id_pr_observability_reviews_id_fk": {
+          "name": "pr_observability_review_projects_review_id_pr_observability_reviews_id_fk",
+          "tableFrom": "pr_observability_review_projects",
+          "tableTo": "pr_observability_reviews",
+          "columnsFrom": [
+            "review_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "pr_observability_review_projects_project_id_projects_id_fk": {
+          "name": "pr_observability_review_projects_project_id_projects_id_fk",
+          "tableFrom": "pr_observability_review_projects",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.pr_observability_reviews": {
       "name": "pr_observability_reviews",
       "schema": "",
@@ -7387,6 +7638,12 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
+        },
+        "repo_id": {
+          "name": "repo_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
         },
         "repo_full_name": {
           "name": "repo_full_name",
@@ -7631,6 +7888,34 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
+        },
+        "anomaly_scanner_enabled": {
+          "name": "anomaly_scanner_enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "anomaly_scanner_cadence_hours": {
+          "name": "anomaly_scanner_cadence_hours",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 6
+        },
+        "anomaly_scanner_observation_minutes": {
+          "name": "anomaly_scanner_observation_minutes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 60
+        },
+        "anomaly_scanner_baseline_hours": {
+          "name": "anomaly_scanner_baseline_hours",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 24
         },
         "auto_follow_up_enabled": {
           "name": "auto_follow_up_enabled",

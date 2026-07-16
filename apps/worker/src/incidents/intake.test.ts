@@ -195,6 +195,60 @@ test("intake: existing link touches the open incident and returns it unchanged",
   assert.ok(calls.includes("touchIncidentLastSeen:inc-old"));
 });
 
+test("intake: preferred open incident is validated and joined before grouping", async () => {
+  const calls: string[] = [];
+  const preferred = makeIncident({ id: "inc-preferred", projectId: "proj-1", status: "open" });
+  const repo = makeRepo({
+    calls,
+    incidentById: new Map([[preferred.id, preferred]]),
+  });
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue(),
+    "new",
+    makeDeps({ repo, lifecycle: makeLifecycle({ calls }), calls }),
+    {
+      preferredOpenIncidentId: preferred.id,
+      preferredMatchReason: "The scheduled scan found the same metric anomaly.",
+    },
+  );
+
+  assert.equal(result.createdIncident, false);
+  assert.equal(result.linkedIssue, true);
+  assert.equal(result.incident.id, preferred.id);
+  assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-preferred"));
+  assert.ok(
+    calls.includes(
+      "updateIssueGrouping:iss-new:grouped:llm:The scheduled scan found the same metric anomaly.",
+    ),
+  );
+  assert.ok(!calls.some((call) => call.startsWith("findOpenIncidentCandidates:")));
+  assert.ok(!calls.some((call) => call.startsWith("createOpen:")));
+});
+
+test("intake: stale preferred incident falls through to normal grouping", async () => {
+  const calls: string[] = [];
+  const closed = makeIncident({ id: "inc-closed", status: "resolved" });
+  const repo = makeRepo({
+    calls,
+    incidentById: new Map([[closed.id, closed]]),
+  });
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue(),
+    "new",
+    makeDeps({ repo, lifecycle: makeLifecycle({ calls }), calls }),
+    {
+      preferredOpenIncidentId: closed.id,
+      preferredMatchReason: "This must not be trusted after the incident closes.",
+    },
+  );
+
+  assert.equal(result.createdIncident, true);
+  assert.equal(result.incident.id, "inc-new");
+  assert.ok(calls.some((call) => call.startsWith("findOpenIncidentCandidates:")));
+  assert.ok(calls.some((call) => call.startsWith("createOpen:")));
+  assert.ok(!calls.includes("linkIssueToIncident:iss-new->inc-closed"));
+});
+
 test("intake: recurred issue opens a new incident chained to its previous one", async () => {
   const calls: string[] = [];
   const previous = makeIncident({ id: "inc-prev", status: "resolved" });
