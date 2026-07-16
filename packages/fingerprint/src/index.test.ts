@@ -60,6 +60,17 @@ test("fingerprint ignores cache-busting suffixes on browser Next.js chunk URLs",
   assert.equal(fingerprintFor("?dpl=first").hash, fingerprintFor("#dpl=second").hash);
 });
 
+test("fingerprint ignores cache-busting suffixes on hashless Next.js chunk URLs", () => {
+  const fingerprintFor = (suffix: string) =>
+    fingerprint({
+      type: "TypeError",
+      message: "Failed to render account page",
+      stacktrace: `    at renderAccount (https://example.com/_next/static/chunks/main-app.js${suffix}:1:200)`,
+    });
+
+  assert.equal(fingerprintFor("?dpl=first").hash, fingerprintFor("#dpl=second").hash);
+});
+
 function iosHermesStack(input: { applicationId: string; bundleName: string }): string {
   const bundlePath =
     `/var/mobile/Containers/Data/Application/${input.applicationId}` +
