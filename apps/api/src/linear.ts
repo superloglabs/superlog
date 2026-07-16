@@ -10,6 +10,7 @@ import {
   db,
   deleteLinearWebhook,
   enqueueIncidentCreated,
+  ensureFreshLinearToken,
   exchangeLinearCode,
   fetchLinearAgentSessionSourceType,
   fetchLinearViewer,
@@ -491,6 +492,21 @@ async function handleLinearWebhook(
     .onConflictDoNothing();
 }
 
+// Returns a usable Linear access token for the installation, refreshing in place when
+// the OAuth client creds are present (they are in prod). Mirrors the worker's
+// resolveAccessToken: without creds, fall back to the stored token as-is.
+async function resolveLinearAccessToken(install: schema.LinearInstallation): Promise<string> {
+  const clientId = process.env.LINEAR_CLIENT_ID;
+  const clientSecret = process.env.LINEAR_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return install.accessToken;
+  const fresh = await ensureFreshLinearToken({
+    installationId: install.id,
+    clientId,
+    clientSecret,
+  });
+  return fresh.accessToken;
+}
+
 async function handleLinearAgentSessionEvent(
   payload: LinearWebhookPayload,
   install: schema.LinearInstallation,
@@ -506,8 +522,10 @@ async function handleLinearAgentSessionEvent(
     if (session && "sourceMetadata" in session) {
       sourceMetadataType = session.sourceMetadata?.type ?? null;
     } else if (session?.id) {
+      // This fetch gates classification and runs before any DB write, so a stale
+      // access token would 500 the webhook and wedge retries. Refresh first.
       sourceMetadataType = await fetchLinearAgentSessionSourceType({
-        accessToken: install.accessToken,
+        accessToken: await resolveLinearAccessToken(install),
         agentSessionId: session.id,
       });
     }
