@@ -118,6 +118,12 @@ export function dashboardRouteCanWriteWidget({
   );
 }
 
+export function dashboardRouteCanMutateDashboard({
+  isHome,
+}: Pick<schema.Dashboard, "isHome">): boolean {
+  return !isHome;
+}
+
 export function defaultHomeWidgets(): DashboardWidgetCreateInput[] {
   return [
     {
@@ -323,7 +329,7 @@ export async function setHomeBuiltin(
     await insertDashboardWidget(home.id, definition);
   }
   if (!enabled && existing) {
-    await deleteDashboardWidget(projectId, home.id, existing.id);
+    await removeDashboardWidget(home.id, existing.id);
   }
   return (await getDashboardWithWidgets(projectId, home.id)) ?? home;
 }
@@ -353,7 +359,7 @@ export async function addHomeDataWidget(
     throw new Error("use the dedicated home built-in or link operation");
   }
   const home = await getOrCreateHomeDashboard(projectId, userId);
-  const widget = await addDashboardWidget(projectId, home.id, input);
+  const widget = await insertDashboardWidget(home.id, input);
   if (!widget) throw new Error("failed to add home widget");
   return widget;
 }
@@ -365,7 +371,16 @@ export async function deleteHomeItem(
 ): Promise<boolean> {
   const home = await getOrCreateHomeDashboard(projectId, userId);
   if (!home.widgets.some((widget) => widget.id === itemId)) return false;
-  return deleteDashboardWidget(projectId, home.id, itemId);
+  return removeDashboardWidget(home.id, itemId);
+}
+
+export async function updateHomeLayout(
+  projectId: string,
+  userId: string,
+  widgets: { id: string; layout: z.infer<typeof dashboardWidgetLayoutSchema> }[],
+): Promise<void> {
+  const home = await getOrCreateHomeDashboard(projectId, userId);
+  await updateDashboardLayoutItems(home.id, widgets);
 }
 
 export async function getDashboardWithWidgets(
@@ -424,7 +439,13 @@ export async function updateDashboard(
       ...(input.variables !== undefined ? { variables: input.variables } : {}),
       updatedAt: new Date(),
     })
-    .where(and(eq(schema.dashboards.id, id), eq(schema.dashboards.projectId, projectId)))
+    .where(
+      and(
+        eq(schema.dashboards.id, id),
+        eq(schema.dashboards.projectId, projectId),
+        eq(schema.dashboards.isHome, false),
+      ),
+    )
     .returning();
   return updated[0] ?? null;
 }
@@ -437,7 +458,13 @@ export async function setDashboardVariables(
   const updated = await db
     .update(schema.dashboards)
     .set({ variables, updatedAt: new Date() })
-    .where(and(eq(schema.dashboards.id, id), eq(schema.dashboards.projectId, projectId)))
+    .where(
+      and(
+        eq(schema.dashboards.id, id),
+        eq(schema.dashboards.projectId, projectId),
+        eq(schema.dashboards.isHome, false),
+      ),
+    )
     .returning();
   return updated[0] ?? null;
 }
@@ -472,6 +499,7 @@ export async function addDashboardWidget(
 ): Promise<schema.DashboardWidget | null> {
   const dashboard = await ensureDashboardOwned(projectId, dashboardId);
   if (!dashboard) return null;
+  if (!dashboardRouteCanMutateDashboard(dashboard)) return null;
   if (!dashboardRouteCanWriteWidget({ requestedType: input.type })) return null;
   return insertDashboardWidget(dashboardId, input);
 }
@@ -510,6 +538,7 @@ export async function updateDashboardWidget(
 ): Promise<schema.DashboardWidget | null> {
   const dashboard = await ensureDashboardOwned(projectId, dashboardId);
   if (!dashboard) return null;
+  if (!dashboardRouteCanMutateDashboard(dashboard)) return null;
   const existing = await db.query.dashboardWidgets.findFirst({
     where: and(
       eq(schema.dashboardWidgets.id, widgetId),
@@ -556,15 +585,21 @@ export async function deleteDashboardWidget(
 ): Promise<boolean> {
   const dashboard = await ensureDashboardOwned(projectId, dashboardId);
   if (!dashboard) return false;
-  await db
+  if (!dashboardRouteCanMutateDashboard(dashboard)) return false;
+  return removeDashboardWidget(dashboardId, widgetId);
+}
+
+async function removeDashboardWidget(dashboardId: string, widgetId: string): Promise<boolean> {
+  const deleted = await db
     .delete(schema.dashboardWidgets)
     .where(
       and(
         eq(schema.dashboardWidgets.id, widgetId),
         eq(schema.dashboardWidgets.dashboardId, dashboardId),
       ),
-    );
-  return true;
+    )
+    .returning({ id: schema.dashboardWidgets.id });
+  return deleted.length > 0;
 }
 
 export async function updateDashboardLayout(
@@ -574,6 +609,15 @@ export async function updateDashboardLayout(
 ): Promise<boolean> {
   const dashboard = await ensureDashboardOwned(projectId, dashboardId);
   if (!dashboard) return false;
+  if (!dashboardRouteCanMutateDashboard(dashboard)) return false;
+  await updateDashboardLayoutItems(dashboardId, widgets);
+  return true;
+}
+
+async function updateDashboardLayoutItems(
+  dashboardId: string,
+  widgets: { id: string; layout: z.infer<typeof dashboardWidgetLayoutSchema> }[],
+): Promise<void> {
   await Promise.all(
     widgets.map((w) =>
       db
@@ -591,5 +635,4 @@ export async function updateDashboardLayout(
     .update(schema.dashboards)
     .set({ updatedAt: new Date() })
     .where(eq(schema.dashboards.id, dashboardId));
-  return true;
 }

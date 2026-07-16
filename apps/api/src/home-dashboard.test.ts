@@ -3,8 +3,12 @@ import { test } from "node:test";
 
 process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
 
-const { defaultHomeWidgets, homeLinkCreateSchema, dashboardRouteCanWriteWidget } =
-  await import("./dashboards-service.js");
+const {
+  defaultHomeWidgets,
+  homeLinkCreateSchema,
+  dashboardRouteCanMutateDashboard,
+  dashboardRouteCanWriteWidget,
+} = await import("./dashboards-service.js");
 
 test("a new project home preserves the three existing overview sections as widgets", () => {
   const widgets = defaultHomeWidgets();
@@ -35,4 +39,9 @@ test("generic dashboard routes cannot create or edit home-only widgets", () => {
   assert.equal(dashboardRouteCanWriteWidget({ existingType: "link" }), false);
   assert.equal(dashboardRouteCanWriteWidget({ requestedType: "active_incidents" }), false);
   assert.equal(dashboardRouteCanWriteWidget({ requestedType: "timeseries_count" }), true);
+});
+
+test("generic dashboard routes cannot mutate the home dashboard", () => {
+  assert.equal(dashboardRouteCanMutateDashboard({ isHome: true }), false);
+  assert.equal(dashboardRouteCanMutateDashboard({ isHome: false }), true);
 });

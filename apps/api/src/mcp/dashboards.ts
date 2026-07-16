@@ -21,6 +21,7 @@ import {
   updateDashboard,
   updateDashboardLayout,
   updateDashboardWidget,
+  updateHomeLayout,
   setHomeBuiltin,
 } from "../dashboards-service.js";
 import { assertProjectAccess } from "./projects.js";
@@ -161,8 +162,7 @@ export function registerDashboardTools(
     },
     async (input) => {
       const projectId = await resolve(input.project_id);
-      const home = await getOrCreateHomeDashboard(projectId, session.userId);
-      await updateDashboardLayout(projectId, home.id, input.items);
+      await updateHomeLayout(projectId, session.userId, input.items);
       return text({ ok: true });
     },
   );

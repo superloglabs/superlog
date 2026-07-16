@@ -25,6 +25,7 @@ import {
   updateDashboard,
   updateDashboardLayout,
   updateDashboardWidget,
+  updateHomeLayout,
   setHomeBuiltin,
 } from "./dashboards-service.js";
 import { resolveEffectiveReadProjectId } from "./demo.js";
@@ -105,8 +106,7 @@ export function mountDashboards(app: Hono<{ Variables: Vars }>) {
       })
       .safeParse(body);
     if (!parsed.success) throw new HTTPException(400, { message: "invalid home layout" });
-    const home = await getOrCreateHomeDashboard(projectId, user.id);
-    await updateDashboardLayout(projectId, home.id, parsed.data.widgets);
+    await updateHomeLayout(projectId, user.id, parsed.data.widgets);
     return c.json({ ok: true });
   });
 
