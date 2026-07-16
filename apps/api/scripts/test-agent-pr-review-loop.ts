@@ -5,6 +5,7 @@ import {
   AGENT_PULL_REQUEST_REVIEW_CONTINUATION_LIMIT,
   closeDb,
   db,
+  recordAgentPullRequestReviewEvent,
   runMigrations,
   schema,
 } from "@superlog/db";
@@ -253,16 +254,28 @@ try {
     .update(schema.agentRuns)
     .set({ state: "awaiting_events" })
     .where(eq(schema.agentRuns.id, agentRun.id));
-  await db.insert(schema.agentPrEvents).values(
-    Array.from({ length: AGENT_PULL_REQUEST_REVIEW_CONTINUATION_LIMIT - 2 }, (_, index) => ({
+  for (let index = 0; index < AGENT_PULL_REQUEST_REVIEW_CONTINUATION_LIMIT - 2; index += 1) {
+    const recorded = await recordAgentPullRequestReviewEvent(db, {
       agentPrId: agentPr.id,
       kind: "review_comment" as const,
       summary: "Prior review interaction",
       actorLogin: "reviewer[bot]",
+      actorGithubId: 501,
+      actorAvatarUrl: null,
+      payload: {},
       providerEventId: `${tag}-prior-${index}`,
       occurredAt: new Date(Date.now() - (index + 1) * 1_000),
-    })),
-  );
+    });
+    assert.deepEqual(recorded, { disposition: "accepted" });
+  }
+  await db.insert(schema.agentPrEvents).values({
+    agentPrId: agentPr.id,
+    kind: "issue_comment",
+    summary: "The app posted a follow-up status.",
+    actorLogin: "superlog-app[bot]",
+    providerEventId: `${tag}-own-status-before-limit`,
+    occurredAt: new Date(),
+  });
 
   await runIteration(100, "Add a regression test for the failure result.", "review-head-100");
 

@@ -1,4 +1,4 @@
-import { and, asc, count, eq, inArray } from "drizzle-orm";
+import { and, asc, count, eq, sql } from "drizzle-orm";
 import type { DB } from "./client.js";
 import * as schema from "./schema.js";
 
@@ -36,6 +36,7 @@ const REVIEW_CONTINUATION_EVENT_KINDS = [
 ] as const;
 const REVIEW_CONTINUATION_LIMIT_EVENT_KIND = "review_continuation_limit_reached";
 const REVIEW_CONTINUATION_LIMIT_PROVIDER_EVENT_ID = "review-continuation-limit-reached";
+const REVIEW_CONTINUATION_CLAIM_PAYLOAD_KEY = "_reviewContinuationClaimed";
 
 export type RecordAgentPullRequestReviewEventInput = {
   agentPrId: string;
@@ -79,7 +80,20 @@ export async function recordAgentPullRequestReviewEvent(
       .insert(schema.agentPrEvents)
       .values(input)
       .onConflictDoNothing()
-      .returning({ id: schema.agentPrEvents.id });
+      .returning({ id: schema.agentPrEvents.id, payload: schema.agentPrEvents.payload });
+
+    if (!recorded && input.providerEventId) {
+      const existing = await tx.query.agentPrEvents.findFirst({
+        where: and(
+          eq(schema.agentPrEvents.agentPrId, input.agentPrId),
+          eq(schema.agentPrEvents.providerEventId, input.providerEventId),
+        ),
+        columns: { payload: true },
+      });
+      if (existing?.payload?.[REVIEW_CONTINUATION_CLAIM_PAYLOAD_KEY] === true) {
+        return { disposition: "duplicate" };
+      }
+    }
 
     const [reviewCount] = await tx
       .select({ value: count() })
@@ -87,11 +101,21 @@ export async function recordAgentPullRequestReviewEvent(
       .where(
         and(
           eq(schema.agentPrEvents.agentPrId, input.agentPrId),
-          inArray(schema.agentPrEvents.kind, [...REVIEW_CONTINUATION_EVENT_KINDS]),
+          sql`${schema.agentPrEvents.payload}->>${REVIEW_CONTINUATION_CLAIM_PAYLOAD_KEY} = 'true'`,
         ),
       );
-    if ((reviewCount?.value ?? 0) <= AGENT_PULL_REQUEST_REVIEW_CONTINUATION_LIMIT) {
-      return { disposition: recorded ? "accepted" : "duplicate" };
+    if ((reviewCount?.value ?? 0) < AGENT_PULL_REQUEST_REVIEW_CONTINUATION_LIMIT) {
+      if (!recorded) return { disposition: "duplicate" };
+      await tx
+        .update(schema.agentPrEvents)
+        .set({
+          payload: {
+            ...(recorded.payload ?? input.payload),
+            [REVIEW_CONTINUATION_CLAIM_PAYLOAD_KEY]: true,
+          },
+        })
+        .where(eq(schema.agentPrEvents.id, recorded.id));
+      return { disposition: "accepted" };
     }
 
     const [notificationClaim] = await tx

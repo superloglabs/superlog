@@ -2,7 +2,14 @@ import "dotenv/config";
 import { strict as assert } from "node:assert";
 import crypto from "node:crypto";
 import { after, before, test } from "node:test";
-import { closeDb, createIncidentLifecycle, db, runMigrations, schema } from "@superlog/db";
+import {
+  closeDb,
+  createIncidentLifecycle,
+  db,
+  recordAgentPullRequestReviewEvent,
+  runMigrations,
+  schema,
+} from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { mountGithubPublic } from "./github.js";
@@ -635,16 +642,28 @@ test("the 100th PR review is processed before later reviews hit one visible limi
     .update(schema.agentRuns)
     .set({ state: "awaiting_events", providerSessionId: `session-${fixture.tag}` })
     .where(eq(schema.agentRuns.id, fixture.agentRunId));
-  await db.insert(schema.agentPrEvents).values(
-    Array.from({ length: 99 }, (_, index) => ({
+  for (let index = 0; index < 99; index += 1) {
+    const recorded = await recordAgentPullRequestReviewEvent(db, {
       agentPrId: fixture.agentPrId,
-      kind: "review_comment",
+      kind: "review_comment" as const,
       summary: "Inline review comment",
       actorLogin: "reviewer[bot]",
+      actorGithubId: 501,
+      actorAvatarUrl: null,
+      payload: {},
       providerEventId: `prior-review-${fixture.tag}-${index}`,
       occurredAt: new Date(Date.now() - (100 - index) * 1_000),
-    })),
-  );
+    });
+    assert.deepEqual(recorded, { disposition: "accepted" });
+  }
+  await db.insert(schema.agentPrEvents).values({
+    agentPrId: fixture.agentPrId,
+    kind: "issue_comment",
+    summary: "The app posted a follow-up status.",
+    actorLogin: "superlog-app[bot]",
+    providerEventId: `own-status-${fixture.tag}`,
+    occurredAt: new Date(),
+  });
 
   const postedComments: string[] = [];
   const app = new Hono();
