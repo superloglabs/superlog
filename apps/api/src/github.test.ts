@@ -1062,6 +1062,47 @@ test("an org-scoped installation can enable observability reviews from an author
     where: eq(schema.githubInstallations.id, installation.id),
   });
   assert.equal(updated?.observabilityReviewEnabled, true);
+
+  const webhookApp = new Hono();
+  mountGithubPublic(webhookApp);
+  const pullRequest = (repoId: number, repoFullName: string, headSha: string) => ({
+    action: "opened",
+    repository: { id: repoId, full_name: repoFullName },
+    pull_request: { number: 12, draft: false, head: { sha: headSha } },
+    installation: { id: externalInstallationId },
+  });
+  assert.equal(
+    (
+      await postGithub(
+        webhookApp,
+        "pull_request",
+        `${tag}-ungranted-review`,
+        pullRequest(99, `${tag}/ungranted`, "ungranted-head"),
+      )
+    ).status,
+    200,
+  );
+  const ungranted = await db.query.prObservabilityReviews.findMany({
+    where: eq(schema.prObservabilityReviews.repoFullName, `${tag}/ungranted`),
+  });
+  assert.equal(ungranted.length, 0);
+
+  assert.equal(
+    (
+      await postGithub(
+        webhookApp,
+        "pull_request",
+        `${tag}-granted-review`,
+        pullRequest(17, `${tag}/repo`, "granted-head"),
+      )
+    ).status,
+    200,
+  );
+  const granted = await db.query.prObservabilityReviews.findMany({
+    where: eq(schema.prObservabilityReviews.repoFullName, `${tag}/repo`),
+  });
+  assert.equal(granted.length, 1);
+  assert.equal(granted[0]?.projectId, project.id);
 });
 
 async function seedAgentPrFixture(label: string): Promise<{

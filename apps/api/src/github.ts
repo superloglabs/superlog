@@ -544,10 +544,20 @@ async function maybeEnqueuePrObservabilityReview(
           isNull(schema.githubInstallations.revokedAt),
         ),
       });
-      const installation = installations.find((row) =>
-        isRepoEnabled(normalizeRepoAccess(row.repoAccess), input.repoId),
-      );
-      return installation ? { orgId: installation.orgId, projectId: installation.projectId } : null;
+      for (const installation of installations) {
+        if (!isRepoEnabled(normalizeRepoAccess(installation.repoAccess), input.repoId)) continue;
+        if (installation.projectId) {
+          return { orgId: installation.orgId, projectId: installation.projectId };
+        }
+        const grant = await db.query.projectGithubRepos.findFirst({
+          where: and(
+            eq(schema.projectGithubRepos.installationId, installation.id),
+            eq(schema.projectGithubRepos.githubRepoId, input.repoId),
+          ),
+        });
+        if (grant) return { orgId: installation.orgId, projectId: grant.projectId };
+      }
+      return null;
     },
     async insert(input) {
       await db
