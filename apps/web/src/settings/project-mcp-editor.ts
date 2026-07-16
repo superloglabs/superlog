@@ -40,6 +40,13 @@ export function shouldDetectProjectMcpAuth(
   return selection === "automatic" && trusted && url.trim().length > 0;
 }
 
+export function projectMcpAuthDetectionIsCurrent(
+  requestedUrl: string,
+  currentUrl: string,
+): boolean {
+  return requestedUrl === currentUrl;
+}
+
 export function createDetectedProjectMcpAuthDraft(detection: ProjectMcpAuthDetection): AuthDraft {
   if (detection.type === "unknown") return EMPTY_AUTH;
   return {

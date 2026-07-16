@@ -5,6 +5,7 @@ import {
   createDetectedProjectMcpAuthDraft,
   createProjectMcpEditorDraft,
   projectMcpAuthSelectionAfterUrlChange,
+  projectMcpAuthDetectionIsCurrent,
   shouldDetectProjectMcpAuth,
 } from "./project-mcp-editor.ts";
 
@@ -118,4 +119,21 @@ test("automatic auth detection requires an URL and explicit trust confirmation",
   assert.equal(shouldDetectProjectMcpAuth("automatic", "", true), false);
   assert.equal(shouldDetectProjectMcpAuth("manual", "https://mcp.example/mcp", true), false);
   assert.equal(shouldDetectProjectMcpAuth("automatic", "https://mcp.example/mcp", true), true);
+});
+
+test("auth detection results are current only while the requested URL is unchanged", () => {
+  assert.equal(
+    projectMcpAuthDetectionIsCurrent(
+      "https://old.example/mcp",
+      "https://new.example/mcp",
+    ),
+    false,
+  );
+  assert.equal(
+    projectMcpAuthDetectionIsCurrent(
+      "https://mcp.example/mcp",
+      "https://mcp.example/mcp",
+    ),
+    true,
+  );
 });

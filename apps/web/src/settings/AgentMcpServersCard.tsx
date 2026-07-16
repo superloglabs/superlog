@@ -18,6 +18,7 @@ import {
   EMPTY_AUTH,
   createDetectedProjectMcpAuthDraft,
   createProjectMcpEditorDraft,
+  projectMcpAuthDetectionIsCurrent,
   projectMcpAuthSelectionAfterUrlChange,
   shouldDetectProjectMcpAuth,
   type ProjectMcpAuthSelection,
@@ -36,6 +37,7 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
   const disconnectOAuth = useDisconnectProjectMcpOAuth(projectId);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
+  const urlRef = useRef("");
   const [auth, setAuth] = useState<AuthDraft>(EMPTY_AUTH);
   const [trusted, setTrusted] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,10 +59,12 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
     disconnectOAuth.isPending;
 
   const detectAuthForUrl = async (): Promise<AuthDraft | null> => {
-    if (!shouldDetectProjectMcpAuth(authSelection.current, url, trusted)) return auth;
+    const requestedUrl = urlRef.current;
+    if (!shouldDetectProjectMcpAuth(authSelection.current, requestedUrl, trusted)) return auth;
     setAuthDetection("Detecting auth…");
     try {
-      const detected = await detectAuth.mutateAsync(url);
+      const detected = await detectAuth.mutateAsync(requestedUrl);
+      if (!projectMcpAuthDetectionIsCurrent(requestedUrl, urlRef.current)) return null;
       if (authSelection.current !== "automatic") return auth;
       const nextAuth = createDetectedProjectMcpAuthDraft(detected);
       setAuth(nextAuth);
@@ -79,6 +83,7 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
       );
       return nextAuth.requiresClientId ? null : nextAuth;
     } catch {
+      if (!projectMcpAuthDetectionIsCurrent(requestedUrl, urlRef.current)) return null;
       setAuthDetection("Auth detection failed");
       return auth;
     }
@@ -103,6 +108,7 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
         onSuccess: () => {
           setName("");
           setUrl("");
+          urlRef.current = "";
           setAuth(EMPTY_AUTH);
           authSelection.current = "automatic";
           setManualAuth(false);
@@ -283,6 +289,7 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
               <Input
                 value={url}
                 onChange={(e) => {
+                  urlRef.current = e.target.value;
                   setUrl(e.target.value);
                   setAuthDetection(null);
                   const nextSelection = projectMcpAuthSelectionAfterUrlChange(
