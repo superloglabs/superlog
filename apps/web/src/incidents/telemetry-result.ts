@@ -77,7 +77,7 @@ export function parseTelemetryResult(
     return {
       rows,
       state: metadata.truncated ? "truncated" : "complete",
-      originalRowCount: metadata.originalRowCount ?? rows.length,
+      originalRowCount: metadata.originalRowCount ?? (metadata.truncated ? null : rows.length),
     };
   } catch {
     return {

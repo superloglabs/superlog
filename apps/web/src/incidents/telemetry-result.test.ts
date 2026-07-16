@@ -64,6 +64,14 @@ test("parseTelemetryResult distinguishes an empty query from a legacy truncated 
   });
 });
 
+test("parseTelemetryResult keeps an omitted truncated total unknown", () => {
+  assert.deepEqual(parseTelemetryResult('[{"trace_id":"abc"}]', { truncated: true }), {
+    rows: [{ trace_id: "abc" }],
+    state: "truncated",
+    originalRowCount: null,
+  });
+});
+
 test("telemetryResultNotice describes partial and unavailable recorded results", () => {
   assert.equal(
     telemetryResultNotice("truncated", 3, 50),
