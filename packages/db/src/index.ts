@@ -216,6 +216,7 @@ export {
   AGENT_PULL_REQUEST_REVIEW_CONTINUATION_LIMIT,
   applyAgentPullRequestState,
   applyAgentPullRequestStateInTx,
+  completeAgentPullRequestReviewContinuationClaim,
   type ApplyAgentPullRequestStateInput,
   type ApplyAgentPullRequestStateResult,
   type AgentPullRequestStateTx,

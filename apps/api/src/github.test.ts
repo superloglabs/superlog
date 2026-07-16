@@ -743,6 +743,58 @@ test("a skipped trusted review does not consume a continuation slot", async () =
   assert.match(continuations[0]?.summary ?? "", /Trusted requested change 103/);
 });
 
+test("a retried review completes an interrupted continuation reservation", async () => {
+  const fixture = await seedAgentPrFixture("interrupted-review-continuation");
+  await db
+    .update(schema.agentRuns)
+    .set({ state: "awaiting_events", providerSessionId: `session-${fixture.tag}` })
+    .where(eq(schema.agentRuns.id, fixture.agentRunId));
+  const delivery = `gh-${fixture.tag}-review`;
+  const reservation = await recordAgentPullRequestReviewEvent(db, {
+    agentPrId: fixture.agentPrId,
+    kind: "review_changes_requested",
+    summary: "Retry this interrupted review continuation.",
+    actorLogin: "cursor[bot]",
+    actorGithubId: 501,
+    actorAvatarUrl: null,
+    payload: {},
+    providerEventId: delivery,
+    occurredAt: new Date(),
+  });
+  assert.equal(reservation.disposition, "accepted");
+  const app = new Hono();
+  mountGithubPublic(app);
+  const payload = {
+    action: "submitted",
+    repository: { full_name: fixture.repoFullName },
+    pull_request: {
+      number: fixture.prNumber,
+      head: { sha: "deadbeef", ref: fixture.branchName },
+    },
+    review: {
+      id: 104,
+      state: "changes_requested",
+      body: "Retry this interrupted review continuation.",
+      html_url: `https://github.com/${fixture.repoFullName}/pull/${fixture.prNumber}#pullrequestreview-104`,
+      author_association: "NONE",
+      user: { login: "cursor[bot]", id: 501, type: "Bot" },
+    },
+    sender: { login: "cursor[bot]", id: 501, type: "Bot" },
+    installation: { id: fixture.installationId },
+  };
+
+  assert.equal((await postGithub(app, "pull_request_review", delivery, payload)).status, 200);
+  assert.equal((await postGithub(app, "pull_request_review", delivery, payload)).status, 200);
+  const continuations = await db.query.incidentEvents.findMany({
+    where: and(
+      eq(schema.incidentEvents.agentRunId, fixture.agentRunId),
+      eq(schema.incidentEvents.kind, "github_comment"),
+    ),
+  });
+  assert.equal(continuations.length, 1);
+  assert.match(continuations[0]?.summary ?? "", /Retry this interrupted review continuation/);
+});
+
 test("the 100th PR review is processed before later reviews hit one visible limit", async () => {
   const fixture = await seedAgentPrFixture("review-continuation-limit");
   await db

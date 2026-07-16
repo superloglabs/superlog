@@ -6,6 +6,7 @@ import {
   type ResolveIncidentAfterAgentPullRequestsMergedResult,
   applyAgentPullRequestState,
   buildAgentPullRequestLifecycleContinuation,
+  completeAgentPullRequestReviewContinuationClaim,
   db,
   isAgentPullRequestReviewEventKind,
   listAccessibleGithubInstallsForProject,
@@ -801,6 +802,11 @@ async function handleAgentPrWebhook(
     }
     if (followUp === "skipped") {
       await releaseAgentPullRequestReviewContinuationClaim(db, {
+        agentPrId: agentPrRow.id,
+        eventId: reviewEvent.eventId,
+      });
+    } else {
+      await completeAgentPullRequestReviewContinuationClaim(db, {
         agentPrId: agentPrRow.id,
         eventId: reviewEvent.eventId,
       });

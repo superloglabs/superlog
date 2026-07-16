@@ -37,6 +37,7 @@ const REVIEW_CONTINUATION_EVENT_KINDS = [
 const REVIEW_CONTINUATION_LIMIT_EVENT_KIND = "review_continuation_limit_reached";
 const REVIEW_CONTINUATION_LIMIT_PROVIDER_EVENT_ID = "review-continuation-limit-reached";
 const REVIEW_CONTINUATION_CLAIM_PAYLOAD_KEY = "_reviewContinuationClaimed";
+const REVIEW_CONTINUATION_COMPLETED_PAYLOAD_KEY = "_reviewContinuationCompleted";
 
 export type RecordAgentPullRequestReviewEventInput = {
   agentPrId: string;
@@ -92,7 +93,9 @@ export async function recordAgentPullRequestReviewEvent(
         columns: { id: true, payload: true },
       });
       if (existing?.payload?.[REVIEW_CONTINUATION_CLAIM_PAYLOAD_KEY] === true) {
-        return { disposition: "duplicate" };
+        return existing.payload[REVIEW_CONTINUATION_COMPLETED_PAYLOAD_KEY] === true
+          ? { disposition: "duplicate" }
+          : { disposition: "accepted", eventId: existing.id };
       }
       claimTarget = existing;
     }
@@ -135,6 +138,30 @@ export async function recordAgentPullRequestReviewEvent(
   });
 }
 
+export async function completeAgentPullRequestReviewContinuationClaim(
+  database: DB,
+  input: { agentPrId: string; eventId: string },
+): Promise<void> {
+  await database.transaction(async (tx) => {
+    await tx
+      .select({ id: schema.agentPullRequests.id })
+      .from(schema.agentPullRequests)
+      .where(eq(schema.agentPullRequests.id, input.agentPrId))
+      .for("update");
+    await tx
+      .update(schema.agentPrEvents)
+      .set({
+        payload: sql`coalesce(${schema.agentPrEvents.payload}, '{}'::jsonb) || jsonb_build_object(${REVIEW_CONTINUATION_COMPLETED_PAYLOAD_KEY}::text, true)`,
+      })
+      .where(
+        and(
+          eq(schema.agentPrEvents.id, input.eventId),
+          eq(schema.agentPrEvents.agentPrId, input.agentPrId),
+        ),
+      );
+  });
+}
+
 export async function releaseAgentPullRequestReviewContinuationClaim(
   database: DB,
   input: { agentPrId: string; eventId: string },
@@ -148,7 +175,7 @@ export async function releaseAgentPullRequestReviewContinuationClaim(
     await tx
       .update(schema.agentPrEvents)
       .set({
-        payload: sql`${schema.agentPrEvents.payload} - ${REVIEW_CONTINUATION_CLAIM_PAYLOAD_KEY}`,
+        payload: sql`${schema.agentPrEvents.payload} - ${REVIEW_CONTINUATION_CLAIM_PAYLOAD_KEY} - ${REVIEW_CONTINUATION_COMPLETED_PAYLOAD_KEY}`,
       })
       .where(
         and(
