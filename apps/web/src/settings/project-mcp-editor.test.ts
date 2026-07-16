@@ -37,6 +37,7 @@ test("opening an MCP editor starts from the persisted server instead of a stale 
       scopes: "issues:read",
       clientId: "",
       clientSecret: "",
+      requiresClientId: false,
     },
   });
 });
@@ -57,6 +58,7 @@ test("detected OAuth becomes the form auth draft while unknown auth stays creden
       scopes: "",
       clientId: "",
       clientSecret: "",
+      requiresClientId: false,
     },
   );
   assert.deepEqual(createDetectedProjectMcpAuthDraft({ type: "unknown" }), {
@@ -68,5 +70,27 @@ test("detected OAuth becomes the form auth draft while unknown auth stays creden
     scopes: "",
     clientId: "",
     clientSecret: "",
+    requiresClientId: false,
   });
+});
+
+test("detected OAuth without dynamic registration requires manual client credentials", () => {
+  assert.deepEqual(
+    createDetectedProjectMcpAuthDraft({
+      type: "oauth",
+      grantType: "authorization_code",
+      supportsDynamicRegistration: false,
+    }),
+    {
+      type: "oauth",
+      token: "",
+      headerName: "X-API-Key",
+      key: "",
+      grantType: "authorization_code",
+      scopes: "",
+      clientId: "",
+      clientSecret: "",
+      requiresClientId: true,
+    },
+  );
 });

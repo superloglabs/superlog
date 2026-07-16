@@ -9,6 +9,7 @@ export type AuthDraft = {
   scopes: string;
   clientId: string;
   clientSecret: string;
+  requiresClientId: boolean;
 };
 
 export const EMPTY_AUTH: AuthDraft = {
@@ -20,6 +21,7 @@ export const EMPTY_AUTH: AuthDraft = {
   scopes: "",
   clientId: "",
   clientSecret: "",
+  requiresClientId: false,
 };
 
 export function createDetectedProjectMcpAuthDraft(detection: ProjectMcpAuthDetection): AuthDraft {
@@ -28,6 +30,7 @@ export function createDetectedProjectMcpAuthDraft(detection: ProjectMcpAuthDetec
     ...EMPTY_AUTH,
     type: "oauth",
     grantType: detection.grantType,
+    requiresClientId: !detection.supportsDynamicRegistration,
   };
 }
 

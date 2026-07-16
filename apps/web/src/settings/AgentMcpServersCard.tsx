@@ -53,13 +53,17 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
     connectClientCredentials.isPending ||
     disconnectOAuth.isPending;
 
-  const detectAuthForUrl = async (): Promise<AuthDraft> => {
+  const detectAuthForUrl = async (): Promise<AuthDraft | null> => {
     setAuthDetection("Detecting auth…");
     try {
       const detected = await detectAuth.mutateAsync(url);
       if (authManuallySelected.current) return auth;
       const nextAuth = createDetectedProjectMcpAuthDraft(detected);
       setAuth(nextAuth);
+      if (nextAuth.requiresClientId) {
+        authManuallySelected.current = true;
+        setManualAuth(true);
+      }
       setAuthDetection(
         detected.type === "unknown"
           ? "Auth not detected"
@@ -69,7 +73,7 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
               ? "OAuth detected"
               : "OAuth · client ID required",
       );
-      return nextAuth;
+      return nextAuth.requiresClientId ? null : nextAuth;
     } catch {
       setAuthDetection("Auth detection failed");
       return auth;
@@ -80,6 +84,7 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
     event.preventDefault();
     setError(null);
     const submittedAuth = authManuallySelected.current ? auth : await detectAuthForUrl();
+    if (!submittedAuth) return;
     create.mutate(
       {
         name,
@@ -563,10 +568,17 @@ function AuthFields({
           placeholder="issues:read"
         />
       </Field>
-      <Field label="Client ID (optional with dynamic registration)">
+      <Field
+        label={
+          value.requiresClientId
+            ? "Client ID"
+            : "Client ID (optional with dynamic registration)"
+        }
+      >
         <Input
           value={value.clientId}
           onChange={(e) => onChange({ ...value, clientId: e.target.value })}
+          required={value.requiresClientId}
         />
       </Field>
       <Field
