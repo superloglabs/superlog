@@ -4,6 +4,7 @@ import type { ProjectMcpServer } from "../api.ts";
 import {
   createDetectedProjectMcpAuthDraft,
   createProjectMcpEditorDraft,
+  detectProjectMcpAuthSafely,
   projectMcpAuthSelectionAfterUrlChange,
   projectMcpAuthDetectionIsCurrent,
   shouldDetectProjectMcpAuth,
@@ -135,5 +136,14 @@ test("auth detection results are current only while the requested URL is unchang
       "https://mcp.example/mcp",
     ),
     true,
+  );
+});
+
+test("automatic auth detection fails closed when discovery errors", async () => {
+  assert.equal(
+    await detectProjectMcpAuthSafely(async () => {
+      throw new Error("discovery failed");
+    }),
+    null,
   );
 });

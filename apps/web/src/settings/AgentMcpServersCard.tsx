@@ -18,6 +18,7 @@ import {
   EMPTY_AUTH,
   createDetectedProjectMcpAuthDraft,
   createProjectMcpEditorDraft,
+  detectProjectMcpAuthSafely,
   projectMcpAuthDetectionIsCurrent,
   projectMcpAuthSelectionAfterUrlChange,
   shouldDetectProjectMcpAuth,
@@ -62,31 +63,31 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
     const requestedUrl = urlRef.current;
     if (!shouldDetectProjectMcpAuth(authSelection.current, requestedUrl, trusted)) return auth;
     setAuthDetection("Detecting auth…");
-    try {
-      const detected = await detectAuth.mutateAsync(requestedUrl);
-      if (!projectMcpAuthDetectionIsCurrent(requestedUrl, urlRef.current)) return null;
-      if (authSelection.current !== "automatic") return auth;
-      const nextAuth = createDetectedProjectMcpAuthDraft(detected);
-      setAuth(nextAuth);
-      if (nextAuth.requiresClientId) {
-        authSelection.current = "required";
-        setManualAuth(true);
-      }
-      setAuthDetection(
-        detected.type === "unknown"
-          ? "Auth not detected"
-          : detected.grantType === "client_credentials"
-            ? "OAuth client credentials"
-            : detected.supportsDynamicRegistration
-              ? "OAuth detected"
-              : "OAuth · client ID required",
-      );
-      return nextAuth.requiresClientId ? null : nextAuth;
-    } catch {
-      if (!projectMcpAuthDetectionIsCurrent(requestedUrl, urlRef.current)) return null;
+    const detected = await detectProjectMcpAuthSafely(() =>
+      detectAuth.mutateAsync(requestedUrl),
+    );
+    if (!projectMcpAuthDetectionIsCurrent(requestedUrl, urlRef.current)) return null;
+    if (!detected) {
       setAuthDetection("Auth detection failed");
-      return auth;
+      return null;
     }
+    if (authSelection.current !== "automatic") return auth;
+    const nextAuth = createDetectedProjectMcpAuthDraft(detected);
+    setAuth(nextAuth);
+    if (nextAuth.requiresClientId) {
+      authSelection.current = "required";
+      setManualAuth(true);
+    }
+    setAuthDetection(
+      detected.type === "unknown"
+        ? "Auth not detected"
+        : detected.grantType === "client_credentials"
+          ? "OAuth client credentials"
+          : detected.supportsDynamicRegistration
+            ? "OAuth detected"
+            : "OAuth · client ID required",
+    );
+    return nextAuth.requiresClientId ? null : nextAuth;
   };
 
   const submit = async (event: React.FormEvent) => {

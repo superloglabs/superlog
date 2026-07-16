@@ -47,6 +47,16 @@ export function projectMcpAuthDetectionIsCurrent(
   return requestedUrl === currentUrl;
 }
 
+export async function detectProjectMcpAuthSafely<T>(
+  detect: () => Promise<T>,
+): Promise<T | null> {
+  try {
+    return await detect();
+  } catch {
+    return null;
+  }
+}
+
 export function createDetectedProjectMcpAuthDraft(detection: ProjectMcpAuthDetection): AuthDraft {
   if (detection.type === "unknown") return EMPTY_AUTH;
   return {
