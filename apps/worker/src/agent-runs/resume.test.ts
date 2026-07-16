@@ -60,11 +60,11 @@ test("external-cause waits resume when incident context changes", () => {
         waitReason: "external_cause",
       },
     }),
-    ["human_reply", "incident_context_changed"],
+    ["human_reply", "github_comment", "incident_context_changed"],
   );
 });
 
-test("human waits still require a human reply", () => {
+test("interactive waits accept human replies and GitHub comments", () => {
   assert.deepEqual(
     resumeInputEventKinds({
       state: "awaiting_human",
@@ -73,7 +73,7 @@ test("human waits still require a human reply", () => {
         summary: "Which deployment should I inspect?",
       },
     }),
-    ["human_reply"],
+    ["human_reply", "github_comment"],
   );
 });
 

@@ -587,6 +587,151 @@ test("merged agent PR reaches a surviving session once and does not auto-resolve
   assert.equal(resolvedEvent, undefined);
 });
 
+test("an automated change-request review reaches the parked investigation session", async () => {
+  const fixture = await seedAgentPrFixture("automated-review-continuation");
+  await db
+    .update(schema.agentRuns)
+    .set({ state: "awaiting_events", providerSessionId: `session-${fixture.tag}` })
+    .where(eq(schema.agentRuns.id, fixture.agentRunId));
+  const app = new Hono();
+  mountGithubPublic(app);
+
+  const response = await postGithub(app, "pull_request_review", `gh-${fixture.tag}-review`, {
+    action: "submitted",
+    repository: { full_name: fixture.repoFullName },
+    pull_request: {
+      number: fixture.prNumber,
+      head: { sha: "deadbeef", ref: fixture.branchName },
+    },
+    review: {
+      id: 101,
+      state: "changes_requested",
+      body: "Return a discriminated failure value instead of throwing.",
+      html_url: `https://github.com/${fixture.repoFullName}/pull/${fixture.prNumber}#pullrequestreview-101`,
+      author_association: "NONE",
+      user: { login: "trusted-reviewer[bot]", id: 501, type: "Bot" },
+    },
+    sender: { login: "trusted-reviewer[bot]", id: 501, type: "Bot" },
+    installation: { id: fixture.installationId },
+  });
+
+  assert.equal(response.status, 200);
+  const continuation = await db.query.incidentEvents.findFirst({
+    where: and(
+      eq(schema.incidentEvents.agentRunId, fixture.agentRunId),
+      eq(schema.incidentEvents.kind, "github_comment"),
+    ),
+  });
+  assert.match(continuation?.summary ?? "", /Return a discriminated failure value/);
+  const adminFeedback = await db.query.feedback.findMany({
+    where: and(eq(schema.feedback.kind, "pr"), eq(schema.feedback.refId, fixture.agentPrId)),
+  });
+  assert.equal(adminFeedback.length, 0);
+});
+
+test("the 100th PR review is processed before later reviews hit one visible limit", async () => {
+  const fixture = await seedAgentPrFixture("review-continuation-limit");
+  await db
+    .update(schema.agentRuns)
+    .set({ state: "awaiting_events", providerSessionId: `session-${fixture.tag}` })
+    .where(eq(schema.agentRuns.id, fixture.agentRunId));
+  await db.insert(schema.agentPrEvents).values(
+    Array.from({ length: 99 }, (_, index) => ({
+      agentPrId: fixture.agentPrId,
+      kind: "review_comment",
+      summary: "Inline review comment",
+      actorLogin: "reviewer[bot]",
+      providerEventId: `prior-review-${fixture.tag}-${index}`,
+      occurredAt: new Date(Date.now() - (100 - index) * 1_000),
+    })),
+  );
+
+  const postedComments: string[] = [];
+  const app = new Hono();
+  mountGithubPublic(app, {
+    postAgentPrComment: async ({ body }) => {
+      postedComments.push(body);
+      return { ok: true };
+    },
+  });
+
+  for (const reviewId of [200, 201, 202]) {
+    const response = await postGithub(
+      app,
+      "pull_request_review",
+      `gh-${fixture.tag}-review-${reviewId}`,
+      {
+        action: "submitted",
+        repository: { full_name: fixture.repoFullName },
+        pull_request: {
+          number: fixture.prNumber,
+          head: { sha: "deadbeef", ref: fixture.branchName },
+        },
+        review: {
+          id: reviewId,
+          state: "changes_requested",
+          body: `Automated requested change ${reviewId}`,
+          html_url: `https://github.com/${fixture.repoFullName}/pull/${fixture.prNumber}#pullrequestreview-${reviewId}`,
+          author_association: "NONE",
+          user: { login: "reviewer[bot]", id: 501, type: "Bot" },
+        },
+        sender: { login: "reviewer[bot]", id: 501, type: "Bot" },
+        installation: { id: fixture.installationId },
+      },
+    );
+    assert.equal(response.status, 200);
+  }
+
+  const continuations = await db.query.incidentEvents.findMany({
+    where: and(
+      eq(schema.incidentEvents.agentRunId, fixture.agentRunId),
+      eq(schema.incidentEvents.kind, "github_comment"),
+    ),
+  });
+  assert.equal(continuations.length, 1);
+  assert.match(continuations[0]?.summary ?? "", /Automated requested change 200/);
+  assert.equal(postedComments.length, 1);
+  assert.match(postedComments[0] ?? "", /100 PR review comments/);
+});
+
+test("the GitHub app's own PR comments do not resume its investigation", async () => {
+  const fixture = await seedAgentPrFixture("own-comment-loop");
+  await db
+    .update(schema.agentRuns)
+    .set({ state: "awaiting_events", providerSessionId: `session-${fixture.tag}` })
+    .where(eq(schema.agentRuns.id, fixture.agentRunId));
+  const previousAppSlug = process.env.GITHUB_APP_SLUG;
+  process.env.GITHUB_APP_SLUG = "superlog-app";
+  const app = new Hono();
+  mountGithubPublic(app);
+  if (previousAppSlug === undefined) process.env.GITHUB_APP_SLUG = undefined;
+  else process.env.GITHUB_APP_SLUG = previousAppSlug;
+
+  const response = await postGithub(app, "issue_comment", `gh-${fixture.tag}-own-comment`, {
+    action: "created",
+    repository: { full_name: fixture.repoFullName },
+    issue: { number: fixture.prNumber, pull_request: { url: "https://api.github.test/pull" } },
+    comment: {
+      id: 301,
+      body: "I updated the pull request to address the review.",
+      html_url: `https://github.com/${fixture.repoFullName}/pull/${fixture.prNumber}#issuecomment-301`,
+      author_association: "NONE",
+      user: { login: "superlog-app[bot]", id: 601, type: "Bot" },
+    },
+    sender: { login: "superlog-app[bot]", id: 601, type: "Bot" },
+    installation: { id: fixture.installationId },
+  });
+
+  assert.equal(response.status, 200);
+  const continuations = await db.query.incidentEvents.findMany({
+    where: and(
+      eq(schema.incidentEvents.agentRunId, fixture.agentRunId),
+      eq(schema.incidentEvents.kind, "github_comment"),
+    ),
+  });
+  assert.equal(continuations.length, 0);
+});
+
 test("closed unmerged agent PR does not resolve incident or linked issue", async () => {
   const fixture = await seedAgentPrFixture("closed");
   const app = new Hono();

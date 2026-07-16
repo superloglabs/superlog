@@ -1,14 +1,18 @@
 import crypto from "node:crypto";
 import {
+  AGENT_PULL_REQUEST_REVIEW_CONTINUATION_LIMIT,
   type AgentPullRequestLifecycleContinuation,
   type AgentPullRequestProviderObservation as GithubPullRequestProviderObservation,
   type ResolveIncidentAfterAgentPullRequestsMergedResult,
   applyAgentPullRequestState,
   buildAgentPullRequestLifecycleContinuation,
   db,
+  isAgentPullRequestReviewEventKind,
   listAccessibleGithubInstallsForProject,
   reconcileAgentPullRequestProviderObservation,
+  recordAgentPullRequestReviewEvent,
   recordInboundInteraction,
+  releaseAgentPullRequestReviewLimitNotification,
   resolveIncidentIfAllAgentPullRequestsMerged,
   schema,
   syncLoopsContactsForOrg,
@@ -41,10 +45,27 @@ const DEFAULT_COMMIT_AUTHOR = {
   name: "Superlog app",
   email: "bot@superlog.sh",
 };
+const REVIEW_CONTINUATION_LIMIT_COMMENT = `Automated review follow-up has stopped after processing ${AGENT_PULL_REQUEST_REVIEW_CONTINUATION_LIMIT} PR review comments on this pull request. Further review comments will remain visible, but they will not resume the investigation automatically.`;
 
-// biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
-export function mountGithubPublic(app: Hono<any>): void {
+type GithubPublicDependencies = {
+  postAgentPrComment(opts: {
+    installationId: number;
+    repoFullName: string;
+    prNumber: number;
+    body: string;
+  }): Promise<{ ok: true } | { ok: false; error: string }>;
+};
+
+export function mountGithubPublic(
+  // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
+  app: Hono<any>,
+  dependencies: Partial<GithubPublicDependencies> = {},
+): void {
   const appSlug = process.env.GITHUB_APP_SLUG;
+  const webhookDependencies: GithubWebhookDependencies = {
+    appSlug,
+    postAgentPrComment: dependencies.postAgentPrComment ?? postGithubAgentPrComment,
+  };
   const stateSecret = process.env.STATE_SIGNING_SECRET;
   const webhookSecret = process.env.GITHUB_APP_WEBHOOK_SECRET;
   const webOrigin = process.env.WEB_ORIGIN ?? "http://localhost:5173";
@@ -257,7 +278,7 @@ export function mountGithubPublic(app: Hono<any>): void {
 
     const delivery = c.req.header("x-github-delivery") ?? null;
     try {
-      await handleWebhook(event, payload, delivery);
+      await handleWebhook(event, payload, delivery, webhookDependencies);
       log.info(
         {
           event,
@@ -413,10 +434,15 @@ type WebhookPayload = {
   commits?: Array<{ id?: string; message?: string; author?: { name?: string; email?: string } }>;
 };
 
+type GithubWebhookDependencies = GithubPublicDependencies & {
+  appSlug: string | undefined;
+};
+
 async function handleWebhook(
   event: string,
   payload: WebhookPayload,
   delivery: string | null,
+  dependencies: GithubWebhookDependencies,
 ): Promise<void> {
   if (
     event === "pull_request" ||
@@ -425,7 +451,7 @@ async function handleWebhook(
     event === "issue_comment" ||
     event === "push"
   ) {
-    await handleAgentPrWebhook(event, payload, delivery);
+    await handleAgentPrWebhook(event, payload, delivery, dependencies);
     return;
   }
 
@@ -554,6 +580,7 @@ async function handleAgentPrWebhook(
   event: string,
   payload: WebhookPayload,
   delivery: string | null,
+  dependencies: GithubWebhookDependencies,
 ): Promise<void> {
   const repoFullName = payload.repository?.full_name;
   if (!repoFullName) return;
@@ -608,12 +635,6 @@ async function handleAgentPrWebhook(
   // apps/api/src/slack.ts.
   await maybeRecordPrCommentFeedback({ event, payload, agentPrRow }).catch((err) => {
     log.warn({ err, event, agent_pr_id: agentPrRow.id }, "pr comment feedback capture failed");
-  });
-
-  // Same best-effort posture: a follow-up enqueue failure must not 500 the
-  // webhook delivery.
-  await maybeRequestPrCommentFollowUp({ event, payload, agentPrRow }).catch((err) => {
-    log.warn({ err, event, agent_pr_id: agentPrRow.id }, "pr comment follow-up enqueue failed");
   });
 
   const now = new Date();
@@ -730,6 +751,36 @@ async function handleAgentPrWebhook(
 
   const { kind, summary, actor } = describeAgentPrEvent(event, payload);
   if (!kind) return;
+
+  if (
+    isAgentPullRequestReviewEventKind(kind) &&
+    extractPrComment(event, payload) !== null &&
+    !isOwnGithubAppActor(actor?.login ?? null, dependencies.appSlug)
+  ) {
+    const reviewEvent = await recordAgentPullRequestReviewEvent(db, {
+      agentPrId: agentPrRow.id,
+      kind,
+      summary,
+      actorLogin: actor?.login ?? null,
+      actorGithubId: actor?.id ?? null,
+      actorAvatarUrl: actor?.avatar_url ?? null,
+      payload: payload as unknown as Record<string, unknown>,
+      providerEventId: delivery,
+      occurredAt: now,
+    });
+    if (reviewEvent.disposition === "limit_reached") {
+      if (reviewEvent.shouldNotify) {
+        await postReviewContinuationLimitComment({
+          agentPrRow,
+          payload,
+          dependencies,
+        });
+      }
+      return;
+    }
+    await maybeRequestPrCommentFollowUp({ event, payload, agentPrRow });
+    return;
+  }
 
   await db
     .insert(schema.agentPrEvents)
@@ -924,16 +975,49 @@ type EligiblePrComment = {
   sourceId: string | null;
 };
 
-// Shared gate for the comment-bearing PR events: real text from a real
-// (non-bot, repo-associated) human, excluding our own feedback footer.
-// PR open/close/merge has its own first-class handling and isn't a comment.
-function extractEligiblePrComment(
-  event: string,
-  payload: WebhookPayload,
-): EligiblePrComment | null {
+function isOwnGithubAppActor(actorLogin: string | null, appSlug: string | undefined): boolean {
+  if (!actorLogin || !appSlug) return false;
+  const normalizedActor = actorLogin.toLowerCase();
+  const normalizedSlug = appSlug.toLowerCase();
+  return normalizedActor === normalizedSlug || normalizedActor === `${normalizedSlug}[bot]`;
+}
+
+async function postReviewContinuationLimitComment(opts: {
+  agentPrRow: schema.AgentPullRequest;
+  payload: WebhookPayload;
+  dependencies: GithubWebhookDependencies;
+}): Promise<void> {
+  let installationId = opts.payload.installation?.id;
+  if (!installationId) {
+    const installation = await db.query.githubInstallations.findFirst({
+      where: eq(schema.githubInstallations.id, opts.agentPrRow.installationId),
+      columns: { installationId: true },
+    });
+    installationId = installation?.installationId;
+  }
+  if (!installationId) {
+    await releaseAgentPullRequestReviewLimitNotification(db, opts.agentPrRow.id);
+    throw new Error(`GitHub installation unavailable for agent PR ${opts.agentPrRow.id}`);
+  }
+
+  const result = await opts.dependencies.postAgentPrComment({
+    installationId,
+    repoFullName: opts.agentPrRow.repoFullName,
+    prNumber: opts.agentPrRow.prNumber,
+    body: REVIEW_CONTINUATION_LIMIT_COMMENT,
+  });
+  if (!result.ok) {
+    await releaseAgentPullRequestReviewLimitNotification(db, opts.agentPrRow.id);
+    throw new Error(result.error);
+  }
+}
+
+// Parse comment-bearing PR events without deciding how each consumer should
+// classify the author. Automated reviews are actionable investigation input,
+// while the admin feedback inbox applies its own human-only policy below.
+function extractPrComment(event: string, payload: WebhookPayload): EligiblePrComment | null {
   let body: string | null = null;
   let actor: GhActor = null;
-  let authorAssociation: string | null = null;
   let commentUrl: string | null = null;
   let path: string | null = null;
   let line: number | null = null;
@@ -941,13 +1025,11 @@ function extractEligiblePrComment(
   if (event === "issue_comment" && payload.action === "created") {
     body = payload.comment?.body ?? null;
     actor = payload.comment?.user ?? null;
-    authorAssociation = payload.comment?.author_association ?? null;
     commentUrl = payload.comment?.html_url ?? null;
     sourceId = payload.comment?.id != null ? `issue_comment:${payload.comment.id}` : null;
   } else if (event === "pull_request_review_comment" && payload.action === "created") {
     body = payload.comment?.body ?? null;
     actor = payload.comment?.user ?? null;
-    authorAssociation = payload.comment?.author_association ?? null;
     commentUrl = payload.comment?.html_url ?? null;
     path = payload.comment?.path ?? null;
     line = payload.comment?.line ?? null;
@@ -955,7 +1037,6 @@ function extractEligiblePrComment(
   } else if (event === "pull_request_review" && payload.action === "submitted") {
     body = payload.review?.body ?? null;
     actor = payload.review?.user ?? null;
-    authorAssociation = payload.review?.author_association ?? null;
     commentUrl = payload.review?.html_url ?? null;
     sourceId = payload.review?.id != null ? `review:${payload.review.id}` : null;
   } else {
@@ -969,14 +1050,6 @@ function extractEligiblePrComment(
   // feedback" link surfaced as feedback.
   if (body.includes(FEEDBACK_PR_FOOTER_MARKER)) return null;
 
-  if (
-    !isFeedbackEligibleCommenter({
-      userType: actor?.type ?? null,
-      authorAssociation,
-    })
-  ) {
-    return null;
-  }
   return { body, actor, commentUrl, path, line, sourceId };
 }
 
@@ -990,7 +1063,7 @@ async function maybeRequestPrCommentFollowUp(opts: {
   payload: WebhookPayload;
   agentPrRow: schema.AgentPullRequest;
 }): Promise<void> {
-  const comment = extractEligiblePrComment(opts.event, opts.payload);
+  const comment = extractPrComment(opts.event, opts.payload);
   if (!comment) return;
   const result = await recordInboundInteraction(db, {
     incidentId: opts.agentPrRow.incidentId,
@@ -1025,9 +1098,20 @@ async function maybeRecordPrCommentFeedback(opts: {
   agentPrRow: schema.AgentPullRequest;
 }): Promise<void> {
   const { event, payload, agentPrRow } = opts;
-  const eligible = extractEligiblePrComment(event, payload);
+  const eligible = extractPrComment(event, payload);
   if (!eligible) return;
   const { body, actor, commentUrl } = eligible;
+  if (
+    !isFeedbackEligibleCommenter({
+      userType: actor?.type ?? null,
+      authorAssociation:
+        event === "pull_request_review"
+          ? (payload.review?.author_association ?? null)
+          : (payload.comment?.author_association ?? null),
+    })
+  ) {
+    return;
+  }
 
   // Resolve org + project via the agent PR's installation so the admin
   // inbox can show which org's PR this feedback is on.
@@ -1338,6 +1422,37 @@ async function createInstallationToken(opts: {
   }
   const data = (await res.json()) as { token: string };
   return data.token;
+}
+
+async function postGithubAgentPrComment(opts: {
+  installationId: number;
+  repoFullName: string;
+  prNumber: number;
+  body: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const token = await createInstallationToken({
+      installationId: opts.installationId,
+      permissions: { pull_requests: "write" },
+    });
+    const pathname = `/repos/${opts.repoFullName}/issues/${opts.prNumber}/comments`;
+    const response = await fetch(`https://api.github.com${pathname}`, {
+      method: "POST",
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json; charset=utf-8",
+        "x-github-api-version": "2022-11-28",
+        "user-agent": "superlog-api",
+      },
+      body: JSON.stringify({ body: opts.body }),
+    });
+    if (response.ok) return { ok: true };
+    const text = await response.text().catch(() => "");
+    return { ok: false, error: `github POST ${pathname} failed: ${response.status} ${text}` };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 async function createInstallationReadToken(installationId: number): Promise<string> {

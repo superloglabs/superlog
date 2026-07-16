@@ -839,6 +839,36 @@ test("ordinary continuation routing cannot reactivate a resolved Incident", asyn
   assert.deepEqual(writes, []);
 });
 
+test("a pull request comment is recorded as GitHub input rather than a human reply", async () => {
+  const { db, writes } = lockedInboundDb({
+    latestRun: {
+      id: "run-1",
+      state: "running",
+      trigger: "incident",
+      triggerDetail: null,
+      providerSessionId: "session-1",
+      completedAt: null,
+      runtime: "anthropic",
+    },
+  });
+
+  const result = await recordInboundInteraction(db, {
+    incidentId: "incident-1",
+    interaction: {
+      channel: "pr_comment",
+      author: "reviewer[bot]",
+      text: "Add a regression test.",
+      occurredAt: NOW.toISOString(),
+    },
+    dedupeKey: "github:review-1",
+    now: NOW,
+  });
+
+  assert.deepEqual(result, { outcome: "accepted", action: "steer" });
+  const recorded = writes.find((write) => write.table === schema.incidentEvents);
+  assert.equal(recorded?.kind, "github_comment");
+});
+
 test("incident-wide dedupe survives a predecessor-to-successor handoff", async () => {
   const { db, calls, writes } = lockedInboundDb({
     latestRun: {

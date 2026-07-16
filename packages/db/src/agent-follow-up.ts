@@ -324,7 +324,7 @@ export async function restartAgentRun(
               schema.incidentEvents.agentRunId,
               superseded.map((run) => run.id),
             ),
-            eq(schema.incidentEvents.kind, "human_reply"),
+            inArray(schema.incidentEvents.kind, [...INBOUND_INTERACTION_EVENT_KINDS]),
             isNull(schema.incidentEvents.processedAt),
           ),
         );
@@ -479,11 +479,25 @@ export type RecordInboundInteractionResult =
   | { outcome: "duplicate" }
   | { outcome: "skipped"; reason: string };
 
+export const INBOUND_INTERACTION_EVENT_KINDS = ["human_reply", "github_comment"] as const;
+export type InboundInteractionEventKind = (typeof INBOUND_INTERACTION_EVENT_KINDS)[number];
+
+export function isInboundInteractionEventKind(kind: string): kind is InboundInteractionEventKind {
+  return (INBOUND_INTERACTION_EVENT_KINDS as readonly string[]).includes(kind);
+}
+
+function inboundInteractionEventKind(
+  interaction: AgentRunFollowUpInteraction,
+): InboundInteractionEventKind {
+  return interaction.channel === "pr_comment" ? "github_comment" : "human_reply";
+}
+
 // The shared inbound path for every channel (Slack reply, PR comment/review,
 // feedback): decide whether to continue the durable session or cold-start, then
-// act. For resume/steer it records a `human_reply` event (carrying the channel
-// `origin` so the worker can route the reply back) and reactivates a terminal
-// run into `resuming`; for cold_start it delegates to requestFollowUpAgentRun.
+// act. For resume/steer it records a source-specific inbound event (carrying
+// the channel `origin` so the worker can route the reply back) and reactivates
+// a terminal run into `resuming`; for cold_start it delegates to
+// requestFollowUpAgentRun.
 // `dedupeKey` makes provider/webhook retries idempotent — a swallowed insert
 // returns `duplicate` so the caller neither reactivates twice nor double-acks.
 export async function recordInboundInteraction(
@@ -504,6 +518,7 @@ export async function recordInboundInteraction(
   },
 ): Promise<RecordInboundInteractionResult> {
   const now = args.now ?? new Date();
+  const eventKind = inboundInteractionEventKind(args.interaction);
   return db.transaction(async (tx) => {
     // Shared lock order with resolution and dead-session handoff: Incident
     // first, then its AgentRuns. Any reply that wins before handoff is copied
@@ -557,7 +572,7 @@ export async function recordInboundInteraction(
           .values({
             agentRunId: latestRun.id,
             incidentId: args.incidentId,
-            kind: "human_reply",
+            kind: eventKind,
             summary: args.interaction.text,
             detail: { ...(args.detail ?? {}), origin: args.interaction },
             dedupeKey: args.dedupeKey,
@@ -585,7 +600,7 @@ export async function recordInboundInteraction(
           .values({
             agentRunId: latestRun.id,
             incidentId: args.incidentId,
-            kind: "human_reply",
+            kind: eventKind,
             summary: args.interaction.text,
             detail: { ...(args.detail ?? {}), origin: args.interaction },
             dedupeKey: args.dedupeKey,
@@ -636,7 +651,7 @@ export async function recordInboundInteraction(
       .values({
         agentRunId: verdict.runId,
         incidentId: args.incidentId,
-        kind: "human_reply",
+        kind: eventKind,
         summary: args.interaction.text,
         detail: { ...(args.detail ?? {}), origin: args.interaction },
         dedupeKey: args.dedupeKey,

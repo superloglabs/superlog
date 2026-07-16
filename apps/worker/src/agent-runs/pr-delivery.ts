@@ -1234,6 +1234,16 @@ export async function preflightProposedPullRequest(
 // patch (or pick another branch) and call propose_pr again. PRs are keyed by
 // (incident, repo, branch): the same branchName pushes a follow-up commit to
 // that PR; a new branchName opens an independent PR.
+export type ProposedPullRequestDeliveryDependencies = {
+  listRepositories(ctx: AgentRunContext): Promise<InstalledGithubRepo[]>;
+  pushPatchToExistingPr: typeof pushPatchToExistingAgentPr;
+};
+
+const proposedPullRequestDeliveryDependencies: ProposedPullRequestDeliveryDependencies = {
+  listRepositories: listAccessibleGithubRepositories,
+  pushPatchToExistingPr: pushPatchToExistingAgentPr,
+};
+
 export async function deliverProposedPullRequest(
   ctx: AgentRunContext,
   pr: {
@@ -1248,6 +1258,7 @@ export async function deliverProposedPullRequest(
   findings: AgentRunFindings | null,
   prepared?: PreparedProposedPullRequest,
   deliveryIdentity?: PullRequestDeliveryIdentity,
+  dependencies: ProposedPullRequestDeliveryDependencies = proposedPullRequestDeliveryDependencies,
 ): Promise<ProposedPullRequestDeliveryResult> {
   if (prepared?.kind === "recorded") {
     return {
@@ -1271,7 +1282,7 @@ export async function deliverProposedPullRequest(
 
   let repoMeta: InstalledGithubRepo | undefined;
   try {
-    const repos = await listAccessibleGithubRepositories(ctx);
+    const repos = await dependencies.listRepositories(ctx);
     repoMeta = repos.find((repo) => repo.fullName === pr.repoFullName);
   } catch (err) {
     return {
@@ -1337,7 +1348,7 @@ export async function deliverProposedPullRequest(
   if (existingPr) {
     let pushed: { headSha: string };
     try {
-      pushed = await pushPatchToExistingAgentPr({
+      pushed = await dependencies.pushPatchToExistingPr({
         installationId: repoMeta.installation.installationId,
         repositoryId: repoMeta.id,
         repoFullName: pr.repoFullName,

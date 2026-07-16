@@ -1261,7 +1261,7 @@ export const agentChats = pgTable(
 // provider event/message id so webhook retries can't double-feed the session.
 // `processedAt` is stamped when the worker delivers the text into the
 // provider session (resume/steer) — the same pending-marker pattern as
-// incident_events.human_reply.
+// source-specific incident interaction events.
 export const agentChatMessages = pgTable(
   "agent_chat_messages",
   {

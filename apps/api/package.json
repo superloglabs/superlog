@@ -8,6 +8,7 @@
     "dev": "tsx watch --import ./tracing.ts src/index.ts",
     "start": "tsx --import ./tracing.ts src/index.ts",
     "test": "tsx --test src/*.test.ts src/*/*.test.ts",
+    "test:agent-pr-review-loop": "tsx scripts/test-agent-pr-review-loop.ts",
     "test:mcp-clickhouse-ranges": "tsx scripts/test-mcp-clickhouse-ranges.ts",
     "typecheck": "tsc --noEmit"
   },
