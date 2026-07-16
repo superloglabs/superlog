@@ -62,6 +62,22 @@ test("a project can add a bearer-authenticated MCP without exposing its credenti
   assert.equal(JSON.stringify(await manager.list("project-1")).includes("secret-bearer"), false);
 });
 
+test("an MCP keeps its user-facing name and derives a protocol-safe slug", async () => {
+  const manager = createProjectMcpServerManager(new InMemoryProjectMcpServerRepository());
+
+  const created = await manager.add({
+    projectId: "project-1",
+    actorUserId: "user-1",
+    name: "Granola Cloud",
+    url: "https://mcp.granola.example/mcp",
+    auth: { type: "none" },
+    confirmTrusted: true,
+  });
+
+  assert.equal(created.name, "Granola Cloud");
+  assert.equal(created.slug, "granola-cloud");
+});
+
 test("API-key authentication only accepts a safe custom header", async () => {
   const manager = createProjectMcpServerManager(new InMemoryProjectMcpServerRepository());
 

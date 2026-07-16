@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ProjectMcpServer } from "../api.ts";
-import { createProjectMcpEditorDraft } from "./project-mcp-editor.ts";
+import {
+  createDetectedProjectMcpAuthDraft,
+  createProjectMcpEditorDraft,
+} from "./project-mcp-editor.ts";
 
 test("opening an MCP editor starts from the persisted server instead of a stale draft", () => {
   const server = {
     id: "server-1",
     name: "linear",
+    slug: "linear",
     url: "https://linear.example/mcp",
     enabled: true,
     auth: {
@@ -34,5 +38,35 @@ test("opening an MCP editor starts from the persisted server instead of a stale 
       clientId: "",
       clientSecret: "",
     },
+  });
+});
+
+test("detected OAuth becomes the form auth draft while unknown auth stays credential-free", () => {
+  assert.deepEqual(
+    createDetectedProjectMcpAuthDraft({
+      type: "oauth",
+      grantType: "authorization_code",
+      supportsDynamicRegistration: true,
+    }),
+    {
+      type: "oauth",
+      token: "",
+      headerName: "X-API-Key",
+      key: "",
+      grantType: "authorization_code",
+      scopes: "",
+      clientId: "",
+      clientSecret: "",
+    },
+  );
+  assert.deepEqual(createDetectedProjectMcpAuthDraft({ type: "unknown" }), {
+    type: "none",
+    token: "",
+    headerName: "X-API-Key",
+    key: "",
+    grantType: "authorization_code",
+    scopes: "",
+    clientId: "",
+    clientSecret: "",
   });
 });

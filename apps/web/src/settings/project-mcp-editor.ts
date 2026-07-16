@@ -1,4 +1,4 @@
-import type { ProjectMcpServer } from "../api.ts";
+import type { ProjectMcpAuthDetection, ProjectMcpServer } from "../api.ts";
 
 export type AuthDraft = {
   type: "none" | "bearer" | "api_key" | "oauth";
@@ -21,6 +21,15 @@ export const EMPTY_AUTH: AuthDraft = {
   clientId: "",
   clientSecret: "",
 };
+
+export function createDetectedProjectMcpAuthDraft(detection: ProjectMcpAuthDetection): AuthDraft {
+  if (detection.type === "unknown") return EMPTY_AUTH;
+  return {
+    ...EMPTY_AUTH,
+    type: "oauth",
+    grantType: detection.grantType,
+  };
+}
 
 export function createProjectMcpEditorDraft(server: ProjectMcpServer) {
   return {
