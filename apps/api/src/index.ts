@@ -54,6 +54,7 @@ import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
 import { mountCloudflareAuthed, mountCloudflarePublic } from "./cloudflare.js";
 import { mountDashboards } from "./dashboards.js";
+import { mountSavedViews } from "./saved-views/interfaces.js";
 import {
   demoOverlay,
   demoProjectId,
@@ -369,6 +370,7 @@ mountSettingsAuthed(app);
 mountProjectMcpServersAuthed(app);
 mountOrgKeyManagementAuthed(app);
 mountDashboards(app);
+mountSavedViews(app);
 mountCloudConnectionsAuthed(app);
 mountIngestFilters(app);
 mountOrgCrud(app);

@@ -4,8 +4,10 @@ import {
   exploreHref,
   formatRangeLabel,
   normalizeBucket,
+  parseTelemetryResult,
   parseResultRows,
   telemetryToolKind,
+  telemetryResultNotice,
   toMetricRows,
   toTraceRows,
 } from "./telemetry-result.ts";
@@ -47,6 +49,42 @@ test("parseResultRows is null-safe and rejects non-arrays / scalars / bad JSON",
   assert.deepEqual(parseResultRows("not json"), []);
   assert.deepEqual(parseResultRows('{"a":1}'), []); // object, not array
   assert.deepEqual(parseResultRows("[1,2,3]"), []); // scalars filtered out
+});
+
+test("parseTelemetryResult distinguishes an empty query from a legacy truncated result", () => {
+  assert.deepEqual(parseTelemetryResult("[]"), {
+    rows: [],
+    state: "complete",
+    originalRowCount: 0,
+  });
+  assert.deepEqual(parseTelemetryResult('[{"trace_id":"abc","span_name":"fetch...'), {
+    rows: [],
+    state: "truncated",
+    originalRowCount: null,
+  });
+});
+
+test("parseTelemetryResult keeps an omitted truncated total unknown", () => {
+  assert.deepEqual(parseTelemetryResult('[{"trace_id":"abc"}]', { truncated: true }), {
+    rows: [{ trace_id: "abc" }],
+    state: "truncated",
+    originalRowCount: null,
+  });
+});
+
+test("telemetryResultNotice describes partial and unavailable recorded results", () => {
+  assert.equal(
+    telemetryResultNotice("truncated", 3, 50),
+    "Showing 3 of 50 recorded rows; the stored result was truncated.",
+  );
+  assert.equal(
+    telemetryResultNotice("truncated", 0, null),
+    "The recorded result was truncated before it could be displayed.",
+  );
+  assert.equal(
+    telemetryResultNotice("invalid", 0, null),
+    "The recorded result could not be displayed.",
+  );
 });
 
 test("normalizeBucket trims ClickHouse nanos and T separator to second precision", () => {

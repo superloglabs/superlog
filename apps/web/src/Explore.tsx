@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import { LogDrawer } from "./LogDetail.tsx";
 import { useProjectPath } from "./ProjectRouteContext.tsx";
+import { SavedViewBar } from "./SavedViewBar.tsx";
 import { TraceDrawer } from "./TraceDetail.tsx";
 import { ExploreFacets, SEVERITY_OPTIONS, STATUS_OPTIONS } from "./ExploreFacets.tsx";
 import { facetDisplayName } from "./FacetValues.tsx";
@@ -57,6 +58,11 @@ import { Btn, Chip, Input, PageHeader, ShortcutKey, Tile } from "./design/ui.tsx
 import { addAttrFilter } from "./exploreAttrFilter.ts";
 import { sourceFromExplorePath, type ExploreSource } from "./explore-route.ts";
 import { tracer } from "./instrumentation.ts";
+import {
+  buildSavedViewSearchParams,
+  captureSavedViewState,
+  type SavedExploreViewState,
+} from "./saved-view-state.ts";
 import {
   ExploreSignalDetailSkeleton,
   ExploreSignalListSkeleton,
@@ -134,7 +140,18 @@ function ExploreInner({ projectId }: { projectId: string }) {
     setSearchParams(next, { replace: false });
   }, [searchParams, setSearchParams]);
 
+  const relativeRangeSeconds = Number(searchParams.get("range"));
+  const relativeRangeLabel = searchParams.get("rangeLabel");
+  const validRelativeRangeFromUrl =
+    Number.isInteger(relativeRangeSeconds) &&
+    relativeRangeSeconds > 0 &&
+    relativeRangeSeconds <= 31_536_000 &&
+    !!relativeRangeLabel;
+
   const [selection, setSelection] = useState<RangeSelection>(() => {
+    if (validRelativeRangeFromUrl) {
+      return { seconds: relativeRangeSeconds, label: relativeRangeLabel };
+    }
     try {
       const saved = localStorage.getItem(PRESET_STORAGE_KEY);
       if (saved) {
@@ -155,6 +172,14 @@ function ExploreInner({ projectId }: { projectId: string }) {
       // ignore
     }
   }, [selection]);
+  useEffect(() => {
+    if (!validRelativeRangeFromUrl) return;
+    setSelection((current) =>
+      current.seconds === relativeRangeSeconds && current.label === relativeRangeLabel
+        ? current
+        : { seconds: relativeRangeSeconds, label: relativeRangeLabel },
+    );
+  }, [validRelativeRangeFromUrl, relativeRangeSeconds, relativeRangeLabel]);
   const [nowTick, setNowTick] = useState(() => Date.now());
 
   // Filter/selection state derived from the URL. Updating these writes through
@@ -241,6 +266,33 @@ function ExploreInner({ projectId }: { projectId: string }) {
     [absoluteRange, selection, nowTick],
   );
 
+  const savedViewState = useMemo<SavedExploreViewState | null>(() => {
+    if (source !== "logs" && source !== "traces") return null;
+    return captureSavedViewState({
+      source,
+      selection,
+      absoluteRange,
+      attrs,
+      severity,
+      statusCode,
+      groupBy,
+      tracesView,
+    });
+  }, [source, selection, absoluteRange, attrs, severity, statusCode, groupBy, tracesView]);
+
+  const applySavedView = useCallback(
+    (state: SavedExploreViewState, savedViewId?: string) => {
+      if (state.range.type === "relative") {
+        setSelection({ seconds: state.range.seconds, label: state.range.label });
+        setNowTick(Date.now());
+      }
+      const nextParams = buildSavedViewSearchParams(state, savedViewId);
+      const query = nextParams.toString();
+      navigate(`${projectPath(`/explore/${state.source}`)}${query ? `?${query}` : ""}`);
+    },
+    [navigate, projectPath],
+  );
+
   const filter: ExploreFilter = useMemo(
     () => ({
       range,
@@ -320,10 +372,17 @@ function ExploreInner({ projectId }: { projectId: string }) {
                 // Picking a live preset drops any pinned-window params so the
                 // range slides again — keyed on the raw params (not the parsed
                 // range) so a malformed `since`/`until` gets cleaned up too.
-                if (searchParams.has("since") || searchParams.has("until")) {
+                if (
+                  searchParams.has("since") ||
+                  searchParams.has("until") ||
+                  searchParams.has("range") ||
+                  searchParams.has("rangeLabel")
+                ) {
                   updateParams((p) => {
                     p.delete("since");
                     p.delete("until");
+                    p.delete("range");
+                    p.delete("rangeLabel");
                   });
                 }
               } finally {
@@ -333,6 +392,16 @@ function ExploreInner({ projectId }: { projectId: string }) {
           />
         )}
       </section>
+
+      {savedViewState && (
+        <SavedViewBar
+          projectId={projectId}
+          source={savedViewState.source}
+          currentState={savedViewState}
+          activeViewId={searchParams.get("savedView")}
+          onApply={applySavedView}
+        />
+      )}
 
       {source === "resources" ? (
         <ResourcesPanel projectId={projectId} />

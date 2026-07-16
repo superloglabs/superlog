@@ -300,7 +300,17 @@ function normalizePath(p: string): string {
     .replace(/^webpack-internal:\/\/\/?/, "")
     .replace(/^\([^)]*\)\//, "")
     .replace(/^\.\//, "")
-    .replace(/^file:\/\//, "");
+    .replace(/^file:\/\//, "")
+    // iOS assigns each installed app a different UUID-named sandbox. Hermes
+    // includes that absolute sandbox path in frames, but it is deployment
+    // metadata rather than part of the failing code's identity.
+    .replace(
+      /\/var\/mobile\/Containers\/Data\/Application\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\//i,
+      "/var/mobile/Containers/Data/Application/<uuid>/",
+    )
+    // Expo gives the generated Hermes bundle a build-specific name. The
+    // function names still identify the failing code across app releases.
+    .replace(/(\/\.expo-internal\/)[^/]+\.(?:js)?bundle$/i, "$1<bundle>");
 
   out = out.replace(/^.*?\/((?:apps|packages|src|app|lib|pages)\/.*)$/, "$1");
   // Next.js/Turbopack puts content hashes in generated chunk filenames. The

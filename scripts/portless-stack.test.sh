@@ -23,19 +23,37 @@ if [[ -e "$TMP_HOME/.portless/proxy.port" ]]; then
   exit 1
 fi
 
+mkdir -p "$TMP_HOME/.portless"
+printf '443\n' > "$TMP_HOME/.portless/proxy.port"
+output="$(HOME="$TMP_HOME" "$REPO_ROOT/scripts/portless-stack.sh" env --name "$STACK_NAME")"
+if ! grep -Fqx "web:        http://$STACK_NAME.superlog.localhost:443" <<< "$output"; then
+  echo "expected a persisted HTTP proxy on port 443 to keep its explicit port" >&2
+  printf '%s\n' "$output" >&2
+  exit 1
+fi
+rm "$TMP_HOME/.portless/proxy.port"
+
 output="$(
   HOME="$TMP_HOME" SUPERLOG_PORTLESS_PROXY_PORT=2443 \
     "$REPO_ROOT/scripts/portless-stack.sh" env --name "$STACK_NAME"
 )"
 
-if ! grep -Fqx "web:        https://$STACK_NAME.superlog.localhost:2443" <<< "$output"; then
-  echo "expected the explicit proxy port override in generated URLs" >&2
+if ! grep -Fqx "web:        http://$STACK_NAME.superlog.localhost:2443" <<< "$output"; then
+  echo "expected the explicit proxy port override to use the proxy's persisted HTTP mode" >&2
   printf '%s\n' "$output" >&2
   exit 1
 fi
 
 if [[ "$(tr -d '[:space:]' < "$TMP_HOME/.portless/proxy.port")" != "2443" ]]; then
   echo "expected the explicit proxy port override to seed the marker" >&2
+  exit 1
+fi
+
+touch "$TMP_HOME/.portless/proxy.tls"
+output="$(HOME="$TMP_HOME" "$REPO_ROOT/scripts/portless-stack.sh" env --name "$STACK_NAME")"
+if ! grep -Fqx "web:        https://$STACK_NAME.superlog.localhost:2443" <<< "$output"; then
+  echo "expected the persisted TLS marker to generate HTTPS URLs" >&2
+  printf '%s\n' "$output" >&2
   exit 1
 fi
 

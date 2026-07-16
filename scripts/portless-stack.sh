@@ -138,14 +138,16 @@ else
   PROXY_ROUTE="intake.$STACK_NAME.superlog"
 fi
 
-# Detect the portless proxy port. When portless is installed privileged it
-# binds 443 (no suffix needed); otherwise it picks a non-privileged port and
-# writes it to ~/.portless/proxy.port. Embedding the port in the URL is
-# required so any process — including node fetch in seed scripts — can hit
-# the route.
+# Detect the portless proxy endpoint. Portless persists the port and TLS mode
+# separately (`proxy.port` + optional `proxy.tls`), so URL generation must read
+# both. Embedding the port and matching scheme is required so every process —
+# including node fetch in seed scripts — reaches the same proxy that the CLI
+# starts.
 PORTLESS_PORT_FILE="$HOME/.portless/proxy.port"
+PORTLESS_TLS_FILE="$HOME/.portless/proxy.tls"
 PORT_SUFFIX=""
 PROXY_PORT_VAL=""
+URL_SCHEME="https"
 if [[ -s "$PORTLESS_PORT_FILE" ]]; then
   PROXY_PORT_VAL="$(tr -d '[:space:]' < "$PORTLESS_PORT_FILE")"
 fi
@@ -162,13 +164,17 @@ if [[ ! "$PROXY_PORT_VAL" =~ ^[0-9]+$ ]] && [[ -n "${SUPERLOG_PORTLESS_PROXY_POR
   printf '%s\n' "$PROXY_PORT_VAL" > "$PORTLESS_PORT_FILE"
   echo "==> portless proxy port was unset; using explicit port $PROXY_PORT_VAL" >&2
 fi
-if [[ "$PROXY_PORT_VAL" =~ ^[0-9]+$ ]] && [[ "$PROXY_PORT_VAL" != "443" ]]; then
+if [[ "$PROXY_PORT_VAL" =~ ^[0-9]+$ ]] &&
+  { [[ "$PROXY_PORT_VAL" != "443" ]] || [[ ! -f "$PORTLESS_TLS_FILE" ]]; }; then
   PORT_SUFFIX=":$PROXY_PORT_VAL"
 fi
+if [[ "$PROXY_PORT_VAL" =~ ^[0-9]+$ ]] && [[ ! -f "$PORTLESS_TLS_FILE" ]]; then
+  URL_SCHEME="http"
+fi
 
-WEB_URL="https://$WEB_ROUTE.localhost$PORT_SUFFIX"
-API_URL="https://$API_ROUTE.localhost$PORT_SUFFIX"
-PROXY_URL="https://$PROXY_ROUTE.localhost$PORT_SUFFIX"
+WEB_URL="$URL_SCHEME://$WEB_ROUTE.localhost$PORT_SUFFIX"
+API_URL="$URL_SCHEME://$API_ROUTE.localhost$PORT_SUFFIX"
+PROXY_URL="$URL_SCHEME://$PROXY_ROUTE.localhost$PORT_SUFFIX"
 
 write_env_file() {
   mkdir -p "$STACK_DIR" "$LOG_DIR"

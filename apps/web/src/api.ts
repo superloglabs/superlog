@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "./api-error.ts";
 import { incidentPollIntervalMs } from "./incidents/agent-run-polling.ts";
+import type { SavedExploreViewState } from "./saved-view-state.ts";
 
 const API_URL = import.meta.env?.VITE_API_URL ?? "http://localhost:4100";
 
@@ -2967,6 +2968,71 @@ export type ExploreFilter = {
   statusCode?: string;
   minDurationMs?: number;
 };
+
+export type SavedViewVisibility = "personal" | "workspace";
+
+export type SavedView = {
+  id: string;
+  name: string;
+  visibility: SavedViewVisibility;
+  state: SavedExploreViewState;
+  ownedByMe: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+const savedViewsQueryKey = (projectId: string | undefined) => ["saved-views", projectId];
+
+export function useSavedViews(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: savedViewsQueryKey(projectId),
+    queryFn: () => fetcher<SavedView[]>(`/api/projects/${projectId}/saved-views`),
+    enabled: !!projectId,
+  });
+}
+
+export function useCreateSavedView(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      name: string;
+      visibility: SavedViewVisibility;
+      state: SavedExploreViewState;
+    }) =>
+      fetcher<SavedView>(`/api/projects/${requireProjectId(projectId)}/saved-views`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: savedViewsQueryKey(projectId) }),
+  });
+}
+
+export function useUpdateSavedView(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: { id: string; state?: SavedExploreViewState }) =>
+      fetcher<SavedView>(`/api/projects/${requireProjectId(projectId)}/saved-views/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: savedViewsQueryKey(projectId) }),
+  });
+}
+
+export function useDeleteSavedView(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      fetcher<{ ok: true }>(`/api/projects/${requireProjectId(projectId)}/saved-views/${id}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: savedViewsQueryKey(projectId) }),
+  });
+}
 
 export type LogRow = {
   timestamp: string;

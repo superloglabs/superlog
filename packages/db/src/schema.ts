@@ -1824,6 +1824,40 @@ export type DashboardVariable = {
   attributeKey?: string;
 };
 
+export type SavedExploreViewState = {
+  source: "logs" | "traces";
+  range:
+    | { type: "relative"; seconds: number; label: string }
+    | { type: "absolute"; since: string; until: string };
+  attrs: { key: string; value: string }[];
+  severity?: string;
+  statusCode?: string;
+  groupBy?: string;
+  tracesView?: "traces" | "spans";
+};
+
+export const savedViews = pgTable(
+  "saved_views",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    createdByUserId: uuid("created_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    visibility: text("visibility").$type<"personal" | "workspace">().notNull(),
+    state: jsonb("state").$type<SavedExploreViewState>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    projectIdx: index("saved_views_project_idx").on(t.projectId),
+    creatorIdx: index("saved_views_creator_idx").on(t.createdByUserId),
+  }),
+);
+
 export const dashboards = pgTable(
   "dashboards",
   {
@@ -2960,6 +2994,7 @@ export type McpOauthCode = typeof mcpOauthCodes.$inferSelect;
 export type McpOauthToken = typeof mcpOauthTokens.$inferSelect;
 export type PersonalAccessToken = typeof personalAccessTokens.$inferSelect;
 export type SlackInstallation = typeof slackInstallations.$inferSelect;
+export type SavedView = typeof savedViews.$inferSelect;
 export type Dashboard = typeof dashboards.$inferSelect;
 export type DashboardWidget = typeof dashboardWidgets.$inferSelect;
 export type GithubInstallation = typeof githubInstallations.$inferSelect;
