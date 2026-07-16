@@ -24,3 +24,27 @@ export function getIncidentDetailAccess(readOnly: boolean): IncidentDetailAccess
 export function shouldUsePreloadedPullRequests({ readOnly }: { readOnly: boolean }): boolean {
   return readOnly;
 }
+
+export function incidentPullRequestDiffPath(diffBasePath: string, pullRequestId: string): string {
+  return `${diffBasePath.replace(/\/$/, "")}/${encodeURIComponent(pullRequestId)}/diff`;
+}
+
+export type IncidentPullRequestDiffSource =
+  | { kind: "recorded"; patch: string }
+  | { kind: "remote"; path: string }
+  | { kind: "unavailable" };
+
+export function resolveIncidentPullRequestDiff(input: {
+  patch: string | null;
+  diffBasePath?: string;
+  pullRequestId: string;
+}): IncidentPullRequestDiffSource {
+  if (input.patch) return { kind: "recorded", patch: input.patch };
+  if (input.diffBasePath) {
+    return {
+      kind: "remote",
+      path: incidentPullRequestDiffPath(input.diffBasePath, input.pullRequestId),
+    };
+  }
+  return { kind: "unavailable" };
+}

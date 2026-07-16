@@ -4,6 +4,11 @@ import { incidentPollIntervalMs } from "./incidents/agent-run-polling.ts";
 
 const API_URL = import.meta.env?.VITE_API_URL ?? "http://localhost:4100";
 
+export function apiRequestUrl(path: string, apiUrl = API_URL): string {
+	if (/^https?:\/\//i.test(path)) return path;
+	return `${apiUrl.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
+}
+
 export type Me = {
   user: { id: string; email: string; name: string; isStaff: boolean; impersonating: boolean };
   // Both null when the user signed up but hasn't created their first org yet.
@@ -86,7 +91,7 @@ export function useFetcher() {
       const source = readPendingSignupSource();
       if (source) headers["x-superlog-signup-source"] = source;
     }
-    const res = await fetch(`${API_URL}${path}`, {
+    const res = await fetch(apiRequestUrl(path), {
       ...init,
       credentials: "include",
       headers,
@@ -2673,19 +2678,11 @@ export function useIncidentPullRequests(
 // `headSha` is part of the key: the PR list polls while a run is active and a
 // follow-up push moves the head, so the diff refetches exactly when a new
 // commit lands — without polling GitHub on a timer.
-export function useIncidentPullRequestDiff(
-  projectId: string,
-  incidentId: string,
-  prId: string,
-  headSha: string | null,
-) {
+export function useIncidentPullRequestDiff(path: string, headSha: string | null) {
   const fetcher = useFetcher();
   return useQuery({
-    queryKey: ["incident-pr-diff", projectId, incidentId, prId, headSha],
-    queryFn: () =>
-      fetcher<{ patch: string }>(
-        `/api/projects/${projectId}/incidents/${incidentId}/pull-requests/${prId}/diff`,
-      ),
+    queryKey: ["incident-pr-diff", path, headSha],
+    queryFn: () => fetcher<{ patch: string }>(path),
     // Keep showing the previous commit's diff while the new head's loads.
     placeholderData: (prev) => prev,
     staleTime: 60_000,
