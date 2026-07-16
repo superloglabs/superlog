@@ -345,6 +345,7 @@ export {
   createLinearComment,
   createLinearAgentActivity,
   updateLinearAgentSession,
+  fetchLinearAgentSessionSourceType,
 } from "./linear.js";
 export type {
   LinearTokenResponse,

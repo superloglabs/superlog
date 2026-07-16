@@ -11,6 +11,7 @@ import {
   deleteLinearWebhook,
   enqueueIncidentCreated,
   exchangeLinearCode,
+  fetchLinearAgentSessionSourceType,
   fetchLinearViewer,
   linearTicketAcceptanceUnit,
   recordInboundInteraction,
@@ -215,8 +216,16 @@ type LinearWebhookPayload = {
   agentSession?: {
     id?: string;
     issueId?: string;
+    // `comment` is the comment thread the session is attached to. It is present for
+    // BOTH a mention and a delegation (a delegation gets its own auto-created thread),
+    // so it must NOT be used to tell them apart.
     commentId?: string | null;
     sourceCommentId?: string | null;
+    // `sourceMetadata` records how the session was created. A mention has
+    // `{ type: "comment", ... }`; a delegation (issue assigned to the agent) has null.
+    // This is the reliable discriminator. May be omitted from the webhook body, in
+    // which case the handler resolves it from Linear.
+    sourceMetadata?: { type?: string | null } | null;
     creatorId?: string | null;
     issue?: {
       id?: string;
@@ -256,6 +265,7 @@ export type LinearAgentSessionEventClassification =
 
 export function classifyLinearAgentSessionEvent(
   payload: LinearWebhookPayload,
+  opts?: { sourceMetadataType?: string | null },
 ): LinearAgentSessionEventClassification {
   if (payload.type !== "AgentSessionEvent") return { kind: "ignore" };
   const agentSessionId = payload.agentSession?.id;
@@ -273,9 +283,16 @@ export function classifyLinearAgentSessionEvent(
   const issueId = payload.agentSession?.issueId;
   const prompt = payload.promptContext?.trim();
   if (!issueId || !prompt) return { kind: "ignore" };
-  const isMention = Boolean(
-    payload.agentSession?.commentId ?? payload.agentSession?.sourceCommentId,
-  );
+  // A mention (@superlog in a comment) is created with a triggering source comment,
+  // surfaced as sourceMetadata.type === "comment". A delegation (issue assigned to the
+  // agent) has no source comment (sourceMetadata is null) even though the session owns
+  // an auto-created comment thread. The caller may resolve sourceMetadata out of band
+  // (it can be absent from the webhook body); prefer that when provided.
+  const sourceMetadataType =
+    opts?.sourceMetadataType !== undefined
+      ? opts.sourceMetadataType
+      : (payload.agentSession?.sourceMetadata?.type ?? null);
+  const isMention = sourceMetadataType === "comment";
   return {
     kind: isMention ? "chat" : "incident",
     agentSessionId,
@@ -467,7 +484,36 @@ async function handleLinearAgentSessionEvent(
   payload: LinearWebhookPayload,
   install: schema.LinearInstallation,
 ): Promise<void> {
-  const classification = classifyLinearAgentSessionEvent(payload);
+  // A created session is a mention (chat) or a delegation (incident). The reliable
+  // signal is agentSession.sourceMetadata.type ("comment" for a mention). If the
+  // webhook body omits sourceMetadata, resolve it from Linear rather than fall back to
+  // the session's own comment thread, which is present for both and misclassifies a
+  // delegation as a chat (the ENG-327 bug).
+  let sourceMetadataType: string | null | undefined;
+  if (payload.action === "created") {
+    const session = payload.agentSession;
+    if (session && "sourceMetadata" in session) {
+      sourceMetadataType = session.sourceMetadata?.type ?? null;
+    } else if (session?.id) {
+      sourceMetadataType = await fetchLinearAgentSessionSourceType({
+        accessToken: install.accessToken,
+        agentSessionId: session.id,
+      });
+    }
+    log.info(
+      {
+        agent_session_id: payload.agentSession?.id ?? null,
+        issue: payload.agentSession?.issue?.identifier ?? null,
+        source_metadata_type: sourceMetadataType ?? null,
+        had_comment: Boolean(payload.agentSession?.commentId),
+        resolved_via:
+          payload.agentSession && "sourceMetadata" in payload.agentSession ? "webhook" : "api",
+      },
+      "linear agent session created",
+    );
+  }
+
+  const classification = classifyLinearAgentSessionEvent(payload, { sourceMetadataType });
   if (classification.kind === "ignore") return;
   const issue = payload.agentSession?.issue;
 

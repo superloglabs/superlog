@@ -33,9 +33,10 @@ test("buildLinearAuthorizeUrl requests app-actor authorization", async () => {
   assert.equal(url.searchParams.get("scope")?.includes("app:assignable"), true);
 });
 
-test("a Linear agent session created from a comment opens a chat", async () => {
+test("a Linear agent session created from an @mention comment opens a chat", async () => {
   const { classifyLinearAgentSessionEvent } = await import("./linear.js");
 
+  // A mention carries the triggering human comment: sourceMetadata.type === "comment".
   assert.deepEqual(
     classifyLinearAgentSessionEvent({
       type: "AgentSessionEvent",
@@ -45,6 +46,7 @@ test("a Linear agent session created from a comment opens a chat", async () => {
         id: "session-1",
         issueId: "issue-1",
         commentId: "comment-1",
+        sourceMetadata: { type: "comment" },
       },
     }),
     {
@@ -72,6 +74,67 @@ test("a Linear agent session created from an issue opens an incident", async () 
       issueId: "issue-2",
       prompt: "Investigate checkout failures",
     },
+  );
+});
+
+test("a delegation whose session has its own comment thread still opens an incident", async () => {
+  const { classifyLinearAgentSessionEvent } = await import("./linear.js");
+
+  // Assigning an issue to the agent (delegation) creates an AgentSession with its own
+  // auto-created comment thread — `comment`/`commentId` is set — but there is NO
+  // triggering source comment, so sourceMetadata is null. This must open an incident,
+  // not a chat. Regression guard for the ENG-327 misclassification.
+  assert.deepEqual(
+    classifyLinearAgentSessionEvent({
+      type: "AgentSessionEvent",
+      action: "created",
+      promptContext: '<issue identifier="ENG-2"><title>Block to usage over limit</title></issue>',
+      agentSession: {
+        id: "session-3",
+        issueId: "issue-3",
+        commentId: "container-comment-1",
+        sourceMetadata: null,
+      },
+    }),
+    {
+      kind: "incident",
+      agentSessionId: "session-3",
+      issueId: "issue-3",
+      prompt: '<issue identifier="ENG-2"><title>Block to usage over limit</title></issue>',
+    },
+  );
+});
+
+test("classification honours a source-metadata type resolved out of band", async () => {
+  const { classifyLinearAgentSessionEvent } = await import("./linear.js");
+
+  // When the webhook body omits sourceMetadata, the handler resolves it from Linear
+  // and passes it in. "comment" => chat regardless of the (absent) payload field.
+  assert.equal(
+    classifyLinearAgentSessionEvent(
+      {
+        type: "AgentSessionEvent",
+        action: "created",
+        promptContext: "hey @superlog",
+        agentSession: { id: "session-4", issueId: "issue-4", commentId: "c-4" },
+      },
+      { sourceMetadataType: "comment" },
+    ).kind,
+    "chat",
+  );
+
+  // Resolved null (a delegation) => incident even though a comment thread exists.
+  assert.equal(
+    classifyLinearAgentSessionEvent(
+      {
+        type: "AgentSessionEvent",
+        action: "created",
+        promptContext: "investigate",
+        agentSession: { id: "session-5", issueId: "issue-5", commentId: "c-5" },
+      },
+      { sourceMetadataType: null },
+    ).kind,
+    "incident",
   );
 });
 
