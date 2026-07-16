@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull } from "drizzle-orm";
 import {
   areAllIncidentPullRequestsMerged,
   areAllIncidentPullRequestsSettled,
@@ -560,6 +560,28 @@ export function createIncidentLifecycle(database: DB = db) {
         };
       }
       const input = inputForPullRequests(pullRequests);
+      // Settlement evidence that predates the incident's last reopen belongs
+      // to a previous epoch: a human who reopened the incident did so knowing
+      // those PRs were settled, so a stale settle-webhook redelivery must not
+      // flip the incident closed again. Only a settle event newer than the
+      // reopen may resolve.
+      if (input.resolvedAt) {
+        const reopenedAfterSettlement = await tx.query.incidentEvents.findFirst({
+          where: and(
+            eq(schema.incidentEvents.incidentId, incidentId),
+            eq(schema.incidentEvents.kind, "incident_reopened"),
+            gt(schema.incidentEvents.createdAt, input.resolvedAt),
+          ),
+          columns: { id: true },
+        });
+        if (reopenedAfterSettlement) {
+          return {
+            disposition: "resolution_event_already_consumed" as const,
+            resolved: false as const,
+            resolvedIssueCount: 0 as const,
+          };
+        }
+      }
       const resolution = await resolveIncidentInTx(tx, input, repository, incident);
       if (resolution.rejectionReason === "resolution_event_already_consumed") {
         return {

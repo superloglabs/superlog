@@ -13,13 +13,21 @@ function recordingDb(opts: {
   incidentStatus: schema.IncidentStatus;
   pullRequestStates: schema.AgentPrState[];
   pendingBatchReservation?: boolean;
+  reopenedAfterSettlement?: boolean;
 }): { db: DB; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
+  // The resolver's two incidentEvents.findFirst probes arrive in a fixed
+  // order: the pending-batch reservation first, then the reopened-since-
+  // settlement check.
+  const incidentEventProbes = [
+    opts.pendingBatchReservation ? { id: "reservation-1" } : undefined,
+    opts.reopenedAfterSettlement ? { id: "reopen-1" } : undefined,
+  ];
   const db = {
     query: {
       incidentEvents: {
         async findFirst() {
-          return opts.pendingBatchReservation ? { id: "reservation-1" } : undefined;
+          return incidentEventProbes.shift();
         },
       },
       agentPullRequests: {
@@ -70,6 +78,7 @@ const resolution = {
     kind: "agent_pr_closed" as const,
     reasonCode: "agent_pr_closed",
     reasonText: "Last agent PR closed without merge.",
+    resolvedAt: new Date("2026-07-15T10:00:00.000Z"),
   }),
 };
 
@@ -118,6 +127,22 @@ test("settled resolution stops after the lock when another resolver won", async 
     resolvedIssueCount: 0,
   });
   assert.deepEqual(calls, ["transaction.begin", "incident.lock"]);
+});
+
+test("settlement evidence older than the last reopen cannot resolve the new epoch", async () => {
+  const { db } = recordingDb({
+    incidentStatus: "open",
+    pullRequestStates: ["merged", "closed"],
+    reopenedAfterSettlement: true,
+  });
+
+  const result = await createIncidentLifecycle(db).resolveIfAllAgentPullRequestsSettled(resolution);
+
+  assert.deepEqual(result, {
+    disposition: "resolution_event_already_consumed",
+    resolved: false,
+    resolvedIssueCount: 0,
+  });
 });
 
 test("settled resolution defers to an in-flight PR delivery batch", async () => {
