@@ -152,15 +152,44 @@ test("resolves a legacy recorded Linear identifier to the issue UUID", async () 
   assert.deepEqual(deps.calls.searchIssues, ["ENG-7"]);
 });
 
-test("creates a ticket without trusting fuzzy provider search results", async () => {
+test("recovers a provider-created ticket only when its exact investigation marker is present", async () => {
+  const marker = investigationMarker("inc-1", "run-1");
   const deps = makeDeps({
     searchIssues: async () => [
       {
-        id: "unrelated-issue",
+        id: "issue-3",
         identifier: "OPS-3",
         url: "https://linear.app/ops/issue/OPS-3",
+        description: `Investigation complete.\n\n${marker}`,
       },
     ],
+  });
+
+  const ticket = await deliverLinearTicketWithDeps(BASE_ARGS, RESULT, deps);
+
+  assert.deepEqual(ticket, {
+    ticketId: "issue-3",
+    identifier: "OPS-3",
+    url: "https://linear.app/ops/issue/OPS-3",
+    created: false,
+  });
+  assert.equal(deps.calls.createIssue.length, 0);
+});
+
+test("creates a ticket without trusting fuzzy provider search results", async () => {
+  const searchTerms: string[] = [];
+  const deps = makeDeps({
+    searchIssues: async (term) => {
+      searchTerms.push(term);
+      return [
+        {
+          id: "unrelated-issue",
+          identifier: "OPS-3",
+          url: "https://linear.app/ops/issue/OPS-3",
+          description: "superlog_incident_id=someone-else superlog_agent_run_id=another-run",
+        },
+      ];
+    },
   });
   const ticket = await deliverLinearTicketWithDeps(BASE_ARGS, RESULT, deps);
   assert.deepEqual(ticket, {
@@ -169,7 +198,7 @@ test("creates a ticket without trusting fuzzy provider search results", async ()
     url: "https://linear.app/eng/issue/ENG-42",
     created: true,
   });
-  assert.equal(deps.calls.searchIssues.length, 0);
+  assert.deepEqual(searchTerms, [investigationMarker("inc-1", "run-1")]);
   assert.equal(deps.calls.createIssue.length, 1);
 });
 

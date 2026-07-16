@@ -25,8 +25,9 @@ import { logger } from "../logger.js";
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
 
 // Marker line embedded in every ticket description for provider-side
-// correlation and diagnostics. Delivery retries use the locally recorded
-// ticket as their source of truth instead of fuzzy provider search.
+// correlation and recovery. Delivery retries use the locally recorded ticket
+// as their source of truth, with exact-marker provider lookup only when the
+// provider mutation succeeded before the local record committed.
 export function investigationMarker(incidentId: string, agentRunId: string): string {
   return `superlog_incident_id=${incidentId} superlog_agent_run_id=${agentRunId}`;
 }
@@ -148,6 +149,19 @@ export async function deliverLinearTicketWithDeps(
         ticketId: known.ticketId,
         identifier: known.identifier ?? known.ticketId,
         url: known.url,
+        created: false,
+      };
+    }
+
+    const marker = investigationMarker(args.incidentId, args.agentRunId);
+    const recovered = (await deps.searchIssues(marker)).find((issue) =>
+      issue.description?.includes(marker),
+    );
+    if (recovered) {
+      return {
+        ticketId: recovered.id,
+        identifier: recovered.identifier,
+        url: recovered.url,
         created: false,
       };
     }
