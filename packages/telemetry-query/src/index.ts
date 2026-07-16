@@ -790,12 +790,21 @@ export async function listServices(ch: ClickHouseClient, projectId: string, rang
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(range);
   const servicesBySource = await Promise.all(
     SERVICE_SOURCES.map(async (source): Promise<string[]> => {
+      // Logs are partitioned by TimestampTime. Keep the canonical nanosecond
+      // Timestamp filter for exactness, and add the padded partition-key window
+      // so ClickHouse can prune retained log partitions efficiently.
+      const logPartitionWindow =
+        source.table === "otel_logs"
+          ? `
+          AND TimestampTime >= (${sinceExpr}) - INTERVAL 1 SECOND
+          AND TimestampTime <= ${untilExpr}`
+          : "";
       const query = `
         SELECT DISTINCT ${source.service} AS service
         FROM ${source.table}
         WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
           AND ${source.time} >= ${sinceExpr}
-          AND ${source.time} <= ${untilExpr}
+          AND ${source.time} <= ${untilExpr}${logPartitionWindow}
           AND ${source.service} != ''
         ORDER BY service
         LIMIT 200

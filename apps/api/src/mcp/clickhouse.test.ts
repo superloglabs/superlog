@@ -202,6 +202,7 @@ test("telemetry queries preserve space-separated saved-view time bounds", async 
 
 test("listServices discovers services across traces, logs, and metrics", async () => {
   const queriedTables: string[] = [];
+  const queriesByTable: Record<string, string> = {};
   const servicesByTable: Record<string, string[]> = {
     otel_traces: ["api"],
     otel_logs: ["api", "log-only-worker"],
@@ -215,6 +216,7 @@ test("listServices discovers services across traces, logs, and metrics", async (
       const table = input.query.match(/FROM\s+(otel_[a-z_]+)/i)?.[1];
       assert.ok(table);
       queriedTables.push(table);
+      queriesByTable[table] = input.query;
       if (table === "otel_metrics_summary") throw new Error("UNKNOWN_TABLE");
       return {
         async json() {
@@ -244,6 +246,10 @@ test("listServices discovers services across traces, logs, and metrics", async (
     "otel_metrics_summary",
     "otel_traces",
   ]);
+  const logQuery = queriesByTable.otel_logs;
+  assert.ok(logQuery);
+  assert.match(logQuery, /TimestampTime >= \(now\(\) - INTERVAL 1 HOUR\) - INTERVAL 1 SECOND/);
+  assert.match(logQuery, /TimestampTime <= now\(\)/);
 });
 
 test("fieldColumnExpr allowlists identifier columns per source", () => {
