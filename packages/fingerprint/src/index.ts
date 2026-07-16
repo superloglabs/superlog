@@ -160,6 +160,12 @@ function normalizePsycopgError(body: string): string | null {
   if (!match?.[1]) return null;
 
   let s = `psycopg2.errors.${match[1]}: ${match[2] ?? ""}`;
+  s = s.replace(/"(?:[^"\\]|\\.)*"/g, (quoted, offset: number, source: string) => {
+    const prefix = source.slice(0, offset);
+    return /\b(?:column|relation|constraint|table|schema|database|index)\s*$/i.test(prefix)
+      ? quoted
+      : "<str>";
+  });
   s = s.replace(/https?:\/\/\S+/gi, "<url>");
   s = s.replace(/\b[\w.+-]+@[\w.-]+\.\w+\b/g, "<email>");
   s = s.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>");

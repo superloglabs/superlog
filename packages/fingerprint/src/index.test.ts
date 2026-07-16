@@ -363,6 +363,19 @@ test("fingerprintLog keeps different Postgres constraints separate", () => {
   assert.notEqual(fingerprintFor("vendor_product_id").hash, fingerprintFor("vendor_item_id").hash);
 });
 
+test("fingerprintLog redacts volatile quoted values in Postgres headlines", () => {
+  const fingerprintFor = (value: string) =>
+    fingerprintLog({
+      service: "catalog-worker",
+      severity: "ERROR",
+      body: `psycopg2.errors.InvalidTextRepresentation: invalid input syntax for type integer: "${value}"`,
+      exceptionType: "DataError",
+      stacktrace: null,
+    });
+
+  assert.equal(fingerprintFor("not-a-number").hash, fingerprintFor("still-not-a-number").hash);
+});
+
 // Postgres text and jsonb columns reject the NUL byte (0x00) — it raises
 // `22021 invalid byte sequence for encoding "UTF8": 0x00`. Telemetry can carry
 // a raw NUL in a message or stack frame; the fingerprint outputs feed straight
