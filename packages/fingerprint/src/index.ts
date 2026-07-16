@@ -303,5 +303,12 @@ function normalizePath(p: string): string {
     .replace(/^file:\/\//, "");
 
   out = out.replace(/^.*?\/((?:apps|packages|src|app|lib|pages)\/.*)$/, "$1");
+  // Next.js/Turbopack puts content hashes in generated chunk filenames. The
+  // same source stack can therefore acquire a different path identity across
+  // chunks (or builds), which must not create a fresh issue fingerprint.
+  out = out.replace(
+    /(\/\.next\/(?:server|static)\/(?:[^/]+\/)*[^/]*?)[0-9a-f]{8,}(?=\._\.js(?:$|[?#]))/gi,
+    "$1<hash>",
+  );
   return out;
 }

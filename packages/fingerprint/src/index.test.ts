@@ -2,6 +2,31 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fingerprint, fingerprintLog, messageBucketFor, stripNullBytes } from "./index.js";
 
+test("fingerprint groups equivalent Next.js stacks whose generated chunk hashes differ", () => {
+  const stackFor = (chunkHash: string) =>
+    [
+      "api_response_error: Too Many Requests",
+      "    at a7.request (/var/task/apps/web/.next/server/chunks/ssr/node_modules__pnpm_dab6c57e._.js:17:64695)",
+      "    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)",
+      `    at async f (/var/task/apps/web/.next/server/chunks/ssr/[root-of-the-server]__${chunkHash}._.js:2:2000)`,
+      `    at async h (/var/task/apps/web/.next/server/chunks/ssr/[root-of-the-server]__${chunkHash}._.js:2:3306)`,
+      "    at async m (/var/task/apps/web/.next/server/chunks/ssr/_978abe5d._.js:2:8316)",
+    ].join("\n");
+
+  const first = fingerprint({
+    type: "api_response_error",
+    message: "Too Many Requests",
+    stacktrace: stackFor("cb666142"),
+  });
+  const second = fingerprint({
+    type: "api_response_error",
+    message: "Too Many Requests",
+    stacktrace: stackFor("9598d6e6"),
+  });
+
+  assert.equal(first.hash, second.hash);
+});
+
 // A single route-scanner error class (e.g. Phoenix NoRouteError) emits one
 // exception per probed path. The stacktrace is identical across all of them —
 // only the request path in the message differs — so without path normalization
