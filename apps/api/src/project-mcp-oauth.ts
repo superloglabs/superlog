@@ -1,6 +1,14 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { ProjectMcpServer, ProjectMcpServerRepository } from "@superlog/db";
-import { db, decryptIntegrationSecret, encryptIntegrationSecret, schema } from "@superlog/db";
+import type {
+  ProjectMcpServer,
+  ProjectMcpServerRepository,
+} from "@superlog/db";
+import {
+  db,
+  decryptIntegrationSecret,
+  encryptIntegrationSecret,
+  schema,
+} from "@superlog/db";
 import { and, eq, isNull } from "drizzle-orm";
 import { strictProjectMcpFetch } from "./project-mcp-http.js";
 
@@ -45,7 +53,10 @@ export type ProjectMcpOAuthAttemptStore = {
 };
 
 export type ProjectMcpOAuthHttp = {
-  discover(serverUrl: string): Promise<ProjectMcpOAuthDiscovery>;
+  discover(
+    serverUrl: string,
+    signal?: AbortSignal,
+  ): Promise<ProjectMcpOAuthDiscovery>;
   register(
     registrationEndpoint: string,
     redirectUri: string,
@@ -83,7 +94,8 @@ export function createProjectMcpOAuthService(deps: {
   randomToken?: () => string;
   now?: () => Date;
 }) {
-  const randomToken = deps.randomToken ?? (() => randomBytes(32).toString("base64url"));
+  const randomToken =
+    deps.randomToken ?? (() => randomBytes(32).toString("base64url"));
   const now = deps.now ?? (() => new Date());
 
   return {
@@ -93,7 +105,11 @@ export function createProjectMcpOAuthService(deps: {
       actorUserId: string | null;
       redirectUri: string;
     }): Promise<{ authorizationUrl: string; expiresAt: string }> {
-      const server = await requireOAuthServer(deps.repository, input.projectId, input.serverId);
+      const server = await requireOAuthServer(
+        deps.repository,
+        input.projectId,
+        input.serverId,
+      );
       if (server.auth.grantType !== "authorization_code") {
         throw new Error("this OAuth server uses the client credentials grant");
       }
@@ -153,11 +169,17 @@ export function createProjectMcpOAuthService(deps: {
       authorizationUrl.searchParams.set("client_id", clientId);
       authorizationUrl.searchParams.set("redirect_uri", input.redirectUri);
       authorizationUrl.searchParams.set("state", state);
-      authorizationUrl.searchParams.set("code_challenge", pkceChallenge(codeVerifier));
+      authorizationUrl.searchParams.set(
+        "code_challenge",
+        pkceChallenge(codeVerifier),
+      );
       authorizationUrl.searchParams.set("code_challenge_method", "S256");
       authorizationUrl.searchParams.set("resource", discovery.resource);
       if (server.auth.scopes.length > 0) {
-        authorizationUrl.searchParams.set("scope", server.auth.scopes.join(" "));
+        authorizationUrl.searchParams.set(
+          "scope",
+          server.auth.scopes.join(" "),
+        );
       }
       return {
         authorizationUrl: authorizationUrl.toString(),
@@ -172,9 +194,15 @@ export function createProjectMcpOAuthService(deps: {
       const attempt = await deps.attempts.consume(input.state);
       if (!attempt || attempt.expiresAt <= now())
         throw new Error("OAuth attempt is invalid or expired");
-      const server = await requireOAuthServer(deps.repository, attempt.projectId, attempt.serverId);
+      const server = await requireOAuthServer(
+        deps.repository,
+        attempt.projectId,
+        attempt.serverId,
+      );
       if (server.url !== attempt.serverUrl) {
-        throw new Error("OAuth server configuration changed after authorization started");
+        throw new Error(
+          "OAuth server configuration changed after authorization started",
+        );
       }
       const token = await deps.http.exchange({
         tokenEndpoint: attempt.tokenEndpoint,
@@ -201,7 +229,9 @@ export function createProjectMcpOAuthService(deps: {
           tokenEndpoint: attempt.tokenEndpoint,
           authorizationServer: attempt.authorizationServer,
           resource: attempt.resource,
-          scopes: token.scope ? token.scope.split(/\s+/).filter(Boolean) : attempt.scopes,
+          scopes: token.scope
+            ? token.scope.split(/\s+/).filter(Boolean)
+            : attempt.scopes,
         },
         updatedAt: now(),
       });
@@ -211,10 +241,15 @@ export function createProjectMcpOAuthService(deps: {
       projectId: string;
       serverId: string;
     }): Promise<ProjectMcpServer> {
-      const server = await requireOAuthServer(deps.repository, input.projectId, input.serverId);
+      const server = await requireOAuthServer(
+        deps.repository,
+        input.projectId,
+        input.serverId,
+      );
       if (
         server.auth.accessToken &&
-        (!server.auth.expiresAt || server.auth.expiresAt.getTime() > now().getTime() + 60_000)
+        (!server.auth.expiresAt ||
+          server.auth.expiresAt.getTime() > now().getTime() + 60_000)
       ) {
         return server;
       }
@@ -247,7 +282,11 @@ export function createProjectMcpOAuthService(deps: {
       serverId: string;
       actorUserId: string | null;
     }): Promise<ProjectMcpServer> {
-      const server = await requireOAuthServer(deps.repository, input.projectId, input.serverId);
+      const server = await requireOAuthServer(
+        deps.repository,
+        input.projectId,
+        input.serverId,
+      );
       return connectClientCredentials(server, input.actorUserId);
     },
   };
@@ -262,11 +301,15 @@ export function createProjectMcpOAuthService(deps: {
       throw new Error("this OAuth server uses the authorization code grant");
     }
     if (!server.auth.clientId || !server.auth.clientSecret) {
-      throw new Error("OAuth client credentials requires a client ID and client secret");
+      throw new Error(
+        "OAuth client credentials requires a client ID and client secret",
+      );
     }
     const discovery = await deps.http.discover(server.url);
     if (!discovery.grantTypes.includes("client_credentials")) {
-      throw new Error("OAuth server does not advertise the client credentials grant");
+      throw new Error(
+        "OAuth server does not advertise the client credentials grant",
+      );
     }
     const token = await deps.http.clientCredentials({
       tokenEndpoint: discovery.tokenEndpoint,
@@ -308,9 +351,12 @@ export function createProjectMcpOAuthService(deps: {
             ? null
             : new Date(now().getTime() + token.expiresInSeconds * 1000),
         tokenEndpoint: overrides.tokenEndpoint ?? server.auth.tokenEndpoint,
-        authorizationServer: overrides.authorizationServer ?? server.auth.authorizationServer,
+        authorizationServer:
+          overrides.authorizationServer ?? server.auth.authorizationServer,
         resource: overrides.resource ?? server.auth.resource,
-        scopes: token.scope ? token.scope.split(/\s+/).filter(Boolean) : server.auth.scopes,
+        scopes: token.scope
+          ? token.scope.split(/\s+/).filter(Boolean)
+          : server.auth.scopes,
       },
       updatedByUserId: overrides.actorUserId ?? server.updatedByUserId,
       updatedAt: now(),
@@ -329,7 +375,8 @@ async function requireOAuthServer(
 > {
   const server = await repository.get(projectId, serverId);
   if (!server) throw new Error("MCP server not found");
-  if (server.auth.type !== "oauth") throw new Error("MCP server is not configured for OAuth");
+  if (server.auth.type !== "oauth")
+    throw new Error("MCP server is not configured for OAuth");
   return server as ProjectMcpServer & {
     auth: Extract<ProjectMcpServer["auth"], { type: "oauth" }>;
   };
@@ -363,7 +410,10 @@ export function createDrizzleProjectMcpOAuthAttemptStore(): ProjectMcpOAuthAttem
         .set({ consumedAt: new Date() })
         .where(
           and(
-            eq(schema.projectMcpOauthAttempts.stateHash, hashProjectMcpOAuthState(state)),
+            eq(
+              schema.projectMcpOauthAttempts.stateHash,
+              hashProjectMcpOAuthState(state),
+            ),
             isNull(schema.projectMcpOauthAttempts.consumedAt),
           ),
         )
@@ -381,10 +431,13 @@ export function createDrizzleProjectMcpOAuthAttemptStore(): ProjectMcpOAuthAttem
   };
 }
 
-export function createFetchProjectMcpOAuthHttp(fetchOverride?: typeof fetch): ProjectMcpOAuthHttp {
+export function createFetchProjectMcpOAuthHttp(
+  fetchOverride?: typeof fetch,
+): ProjectMcpOAuthHttp {
   const fetchImpl = fetchOverride ?? strictProjectMcpFetch;
   return {
-    discover: (serverUrl) => discoverProjectMcpOAuth(fetchImpl, serverUrl),
+    discover: (serverUrl, signal) =>
+      discoverProjectMcpOAuth(fetchImpl, serverUrl, signal),
     async register(registrationEndpoint, redirectUri) {
       const response = await fetchImpl(registrationEndpoint, {
         method: "POST",
@@ -401,12 +454,16 @@ export function createFetchProjectMcpOAuthHttp(fetchOverride?: typeof fetch): Pr
           token_endpoint_auth_method: "none",
         }),
       });
-      const body = await responseJson(response, "OAuth dynamic registration failed");
+      const body = await responseJson(
+        response,
+        "OAuth dynamic registration failed",
+      );
       if (typeof body.client_id !== "string")
         throw new Error("OAuth registration omitted client_id");
       return {
         clientId: body.client_id,
-        clientSecret: typeof body.client_secret === "string" ? body.client_secret : null,
+        clientSecret:
+          typeof body.client_secret === "string" ? body.client_secret : null,
       };
     },
     async exchange(input) {
@@ -460,6 +517,7 @@ export function createFetchProjectMcpOAuthHttp(fetchOverride?: typeof fetch): Pr
 async function discoverProjectMcpOAuth(
   fetchImpl: typeof fetch,
   serverUrl: string,
+  signal?: AbortSignal,
 ): Promise<ProjectMcpOAuthDiscovery> {
   const endpoint = new URL(serverUrl);
   const initial = await fetchImpl(endpoint, {
@@ -469,21 +527,40 @@ async function discoverProjectMcpOAuth(
       "mcp-protocol-version": "2025-11-25",
     },
     redirect: "manual",
+    signal,
   });
   const challenge = initial.headers.get("www-authenticate") ?? "";
   const advertised = /resource_metadata="([^"]+)"/i.exec(challenge)?.[1];
   const resourceCandidates = [
     advertised,
-    new URL(`/.well-known/oauth-protected-resource${endpoint.pathname}`, endpoint).toString(),
+    new URL(
+      `/.well-known/oauth-protected-resource${endpoint.pathname}`,
+      endpoint,
+    ).toString(),
     new URL("/.well-known/oauth-protected-resource", endpoint).toString(),
-  ].filter((value, index, all): value is string => !!value && all.indexOf(value) === index);
-  const resourceMetadata = await firstJson(fetchImpl, resourceCandidates);
-  const authorizationServers = readStringArray(resourceMetadata.authorization_servers);
+  ].filter(
+    (value, index, all): value is string =>
+      !!value && all.indexOf(value) === index,
+  );
+  const resourceMetadata = await firstJson(
+    fetchImpl,
+    resourceCandidates,
+    signal,
+  );
+  const authorizationServers = readStringArray(
+    resourceMetadata.authorization_servers,
+  );
   if (authorizationServers.length === 0) {
-    throw new Error("MCP protected-resource metadata has no authorization server");
+    throw new Error(
+      "MCP protected-resource metadata has no authorization server",
+    );
   }
   const authorizationServer = authorizationServers[0] as string;
-  const metadata = await firstJson(fetchImpl, authorizationMetadataUrls(authorizationServer));
+  const metadata = await firstJson(
+    fetchImpl,
+    authorizationMetadataUrls(authorizationServer),
+    signal,
+  );
   return {
     authorizationServer,
     authorizationEndpoint: requiredMetadataUrl(metadata.authorization_endpoint),
@@ -493,7 +570,9 @@ async function discoverProjectMcpOAuth(
       typeof resourceMetadata.resource === "string"
         ? resourceMetadata.resource
         : endpoint.toString(),
-    codeChallengeMethods: readStringArray(metadata.code_challenge_methods_supported),
+    codeChallengeMethods: readStringArray(
+      metadata.code_challenge_methods_supported,
+    ),
     grantTypes: readStringArray(metadata.grant_types_supported),
   };
 }
@@ -526,8 +605,10 @@ async function tokenRequest(
     throw new Error("OAuth token response omitted access_token");
   return {
     accessToken: body.access_token,
-    refreshToken: typeof body.refresh_token === "string" ? body.refresh_token : null,
-    expiresInSeconds: typeof body.expires_in === "number" ? body.expires_in : null,
+    refreshToken:
+      typeof body.refresh_token === "string" ? body.refresh_token : null,
+    expiresInSeconds:
+      typeof body.expires_in === "number" ? body.expires_in : null,
     scope: typeof body.scope === "string" ? body.scope : null,
   };
 }
@@ -535,14 +616,17 @@ async function tokenRequest(
 async function firstJson(
   fetchImpl: typeof fetch,
   urls: string[],
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
   for (const url of urls) {
     try {
       const response = await fetchImpl(url, {
         headers: { accept: "application/json" },
         redirect: "manual",
+        signal,
       });
-      if (response.ok) return (await response.json()) as Record<string, unknown>;
+      if (response.ok)
+        return (await response.json()) as Record<string, unknown>;
     } catch {
       // Try the next standards-defined discovery location.
     }
@@ -550,7 +634,10 @@ async function firstJson(
   throw new Error("OAuth metadata discovery failed");
 }
 
-async function responseJson(response: Response, message: string): Promise<Record<string, unknown>> {
+async function responseJson(
+  response: Response,
+  message: string,
+): Promise<Record<string, unknown>> {
   if (!response.ok) throw new Error(`${message} (${response.status})`);
   return (await response.json()) as Record<string, unknown>;
 }
@@ -580,7 +667,8 @@ function requiredMetadataUrl(value: unknown): string {
 function optionalMetadataUrl(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const url = new URL(value);
-  if (url.protocol !== "https:") throw new Error("OAuth endpoints must use HTTPS");
+  if (url.protocol !== "https:")
+    throw new Error("OAuth endpoints must use HTTPS");
   return url.toString();
 }
 
