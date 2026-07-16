@@ -1744,6 +1744,7 @@ export type ProjectMcpServer = {
   id: string;
   projectId: string;
   name: string;
+  slug: string;
   url: string;
   enabled: boolean;
   auth: ProjectMcpServerAuthView;
@@ -1774,6 +1775,14 @@ export type ProjectMcpServerList = {
   canManage: boolean;
 };
 
+export type ProjectMcpAuthDetection =
+  | {
+      type: "oauth";
+      grantType: "authorization_code" | "client_credentials";
+      supportsDynamicRegistration: boolean;
+    }
+  | { type: "unknown" };
+
 const projectMcpQueryKey = (projectId: string | undefined) => ["project-agent-mcps", projectId];
 
 export function useProjectMcpServers(projectId: string | undefined) {
@@ -1802,6 +1811,17 @@ export function useCreateProjectMcpServer(projectId: string | undefined) {
         { method: "POST", body: JSON.stringify(input) },
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: projectMcpQueryKey(projectId) }),
+  });
+}
+
+export function useDetectProjectMcpAuth(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: (url: string) =>
+      fetcher<ProjectMcpAuthDetection>(
+        `/api/org/projects/${requireProjectId(projectId)}/agent-mcp-servers/detect-auth`,
+        { method: "POST", body: JSON.stringify({ url }) },
+      ),
   });
 }
 

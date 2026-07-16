@@ -14,6 +14,7 @@ function oauthServer(): ProjectMcpServer {
     id: "server-1",
     projectId: "project-1",
     name: "linear",
+    displayName: "Linear",
     url: "https://linear.example/mcp",
     enabled: false,
     auth: {

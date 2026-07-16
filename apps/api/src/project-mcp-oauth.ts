@@ -45,7 +45,7 @@ export type ProjectMcpOAuthAttemptStore = {
 };
 
 export type ProjectMcpOAuthHttp = {
-  discover(serverUrl: string): Promise<ProjectMcpOAuthDiscovery>;
+  discover(serverUrl: string, signal?: AbortSignal): Promise<ProjectMcpOAuthDiscovery>;
   register(
     registrationEndpoint: string,
     redirectUri: string,
@@ -384,7 +384,7 @@ export function createDrizzleProjectMcpOAuthAttemptStore(): ProjectMcpOAuthAttem
 export function createFetchProjectMcpOAuthHttp(fetchOverride?: typeof fetch): ProjectMcpOAuthHttp {
   const fetchImpl = fetchOverride ?? strictProjectMcpFetch;
   return {
-    discover: (serverUrl) => discoverProjectMcpOAuth(fetchImpl, serverUrl),
+    discover: (serverUrl, signal) => discoverProjectMcpOAuth(fetchImpl, serverUrl, signal),
     async register(registrationEndpoint, redirectUri) {
       const response = await fetchImpl(registrationEndpoint, {
         method: "POST",
@@ -460,6 +460,7 @@ export function createFetchProjectMcpOAuthHttp(fetchOverride?: typeof fetch): Pr
 async function discoverProjectMcpOAuth(
   fetchImpl: typeof fetch,
   serverUrl: string,
+  signal?: AbortSignal,
 ): Promise<ProjectMcpOAuthDiscovery> {
   const endpoint = new URL(serverUrl);
   const initial = await fetchImpl(endpoint, {
@@ -469,6 +470,7 @@ async function discoverProjectMcpOAuth(
       "mcp-protocol-version": "2025-11-25",
     },
     redirect: "manual",
+    signal,
   });
   const challenge = initial.headers.get("www-authenticate") ?? "";
   const advertised = /resource_metadata="([^"]+)"/i.exec(challenge)?.[1];
@@ -477,13 +479,13 @@ async function discoverProjectMcpOAuth(
     new URL(`/.well-known/oauth-protected-resource${endpoint.pathname}`, endpoint).toString(),
     new URL("/.well-known/oauth-protected-resource", endpoint).toString(),
   ].filter((value, index, all): value is string => !!value && all.indexOf(value) === index);
-  const resourceMetadata = await firstJson(fetchImpl, resourceCandidates);
+  const resourceMetadata = await firstJson(fetchImpl, resourceCandidates, signal);
   const authorizationServers = readStringArray(resourceMetadata.authorization_servers);
   if (authorizationServers.length === 0) {
     throw new Error("MCP protected-resource metadata has no authorization server");
   }
   const authorizationServer = authorizationServers[0] as string;
-  const metadata = await firstJson(fetchImpl, authorizationMetadataUrls(authorizationServer));
+  const metadata = await firstJson(fetchImpl, authorizationMetadataUrls(authorizationServer), signal);
   return {
     authorizationServer,
     authorizationEndpoint: requiredMetadataUrl(metadata.authorization_endpoint),
@@ -535,12 +537,14 @@ async function tokenRequest(
 async function firstJson(
   fetchImpl: typeof fetch,
   urls: string[],
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
   for (const url of urls) {
     try {
       const response = await fetchImpl(url, {
         headers: { accept: "application/json" },
         redirect: "manual",
+        signal,
       });
       if (response.ok) return (await response.json()) as Record<string, unknown>;
     } catch {

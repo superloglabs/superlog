@@ -682,6 +682,7 @@ export const projectMcpServers = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    displayName: text("display_name"),
     url: text("url").notNull(),
     enabled: boolean("enabled").notNull().default(true),
     authType: text("auth_type")

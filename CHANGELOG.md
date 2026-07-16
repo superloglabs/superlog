@@ -4,6 +4,18 @@ Notable changes to Superlog. Add new entries at the top. Each entry is a
 `## YYYY-MM-DD — Title` heading; an optional `Tags:` line right under the
 heading becomes the entry's labels.
 
+## 2026-07-16 — Smarter custom MCP setup
+
+Tags: Improvement, MCP
+
+Adding a custom MCP server now detects standards-based OAuth automatically and
+keeps manual credentials as an explicit fallback.
+
+- Server names keep their original capitalization while Superlog generates a
+  protocol-safe identifier behind the scenes.
+- Authentication feedback is compact and manual options stay out of the way
+  until you ask for them.
+
 ## 2026-07-09 — Incident page, redesigned
 
 Tags: Improvement, Incidents
