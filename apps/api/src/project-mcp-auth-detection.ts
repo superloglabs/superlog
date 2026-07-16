@@ -20,9 +20,17 @@ export async function detectProjectMcpAuth(
 ): Promise<ProjectMcpAuthDetection> {
   try {
     const discovery = await oauth.discover(serverUrl);
+    const supportsAuthorizationCode = discovery.grantTypes.includes("authorization_code");
+    const supportsClientCredentials = discovery.grantTypes.includes("client_credentials");
+    if (
+      discovery.grantTypes.length > 0 &&
+      !supportsAuthorizationCode &&
+      !supportsClientCredentials
+    ) {
+      return { type: "unknown" };
+    }
     const grantType =
-      discovery.grantTypes.includes("client_credentials") &&
-      !discovery.grantTypes.includes("authorization_code")
+      supportsClientCredentials && !supportsAuthorizationCode
         ? "client_credentials"
         : "authorization_code";
     if (

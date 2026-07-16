@@ -24,6 +24,14 @@ export const EMPTY_AUTH: AuthDraft = {
   requiresClientId: false,
 };
 
+export type ProjectMcpAuthSelection = "automatic" | "manual" | "required";
+
+export function projectMcpAuthSelectionAfterUrlChange(
+  selection: ProjectMcpAuthSelection,
+): ProjectMcpAuthSelection {
+  return selection === "required" ? "automatic" : selection;
+}
+
 export function createDetectedProjectMcpAuthDraft(detection: ProjectMcpAuthDetection): AuthDraft {
   if (detection.type === "unknown") return EMPTY_AUTH;
   return {

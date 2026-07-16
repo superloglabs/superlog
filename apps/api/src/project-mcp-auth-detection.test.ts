@@ -44,3 +44,15 @@ test("MCP auth detection rejects authorization code servers without PKCE S256", 
 
   assert.deepEqual(result, { type: "unknown" });
 });
+
+test("MCP auth detection stays unknown for unsupported OAuth grants", async () => {
+  const result = await detectProjectMcpAuth("https://mcp.example/mcp", {
+    discover: async () => ({
+      codeChallengeMethods: ["S256"],
+      grantTypes: ["urn:ietf:params:oauth:grant-type:device_code"],
+      registrationEndpoint: null,
+    }),
+  });
+
+  assert.deepEqual(result, { type: "unknown" });
+});
