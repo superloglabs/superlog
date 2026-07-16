@@ -3,12 +3,12 @@ import net from "node:net";
 import test from "node:test";
 
 import {
+  type RenderSyslogRecord,
   SyslogFrameSplitter,
   createRenderSyslogServer,
   extractIngestKey,
   parseRfc5424,
   renderSyslogToOtlp,
-  type RenderSyslogRecord,
 } from "./render-syslog.js";
 
 // Realistic length: real keys are the prefix + 43 chars of base64url.
@@ -209,17 +209,22 @@ test("frames that never authenticate are dropped, not delivered", async () => {
   );
 });
 
-test("invalid-key verdicts are cached across frames", async () => {
-  const calls: string[] = [];
+test("a missing key is rechecked on a following frame", async () => {
+  let calls = 0;
   await withServer(
-    async (key) => {
-      calls.push(key);
-      return null;
+    async () => {
+      calls += 1;
+      return calls === 1 ? null : "project-1";
     },
-    async (port) => {
-      await send(port, Buffer.concat([octet(FRAME), octet(FRAME), octet(FRAME)]));
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      assert.equal(calls.length, 1);
+    async (port, delivered) => {
+      await send(port, octet(FRAME));
+      await eventually(() => calls === 1);
+      assert.equal(delivered.length, 0);
+
+      await send(port, octet(FRAME));
+      await eventually(() => delivered.length === 1);
+      assert.equal(calls, 2);
+      assert.equal(delivered[0]?.projectId, "project-1");
     },
   );
 });
