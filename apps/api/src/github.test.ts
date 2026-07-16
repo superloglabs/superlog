@@ -910,7 +910,7 @@ test("the GitHub app's own PR comments do not resume its investigation", async (
   assert.equal(continuations.length, 0);
 });
 
-test("closed unmerged agent PR does not resolve incident or linked issue", async () => {
+test("closing the last live agent PR without merge resolves the incident and linked issue", async () => {
   const fixture = await seedAgentPrFixture("closed");
   const app = new Hono();
   mountGithubPublic(app);
@@ -937,15 +937,20 @@ test("closed unmerged agent PR does not resolve incident or linked issue", async
   });
   assert.equal(pr?.state, "closed");
 
+  // The close settled the incident's only PR: the human's decision on the
+  // delivery resolves the incident instead of parking it behind a question.
   const incident = await db.query.incidents.findFirst({
     where: eq(schema.incidents.id, fixture.incidentId),
   });
-  assert.equal(incident?.status, "open");
+  assert.equal(incident?.status, "resolved");
+  assert.equal(incident?.resolvedByKind, "agent_pr_closed");
+  assert.equal(incident?.resolvedReasonCode, "agent_pr_closed");
+  assert.match(incident?.resolvedReasonText ?? "", /closed without merge by @alice/);
 
   const issue = await db.query.issues.findFirst({
     where: eq(schema.issues.id, fixture.issueId),
   });
-  assert.equal(issue?.status, "open");
+  assert.equal(issue?.status, "resolved");
 
   const resolvedEvent = await db.query.incidentEvents.findFirst({
     where: and(
@@ -953,7 +958,7 @@ test("closed unmerged agent PR does not resolve incident or linked issue", async
       eq(schema.incidentEvents.kind, "incident_resolved"),
     ),
   });
-  assert.equal(resolvedEvent, undefined);
+  assert.match(resolvedEvent?.summary ?? "", /closed without merge/);
 });
 
 async function seedAgentPrFixture(label: string): Promise<{
