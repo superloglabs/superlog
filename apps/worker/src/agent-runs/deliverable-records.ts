@@ -275,9 +275,9 @@ export async function recordFiledLinearTicket(
   ctx: AgentRunContext,
   ticket: schema.AgentRunLinearTicket | null | undefined,
   opts: { identifier?: string | null } = {},
-): Promise<void> {
-  if (!ticket?.id) return;
-  if (!ctx.linearInstall) return;
+): Promise<boolean> {
+  if (!ticket?.id) return false;
+  if (!ctx.linearInstall) return false;
   const now = new Date();
   const inserted = await db
     .insert(schema.agentLinearTickets)
@@ -296,7 +296,18 @@ export async function recordFiledLinearTicket(
     })
     .returning({ id: schema.agentLinearTickets.id });
   const row = inserted[0];
-  if (!row) return;
+  if (!row) {
+    const existing = await db.query.agentLinearTickets.findFirst({
+      where: and(
+        eq(schema.agentLinearTickets.workspaceId, ctx.linearInstall.workspaceId),
+        eq(schema.agentLinearTickets.ticketId, ticket.id),
+        eq(schema.agentLinearTickets.incidentId, ctx.incident.id),
+        eq(schema.agentLinearTickets.agentRunId, ctx.agentRun.id),
+      ),
+      columns: { id: true },
+    });
+    return !!existing;
+  }
   await db
     .insert(schema.agentLinearTicketEvents)
     .values({
@@ -329,6 +340,7 @@ export async function recordFiledLinearTicket(
       org,
     });
   }
+  return true;
 }
 
 export async function recordOpenedAgentPullRequest(

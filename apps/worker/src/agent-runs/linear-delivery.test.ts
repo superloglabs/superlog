@@ -132,6 +132,11 @@ test("resolves a legacy recorded Linear identifier to the issue UUID", async () 
       return term === "ENG-7"
         ? [
             {
+              id: "unrelated-issue",
+              identifier: "OPS-3",
+              url: "https://linear.app/ops/issue/OPS-3",
+            },
+            {
               id: "0b6e7f7e-6f3a-4b8e-9a4e-2d1c3b4a5f6e",
               identifier: "ENG-7",
               url: "https://linear.app/eng/issue/ENG-7",
@@ -147,14 +152,21 @@ test("resolves a legacy recorded Linear identifier to the issue UUID", async () 
   assert.deepEqual(deps.calls.searchIssues, ["ENG-7"]);
 });
 
-test("dedupes a retried completion against its investigation marker", async () => {
+test("recovers a provider-created ticket only when its exact investigation marker is present", async () => {
+  const marker = investigationMarker("inc-1", "run-1");
   const deps = makeDeps({
-    searchIssues: async (term) =>
-      term === investigationMarker("inc-1", "run-1")
-        ? [{ id: "issue-3", identifier: "OPS-3", url: "https://linear.app/ops/issue/OPS-3" }]
-        : [],
+    searchIssues: async () => [
+      {
+        id: "issue-3",
+        identifier: "OPS-3",
+        url: "https://linear.app/ops/issue/OPS-3",
+        description: `Investigation complete.\n\n${marker}`,
+      },
+    ],
   });
+
   const ticket = await deliverLinearTicketWithDeps(BASE_ARGS, RESULT, deps);
+
   assert.deepEqual(ticket, {
     ticketId: "issue-3",
     identifier: "OPS-3",
@@ -164,10 +176,36 @@ test("dedupes a retried completion against its investigation marker", async () =
   assert.equal(deps.calls.createIssue.length, 0);
 });
 
+test("creates a ticket without trusting fuzzy provider search results", async () => {
+  const searchTerms: string[] = [];
+  const deps = makeDeps({
+    searchIssues: async (term) => {
+      searchTerms.push(term);
+      return [
+        {
+          id: "unrelated-issue",
+          identifier: "OPS-3",
+          url: "https://linear.app/ops/issue/OPS-3",
+          description: "superlog_incident_id=someone-else superlog_agent_run_id=another-run",
+        },
+      ];
+    },
+  });
+  const ticket = await deliverLinearTicketWithDeps(BASE_ARGS, RESULT, deps);
+  assert.deepEqual(ticket, {
+    ticketId: "issue-uuid",
+    identifier: "ENG-42",
+    url: "https://linear.app/eng/issue/ENG-42",
+    created: true,
+  });
+  assert.deepEqual(searchTerms, [investigationMarker("inc-1", "run-1")]);
+  assert.equal(deps.calls.createIssue.length, 1);
+});
+
 test("returns null and marks reauth on revoked-token errors, never throwing", async () => {
   const deps = makeDeps({
-    searchIssues: async () => {
-      throw new Error("linear searchIssues query failed: 401 invalid_grant refresh token revoked");
+    createIssue: async () => {
+      throw new Error("linear issueCreate failed: 401 invalid_grant refresh token revoked");
     },
   });
   const ticket = await deliverLinearTicketWithDeps(BASE_ARGS, RESULT, deps);
