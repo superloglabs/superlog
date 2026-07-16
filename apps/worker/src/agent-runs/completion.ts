@@ -460,9 +460,16 @@ export async function completeWithoutPullRequest(
     runCompletion?: "already_committed_by_resolution";
     incidentOutcome?:
       | {
-          kind: "all_pull_requests_merged" | "all_pull_requests_settled";
+          kind: "all_pull_requests_merged";
           prNumber: number;
           repoFullName: string;
+          resolutionProof: IncidentResolutionProof;
+        }
+      | {
+          kind: "all_pull_requests_settled";
+          prNumber: number;
+          repoFullName: string;
+          settledState: "merged" | "closed";
           resolutionProof: IncidentResolutionProof;
         }
       | { kind: "incident_already_closed" };

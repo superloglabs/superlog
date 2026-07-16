@@ -18,14 +18,18 @@ export function mergedPullRequestResolutionCopy(opts: {
 export function settledPullRequestResolutionCopy(opts: {
   prNumber: number;
   repoFullName: string;
+  settledState: "merged" | "closed";
 }): {
   threadLead: string;
   status: string;
   mainTextSuffix: string;
 } {
   return {
-    threadLead: `:white_check_mark: PR #${opts.prNumber} (${opts.repoFullName}) was closed without merging and no agent pull request remains open; incident resolved.`,
-    status: "Incident resolved - agent pull requests closed without merge",
+    threadLead:
+      opts.settledState === "merged"
+        ? `:white_check_mark: Fix PR #${opts.prNumber} (${opts.repoFullName}) is merged and the remaining agent pull requests are closed; incident resolved.`
+        : `:white_check_mark: PR #${opts.prNumber} (${opts.repoFullName}) was closed without merging and no agent pull request remains open; incident resolved.`,
+    status: "Incident resolved - all agent pull requests settled",
     mainTextSuffix: "Incident resolved",
   };
 }

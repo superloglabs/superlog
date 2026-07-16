@@ -18,7 +18,6 @@ import {
   recordInboundInteraction,
   releaseAgentPullRequestReviewContinuationClaim,
   releaseAgentPullRequestReviewLimitNotification,
-  resolveIncidentIfAllAgentPullRequestsMerged,
   resolveIncidentIfAllAgentPullRequestsSettled,
   schema,
   syncLoopsContactsForOrg,
@@ -1049,26 +1048,33 @@ async function resolveIncidentForMergedAgentPr(opts: {
 }): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult> {
   const { agentPr, mergedAt, mergedByLogin } = opts;
   const resolutionEventDedupeKey = `incident_resolved:agent_pr:${agentPr.id}`;
-  const resolution = await resolveIncidentIfAllAgentPullRequestsMerged({
+  // Settled guard, not all-merged: a sibling PR closed without merge must not
+  // block this merge from resolving the incident — on a mixed incident the
+  // merge can be the last settle event, with no later close to fire the
+  // policy.
+  const resolution = await resolveIncidentIfAllAgentPullRequestsSettled({
     incidentId: agentPr.incidentId,
-    kind: "agent_pr_merged",
-    reasonCode: "agent_pr_merged",
-    reasonText: `Resolved because agent PR #${agentPr.prNumber} (${agentPr.repoFullName}) was merged${
-      mergedByLogin ? ` by @${mergedByLogin}` : ""
-    }${!mergedByLogin && opts.source ? ` (${opts.source})` : ""}.`,
-    agentRunId: agentPr.agentRunId,
-    resolvingAgentRunId: null,
-    eventSummary: `Incident resolved because PR #${agentPr.prNumber} was merged.`,
-    eventDetail: {
-      agentPrId: agentPr.id,
-      repoFullName: agentPr.repoFullName,
-      prNumber: agentPr.prNumber,
-      prUrl: agentPr.url,
-      mergedByLogin,
-      ...(opts.source ? { source: opts.source } : {}),
-    },
-    eventDedupeKey: resolutionEventDedupeKey,
-    resolvedAt: mergedAt,
+    buildInput: (pullRequests) => ({
+      incidentId: agentPr.incidentId,
+      kind: "agent_pr_merged" as const,
+      reasonCode: "agent_pr_merged",
+      reasonText: `Resolved because agent PR #${agentPr.prNumber} (${agentPr.repoFullName}) was merged${
+        mergedByLogin ? ` by @${mergedByLogin}` : ""
+      }${!mergedByLogin && opts.source ? ` (${opts.source})` : ""}.`,
+      agentRunId: agentPr.agentRunId,
+      resolvingAgentRunId: null,
+      eventSummary: `Incident resolved because PR #${agentPr.prNumber} was merged.`,
+      eventDetail: {
+        agentPrId: agentPr.id,
+        repoFullName: agentPr.repoFullName,
+        prNumber: agentPr.prNumber,
+        prUrl: agentPr.url,
+        mergedByLogin,
+        ...(opts.source ? { source: opts.source } : {}),
+      },
+      eventDedupeKey: resolutionEventDedupeKey,
+      resolvedAt: latestAgentPullRequestSettlementAt(pullRequests) ?? mergedAt,
+    }),
   });
   if (resolution.disposition === "resolved") {
     await runResolvedIncidentSideEffectsWithGithub(agentPr.incidentId, {

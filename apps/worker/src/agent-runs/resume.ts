@@ -8,7 +8,8 @@ import {
   isInboundInteractionEventKind,
   isIncidentResolutionProofCurrent,
   requestFollowUpAgentRun,
-  resolveIncidentIfAllAgentPullRequestsMerged,
+  latestAgentPullRequestSettlementAt,
+  resolveIncidentIfAllAgentPullRequestsSettled,
   schema,
 } from "@superlog/db";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
@@ -354,27 +355,32 @@ async function coldStartFallback(
         };
       }
       const occurredAt = new Date(input.occurredAt);
-      const resolvedAt =
+      const fallbackResolvedAt =
         agentPr.mergedAt ?? (Number.isFinite(occurredAt.getTime()) ? occurredAt : new Date());
-      return resolveIncidentIfAllAgentPullRequestsMerged({
+      // Settled guard, not all-merged: a sibling PR closed without merge must
+      // not leave the incident open when this merge is the last settle event.
+      return resolveIncidentIfAllAgentPullRequestsSettled({
         incidentId: ctx.incident.id,
-        kind: "agent_pr_merged",
-        reasonCode: "agent_pr_merged",
-        reasonText: `Resolved because agent PR #${agentPr.prNumber} (${agentPr.repoFullName}) was merged${
-          agentPr.mergedByLogin ? ` by @${agentPr.mergedByLogin}` : ""
-        }.`,
-        agentRunId: agentPr.agentRunId,
-        resolvingAgentRunId: null,
-        eventSummary: `Incident resolved because PR #${agentPr.prNumber} was merged.`,
-        eventDetail: {
-          agentPrId: agentPr.id,
-          repoFullName: agentPr.repoFullName,
-          prNumber: agentPr.prNumber,
-          prUrl: agentPr.url,
-          mergedByLogin: agentPr.mergedByLogin,
-        },
-        eventDedupeKey: `incident_resolved:agent_pr:${agentPr.id}`,
-        resolvedAt,
+        buildInput: (lockedPullRequests) => ({
+          incidentId: ctx.incident.id,
+          kind: "agent_pr_merged" as const,
+          reasonCode: "agent_pr_merged",
+          reasonText: `Resolved because agent PR #${agentPr.prNumber} (${agentPr.repoFullName}) was merged${
+            agentPr.mergedByLogin ? ` by @${agentPr.mergedByLogin}` : ""
+          }.`,
+          agentRunId: agentPr.agentRunId,
+          resolvingAgentRunId: null,
+          eventSummary: `Incident resolved because PR #${agentPr.prNumber} was merged.`,
+          eventDetail: {
+            agentPrId: agentPr.id,
+            repoFullName: agentPr.repoFullName,
+            prNumber: agentPr.prNumber,
+            prUrl: agentPr.url,
+            mergedByLogin: agentPr.mergedByLogin,
+          },
+          eventDedupeKey: `incident_resolved:agent_pr:${agentPr.id}`,
+          resolvedAt: latestAgentPullRequestSettlementAt(lockedPullRequests) ?? fallbackResolvedAt,
+        }),
       });
     },
     async publishResolvedRun(input, disposition) {
