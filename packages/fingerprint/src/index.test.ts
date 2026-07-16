@@ -376,6 +376,19 @@ test("fingerprintLog redacts volatile quoted values in Postgres headlines", () =
   assert.equal(fingerprintFor("not-a-number").hash, fingerprintFor("still-not-a-number").hash);
 });
 
+test("fingerprintLog groups equivalent psycopg2 and psycopg3 errors", () => {
+  const fingerprintFor = (driver: "psycopg2" | "psycopg") =>
+    fingerprintLog({
+      service: "catalog-worker",
+      severity: "ERROR",
+      body: `(${driver}.errors.NotNullViolation) null value in column "vendor_product_id" of relation "product_variants" violates not-null constraint`,
+      exceptionType: "IntegrityError",
+      stacktrace: null,
+    });
+
+  assert.equal(fingerprintFor("psycopg2").hash, fingerprintFor("psycopg").hash);
+});
+
 // Postgres text and jsonb columns reject the NUL byte (0x00) — it raises
 // `22021 invalid byte sequence for encoding "UTF8": 0x00`. Telemetry can carry
 // a raw NUL in a message or stack frame; the fingerprint outputs feed straight
