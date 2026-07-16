@@ -1010,6 +1010,11 @@ test("an org-scoped installation can enable observability reviews from an author
     .values({ orgId: org.id, name: "test", slug: tag })
     .returning();
   if (!project) throw new Error("failed to seed project");
+  const [otherProject] = await db
+    .insert(schema.projects)
+    .values({ orgId: org.id, name: "other", slug: `${tag}-other` })
+    .returning();
+  if (!otherProject) throw new Error("failed to seed other project");
   const [user] = await db
     .insert(schema.users)
     .values({
@@ -1040,6 +1045,12 @@ test("an org-scoped installation can enable observability reviews from an author
     githubRepoId: 17,
     githubRepoFullName: `${tag}/repo`,
   });
+  await db.insert(schema.projectGithubRepos).values({
+    projectId: otherProject.id,
+    installationId: installation.id,
+    githubRepoId: 99,
+    githubRepoFullName: `${tag}/other-repo`,
+  });
   const app = new Hono<{ Variables: { userId: string; orgId: string } }>();
   app.use("*", async (c, next) => {
     c.set("userId", user.id);
@@ -1061,7 +1072,21 @@ test("an org-scoped installation can enable observability reviews from an author
   const updated = await db.query.githubInstallations.findFirst({
     where: eq(schema.githubInstallations.id, installation.id),
   });
-  assert.equal(updated?.observabilityReviewEnabled, true);
+  assert.equal(updated?.observabilityReviewEnabled, false);
+  const projectSetting = await db.query.projectGithubInstallationSettings.findFirst({
+    where: and(
+      eq(schema.projectGithubInstallationSettings.projectId, project.id),
+      eq(schema.projectGithubInstallationSettings.installationId, installation.id),
+    ),
+  });
+  assert.equal(projectSetting?.observabilityReviewEnabled, true);
+  const otherProjectSetting = await db.query.projectGithubInstallationSettings.findFirst({
+    where: and(
+      eq(schema.projectGithubInstallationSettings.projectId, otherProject.id),
+      eq(schema.projectGithubInstallationSettings.installationId, installation.id),
+    ),
+  });
+  assert.equal(otherProjectSetting, undefined);
 
   const webhookApp = new Hono();
   mountGithubPublic(webhookApp);
@@ -1077,13 +1102,13 @@ test("an org-scoped installation can enable observability reviews from an author
         webhookApp,
         "pull_request",
         `${tag}-ungranted-review`,
-        pullRequest(99, `${tag}/ungranted`, "ungranted-head"),
+        pullRequest(99, `${tag}/other-repo`, "other-project-head"),
       )
     ).status,
     200,
   );
   const ungranted = await db.query.prObservabilityReviews.findMany({
-    where: eq(schema.prObservabilityReviews.repoFullName, `${tag}/ungranted`),
+    where: eq(schema.prObservabilityReviews.repoFullName, `${tag}/other-repo`),
   });
   assert.equal(ungranted.length, 0);
 

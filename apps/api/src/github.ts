@@ -539,7 +539,6 @@ async function maybeEnqueuePrObservabilityReview(
       const installations = await db.query.githubInstallations.findMany({
         where: and(
           eq(schema.githubInstallations.installationId, input.installationId),
-          eq(schema.githubInstallations.observabilityReviewEnabled, true),
           eq(schema.githubInstallations.agentEnabled, true),
           isNull(schema.githubInstallations.revokedAt),
         ),
@@ -547,15 +546,25 @@ async function maybeEnqueuePrObservabilityReview(
       for (const installation of installations) {
         if (!isRepoEnabled(normalizeRepoAccess(installation.repoAccess), input.repoId)) continue;
         if (installation.projectId) {
+          if (!installation.observabilityReviewEnabled) continue;
           return { orgId: installation.orgId, projectId: installation.projectId };
         }
-        const grant = await db.query.projectGithubRepos.findFirst({
+        const grants = await db.query.projectGithubRepos.findMany({
           where: and(
             eq(schema.projectGithubRepos.installationId, installation.id),
             eq(schema.projectGithubRepos.githubRepoId, input.repoId),
           ),
         });
-        if (grant) return { orgId: installation.orgId, projectId: grant.projectId };
+        for (const grant of grants) {
+          const setting = await db.query.projectGithubInstallationSettings.findFirst({
+            where: and(
+              eq(schema.projectGithubInstallationSettings.projectId, grant.projectId),
+              eq(schema.projectGithubInstallationSettings.installationId, installation.id),
+              eq(schema.projectGithubInstallationSettings.observabilityReviewEnabled, true),
+            ),
+          });
+          if (setting) return { orgId: installation.orgId, projectId: grant.projectId };
+        }
       }
       return null;
     },
@@ -2061,12 +2070,24 @@ export function mountGithubAuthed(app: Hono<any>): void {
       // repo set; project-owned installs see everything in the install.
       const grantSet = allowedRepoIds === null ? null : new Set(allowedRepoIds);
       const scopedRepos = grantSet === null ? repos : repos.filter((repo) => grantSet.has(repo.id));
+      const projectSetting =
+        row.projectId === null
+          ? await db.query.projectGithubInstallationSettings.findFirst({
+              where: and(
+                eq(schema.projectGithubInstallationSettings.projectId, active.projectId),
+                eq(schema.projectGithubInstallationSettings.installationId, row.id),
+              ),
+            })
+          : null;
       installations.push({
         installationId: row.installationId,
         accountLogin: row.accountLogin,
         accountType: row.accountType,
         enabled: row.agentEnabled,
-        observabilityReviewEnabled: row.observabilityReviewEnabled,
+        observabilityReviewEnabled:
+          row.projectId === null
+            ? (projectSetting?.observabilityReviewEnabled ?? false)
+            : row.observabilityReviewEnabled,
         manageUrl: githubInstallationManageUrl(row),
         repos: scopedRepos.map((repo) => ({
           ...repo,
@@ -2234,10 +2255,14 @@ export function mountGithubAuthed(app: Hono<any>): void {
       observabilityReviewEnabled?: boolean;
       repoAccess?: RepoAccess;
     } = {};
+    const orgScopedReviewEnabled =
+      row.projectId === null && typeof body?.observabilityReviewEnabled === "boolean"
+        ? body.observabilityReviewEnabled
+        : null;
     if (typeof body?.enabled === "boolean") {
       patch.agentEnabled = body.enabled;
     }
-    if (typeof body?.observabilityReviewEnabled === "boolean") {
+    if (typeof body?.observabilityReviewEnabled === "boolean" && row.projectId !== null) {
       patch.observabilityReviewEnabled = body.observabilityReviewEnabled;
     }
     if (body?.repoId !== undefined || body?.repoEnabled !== undefined) {
@@ -2247,14 +2272,35 @@ export function mountGithubAuthed(app: Hono<any>): void {
       }
       patch.repoAccess = setRepoEnabled(row.repoAccess, repoId, body.repoEnabled);
     }
-    if (Object.keys(patch).length === 0) {
+    if (Object.keys(patch).length === 0 && orgScopedReviewEnabled === null) {
       return c.json({ error: "no repo access change provided" }, 400);
     }
 
-    await db
-      .update(schema.githubInstallations)
-      .set(patch)
-      .where(eq(schema.githubInstallations.id, row.id));
+    if (Object.keys(patch).length > 0) {
+      await db
+        .update(schema.githubInstallations)
+        .set(patch)
+        .where(eq(schema.githubInstallations.id, row.id));
+    }
+    if (orgScopedReviewEnabled !== null) {
+      await db
+        .insert(schema.projectGithubInstallationSettings)
+        .values({
+          projectId: ctx.projectId,
+          installationId: row.id,
+          observabilityReviewEnabled: orgScopedReviewEnabled,
+        })
+        .onConflictDoUpdate({
+          target: [
+            schema.projectGithubInstallationSettings.projectId,
+            schema.projectGithubInstallationSettings.installationId,
+          ],
+          set: {
+            observabilityReviewEnabled: orgScopedReviewEnabled,
+            updatedAt: new Date(),
+          },
+        });
+    }
     return c.json({ ok: true });
   });
 

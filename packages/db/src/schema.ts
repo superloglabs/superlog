@@ -1794,6 +1794,31 @@ export const projectGithubRepos = pgTable(
   }),
 );
 
+// Project-local settings for an org-scoped GitHub installation. The shared
+// installation row cannot carry project opt-ins: several projects may have
+// disjoint repo grants on the same installation.
+export const projectGithubInstallationSettings = pgTable(
+  "project_github_installation_settings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    installationId: uuid("installation_id")
+      .notNull()
+      .references(() => githubInstallations.id, { onDelete: "cascade" }),
+    observabilityReviewEnabled: boolean("observability_review_enabled").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    projectInstallationUniq: uniqueIndex("project_github_installation_settings_uniq").on(
+      t.projectId,
+      t.installationId,
+    ),
+  }),
+);
+
 export const slackInstallations = pgTable(
   "slack_installations",
   {
