@@ -38,10 +38,15 @@ export function fieldColumnExpr(field: string, source: FieldFilterSource): strin
 
 const RELATIVE_TIME_EXPR_RE =
   /^now\(\)(?:\s*-\s*INTERVAL\s+(?:[1-9][0-9]*)\s+(?:SECOND|MINUTE|HOUR|DAY|WEEK|MONTH))?$/i;
+const ISO_TIME_BOUND_RE =
+  /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
 
 function timeBoundExpr(value: string, paramName: "since" | "until"): string {
   const normalized = value.trim().replace(/\s+/g, " ");
   if (RELATIVE_TIME_EXPR_RE.test(normalized)) return normalized;
+  if (!ISO_TIME_BOUND_RE.test(normalized) || Number.isNaN(Date.parse(normalized))) {
+    throw new Error(`invalid ${paramName} time bound: ${value}`);
+  }
   return `parseDateTime64BestEffortOrZero({${paramName}:String})`;
 }
 
@@ -751,25 +756,65 @@ export async function queryMetrics(
   return results.slice(0, params.limit);
 }
 
+const SERVICE_SOURCES = [
+  { table: "otel_traces", service: "ServiceName", time: "Timestamp" },
+  { table: "otel_logs", service: "ServiceName", time: "Timestamp" },
+  {
+    table: "otel_metrics_gauge",
+    service: "ServiceName",
+    time: "TimeUnix",
+  },
+  {
+    table: "otel_metrics_sum",
+    service: "ServiceName",
+    time: "TimeUnix",
+  },
+  {
+    table: "otel_metrics_histogram",
+    service: "ServiceName",
+    time: "TimeUnix",
+  },
+  {
+    table: "otel_metrics_exp_histogram",
+    service: "ServiceName",
+    time: "TimeUnix",
+  },
+  {
+    table: "otel_metrics_summary",
+    service: "ServiceName",
+    time: "TimeUnix",
+  },
+] as const;
+
 export async function listServices(ch: ClickHouseClient, projectId: string, range?: TimeRange) {
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(range);
-  const query = `
-    SELECT DISTINCT ServiceName AS service
-    FROM otel_traces
-    WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
-      AND Timestamp >= ${sinceExpr}
-      AND Timestamp <= ${untilExpr}
-      AND ServiceName != ''
-    ORDER BY service
-    LIMIT 200
-  `;
-  const r = await ch.query({
-    query,
-    query_params: { projectId, since: sinceSql, until: untilSql },
-    format: "JSONEachRow",
-  });
-  const rows = (await r.json()) as { service: string }[];
-  return rows.map((r) => r.service);
+  const servicesBySource = await Promise.all(
+    SERVICE_SOURCES.map(async (source): Promise<string[]> => {
+      const query = `
+        SELECT DISTINCT ${source.service} AS service
+        FROM ${source.table}
+        WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+          AND ${source.time} >= ${sinceExpr}
+          AND ${source.time} <= ${untilExpr}
+          AND ${source.service} != ''
+        ORDER BY service
+        LIMIT 200
+      `;
+      try {
+        const r = await ch.query({
+          query,
+          query_params: { projectId, since: sinceSql, until: untilSql },
+          format: "JSONEachRow",
+        });
+        const rows = (await r.json()) as { service: string }[];
+        return rows.map((row) => row.service);
+      } catch (err) {
+        if (!(err instanceof Error && /UNKNOWN_TABLE|doesn't exist/i.test(err.message))) throw err;
+        return [];
+      }
+    }),
+  );
+  return [...new Set(servicesBySource.flat())].sort().slice(0, 200);
 }
 
 // Discovering which attribute keys exist only needs a representative sample of

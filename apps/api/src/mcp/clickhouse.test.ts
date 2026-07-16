@@ -7,6 +7,7 @@ import {
   listAttributeKeys,
   listAttributeValues,
   listMetricNames,
+  listServices,
   metricSeries,
   queryLogs,
   queryMetrics,
@@ -170,6 +171,66 @@ test("queryTraces filters by prefixed span attributes", async () => {
   );
   assert.equal(capture.params?.sattr_k_0, "session.id");
   assert.equal(capture.params?.sattr_v_0, "s1");
+});
+
+test("telemetry queries reject malformed time bounds before querying ClickHouse", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await assert.rejects(
+    queryTraces(fakeClickhouse(capture), "project-1", {
+      range: { since: "last 24 hours", until: "now()" },
+      limit: 50,
+    }),
+    /invalid since time bound/i,
+  );
+
+  assert.equal(capture.query, undefined);
+});
+
+test("listServices discovers services across traces, logs, and metrics", async () => {
+  const queriedTables: string[] = [];
+  const servicesByTable: Record<string, string[]> = {
+    otel_traces: ["api"],
+    otel_logs: ["api", "log-only-worker"],
+    otel_metrics_gauge: ["metric-only-cron"],
+    otel_metrics_sum: [],
+    otel_metrics_histogram: ["api"],
+    otel_metrics_exp_histogram: ["exp-histogram-only"],
+  };
+  const ch = {
+    async query(input: { query: string }) {
+      const table = input.query.match(/FROM\s+(otel_[a-z_]+)/i)?.[1];
+      assert.ok(table);
+      queriedTables.push(table);
+      if (table === "otel_metrics_summary") throw new Error("UNKNOWN_TABLE");
+      return {
+        async json() {
+          return (servicesByTable[table] ?? []).map((service) => ({ service }));
+        },
+      };
+    },
+  } as unknown as ClickHouseClient;
+
+  const services = await listServices(ch, "project-1", {
+    since: "now() - INTERVAL 1 HOUR",
+    until: "now()",
+  });
+
+  assert.deepEqual(services, [
+    "api",
+    "exp-histogram-only",
+    "log-only-worker",
+    "metric-only-cron",
+  ]);
+  assert.deepEqual(queriedTables.sort(), [
+    "otel_logs",
+    "otel_metrics_exp_histogram",
+    "otel_metrics_gauge",
+    "otel_metrics_histogram",
+    "otel_metrics_sum",
+    "otel_metrics_summary",
+    "otel_traces",
+  ]);
 });
 
 test("fieldColumnExpr allowlists identifier columns per source", () => {
