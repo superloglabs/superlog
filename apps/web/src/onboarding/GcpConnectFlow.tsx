@@ -84,7 +84,14 @@ export function GcpConnectFlow({
       )}
 
       {phase === "connecting" && (
-        <ConnectingPanel statusText={gcpStatusText(phase, eventsArrived)} consentUrl={consentUrl} />
+        <ConnectingPanel
+          statusText={gcpStatusText(phase, eventsArrived)}
+          consentUrl={consentUrl}
+          onStartOver={() => {
+            setLaunched(false);
+            setConsentUrl(null);
+          }}
+        />
       )}
 
       {phase === "failed" && (
@@ -181,9 +188,11 @@ function StartPanel({
 function ConnectingPanel({
   statusText,
   consentUrl,
+  onStartOver,
 }: {
   statusText: string;
   consentUrl: string | null;
+  onStartOver: () => void;
 }) {
   return (
     <div className={`overflow-hidden rounded-[14px] border bg-surface ${SOFT_LINE}`}>
@@ -201,16 +210,29 @@ function ConnectingPanel({
           <li>Pick the Google Cloud project you want to share.</li>
           <li>This panel updates on its own once the connection lands.</li>
         </ol>
-        {consentUrl && (
-          <a
-            href={consentUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-3 inline-flex items-center gap-1.5 text-[12.5px] font-medium text-[#8C98F0] transition-colors hover:text-fg"
+        {/* The consent/picker steps happen in a separate tab, so a denial,
+            cancellation, or "no projects" outcome never reaches this tab and
+            can't flip the phase to failed. Reopen re-runs the flow; Start over
+            returns to the start panel so the user is never stuck waiting. */}
+        <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5">
+          {consentUrl && (
+            <a
+              href={consentUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-[#8C98F0] transition-colors hover:text-fg"
+            >
+              <ExternalLinkIcon size={13} /> Didn't see a tab? Reopen Google Cloud
+            </a>
+          )}
+          <button
+            type="button"
+            onClick={onStartOver}
+            className="text-[12.5px] font-medium text-muted transition-colors hover:text-fg"
           >
-            <ExternalLinkIcon size={13} /> Didn't see a tab? Reopen Google Cloud
-          </a>
-        )}
+            Cancelled or denied? Start over
+          </button>
+        </div>
       </div>
     </div>
   );
