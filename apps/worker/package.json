@@ -80,6 +80,7 @@
     "@superlog/net-guard": "workspace:*",
     "@superlog/railway": "workspace:*",
     "@superlog/render": "workspace:*",
+    "@superlog/telemetry-query": "workspace:*",
     "@superlog/topology": "workspace:*",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
