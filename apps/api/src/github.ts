@@ -3,6 +3,7 @@ import {
   AGENT_PULL_REQUEST_REVIEW_CONTINUATION_LIMIT,
   type AgentPullRequestLifecycleContinuation,
   type AgentPullRequestProviderObservation as GithubPullRequestProviderObservation,
+  type IncidentAgentPullRequestSnapshot,
   type ResolveIncidentAfterAgentPullRequestsMergedResult,
   type ResolveIncidentInput,
   applyAgentPullRequestState,
@@ -931,10 +932,12 @@ type ClosedAgentPullRequestContinuationInput = {
 };
 
 type ClosedAgentPullRequestContinuationDependencies = {
-  listIncidentPullRequests(incidentId: string): Promise<schema.AgentPullRequest[]>;
-  resolveSettled(
-    input: ResolveIncidentInput & { kind: "agent_pr_merged" | "agent_pr_closed" },
-  ): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult>;
+  resolveSettled(opts: {
+    incidentId: string;
+    buildInput(
+      pullRequests: IncidentAgentPullRequestSnapshot[],
+    ): ResolveIncidentInput & { kind: "agent_pr_merged" | "agent_pr_closed" };
+  }): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult>;
   runResolvedSideEffects(
     incidentId: string,
     resolutionProof: { agentRunId: string | null; eventDedupeKey: string },
@@ -948,55 +951,57 @@ type ClosedAgentPullRequestContinuationDependencies = {
 export async function resolveOrResumeIncidentForClosedAgentPr(
   opts: ClosedAgentPullRequestContinuationInput,
   dependencies: ClosedAgentPullRequestContinuationDependencies = {
-    listIncidentPullRequests: (incidentId) =>
-      db.query.agentPullRequests.findMany({
-        where: eq(schema.agentPullRequests.incidentId, incidentId),
-      }),
     resolveSettled: resolveIncidentIfAllAgentPullRequestsSettled,
     runResolvedSideEffects: runResolvedIncidentSideEffectsWithGithub,
     continueInSession: resumeIncidentSessionForPrEvent,
   },
 ): Promise<ClosedAgentPullRequestContinuationDisposition> {
   const { agentPr, closedByLogin, closedAt } = opts;
-  const pullRequests = await dependencies.listIncidentPullRequests(agentPr.incidentId);
-  // Credit the landed fix when one exists: resolving a merged+closed mix as
-  // "closed" would hide that a change actually shipped.
-  const mergedSibling =
-    pullRequests
-      .filter((pullRequest) => pullRequest.state === "merged")
-      .sort((a, b) => (a.mergedAt?.getTime() ?? 0) - (b.mergedAt?.getTime() ?? 0))
-      .at(-1) ?? null;
   const closedBy = closedByLogin ? ` by @${closedByLogin}` : "";
   const eventDedupeKey = `incident_resolved:agent_pr_closed:${agentPr.id}:${closedAt.getTime()}`;
   const resolution = await dependencies.resolveSettled({
     incidentId: agentPr.incidentId,
-    ...(mergedSibling
-      ? {
-          kind: "agent_pr_merged" as const,
-          reasonCode: "agent_pr_merged",
-          reasonText: `Resolved because agent PR #${mergedSibling.prNumber} (${mergedSibling.repoFullName}) was merged and the last live agent PR #${agentPr.prNumber} was closed without merge${closedBy}.`,
-          eventSummary: `Incident resolved after PR #${agentPr.prNumber} was closed; fix PR #${mergedSibling.prNumber} is merged.`,
-        }
-      : {
-          kind: "agent_pr_closed" as const,
-          reasonCode: "agent_pr_closed",
-          reasonText: `Resolved because agent PR #${agentPr.prNumber} (${agentPr.repoFullName}) was closed without merge${closedBy} and no agent PRs remain open.`,
-          eventSummary: `Incident resolved because PR #${agentPr.prNumber} was closed without merge.`,
-        }),
-    agentRunId: agentPr.agentRunId,
-    resolvingAgentRunId: null,
-    eventDetail: {
-      agentPrId: agentPr.id,
-      repoFullName: agentPr.repoFullName,
-      prNumber: agentPr.prNumber,
-      prUrl: agentPr.url,
-      closedByLogin,
-      ...(mergedSibling
-        ? { mergedAgentPrId: mergedSibling.id, mergedPrNumber: mergedSibling.prNumber }
-        : {}),
+    // Built from the PR snapshot taken under the incident lock, so a sibling
+    // merge racing this close cannot skew the attribution: a landed fix is
+    // credited as `agent_pr_merged`, a plain close resolves as
+    // `agent_pr_closed`.
+    buildInput: (pullRequests) => {
+      const mergedSibling =
+        pullRequests
+          .filter((pullRequest) => pullRequest.state === "merged")
+          .sort((a, b) => (a.mergedAt?.getTime() ?? 0) - (b.mergedAt?.getTime() ?? 0))
+          .at(-1) ?? null;
+      return {
+        incidentId: agentPr.incidentId,
+        ...(mergedSibling
+          ? {
+              kind: "agent_pr_merged" as const,
+              reasonCode: "agent_pr_merged",
+              reasonText: `Resolved because agent PR #${mergedSibling.prNumber} (${mergedSibling.repoFullName}) was merged and the last live agent PR #${agentPr.prNumber} was closed without merge${closedBy}.`,
+              eventSummary: `Incident resolved after PR #${agentPr.prNumber} was closed; fix PR #${mergedSibling.prNumber} is merged.`,
+            }
+          : {
+              kind: "agent_pr_closed" as const,
+              reasonCode: "agent_pr_closed",
+              reasonText: `Resolved because agent PR #${agentPr.prNumber} (${agentPr.repoFullName}) was closed without merge${closedBy} and no agent PRs remain open.`,
+              eventSummary: `Incident resolved because PR #${agentPr.prNumber} was closed without merge.`,
+            }),
+        agentRunId: agentPr.agentRunId,
+        resolvingAgentRunId: null,
+        eventDetail: {
+          agentPrId: agentPr.id,
+          repoFullName: agentPr.repoFullName,
+          prNumber: agentPr.prNumber,
+          prUrl: agentPr.url,
+          closedByLogin,
+          ...(mergedSibling
+            ? { mergedAgentPrId: mergedSibling.id, mergedPrNumber: mergedSibling.prNumber }
+            : {}),
+        },
+        eventDedupeKey,
+        resolvedAt: closedAt,
+      };
     },
-    eventDedupeKey,
-    resolvedAt: closedAt,
   });
   if (resolution.disposition === "resolved") {
     await dependencies.runResolvedSideEffects(agentPr.incidentId, {

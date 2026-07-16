@@ -65,9 +65,12 @@ function recordingDb(opts: {
 
 const resolution = {
   incidentId: "incident-1",
-  kind: "agent_pr_closed" as const,
-  reasonCode: "agent_pr_closed",
-  reasonText: "Last agent PR closed without merge.",
+  buildInput: () => ({
+    incidentId: "incident-1",
+    kind: "agent_pr_closed" as const,
+    reasonCode: "agent_pr_closed",
+    reasonText: "Last agent PR closed without merge.",
+  }),
 };
 
 test("settled resolution waits while any Incident PR is still open", async () => {

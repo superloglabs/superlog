@@ -296,6 +296,7 @@ export {
   type IssueClassificationAction,
   type SynthesizeLegacyIncidentIssueOutcomesResult,
 } from "./issue-classification.js";
+export type { IncidentAgentPullRequestSnapshot } from "./incident-repository.js";
 export {
   confirmResolutionProposal,
   createIncidentLifecycle,

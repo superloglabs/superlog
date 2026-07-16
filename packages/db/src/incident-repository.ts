@@ -20,6 +20,14 @@ export type LockedOpenIncident = schema.Incident;
 
 export type LinkableIssue = Pick<schema.Issue, "id" | "lastSeen" | "service">;
 
+// In-tx view of an incident's PRs taken under the incident lock. Rich enough
+// for a resolver to both validate the settle guard and attribute the
+// resolution (merged sibling vs plain close) from one consistent snapshot.
+export type IncidentAgentPullRequestSnapshot = Pick<
+  schema.AgentPullRequest,
+  "id" | "state" | "prNumber" | "repoFullName" | "url" | "mergedAt"
+>;
+
 async function lockIncidentsByIdInTx(tx: Tx, incidentIds: string[]): Promise<schema.Incident[]> {
   const ids = [...new Set(incidentIds)].sort();
   if (ids.length === 0) return [];
@@ -106,13 +114,23 @@ export function createIncidentRepository(database: DB) {
       return run ?? null;
     },
 
+    // Selected columns cover resolution attribution (e.g. crediting a merged
+    // sibling from the same locked snapshot the settle guard validates), not
+    // just the state predicate.
     listAgentPullRequestStatesInTx(
       tx: Tx,
       incidentId: string,
-    ): Promise<Array<{ state: schema.AgentPrState }>> {
+    ): Promise<IncidentAgentPullRequestSnapshot[]> {
       return tx.query.agentPullRequests.findMany({
         where: eq(schema.agentPullRequests.incidentId, incidentId),
-        columns: { state: true },
+        columns: {
+          id: true,
+          state: true,
+          prNumber: true,
+          repoFullName: true,
+          url: true,
+          mergedAt: true,
+        },
       });
     },
 
