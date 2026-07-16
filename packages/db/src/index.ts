@@ -223,6 +223,7 @@ export {
   recordAgentPullRequestReviewEvent,
   type RecordAgentPullRequestReviewEventInput,
   type RecordAgentPullRequestReviewEventResult,
+  releaseAgentPullRequestReviewContinuationClaim,
   releaseAgentPullRequestReviewLimitNotification,
 } from "./agent-pr-state.js";
 export {

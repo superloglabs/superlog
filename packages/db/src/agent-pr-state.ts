@@ -51,7 +51,7 @@ export type RecordAgentPullRequestReviewEventInput = {
 };
 
 export type RecordAgentPullRequestReviewEventResult =
-  | { disposition: "accepted" }
+  | { disposition: "accepted"; eventId: string }
   | { disposition: "duplicate" }
   | { disposition: "limit_reached"; shouldNotify: boolean };
 
@@ -82,17 +82,19 @@ export async function recordAgentPullRequestReviewEvent(
       .onConflictDoNothing()
       .returning({ id: schema.agentPrEvents.id, payload: schema.agentPrEvents.payload });
 
-    if (!recorded && input.providerEventId) {
+    let claimTarget = recorded;
+    if (!claimTarget && input.providerEventId) {
       const existing = await tx.query.agentPrEvents.findFirst({
         where: and(
           eq(schema.agentPrEvents.agentPrId, input.agentPrId),
           eq(schema.agentPrEvents.providerEventId, input.providerEventId),
         ),
-        columns: { payload: true },
+        columns: { id: true, payload: true },
       });
       if (existing?.payload?.[REVIEW_CONTINUATION_CLAIM_PAYLOAD_KEY] === true) {
         return { disposition: "duplicate" };
       }
+      claimTarget = existing;
     }
 
     const [reviewCount] = await tx
@@ -105,17 +107,17 @@ export async function recordAgentPullRequestReviewEvent(
         ),
       );
     if ((reviewCount?.value ?? 0) < AGENT_PULL_REQUEST_REVIEW_CONTINUATION_LIMIT) {
-      if (!recorded) return { disposition: "duplicate" };
+      if (!claimTarget) return { disposition: "duplicate" };
       await tx
         .update(schema.agentPrEvents)
         .set({
           payload: {
-            ...(recorded.payload ?? input.payload),
+            ...(claimTarget.payload ?? input.payload),
             [REVIEW_CONTINUATION_CLAIM_PAYLOAD_KEY]: true,
           },
         })
-        .where(eq(schema.agentPrEvents.id, recorded.id));
-      return { disposition: "accepted" };
+        .where(eq(schema.agentPrEvents.id, claimTarget.id));
+      return { disposition: "accepted", eventId: claimTarget.id };
     }
 
     const [notificationClaim] = await tx
@@ -130,6 +132,30 @@ export async function recordAgentPullRequestReviewEvent(
       .onConflictDoNothing()
       .returning({ id: schema.agentPrEvents.id });
     return { disposition: "limit_reached", shouldNotify: notificationClaim !== undefined };
+  });
+}
+
+export async function releaseAgentPullRequestReviewContinuationClaim(
+  database: DB,
+  input: { agentPrId: string; eventId: string },
+): Promise<void> {
+  await database.transaction(async (tx) => {
+    await tx
+      .select({ id: schema.agentPullRequests.id })
+      .from(schema.agentPullRequests)
+      .where(eq(schema.agentPullRequests.id, input.agentPrId))
+      .for("update");
+    await tx
+      .update(schema.agentPrEvents)
+      .set({
+        payload: sql`${schema.agentPrEvents.payload} - ${REVIEW_CONTINUATION_CLAIM_PAYLOAD_KEY}`,
+      })
+      .where(
+        and(
+          eq(schema.agentPrEvents.id, input.eventId),
+          eq(schema.agentPrEvents.agentPrId, input.agentPrId),
+        ),
+      );
   });
 }
 

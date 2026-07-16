@@ -670,6 +670,79 @@ test("an untrusted PR commenter cannot steer the parked investigation session", 
   assert.equal(continuations.length, 0);
 });
 
+test("a skipped trusted review does not consume a continuation slot", async () => {
+  const fixture = await seedAgentPrFixture("skipped-review-continuation");
+  await db
+    .update(schema.agentRuns)
+    .set({ state: "awaiting_events", providerSessionId: `session-${fixture.tag}` })
+    .where(eq(schema.agentRuns.id, fixture.agentRunId));
+  await db.insert(schema.projectAutomationSettings).values({
+    projectId: fixture.projectId,
+    autoFollowUpEnabled: false,
+  });
+  const app = new Hono();
+  mountGithubPublic(app, {
+    postAgentPrComment: async () => ({ ok: true }),
+  });
+
+  const reviewPayload = (reviewId: number) => ({
+    action: "submitted",
+    repository: { full_name: fixture.repoFullName },
+    pull_request: {
+      number: fixture.prNumber,
+      head: { sha: "deadbeef", ref: fixture.branchName },
+    },
+    review: {
+      id: reviewId,
+      state: "changes_requested",
+      body: `Trusted requested change ${reviewId}`,
+      html_url: `https://github.com/${fixture.repoFullName}/pull/${fixture.prNumber}#pullrequestreview-${reviewId}`,
+      author_association: "NONE",
+      user: { login: "cursor[bot]", id: 501, type: "Bot" },
+    },
+    sender: { login: "cursor[bot]", id: 501, type: "Bot" },
+    installation: { id: fixture.installationId },
+  });
+
+  assert.equal(
+    (await postGithub(app, "pull_request_review", `gh-${fixture.tag}-skipped`, reviewPayload(102)))
+      .status,
+    200,
+  );
+  await db
+    .update(schema.projectAutomationSettings)
+    .set({ autoFollowUpEnabled: true })
+    .where(eq(schema.projectAutomationSettings.projectId, fixture.projectId));
+  for (let index = 0; index < 99; index += 1) {
+    const recorded = await recordAgentPullRequestReviewEvent(db, {
+      agentPrId: fixture.agentPrId,
+      kind: "review_comment",
+      summary: "Prior accepted review",
+      actorLogin: "cursor[bot]",
+      actorGithubId: 501,
+      actorAvatarUrl: null,
+      payload: {},
+      providerEventId: `prior-accepted-${fixture.tag}-${index}`,
+      occurredAt: new Date(),
+    });
+    assert.equal(recorded.disposition, "accepted");
+  }
+
+  assert.equal(
+    (await postGithub(app, "pull_request_review", `gh-${fixture.tag}-accepted`, reviewPayload(103)))
+      .status,
+    200,
+  );
+  const continuations = await db.query.incidentEvents.findMany({
+    where: and(
+      eq(schema.incidentEvents.agentRunId, fixture.agentRunId),
+      eq(schema.incidentEvents.kind, "github_comment"),
+    ),
+  });
+  assert.equal(continuations.length, 1);
+  assert.match(continuations[0]?.summary ?? "", /Trusted requested change 103/);
+});
+
 test("the 100th PR review is processed before later reviews hit one visible limit", async () => {
   const fixture = await seedAgentPrFixture("review-continuation-limit");
   await db
@@ -688,7 +761,7 @@ test("the 100th PR review is processed before later reviews hit one visible limi
       providerEventId: `prior-review-${fixture.tag}-${index}`,
       occurredAt: new Date(Date.now() - (100 - index) * 1_000),
     });
-    assert.deepEqual(recorded, { disposition: "accepted" });
+    assert.equal(recorded.disposition, "accepted");
   }
   await db.insert(schema.agentPrEvents).values({
     agentPrId: fixture.agentPrId,
@@ -836,6 +909,7 @@ async function seedAgentPrFixture(label: string): Promise<{
   repoFullName: string;
   branchName: string;
   installationId: number;
+  projectId: string;
   incidentId: string;
   issueId: string;
   agentRunId: string;
@@ -936,6 +1010,7 @@ async function seedAgentPrFixture(label: string): Promise<{
     repoFullName,
     branchName,
     installationId,
+    projectId: project.id,
     incidentId: incident.id,
     issueId: issue.id,
     agentRunId: agentRun.id,

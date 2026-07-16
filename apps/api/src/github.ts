@@ -12,6 +12,7 @@ import {
   reconcileAgentPullRequestProviderObservation,
   recordAgentPullRequestReviewEvent,
   recordInboundInteraction,
+  releaseAgentPullRequestReviewContinuationClaim,
   releaseAgentPullRequestReviewLimitNotification,
   resolveIncidentIfAllAgentPullRequestsMerged,
   schema,
@@ -787,7 +788,23 @@ async function handleAgentPrWebhook(
       }
       return;
     }
-    await maybeRequestPrCommentFollowUp({ event, payload, agentPrRow });
+    if (reviewEvent.disposition === "duplicate") return;
+    let followUp: "accepted" | "skipped";
+    try {
+      followUp = await maybeRequestPrCommentFollowUp({ event, payload, agentPrRow });
+    } catch (error) {
+      await releaseAgentPullRequestReviewContinuationClaim(db, {
+        agentPrId: agentPrRow.id,
+        eventId: reviewEvent.eventId,
+      });
+      throw error;
+    }
+    if (followUp === "skipped") {
+      await releaseAgentPullRequestReviewContinuationClaim(db, {
+        agentPrId: agentPrRow.id,
+        eventId: reviewEvent.eventId,
+      });
+    }
     return;
   }
 
@@ -1086,9 +1103,9 @@ async function maybeRequestPrCommentFollowUp(opts: {
   event: string;
   payload: WebhookPayload;
   agentPrRow: schema.AgentPullRequest;
-}): Promise<void> {
+}): Promise<"accepted" | "skipped"> {
   const comment = extractPrComment(opts.event, opts.payload);
-  if (!comment) return;
+  if (!comment) return "skipped";
   const result = await recordInboundInteraction(db, {
     incidentId: opts.agentPrRow.incidentId,
     interaction: {
@@ -1113,7 +1130,9 @@ async function maybeRequestPrCommentFollowUp(opts: {
       { incident_id: opts.agentPrRow.incidentId, reason: result.reason },
       "pr comment did not continue the investigation",
     );
+    return "skipped";
   }
+  return "accepted";
 }
 
 async function maybeRecordPrCommentFeedback(opts: {

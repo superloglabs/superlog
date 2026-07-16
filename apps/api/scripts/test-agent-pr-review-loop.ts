@@ -266,7 +266,7 @@ try {
       providerEventId: `${tag}-prior-${index}`,
       occurredAt: new Date(Date.now() - (index + 1) * 1_000),
     });
-    assert.deepEqual(recorded, { disposition: "accepted" });
+    assert.equal(recorded.disposition, "accepted");
   }
   await db.insert(schema.agentPrEvents).values({
     agentPrId: agentPr.id,
