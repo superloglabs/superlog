@@ -7,6 +7,7 @@ import {
   Legend,
   Line,
   LineChart,
+  ReferenceArea,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -56,6 +57,12 @@ import {
 import { ScrollArea } from "./design/scroll-area.tsx";
 import { Btn, Chip, Input, PageHeader, ShortcutKey, Tile } from "./design/ui.tsx";
 import { addAttrFilter } from "./exploreAttrFilter.ts";
+import {
+  bucketSeriesSpansDates,
+  formatBucketAxisTick,
+  parseStepMs,
+  rangeFromBucketSelection,
+} from "./explore-timeseries.ts";
 import { sourceFromExplorePath, type ExploreSource } from "./explore-route.ts";
 import { tracer } from "./instrumentation.ts";
 import {
@@ -243,6 +250,17 @@ function ExploreInner({ projectId }: { projectId: string }) {
       updateParams((p) => (v === "spans" ? p.set("view", "spans") : p.delete("view"))),
     [updateParams],
   );
+  const applyAbsoluteRange = useCallback(
+    (nextRange: ExploreRange) => {
+      updateParams((p) => {
+        p.set("since", nextRange.since);
+        p.set("until", nextRange.until);
+        p.delete("range");
+        p.delete("rangeLabel");
+      });
+    },
+    [updateParams],
+  );
 
   // Chart/UI prefs stay local — they're per-user view state, not part of the
   // shareable query.
@@ -358,6 +376,7 @@ function ExploreInner({ projectId }: { projectId: string }) {
           <RangePicker
             value={absoluteRange ? { seconds: 0, label: CUSTOM_RANGE_LABEL } : selection}
             range={range}
+            onAbsoluteChange={applyAbsoluteRange}
             onChange={(next) => {
               const span = tracer.startSpan("explore.range_change", {
                 attributes: {
@@ -478,6 +497,7 @@ function ExploreInner({ projectId }: { projectId: string }) {
               groupBy={groupBy}
               onGroupByChange={setGroupBy}
               range={range}
+              onRangeChange={applyAbsoluteRange}
             />
             <ListPanel
               projectId={projectId}
@@ -1898,6 +1918,7 @@ function ChartPanel({
   groupBy,
   onGroupByChange,
   range,
+  onRangeChange,
   showControls = true,
 }: {
   projectId: string;
@@ -1906,6 +1927,7 @@ function ChartPanel({
   groupBy: string;
   onGroupByChange: (g: string) => void;
   range: ExploreRange;
+  onRangeChange: (range: ExploreRange) => void;
   showControls?: boolean;
 }) {
   const countSeries = useExploreSeries(
@@ -1942,6 +1964,7 @@ function ChartPanel({
             height={72}
             range={range}
             step={countSeries.data.step}
+            onRangeChange={onRangeChange}
           />
         ) : (
           <div className="flex h-14 items-center justify-center font-sans text-[11px] text-subtle">
@@ -2193,23 +2216,6 @@ function pivotRows<T extends { bucket: string }>(
 // TimeseriesChart — stacked bars via Recharts
 // ---------------------------------------------------------------------------
 
-function parseStepMs(step: string | undefined): number | undefined {
-  if (!step) return undefined;
-  const m = step.match(/^(\d+)\s+(SECOND|MINUTE|HOUR|DAY)/i);
-  if (!m) return undefined;
-  const n = Number.parseInt(m[1]!, 10);
-  const unit = m[2]!.toUpperCase();
-  const mult =
-    unit === "SECOND"
-      ? 1000
-      : unit === "MINUTE"
-        ? 60_000
-        : unit === "HOUR"
-          ? 3_600_000
-          : 86_400_000;
-  return n * mult;
-}
-
 function formatBucket(d: Date): string {
   return d.toISOString().slice(0, 19).replace("T", " ");
 }
@@ -2253,11 +2259,6 @@ function pickEvenTicks<T>(items: T[], target: number, key: (t: T) => string): st
   return [...new Set(out)];
 }
 
-function fmtBucketTime(s: string): string {
-  // s is "YYYY-MM-DD HH:MM:SS" UTC — show local "HH:MM".
-  return formatLocalHm(s);
-}
-
 const AXIS_TICK_STYLE = {
   fill: "#6b7280",
   fontSize: 9,
@@ -2278,6 +2279,7 @@ export function TimeseriesChart({
   showXAxis = true,
   showYAxis = false,
   showLegend = false,
+  onRangeChange,
 }: {
   rows: SeriesRow[];
   height?: number | `${number}%`;
@@ -2287,7 +2289,10 @@ export function TimeseriesChart({
   showXAxis?: boolean;
   showYAxis?: boolean;
   showLegend?: boolean;
+  onRangeChange?: (range: ExploreRange) => void;
 }) {
+  const [dragStart, setDragStart] = useState<string | null>(null);
+  const [dragEnd, setDragEnd] = useState<string | null>(null);
   const filled = useMemo(() => padSeriesBuckets(rows, range, step), [rows, range, step]);
   const { data, groups } = useMemo(
     () =>
@@ -2299,8 +2304,25 @@ export function TimeseriesChart({
     [filled],
   );
   const ticks = useMemo(() => pickEvenTicks(data, 5, (d) => d.bucket as string), [data]);
+  const showDates = useMemo(
+    () => bucketSeriesSpansDates(data.map((row) => String(row.bucket))),
+    [data],
+  );
 
   const Chart = chartType === "line" ? LineChart : BarChart;
+
+  const activeBucket = (label: string | number | undefined) =>
+    typeof label === "string" ? label : null;
+
+  const finishDrag = (label: string | number | undefined) => {
+    const last = activeBucket(label) ?? dragEnd ?? dragStart;
+    if (dragStart && last && range && step && onRangeChange) {
+      const nextRange = rangeFromBucketSelection(dragStart, last, step, range);
+      if (nextRange) onRangeChange(nextRange);
+    }
+    setDragStart(null);
+    setDragEnd(null);
+  };
 
   return (
     <ResponsiveContainer width="100%" height={height}>
@@ -2309,16 +2331,35 @@ export function TimeseriesChart({
         barCategoryGap={0}
         barGap={0}
         margin={{ top: 4, right: 0, bottom: showXAxis ? 6 : 0, left: 0 }}
+        style={{ cursor: onRangeChange ? "crosshair" : undefined, userSelect: "none" }}
+        onMouseDown={(state, event) => {
+          if (!onRangeChange) return;
+          const bucket = activeBucket(state.activeLabel);
+          if (!bucket) return;
+          event.preventDefault();
+          setDragStart(bucket);
+          setDragEnd(bucket);
+        }}
+        onMouseMove={(state) => {
+          if (!dragStart) return;
+          const bucket = activeBucket(state.activeLabel);
+          if (bucket) setDragEnd(bucket);
+        }}
+        onMouseUp={(state) => finishDrag(state.activeLabel)}
+        onMouseLeave={() => {
+          setDragStart(null);
+          setDragEnd(null);
+        }}
       >
         <CartesianGrid vertical={false} stroke="var(--color-border)" strokeDasharray="0" />
         {showXAxis ? (
           <XAxis
             dataKey="bucket"
             ticks={ticks}
-            tickFormatter={fmtBucketTime}
+            tickFormatter={(bucket) => formatBucketAxisTick(String(bucket), showDates)}
             axisLine={false}
             tickLine={false}
-            height={18}
+            height={showDates ? 28 : 18}
             tickMargin={4}
             tick={AXIS_TICK_STYLE}
           />
@@ -2340,6 +2381,16 @@ export function TimeseriesChart({
           {...TOOLTIP_STYLE}
           labelFormatter={(label) => formatLocalTimestamp(String(label))}
         />
+        {dragStart && dragEnd && (
+          <ReferenceArea
+            x1={dragStart}
+            x2={dragEnd}
+            fill="var(--color-accent)"
+            fillOpacity={0.16}
+            stroke="var(--color-accent)"
+            strokeOpacity={0.5}
+          />
+        )}
         {showLegend && <Legend wrapperStyle={LEGEND_STYLE} iconType="plainline" iconSize={10} />}
         {groups.map((g, gi) =>
           chartType === "line" ? (
@@ -2406,7 +2457,7 @@ export function MetricLineChart({
           <XAxis
             dataKey="bucket"
             ticks={ticks}
-            tickFormatter={fmtBucketTime}
+            tickFormatter={(bucket) => formatLocalHm(String(bucket))}
             axisLine={false}
             tickLine={false}
             height={18}
