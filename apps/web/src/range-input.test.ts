@@ -42,3 +42,23 @@ test("clock ranges use the visible historical range date", () => {
     },
   );
 });
+
+test("clock ranges choose the visible day containing the interval", () => {
+  assert.deepEqual(
+    parseRangeInputForVisibleRange(
+      "09:00-10:00",
+      {
+        since: new Date(2025, 3, 3, 18).toISOString(),
+        until: new Date(2025, 3, 4, 18).toISOString(),
+      },
+      new Date(2026, 6, 16, 12).getTime(),
+    ),
+    {
+      type: "absolute",
+      range: {
+        since: new Date(2025, 3, 4, 9).toISOString(),
+        until: new Date(2025, 3, 4, 10).toISOString(),
+      },
+    },
+  );
+});

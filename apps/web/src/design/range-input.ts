@@ -75,5 +75,35 @@ export function parseRangeInputForVisibleRange(
   now: number,
 ): ParsedRangeInput | null {
   const visibleSince = new Date(visibleRange.since).getTime();
-  return parseRangeInput(input, Number.isFinite(visibleSince) ? visibleSince : now);
+  const visibleUntil = new Date(visibleRange.until).getTime();
+  const parsedNow = parseRangeInput(input, now);
+  if (
+    parsedNow?.type !== "absolute" ||
+    !Number.isFinite(visibleSince) ||
+    !Number.isFinite(visibleUntil) ||
+    visibleSince >= visibleUntil
+  ) {
+    return parsedNow;
+  }
+
+  const referenceTimes = [now, visibleUntil - 1, visibleSince];
+  for (const referenceTime of referenceTimes) {
+    const candidate = parseRangeInput(input, referenceTime);
+    if (candidate?.type !== "absolute") continue;
+    const candidateSince = new Date(candidate.range.since).getTime();
+    const candidateUntil = new Date(candidate.range.until).getTime();
+    if (candidateSince >= visibleSince && candidateUntil <= visibleUntil) {
+      return candidate;
+    }
+  }
+
+  const localDay = (timestamp: number) => {
+    const date = new Date(timestamp);
+    return date.getFullYear() * 10_000 + (date.getMonth() + 1) * 100 + date.getDate();
+  };
+  if (localDay(now) >= localDay(visibleSince) && localDay(now) <= localDay(visibleUntil)) {
+    return parsedNow;
+  }
+
+  return parseRangeInput(input, visibleSince);
 }
