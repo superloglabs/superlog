@@ -110,11 +110,32 @@ test("errors and incidents are separate primary navigation destinations", () => 
   assert.ok(incidentsPosition < errorsPosition, "Incidents should appear above Errors");
 });
 
+test("anomaly scanner navigation is visible only for flagged organizations", () => {
+  const disabled = renderToStaticMarkup(
+    <MemoryRouter initialEntries={["/"]}>
+      <ProductShell>
+        <main>Overview</main>
+      </ProductShell>
+    </MemoryRouter>,
+  );
+  const enabled = renderToStaticMarkup(
+    <MemoryRouter initialEntries={["/anomaly-scanner"]}>
+      <ProductShell anomalyScannerEnabled>
+        <main>Scanner</main>
+      </ProductShell>
+    </MemoryRouter>,
+  );
+
+  assert.doesNotMatch(disabled, /href="\/anomaly-scanner"/);
+  assert.match(enabled, /aria-current="page"[^>]*href="\/anomaly-scanner"/);
+  assert.match(enabled, />Anomaly scanner<\/span>/);
+});
+
 test("the command palette mirrors the incidents and errors navigation", async () => {
   const source = await readFile(new URL("../CommandPalette.tsx", import.meta.url), "utf8");
 
-  assert.match(source, /label: "Incidents"[^\n]*navigate\(projectPath\("\/incidents"\)\)/);
-  assert.match(source, /label: "Errors"[^\n]*navigate\(projectPath\("\/issues"\)\)/);
+  assert.match(source, /label: "Incidents"[\s\S]*?navigate\(projectPath\("\/incidents"\)\)/);
+  assert.match(source, /label: "Errors"[\s\S]*?navigate\(projectPath\("\/issues"\)\)/);
   assert.doesNotMatch(source, /label: "Issues"/);
 });
 

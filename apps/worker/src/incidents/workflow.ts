@@ -17,7 +17,11 @@ import { dispatchAgentRunJob } from "../agent-runs/enqueue.js";
 import { investigationGate } from "../billing/investigation-gate.js";
 import { usageNotifier } from "../billing/usage-notifier-infra.js";
 import { isAutoAgentRunSuppressed } from "../incident-cooldown.js";
-import { ensureIncidentForIssue } from "../incident-intake.js";
+import {
+  type EnsureIncidentForIssueResult,
+  type IssueIntakePreference,
+  ensureIncidentForIssue,
+} from "../incident-intake.js";
 import {
   postIncidentRootMessage,
   postIncidentThreadMessage,
@@ -223,9 +227,18 @@ async function steerInvestigationWithNewSignature(
 export async function handleIssueTransition(
   issue: schema.Issue,
   transition: IssueTransition,
+  preference?: IssueIntakePreference,
 ): Promise<void> {
-  const { incident, createdIncident, linkedIssue, recurrenceIncident } =
-    await ensureIncidentForIssue(issue, transition);
+  await handleIssueTransitionWithResult(issue, transition, preference);
+}
+
+export async function handleIssueTransitionWithResult(
+  issue: schema.Issue,
+  transition: IssueTransition,
+  preference?: IssueIntakePreference,
+): Promise<EnsureIncidentForIssueResult> {
+  const intakeResult = await ensureIncidentForIssue(issue, transition, preference);
+  const { incident, createdIncident, linkedIssue, recurrenceIncident } = intakeResult;
   // Emit the webhook as soon as we know the incident was created, before the
   // (fallible) Slack root post. `createdIncident` is only true on the tick that
   // actually inserts the incident; if a later step in this handler throws and
@@ -285,7 +298,7 @@ export async function handleIssueTransition(
     routing === "steer" &&
     (await steerInvestigationWithNewSignature(incident, issue, transition))
   ) {
-    return;
+    return intakeResult;
   }
 
   const { agentRun, queueStatus } = await queueAgentRunIfNeeded(incident);
@@ -307,10 +320,11 @@ export async function handleIssueTransition(
       summary: `${transition === "new" ? "New" : "Regressed"} issue joined the incident (issue id: ${issue.id}): ${issue.title}`,
       dedupeKey: `issue:${issue.id}:joined`,
     });
-    if (!appended) return;
+    if (!appended) return intakeResult;
     await postIncidentThreadMessage(
       incident.id,
       `:information_source: ${transition === "new" ? "New" : "Regressed"} issue joined the incident: *${issue.title}*`,
     );
   }
+  return intakeResult;
 }

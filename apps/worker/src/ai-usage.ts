@@ -23,6 +23,7 @@ export type TokenUsage = {
 export type CallSite =
   | "agent_run"
   | "agent_chat"
+  | "anomaly_scanner"
   | "digest"
   | "grouping"
   | "merge"

@@ -4,6 +4,7 @@ import { BugIcon } from "@phosphor-icons/react/dist/csr/Bug";
 import { ChartBarIcon } from "@phosphor-icons/react/dist/csr/ChartBar";
 import { GearIcon } from "@phosphor-icons/react/dist/csr/Gear";
 import { MagnifyingGlassIcon } from "@phosphor-icons/react/dist/csr/MagnifyingGlass";
+import { PulseIcon } from "@phosphor-icons/react/dist/csr/Pulse";
 import { SidebarSimpleIcon } from "@phosphor-icons/react/dist/csr/SidebarSimple";
 import { SirenIcon } from "@phosphor-icons/react/dist/csr/Siren";
 import { SquaresFourIcon } from "@phosphor-icons/react/dist/csr/SquaresFour";
@@ -45,18 +46,35 @@ const SETTINGS_ITEM: NavigationItem = { href: "/settings", label: "Settings", ic
 export function ProductShell({
   toolbar,
   children,
+  anomalyScannerEnabled = false,
 }: {
   toolbar?: ReactNode;
   children: ReactNode;
+  anomalyScannerEnabled?: boolean;
 }) {
   const { pathname } = useLocation();
   const projectPath = useProjectPath();
   const appPath = appPathFromProjectRoute(pathname);
   const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
+  const navigationGroups = anomalyScannerEnabled
+    ? [
+        ...NAVIGATION_GROUPS,
+        {
+          label: "Automate",
+          items: [
+            {
+              href: "/anomaly-scanner",
+              label: "Anomaly scanner",
+              icon: PulseIcon,
+            },
+          ],
+        },
+      ]
+    : NAVIGATION_GROUPS;
   useEffect(() => {
     writeSidebarCollapsed(collapsed);
   }, [collapsed]);
-  const current = [...NAVIGATION_GROUPS.flatMap((group) => group.items), SETTINGS_ITEM].find(
+  const current = [...navigationGroups.flatMap((group) => group.items), SETTINGS_ITEM].find(
     (item) => isActive(item, appPath),
   );
 
@@ -85,7 +103,7 @@ export function ProductShell({
         </div>
 
         <nav aria-label="Primary navigation" className="mt-9 space-y-7">
-          {NAVIGATION_GROUPS.map((group) => (
+          {navigationGroups.map((group) => (
             <div key={group.label}>
               {!collapsed && (
                 <div className="px-2 text-[11px] font-medium text-subtle">{group.label}</div>
@@ -128,7 +146,11 @@ export function ProductShell({
             </div>
             <div className="flex shrink-0 items-center gap-2">{toolbar}</div>
           </div>
-          <MobileNavigation pathname={appPath} projectPath={projectPath} />
+          <MobileNavigation
+            pathname={appPath}
+            projectPath={projectPath}
+            navigationGroups={navigationGroups}
+          />
         </header>
         <div className="flex min-h-0 flex-1 flex-col">{children}</div>
       </div>
@@ -167,11 +189,13 @@ function NavigationLink({
 function MobileNavigation({
   pathname,
   projectPath,
+  navigationGroups,
 }: {
   pathname: string;
   projectPath: (appPath: string) => string;
+  navigationGroups: Array<{ label: string; items: NavigationItem[] }>;
 }) {
-  const items = [...NAVIGATION_GROUPS.flatMap((group) => group.items), SETTINGS_ITEM];
+  const items = [...navigationGroups.flatMap((group) => group.items), SETTINGS_ITEM];
   return (
     <nav
       aria-label="Mobile navigation"
