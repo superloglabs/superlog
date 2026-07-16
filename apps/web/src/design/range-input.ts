@@ -68,3 +68,12 @@ export function parseRangeInput(input: string, now: number): ParsedRangeInput | 
     range: { since: since.toISOString(), until: until.toISOString() },
   };
 }
+
+export function parseRangeInputForVisibleRange(
+  input: string,
+  visibleRange: ExploreRange,
+  now: number,
+): ParsedRangeInput | null {
+  const visibleSince = new Date(visibleRange.since).getTime();
+  return parseRangeInput(input, Number.isFinite(visibleSince) ? visibleSince : now);
+}

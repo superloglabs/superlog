@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ExploreRange } from "../api.ts";
-import { parseRangeInput } from "./range-input.ts";
+import { parseRangeInput, parseRangeInputForVisibleRange } from "./range-input.ts";
 import { ShortcutKey } from "./ui.tsx";
 
 export type RangeSelection = { seconds: number; label: string };
@@ -136,7 +136,10 @@ export function RangePicker({
     };
   }, [open, value.label]);
 
-  const parsed = useMemo(() => parseRangeInput(draft, Date.now()), [draft]);
+  const parsed = useMemo(
+    () => parseRangeInputForVisibleRange(draft, range, Date.now()),
+    [draft, range],
+  );
   const canApplyParsed = parsed?.type === "relative" || !!(parsed && onAbsoluteChange);
   const draftIsCurrent = draft.trim().toLowerCase() === value.label.trim().toLowerCase();
 
