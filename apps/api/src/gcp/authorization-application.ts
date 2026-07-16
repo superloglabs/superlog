@@ -6,10 +6,7 @@ import type {
   GcpConnectionRepository,
   GcpGateway,
 } from "./domain.js";
-import { GcpAuthorizationError, parseGcpProjectId } from "./domain.js";
-
-const PENDING_SESSION_TTL_MS = 15 * 60 * 1000;
-const READY_SESSION_TTL_MS = 10 * 60 * 1000;
+import { GCP_AUTHORIZATION_TTL_MS, GcpAuthorizationError, parseGcpProjectId } from "./domain.js";
 
 export async function startGcpAuthorization(input: {
   projectId: string;
@@ -23,7 +20,7 @@ export async function startGcpAuthorization(input: {
   const session = await input.repository.create({
     projectId: input.projectId,
     userId: input.userId,
-    expiresAt: new Date(now.getTime() + PENDING_SESSION_TTL_MS),
+    expiresAt: new Date(now.getTime() + GCP_AUTHORIZATION_TTL_MS),
   });
   return {
     session,
@@ -60,7 +57,7 @@ export async function completeGcpAuthorization(input: {
       id: session.id,
       accessToken,
       projects,
-      expiresAt: new Date(now.getTime() + READY_SESSION_TTL_MS),
+      expiresAt: new Date(now.getTime() + GCP_AUTHORIZATION_TTL_MS),
     });
   } catch (error) {
     await input.repository.markFailed(

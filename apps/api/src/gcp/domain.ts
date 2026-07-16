@@ -41,6 +41,8 @@ export type GcpProjectOption = {
 
 export type GcpAuthorizationStatus = "pending" | "ready" | "consumed" | "failed";
 
+export const GCP_AUTHORIZATION_TTL_MS = 10 * 60 * 1000;
+
 export type GcpAuthorizationSessionRecord = {
   id: string;
   projectId: string;
