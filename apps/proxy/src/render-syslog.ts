@@ -245,10 +245,7 @@ export function renderSyslogToOtlp(records: RenderSyslogRecord[]): unknown {
   return {
     resourceLogs: [...byService.entries()].map(([service, group]) => ({
       resource: {
-        attributes: [
-          kv("service.name", service),
-          kv("telemetry.source", "render"),
-        ].filter(Boolean),
+        attributes: [kv("service.name", service), kv("telemetry.source", "render")].filter(Boolean),
       },
       scopeLogs: [
         {
@@ -294,17 +291,19 @@ export type RenderSyslogServerDeps = {
 };
 
 export function createRenderSyslogServer(deps: RenderSyslogServerDeps): net.Server {
-  const authCache = new Map<string, { projectId: string | null; expiresAt: number }>();
+  const authCache = new Map<string, { projectId: string; expiresAt: number }>();
 
   async function resolveKey(key: string): Promise<string | null> {
     const cached = authCache.get(key);
     if (cached && cached.expiresAt > Date.now()) return cached.projectId;
     const projectId = await deps.authenticate(key);
-    authCache.set(key, { projectId, expiresAt: Date.now() + AUTH_CACHE_TTL_MS });
-    // The cache is keyed by attacker-supplied strings; keep it bounded.
-    if (authCache.size > 10_000) {
-      const oldest = authCache.keys().next().value;
-      if (oldest !== undefined) authCache.delete(oldest);
+    if (projectId) {
+      authCache.set(key, { projectId, expiresAt: Date.now() + AUTH_CACHE_TTL_MS });
+      // The cache is keyed by attacker-supplied strings; keep it bounded.
+      if (authCache.size > 10_000) {
+        const oldest = authCache.keys().next().value;
+        if (oldest !== undefined) authCache.delete(oldest);
+      }
     }
     return projectId;
   }
