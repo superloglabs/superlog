@@ -36,6 +36,7 @@ import {
 } from "./gcp-pubsub.js";
 import { mountGcpMetricsPullRoute } from "./gcp-pull-routes.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
+import { createIngestKeyCache, createLastUsedRecorder } from "./ingest-key-auth.js";
 import { IngestQueue, getIngestQueueConfig } from "./ingest-queue.js";
 import {
   type IngestSource,
@@ -112,6 +113,28 @@ const ingestSourceFilter = createIngestSourceFilter({
       columns: { source: true, signal: true },
     });
     return new Set(rows.map((r) => ingestFilterKey(r.source, r.signal)));
+  },
+});
+
+// Ingest-key authentication is on every intake request. Cache the hash lookup
+// briefly and collapse concurrent misses so a hot key cannot monopolize the DB
+// connection pool. Key revocations propagate after the one-minute TTL.
+const ingestKeyCache = createIngestKeyCache({
+  lookup: async (keyHash) =>
+    (await db.query.apiKeys.findFirst({
+      where: eq(schema.apiKeys.keyHash, keyHash),
+    })) ?? null,
+});
+
+// last_used_at is operational metadata, not part of the authorization verdict.
+// Persist it at most once per key per minute per proxy instance rather than
+// taking a same-row UPDATE lock for every telemetry request.
+const lastUsedRecorder = createLastUsedRecorder({
+  write: async (keyId, usedAt) => {
+    await db.update(schema.apiKeys).set({ lastUsedAt: usedAt }).where(eq(schema.apiKeys.id, keyId));
+  },
+  onError: (err) => {
+    logger.error({ err }, "failed to update last_used_at or sync loops contact");
   },
 });
 
@@ -329,9 +352,7 @@ async function validateIngestKey(c: Context<{ Variables: Variables }>, next: () 
         );
       }
 
-      const row = await db.query.apiKeys.findFirst({
-        where: eq(schema.apiKeys.keyHash, hashApiKey(key)),
-      });
+      const row = await ingestKeyCache.resolve(hashApiKey(key));
       if (!row || row.revokedAt) {
         span.setAttribute("auth.result", "invalid_key");
         span.setStatus({ code: SpanStatusCode.ERROR, message: "invalid api key" });
@@ -341,21 +362,9 @@ async function validateIngestKey(c: Context<{ Variables: Variables }>, next: () 
       span.setAttribute("auth.result", "ok");
       span.setAttribute("tenant.project_id", row.projectId);
       c.set("projectId", row.projectId);
-      const isFirstUse = row.lastUsedAt === null;
-      void db
-        .update(schema.apiKeys)
-        .set({ lastUsedAt: new Date() })
-        .where(eq(schema.apiKeys.id, row.id))
-        .then(() => {
-          // Loops only needs the lifecycle nudge when telemetrySet flips false→true, i.e. on the
-          // first ingest for this key. Firing on every request hammers the Loops rate limit.
-          // (The product-analytics activation event is fired separately, from the accept path in
-          // forward(), gated on a project-level atomic claim — see maybeCaptureProjectActivation.)
-          if (isFirstUse) return syncLoopsContactsForProject({ projectId: row.projectId });
-        })
-        .catch((err: unknown) => {
-          logger.error({ err }, "failed to update last_used_at or sync loops contact");
-        });
+      lastUsedRecorder.record(row, (identity) =>
+        syncLoopsContactsForProject({ projectId: identity.projectId }),
+      );
 
       await next();
     } catch (err) {
@@ -890,17 +899,9 @@ async function forward(
  * which the OTLP path already owns.
  */
 async function resolveProjectIdForIngestKey(key: string): Promise<string | null> {
-  const row = await db.query.apiKeys.findFirst({
-    where: eq(schema.apiKeys.keyHash, hashApiKey(key)),
-  });
+  const row = await ingestKeyCache.resolve(hashApiKey(key));
   if (!row || row.revokedAt) return null;
-  void db
-    .update(schema.apiKeys)
-    .set({ lastUsedAt: new Date() })
-    .where(eq(schema.apiKeys.id, row.id))
-    .catch((err: unknown) => {
-      logger.warn({ err }, "failed to update last_used_at for firehose key");
-    });
+  lastUsedRecorder.record(row);
   return row.projectId;
 }
 
@@ -1099,21 +1100,11 @@ const RENDER_SYSLOG_PORT = Number(process.env.RENDER_SYSLOG_PORT ?? 0);
 const renderSyslogServer = RENDER_SYSLOG_PORT
   ? createRenderSyslogServer({
       authenticate: async (key) => {
-        const row = await db.query.apiKeys.findFirst({
-          where: eq(schema.apiKeys.keyHash, hashApiKey(key)),
-        });
+        const row = await ingestKeyCache.resolve(hashApiKey(key));
         if (!row || row.revokedAt) return null;
-        const isFirstUse = row.lastUsedAt === null;
-        void db
-          .update(schema.apiKeys)
-          .set({ lastUsedAt: new Date() })
-          .where(eq(schema.apiKeys.id, row.id))
-          .then(() => {
-            if (isFirstUse) return syncLoopsContactsForProject({ projectId: row.projectId });
-          })
-          .catch((err: unknown) => {
-            logger.error({ err }, "failed to update last_used_at or sync loops contact");
-          });
+        lastUsedRecorder.record(row, (identity) =>
+          syncLoopsContactsForProject({ projectId: identity.projectId }),
+        );
         return row.projectId;
       },
       deliver: async (projectId, records) => {
