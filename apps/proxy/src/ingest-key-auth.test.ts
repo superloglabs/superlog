@@ -48,6 +48,26 @@ test("an expired ingest-key identity is refreshed", async () => {
   assert.equal(lookups, 2);
 });
 
+test("a missing ingest key is not cached", async () => {
+  let lookups = 0;
+  const cache = createIngestKeyCache({
+    lookup: async () => {
+      lookups += 1;
+      if (lookups === 1) return null;
+      return {
+        id: "key-1",
+        projectId: "project-1",
+        lastUsedAt: null,
+        revokedAt: null,
+      };
+    },
+  });
+
+  assert.equal(await cache.resolve("hash-1"), null);
+  assert.equal((await cache.resolve("hash-1"))?.projectId, "project-1");
+  assert.equal(lookups, 2);
+});
+
 test("concurrent authentication requests share one ingest-key lookup", async () => {
   let lookups = 0;
   let releaseLookup: (() => void) | undefined;

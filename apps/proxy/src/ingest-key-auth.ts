@@ -6,7 +6,7 @@ export type IngestKeyIdentity = {
 };
 
 type CacheEntry = {
-  identity: IngestKeyIdentity | null;
+  identity: IngestKeyIdentity;
   expiresAt: number;
 };
 
@@ -44,7 +44,7 @@ export function createIngestKeyCache(deps: {
       const lookup = deps
         .lookup(keyHash)
         .then((identity) => {
-          setEntry(keyHash, { identity, expiresAt: now() + ttlMs });
+          if (identity) setEntry(keyHash, { identity, expiresAt: now() + ttlMs });
           return identity;
         })
         .finally(() => inflight.delete(keyHash));
