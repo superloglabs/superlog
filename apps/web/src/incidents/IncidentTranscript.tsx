@@ -14,8 +14,10 @@ import {
 } from "./incident-activity-feed.ts";
 import {
   type TelemetryKind,
+  type TelemetryResultState,
   exploreHref,
   formatRangeLabel,
+  telemetryResultNotice,
   toLogRows,
   toMetricRows,
   toTraceRows,
@@ -513,6 +515,8 @@ function TelemetryEntry({
         kind={item.kind}
         input={item.input}
         rows={item.rows}
+        resultState={item.resultState}
+        originalRowCount={item.originalRowCount}
         isError={item.isError}
       />
     </div>
@@ -553,17 +557,22 @@ export function TelemetryQueryWidget({
   kind,
   input,
   rows,
+  resultState = "complete",
+  originalRowCount = null,
   isError,
 }: {
   kind: TelemetryKind;
   input: Record<string, unknown>;
   rows: Record<string, unknown>[];
+  resultState?: TelemetryResultState;
+  originalRowCount?: number | null;
   isError?: boolean;
 }) {
   const range = (input.range as { since?: string; until?: string } | undefined) ?? undefined;
   const windowLabel = formatRangeLabel(range);
   const count = rows.length;
   const empty = count === 0;
+  const resultNotice = telemetryResultNotice(resultState, count, originalRowCount);
 
   return (
     <div className="mt-3 overflow-hidden rounded-lg border border-border bg-surface">
@@ -580,24 +589,35 @@ export function TelemetryQueryWidget({
       <div className="px-3.5 py-3">
         {isError ? (
           <div className="py-6 text-center font-mono text-[11px] text-danger">query failed</div>
-        ) : empty ? (
-          <div className="py-6 text-center font-mono text-[11px] text-subtle">
-            no rows in this window
-          </div>
-        ) : kind === "metrics" ? (
-          <MetricWidget
-            rows={rows}
-            range={range}
-            metricName={String(input.metric_name ?? "value")}
-          />
-        ) : kind === "logs" ? (
-          <div className="overflow-x-auto">
-            <LogsTable rows={toLogRows(rows)} />
-          </div>
         ) : (
-          <div className="overflow-x-auto">
-            <TracesTable rows={toTraceRows(rows)} />
-          </div>
+          <>
+            {resultNotice && (
+              <div className="mb-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 font-mono text-[11px] text-warning">
+                {resultNotice}
+              </div>
+            )}
+            {empty ? (
+              !resultNotice && (
+                <div className="py-6 text-center font-mono text-[11px] text-subtle">
+                  no rows in this window
+                </div>
+              )
+            ) : kind === "metrics" ? (
+              <MetricWidget
+                rows={rows}
+                range={range}
+                metricName={String(input.metric_name ?? "value")}
+              />
+            ) : kind === "logs" ? (
+              <div className="overflow-x-auto">
+                <LogsTable rows={toLogRows(rows)} />
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <TracesTable rows={toTraceRows(rows)} />
+              </div>
+            )}
+          </>
         )}
       </div>
 

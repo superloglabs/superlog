@@ -164,6 +164,44 @@ test("custom MCP calls and failures identify their server in the investigation t
   ]);
 });
 
+test("buildActivityFeed carries truncated telemetry metadata with the stored rows", () => {
+  const feed = buildActivityFeed([
+    event({
+      id: "trace-use-1",
+      providerEventId: "trace-provider-use-1",
+      kind: "agent.mcp_tool_use",
+      detail: { toolUse: { name: "query_traces", input: { service: "api" } } },
+    }),
+    event({
+      id: "trace-result-1",
+      kind: "agent.mcp_tool_result",
+      summary: '[{"trace_id":"abc"}]',
+      detail: {
+        toolResult: {
+          toolUseId: "trace-provider-use-1",
+          isError: false,
+          truncated: true,
+          originalRowCount: 50,
+          storedRowCount: 1,
+        },
+      },
+    }),
+  ]);
+
+  assert.deepEqual(feed, [
+    {
+      type: "telemetry",
+      id: "trace-use-1",
+      kind: "traces",
+      input: { service: "api" },
+      rows: [{ trace_id: "abc" }],
+      resultState: "truncated",
+      originalRowCount: 50,
+      isError: false,
+    },
+  ]);
+});
+
 test("markAwaitingQuestion marks the latest repeated ask_human prompt", () => {
   const feed = buildActivityFeed([
     event({

@@ -1,9 +1,20 @@
 import type { IncidentEvent } from "../api.ts";
 import { type MemoryActivity, memoryActivityFromTool } from "./memory-tool-activity.ts";
-import { type TelemetryKind, parseResultRows, telemetryToolKind } from "./telemetry-result.ts";
+import {
+  type TelemetryKind,
+  type TelemetryResultState,
+  parseTelemetryResult,
+  telemetryToolKind,
+} from "./telemetry-result.ts";
 
 type ToolUseDetail = { name?: string; input?: Record<string, unknown>; mcpServerName?: string };
-type ToolResultDetail = { toolUseId?: string; isError?: boolean };
+type ToolResultDetail = {
+  toolUseId?: string;
+  isError?: boolean;
+  truncated?: boolean;
+  originalRowCount?: number;
+  storedRowCount?: number;
+};
 
 function readToolUse(e: IncidentEvent): ToolUseDetail | null {
   const detail = e.detail as { toolUse?: ToolUseDetail } | null;
@@ -23,6 +34,8 @@ export type TranscriptItem =
       kind: TelemetryKind;
       input: Record<string, unknown>;
       rows: Record<string, unknown>[];
+      resultState: TelemetryResultState;
+      originalRowCount: number | null;
       isError: boolean;
     }
   | {
@@ -184,12 +197,19 @@ export function buildActivityFeed(
         isError,
       );
       if (kind) {
+        const resultDetail = result ? readToolResult(result) : null;
+        const parsedResult = parseTelemetryResult(result?.summary, {
+          truncated: resultDetail?.truncated,
+          originalRowCount: resultDetail?.originalRowCount,
+        });
         items.push({
           type: "telemetry",
           id: event.id,
           kind,
           input: use?.input ?? {},
-          rows: parseResultRows(result?.summary),
+          rows: parsedResult.rows,
+          resultState: parsedResult.state,
+          originalRowCount: parsedResult.originalRowCount,
           isError,
         });
       } else if (memory) {

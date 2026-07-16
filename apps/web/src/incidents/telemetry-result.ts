@@ -2,12 +2,12 @@
 // `agent.mcp_tool_use` of query_metrics/query_logs/query_traces, paired with its
 // `agent.mcp_tool_result`) into widget-ready data.
 //
-// The agent's MCP query tools return a JSON array of rows; the worker persists
-// that array verbatim in `incident_events.summary` of the result event. We render
-// the agent's *recorded* result rather than re-running the query — it's faithful
-// to what the agent saw, survives ClickHouse retention, and avoids cross-project
-// scope issues (the explore endpoints also can't express span_attrs/log_attrs
-// filters the MCP tools accept, so a live re-run would be lossy).
+// The agent's MCP query tools return a JSON array of rows. The recorded event
+// stores that array, or a valid row-bounded prefix plus truncation metadata when
+// the response is too large. We render the recorded result rather than re-running
+// the query — it survives ClickHouse retention and avoids cross-project scope
+// issues (the explore endpoints also can't express span_attrs/log_attrs filters
+// the MCP tools accept, so a live re-run would be lossy).
 
 import type { LogRow, MetricSeriesRow } from "../api.ts";
 import { parseAbsoluteRange } from "../design/range-url.ts";
@@ -25,6 +25,19 @@ export type TraceTableRow = {
 
 export type ToolRange = { since?: string; until?: string } | undefined;
 
+export type TelemetryResultState = "complete" | "truncated" | "missing" | "invalid";
+
+export type ParsedTelemetryResult = {
+  rows: Record<string, unknown>[];
+  state: TelemetryResultState;
+  originalRowCount: number | null;
+};
+
+export type TelemetryResultMetadata = {
+  truncated?: boolean;
+  originalRowCount?: number;
+};
+
 export function telemetryToolKind(name: string | undefined): TelemetryKind | null {
   switch (name) {
     case "query_metrics":
@@ -41,16 +54,53 @@ export function telemetryToolKind(name: string | undefined): TelemetryKind | nul
 /** Parse the JSON array of result rows the agent recorded. Null-safe; returns []
  *  for empty results, scalars, objects, or unparseable text. */
 export function parseResultRows(text: string | null | undefined): Record<string, unknown>[] {
-  if (!text) return [];
+  return parseTelemetryResult(text).rows;
+}
+
+export function parseTelemetryResult(
+  text: string | null | undefined,
+  metadata: TelemetryResultMetadata = {},
+): ParsedTelemetryResult {
+  if (!text) return { rows: [], state: "missing", originalRowCount: null };
   const trimmed = text.trim();
-  if (!trimmed.startsWith("[")) return [];
+  if (!trimmed.startsWith("[")) {
+    return { rows: [], state: "invalid", originalRowCount: null };
+  }
   try {
     const parsed = JSON.parse(trimmed);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((r): r is Record<string, unknown> => !!r && typeof r === "object");
+    if (!Array.isArray(parsed)) {
+      return { rows: [], state: "invalid", originalRowCount: null };
+    }
+    const rows = parsed.filter(
+      (row): row is Record<string, unknown> => !!row && typeof row === "object",
+    );
+    return {
+      rows,
+      state: metadata.truncated ? "truncated" : "complete",
+      originalRowCount: metadata.originalRowCount ?? rows.length,
+    };
   } catch {
-    return [];
+    return {
+      rows: [],
+      state: trimmed.endsWith("...") ? "truncated" : "invalid",
+      originalRowCount: null,
+    };
   }
+}
+
+export function telemetryResultNotice(
+  state: TelemetryResultState,
+  storedRowCount: number,
+  originalRowCount: number | null,
+): string | null {
+  if (state === "complete") return null;
+  if (state === "missing") return "The query result was not recorded.";
+  if (state === "invalid") return "The recorded result could not be displayed.";
+  if (storedRowCount === 0) {
+    return "The recorded result was truncated before it could be displayed.";
+  }
+  const total = originalRowCount === null ? "more" : String(originalRowCount);
+  return `Showing ${storedRowCount} of ${total} recorded rows; the stored result was truncated.`;
 }
 
 /** ClickHouse "YYYY-MM-DD HH:MM:SS.nanos" (or ISO) → "YYYY-MM-DD HH:MM:SS",
