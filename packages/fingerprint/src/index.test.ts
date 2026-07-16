@@ -2,6 +2,53 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fingerprint, fingerprintLog, messageBucketFor, stripNullBytes } from "./index.js";
 
+test("fingerprint groups equivalent Next.js stacks whose generated chunk hashes differ", () => {
+  const stackFor = (chunkHash: string) =>
+    [
+      "api_response_error: Too Many Requests",
+      "    at a7.request (/var/task/apps/web/.next/server/chunks/ssr/node_modules__pnpm_dab6c57e._.js:17:64695)",
+      "    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)",
+      `    at async f (/var/task/apps/web/.next/server/chunks/ssr/[root-of-the-server]__${chunkHash}._.js:2:2000)`,
+      `    at async h (/var/task/apps/web/.next/server/chunks/ssr/[root-of-the-server]__${chunkHash}._.js:2:3306)`,
+      "    at async m (/var/task/apps/web/.next/server/chunks/ssr/_978abe5d._.js:2:8316)",
+    ].join("\n");
+
+  const first = fingerprint({
+    type: "api_response_error",
+    message: "Too Many Requests",
+    stacktrace: stackFor("cb666142"),
+  });
+  const second = fingerprint({
+    type: "api_response_error",
+    message: "Too Many Requests",
+    stacktrace: stackFor("9598d6e6"),
+  });
+
+  assert.equal(first.hash, second.hash);
+});
+
+test("fingerprint groups equivalent Next.js static chunks whose content hashes differ", () => {
+  const fingerprintFor = (chunkHash: string) =>
+    fingerprint({
+      type: "TypeError",
+      message: "Failed to render account page",
+      stacktrace: `    at renderAccount (/var/task/apps/web/.next/static/chunks/webpack-${chunkHash}.js:1:200)`,
+    });
+
+  assert.equal(fingerprintFor("332dbc5711e5ed").hash, fingerprintFor("9f76a111d542c0").hash);
+});
+
+test("fingerprint groups equivalent browser Next.js chunk URLs across builds", () => {
+  const fingerprintFor = (chunkHash: string) =>
+    fingerprint({
+      type: "TypeError",
+      message: "Failed to render account page",
+      stacktrace: `    at renderAccount (https://example.com/_next/static/chunks/app/page-${chunkHash}.js:1:200)`,
+    });
+
+  assert.equal(fingerprintFor("332dbc5711e5ed").hash, fingerprintFor("9f76a111d542c0").hash);
+});
+
 function iosHermesStack(input: { applicationId: string; bundleName: string }): string {
   const bundlePath =
     `/var/mobile/Containers/Data/Application/${input.applicationId}` +
