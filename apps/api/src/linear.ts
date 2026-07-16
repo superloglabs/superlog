@@ -511,6 +511,17 @@ async function handleLinearAgentSessionEvent(
   payload: LinearWebhookPayload,
   install: schema.LinearInstallation,
 ): Promise<void> {
+  // Resolve a fresh Linear token at most once and reuse it for every Linear write in
+  // this handler (metadata fetch, acknowledgement, external URL). The stored token can
+  // be expired; refreshing only for the fetch would leave the later writes on a stale
+  // token and 500 mid-handler — after the incident/chat already exists, so the retry
+  // takes the dedupe path and skips the acknowledgement and external URL entirely.
+  let cachedAccessToken: string | undefined;
+  const accessToken = async (): Promise<string> => {
+    cachedAccessToken ??= await resolveLinearAccessToken(install);
+    return cachedAccessToken;
+  };
+
   // A created session is a mention (chat) or a delegation (incident). The reliable
   // signal is agentSession.sourceMetadata.type ("comment" for a mention). If the
   // webhook body omits sourceMetadata, resolve it from Linear rather than fall back to
@@ -525,7 +536,7 @@ async function handleLinearAgentSessionEvent(
       // This fetch gates classification and runs before any DB write, so a stale
       // access token would 500 the webhook and wedge retries. Refresh first.
       sourceMetadataType = await fetchLinearAgentSessionSourceType({
-        accessToken: await resolveLinearAccessToken(install),
+        accessToken: await accessToken(),
         agentSessionId: session.id,
       });
     }
@@ -560,7 +571,7 @@ async function handleLinearAgentSessionEvent(
       activityId: `session:${classification.agentSessionId}`,
     });
     if (recorded.outcome === "accepted") {
-      await acknowledgeLinearSession(install, classification.agentSessionId, "chat");
+      await acknowledgeLinearSession(await accessToken(), classification.agentSessionId, "chat");
     }
     return;
   }
@@ -582,11 +593,15 @@ async function handleLinearAgentSessionEvent(
           "failed to enqueue Linear incident webhook",
         ),
       );
-      await acknowledgeLinearSession(install, classification.agentSessionId, "incident");
+      await acknowledgeLinearSession(
+        await accessToken(),
+        classification.agentSessionId,
+        "incident",
+      );
       const incidentUrl = await linearIncidentUrl(result.incident);
       if (incidentUrl) {
         await updateLinearAgentSession({
-          accessToken: install.accessToken,
+          accessToken: await accessToken(),
           agentSessionId: classification.agentSessionId,
           externalUrls: [{ label: "View incident", url: incidentUrl }],
         });
@@ -616,7 +631,7 @@ async function handleLinearAgentSessionEvent(
       activityId: classification.activityId,
     });
     if (recorded.outcome === "accepted") {
-      await acknowledgeLinearSession(install, classification.agentSessionId, "chat");
+      await acknowledgeLinearSession(await accessToken(), classification.agentSessionId, "chat");
     }
     return;
   }
@@ -637,7 +652,7 @@ async function handleLinearAgentSessionEvent(
     dedupeKey: `linear_prompt:${classification.activityId}`,
   });
   if (recorded.outcome === "accepted") {
-    await acknowledgeLinearSession(install, classification.agentSessionId, "incident");
+    await acknowledgeLinearSession(await accessToken(), classification.agentSessionId, "incident");
   }
 }
 
@@ -671,12 +686,12 @@ async function createLinearRootIncident(args: {
 }
 
 async function acknowledgeLinearSession(
-  install: schema.LinearInstallation,
+  accessToken: string,
   agentSessionId: string,
   kind: "chat" | "incident",
 ): Promise<void> {
   await createLinearAgentActivity({
-    accessToken: install.accessToken,
+    accessToken,
     agentSessionId,
     type: "thought",
     body: kind === "incident" ? "I’m starting an investigation now." : "I’m looking into that now.",
