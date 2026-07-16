@@ -934,8 +934,10 @@ type ClosedAgentPullRequestContinuationInput = {
 type ClosedAgentPullRequestContinuationDependencies = {
   resolveSettled(opts: {
     incidentId: string;
+    settlementEvidenceAt: Date;
     buildInput(
       pullRequests: IncidentAgentPullRequestSnapshot[],
+      epoch: { reopenedAt: Date | null },
     ): ResolveIncidentInput & { kind: "agent_pr_merged" | "agent_pr_closed" };
   }): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult>;
   runResolvedSideEffects(
@@ -961,14 +963,21 @@ export async function resolveOrResumeIncidentForClosedAgentPr(
   const eventDedupeKey = `incident_resolved:agent_pr_closed:${agentPr.id}:${closedAt.getTime()}`;
   const resolution = await dependencies.resolveSettled({
     incidentId: agentPr.incidentId,
+    settlementEvidenceAt: closedAt,
     // Built from the PR snapshot taken under the incident lock, so a sibling
     // merge racing this close cannot skew the attribution: a landed fix is
     // credited as `agent_pr_merged`, a plain close resolves as
-    // `agent_pr_closed`.
-    buildInput: (pullRequests) => {
+    // `agent_pr_closed`. Only current-epoch merges count — a PR merged before
+    // the incident's last manual reopen is a fix the human already overrode.
+    buildInput: (pullRequests, epoch) => {
       const mergedSibling =
         pullRequests
-          .filter((pullRequest) => pullRequest.state === "merged")
+          .filter(
+            (pullRequest) =>
+              pullRequest.state === "merged" &&
+              pullRequest.mergedAt &&
+              (!epoch.reopenedAt || pullRequest.mergedAt.getTime() > epoch.reopenedAt.getTime()),
+          )
           .sort((a, b) => (a.mergedAt?.getTime() ?? 0) - (b.mergedAt?.getTime() ?? 0))
           .at(-1) ?? null;
       return {
@@ -1054,6 +1063,7 @@ async function resolveIncidentForMergedAgentPr(opts: {
   // policy.
   const resolution = await resolveIncidentIfAllAgentPullRequestsSettled({
     incidentId: agentPr.incidentId,
+    settlementEvidenceAt: mergedAt,
     buildInput: (pullRequests) => ({
       incidentId: agentPr.incidentId,
       kind: "agent_pr_merged" as const,

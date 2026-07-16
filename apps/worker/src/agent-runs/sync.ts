@@ -967,13 +967,22 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
                   })
                 : await resolveIncidentIfAllAgentPullRequestsSettled({
                     incidentId: ctx.incident.id,
+                    settlementEvidenceAt: settledAt,
                     // Attribution comes from the locked PR snapshot: credit a
-                    // merged sibling when one landed, otherwise resolve as a
-                    // plain close.
-                    buildInput: (lockedPullRequests) => {
+                    // merged sibling when one landed in the current epoch,
+                    // otherwise resolve as a plain close — a PR merged before
+                    // the incident's last manual reopen is a fix the human
+                    // already overrode.
+                    buildInput: (lockedPullRequests, epoch) => {
                       const mergedSibling =
                         lockedPullRequests
-                          .filter((pullRequest) => pullRequest.state === "merged")
+                          .filter(
+                            (pullRequest) =>
+                              pullRequest.state === "merged" &&
+                              pullRequest.mergedAt &&
+                              (!epoch.reopenedAt ||
+                                pullRequest.mergedAt.getTime() > epoch.reopenedAt.getTime()),
+                          )
                           .sort(
                             (a, b) => (a.mergedAt?.getTime() ?? 0) - (b.mergedAt?.getTime() ?? 0),
                           )

@@ -361,6 +361,7 @@ async function coldStartFallback(
       // not leave the incident open when this merge is the last settle event.
       return resolveIncidentIfAllAgentPullRequestsSettled({
         incidentId: ctx.incident.id,
+        settlementEvidenceAt: fallbackResolvedAt,
         buildInput: (lockedPullRequests) => ({
           incidentId: ctx.incident.id,
           kind: "agent_pr_merged" as const,

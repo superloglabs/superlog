@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import {
   areAllIncidentPullRequestsMerged,
   areAllIncidentPullRequestsSettled,
@@ -515,14 +515,25 @@ export function createIncidentLifecycle(database: DB = db) {
   // guard, dedupe) must stay identical so batched PRs cannot drift
   // semantically between the two paths. The resolve input is built from the
   // locked PR snapshot (not a caller pre-read) so concurrent sibling merge/
-  // close webhooks cannot skew the resolution's attribution.
+  // close webhooks cannot skew the resolution's attribution, and receives the
+  // current epoch boundary (the last manual reopen) so it never credits a PR
+  // the human already overrode by reopening.
   const resolveIfIncidentPullRequestsSatisfy = async (
-    incidentId: string,
+    opts: {
+      incidentId: string;
+      // When the settle event driving this resolve occurred. Evidence that
+      // predates the incident's last reopen belongs to a previous epoch — a
+      // human who reopened did so knowing those PRs were settled, so a stale
+      // settle-webhook redelivery must not flip the incident closed again.
+      settlementEvidenceAt?: Date;
+    },
     pullRequestsPermitResolution: (pullRequests: Array<{ state: schema.AgentPrState }>) => boolean,
     inputForPullRequests: (
       pullRequests: IncidentAgentPullRequestSnapshot[],
+      epoch: { reopenedAt: Date | null },
     ) => ResolveIncidentInput,
   ): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult> => {
+    const { incidentId } = opts;
     const result = await repository.transaction(async (tx) => {
       // `recordOpenedAgentPullRequest` takes this same Incident lock before
       // inserting a PR. The winner is therefore definitive: a PR inserted
@@ -559,29 +570,27 @@ export function createIncidentLifecycle(database: DB = db) {
           resolvedIssueCount: 0 as const,
         };
       }
-      const input = inputForPullRequests(pullRequests);
-      // Settlement evidence that predates the incident's last reopen belongs
-      // to a previous epoch: a human who reopened the incident did so knowing
-      // those PRs were settled, so a stale settle-webhook redelivery must not
-      // flip the incident closed again. Only a settle event newer than the
-      // reopen may resolve.
-      if (input.resolvedAt) {
-        const reopenedAfterSettlement = await tx.query.incidentEvents.findFirst({
-          where: and(
-            eq(schema.incidentEvents.incidentId, incidentId),
-            eq(schema.incidentEvents.kind, "incident_reopened"),
-            gt(schema.incidentEvents.createdAt, input.resolvedAt),
-          ),
-          columns: { id: true },
-        });
-        if (reopenedAfterSettlement) {
-          return {
-            disposition: "resolution_event_already_consumed" as const,
-            resolved: false as const,
-            resolvedIssueCount: 0 as const,
-          };
-        }
+      const lastReopen = await tx.query.incidentEvents.findFirst({
+        where: and(
+          eq(schema.incidentEvents.incidentId, incidentId),
+          eq(schema.incidentEvents.kind, "incident_reopened"),
+        ),
+        orderBy: [desc(schema.incidentEvents.createdAt)],
+        columns: { createdAt: true },
+      });
+      const reopenedAt = lastReopen?.createdAt ?? null;
+      if (
+        reopenedAt &&
+        opts.settlementEvidenceAt &&
+        reopenedAt.getTime() > opts.settlementEvidenceAt.getTime()
+      ) {
+        return {
+          disposition: "resolution_event_already_consumed" as const,
+          resolved: false as const,
+          resolvedIssueCount: 0 as const,
+        };
       }
+      const input = inputForPullRequests(pullRequests, { reopenedAt });
       const resolution = await resolveIncidentInTx(tx, input, repository, incident);
       if (resolution.rejectionReason === "resolution_event_already_consumed") {
         return {
@@ -655,7 +664,7 @@ export function createIncidentLifecycle(database: DB = db) {
       input: ResolveIncidentInput & { kind: "agent_pr_merged" },
     ): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult> {
       return resolveIfIncidentPullRequestsSatisfy(
-        input.incidentId,
+        { incidentId: input.incidentId, settlementEvidenceAt: input.resolvedAt },
         areAllIncidentPullRequestsMerged,
         () => input,
       );
@@ -666,15 +675,17 @@ export function createIncidentLifecycle(database: DB = db) {
     // the delivery and the incident resolves without waiting for a session or
     // a confirmation click. `buildInput` runs on the locked PR snapshot so the
     // caller picks the kind from consistent state: `agent_pr_merged` when a
-    // sibling fix did land, `agent_pr_closed` when nothing merged.
+    // sibling fix landed in the current epoch, `agent_pr_closed` otherwise.
     async resolveIfAllAgentPullRequestsSettled(opts: {
       incidentId: string;
+      settlementEvidenceAt: Date;
       buildInput(
         pullRequests: IncidentAgentPullRequestSnapshot[],
+        epoch: { reopenedAt: Date | null },
       ): ResolveIncidentInput & { kind: "agent_pr_merged" | "agent_pr_closed" };
     }): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult> {
       return resolveIfIncidentPullRequestsSatisfy(
-        opts.incidentId,
+        { incidentId: opts.incidentId, settlementEvidenceAt: opts.settlementEvidenceAt },
         areAllIncidentPullRequestsSettled,
         opts.buildInput,
       );
@@ -986,8 +997,10 @@ export async function resolveIncidentIfAllAgentPullRequestsMerged(
 
 export async function resolveIncidentIfAllAgentPullRequestsSettled(opts: {
   incidentId: string;
+  settlementEvidenceAt: Date;
   buildInput(
     pullRequests: IncidentAgentPullRequestSnapshot[],
+    epoch: { reopenedAt: Date | null },
   ): ResolveIncidentInput & { kind: "agent_pr_merged" | "agent_pr_closed" };
 }): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult> {
   return createIncidentLifecycle(db).resolveIfAllAgentPullRequestsSettled(opts);

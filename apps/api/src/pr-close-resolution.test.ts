@@ -52,7 +52,10 @@ test("a close that settles the last live PR resolves the incident without asking
     { agentPr: closedPr, closedByLogin: "hubot", closedAt },
     {
       async resolveSettled(opts) {
-        calls.push({ kind: "resolve", value: opts.buildInput([closedSnapshot]) });
+        calls.push({
+          kind: "resolve",
+          value: opts.buildInput([closedSnapshot], { reopenedAt: null }),
+        });
         return { disposition: "resolved", resolved: true, resolvedIssueCount: 2 };
       },
       async runResolvedSideEffects(incidentId) {
@@ -99,7 +102,7 @@ test("a close with a merged sibling in the locked snapshot resolves as agent_pr_
     { agentPr: closedPr, closedByLogin: "hubot", closedAt },
     {
       async resolveSettled(opts) {
-        const input = opts.buildInput([mergedSnapshot, closedSnapshot]);
+        const input = opts.buildInput([mergedSnapshot, closedSnapshot], { reopenedAt: null });
         resolveInputs.push({
           kind: input.kind,
           reasonText: input.reasonText ?? "",
@@ -121,6 +124,32 @@ test("a close with a merged sibling in the locked snapshot resolves as agent_pr_
   // The sibling merged after this close: the resolution is stamped at the
   // merge, not backdated to the close.
   assert.deepEqual(resolveInputs[0]?.resolvedAt, laterMergedAt);
+});
+
+test("a merged sibling from before the incident's last reopen is not credited", async () => {
+  const resolveInputs: Array<{ kind: string }> = [];
+
+  const disposition = await resolveOrResumeIncidentForClosedAgentPr(
+    { agentPr: closedPr, closedByLogin: "hubot", closedAt },
+    {
+      async resolveSettled(opts) {
+        // The sibling merged before the human reopened the incident: that fix
+        // was already overridden, so the close resolves as agent_pr_closed.
+        const input = opts.buildInput([mergedSnapshot, closedSnapshot], {
+          reopenedAt: new Date(laterMergedAt.getTime() + 60_000),
+        });
+        resolveInputs.push({ kind: input.kind });
+        return { disposition: "resolved", resolved: true, resolvedIssueCount: 1 };
+      },
+      async runResolvedSideEffects() {},
+      async continueInSession() {
+        throw new Error("session must not be consulted");
+      },
+    },
+  );
+
+  assert.equal(disposition, "resolved");
+  assert.equal(resolveInputs[0]?.kind, "agent_pr_closed");
 });
 
 test("a close while another PR is still live falls back to the session continuation", async () => {

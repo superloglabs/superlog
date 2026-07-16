@@ -17,11 +17,12 @@ function recordingDb(opts: {
 }): { db: DB; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
   // The resolver's two incidentEvents.findFirst probes arrive in a fixed
-  // order: the pending-batch reservation first, then the reopened-since-
-  // settlement check.
+  // order: the pending-batch reservation first, then the last-reopen lookup.
   const incidentEventProbes = [
     opts.pendingBatchReservation ? { id: "reservation-1" } : undefined,
-    opts.reopenedAfterSettlement ? { id: "reopen-1" } : undefined,
+    opts.reopenedAfterSettlement
+      ? { createdAt: new Date("2026-07-16T00:00:00.000Z") }
+      : undefined,
   ];
   const db = {
     query: {
@@ -73,6 +74,7 @@ function recordingDb(opts: {
 
 const resolution = {
   incidentId: "incident-1",
+  settlementEvidenceAt: new Date("2026-07-15T10:00:00.000Z"),
   buildInput: () => ({
     incidentId: "incident-1",
     kind: "agent_pr_closed" as const,
