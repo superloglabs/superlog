@@ -7,10 +7,7 @@ export type ProjectMcpAuthDetection =
   | { type: "unknown" };
 
 export type ProjectMcpOAuthDiscoverer = {
-  discover(
-    serverUrl: string,
-    signal?: AbortSignal,
-  ): Promise<{
+  discover(serverUrl: string, signal?: AbortSignal): Promise<{
     codeChallengeMethods: string[];
     grantTypes: string[];
     registrationEndpoint: string | null;
@@ -31,14 +28,9 @@ export async function detectProjectMcpAuth(
         reject(new Error("OAuth metadata discovery timed out"));
       }, timeoutMs);
     });
-    const discovery = await Promise.race([
-      oauth.discover(serverUrl, controller.signal),
-      deadline,
-    ]);
-    const supportsAuthorizationCode =
-      discovery.grantTypes.includes("authorization_code");
-    const supportsClientCredentials =
-      discovery.grantTypes.includes("client_credentials");
+    const discovery = await Promise.race([oauth.discover(serverUrl, controller.signal), deadline]);
+    const supportsAuthorizationCode = discovery.grantTypes.includes("authorization_code");
+    const supportsClientCredentials = discovery.grantTypes.includes("client_credentials");
     if (
       discovery.grantTypes.length > 0 &&
       !supportsAuthorizationCode &&

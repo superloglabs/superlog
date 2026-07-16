@@ -16,14 +16,11 @@ test("MCP auth detection recognizes standards-based OAuth authorization code ser
     }),
   };
 
-  assert.deepEqual(
-    await detectProjectMcpAuth("https://mcp.granola.example/mcp", http),
-    {
-      type: "oauth",
-      grantType: "authorization_code",
-      supportsDynamicRegistration: true,
-    },
-  );
+  assert.deepEqual(await detectProjectMcpAuth("https://mcp.granola.example/mcp", http), {
+    type: "oauth",
+    grantType: "authorization_code",
+    supportsDynamicRegistration: true,
+  });
 });
 
 test("MCP auth detection stays unknown when the server does not publish OAuth metadata", async () => {
