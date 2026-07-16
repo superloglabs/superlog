@@ -21,11 +21,11 @@ const webhookSecret = "agent-pr-review-loop-drill";
 process.env.GITHUB_APP_WEBHOOK_SECRET = webhookSecret;
 process.env.GITHUB_APP_SLUG = "superlog-app";
 
-const tag = `review-loop-drill-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+const tag = `review-loop-drill-${Date.now()}-${crypto.randomUUID()}`;
 const repoFullName = `acme/${tag}`;
 const branchName = `ash/${tag}`;
-const prNumber = Math.floor(Math.random() * 10_000) + 1;
-const installationId = Math.floor(Date.now() / 1_000) + Math.floor(Math.random() * 1_000_000);
+const prNumber = crypto.randomInt(1, 10_001);
+const installationId = Math.floor(Date.now() / 1_000) + crypto.randomInt(1_000_000);
 const providerMessages: string[] = [];
 const pushedUpdates: Array<{ prNumber: number; branchName: string; commentBody: string }> = [];
 const limitComments: string[] = [];
