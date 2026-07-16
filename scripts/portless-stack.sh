@@ -164,7 +164,8 @@ if [[ ! "$PROXY_PORT_VAL" =~ ^[0-9]+$ ]] && [[ -n "${SUPERLOG_PORTLESS_PROXY_POR
   printf '%s\n' "$PROXY_PORT_VAL" > "$PORTLESS_PORT_FILE"
   echo "==> portless proxy port was unset; using explicit port $PROXY_PORT_VAL" >&2
 fi
-if [[ "$PROXY_PORT_VAL" =~ ^[0-9]+$ ]] && [[ "$PROXY_PORT_VAL" != "443" ]]; then
+if [[ "$PROXY_PORT_VAL" =~ ^[0-9]+$ ]] &&
+  { [[ "$PROXY_PORT_VAL" != "443" ]] || [[ ! -f "$PORTLESS_TLS_FILE" ]]; }; then
   PORT_SUFFIX=":$PROXY_PORT_VAL"
 fi
 if [[ "$PROXY_PORT_VAL" =~ ^[0-9]+$ ]] && [[ ! -f "$PORTLESS_TLS_FILE" ]]; then
