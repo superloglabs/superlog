@@ -5,6 +5,7 @@ import {
   createDetectedProjectMcpAuthDraft,
   createProjectMcpEditorDraft,
   projectMcpAuthSelectionAfterUrlChange,
+  shouldDetectProjectMcpAuth,
 } from "./project-mcp-editor.ts";
 
 test("opening an MCP editor starts from the persisted server instead of a stale draft", () => {
@@ -110,4 +111,11 @@ test("detected client-credentials OAuth requires manual credentials even with re
 test("changing the URL resets auth forced by detection but preserves an explicit manual choice", () => {
   assert.equal(projectMcpAuthSelectionAfterUrlChange("required"), "automatic");
   assert.equal(projectMcpAuthSelectionAfterUrlChange("manual"), "manual");
+});
+
+test("automatic auth detection requires an URL and explicit trust confirmation", () => {
+  assert.equal(shouldDetectProjectMcpAuth("automatic", "https://mcp.example/mcp", false), false);
+  assert.equal(shouldDetectProjectMcpAuth("automatic", "", true), false);
+  assert.equal(shouldDetectProjectMcpAuth("manual", "https://mcp.example/mcp", true), false);
+  assert.equal(shouldDetectProjectMcpAuth("automatic", "https://mcp.example/mcp", true), true);
 });

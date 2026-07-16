@@ -32,6 +32,14 @@ export function projectMcpAuthSelectionAfterUrlChange(
   return selection === "required" ? "automatic" : selection;
 }
 
+export function shouldDetectProjectMcpAuth(
+  selection: ProjectMcpAuthSelection,
+  url: string,
+  trusted: boolean,
+): boolean {
+  return selection === "automatic" && trusted && url.trim().length > 0;
+}
+
 export function createDetectedProjectMcpAuthDraft(detection: ProjectMcpAuthDetection): AuthDraft {
   if (detection.type === "unknown") return EMPTY_AUTH;
   return {

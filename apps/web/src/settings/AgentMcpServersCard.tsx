@@ -19,6 +19,7 @@ import {
   createDetectedProjectMcpAuthDraft,
   createProjectMcpEditorDraft,
   projectMcpAuthSelectionAfterUrlChange,
+  shouldDetectProjectMcpAuth,
   type ProjectMcpAuthSelection,
 } from "./project-mcp-editor.ts";
 import { SettingsCard, SettingsRow } from "./rows.tsx";
@@ -56,6 +57,7 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
     disconnectOAuth.isPending;
 
   const detectAuthForUrl = async (): Promise<AuthDraft | null> => {
+    if (!shouldDetectProjectMcpAuth(authSelection.current, url, trusted)) return auth;
     setAuthDetection("Detecting auth…");
     try {
       const detected = await detectAuth.mutateAsync(url);
@@ -85,6 +87,7 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
+    if (!trusted) return;
     const submittedAuth =
       authSelection.current === "automatic" ? await detectAuthForUrl() : auth;
     if (!submittedAuth) return;
@@ -292,7 +295,7 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
                   }
                 }}
                 onBlur={() => {
-                  if (authSelection.current !== "automatic" || !url.trim()) return;
+                  if (!shouldDetectProjectMcpAuth(authSelection.current, url, trusted)) return;
                   void detectAuthForUrl();
                 }}
                 placeholder="https://mcp.example.com/mcp"
@@ -315,7 +318,7 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
               authSelection.current = "automatic";
               setManualAuth(false);
               setAuth(EMPTY_AUTH);
-              if (url.trim()) void detectAuthForUrl();
+              if (shouldDetectProjectMcpAuth("automatic", url, trusted)) void detectAuthForUrl();
             }}
           />
           <label className="mt-4 flex items-start gap-2 text-[12.5px] text-muted">
