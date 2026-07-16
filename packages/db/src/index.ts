@@ -187,6 +187,8 @@ export { generateCodename } from "./codename.js";
 export {
   evaluateFollowUpEligibility,
   decideInboundContinuation,
+  INBOUND_INTERACTION_EVENT_KINDS,
+  isInboundInteractionEventKind,
   recordInboundInteraction,
   restartAgentRun,
   requestFollowUpAgentRun,
@@ -197,6 +199,7 @@ export {
   type FollowUpVerdict,
   type InboundContinuationInput,
   type InboundContinuationVerdict,
+  type InboundInteractionEventKind,
   type RecordInboundInteractionResult,
   type RequestFollowUpResult,
 } from "./agent-follow-up.js";
@@ -210,11 +213,19 @@ export {
 } from "./agent-pr-retry.js";
 export { agentPullRequestRetryEligibility } from "./agent-pr-retry-domain.js";
 export {
+  AGENT_PULL_REQUEST_REVIEW_CONTINUATION_LIMIT,
   applyAgentPullRequestState,
   applyAgentPullRequestStateInTx,
+  completeAgentPullRequestReviewContinuationClaim,
   type ApplyAgentPullRequestStateInput,
   type ApplyAgentPullRequestStateResult,
   type AgentPullRequestStateTx,
+  isAgentPullRequestReviewEventKind,
+  recordAgentPullRequestReviewEvent,
+  type RecordAgentPullRequestReviewEventInput,
+  type RecordAgentPullRequestReviewEventResult,
+  releaseAgentPullRequestReviewContinuationClaim,
+  releaseAgentPullRequestReviewLimitNotification,
 } from "./agent-pr-state.js";
 export {
   type AgentPullRequestProviderMutation,

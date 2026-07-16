@@ -1,8 +1,11 @@
 import {
   type AgentRunFollowUpInteraction,
+  INBOUND_INTERACTION_EVENT_KINDS,
+  type InboundInteractionEventKind,
   type RequestFollowUpResult,
   type ResolveIncidentAfterAgentPullRequestsMergedResult,
   db,
+  isInboundInteractionEventKind,
   isIncidentResolutionProofCurrent,
   requestFollowUpAgentRun,
   resolveIncidentIfAllAgentPullRequestsMerged,
@@ -138,8 +141,10 @@ export async function resumeDurableAgentRun(opts: {
   // with the human reply alone. The untouched context event is then steered
   // by the ordinary running-sync path on its next pass, preserving the right
   // framing for both inputs instead of presenting system context as human text.
-  const humanInputs = opts.inputs.filter((event) => event.kind === "human_reply");
-  const deliveryInputs = humanInputs.length > 0 ? humanInputs : opts.inputs;
+  const interactionInputs = opts.inputs.filter((event) =>
+    isInboundInteractionEventKind(event.kind),
+  );
+  const deliveryInputs = interactionInputs.length > 0 ? interactionInputs : opts.inputs;
   const combined = deliveryInputs
     .map((event) => event.summary ?? "")
     .filter(Boolean)
@@ -162,11 +167,11 @@ export async function resumeDurableAgentRun(opts: {
 
 export function resumeInputEventKinds(
   agentRun: Pick<schema.AgentRun, "state" | "result">,
-): Array<"human_reply" | "incident_context_changed"> {
+): Array<InboundInteractionEventKind | "incident_context_changed"> {
   if (agentRun.state === "awaiting_events" && agentRun.result?.waitReason === "external_cause") {
-    return ["human_reply", "incident_context_changed"];
+    return [...INBOUND_INTERACTION_EVENT_KINDS, "incident_context_changed"];
   }
-  return ["human_reply"];
+  return [...INBOUND_INTERACTION_EVENT_KINDS];
 }
 
 async function loadUnprocessedResumeInputs(

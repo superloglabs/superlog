@@ -2,6 +2,7 @@ import {
   type AgentPullRequestLifecycleContinuation,
   type AgentRunResult,
   type DB,
+  INBOUND_INTERACTION_EVENT_KINDS,
   mergeIncidentsInTx,
   schema,
 } from "@superlog/db";
@@ -27,7 +28,7 @@ function pendingReplyInteraction(
     }
   }
   // Legacy human_reply rows predate `detail.origin`. Never let one malformed
-  // historical row permanently block the dead-session handoff: its durable
+  // historical inbound row permanently block the dead-session handoff: its durable
   // summary and timestamp still preserve the human's message for the
   // successor, with a neutral channel fallback.
   return {
@@ -54,7 +55,7 @@ function combineFollowUpInteractions(
       interaction.occurredAt,
     ]);
 
-  // A lifecycle continuation can also exist as one pending human_reply row.
+  // A lifecycle continuation can also exist as one pending interaction row.
   // Treat the two sources as multisets: every durable pending row survives,
   // while at most the matching number of lifecycle copies are suppressed.
   const pendingCounts = new Map<string, number>();
@@ -325,7 +326,7 @@ export function createAgentRunRepository(db: DB) {
             and(
               eq(schema.incidentEvents.incidentId, opts.incidentId),
               eq(schema.incidentEvents.agentRunId, opts.id),
-              eq(schema.incidentEvents.kind, "human_reply"),
+              inArray(schema.incidentEvents.kind, [...INBOUND_INTERACTION_EVENT_KINDS]),
               isNull(schema.incidentEvents.processedAt),
             ),
           )
