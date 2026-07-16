@@ -85,9 +85,14 @@ async function seedProject() {
   return { org, user, project };
 }
 
-test("a project owner connects GCP without retaining their OAuth token", async () => {
+test("a project owner discovers Google projects before choosing one to connect", async () => {
   const { org, user, project } = await seedProject();
-  const calls: Array<{ connectionId: string; accessToken: string; gcpProjectId: string }> = [];
+  const calls: Array<{
+    connectionId: string;
+    accessToken: string;
+    gcpProjectId: string;
+    gcpProjectNumber: string | undefined;
+  }> = [];
   const gateway: GcpGateway = {
     authorizationUrl({ state }) {
       const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
@@ -99,11 +104,27 @@ test("a project owner connects GCP without retaining their OAuth token", async (
       assert.equal(code, "oauth-code");
       return { accessToken: "temporary-user-token" };
     },
+    async listProjects(accessToken) {
+      assert.equal(accessToken, "temporary-user-token");
+      return [
+        {
+          projectId: "acme-production",
+          projectNumber: "123456789012",
+          displayName: "Acme production",
+        },
+        {
+          projectId: "acme-staging",
+          projectNumber: "210987654321",
+          displayName: "Acme staging",
+        },
+      ];
+    },
     async provision(input) {
       calls.push({
         connectionId: input.connectionId,
         accessToken: input.userAccessToken,
         gcpProjectId: input.gcpProjectId,
+        gcpProjectNumber: input.gcpProjectNumber,
       });
       assert.equal(input.integrationProjectId, "superlog-observability");
       assert.equal(
@@ -136,8 +157,6 @@ test("a project owner connects GCP without retaining their OAuth token", async (
 
   const start = await app.request(`/api/projects/${project.id}/gcp/install-url`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ gcpProjectId: "acme-production" }),
   });
   assert.equal(start.status, 200);
   const { url } = (await start.json()) as { url: string };
@@ -153,12 +172,101 @@ test("a project owner connects GCP without retaining their OAuth token", async (
     )}`,
   );
   assert.equal(callback.status, 302);
-  assert.equal(
-    callback.headers.get("location"),
-    "https://app.example.com/connect/gcp?gcp=connected",
+  const selectionUrl = new URL(callback.headers.get("location") ?? "");
+  assert.equal(selectionUrl.origin + selectionUrl.pathname, "https://app.example.com/connect/gcp");
+  assert.equal(selectionUrl.searchParams.get("gcp"), "select");
+  const authorizationId = selectionUrl.searchParams.get("authorization");
+  assert.ok(authorizationId);
+  assert.equal(calls.length, 0);
+
+  const projects = await app.request(`/api/gcp/authorizations/${authorizationId}`);
+  assert.equal(projects.status, 200);
+  const readyAuthorization = await db.query.gcpAuthorizationSessions.findFirst({
+    where: eq(schema.gcpAuthorizationSessions.id, authorizationId),
+  });
+  assert.equal(readyAuthorization?.status, "ready");
+  assert.ok(readyAuthorization?.accessTokenCiphertext);
+  assert.notEqual(
+    readyAuthorization.accessTokenCiphertext.toString("utf8"),
+    "temporary-user-token",
   );
+  assert.ok(
+    readyAuthorization.expiresAt.getTime() <= Date.now() + 10 * 60 * 1000,
+    "the usable grant must expire within ten minutes",
+  );
+  assert.deepEqual(await projects.json(), {
+    id: authorizationId,
+    expiresAt: readyAuthorization.expiresAt.toISOString(),
+    projects: [
+      {
+        projectId: "acme-production",
+        projectNumber: "123456789012",
+        displayName: "Acme production",
+      },
+      {
+        projectId: "acme-staging",
+        projectNumber: "210987654321",
+        displayName: "Acme staging",
+      },
+    ],
+  });
+
+  const [otherManager] = await db
+    .insert(schema.users)
+    .values({ email: `other-${Date.now()}@example.com` })
+    .returning();
+  assert.ok(otherManager);
+  userIds.push(otherManager.id);
+  await db
+    .insert(schema.orgMembers)
+    .values({ orgId: org.id, userId: otherManager.id, role: "owner" });
+  const otherApp = new Hono<{
+    Variables: { userId: string; orgId: string | null };
+  }>();
+  otherApp.use("/api/*", async (c, next) => {
+    c.set("userId", otherManager.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  mountGcpAuthed(otherApp, { config, gateway });
+  const otherManagerRead = await otherApp.request(`/api/gcp/authorizations/${authorizationId}`);
+  assert.equal(otherManagerRead.status, 404);
+
+  const invalidSelection = await app.request(`/api/gcp/authorizations/${authorizationId}/connect`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ gcpProjectId: "not-returned-by-google" }),
+  });
+  assert.equal(invalidSelection.status, 400);
+  assert.equal(calls.length, 0);
+
+  const connect = await app.request(`/api/gcp/authorizations/${authorizationId}/connect`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ gcpProjectId: "acme-production" }),
+  });
+  assert.equal(connect.status, 200);
+  assert.deepEqual(await connect.json(), { connected: true });
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.gcpProjectId, "acme-production");
+  assert.equal(calls[0]?.gcpProjectNumber, "123456789012");
+
+  const consumedAuthorization = await db.query.gcpAuthorizationSessions.findFirst({
+    where: eq(schema.gcpAuthorizationSessions.id, authorizationId),
+  });
+  assert.equal(consumedAuthorization?.status, "consumed");
+  assert.ok(consumedAuthorization?.consumedAt);
+  assert.equal(consumedAuthorization?.accessTokenCiphertext, null);
+  assert.equal(consumedAuthorization?.accessTokenNonce, null);
+  assert.equal(consumedAuthorization?.accessTokenKeyVersion, null);
+
+  const replay = await app.request(`/api/gcp/authorizations/${authorizationId}/connect`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ gcpProjectId: "acme-production" }),
+  });
+  assert.equal(replay.status, 409);
+  assert.equal(calls.length, 1);
 
   const status = await app.request(`/api/projects/${project.id}/gcp/connection`);
   assert.equal(status.status, 200);
@@ -180,6 +288,9 @@ test("denying Google consent marks the pending connection failed", async () => {
     async exchangeCode() {
       throw new Error("denied callbacks must not exchange a code");
     },
+    async listProjects() {
+      throw new Error("denied callbacks must not list projects");
+    },
     async provision() {
       throw new Error("denied callbacks must not provision resources");
     },
@@ -198,8 +309,6 @@ test("denying Google consent marks the pending connection failed", async () => {
 
   const start = await app.request(`/api/projects/${project.id}/gcp/install-url`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ gcpProjectId: "acme-production" }),
   });
   const { url } = (await start.json()) as { url: string };
   const state = new URL(url).searchParams.get("state");
@@ -211,11 +320,11 @@ test("denying Google consent marks the pending connection failed", async () => {
   assert.equal(callback.status, 302);
   assert.equal(callback.headers.get("location"), "https://app.example.com/connect/gcp?gcp=denied");
 
-  const connection = await db.query.gcpConnections.findFirst({
-    where: eq(schema.gcpConnections.projectId, project.id),
+  const authorization = await db.query.gcpAuthorizationSessions.findFirst({
+    where: eq(schema.gcpAuthorizationSessions.projectId, project.id),
   });
-  assert.equal(connection?.status, "failed");
-  assert.equal(connection?.lastError, "Google OAuth access denied");
+  assert.equal(authorization?.status, "failed");
+  assert.equal(authorization?.lastError, "Google OAuth access denied");
 });
 
 test("completing an older OAuth tab does not revoke a newer pending connection", async () => {
@@ -534,7 +643,7 @@ test("accepted GCP logs mark a project as ingested without an API key request", 
   assert.equal(await projectHasIngested(project.id), true);
 });
 
-test("a null install request body is rejected as an invalid project id", async () => {
+test("starting Google OAuth does not require a project id request body", async () => {
   const { org, user, project } = await seedProject();
   const gateway = {
     authorizationUrl() {
@@ -542,6 +651,9 @@ test("a null install request body is rejected as an invalid project id", async (
     },
     async exchangeCode() {
       return { accessToken: "unused" };
+    },
+    async listProjects() {
+      return [];
     },
     async provision() {
       throw new Error("unused");
@@ -558,10 +670,10 @@ test("a null install request body is rejected as an invalid project id", async (
 
   const response = await app.request(`/api/projects/${project.id}/gcp/install-url`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: "null",
   });
 
-  assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), { error: "gcpProjectId is required" });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    url: "https://accounts.google.com/o/oauth2/v2/auth",
+  });
 });

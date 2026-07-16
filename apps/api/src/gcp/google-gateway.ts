@@ -2,6 +2,7 @@ import { createAwsFederatedGcpClient } from "@superlog/gcp-auth";
 import type {
   GcpDeprovisioningInput,
   GcpGateway,
+  GcpProjectOption,
   GcpProvisioningInput,
   ProvisionedGcpConnection,
 } from "./domain.js";
@@ -20,11 +21,12 @@ export class GoogleApiError extends Error {
   }
 }
 
-async function responseError(response: Response): Promise<GoogleApiError> {
+async function responseError(response: Response, operation: string): Promise<GoogleApiError> {
   const body = (await response.json().catch(() => ({}))) as ErrorBody;
+  const detail = body.error?.message;
   return new GoogleApiError(
     response.status,
-    body.error?.message ?? `Google API request failed (${response.status})`,
+    detail ? `${operation}: ${detail}` : `${operation} failed (${response.status})`,
   );
 }
 
@@ -44,7 +46,11 @@ async function requestJson<T>(
       ...init.headers,
     },
   });
-  if (!response.ok) throw await responseError(response);
+  if (!response.ok) {
+    const parsed = new URL(url);
+    const method = (init.method ?? "GET").toUpperCase();
+    throw await responseError(response, `${method} ${parsed.hostname}${parsed.pathname}`);
+  }
   return (await response.json().catch(() => ({}))) as T;
 }
 
@@ -176,11 +182,47 @@ export class GoogleGcpGateway implements GcpGateway {
         grant_type: "authorization_code",
       }),
     });
-    if (!response.ok) throw await responseError(response);
+    if (!response.ok) throw await responseError(response, "POST oauth2.googleapis.com/token");
     const body = (await response.json()) as { access_token?: string };
     if (!body.access_token)
       throw new Error("Google OAuth response did not include an access token");
     return { accessToken: body.access_token };
+  }
+
+  async listProjects(userAccessToken: string): Promise<GcpProjectOption[]> {
+    const projects: GcpProjectOption[] = [];
+    const seenPageTokens = new Set<string>();
+    let pageToken: string | undefined;
+    do {
+      const url = new URL("https://cloudresourcemanager.googleapis.com/v3/projects:search");
+      url.searchParams.set("query", "state:ACTIVE");
+      url.searchParams.set("pageSize", "100");
+      if (pageToken) url.searchParams.set("pageToken", pageToken);
+      const page = await requestJson<{
+        projects?: Array<{
+          name?: string;
+          projectId?: string;
+          displayName?: string;
+          state?: string;
+        }>;
+        nextPageToken?: string;
+      }>(this.fetchImpl, url.toString(), userAccessToken);
+      for (const project of page.projects ?? []) {
+        const projectNumber = project.name?.match(/^projects\/(\d+)$/)?.[1];
+        if (project.state !== "ACTIVE" || !project.projectId || !projectNumber) continue;
+        projects.push({
+          projectId: project.projectId,
+          projectNumber,
+          displayName: project.displayName?.trim() || project.projectId,
+        });
+      }
+      pageToken = page.nextPageToken || undefined;
+      if (pageToken && seenPageTokens.has(pageToken)) {
+        throw new Error("Google Cloud project search returned a repeated page token");
+      }
+      if (pageToken) seenPageTokens.add(pageToken);
+    } while (pageToken);
+    return projects;
   }
 
   async provision(input: GcpProvisioningInput): Promise<ProvisionedGcpConnection> {
@@ -189,14 +231,17 @@ export class GoogleGcpGateway implements GcpGateway {
     const topicPath = `projects/${input.integrationProjectId}/topics/${resourceSlug}`;
     const subscriptionPath = `projects/${input.integrationProjectId}/subscriptions/${resourceSlug}`;
 
-    const project = await requestJson<{ projectNumber?: string }>(
-      this.fetchImpl,
-      `https://cloudresourcemanager.googleapis.com/v1/projects/${encodeURIComponent(input.gcpProjectId)}`,
-      input.userAccessToken,
-      {},
-    );
-    const gcpProjectNumber = project.projectNumber;
-    if (!gcpProjectNumber) throw new Error("Google Cloud project number was not returned");
+    let gcpProjectNumber = input.gcpProjectNumber;
+    if (!gcpProjectNumber) {
+      const project = await requestJson<{ projectNumber?: string }>(
+        this.fetchImpl,
+        `https://cloudresourcemanager.googleapis.com/v1/projects/${encodeURIComponent(input.gcpProjectId)}`,
+        input.userAccessToken,
+        {},
+      );
+      gcpProjectNumber = project.projectNumber;
+      if (!gcpProjectNumber) throw new Error("Google Cloud project number was not returned");
+    }
 
     let topicCreated = false;
     let sinkCreated = false;
@@ -242,12 +287,9 @@ export class GoogleGcpGateway implements GcpGateway {
       const topicPolicyUrl = `https://pubsub.googleapis.com/v1/${topicPath}`;
       topicPolicyBefore = await requestJson<IamPolicy>(
         this.fetchImpl,
-        `${topicPolicyUrl}:getIamPolicy`,
+        `${topicPolicyUrl}:getIamPolicy?options.requestedPolicyVersion=3`,
         serviceToken,
-        {
-          method: "POST",
-          body: JSON.stringify({ options: { requestedPolicyVersion: 3 } }),
-        },
+        { method: "GET" },
         input.integrationProjectId,
       );
       if (!hasMember(topicPolicyBefore, "roles/pubsub.publisher", sink.writerIdentity)) {

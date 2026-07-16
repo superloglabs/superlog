@@ -1,10 +1,10 @@
 import crypto from "node:crypto";
 
-type GcpState = { connectionId: string; issuedAt: number };
+type GcpState = { authorizationId: string; issuedAt: number };
 
-export function signGcpState(connectionId: string, secret: string): string {
+export function signGcpState(authorizationId: string, secret: string): string {
   const body = Buffer.from(
-    JSON.stringify({ connectionId, issuedAt: Date.now() } satisfies GcpState),
+    JSON.stringify({ authorizationId, issuedAt: Date.now() } satisfies GcpState),
     "utf8",
   ).toString("base64url");
   const signature = crypto.createHmac("sha256", secret).update(body).digest("base64url");
@@ -25,9 +25,11 @@ export function verifyGcpState(state: string, secret: string): GcpState | null {
   }
   try {
     const parsed = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as Partial<GcpState>;
-    if (typeof parsed.connectionId !== "string" || typeof parsed.issuedAt !== "number") return null;
+    if (typeof parsed.authorizationId !== "string" || typeof parsed.issuedAt !== "number") {
+      return null;
+    }
     if (Date.now() - parsed.issuedAt > 10 * 60 * 1000) return null;
-    return { connectionId: parsed.connectionId, issuedAt: parsed.issuedAt };
+    return { authorizationId: parsed.authorizationId, issuedAt: parsed.issuedAt };
   } catch {
     return null;
   }
