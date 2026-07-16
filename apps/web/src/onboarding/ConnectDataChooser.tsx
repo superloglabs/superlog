@@ -12,6 +12,7 @@ import {
   ChevronRightIcon,
   CloudflareIcon,
   ExternalLinkIcon,
+  GcpIcon,
   RailwayIcon,
   RenderIcon,
   TerminalIcon,
@@ -32,6 +33,7 @@ function ConnectGlyph({ icon }: { icon: ConnectIcon }) {
   const map: Record<ConnectIcon, typeof AwsIcon> = {
     aws: AwsIcon,
     cloudflare: CloudflareIcon,
+    gcp: GcpIcon,
     vercel: VercelIcon,
     railway: RailwayIcon,
     render: RenderIcon,
@@ -146,6 +148,7 @@ export function ConnectDataChooser({
   const capabilities = useSystemCapabilities();
   const sections = connectSectionsFor({
     cloudflare: capabilities.data?.cloudflareConnect ?? false,
+    gcp: capabilities.data?.gcpConnect ?? false,
     vercel: capabilities.data?.vercelConnect ?? false,
     railway: capabilities.data?.railwayConnect ?? false,
     render: capabilities.data?.renderConnect ?? false,

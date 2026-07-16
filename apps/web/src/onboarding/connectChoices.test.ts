@@ -16,9 +16,9 @@ function findOption(sections: ReturnType<typeof connectSectionsFor>, id: string)
   return undefined;
 }
 
-test("the chooser offers exactly six lanes: AWS, Cloudflare, Vercel, Railway, Render, and 'I'm hosted elsewhere'", () => {
+test("the chooser offers exactly seven lanes: AWS, Cloudflare, Google Cloud, Vercel, Railway, Render, and 'I'm hosted elsewhere'", () => {
   const ids = CONNECT_SECTIONS.flatMap((s) => s.options.map((o) => o.id));
-  assert.deepEqual(ids, ["aws", "cloudflare", "vercel", "railway", "render", "elsewhere"]);
+  assert.deepEqual(ids, ["aws", "cloudflare", "gcp", "vercel", "railway", "render", "elsewhere"]);
 });
 
 test("there is no coming-soon grid", () => {
@@ -44,6 +44,7 @@ test("integration-first: the primary option is a no-code integration (AWS)", () 
 test("every lane is actionable when its connectors are configured", () => {
   const sections = connectSectionsFor({
     cloudflare: true,
+    gcp: true,
     vercel: true,
     railway: true,
     render: true,
@@ -59,6 +60,7 @@ test("every lane is actionable when its connectors are configured", () => {
 test("connectActionFor resolves known ids and returns null for unknown", () => {
   assert.equal(connectActionFor("aws"), "aws");
   assert.equal(connectActionFor("cloudflare"), "cloudflare");
+  assert.equal(connectActionFor("gcp"), "gcp");
   assert.equal(connectActionFor("vercel"), "vercel");
   assert.equal(connectActionFor("railway"), "railway");
   assert.equal(connectActionFor("render"), "render");
@@ -69,6 +71,7 @@ test("connectActionFor resolves known ids and returns null for unknown", () => {
 test("connectSectionsFor disables Cloudflare when the connector isn't configured", () => {
   const gated = connectSectionsFor({
     cloudflare: false,
+    gcp: true,
     vercel: true,
     railway: true,
     render: true,
@@ -83,9 +86,28 @@ test("connectSectionsFor disables Cloudflare when the connector isn't configured
   assert.equal(findOption(gated, "elsewhere")?.action, "code");
 });
 
+test("connectSectionsFor disables Google Cloud when the connector isn't configured", () => {
+  const gated = connectSectionsFor({
+    cloudflare: true,
+    gcp: false,
+    vercel: true,
+    railway: true,
+    render: true,
+  });
+  const gcp = findOption(gated, "gcp");
+  assert.ok(gcp);
+  assert.equal(gcp.action, null, "gcp should not be actionable when unavailable");
+  assert.equal(isComingSoon(gcp), true);
+  // Other lanes are untouched.
+  assert.equal(findOption(gated, "aws")?.action, "aws");
+  assert.equal(findOption(gated, "cloudflare")?.action, "cloudflare");
+  assert.equal(findOption(gated, "elsewhere")?.action, "code");
+});
+
 test("connectSectionsFor disables Vercel when the connector isn't configured", () => {
   const gated = connectSectionsFor({
     cloudflare: true,
+    gcp: true,
     vercel: false,
     railway: true,
     render: true,
@@ -103,6 +125,7 @@ test("connectSectionsFor disables Vercel when the connector isn't configured", (
 test("connectSectionsFor disables Railway when the connector isn't configured", () => {
   const gated = connectSectionsFor({
     cloudflare: true,
+    gcp: true,
     vercel: true,
     railway: false,
     render: true,
@@ -120,6 +143,7 @@ test("connectSectionsFor disables Railway when the connector isn't configured", 
 test("connectSectionsFor disables Render when the connector isn't configured", () => {
   const gated = connectSectionsFor({
     cloudflare: true,
+    gcp: true,
     vercel: true,
     railway: true,
     render: false,
@@ -137,11 +161,13 @@ test("connectSectionsFor disables Render when the connector isn't configured", (
 test("connectSectionsFor leaves configured connectors actionable", () => {
   const enabled = connectSectionsFor({
     cloudflare: true,
+    gcp: true,
     vercel: true,
     railway: true,
     render: true,
   });
   assert.equal(findOption(enabled, "cloudflare")?.action, "cloudflare");
+  assert.equal(findOption(enabled, "gcp")?.action, "gcp");
   assert.equal(findOption(enabled, "vercel")?.action, "vercel");
   assert.equal(findOption(enabled, "railway")?.action, "railway");
   assert.equal(findOption(enabled, "render")?.action, "render");

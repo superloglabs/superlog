@@ -10,11 +10,18 @@
 // What activating a row does. `null` => not yet available (coming soon), so the
 // row renders disabled and is not actionable. "code" opens the coding-agent
 // prompt (paste into Cursor / Claude Code / Codex).
-export type ConnectAction = "aws" | "cloudflare" | "vercel" | "railway" | "render" | "code";
+export type ConnectAction = "aws" | "cloudflare" | "gcp" | "vercel" | "railway" | "render" | "code";
 
 // Glyph key resolved to a neutral monochrome icon by the component. Kept as a
 // string union (not a component) so this module stays free of JSX/React.
-export type ConnectIcon = "aws" | "cloudflare" | "vercel" | "railway" | "render" | "terminal";
+export type ConnectIcon =
+  | "aws"
+  | "cloudflare"
+  | "gcp"
+  | "vercel"
+  | "railway"
+  | "render"
+  | "terminal";
 
 export type ConnectOption = {
   id: string;
@@ -55,6 +62,14 @@ export const CONNECT_SECTIONS: ConnectSection[] = [
           "Authorize Cloudflare once and we set up Workers Observability destinations that stream your Workers traces, logs, and metrics in. No agent, no code.",
         icon: "cloudflare",
         action: "cloudflare",
+      },
+      {
+        id: "gcp",
+        title: "Google Cloud",
+        description:
+          "Authorize Google Cloud once and pick a project — we route Cloud Logging and read a bounded set of Cloud Monitoring metrics. No Terraform, no service-account key.",
+        icon: "gcp",
+        action: "gcp",
       },
       {
         id: "vercel",
@@ -100,6 +115,7 @@ export const CONNECT_SECTIONS: ConnectSection[] = [
 // into the coding-agent prompt.
 export type ConnectAvailability = {
   cloudflare: boolean;
+  gcp: boolean;
   vercel: boolean;
   railway: boolean;
   render: boolean;
@@ -108,6 +124,7 @@ export type ConnectAvailability = {
 export function connectSectionsFor(availability: ConnectAvailability): ConnectSection[] {
   const unavailable = new Set<string>();
   if (!availability.cloudflare) unavailable.add("cloudflare");
+  if (!availability.gcp) unavailable.add("gcp");
   if (!availability.vercel) unavailable.add("vercel");
   if (!availability.railway) unavailable.add("railway");
   if (!availability.render) unavailable.add("render");

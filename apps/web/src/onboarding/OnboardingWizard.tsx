@@ -16,6 +16,7 @@ import { getSkillOnboardingIntent } from "../skillOnboarding.ts";
 import { AwsConnectFlow } from "./AwsConnectFlow.tsx";
 import { CloudflareConnectFlow } from "./CloudflareConnectFlow.tsx";
 import { ConnectDataChooser } from "./ConnectDataChooser.tsx";
+import { GcpConnectFlow } from "./GcpConnectFlow.tsx";
 import { RailwayConnectFlow } from "./RailwayConnectFlow.tsx";
 import { RenderConnectFlow } from "./RenderConnectFlow.tsx";
 import { VercelConnectFlow } from "./VercelConnectFlow.tsx";
@@ -112,6 +113,8 @@ export function OnboardingWizard({
       setWebView("aws");
     } else if (action === "cloudflare") {
       setWebView("cloudflare");
+    } else if (action === "gcp") {
+      setWebView("gcp");
     } else if (action === "vercel") {
       setWebView("vercel");
     } else if (action === "railway") {
@@ -184,6 +187,14 @@ export function OnboardingWizard({
             />
           ) : webView === "cloudflare" ? (
             <CloudflareConnectFlow
+              projectId={projectId}
+              eventsArrived={eventsArrived}
+              onBack={() => setWebView("chooser")}
+              onDone={onComplete}
+              onExploreDemo={onExploreDemo}
+            />
+          ) : webView === "gcp" ? (
+            <GcpConnectFlow
               projectId={projectId}
               eventsArrived={eventsArrived}
               onBack={() => setWebView("chooser")}

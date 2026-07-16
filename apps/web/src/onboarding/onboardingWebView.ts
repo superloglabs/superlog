@@ -2,6 +2,7 @@ export type WebView =
   | "chooser"
   | "aws"
   | "cloudflare"
+  | "gcp"
   | "vercel"
   | "railway"
   | "render"
