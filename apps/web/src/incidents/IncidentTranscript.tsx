@@ -557,15 +557,15 @@ export function TelemetryQueryWidget({
   kind,
   input,
   rows,
-  resultState = "complete",
-  originalRowCount = null,
+  resultState,
+  originalRowCount,
   isError,
 }: {
   kind: TelemetryKind;
   input: Record<string, unknown>;
   rows: Record<string, unknown>[];
-  resultState?: TelemetryResultState;
-  originalRowCount?: number | null;
+  resultState: TelemetryResultState;
+  originalRowCount: number | null;
   isError?: boolean;
 }) {
   const range = (input.range as { since?: string; until?: string } | undefined) ?? undefined;
@@ -1112,7 +1112,13 @@ export function IncidentSummaryTelemetry({ events }: { events: IncidentEvent[] }
   return (
     <div className="mt-4">
       <div className="mb-2 text-[12px] font-medium text-muted">Cited telemetry</div>
-      <TelemetryQueryWidget kind={metric.kind} input={metric.input} rows={metric.rows} />
+      <TelemetryQueryWidget
+        kind={metric.kind}
+        input={metric.input}
+        rows={metric.rows}
+        resultState={metric.resultState}
+        originalRowCount={metric.originalRowCount}
+      />
     </div>
   );
 }
