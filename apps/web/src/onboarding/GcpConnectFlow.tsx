@@ -11,18 +11,19 @@ import {
   StepHeader,
 } from "./wizardChrome.tsx";
 
-// Open the Google Cloud consent screen in a new tab, falling back to a same-tab
-// navigation if the popup was blocked. Same opener-severing trick as the other
-// connector launch helpers. Unlike the same-tab redirect Settings uses, the new
-// tab lets this onboarding tab keep polling the connection endpoint while the
-// user authorizes and picks a project on the standalone /connect/gcp page.
+// Open the Google Cloud consent screen in a new tab, severing the opener. The
+// new tab lets this onboarding tab keep polling the connection endpoint while
+// the user authorizes and picks a project on the standalone /connect/gcp page.
+//
+// We deliberately do NOT fall back to a same-tab navigation when the popup is
+// blocked: unlike the other OAuth callbacks, which carry their outcome back to
+// `/`, the /connect/gcp result page returns to `/settings`, so a same-tab
+// round-trip would drop the user out of onboarding. When the popup is blocked
+// the connecting panel exposes a manual open link (a plain anchor, which isn't
+// popup-blocked) that keeps this tab and its polling alive.
 function openConsent(url: string) {
-  const win = window.open(url, "_blank");
-  if (win) {
-    win.opener = null;
-  } else {
-    window.location.assign(url);
-  }
+  const win = window.open(url, "_blank", "noopener,noreferrer");
+  if (win) win.opener = null;
 }
 
 export function GcpConnectFlow({
@@ -45,6 +46,10 @@ export function GcpConnectFlow({
   // from "start" to the "connecting" waiting state while the connection poll
   // catches the OAuth + project-selection round-trip landing.
   const [launched, setLaunched] = useState(false);
+  // The most recent consent URL, kept so the connecting panel can offer a
+  // manual open link (an anchor, which isn't subject to popup blocking) without
+  // re-minting a fresh authorization.
+  const [consentUrl, setConsentUrl] = useState<string | null>(null);
 
   const connection = useGcpConnection(projectId);
   const start = useStartGcpConnect(projectId);
@@ -56,6 +61,7 @@ export function GcpConnectFlow({
     if (start.isPending) return;
     try {
       const { url } = await start.mutateAsync();
+      setConsentUrl(url);
       setLaunched(true);
       openConsent(url);
     } catch {
@@ -78,11 +84,7 @@ export function GcpConnectFlow({
       )}
 
       {phase === "connecting" && (
-        <ConnectingPanel
-          statusText={gcpStatusText(phase, eventsArrived)}
-          onReopen={connect}
-          reopening={start.isPending}
-        />
+        <ConnectingPanel statusText={gcpStatusText(phase, eventsArrived)} consentUrl={consentUrl} />
       )}
 
       {phase === "failed" && (
@@ -178,12 +180,10 @@ function StartPanel({
 
 function ConnectingPanel({
   statusText,
-  onReopen,
-  reopening,
+  consentUrl,
 }: {
   statusText: string;
-  onReopen: () => void;
-  reopening: boolean;
+  consentUrl: string | null;
 }) {
   return (
     <div className={`overflow-hidden rounded-[14px] border bg-surface ${SOFT_LINE}`}>
@@ -201,14 +201,16 @@ function ConnectingPanel({
           <li>Pick the Google Cloud project you want to share.</li>
           <li>This panel updates on its own once the connection lands.</li>
         </ol>
-        <button
-          type="button"
-          onClick={onReopen}
-          disabled={reopening}
-          className="mt-3 inline-flex items-center gap-1.5 text-[12.5px] font-medium text-[#8C98F0] transition-colors hover:text-fg disabled:opacity-50"
-        >
-          <ExternalLinkIcon size={13} /> Reopen Google Cloud
-        </button>
+        {consentUrl && (
+          <a
+            href={consentUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-3 inline-flex items-center gap-1.5 text-[12.5px] font-medium text-[#8C98F0] transition-colors hover:text-fg"
+          >
+            <ExternalLinkIcon size={13} /> Didn't see a tab? Reopen Google Cloud
+          </a>
+        )}
       </div>
     </div>
   );
