@@ -960,11 +960,11 @@ test("closed unmerged agent PR does not resolve incident or linked issue", async
   assert.equal(resolvedEvent, undefined);
 });
 
-test("an opted-in pull request webhook queues one observability review per head", async () => {
+test("an opted-in pull request webhook queues one observability review per head without the PR agent", async () => {
   const fixture = await seedAgentPrFixture("observability-review");
   await db
     .update(schema.githubInstallations)
-    .set({ observabilityReviewEnabled: true })
+    .set({ observabilityReviewEnabled: true, agentEnabled: false })
     .where(eq(schema.githubInstallations.installationId, fixture.installationId));
   const app = new Hono();
   mountGithubPublic(app);

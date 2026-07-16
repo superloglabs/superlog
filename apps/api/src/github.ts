@@ -539,7 +539,6 @@ async function maybeEnqueuePrObservabilityReview(
       const installations = await db.query.githubInstallations.findMany({
         where: and(
           eq(schema.githubInstallations.installationId, input.installationId),
-          eq(schema.githubInstallations.agentEnabled, true),
           isNull(schema.githubInstallations.revokedAt),
         ),
       });
