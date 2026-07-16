@@ -7,6 +7,7 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { App } from "./App.tsx";
 import { DesignLanguage } from "./design/DesignLanguage.tsx";
+import { HomeDashboardMockups } from "./design/HomeDashboardMockups.tsx";
 import { tracer } from "./instrumentation";
 import "./index.css";
 import "react-grid-layout/css/styles.css";
@@ -53,7 +54,11 @@ if (window.location.pathname.startsWith("/design")) {
     <React.StrictMode>
       <BrowserRouter>
         <QueryClientProvider client={designQueryClient}>
-          <DesignLanguage />
+          {window.location.pathname === "/design/home-dashboard-mockups" ? (
+            <HomeDashboardMockups />
+          ) : (
+            <DesignLanguage />
+          )}
         </QueryClientProvider>
       </BrowserRouter>
     </React.StrictMode>,

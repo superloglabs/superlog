@@ -3,18 +3,25 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import {
   addDashboardWidget,
+  addHomeDataWidget,
+  addHomeLink,
   createDashboard,
+  dashboardDataWidgetTypeSchema,
   dashboardVariablesSchema,
   dashboardWidgetConfigSchema,
   dashboardWidgetLayoutSchema,
-  dashboardWidgetTypeSchema,
   deleteDashboard,
   deleteDashboardWidget,
+  deleteHomeItem,
   getDashboardWithWidgets,
+  getOrCreateHomeDashboard,
+  homeBuiltinTypeSchema,
   listDashboardsForProject,
   setDashboardVariables,
   updateDashboard,
+  updateDashboardLayout,
   updateDashboardWidget,
+  setHomeBuiltin,
 } from "../dashboards-service.js";
 import { assertProjectAccess } from "./projects.js";
 
@@ -54,6 +61,133 @@ export function registerDashboardTools(
     await assertProjectAccess(session.userId, id);
     return id;
   };
+
+  server.registerTool(
+    "get_home",
+    {
+      title: "Get project home",
+      description:
+        "Fetch the active project's shared home command center, including built-ins, data widgets, links, and grid layouts.",
+      inputSchema: { project_id: projectIdSchema },
+    },
+    async (input) =>
+      text(await getOrCreateHomeDashboard(await resolve(input.project_id), session.userId)),
+  );
+
+  server.registerTool(
+    "set_home_builtin",
+    {
+      title: "Enable or disable a home built-in",
+      description:
+        "Show or hide one of the built-in home widgets: setup_todos, active_incidents, or service_map.",
+      inputSchema: {
+        project_id: projectIdSchema,
+        type: homeBuiltinTypeSchema,
+        enabled: z.boolean(),
+      },
+    },
+    async (input) =>
+      text(
+        await setHomeBuiltin(
+          await resolve(input.project_id),
+          session.userId,
+          input.type,
+          input.enabled,
+        ),
+      ),
+  );
+
+  server.registerTool(
+    "add_home_widget",
+    {
+      title: "Add a data widget to home",
+      description:
+        "Add a chart, table, or markdown widget directly to the shared project home. Uses the same widget config and 12-column layout as dashboards.",
+      inputSchema: {
+        project_id: projectIdSchema,
+        type: dashboardDataWidgetTypeSchema,
+        title: z.string().min(1).max(200),
+        config: dashboardWidgetConfigSchema,
+        layout: dashboardWidgetLayoutSchema.optional(),
+      },
+    },
+    async (input) =>
+      text(
+        await addHomeDataWidget(await resolve(input.project_id), session.userId, {
+          type: input.type,
+          title: input.title,
+          config: input.config,
+          layout: input.layout,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "add_home_link",
+    {
+      title: "Add a link to home",
+      description:
+        "Add a shared link card to project home. URLs must be absolute and use http or https.",
+      inputSchema: {
+        project_id: projectIdSchema,
+        title: z.string().min(1).max(200),
+        url: z.string().url().max(2_000),
+        description: z.string().max(500).optional(),
+      },
+    },
+    async (input) =>
+      text(
+        await addHomeLink(await resolve(input.project_id), session.userId, {
+          title: input.title,
+          url: input.url,
+          description: input.description,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "update_home_layout",
+    {
+      title: "Arrange project home",
+      description:
+        "Update positions and sizes for home items on the 12-column grid. Read get_home first and send the items that should move.",
+      inputSchema: {
+        project_id: projectIdSchema,
+        items: z
+          .array(z.object({ id: z.string().uuid(), layout: dashboardWidgetLayoutSchema }))
+          .min(1)
+          .max(200),
+      },
+    },
+    async (input) => {
+      const projectId = await resolve(input.project_id);
+      const home = await getOrCreateHomeDashboard(projectId, session.userId);
+      await updateDashboardLayout(projectId, home.id, input.items);
+      return text({ ok: true });
+    },
+  );
+
+  server.registerTool(
+    "remove_home_item",
+    {
+      title: "Remove an item from home",
+      description:
+        "Remove a built-in, data widget, or link from project home. Read get_home first to discover item ids.",
+      inputSchema: {
+        project_id: projectIdSchema,
+        item_id: z.string().uuid(),
+      },
+    },
+    async (input) => {
+      const removed = await deleteHomeItem(
+        await resolve(input.project_id),
+        session.userId,
+        input.item_id,
+      );
+      if (!removed) throw new HTTPException(404, { message: "home item not found" });
+      return text({ ok: true });
+    },
+  );
 
   server.registerTool(
     "list_dashboards",
@@ -171,7 +305,7 @@ export function registerDashboardTools(
       inputSchema: {
         project_id: projectIdSchema,
         dashboard_id: z.string().uuid(),
-        type: dashboardWidgetTypeSchema,
+        type: dashboardDataWidgetTypeSchema,
         title: z.string().min(1).max(200),
         config: dashboardWidgetConfigSchema,
         layout: dashboardWidgetLayoutSchema

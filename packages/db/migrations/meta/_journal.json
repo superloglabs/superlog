@@ -792,6 +792,13 @@
       "when": 1784222838699,
       "tag": "0112_white_prodigy",
       "breakpoints": true
+    },
+    {
+      "idx": 113,
+      "version": "7",
+      "when": 1784223959070,
+      "tag": "0113_skinny_thunderbird",
+      "breakpoints": true
     }
   ]
 }

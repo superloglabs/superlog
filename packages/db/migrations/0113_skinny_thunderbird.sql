@@ -1,0 +1,2 @@
+ALTER TABLE "dashboards" ADD COLUMN "is_home" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "dashboards_project_home_idx" ON "dashboards" USING btree ("project_id") WHERE "dashboards"."is_home";

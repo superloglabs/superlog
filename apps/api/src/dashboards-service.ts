@@ -8,6 +8,18 @@ export const dashboardWidgetTypeSchema = z.enum([
   "trace_table",
   "log_table",
   "markdown",
+  "link",
+  "setup_todos",
+  "active_incidents",
+  "service_map",
+]);
+
+export const dashboardDataWidgetTypeSchema = z.enum([
+  "timeseries_count",
+  "timeseries_metric",
+  "trace_table",
+  "log_table",
+  "markdown",
 ]);
 
 const resourceAttrSchema = z.object({
@@ -32,6 +44,8 @@ export const dashboardWidgetConfigSchema = z.object({
   showLegend: z.boolean().optional(),
   legendPosition: z.enum(["side", "bottom"]).optional(),
   markdown: z.string().max(20_000).optional(),
+  url: z.string().url().max(2_000).optional(),
+  description: z.string().max(500).optional(),
 });
 
 // Layouts are placed on the 12-column grid the UI renders (DashboardView.tsx
@@ -55,6 +69,14 @@ export function defaultWidgetLayout(type: DashboardWidgetType): DashboardWidgetL
   switch (type) {
     case "markdown":
       return { x: 0, y: 9999, w: 4, h: 5 };
+    case "link":
+      return { x: 0, y: 9999, w: 3, h: 2 };
+    case "setup_todos":
+      return { x: 0, y: 0, w: 12, h: 5 };
+    case "active_incidents":
+      return { x: 0, y: 5, w: 6, h: 3 };
+    case "service_map":
+      return { x: 6, y: 5, w: 6, h: 8 };
     case "trace_table":
     case "log_table":
       return { x: 0, y: 9999, w: 12, h: 6 };
@@ -68,6 +90,55 @@ export function defaultWidgetLayout(type: DashboardWidgetType): DashboardWidgetL
       throw new Error(`unhandled widget type: ${String(_exhaustive)}`);
     }
   }
+}
+
+export const HOME_BUILTIN_TYPES = [
+  "setup_todos",
+  "active_incidents",
+  "service_map",
+] as const satisfies readonly DashboardWidgetType[];
+
+export type HomeBuiltinType = (typeof HOME_BUILTIN_TYPES)[number];
+export const homeBuiltinTypeSchema = z.enum(HOME_BUILTIN_TYPES);
+
+function isHomeOnlyWidgetType(type: DashboardWidgetType): boolean {
+  return type === "link" || HOME_BUILTIN_TYPES.includes(type as HomeBuiltinType);
+}
+
+export function dashboardRouteCanWriteWidget({
+  existingType,
+  requestedType,
+}: {
+  existingType?: DashboardWidgetType;
+  requestedType?: DashboardWidgetType;
+}): boolean {
+  return !(
+    (existingType && isHomeOnlyWidgetType(existingType)) ||
+    (requestedType && isHomeOnlyWidgetType(requestedType))
+  );
+}
+
+export function defaultHomeWidgets(): DashboardWidgetCreateInput[] {
+  return [
+    {
+      type: "setup_todos",
+      title: "Setup",
+      config: { filter: {} },
+      layout: defaultWidgetLayout("setup_todos"),
+    },
+    {
+      type: "active_incidents",
+      title: "Active critical incidents",
+      config: { filter: {} },
+      layout: defaultWidgetLayout("active_incidents"),
+    },
+    {
+      type: "service_map",
+      title: "Service map",
+      config: { filter: {} },
+      layout: defaultWidgetLayout("service_map"),
+    },
+  ];
 }
 
 // A dashboard-level template variable. Widget filters reference it from a
@@ -135,6 +206,11 @@ export const dashboardWidgetCreateSchema = z.object({
   layout: dashboardWidgetLayoutSchema.optional(),
 });
 
+export const homeDataWidgetCreateSchema = dashboardWidgetCreateSchema.refine(
+  (input) => input.type !== "link" && !HOME_BUILTIN_TYPES.includes(input.type as HomeBuiltinType),
+  "home data widgets must use a chart, table, or markdown type",
+);
+
 export const dashboardWidgetUpdateSchema = z.object({
   type: dashboardWidgetTypeSchema.optional(),
   title: z.string().min(1).max(200).optional(),
@@ -147,6 +223,21 @@ export type DashboardUpdateInput = z.infer<typeof dashboardUpdateSchema>;
 export type DashboardWidgetCreateInput = z.infer<typeof dashboardWidgetCreateSchema>;
 export type DashboardWidgetUpdateInput = z.infer<typeof dashboardWidgetUpdateSchema>;
 
+export const homeLinkCreateSchema = z.object({
+  title: z.string().min(1).max(200),
+  url: z
+    .string()
+    .url()
+    .max(2_000)
+    .refine((value) => {
+      const protocol = new URL(value).protocol;
+      return protocol === "http:" || protocol === "https:";
+    }, "URL must use http or https"),
+  description: z.string().max(500).optional(),
+});
+
+export type HomeLinkCreateInput = z.infer<typeof homeLinkCreateSchema>;
+
 const slugFromName = (name: string) =>
   name
     .toLowerCase()
@@ -157,9 +248,124 @@ const slugFromName = (name: string) =>
 
 export async function listDashboardsForProject(projectId: string): Promise<schema.Dashboard[]> {
   return db.query.dashboards.findMany({
-    where: eq(schema.dashboards.projectId, projectId),
+    where: and(eq(schema.dashboards.projectId, projectId), eq(schema.dashboards.isHome, false)),
     orderBy: [asc(schema.dashboards.name)],
   });
+}
+
+export async function getOrCreateHomeDashboard(
+  projectId: string,
+  userId: string,
+): Promise<schema.Dashboard & { widgets: schema.DashboardWidget[] }> {
+  const existing = await db.query.dashboards.findFirst({
+    where: and(eq(schema.dashboards.projectId, projectId), eq(schema.dashboards.isHome, true)),
+  });
+  if (existing) {
+    const widgets = await db.query.dashboardWidgets.findMany({
+      where: eq(schema.dashboardWidgets.dashboardId, existing.id),
+      orderBy: [asc(schema.dashboardWidgets.position)],
+    });
+    return { ...existing, widgets };
+  }
+
+  return db.transaction(async (tx) => {
+    const inserted = await tx
+      .insert(schema.dashboards)
+      .values({
+        projectId,
+        name: "Home",
+        slug: "__home__",
+        isHome: true,
+        createdBy: userId,
+      })
+      .onConflictDoNothing()
+      .returning();
+
+    const home =
+      inserted[0] ??
+      (await tx.query.dashboards.findFirst({
+        where: and(eq(schema.dashboards.projectId, projectId), eq(schema.dashboards.isHome, true)),
+      }));
+    if (!home) throw new Error("failed to create project home dashboard");
+
+    if (inserted[0]) {
+      await tx.insert(schema.dashboardWidgets).values(
+        defaultHomeWidgets().map((widget, position) => ({
+          dashboardId: home.id,
+          type: widget.type,
+          title: widget.title,
+          config: widget.config,
+          layout: widget.layout ?? defaultWidgetLayout(widget.type),
+          position,
+        })),
+      );
+    }
+
+    const widgets = await tx.query.dashboardWidgets.findMany({
+      where: eq(schema.dashboardWidgets.dashboardId, home.id),
+      orderBy: [asc(schema.dashboardWidgets.position)],
+    });
+    return { ...home, widgets };
+  });
+}
+
+export async function setHomeBuiltin(
+  projectId: string,
+  userId: string,
+  type: HomeBuiltinType,
+  enabled: boolean,
+): Promise<schema.Dashboard & { widgets: schema.DashboardWidget[] }> {
+  const home = await getOrCreateHomeDashboard(projectId, userId);
+  const existing = home.widgets.find((widget) => widget.type === type);
+  if (enabled && !existing) {
+    const definition = defaultHomeWidgets().find((widget) => widget.type === type);
+    if (!definition) throw new Error(`missing definition for home widget: ${type}`);
+    await insertDashboardWidget(home.id, definition);
+  }
+  if (!enabled && existing) {
+    await deleteDashboardWidget(projectId, home.id, existing.id);
+  }
+  return (await getDashboardWithWidgets(projectId, home.id)) ?? home;
+}
+
+export async function addHomeLink(
+  projectId: string,
+  userId: string,
+  input: HomeLinkCreateInput,
+): Promise<schema.DashboardWidget> {
+  const safeInput = homeLinkCreateSchema.parse(input);
+  const home = await getOrCreateHomeDashboard(projectId, userId);
+  const widget = await insertDashboardWidget(home.id, {
+    type: "link",
+    title: safeInput.title,
+    config: { filter: {}, url: safeInput.url, description: safeInput.description },
+  });
+  if (!widget) throw new Error("failed to add home link");
+  return widget;
+}
+
+export async function addHomeDataWidget(
+  projectId: string,
+  userId: string,
+  input: DashboardWidgetCreateInput,
+): Promise<schema.DashboardWidget> {
+  if (isHomeOnlyWidgetType(input.type)) {
+    throw new Error("use the dedicated home built-in or link operation");
+  }
+  const home = await getOrCreateHomeDashboard(projectId, userId);
+  const widget = await addDashboardWidget(projectId, home.id, input);
+  if (!widget) throw new Error("failed to add home widget");
+  return widget;
+}
+
+export async function deleteHomeItem(
+  projectId: string,
+  userId: string,
+  itemId: string,
+): Promise<boolean> {
+  const home = await getOrCreateHomeDashboard(projectId, userId);
+  if (!home.widgets.some((widget) => widget.id === itemId)) return false;
+  return deleteDashboardWidget(projectId, home.id, itemId);
 }
 
 export async function getDashboardWithWidgets(
@@ -239,7 +445,13 @@ export async function setDashboardVariables(
 export async function deleteDashboard(projectId: string, id: string): Promise<void> {
   await db
     .delete(schema.dashboards)
-    .where(and(eq(schema.dashboards.id, id), eq(schema.dashboards.projectId, projectId)));
+    .where(
+      and(
+        eq(schema.dashboards.id, id),
+        eq(schema.dashboards.projectId, projectId),
+        eq(schema.dashboards.isHome, false),
+      ),
+    );
 }
 
 async function ensureDashboardOwned(
@@ -260,6 +472,14 @@ export async function addDashboardWidget(
 ): Promise<schema.DashboardWidget | null> {
   const dashboard = await ensureDashboardOwned(projectId, dashboardId);
   if (!dashboard) return null;
+  if (!dashboardRouteCanWriteWidget({ requestedType: input.type })) return null;
+  return insertDashboardWidget(dashboardId, input);
+}
+
+async function insertDashboardWidget(
+  dashboardId: string,
+  input: DashboardWidgetCreateInput,
+): Promise<schema.DashboardWidget | null> {
   const existing = await db.query.dashboardWidgets.findMany({
     where: eq(schema.dashboardWidgets.dashboardId, dashboardId),
   });
@@ -290,6 +510,21 @@ export async function updateDashboardWidget(
 ): Promise<schema.DashboardWidget | null> {
   const dashboard = await ensureDashboardOwned(projectId, dashboardId);
   if (!dashboard) return null;
+  const existing = await db.query.dashboardWidgets.findFirst({
+    where: and(
+      eq(schema.dashboardWidgets.id, widgetId),
+      eq(schema.dashboardWidgets.dashboardId, dashboardId),
+    ),
+  });
+  if (!existing) return null;
+  if (
+    !dashboardRouteCanWriteWidget({
+      existingType: existing.type,
+      requestedType: input.type,
+    })
+  ) {
+    return null;
+  }
   const updated = await db
     .update(schema.dashboardWidgets)
     .set({
