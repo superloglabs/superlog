@@ -94,3 +94,14 @@ test("detected OAuth without dynamic registration requires manual client credent
     },
   );
 });
+
+test("detected client-credentials OAuth requires manual credentials even with registration", () => {
+  assert.equal(
+    createDetectedProjectMcpAuthDraft({
+      type: "oauth",
+      grantType: "client_credentials",
+      supportsDynamicRegistration: true,
+    }).requiresClientId,
+    true,
+  );
+});

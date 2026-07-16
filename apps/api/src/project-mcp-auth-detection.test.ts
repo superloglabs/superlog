@@ -32,3 +32,15 @@ test("MCP auth detection stays unknown when the server does not publish OAuth me
 
   assert.deepEqual(result, { type: "unknown" });
 });
+
+test("MCP auth detection rejects authorization code servers without PKCE S256", async () => {
+  const result = await detectProjectMcpAuth("https://mcp.example/mcp", {
+    discover: async () => ({
+      codeChallengeMethods: ["plain"],
+      grantTypes: ["authorization_code"],
+      registrationEndpoint: "https://auth.example/register",
+    }),
+  });
+
+  assert.deepEqual(result, { type: "unknown" });
+});

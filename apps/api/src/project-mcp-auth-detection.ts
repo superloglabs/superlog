@@ -8,6 +8,7 @@ export type ProjectMcpAuthDetection =
 
 export type ProjectMcpOAuthDiscoverer = {
   discover(serverUrl: string): Promise<{
+    codeChallengeMethods: string[];
     grantTypes: string[];
     registrationEndpoint: string | null;
   }>;
@@ -24,6 +25,12 @@ export async function detectProjectMcpAuth(
       !discovery.grantTypes.includes("authorization_code")
         ? "client_credentials"
         : "authorization_code";
+    if (
+      grantType === "authorization_code" &&
+      !discovery.codeChallengeMethods.includes("S256")
+    ) {
+      return { type: "unknown" };
+    }
     return {
       type: "oauth",
       grantType,

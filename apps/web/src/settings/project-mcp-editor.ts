@@ -30,7 +30,8 @@ export function createDetectedProjectMcpAuthDraft(detection: ProjectMcpAuthDetec
     ...EMPTY_AUTH,
     type: "oauth",
     grantType: detection.grantType,
-    requiresClientId: !detection.supportsDynamicRegistration,
+    requiresClientId:
+      detection.grantType === "client_credentials" || !detection.supportsDynamicRegistration,
   };
 }
 
