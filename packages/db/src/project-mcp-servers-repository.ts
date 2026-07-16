@@ -105,6 +105,7 @@ function toInsert(input: NewProjectMcpServer): typeof projectMcpServers.$inferIn
   return {
     projectId: input.projectId,
     name: input.name,
+    displayName: input.displayName,
     url: input.url,
     enabled: input.enabled,
     authType: input.auth.type,
@@ -119,6 +120,7 @@ function toInsert(input: NewProjectMcpServer): typeof projectMcpServers.$inferIn
 function toUpdate(server: ProjectMcpServer): Partial<typeof projectMcpServers.$inferInsert> {
   return {
     name: server.name,
+    displayName: server.displayName,
     url: server.url,
     enabled: server.enabled,
     authType: server.auth.type,
@@ -175,6 +177,7 @@ function toDomain(row: typeof projectMcpServers.$inferSelect): ProjectMcpServer 
     id: row.id,
     projectId: row.projectId,
     name: row.name,
+    displayName: row.displayName ?? row.name,
     url: row.url,
     enabled: row.enabled,
     auth,

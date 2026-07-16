@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ExploreRange } from "../api.ts";
+import { parseRangeInput, parseRangeInputForVisibleRange } from "./range-input.ts";
 import { ShortcutKey } from "./ui.tsx";
 
 export type RangeSelection = { seconds: number; label: string };
@@ -18,14 +19,6 @@ export function rangeFromSeconds(seconds: number, now: number): ExploreRange {
     until: new Date(now).toISOString(),
   };
 }
-
-const UNIT_SECS: Record<string, number> = {
-  s: 1, sec: 1, secs: 1, second: 1, seconds: 1,
-  m: 60, min: 60, mins: 60, minute: 60, minutes: 60,
-  h: 3600, hr: 3600, hrs: 3600, hour: 3600, hours: 3600,
-  d: 86400, day: 86400, days: 86400,
-  w: 604800, week: 604800, weeks: 604800,
-};
 
 export function formatSeconds(seconds: number): string {
   if (seconds % 86400 === 0) return `${seconds / 86400}d`;
@@ -73,23 +66,20 @@ function formatSecondsVerbose(seconds: number): string {
 }
 
 export function parseDurationInput(input: string): RangeSelection | null {
-  const cleaned = input.trim().toLowerCase().replace(/^(last|past)\s+/, "");
-  const match = cleaned.match(/^(\d+(?:\.\d+)?)\s*([a-z]+)$/);
-  if (!match) return null;
-  const n = Number.parseFloat(match[1]!);
-  const mult = UNIT_SECS[match[2]!];
-  if (!mult || !Number.isFinite(n) || n <= 0) return null;
-  return { seconds: n * mult, label: `Last ${input.trim()}` };
+  const parsed = parseRangeInput(input, Date.now());
+  return parsed?.type === "relative" ? { seconds: parsed.seconds, label: parsed.label } : null;
 }
 
 export function RangePicker({
   value,
   range,
   onChange,
+  onAbsoluteChange,
 }: {
   value: RangeSelection;
   range: ExploreRange;
   onChange: (v: RangeSelection) => void;
+  onAbsoluteChange?: (range: ExploreRange) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
@@ -146,7 +136,11 @@ export function RangePicker({
     };
   }, [open, value.label]);
 
-  const parsed = useMemo(() => parseDurationInput(draft), [draft]);
+  const parsed = useMemo(
+    () => parseRangeInputForVisibleRange(draft, range, Date.now()),
+    [draft, range],
+  );
+  const canApplyParsed = parsed?.type === "relative" || !!(parsed && onAbsoluteChange);
   const draftIsCurrent = draft.trim().toLowerCase() === value.label.trim().toLowerCase();
 
   const apply = (next: RangeSelection) => {
@@ -154,8 +148,13 @@ export function RangePicker({
     setOpen(false);
   };
 
-  const submitDraft = () => {
-    if (parsed) apply(parsed);
+  const applyParsed = () => {
+    if (parsed?.type === "relative") {
+      apply({ seconds: parsed.seconds, label: parsed.label });
+    } else if (parsed?.type === "absolute" && onAbsoluteChange) {
+      onAbsoluteChange(parsed.range);
+      setOpen(false);
+    }
   };
 
   const onInputKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -170,8 +169,8 @@ export function RangePicker({
       // Prefer the parsed expression when the user typed something
       // different from the current selection; otherwise fall back to the
       // keyboard-highlighted preset row.
-      if (parsed && !draftIsCurrent) {
-        apply(parsed);
+      if (canApplyParsed && !draftIsCurrent) {
+        applyParsed();
       } else {
         const preset = RANGE_PRESETS[highlight];
         if (preset) apply(preset);
@@ -200,16 +199,24 @@ export function RangePicker({
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onInputKey}
-              placeholder="Type a range — e.g. last 30 minutes"
+              placeholder={
+                onAbsoluteChange
+                  ? "Type a range — e.g. 17:00-19:00 or last 30 minutes"
+                  : "Type a range — e.g. last 30 minutes"
+              }
               className="h-10 flex-1 bg-transparent text-[13px] text-fg placeholder:text-subtle focus:outline-none"
             />
             {draft.trim() && !draftIsCurrent && (
               <span
                 className={`shrink-0 whitespace-nowrap font-mono text-[11px] ${
-                  parsed ? "text-success" : "text-subtle"
+                  canApplyParsed ? "text-success" : "text-subtle"
                 }`}
               >
-                {parsed ? `= ${formatSecondsVerbose(parsed.seconds)}` : "?"}
+                {parsed?.type === "relative" && canApplyParsed
+                  ? `= ${formatSecondsVerbose(parsed.seconds)}`
+                  : parsed?.type === "absolute" && canApplyParsed
+                    ? "= fixed range"
+                    : "?"}
               </span>
             )}
           </div>
@@ -264,4 +271,3 @@ function ClockIcon() {
     </svg>
   );
 }
-

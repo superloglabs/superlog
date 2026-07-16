@@ -12,12 +12,13 @@ import {
 } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
-import { mountGithubPublic } from "./github.js";
+import { mountGithubAuthed, mountGithubPublic } from "./github.js";
 
 const GH_WEBHOOK_SECRET = "github-test-secret";
 process.env.GITHUB_APP_WEBHOOK_SECRET = GH_WEBHOOK_SECRET;
 
 const orgIds: string[] = [];
+const userIds: string[] = [];
 
 before(async () => {
   await runMigrations();
@@ -27,6 +28,9 @@ after(async () => {
   try {
     for (const orgId of orgIds.reverse()) {
       await db.delete(schema.orgs).where(eq(schema.orgs.id, orgId));
+    }
+    for (const userId of userIds.reverse()) {
+      await db.delete(schema.users).where(eq(schema.users.id, userId));
     }
   } finally {
     await closeDb();
@@ -954,6 +958,195 @@ test("closed unmerged agent PR does not resolve incident or linked issue", async
     ),
   });
   assert.equal(resolvedEvent, undefined);
+});
+
+test("an opted-in pull request webhook queues one observability review per head without the PR agent", async () => {
+  const fixture = await seedAgentPrFixture("observability-review");
+  await db
+    .update(schema.githubInstallations)
+    .set({ observabilityReviewEnabled: true, agentEnabled: false })
+    .where(eq(schema.githubInstallations.installationId, fixture.installationId));
+  const app = new Hono();
+  mountGithubPublic(app);
+  const payload = {
+    action: "opened",
+    repository: { id: 1, full_name: fixture.repoFullName },
+    pull_request: {
+      number: fixture.prNumber,
+      draft: false,
+      title: "Add a background job",
+      head: { sha: "review-head-1", ref: fixture.branchName },
+    },
+    installation: { id: fixture.installationId },
+  };
+
+  assert.equal(
+    (await postGithub(app, "pull_request", `gh-${fixture.tag}-review`, payload)).status,
+    200,
+  );
+  assert.equal(
+    (await postGithub(app, "pull_request", `gh-${fixture.tag}-review-redelivery`, payload)).status,
+    200,
+  );
+
+  const reviews = await db.query.prObservabilityReviews.findMany({
+    where: and(
+      eq(schema.prObservabilityReviews.repoFullName, fixture.repoFullName),
+      eq(schema.prObservabilityReviews.prNumber, fixture.prNumber),
+    ),
+  });
+  assert.equal(reviews.length, 1);
+  assert.equal(reviews[0]?.headSha, "review-head-1");
+  assert.equal(reviews[0]?.status, "queued");
+});
+
+test("an org-scoped installation can enable observability reviews from an authorized project", async () => {
+  const tag = `test-org-review-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const [org] = await db.insert(schema.orgs).values({ name: tag, slug: tag }).returning();
+  if (!org) throw new Error("failed to seed org");
+  orgIds.push(org.id);
+  const [project] = await db
+    .insert(schema.projects)
+    .values({ orgId: org.id, name: "test", slug: tag })
+    .returning();
+  if (!project) throw new Error("failed to seed project");
+  const [otherProject] = await db
+    .insert(schema.projects)
+    .values({ orgId: org.id, name: "other", slug: `${tag}-other` })
+    .returning();
+  if (!otherProject) throw new Error("failed to seed other project");
+  const [user] = await db
+    .insert(schema.users)
+    .values({
+      email: `${tag}@example.com`,
+      activeOrgId: org.id,
+      activeProjectId: project.id,
+    })
+    .returning();
+  if (!user) throw new Error("failed to seed user");
+  userIds.push(user.id);
+  await db.insert(schema.orgMembers).values({ orgId: org.id, userId: user.id, role: "owner" });
+  const externalInstallationId = Math.floor(Date.now() / 1000) + Math.floor(Math.random() * 1e6);
+  const [installation] = await db
+    .insert(schema.githubInstallations)
+    .values({
+      orgId: org.id,
+      projectId: null,
+      installationId: externalInstallationId,
+      accountLogin: "acme",
+      accountType: "Organization",
+      repos: [{ id: 17, fullName: `${tag}/repo`, private: false }],
+    })
+    .returning();
+  if (!installation) throw new Error("failed to seed installation");
+  await db.insert(schema.projectGithubRepos).values({
+    projectId: project.id,
+    installationId: installation.id,
+    githubRepoId: 17,
+    githubRepoFullName: `${tag}/repo`,
+  });
+  await db.insert(schema.projectGithubRepos).values({
+    projectId: otherProject.id,
+    installationId: installation.id,
+    githubRepoId: 99,
+    githubRepoFullName: `${tag}/other-repo`,
+  });
+  await db.insert(schema.projectGithubRepos).values({
+    projectId: otherProject.id,
+    installationId: installation.id,
+    githubRepoId: 17,
+    githubRepoFullName: `${tag}/repo`,
+  });
+  const app = new Hono<{ Variables: { userId: string; orgId: string } }>();
+  app.use("*", async (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  mountGithubAuthed(app);
+
+  const response = await app.request("/api/github/repo-access", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      installationId: externalInstallationId,
+      observabilityReviewEnabled: true,
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const updated = await db.query.githubInstallations.findFirst({
+    where: eq(schema.githubInstallations.id, installation.id),
+  });
+  assert.equal(updated?.observabilityReviewEnabled, false);
+  const projectSetting = await db.query.projectGithubInstallationSettings.findFirst({
+    where: and(
+      eq(schema.projectGithubInstallationSettings.projectId, project.id),
+      eq(schema.projectGithubInstallationSettings.installationId, installation.id),
+    ),
+  });
+  assert.equal(projectSetting?.observabilityReviewEnabled, true);
+  const otherProjectSetting = await db.query.projectGithubInstallationSettings.findFirst({
+    where: and(
+      eq(schema.projectGithubInstallationSettings.projectId, otherProject.id),
+      eq(schema.projectGithubInstallationSettings.installationId, installation.id),
+    ),
+  });
+  assert.equal(otherProjectSetting, undefined);
+
+  const webhookApp = new Hono();
+  mountGithubPublic(webhookApp);
+  const pullRequest = (repoId: number, repoFullName: string, headSha: string) => ({
+    action: "opened",
+    repository: { id: repoId, full_name: repoFullName },
+    pull_request: { number: 12, draft: false, head: { sha: headSha } },
+    installation: { id: externalInstallationId },
+  });
+  assert.equal(
+    (
+      await postGithub(
+        webhookApp,
+        "pull_request",
+        `${tag}-ungranted-review`,
+        pullRequest(99, `${tag}/other-repo`, "other-project-head"),
+      )
+    ).status,
+    200,
+  );
+  const ungranted = await db.query.prObservabilityReviews.findMany({
+    where: eq(schema.prObservabilityReviews.repoFullName, `${tag}/other-repo`),
+  });
+  assert.equal(ungranted.length, 0);
+
+  await db.insert(schema.projectGithubInstallationSettings).values({
+    projectId: otherProject.id,
+    installationId: installation.id,
+    observabilityReviewEnabled: true,
+  });
+
+  assert.equal(
+    (
+      await postGithub(
+        webhookApp,
+        "pull_request",
+        `${tag}-granted-review`,
+        pullRequest(17, `${tag}/repo`, "granted-head"),
+      )
+    ).status,
+    200,
+  );
+  const granted = await db.query.prObservabilityReviews.findMany({
+    where: eq(schema.prObservabilityReviews.repoFullName, `${tag}/repo`),
+  });
+  assert.equal(granted.length, 1);
+  assert.equal(granted[0]?.projectId, null);
+  const reviewScopes = await db.query.prObservabilityReviewProjects.findMany({
+    where: eq(schema.prObservabilityReviewProjects.reviewId, granted[0]?.id ?? ""),
+  });
+  assert.deepEqual(
+    reviewScopes.map((scope) => scope.projectId).sort(),
+    [project.id, otherProject.id].sort(),
+  );
 });
 
 async function seedAgentPrFixture(label: string): Promise<{

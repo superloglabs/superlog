@@ -65,6 +65,42 @@ test("OAuth authentication rejects unknown grant types", () => {
   );
 });
 
+test("an owner can detect OAuth from an MCP server URL before saving it", async () => {
+  const { org, user, project } = await seedProject();
+  const app = new Hono<{ Variables: Vars }>();
+  app.use("*", (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    return next();
+  });
+  mountProjectMcpServersAuthed(app, {
+    detectAuth: async (url) => {
+      assert.equal(url, "https://mcp.granola.example/mcp");
+      return {
+        type: "oauth",
+        grantType: "authorization_code",
+        supportsDynamicRegistration: true,
+      };
+    },
+  });
+
+  const response = await app.request(
+    `/api/org/projects/${project.id}/agent-mcp-servers/detect-auth`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://mcp.granola.example/mcp" }),
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    type: "oauth",
+    grantType: "authorization_code",
+    supportsDynamicRegistration: true,
+  });
+});
+
 test("an owner can configure bearer and API-key MCPs without credentials leaking", async () => {
   const { org, user, project } = await seedProject();
   const app = new Hono<{ Variables: Vars }>();

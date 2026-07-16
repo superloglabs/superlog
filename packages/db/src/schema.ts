@@ -49,6 +49,25 @@ export type GithubRepoAccess = {
   disabledRepoIds?: number[];
 };
 
+export type PrObservabilitySignal = "logs" | "traces" | "metrics" | "cross-signal";
+export type PrObservabilityReviewStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "superseded";
+export type PrObservabilitySuggestion = {
+  signal: PrObservabilitySignal;
+  severity: "blocking" | "warning";
+  path: string;
+  line: number;
+  title: string;
+  body: string;
+  confidence: number;
+  githubCommentId: number;
+  githubCommentUrl: string;
+};
+
 export type AgentRunFailureReason =
   | "agent_no_findings"
   | "patch_validation_failed"
@@ -663,6 +682,7 @@ export const projectMcpServers = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    displayName: text("display_name"),
     url: text("url").notNull(),
     enabled: boolean("enabled").notNull().default(true),
     authType: text("auth_type")
@@ -1782,6 +1802,9 @@ export const githubInstallations = pgTable(
     accountType: text("account_type"),
     repos: jsonb("repos").$type<{ id: number; fullName: string; private: boolean }[]>(),
     agentEnabled: boolean("agent_enabled").default(true).notNull(),
+    // Opt-in PR review bot. Kept separate from agentEnabled because reviewing
+    // incoming PRs and opening remediation PRs are independent capabilities.
+    observabilityReviewEnabled: boolean("observability_review_enabled").default(false).notNull(),
     repoAccess: jsonb("repo_access").$type<GithubRepoAccess>(),
     commitAuthorName: text("commit_author_name"),
     commitAuthorEmail: text("commit_author_email"),
@@ -1813,6 +1836,75 @@ export const githubInstallations = pgTable(
   }),
 );
 
+// Durable aggregate for one observability review of one immutable PR head.
+// Suggestions stay together as JSON because they are published and reaction-
+// synced as a unit; a new head gets a new row rather than mutating history.
+export const prObservabilityReviews = pgTable(
+  "pr_observability_reviews",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    installationId: bigint("installation_id", { mode: "number" }).notNull(),
+    orgId: uuid("org_id").references(() => orgs.id, { onDelete: "set null" }),
+    projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
+    repoId: bigint("repo_id", { mode: "number" }).notNull(),
+    repoFullName: text("repo_full_name").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    headSha: text("head_sha").notNull(),
+    status: text("status").$type<PrObservabilityReviewStatus>().notNull().default("queued"),
+    summary: text("summary"),
+    suggestions: jsonb("suggestions")
+      .$type<PrObservabilitySuggestion[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    processedReactionIds: jsonb("processed_reaction_ids")
+      .$type<number[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    failureMessage: text("failure_message"),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    lastReactionSyncedAt: timestamp("last_reaction_synced_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    headUniq: uniqueIndex("pr_observability_reviews_head_idx").on(
+      t.repoFullName,
+      t.prNumber,
+      t.headSha,
+    ),
+    queuedIdx: index("pr_observability_reviews_queued_idx")
+      .on(t.createdAt)
+      .where(sql`status = 'queued'`),
+    reactionSyncIdx: index("pr_observability_reviews_reaction_sync_idx")
+      .on(t.lastReactionSyncedAt, t.completedAt)
+      .where(sql`status = 'completed'`),
+  }),
+);
+
+// Every opted-in project represented by a single repository/head review.
+// The GitHub side effect remains one review while shared org installations
+// retain all project scopes that requested it.
+export const prObservabilityReviewProjects = pgTable(
+  "pr_observability_review_projects",
+  {
+    reviewId: uuid("review_id")
+      .notNull()
+      .references(() => prObservabilityReviews.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    reviewProjectUniq: uniqueIndex("pr_observability_review_projects_uniq").on(
+      t.reviewId,
+      t.projectId,
+    ),
+    projectIdx: index("pr_observability_review_projects_project_idx").on(t.projectId),
+  }),
+);
+
 // Cross-project repo grants for org-scoped installs. When an install is
 // org-scoped (project_id NULL on the install row), this table is the only
 // way a project gets access to specific repos under that install. Project-
@@ -1838,6 +1930,31 @@ export const projectGithubRepos = pgTable(
       t.githubRepoId,
     ),
     installationIdx: index("project_github_repos_installation_idx").on(t.installationId),
+  }),
+);
+
+// Project-local settings for an org-scoped GitHub installation. The shared
+// installation row cannot carry project opt-ins: several projects may have
+// disjoint repo grants on the same installation.
+export const projectGithubInstallationSettings = pgTable(
+  "project_github_installation_settings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    installationId: uuid("installation_id")
+      .notNull()
+      .references(() => githubInstallations.id, { onDelete: "cascade" }),
+    observabilityReviewEnabled: boolean("observability_review_enabled").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    projectInstallationUniq: uniqueIndex("project_github_installation_settings_uniq").on(
+      t.projectId,
+      t.installationId,
+    ),
   }),
 );
 
@@ -2514,7 +2631,13 @@ export const alertEpisodes = pgTable(
 // id otherwise (PR webhook captures, /feedback/pr/* public submissions, and
 // Slack view_submission events all come in without a session).
 export type FeedbackKind = "incident" | "issue" | "pr";
-export type FeedbackSource = "dialog" | "slack_button" | "slack_rating" | "pr_comment" | "pr_link";
+export type FeedbackSource =
+  | "dialog"
+  | "slack_button"
+  | "slack_rating"
+  | "pr_comment"
+  | "pr_link"
+  | "pr_review_reaction";
 export type FeedbackStatus = "new" | "triaged" | "closed";
 // One-click sentiment on an incident's Slack thread (👍/👎). Nullable — most
 // feedback rows carry only free-form `body` with no structured rating.
@@ -2534,6 +2657,10 @@ export const feedback = pgTable(
     refId: text("ref_id").notNull(),
     refRepo: text("ref_repo"),
     source: text("source").$type<FeedbackSource>().notNull(),
+    // Stable provider event id for polling-based integrations. GitHub does not
+    // emit reaction webhooks, so the review worker polls and uses this key to
+    // make feedback inserts idempotent across job retries.
+    providerEventId: text("provider_event_id"),
     body: text("body").notNull(),
     rating: text("rating").$type<FeedbackRating>(),
     authorUserId: uuid("author_user_id").references(() => users.id, {
@@ -2554,6 +2681,9 @@ export const feedback = pgTable(
   (t) => ({
     statusCreatedIdx: index("feedback_status_created_idx").on(t.status, t.createdAt),
     kindRefIdx: index("feedback_kind_ref_idx").on(t.kind, t.refId),
+    providerEventUniq: uniqueIndex("feedback_provider_event_idx")
+      .on(t.providerEventId)
+      .where(sql`provider_event_id IS NOT NULL`),
   }),
 );
 
@@ -3168,6 +3298,7 @@ export type SavedView = typeof savedViews.$inferSelect;
 export type Dashboard = typeof dashboards.$inferSelect;
 export type DashboardWidget = typeof dashboardWidgets.$inferSelect;
 export type GithubInstallation = typeof githubInstallations.$inferSelect;
+export type PrObservabilityReview = typeof prObservabilityReviews.$inferSelect;
 export type ProjectGithubRepo = typeof projectGithubRepos.$inferSelect;
 export type LinearInstallation = typeof linearInstallations.$inferSelect;
 export type LinearAgentSession = typeof linearAgentSessions.$inferSelect;

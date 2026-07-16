@@ -1,4 +1,4 @@
-import type { ProjectMcpServer } from "../api.ts";
+import type { ProjectMcpAuthDetection, ProjectMcpServer } from "../api.ts";
 
 export type AuthDraft = {
   type: "none" | "bearer" | "api_key" | "oauth";
@@ -9,6 +9,7 @@ export type AuthDraft = {
   scopes: string;
   clientId: string;
   clientSecret: string;
+  requiresClientId: boolean;
 };
 
 export const EMPTY_AUTH: AuthDraft = {
@@ -20,7 +21,52 @@ export const EMPTY_AUTH: AuthDraft = {
   scopes: "",
   clientId: "",
   clientSecret: "",
+  requiresClientId: false,
 };
+
+export type ProjectMcpAuthSelection = "automatic" | "manual" | "required";
+
+export function projectMcpAuthSelectionAfterUrlChange(
+  selection: ProjectMcpAuthSelection,
+): ProjectMcpAuthSelection {
+  return selection === "required" ? "automatic" : selection;
+}
+
+export function shouldDetectProjectMcpAuth(
+  selection: ProjectMcpAuthSelection,
+  url: string,
+  trusted: boolean,
+): boolean {
+  return selection === "automatic" && trusted && url.trim().length > 0;
+}
+
+export function projectMcpAuthDetectionIsCurrent(
+  requestedUrl: string,
+  currentUrl: string,
+): boolean {
+  return requestedUrl === currentUrl;
+}
+
+export async function detectProjectMcpAuthSafely<T>(
+  detect: () => Promise<T>,
+): Promise<T | null> {
+  try {
+    return await detect();
+  } catch {
+    return null;
+  }
+}
+
+export function createDetectedProjectMcpAuthDraft(detection: ProjectMcpAuthDetection): AuthDraft {
+  if (detection.type === "unknown") return EMPTY_AUTH;
+  return {
+    ...EMPTY_AUTH,
+    type: "oauth",
+    grantType: detection.grantType,
+    requiresClientId:
+      detection.grantType === "client_credentials" || !detection.supportsDynamicRegistration,
+  };
+}
 
 export function createProjectMcpEditorDraft(server: ProjectMcpServer) {
   return {

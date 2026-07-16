@@ -13,6 +13,7 @@ import {
   commitMessageHasPullRequestDelivery,
   findPullRequestDeliveryCommit,
   formatRetryBranchName,
+  githubPullRequestReviewTokenScope,
   isGitPushBranchCollision,
   isMissingRemoteBranchFailure,
   isRetryableGitPushFailure,
@@ -22,6 +23,14 @@ import {
   redactGitSecrets,
   reopenGithubPullRequestWithToken,
 } from "./github-app.js";
+
+test("PR review tokens are restricted to the queued repository", () => {
+  assert.deepEqual(githubPullRequestReviewTokenScope(123, 456), {
+    installationId: 123,
+    repositoryIds: [456],
+    permissions: { contents: "read", pull_requests: "write" },
+  });
+});
 
 function makeDirLister(
   dirs: Record<string, GithubDirEntry[]>,

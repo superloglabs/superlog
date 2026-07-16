@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   type ProjectMcpAuthInput,
   type ProjectMcpServer,
   useConnectProjectMcpClientCredentials,
   useCreateProjectMcpServer,
   useDeleteProjectMcpServer,
+  useDetectProjectMcpAuth,
   useDisconnectProjectMcpOAuth,
   useProjectMcpServers,
   useStartProjectMcpOAuth,
@@ -12,12 +13,23 @@ import {
   useUpdateProjectMcpServer,
 } from "../api.ts";
 import { Btn, Chip, FieldLabel, Input } from "../design/ui.tsx";
-import { type AuthDraft, EMPTY_AUTH, createProjectMcpEditorDraft } from "./project-mcp-editor.ts";
+import {
+  type AuthDraft,
+  EMPTY_AUTH,
+  createDetectedProjectMcpAuthDraft,
+  createProjectMcpEditorDraft,
+  detectProjectMcpAuthSafely,
+  projectMcpAuthDetectionIsCurrent,
+  projectMcpAuthSelectionAfterUrlChange,
+  shouldDetectProjectMcpAuth,
+  type ProjectMcpAuthSelection,
+} from "./project-mcp-editor.ts";
 import { SettingsCard, SettingsRow } from "./rows.tsx";
 
 export function AgentMcpServersCard({ projectId }: { projectId: string | undefined }) {
   const query = useProjectMcpServers(projectId);
   const create = useCreateProjectMcpServer(projectId);
+  const detectAuth = useDetectProjectMcpAuth(projectId);
   const update = useUpdateProjectMcpServer(projectId);
   const remove = useDeleteProjectMcpServer(projectId);
   const test = useTestProjectMcpServer(projectId);
@@ -26,15 +38,20 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
   const disconnectOAuth = useDisconnectProjectMcpOAuth(projectId);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
+  const urlRef = useRef("");
   const [auth, setAuth] = useState<AuthDraft>(EMPTY_AUTH);
   const [trusted, setTrusted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<Record<string, string>>({});
+  const [authDetection, setAuthDetection] = useState<string | null>(null);
+  const [manualAuth, setManualAuth] = useState(false);
+  const authSelection = useRef<ProjectMcpAuthSelection>("automatic");
 
   const servers = query.data?.servers ?? [];
   const canManage = query.data?.canManage ?? false;
   const pending =
     create.isPending ||
+    detectAuth.isPending ||
     update.isPending ||
     remove.isPending ||
     test.isPending ||
@@ -42,22 +59,61 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
     connectClientCredentials.isPending ||
     disconnectOAuth.isPending;
 
-  const submit = (event: React.FormEvent) => {
+  const detectAuthForUrl = async (): Promise<AuthDraft | null> => {
+    const requestedUrl = urlRef.current;
+    if (!shouldDetectProjectMcpAuth(authSelection.current, requestedUrl, trusted)) return auth;
+    setAuthDetection("Detecting auth…");
+    const detected = await detectProjectMcpAuthSafely(() =>
+      detectAuth.mutateAsync(requestedUrl),
+    );
+    if (!projectMcpAuthDetectionIsCurrent(requestedUrl, urlRef.current)) return null;
+    if (!detected) {
+      setAuthDetection("Auth detection failed");
+      return null;
+    }
+    if (authSelection.current !== "automatic") return auth;
+    const nextAuth = createDetectedProjectMcpAuthDraft(detected);
+    setAuth(nextAuth);
+    if (nextAuth.requiresClientId) {
+      authSelection.current = "required";
+      setManualAuth(true);
+    }
+    setAuthDetection(
+      detected.type === "unknown"
+        ? "Auth not detected"
+        : detected.grantType === "client_credentials"
+          ? "OAuth client credentials"
+          : detected.supportsDynamicRegistration
+            ? "OAuth detected"
+            : "OAuth · client ID required",
+    );
+    return nextAuth.requiresClientId ? null : nextAuth;
+  };
+
+  const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
+    if (!trusted) return;
+    const submittedAuth =
+      authSelection.current === "automatic" ? await detectAuthForUrl() : auth;
+    if (!submittedAuth) return;
     create.mutate(
       {
         name,
         url,
         enabled: (query.data?.enabledCount ?? 0) < (query.data?.enabledLimit ?? 19),
-        auth: authInput(auth),
+        auth: authInput(submittedAuth),
         confirmTrusted: trusted,
       },
       {
         onSuccess: () => {
           setName("");
           setUrl("");
+          urlRef.current = "";
           setAuth(EMPTY_AUTH);
+          authSelection.current = "automatic";
+          setManualAuth(false);
+          setAuthDetection(null);
           setTrusted(false);
         },
         onError: (cause) => setError(errorMessage(cause)),
@@ -226,39 +282,53 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="linear"
+                placeholder="Granola"
                 required
               />
             </Field>
             <Field label="Streamable HTTP URL">
               <Input
                 value={url}
-                onChange={(e) => setUrl(e.target.value)}
+                onChange={(e) => {
+                  urlRef.current = e.target.value;
+                  setUrl(e.target.value);
+                  setAuthDetection(null);
+                  const nextSelection = projectMcpAuthSelectionAfterUrlChange(
+                    authSelection.current,
+                  );
+                  if (nextSelection !== authSelection.current) {
+                    authSelection.current = nextSelection;
+                    setManualAuth(false);
+                    setAuth(EMPTY_AUTH);
+                  }
+                }}
+                onBlur={() => {
+                  if (!shouldDetectProjectMcpAuth(authSelection.current, url, trusted)) return;
+                  void detectAuthForUrl();
+                }}
                 placeholder="https://mcp.example.com/mcp"
                 type="url"
                 required
               />
             </Field>
           </div>
-          <div className="mt-4">
-            <FieldLabel>Authentication</FieldLabel>
-            <select
-              value={auth.type}
-              onChange={(e) =>
-                setAuth({
-                  ...EMPTY_AUTH,
-                  type: e.target.value as AuthDraft["type"],
-                })
-              }
-              className="h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-[13px] text-fg focus:border-border-strong focus:outline-none sm:w-64"
-            >
-              <option value="none">None</option>
-              <option value="bearer">Bearer / API token</option>
-              <option value="api_key">API-key header</option>
-              <option value="oauth">OAuth 2.1</option>
-            </select>
-          </div>
-          <AuthFields value={auth} onChange={setAuth} />
+          <McpAuthenticationEditor
+            manual={manualAuth}
+            detectionMessage={authDetection}
+            value={auth}
+            onChange={setAuth}
+            onConfigureManually={() => {
+              authSelection.current = "manual";
+              setManualAuth(true);
+              setAuthDetection(null);
+            }}
+            onUseAutomatic={() => {
+              authSelection.current = "automatic";
+              setManualAuth(false);
+              setAuth(EMPTY_AUTH);
+              if (shouldDetectProjectMcpAuth("automatic", url, trusted)) void detectAuthForUrl();
+            }}
+          />
           <label className="mt-4 flex items-start gap-2 text-[12.5px] text-muted">
             <input
               type="checkbox"
@@ -276,7 +346,7 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
             <Btn
               type="submit"
               loading={create.isPending}
-              disabled={!name.trim() || !url.trim() || !trusted}
+              disabled={!name.trim() || !url.trim() || !trusted || detectAuth.isPending}
             >
               Add MCP server
             </Btn>
@@ -286,6 +356,65 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
         <p className="text-[12.5px] text-muted">
           Project owners and admins can change agent MCP servers.
         </p>
+      )}
+    </div>
+  );
+}
+
+export function McpAuthenticationEditor({
+  manual,
+  detectionMessage,
+  value,
+  onChange,
+  onConfigureManually,
+  onUseAutomatic,
+}: {
+  manual: boolean;
+  detectionMessage: string | null;
+  value: AuthDraft;
+  onChange: (next: AuthDraft) => void;
+  onConfigureManually: () => void;
+  onUseAutomatic: () => void;
+}) {
+  return (
+    <div className="mt-4">
+      {manual ? (
+        <div>
+          <div className="flex items-center justify-between gap-3">
+            <FieldLabel>Manual authentication</FieldLabel>
+            <Btn type="button" size="sm" variant="secondary" onClick={onUseAutomatic}>
+              Use auto
+            </Btn>
+          </div>
+          <select
+            aria-label="Manual authentication"
+            value={value.type}
+            onChange={(event) =>
+              onChange({
+                ...EMPTY_AUTH,
+                type: event.target.value as AuthDraft["type"],
+              })
+            }
+            className="h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-[13px] text-fg focus:border-border-strong focus:outline-none sm:w-64"
+          >
+            <option value="none">None</option>
+            <option value="bearer">Bearer / API token</option>
+            <option value="api_key">API-key header</option>
+            <option value="oauth">OAuth 2.1</option>
+          </select>
+          <AuthFields value={value} onChange={onChange} />
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          {detectionMessage && (
+            <span aria-live="polite">
+              <Chip tone="muted">{detectionMessage}</Chip>
+            </span>
+          )}
+          <Btn type="button" size="sm" variant="secondary" onClick={onConfigureManually}>
+            Set auth manually
+          </Btn>
+        </div>
       )}
     </div>
   );
@@ -461,10 +590,17 @@ function AuthFields({
           placeholder="issues:read"
         />
       </Field>
-      <Field label="Client ID (optional with dynamic registration)">
+      <Field
+        label={
+          value.requiresClientId
+            ? "Client ID"
+            : "Client ID (optional with dynamic registration)"
+        }
+      >
         <Input
           value={value.clientId}
           onChange={(e) => onChange({ ...value, clientId: e.target.value })}
+          required={value.requiresClientId}
         />
       </Field>
       <Field

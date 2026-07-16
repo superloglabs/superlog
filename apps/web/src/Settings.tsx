@@ -1652,6 +1652,26 @@ function GithubCard() {
                     Manage
                   </Btn>
                 </div>
+                <label className="flex items-start gap-2 border-t border-border pt-2">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 h-3.5 w-3.5 accent-accent"
+                    checked={installation.observabilityReviewEnabled}
+                    disabled={!installation.enabled || updateRepoAccess.isPending}
+                    onChange={(event) =>
+                      updateRepoAccess.mutate({
+                        installationId: installation.installationId,
+                        observabilityReviewEnabled: event.target.checked,
+                      })
+                    }
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-[12px] text-fg">Review PR observability</span>
+                    <span className="block font-sans text-[11px] leading-relaxed text-muted">
+                      Check new PR commits for actionable logging, tracing, and metrics gaps.
+                    </span>
+                  </span>
+                </label>
                 {installation.repos.length > 0 && (
                   <div className="max-h-48 space-y-1 overflow-y-auto border-t border-border pt-2">
                     {installation.repos.map((repo) => (
@@ -2389,7 +2409,12 @@ function WeeklyDigestCard({ projectId }: { projectId: string | undefined }) {
     <SettingsCard>
       <SettingsRow
         title="Post a weekly project recap to Slack"
-        description={weeklyDigestStatusDescription({ enabled, channelId, channelName, lastRunLabel })}
+        description={weeklyDigestStatusDescription({
+          enabled,
+          channelId,
+          channelName,
+          lastRunLabel,
+        })}
         control={
           <Toggle
             checked={enabled}

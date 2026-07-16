@@ -40,6 +40,10 @@ import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 import { recordPrClosedMetric, recordPrMergedMetric } from "./pr-metrics.js";
+import {
+  enqueueObservabilityReview,
+  observabilityReviewCommandFromWebhook,
+} from "./pr-observability-review.js";
 
 const log = logger.child({ scope: "github" });
 type Vars = { userId: string; orgId: string | null };
@@ -369,6 +373,7 @@ type GithubInstallationSummary = {
   accountLogin: string | null;
   accountType: string | null;
   enabled: boolean;
+  observabilityReviewEnabled: boolean;
   manageUrl: string;
   repos: GithubRepoSummary[];
 };
@@ -395,7 +400,7 @@ type WebhookPayload = {
   repositories_added?: GhRepo[];
   repositories_removed?: GhRepo[];
   // pull_request events / pull_request_review / pull_request_review_comment
-  repository?: { full_name?: string };
+  repository?: { id?: number; full_name?: string };
   pull_request?: {
     number?: number;
     node_id?: string;
@@ -409,6 +414,7 @@ type WebhookPayload = {
     user?: GhActor;
     head?: { sha?: string; ref?: string };
     base?: { ref?: string };
+    draft?: boolean;
     html_url?: string;
   };
   // issue_comment (only PR if issue.pull_request present)
@@ -453,6 +459,8 @@ async function handleWebhook(
   delivery: string | null,
   dependencies: GithubWebhookDependencies,
 ): Promise<void> {
+  await maybeEnqueuePrObservabilityReview(event, payload);
+
   if (
     event === "pull_request" ||
     event === "pull_request_review" ||
@@ -516,6 +524,111 @@ async function handleWebhook(
     if (payload.action === "added") {
       await resumeBlockedAgentRunsForInstallation(installationId, "github_repos_added");
     }
+  }
+}
+
+async function maybeEnqueuePrObservabilityReview(
+  event: string,
+  payload: WebhookPayload,
+): Promise<void> {
+  const command = observabilityReviewCommandFromWebhook(event, payload);
+  if (!command) return;
+
+  const enqueued = await enqueueObservabilityReview(command, {
+    async findEnabledScopes(input) {
+      const installations = await db.query.githubInstallations.findMany({
+        where: and(
+          eq(schema.githubInstallations.installationId, input.installationId),
+          isNull(schema.githubInstallations.revokedAt),
+        ),
+      });
+      const scopes = new Map<string, { orgId: string; projectId: string }>();
+      for (const installation of installations) {
+        if (!isRepoEnabled(normalizeRepoAccess(installation.repoAccess), input.repoId)) continue;
+        if (installation.projectId) {
+          if (!installation.observabilityReviewEnabled) continue;
+          scopes.set(installation.projectId, {
+            orgId: installation.orgId,
+            projectId: installation.projectId,
+          });
+          continue;
+        }
+        const grants = await db.query.projectGithubRepos.findMany({
+          where: and(
+            eq(schema.projectGithubRepos.installationId, installation.id),
+            eq(schema.projectGithubRepos.githubRepoId, input.repoId),
+          ),
+        });
+        for (const grant of grants) {
+          const setting = await db.query.projectGithubInstallationSettings.findFirst({
+            where: and(
+              eq(schema.projectGithubInstallationSettings.projectId, grant.projectId),
+              eq(schema.projectGithubInstallationSettings.installationId, installation.id),
+              eq(schema.projectGithubInstallationSettings.observabilityReviewEnabled, true),
+            ),
+          });
+          if (setting) {
+            scopes.set(grant.projectId, {
+              orgId: installation.orgId,
+              projectId: grant.projectId,
+            });
+          }
+        }
+      }
+      return [...scopes.values()];
+    },
+    async insert(input) {
+      const [firstScope] = input.scopes;
+      if (!firstScope) return;
+      await db.transaction(async (tx) => {
+        const projectId = input.scopes.length === 1 ? firstScope.projectId : null;
+        const [review] = await tx
+          .insert(schema.prObservabilityReviews)
+          .values({
+            installationId: input.installationId,
+            orgId: firstScope.orgId,
+            projectId,
+            repoId: input.repoId,
+            repoFullName: input.repoFullName,
+            prNumber: input.prNumber,
+            headSha: input.headSha,
+          })
+          .onConflictDoUpdate({
+            target: [
+              schema.prObservabilityReviews.repoFullName,
+              schema.prObservabilityReviews.prNumber,
+              schema.prObservabilityReviews.headSha,
+            ],
+            set: {
+              orgId: firstScope.orgId,
+              projectId,
+              repoId: input.repoId,
+              updatedAt: new Date(),
+            },
+          })
+          .returning({ id: schema.prObservabilityReviews.id });
+        if (!review) return;
+        await tx
+          .insert(schema.prObservabilityReviewProjects)
+          .values(
+            input.scopes.map((scope) => ({
+              reviewId: review.id,
+              projectId: scope.projectId,
+            })),
+          )
+          .onConflictDoNothing();
+      });
+    },
+  });
+  if (enqueued) {
+    log.info(
+      {
+        repo: command.repoFullName,
+        pr_number: command.prNumber,
+        head_sha: command.headSha,
+      },
+      "observability review queued",
+    );
   }
 }
 
@@ -1995,11 +2108,24 @@ export function mountGithubAuthed(app: Hono<any>): void {
       // repo set; project-owned installs see everything in the install.
       const grantSet = allowedRepoIds === null ? null : new Set(allowedRepoIds);
       const scopedRepos = grantSet === null ? repos : repos.filter((repo) => grantSet.has(repo.id));
+      const projectSetting =
+        row.projectId === null
+          ? await db.query.projectGithubInstallationSettings.findFirst({
+              where: and(
+                eq(schema.projectGithubInstallationSettings.projectId, active.projectId),
+                eq(schema.projectGithubInstallationSettings.installationId, row.id),
+              ),
+            })
+          : null;
       installations.push({
         installationId: row.installationId,
         accountLogin: row.accountLogin,
         accountType: row.accountType,
         enabled: row.agentEnabled,
+        observabilityReviewEnabled:
+          row.projectId === null
+            ? (projectSetting?.observabilityReviewEnabled ?? false)
+            : row.observabilityReviewEnabled,
         manageUrl: githubInstallationManageUrl(row),
         repos: scopedRepos.map((repo) => ({
           ...repo,
@@ -2132,6 +2258,7 @@ export function mountGithubAuthed(app: Hono<any>): void {
     const body = (await c.req.json().catch(() => null)) as {
       installationId?: unknown;
       enabled?: unknown;
+      observabilityReviewEnabled?: unknown;
       repoId?: unknown;
       repoEnabled?: unknown;
     } | null;
@@ -2140,21 +2267,41 @@ export function mountGithubAuthed(app: Hono<any>): void {
       return c.json({ error: "invalid installation id" }, 400);
     }
 
-    const row = await db.query.githubInstallations.findFirst({
+    let row = await db.query.githubInstallations.findFirst({
       where: and(
         eq(schema.githubInstallations.projectId, ctx.projectId),
         eq(schema.githubInstallations.installationId, installationId),
         isNull(schema.githubInstallations.revokedAt),
       ),
     });
+    if (
+      !row &&
+      typeof body?.observabilityReviewEnabled === "boolean" &&
+      body.enabled === undefined &&
+      body.repoId === undefined &&
+      body.repoEnabled === undefined
+    ) {
+      const accessible = await listAccessibleGithubInstallsForProject(ctx.projectId);
+      row = accessible.find(
+        ({ installation }) => installation.installationId === installationId,
+      )?.installation;
+    }
     if (!row) return c.json({ error: "github installation not found" }, 404);
 
     const patch: {
       agentEnabled?: boolean;
+      observabilityReviewEnabled?: boolean;
       repoAccess?: RepoAccess;
     } = {};
+    const orgScopedReviewEnabled =
+      row.projectId === null && typeof body?.observabilityReviewEnabled === "boolean"
+        ? body.observabilityReviewEnabled
+        : null;
     if (typeof body?.enabled === "boolean") {
       patch.agentEnabled = body.enabled;
+    }
+    if (typeof body?.observabilityReviewEnabled === "boolean" && row.projectId !== null) {
+      patch.observabilityReviewEnabled = body.observabilityReviewEnabled;
     }
     if (body?.repoId !== undefined || body?.repoEnabled !== undefined) {
       const repoId = Number(body?.repoId);
@@ -2163,14 +2310,35 @@ export function mountGithubAuthed(app: Hono<any>): void {
       }
       patch.repoAccess = setRepoEnabled(row.repoAccess, repoId, body.repoEnabled);
     }
-    if (Object.keys(patch).length === 0) {
+    if (Object.keys(patch).length === 0 && orgScopedReviewEnabled === null) {
       return c.json({ error: "no repo access change provided" }, 400);
     }
 
-    await db
-      .update(schema.githubInstallations)
-      .set(patch)
-      .where(eq(schema.githubInstallations.id, row.id));
+    if (Object.keys(patch).length > 0) {
+      await db
+        .update(schema.githubInstallations)
+        .set(patch)
+        .where(eq(schema.githubInstallations.id, row.id));
+    }
+    if (orgScopedReviewEnabled !== null) {
+      await db
+        .insert(schema.projectGithubInstallationSettings)
+        .values({
+          projectId: ctx.projectId,
+          installationId: row.id,
+          observabilityReviewEnabled: orgScopedReviewEnabled,
+        })
+        .onConflictDoUpdate({
+          target: [
+            schema.projectGithubInstallationSettings.projectId,
+            schema.projectGithubInstallationSettings.installationId,
+          ],
+          set: {
+            observabilityReviewEnabled: orgScopedReviewEnabled,
+            updatedAt: new Date(),
+          },
+        });
+    }
     return c.json({ ok: true });
   });
 

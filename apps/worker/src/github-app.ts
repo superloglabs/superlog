@@ -360,6 +360,31 @@ export async function createGithubWriteToken(
   });
 }
 
+// Narrow token for automated PR review: read source/diffs, publish inline
+// review comments, and read reactions on those comments. Exported through the
+// worker's GitHub boundary so background review jobs never handle app JWTs.
+export function githubPullRequestReviewTokenScope(
+  installationId: number,
+  repositoryId: number,
+): {
+  installationId: number;
+  repositoryIds: number[];
+  permissions: Record<string, GithubPermission>;
+} {
+  return {
+    installationId,
+    repositoryIds: [repositoryId],
+    permissions: { contents: "read", pull_requests: "write" },
+  };
+}
+
+export async function createGithubPullRequestReviewToken(
+  installationId: number,
+  repositoryId: number,
+): Promise<string> {
+  return createInstallationToken(githubPullRequestReviewTokenScope(installationId, repositoryId));
+}
+
 // Post a comment on an agent PR — used to route a continuation turn's reply
 // back to the channel it came in on (a PR comment gets a PR answer). Best-effort
 // and idempotency-free: the caller only fires this once per completed turn.

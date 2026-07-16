@@ -1,6 +1,6 @@
 export const MAX_ENABLED_CUSTOM_MCP_SERVERS = 19;
 
-const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const MAX_DISPLAY_NAME_LENGTH = 80;
 const RESERVED_NAMES = new Set(["superlog"]);
 const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const FORBIDDEN_API_KEY_HEADERS = new Set([
@@ -33,7 +33,9 @@ export type ProjectMcpServerAuth =
 export type ProjectMcpServer = {
   id: string;
   projectId: string;
+  /** Protocol-safe identifier used when attaching the MCP server to an agent. */
   name: string;
+  displayName: string;
   url: string;
   enabled: boolean;
   auth: ProjectMcpServerAuth;
@@ -49,8 +51,10 @@ export type NewProjectMcpServer = Omit<ProjectMcpServer, "id" | "createdAt" | "u
 
 export type ProjectMcpServerView = Omit<
   ProjectMcpServer,
-  "auth" | "trustedAt" | "createdAt" | "updatedAt"
+  "auth" | "name" | "displayName" | "trustedAt" | "createdAt" | "updatedAt"
 > & {
+  name: string;
+  slug: string;
   auth:
     | { type: "none"; hasCredential: false }
     | { type: "bearer"; hasCredential: true }
@@ -115,7 +119,8 @@ export function createProjectMcpServerManager(repository: ProjectMcpServerReposi
       if (!command.confirmTrusted) {
         throw new ProjectMcpServerError("trust_required", "the MCP server must be trusted");
       }
-      const name = parseProjectMcpServerName(command.name);
+      const displayName = parseProjectMcpServerName(command.name);
+      const name = projectMcpServerSlug(displayName);
       const url = parseProjectMcpServerUrl(command.url);
       const existing = await repository.list(command.projectId);
       if (existing.some((server) => server.name === name)) {
@@ -142,6 +147,7 @@ export function createProjectMcpServerManager(repository: ProjectMcpServerReposi
         await repository.insert({
           projectId: command.projectId,
           name,
+          displayName,
           url,
           enabled,
           auth: validateAuth(command.auth),
@@ -165,8 +171,9 @@ export function createProjectMcpServerManager(repository: ProjectMcpServerReposi
     }): Promise<ProjectMcpServerView> {
       const current = await repository.get(command.projectId, command.id);
       if (!current) throw new ProjectMcpServerError("not_found", "MCP server not found");
-      const name =
-        command.name === undefined ? current.name : parseProjectMcpServerName(command.name);
+      const displayName =
+        command.name === undefined ? current.displayName : parseProjectMcpServerName(command.name);
+      const name = command.name === undefined ? current.name : projectMcpServerSlug(displayName);
       const url = command.url === undefined ? current.url : parseProjectMcpServerUrl(command.url);
       if (url !== current.url && !command.confirmTrusted) {
         throw new ProjectMcpServerError("trust_required", "the new MCP server URL must be trusted");
@@ -197,6 +204,7 @@ export function createProjectMcpServerManager(repository: ProjectMcpServerReposi
         await repository.update({
           ...current,
           name,
+          displayName,
           url,
           enabled,
           auth: command.auth === undefined ? current.auth : validateAuth(command.auth),
@@ -218,13 +226,35 @@ export function createProjectMcpServerManager(repository: ProjectMcpServerReposi
 
 export function parseProjectMcpServerName(value: string): string {
   const name = value.trim();
-  if (!NAME_PATTERN.test(name)) {
-    throw new ProjectMcpServerError("invalid_name", "invalid MCP server name");
+  if (!name || name.length > MAX_DISPLAY_NAME_LENGTH) {
+    throw new ProjectMcpServerError(
+      "invalid_name",
+      `MCP server name must be between 1 and ${MAX_DISPLAY_NAME_LENGTH} characters`,
+    );
   }
-  if (RESERVED_NAMES.has(name)) {
+  const slug = projectMcpServerSlug(name);
+  if (RESERVED_NAMES.has(slug)) {
     throw new ProjectMcpServerError("reserved_name", `${name} is reserved`);
   }
   return name;
+}
+
+export function projectMcpServerSlug(name: string): string {
+  const slug = name
+    .normalize("NFKD")
+    .replace(/\p{M}+/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "")
+    .slice(0, 64)
+    .replace(/[-_]+$/g, "");
+  if (!slug) {
+    throw new ProjectMcpServerError(
+      "invalid_name",
+      "MCP server name must include at least one letter or number",
+    );
+  }
+  return slug;
 }
 
 export function parseProjectMcpServerUrl(value: string): string {
@@ -305,8 +335,11 @@ export function toProjectMcpServerView(server: ProjectMcpServer): ProjectMcpServ
               scopes: server.auth.scopes,
               expiresAt: server.auth.expiresAt?.toISOString() ?? null,
             };
+  const { displayName, ...rest } = server;
   return {
-    ...server,
+    ...rest,
+    name: displayName,
+    slug: server.name,
     auth,
     trustedAt: server.trustedAt.toISOString(),
     createdAt: server.createdAt.toISOString(),

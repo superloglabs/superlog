@@ -6,11 +6,16 @@ import {
   createDrizzleProjectMcpServerRepository,
   createProjectMcpServerManager,
   db,
+  parseProjectMcpServerUrl,
   schema,
 } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { resolveActiveOrgContext } from "./org-context.js";
+import {
+  type ProjectMcpAuthDetection,
+  detectProjectMcpAuth,
+} from "./project-mcp-auth-detection.js";
 import {
   createDrizzleProjectMcpOAuthAttemptStore,
   createFetchProjectMcpOAuthHttp,
@@ -21,18 +26,26 @@ import { testProjectMcpServerConnection } from "./project-mcp-test.js";
 type Vars = { userId: string; orgId: string | null };
 const repository = createDrizzleProjectMcpServerRepository();
 const manager = createProjectMcpServerManager(repository);
+const oauthHttp = createFetchProjectMcpOAuthHttp();
 const oauth = createProjectMcpOAuthService({
   repository,
   attempts: createDrizzleProjectMcpOAuthAttemptStore(),
-  http: createFetchProjectMcpOAuthHttp(),
+  http: oauthHttp,
 });
 const apiOrigin = (
   process.env.GATEWAY_PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 4100}`
 ).replace(/\/$/, "");
 const oauthRedirectUri = `${apiOrigin}/api/agent-mcp-oauth/callback`;
 
-// biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
-export function mountProjectMcpServersAuthed(app: Hono<any>): void {
+export function mountProjectMcpServersAuthed(
+  // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
+  app: Hono<any>,
+  overrides: {
+    detectAuth?: (url: string) => Promise<ProjectMcpAuthDetection>;
+  } = {},
+): void {
+  const detectAuth =
+    overrides.detectAuth ?? ((url: string) => detectProjectMcpAuth(url, oauthHttp));
   app.get("/api/org/projects/:projectId/agent-mcp-servers", async (c) => {
     const scope = await resolveProjectScope(c);
     if (!scope) return c.json({ error: "project not found" }, 404);
@@ -43,6 +56,18 @@ export function mountProjectMcpServersAuthed(app: Hono<any>): void {
       enabledLimit: MAX_ENABLED_CUSTOM_MCP_SERVERS,
       canManage: scope.canManage,
     });
+  });
+
+  app.post("/api/org/projects/:projectId/agent-mcp-servers/detect-auth", async (c) => {
+    const scope = await resolveProjectScope(c);
+    if (!scope) return c.json({ error: "project not found" }, 404);
+    if (!scope.canManage) return c.json({ error: "admin access required" }, 403);
+    const body = await readBody(c);
+    try {
+      return c.json(await detectAuth(parseProjectMcpServerUrl(requiredString(body.url, "url"))));
+    } catch (error) {
+      return errorResponse(c, error);
+    }
   });
 
   app.post("/api/org/projects/:projectId/agent-mcp-servers", async (c) => {

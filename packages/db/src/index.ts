@@ -394,6 +394,7 @@ export {
   createProjectMcpServerManager,
   parseProjectMcpServerName,
   parseProjectMcpServerUrl,
+  projectMcpServerSlug,
   toProjectMcpServerView,
 } from "./project-mcp-servers.js";
 export type {

@@ -1,0 +1,1 @@
+ALTER TABLE "project_mcp_servers" ADD COLUMN "display_name" text;
