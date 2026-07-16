@@ -2,6 +2,18 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fingerprint, fingerprintLog, messageBucketFor, stripNullBytes } from "./index.js";
 
+function iosHermesStack(input: { applicationId: string; bundleName: string }): string {
+  const bundlePath =
+    `/var/mobile/Containers/Data/Application/${input.applicationId}` +
+    `/Library/Application Support/.expo-internal/${input.bundleName}`;
+  return [
+    "Error: fetch failed: The network connection was lost.",
+    `    at recordSpanError (address at ${bundlePath}:1:100)`,
+    `    at ?anon_0_ (address at ${bundlePath}:1:200)`,
+    "    at anonymous (address at InternalBytecode.js:1:300)",
+  ].join("\n");
+}
+
 // A single route-scanner error class (e.g. Phoenix NoRouteError) emits one
 // exception per probed path. The stacktrace is identical across all of them —
 // only the request path in the message differs — so without path normalization
@@ -30,6 +42,48 @@ test("fingerprint groups same-stack route-scanner errors that differ only by pat
     message: "no route found for GET /.env (AppWeb.Router)",
   });
   assert.equal(fp1.hash, fp2.hash);
+});
+
+test("fingerprint groups equivalent iOS Hermes stacks across app-container IDs", () => {
+  const first = fingerprint({
+    type: "Error",
+    stacktrace: iosHermesStack({
+      applicationId: "11111111-1111-4111-8111-111111111111",
+      bundleName: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bundle",
+    }),
+    message: "Could not PATCH data: The network connection was lost.",
+  });
+  const second = fingerprint({
+    type: "Error",
+    stacktrace: iosHermesStack({
+      applicationId: "22222222-2222-4222-8222-222222222222",
+      bundleName: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bundle",
+    }),
+    message: "Could not PATCH data: The network connection was lost.",
+  });
+
+  assert.equal(first.hash, second.hash);
+});
+
+test("fingerprint groups equivalent iOS Hermes stacks across Expo bundle IDs", () => {
+  const first = fingerprint({
+    type: "Error",
+    stacktrace: iosHermesStack({
+      applicationId: "11111111-1111-4111-8111-111111111111",
+      bundleName: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bundle",
+    }),
+    message: "Could not PATCH data: The network connection was lost.",
+  });
+  const second = fingerprint({
+    type: "Error",
+    stacktrace: iosHermesStack({
+      applicationId: "11111111-1111-4111-8111-111111111111",
+      bundleName: "bundle-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.jsbundle",
+    }),
+    message: "Could not PATCH data: The network connection was lost.",
+  });
+
+  assert.equal(first.hash, second.hash);
 });
 
 test("messageBucketFor keeps a bare path token distinct from a real path", () => {
