@@ -2198,13 +2198,25 @@ export function mountGithubAuthed(app: Hono<any>): void {
       return c.json({ error: "invalid installation id" }, 400);
     }
 
-    const row = await db.query.githubInstallations.findFirst({
+    let row = await db.query.githubInstallations.findFirst({
       where: and(
         eq(schema.githubInstallations.projectId, ctx.projectId),
         eq(schema.githubInstallations.installationId, installationId),
         isNull(schema.githubInstallations.revokedAt),
       ),
     });
+    if (
+      !row &&
+      typeof body?.observabilityReviewEnabled === "boolean" &&
+      body.enabled === undefined &&
+      body.repoId === undefined &&
+      body.repoEnabled === undefined
+    ) {
+      const accessible = await listAccessibleGithubInstallsForProject(ctx.projectId);
+      row = accessible.find(
+        ({ installation }) => installation.installationId === installationId,
+      )?.installation;
+    }
     if (!row) return c.json({ error: "github installation not found" }, 404);
 
     const patch: {

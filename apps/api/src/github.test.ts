@@ -12,12 +12,13 @@ import {
 } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
-import { mountGithubPublic } from "./github.js";
+import { mountGithubAuthed, mountGithubPublic } from "./github.js";
 
 const GH_WEBHOOK_SECRET = "github-test-secret";
 process.env.GITHUB_APP_WEBHOOK_SECRET = GH_WEBHOOK_SECRET;
 
 const orgIds: string[] = [];
+const userIds: string[] = [];
 
 before(async () => {
   await runMigrations();
@@ -27,6 +28,9 @@ after(async () => {
   try {
     for (const orgId of orgIds.reverse()) {
       await db.delete(schema.orgs).where(eq(schema.orgs.id, orgId));
+    }
+    for (const userId of userIds.reverse()) {
+      await db.delete(schema.users).where(eq(schema.users.id, userId));
     }
   } finally {
     await closeDb();
@@ -994,6 +998,70 @@ test("an opted-in pull request webhook queues one observability review per head"
   assert.equal(reviews.length, 1);
   assert.equal(reviews[0]?.headSha, "review-head-1");
   assert.equal(reviews[0]?.status, "queued");
+});
+
+test("an org-scoped installation can enable observability reviews from an authorized project", async () => {
+  const tag = `test-org-review-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const [org] = await db.insert(schema.orgs).values({ name: tag, slug: tag }).returning();
+  if (!org) throw new Error("failed to seed org");
+  orgIds.push(org.id);
+  const [project] = await db
+    .insert(schema.projects)
+    .values({ orgId: org.id, name: "test", slug: tag })
+    .returning();
+  if (!project) throw new Error("failed to seed project");
+  const [user] = await db
+    .insert(schema.users)
+    .values({
+      email: `${tag}@example.com`,
+      activeOrgId: org.id,
+      activeProjectId: project.id,
+    })
+    .returning();
+  if (!user) throw new Error("failed to seed user");
+  userIds.push(user.id);
+  await db.insert(schema.orgMembers).values({ orgId: org.id, userId: user.id, role: "owner" });
+  const externalInstallationId = Math.floor(Date.now() / 1000) + Math.floor(Math.random() * 1e6);
+  const [installation] = await db
+    .insert(schema.githubInstallations)
+    .values({
+      orgId: org.id,
+      projectId: null,
+      installationId: externalInstallationId,
+      accountLogin: "acme",
+      accountType: "Organization",
+      repos: [{ id: 17, fullName: `${tag}/repo`, private: false }],
+    })
+    .returning();
+  if (!installation) throw new Error("failed to seed installation");
+  await db.insert(schema.projectGithubRepos).values({
+    projectId: project.id,
+    installationId: installation.id,
+    githubRepoId: 17,
+    githubRepoFullName: `${tag}/repo`,
+  });
+  const app = new Hono<{ Variables: { userId: string; orgId: string } }>();
+  app.use("*", async (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  mountGithubAuthed(app);
+
+  const response = await app.request("/api/github/repo-access", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      installationId: externalInstallationId,
+      observabilityReviewEnabled: true,
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const updated = await db.query.githubInstallations.findFirst({
+    where: eq(schema.githubInstallations.id, installation.id),
+  });
+  assert.equal(updated?.observabilityReviewEnabled, true);
 });
 
 async function seedAgentPrFixture(label: string): Promise<{
