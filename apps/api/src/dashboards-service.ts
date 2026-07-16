@@ -105,6 +105,19 @@ function isHomeOnlyWidgetType(type: DashboardWidgetType): boolean {
   return type === "link" || HOME_BUILTIN_TYPES.includes(type as HomeBuiltinType);
 }
 
+export function dashboardRouteCanWriteWidget({
+  existingType,
+  requestedType,
+}: {
+  existingType?: DashboardWidgetType;
+  requestedType?: DashboardWidgetType;
+}): boolean {
+  return !(
+    (existingType && isHomeOnlyWidgetType(existingType)) ||
+    (requestedType && isHomeOnlyWidgetType(requestedType))
+  );
+}
+
 export function defaultHomeWidgets(): DashboardWidgetCreateInput[] {
   return [
     {
@@ -307,7 +320,7 @@ export async function setHomeBuiltin(
   if (enabled && !existing) {
     const definition = defaultHomeWidgets().find((widget) => widget.type === type);
     if (!definition) throw new Error(`missing definition for home widget: ${type}`);
-    await addDashboardWidget(projectId, home.id, definition);
+    await insertDashboardWidget(home.id, definition);
   }
   if (!enabled && existing) {
     await deleteDashboardWidget(projectId, home.id, existing.id);
@@ -322,7 +335,7 @@ export async function addHomeLink(
 ): Promise<schema.DashboardWidget> {
   const safeInput = homeLinkCreateSchema.parse(input);
   const home = await getOrCreateHomeDashboard(projectId, userId);
-  const widget = await addDashboardWidget(projectId, home.id, {
+  const widget = await insertDashboardWidget(home.id, {
     type: "link",
     title: safeInput.title,
     config: { filter: {}, url: safeInput.url, description: safeInput.description },
@@ -459,7 +472,14 @@ export async function addDashboardWidget(
 ): Promise<schema.DashboardWidget | null> {
   const dashboard = await ensureDashboardOwned(projectId, dashboardId);
   if (!dashboard) return null;
-  if (!dashboard.isHome && isHomeOnlyWidgetType(input.type)) return null;
+  if (!dashboardRouteCanWriteWidget({ requestedType: input.type })) return null;
+  return insertDashboardWidget(dashboardId, input);
+}
+
+async function insertDashboardWidget(
+  dashboardId: string,
+  input: DashboardWidgetCreateInput,
+): Promise<schema.DashboardWidget | null> {
   const existing = await db.query.dashboardWidgets.findMany({
     where: eq(schema.dashboardWidgets.dashboardId, dashboardId),
   });
@@ -490,7 +510,21 @@ export async function updateDashboardWidget(
 ): Promise<schema.DashboardWidget | null> {
   const dashboard = await ensureDashboardOwned(projectId, dashboardId);
   if (!dashboard) return null;
-  if (input.type && !dashboard.isHome && isHomeOnlyWidgetType(input.type)) return null;
+  const existing = await db.query.dashboardWidgets.findFirst({
+    where: and(
+      eq(schema.dashboardWidgets.id, widgetId),
+      eq(schema.dashboardWidgets.dashboardId, dashboardId),
+    ),
+  });
+  if (!existing) return null;
+  if (
+    !dashboardRouteCanWriteWidget({
+      existingType: existing.type,
+      requestedType: input.type,
+    })
+  ) {
+    return null;
+  }
   const updated = await db
     .update(schema.dashboardWidgets)
     .set({

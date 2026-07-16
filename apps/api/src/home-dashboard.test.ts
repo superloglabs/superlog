@@ -3,7 +3,8 @@ import { test } from "node:test";
 
 process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
 
-const { defaultHomeWidgets, homeLinkCreateSchema } = await import("./dashboards-service.js");
+const { defaultHomeWidgets, homeLinkCreateSchema, dashboardRouteCanWriteWidget } =
+  await import("./dashboards-service.js");
 
 test("a new project home preserves the three existing overview sections as widgets", () => {
   const widgets = defaultHomeWidgets();
@@ -27,4 +28,11 @@ test("home links require a safe absolute web URL", () => {
     }),
   );
   assert.throws(() => homeLinkCreateSchema.parse({ title: "Unsafe", url: "javascript:alert(1)" }));
+});
+
+test("generic dashboard routes cannot create or edit home-only widgets", () => {
+  assert.equal(dashboardRouteCanWriteWidget({ requestedType: "link" }), false);
+  assert.equal(dashboardRouteCanWriteWidget({ existingType: "link" }), false);
+  assert.equal(dashboardRouteCanWriteWidget({ requestedType: "active_incidents" }), false);
+  assert.equal(dashboardRouteCanWriteWidget({ requestedType: "timeseries_count" }), true);
 });
