@@ -271,6 +271,17 @@ export async function resolveIncidentOrgBestEffort(
   }
 }
 
+// Whether this run has already filed a Linear ticket (e.g. at the PR
+// boundary). Resolving completions may update such a ticket even when
+// resolve-time creation is disabled.
+export async function runHasFiledLinearTicket(agentRunId: string): Promise<boolean> {
+  const row = await db.query.agentLinearTickets.findFirst({
+    where: eq(schema.agentLinearTickets.agentRunId, agentRunId),
+    columns: { id: true },
+  });
+  return Boolean(row);
+}
+
 export async function recordFiledLinearTicket(
   ctx: AgentRunContext,
   ticket: schema.AgentRunLinearTicket | null | undefined,

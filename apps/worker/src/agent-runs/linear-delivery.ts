@@ -88,8 +88,11 @@ function isLinearIssueUuid(value: string): boolean {
 }
 
 // Should this completion produce/refresh a ticket at all?
-export function linearDeliveryAllowed(args: { hasInstall: boolean }): boolean {
-  return args.hasInstall;
+export function linearDeliveryAllowed(args: {
+  hasInstall: boolean;
+  policy: schema.LinearTicketPolicy;
+}): boolean {
+  return args.hasInstall && args.policy !== "never";
 }
 
 export type LinearDeliveryDeps = {
@@ -119,13 +122,14 @@ export async function deliverLinearTicketWithDeps(
     orgSlug: string;
     projectSlug: string;
     hasInstall: boolean;
+    policy: schema.LinearTicketPolicy;
     defaultTeamId: string | null;
     prUrls: string[];
   },
   result: AgentRunResult,
   deps: LinearDeliveryDeps,
 ): Promise<DeliveredLinearTicket | null> {
-  if (!linearDeliveryAllowed({ hasInstall: args.hasInstall })) {
+  if (!linearDeliveryAllowed({ hasInstall: args.hasInstall, policy: args.policy })) {
     return null;
   }
   try {
@@ -297,6 +301,7 @@ export async function deliverLinearTicket(
       orgSlug: ctx.org.slug,
       projectSlug: ctx.project.slug,
       hasInstall: !!install,
+      policy: ctx.linearTicketPolicy,
       defaultTeamId: ctx.linearDefaultTeamId,
       prUrls: opts.prUrls,
     },
