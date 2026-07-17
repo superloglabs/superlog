@@ -2,18 +2,10 @@ import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type Anthropic from "@anthropic-ai/sdk";
-import {
-  type GroupingLLMClient,
-  runGroupingAgent,
-} from "./agent.js";
-import type {
-  GroupingCandidateIncident,
-  GroupingNewIssue,
-} from "./domain.js";
+import { type GroupingLLMClient, runGroupingAgent } from "./agent.js";
+import type { GroupingCandidateIncident, GroupingNewIssue } from "./domain.js";
 
-function makeMessage(
-  blocks: Anthropic.Messages.ContentBlock[],
-): Anthropic.Messages.Message {
+function makeMessage(blocks: Anthropic.Messages.ContentBlock[]): Anthropic.Messages.Message {
   return {
     id: "msg",
     type: "message",
@@ -42,7 +34,10 @@ function textBlock(text: string): Anthropic.Messages.ContentBlock {
   return { type: "text", text, citations: null } as unknown as Anthropic.Messages.ContentBlock;
 }
 
-function makeCandidate(id: string, overrides: Partial<GroupingCandidateIncident> = {}): GroupingCandidateIncident {
+function makeCandidate(
+  id: string,
+  overrides: Partial<GroupingCandidateIncident> = {},
+): GroupingCandidateIncident {
   return {
     id,
     title: "DB unreachable",
@@ -108,13 +103,7 @@ function makeDeps(
 
 test("runGroupingAgent: immediate decide_grouping standalone → standalone verdict", async () => {
   const deps = makeDeps([
-    [
-      toolUse(
-        "decide_grouping",
-        { decision: "standalone", evidence: "Nothing in common" },
-        "t1",
-      ),
-    ],
+    [toolUse("decide_grouping", { decision: "standalone", evidence: "Nothing in common" }, "t1")],
   ]);
   const verdict = await runGroupingAgent(
     { projectName: "p", newIssue: NEW_ISSUE, candidates: [makeCandidate("a")] },
@@ -231,10 +220,9 @@ test("runGroupingAgent: text-only with non-JSON returns standalone with explanat
 
 test("runGroupingAgent: exhausts iteration budget → standalone with budget message", async () => {
   // The agent only ever searches.
-  const deps = makeDeps(
-    [[toolUse("search_incidents", { query: "x" }, "loop")]],
-    { maxIterations: 2 },
-  );
+  const deps = makeDeps([[toolUse("search_incidents", { query: "x" }, "loop")]], {
+    maxIterations: 2,
+  });
   const verdict = await runGroupingAgent(
     { projectName: "p", newIssue: NEW_ISSUE, candidates: [makeCandidate("a")] },
     deps,
@@ -273,4 +261,39 @@ test("runGroupingAgent: metering failures do not abort the grouping decision", a
   );
 
   assert.deepEqual(verdict, { decision: "standalone", evidence: "Nothing in common" });
+});
+
+test("runGroupingAgent: tells the decision model to inspect correlated bursts before defaulting standalone", async () => {
+  let systemPrompt = "";
+  const client: GroupingLLMClient = {
+    async send(input) {
+      systemPrompt = input.system;
+      return makeMessage([
+        toolUse(
+          "decide_grouping",
+          { decision: "standalone", evidence: "No shared root cause" },
+          "t1",
+        ),
+      ]);
+    },
+  };
+
+  await runGroupingAgent(
+    { projectName: "p", newIssue: NEW_ISSUE, candidates: [makeCandidate("a")] },
+    {
+      client,
+      model: "test-model",
+      maxIterations: 1,
+      accountant: { record() {} },
+    },
+  );
+
+  assert.match(
+    systemPrompt,
+    /When several issues begin within the same short window and share a dependency or failure class, inspect them as a burst before deciding\./,
+  );
+  assert.match(
+    systemPrompt,
+    /Prefer joining when a single plausible deployment or configuration change explains all symptoms\./,
+  );
 });

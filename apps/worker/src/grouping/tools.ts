@@ -12,7 +12,8 @@ export const GROUPING_SYSTEM_PROMPT = [
   "inspect_incident can include linked issues, representative samples, and the latest agent investigation result. Prefer those structured details over title similarity.",
   "Do not assume an unseen incident is a join target.",
   "When you are done, call decide_grouping exactly once. Do not write a text reply.",
-  "When unsure, return 'standalone'.",
+  "When several issues begin within the same short window and share a dependency or failure class, inspect them as a burst before deciding.",
+  "Prefer joining when a single plausible deployment or configuration change explains all symptoms.",
 ].join("\n");
 
 const LIST_INCIDENT_TITLES_TOOL: Anthropic.Messages.Tool = {
