@@ -14,6 +14,7 @@ export const GROUPING_SYSTEM_PROMPT = [
   "When you are done, call decide_grouping exactly once. Do not write a text reply.",
   "When several issues begin within the same short window and share a dependency or failure class, inspect them as a burst before deciding.",
   "Prefer joining when a single plausible deployment or configuration change explains all symptoms.",
+  "Only join when inspected evidence supports that shared explanation; otherwise return standalone.",
 ].join("\n");
 
 const LIST_INCIDENT_TITLES_TOOL: Anthropic.Messages.Tool = {

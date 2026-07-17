@@ -296,4 +296,8 @@ test("runGroupingAgent: tells the decision model to inspect correlated bursts be
     systemPrompt,
     /Prefer joining when a single plausible deployment or configuration change explains all symptoms\./,
   );
+  assert.match(
+    systemPrompt,
+    /Only join when inspected evidence supports that shared explanation; otherwise return standalone\./,
+  );
 });
