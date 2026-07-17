@@ -156,19 +156,11 @@ export function normalizeMessage(body: string): string {
 // prefixes. Everything after the first driver-error line (DETAIL, rendered
 // SQL, bound parameters) is occurrence metadata, not error identity.
 function normalizePsycopgError(body: string): string | null {
-  const match = body.match(
-    /psycopg(?:2)?\.errors\.([A-Za-z_][A-Za-z0-9_]*)(?::|\))[ \t]*(.*?)(?=(?:(?:[ \t]|\\[rn])+(?:[A-Z][A-Z_]*(?: [A-Z][A-Z_]*)*(?: [0-9]+)?:|\[[A-Za-z]+:|\(Background on this error at:))|[\r\n]|$)/,
-  );
-  if (!match?.[1]) return null;
+  const headline = extractPsycopgHeadline(body);
+  if (!headline) return null;
 
-  let s = `postgres.errors.${match[1]}: ${match[2] ?? ""}`;
-  s = s.replace(/"(?:[^"\\]|\\.)*"/g, (quoted, offset: number, source: string) => {
-    const prefix = source.slice(0, offset);
-    return /\b(?:column|relation|constraint|table|schema|database|index)\s*$/i.test(prefix)
-      ? quoted
-      : "<str>";
-  });
-  s = s.replace(/'(?:[^'\\]|\\.)*'/g, "<str>");
+  let s = `postgres.errors.${headline.type}: ${headline.message}`;
+  s = redactPostgresHeadlineValues(s);
   s = s.replace(/https?:\/\/\S+/gi, "<url>");
   s = s.replace(/\b[\w.+-]+@[\w.-]+\.\w+\b/g, "<email>");
   s = s.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>");
@@ -178,6 +170,152 @@ function normalizePsycopgError(body: string): string | null {
   s = s.replace(/\b[0-9a-f]{20,}\b/gi, "<hex>");
   s = s.replace(/\b\d+\b/g, "<n>");
   return s.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+const PSYCOPG_ERROR_PREFIXES = ["psycopg2.errors.", "psycopg.errors."] as const;
+const POSTGRES_IDENTIFIER_CONTEXTS = new Set([
+  "column",
+  "relation",
+  "constraint",
+  "table",
+  "schema",
+  "database",
+  "index",
+]);
+
+function extractPsycopgHeadline(body: string): { type: string; message: string } | null {
+  let marker = -1;
+  let prefix = "";
+  for (const candidate of PSYCOPG_ERROR_PREFIXES) {
+    const index = body.indexOf(candidate);
+    if (index !== -1 && (marker === -1 || index < marker)) {
+      marker = index;
+      prefix = candidate;
+    }
+  }
+  if (marker === -1) return null;
+
+  const typeStart = marker + prefix.length;
+  let cursor = typeStart;
+  while (cursor < body.length && isIdentifierCharacter(body.charCodeAt(cursor))) cursor += 1;
+  if (cursor === typeStart || (body[cursor] !== ":" && body[cursor] !== ")")) return null;
+
+  const type = body.slice(typeStart, cursor);
+  cursor += 1;
+  while (body[cursor] === " " || body[cursor] === "\t") cursor += 1;
+  const messageEnd = findPostgresDiagnosticBoundary(body, cursor);
+  return { type, message: body.slice(cursor, messageEnd).trimEnd() };
+}
+
+function isIdentifierCharacter(code: number): boolean {
+  return (
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    (code >= 48 && code <= 57) ||
+    code === 95
+  );
+}
+
+function findPostgresDiagnosticBoundary(body: string, start: number): number {
+  for (let index = start; index < body.length; index += 1) {
+    const char = body[index];
+    if (char === "\r" || char === "\n") return index;
+    if (char === "\\" && (body[index + 1] === "r" || body[index + 1] === "n")) return index;
+    if (char !== " " && char !== "\t") continue;
+
+    let marker = index;
+    while (body[marker] === " " || body[marker] === "\t") marker += 1;
+    if (isPostgresDiagnosticMarker(body, marker)) return index;
+    index = marker - 1;
+  }
+  return body.length;
+}
+
+function isPostgresDiagnosticMarker(body: string, start: number): boolean {
+  if (body.startsWith("(Background on this error at:", start)) return true;
+
+  if (body[start] === "[") {
+    let cursor = start + 1;
+    const nameStart = cursor;
+    while (isAsciiLetterCode(body.charCodeAt(cursor))) cursor += 1;
+    return cursor > nameStart && body[cursor] === ":";
+  }
+
+  let cursor = start;
+  if (!isUppercaseWordCharacter(body.charCodeAt(cursor))) return false;
+  while (cursor < body.length) {
+    while (isUppercaseWordCharacter(body.charCodeAt(cursor))) cursor += 1;
+    if (body[cursor] === ":") return true;
+    if (body[cursor] !== " ") return false;
+    while (body[cursor] === " ") cursor += 1;
+
+    if (isDigitCode(body.charCodeAt(cursor))) {
+      while (isDigitCode(body.charCodeAt(cursor))) cursor += 1;
+      while (body[cursor] === " ") cursor += 1;
+      return body[cursor] === ":";
+    }
+    if (!isUppercaseWordCharacter(body.charCodeAt(cursor))) return false;
+  }
+  return false;
+}
+
+function isAsciiLetterCode(code: number): boolean {
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+function isUppercaseWordCharacter(code: number): boolean {
+  return (code >= 65 && code <= 90) || code === 95;
+}
+
+function isDigitCode(code: number): boolean {
+  return code >= 48 && code <= 57;
+}
+
+function redactPostgresHeadlineValues(headline: string): string {
+  let output = "";
+  let cursor = 0;
+  while (cursor < headline.length) {
+    const quote = headline[cursor];
+    if (quote !== '"' && quote !== "'") {
+      output += quote;
+      cursor += 1;
+      continue;
+    }
+
+    const end = findClosingQuote(headline, cursor, quote);
+    if (end === -1) {
+      output += headline.slice(cursor);
+      break;
+    }
+    const preserve = quote === '"' && hasPostgresIdentifierContext(headline, cursor);
+    output += preserve ? headline.slice(cursor, end + 1) : "<str>";
+    cursor = end + 1;
+  }
+  return output;
+}
+
+function findClosingQuote(value: string, start: number, quote: string): number {
+  for (let cursor = start + 1; cursor < value.length; cursor += 1) {
+    if (value[cursor] === "\\") {
+      cursor += 1;
+      continue;
+    }
+    if (value[cursor] !== quote) continue;
+    if (value[cursor + 1] === quote) {
+      cursor += 1;
+      continue;
+    }
+    return cursor;
+  }
+  return -1;
+}
+
+function hasPostgresIdentifierContext(value: string, quoteIndex: number): boolean {
+  let end = quoteIndex;
+  while (end > 0 && (value[end - 1] === " " || value[end - 1] === "\t")) end -= 1;
+  let start = end;
+  while (start > 0 && isAsciiLetterCode(value.charCodeAt(start - 1))) start -= 1;
+  return POSTGRES_IDENTIFIER_CONTEXTS.has(value.slice(start, end).toLowerCase());
 }
 
 // Vercel log drains can emit one four-line runtime envelope per request. Its
