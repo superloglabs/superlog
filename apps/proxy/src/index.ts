@@ -1086,6 +1086,17 @@ const server = serve({ fetch: app.fetch, port: PORT });
 if ("keepAliveTimeout" in server) {
   server.keepAliveTimeout = 75_000;
   server.headersTimeout = 76_000;
+  // Bound the whole request, including the body read. An admission permit is
+  // held across the body stream (there are only ~64), so without a cap a single
+  // valid key can open all of them and dribble bodies slowly (slowloris),
+  // pinning every permit and starving all other tenants. Node's default
+  // requestTimeout is a lax 300s; tighten it so a stalled body is aborted and
+  // its permit released. Kept well above headersTimeout and generous enough for
+  // a 64 MiB body over a slow link (~0.5 MB/s floor at the default).
+  server.requestTimeout = readNonNegativeIntEnv(
+    process.env.INGEST_REQUEST_TIMEOUT_MS,
+    120_000,
+  );
 }
 if (ingestQueue && ingestQueueConfig?.consumerEnabled) {
   ingestQueue.startConsumer(COLLECTOR_URL);
