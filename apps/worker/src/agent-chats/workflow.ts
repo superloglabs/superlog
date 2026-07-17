@@ -83,6 +83,17 @@ export type AgentChatWorkflowDeps = {
   postReply(chat: AgentChat, text: string, dedupeId?: string): Promise<void>;
   // Called once per finished turn, after the state transition commits.
   meterTurn(chat: AgentChat, snapshot: AgentRunnerSnapshot): Promise<void>;
+  // Structured, per-tick decision log. The chat path is otherwise silent, so
+  // this is the only way to reconstruct why a turn closed (or kept running)
+  // from production logs. Optional — omitted in tests.
+  log?(event: {
+    chatId: string;
+    sessionId: string;
+    status: string;
+    stopReason: string | null;
+    repliesThisTurn: number;
+    decision: "await-session" | "turn-finished";
+  }): void;
 };
 
 // Deliver the queued human messages: into the existing durable session when
@@ -290,14 +301,35 @@ export async function syncRunningAgentChat(
     return;
   }
 
-  if (snapshot.status === "running" || snapshot.status === "rescheduling") {
+  // `idle` does NOT imply the turn is over. Keep driving the session — leave
+  // the chat `running` so the next tick dispatches again — unless it has
+  // reached a genuinely terminal state. Two non-terminal idles used to close
+  // the turn prematurely and strand the session:
+  //   - a freshly-created session reads `idle` with no stop_reason before its
+  //     first run (the worker could sync before `session.status_running`), and
+  //   - a session that just emitted the reply tool sits idle with
+  //     `requires_action` until the next dispatch acks it.
+  // In both cases closing here posts the no-answer fallback and abandons a
+  // reply the agent is about to (or already did) produce. Only a concrete,
+  // non-`requires_action` stop_reason means the turn actually finished.
+  const stop = snapshot.stopReason?.type ?? null;
+  const turnFinished = snapshot.status === "idle" && stop !== null && stop !== "requires_action";
+  if (!turnFinished) {
     await deps.updateChat(chat.id, progressPatch, ["running"]);
+    deps.log?.({
+      chatId: chat.id,
+      sessionId,
+      status: snapshot.status,
+      stopReason: stop,
+      repliesThisTurn: dispatch.repliesThisTurn,
+      decision: "await-session",
+    });
     return;
   }
 
-  // idle: the turn finished. Win the transition first so concurrent workers
-  // can't both send the no-reply fallback; the loser leaves delivery (and
-  // metering) to the winner.
+  // The turn finished. Win the transition first so concurrent workers can't
+  // both send the no-reply fallback; the loser leaves delivery (and metering)
+  // to the winner.
   const moved = await deps.updateChat(chat.id, { ...progressPatch, state: "idle" }, ["running"]);
   if (moved) {
     // The reply tool is the delivery path; a turn that went idle without a
@@ -306,6 +338,14 @@ export async function syncRunningAgentChat(
       await deps.postReply(chat, snapshot.latestMessage?.trim() || CHAT_NO_ANSWER_TEXT);
     }
     await deps.meterTurn(chat, snapshot);
+    deps.log?.({
+      chatId: chat.id,
+      sessionId,
+      status: snapshot.status,
+      stopReason: stop,
+      repliesThisTurn: dispatch.repliesThisTurn,
+      decision: "turn-finished",
+    });
   }
   // A message that landed between collect() and the transition would
   // otherwise sit unprocessed until the next inbound wakes the chat.
