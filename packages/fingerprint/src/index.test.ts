@@ -402,6 +402,22 @@ test("fingerprintLog ignores flattened SQLAlchemy metadata after a psycopg headl
   assert.equal(fingerprintFor("order-a").hash, fingerprintFor("order-b").hash);
 });
 
+test("fingerprintLog ignores flattened Postgres diagnostic fields", () => {
+  const fingerprintFor = (diagnostic: string) =>
+    fingerprintLog({
+      service: "catalog-worker",
+      severity: "ERROR",
+      body: `(psycopg.errors.NotNullViolation) null value in column "vendor_product_id" of relation "product_variants" violates not-null constraint ${diagnostic}`,
+      exceptionType: "IntegrityError",
+      stacktrace: null,
+    });
+
+  assert.equal(
+    fingerprintFor("LINE 1: INSERT INTO product_variants VALUES ('order-a')").hash,
+    fingerprintFor("HINT: Retry without value 'order-b'").hash,
+  );
+});
+
 // Postgres text and jsonb columns reject the NUL byte (0x00) — it raises
 // `22021 invalid byte sequence for encoding "UTF8": 0x00`. Telemetry can carry
 // a raw NUL in a message or stack frame; the fingerprint outputs feed straight

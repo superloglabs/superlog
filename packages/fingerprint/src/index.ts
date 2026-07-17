@@ -157,7 +157,7 @@ export function normalizeMessage(body: string): string {
 // SQL, bound parameters) is occurrence metadata, not error identity.
 function normalizePsycopgError(body: string): string | null {
   const match = body.match(
-    /psycopg(?:2)?\.errors\.([A-Za-z_][A-Za-z0-9_]*)(?::|\))[ \t]*(.*?)(?=(?:(?:[ \t]|\\[rn])+(?:DETAIL:|\[SQL:|\[parameters:|\(Background on this error at:))|[\r\n]|$)/,
+    /psycopg(?:2)?\.errors\.([A-Za-z_][A-Za-z0-9_]*)(?::|\))[ \t]*(.*?)(?=(?:(?:[ \t]|\\[rn])+(?:[A-Z][A-Z_]*(?: [A-Z][A-Z_]*)*(?: [0-9]+)?:|\[[A-Za-z]+:|\(Background on this error at:))|[\r\n]|$)/,
   );
   if (!match?.[1]) return null;
 
@@ -168,6 +168,7 @@ function normalizePsycopgError(body: string): string | null {
       ? quoted
       : "<str>";
   });
+  s = s.replace(/'(?:[^'\\]|\\.)*'/g, "<str>");
   s = s.replace(/https?:\/\/\S+/gi, "<url>");
   s = s.replace(/\b[\w.+-]+@[\w.-]+\.\w+\b/g, "<email>");
   s = s.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>");
