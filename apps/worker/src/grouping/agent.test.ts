@@ -66,6 +66,7 @@ const NEW_ISSUE: GroupingNewIssue = {
   message: "conn refused",
   topFrame: "db.query",
   normalizedFrames: ["db.query"],
+  observedAt: "2026-07-17T10:05:00.000Z",
   stacktrace: null,
   traceId: null,
   spanId: null,

@@ -86,6 +86,7 @@ test("groupingIssueInput and buildGroupingCandidate keep LLM input shape explici
     message: "boom",
     topFrame: "svc/a.ts",
     normalizedFrames: ["svc/a.ts"],
+    observedAt: "2026-07-17T10:05:00.000Z",
     stacktrace: "stack",
     traceId: "trace-1",
     spanId: "span-1",
@@ -104,6 +105,8 @@ function makeIssue(normalizedFrames: string[]): schema.Issue {
     message: "boom",
     topFrame: normalizedFrames[0] ?? null,
     normalizedFrames,
+    firstSeen: new Date("2026-07-17T10:00:00.000Z"),
+    lastSeen: new Date("2026-07-17T10:05:00.000Z"),
     lastSample: null,
   } as schema.Issue;
 }

@@ -40,6 +40,7 @@ export function groupingIssueInput(issue: schema.Issue): GroupingNewIssue {
     message: issue.message,
     topFrame: issue.topFrame,
     normalizedFrames: issue.normalizedFrames ?? [],
+    observedAt: issue.lastSeen.toISOString(),
     stacktrace: sample?.stacktrace ?? null,
     traceId: sample?.traceId ?? null,
     spanId: sample?.spanId ?? null,

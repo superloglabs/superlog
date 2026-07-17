@@ -63,6 +63,7 @@ export type GroupingNewIssue = {
   message: string | null;
   topFrame: string | null;
   normalizedFrames: string[];
+  observedAt: string;
   stacktrace: string | null;
   traceId: string | null;
   spanId: string | null;
