@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { fingerprint, fingerprintLog } from "@superlog/fingerprint";
 import { type Counter, metrics } from "@opentelemetry/api";
+import protobuf from "protobufjs";
 
 const ISSUE_FINGERPRINT_ATTRIBUTE = "superlog.issue_fingerprint";
 
@@ -18,6 +19,49 @@ const require = createRequire(import.meta.url);
 const otlpRoot = require("@opentelemetry/otlp-transformer/build/esm/generated/root.js");
 const ExportTraceServiceRequest =
   otlpRoot.opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest;
+
+const LOGS_PROTO = `
+syntax = "proto3";
+package otlplogs;
+message ExportLogsServiceRequest { repeated ResourceLogs resource_logs = 1; }
+message ResourceLogs { Resource resource = 1; repeated ScopeLogs scope_logs = 2; string schema_url = 3; }
+message Resource { repeated KeyValue attributes = 1; uint32 dropped_attributes_count = 2; }
+message ScopeLogs { InstrumentationScope scope = 1; repeated LogRecord log_records = 2; string schema_url = 3; }
+message InstrumentationScope { string name = 1; string version = 2; repeated KeyValue attributes = 3; uint32 dropped_attributes_count = 4; }
+message LogRecord {
+  fixed64 time_unix_nano = 1;
+  uint32 severity_number = 2;
+  string severity_text = 3;
+  AnyValue body = 5;
+  repeated KeyValue attributes = 6;
+  uint32 dropped_attributes_count = 7;
+  fixed32 flags = 8;
+  bytes trace_id = 9;
+  bytes span_id = 10;
+  fixed64 observed_time_unix_nano = 11;
+  string event_name = 12;
+}
+message KeyValue { string key = 1; AnyValue value = 2; }
+message AnyValue {
+  oneof value {
+    string string_value = 1;
+    bool bool_value = 2;
+    int64 int_value = 3;
+    double double_value = 4;
+    ArrayValue array_value = 5;
+    KeyValueList kvlist_value = 6;
+    bytes bytes_value = 7;
+  }
+}
+message ArrayValue { repeated AnyValue values = 1; }
+message KeyValueList { repeated KeyValue values = 1; }
+`;
+
+const ExportLogsServiceRequest = protobuf
+  .parse(LOGS_PROTO)
+  .root.lookupType("otlplogs.ExportLogsServiceRequest");
+
+const PROTO_TO_OBJECT_OPTS = { longs: String, enums: Number, defaults: false };
 
 type OtlpAnyValue = {
   stringValue?: string;
@@ -42,6 +86,7 @@ export type StampedIngestPayload = {
   body: Buffer;
   stampedCount: number;
   strippedCount: number;
+  stamped: boolean;
 };
 
 // Fingerprint stamping deserializes the whole body (JSON.parse / protobuf decode) and
@@ -56,7 +101,7 @@ export function stampIssueFingerprintsWithinLimit(
   maxBytes: number = MAX_FINGERPRINT_BODY_BYTES,
 ): StampedIngestPayload {
   if (input.body.byteLength > maxBytes)
-    return { body: input.body, stampedCount: 0, strippedCount: 0 };
+    return { body: input.body, stampedCount: 0, strippedCount: 0, stamped: false };
   return stampIssueFingerprints(input);
 }
 
@@ -73,7 +118,6 @@ export function stampIssueFingerprintsFailOpen(
 ): { body: Buffer; stamped: boolean } {
   try {
     const stamped = stampIssueFingerprintsWithinLimit(input);
-    const isStamped = !input.contentEncoding && input.body.byteLength <= MAX_FINGERPRINT_BODY_BYTES;
     if (stamped.stampedCount > 0) {
       logger.info(
         {
@@ -98,7 +142,7 @@ export function stampIssueFingerprintsFailOpen(
         "stripped client-supplied superlog.issue_fingerprint attributes on ingest payload",
       );
     }
-    return { body: stamped.body, stamped: isStamped };
+    return { body: stamped.body, stamped: stamped.stamped };
   } catch (err) {
     logger.warn(
       {
@@ -114,18 +158,25 @@ export function stampIssueFingerprintsFailOpen(
 }
 
 export function stampIssueFingerprints(input: StampInput): StampedIngestPayload {
-  if (input.contentEncoding) return { body: input.body, stampedCount: 0, strippedCount: 0 };
+  if (input.contentEncoding) return { body: input.body, stampedCount: 0, strippedCount: 0, stamped: false };
 
   if (input.path === "/v1/traces" && isJsonContentType(input.contentType)) {
-    return stampJsonTraceFingerprints(input.body);
+    const res = stampJsonTraceFingerprints(input.body);
+    return { ...res, stamped: true };
   }
   if (input.path === "/v1/traces" && isProtobufContentType(input.contentType)) {
-    return stampProtobufTraceFingerprints(input.body);
+    const res = stampProtobufTraceFingerprints(input.body);
+    return { ...res, stamped: true };
   }
   if (input.path === "/v1/logs" && isJsonContentType(input.contentType)) {
-    return stampJsonLogFingerprints(input.body);
+    const res = stampJsonLogFingerprints(input.body);
+    return { ...res, stamped: true };
   }
-  return { body: input.body, stampedCount: 0, strippedCount: 0 };
+  if (input.path === "/v1/logs" && isProtobufContentType(input.contentType)) {
+    const res = stampProtobufLogFingerprints(input.body);
+    return { ...res, stamped: true };
+  }
+  return { body: input.body, stampedCount: 0, strippedCount: 0, stamped: false };
 }
 
 function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
@@ -279,6 +330,57 @@ function stampJsonLogFingerprints(body: Buffer): StampedIngestPayload {
   if (stampedCount === 0 && strippedCount === 0)
     return { body, stampedCount: 0, strippedCount: 0 };
   return { body: Buffer.from(JSON.stringify(payload)), stampedCount, strippedCount };
+}
+
+function stampProtobufLogFingerprints(body: Buffer): { body: Buffer; stampedCount: number; strippedCount: number } {
+  const decoded = ExportLogsServiceRequest.decode(body);
+  const payload = ExportLogsServiceRequest.toObject(decoded, PROTO_TO_OBJECT_OPTS) as {
+    resourceLogs?: Array<{
+      resource?: { attributes?: OtlpKeyValue[] };
+      scopeLogs?: Array<{
+        logRecords?: Array<{
+          severityText?: string;
+          severityNumber?: number;
+          body?: OtlpAnyValue;
+          attributes?: OtlpKeyValue[];
+        }>;
+      }>;
+    }>;
+  };
+
+  let stampedCount = 0;
+  let strippedCount = 0;
+  for (const resourceLog of payload.resourceLogs ?? []) {
+    const service =
+      stringAttribute(resourceLog.resource?.attributes ?? [], "service.name") || "unknown";
+    for (const scopeLog of resourceLog.scopeLogs ?? []) {
+      for (const logRecord of scopeLog.logRecords ?? []) {
+        const before = logRecord.attributes ?? [];
+        const after = before.filter((a) => a.key !== ISSUE_FINGERPRINT_ATTRIBUTE);
+        if (after.length !== before.length) strippedCount += 1;
+        logRecord.attributes = after;
+        const attrs = logRecord.attributes;
+        if (!isErrorLog(logRecord.severityNumber, logRecord.severityText, attrs)) continue;
+        const fp = fingerprintLog({
+          service,
+          severity: logRecord.severityText || String(logRecord.severityNumber ?? ""),
+          body: stringValue(logRecord.body) ?? "",
+          exceptionType: stringAttribute(attrs, "exception.type"),
+          stacktrace: stringAttribute(attrs, "exception.stacktrace"),
+        });
+        logRecord.attributes = setStringAttribute(attrs, ISSUE_FINGERPRINT_ATTRIBUTE, fp.hash);
+        stampedCount += 1;
+      }
+    }
+  }
+
+  if (stampedCount === 0 && strippedCount === 0)
+    return { body, stampedCount: 0, strippedCount: 0 };
+  return {
+    body: Buffer.from(ExportLogsServiceRequest.encode(payload).finish()),
+    stampedCount,
+    strippedCount,
+  };
 }
 
 function isJsonContentType(contentType: string): boolean {

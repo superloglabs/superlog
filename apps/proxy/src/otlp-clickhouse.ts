@@ -229,7 +229,7 @@ export function otlpTracesToRows(
           ResourceAttributes: resourceAttributes,
           ScopeName: scopeName,
           ScopeVersion: scopeVersion,
-          SpanAttributes: stripUntrustedSuperlog(kvListToMap(span.attributes), stamped, tracker),
+          SpanAttributes: stripAllSuperlog(kvListToMap(span.attributes), tracker),
           Duration: (end > start ? end - start : 0n).toString(),
           StatusCode: STATUS_CODES[span.status?.code ?? 0] ?? "Unset",
           StatusMessage: span.status?.message ?? "",
@@ -276,7 +276,9 @@ function stripAllSuperlog(
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(map)) {
     if (k.startsWith("superlog.")) {
-      if (tracker) tracker.strippedCount += 1;
+      if (k === ISSUE_FINGERPRINT_KEY && tracker) {
+        tracker.strippedCount += 1;
+      }
       continue;
     }
     out[k] = v;
@@ -299,7 +301,9 @@ function stripUntrustedSuperlog(
       if (stamped && PRESERVED_SUPERLOG_KEYS.has(k)) {
         out[k] = v;
       } else {
-        if (tracker) tracker.strippedCount += 1;
+        if (k === ISSUE_FINGERPRINT_KEY && tracker) {
+          tracker.strippedCount += 1;
+        }
       }
       continue;
     }

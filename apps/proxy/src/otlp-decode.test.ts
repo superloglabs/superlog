@@ -152,7 +152,7 @@ test("decodeOtlpToRows handles client-supplied superlog attributes based on stam
   });
   assert.ok(resStamped);
   assert.equal(resStamped.table, "otel_logs");
-  assert.equal(resStamped.strippedCount, 1);
+  assert.equal(resStamped.strippedCount, 0);
   assert.equal(resStamped.rows[0]!.LogAttributes["superlog.issue_fingerprint"], "fake");
   assert.equal(resStamped.rows[0]!.LogAttributes["superlog.other_key"], undefined);
   assert.equal(resStamped.rows[0]!.LogAttributes["normal_key"], "ok");
@@ -167,7 +167,7 @@ test("decodeOtlpToRows handles client-supplied superlog attributes based on stam
   });
   assert.ok(resUnstamped);
   assert.equal(resUnstamped.table, "otel_logs");
-  assert.equal(resUnstamped.strippedCount, 2);
+  assert.equal(resUnstamped.strippedCount, 1);
   assert.equal(resUnstamped.rows[0]!.LogAttributes["superlog.issue_fingerprint"], undefined);
   assert.equal(resUnstamped.rows[0]!.LogAttributes["superlog.other_key"], undefined);
   assert.equal(resUnstamped.rows[0]!.LogAttributes["normal_key"], "ok");

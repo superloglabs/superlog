@@ -21,6 +21,8 @@ const require = createRequire(import.meta.url);
 const otlpRoot = require("@opentelemetry/otlp-transformer/build/esm/generated/root.js");
 const ExportTraceServiceRequest =
   otlpRoot.opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest;
+const ExportLogsServiceRequest =
+  otlpRoot.opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest;
 
 test("stampIssueFingerprints adds issue fingerprint attributes to JSON trace exceptions", () => {
   const input = {
@@ -396,3 +398,61 @@ test("stampIssueFingerprintsFailOpen logs a warning when client-supplied fingerp
     "stripped client-supplied superlog.issue_fingerprint attributes on ingest payload",
   );
 });
+
+test("stampIssueFingerprints adds issue fingerprint attributes to protobuf error logs and strips from non-error logs", () => {
+  const request = ExportLogsServiceRequest.create({
+    resourceLogs: [
+      {
+        scopeLogs: [
+          {
+            logRecords: [
+              {
+                severityNumber: 17, // ERROR
+                severityText: "ERROR",
+                body: { stringValue: "request failed" },
+                attributes: [
+                  { key: "exception.type", value: { stringValue: "ForbiddenError" } },
+                  { key: "superlog.issue_fingerprint", value: { stringValue: "client-supplied-1" } },
+                ],
+              },
+              {
+                severityNumber: 9, // INFO
+                severityText: "INFO",
+                body: { stringValue: "some info" },
+                attributes: [
+                  { key: "superlog.issue_fingerprint", value: { stringValue: "client-supplied-2" } },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  const body = Buffer.from(ExportLogsServiceRequest.encode(request).finish());
+
+  const stamped = stampIssueFingerprints({
+    path: "/v1/logs",
+    contentType: "application/x-protobuf",
+    body,
+  });
+
+  const decoded = ExportLogsServiceRequest.decode(stamped.body);
+  const logRecords = decoded.resourceLogs[0].scopeLogs[0].logRecords;
+
+  assert.equal(stamped.stampedCount, 1);
+  assert.equal(stamped.strippedCount, 2);
+
+  // Check the error log: should have stamped authoritative fingerprint (which overwrites client-supplied)
+  const errAttrs = logRecords[0].attributes;
+  const fpAttr = errAttrs.find((attr: { key: string }) => attr.key === "superlog.issue_fingerprint");
+  assert.ok(fpAttr);
+  assert.equal(fpAttr.value.stringValue.length, 16);
+  assert.notEqual(fpAttr.value.stringValue, "client-supplied-1");
+
+  // Check the info log: should have stripped fingerprint
+  const infoAttrs = logRecords[1].attributes;
+  const infoFpAttr = infoAttrs.find((attr: { key: string }) => attr.key === "superlog.issue_fingerprint");
+  assert.equal(infoFpAttr, undefined);
+});
+

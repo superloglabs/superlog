@@ -832,7 +832,7 @@ export class IngestQueue {
         }
         if (decoded) {
           await this.rowWriter.insert(decoded.table, decoded.rows);
-          if (decoded.strippedCount > 0) {
+          if (!stamped && decoded.strippedCount > 0) {
             getFingerprintStrippedCounter().add(decoded.strippedCount, {
               path: parsed.path,
               projectId: parsed.projectId ?? "unknown",
@@ -843,7 +843,7 @@ export class IngestQueue {
                 projectId: parsed.projectId ?? "unknown",
                 strippedCount: decoded.strippedCount,
               },
-              "stripped client-supplied superlog.* attributes on direct-write payload",
+              "stripped client-supplied superlog.issue_fingerprint attributes on direct-write payload",
             );
           }
           proxyOperationalRecorder.recordQueueDelivery({

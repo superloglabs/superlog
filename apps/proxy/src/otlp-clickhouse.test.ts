@@ -195,8 +195,8 @@ test("otlpTracesToRows strips untrusted superlog.* from resource and span attrs,
   assert.equal(r.ResourceAttributes["superlog.project_id"], "proj-xyz");
   assert.equal(r.ResourceAttributes["service.name"], "api");
   assert.equal(r.SpanAttributes["http.method"], "GET");
-  // proxy-stamped issue_fingerprint is preserved on span attrs (regression #285)
-  assert.equal(r.SpanAttributes["superlog.issue_fingerprint"], "deadbeef");
+  // client-supplied issue_fingerprint on span attributes is stripped unconditionally
+  assert.equal(r.SpanAttributes["superlog.issue_fingerprint"], undefined);
 });
 
 test("otlpTracesToRows flattens events and links into parallel arrays", () => {
