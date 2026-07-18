@@ -1,7 +1,13 @@
 import { createRequire } from "node:module";
 import { fingerprint, fingerprintLog } from "@superlog/fingerprint";
+import { metrics } from "@opentelemetry/api";
 
 const ISSUE_FINGERPRINT_ATTRIBUTE = "superlog.issue_fingerprint";
+
+const meter = metrics.getMeter("@superlog/proxy/operational");
+const fingerprintStrippedCounter = meter.createCounter("superlog.proxy.fingerprint_stripped_total", {
+  description: "Total number of client-supplied superlog.issue_fingerprint attributes stripped.",
+});
 const require = createRequire(import.meta.url);
 const otlpRoot = require("@opentelemetry/otlp-transformer/build/esm/generated/root.js");
 const ExportTraceServiceRequest =
@@ -72,6 +78,9 @@ export function stampIssueFingerprintsFailOpen(
       );
     }
     if (stamped.strippedCount > 0) {
+      fingerprintStrippedCounter.add(stamped.strippedCount, {
+        path: input.path,
+      });
       logger.warn(
         {
           path: input.path,
