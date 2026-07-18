@@ -100,45 +100,7 @@ function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
             name?: string;
             attributes?: OtlpKeyValue[];
           }>;
-        }>;
-      }>;
-    }>;
-  };
-
-  let stampedCount = 0;
-  let sanitizedCount = 0;
-  for (const resourceSpan of payload.resourceSpans ?? []) {
-    sanitizedCount += sanitizeAttributes(resourceSpan.resource?.attributes);
-    for (const scopeSpan of resourceSpan.scopeSpans ?? []) {
-      for (const span of scopeSpan.spans ?? []) {
-        sanitizedCount += sanitizeAttributes(span.attributes);
-        for (const event of span.events ?? []) {
-          sanitizedCount += sanitizeAttributes(event.attributes);
-          if (event.name !== "exception") continue;
-          const attrs = event.attributes ?? [];
-          const fp = fingerprint({
-            type: stringAttribute(attrs, "exception.type") || "Error",
-            message: stringAttribute(attrs, "exception.message"),
-            stacktrace: stringAttribute(attrs, "exception.stacktrace"),
-          });
-          event.attributes = setStringAttribute(attrs, ISSUE_FINGERPRINT_ATTRIBUTE, fp.hash);
-          stampedCount += 1;
-        }
-      }
-    }
-  }
-
-  if (stampedCount === 0 && sanitizedCount === 0) return { body, stampedCount, authoritative: true };
-  return { body: Buffer.from(JSON.stringify(payload)), stampedCount, authoritative: true };
-}
-
-function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
-  const payload = ExportTraceServiceRequest.decode(body) as {
-    resourceSpans?: Array<{
-      scopeSpans?: Array<{
-        spans?: Array<{
-          events?: Array<{
-            name?: string;
+          links?: Array<{
             attributes?: OtlpKeyValue[];
           }>;
         }>;
@@ -164,6 +126,56 @@ function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
           });
           event.attributes = setStringAttribute(attrs, ISSUE_FINGERPRINT_ATTRIBUTE, fp.hash);
           stampedCount += 1;
+        }
+        for (const link of span.links ?? []) {
+          sanitizedCount += sanitizeAttributes(link.attributes);
+        }
+      }
+    }
+  }
+
+  if (stampedCount === 0 && sanitizedCount === 0) return { body, stampedCount, authoritative: true };
+  return { body: Buffer.from(JSON.stringify(payload)), stampedCount, authoritative: true };
+}
+
+function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
+  const payload = ExportTraceServiceRequest.decode(body) as {
+    resourceSpans?: Array<{
+      scopeSpans?: Array<{
+        spans?: Array<{
+          events?: Array<{
+            name?: string;
+            attributes?: OtlpKeyValue[];
+          }>;
+          links?: Array<{
+            attributes?: OtlpKeyValue[];
+          }>;
+        }>;
+      }>;
+    }>;
+  };
+
+  let stampedCount = 0;
+  let sanitizedCount = 0;
+  for (const resourceSpan of payload.resourceSpans ?? []) {
+    sanitizedCount += sanitizeAttributes(resourceSpan.resource?.attributes);
+    for (const scopeSpan of resourceSpan.scopeSpans ?? []) {
+      for (const span of scopeSpan.spans ?? []) {
+        sanitizedCount += sanitizeAttributes(span.attributes);
+        for (const event of span.events ?? []) {
+          sanitizedCount += sanitizeAttributes(event.attributes);
+          if (event.name !== "exception") continue;
+          const attrs = event.attributes ?? [];
+          const fp = fingerprint({
+            type: stringAttribute(attrs, "exception.type") || "Error",
+            message: stringAttribute(attrs, "exception.message"),
+            stacktrace: stringAttribute(attrs, "exception.stacktrace"),
+          });
+          event.attributes = setStringAttribute(attrs, ISSUE_FINGERPRINT_ATTRIBUTE, fp.hash);
+          stampedCount += 1;
+        }
+        for (const link of span.links ?? []) {
+          sanitizedCount += sanitizeAttributes(link.attributes);
         }
       }
     }
