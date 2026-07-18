@@ -95,7 +95,11 @@ class FakeS3 {
     }
     if (name === "GetObjectCommand") {
       const body = this.objects.get(cmd.input.Key);
-      if (!body) throw new Error(`no such object: ${cmd.input.Key}`);
+      if (!body) {
+        const err = new Error("The specified key does not exist.");
+        (err as { name: string }).name = "NoSuchKey";
+        throw err;
+      }
       return { Body: { transformToByteArray: async () => new Uint8Array(body) } };
     }
     throw new Error(`unexpected S3 command: ${name}`);
@@ -332,6 +336,28 @@ test("keeps the S3 body when its SQS delete fails so the redelivery can still re
   });
 
   assert.deepEqual(s3.deletes, ["k-1"], "only the successfully-deleted message may purge its body");
+});
+
+test("drops an S3 message whose object is missing (already processed on a prior delivery)", async () => {
+  // Simulates an SQS re-delivery after the first successful processing cycle deleted the
+  // S3 body: the consumer must delete the SQS message instead of cycling it to the DLQ.
+  const sqs = new FakeConsumerSqs([
+    { MessageId: "m-1", ReceiptHandle: "r-1", Body: s3MessageBody("p-1", "k-missing") },
+  ]);
+  const queue = new IngestQueue(buildConfig(), noopLogger);
+  const s3 = new FakeS3();
+  // k-missing is intentionally absent from s3.objects to reproduce the NoSuchKey scenario.
+  (queue as unknown as { sqs: FakeConsumerSqs }).sqs = sqs;
+  (queue as unknown as { s3: FakeS3 }).s3 = s3;
+
+  await withCollectorReturning(200, async () => {
+    queue.startConsumer("http://collector.local");
+    await waitFor(() => sqs.deleteBatches.length === 1);
+    await queue.stop();
+  });
+
+  assert.deepEqual(sqs.deleteBatches, [["r-1"]], "message must be deleted, not cycled to the DLQ");
+  assert.equal(s3.deletes.length, 0, "no S3 delete attempt when the object is already gone");
 });
 
 test("stop() flushes pending batched sends before resolving", async () => {

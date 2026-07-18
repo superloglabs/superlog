@@ -913,7 +913,13 @@ export class IngestQueue {
       // is as undeliverable as a poison envelope — drop it instead of cycling it to the DLQ.
       const permanentCollectorRejection =
         !poison && collectorFailure !== undefined && isPermanentCollectorFailure(collectorFailure.status);
-      const drop = poison || permanentCollectorRejection;
+      // An S3 NoSuchKey means the oversize body was already delivered and its object cleaned
+      // up, then SQS re-delivered the message (at-least-once semantics). The S3 upload always
+      // precedes the SQS send, so a missing object unambiguously means prior successful
+      // processing. Retrying will never succeed — drop the message so it does not cycle
+      // through 50 retries to the DLQ.
+      const s3ObjectMissing = !poison && isS3NoSuchKeyError(err);
+      const drop = poison || permanentCollectorRejection || s3ObjectMissing;
       const metric = queueDeliveryMetricFromParsedMessage(
         parsed,
         poison ? "invalid_message" : collectorFailure ? "collector_error" : "delivery_error",
@@ -931,6 +937,7 @@ export class IngestQueue {
           err,
           poison,
           permanentCollectorRejection,
+          s3ObjectMissing,
           messageId: message.MessageId,
           collectorStatus: collectorFailure?.status,
           collectorResponseBody: collectorFailure?.body,
@@ -947,19 +954,22 @@ export class IngestQueue {
           ? "dropping poison ingest message"
           : permanentCollectorRejection
             ? "dropping ingest message permanently rejected by collector"
-            : "failed to deliver queued ingest payload",
+            : s3ObjectMissing
+              ? "dropping ingest message whose S3 body is missing (already processed on a prior delivery)"
+              : "failed to deliver queued ingest payload",
       );
 
-      // An undeliverable message (poison envelope or permanent collector 4xx) can never
-      // succeed; leaving it in place means 50 redeliveries (15-min visibility each) before
-      // it reaches the DLQ, which pins oldest-message-age into a sawtooth and keeps the bad
-      // payload churning in-flight. Mark it for deletion so it stops cycling; the S3 body
-      // is only purged once the SQS delete actually succeeded (see deleteProcessedMessages).
+      // An undeliverable message (poison envelope, permanent collector 4xx, or missing S3
+      // body) can never succeed; leaving it in place means 50 redeliveries before the DLQ,
+      // which pins oldest-message-age into a sawtooth and keeps the message churning
+      // in-flight. Mark it for deletion so it stops cycling; the S3 body is only purged once
+      // the SQS delete actually succeeded (see deleteProcessedMessages). For the
+      // s3ObjectMissing case the object is already gone, so skip the cleanup attempt.
       return {
         message,
         shouldDelete: drop,
         s3Cleanup:
-          drop && parsed?.body?.storage === "s3" && parsed.body.bucket && parsed.body.key
+          drop && !s3ObjectMissing && parsed?.body?.storage === "s3" && parsed.body.bucket && parsed.body.key
             ? { bucket: parsed.body.bucket, key: parsed.body.key }
             : undefined,
       };
@@ -1107,6 +1117,12 @@ function ageMs(receivedAt: unknown): number | undefined {
   if (typeof receivedAt !== "string") return undefined;
   const parsed = Date.parse(receivedAt);
   return Number.isFinite(parsed) ? Math.max(0, Date.now() - parsed) : undefined;
+}
+
+/** Returns true when an AWS S3 SDK error is a 404 NoSuchKey (the object was
+ *  deleted before this read, indicating prior successful delivery). */
+function isS3NoSuchKeyError(err: unknown): boolean {
+  return err instanceof Error && (err as { name?: string }).name === "NoSuchKey";
 }
 
 export function queueDeliveryMetricFromParsedMessage(
