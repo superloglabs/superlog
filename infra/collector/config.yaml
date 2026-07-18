@@ -45,12 +45,17 @@ processors:
   transform/strip_superlog:
     error_mode: ignore
     trace_statements:
-      - delete_matching_keys(span.attributes, "^superlog\\.(?!issue_fingerprint).*")
-      - delete_matching_keys(resource.attributes, "^superlog\\.(?!issue_fingerprint).*")
-      # Symmetric with log_statements: strip spoofed superlog.* from event
-      # attrs too (excluding the proxy-stamped fingerprint which lives here
-      # for exception events on the collector delivery path).
-      - delete_matching_keys(span.attributes["Events.Attributes"], "^superlog\\.(?!issue_fingerprint).*")
+      - context: span
+        statements:
+          - delete_matching_keys(attributes, "^superlog\\.(?!issue_fingerprint).*")
+          - delete_matching_keys(resource.attributes, "^superlog\\.(?!issue_fingerprint).*")
+      # Span events live in the spanevent OTTL context, not in span attributes.
+      # This is symmetric with log_statements and prevents spoofed
+      # superlog.* keys in exception event attributes from passing through
+      # to ClickHouse unstripped (excluding the proxy-stamped fingerprint).
+      - context: spanevent
+        statements:
+          - delete_matching_keys(attributes, "^superlog\\.(?!issue_fingerprint).*")
     log_statements:
       - delete_matching_keys(log.attributes, "^superlog\\.(?!issue_fingerprint).*")
       - delete_matching_keys(resource.attributes, "^superlog\\.(?!issue_fingerprint).*")

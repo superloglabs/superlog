@@ -109,8 +109,15 @@ function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
     for (const scopeSpan of resourceSpan.scopeSpans ?? []) {
       for (const span of scopeSpan.spans ?? []) {
         for (const event of span.events ?? []) {
+          // Strip any client-supplied fingerprint unconditionally so a client
+          // cannot inject a fake value on non-exception events that the
+          // stamper skips. For exception events, setStringAttribute overwrites
+          // it with the proxy-computed hash immediately after.
+          event.attributes = (event.attributes ?? []).filter(
+            (a) => a.key !== ISSUE_FINGERPRINT_ATTRIBUTE,
+          );
           if (event.name !== "exception") continue;
-          const attrs = event.attributes ?? [];
+          const attrs = event.attributes;
           const fp = fingerprint({
             type: stringAttribute(attrs, "exception.type") || "Error",
             message: stringAttribute(attrs, "exception.message"),
@@ -146,8 +153,13 @@ function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
     for (const scopeSpan of resourceSpan.scopeSpans ?? []) {
       for (const span of scopeSpan.spans ?? []) {
         for (const event of span.events ?? []) {
+          // Strip any client-supplied fingerprint unconditionally — same
+          // rationale as stampJsonTraceFingerprints.
+          event.attributes = (event.attributes ?? []).filter(
+            (a) => a.key !== ISSUE_FINGERPRINT_ATTRIBUTE,
+          );
           if (event.name !== "exception") continue;
-          const attrs = event.attributes ?? [];
+          const attrs = event.attributes;
           const fp = fingerprint({
             type: stringAttribute(attrs, "exception.type") || "Error",
             message: stringAttribute(attrs, "exception.message"),
@@ -185,7 +197,12 @@ function stampJsonLogFingerprints(body: Buffer): StampedIngestPayload {
       stringAttribute(resourceLog.resource?.attributes ?? [], "service.name") || "unknown";
     for (const scopeLog of resourceLog.scopeLogs ?? []) {
       for (const logRecord of scopeLog.logRecords ?? []) {
-        const attrs = logRecord.attributes ?? [];
+        // Strip any client-supplied fingerprint unconditionally so a client
+        // cannot inject a fake value for non-error logs the stamper skips.
+        logRecord.attributes = (logRecord.attributes ?? []).filter(
+          (a) => a.key !== ISSUE_FINGERPRINT_ATTRIBUTE,
+        );
+        const attrs = logRecord.attributes;
         if (!isErrorLog(logRecord.severityNumber, logRecord.severityText, attrs)) continue;
         const fp = fingerprintLog({
           service,
