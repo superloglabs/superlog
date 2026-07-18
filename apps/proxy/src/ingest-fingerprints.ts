@@ -63,20 +63,33 @@ export function stampIssueFingerprintsFailOpen(
     const stamped = stampIssueFingerprintsWithinLimit(input);
     if (stamped.stampedCount > 0) {
       logger.info(
-        { path: input.path, projectId: input.projectId, stampedCount: stamped.stampedCount },
+        {
+          path: input.path,
+          projectId: input.projectId ?? "unknown",
+          stampedCount: stamped.stampedCount,
+        },
         "stamped issue fingerprints on ingest payload",
       );
     }
     if (stamped.strippedCount > 0) {
       logger.warn(
-        { path: input.path, projectId: input.projectId, strippedCount: stamped.strippedCount },
+        {
+          path: input.path,
+          projectId: input.projectId ?? "unknown",
+          strippedCount: stamped.strippedCount,
+        },
         "stripped client-supplied superlog.issue_fingerprint attributes on ingest payload",
       );
     }
     return stamped.body;
   } catch (err) {
     logger.warn(
-      { err, path: input.path, projectId: input.projectId, contentType: input.contentType },
+      {
+        err,
+        path: input.path,
+        projectId: input.projectId ?? "unknown",
+        contentType: input.contentType,
+      },
       "failed to stamp issue fingerprints on ingest payload",
     );
     return input.body;
