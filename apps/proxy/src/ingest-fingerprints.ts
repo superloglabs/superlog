@@ -105,6 +105,7 @@ function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
   };
 
   let stampedCount = 0;
+  let strippedCount = 0;
   for (const resourceSpan of payload.resourceSpans ?? []) {
     for (const scopeSpan of resourceSpan.scopeSpans ?? []) {
       for (const span of scopeSpan.spans ?? []) {
@@ -113,9 +114,10 @@ function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
           // cannot inject a fake value on non-exception events that the
           // stamper skips. For exception events, setStringAttribute overwrites
           // it with the proxy-computed hash immediately after.
-          event.attributes = (event.attributes ?? []).filter(
-            (a) => a.key !== ISSUE_FINGERPRINT_ATTRIBUTE,
-          );
+          const before = event.attributes ?? [];
+          const after = before.filter((a) => a.key !== ISSUE_FINGERPRINT_ATTRIBUTE);
+          if (after.length !== before.length) strippedCount += 1;
+          event.attributes = after;
           if (event.name !== "exception") continue;
           const attrs = event.attributes;
           const fp = fingerprint({
@@ -130,7 +132,10 @@ function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
     }
   }
 
-  if (stampedCount === 0) return { body, stampedCount };
+  // Re-serialize if anything changed — stripping alone mutates the parsed
+  // object in memory but the caller receives the original Buffer unless we
+  // re-encode here.
+  if (stampedCount === 0 && strippedCount === 0) return { body, stampedCount };
   return { body: Buffer.from(JSON.stringify(payload)), stampedCount };
 }
 
@@ -149,15 +154,17 @@ function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
   };
 
   let stampedCount = 0;
+  let strippedCount = 0;
   for (const resourceSpan of payload.resourceSpans ?? []) {
     for (const scopeSpan of resourceSpan.scopeSpans ?? []) {
       for (const span of scopeSpan.spans ?? []) {
         for (const event of span.events ?? []) {
           // Strip any client-supplied fingerprint unconditionally — same
           // rationale as stampJsonTraceFingerprints.
-          event.attributes = (event.attributes ?? []).filter(
-            (a) => a.key !== ISSUE_FINGERPRINT_ATTRIBUTE,
-          );
+          const before = event.attributes ?? [];
+          const after = before.filter((a) => a.key !== ISSUE_FINGERPRINT_ATTRIBUTE);
+          if (after.length !== before.length) strippedCount += 1;
+          event.attributes = after;
           if (event.name !== "exception") continue;
           const attrs = event.attributes;
           const fp = fingerprint({
@@ -172,7 +179,10 @@ function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
     }
   }
 
-  if (stampedCount === 0) return { body, stampedCount };
+  // Re-serialize if anything changed — stripping alone mutates the parsed
+  // object in memory but the caller receives the original Buffer unless we
+  // re-encode here.
+  if (stampedCount === 0 && strippedCount === 0) return { body, stampedCount };
   return { body: Buffer.from(ExportTraceServiceRequest.encode(payload).finish()), stampedCount };
 }
 
@@ -192,6 +202,7 @@ function stampJsonLogFingerprints(body: Buffer): StampedIngestPayload {
   };
 
   let stampedCount = 0;
+  let strippedCount = 0;
   for (const resourceLog of payload.resourceLogs ?? []) {
     const service =
       stringAttribute(resourceLog.resource?.attributes ?? [], "service.name") || "unknown";
@@ -199,9 +210,10 @@ function stampJsonLogFingerprints(body: Buffer): StampedIngestPayload {
       for (const logRecord of scopeLog.logRecords ?? []) {
         // Strip any client-supplied fingerprint unconditionally so a client
         // cannot inject a fake value for non-error logs the stamper skips.
-        logRecord.attributes = (logRecord.attributes ?? []).filter(
-          (a) => a.key !== ISSUE_FINGERPRINT_ATTRIBUTE,
-        );
+        const before = logRecord.attributes ?? [];
+        const after = before.filter((a) => a.key !== ISSUE_FINGERPRINT_ATTRIBUTE);
+        if (after.length !== before.length) strippedCount += 1;
+        logRecord.attributes = after;
         const attrs = logRecord.attributes;
         if (!isErrorLog(logRecord.severityNumber, logRecord.severityText, attrs)) continue;
         const fp = fingerprintLog({
@@ -217,7 +229,10 @@ function stampJsonLogFingerprints(body: Buffer): StampedIngestPayload {
     }
   }
 
-  if (stampedCount === 0) return { body, stampedCount };
+  // Re-serialize if anything changed — stripping alone mutates the parsed
+  // object in memory but the caller receives the original Buffer unless we
+  // re-encode here.
+  if (stampedCount === 0 && strippedCount === 0) return { body, stampedCount };
   return { body: Buffer.from(JSON.stringify(payload)), stampedCount };
 }
 

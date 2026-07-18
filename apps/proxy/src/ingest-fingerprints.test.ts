@@ -268,3 +268,90 @@ test("stampIssueFingerprints leaves compressed payloads untouched", () => {
   assert.equal(stamped.body, body);
   assert.equal(stamped.stampedCount, 0);
 });
+
+test("stampIssueFingerprints strips client-supplied fingerprint from non-error logs even if no logs stamped", () => {
+  const input = {
+    path: "/v1/logs",
+    contentType: "application/json",
+    body: Buffer.from(
+      JSON.stringify({
+        resourceLogs: [
+          {
+            scopeLogs: [
+              {
+                logRecords: [
+                  {
+                    severityText: "INFO",
+                    body: { stringValue: "info message" },
+                    attributes: [
+                      { key: "superlog.issue_fingerprint", value: { stringValue: "fakefp" } },
+                      { key: "env", value: { stringValue: "prod" } },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    ),
+  };
+
+  const stamped = stampIssueFingerprints(input);
+  assert.equal(stamped.stampedCount, 0);
+  const payload = JSON.parse(stamped.body.toString("utf8"));
+  const attributes = payload.resourceLogs[0].scopeLogs[0].logRecords[0].attributes;
+  assert.equal(
+    attributes.find((attr: { key: string }) => attr.key === "superlog.issue_fingerprint"),
+    undefined,
+  );
+  assert.equal(
+    attributes.find((attr: { key: string }) => attr.key === "env").value.stringValue,
+    "prod",
+  );
+});
+
+test("stampIssueFingerprints strips client-supplied fingerprint from non-exception trace events even if no spans stamped", () => {
+  const input = {
+    path: "/v1/traces",
+    contentType: "application/json",
+    body: Buffer.from(
+      JSON.stringify({
+        resourceSpans: [
+          {
+            scopeSpans: [
+              {
+                spans: [
+                  {
+                    events: [
+                      {
+                        name: "custom_event",
+                        attributes: [
+                          { key: "superlog.issue_fingerprint", value: { stringValue: "fakefp" } },
+                          { key: "custom.key", value: { stringValue: "value" } },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    ),
+  };
+
+  const stamped = stampIssueFingerprints(input);
+  assert.equal(stamped.stampedCount, 0);
+  const payload = JSON.parse(stamped.body.toString("utf8"));
+  const attributes = payload.resourceSpans[0].scopeSpans[0].spans[0].events[0].attributes;
+  assert.equal(
+    attributes.find((attr: { key: string }) => attr.key === "superlog.issue_fingerprint"),
+    undefined,
+  );
+  assert.equal(
+    attributes.find((attr: { key: string }) => attr.key === "custom.key").value.stringValue,
+    "value",
+  );
+});
