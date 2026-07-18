@@ -116,3 +116,32 @@ test("decodeOtlpToRows returns null for an undecodable content type", () => {
     null,
   );
 });
+
+test("decodeOtlpToRows rejects a gzip decompression bomb over the cap", () => {
+  // ~4 MiB of zeros compresses to a few KB but blows past a small cap.
+  const bomb = gzipSync(Buffer.alloc(4 * 1024 * 1024, 0));
+  assert.throws(
+    () =>
+      decodeOtlpToRows({
+        path: "/v1/logs",
+        projectId: "proj-1",
+        contentType: "application/x-protobuf",
+        contentEncoding: "gzip",
+        body: bomb,
+        maxDecompressedBytes: 64 * 1024, // 64 KiB cap
+      }),
+    /ERR_BUFFER_TOO_LARGE|maxOutputLength|too large/i,
+  );
+})
+
+test("decodeOtlpToRows accepts a gzipped body under the cap", () => {
+  const out = decodeOtlpToRows({
+    path: "/v1/logs",
+    projectId: "proj-1",
+    contentType: "application/json",
+    contentEncoding: "gzip",
+    body: gzipSync(Buffer.from(jsonLogs, "utf8")),
+    maxDecompressedBytes: 16 * 1024 * 1024,
+  });
+  assert.ok(logRows(out).length >= 1);
+})
