@@ -29,6 +29,7 @@ type StampInput = {
 export type StampedIngestPayload = {
   body: Buffer;
   stampedCount: number;
+  authoritative: boolean;
 };
 
 // Fingerprint stamping deserializes the whole body (JSON.parse / protobuf decode) and
@@ -42,7 +43,7 @@ export function stampIssueFingerprintsWithinLimit(
   input: StampInput,
   maxBytes: number = MAX_FINGERPRINT_BODY_BYTES,
 ): StampedIngestPayload {
-  if (input.body.byteLength > maxBytes) return { body: input.body, stampedCount: 0 };
+  if (input.body.byteLength > maxBytes) return { body: input.body, stampedCount: 0, authoritative: false };
   return stampIssueFingerprints(input);
 }
 
@@ -56,7 +57,7 @@ export interface FingerprintLogger {
 export function stampIssueFingerprintsFailOpen(
   input: StampInput & { projectId: string },
   logger: FingerprintLogger,
-): Buffer {
+): { body: Buffer; authoritative: boolean } {
   try {
     const stamped = stampIssueFingerprintsWithinLimit(input);
     if (stamped.stampedCount > 0) {
@@ -65,18 +66,18 @@ export function stampIssueFingerprintsFailOpen(
         "stamped issue fingerprints on ingest payload",
       );
     }
-    return stamped.body;
+    return { body: stamped.body, authoritative: stamped.authoritative };
   } catch (err) {
     logger.warn(
       { err, path: input.path, projectId: input.projectId, contentType: input.contentType },
       "failed to stamp issue fingerprints on ingest payload",
     );
-    return input.body;
+    return { body: input.body, authoritative: false };
   }
 }
 
 export function stampIssueFingerprints(input: StampInput): StampedIngestPayload {
-  if (input.contentEncoding) return { body: input.body, stampedCount: 0 };
+  if (input.contentEncoding) return { body: input.body, stampedCount: 0, authoritative: false };
 
   if (input.path === "/v1/traces" && isJsonContentType(input.contentType)) {
     return stampJsonTraceFingerprints(input.body);
@@ -87,7 +88,7 @@ export function stampIssueFingerprints(input: StampInput): StampedIngestPayload 
   if (input.path === "/v1/logs" && isJsonContentType(input.contentType)) {
     return stampJsonLogFingerprints(input.body);
   }
-  return { body: input.body, stampedCount: 0 };
+  return { body: input.body, stampedCount: 0, authoritative: false };
 }
 
 function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
@@ -127,8 +128,8 @@ function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
     }
   }
 
-  if (stampedCount === 0 && sanitizedCount === 0) return { body, stampedCount };
-  return { body: Buffer.from(JSON.stringify(payload)), stampedCount };
+  if (stampedCount === 0 && sanitizedCount === 0) return { body, stampedCount, authoritative: true };
+  return { body: Buffer.from(JSON.stringify(payload)), stampedCount, authoritative: true };
 }
 
 function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
@@ -168,8 +169,8 @@ function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
     }
   }
 
-  if (stampedCount === 0 && sanitizedCount === 0) return { body, stampedCount };
-  return { body: Buffer.from(ExportTraceServiceRequest.encode(payload).finish()), stampedCount };
+  if (stampedCount === 0 && sanitizedCount === 0) return { body, stampedCount, authoritative: true };
+  return { body: Buffer.from(ExportTraceServiceRequest.encode(payload).finish()), stampedCount, authoritative: true };
 }
 
 function stampJsonLogFingerprints(body: Buffer): StampedIngestPayload {
@@ -211,8 +212,8 @@ function stampJsonLogFingerprints(body: Buffer): StampedIngestPayload {
     }
   }
 
-  if (stampedCount === 0 && sanitizedCount === 0) return { body, stampedCount };
-  return { body: Buffer.from(JSON.stringify(payload)), stampedCount };
+  if (stampedCount === 0 && sanitizedCount === 0) return { body, stampedCount, authoritative: true };
+  return { body: Buffer.from(JSON.stringify(payload)), stampedCount, authoritative: true };
 }
 
 function isJsonContentType(contentType: string): boolean {

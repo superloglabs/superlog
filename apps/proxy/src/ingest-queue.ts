@@ -793,7 +793,7 @@ export class IngestQueue {
       // Stamp issue fingerprints here, off the proxy's ingest hot path. This deserializes
       // the payload (size-guarded + fail-open inside the helper); a slow/OOM here only
       // redelivers an SQS message rather than 502-ing live ingest traffic.
-      const body = stampIssueFingerprintsFailOpen(
+      const stamped = stampIssueFingerprintsFailOpen(
         {
           path: parsed.path,
           contentType: parsed.contentType,
@@ -803,6 +803,7 @@ export class IngestQueue {
         },
         this.logger,
       );
+      const body = stamped.body;
 
       // Direct-to-ClickHouse path (INGEST_CLICKHOUSE_DIRECT). Map the OTLP body to rows
       // and INSERT synchronously with quorum; the message is deleted only if the insert
@@ -822,6 +823,7 @@ export class IngestQueue {
             contentType: parsed.contentType,
             contentEncoding: parsed.contentEncoding,
             body,
+            authoritative: stamped.authoritative,
           });
         } catch (decodeErr) {
           this.logger.warn(
@@ -864,6 +866,7 @@ export class IngestQueue {
         "content-type": parsed.contentType,
         "x-superlog-project-id": parsed.projectId,
       };
+      if (stamped.authoritative) headers["x-superlog-authoritative"] = "true";
       if (parsed.contentEncoding) headers["content-encoding"] = parsed.contentEncoding;
 
       const response = await fetch(`${collectorUrl}${parsed.path}`, {

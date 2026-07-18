@@ -39,17 +39,23 @@ processors:
   transform/strip_superlog:
     error_mode: ignore
     trace_statements:
-      - delete_matching_keys(span.attributes, "^superlog\\.(?:[^i].*|i(?:$|[^s].*)|is(?:$|[^s].*)|iss(?:$|[^u].*)|issu(?:$|[^e].*)|issue(?:$|[^_].*)|issue_(?:$|[^f].*)|issue_f(?:$|[^i].*)|issue_fi(?:$|[^n].*)|issue_fin(?:$|[^g].*)|issue_fing(?:$|[^e].*)|issue_finge(?:$|[^r].*)|issue_finger(?:$|[^p].*)|issue_fingerp(?:$|[^r].*)|issue_fingerpr(?:$|[^i].*)|issue_fingerpri(?:$|[^n].*)|issue_fingerprin(?:$|[^t].*)|issue_fingerprint.+)$")
-      - delete_matching_keys(span_event.attributes, "^superlog\\.(?:[^i].*|i(?:$|[^s].*)|is(?:$|[^s].*)|iss(?:$|[^u].*)|issu(?:$|[^e].*)|issue(?:$|[^_].*)|issue_(?:$|[^f].*)|issue_f(?:$|[^i].*)|issue_fi(?:$|[^n].*)|issue_fin(?:$|[^g].*)|issue_fing(?:$|[^e].*)|issue_finge(?:$|[^r].*)|issue_finger(?:$|[^p].*)|issue_fingerp(?:$|[^r].*)|issue_fingerpr(?:$|[^i].*)|issue_fingerpri(?:$|[^n].*)|issue_fingerprin(?:$|[^t].*)|issue_fingerprint.+)$")
-      - delete_matching_keys(resource.attributes, "^superlog\\.(?:[^i].*|i(?:$|[^s].*)|is(?:$|[^s].*)|iss(?:$|[^u].*)|issu(?:$|[^e].*)|issue(?:$|[^_].*)|issue_(?:$|[^f].*)|issue_f(?:$|[^i].*)|issue_fi(?:$|[^n].*)|issue_fin(?:$|[^g].*)|issue_fing(?:$|[^e].*)|issue_finge(?:$|[^r].*)|issue_finger(?:$|[^p].*)|issue_fingerp(?:$|[^r].*)|issue_fingerpr(?:$|[^i].*)|issue_fingerpri(?:$|[^n].*)|issue_fingerprin(?:$|[^t].*)|issue_fingerprint.+)$")
+      - delete_matching_keys(span.attributes, "^superlog\\..*") where resource.attributes["superlog.internal.authoritative"] != "true"
+      - delete_matching_keys(spanevent.attributes, "^superlog\\..*") where resource.attributes["superlog.internal.authoritative"] != "true"
+      - delete_matching_keys(resource.attributes, "^superlog\\..*") where resource.attributes["superlog.internal.authoritative"] != "true"
     log_statements:
-      - delete_matching_keys(log.attributes, "^superlog\\.(?:[^i].*|i(?:$|[^s].*)|is(?:$|[^s].*)|iss(?:$|[^u].*)|issu(?:$|[^e].*)|issue(?:$|[^_].*)|issue_(?:$|[^f].*)|issue_f(?:$|[^i].*)|issue_fi(?:$|[^n].*)|issue_fin(?:$|[^g].*)|issue_fing(?:$|[^e].*)|issue_finge(?:$|[^r].*)|issue_finger(?:$|[^p].*)|issue_fingerp(?:$|[^r].*)|issue_fingerpr(?:$|[^i].*)|issue_fingerpri(?:$|[^n].*)|issue_fingerprin(?:$|[^t].*)|issue_fingerprint.+)$")
-      - delete_matching_keys(resource.attributes, "^superlog\\.(?:[^i].*|i(?:$|[^s].*)|is(?:$|[^s].*)|iss(?:$|[^u].*)|issu(?:$|[^e].*)|issue(?:$|[^_].*)|issue_(?:$|[^f].*)|issue_f(?:$|[^i].*)|issue_fi(?:$|[^n].*)|issue_fin(?:$|[^g].*)|issue_fing(?:$|[^e].*)|issue_finge(?:$|[^r].*)|issue_finger(?:$|[^p].*)|issue_fingerp(?:$|[^r].*)|issue_fingerpr(?:$|[^i].*)|issue_fingerpri(?:$|[^n].*)|issue_fingerprin(?:$|[^t].*)|issue_fingerprint.+)$")
+      - delete_matching_keys(log.attributes, "^superlog\\..*") where resource.attributes["superlog.internal.authoritative"] != "true"
+      - delete_matching_keys(resource.attributes, "^superlog\\..*") where resource.attributes["superlog.internal.authoritative"] != "true"
     metric_statements:
-      - delete_matching_keys(datapoint.attributes, "^superlog\\.(?:[^i].*|i(?:$|[^s].*)|is(?:$|[^s].*)|iss(?:$|[^u].*)|issu(?:$|[^e].*)|issue(?:$|[^_].*)|issue_(?:$|[^f].*)|issue_f(?:$|[^i].*)|issue_fi(?:$|[^n].*)|issue_fin(?:$|[^g].*)|issue_fing(?:$|[^e].*)|issue_finge(?:$|[^r].*)|issue_finger(?:$|[^p].*)|issue_fingerp(?:$|[^r].*)|issue_fingerpr(?:$|[^i].*)|issue_fingerpri(?:$|[^n].*)|issue_fingerprin(?:$|[^t].*)|issue_fingerprint.+)$")
-      - delete_matching_keys(resource.attributes, "^superlog\\.(?:[^i].*|i(?:$|[^s].*)|is(?:$|[^s].*)|iss(?:$|[^u].*)|issu(?:$|[^e].*)|issue(?:$|[^_].*)|issue_(?:$|[^f].*)|issue_f(?:$|[^i].*)|issue_fi(?:$|[^n].*)|issue_fin(?:$|[^g].*)|issue_fing(?:$|[^e].*)|issue_finge(?:$|[^r].*)|issue_finger(?:$|[^p].*)|issue_fingerp(?:$|[^r].*)|issue_fingerpr(?:$|[^i].*)|issue_fingerpri(?:$|[^n].*)|issue_fingerprin(?:$|[^t].*)|issue_fingerprint.+)$")
+      - delete_matching_keys(datapoint.attributes, "^superlog\\..*") where resource.attributes["superlog.internal.authoritative"] != "true"
+      - delete_matching_keys(resource.attributes, "^superlog\\..*") where resource.attributes["superlog.internal.authoritative"] != "true"
 
-  attributes/from_metadata:
+  attributes/from_metadata/authoritative:
+    actions:
+      - key: superlog.internal.authoritative
+        action: upsert
+        from_context: metadata.x-superlog-authoritative
+
+  attributes/from_metadata/project_id:
     actions:
       - key: superlog.project_id
         action: upsert
@@ -90,15 +96,15 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [transform/strip_superlog, attributes/from_metadata, groupbyattrs/project_id, batch]
+      processors: [attributes/from_metadata/authoritative, transform/strip_superlog, attributes/from_metadata/project_id, groupbyattrs/project_id, batch]
       exporters: [clickhouse]
     logs:
       receivers: [otlp, awsfirehose/logs]
-      processors: [transform/strip_superlog, attributes/from_metadata, groupbyattrs/project_id, batch]
+      processors: [attributes/from_metadata/authoritative, transform/strip_superlog, attributes/from_metadata/project_id, groupbyattrs/project_id, batch]
       exporters: [clickhouse]
     metrics:
       receivers: [otlp, awsfirehose/metrics]
-      processors: [transform/strip_superlog, attributes/from_metadata, groupbyattrs/project_id, batch]
+      processors: [attributes/from_metadata/authoritative, transform/strip_superlog, attributes/from_metadata/project_id, groupbyattrs/project_id, batch]
       exporters: [clickhouse]
   telemetry:
     logs:

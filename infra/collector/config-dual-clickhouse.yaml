@@ -33,19 +33,26 @@ processors:
   transform/strip_superlog:
     error_mode: ignore
     trace_statements:
-      - delete_matching_keys(span.attributes, "^superlog\\..*")
-      - delete_matching_keys(resource.attributes, "^superlog\\..*")
+      - delete_matching_keys(span.attributes, "^superlog\\..*") where resource.attributes["superlog.internal.authoritative"] != "true"
+      - delete_matching_keys(spanevent.attributes, "^superlog\\..*") where resource.attributes["superlog.internal.authoritative"] != "true"
+      - delete_matching_keys(resource.attributes, "^superlog\\..*") where resource.attributes["superlog.internal.authoritative"] != "true"
     log_statements:
-      - delete_matching_keys(log.attributes, "^superlog\\..*")
-      - delete_matching_keys(resource.attributes, "^superlog\\..*")
+      - delete_matching_keys(log.attributes, "^superlog\\..*") where resource.attributes["superlog.internal.authoritative"] != "true"
+      - delete_matching_keys(resource.attributes, "^superlog\\..*") where resource.attributes["superlog.internal.authoritative"] != "true"
     metric_statements:
-      - delete_matching_keys(datapoint.attributes, "^superlog\\..*")
-      - delete_matching_keys(resource.attributes, "^superlog\\..*")
+      - delete_matching_keys(datapoint.attributes, "^superlog\\..*") where resource.attributes["superlog.internal.authoritative"] != "true"
+      - delete_matching_keys(resource.attributes, "^superlog\\..*") where resource.attributes["superlog.internal.authoritative"] != "true"
 
-  attributes/from_metadata:
+  attributes/from_metadata/authoritative:
+    actions:
+      - key: superlog.internal.authoritative
+        action: upsert
+        from_context: metadata.x-superlog-authoritative
+
+  attributes/from_metadata/project_id:
     actions:
       - key: superlog.project_id
-        action: insert
+        action: upsert
         from_context: metadata.x-superlog-project-id
 
   groupbyattrs/project_id:
@@ -117,15 +124,15 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [transform/strip_superlog, attributes/from_metadata, groupbyattrs/project_id, batch]
+      processors: [attributes/from_metadata/authoritative, transform/strip_superlog, attributes/from_metadata/project_id, groupbyattrs/project_id, batch]
       exporters: [clickhouse, clickhouse/aws]
     logs:
       receivers: [otlp, awsfirehose/logs]
-      processors: [transform/strip_superlog, attributes/from_metadata, groupbyattrs/project_id, batch]
+      processors: [attributes/from_metadata/authoritative, transform/strip_superlog, attributes/from_metadata/project_id, groupbyattrs/project_id, batch]
       exporters: [clickhouse, clickhouse/aws]
     metrics:
       receivers: [otlp, awsfirehose/metrics]
-      processors: [transform/strip_superlog, attributes/from_metadata, groupbyattrs/project_id, batch]
+      processors: [attributes/from_metadata/authoritative, transform/strip_superlog, attributes/from_metadata/project_id, groupbyattrs/project_id, batch]
       exporters: [clickhouse, clickhouse/aws]
   telemetry:
     logs:
