@@ -105,10 +105,14 @@ function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
   };
 
   let stampedCount = 0;
+  let sanitizedCount = 0;
   for (const resourceSpan of payload.resourceSpans ?? []) {
+    sanitizedCount += sanitizeAttributes(resourceSpan.resource?.attributes);
     for (const scopeSpan of resourceSpan.scopeSpans ?? []) {
       for (const span of scopeSpan.spans ?? []) {
+        sanitizedCount += sanitizeAttributes(span.attributes);
         for (const event of span.events ?? []) {
+          sanitizedCount += sanitizeAttributes(event.attributes);
           if (event.name !== "exception") continue;
           const attrs = event.attributes ?? [];
           const fp = fingerprint({
@@ -123,7 +127,7 @@ function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
     }
   }
 
-  if (stampedCount === 0) return { body, stampedCount };
+  if (stampedCount === 0 && sanitizedCount === 0) return { body, stampedCount };
   return { body: Buffer.from(JSON.stringify(payload)), stampedCount };
 }
 
@@ -142,10 +146,14 @@ function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
   };
 
   let stampedCount = 0;
+  let sanitizedCount = 0;
   for (const resourceSpan of payload.resourceSpans ?? []) {
+    sanitizedCount += sanitizeAttributes(resourceSpan.resource?.attributes);
     for (const scopeSpan of resourceSpan.scopeSpans ?? []) {
       for (const span of scopeSpan.spans ?? []) {
+        sanitizedCount += sanitizeAttributes(span.attributes);
         for (const event of span.events ?? []) {
+          sanitizedCount += sanitizeAttributes(event.attributes);
           if (event.name !== "exception") continue;
           const attrs = event.attributes ?? [];
           const fp = fingerprint({
@@ -160,7 +168,7 @@ function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
     }
   }
 
-  if (stampedCount === 0) return { body, stampedCount };
+  if (stampedCount === 0 && sanitizedCount === 0) return { body, stampedCount };
   return { body: Buffer.from(ExportTraceServiceRequest.encode(payload).finish()), stampedCount };
 }
 
@@ -180,11 +188,14 @@ function stampJsonLogFingerprints(body: Buffer): StampedIngestPayload {
   };
 
   let stampedCount = 0;
+  let sanitizedCount = 0;
   for (const resourceLog of payload.resourceLogs ?? []) {
+    sanitizedCount += sanitizeAttributes(resourceLog.resource?.attributes);
     const service =
       stringAttribute(resourceLog.resource?.attributes ?? [], "service.name") || "unknown";
     for (const scopeLog of resourceLog.scopeLogs ?? []) {
       for (const logRecord of scopeLog.logRecords ?? []) {
+        sanitizedCount += sanitizeAttributes(logRecord.attributes);
         const attrs = logRecord.attributes ?? [];
         if (!isErrorLog(logRecord.severityNumber, logRecord.severityText, attrs)) continue;
         const fp = fingerprintLog({
@@ -200,7 +211,7 @@ function stampJsonLogFingerprints(body: Buffer): StampedIngestPayload {
     }
   }
 
-  if (stampedCount === 0) return { body, stampedCount };
+  if (stampedCount === 0 && sanitizedCount === 0) return { body, stampedCount };
   return { body: Buffer.from(JSON.stringify(payload)), stampedCount };
 }
 
@@ -235,6 +246,19 @@ function setStringAttribute(attrs: OtlpKeyValue[], key: string, value: string): 
   const next = attrs.filter((attr) => attr.key !== key);
   next.push({ key, value: { stringValue: value } });
   return next;
+}
+
+function sanitizeAttributes(attrs: OtlpKeyValue[] | undefined): number {
+  if (!attrs) return 0;
+  let count = 0;
+  for (let i = attrs.length - 1; i >= 0; i--) {
+    const key = attrs[i].key;
+    if (key && key.startsWith("superlog.")) {
+      attrs.splice(i, 1);
+      count += 1;
+    }
+  }
+  return count;
 }
 
 function stringAttribute(attrs: OtlpKeyValue[], key: string): string | null {

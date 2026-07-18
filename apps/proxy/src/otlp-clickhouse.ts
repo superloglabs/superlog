@@ -251,7 +251,7 @@ function kvListToMap(attrs: OtlpKeyValue[] | undefined): Record<string, string> 
 function stripSuperlog(map: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(map)) {
-    if (k.startsWith("superlog.")) continue;
+    if (k.startsWith("superlog.") && k !== "superlog.project_id" && k !== "superlog.issue_fingerprint") continue;
     out[k] = v;
   }
   return out;

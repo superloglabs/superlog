@@ -39,19 +39,20 @@ processors:
   transform/strip_superlog:
     error_mode: ignore
     trace_statements:
-      - delete_matching_keys(span.attributes, "^superlog\\..*")
-      - delete_matching_keys(resource.attributes, "^superlog\\..*")
+      - delete_matching_keys(span.attributes, "^superlog\\.(?:[^i].*|i(?:$|[^s].*)|is(?:$|[^s].*)|iss(?:$|[^u].*)|issu(?:$|[^e].*)|issue(?:$|[^_].*)|issue_(?:$|[^f].*)|issue_f(?:$|[^i].*)|issue_fi(?:$|[^n].*)|issue_fin(?:$|[^g].*)|issue_fing(?:$|[^e].*)|issue_finge(?:$|[^r].*)|issue_finger(?:$|[^p].*)|issue_fingerp(?:$|[^r].*)|issue_fingerpr(?:$|[^i].*)|issue_fingerpri(?:$|[^n].*)|issue_fingerprin(?:$|[^t].*)|issue_fingerprint.+)$")
+      - delete_matching_keys(span_event.attributes, "^superlog\\.(?:[^i].*|i(?:$|[^s].*)|is(?:$|[^s].*)|iss(?:$|[^u].*)|issu(?:$|[^e].*)|issue(?:$|[^_].*)|issue_(?:$|[^f].*)|issue_f(?:$|[^i].*)|issue_fi(?:$|[^n].*)|issue_fin(?:$|[^g].*)|issue_fing(?:$|[^e].*)|issue_finge(?:$|[^r].*)|issue_finger(?:$|[^p].*)|issue_fingerp(?:$|[^r].*)|issue_fingerpr(?:$|[^i].*)|issue_fingerpri(?:$|[^n].*)|issue_fingerprin(?:$|[^t].*)|issue_fingerprint.+)$")
+      - delete_matching_keys(resource.attributes, "^superlog\\.(?:[^i].*|i(?:$|[^s].*)|is(?:$|[^s].*)|iss(?:$|[^u].*)|issu(?:$|[^e].*)|issue(?:$|[^_].*)|issue_(?:$|[^f].*)|issue_f(?:$|[^i].*)|issue_fi(?:$|[^n].*)|issue_fin(?:$|[^g].*)|issue_fing(?:$|[^e].*)|issue_finge(?:$|[^r].*)|issue_finger(?:$|[^p].*)|issue_fingerp(?:$|[^r].*)|issue_fingerpr(?:$|[^i].*)|issue_fingerpri(?:$|[^n].*)|issue_fingerprin(?:$|[^t].*)|issue_fingerprint.+)$")
     log_statements:
-      - delete_matching_keys(log.attributes, "^superlog\\..*")
-      - delete_matching_keys(resource.attributes, "^superlog\\..*")
+      - delete_matching_keys(log.attributes, "^superlog\\.(?:[^i].*|i(?:$|[^s].*)|is(?:$|[^s].*)|iss(?:$|[^u].*)|issu(?:$|[^e].*)|issue(?:$|[^_].*)|issue_(?:$|[^f].*)|issue_f(?:$|[^i].*)|issue_fi(?:$|[^n].*)|issue_fin(?:$|[^g].*)|issue_fing(?:$|[^e].*)|issue_finge(?:$|[^r].*)|issue_finger(?:$|[^p].*)|issue_fingerp(?:$|[^r].*)|issue_fingerpr(?:$|[^i].*)|issue_fingerpri(?:$|[^n].*)|issue_fingerprin(?:$|[^t].*)|issue_fingerprint.+)$")
+      - delete_matching_keys(resource.attributes, "^superlog\\.(?:[^i].*|i(?:$|[^s].*)|is(?:$|[^s].*)|iss(?:$|[^u].*)|issu(?:$|[^e].*)|issue(?:$|[^_].*)|issue_(?:$|[^f].*)|issue_f(?:$|[^i].*)|issue_fi(?:$|[^n].*)|issue_fin(?:$|[^g].*)|issue_fing(?:$|[^e].*)|issue_finge(?:$|[^r].*)|issue_finger(?:$|[^p].*)|issue_fingerp(?:$|[^r].*)|issue_fingerpr(?:$|[^i].*)|issue_fingerpri(?:$|[^n].*)|issue_fingerprin(?:$|[^t].*)|issue_fingerprint.+)$")
     metric_statements:
-      - delete_matching_keys(datapoint.attributes, "^superlog\\..*")
-      - delete_matching_keys(resource.attributes, "^superlog\\..*")
+      - delete_matching_keys(datapoint.attributes, "^superlog\\.(?:[^i].*|i(?:$|[^s].*)|is(?:$|[^s].*)|iss(?:$|[^u].*)|issu(?:$|[^e].*)|issue(?:$|[^_].*)|issue_(?:$|[^f].*)|issue_f(?:$|[^i].*)|issue_fi(?:$|[^n].*)|issue_fin(?:$|[^g].*)|issue_fing(?:$|[^e].*)|issue_finge(?:$|[^r].*)|issue_finger(?:$|[^p].*)|issue_fingerp(?:$|[^r].*)|issue_fingerpr(?:$|[^i].*)|issue_fingerpri(?:$|[^n].*)|issue_fingerprin(?:$|[^t].*)|issue_fingerprint.+)$")
+      - delete_matching_keys(resource.attributes, "^superlog\\.(?:[^i].*|i(?:$|[^s].*)|is(?:$|[^s].*)|iss(?:$|[^u].*)|issu(?:$|[^e].*)|issue(?:$|[^_].*)|issue_(?:$|[^f].*)|issue_f(?:$|[^i].*)|issue_fi(?:$|[^n].*)|issue_fin(?:$|[^g].*)|issue_fing(?:$|[^e].*)|issue_finge(?:$|[^r].*)|issue_finger(?:$|[^p].*)|issue_fingerp(?:$|[^r].*)|issue_fingerpr(?:$|[^i].*)|issue_fingerpri(?:$|[^n].*)|issue_fingerprin(?:$|[^t].*)|issue_fingerprint.+)$")
 
   attributes/from_metadata:
     actions:
       - key: superlog.project_id
-        action: insert
+        action: upsert
         from_context: metadata.x-superlog-project-id
 
   groupbyattrs/project_id:
