@@ -77,7 +77,7 @@ test("otlpLogsToRows maps one row per log record with collector-compatible colum
   assert.equal(r.Timestamp, "2024-06-10 06:13:20.123456789");
 });
 
-test("otlpLogsToRows strips superlog.* from resource attrs and stamps the real project id", () => {
+test("otlpLogsToRows strips untrusted superlog.* but preserves proxy-stamped issue_fingerprint", () => {
   const rows = otlpLogsToRows(logsExport, "proj-123");
   assert.equal(rows[0]!.ResourceAttributes["superlog.project_id"], "proj-123");
   assert.equal(rows[0]!.ResourceAttributes["service.name"], "checkout");
@@ -85,13 +85,11 @@ test("otlpLogsToRows strips superlog.* from resource attrs and stamps the real p
   // no stray superlog.* keys other than the stamped project id
   const superlogKeys = Object.keys(rows[0]!.ResourceAttributes).filter((k) => k.startsWith("superlog."));
   assert.deepEqual(superlogKeys, ["superlog.project_id"]);
-  // superlog.* is stripped from log record attributes too (matches the collector's
-  // transform/strip_superlog on log.attributes); project id lives only on resource attrs.
-  assert.equal(rows[0]!.LogAttributes["superlog.issue_fingerprint"], undefined);
-  assert.equal(
-    Object.keys(rows[0]!.LogAttributes).some((k) => k.startsWith("superlog.")),
-    false,
-  );
+  // superlog.issue_fingerprint is proxy-authored and MUST survive so the
+  // issue-activity materialized views can match it (regression for #285).
+  assert.equal(rows[0]!.LogAttributes["superlog.issue_fingerprint"], "deadbeef");
+  // other log attributes are unaffected
+  assert.equal(rows[0]!.LogAttributes["http.status"], "500");
 });
 
 test("otlpLogsToRows stringifies log attribute values like the collector Map(String,String)", () => {
@@ -192,13 +190,13 @@ test("otlpTracesToRows maps spans with collector-compatible columns", () => {
   assert.equal(r.Timestamp, "2024-06-10 06:13:20.000000000");
 });
 
-test("otlpTracesToRows strips superlog.* from resource and span attrs, stamps project id", () => {
+test("otlpTracesToRows strips untrusted superlog.* from resource and span attrs, preserves issue_fingerprint", () => {
   const r = otlpTracesToRows(tracesExport, "proj-xyz")[0]!;
   assert.equal(r.ResourceAttributes["superlog.project_id"], "proj-xyz");
   assert.equal(r.ResourceAttributes["service.name"], "api");
   assert.equal(r.SpanAttributes["http.method"], "GET");
-  // span-level superlog.* stripped (matches collector transform/strip_superlog)
-  assert.equal(r.SpanAttributes["superlog.issue_fingerprint"], undefined);
+  // proxy-stamped issue_fingerprint is preserved on span attrs (regression #285)
+  assert.equal(r.SpanAttributes["superlog.issue_fingerprint"], "deadbeef");
 });
 
 test("otlpTracesToRows flattens events and links into parallel arrays", () => {
@@ -212,4 +210,111 @@ test("otlpTracesToRows flattens events and links into parallel arrays", () => {
 
 test("otlpTracesToRows tolerates an empty export", () => {
   assert.deepEqual(otlpTracesToRows({}, "p"), []);
+});
+
+// ── Regression tests for #285 ────────────────────────────────────────────────
+// The proxy stamps superlog.issue_fingerprint as authoritative data before
+// selecting a delivery branch. Neither the direct-ClickHouse mapper nor the
+// collector pipeline should strip it; the issue-activity materialized views
+// require it to be present on both logs and trace events.
+
+test("regression #285: issue_fingerprint survives direct-ClickHouse mapping for logs", () => {
+  const fp = { key: "superlog.issue_fingerprint", value: { stringValue: "fp16" } };
+  const control = { key: "exception.type", value: { stringValue: "Error" } };
+  const rows = otlpLogsToRows(
+    {
+      resourceLogs: [
+        {
+          scopeLogs: [
+            {
+              logRecords: [
+                { timeUnixNano: "1000000000", severityNumber: 17, attributes: [control, fp] },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    "p",
+  );
+  // Fingerprint must reach ClickHouse so the log activity view admits the row.
+  assert.equal(
+    rows[0]!.LogAttributes["superlog.issue_fingerprint"],
+    "fp16",
+    "issue_fingerprint must be preserved in LogAttributes",
+  );
+  // Neighbouring control attribute must also survive (non-regression).
+  assert.equal(rows[0]!.LogAttributes["exception.type"], "Error");
+});
+
+test("regression #285: issue_fingerprint survives direct-ClickHouse mapping for trace events", () => {
+  const fp = { key: "superlog.issue_fingerprint", value: { stringValue: "fp16" } };
+  const control = { key: "exception.type", value: { stringValue: "Error" } };
+  const rows = otlpTracesToRows(
+    {
+      resourceSpans: [
+        {
+          scopeSpans: [
+            {
+              spans: [
+                {
+                  startTimeUnixNano: "1000000000",
+                  endTimeUnixNano: "2000000000",
+                  events: [{ name: "exception", timeUnixNano: "1000000000", attributes: [control, fp] }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    "p",
+  );
+  // Fingerprint must reach ClickHouse so the trace activity view admits the row.
+  assert.equal(
+    rows[0]!["Events.Attributes"][0]!["superlog.issue_fingerprint"],
+    "fp16",
+    "issue_fingerprint must be preserved in Events.Attributes",
+  );
+  // Neighbouring control attribute must also survive (non-regression).
+  assert.equal(rows[0]!["Events.Attributes"][0]!["exception.type"], "Error");
+});
+
+test("control #285: ordinary (non-superlog) attributes are unaffected", () => {
+  const attrs = [
+    { key: "exception.type", value: { stringValue: "Error" } },
+    { key: "user.id", value: { stringValue: "u1" } },
+  ];
+  const logRows = otlpLogsToRows(
+    {
+      resourceLogs: [
+        { scopeLogs: [{ logRecords: [{ timeUnixNano: "1000000000", severityNumber: 17, attributes: attrs }] }] },
+      ],
+    },
+    "p",
+  );
+  const traceRows = otlpTracesToRows(
+    {
+      resourceSpans: [
+        {
+          scopeSpans: [
+            {
+              spans: [
+                {
+                  startTimeUnixNano: "1000000000",
+                  endTimeUnixNano: "2000000000",
+                  events: [{ name: "exception", timeUnixNano: "1000000000", attributes: attrs }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    "p",
+  );
+  assert.equal(logRows[0]!.LogAttributes["exception.type"], "Error");
+  assert.equal(logRows[0]!.LogAttributes["user.id"], "u1");
+  assert.equal(traceRows[0]!["Events.Attributes"][0]!["exception.type"], "Error");
+  assert.equal(traceRows[0]!["Events.Attributes"][0]!["user.id"], "u1");
 });

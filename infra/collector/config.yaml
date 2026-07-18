@@ -36,17 +36,27 @@ processors:
   # both span/log/datapoint and resource scope. The proxy is the only
   # authoritative source of `superlog.*` keys; without this strip a customer
   # could spoof another tenant by setting `superlog.project_id` themselves.
+  #
+  # IMPORTANT: superlog.issue_fingerprint is proxy-authored (stamped after
+  # ingest-queue dequeues the payload) and must survive to reach ClickHouse
+  # so the issue-activity materialized views can match it. The negative
+  # lookahead below excludes it from deletion while still stripping every
+  # other superlog.* key a client could inject.
   transform/strip_superlog:
     error_mode: ignore
     trace_statements:
-      - delete_matching_keys(span.attributes, "^superlog\\..*")
-      - delete_matching_keys(resource.attributes, "^superlog\\..*")
+      - delete_matching_keys(span.attributes, "^superlog\\.(?!issue_fingerprint).*")
+      - delete_matching_keys(resource.attributes, "^superlog\\.(?!issue_fingerprint).*")
+      # Symmetric with log_statements: strip spoofed superlog.* from event
+      # attrs too (excluding the proxy-stamped fingerprint which lives here
+      # for exception events on the collector delivery path).
+      - delete_matching_keys(span.attributes["Events.Attributes"], "^superlog\\.(?!issue_fingerprint).*")
     log_statements:
-      - delete_matching_keys(log.attributes, "^superlog\\..*")
-      - delete_matching_keys(resource.attributes, "^superlog\\..*")
+      - delete_matching_keys(log.attributes, "^superlog\\.(?!issue_fingerprint).*")
+      - delete_matching_keys(resource.attributes, "^superlog\\.(?!issue_fingerprint).*")
     metric_statements:
-      - delete_matching_keys(datapoint.attributes, "^superlog\\..*")
-      - delete_matching_keys(resource.attributes, "^superlog\\..*")
+      - delete_matching_keys(datapoint.attributes, "^superlog\\.(?!issue_fingerprint).*")
+      - delete_matching_keys(resource.attributes, "^superlog\\.(?!issue_fingerprint).*")
 
   attributes/from_metadata:
     actions:
