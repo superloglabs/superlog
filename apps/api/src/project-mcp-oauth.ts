@@ -14,6 +14,12 @@ export type ProjectMcpOAuthDiscovery = {
   resource: string;
   codeChallengeMethods: string[];
   grantTypes: string[];
+  // Scopes the server advertises for this resource (RFC 9728 protected-resource
+  // metadata, falling back to the authorization server's own list). Servers use
+  // this to narrow what a URL variant grants — e.g. a read-only URL advertises
+  // only read scopes — so a client should request exactly these unless the
+  // operator has pinned an explicit subset.
+  scopesSupported: string[];
 };
 
 export type ProjectMcpOAuthAttempt = {
@@ -116,6 +122,12 @@ export function createProjectMcpOAuthService(deps: {
         clientId = registration.clientId;
         clientSecret = registration.clientSecret;
       }
+      // An operator-pinned scope list wins; otherwise request everything the
+      // server advertises for this resource. This is what makes a read-only
+      // resource URL request only read scopes, matching other MCP clients,
+      // instead of falling through to the server's "grant everything" default.
+      const requestedScopes =
+        server.auth.scopes.length > 0 ? server.auth.scopes : discovery.scopesSupported;
       const state = randomToken();
       const codeVerifier = randomToken();
       const expiresAt = new Date(now().getTime() + OAUTH_ATTEMPT_TTL_MS);
@@ -131,7 +143,7 @@ export function createProjectMcpOAuthService(deps: {
         tokenEndpoint: discovery.tokenEndpoint,
         authorizationServer: discovery.authorizationServer,
         resource: discovery.resource,
-        scopes: server.auth.scopes,
+        scopes: requestedScopes,
         expiresAt,
       });
       await deps.repository.update({
@@ -156,8 +168,8 @@ export function createProjectMcpOAuthService(deps: {
       authorizationUrl.searchParams.set("code_challenge", pkceChallenge(codeVerifier));
       authorizationUrl.searchParams.set("code_challenge_method", "S256");
       authorizationUrl.searchParams.set("resource", discovery.resource);
-      if (server.auth.scopes.length > 0) {
-        authorizationUrl.searchParams.set("scope", server.auth.scopes.join(" "));
+      if (requestedScopes.length > 0) {
+        authorizationUrl.searchParams.set("scope", requestedScopes.join(" "));
       }
       return {
         authorizationUrl: authorizationUrl.toString(),
@@ -268,18 +280,21 @@ export function createProjectMcpOAuthService(deps: {
     if (!discovery.grantTypes.includes("client_credentials")) {
       throw new Error("OAuth server does not advertise the client credentials grant");
     }
+    const requestedScopes =
+      server.auth.scopes.length > 0 ? server.auth.scopes : discovery.scopesSupported;
     const token = await deps.http.clientCredentials({
       tokenEndpoint: discovery.tokenEndpoint,
       clientId: server.auth.clientId,
       clientSecret: server.auth.clientSecret,
       resource: discovery.resource,
-      scopes: server.auth.scopes,
+      scopes: requestedScopes,
     });
     return storeToken(server, token, {
       actorUserId,
       tokenEndpoint: discovery.tokenEndpoint,
       authorizationServer: discovery.authorizationServer,
       resource: discovery.resource,
+      scopes: requestedScopes,
     });
   }
 
@@ -294,6 +309,7 @@ export function createProjectMcpOAuthService(deps: {
       tokenEndpoint?: string;
       authorizationServer?: string;
       resource?: string;
+      scopes?: string[];
     } = {},
   ): Promise<ProjectMcpServer> {
     return deps.repository.update({
@@ -310,7 +326,9 @@ export function createProjectMcpOAuthService(deps: {
         tokenEndpoint: overrides.tokenEndpoint ?? server.auth.tokenEndpoint,
         authorizationServer: overrides.authorizationServer ?? server.auth.authorizationServer,
         resource: overrides.resource ?? server.auth.resource,
-        scopes: token.scope ? token.scope.split(/\s+/).filter(Boolean) : server.auth.scopes,
+        scopes: token.scope
+          ? token.scope.split(/\s+/).filter(Boolean)
+          : (overrides.scopes ?? server.auth.scopes),
       },
       updatedByUserId: overrides.actorUserId ?? server.updatedByUserId,
       updatedAt: now(),
@@ -485,7 +503,12 @@ async function discoverProjectMcpOAuth(
     throw new Error("MCP protected-resource metadata has no authorization server");
   }
   const authorizationServer = authorizationServers[0] as string;
-  const metadata = await firstJson(fetchImpl, authorizationMetadataUrls(authorizationServer), signal);
+  const metadata = await firstJson(
+    fetchImpl,
+    authorizationMetadataUrls(authorizationServer),
+    signal,
+  );
+  const resourceScopes = readStringArray(resourceMetadata.scopes_supported);
   return {
     authorizationServer,
     authorizationEndpoint: requiredMetadataUrl(metadata.authorization_endpoint),
@@ -497,6 +520,8 @@ async function discoverProjectMcpOAuth(
         : endpoint.toString(),
     codeChallengeMethods: readStringArray(metadata.code_challenge_methods_supported),
     grantTypes: readStringArray(metadata.grant_types_supported),
+    scopesSupported:
+      resourceScopes.length > 0 ? resourceScopes : readStringArray(metadata.scopes_supported),
   };
 }
 

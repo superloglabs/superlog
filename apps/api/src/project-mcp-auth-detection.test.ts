@@ -13,6 +13,7 @@ test("MCP auth detection recognizes standards-based OAuth authorization code ser
       resource: "https://mcp.granola.example/mcp",
       codeChallengeMethods: ["S256"],
       grantTypes: ["authorization_code", "refresh_token"],
+      scopesSupported: ["projects:read", "database:read"],
     }),
   };
 
@@ -20,6 +21,7 @@ test("MCP auth detection recognizes standards-based OAuth authorization code ser
     type: "oauth",
     grantType: "authorization_code",
     supportsDynamicRegistration: true,
+    scopesSupported: ["projects:read", "database:read"],
   });
 });
 

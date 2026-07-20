@@ -80,6 +80,7 @@ test("an owner can detect OAuth from an MCP server URL before saving it", async 
         type: "oauth",
         grantType: "authorization_code",
         supportsDynamicRegistration: true,
+        scopesSupported: ["projects:read"],
       };
     },
   });
@@ -98,6 +99,7 @@ test("an owner can detect OAuth from an MCP server URL before saving it", async 
     type: "oauth",
     grantType: "authorization_code",
     supportsDynamicRegistration: true,
+    scopesSupported: ["projects:read"],
   });
 });
 

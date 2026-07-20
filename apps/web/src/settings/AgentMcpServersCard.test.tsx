@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { McpAuthenticationEditor } from "./AgentMcpServersCard.tsx";
 import { EMPTY_AUTH } from "./project-mcp-editor.ts";
@@ -38,4 +39,29 @@ test("manual MCP auth reveals credential choices only after the fallback is requ
   assert.match(html, /<select/);
   assert.match(html, /Bearer \/ API token/);
   assert.match(html, /Use auto/);
+});
+
+test("detected OAuth shows advertised scopes in a closed customization disclosure", () => {
+  const html = renderToStaticMarkup(
+    <McpAuthenticationEditor
+      manual={false}
+      detectionMessage="OAuth detected"
+      value={{
+        ...EMPTY_AUTH,
+        type: "oauth",
+        advertisedScopes: ["projects:read", "database:read"],
+      }}
+      onChange={() => {}}
+      onConfigureManually={() => {}}
+      onUseAutomatic={() => {}}
+    />,
+  );
+
+  assert.match(html, /<details/);
+  assert.doesNotMatch(html, /<details[^>]* open/);
+  assert.match(html, /OAuth scopes/);
+  assert.match(html, /2 selected/);
+  assert.match(html, /projects:read/);
+  assert.match(html, /database:read/);
+  assert.match(html, /type="checkbox"[^>]*checked/);
 });

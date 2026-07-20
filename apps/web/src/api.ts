@@ -1780,6 +1780,7 @@ export type ProjectMcpAuthDetection =
       type: "oauth";
       grantType: "authorization_code" | "client_credentials";
       supportsDynamicRegistration: boolean;
+      scopesSupported: string[];
     }
   | { type: "unknown" };
 

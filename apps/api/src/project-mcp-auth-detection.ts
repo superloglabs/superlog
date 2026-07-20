@@ -3,14 +3,21 @@ export type ProjectMcpAuthDetection =
       type: "oauth";
       grantType: "authorization_code" | "client_credentials";
       supportsDynamicRegistration: boolean;
+      // Scopes the server advertises for this resource, so the connect UI can
+      // show what will be requested and let the operator trim the set.
+      scopesSupported: string[];
     }
   | { type: "unknown" };
 
 export type ProjectMcpOAuthDiscoverer = {
-  discover(serverUrl: string, signal?: AbortSignal): Promise<{
+  discover(
+    serverUrl: string,
+    signal?: AbortSignal,
+  ): Promise<{
     codeChallengeMethods: string[];
     grantTypes: string[];
     registrationEndpoint: string | null;
+    scopesSupported?: string[];
   }>;
 };
 
@@ -42,16 +49,14 @@ export async function detectProjectMcpAuth(
       supportsClientCredentials && !supportsAuthorizationCode
         ? "client_credentials"
         : "authorization_code";
-    if (
-      grantType === "authorization_code" &&
-      !discovery.codeChallengeMethods.includes("S256")
-    ) {
+    if (grantType === "authorization_code" && !discovery.codeChallengeMethods.includes("S256")) {
       return { type: "unknown" };
     }
     return {
       type: "oauth",
       grantType,
       supportsDynamicRegistration: discovery.registrationEndpoint !== null,
+      scopesSupported: discovery.scopesSupported ?? [],
     };
   } catch {
     return { type: "unknown" };
