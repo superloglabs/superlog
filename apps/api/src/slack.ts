@@ -12,6 +12,7 @@ import {
   requestFollowUpAgentRun,
   resolveChatInstallation,
   resolveIncidentWithProof,
+  retryBlockedAgentRun,
   schema,
   stripBotMention,
   syncLoopsContactsForOrg,
@@ -295,6 +296,8 @@ export function mountSlackPublic(app: Hono<any>): void {
 //     resolved, issues resolved (recurrence opens a new chained incident)
 //   - `not_an_issue:<incident-uuid>` → incident resolved, issues silenced
 //   - `merge_pr:<incident-uuid>` → merges the incident's latest open agent PR
+//   - `retry_investigation:<incident-uuid>` → retries only when the latest run
+//     is still blocked on GitHub, making repeated clicks idempotent
 async function handleSlackBlockActions(payload: SlackInteractivityPayload): Promise<void> {
   const action = payload.actions?.[0];
   if (!action) return;
@@ -315,6 +318,12 @@ async function handleSlackBlockActions(payload: SlackInteractivityPayload): Prom
   if (actionId.startsWith("merge_pr:")) {
     const incidentId = actionId.slice("merge_pr:".length);
     if (incidentId) await handleSlackMergePr(incidentId, payload);
+    return;
+  }
+
+  const retryIncidentId = parseRetryInvestigationAction(actionId);
+  if (retryIncidentId) {
+    await handleSlackRetryInvestigation(retryIncidentId, payload);
     return;
   }
 
@@ -423,6 +432,44 @@ export function parseRateIncidentAction(
   if (!incidentId) return null;
   if (rating !== "helpful" && rating !== "unhelpful") return null;
   return { rating, incidentId };
+}
+
+export function parseRetryInvestigationAction(actionId: string): string | null {
+  const prefix = "retry_investigation:";
+  if (!actionId.startsWith(prefix)) return null;
+  return actionId.slice(prefix.length) || null;
+}
+
+async function handleSlackRetryInvestigation(
+  incidentId: string,
+  payload: SlackInteractivityPayload,
+): Promise<void> {
+  const result = await retryBlockedAgentRun(db, { incidentId });
+  if (result.outcome !== "retried") {
+    log.info(
+      { incident_id: incidentId, outcome: result.outcome },
+      "Slack investigation retry did not enqueue a successor",
+    );
+    return;
+  }
+
+  const incident = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.id, incidentId),
+  });
+  if (!incident?.slackChannelId || !incident.slackThreadTs) return;
+  const installation = await installationForIncident({
+    pinnedId: incident.slackInstallationId,
+    teamId: payload.team?.id ?? "",
+  });
+  if (!installation) return;
+  const slackUserId = payload.user?.id ?? null;
+  const attribution = slackUserId ? ` by <@${slackUserId}>` : "";
+  await postSlackThreadReply({
+    botToken: installation.botAccessToken,
+    channel: incident.slackChannelId,
+    threadTs: incident.slackThreadTs,
+    text: `:arrows_counterclockwise: Investigation retry requested${attribution}.`,
+  });
 }
 
 // Synthesized `feedback.body` for a bare rating click. `body` is NOT NULL, and

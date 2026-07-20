@@ -14,6 +14,7 @@ import {
   recordInboundInteraction,
   requestFollowUpAgentRun,
   restartAgentRun,
+  retryBlockedAgentRun,
 } from "./agent-follow-up.js";
 import type { DB } from "./client.js";
 import * as schema from "./schema.js";
@@ -1155,6 +1156,46 @@ test("restart serializes with follow-up creation and leaves one active successor
       runs.filter((run) => !["complete", "failed", "superseded"].includes(run.state)).length,
       1,
     );
+  } finally {
+    await client.close();
+  }
+});
+
+test("concurrent retries of a GitHub-blocked run create one viable successor", async () => {
+  const { db, client } = await freshFollowUpDb();
+  try {
+    const { incident, priorRun } = await seedFollowUpIncident(db);
+    await db
+      .update(schema.agentRuns)
+      .set({ createdAt: RECENT })
+      .where(eq(schema.agentRuns.id, priorRun.id));
+    const blocked = one(
+      await db
+        .insert(schema.agentRuns)
+        .values({
+          incidentId: incident.id,
+          runtime: "anthropic",
+          state: "blocked_no_github",
+          createdAt: NOW,
+        })
+        .returning(),
+    );
+
+    const results = await Promise.all([
+      retryBlockedAgentRun(db, { incidentId: incident.id, now: NOW }),
+      retryBlockedAgentRun(db, { incidentId: incident.id, now: NOW }),
+    ]);
+
+    assert.equal(results.filter((result) => result.outcome === "retried").length, 1);
+    assert.equal(results.filter((result) => result.outcome === "not_blocked").length, 1);
+    const runs = await db.query.agentRuns.findMany({
+      where: eq(schema.agentRuns.incidentId, incident.id),
+    });
+    assert.equal(runs.find((run) => run.id === blocked.id)?.state, "superseded");
+    const viable = runs.filter((run) => !["complete", "failed", "superseded"].includes(run.state));
+    assert.equal(viable.length, 1);
+    assert.equal(viable[0]?.state, "queued");
+    assert.equal(viable[0]?.runtime, "anthropic");
   } finally {
     await client.close();
   }

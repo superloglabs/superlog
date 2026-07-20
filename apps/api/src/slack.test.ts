@@ -83,6 +83,14 @@ test("parseRateIncidentAction rejects unknown ratings and other actions", async 
   assert.equal(parseRateIncidentAction("resolve_incident:inc-1"), null);
 });
 
+test("parseRetryInvestigationAction extracts only non-empty incident ids", async () => {
+  const { parseRetryInvestigationAction } = await import("./slack.js");
+
+  assert.equal(parseRetryInvestigationAction("retry_investigation:incident-1"), "incident-1");
+  assert.equal(parseRetryInvestigationAction("retry_investigation:"), null);
+  assert.equal(parseRetryInvestigationAction("resolve_incident:incident-1"), null);
+});
+
 test("ratingTimelineSummary carries the 👍/👎 signal for the incident timeline", async () => {
   const { ratingTimelineSummary } = await import("./slack.js");
   assert.match(ratingTimelineSummary("helpful"), /^👍 /);

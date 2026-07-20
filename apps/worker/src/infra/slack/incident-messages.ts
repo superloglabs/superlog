@@ -152,7 +152,7 @@ export function incidentBlocks(opts: {
   projectName: string;
   service?: string | null;
   environment?: string | null;
-  buttons: Array<{ text: string; url: string; actionId: string }>;
+  buttons: Array<{ text: string; url?: string; actionId: string }>;
   // Auxiliary links rendered as a body line (`View PR · View ticket · …`)
   // rather than buttons — keeps informational URLs out of the actions row.
   links?: Array<{ text: string; url: string }>;
@@ -188,7 +188,7 @@ export function incidentBlocks(opts: {
   const elements: unknown[] = opts.buttons.map((btn) => ({
     type: "button",
     text: { type: "plain_text", text: btn.text, emoji: true },
-    url: btn.url,
+    ...(btn.url ? { url: btn.url } : {}),
     action_id: btn.actionId,
   }));
   if (opts.incidentId) {

@@ -2,7 +2,7 @@ import "./agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { schema } from "@superlog/db";
-import { buildFollowUpContext } from "./agent-run-context.js";
+import { buildFollowUpContext, listAccessibleGithubRepositories } from "./agent-run-context.js";
 import { buildAgentRunInstructions } from "./agent-run-instructions.js";
 
 test("agent run instructions include org guidance, project context, and project instructions", () => {
@@ -154,4 +154,38 @@ test("agent run instructions skip blank project context", () => {
   });
 
   assert.equal(instructions, "Prefer small patches.\n\nRun billing tests before opening a PR.");
+});
+
+test("repository discovery surfaces failure when every enabled installation errors", async () => {
+  const githubUnavailable = new Error("github returned 503");
+  const githubInstalls = [
+    {
+      installation: {
+        installationId: 101,
+        agentEnabled: true,
+        repoAccess: null,
+      } as schema.GithubInstallation,
+      allowedRepoIds: null,
+    },
+    {
+      installation: {
+        installationId: 202,
+        agentEnabled: false,
+        repoAccess: null,
+      } as schema.GithubInstallation,
+      allowedRepoIds: null,
+    },
+  ];
+
+  await assert.rejects(
+    listAccessibleGithubRepositories(
+      { githubInstalls },
+      {
+        listInstallationRepositories: async () => {
+          throw githubUnavailable;
+        },
+      },
+    ),
+    githubUnavailable,
+  );
 });

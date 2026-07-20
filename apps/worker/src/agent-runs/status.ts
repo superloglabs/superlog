@@ -653,7 +653,14 @@ export async function moveAgentRunToBlockedNoGithub(
         tagline,
         projectName: ctx.project.name,
         service: ctx.incident.service,
-        buttons: [{ text: "Connect GitHub", url: installUrl, actionId: "connect_github" }],
+        buttons: [
+          { text: "View incident", url: incidentUrl, actionId: "view_incident" },
+          {
+            text: "Retry investigation",
+            actionId: `retry_investigation:${ctx.incident.id}`,
+          },
+          { text: "Connect GitHub", url: installUrl, actionId: "connect_github" },
+        ],
         incidentId: ctx.incident.id,
         showResolveButton: true,
         // No thumbs: the investigation is blocked before it can start (no GitHub

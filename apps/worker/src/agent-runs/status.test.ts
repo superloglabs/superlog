@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type { schema } from "@superlog/db";
 import type { AgentRunContext } from "../agent-run-context.js";
 import {
+  type ConditionalAgentRunStatusDeps,
   WALL_CLOCK_MULTIPLIER,
   agentRunErrorLogMeta,
   awaitingEventsCompensationPresentation,
@@ -56,6 +57,29 @@ test("lost GitHub-block transition suppresses webhook and Slack side effects", a
 
   assert.equal(transitioned, false);
   assert.deepEqual(calls, ["transition:blockForGithub"]);
+});
+
+test("GitHub-blocked Slack messages offer explicit incident and retry actions", async () => {
+  const calls: string[] = [];
+  let blocks: unknown[] = [];
+  const deps = makeRejectedStatusDeps(calls, null);
+  deps.updateIncidentMainMessage = async (_incidentId, _text, nextBlocks) => {
+    blocks = nextBlocks;
+  };
+
+  const transitioned = await moveAgentRunToBlockedNoGithub(
+    makeStatusContext("repo_discovery"),
+    "no_accessible_repos",
+    "Investigation blocked: GitHub install has no accessible repositories.",
+    deps,
+  );
+
+  assert.equal(transitioned, true);
+  const json = JSON.stringify(blocks);
+  assert.match(json, /View incident/);
+  assert.match(json, /\/org\/status-org\/project\/status-project\/incidents\/incident-status-race/);
+  assert.match(json, /Retry investigation/);
+  assert.match(json, /retry_investigation:incident-status-race/);
 });
 
 test("resolution after a winning status transition preserves the metering claim while suppressing stale publication", async (t) => {
@@ -127,7 +151,7 @@ function makeRejectedStatusDeps(
   calls: string[],
   rejectedTransition: "fail" | "pauseForHuman" | "blockForGithub" | null,
   ownership: boolean[] = [true, true],
-) {
+): ConditionalAgentRunStatusDeps {
   const sideEffect = (name: string) => {
     calls.push(`side-effect:${name}`);
   };

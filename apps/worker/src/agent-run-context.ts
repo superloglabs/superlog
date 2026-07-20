@@ -350,35 +350,37 @@ function isGithubRepoEnabled(repoAccess: GithubRepoAccess, repoId: number): bool
 export async function listAccessibleGithubRepositories(
   // Only the installs are needed — chats (no incident) share this path.
   ctx: Pick<AgentRunContext, "githubInstalls">,
+  deps: {
+    listInstallationRepositories: typeof listInstallationRepositories;
+  } = { listInstallationRepositories },
 ): Promise<InstalledGithubRepo[]> {
   const results = await Promise.all(
-    ctx.githubInstalls.map(async ({ installation, allowedRepoIds }) => {
-      if (!installation.agentEnabled) {
-        return { repos: [] as InstalledGithubRepo[], err: null };
-      }
-      try {
-        const repoAccess = normalizeGithubRepoAccess(installation.repoAccess);
-        const repos = await listInstallationRepositories(installation.installationId);
-        const grantSet = allowedRepoIds === null ? null : new Set(allowedRepoIds);
-        return {
-          repos: repos
-            // Project-scoped (allowedRepoIds=null) sees all repos minus
-            // operator-disabled ones. Granted org-scoped installs are
-            // additionally limited to the explicit grant set so a project
-            // can't reach repos it wasn't given.
-            .filter((repo) => isGithubRepoEnabled(repoAccess, repo.id))
-            .filter((repo) => grantSet === null || grantSet.has(repo.id))
-            .map((repo) => ({ ...repo, installation })),
-          err: null,
-        };
-      } catch (err) {
-        logger.warn(
-          { err, installationId: installation.installationId },
-          "failed to list repositories for GitHub installation",
-        );
-        return { repos: [] as InstalledGithubRepo[], err };
-      }
-    }),
+    ctx.githubInstalls
+      .filter(({ installation }) => installation.agentEnabled)
+      .map(async ({ installation, allowedRepoIds }) => {
+        try {
+          const repoAccess = normalizeGithubRepoAccess(installation.repoAccess);
+          const repos = await deps.listInstallationRepositories(installation.installationId);
+          const grantSet = allowedRepoIds === null ? null : new Set(allowedRepoIds);
+          return {
+            repos: repos
+              // Project-scoped (allowedRepoIds=null) sees all repos minus
+              // operator-disabled ones. Granted org-scoped installs are
+              // additionally limited to the explicit grant set so a project
+              // can't reach repos it wasn't given.
+              .filter((repo) => isGithubRepoEnabled(repoAccess, repo.id))
+              .filter((repo) => grantSet === null || grantSet.has(repo.id))
+              .map((repo) => ({ ...repo, installation })),
+            err: null,
+          };
+        } catch (err) {
+          logger.warn(
+            { err, installationId: installation.installationId },
+            "failed to list repositories for GitHub installation",
+          );
+          return { repos: [] as InstalledGithubRepo[], err };
+        }
+      }),
   );
 
   const repos = dedupeInstalledGithubRepos(results.flatMap((result) => result.repos));
