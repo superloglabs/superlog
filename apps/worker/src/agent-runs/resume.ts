@@ -15,7 +15,7 @@ import {
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
-import type { AgentRunnerBackend } from "../agent-runner-backend.js";
+import type { AgentRunnerBackend, SessionDeliveryErrorKind } from "../agent-runner-backend.js";
 import { investigationGate } from "../billing/investigation-gate.js";
 import { usageNotifier } from "../billing/usage-notifier-infra.js";
 import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
@@ -166,6 +166,50 @@ export async function resumeDurableAgentRun(opts: {
   return resumed ? "resumed" : "superseded";
 }
 
+export type ResumeDeliveryResult =
+  | { kind: "delivered"; outcome: "resumed" | "superseded"; repaired: boolean }
+  | {
+      kind: "failed";
+      err: unknown;
+      errorKind: SessionDeliveryErrorKind;
+      repairAttempted: boolean;
+    };
+
+// Deliver pending input into the durable session, repairing a wedged turn at
+// most once. A runtime rejects new messages while the session's turn is still
+// open on unanswered tool events (a run that parked mid-turn) — the session is
+// alive, so discarding it for a cold-start follow-up would throw away the
+// whole investigation context. When the backend can classify that state and
+// interrupt the open turn, do so and retry the delivery in place. Transient
+// errors are rethrown untouched so the caller's next-tick retry applies.
+export async function deliverResumeRepairingWedgedTurn(opts: {
+  attempt(): Promise<"resumed" | "superseded">;
+  classifyError(err: unknown): SessionDeliveryErrorKind;
+  interruptOpenTurn: (() => Promise<void>) | null;
+}): Promise<ResumeDeliveryResult> {
+  try {
+    return { kind: "delivered", outcome: await opts.attempt(), repaired: false };
+  } catch (err) {
+    if (isTransientError(err)) throw err;
+    const errorKind = opts.classifyError(err);
+    if (errorKind !== "wedged_turn" || !opts.interruptOpenTurn) {
+      return { kind: "failed", err, errorKind, repairAttempted: false };
+    }
+    try {
+      await opts.interruptOpenTurn();
+      return { kind: "delivered", outcome: await opts.attempt(), repaired: true };
+    } catch (retryErr) {
+      if (isTransientError(retryErr)) throw retryErr;
+      return {
+        kind: "failed",
+        err: retryErr,
+        errorKind: opts.classifyError(retryErr),
+        repairAttempted: true,
+      };
+    }
+  }
+}
+
 export function resumeInputEventKinds(
   agentRun: Pick<schema.AgentRun, "state" | "result">,
 ): Array<InboundInteractionEventKind | "incident_context_changed"> {
@@ -204,8 +248,11 @@ async function markProcessed(ids: string[]): Promise<void> {
 // An external-cause `awaiting_events` run additionally treats newly-arrived
 // incident context as resumable input, so fresh evidence wakes the parked
 // investigation without requiring an unrelated human reply.
-// When the provider session can't be resumed (never created, or reclaimed by
-// the provider after its TTL) we fall back to a cold-start follow-up run that
+// A session that parked mid-turn (unanswered tool events) rejects new
+// messages even though it is alive; when the backend can classify that state
+// we interrupt the open turn and deliver in place, preserving the session.
+// Only when the session truly can't be resumed (never created, or reclaimed
+// by the provider) do we fall back to a cold-start follow-up run that
 // re-seeds the prior context, so the human's message is never silently lost.
 export async function resumeAgentRunFromHumanInput(ctx: AgentRunContext): Promise<void> {
   const sessionId = ctx.agentRun.providerSessionId;
@@ -224,7 +271,7 @@ export async function resumeAgentRunFromHumanInput(ctx: AgentRunContext): Promis
     const resumeInputs = await loadUnprocessedResumeInputs(ctx.agentRun);
     if (resumeInputs.length === 0) return;
     if (isContinuation) {
-      await coldStartFallback(ctx, resumeInputs);
+      await coldStartFallback(ctx, resumeInputs, "session_gone");
       return;
     }
     const requeued = await agentRunLifecycle.requeueAfterHumanReply({
@@ -252,45 +299,28 @@ export async function resumeAgentRunFromHumanInput(ctx: AgentRunContext): Promis
   const resumeInputs = await loadUnprocessedResumeInputs(ctx.agentRun);
   if (resumeInputs.length === 0) return;
 
+  let delivery: ResumeDeliveryResult;
   try {
     const runner = await getAgentRunnerBackend(ctx.agentRun.runtime);
-    const outcome = await resumeDurableAgentRun({
-      sessionId,
-      inputs: resumeInputs,
-      runner,
-      transitionToRunning: () =>
-        agentRunLifecycle.resumeRunning({
-          id: ctx.agentRun.id,
-          currentState: ctx.agentRun.state,
-          currentResumeCount: ctx.agentRun.resumeCount,
-          continuation: isContinuation,
+    const interrupt = runner.interrupt?.bind(runner);
+    delivery = await deliverResumeRepairingWedgedTurn({
+      attempt: () =>
+        resumeDurableAgentRun({
+          sessionId,
+          inputs: resumeInputs,
+          runner,
+          transitionToRunning: () =>
+            agentRunLifecycle.resumeRunning({
+              id: ctx.agentRun.id,
+              currentState: ctx.agentRun.state,
+              currentResumeCount: ctx.agentRun.resumeCount,
+              continuation: isContinuation,
+            }),
+          markProcessed,
         }),
-      markProcessed,
+      classifyError: (err) => runner.classifyDeliveryError?.(err) ?? "unknown",
+      interruptOpenTurn: interrupt ? () => interrupt(sessionId) : null,
     });
-    if (outcome === "superseded") {
-      logger.info(
-        {
-          scope: "agent_run",
-          agent_run_id: ctx.agentRun.id,
-          incident_id: ctx.incident.id,
-          session_id: sessionId,
-        },
-        "resume input reached the durable session after the run had already transitioned",
-      );
-      return;
-    }
-    logger.info(
-      {
-        scope: "agent_run",
-        agent_run_id: ctx.agentRun.id,
-        incident_id: ctx.incident.id,
-        session_id: sessionId,
-        continuation: isContinuation,
-        resume_count: ctx.agentRun.resumeCount + 1,
-        input_count: resumeInputs.length,
-      },
-      "agent run resumed from pending input",
-    );
   } catch (err) {
     if (isTransientError(err)) {
       logger.error(
@@ -308,28 +338,65 @@ export async function resumeAgentRunFromHumanInput(ctx: AgentRunContext): Promis
       );
       return;
     }
-    // A non-transient resume error on a continuation almost always means the
-    // provider session is gone (TTL-reclaimed). Don't alarm the thread with an
-    // "Investigation failed" card — quietly fall back to a fresh follow-up that
+    delivery = { kind: "failed", err, errorKind: "unknown", repairAttempted: false };
+  }
+
+  if (delivery.kind === "failed") {
+    // Only a provably-gone session justifies discarding the durable context.
+    // Wedged turns are repaired above; whatever still fails here (repair
+    // exhausted, or an unclassifiable error) falls back so the human's input
+    // is never silently lost. Don't alarm the thread with an "Investigation
+    // failed" card on a continuation — quietly enqueue a fresh follow-up that
     // re-seeds the prior context. For the classic awaiting_human pause we keep
     // the existing hard-fail.
     if (isContinuation) {
       logger.warn(
         {
-          err,
+          err: delivery.err,
           scope: "agent_run",
           agent_run_id: ctx.agentRun.id,
           incident_id: ctx.incident.id,
           provider_session_id: sessionId,
           stage: "resume",
+          delivery_error_kind: delivery.errorKind,
+          repair_attempted: delivery.repairAttempted,
         },
         "could not resume durable session; falling back to a cold-start follow-up",
       );
-      await coldStartFallback(ctx, resumeInputs);
+      await coldStartFallback(ctx, resumeInputs, delivery.errorKind);
       return;
     }
-    await failAgentRun(ctx, "resume_failed", "Failed to resume agent run.", { err });
+    await failAgentRun(ctx, "resume_failed", "Failed to resume agent run.", { err: delivery.err });
+    return;
   }
+
+  if (delivery.outcome === "superseded") {
+    logger.info(
+      {
+        scope: "agent_run",
+        agent_run_id: ctx.agentRun.id,
+        incident_id: ctx.incident.id,
+        session_id: sessionId,
+      },
+      "resume input reached the durable session after the run had already transitioned",
+    );
+    return;
+  }
+  logger.info(
+    {
+      scope: "agent_run",
+      agent_run_id: ctx.agentRun.id,
+      incident_id: ctx.incident.id,
+      session_id: sessionId,
+      continuation: isContinuation,
+      resume_count: ctx.agentRun.resumeCount + 1,
+      input_count: resumeInputs.length,
+      turn_repaired: delivery.repaired,
+    },
+    delivery.repaired
+      ? "agent run resumed from pending input after interrupting a wedged turn"
+      : "agent run resumed from pending input",
+  );
 }
 
 // Session unresumable → resolve a completed PR delivery deterministically, or
@@ -337,6 +404,7 @@ export async function resumeAgentRunFromHumanInput(ctx: AgentRunContext): Promis
 async function coldStartFallback(
   ctx: AgentRunContext,
   resumeInputs: Awaited<ReturnType<typeof loadUnprocessedResumeInputs>>,
+  errorKind: SessionDeliveryErrorKind,
 ): Promise<void> {
   const recovery = await recoverUnresumableContinuation({
     inputs: resumeInputs,
@@ -441,7 +509,12 @@ async function coldStartFallback(
         id: ctx.agentRun.id,
         currentState: ctx.agentRun.state,
         reason: "resume_failed",
-        summary: "Provider session expired; continuing as a fresh follow-up.",
+        // Only claim expiry when the provider proved the session is gone —
+        // any other failure gets the honest, unspecific wording.
+        summary:
+          errorKind === "session_gone"
+            ? "Provider session expired; continuing as a fresh follow-up."
+            : "Provider session could not be resumed; continuing as a fresh follow-up.",
         category: "infrastructure",
         existingResult: ctx.agentRun.result ?? null,
       });
