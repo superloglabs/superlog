@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ProjectMcpServer } from "../api.ts";
 import {
+  EMPTY_AUTH,
   createDetectedProjectMcpAuthDraft,
   createProjectMcpEditorDraft,
   detectProjectMcpAuthSafely,
   projectMcpAuthDetectionIsCurrent,
   projectMcpAuthSelectionAfterUrlChange,
+  resolveProjectMcpAuthForSubmit,
   resolveSelectedScopes,
   shouldDetectProjectMcpAuth,
   toggleScopeSelection,
@@ -175,4 +177,47 @@ test("toggling the last selected scope keeps a non-empty selection", () => {
   const advertised = ["projects:read", "database:read"];
 
   assert.equal(toggleScopeSelection("projects:read", advertised, "projects:read"), "projects:read");
+});
+
+test("submitting an unchanged detected URL keeps its customized OAuth scopes", async () => {
+  const draft = {
+    ...EMPTY_AUTH,
+    type: "oauth" as const,
+    scopes: "projects:read",
+    advertisedScopes: ["projects:read", "database:read"],
+  };
+  let detectionCalls = 0;
+
+  const result = await resolveProjectMcpAuthForSubmit({
+    selection: "automatic",
+    draft,
+    detectedUrl: "https://mcp.example/mcp",
+    currentUrl: "https://mcp.example/mcp",
+    detect: async () => {
+      detectionCalls += 1;
+      return EMPTY_AUTH;
+    },
+  });
+
+  assert.equal(result, draft);
+  assert.equal(detectionCalls, 0);
+});
+
+test("submitting a changed automatic URL discovers its authentication again", async () => {
+  const discovered = { ...EMPTY_AUTH, type: "oauth" as const };
+  let detectionCalls = 0;
+
+  const result = await resolveProjectMcpAuthForSubmit({
+    selection: "automatic",
+    draft: EMPTY_AUTH,
+    detectedUrl: "https://old.example/mcp",
+    currentUrl: "https://new.example/mcp",
+    detect: async () => {
+      detectionCalls += 1;
+      return discovered;
+    },
+  });
+
+  assert.equal(result, discovered);
+  assert.equal(detectionCalls, 1);
 });

@@ -82,6 +82,19 @@ export async function detectProjectMcpAuthSafely<T>(detect: () => Promise<T>): P
   }
 }
 
+export async function resolveProjectMcpAuthForSubmit(input: {
+  selection: ProjectMcpAuthSelection;
+  draft: AuthDraft;
+  detectedUrl: string | null;
+  currentUrl: string;
+  detect: () => Promise<AuthDraft | null>;
+}): Promise<AuthDraft | null> {
+  if (input.selection === "automatic" && input.detectedUrl !== input.currentUrl) {
+    return input.detect();
+  }
+  return input.draft;
+}
+
 export function createDetectedProjectMcpAuthDraft(detection: ProjectMcpAuthDetection): AuthDraft {
   if (detection.type === "unknown") return EMPTY_AUTH;
   return {
