@@ -7,6 +7,7 @@ test("an active investigation ends the transcript with rotating progress copy", 
   const html = renderToStaticMarkup(<IncidentActivityFeed events={[]} investigating />);
 
   assert.match(html, /<output/);
+  assert.match(html, /<output[^>]*class="[^"]*flex-1/);
   assert.match(html, /Investigation in progress/);
   assert.doesNotMatch(html, /border-accent\/40|rounded-full[^>]*investigation-progress-dot/);
   assert.doesNotMatch(html, /w-px bg-border/);

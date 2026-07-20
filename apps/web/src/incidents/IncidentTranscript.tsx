@@ -235,7 +235,7 @@ function InvestigationProgressEntry() {
       <output
         aria-live="polite"
         aria-atomic="true"
-        className="flex min-h-[22px] min-w-0 items-center"
+        className="flex min-h-[22px] min-w-0 flex-1 items-center"
       >
         <span className="sr-only">Investigation in progress</span>
         <span aria-hidden className="relative block h-4 min-w-0 flex-1 overflow-hidden">
