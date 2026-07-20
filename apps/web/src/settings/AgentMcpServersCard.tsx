@@ -21,6 +21,7 @@ import {
   createProjectMcpEditorDraft,
   detectProjectMcpAuthSafely,
   projectMcpAuthDetectionIsCurrent,
+  projectMcpAuthDraftAfterUrlChange,
   projectMcpAuthSelectionAfterUrlChange,
   resolveProjectMcpAuthForSubmit,
   resolveSelectedScopes,
@@ -303,6 +304,7 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
                   setUrl(e.target.value);
                   setAuthDetection(null);
                   detectedAuthUrl.current = null;
+                  setAuth((current) => projectMcpAuthDraftAfterUrlChange(current));
                   const nextSelection = projectMcpAuthSelectionAfterUrlChange(
                     authSelection.current,
                   );

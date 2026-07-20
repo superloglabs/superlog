@@ -484,3 +484,39 @@ test("OAuth discovery prefers the protected-resource scopes_supported over the a
 
   assert.deepEqual(discovery.scopesSupported, ["projects:read", "database:read"]);
 });
+
+test("OAuth discovery honors an explicitly empty protected-resource scope list", async () => {
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  const fakeFetch = (async (input: URL | string | Request) => {
+    const target = input.toString();
+    if (target === "https://mcp.example/mcp") {
+      return new Response(null, { status: 401 });
+    }
+    if (target === "https://mcp.example/.well-known/oauth-protected-resource/mcp") {
+      return json({
+        resource: "https://mcp.example/mcp",
+        authorization_servers: ["https://as.example"],
+        scopes_supported: [],
+      });
+    }
+    if (target === "https://as.example/.well-known/oauth-authorization-server") {
+      return json({
+        authorization_endpoint: "https://as.example/authorize",
+        token_endpoint: "https://as.example/token",
+        code_challenge_methods_supported: ["S256"],
+        grant_types_supported: ["authorization_code"],
+        scopes_supported: ["projects:read", "projects:write"],
+      });
+    }
+    return new Response(null, { status: 404 });
+  }) as unknown as typeof fetch;
+
+  const discovery =
+    await createFetchProjectMcpOAuthHttp(fakeFetch).discover("https://mcp.example/mcp");
+
+  assert.deepEqual(discovery.scopesSupported, []);
+});

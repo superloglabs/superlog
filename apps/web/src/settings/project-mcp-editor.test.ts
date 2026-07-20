@@ -7,6 +7,7 @@ import {
   createProjectMcpEditorDraft,
   detectProjectMcpAuthSafely,
   projectMcpAuthDetectionIsCurrent,
+  projectMcpAuthDraftAfterUrlChange,
   projectMcpAuthSelectionAfterUrlChange,
   resolveProjectMcpAuthForSubmit,
   resolveSelectedScopes,
@@ -124,6 +125,20 @@ test("detected client-credentials OAuth requires manual credentials even with re
 test("changing the URL resets auth forced by detection but preserves an explicit manual choice", () => {
   assert.equal(projectMcpAuthSelectionAfterUrlChange("required"), "automatic");
   assert.equal(projectMcpAuthSelectionAfterUrlChange("manual"), "manual");
+});
+
+test("changing a manual OAuth URL clears scopes advertised by the old resource", () => {
+  const draft = {
+    ...EMPTY_AUTH,
+    type: "oauth" as const,
+    scopes: "projects:read",
+    advertisedScopes: ["projects:read", "database:read"],
+  };
+
+  assert.deepEqual(projectMcpAuthDraftAfterUrlChange(draft), {
+    ...draft,
+    advertisedScopes: [],
+  });
 });
 
 test("automatic auth detection requires an URL and explicit trust confirmation", () => {

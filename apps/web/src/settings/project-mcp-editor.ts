@@ -53,6 +53,10 @@ export function toggleScopeSelection(scopes: string, advertised: string[], scope
 
 export type ProjectMcpAuthSelection = "automatic" | "manual" | "required";
 
+export function projectMcpAuthDraftAfterUrlChange(draft: AuthDraft): AuthDraft {
+  return { ...draft, advertisedScopes: [] };
+}
+
 export function projectMcpAuthSelectionAfterUrlChange(
   selection: ProjectMcpAuthSelection,
 ): ProjectMcpAuthSelection {
