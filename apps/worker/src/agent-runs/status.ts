@@ -4,6 +4,7 @@ import {
   db,
   enqueueAgentRunAwaitingInput,
   enqueueAgentRunFailed,
+  incidentHasCurrentSilencedIssues,
   schema,
 } from "@superlog/db";
 import type { AgentRunContext } from "../agent-run-context.js";
@@ -457,6 +458,12 @@ export async function reconcileStaleAgentRunPublication(ctx: AgentRunContext): P
         agentRun?.result?.summary ??
         presentation.summary);
 
+  // A closed-PR resolution (e.g. committed by the GitHub webhook while this
+  // run's provider calls were in flight) silences the incident's issues; this
+  // repaint must keep the un-silence escape hatch it would otherwise erase.
+  const showUnsilenceButton =
+    incident.status !== "open" && (await incidentHasCurrentSilencedIssues(incident.id));
+
   // Resolution or a resume may commit while the non-transactional provider
   // calls are in flight. Re-publish the aggregate's durable current state so
   // the waiting update cannot remain the final Slack/Linear state.
@@ -476,6 +483,7 @@ export async function reconcileStaleAgentRunPublication(ctx: AgentRunContext): P
       incidentId: incident.id,
       showResolveButton: incident.status === "open",
       showFeedbackButtons: incident.status !== "open",
+      showUnsilenceButton,
     }),
   );
   await postLinearIncidentResponse(incident.id, presentation.summary);
