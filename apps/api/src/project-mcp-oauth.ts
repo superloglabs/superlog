@@ -508,7 +508,6 @@ async function discoverProjectMcpOAuth(
     authorizationMetadataUrls(authorizationServer),
     signal,
   );
-  const resourceAdvertisesScopes = Array.isArray(resourceMetadata.scopes_supported);
   const resourceScopes = readStringArray(resourceMetadata.scopes_supported);
   return {
     authorizationServer,
@@ -521,9 +520,7 @@ async function discoverProjectMcpOAuth(
         : endpoint.toString(),
     codeChallengeMethods: readStringArray(metadata.code_challenge_methods_supported),
     grantTypes: readStringArray(metadata.grant_types_supported),
-    scopesSupported: resourceAdvertisesScopes
-      ? resourceScopes
-      : readStringArray(metadata.scopes_supported),
+    scopesSupported: resourceScopes,
   };
 }
 
