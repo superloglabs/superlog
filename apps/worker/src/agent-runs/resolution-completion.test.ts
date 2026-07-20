@@ -94,11 +94,12 @@ test("merged fallback publishes Incident-resolved copy", () => {
   assert.doesNotMatch(`${copy.threadLead} ${copy.status}`, /investigation complete/i);
 });
 
-test("settled-closed fallback publishes silenced copy with the un-silence pointer", () => {
+test("settled-closed fallback publishes silenced copy when the cascade silenced issues", () => {
   const copy = settledPullRequestResolutionCopy({
     prNumber: 42,
     repoFullName: "acme/api",
     settledState: "closed",
+    silenced: true,
   });
 
   assert.match(copy.threadLead, /closed without merging/);
@@ -108,11 +109,28 @@ test("settled-closed fallback publishes silenced copy with the un-silence pointe
   assert.equal(copy.mainTextSuffix, "Incident resolved, errors silenced");
 });
 
+test("settled-closed fallback keeps plain copy when the committed resolution did not silence", () => {
+  // Mixed merged+closed delivery: the triggering PR is a close, but a merged
+  // sibling made the committed resolution agent_pr_merged with the plain
+  // resolve cascade — the copy must not claim silencing.
+  const copy = settledPullRequestResolutionCopy({
+    prNumber: 42,
+    repoFullName: "acme/api",
+    settledState: "closed",
+    silenced: false,
+  });
+
+  assert.doesNotMatch(copy.threadLead, /silenced/);
+  assert.equal(copy.status, "Incident resolved - all agent pull requests settled");
+  assert.equal(copy.mainTextSuffix, "Incident resolved");
+});
+
 test("settled-merged fallback keeps plain resolved copy", () => {
   const copy = settledPullRequestResolutionCopy({
     prNumber: 42,
     repoFullName: "acme/api",
     settledState: "merged",
+    silenced: false,
   });
 
   assert.doesNotMatch(copy.threadLead, /silenced/);

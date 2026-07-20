@@ -98,7 +98,8 @@ export async function runResolvedIncidentSideEffectsForIncident(opts: {
   resolutionProof: IncidentResolutionProof;
   reopenPullRequest: CloseIncidentPullRequest;
 }): Promise<CloseIncidentOpenPullRequestsResult | null> {
-  const { db, isIncidentResolutionProofCurrent, schema } = await import("@superlog/db");
+  const { db, incidentHasCurrentSilencedIssues, isIncidentResolutionProofCurrent, schema } =
+    await import("@superlog/db");
   const incident = await db.query.incidents.findFirst({
     where: eq(schema.incidents.id, opts.incidentId),
   });
@@ -118,22 +119,13 @@ export async function runResolvedIncidentSideEffectsForIncident(opts: {
   // A closed-PR resolution silenced the incident's issues (the settled-path
   // default in @superlog/db). Surface that on the root message, attributing
   // the close from the resolution event's recorded actor rather than parsing
-  // reason text. Gated on an issue actually being silenced so a re-render
-  // after the un-silence click paints the plain resolved copy.
+  // reason text. Gated on an issue whose *current* incident is this one still
+  // being silenced: a re-render after the un-silence click paints the plain
+  // resolved copy, and an issue that recurred into a newer incident cannot
+  // resurface the silenced variant here (the button could no longer touch it).
   let silencedByClosedPr: { closedByLogin: string | null } | undefined;
   if (incident.resolvedReasonCode === "agent_pr_closed") {
-    const silencedIssue = await db
-      .select({ id: schema.issues.id })
-      .from(schema.incidentIssues)
-      .innerJoin(schema.issues, eq(schema.issues.id, schema.incidentIssues.issueId))
-      .where(
-        and(
-          eq(schema.incidentIssues.incidentId, incident.id),
-          eq(schema.issues.status, "silenced"),
-        ),
-      )
-      .limit(1);
-    if (silencedIssue.length > 0) {
+    if (await incidentHasCurrentSilencedIssues(incident.id)) {
       const resolutionEvent = await db.query.incidentEvents.findFirst({
         where: and(
           eq(schema.incidentEvents.incidentId, incident.id),

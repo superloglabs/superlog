@@ -1222,6 +1222,53 @@ test("unsilenceIncidentIssues flips silenced issues to resolved so recurrence re
   }
 });
 
+test("hasCurrentSilencedIssues follows the issue's current incident link", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { issue, incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-current-silenced",
+    });
+    await seedClosedAgentPullRequest(db, incident, project.orgId);
+    const lifecycle = createIncidentLifecycle(db);
+    await lifecycle.resolveIfAllAgentPullRequestsSettled({
+      incidentId: incident.id,
+      settlementEvidenceAt: new Date(),
+      buildInput: () => ({
+        incidentId: incident.id,
+        kind: "agent_pr_closed",
+        reasonCode: "agent_pr_closed",
+        reasonText: "Last agent PR closed without merge.",
+      }),
+    });
+    assert.equal(await lifecycle.hasCurrentSilencedIssues(incident.id), true);
+
+    await lifecycle.unsilenceIncidentIssues({ incidentId: incident.id });
+    assert.equal(await lifecycle.hasCurrentSilencedIssues(incident.id), false);
+
+    // The issue recurs into a NEW incident which later silences it. The old
+    // incident's historical link must not resurface the silenced state (its
+    // un-silence button could no longer touch the issue).
+    const reloaded = one(await db.select().from(schema.issues).where(eq(schema.issues.id, issue.id)));
+    const successor = await lifecycle.openRecurrence({
+      previousIncident: incident,
+      issue: reloaded,
+      origin: "resolved_issue_recurred",
+    });
+    await lifecycle.resolve({
+      incidentId: successor.id,
+      kind: "dashboard_manual",
+      reasonCode: "not_an_issue",
+      reasonText: null,
+      issueOutcome: { kind: "silence" },
+    });
+    assert.equal(await lifecycle.hasCurrentSilencedIssues(incident.id), false);
+    assert.equal(await lifecycle.hasCurrentSilencedIssues(successor.id), true);
+  } finally {
+    await client.close();
+  }
+});
+
 test("resolve with observe outcome stores the trigger and baseline", async () => {
   const { db, client } = await freshDb();
   try {

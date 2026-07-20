@@ -703,6 +703,19 @@ export function createIncidentLifecycle(database: DB = db) {
       );
     },
 
+    // Whether any issue whose *current* incident is this one sits silenced.
+    // Drives the silenced variant of the resolution notification: derived
+    // from committed issue state (not the triggering PR event), and scoped to
+    // current links so an issue that recurred into a newer incident cannot
+    // resurface the silenced copy on a predecessor whose un-silence action
+    // could no longer touch it.
+    async hasCurrentSilencedIssues(incidentId: string): Promise<boolean> {
+      return repository.transaction(async (tx) => {
+        const issues = await repository.listCurrentIssuesForIncidentInTx(tx, incidentId);
+        return issues.some((issue) => issue.status === "silenced");
+      });
+    },
+
     // Undo for the closed-PR silence default: flip this incident's silenced
     // issues back to `resolved`, so the next occurrence is a recurrence that
     // opens a chained incident again. Only issues whose *current* incident is
@@ -1051,6 +1064,10 @@ export async function resolveIncidentIfAllAgentPullRequestsSettled(opts: {
   ): ResolveIncidentInput & { kind: "agent_pr_merged" | "agent_pr_closed" };
 }): Promise<ResolveIncidentAfterAgentPullRequestsMergedResult> {
   return createIncidentLifecycle(db).resolveIfAllAgentPullRequestsSettled(opts);
+}
+
+export async function incidentHasCurrentSilencedIssues(incidentId: string): Promise<boolean> {
+  return createIncidentLifecycle(db).hasCurrentSilencedIssues(incidentId);
 }
 
 export async function unsilenceIncidentIssues(opts: {

@@ -6,6 +6,7 @@ import {
   closeIncidentOpenPullRequestsAfterResolution,
   createIncidentLifecycle,
   db,
+  incidentHasCurrentSilencedIssues,
   isIncidentResolutionProofCurrent,
   resolveAgentIncident,
   schema,
@@ -477,19 +478,28 @@ export async function completeWithoutPullRequest(
 ): Promise<boolean> {
   const noiseReason = completedNoiseReason(result);
   const resolutionReason = noiseReason ? null : completedResolutionReason(result);
+  // The settled outcome only says which PR event triggered the resolve. Read
+  // whether the committed cascade actually silenced issues from the database:
+  // a close with a merged sibling resolves as agent_pr_merged with the plain
+  // resolve cascade, and must not render silenced copy or a no-op un-silence
+  // button.
+  const settledClosedSilenced =
+    opts?.incidentOutcome?.kind === "all_pull_requests_settled" &&
+    opts.incidentOutcome.settledState === "closed" &&
+    (await incidentHasCurrentSilencedIssues(ctx.incident.id));
   const mergedResolutionCopy =
     opts?.incidentOutcome?.kind === "all_pull_requests_merged"
       ? mergedPullRequestResolutionCopy(opts.incidentOutcome)
       : opts?.incidentOutcome?.kind === "all_pull_requests_settled"
-        ? settledPullRequestResolutionCopy(opts.incidentOutcome)
+        ? settledPullRequestResolutionCopy({
+            ...opts.incidentOutcome,
+            silenced: settledClosedSilenced,
+          })
         : null;
   const alreadyClosedCopy =
     opts?.incidentOutcome?.kind === "incident_already_closed"
       ? incidentAlreadyClosedCompletionCopy()
       : null;
-  const settledClosedSilenced =
-    opts?.incidentOutcome?.kind === "all_pull_requests_settled" &&
-    opts.incidentOutcome.settledState === "closed";
   let closedElsewhereCopy = alreadyClosedCopy;
   let resolutionProof =
     opts?.incidentOutcome?.kind === "all_pull_requests_merged" ||
