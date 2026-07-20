@@ -116,6 +116,44 @@ body {
   font-family: inherit;
 }
 
+@keyframes investigation-progress-dot {
+  0%,
+  100% {
+    opacity: 0.22;
+    transform: scale(0.78);
+  }
+  45% {
+    opacity: 1;
+    transform: scale(1.25);
+  }
+}
+
+@keyframes investigation-progress-phrase {
+  0%,
+  8% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  10%,
+  98% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.investigation-progress-dot {
+  animation: investigation-progress-dot 1.35s ease-in-out infinite;
+}
+
+.investigation-progress-phrase {
+  opacity: 0;
+  animation: investigation-progress-phrase 30s ease-in-out infinite;
+}
+
 .incident-alert-card {
   opacity: 0;
   transform: translate3d(0, 44px, 0) scale(0.97);
@@ -548,6 +586,25 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .investigation-progress-dot,
+  .investigation-progress-phrase {
+    animation: none;
+  }
+
+  .investigation-progress-dot {
+    opacity: 0.5;
+    transform: none;
+  }
+
+  .investigation-progress-phrase {
+    opacity: 0;
+    transform: none;
+  }
+
+  .investigation-progress-phrase:first-child {
+    opacity: 1;
+  }
+
   .incident-alert-card,
   .incident-summary-card,
   .severity-main-card,
