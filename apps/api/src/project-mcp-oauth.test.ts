@@ -47,6 +47,25 @@ test("OAuth discovery rejects private destinations at the outbound request bound
   );
 });
 
+test("OAuth dynamic registration restricts the client to requested scopes", async () => {
+  const registrationBodies: Record<string, unknown>[] = [];
+  const fakeFetch = (async (_input: URL | string | Request, init?: RequestInit) => {
+    registrationBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response(JSON.stringify({ client_id: "dynamic-client" }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+
+  await createFetchProjectMcpOAuthHttp(fakeFetch).register(
+    "https://auth.example/register",
+    "https://api.superlog.sh/api/agent-mcp-oauth/callback",
+    ["projects:read", "database:read"],
+  );
+
+  assert.equal(registrationBodies[0]?.scope, "projects:read database:read");
+});
+
 test("OAuth start uses discovery, dynamic registration, PKCE, and resource binding", async () => {
   let server = oauthServer();
   let attempt: ProjectMcpOAuthAttempt | null = null;
@@ -411,7 +430,10 @@ test("OAuth start requests the server's advertised scopes when none are configur
         grantTypes: ["authorization_code", "refresh_token"],
         scopesSupported: ["projects:read", "database:read"],
       }),
-      register: async () => ({ clientId: "dynamic-client", clientSecret: null }),
+      register: async (_registrationEndpoint, _redirectUri, scopes) => {
+        assert.deepEqual(scopes, ["projects:read", "database:read"]);
+        return { clientId: "dynamic-client", clientSecret: null };
+      },
       exchange: async () => {
         throw new Error("not called");
       },

@@ -14,11 +14,9 @@ export type ProjectMcpOAuthDiscovery = {
   resource: string;
   codeChallengeMethods: string[];
   grantTypes: string[];
-  // Scopes the server advertises for this resource (RFC 9728 protected-resource
-  // metadata, falling back to the authorization server's own list). Servers use
-  // this to narrow what a URL variant grants — e.g. a read-only URL advertises
-  // only read scopes — so a client should request exactly these unless the
-  // operator has pinned an explicit subset.
+  // Scopes the server advertises for this resource in RFC 9728
+  // protected-resource metadata. A read-only URL can therefore advertise only
+  // read scopes, which the client requests unless the operator pins a subset.
   scopesSupported: string[];
 };
 
@@ -55,6 +53,7 @@ export type ProjectMcpOAuthHttp = {
   register(
     registrationEndpoint: string,
     redirectUri: string,
+    scopes: string[],
   ): Promise<{ clientId: string; clientSecret: string | null }>;
   exchange(input: {
     tokenEndpoint: string;
@@ -107,6 +106,12 @@ export function createProjectMcpOAuthService(deps: {
       if (!discovery.codeChallengeMethods.includes("S256")) {
         throw new Error("OAuth server does not advertise PKCE S256 support");
       }
+      // An operator-pinned scope list wins; otherwise request everything the
+      // server advertises for this resource. This is what makes a read-only
+      // resource URL request only read scopes, matching other MCP clients,
+      // instead of falling through to the server's "grant everything" default.
+      const requestedScopes =
+        server.auth.scopes.length > 0 ? server.auth.scopes : discovery.scopesSupported;
       let clientId = server.auth.clientId;
       let clientSecret = server.auth.clientSecret;
       if (!clientId) {
@@ -118,16 +123,11 @@ export function createProjectMcpOAuthService(deps: {
         const registration = await deps.http.register(
           discovery.registrationEndpoint,
           input.redirectUri,
+          requestedScopes,
         );
         clientId = registration.clientId;
         clientSecret = registration.clientSecret;
       }
-      // An operator-pinned scope list wins; otherwise request everything the
-      // server advertises for this resource. This is what makes a read-only
-      // resource URL request only read scopes, matching other MCP clients,
-      // instead of falling through to the server's "grant everything" default.
-      const requestedScopes =
-        server.auth.scopes.length > 0 ? server.auth.scopes : discovery.scopesSupported;
       const state = randomToken();
       const codeVerifier = randomToken();
       const expiresAt = new Date(now().getTime() + OAUTH_ATTEMPT_TTL_MS);
@@ -403,7 +403,7 @@ export function createFetchProjectMcpOAuthHttp(fetchOverride?: typeof fetch): Pr
   const fetchImpl = fetchOverride ?? strictProjectMcpFetch;
   return {
     discover: (serverUrl, signal) => discoverProjectMcpOAuth(fetchImpl, serverUrl, signal),
-    async register(registrationEndpoint, redirectUri) {
+    async register(registrationEndpoint, redirectUri, scopes) {
       const response = await fetchImpl(registrationEndpoint, {
         method: "POST",
         redirect: "manual",
@@ -417,6 +417,7 @@ export function createFetchProjectMcpOAuthHttp(fetchOverride?: typeof fetch): Pr
           grant_types: ["authorization_code", "refresh_token"],
           response_types: ["code"],
           token_endpoint_auth_method: "none",
+          ...(scopes.length > 0 ? { scope: scopes.join(" ") } : {}),
         }),
       });
       const body = await responseJson(response, "OAuth dynamic registration failed");

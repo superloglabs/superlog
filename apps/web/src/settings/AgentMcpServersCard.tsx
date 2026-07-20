@@ -1,6 +1,5 @@
 import { useRef, useState } from "react";
 import {
-  type ProjectMcpAuthInput,
   type ProjectMcpServer,
   useConnectProjectMcpClientCredentials,
   useCreateProjectMcpServer,
@@ -22,6 +21,7 @@ import {
   detectProjectMcpAuthSafely,
   projectMcpAuthDetectionIsCurrent,
   projectMcpAuthDraftAfterUrlChange,
+  projectMcpAuthInputFromDraft,
   projectMcpAuthSelectionAfterUrlChange,
   resolveProjectMcpAuthForSubmit,
   resolveSelectedScopes,
@@ -111,7 +111,7 @@ export function AgentMcpServersCard({ projectId }: { projectId: string | undefin
         name,
         url,
         enabled: (query.data?.enabledCount ?? 0) < (query.data?.enabledLimit ?? 19),
-        auth: authInput(submittedAuth),
+        auth: projectMcpAuthInputFromDraft(submittedAuth),
         confirmTrusted: trusted,
       },
       {
@@ -525,7 +525,7 @@ function ServerEditor({
               name,
               url,
               confirmTrusted,
-              ...(replaceAuth ? { auth: authInput(auth) } : {}),
+              ...(replaceAuth ? { auth: projectMcpAuthInputFromDraft(auth) } : {}),
             });
             closeEditor();
           }}
@@ -726,20 +726,6 @@ function Switch({
       />
     </button>
   );
-}
-
-function authInput(auth: AuthDraft): ProjectMcpAuthInput {
-  if (auth.type === "none") return { type: "none" };
-  if (auth.type === "bearer") return { type: "bearer", token: auth.token };
-  if (auth.type === "api_key")
-    return { type: "api_key", headerName: auth.headerName, key: auth.key };
-  return {
-    type: "oauth",
-    grantType: auth.grantType,
-    scopes: auth.scopes.split(/\s+/).filter(Boolean),
-    ...(auth.clientId.trim() ? { clientId: auth.clientId.trim() } : {}),
-    ...(auth.clientSecret ? { clientSecret: auth.clientSecret } : {}),
-  };
 }
 
 function authLabel(server: ProjectMcpServer): string {

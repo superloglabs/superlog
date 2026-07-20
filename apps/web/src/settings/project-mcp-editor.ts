@@ -1,4 +1,4 @@
-import type { ProjectMcpAuthDetection, ProjectMcpServer } from "../api.ts";
+import type { ProjectMcpAuthDetection, ProjectMcpAuthInput, ProjectMcpServer } from "../api.ts";
 
 export type AuthDraft = {
   type: "none" | "bearer" | "api_key" | "oauth";
@@ -6,10 +6,8 @@ export type AuthDraft = {
   headerName: string;
   key: string;
   grantType: "authorization_code" | "client_credentials";
-  // Explicit scope selection. An empty string means "request everything the
-  // server advertises" — the server, not us, decides that set (see
-  // advertisedScopes), so a read-only resource URL is honoured without the
-  // operator having to type anything.
+  // Explicit scope selection. An empty string means every advertised scope is
+  // selected; submission expands it to the concrete advertised list.
   scopes: string;
   // Scopes the server advertised at detection time; drives the customize UI.
   advertisedScopes: string[];
@@ -36,6 +34,20 @@ export const EMPTY_AUTH: AuthDraft = {
 export function resolveSelectedScopes(scopes: string, advertised: string[]): string[] {
   const explicit = scopes.split(/\s+/).filter(Boolean);
   return explicit.length > 0 ? explicit : advertised;
+}
+
+export function projectMcpAuthInputFromDraft(auth: AuthDraft): ProjectMcpAuthInput {
+  if (auth.type === "none") return { type: "none" };
+  if (auth.type === "bearer") return { type: "bearer", token: auth.token };
+  if (auth.type === "api_key")
+    return { type: "api_key", headerName: auth.headerName, key: auth.key };
+  return {
+    type: "oauth",
+    grantType: auth.grantType,
+    scopes: resolveSelectedScopes(auth.scopes, auth.advertisedScopes),
+    ...(auth.clientId.trim() ? { clientId: auth.clientId.trim() } : {}),
+    ...(auth.clientSecret ? { clientSecret: auth.clientSecret } : {}),
+  };
 }
 
 // Toggle one advertised scope in/out of the selection, keeping advertised

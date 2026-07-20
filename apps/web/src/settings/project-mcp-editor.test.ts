@@ -8,12 +8,28 @@ import {
   detectProjectMcpAuthSafely,
   projectMcpAuthDetectionIsCurrent,
   projectMcpAuthDraftAfterUrlChange,
+  projectMcpAuthInputFromDraft,
   projectMcpAuthSelectionAfterUrlChange,
   resolveProjectMcpAuthForSubmit,
   resolveSelectedScopes,
   shouldDetectProjectMcpAuth,
   toggleScopeSelection,
 } from "./project-mcp-editor.ts";
+
+test("submitting detected OAuth persists every scope displayed as selected", () => {
+  assert.deepEqual(
+    projectMcpAuthInputFromDraft({
+      ...EMPTY_AUTH,
+      type: "oauth",
+      advertisedScopes: ["projects:read", "database:read"],
+    }),
+    {
+      type: "oauth",
+      grantType: "authorization_code",
+      scopes: ["projects:read", "database:read"],
+    },
+  );
+});
 
 test("opening an MCP editor starts from the persisted server instead of a stale draft", () => {
   const server = {
