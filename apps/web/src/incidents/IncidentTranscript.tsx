@@ -43,6 +43,7 @@ export function IncidentActivityFeed({
   renderIssueCard,
   awaiting,
   evidenceContext,
+  investigating = false,
 }: {
   events: IncidentEvent[];
   /** The issue that opened the incident. It is projected as the first feed
@@ -57,6 +58,8 @@ export function IncidentActivityFeed({
   awaiting?: { question: string; ctx: EvidenceLinkContext } | null;
   /** Link context for markdown evidence recorded by outcome tools. */
   evidenceContext?: EvidenceLinkContext;
+  /** Appends a live terminal node while the agent is actively investigating. */
+  investigating?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const railRef = useRef<HTMLDivElement>(null);
@@ -172,18 +175,81 @@ export function IncidentActivityFeed({
     return () => ro.disconnect();
   }, [nodes.length, expanded]);
 
-  if (nodes.length === 0) return null;
+  if (nodes.length === 0 && !investigating) return null;
 
   return (
     <div ref={railRef} className="relative pl-7">
-      {/* Start at the first entry's marker center (~12px); cut at the last node
-          so no hairline dangles past the final entry. */}
-      <div
-        className="absolute left-[10px] top-3 w-px bg-border"
-        style={railHeight != null ? { height: railHeight } : { bottom: 8 }}
-      />
-      {nodes.slice(0, -1)}
-      <div ref={lastRef}>{nodes[nodes.length - 1]}</div>
+      {nodes.length > 0 && (
+        <>
+          {/* Start at the first entry's marker center (~12px); cut at the last node
+              so no hairline dangles past the final entry. */}
+          <div
+            className="absolute left-[10px] top-3 w-px bg-border"
+            style={railHeight != null ? { height: railHeight } : { bottom: 8 }}
+          />
+          {nodes.slice(0, -1)}
+          <div ref={lastRef}>{nodes[nodes.length - 1]}</div>
+        </>
+      )}
+      {investigating && <InvestigationProgressEntry />}
+    </div>
+  );
+}
+
+const INVESTIGATION_PROGRESS_PHRASES = [
+  "Looking for evidence…",
+  "Following the signal…",
+  "Checking recent changes…",
+  "Connecting the clues…",
+  "Tracing the failure path…",
+  "Comparing related events…",
+  "Testing likely causes…",
+  "Reviewing the surrounding code…",
+  "Ruling out false leads…",
+  "Building the incident timeline…",
+] as const;
+const INVESTIGATION_PROGRESS_DOTS = [
+  "top-left",
+  "top-center",
+  "top-right",
+  "middle-left",
+  "middle-center",
+  "middle-right",
+  "bottom-left",
+  "bottom-center",
+  "bottom-right",
+] as const;
+
+function InvestigationProgressEntry() {
+  return (
+    <div className="-ml-7 -mt-3 mb-6 flex min-h-[22px] min-w-0 items-center gap-2">
+      <span aria-hidden className="grid shrink-0 grid-cols-3 gap-[2px]">
+        {INVESTIGATION_PROGRESS_DOTS.map((dot, index) => (
+          <span
+            key={dot}
+            className="investigation-progress-dot h-[2px] w-[2px] rounded-full bg-[#97a3f2]"
+            style={{ animationDelay: `${index * -0.12}s` }}
+          />
+        ))}
+      </span>
+      <output
+        aria-live="polite"
+        aria-atomic="true"
+        className="flex min-h-[22px] min-w-0 items-center"
+      >
+        <span className="sr-only">Investigation in progress</span>
+        <span aria-hidden className="relative block h-4 min-w-0 flex-1 overflow-hidden">
+          {INVESTIGATION_PROGRESS_PHRASES.map((phrase, index) => (
+            <span
+              key={phrase}
+              className="investigation-progress-phrase absolute left-0 top-0 block max-w-full truncate text-[12px] font-medium text-muted"
+              style={{ animationDelay: `${index * 3}s` }}
+            >
+              {phrase}
+            </span>
+          ))}
+        </span>
+      </output>
     </div>
   );
 }

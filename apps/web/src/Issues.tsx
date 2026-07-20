@@ -84,6 +84,7 @@ import {
   resolveIncidentDetailTab,
   visibleIncidentDetailTabs,
 } from "./incidents/incident-detail-tabs.ts";
+import { isInvestigationInProgress } from "./incidents/investigation-progress.ts";
 import {
   type IncidentMetaRow,
   buildIncidentDetailMeta,
@@ -1782,6 +1783,7 @@ export function IncidentDetailContent({
                     !triggeringIssue && <p className="text-[12px] text-muted">No activity yet.</p>}
                   <IncidentActivityFeed
                     events={events}
+                    investigating={isInvestigationInProgress(agentRun?.state)}
                     evidenceContext={{
                       repoUrl: agentRun?.selectedRepoUrl ?? null,
                       baseBranch: agentRun?.selectedBaseBranch ?? null,
