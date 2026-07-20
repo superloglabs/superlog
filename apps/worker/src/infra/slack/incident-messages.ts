@@ -145,6 +145,7 @@ export function incidentBlocks(opts: {
   emoji: string;
   status: string;
   title: string;
+  incidentCodename?: string | null;
   // When set, the title renders as a link to the incident. Preferred over a
   // standalone "Open in Superlog" button — it frees an actions-row slot.
   titleUrl?: string | null;
@@ -168,7 +169,13 @@ export function incidentBlocks(opts: {
   const titleText = opts.titleUrl
     ? `*<${escapeSlackLinkUrl(opts.titleUrl)}|${escapeSlackLinkText(opts.title)}>*`
     : `*${opts.title}*`;
-  const lines = [`:${opts.emoji}: *${opts.status}*`, titleText];
+  const lines = opts.incidentCodename
+    ? [
+        `:${opts.emoji}: *${opts.status}*`,
+        `*Incident* \`${opts.incidentCodename}\``,
+        `*Error*:\n\`\`\`\n${opts.title}\n\`\`\``,
+      ]
+    : [`:${opts.emoji}: *${opts.status}*`, titleText];
   if (opts.tagline) lines.push(`_${opts.tagline}_`);
   // `project · service · environment`, each a code chip; service/environment
   // only appear when present on the triggering error.

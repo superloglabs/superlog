@@ -39,6 +39,33 @@ test("incidentBlocks omits environment when absent", () => {
   assert.equal(line, "`Acme` · `api`");
 });
 
+test("incidentBlocks labels an ongoing investigation by codename and formats its error as code", () => {
+  const blocks = incidentBlocks({
+    emoji: "rotating_light",
+    status: "Investigation ongoing",
+    title:
+      "*ERROR: START RequestId: b19ab794-1b70-4261-a23e-acf19135aee6\n[POST] /api/plants/nullingia status=500\nEND RequestId: b19ab794-1b*",
+    incidentCodename: "code_name",
+    projectName: "demo-project",
+    service: "superlog-sample",
+    buttons: [],
+  });
+  const section = blocks[0] as { text: { text: string } };
+
+  assert.equal(
+    section.text.text,
+    ":rotating_light: *Investigation ongoing*\n" +
+      "*Incident* `code_name`\n" +
+      "*Error*:\n" +
+      "```\n" +
+      "*ERROR: START RequestId: b19ab794-1b70-4261-a23e-acf19135aee6\n" +
+      "[POST] /api/plants/nullingia status=500\n" +
+      "END RequestId: b19ab794-1b*\n" +
+      "```\n" +
+      "`demo-project` · `superlog-sample`",
+  );
+});
+
 test("incidentBlocks renders the title as a link when titleUrl is set", () => {
   const blocks = incidentBlocks({
     emoji: "rotating_light",
