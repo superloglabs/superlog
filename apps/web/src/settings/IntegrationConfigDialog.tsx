@@ -80,7 +80,7 @@ export function IntegrationConfigDialog({
     };
   }, []);
 
-  return createPortal(
+  const overlay = (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-6"
       // biome-ignore lint/a11y/useSemanticElements: <dialog> would require .showModal() lifecycle wiring; conditional render with role="dialog" is intentional.
@@ -134,7 +134,12 @@ export function IntegrationConfigDialog({
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-[22px] py-5">{children}</div>
       </div>
-    </div>,
-    document.body,
+    </div>
   );
+
+  // Portal to <body> so the fixed-position scrim escapes the product shell's
+  // stacking contexts and covers the full viewport (header included). Fall
+  // back to inline rendering when there's no DOM (server/static rendering).
+  if (typeof document === "undefined") return overlay;
+  return createPortal(overlay, document.body);
 }
