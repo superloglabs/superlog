@@ -69,11 +69,17 @@ export function HomeDashboard({
     .filter((type): type is HomeBuiltinType => BUILTIN_TYPES.has(type as HomeBuiltinType));
   const { setup, grid } = splitHomeWidgets(home.data.widgets);
   // Hide the service map tile for projects that have no cloud connection — without
-  // one there's no map and nothing to build, so the widget is pure clutter. Keep it
-  // visible while customizing so it stays draggable/removable.
-  const hasCloudConnection = (cloudConnections.data?.length ?? 0) > 0;
+  // one there's no map and nothing to build, so the widget is pure clutter. Only
+  // hide once the connections query has actually resolved to an empty list: while
+  // it's still loading or if it errored, keep the tile so a connected project's map
+  // doesn't flicker away (or stay hidden on a transient failure). Also keep it while
+  // customizing so it stays draggable/removable.
+  const hideServiceMap =
+    cloudConnections.isSuccess &&
+    (cloudConnections.data?.length ?? 0) === 0 &&
+    !customizing;
   const visibleGrid = grid.filter(
-    (widget) => widget.type !== "service_map" || hasCloudConnection || customizing,
+    (widget) => widget.type !== "service_map" || !hideServiceMap,
   );
 
   return (
