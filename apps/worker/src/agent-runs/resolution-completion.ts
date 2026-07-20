@@ -24,13 +24,23 @@ export function settledPullRequestResolutionCopy(opts: {
   status: string;
   mainTextSuffix: string;
 } {
+  if (opts.settledState === "merged") {
+    return {
+      threadLead: `:white_check_mark: Fix PR #${opts.prNumber} (${opts.repoFullName}) is merged and the remaining agent pull requests are closed; incident resolved.`,
+      status: "Incident resolved - all agent pull requests settled",
+      mainTextSuffix: "Incident resolved",
+    };
+  }
+  // A close without a merged sibling silences the incident's issues (the
+  // settled-path default in @superlog/db), so the copy says so and points at
+  // the un-silence action on the root message.
   return {
     threadLead:
-      opts.settledState === "merged"
-        ? `:white_check_mark: Fix PR #${opts.prNumber} (${opts.repoFullName}) is merged and the remaining agent pull requests are closed; incident resolved.`
-        : `:white_check_mark: PR #${opts.prNumber} (${opts.repoFullName}) was closed without merging and no agent pull request remains open; incident resolved.`,
-    status: "Incident resolved - all agent pull requests settled",
-    mainTextSuffix: "Incident resolved",
+      `:no_bell: PR #${opts.prNumber} (${opts.repoFullName}) was closed without merging and no agent pull request remains open; ` +
+      `incident resolved and its errors silenced — they will not raise incidents anymore. ` +
+      `Click *Do not silence, resolve* on the incident message to re-arm recurrence.`,
+    status: "Incident resolved - errors silenced (agent PR closed)",
+    mainTextSuffix: "Incident resolved, errors silenced",
   };
 }
 

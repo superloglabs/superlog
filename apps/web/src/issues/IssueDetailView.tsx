@@ -210,7 +210,9 @@ function IssueActivityTimeline({ issueId, events }: { issueId: string; events: I
     const presentation =
       event.kind === "issue_silenced"
         ? { status: "Silenced", tone: "neutral" as const }
-        : event.kind === "issue_observed"
+        : event.kind === "issue_unsilenced"
+          ? { status: "Un-silenced", tone: "neutral" as const }
+          : event.kind === "issue_observed"
           ? { status: "Under observation", tone: "warning" as const }
           : event.kind === "issue_resolved"
             ? { status: "Resolved", tone: "success" as const }

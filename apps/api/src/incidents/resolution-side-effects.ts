@@ -48,6 +48,7 @@ export async function runResolvedIncidentSideEffects(opts: {
   projectName: string;
   projectRoute: { orgSlug: string; projectSlug: string };
   resolutionEpoch?: ResolvedIncidentResolutionEpoch;
+  silencedByClosedPr?: { closedByLogin: string | null };
   deps: ResolvedIncidentSideEffectDeps;
 }): Promise<CloseIncidentOpenPullRequestsResult> {
   if (opts.resolutionEpoch && !(await opts.resolutionEpoch.isCurrent())) {
@@ -69,6 +70,7 @@ export async function runResolvedIncidentSideEffects(opts: {
     incident: opts.incident,
     projectName: opts.projectName,
     projectRoute: opts.projectRoute,
+    silencedByClosedPr: opts.silencedByClosedPr,
   });
   try {
     await opts.deps.updateSlackRootMessage({
@@ -113,12 +115,44 @@ export async function runResolvedIncidentSideEffectsForIncident(opts: {
     resolutionProof,
     reopenPullRequest: opts.reopenPullRequest,
   });
+  // A closed-PR resolution silenced the incident's issues (the settled-path
+  // default in @superlog/db). Surface that on the root message, attributing
+  // the close from the resolution event's recorded actor rather than parsing
+  // reason text. Gated on an issue actually being silenced so a re-render
+  // after the un-silence click paints the plain resolved copy.
+  let silencedByClosedPr: { closedByLogin: string | null } | undefined;
+  if (incident.resolvedReasonCode === "agent_pr_closed") {
+    const silencedIssue = await db
+      .select({ id: schema.issues.id })
+      .from(schema.incidentIssues)
+      .innerJoin(schema.issues, eq(schema.issues.id, schema.incidentIssues.issueId))
+      .where(
+        and(
+          eq(schema.incidentIssues.incidentId, incident.id),
+          eq(schema.issues.status, "silenced"),
+        ),
+      )
+      .limit(1);
+    if (silencedIssue.length > 0) {
+      const resolutionEvent = await db.query.incidentEvents.findFirst({
+        where: and(
+          eq(schema.incidentEvents.incidentId, incident.id),
+          eq(schema.incidentEvents.dedupeKey, resolutionProof.eventDedupeKey),
+        ),
+      });
+      const detail = resolutionEvent?.detail as { closedByLogin?: unknown } | null | undefined;
+      silencedByClosedPr = {
+        closedByLogin: typeof detail?.closedByLogin === "string" ? detail.closedByLogin : null,
+      };
+    }
+  }
   return runResolvedIncidentSideEffects({
     incident: {
       id: incident.id,
       title: incident.title,
       service: incident.service,
     },
+    silencedByClosedPr,
     projectName: project.name,
     projectRoute: { orgSlug: org.slug, projectSlug: project.slug },
     resolutionEpoch: {
@@ -153,39 +187,59 @@ export function buildResolvedIncidentSlackRoot(opts: {
   incident: ResolvedIncidentSideEffectIncident;
   projectName: string;
   projectRoute: { orgSlug: string; projectSlug: string };
+  // Set when the resolution came from the last agent PR being closed without
+  // merge: the resolve cascade silenced the incident's issues, so the root
+  // message says so and offers the un-silence action.
+  silencedByClosedPr?: { closedByLogin: string | null };
 }): ResolvedIncidentSlackRoot {
   const origin = WEB_ORIGIN.replace(/\/$/, "");
   const incidentUrl = escapeSlackLinkUrl(
     `${origin}/org/${encodeURIComponent(opts.projectRoute.orgSlug)}/project/${encodeURIComponent(opts.projectRoute.projectSlug)}/incidents/${encodeURIComponent(opts.incident.id)}`,
   );
   const titleLabel = escapeSlackLinkText(opts.incident.title);
+  const silenced = opts.silencedByClosedPr;
   const lines = [
-    ":white_check_mark: *Incident resolved*",
+    silenced ? ":no_bell: *Incident resolved — errors silenced*" : ":white_check_mark: *Incident resolved*",
     `*<${incidentUrl}|${titleLabel}>*`,
     opts.incident.service
       ? `\`${opts.projectName}\` · \`${opts.incident.service}\``
       : `\`${opts.projectName}\``,
   ];
+  if (silenced) {
+    const closedBy = silenced.closedByLogin ? `PR closed by @${silenced.closedByLogin}` : "PR closed";
+    lines.push(
+      `${closedBy} — this incident and its errors are silenced and will not raise incidents anymore. ` +
+        `If you'd like these errors to reopen incidents, click *Do not silence, resolve*.`,
+    );
+  }
+  const elements: unknown[] = [];
+  if (silenced) {
+    elements.push({
+      type: "button",
+      text: { type: "plain_text", text: "Do not silence, resolve", emoji: true },
+      action_id: `unsilence_resolve:${opts.incident.id}`,
+    });
+  }
+  elements.push(
+    {
+      type: "button",
+      text: { type: "plain_text", text: "👍 Helpful", emoji: true },
+      action_id: `rate_incident:helpful:${opts.incident.id}`,
+    },
+    {
+      type: "button",
+      text: { type: "plain_text", text: "👎 Not helpful", emoji: true },
+      action_id: `rate_incident:unhelpful:${opts.incident.id}`,
+    },
+  );
   const blocks: unknown[] = [
     { type: "section", text: { type: "mrkdwn", text: lines.join("\n") } },
-    {
-      type: "actions",
-      elements: [
-        {
-          type: "button",
-          text: { type: "plain_text", text: "👍 Helpful", emoji: true },
-          action_id: `rate_incident:helpful:${opts.incident.id}`,
-        },
-        {
-          type: "button",
-          text: { type: "plain_text", text: "👎 Not helpful", emoji: true },
-          action_id: `rate_incident:unhelpful:${opts.incident.id}`,
-        },
-      ],
-    },
+    { type: "actions", elements },
   ];
   return {
-    text: `:white_check_mark: ${opts.incident.title} - Incident resolved`,
+    text: silenced
+      ? `:no_bell: ${opts.incident.title} - Incident resolved, errors silenced`
+      : `:white_check_mark: ${opts.incident.title} - Incident resolved`,
     blocks,
   };
 }

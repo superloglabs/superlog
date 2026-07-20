@@ -1051,6 +1051,177 @@ test("silence cascade resolves alert-episode issues plainly (never silences them
   }
 });
 
+async function seedClosedAgentPullRequest(
+  db: DB,
+  incident: schema.Incident,
+  projectOrgId: string,
+  opts?: { state?: schema.AgentPrState },
+) {
+  const [run] = await db
+    .insert(schema.agentRuns)
+    .values({ incidentId: incident.id, runtime: "test", state: "complete" })
+    .returning();
+  assert.ok(run);
+  const [installation] = await db
+    .insert(schema.githubInstallations)
+    .values({
+      orgId: projectOrgId,
+      projectId: incident.projectId,
+      installationId: 424242,
+      accountLogin: "acme",
+      accountType: "Organization",
+      repos: [],
+    })
+    .returning();
+  assert.ok(installation);
+  const state = opts?.state ?? "closed";
+  const [pullRequest] = await db
+    .insert(schema.agentPullRequests)
+    .values({
+      incidentId: incident.id,
+      agentRunId: run.id,
+      installationId: installation.id,
+      repoFullName: "acme/api",
+      prNumber: 7,
+      url: "https://github.com/acme/api/pull/7",
+      branchName: "agent/fix",
+      baseBranch: "main",
+      state,
+      ...(state === "merged" ? { mergedAt: new Date() } : { closedAt: new Date() }),
+    })
+    .returning();
+  assert.ok(pullRequest);
+  return pullRequest;
+}
+
+// The closed-PR resolution is the customer saying "no" to the delivered fix
+// while the underlying errors may still be firing. Cascading `resolve` there
+// re-arms recurrence, which re-investigates and re-submits a PR the customer
+// just declined — so the settled path defaults the cascade to `silence` and
+// the Slack root message offers an explicit un-silence action instead.
+test("agent_pr_closed settled resolution silences current issues by default", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { issue, incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-pr-closed-silence",
+    });
+    await seedClosedAgentPullRequest(db, incident, project.orgId);
+    const result = await createIncidentLifecycle(db).resolveIfAllAgentPullRequestsSettled({
+      incidentId: incident.id,
+      settlementEvidenceAt: new Date(),
+      buildInput: () => ({
+        incidentId: incident.id,
+        kind: "agent_pr_closed",
+        reasonCode: "agent_pr_closed",
+        reasonText: "Last agent PR closed without merge.",
+      }),
+    });
+    assert.equal(result.disposition, "resolved");
+    const after = one(await db.select().from(schema.issues).where(eq(schema.issues.id, issue.id)));
+    assert.equal(after.status, "silenced");
+    assert.ok(after.silencedAt);
+    const kinds = await eventKinds(db, incident.id);
+    assert.ok(kinds.includes("issue_silenced"));
+    assert.ok(!kinds.includes("issue_resolved"));
+  } finally {
+    await client.close();
+  }
+});
+
+test("agent_pr_merged settled resolution keeps the resolve cascade", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { issue, incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-pr-merged-resolve",
+    });
+    await seedClosedAgentPullRequest(db, incident, project.orgId, { state: "merged" });
+    const result = await createIncidentLifecycle(db).resolveIfAllAgentPullRequestsSettled({
+      incidentId: incident.id,
+      settlementEvidenceAt: new Date(),
+      buildInput: () => ({
+        incidentId: incident.id,
+        kind: "agent_pr_merged",
+        reasonCode: "agent_pr_merged",
+        reasonText: "Agent PR merged.",
+      }),
+    });
+    assert.equal(result.disposition, "resolved");
+    const after = one(await db.select().from(schema.issues).where(eq(schema.issues.id, issue.id)));
+    assert.equal(after.status, "resolved");
+    assert.ok((await eventKinds(db, incident.id)).includes("issue_resolved"));
+  } finally {
+    await client.close();
+  }
+});
+
+test("an explicit issue outcome overrides the agent_pr_closed silence default", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { issue, incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-pr-closed-explicit",
+    });
+    await seedClosedAgentPullRequest(db, incident, project.orgId);
+    const result = await createIncidentLifecycle(db).resolveIfAllAgentPullRequestsSettled({
+      incidentId: incident.id,
+      settlementEvidenceAt: new Date(),
+      buildInput: () => ({
+        incidentId: incident.id,
+        kind: "agent_pr_closed",
+        reasonCode: "agent_pr_closed",
+        reasonText: "Last agent PR closed without merge.",
+        issueOutcome: { kind: "resolve" },
+      }),
+    });
+    assert.equal(result.disposition, "resolved");
+    const after = one(await db.select().from(schema.issues).where(eq(schema.issues.id, issue.id)));
+    assert.equal(after.status, "resolved");
+  } finally {
+    await client.close();
+  }
+});
+
+test("unsilenceIncidentIssues flips silenced issues to resolved so recurrence re-arms", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { issue, incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-unsilence",
+    });
+    await seedClosedAgentPullRequest(db, incident, project.orgId);
+    await createIncidentLifecycle(db).resolveIfAllAgentPullRequestsSettled({
+      incidentId: incident.id,
+      settlementEvidenceAt: new Date(),
+      buildInput: () => ({
+        incidentId: incident.id,
+        kind: "agent_pr_closed",
+        reasonCode: "agent_pr_closed",
+        reasonText: "Last agent PR closed without merge.",
+      }),
+    });
+    const outcome = await createIncidentLifecycle(db).unsilenceIncidentIssues({
+      incidentId: incident.id,
+      resolvedBySlackUserId: "U123",
+    });
+    assert.equal(outcome.unsilencedIssueCount, 1);
+    const after = one(await db.select().from(schema.issues).where(eq(schema.issues.id, issue.id)));
+    assert.equal(after.status, "resolved");
+    assert.equal(after.silencedAt, null);
+    assert.ok((await eventKinds(db, incident.id)).includes("issue_unsilenced"));
+
+    // Second click is a no-op.
+    const repeat = await createIncidentLifecycle(db).unsilenceIncidentIssues({
+      incidentId: incident.id,
+      resolvedBySlackUserId: "U123",
+    });
+    assert.equal(repeat.unsilencedIssueCount, 0);
+  } finally {
+    await client.close();
+  }
+});
+
 test("resolve with observe outcome stores the trigger and baseline", async () => {
   const { db, client } = await freshDb();
   try {

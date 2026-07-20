@@ -164,6 +164,11 @@ export function incidentBlocks(opts: {
   // Adds 👍/👎 rating buttons (rate_incident:<rating>:<incidentId>). Set on
   // states where there's an investigation worth rating.
   showFeedbackButtons?: boolean;
+  // Adds a "Do not silence, resolve" button (unsilence_resolve:<incidentId>).
+  // Set on the closed-PR resolution message, where the resolve cascade
+  // silenced the incident's issues — the click flips them back to `resolved`
+  // so a recurrence opens a chained incident again.
+  showUnsilenceButton?: boolean;
 }): unknown[] {
   const titleText = opts.titleUrl
     ? `*<${escapeSlackLinkUrl(opts.titleUrl)}|${escapeSlackLinkText(opts.title)}>*`
@@ -238,6 +243,13 @@ export function incidentBlocks(opts: {
           confirm: { type: "plain_text", text: "Silence" },
           deny: { type: "plain_text", text: "Cancel" },
         },
+      });
+    }
+    if (opts.showUnsilenceButton) {
+      elements.push({
+        type: "button",
+        text: { type: "plain_text", text: "Do not silence, resolve", emoji: true },
+        action_id: `unsilence_resolve:${opts.incidentId}`,
       });
     }
     if (opts.showFeedbackButtons) {

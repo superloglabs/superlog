@@ -8,6 +8,7 @@ import {
   incidentAlreadyClosedCompletionCopy,
   legacyResolutionEventDedupeKey,
   mergedPullRequestResolutionCopy,
+  settledPullRequestResolutionCopy,
   planLegacyTerminalResolutionCompletion,
   resolutionCompletionCopy,
   resolutionCompletionResult,
@@ -91,6 +92,31 @@ test("merged fallback publishes Incident-resolved copy", () => {
     mainTextSuffix: "Incident resolved",
   });
   assert.doesNotMatch(`${copy.threadLead} ${copy.status}`, /investigation complete/i);
+});
+
+test("settled-closed fallback publishes silenced copy with the un-silence pointer", () => {
+  const copy = settledPullRequestResolutionCopy({
+    prNumber: 42,
+    repoFullName: "acme/api",
+    settledState: "closed",
+  });
+
+  assert.match(copy.threadLead, /closed without merging/);
+  assert.match(copy.threadLead, /silenced/);
+  assert.match(copy.threadLead, /Do not silence, resolve/);
+  assert.equal(copy.status, "Incident resolved - errors silenced (agent PR closed)");
+  assert.equal(copy.mainTextSuffix, "Incident resolved, errors silenced");
+});
+
+test("settled-merged fallback keeps plain resolved copy", () => {
+  const copy = settledPullRequestResolutionCopy({
+    prNumber: 42,
+    repoFullName: "acme/api",
+    settledState: "merged",
+  });
+
+  assert.doesNotMatch(copy.threadLead, /silenced/);
+  assert.equal(copy.mainTextSuffix, "Incident resolved");
 });
 
 test("merged fallback that loses the resolution race uses thread-only closed-elsewhere copy", () => {

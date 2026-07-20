@@ -309,6 +309,7 @@ export {
   resolveIncidentWithProof,
   resolveIncidentIfAllAgentPullRequestsMerged,
   resolveIncidentIfAllAgentPullRequestsSettled,
+  unsilenceIncidentIssues,
   reconcileAgentRunCompletedByResolution,
   validateIncidentIssueOutcomes,
   reserveAgentPullRequestBatch,

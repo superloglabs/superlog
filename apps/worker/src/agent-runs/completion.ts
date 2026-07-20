@@ -487,6 +487,9 @@ export async function completeWithoutPullRequest(
     opts?.incidentOutcome?.kind === "incident_already_closed"
       ? incidentAlreadyClosedCompletionCopy()
       : null;
+  const settledClosedSilenced =
+    opts?.incidentOutcome?.kind === "all_pull_requests_settled" &&
+    opts.incidentOutcome.settledState === "closed";
   let closedElsewhereCopy = alreadyClosedCopy;
   let resolutionProof =
     opts?.incidentOutcome?.kind === "all_pull_requests_merged" ||
@@ -759,7 +762,7 @@ export async function completeWithoutPullRequest(
               ? `Investigation complete · Linear ${ticket.identifier}`
               : "Investigation complete";
       const text = mergedResolutionCopy
-        ? `:white_check_mark: ${ctx.incident.title} — ${mergedResolutionCopy.mainTextSuffix}`
+        ? `:${settledClosedSilenced ? "no_bell" : "white_check_mark"}: ${ctx.incident.title} — ${mergedResolutionCopy.mainTextSuffix}`
         : noiseReason && noiseApplied
           ? `:no_bell: ${ctx.incident.title} — ${isAlertIncident(ctx) ? "Alert" : "Incident"} marked as noise`
           : resolutionReason
@@ -769,7 +772,8 @@ export async function completeWithoutPullRequest(
         ctx.incident.id,
         text,
         incidentBlocks({
-          emoji: noiseReason && noiseApplied ? "no_bell" : "white_check_mark",
+          emoji:
+            (noiseReason && noiseApplied) || settledClosedSilenced ? "no_bell" : "white_check_mark",
           status,
           title: ctx.incident.title,
           titleUrl: incidentUrl,
@@ -780,6 +784,7 @@ export async function completeWithoutPullRequest(
           links: ticket?.url ? [{ text: "View ticket", url: ticket.url }] : [],
           incidentId: ctx.incident.id,
           showFeedbackButtons: true,
+          showUnsilenceButton: settledClosedSilenced,
         }),
       );
     }

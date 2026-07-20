@@ -24,6 +24,23 @@ test("incidentBlocks renders project · service · environment as code chips", (
   assert.equal(line, "`Acme` · `api` · `production`");
 });
 
+test("incidentBlocks renders the un-silence button ahead of the rating buttons", () => {
+  const blocks = incidentBlocks({
+    emoji: "no_bell",
+    status: "Incident resolved - errors silenced (agent PR closed)",
+    title: "boom",
+    projectName: "Acme",
+    buttons: [],
+    incidentId: "inc-1",
+    showUnsilenceButton: true,
+    showFeedbackButtons: true,
+  });
+  const json = JSON.stringify(blocks);
+  assert.equal(json.includes("unsilence_resolve:inc-1"), true);
+  assert.equal(json.includes("Do not silence, resolve"), true);
+  assert.ok(json.indexOf("unsilence_resolve:inc-1") < json.indexOf("rate_incident:helpful:inc-1"));
+});
+
 test("incidentBlocks omits environment when absent", () => {
   const line = contextLine(
     incidentBlocks({

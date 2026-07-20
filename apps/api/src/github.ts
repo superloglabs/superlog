@@ -1027,8 +1027,12 @@ export async function resumeOrResolveIncidentForMergedAgentPr(
 // the human's decision on the delivery itself, so the incident resolves
 // deterministically instead of waiting for a confirmation nobody sends: as
 // `agent_pr_merged` when a sibling fix did land, as `agent_pr_closed` when
-// nothing merged. Issues cascade to resolved, so a real recurrence re-pages
-// through the ordinary resolved→recur path. While other PRs are still open
+// nothing merged. On a merge the issues cascade to resolved, so a real
+// recurrence re-pages through the ordinary resolved→recur path; on a plain
+// close they cascade to silenced (the human declined the fix while the errors
+// may still fire — resubmitting the same PR on every recurrence spams them),
+// with an un-silence button on the Slack root message to re-arm recurrence.
+// While other PRs are still open
 // the close is only context — it resumes the session (when one exists) so the
 // agent keeps driving the remaining delivery.
 export type ClosedAgentPullRequestContinuationDisposition =

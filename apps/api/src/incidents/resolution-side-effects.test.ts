@@ -236,6 +236,45 @@ test("buildResolvedIncidentSlackRoot removes resolve action and keeps rating act
   assert.equal(json.includes("rate_incident:unhelpful:inc-1"), true);
 });
 
+test("buildResolvedIncidentSlackRoot renders the silenced variant for a closed-PR resolution", () => {
+  const update = buildResolvedIncidentSlackRoot({
+    incident: {
+      id: "inc-1",
+      title: "Checkout API timeout",
+      service: "checkout-api",
+    },
+    projectName: "Acme",
+    projectRoute: PROJECT_ROUTE,
+    silencedByClosedPr: { closedByLogin: "octocat" },
+  });
+
+  const json = JSON.stringify(update.blocks);
+  assert.equal(update.text, ":no_bell: Checkout API timeout - Incident resolved, errors silenced");
+  assert.equal(json.includes("PR closed by @octocat"), true);
+  assert.equal(json.includes("will not raise incidents anymore"), true);
+  assert.equal(json.includes("unsilence_resolve:inc-1"), true);
+  assert.equal(json.includes("Do not silence, resolve"), true);
+  // Rating buttons stay available alongside the un-silence action.
+  assert.equal(json.includes("rate_incident:helpful:inc-1"), true);
+});
+
+test("the silenced variant copes with an unknown closer login", () => {
+  const update = buildResolvedIncidentSlackRoot({
+    incident: {
+      id: "inc-1",
+      title: "Checkout API timeout",
+      service: "checkout-api",
+    },
+    projectName: "Acme",
+    projectRoute: PROJECT_ROUTE,
+    silencedByClosedPr: { closedByLogin: null },
+  });
+
+  const json = JSON.stringify(update.blocks);
+  assert.equal(json.includes("PR closed —"), true);
+  assert.equal(json.includes("unsilence_resolve:inc-1"), true);
+});
+
 test("resolution publication compensation restores an open incident root", () => {
   const update = buildIncidentResolutionCompensationSlackRoot({
     incident: {

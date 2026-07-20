@@ -15,6 +15,7 @@ import {
   schema,
   stripBotMention,
   syncLoopsContactsForOrg,
+  unsilenceIncidentIssues,
 } from "@superlog/db";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { Hono } from "hono";
@@ -294,6 +295,8 @@ export function mountSlackPublic(app: Hono<any>): void {
 //   - `resolve_incident:<incident-uuid>` → "Problem resolved": incident
 //     resolved, issues resolved (recurrence opens a new chained incident)
 //   - `not_an_issue:<incident-uuid>` → incident resolved, issues silenced
+//   - `unsilence_resolve:<incident-uuid>` → flips issues a closed-PR
+//     resolution silenced back to resolved, so recurrences re-page
 //   - `merge_pr:<incident-uuid>` → merges the incident's latest open agent PR
 async function handleSlackBlockActions(payload: SlackInteractivityPayload): Promise<void> {
   const action = payload.actions?.[0];
@@ -309,6 +312,12 @@ async function handleSlackBlockActions(payload: SlackInteractivityPayload): Prom
   if (actionId.startsWith("not_an_issue:")) {
     const incidentId = actionId.slice("not_an_issue:".length);
     if (incidentId) await handleSlackResolveIncident(incidentId, payload, "not_an_issue");
+    return;
+  }
+
+  if (actionId.startsWith("unsilence_resolve:")) {
+    const incidentId = actionId.slice("unsilence_resolve:".length);
+    if (incidentId) await handleSlackUnsilenceResolve(incidentId, payload);
     return;
   }
 
@@ -658,6 +667,59 @@ async function handleSlackResolveIncident(
         resolution === "not_an_issue"
           ? `:no_bell: Marked not-an-issue by ${attribution}. The linked issues are silenced; future occurrences will not open incidents.`
           : `:white_check_mark: Incident resolved by ${attribution}. If the underlying error reappears, a new incident will open with this investigation's findings attached.`,
+    });
+  }
+}
+
+// Handle an `unsilence_resolve:<incidentId>` click: the closed-PR resolution
+// silenced the incident's issues by default; this flips them back to
+// `resolved` so the next occurrence opens a chained incident, then refreshes
+// the root message (which re-renders as plain resolved once nothing is
+// silenced). Idempotent — a repeat click finds nothing silenced and only
+// refreshes.
+async function handleSlackUnsilenceResolve(
+  incidentId: string,
+  payload: SlackInteractivityPayload,
+): Promise<void> {
+  const incident = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.id, incidentId),
+  });
+  if (!incident) {
+    log.warn({ incidentId }, "unsilence_resolve click for unknown incident");
+    return;
+  }
+  const slackUserId = payload.user?.id ?? null;
+  const slackUserName = payload.user?.name ?? null;
+  const attribution = slackUserId ? `<@${slackUserId}>` : (slackUserName ?? "a teammate");
+
+  const { unsilencedIssueCount } = await unsilenceIncidentIssues({
+    incidentId,
+    resolvedBySlackUserId: slackUserId ?? undefined,
+  });
+
+  const resolutionProof = await loadCurrentIncidentResolutionProof({ incidentId });
+  if (resolutionProof) {
+    await runSlackResolvedIncidentSideEffects(incidentId, resolutionProof);
+  }
+  if (unsilencedIssueCount === 0) {
+    log.info({ incidentId }, "unsilence_resolve click found no silenced issues");
+    return;
+  }
+
+  const installation = await installationForIncident({
+    pinnedId: incident.slackInstallationId,
+    teamId: payload.team?.id ?? "",
+  });
+  if (!installation) {
+    log.warn({ team_id: payload.team?.id, incidentId }, "no installation to post unsilence reply");
+    return;
+  }
+  if (incident.slackChannelId && incident.slackThreadTs) {
+    await postSlackThreadReply({
+      botToken: installation.botAccessToken,
+      channel: incident.slackChannelId,
+      threadTs: incident.slackThreadTs,
+      text: `:bell: ${attribution} chose to keep tracking these errors. The issues are resolved instead of silenced — if the error recurs, a new incident will open.`,
     });
   }
 }
