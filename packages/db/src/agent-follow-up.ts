@@ -253,6 +253,7 @@ export type RestartAgentRunResult =
 export type RetryBlockedAgentRunResult =
   | { outcome: "retried"; agentRun: schema.AgentRun }
   | { outcome: "not_blocked" }
+  | { outcome: "agent_runs_disabled" }
   | { outcome: "incident_not_open" }
   | { outcome: "no_prior_run" };
 
@@ -289,6 +290,11 @@ export async function retryBlockedAgentRun(
     const latest = aggregate.runs[0];
     if (!latest) return { outcome: "no_prior_run" };
     if (latest.state !== "blocked_no_github") return { outcome: "not_blocked" };
+    const automation = await tx.query.projectAutomationSettings.findFirst({
+      where: eq(schema.projectAutomationSettings.projectId, aggregate.incident.projectId),
+      columns: { agentRunEnabled: true },
+    });
+    if (automation?.agentRunEnabled === false) return { outcome: "agent_runs_disabled" };
 
     const created = await createRestartedAgentRun(tx, aggregate, {
       incidentId: args.incidentId,

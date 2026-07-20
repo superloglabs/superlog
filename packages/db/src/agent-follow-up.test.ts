@@ -1241,3 +1241,40 @@ test("retry preserves the blocked follow-up trigger context and prompt", async (
     await client.close();
   }
 });
+
+test("retry does not bypass disabled project agent runs", async () => {
+  const { db, client } = await freshFollowUpDb();
+  try {
+    const { incident, priorRun } = await seedFollowUpIncident(db);
+    await db
+      .update(schema.agentRuns)
+      .set({ createdAt: RECENT })
+      .where(eq(schema.agentRuns.id, priorRun.id));
+    const blocked = one(
+      await db
+        .insert(schema.agentRuns)
+        .values({
+          incidentId: incident.id,
+          runtime: "anthropic",
+          state: "blocked_no_github",
+          createdAt: NOW,
+        })
+        .returning(),
+    );
+    await db.insert(schema.projectAutomationSettings).values({
+      projectId: incident.projectId,
+      agentRunEnabled: false,
+    });
+
+    const result = await retryBlockedAgentRun(db, { incidentId: incident.id, now: NOW });
+
+    assert.deepEqual(result, { outcome: "agent_runs_disabled" });
+    const runs = await db.query.agentRuns.findMany({
+      where: eq(schema.agentRuns.incidentId, incident.id),
+    });
+    assert.equal(runs.find((run) => run.id === blocked.id)?.state, "blocked_no_github");
+    assert.equal(runs.length, 2);
+  } finally {
+    await client.close();
+  }
+});
