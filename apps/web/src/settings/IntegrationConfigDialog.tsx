@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 
 /**
  * Centered modal that hosts a single integration's configuration. Opened by
@@ -79,7 +80,7 @@ export function IntegrationConfigDialog({
     };
   }, []);
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-6"
       // biome-ignore lint/a11y/useSemanticElements: <dialog> would require .showModal() lifecycle wiring; conditional render with role="dialog" is intentional.
@@ -133,6 +134,7 @@ export function IntegrationConfigDialog({
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-[22px] py-5">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
