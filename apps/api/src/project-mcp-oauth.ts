@@ -114,6 +114,7 @@ export function createProjectMcpOAuthService(deps: {
         server.auth.scopes.length > 0 ? server.auth.scopes : discovery.scopesSupported;
       let clientId = server.auth.clientId;
       let clientSecret = server.auth.clientSecret;
+      let persistedScopes = server.auth.scopes;
       if (!clientId) {
         if (!discovery.registrationEndpoint) {
           throw new Error(
@@ -127,6 +128,7 @@ export function createProjectMcpOAuthService(deps: {
         );
         clientId = registration.clientId;
         clientSecret = registration.clientSecret;
+        persistedScopes = requestedScopes;
       }
       const state = randomToken();
       const codeVerifier = randomToken();
@@ -153,6 +155,7 @@ export function createProjectMcpOAuthService(deps: {
           status: "pending",
           clientId,
           clientSecret,
+          scopes: persistedScopes,
           tokenEndpoint: discovery.tokenEndpoint,
           authorizationServer: discovery.authorizationServer,
           resource: discovery.resource,

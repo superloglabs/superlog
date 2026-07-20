@@ -466,6 +466,10 @@ test("OAuth start requests the server's advertised scopes when none are configur
     "projects:read",
     "database:read",
   ]);
+  assert.equal(server.auth.type, "oauth");
+  if (server.auth.type === "oauth") {
+    assert.deepEqual(server.auth.scopes, ["projects:read", "database:read"]);
+  }
 });
 
 test("OAuth discovery prefers the protected-resource scopes_supported over the auth server's", async () => {
