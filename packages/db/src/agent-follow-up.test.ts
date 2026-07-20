@@ -1200,3 +1200,44 @@ test("concurrent retries of a GitHub-blocked run create one viable successor", a
     await client.close();
   }
 });
+
+test("retry preserves the blocked follow-up trigger context and prompt", async () => {
+  const { db, client } = await freshFollowUpDb();
+  try {
+    const { incident, priorRun } = await seedFollowUpIncident(db);
+    await db
+      .update(schema.agentRuns)
+      .set({ createdAt: RECENT })
+      .where(eq(schema.agentRuns.id, priorRun.id));
+    const triggerDetail = {
+      interactions: [
+        {
+          channel: "slack_reply" as const,
+          author: "alice",
+          text: "Please investigate the latest deploy.",
+          occurredAt: NOW.toISOString(),
+        },
+      ],
+      pullRequests: [],
+    };
+    await db.insert(schema.agentRuns).values({
+      incidentId: incident.id,
+      runtime: "anthropic",
+      state: "blocked_no_github",
+      trigger: "slack_reply",
+      triggerDetail,
+      prompt: "Focus on the authentication regression.",
+      createdAt: NOW,
+    });
+
+    const result = await retryBlockedAgentRun(db, { incidentId: incident.id, now: NOW });
+
+    assert.equal(result.outcome, "retried");
+    if (result.outcome !== "retried") return;
+    assert.equal(result.agentRun.trigger, "slack_reply");
+    assert.deepEqual(result.agentRun.triggerDetail, triggerDetail);
+    assert.equal(result.agentRun.prompt, "Focus on the authentication regression.");
+  } finally {
+    await client.close();
+  }
+});

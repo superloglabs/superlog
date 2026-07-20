@@ -37,6 +37,7 @@ type LockedAgentFollowUpAggregate = {
     state: schema.AgentRun["state"];
     trigger: AgentRunTrigger;
     triggerDetail: AgentRunTriggerDetail | null;
+    prompt: string | null;
     providerSessionId: string | null;
     completedAt: Date | null;
     runtime: string;
@@ -66,6 +67,7 @@ async function lockAgentFollowUpAggregate(
       state: schema.agentRuns.state,
       trigger: schema.agentRuns.trigger,
       triggerDetail: schema.agentRuns.triggerDetail,
+      prompt: schema.agentRuns.prompt,
       providerSessionId: schema.agentRuns.providerSessionId,
       completedAt: schema.agentRuns.completedAt,
       runtime: schema.agentRuns.runtime,
@@ -292,6 +294,7 @@ export async function retryBlockedAgentRun(
       incidentId: args.incidentId,
       runtime: latest.runtime,
       now,
+      preserveTriggerContext: true,
     });
     return { outcome: "retried", agentRun: created };
   });
@@ -300,7 +303,12 @@ export async function retryBlockedAgentRun(
 async function createRestartedAgentRun(
   tx: AgentFollowUpTransaction,
   aggregate: LockedAgentFollowUpAggregate,
-  args: { incidentId: string; runtime: string; now: Date },
+  args: {
+    incidentId: string;
+    runtime: string;
+    now: Date;
+    preserveTriggerContext?: boolean;
+  },
 ): Promise<schema.AgentRun> {
   const latest = aggregate.runs[0];
   if (!latest) throw new Error("cannot restart an incident without an agent run");
@@ -353,6 +361,13 @@ async function createRestartedAgentRun(
       incidentId: args.incidentId,
       runtime: args.runtime,
       state: "queued",
+      ...(args.preserveTriggerContext
+        ? {
+            trigger: latest.trigger,
+            triggerDetail: latest.triggerDetail,
+            prompt: latest.prompt,
+          }
+        : {}),
     })
     .returning();
   if (!created) throw new Error("failed to restart agent run");
