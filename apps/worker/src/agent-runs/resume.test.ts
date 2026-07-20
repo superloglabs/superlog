@@ -2,6 +2,7 @@ import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  deliverResumeRepairingWedgedTurn,
   finalizeCurrentMergedPullRequestResolution,
   recoverUnresumableContinuation,
   resumeDurableAgentRun,
@@ -411,4 +412,124 @@ test("a human reply resumes first and leaves concurrent incident context for run
   assert.equal(outcome, "resumed");
   assert.deepEqual(delivered, [{ operation: "resume", message: "The provider is healthy again." }]);
   assert.deepEqual(processed, [["reply-1"]]);
+});
+
+test("a wedged-turn delivery interrupts the open turn and retries in place", async () => {
+  const calls: string[] = [];
+  let attempts = 0;
+
+  const delivery = await deliverResumeRepairingWedgedTurn({
+    async attempt() {
+      attempts += 1;
+      calls.push(`attempt:${attempts}`);
+      if (attempts === 1) throw new Error("waiting on responses to events [sevt_1]");
+      return "resumed";
+    },
+    classifyError() {
+      return "wedged_turn";
+    },
+    async interruptOpenTurn() {
+      calls.push("interrupt");
+    },
+  });
+
+  assert.deepEqual(delivery, { kind: "delivered", outcome: "resumed", repaired: true });
+  assert.deepEqual(calls, ["attempt:1", "interrupt", "attempt:2"]);
+});
+
+test("a wedged turn without an interrupt capability fails without a retry", async () => {
+  let attempts = 0;
+  const err = new Error("waiting on responses to events [sevt_1]");
+
+  const delivery = await deliverResumeRepairingWedgedTurn({
+    async attempt() {
+      attempts += 1;
+      throw err;
+    },
+    classifyError() {
+      return "wedged_turn";
+    },
+    interruptOpenTurn: null,
+  });
+
+  assert.deepEqual(delivery, {
+    kind: "failed",
+    err,
+    errorKind: "wedged_turn",
+    repairAttempted: false,
+  });
+  assert.equal(attempts, 1);
+});
+
+test("session-gone delivery errors are never repaired", async () => {
+  const calls: string[] = [];
+  const err = new Error("404 session not found");
+
+  const delivery = await deliverResumeRepairingWedgedTurn({
+    async attempt() {
+      calls.push("attempt");
+      throw err;
+    },
+    classifyError() {
+      return "session_gone";
+    },
+    async interruptOpenTurn() {
+      calls.push("interrupt");
+    },
+  });
+
+  assert.deepEqual(delivery, {
+    kind: "failed",
+    err,
+    errorKind: "session_gone",
+    repairAttempted: false,
+  });
+  assert.deepEqual(calls, ["attempt"]);
+});
+
+test("transient delivery errors propagate untouched for the next-tick retry", async () => {
+  const transient = Object.assign(new Error("socket reset"), { code: "ECONNRESET" });
+
+  await assert.rejects(
+    deliverResumeRepairingWedgedTurn({
+      async attempt() {
+        throw transient;
+      },
+      classifyError() {
+        return "wedged_turn";
+      },
+      async interruptOpenTurn() {
+        throw new Error("interrupt must not run for a transient error");
+      },
+    }),
+    (err: unknown) => err === transient,
+  );
+});
+
+test("a repair whose retry fails again reports the retry error without a third attempt", async () => {
+  const calls: string[] = [];
+  let attempts = 0;
+  const retryErr = new Error("410 session gone");
+
+  const delivery = await deliverResumeRepairingWedgedTurn({
+    async attempt() {
+      attempts += 1;
+      calls.push(`attempt:${attempts}`);
+      throw attempts === 1 ? new Error("waiting on responses to events [sevt_1]") : retryErr;
+    },
+    classifyError(err) {
+      return err === retryErr ? "session_gone" : "wedged_turn";
+    },
+    async interruptOpenTurn() {
+      calls.push("interrupt");
+    },
+  });
+
+  assert.deepEqual(delivery, {
+    kind: "failed",
+    err: retryErr,
+    errorKind: "session_gone",
+    repairAttempted: true,
+  });
+  assert.deepEqual(calls, ["attempt:1", "interrupt", "attempt:2"]);
 });

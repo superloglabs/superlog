@@ -260,6 +260,15 @@ export type AgentChatDispatchResult = {
   repliesThisTurn: number;
 };
 
+// Why delivering a message into a durable session failed.
+//   - "wedged_turn": the session is alive but its current turn is blocked on
+//     unanswered tool events, so the runtime rejects new messages. An
+//     `interrupt` closes the turn and makes the session deliverable again.
+//   - "session_gone": the runtime no longer has the session (expired or
+//     deleted) — only this kind justifies discarding the session's context.
+//   - "unknown": neither state is provable from the error.
+export type SessionDeliveryErrorKind = "wedged_turn" | "session_gone" | "unknown";
+
 export type AgentRunnerBackend = {
   name: string;
   maxRepoResources: number;
@@ -279,6 +288,12 @@ export type AgentRunnerBackend = {
   collect(sessionId: string): Promise<AgentRunnerSnapshot>;
   resume(sessionId: string, message: string): Promise<void>;
   steer(sessionId: string, message: string): Promise<void>;
+  // Optional: classify a resume/steer delivery failure so the caller can
+  // repair a wedged turn in place instead of discarding a live session.
+  classifyDeliveryError?(err: unknown): SessionDeliveryErrorKind;
+  // Optional: interrupt the session's open turn so a queued message becomes
+  // deliverable. Only meaningful for runtimes that report "wedged_turn".
+  interrupt?(sessionId: string): Promise<void>;
   dispatchIntegrationToolCalls(input: {
     sessionId: string;
     orgId: string;
