@@ -1529,7 +1529,9 @@ async function handleSlackEventEnvelope(payload: SlackEventEnvelope): Promise<vo
     if (incident) {
       const route = slackIncidentThreadRoute({
         incidentStatus: incident.status,
+        incidentClosedAt: incident.resolvedAt ?? incident.noiseResolvedAt ?? incident.mergedAt,
         eventType: inbound.type,
+        eventTs: inbound.ts,
       });
       if (route === "ignore") return;
       if (route === "incident") {
@@ -1544,9 +1546,18 @@ async function handleSlackEventEnvelope(payload: SlackEventEnvelope): Promise<vo
 
 export function slackIncidentThreadRoute(input: {
   incidentStatus: schema.IncidentStatus;
+  incidentClosedAt?: Date | null;
   eventType?: string;
+  eventTs?: string;
 }): "incident" | "chat" | "ignore" {
-  if (input.incidentStatus !== "open") return "chat";
+  const eventTimeSeconds = Number.parseFloat(input.eventTs ?? "");
+  const eventOccurredWhileOpen =
+    input.incidentStatus === "open" ||
+    (input.incidentClosedAt !== null &&
+      input.incidentClosedAt !== undefined &&
+      Number.isFinite(eventTimeSeconds) &&
+      eventTimeSeconds * 1_000 <= input.incidentClosedAt.getTime());
+  if (!eventOccurredWhileOpen) return "chat";
   return input.eventType === "message" ? "incident" : "ignore";
 }
 
