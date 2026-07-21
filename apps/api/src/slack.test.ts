@@ -263,6 +263,88 @@ test("chat anchors: DMs have no thread anchor (one conversation per channel)", a
   );
 });
 
+test("resolved incident threads route mentions to Q&A chat", async () => {
+  const { slackIncidentThreadRoute } = await import("./slack.js");
+
+  assert.equal(
+    slackIncidentThreadRoute({
+      incidentStatus: "resolved",
+      incidentClosedAt: new Date("2026-07-21T12:00:00.000Z"),
+      eventType: "app_mention",
+      eventTs: "1784635201.000000",
+    }),
+    "chat",
+  );
+  assert.equal(
+    slackIncidentThreadRoute({
+      incidentStatus: "resolved",
+      incidentClosedAt: new Date("2026-07-21T12:00:00.000Z"),
+      eventType: "message",
+      eventTs: "1784635201.000000",
+    }),
+    "chat",
+  );
+});
+
+test("open incident threads continue the investigation from the message event", async () => {
+  const { slackIncidentThreadRoute } = await import("./slack.js");
+
+  assert.equal(
+    slackIncidentThreadRoute({ incidentStatus: "open", eventType: "message" }),
+    "incident",
+  );
+  assert.equal(
+    slackIncidentThreadRoute({ incidentStatus: "open", eventType: "app_mention" }),
+    "ignore",
+  );
+});
+
+test("a mention sent before resolution does not become Q&A when its twin arrives late", async () => {
+  const { slackIncidentThreadRoute } = await import("./slack.js");
+
+  assert.equal(
+    slackIncidentThreadRoute({
+      incidentStatus: "resolved",
+      incidentClosedAt: new Date("2026-07-21T12:00:01.000Z"),
+      eventType: "app_mention",
+      eventTs: "1784635200.500000",
+    }),
+    "ignore",
+  );
+  assert.equal(
+    slackIncidentThreadRoute({
+      incidentStatus: "resolved",
+      incidentClosedAt: new Date("2026-07-21T12:00:01.000Z"),
+      eventType: "message",
+      eventTs: "1784635200.500000",
+    }),
+    "incident",
+  );
+});
+
+test("closed incident Q&A keeps the installation that owns the incident", async () => {
+  const { findIncidentChatInstallation } = await import("./slack.js");
+  const wrongChannelDefault = { id: "install-b", projectId: "project-b" };
+  const incidentInstallation = { id: "install-a", projectId: "project-a" };
+
+  assert.equal(
+    findIncidentChatInstallation(
+      [wrongChannelDefault, incidentInstallation],
+      "project-a",
+      "install-a",
+    ),
+    incidentInstallation,
+  );
+  assert.equal(
+    findIncidentChatInstallation(
+      [wrongChannelDefault, incidentInstallation],
+      "project-a",
+      "deleted-install",
+    ),
+    incidentInstallation,
+  );
+});
+
 // The bot posts to public channels via chat:write.public WITHOUT joining them,
 // but Slack's Events API only delivers message events for channels the bot is
 // a member of — so thread replies in a never-joined channel vanish silently.

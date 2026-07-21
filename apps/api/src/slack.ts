@@ -1512,11 +1512,14 @@ async function handleSlackEventEnvelope(payload: SlackEventEnvelope): Promise<vo
     user: event.user,
     text: event.text,
   };
+  let chatTargetHint: { projectId: string; installationId: string | null } | null = null;
 
-  // Incident threads first: replies there talk to the investigation, never to
-  // a chat. A channel mention fires BOTH a `message` and an `app_mention`
-  // event (with distinct event_ids), so only the `message` copy is processed
-  // here — otherwise one reply would record two human_reply events.
+  // Open incident threads continue the investigation. Once an incident is
+  // closed, the thread becomes an ordinary Q&A surface: an explicit mention
+  // starts a chat and subsequent replies continue it through handleChatEvent.
+  // A channel mention fires BOTH a `message` and an `app_mention` event (with
+  // distinct event_ids), so open incidents process only the `message` copy —
+  // otherwise one reply would record two human_reply events.
   if (inbound.thread_ts && inbound.thread_ts !== inbound.ts) {
     const incident = await db.query.incidents.findFirst({
       where: and(
@@ -1525,13 +1528,54 @@ async function handleSlackEventEnvelope(payload: SlackEventEnvelope): Promise<vo
       ),
     });
     if (incident) {
-      if (inbound.type !== "message") return;
-      await handleIncidentThreadReply(payload, inbound, incident);
-      return;
+      const route = slackIncidentThreadRoute({
+        incidentStatus: incident.status,
+        incidentClosedAt: incident.resolvedAt ?? incident.noiseResolvedAt ?? incident.mergedAt,
+        eventType: inbound.type,
+        eventTs: inbound.ts,
+      });
+      if (route === "ignore") return;
+      if (route === "incident") {
+        await handleIncidentThreadReply(payload, inbound, incident);
+        return;
+      }
+      chatTargetHint = {
+        projectId: incident.projectId,
+        installationId: incident.slackInstallationId,
+      };
     }
   }
 
-  await handleChatEvent(payload, inbound);
+  await handleChatEvent(payload, inbound, chatTargetHint);
+}
+
+export function slackIncidentThreadRoute(input: {
+  incidentStatus: schema.IncidentStatus;
+  incidentClosedAt?: Date | null;
+  eventType?: string;
+  eventTs?: string;
+}): "incident" | "chat" | "ignore" {
+  const eventTimeSeconds = Number.parseFloat(input.eventTs ?? "");
+  const eventOccurredWhileOpen =
+    input.incidentStatus === "open" ||
+    (input.incidentClosedAt !== null &&
+      input.incidentClosedAt !== undefined &&
+      Number.isFinite(eventTimeSeconds) &&
+      eventTimeSeconds * 1_000 <= input.incidentClosedAt.getTime());
+  if (!eventOccurredWhileOpen) return "chat";
+  return input.eventType === "message" ? "incident" : "ignore";
+}
+
+export function findIncidentChatInstallation<T extends { id: string; projectId: string }>(
+  installations: T[],
+  projectId: string,
+  pinnedInstallationId: string | null,
+): T | null {
+  return (
+    installations.find((installation) => installation.id === pinnedInstallationId) ??
+    installations.find((installation) => installation.projectId === projectId) ??
+    null
+  );
 }
 
 type SlackInboundEvent = NonNullable<SlackEventEnvelope["event"]> & {
@@ -1656,6 +1700,7 @@ export function chatAnchorThreadTs(event: {
 async function handleChatEvent(
   payload: SlackEventEnvelope,
   event: SlackInboundEvent,
+  targetHint: { projectId: string; installationId: string | null } | null = null,
 ): Promise<void> {
   const teamId = payload.team_id ?? "";
   if (!teamId) return;
@@ -1701,6 +1746,18 @@ async function handleChatEvent(
     };
     if (!target.installationId && installations[0]) target.installationId = installations[0].id;
     if (!target.installationId) return;
+  } else if (targetHint) {
+    const row = findIncidentChatInstallation(
+      installations,
+      targetHint.projectId,
+      targetHint.installationId,
+    );
+    if (!row) return;
+    target = {
+      projectId: targetHint.projectId,
+      installationId: row.id,
+      installation: row,
+    };
   } else {
     const resolution = resolveChatInstallation(
       installations.map((i) => ({
