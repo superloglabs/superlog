@@ -1,11 +1,11 @@
 import crypto from "node:crypto";
 import { db, encryptIntegrationSecret, schema } from "@superlog/db";
 import { and, eq, isNull } from "drizzle-orm";
-import type { Context, Hono } from "hono";
+import type { Hono } from "hono";
 import { logger } from "../logger.js";
 import { requireProjectManagerContext } from "../org-authorization-http.js";
 import { hasProjectManagerAccess } from "../org-authorization.js";
-import { resolveActiveOrgContext } from "../org-context.js";
+import { sentryProjectIsAccessible } from "./client.js";
 import { buildSentryAuthorizeUrl, signSentryState, verifySentryState } from "./oauth.js";
 
 const log = logger.child({ scope: "sentry" });
@@ -100,10 +100,10 @@ export function mountSentryInstallationPublic(app: Hono<any>): void {
 export function mountSentryInstallationAuthed(app: Hono<any>): void {
   const { clientId, clientSecret, appSlug, redirectUrl, stateSecret } = config();
 
-  app.get("/api/sentry/installation", async (c) => {
-    const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ installed: false });
-    const installation = await findCurrentInstallation(ctx.projectId);
+  app.get("/api/projects/:projectId/sentry/installation", async (c) => {
+    const projectId = c.req.param("projectId");
+    await requireProjectManagerContext(c, projectId);
+    const installation = await findCurrentInstallation(projectId);
     if (!installation) return c.json({ installed: false });
     return c.json({
       installed: true,
@@ -114,12 +114,12 @@ export function mountSentryInstallationAuthed(app: Hono<any>): void {
     });
   });
 
-  app.post("/api/sentry/install-url", async (c) => {
+  app.post("/api/projects/:projectId/sentry/install-url", async (c) => {
     if (!clientId || !clientSecret || !appSlug || !stateSecret) {
       return c.json({ error: "sentry not configured" }, 503);
     }
-    const ctx = await resolveUserOrgManager(c);
-    if (!ctx) return c.json({ error: "no org for user" }, 404);
+    const projectId = c.req.param("projectId");
+    const ctx = await requireProjectManagerContext(c, projectId);
     const body = (await c.req.json().catch(() => null)) as { projectSlug?: unknown } | null;
     const sentryProjectSlug =
       typeof body?.projectSlug === "string" ? body.projectSlug.trim().toLowerCase() : "";
@@ -128,9 +128,9 @@ export function mountSentryInstallationAuthed(app: Hono<any>): void {
     }
     const state = signSentryState(
       {
-        orgId: ctx.orgId,
-        projectId: ctx.projectId,
-        userId: ctx.userId,
+        orgId: ctx.access.orgId,
+        projectId,
+        userId: ctx.access.userId,
         sentryProjectSlug,
       },
       stateSecret,
@@ -138,19 +138,19 @@ export function mountSentryInstallationAuthed(app: Hono<any>): void {
     return c.json({ url: buildSentryAuthorizeUrl({ appSlug, state }) });
   });
 
-  app.post("/api/sentry/uninstall", async (c) => {
-    const ctx = await resolveUserOrgManager(c);
-    if (!ctx) return c.json({ error: "no org for user" }, 404);
+  app.post("/api/projects/:projectId/sentry/uninstall", async (c) => {
+    const projectId = c.req.param("projectId");
+    const ctx = await requireProjectManagerContext(c, projectId);
     await db
       .update(schema.sentryInstallations)
       .set({ revokedAt: new Date(), updatedAt: new Date() })
       .where(
         and(
-          eq(schema.sentryInstallations.projectId, ctx.projectId),
+          eq(schema.sentryInstallations.projectId, projectId),
           isNull(schema.sentryInstallations.revokedAt),
         ),
       );
-    log.info({ org_id: ctx.orgId, project_id: ctx.projectId }, "sentry disconnected");
+    log.info({ org_id: ctx.access.orgId, project_id: projectId }, "sentry disconnected");
     return c.json({ ok: true });
   });
 }
@@ -197,13 +197,12 @@ async function resolveSentryGrant(input: {
   sentryInstallationId: string;
   sentryProjectSlug: string;
 }): Promise<SentryGrant> {
-  const projects = await sentryGet(
-    input.accessToken,
-    `/api/0/organizations/${encodeURIComponent(input.organizationSlug)}/projects/`,
-  );
   if (
-    !Array.isArray(projects) ||
-    !projects.some((project) => isRecord(project) && project.slug === input.sentryProjectSlug)
+    !(await sentryProjectIsAccessible({
+      accessToken: input.accessToken,
+      organizationSlug: input.organizationSlug,
+      projectSlug: input.sentryProjectSlug,
+    }))
   ) {
     throw new Error(`Sentry project ${input.sentryProjectSlug} is not accessible`);
   }
@@ -314,27 +313,6 @@ function findCurrentInstallation(projectId: string) {
       isNull(schema.sentryInstallations.revokedAt),
     ),
   });
-}
-
-async function resolveUserOrg(
-  c: Context<{ Variables: Vars }>,
-): Promise<{ userId: string; orgId: string; projectId: string } | null> {
-  const userId = c.var.userId;
-  if (!userId) return null;
-  const ctx = await resolveActiveOrgContext({ userId, preferredOrgId: c.var.orgId }).catch(
-    () => null,
-  );
-  if (!ctx) return null;
-  return { userId: ctx.user.id, orgId: ctx.org.id, projectId: ctx.project.id };
-}
-
-async function resolveUserOrgManager(
-  c: Context<{ Variables: Vars }>,
-): Promise<{ userId: string; orgId: string; projectId: string } | null> {
-  const ctx = await resolveUserOrg(c);
-  if (!ctx) return null;
-  await requireProjectManagerContext(c, ctx.projectId);
-  return ctx;
 }
 
 function validDate(value: string): Date | null {

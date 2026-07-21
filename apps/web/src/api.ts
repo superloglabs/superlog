@@ -1622,31 +1622,44 @@ export type SentryInstallation =
       reauthReason: string | null;
     };
 
-export function useSentryInstallation() {
+export function sentryProjectEndpoints(projectId: string) {
+  const base = `/api/projects/${projectId}/sentry`;
+  return {
+    installation: `${base}/installation`,
+    installUrl: `${base}/install-url`,
+    uninstall: `${base}/uninstall`,
+  };
+}
+
+export function useSentryInstallation(projectId: string | undefined) {
   const fetcher = useFetcher();
   return useQuery({
-    queryKey: ["sentry-installation"],
-    queryFn: () => fetcher<SentryInstallation>("/api/sentry/installation"),
+    queryKey: ["sentry-installation", projectId],
+    queryFn: () =>
+      fetcher<SentryInstallation>(sentryProjectEndpoints(projectId!).installation),
+    enabled: !!projectId,
   });
 }
 
-export function useStartSentryInstall() {
+export function useStartSentryInstall(projectId: string | undefined) {
   const fetcher = useFetcher();
   return useMutation({
     mutationFn: (projectSlug: string) =>
-      fetcher<{ url: string }>("/api/sentry/install-url", {
+      fetcher<{ url: string }>(sentryProjectEndpoints(projectId!).installUrl, {
         method: "POST",
         body: JSON.stringify({ projectSlug }),
       }),
   });
 }
 
-export function useUninstallSentry() {
+export function useUninstallSentry(projectId: string | undefined) {
   const fetcher = useFetcher();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => fetcher<{ ok: true }>("/api/sentry/uninstall", { method: "POST" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["sentry-installation"] }),
+    mutationFn: () =>
+      fetcher<{ ok: true }>(sentryProjectEndpoints(projectId!).uninstall, { method: "POST" }),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ["sentry-installation", projectId] }),
   });
 }
 

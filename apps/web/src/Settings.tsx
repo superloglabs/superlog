@@ -1152,7 +1152,7 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
   const slack = useSlackInstallation(projectId, !!projectId);
   const linear = useLinearInstallation();
   const notion = useNotionInstallation();
-  const sentry = useSentryInstallation();
+  const sentry = useSentryInstallation(projectId);
   const cloudflare = useCloudflareInstallation(projectId);
   const vercel = useVercelInstallation(projectId);
   const railway = useRailwayInstallation(projectId);
@@ -1573,7 +1573,7 @@ function IntegrationConfiguration({
     case "notion":
       return <NotionCard />;
     case "sentry":
-      return <SentryCard />;
+      return <SentryCard projectId={projectId} />;
     case "cloudflare":
       return <CloudflareCard projectId={projectId} />;
     case "vercel":
@@ -2646,10 +2646,10 @@ function NotionCard() {
   );
 }
 
-function SentryCard() {
-  const install = useSentryInstallation();
-  const start = useStartSentryInstall();
-  const uninstall = useUninstallSentry();
+function SentryCard({ projectId }: { projectId: string | undefined }) {
+  const install = useSentryInstallation(projectId);
+  const start = useStartSentryInstall(projectId);
+  const uninstall = useUninstallSentry(projectId);
   const sentryInstall = install.data?.installed === true ? install.data : null;
   const [projectSlug, setProjectSlug] = useState("");
 
@@ -2699,7 +2699,7 @@ function SentryCard() {
           size="sm"
           variant={installed ? "secondary" : "primary"}
           loading={start.isPending}
-          disabled={!projectSlug.trim() || start.isPending}
+          disabled={!projectId || !projectSlug.trim() || start.isPending}
           onClick={async () => {
             const { url } = await start.mutateAsync(projectSlug.trim());
             window.location.href = url;
