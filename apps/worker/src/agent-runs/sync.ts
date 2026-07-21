@@ -17,6 +17,7 @@ import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { TERMINAL_OUTCOME_NUDGE_MARKER, assembleAgentRunResult } from "../agent-outcome-tools.js";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { type PauseForEventsOutcome, createAgentRunLifecycle } from "../agent-run.js";
+import type { AgentRunnerSnapshot } from "../agent-runner-backend.js";
 import { type AgentRunOutcome, recordAgentRunCompletion } from "../ai-usage.js";
 import { investigationGate } from "../billing/investigation-gate.js";
 import { usageNotifier } from "../billing/usage-notifier-infra.js";
@@ -456,6 +457,32 @@ export function terminalOutcomeNudgePrompt(
     TERMINAL_OUTCOME_NUDGE_MARKER,
     `Call \`report_findings\` now if you have findings to record, then end the turn with exactly one terminal tool: ${terminalTools.join(", ")}.`,
   ].join("\n");
+}
+
+export function terminalOutcomeNudgeCapabilities(
+  snapshot: Pick<AgentRunnerSnapshot, "declaredCustomToolNames">,
+  fallback: {
+    prCreationAvailable: boolean;
+    completeInvestigationAvailable: boolean;
+  },
+): {
+  prCreationAvailable: boolean;
+  linearTicketCreationAvailable: boolean;
+  completeInvestigationAvailable: boolean;
+} {
+  const declared = snapshot.declaredCustomToolNames;
+  if (!declared) {
+    return {
+      ...fallback,
+      linearTicketCreationAvailable: false,
+    };
+  }
+  const names = new Set(declared);
+  return {
+    prCreationAvailable: names.has("propose_pr"),
+    linearTicketCreationAvailable: names.has("create_linear_issue"),
+    completeInvestigationAvailable: names.has("complete_investigation"),
+  };
 }
 
 const PARTIAL_PULL_REQUEST_RETRY_NUDGE_MARKER = "[superlog:partial-pull-request-retry-nudge]";
@@ -1423,16 +1450,17 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         // steering a duplicate.
         const nudgePrompt =
           partialRetryPrompt ??
-          terminalOutcomeNudgePrompt({
-            completeInvestigationAvailable: completeInvestigationAvailable({
-              prPolicy: ctx.prPolicy,
-              githubConnected: ctx.githubInstalls.length > 0,
-              approvalPromptsEnabled: ctx.approvalPromptsEnabled,
-              approvalPromptToolsAvailable: true,
+          terminalOutcomeNudgePrompt(
+            terminalOutcomeNudgeCapabilities(snapshot, {
+              completeInvestigationAvailable: completeInvestigationAvailable({
+                prPolicy: ctx.prPolicy,
+                githubConnected: ctx.githubInstalls.length > 0,
+                approvalPromptsEnabled: ctx.approvalPromptsEnabled,
+                approvalPromptToolsAvailable: true,
+              }),
+              prCreationAvailable: ctx.githubInstalls.length > 0 && ctx.prPolicy !== "never",
             }),
-            linearTicketCreationAvailable: !!ctx.linearInstall,
-            prCreationAvailable: ctx.githubInstalls.length > 0 && ctx.prPolicy !== "never",
-          });
+          );
         const redeliveryMarker = partialRetryPrompt
           ? `${PARTIAL_PULL_REQUEST_RETRY_NUDGE_MARKER} ${JSON.stringify(pendingRepoFullNames)}`
           : TERMINAL_OUTCOME_NUDGE_MARKER;

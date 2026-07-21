@@ -20,6 +20,7 @@ import {
   shouldFailForRuntimeBudget,
   shouldParkCompatibilityPullRequests,
   steerIdleRunnerWithPendingContext,
+  terminalOutcomeNudgeCapabilities,
   terminalOutcomeNudgePrompt,
 } from "./sync.js";
 
@@ -843,6 +844,45 @@ test("terminalOutcomeNudgePrompt keeps PR creation alongside the Linear handoff"
   });
   assert.match(prompt, /create_linear_issue/);
   assert.match(prompt, /propose_pr/);
+});
+
+test("terminalOutcomeNudgeCapabilities uses the tools declared for the running session", () => {
+  assert.deepEqual(
+    terminalOutcomeNudgeCapabilities(
+      { declaredCustomToolNames: ["report_findings", "propose_pr"] },
+      { prCreationAvailable: false, completeInvestigationAvailable: true },
+    ),
+    {
+      prCreationAvailable: true,
+      linearTicketCreationAvailable: false,
+      completeInvestigationAvailable: false,
+    },
+  );
+  assert.deepEqual(
+    terminalOutcomeNudgeCapabilities(
+      { declaredCustomToolNames: ["report_findings", "create_linear_issue"] },
+      { prCreationAvailable: true, completeInvestigationAvailable: false },
+    ),
+    {
+      prCreationAvailable: false,
+      linearTicketCreationAvailable: true,
+      completeInvestigationAvailable: false,
+    },
+  );
+});
+
+test("terminalOutcomeNudgeCapabilities does not add Linear to legacy snapshots", () => {
+  assert.deepEqual(
+    terminalOutcomeNudgeCapabilities(
+      {},
+      { prCreationAvailable: true, completeInvestigationAvailable: false },
+    ),
+    {
+      prCreationAvailable: true,
+      linearTicketCreationAvailable: false,
+      completeInvestigationAvailable: false,
+    },
+  );
 });
 
 test("partialPullRequestRetryNudgePrompt requires exactly the pending repositories", () => {
