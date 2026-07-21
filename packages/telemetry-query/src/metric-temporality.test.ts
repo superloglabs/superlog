@@ -536,6 +536,51 @@ test("delta aggregates include an interval crossing until", { skip: !clickhouseU
 });
 
 test(
+  "unspecified-temporality sums remain available as raw points",
+  { skip: !clickhouseUrl },
+  async () => {
+    await ch.insert({
+      table: "otel_metrics_sum",
+      format: "JSONEachRow",
+      values: [
+        {
+          ...cumulativeSumPoint("2026-01-01 00:01:30", 7),
+          MetricName: "unspecified.total",
+          AggregationTemporality: 0,
+        },
+      ],
+    });
+
+    const filter = {
+      range: {
+        since: "2026-01-01T00:01:00Z",
+        until: "2026-01-01T00:02:00Z",
+      },
+    };
+    const series = await metricSeries(
+      ch,
+      "project-1",
+      "unspecified.total",
+      filter,
+      undefined,
+      { n: 1, unit: "MINUTE" },
+      "sum",
+    );
+    const aggregate = await metricAggregate(
+      ch,
+      "project-1",
+      "unspecified.total",
+      filter,
+      undefined,
+      "sum",
+    );
+
+    assert.deepEqual(series, [{ bucket: "2026-01-01 00:01:00", group: "", value: 7 }]);
+    assert.deepEqual(aggregate, [{ group: "", value: 7 }]);
+  },
+);
+
+test(
   "non-sum counter aggregations operate on normalized interval contributions",
   { skip: !clickhouseUrl },
   async () => {
@@ -859,6 +904,91 @@ test(
       { bucket: "2026-01-01 00:00:30", group: "", value: 20 },
       { bucket: "2026-01-01 00:01:00", group: "", value: 20 },
     ]);
+  },
+);
+
+test(
+  "unspecified-temporality histogram percentiles remain available as raw points",
+  { skip: !clickhouseUrl },
+  async () => {
+    await ch.insert({
+      table: "otel_metrics_histogram",
+      format: "JSONEachRow",
+      values: [
+        {
+          ...cumulativeHistogramPoint("2026-01-01 00:01:30", 5, 100, [0, 5]),
+          MetricName: "unspecified.duration",
+          AggregationTemporality: 0,
+        },
+      ],
+    });
+
+    const rows = await metricSeries(
+      ch,
+      "project-1",
+      "unspecified.duration",
+      {
+        range: {
+          since: "2026-01-01T00:01:00Z",
+          until: "2026-01-01T00:02:00Z",
+        },
+      },
+      undefined,
+      { n: 1, unit: "MINUTE" },
+      "p95",
+    );
+
+    assert.deepEqual(rows, [{ bucket: "2026-01-01 00:01:00", group: "", value: 20 }]);
+  },
+);
+
+test(
+  "unspecified-temporality histogram extrema remain available as raw points",
+  {
+    skip: !clickhouseUrl,
+  },
+  async () => {
+    await ch.insert({
+      table: "otel_metrics_histogram",
+      format: "JSONEachRow",
+      values: [
+        {
+          ...cumulativeHistogramPoint("2026-01-01 00:01:30", 5, 75, [0, 5]),
+          MetricName: "unspecified_extrema.duration",
+          AggregationTemporality: 0,
+          Min: 10,
+          Max: 20,
+        },
+      ],
+    });
+
+    const filter = {
+      range: {
+        since: "2026-01-01T00:01:00Z",
+        until: "2026-01-01T00:02:00Z",
+      },
+    };
+    const minRows = await metricSeries(
+      ch,
+      "project-1",
+      "unspecified_extrema.duration",
+      filter,
+      undefined,
+      { n: 1, unit: "MINUTE" },
+      "min",
+    );
+    const maxRows = await metricSeries(
+      ch,
+      "project-1",
+      "unspecified_extrema.duration",
+      filter,
+      undefined,
+      { n: 1, unit: "MINUTE" },
+      "max",
+    );
+
+    assert.deepEqual(minRows, [{ bucket: "2026-01-01 00:01:00", group: "", value: 10 }]);
+    assert.deepEqual(maxRows, [{ bucket: "2026-01-01 00:01:00", group: "", value: 20 }]);
   },
 );
 

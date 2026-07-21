@@ -1076,6 +1076,7 @@ function histogramQuantileQuery(args: {
   bucketLayoutExpr: string;
   bucketValuesExpr: string;
   q: number;
+  rawBucketExpr?: string;
 }): string {
   const {
     table,
@@ -1089,8 +1090,10 @@ function histogramQuantileQuery(args: {
     bucketLayoutExpr,
     bucketValuesExpr,
     q,
+    rawBucketExpr,
   } = args;
   const baseWhere = baseConds.join(" AND ");
+  const rawBucket = rawBucketExpr ?? `toStartOfInterval(TimeUnix, INTERVAL ${step.n} ${step.unit})`;
   const stepNs = stepSeconds(step) * 1_000_000_000;
   const sinceNs = unixTimestamp64NanoExpr(sinceExpr);
   const untilNs = unixTimestamp64NanoExpr(untilExpr);
@@ -1289,6 +1292,27 @@ function histogramQuantileQuery(args: {
       ARRAY JOIN spread AS sp
       ARRAY JOIN arrayEnumerate(DeltaBucketCounts) AS idx
       WHERE DeltaBucketCounts[idx] > 0
+
+      UNION ALL
+
+      SELECT
+        toString(${rawBucket}) AS bucket,
+        ${groupExpr} AS group_key,
+        QuantileBucketValues[idx] AS bucket_value,
+        toUInt64(QuantileBucketCounts[idx]) * 1000000 AS weight
+      FROM (
+        SELECT
+          *,
+          ${bucketCountsExpr} AS QuantileBucketCounts,
+          ${bucketValuesExpr} AS QuantileBucketValues
+        FROM ${table}
+        WHERE ${baseWhere}
+          AND TimeUnix >= ${sinceExpr}
+          AND TimeUnix <= ${untilExpr}
+          AND AggregationTemporality = 0
+      )
+      ARRAY JOIN arrayEnumerate(QuantileBucketCounts) AS idx
+      WHERE QuantileBucketCounts[idx] > 0
     )
     WHERE weight > 0
     GROUP BY bucket, group_key
@@ -1324,6 +1348,7 @@ function temporalityAwareScalarQuery(args: {
   isMonotonicExpr: string;
   aggregation?: MetricAggregation;
   bucketAnchorNs?: string;
+  rawBucketExpr?: string;
   rowLimit?: number | null;
 }): string {
   const {
@@ -1337,9 +1362,11 @@ function temporalityAwareScalarQuery(args: {
     isMonotonicExpr,
     aggregation = "sum",
     bucketAnchorNs = "0",
+    rawBucketExpr,
     rowLimit = 10000,
   } = args;
   const baseWhere = baseConds.join(" AND ");
+  const rawBucket = rawBucketExpr ?? `toStartOfInterval(TimeUnix, INTERVAL ${step.n} ${step.unit})`;
   // Bucket arithmetic is done in nanoseconds (TimeUnix is DateTime64) so that
   // sub-second sample intervals aren't quantized away — truncating to whole
   // seconds can collapse a short interval to zero duration and silently drop
@@ -1541,6 +1568,18 @@ function temporalityAwareScalarQuery(args: {
         )
       )
       ARRAY JOIN spread AS sp
+
+      UNION ALL
+
+      SELECT
+        toString(${rawBucket}) AS bucket,
+        ${groupExpr} AS group_key,
+        toFloat64(${valueExpr}) AS v
+      FROM ${table}
+      WHERE ${baseWhere}
+        AND TimeUnix >= ${sinceExpr}
+        AND TimeUnix <= ${untilExpr}
+        AND AggregationTemporality = 0
     )
     GROUP BY bucket, group_key
     ORDER BY bucket ASC
@@ -1803,12 +1842,13 @@ export async function metricSeries(
       const conds = [...baseConds, `TimeUnix >= ${sinceExpr}`, `TimeUnix <= ${untilExpr}`];
       // Cumulative histogram min/max describe the entire start-to-current
       // population. They cannot be converted into extrema for the latest
-      // interval, so only delta histogram points can answer these queries.
+      // interval, so exclude cumulative points while preserving delta and
+      // unspecified points as raw observations.
       if (
         (kind === "histogram" || kind === "exponential_histogram") &&
         (aggregation === "min" || aggregation === "max")
       ) {
-        conds.push("AggregationTemporality = 1");
+        conds.push("AggregationTemporality != 2");
       }
       const query =
         (kind === "histogram" || kind === "exponential_histogram") &&
@@ -1867,6 +1907,7 @@ export async function metricSeries(
                       )
                     )`,
               q: aggregation === "p95" ? 0.95 : 0.99,
+              rawBucketExpr: queryOptions.rawBucketExpr,
             })
           : (kind === "histogram" || kind === "exponential_histogram") && aggregation === "avg"
             ? temporalityAwareHistogramAverageQuery({
@@ -1877,6 +1918,7 @@ export async function metricSeries(
                 sinceExpr,
                 untilExpr,
                 bucketAnchorNs: queryOptions.bucketAnchorNs,
+                rawBucketExpr: queryOptions.rawBucketExpr,
                 rowLimit: queryOptions.rowLimit,
               })
             : kind === "sum"
@@ -1891,6 +1933,7 @@ export async function metricSeries(
                   isMonotonicExpr: "IsMonotonic",
                   aggregation,
                   bucketAnchorNs: queryOptions.bucketAnchorNs,
+                  rawBucketExpr: queryOptions.rawBucketExpr,
                   rowLimit: queryOptions.rowLimit,
                 })
               : (kind === "histogram" || kind === "exponential_histogram") &&
@@ -1905,6 +1948,7 @@ export async function metricSeries(
                     valueExpr: aggregation === "sum" ? "Sum" : "Count",
                     isMonotonicExpr: aggregation === "sum" ? "false" : "true",
                     bucketAnchorNs: queryOptions.bucketAnchorNs,
+                    rawBucketExpr: queryOptions.rawBucketExpr,
                     rowLimit: queryOptions.rowLimit,
                   })
                 : `
