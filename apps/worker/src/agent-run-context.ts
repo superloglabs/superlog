@@ -67,6 +67,15 @@ export type AgentRunContext = {
 // investigations carry the relevant findings.
 export const PREDECESSOR_CHAIN_LIMIT = 3;
 
+export function effectivePrPolicyForAgentRun(
+  projectPolicy: schema.PrPolicy,
+  trigger: schema.AgentRunTrigger,
+): schema.PrPolicy {
+  return projectPolicy === "never" && trigger === "slack_open_pr"
+    ? "on_ready_to_pr"
+    : projectPolicy;
+}
+
 // Walk the previous_incident_id chain and load a compact summary of each
 // predecessor: resolution, agent findings, handoff notes, and PR links.
 export async function loadPredecessorIncidents(
@@ -274,7 +283,7 @@ export async function loadAgentRunContext(
     linearTicketPolicy: automation.linearTicketPolicy,
     linearTicketInstructions: automation.linearTicketInstructions,
     linearDefaultTeamId: automation.linearDefaultTeamId,
-    prPolicy: automation.prPolicy,
+    prPolicy: effectivePrPolicyForAgentRun(automation.prPolicy, agentRun.trigger),
     approvalPromptsEnabled: automation.approvalPromptsEnabled,
     createLinearTicketOnResolve: automation.createLinearTicketOnResolve,
     prBaseBranch: automation.prBaseBranch,

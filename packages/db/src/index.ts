@@ -193,6 +193,8 @@ export {
   restartAgentRun,
   retryBlockedAgentRun,
   requestFollowUpAgentRun,
+  requestOpenPrAgentRun,
+  OPEN_PR_REQUEST_TEXT,
   type RestartAgentRunResult,
   type RetryBlockedAgentRunResult,
   FOLLOW_UP_MAX_AGE_DAYS,

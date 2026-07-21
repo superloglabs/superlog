@@ -234,6 +234,28 @@ type RequestFollowUpArgs = {
   now?: Date;
 };
 
+export const OPEN_PR_REQUEST_TEXT =
+  "Fix the confirmed incident cause and open a pull request with the validated changes.";
+
+export function requestOpenPrAgentRun(
+  db: DB,
+  args: { incidentId: string; requestedBy: string | null; now?: Date },
+): Promise<RequestFollowUpResult> {
+  const now = args.now ?? new Date();
+  return requestFollowUpAgentRun(db, {
+    incidentId: args.incidentId,
+    trigger: "slack_open_pr",
+    confirmed: true,
+    interaction: {
+      channel: "slack_open_pr",
+      author: args.requestedBy,
+      text: OPEN_PR_REQUEST_TEXT,
+      occurredAt: now.toISOString(),
+    },
+    now,
+  });
+}
+
 const RESTARTABLE_AGENT_RUN_STATES = [
   "queued",
   "repo_discovery",
@@ -507,7 +529,13 @@ async function requestFollowUpAgentRunInTx(
     // interaction was persisted.
     const [appended] = await db
       .update(schema.agentRuns)
-      .set({ triggerDetail: detail, updatedAt: now })
+      .set({
+        triggerDetail: detail,
+        // A human explicitly asking for implementation must upgrade a queued
+        // findings-only follow-up so the worker grants its one-shot PR tools.
+        ...(args.trigger === "slack_open_pr" ? { trigger: args.trigger } : {}),
+        updatedAt: now,
+      })
       .where(and(eq(schema.agentRuns.id, verdict.runId), eq(schema.agentRuns.state, "queued")))
       .returning({ id: schema.agentRuns.id });
     if (!appended) return { outcome: "skipped", reason: "run_active" };
@@ -756,6 +784,8 @@ function followUpQueuedSummary(trigger: AgentRunFollowUpTrigger): string {
       return "Follow-up investigation queued from user feedback.";
     case "slack_reply":
       return "Follow-up investigation queued from a Slack reply.";
+    case "slack_open_pr":
+      return "Pull request implementation queued from Slack.";
     case "linear_reply":
       return "Follow-up investigation queued from a Linear prompt.";
     case "web_chat":

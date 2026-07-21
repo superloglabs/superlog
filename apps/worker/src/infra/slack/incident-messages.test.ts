@@ -174,6 +174,21 @@ test("incidentBlocks omits rating buttons when showFeedbackButtons is unset", ()
   assert.equal(JSON.stringify(blocks).includes("rate_incident:"), false);
 });
 
+test("incidentBlocks renders an Open a PR button for a findings-only investigation", () => {
+  const blocks = incidentBlocks({
+    emoji: "white_check_mark",
+    status: "Investigation complete",
+    title: "boom",
+    projectName: "Acme",
+    buttons: [],
+    incidentId: "inc-1",
+    showOpenPrButton: true,
+  });
+  const json = JSON.stringify(blocks);
+  assert.equal(json.includes("open_pr:inc-1"), true);
+  assert.equal(json.includes("Open a PR"), true);
+});
+
 // Thread replies only reach us from channels the bot is a MEMBER of (posting
 // works unjoined via chat:write.public — receiving does not). When the bot
 // can't self-join (legacy install without channels:join, private channel) and

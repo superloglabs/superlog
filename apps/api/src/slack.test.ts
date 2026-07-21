@@ -91,6 +91,14 @@ test("parseRetryInvestigationAction extracts only non-empty incident ids", async
   assert.equal(parseRetryInvestigationAction("resolve_incident:incident-1"), null);
 });
 
+test("parseOpenPrAction extracts only non-empty incident ids", async () => {
+  const { parseOpenPrAction } = await import("./slack.js");
+
+  assert.equal(parseOpenPrAction("open_pr:incident-1"), "incident-1");
+  assert.equal(parseOpenPrAction("open_pr:"), null);
+  assert.equal(parseOpenPrAction("merge_pr:incident-1"), null);
+});
+
 test("ratingTimelineSummary carries the 👍/👎 signal for the incident timeline", async () => {
   const { ratingTimelineSummary } = await import("./slack.js");
   assert.match(ratingTimelineSummary("helpful"), /^👍 /);

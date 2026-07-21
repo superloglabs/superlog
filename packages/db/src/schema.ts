@@ -261,6 +261,7 @@ export type AgentRunTrigger =
   | "pr_closed"
   | "feedback"
   | "slack_reply"
+  | "slack_open_pr"
   | "linear_reply"
   | "web_chat"
   | "issue_joined";

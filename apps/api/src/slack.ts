@@ -10,6 +10,7 @@ import {
   recordInboundChatMessage,
   recordInboundInteraction,
   requestFollowUpAgentRun,
+  requestOpenPrAgentRun,
   resolveChatInstallation,
   resolveIncidentWithProof,
   retryBlockedAgentRun,
@@ -301,6 +302,8 @@ export function mountSlackPublic(app: Hono<any>): void {
 //   - `merge_pr:<incident-uuid>` → merges the incident's latest open agent PR
 //   - `retry_investigation:<incident-uuid>` → retries only when the latest run
 //     is still blocked on GitHub, making repeated clicks idempotent
+//   - `open_pr:<incident-uuid>` → starts a one-shot PR-enabled implementation
+//     run from a findings-only investigation
 async function handleSlackBlockActions(payload: SlackInteractivityPayload): Promise<void> {
   const action = payload.actions?.[0];
   if (!action) return;
@@ -327,6 +330,12 @@ async function handleSlackBlockActions(payload: SlackInteractivityPayload): Prom
   if (actionId.startsWith("merge_pr:")) {
     const incidentId = actionId.slice("merge_pr:".length);
     if (incidentId) await handleSlackMergePr(incidentId, payload);
+    return;
+  }
+
+  const openPrIncidentId = parseOpenPrAction(actionId);
+  if (openPrIncidentId) {
+    await handleSlackOpenPr(openPrIncidentId, payload);
     return;
   }
 
@@ -447,6 +456,49 @@ export function parseRetryInvestigationAction(actionId: string): string | null {
   const prefix = "retry_investigation:";
   if (!actionId.startsWith(prefix)) return null;
   return actionId.slice(prefix.length) || null;
+}
+
+export function parseOpenPrAction(actionId: string): string | null {
+  const prefix = "open_pr:";
+  if (!actionId.startsWith(prefix)) return null;
+  return actionId.slice(prefix.length) || null;
+}
+
+async function handleSlackOpenPr(
+  incidentId: string,
+  payload: SlackInteractivityPayload,
+): Promise<void> {
+  const incident = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.id, incidentId),
+  });
+  if (!incident) {
+    log.warn({ incidentId }, "Open a PR click for unknown incident");
+    return;
+  }
+
+  const result = await requestOpenPrAgentRun(db, {
+    incidentId,
+    requestedBy: payload.user?.id ?? null,
+  });
+  const installation = await installationForIncident({
+    pinnedId: incident.slackInstallationId,
+    teamId: payload.team?.id ?? "",
+  });
+  if (!installation || !incident.slackChannelId || !incident.slackThreadTs) return;
+
+  const clickedBy = payload.user?.id ? `<@${payload.user.id}>` : "A teammate";
+  const text =
+    result.outcome === "skipped"
+      ? result.reason === "run_active"
+        ? ":hourglass: An agent run is already active for this incident."
+        : `:no_entry: PR implementation not started (${result.reason.replace(/_/g, " ")}).`
+      : `:hammer_and_wrench: ${clickedBy} asked the agent to implement the confirmed fix and open a PR.`;
+  await postSlackThreadReply({
+    botToken: installation.botAccessToken,
+    channel: incident.slackChannelId,
+    threadTs: incident.slackThreadTs,
+    text,
+  });
 }
 
 async function handleSlackRetryInvestigation(

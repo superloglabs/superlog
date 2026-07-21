@@ -165,6 +165,8 @@ export function incidentBlocks(opts: {
   // Adds 👍/👎 rating buttons (rate_incident:<rating>:<incidentId>). Set on
   // states where there's an investigation worth rating.
   showFeedbackButtons?: boolean;
+  // Adds a one-shot "Open a PR" action for a findings-only investigation.
+  showOpenPrButton?: boolean;
   // Adds a "Do not silence, resolve" button (unsilence_resolve:<incidentId>).
   // Set on the closed-PR resolution message, where the resolve cascade
   // silenced the incident's issues — the click flips them back to `resolved`
@@ -204,6 +206,23 @@ export function incidentBlocks(opts: {
     action_id: btn.actionId,
   }));
   if (opts.incidentId) {
+    if (opts.showOpenPrButton) {
+      elements.push({
+        type: "button",
+        text: { type: "plain_text", text: "Open a PR", emoji: true },
+        style: "primary",
+        action_id: `open_pr:${opts.incidentId}`,
+        confirm: {
+          title: { type: "plain_text", text: "Open a PR" },
+          text: {
+            type: "mrkdwn",
+            text: "Starts a new agent run to implement the confirmed fix, validate it, and open a pull request.",
+          },
+          confirm: { type: "plain_text", text: "Start" },
+          deny: { type: "plain_text", text: "Cancel" },
+        },
+      });
+    }
     if (opts.showMergePrButton) {
       elements.push({
         type: "button",

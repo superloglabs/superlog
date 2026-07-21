@@ -35,7 +35,10 @@ import {
 } from "../infra/slack/incident-messages.js";
 import { logger } from "../logger.js";
 import { enqueueAgentRunCompleted } from "../webhooks.js";
-import { shouldCreateLinearTicketForTerminalOutcome } from "./completion-policy.js";
+import {
+  shouldCreateLinearTicketForTerminalOutcome,
+  shouldOfferOpenPr,
+} from "./completion-policy.js";
 import { recordFiledLinearTicket } from "./deliverable-records.js";
 import { scheduleLinearHandoff } from "./linear-handoff.js";
 import {
@@ -639,6 +642,11 @@ export async function completeWithoutPullRequest(
             buttons: [],
             links: ticket?.url ? [{ text: "View ticket", url: ticket.url }] : [],
             incidentId: ctx.incident.id,
+            showOpenPrButton: shouldOfferOpenPr({
+              completionKind: completionResult.completionKind,
+              prPolicy: ctx.prPolicy,
+              githubConnected: ctx.githubInstalls.length > 0,
+            }),
             showFeedbackButtons: true,
           }),
         );
@@ -793,6 +801,11 @@ export async function completeWithoutPullRequest(
           buttons: [],
           links: ticket?.url ? [{ text: "View ticket", url: ticket.url }] : [],
           incidentId: ctx.incident.id,
+          showOpenPrButton: shouldOfferOpenPr({
+            completionKind: completionResult.completionKind,
+            prPolicy: ctx.prPolicy,
+            githubConnected: ctx.githubInstalls.length > 0,
+          }),
           showFeedbackButtons: true,
           showUnsilenceButton: settledClosedSilenced,
         }),

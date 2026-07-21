@@ -2,7 +2,11 @@ import "./agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { schema } from "@superlog/db";
-import { buildFollowUpContext, listAccessibleGithubRepositories } from "./agent-run-context.js";
+import {
+  buildFollowUpContext,
+  effectivePrPolicyForAgentRun,
+  listAccessibleGithubRepositories,
+} from "./agent-run-context.js";
 import { buildAgentRunInstructions } from "./agent-run-instructions.js";
 
 test("agent run instructions include org guidance, project context, and project instructions", () => {
@@ -144,6 +148,12 @@ test("buildFollowUpContext tolerates a missing prior run and empty detail", () =
   assert.deepEqual(followUp.interactions, []);
   assert.deepEqual(followUp.pullRequests, []);
   assert.deepEqual(followUp.timeline, []);
+});
+
+test("only an explicit Slack Open a PR run overrides a do-not-PR project policy", () => {
+  assert.equal(effectivePrPolicyForAgentRun("never", "incident"), "never");
+  assert.equal(effectivePrPolicyForAgentRun("never", "slack_open_pr"), "on_ready_to_pr");
+  assert.equal(effectivePrPolicyForAgentRun("always", "slack_open_pr"), "always");
 });
 
 test("agent run instructions skip blank project context", () => {
