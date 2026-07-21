@@ -1,5 +1,5 @@
 import { db, schema } from "@superlog/db";
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import { HTTPException } from "hono/http-exception";
@@ -79,6 +79,18 @@ export function projectHasOnboardingData(status: {
   return status.hasIngested || status.hasSentryIssues;
 }
 
+export async function resolveHasSentryIssues(input: {
+  firstSentryIssueAt: Date | null | undefined;
+  findHistoricalIssue: () => Promise<Date | null>;
+  markFirstSentryIssueAt: (receivedAt: Date) => Promise<void>;
+}): Promise<boolean> {
+  if (input.firstSentryIssueAt) return true;
+  const receivedAt = await input.findHistoricalIssue();
+  if (!receivedAt) return false;
+  await input.markFirstSentryIssueAt(receivedAt);
+  return true;
+}
+
 export async function projectDataStatus(projectId: string): Promise<{
   hasIngested: boolean;
   hasSentryIssues: boolean;
@@ -95,10 +107,35 @@ export async function projectDataStatus(projectId: string): Promise<{
     });
     hasIngested = row !== undefined;
   }
+  const hasSentryIssues = hasIngested
+    ? project?.firstSentryIssueAt != null
+    : await resolveHasSentryIssues({
+        firstSentryIssueAt: project?.firstSentryIssueAt,
+        findHistoricalIssue: async () => {
+          const rows = await db
+            .select({ receivedAt: schema.sentryWebhookEvents.receivedAt })
+            .from(schema.sentryWebhookEvents)
+            .innerJoin(
+              schema.sentryInstallations,
+              eq(schema.sentryWebhookEvents.installationId, schema.sentryInstallations.id),
+            )
+            .where(eq(schema.sentryInstallations.projectId, projectId))
+            .orderBy(schema.sentryWebhookEvents.receivedAt)
+            .limit(1);
+          return rows[0]?.receivedAt ?? null;
+        },
+        markFirstSentryIssueAt: async (receivedAt) => {
+          await db
+            .update(schema.projects)
+            .set({ firstSentryIssueAt: receivedAt })
+            .where(
+              and(eq(schema.projects.id, projectId), isNull(schema.projects.firstSentryIssueAt)),
+            );
+        },
+      });
   return {
     hasIngested,
-    hasSentryIssues:
-      project?.firstSentryIssueAt !== null && project?.firstSentryIssueAt !== undefined,
+    hasSentryIssues,
   };
 }
 

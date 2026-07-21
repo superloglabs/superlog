@@ -6,8 +6,13 @@ import { test } from "node:test";
 // postgres client connects lazily, so these pure-function tests never open a
 // socket). Same pattern as alerts-service.test.ts / incidents/detail.test.ts.
 process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
-const { demoProjectId, isDemoBlockedWrite, pickReadProjectId, projectHasOnboardingData } =
-  await import("./demo.js");
+const {
+  demoProjectId,
+  isDemoBlockedWrite,
+  pickReadProjectId,
+  projectHasOnboardingData,
+  resolveHasSentryIssues,
+} = await import("./demo.js");
 
 test("demoProjectId only accepts a canonical UUID (fail-safe on misconfig)", () => {
   const prev = process.env.DEMO_PROJECT_ID;
@@ -45,6 +50,22 @@ test("pickReadProjectId returns the real project once it has ingested", () => {
 test("a durable Sentry issue counts as real onboarding data without claiming OTLP ingestion", () => {
   assert.equal(projectHasOnboardingData({ hasIngested: false, hasSentryIssues: true }), true);
   assert.equal(projectHasOnboardingData({ hasIngested: false, hasSentryIssues: false }), false);
+});
+
+test("historical Sentry deliveries lazily backfill the project marker", async () => {
+  const receivedAt = new Date("2026-07-20T10:00:00.000Z");
+  const marked: Date[] = [];
+
+  const hasSentryIssues = await resolveHasSentryIssues({
+    firstSentryIssueAt: null,
+    findHistoricalIssue: async () => receivedAt,
+    markFirstSentryIssueAt: async (at) => {
+      marked.push(at);
+    },
+  });
+
+  assert.equal(hasSentryIssues, true);
+  assert.deepEqual(marked, [receivedAt]);
 });
 
 test("pickReadProjectId is a no-op when demo mode is off (no DEMO_PROJECT_ID)", () => {
