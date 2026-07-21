@@ -50,6 +50,8 @@ export function AcceptInvitation() {
 }
 
 function InvitationAuthentication({ id }: { id: string }) {
+  const continuationUrl = `${window.location.origin}/accept-invitation?id=${encodeURIComponent(id)}&join=1`;
+
   return (
     <CenteredShell>
       <Wordmark />
@@ -62,7 +64,8 @@ function InvitationAuthentication({ id }: { id: string }) {
         </div>
         <AuthForm
           initialMode="sign-up"
-          onSuccess={() => window.location.assign(`/accept-invitation?id=${encodeURIComponent(id)}&join=1`)}
+          socialCallbackURL={continuationUrl}
+          onSuccess={() => window.location.assign(continuationUrl)}
         />
       </div>
     </CenteredShell>

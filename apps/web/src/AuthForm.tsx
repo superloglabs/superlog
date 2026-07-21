@@ -58,10 +58,12 @@ export function AuthForm({
   initialMode = "sign-in",
   onSuccess,
   onClose,
+  socialCallbackURL,
 }: {
   initialMode?: Mode;
   onSuccess?: () => void;
   onClose?: () => void;
+  socialCallbackURL?: string;
 }) {
   const providers = useAuthProviders();
   const anySocial = providers.google || providers.github;
@@ -128,7 +130,7 @@ export function AuthForm({
     try {
       await authClient.signIn.social({
         provider: "google",
-        callbackURL: `${window.location.origin}/`,
+        callbackURL: socialCallbackURL ?? `${window.location.origin}/`,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Google sign-in failed");
@@ -141,7 +143,7 @@ export function AuthForm({
     try {
       await authClient.signIn.social({
         provider: "github",
-        callbackURL: `${API_URL}/api/github/post-signin`,
+        callbackURL: socialCallbackURL ?? `${API_URL}/api/github/post-signin`,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "GitHub sign-in failed");
