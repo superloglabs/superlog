@@ -80,12 +80,12 @@ export type OtelLogRow = {
 const SUPERLOG_PROJECT_ID_KEY = "superlog.project_id";
 const NANOS_PER_SECOND = 1_000_000_000n;
 
-export function otlpLogsToRows(payload: OtlpLogsExport, projectId: string): OtelLogRow[] {
+export function otlpLogsToRows(payload: OtlpLogsExport, projectId: string, authoritative: boolean = false): OtelLogRow[] {
   const rows: OtelLogRow[] = [];
   for (const rl of payload.resourceLogs ?? []) {
     const resourceMap = kvListToMap(rl.resource?.attributes);
     const serviceName = resourceMap["service.name"] ?? "";
-    const resourceAttributes = stripSuperlog(resourceMap);
+    const resourceAttributes = authoritative ? { ...resourceMap } : stripSuperlog(resourceMap);
     resourceAttributes[SUPERLOG_PROJECT_ID_KEY] = projectId;
     const resourceSchemaUrl = rl.schemaUrl ?? "";
 
@@ -111,7 +111,7 @@ export function otlpLogsToRows(payload: OtlpLogsExport, projectId: string): Otel
           ScopeName: scopeName,
           ScopeVersion: scopeVersion,
           ScopeAttributes: scopeAttributes,
-          LogAttributes: stripSuperlog(kvListToMap(lr.attributes)),
+          LogAttributes: authoritative ? kvListToMap(lr.attributes) : stripSuperlog(kvListToMap(lr.attributes)),
           EventName: lr.eventName ?? "",
         });
       }
@@ -184,12 +184,12 @@ export type OtelTraceRow = {
 const SPAN_KINDS = ["Unspecified", "Internal", "Server", "Client", "Producer", "Consumer"];
 const STATUS_CODES = ["Unset", "Ok", "Error"];
 
-export function otlpTracesToRows(payload: OtlpTracesExport, projectId: string): OtelTraceRow[] {
+export function otlpTracesToRows(payload: OtlpTracesExport, projectId: string, authoritative: boolean = false): OtelTraceRow[] {
   const rows: OtelTraceRow[] = [];
   for (const rs of payload.resourceSpans ?? []) {
     const resourceMap = kvListToMap(rs.resource?.attributes);
     const serviceName = resourceMap["service.name"] ?? "";
-    const resourceAttributes = stripSuperlog(resourceMap);
+    const resourceAttributes = authoritative ? { ...resourceMap } : stripSuperlog(resourceMap);
     resourceAttributes[SUPERLOG_PROJECT_ID_KEY] = projectId;
 
     for (const ss of rs.scopeSpans ?? []) {
@@ -213,17 +213,17 @@ export function otlpTracesToRows(payload: OtlpTracesExport, projectId: string): 
           ResourceAttributes: resourceAttributes,
           ScopeName: scopeName,
           ScopeVersion: scopeVersion,
-          SpanAttributes: stripSuperlog(kvListToMap(span.attributes)),
+          SpanAttributes: authoritative ? kvListToMap(span.attributes) : stripSuperlog(kvListToMap(span.attributes)),
           Duration: (end > start ? end - start : 0n).toString(),
           StatusCode: STATUS_CODES[span.status?.code ?? 0] ?? "Unset",
           StatusMessage: span.status?.message ?? "",
           "Events.Timestamp": events.map((e) => nanosToClickHouseDateTime64(e.timeUnixNano ?? 0)),
           "Events.Name": events.map((e) => e.name ?? ""),
-          "Events.Attributes": events.map((e) => stripSuperlog(kvListToMap(e.attributes))),
+          "Events.Attributes": events.map((e) => authoritative ? kvListToMap(e.attributes) : stripSuperlog(kvListToMap(e.attributes))),
           "Links.TraceId": links.map((l) => toHex(l.traceId)),
           "Links.SpanId": links.map((l) => toHex(l.spanId)),
           "Links.TraceState": links.map((l) => l.traceState ?? ""),
-          "Links.Attributes": links.map((l) => stripSuperlog(kvListToMap(l.attributes))),
+          "Links.Attributes": links.map((l) => authoritative ? kvListToMap(l.attributes) : stripSuperlog(kvListToMap(l.attributes))),
         });
       }
     }

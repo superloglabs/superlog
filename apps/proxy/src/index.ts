@@ -815,13 +815,16 @@ async function forward(
         { path, contentType, contentEncoding, body: bodyBuffer, projectId },
         logger,
       );
+      if (stampedBody.authoritative) {
+        upstreamHeaders["x-superlog-authoritative"] = "true";
+      }
       const res = await tracer.startActiveSpan("ingest.collector_post", async (postSpan) => {
         postSpan.setAttribute("upstream.url", `${COLLECTOR_URL}${path}`);
         try {
           const r = await fetch(`${COLLECTOR_URL}${path}`, {
             method: "POST",
             headers: upstreamHeaders,
-            body: stampedBody,
+            body: stampedBody.body,
           });
           postSpan.setAttribute("http.response.status_code", r.status);
           if (r.status >= 400) {
@@ -1139,13 +1142,16 @@ const renderSyslogServer = RENDER_SYSLOG_PORT
             },
             logger,
           );
+          const headers: Record<string, string> = {
+            "content-type": "application/json",
+            "x-superlog-project-id": projectId,
+          };
+          if (stampedBody.authoritative) headers["x-superlog-authoritative"] = "true";
+          
           const res = await fetch(`${COLLECTOR_URL}/v1/logs`, {
             method: "POST",
-            headers: {
-              "content-type": "application/json",
-              "x-superlog-project-id": projectId,
-            },
-            body: stampedBody,
+            headers,
+            body: stampedBody.body,
           });
           if (res.status >= 400) {
             throw new Error(`collector returned ${res.status} for render syslog batch`);
