@@ -152,10 +152,33 @@ export function createIssueTransitionDispatcher(opts: {
   };
 }
 
+// Per-project serialization. Transitions for the SAME project run strictly
+// one at a time (burst siblings group sequentially, so the second issue of a
+// storm sees the incident the first one just created), while different
+// projects keep using the full consumer concurrency. In-process only: the
+// worker runs as a single process; if it ever scales out, cross-process
+// races return (degrading to pre-lock behavior, never worse).
+function createKeyedMutex(): <T>(key: string, fn: () => Promise<T>) => Promise<T> {
+  const tails = new Map<string, Promise<unknown>>();
+  return async function withKey<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = tails.get(key) ?? Promise.resolve();
+    const next = prev.then(fn, fn);
+    const stored = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    tails.set(key, stored);
+    void stored.then(() => {
+      if (tails.get(key) === stored) tails.delete(key);
+    });
+    return next;
+  };
+}
+
 // Register the queue and its worker. Each consumer processes one job at a
 // time; a job's failure is logged and swallowed (at-most-once, matching the
 // previous inline behavior) so one poisoned transition can't wedge or re-run
-// the rest.
+// the rest. Same-project jobs additionally serialize behind each other.
 export async function registerIssueTransitionWorker(
   boss: Pick<TransitionQueueBoss, "createQueue" | "work">,
   opts: {
@@ -165,6 +188,7 @@ export async function registerIssueTransitionWorker(
   },
 ): Promise<void> {
   const logger = opts.logger ?? defaultLogger;
+  const perProject = createKeyedMutex();
   await boss.createQueue(ISSUE_TRANSITION_QUEUE);
   await boss.work(
     ISSUE_TRANSITION_QUEUE,
@@ -195,7 +219,7 @@ export async function registerIssueTransitionWorker(
               );
               return;
             }
-            await opts.handle(issue, data.transition);
+            await perProject(data.projectId, () => opts.handle(issue, data.transition));
           } catch (err) {
             failureCounter.add(1, { transition: data.transition });
             logger.error(

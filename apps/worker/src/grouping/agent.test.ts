@@ -207,6 +207,15 @@ test("runGroupingAgent: text-only fallback parses JSON verdict from text", async
   assert.equal(verdict.decision, "join");
 });
 
+test("runGroupingAgent: raw standalone JSON without evidence is honoured, not a failure", async () => {
+  const deps = makeDeps([[textBlock('{"decision": "standalone"}')]]);
+  const verdict = await runGroupingAgent(
+    { projectName: "p", newIssue: NEW_ISSUE, candidates: [makeCandidate("a")] },
+    deps,
+  );
+  assert.deepEqual(verdict, { decision: "standalone", evidence: null });
+});
+
 test("runGroupingAgent: text-only with non-JSON is a mechanical failure, not a verdict", async () => {
   const deps = makeDeps([[textBlock("I'd rather not say")]]);
   const verdict = await runGroupingAgent(

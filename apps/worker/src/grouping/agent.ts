@@ -104,9 +104,11 @@ export async function runGroupingAgent(
       (block): block is Anthropic.Messages.ToolUseBlock => block.type === "tool_use",
     );
     if (toolUses.length === 0) {
+      // The model may opt out of tools and reply with raw verdict JSON —
+      // honour it (including standalone without evidence). Anything that
+      // doesn't parse as a verdict is a mechanical failure, not a decision.
       const parsed = parseVerdictFromText(extractText(message), candidateIds);
-      if (parsed.decision === "join") return parsed;
-      if (parsed.evidence) return parsed; // a real standalone verdict, just written as text
+      if (parsed) return parsed;
       return {
         decision: "standalone",
         evidence: "Model did not call a grouping tool.",

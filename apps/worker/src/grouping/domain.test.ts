@@ -157,13 +157,16 @@ test("parseSearchInput tokenises the query and clamps the limit", () => {
   assert.equal(out.limit, 25);
 });
 
-test("parseVerdictFromText returns standalone on invalid JSON", () => {
+test("parseVerdictFromText returns null when the reply is not a verdict", () => {
   const ids = new Set(["a", "b"]);
-  assert.deepEqual(parseVerdictFromText("not json", ids), {
-    decision: "standalone",
-    evidence: null,
-  });
-  assert.deepEqual(parseVerdictFromText("\"string\"", ids), {
+  assert.equal(parseVerdictFromText("not json", ids), null);
+  assert.equal(parseVerdictFromText("\"string\"", ids), null);
+  assert.equal(parseVerdictFromText("{\"foo\": 1}", ids), null);
+});
+
+test("parseVerdictFromText honours a valid standalone without evidence", () => {
+  const ids = new Set(["a", "b"]);
+  assert.deepEqual(parseVerdictFromText("{\"decision\": \"standalone\"}", ids), {
     decision: "standalone",
     evidence: null,
   });
