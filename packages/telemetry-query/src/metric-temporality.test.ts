@@ -326,6 +326,39 @@ test(
 );
 
 test(
+  "metric aggregates include the in-window portion of a recent known-start cumulative interval",
+  { skip: !clickhouseUrl },
+  async () => {
+    await ch.insert({
+      table: "otel_metrics_sum",
+      format: "JSONEachRow",
+      values: [
+        {
+          ...cumulativeSumPoint("2026-01-01 00:10:00", 100),
+          MetricName: "recent_start.total",
+        },
+      ],
+    });
+
+    const rows = await metricAggregate(
+      ch,
+      "project-1",
+      "recent_start.total",
+      {
+        range: {
+          since: "2026-01-01T00:05:00Z",
+          until: "2026-01-01T00:10:00Z",
+        },
+      },
+      undefined,
+      "sum",
+    );
+
+    assert.deepEqual(rows, [{ group: "", value: 50 }]);
+  },
+);
+
+test(
   "cumulative non-monotonic sums preserve negative and positive changes",
   { skip: !clickhouseUrl },
   async () => {
@@ -574,6 +607,40 @@ test(
       { bucket: "2026-01-01 00:01:00", group: "", value: 20 },
       { bucket: "2026-01-01 00:02:00", group: "", value: 20 },
     ]);
+  },
+);
+
+test(
+  "cumulative histogram percentiles include a recent known-start interval crossing the window",
+  { skip: !clickhouseUrl },
+  async () => {
+    await ch.insert({
+      table: "otel_metrics_histogram",
+      format: "JSONEachRow",
+      values: [
+        {
+          ...cumulativeHistogramPoint("2026-01-01 00:10:00", 100, 2_000, [0, 100]),
+          MetricName: "recent_start.duration",
+        },
+      ],
+    });
+
+    const rows = await metricSeries(
+      ch,
+      "project-1",
+      "recent_start.duration",
+      {
+        range: {
+          since: "2026-01-01T00:05:00Z",
+          until: "2026-01-01T00:10:00Z",
+        },
+      },
+      undefined,
+      { n: 5, unit: "MINUTE" },
+      "p95",
+    );
+
+    assert.deepEqual(rows, [{ bucket: "2026-01-01 00:05:00", group: "", value: 20 }]);
   },
 );
 

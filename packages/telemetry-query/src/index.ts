@@ -1093,6 +1093,8 @@ function histogramQuantileQuery(args: {
   const baseWhere = baseConds.join(" AND ");
   const stepNs = stepSeconds(step) * 1_000_000_000;
   const sinceNs = unixTimestamp64NanoExpr(sinceExpr);
+  const predecessorLookbackExpr = `(${sinceExpr}) - INTERVAL 1 DAY`;
+  const predecessorLookbackNs = unixTimestamp64NanoExpr(predecessorLookbackExpr);
   const seriesKey = `cityHash64(
     ServiceName,
     MetricName,
@@ -1149,7 +1151,7 @@ function histogramQuantileQuery(args: {
                 if(
                   b < ${sinceNs}
                     OR b = toUnixTimestamp64Nano(StartTimeUnix)
-                    OR toUnixTimestamp64Nano(StartTimeUnix) < ${sinceNs},
+                    OR toUnixTimestamp64Nano(StartTimeUnix) < ${predecessorLookbackNs},
                   emptyArrayUInt64(),
                   QuantileBucketCounts
                 ),
@@ -1224,7 +1226,7 @@ function histogramQuantileQuery(args: {
               FROM ${table}
               WHERE ${baseWhere}
                 AND TimeUnix < ${sinceExpr}
-                AND TimeUnix >= (${sinceExpr}) - INTERVAL 1 DAY
+                AND TimeUnix >= ${predecessorLookbackExpr}
                 AND AggregationTemporality = 2
               QUALIFY row_number() OVER (
                 PARTITION BY ${seriesKey}
@@ -1322,6 +1324,8 @@ function temporalityAwareScalarQuery(args: {
   // its increase.
   const stepNs = stepSeconds(step) * 1_000_000_000;
   const sinceNs = unixTimestamp64NanoExpr(sinceExpr);
+  const predecessorLookbackExpr = `(${sinceExpr}) - INTERVAL 1 DAY`;
+  const predecessorLookbackNs = unixTimestamp64NanoExpr(predecessorLookbackExpr);
   const seriesKey = `cityHash64(
     ServiceName,
     MetricName,
@@ -1362,11 +1366,12 @@ function temporalityAwareScalarQuery(args: {
               AND (
                 b < ${sinceNs}
                   OR b = toUnixTimestamp64Nano(StartTimeUnix)
-                  OR toUnixTimestamp64Nano(StartTimeUnix) < ${sinceNs}
+                  OR toUnixTimestamp64Nano(StartTimeUnix) < ${predecessorLookbackNs}
               ),
             -- A predecessor included only for boundary differencing contributes
             -- nothing itself. A zero-duration first point is an unknown-start
-            -- reset, whose initial rate contribution is also zero.
+            -- reset, whose initial rate contribution is also zero. A start
+            -- outside the bounded predecessor lookback is too old to infer.
             [],
             -- Spread the increase across every step-aligned bucket the interval
             -- (a, b] touches. For a known reset, a is StartTimeUnix and the
@@ -1432,7 +1437,7 @@ function temporalityAwareScalarQuery(args: {
               FROM ${table}
               WHERE ${baseWhere}
                 AND TimeUnix < ${sinceExpr}
-                AND TimeUnix >= (${sinceExpr}) - INTERVAL 1 DAY
+                AND TimeUnix >= ${predecessorLookbackExpr}
                 AND AggregationTemporality = 2
               QUALIFY row_number() OVER (
                 PARTITION BY ${seriesKey}
