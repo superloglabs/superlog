@@ -5,6 +5,12 @@ export type TicketCreatingTerminalOutcome =
   | "complete_investigation"
   | "resolve_incident";
 
+export function linearHandoffTerminalOutcome(
+  result: Pick<AgentRunResult, "linearTicketRequested">,
+): Extract<TicketCreatingTerminalOutcome, "create_linear_issue" | "complete_investigation"> {
+  return result.linearTicketRequested ? "create_linear_issue" : "complete_investigation";
+}
+
 export function shouldCreateLinearTicketForTerminalOutcome(
   outcome: TicketCreatingTerminalOutcome,
   createOnResolve: boolean,

@@ -36,6 +36,7 @@ import {
 import { logger } from "../logger.js";
 import { enqueueAgentRunCompleted } from "../webhooks.js";
 import {
+  linearHandoffTerminalOutcome,
   shouldCreateLinearTicketForTerminalOutcome,
   shouldOfferOpenPr,
 } from "./completion-policy.js";
@@ -593,11 +594,47 @@ export async function completeWithoutPullRequest(
           state: "complete",
         }),
       publish: async () => {
-        const deliveredTicket = await scheduleLinearHandoff(
-          ctx,
-          completionResult,
-          completionResult.completionKind ?? "complete_without_pr",
+        const terminalOutcome = linearHandoffTerminalOutcome(completionResult);
+        const explicitLinearHandoff = terminalOutcome === "create_linear_issue";
+        const shouldCreateTicket = shouldCreateLinearTicketForTerminalOutcome(
+          terminalOutcome,
+          false,
         );
+        if (explicitLinearHandoff) {
+          logger.info(
+            {
+              scope: "agent_run.linear_handoff",
+              agent_run_id: ctx.agentRun.id,
+              incident_id: ctx.incident.id,
+              terminal_outcome: terminalOutcome,
+            },
+            "scheduling explicit Linear handoff",
+          );
+        }
+        let deliveredTicket = null;
+        try {
+          deliveredTicket = shouldCreateTicket
+            ? await scheduleLinearHandoff(
+                ctx,
+                completionResult,
+                completionResult.completionKind ?? "complete_without_pr",
+              )
+            : null;
+        } catch (err) {
+          if (explicitLinearHandoff) {
+            logger.error(
+              {
+                scope: "agent_run.linear_handoff",
+                agent_run_id: ctx.agentRun.id,
+                incident_id: ctx.incident.id,
+                terminal_outcome: terminalOutcome,
+                err: err instanceof Error ? err.message : String(err),
+              },
+              "explicit Linear handoff failed",
+            );
+          }
+          throw err;
+        }
         if (!deliveredTicket && completionResult.linearTicket) {
           await recordFiledLinearTicket(ctx, completionResult.linearTicket);
         }
@@ -609,6 +646,17 @@ export async function completeWithoutPullRequest(
                 url: completionResult.linearTicket.url ?? null,
               }
             : null;
+        if (explicitLinearHandoff && !ticket) {
+          logger.error(
+            {
+              scope: "agent_run.linear_handoff",
+              agent_run_id: ctx.agentRun.id,
+              incident_id: ctx.incident.id,
+              terminal_outcome: terminalOutcome,
+            },
+            "explicit Linear handoff returned without a ticket",
+          );
+        }
         logger.info(
           {
             scope: "agent_run",
