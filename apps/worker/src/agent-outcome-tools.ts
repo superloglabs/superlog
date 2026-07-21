@@ -48,6 +48,7 @@ export const DISPATCHED_OUTCOME_TOOL_NAMES = ["propose_pr", "resolve_incident"] 
 
 export const TERMINAL_OUTCOME_TOOL_NAMES = [
   "propose_pr",
+  "create_linear_issue",
   "complete_investigation",
   "ask_human",
   "report_external_cause",
@@ -389,6 +390,19 @@ export type AskHumanPayload = { question: string };
 
 export type CompleteInvestigationPayload = Record<string, never>;
 
+export type CreateLinearIssuePayload = Record<string, never>;
+
+const CREATE_LINEAR_ISSUE_DEFINITION: OutcomeToolDefinition = {
+  name: "create_linear_issue",
+  description:
+    "Terminal: create or reuse exactly one Linear issue for this investigation from the recorded findings, then complete the run while leaving the Incident open. Use this after report_findings when a human asks for a Linear issue or the findings need an explicit Linear handoff. The platform performs the Linear mutation idempotently; do not try to call Linear directly.",
+  input_schema: {
+    type: "object",
+    properties: {},
+    required: [],
+  },
+};
+
 const COMPLETE_INVESTIGATION_DEFINITION: OutcomeToolDefinition = {
   name: "complete_investigation",
   description:
@@ -427,6 +441,7 @@ export const OUTCOME_TOOL_DEFINITIONS: OutcomeToolDefinition[] = [
 export type AgentInterventionCapabilities = {
   prCreation: boolean;
   approvalPrompts: boolean;
+  linearTicketCreation: boolean;
 };
 
 export function hasInterventionTools(capabilities: AgentInterventionCapabilities): boolean {
@@ -439,7 +454,10 @@ export function outcomeToolDefinitionsForCapabilities(
   return [
     REPORT_FINDINGS_DEFINITION,
     ...(capabilities.prCreation ? [PROPOSE_PR_DEFINITION] : []),
-    ...(!hasInterventionTools(capabilities) ? [COMPLETE_INVESTIGATION_DEFINITION] : []),
+    ...(capabilities.linearTicketCreation ? [CREATE_LINEAR_ISSUE_DEFINITION] : []),
+    ...(!hasInterventionTools(capabilities) && !capabilities.linearTicketCreation
+      ? [COMPLETE_INVESTIGATION_DEFINITION]
+      : []),
     ASK_HUMAN_DEFINITION,
     REPORT_EXTERNAL_CAUSE_DEFINITION,
     RESOLVE_INCIDENT_DEFINITION,
@@ -452,6 +470,7 @@ export function outcomeToolDefinitionsForCapabilities(
 
 export type TerminalOutcome =
   | { name: "propose_pr"; payload: ProposePrPayload }
+  | { name: "create_linear_issue"; payload: CreateLinearIssuePayload }
   | { name: "complete_investigation"; payload: CompleteInvestigationPayload }
   | { name: "ask_human"; payload: AskHumanPayload }
   | { name: "report_external_cause"; payload: ReportExternalCausePayload }
@@ -492,6 +511,7 @@ export type ValidatedLegacyOutcome =
 const FINDINGS_REQUIRED = new Set<string>([
   "propose_pr",
   "resolve_incident",
+  "create_linear_issue",
   "complete_investigation",
   "report_external_cause",
 ]);
@@ -868,6 +888,9 @@ export function validateOutcomeToolInput(
     case "complete_investigation":
       return { ok: true, tool: "complete_investigation", payload: {} };
 
+    case "create_linear_issue":
+      return { ok: true, tool: "create_linear_issue", payload: {} };
+
     case "ask_human": {
       const question = pushRequiredString(errors, input, "question");
       if (errors.length > 0) return { ok: false, errors };
@@ -1114,7 +1137,7 @@ export function assembleAgentRunResult(args: {
     }
     result.issueClassifications = [...classificationsByIssue.values()];
   }
-  if (terminal?.name === "complete_investigation") {
+  if (terminal?.name === "complete_investigation" || terminal?.name === "create_linear_issue") {
     result.completionKind = "investigation_complete";
   }
   if (terminal?.name === "ask_human") {

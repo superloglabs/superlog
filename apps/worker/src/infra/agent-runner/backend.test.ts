@@ -56,6 +56,7 @@ test("getAgentRunnerBackend returns the default community backend", async () => 
       prPolicy: "never",
       approvalPromptsEnabled: false,
       approvalPromptToolsAvailable: false,
+      linearTicketCreationAvailable: false,
       prBaseBranch: null,
       githubConnected: false,
       telemetryInvestigationHint:
@@ -110,6 +111,7 @@ test("getAgentRunnerBackend returns a built-in disabled backend for community in
         prPolicy: "never",
         approvalPromptsEnabled: false,
         approvalPromptToolsAvailable: false,
+        linearTicketCreationAvailable: false,
         prBaseBranch: null,
         githubConnected: false,
         telemetryInvestigationHint:

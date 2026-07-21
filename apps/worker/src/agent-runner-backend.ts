@@ -128,6 +128,9 @@ export type AgentRunnerStartInput = {
   // True only when at least one currently registered integration operation
   // is implemented as an approval prompt for this run.
   approvalPromptToolsAvailable: boolean;
+  // True when this run has an active, usable Linear installation. The runner
+  // exposes the idempotent ticket-handoff command only in that case.
+  linearTicketCreationAvailable: boolean;
   prBaseBranch: string | null;
   githubConnected: boolean;
   telemetryInvestigationHint: string;

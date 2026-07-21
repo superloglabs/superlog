@@ -9,6 +9,10 @@ test("complete_investigation always attempts the connected Linear handoff", () =
   assert.equal(shouldCreateLinearTicketForTerminalOutcome("complete_investigation", false), true);
 });
 
+test("create_linear_issue always attempts the connected Linear handoff", () => {
+  assert.equal(shouldCreateLinearTicketForTerminalOutcome("create_linear_issue", false), true);
+});
+
 test("resolve_incident follows the project's create-ticket-on-resolve toggle", () => {
   assert.equal(shouldCreateLinearTicketForTerminalOutcome("resolve_incident", true), true);
   assert.equal(shouldCreateLinearTicketForTerminalOutcome("resolve_incident", false), false);
