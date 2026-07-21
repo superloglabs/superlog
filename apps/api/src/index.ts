@@ -1410,6 +1410,7 @@ app.get("/api/projects/:projectId/issues", async (c) => {
         days: DEFAULT_ISSUE_LIST_WINDOW_DAYS,
       },
       format: "JSONEachRow",
+      abort_signal: AbortSignal.timeout(2_000),
     });
     const activityResultRows = (await activity.json()) as {
       fingerprint: string;
