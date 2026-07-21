@@ -8,6 +8,7 @@ import {
   type MetricAggregation,
   type ResourceAttrFilter,
   countSeries,
+  metricAggregate,
   metricSeries,
   pickStep,
 } from "./mcp/clickhouse.js";
@@ -115,7 +116,7 @@ export async function evaluateAlertQuery(
 
   if (alert.source === "metric") {
     if (!alert.metricName) return { groups: new Map(), total: 0 };
-    const rows = await metricSeries(
+    const rows = await metricAggregate(
       ch,
       alert.projectId,
       alert.metricName,
@@ -125,7 +126,7 @@ export async function evaluateAlertQuery(
         resourceAttrs,
       },
       groupBy,
-      step,
+      alert.aggregation === "avg" ? "avg" : "sum",
     );
     for (const row of rows) {
       const key = row.group ?? "";

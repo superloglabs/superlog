@@ -200,7 +200,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
     {
       title: "Query metrics",
       description:
-        "Fetch recent metric points across gauge/sum/histogram/summary tables. Targets the session's active project unless project_id is given. Each point includes its data-point `attributes` (the per-series dimensions like route/status/tenant) and `resource_attrs`. gauge/sum points carry a scalar `value`; histogram/summary points carry `count` and `sum` (plus `min`/`max` for histograms) instead, since they have no scalar value.",
+        "Fetch recent metric points across gauge, sum, explicit-histogram, exponential-histogram, and summary tables. Targets the session's active project unless project_id is given. Each point includes its data-point `attributes` (the per-series dimensions like route/status/tenant), `resource_attrs`, start time, and aggregation temporality where applicable. Gauge/sum points carry a scalar `value`; histogram/summary points carry `count` and `sum` (plus `min`/`max` for histograms) instead, since they have no scalar value.",
       inputSchema: {
         project_id: projectIdSchema,
         metric_name: z.string().optional(),
