@@ -22,6 +22,7 @@ test("round-trips the selected Sentry project through short-lived signed state",
       projectId: "project-1",
       userId: "user-1",
       sentryProjectSlug: "storefront",
+      returnTo: "settings",
     },
     "state-secret",
     1000,
@@ -32,6 +33,7 @@ test("round-trips the selected Sentry project through short-lived signed state",
     projectId: "project-1",
     userId: "user-1",
     sentryProjectSlug: "storefront",
+    returnTo: "settings",
   });
   assert.equal(verifySentryState(state, "wrong-secret", 1001), null);
   assert.equal(verifySentryState(state, "state-secret", 1000 + 10 * 60 * 1000 + 1), null);

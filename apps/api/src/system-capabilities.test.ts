@@ -14,6 +14,7 @@ test("system capabilities default to the open-core community edition", () => {
     railwayConnect: false,
     renderConnect: false,
     gcpConnect: false,
+    sentryConnect: false,
   });
 });
 
@@ -124,7 +125,29 @@ test("system capabilities expose cloud billing and managed agents when explicitl
       railwayConnect: false,
       renderConnect: false,
       gcpConnect: false,
+      sentryConnect: false,
     },
+  );
+});
+
+test("sentryConnect requires the public Sentry App and platform secrets", () => {
+  assert.equal(
+    buildSystemCapabilities({
+      SENTRY_CLIENT_ID: "id",
+      SENTRY_CLIENT_SECRET: "secret",
+      SENTRY_APP_SLUG: "superlog",
+    }).sentryConnect,
+    false,
+  );
+  assert.equal(
+    buildSystemCapabilities({
+      SENTRY_CLIENT_ID: "id",
+      SENTRY_CLIENT_SECRET: "secret",
+      SENTRY_APP_SLUG: "superlog",
+      STATE_SIGNING_SECRET: "state-secret",
+      AGENT_SECRETS_KEY: "encryption-key",
+    }).sentryConnect,
+    true,
   );
 });
 

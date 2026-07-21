@@ -6,6 +6,7 @@ export type WebView =
   | "vercel"
   | "railway"
   | "render"
+  | "sentry"
   | "code"
   | "deploy";
 
@@ -15,6 +16,7 @@ export function initialWebViewFromSearch(search: string): WebView {
   if (params.has("cloudflare")) return "cloudflare";
   if (params.has("vercel")) return "vercel";
   if (params.has("railway")) return "railway";
+  if (params.has("sentry")) return "sentry";
   return "chooser";
 }
 

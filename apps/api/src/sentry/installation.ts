@@ -26,6 +26,16 @@ type SentryGrant = {
   sentryInstallationId: string;
 };
 
+type SentryInstallationDeps = {
+  importOpenIssues(input: {
+    accessToken: string;
+    organizationSlug: string;
+    projectSlug: string;
+    installationId: string;
+    targetProjectId: string;
+  }): Promise<number>;
+};
+
 function config() {
   return {
     clientId: process.env.SENTRY_CLIENT_ID,
@@ -37,14 +47,21 @@ function config() {
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
-export function mountSentryInstallationPublic(app: Hono<any>): void {
+export function mountSentryInstallationPublic(app: Hono<any>, deps: SentryInstallationDeps): void {
   const { clientId, clientSecret, appSlug, stateSecret, webOrigin } = config();
 
   app.get("/sentry/oauth/callback", async (c) => {
     if (!clientId || !clientSecret || !appSlug || !stateSecret) {
       return c.json({ error: "sentry not configured" }, 503);
     }
-    if (c.req.query("error")) return c.redirect(`${webOrigin}/settings?sentry=denied`, 302);
+    if (c.req.query("error")) {
+      const rawState = c.req.query("state");
+      const state = rawState ? verifySentryState(rawState, stateSecret) : null;
+      return c.redirect(
+        sentryOAuthRedirect(webOrigin, state?.returnTo ?? "settings", "denied"),
+        302,
+      );
+    }
     const callback = parseSentryInstallationCallback(
       {
         code: c.req.query("code"),
@@ -63,7 +80,7 @@ export function mountSentryInstallationPublic(app: Hono<any>): void {
         projectId: callback.state.projectId,
       }))
     ) {
-      return c.redirect(`${webOrigin}/settings?sentry=error`, 302);
+      return c.redirect(sentryOAuthRedirect(webOrigin, callback.state.returnTo, "error"), 302);
     }
 
     try {
@@ -85,19 +102,27 @@ export function mountSentryInstallationPublic(app: Hono<any>): void {
         token,
         grant,
       });
+      const importedIssueCount = await deps.importOpenIssues({
+        accessToken: token.accessToken,
+        organizationSlug: grant.organizationSlug,
+        projectSlug: grant.sentryProjectSlug,
+        installationId: grant.sentryInstallationId,
+        targetProjectId: callback.state.projectId,
+      });
       log.info(
         {
           org_id: callback.state.orgId,
           project_id: callback.state.projectId,
           sentry_organization_slug: grant.organizationSlug,
           sentry_project_slug: grant.sentryProjectSlug,
+          imported_issue_count: importedIssueCount,
         },
         "sentry installed",
       );
-      return c.redirect(`${webOrigin}/settings?sentry=installed`, 302);
+      return c.redirect(sentryOAuthRedirect(webOrigin, callback.state.returnTo, "installed"), 302);
     } catch (error) {
       log.error({ err: error }, "sentry oauth callback failed");
-      return c.redirect(`${webOrigin}/settings?sentry=error`, 302);
+      return c.redirect(sentryOAuthRedirect(webOrigin, callback.state.returnTo, "error"), 302);
     }
   });
 }
@@ -126,18 +151,23 @@ export function mountSentryInstallationAuthed(app: Hono<any>): void {
     }
     const projectId = c.req.param("projectId");
     const ctx = await requireProjectManagerContext(c, projectId);
-    const body = (await c.req.json().catch(() => null)) as { projectSlug?: unknown } | null;
+    const body = (await c.req.json().catch(() => null)) as {
+      projectSlug?: unknown;
+      returnTo?: unknown;
+    } | null;
     const sentryProjectSlug =
       typeof body?.projectSlug === "string" ? body.projectSlug.trim().toLowerCase() : "";
     if (!SENTRY_PROJECT_SLUG.test(sentryProjectSlug)) {
       return c.json({ error: "valid Sentry project slug required" }, 400);
     }
+    const returnTo = body?.returnTo === "onboarding" ? "onboarding" : "settings";
     const state = signSentryState(
       {
         orgId: ctx.access.orgId,
         projectId,
         userId: ctx.access.userId,
         sentryProjectSlug,
+        returnTo,
       },
       stateSecret,
     );
@@ -159,6 +189,15 @@ export function mountSentryInstallationAuthed(app: Hono<any>): void {
     log.info({ org_id: ctx.access.orgId, project_id: projectId }, "sentry disconnected");
     return c.json({ ok: true });
   });
+}
+
+export function sentryOAuthRedirect(
+  webOrigin: string,
+  returnTo: SentryOAuthState["returnTo"],
+  outcome: "installed" | "denied" | "error",
+): string {
+  const path = returnTo === "onboarding" ? "/" : "/settings";
+  return `${webOrigin.replace(/\/$/, "")}${path}?sentry=${outcome}`;
 }
 
 export function parseSentryInstallationCallback(

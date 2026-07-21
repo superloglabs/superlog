@@ -13,26 +13,37 @@ export function createDrizzleSentryWebhookInbox(): SentryWebhookInbox & {
           eq(schema.sentryInstallations.sentryProjectSlug, delivery.issue.projectSlug),
           isNull(schema.sentryInstallations.revokedAt),
         ),
-        columns: { id: true, sentryProjectSlug: true },
+        columns: { id: true, projectId: true, sentryProjectSlug: true },
       });
       if (!installation) return;
-      await db
-        .insert(schema.sentryWebhookEvents)
-        .values({
-          installationId: installation.id,
-          dedupeKey: delivery.dedupeKey,
-          action: delivery.action,
-          sentryIssueId: delivery.issue.id,
-          title: delivery.issue.title,
-          culprit: delivery.issue.culprit,
-          level: delivery.issue.level,
-          firstSeen: parseDate(delivery.issue.firstSeen),
-          lastSeen: parseDate(delivery.issue.lastSeen),
-          eventCount: delivery.issue.count,
-          issueUrl: delivery.issue.url,
-          rawPayload: delivery.rawPayload,
-        })
-        .onConflictDoNothing({ target: schema.sentryWebhookEvents.dedupeKey });
+      await db.transaction(async (tx) => {
+        await tx
+          .insert(schema.sentryWebhookEvents)
+          .values({
+            installationId: installation.id,
+            dedupeKey: delivery.dedupeKey,
+            action: delivery.action,
+            sentryIssueId: delivery.issue.id,
+            title: delivery.issue.title,
+            culprit: delivery.issue.culprit,
+            level: delivery.issue.level,
+            firstSeen: parseDate(delivery.issue.firstSeen),
+            lastSeen: parseDate(delivery.issue.lastSeen),
+            eventCount: delivery.issue.count,
+            issueUrl: delivery.issue.url,
+            rawPayload: delivery.rawPayload,
+          })
+          .onConflictDoNothing({ target: schema.sentryWebhookEvents.dedupeKey });
+        await tx
+          .update(schema.projects)
+          .set({ firstSentryIssueAt: new Date() })
+          .where(
+            and(
+              eq(schema.projects.id, installation.projectId),
+              isNull(schema.projects.firstSentryIssueAt),
+            ),
+          );
+      });
     },
     async revokeInstallation(sentryInstallationId) {
       await db

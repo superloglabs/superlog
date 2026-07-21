@@ -672,6 +672,10 @@ export const projects = pgTable(
     // event fires exactly once per project, independent of how many ingest keys
     // it has or how many requests race in. Null until the project activates.
     firstTelemetryAt: timestamp("first_telemetry_at", { withTimezone: true }),
+    // First Sentry issue accepted into the durable inbox. Kept separate from
+    // firstTelemetryAt so OTLP ingestion remains an honest signal while a
+    // Sentry-first project can still finish onboarding and leave demo mode.
+    firstSentryIssueAt: timestamp("first_sentry_issue_at", { withTimezone: true }),
   },
   (t) => ({
     uniq: uniqueIndex("projects_org_slug_idx").on(t.orgId, t.slug),

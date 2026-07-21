@@ -2,21 +2,23 @@ import crypto from "node:crypto";
 
 export type SentryIssueAction = "created" | "unresolved";
 
+export type SentryIssue = {
+  id: string;
+  title: string;
+  culprit: string | null;
+  level: string | null;
+  firstSeen: string | null;
+  lastSeen: string | null;
+  count: number;
+  url: string | null;
+  projectSlug: string;
+};
+
 export type SentryIssueEvent = {
   action: SentryIssueAction;
   installationId: string;
   rawBody: string;
-  issue: {
-    id: string;
-    title: string;
-    culprit: string | null;
-    level: string | null;
-    firstSeen: string | null;
-    lastSeen: string | null;
-    count: number;
-    url: string | null;
-    projectSlug: string;
-  };
+  issue: SentryIssue;
 };
 
 export function hasValidSentrySignature(args: {

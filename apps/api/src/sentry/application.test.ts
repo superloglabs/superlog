@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import crypto from "node:crypto";
 import { test } from "node:test";
-import { receiveSentryIssueEvent } from "./application.js";
+import { importOpenSentryIssues, receiveSentryIssueEvent } from "./application.js";
 import type { SentryIssueEvent } from "./domain.js";
 
 test("stores a stable delivery key so Sentry retries are idempotent", async () => {
@@ -39,4 +39,75 @@ test("stores a stable delivery key so Sentry retries are idempotent", async () =
       rawPayload: { delivery: "same" },
     },
   ]);
+});
+
+test("imports every currently open Sentry issue into the durable inbox idempotently", async () => {
+  const saved: unknown[] = [];
+  const imported = await importOpenSentryIssues(
+    {
+      listOpenIssues: async () => [
+        {
+          id: "42",
+          title: "Checkout failed",
+          culprit: "checkout.submit",
+          level: "error",
+          firstSeen: "2026-07-20T10:00:00.000Z",
+          lastSeen: "2026-07-21T11:00:00.000Z",
+          count: 7,
+          url: "https://acme.sentry.io/issues/42/",
+          projectSlug: "storefront",
+        },
+        {
+          id: "99",
+          title: "Worker timed out",
+          culprit: null,
+          level: "fatal",
+          firstSeen: null,
+          lastSeen: null,
+          count: 1,
+          url: null,
+          projectSlug: "storefront",
+        },
+      ],
+    },
+    {
+      save: async (delivery) => {
+        saved.push(delivery);
+      },
+    },
+    {
+      accessToken: "access-token",
+      organizationSlug: "acme",
+      projectSlug: "storefront",
+      installationId: "installation-1",
+      targetProjectId: "project-1",
+    },
+  );
+
+  assert.equal(imported, 2);
+  assert.deepEqual(
+    saved.map((delivery) => ({
+      action: (delivery as { action: string }).action,
+      id: (delivery as { issue: { id: string } }).issue.id,
+      dedupeKey: (delivery as { dedupeKey: string }).dedupeKey,
+    })),
+    [
+      {
+        action: "created",
+        id: "42",
+        dedupeKey: crypto
+          .createHash("sha256")
+          .update("sentry-open-issue:project-1:acme:storefront:42")
+          .digest("hex"),
+      },
+      {
+        action: "created",
+        id: "99",
+        dedupeKey: crypto
+          .createHash("sha256")
+          .update("sentry-open-issue:project-1:acme:storefront:99")
+          .digest("hex"),
+      },
+    ],
+  );
 });

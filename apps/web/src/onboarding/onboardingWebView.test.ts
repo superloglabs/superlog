@@ -12,6 +12,12 @@ test("other Vercel callback outcomes resume the Vercel flow", () => {
   assert.equal(initialWebViewFromSearch("?vercel=error"), "vercel");
 });
 
+test("Sentry OAuth outcomes resume the Sentry onboarding flow", () => {
+  assert.equal(initialWebViewFromSearch("?sentry=installed"), "sentry");
+  assert.equal(initialWebViewFromSearch("?sentry=denied"), "sentry");
+  assert.equal(initialWebViewFromSearch("?sentry=error"), "sentry");
+});
+
 test("drains-unavailable is stripped after routing to prompt onboarding", () => {
   assert.equal(stripHandledOnboardingParams("?vercel=drains_unavailable"), "");
   assert.equal(stripHandledOnboardingParams("?vercel=drains_unavailable&x=1"), "?x=1");

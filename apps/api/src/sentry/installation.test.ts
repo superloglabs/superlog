@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { sentryProjectIsAccessible } from "./client.js";
+import { listOpenSentryIssues, sentryProjectIsAccessible } from "./client.js";
 import { signSentryState } from "./oauth.js";
 
 process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
@@ -17,6 +17,7 @@ test("accepts the documented Sentry App callback without an organization slug", 
       projectId: "project-1",
       userId: "user-1",
       sentryProjectSlug: "storefront",
+      returnTo: "onboarding",
     },
     "state-secret",
     1000,
@@ -36,8 +37,21 @@ test("accepts the documented Sentry App callback without an organization slug", 
         projectId: "project-1",
         userId: "user-1",
         sentryProjectSlug: "storefront",
+        returnTo: "onboarding",
       },
     },
+  );
+});
+
+test("routes an onboarding OAuth callback back into onboarding", async () => {
+  const { sentryOAuthRedirect } = await import("./installation.js");
+  assert.equal(
+    sentryOAuthRedirect("https://app.superlog.dev", "onboarding", "installed"),
+    "https://app.superlog.dev/?sentry=installed",
+  );
+  assert.equal(
+    sentryOAuthRedirect("https://app.superlog.dev", "settings", "denied"),
+    "https://app.superlog.dev/settings?sentry=denied",
   );
 });
 
@@ -138,5 +152,81 @@ test("an OAuth install can select a Sentry project after the first cursor page",
   assert.deepEqual(requested, [
     "https://sentry.io/api/0/organizations/acme/projects/",
     "https://sentry.io/api/0/organizations/acme/projects/?cursor=second",
+  ]);
+});
+
+test("loads and normalizes every cursor page of unresolved issues for one project", async () => {
+  const requested: string[] = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    requested.push(String(input));
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer token");
+    if (requested.length === 1) {
+      return new Response(
+        JSON.stringify([
+          {
+            id: "42",
+            title: "Checkout failed",
+            culprit: "checkout.submit",
+            level: "error",
+            firstSeen: "2026-07-20T10:00:00Z",
+            lastSeen: "2026-07-21T11:00:00Z",
+            count: "7",
+            permalink: "https://acme.sentry.io/issues/42/",
+            project: { slug: "storefront" },
+          },
+        ]),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            link: '<https://sentry.io/api/0/organizations/acme/issues/?project=storefront&query=is%3Aunresolved&limit=100&cursor=second>; rel="next"; results="true"',
+          },
+        },
+      );
+    }
+    return Response.json([
+      {
+        id: "99",
+        title: "Worker timed out",
+        count: 1,
+        project: { slug: "storefront" },
+      },
+    ]);
+  };
+
+  const issues = await listOpenSentryIssues({
+    accessToken: "token",
+    organizationSlug: "acme",
+    projectSlug: "storefront",
+    fetchImpl,
+  });
+
+  assert.deepEqual(requested, [
+    "https://sentry.io/api/0/organizations/acme/issues/?project=storefront&query=is%3Aunresolved&limit=100",
+    "https://sentry.io/api/0/organizations/acme/issues/?project=storefront&query=is%3Aunresolved&limit=100&cursor=second",
+  ]);
+  assert.deepEqual(issues, [
+    {
+      id: "42",
+      title: "Checkout failed",
+      culprit: "checkout.submit",
+      level: "error",
+      firstSeen: "2026-07-20T10:00:00Z",
+      lastSeen: "2026-07-21T11:00:00Z",
+      count: 7,
+      url: "https://acme.sentry.io/issues/42/",
+      projectSlug: "storefront",
+    },
+    {
+      id: "99",
+      title: "Worker timed out",
+      culprit: null,
+      level: null,
+      firstSeen: null,
+      lastSeen: null,
+      count: 1,
+      url: null,
+      projectSlug: "storefront",
+    },
   ]);
 });

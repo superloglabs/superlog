@@ -13,12 +13,10 @@ import { isReadOnlyPostPath } from "./request-actor-log.js";
 // traces, logs, metrics) so they can evaluate the product before instrumenting
 // their own app. The substitution is server-side and read-only:
 //
-//   effectiveReadProjectId = hasIngested ? realProjectId : DEMO_PROJECT_ID
+//   effectiveReadProjectId = hasData ? realProjectId : DEMO_PROJECT_ID
 //
-// The moment their real telemetry lands, the proxy stamps the project-level
-// first-telemetry marker (and authenticated key paths also stamp
-// api_keys.last_used_at), `hasIngested` flips true, and every read switches back
-// to their own project.
+// The moment real telemetry lands or a Sentry issue reaches the durable inbox,
+// a project-level marker flips and every read switches back to their project.
 //
 // The whole feature is gated on the DEMO_PROJECT_ID env var. When unset (the
 // open-core / self-host default) every helper below is a no-op and behaviour is
@@ -49,16 +47,16 @@ export function demoProjectId(): string | undefined {
 
 /**
  * Pure decision: which project id should the read path query, and is this an
- * overlay read? We never substitute when the caller IS the demo project (the
- * demo owner viewing it directly) or once the real project has ingested.
+ * overlay read? We never substitute when the caller IS the demo project or
+ * once the real project has telemetry or Sentry issue data.
  */
 export function pickReadProjectId(args: {
   realProjectId: string;
   demoProjectId: string | undefined;
-  hasIngested: boolean;
+  hasData: boolean;
 }): { id: string; demo: boolean } {
-  const { realProjectId, demoProjectId, hasIngested } = args;
-  if (demoProjectId && !hasIngested && demoProjectId !== realProjectId) {
+  const { realProjectId, demoProjectId, hasData } = args;
+  if (demoProjectId && !hasData && demoProjectId !== realProjectId) {
     return { id: demoProjectId, demo: true };
   }
   return { id: realProjectId, demo: false };
@@ -71,16 +69,41 @@ export function pickReadProjectId(args: {
  * before first_telemetry_at existed.
  */
 export async function projectHasIngested(projectId: string): Promise<boolean> {
+  return (await projectDataStatus(projectId)).hasIngested;
+}
+
+export function projectHasOnboardingData(status: {
+  hasIngested: boolean;
+  hasSentryIssues: boolean;
+}): boolean {
+  return status.hasIngested || status.hasSentryIssues;
+}
+
+export async function projectDataStatus(projectId: string): Promise<{
+  hasIngested: boolean;
+  hasSentryIssues: boolean;
+}> {
   const project = await db.query.projects.findFirst({
-    columns: { firstTelemetryAt: true },
+    columns: { firstTelemetryAt: true, firstSentryIssueAt: true },
     where: eq(schema.projects.id, projectId),
   });
-  if (project?.firstTelemetryAt) return true;
-  const row = await db.query.apiKeys.findFirst({
-    columns: { id: true },
-    where: and(eq(schema.apiKeys.projectId, projectId), isNotNull(schema.apiKeys.lastUsedAt)),
-  });
-  return row !== undefined;
+  let hasIngested = project?.firstTelemetryAt !== null && project?.firstTelemetryAt !== undefined;
+  if (!hasIngested) {
+    const row = await db.query.apiKeys.findFirst({
+      columns: { id: true },
+      where: and(eq(schema.apiKeys.projectId, projectId), isNotNull(schema.apiKeys.lastUsedAt)),
+    });
+    hasIngested = row !== undefined;
+  }
+  return {
+    hasIngested,
+    hasSentryIssues:
+      project?.firstSentryIssueAt !== null && project?.firstSentryIssueAt !== undefined,
+  };
+}
+
+export async function projectHasData(projectId: string): Promise<boolean> {
+  return projectHasOnboardingData(await projectDataStatus(projectId));
 }
 
 /**
@@ -92,11 +115,11 @@ export async function resolveEffectiveReadProjectId(
 ): Promise<{ id: string; demo: boolean }> {
   const demo = demoProjectId();
   if (!demo || demo === realProjectId) return { id: realProjectId, demo: false };
-  const hasIngested = await projectHasIngested(realProjectId);
-  return pickReadProjectId({ realProjectId, demoProjectId: demo, hasIngested });
+  const hasData = await projectHasData(realProjectId);
+  return pickReadProjectId({ realProjectId, demoProjectId: demo, hasData });
 }
 
-/** Is this project currently served demo data? (demo configured && not ingested) */
+/** Is this project currently served demo data? (demo configured && no real data) */
 export async function isProjectInDemoMode(realProjectId: string): Promise<boolean> {
   return (await resolveEffectiveReadProjectId(realProjectId)).demo;
 }
@@ -152,7 +175,7 @@ export function demoOverlay() {
       return;
     }
 
-    const overlaying = !(await projectHasIngested(realProjectId));
+    const overlaying = !(await projectHasData(realProjectId));
     c.set("demoReadProjectId", overlaying ? demo : realProjectId);
 
     if (overlaying && isDemoBlockedWrite({ method: c.req.method, path: c.req.path })) {

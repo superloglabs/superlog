@@ -12,9 +12,8 @@ import {
 // Pre-empts the dashboard for new users until they've finished the install +
 // deploy wizard and telemetry has arrived.
 //
-// We auto-pass-through once the project has ever ingested. `hasIngested` is
-// derived from the proxy's project-level telemetry marker, so this gate stays
-// cheap: no ClickHouse queries per page load.
+// We auto-pass-through once the project has telemetry or a durable Sentry issue.
+// Both are project-level markers, so this stays cheap: no ClickHouse queries.
 //
 // Demo overlay: when the server is serving sample data (`me.demoMode`), the
 // install wizard stays the default landing, but the user can opt to "Explore
@@ -30,6 +29,8 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
   const [exploring, setExploring] = useState(readDemoExploring);
 
   const hasIngested = me.data?.project?.hasIngested ?? false;
+  const hasSentryIssues = me.data?.project?.hasSentryIssues ?? false;
+  const hasOnboardingData = hasIngested || hasSentryIssues;
   const demoMode = me.data?.demoMode ?? false;
   const skillMode = isSkillOnboardingPending();
 
@@ -78,6 +79,7 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
         mode={skillMode ? "agent" : "web"}
         projectId={null}
         hasIngested={hasIngested}
+        hasSentryIssues={hasSentryIssues}
         userName={me.data.user.name}
         userEmail={me.data.user.email}
         onComplete={() => {
@@ -94,6 +96,7 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
         mode="agent"
         projectId={me.data.project.id}
         hasIngested={hasIngested}
+        hasSentryIssues={hasSentryIssues}
         userName={me.data.user.name}
         userEmail={me.data.user.email}
         onComplete={() => {
@@ -104,7 +107,7 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
     );
   }
 
-  if (hasIngested || dismissed) {
+  if (hasOnboardingData || dismissed) {
     return <>{children}</>;
   }
 
@@ -118,6 +121,7 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
     <OnboardingWizard
       projectId={me.data.project.id}
       hasIngested={hasIngested}
+      hasSentryIssues={hasSentryIssues}
       userName={me.data.user.name}
       userEmail={me.data.user.email}
       onComplete={() => {

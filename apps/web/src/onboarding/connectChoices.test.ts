@@ -16,9 +16,18 @@ function findOption(sections: ReturnType<typeof connectSectionsFor>, id: string)
   return undefined;
 }
 
-test("the chooser offers exactly seven lanes: AWS, Cloudflare, Google Cloud, Vercel, Railway, Render, and 'I'm hosted elsewhere'", () => {
+test("the chooser offers Sentry as a first-class onboarding lane", () => {
   const ids = CONNECT_SECTIONS.flatMap((s) => s.options.map((o) => o.id));
-  assert.deepEqual(ids, ["aws", "cloudflare", "gcp", "vercel", "railway", "render", "elsewhere"]);
+  assert.deepEqual(ids, [
+    "aws",
+    "cloudflare",
+    "gcp",
+    "vercel",
+    "railway",
+    "render",
+    "sentry",
+    "elsewhere",
+  ]);
 });
 
 test("there is no coming-soon grid", () => {
@@ -48,6 +57,7 @@ test("every lane is actionable when its connectors are configured", () => {
     vercel: true,
     railway: true,
     render: true,
+    sentry: true,
   });
   for (const section of sections) {
     for (const option of section.options) {
@@ -64,6 +74,7 @@ test("connectActionFor resolves known ids and returns null for unknown", () => {
   assert.equal(connectActionFor("vercel"), "vercel");
   assert.equal(connectActionFor("railway"), "railway");
   assert.equal(connectActionFor("render"), "render");
+  assert.equal(connectActionFor("sentry"), "sentry");
   assert.equal(connectActionFor("elsewhere"), "code");
   assert.equal(connectActionFor("does-not-exist"), null);
 });
@@ -75,6 +86,7 @@ test("connectSectionsFor disables Cloudflare when the connector isn't configured
     vercel: true,
     railway: true,
     render: true,
+    sentry: true,
   });
   const cloudflare = findOption(gated, "cloudflare");
   assert.ok(cloudflare);
@@ -93,6 +105,7 @@ test("connectSectionsFor disables Google Cloud when the connector isn't configur
     vercel: true,
     railway: true,
     render: true,
+    sentry: true,
   });
   const gcp = findOption(gated, "gcp");
   assert.ok(gcp);
@@ -111,6 +124,7 @@ test("connectSectionsFor disables Vercel when the connector isn't configured", (
     vercel: false,
     railway: true,
     render: true,
+    sentry: true,
   });
   const vercel = findOption(gated, "vercel");
   assert.ok(vercel);
@@ -129,6 +143,7 @@ test("connectSectionsFor disables Railway when the connector isn't configured", 
     vercel: true,
     railway: false,
     render: true,
+    sentry: true,
   });
   const railway = findOption(gated, "railway");
   assert.ok(railway);
@@ -147,6 +162,7 @@ test("connectSectionsFor disables Render when the connector isn't configured", (
     vercel: true,
     railway: true,
     render: false,
+    sentry: true,
   });
   const render = findOption(gated, "render");
   assert.ok(render);
@@ -165,12 +181,26 @@ test("connectSectionsFor leaves configured connectors actionable", () => {
     vercel: true,
     railway: true,
     render: true,
+    sentry: true,
   });
   assert.equal(findOption(enabled, "cloudflare")?.action, "cloudflare");
   assert.equal(findOption(enabled, "gcp")?.action, "gcp");
   assert.equal(findOption(enabled, "vercel")?.action, "vercel");
   assert.equal(findOption(enabled, "railway")?.action, "railway");
   assert.equal(findOption(enabled, "render")?.action, "render");
+  assert.equal(findOption(enabled, "sentry")?.action, "sentry");
+});
+
+test("connectSectionsFor disables Sentry when the public app isn't configured", () => {
+  const gated = connectSectionsFor({
+    cloudflare: true,
+    gcp: true,
+    vercel: true,
+    railway: true,
+    render: true,
+    sentry: false,
+  });
+  assert.equal(findOption(gated, "sentry")?.action, null);
 });
 
 test("every option id is unique", () => {

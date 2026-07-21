@@ -19,6 +19,7 @@ import { ConnectDataChooser } from "./ConnectDataChooser.tsx";
 import { GcpConnectFlow } from "./GcpConnectFlow.tsx";
 import { RailwayConnectFlow } from "./RailwayConnectFlow.tsx";
 import { RenderConnectFlow } from "./RenderConnectFlow.tsx";
+import { SentryConnectFlow } from "./SentryConnectFlow.tsx";
 import { VercelConnectFlow } from "./VercelConnectFlow.tsx";
 import type { ConnectAction } from "./connectChoices.ts";
 import { CheckIcon, GithubIcon, SlackIcon, SpinnerIcon } from "./icons.tsx";
@@ -67,6 +68,7 @@ export function OnboardingWizard({
   mode = "web",
   projectId,
   hasIngested,
+  hasSentryIssues,
   userName,
   userEmail,
   onComplete,
@@ -81,6 +83,7 @@ export function OnboardingWizard({
   // endpoint, which is demo-overlaid for un-ingested projects and would otherwise
   // make the wizard claim "first events received" while showing demo data.
   hasIngested: boolean;
+  hasSentryIssues: boolean;
   userName: string;
   userEmail: string;
   onComplete: () => void;
@@ -121,6 +124,8 @@ export function OnboardingWizard({
       setWebView("railway");
     } else if (action === "render") {
       setWebView("render");
+    } else if (action === "sentry") {
+      setWebView("sentry");
     } else {
       setWebView("code");
     }
@@ -222,6 +227,14 @@ export function OnboardingWizard({
             <RenderConnectFlow
               projectId={projectId}
               eventsArrived={eventsArrived}
+              onBack={() => setWebView("chooser")}
+              onDone={onComplete}
+              onExploreDemo={onExploreDemo}
+            />
+          ) : webView === "sentry" ? (
+            <SentryConnectFlow
+              projectId={projectId}
+              issuesArrived={hasSentryIssues}
               onBack={() => setWebView("chooser")}
               onDone={onComplete}
               onExploreDemo={onExploreDemo}

@@ -15,6 +15,7 @@ import {
   GcpIcon,
   RailwayIcon,
   RenderIcon,
+  SentryIcon,
   TerminalIcon,
   VercelIcon,
 } from "./icons.tsx";
@@ -37,6 +38,7 @@ function ConnectGlyph({ icon }: { icon: ConnectIcon }) {
     vercel: VercelIcon,
     railway: RailwayIcon,
     render: RenderIcon,
+    sentry: SentryIcon,
     terminal: TerminalIcon,
   };
   const Glyph = map[icon];
@@ -152,6 +154,7 @@ export function ConnectDataChooser({
     vercel: capabilities.data?.vercelConnect ?? false,
     railway: capabilities.data?.railwayConnect ?? false,
     render: capabilities.data?.renderConnect ?? false,
+    sentry: capabilities.data?.sentryConnect ?? false,
   });
   return (
     <>

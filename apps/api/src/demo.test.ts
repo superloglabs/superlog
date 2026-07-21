@@ -6,7 +6,8 @@ import { test } from "node:test";
 // postgres client connects lazily, so these pure-function tests never open a
 // socket). Same pattern as alerts-service.test.ts / incidents/detail.test.ts.
 process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
-const { demoProjectId, isDemoBlockedWrite, pickReadProjectId } = await import("./demo.js");
+const { demoProjectId, isDemoBlockedWrite, pickReadProjectId, projectHasOnboardingData } =
+  await import("./demo.js");
 
 test("demoProjectId only accepts a canonical UUID (fail-safe on misconfig)", () => {
   const prev = process.env.DEMO_PROJECT_ID;
@@ -29,28 +30,33 @@ test("demoProjectId only accepts a canonical UUID (fail-safe on misconfig)", () 
 
 test("pickReadProjectId substitutes the demo project for a fresh, un-ingested project", () => {
   assert.deepEqual(
-    pickReadProjectId({ realProjectId: "real-1", demoProjectId: "demo-x", hasIngested: false }),
+    pickReadProjectId({ realProjectId: "real-1", demoProjectId: "demo-x", hasData: false }),
     { id: "demo-x", demo: true },
   );
 });
 
 test("pickReadProjectId returns the real project once it has ingested", () => {
   assert.deepEqual(
-    pickReadProjectId({ realProjectId: "real-1", demoProjectId: "demo-x", hasIngested: true }),
+    pickReadProjectId({ realProjectId: "real-1", demoProjectId: "demo-x", hasData: true }),
     { id: "real-1", demo: false },
   );
 });
 
+test("a durable Sentry issue counts as real onboarding data without claiming OTLP ingestion", () => {
+  assert.equal(projectHasOnboardingData({ hasIngested: false, hasSentryIssues: true }), true);
+  assert.equal(projectHasOnboardingData({ hasIngested: false, hasSentryIssues: false }), false);
+});
+
 test("pickReadProjectId is a no-op when demo mode is off (no DEMO_PROJECT_ID)", () => {
   assert.deepEqual(
-    pickReadProjectId({ realProjectId: "real-1", demoProjectId: undefined, hasIngested: false }),
+    pickReadProjectId({ realProjectId: "real-1", demoProjectId: undefined, hasData: false }),
     { id: "real-1", demo: false },
   );
 });
 
 test("pickReadProjectId never overlays the demo project onto itself", () => {
   assert.deepEqual(
-    pickReadProjectId({ realProjectId: "demo-x", demoProjectId: "demo-x", hasIngested: false }),
+    pickReadProjectId({ realProjectId: "demo-x", demoProjectId: "demo-x", hasData: false }),
     { id: "demo-x", demo: false },
   );
 });

@@ -61,6 +61,7 @@ import { mountDashboards } from "./dashboards.js";
 import {
   demoOverlay,
   demoProjectId,
+  projectDataStatus,
   projectHasIngested,
   resolveEffectiveReadProjectId,
 } from "./demo.js";
@@ -156,7 +157,8 @@ import {
 } from "./request-actor-log.js";
 import { mountApiRequestSecurity, requestBodyLimit } from "./request-body-limits.js";
 import { mountSavedViews } from "./saved-views/interfaces.js";
-import { receiveSentryIssueEvent } from "./sentry/application.js";
+import { importOpenSentryIssues, receiveSentryIssueEvent } from "./sentry/application.js";
+import { listOpenSentryIssues } from "./sentry/client.js";
 import { mountSentryPublic } from "./sentry/http.js";
 import {
   mountSentryInstallationAuthed,
@@ -361,8 +363,15 @@ mountGithubPublic(app);
 mountGithubAuthorOAuth(app);
 mountLinearPublic(app);
 mountNotionPublic(app);
-mountSentryInstallationPublic(app);
 const sentryWebhookInbox = createDrizzleSentryWebhookInbox();
+mountSentryInstallationPublic(app, {
+  importOpenIssues: (input) =>
+    importOpenSentryIssues(
+      { listOpenIssues: (query) => listOpenSentryIssues(query) },
+      sentryWebhookInbox,
+      input,
+    ),
+});
 mountSentryPublic(app, {
   clientSecret: process.env.SENTRY_CLIENT_SECRET,
   receiveIssueEvent: (event) => receiveSentryIssueEvent(sentryWebhookInbox, event),
@@ -520,14 +529,13 @@ app.get("/api/me", async (c) => {
   const accessibleInstalls = await listAccessibleGithubInstallsForProject(project.id);
   const githubSetupNeeded = accessibleInstalls.length === 0 && !org.githubSetupSkippedAt;
 
-  // `hasIngested` decides whether OnboardingGate shows the install wizard. It's
-  // derived from the proxy's project-level telemetry marker (with legacy API
-  // key usage as a fallback) — no ClickHouse count() queries per page load.
-  const hasIngested = await projectHasIngested(project.id);
+  // Keep OTLP ingestion and Sentry issue arrival as separate honest signals.
+  // Onboarding accepts either, while telemetry-specific UI still relies only
+  // on hasIngested. Both are cheap project-level markers — no ClickHouse count.
+  const { hasIngested, hasSentryIssues } = await projectDataStatus(project.id);
   // `demoMode` is true when a shared demo project is configured and this project
-  // hasn't ingested yet, i.e. the server is serving it demo data. The web uses it
-  // to render the read-only sample-data experience + the persistent install nudge.
-  const demoMode = demoProjectId() !== undefined && !hasIngested;
+  // has neither telemetry nor Sentry issues, i.e. the server is serving demo data.
+  const demoMode = demoProjectId() !== undefined && !hasIngested && !hasSentryIssues;
   const orgAgentSettings = await db.query.orgAgentSettings.findFirst({
     where: eq(schema.orgAgentSettings.orgId, org.id),
     columns: { anomalyScannerEnabled: true },
@@ -542,7 +550,13 @@ app.get("/api/me", async (c) => {
       impersonating: c.var.impersonating === true,
     },
     org: { id: org.id, name: org.name, slug: org.slug, githubSetupNeeded },
-    project: { id: project.id, name: project.name, slug: project.slug, hasIngested },
+    project: {
+      id: project.id,
+      name: project.name,
+      slug: project.slug,
+      hasIngested,
+      hasSentryIssues,
+    },
     favorite: { orgId: user.favoriteOrgId, projectId: user.favoriteProjectId },
     demoMode,
     billingEnforcement,
