@@ -90,11 +90,13 @@ test("imports every currently open Sentry issue into the durable inbox idempoten
       action: (delivery as { action: string }).action,
       id: (delivery as { issue: { id: string } }).issue.id,
       dedupeKey: (delivery as { dedupeKey: string }).dedupeKey,
+      targetProjectId: (delivery as { targetProjectId?: string }).targetProjectId,
     })),
     [
       {
         action: "created",
         id: "42",
+        targetProjectId: "project-1",
         dedupeKey: crypto
           .createHash("sha256")
           .update("sentry-open-issue:project-1:acme:storefront:42")
@@ -103,6 +105,7 @@ test("imports every currently open Sentry issue into the durable inbox idempoten
       {
         action: "created",
         id: "99",
+        targetProjectId: "project-1",
         dedupeKey: crypto
           .createHash("sha256")
           .update("sentry-open-issue:project-1:acme:storefront:99")

@@ -11,6 +11,9 @@ export function createDrizzleSentryWebhookInbox(): SentryWebhookInbox & {
         where: and(
           eq(schema.sentryInstallations.sentryInstallationId, delivery.installationId),
           eq(schema.sentryInstallations.sentryProjectSlug, delivery.issue.projectSlug),
+          delivery.targetProjectId
+            ? eq(schema.sentryInstallations.projectId, delivery.targetProjectId)
+            : undefined,
           isNull(schema.sentryInstallations.revokedAt),
         ),
         columns: { id: true, projectId: true, sentryProjectSlug: true },

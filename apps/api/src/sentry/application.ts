@@ -4,6 +4,7 @@ import type { SentryIssue, SentryIssueEvent } from "./domain.js";
 export type StoredSentryIssueDelivery = SentryIssueEvent & {
   dedupeKey: string;
   rawPayload: Record<string, unknown>;
+  targetProjectId?: string;
 };
 
 export type SentryWebhookInbox = {
@@ -46,6 +47,7 @@ export async function importOpenSentryIssues(
     await inbox.save({
       action: "created",
       installationId: input.installationId,
+      targetProjectId: input.targetProjectId,
       issue,
       rawBody: JSON.stringify(rawPayload),
       rawPayload,
