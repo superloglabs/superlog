@@ -68,9 +68,26 @@ test("audits a mutating auth route and still reaches the terminating handler", a
     orgSlug: "swish",
     sessionId: "sess_1",
     impersonating: false,
+    impersonatedBy: null,
   });
   // Identity is stamped for the observability span to pick up.
   assert.deepEqual(h.sawVars(), { userId: "user_1", orgId: "org_1" });
+});
+
+test("attributes an impersonated mutation to the real staff user", async () => {
+  const h = buildApp({
+    getSession: async () => ({
+      user: { id: "customer_1", name: "Customer", email: "customer@acme.com" },
+      session: { id: "sess_2", activeOrganizationId: "org_1", impersonatedBy: "staff_9" },
+    }),
+  });
+  await h.app.request("/api/auth/organization/update-member-role", { method: "POST" });
+
+  const [entry] = h.logs;
+  assert.ok(entry);
+  assert.equal(entry.userId, "customer_1");
+  assert.equal(entry.impersonatedBy, "staff_9");
+  assert.equal(entry.impersonating, true);
 });
 
 test("skips reads without resolving a session (no double get-session lookup)", async () => {

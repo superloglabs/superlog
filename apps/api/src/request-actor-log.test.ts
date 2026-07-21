@@ -24,7 +24,7 @@ test("buildActorLogFields carries human-readable user + org identity", () => {
       orgName: "Superlog prod",
       orgSlug: "swish",
       sessionId: "sess_1",
-      impersonating: false,
+      impersonatedBy: null,
     }),
     {
       method: "POST",
@@ -38,8 +38,22 @@ test("buildActorLogFields carries human-readable user + org identity", () => {
       orgSlug: "swish",
       sessionId: "sess_1",
       impersonating: false,
+      impersonatedBy: null,
     },
   );
+});
+
+test("buildActorLogFields surfaces the impersonator so staff actions are traceable", () => {
+  const fields = buildActorLogFields({
+    method: "POST",
+    path: "/api/projects/p1/context",
+    status: 200,
+    userId: "customer_1",
+    impersonatedBy: "staff_9",
+  });
+  assert.equal(fields.userId, "customer_1");
+  assert.equal(fields.impersonatedBy, "staff_9");
+  assert.equal(fields.impersonating, true);
 });
 
 test("buildActorLogFields defaults missing org / session fields to null", () => {
@@ -56,4 +70,5 @@ test("buildActorLogFields defaults missing org / session fields to null", () => 
   assert.equal(fields.userEmail, null);
   assert.equal(fields.sessionId, null);
   assert.equal(fields.impersonating, false);
+  assert.equal(fields.impersonatedBy, null);
 });

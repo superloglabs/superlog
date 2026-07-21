@@ -85,7 +85,10 @@ export async function writeActorAuditLog(
         orgName: org?.name ?? null,
         orgSlug: org?.slug ?? null,
         sessionId: session.session.id,
-        impersonating: typeof session.session.impersonatedBy === "string",
+        impersonatedBy:
+          typeof session.session.impersonatedBy === "string"
+            ? session.session.impersonatedBy
+            : null,
       }),
     );
   } catch (err) {
@@ -146,7 +149,8 @@ export type ActorLogFieldsInput = {
   orgName?: string | null;
   orgSlug?: string | null;
   sessionId?: string | null;
-  impersonating?: boolean;
+  /** The real staff user id when this request is an impersonation, else null. */
+  impersonatedBy?: string | null;
 };
 
 /**
@@ -154,6 +158,7 @@ export type ActorLogFieldsInput = {
  * feeds it session-derived identity plus the resolved org name/slug.
  */
 export function buildActorLogFields(input: ActorLogFieldsInput): Record<string, unknown> {
+  const impersonatedBy = input.impersonatedBy ?? null;
   return {
     method: input.method.toUpperCase(),
     path: input.path,
@@ -165,6 +170,9 @@ export function buildActorLogFields(input: ActorLogFieldsInput): Record<string, 
     orgName: input.orgName ?? null,
     orgSlug: input.orgSlug ?? null,
     sessionId: input.sessionId ?? null,
-    impersonating: input.impersonating ?? false,
+    // When a staff user is impersonating, userId is the impersonated customer;
+    // impersonatedBy is the real actor, so keep it for attribution.
+    impersonating: impersonatedBy !== null,
+    impersonatedBy,
   };
 }
