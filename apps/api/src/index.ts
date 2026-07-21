@@ -140,7 +140,7 @@ import { mountRenderAuthed } from "./render.js";
 import {
   type ActorAuditDeps,
   createAuthActorAuditMiddleware,
-  isMutatingMethod,
+  isAuditableMutation,
   statusFromThrown,
   writeActorAuditLog,
 } from "./request-actor-log.js";
@@ -377,7 +377,7 @@ app.use("/api/*", async (c, next) => {
   // admin is acting as another user; surface it on `c.var` so /api/me can
   // expose a boolean without the web client having to inspect raw session.
   c.set("impersonating", typeof session.session.impersonatedBy === "string");
-  if (!isMutatingMethod(c.req.method)) return next();
+  if (!isAuditableMutation({ method: c.req.method, path })) return next();
   // Audit in a finally so writes that fail by throwing an HTTPException (e.g.
   // invalid input) are attributed too, not just those returning an error body.
   let status = 500;

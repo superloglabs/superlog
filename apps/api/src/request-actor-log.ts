@@ -21,6 +21,27 @@ export function isMutatingMethod(method: string): boolean {
   return MUTATING_METHODS.has(method.toUpperCase());
 }
 
+// Project-scoped POST endpoints that are semantically reads — they carry query
+// filters in the body. The demo read-only guard (demo.ts) excludes the same
+// set; keep the two in sync.
+const POST_READ_SUBPATHS = new Set(["issues/lookup", "issue-filter/preview", "alerts/preview"]);
+
+/**
+ * Is this a POST that's really a read (Explore queries, lookups, previews)?
+ * Used to keep normal dashboard/query traffic out of the mutation audit — it
+ * would otherwise flood the log and do a per-query org lookup.
+ */
+export function isReadOnlyPostPath(path: string): boolean {
+  const sub = path.match(/^\/api\/projects\/[^/]+\/(.+?)(?:\?.*)?$/)?.[1];
+  if (!sub) return false;
+  return sub.startsWith("explore/") || POST_READ_SUBPATHS.has(sub);
+}
+
+/** A request worth auditing: a genuine state change, not a POST-for-read query. */
+export function isAuditableMutation(args: { method: string; path: string }): boolean {
+  return isMutatingMethod(args.method) && !isReadOnlyPostPath(args.path);
+}
+
 /**
  * Response status to attribute a mutation to when the handler threw before
  * producing a response — mirrors the HTTP-observability middleware so a failed
@@ -113,7 +134,7 @@ export function createAuthActorAuditMiddleware(
   deps: ActorAuditDeps,
 ): MiddlewareHandler<{ Variables: ActorVars }> {
   return async (c, next) => {
-    if (!isMutatingMethod(c.req.method)) return next();
+    if (!isAuditableMutation({ method: c.req.method, path: c.req.path })) return next();
     const session = await deps.getSession(c.req.raw.headers);
     if (session) {
       c.set("userId", session.user.id);

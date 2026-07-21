@@ -3,6 +3,7 @@ import { and, eq, isNotNull } from "drizzle-orm";
 import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import { HTTPException } from "hono/http-exception";
+import { isReadOnlyPostPath } from "./request-actor-log.js";
 
 // ---------------------------------------------------------------------------
 // Demo data overlay
@@ -115,20 +116,17 @@ const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 // are exactly how a user leaves demo mode.
 const READ_ONLY_SEGMENTS = new Set(["dashboards", "incidents", "alerts", "issues"]);
 
-// POST-for-read endpoints under the protected segments above — never blocked.
-const POST_READ_SUBPATHS = new Set(["issues/lookup", "issue-filter/preview", "alerts/preview"]);
-
 /**
  * Pure: should this request be rejected as a write against demo-overlaid data?
  * Only true for mutating methods targeting a demo-overlaid resource, excluding
- * the POST-for-read endpoints. Callers still gate this on actual demo mode.
+ * the POST-for-read endpoints (shared with the mutation audit). Callers still
+ * gate this on actual demo mode.
  */
 export function isDemoBlockedWrite(args: { method: string; path: string }): boolean {
   if (!MUTATING_METHODS.has(args.method.toUpperCase())) return false;
-  const m = args.path.match(/^\/api\/projects\/[^/]+\/(.+?)(?:\?.*)?$/);
-  const sub = m?.[1];
+  if (isReadOnlyPostPath(args.path)) return false;
+  const sub = args.path.match(/^\/api\/projects\/[^/]+\/(.+?)(?:\?.*)?$/)?.[1];
   if (!sub) return false;
-  if (POST_READ_SUBPATHS.has(sub) || sub.startsWith("explore/")) return false;
   return READ_ONLY_SEGMENTS.has(sub.split("/")[0] ?? "");
 }
 
