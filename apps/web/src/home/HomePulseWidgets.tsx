@@ -11,12 +11,12 @@ import { Tooltip } from "@/components/dither-kit/tooltip";
 import { XAxis } from "@/components/dither-kit/x-axis";
 import { YAxis } from "@/components/dither-kit/y-axis";
 import type { CSSProperties } from "react";
-import type { IncidentListItem } from "../api.ts";
-import { useIncidents } from "../api.ts";
 import {
   type AgentPullRequestSummary,
+  type HomeIncidentTrend,
   type HomeSignalSeries,
   useAgentPullRequestSummary,
+  useHomeIncidentTrend,
   useHomeSignalSeries,
 } from "../dashboards/api.ts";
 
@@ -139,57 +139,16 @@ function SignalStat({
   );
 }
 
-export type IncidentTrend = {
-  active: number;
-  rows: Array<{
-    day: string;
-    label: string;
-    sev1: number;
-    sev2: number;
-    sev3: number;
-    untriaged: number;
-  }>;
-};
-
-export function buildIncidentTrend(incidents: IncidentListItem[], now = new Date()): IncidentTrend {
-  const days = Array.from({ length: 7 }, (_, index) => {
-    const day = new Date(now);
-    day.setUTCHours(0, 0, 0, 0);
-    day.setUTCDate(day.getUTCDate() - (6 - index));
-    return {
-      day: day.toISOString().slice(0, 10),
-      label: day.toLocaleDateString("en", { weekday: "short", timeZone: "UTC" }),
-      sev1: 0,
-      sev2: 0,
-      sev3: 0,
-      untriaged: 0,
-    };
-  });
-  const byDay = new Map(days.map((day) => [day.day, day]));
-  for (const { incident } of incidents) {
-    const point = byDay.get(incident.firstSeen.slice(0, 10));
-    if (!point) continue;
-    if (incident.severity === "SEV-1") point.sev1 += 1;
-    else if (incident.severity === "SEV-2") point.sev2 += 1;
-    else if (incident.severity === "SEV-3") point.sev3 += 1;
-    else point.untriaged += 1;
-  }
-  return {
-    active: incidents.filter(({ incident }) => incident.status === "open").length,
-    rows: days,
-  };
-}
-
 export function IncidentCountHomeWidget({ projectId }: { projectId: string }) {
-  const incidents = useIncidents(projectId, "all");
-  if (incidents.isLoading) return <PulseMessage>Loading incidents…</PulseMessage>;
-  if (!incidents.data || incidents.error) {
+  const trend = useHomeIncidentTrend(projectId);
+  if (trend.isLoading) return <PulseMessage>Loading incidents…</PulseMessage>;
+  if (!trend.data || trend.error) {
     return <PulseMessage tone="danger">Incidents unavailable</PulseMessage>;
   }
-  return <IncidentCountWidgetContent trend={buildIncidentTrend(incidents.data)} />;
+  return <IncidentCountWidgetContent trend={trend.data} />;
 }
 
-export function IncidentCountWidgetContent({ trend }: { trend: IncidentTrend }) {
+export function IncidentCountWidgetContent({ trend }: { trend: HomeIncidentTrend }) {
   return (
     <div className="flex h-full min-h-52 flex-col p-4" aria-label="Incidents opened by severity">
       <div aria-label={`${trend.active} active ${trend.active === 1 ? "incident" : "incidents"}`}>

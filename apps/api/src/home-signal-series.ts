@@ -16,14 +16,12 @@ export type HomeSignalSeriesPoint = {
   metrics: number;
 };
 
-const SIGNAL_TABLES = [
-  { table: "otel_traces", timestamp: "Timestamp", signal: "traces" },
-  { table: "otel_logs", timestamp: "TimestampTime", signal: "logs" },
-  { table: "otel_metrics_gauge", timestamp: "TimeUnix", signal: "metrics" },
-  { table: "otel_metrics_sum", timestamp: "TimeUnix", signal: "metrics" },
-  { table: "otel_metrics_histogram", timestamp: "TimeUnix", signal: "metrics" },
-  { table: "otel_metrics_summary", timestamp: "TimeUnix", signal: "metrics" },
-  { table: "otel_metrics_exp_histogram", timestamp: "TimeUnix", signal: "metrics" },
+const METRIC_TABLES = [
+  "otel_metrics_gauge",
+  "otel_metrics_sum",
+  "otel_metrics_histogram",
+  "otel_metrics_summary",
+  "otel_metrics_exp_histogram",
 ] as const;
 
 export function mergeHomeSignalSeriesRows(rows: RawSignalSeriesRow[]): HomeSignalSeriesPoint[] {
@@ -47,22 +45,37 @@ export async function getHomeSignalSeries(
   range: { since: string; until: string },
   step: Step,
 ): Promise<{ step: string; rows: HomeSignalSeriesPoint[] }> {
-  // Tables, timestamp columns, signal names, and interval units are all selected
-  // from closed allowlists above / in telemetry-query's pickStep(). User input is
-  // bound through ClickHouse parameters.
-  const parts = SIGNAL_TABLES.map(
-    ({ table, timestamp, signal }) => `
+  // Traces and logs use the per-minute event rollup. Metrics use the exact-count
+  // usage projections, whose materialized project column avoids scanning the
+  // ResourceAttributes map. Tables and interval units come from closed allowlists;
+  // all request input is bound through ClickHouse parameters.
+  const parts = [
+    `
       SELECT
-        toString(toStartOfInterval(${timestamp}, INTERVAL ${step.n} ${step.unit})) AS bucket,
-        '${signal}' AS signal,
-        count() AS count
-      FROM ${table}
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
-        AND ${timestamp} >= parseDateTime64BestEffortOrZero({since:String})
-        AND ${timestamp} <= parseDateTime64BestEffortOrZero({until:String})
-      GROUP BY bucket
+        toString(toStartOfInterval(minute, INTERVAL ${step.n} ${step.unit})) AS bucket,
+        signal,
+        sum(c) AS count
+      FROM events_per_minute
+      PREWHERE minute >= toStartOfMinute(parseDateTime64BestEffortOrZero({since:String}))
+        AND minute <= parseDateTime64BestEffortOrZero({until:String})
+      WHERE project_id = {projectId:String}
+        AND signal IN ('traces', 'logs')
+      GROUP BY bucket, signal
     `,
-  );
+    ...METRIC_TABLES.map(
+      (table) => `
+        SELECT
+          toString(toStartOfInterval(TimeUnix, INTERVAL ${step.n} ${step.unit})) AS bucket,
+          'metrics' AS signal,
+          count() AS count
+        FROM ${table}
+        PREWHERE TimeUnix >= parseDateTime64BestEffortOrZero({since:String})
+          AND TimeUnix <= parseDateTime64BestEffortOrZero({until:String})
+        WHERE SuperlogProjectId = {projectId:String}
+        GROUP BY bucket
+      `,
+    ),
+  ];
   const result = await clickhouse.query({
     query: `
       SELECT bucket, signal, sum(count) AS count

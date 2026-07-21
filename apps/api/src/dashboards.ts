@@ -32,7 +32,7 @@ import {
 } from "./dashboards-service.js";
 import { resolveEffectiveReadProjectId } from "./demo.js";
 import { getHomeSignalSeries } from "./home-signal-series.js";
-import { getProjectAgentPullRequestSummary } from "./home-summary.js";
+import { getProjectAgentPullRequestSummary, getProjectHomeIncidentTrend } from "./home-summary.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 
 type Vars = { userId: string; orgId: string | null; demoReadProjectId?: string };
@@ -77,6 +77,12 @@ export function mountDashboards(
     const projectId = c.req.param("projectId");
     const { readProjectId } = await requireAccess(c, projectId);
     return c.json(await getProjectAgentPullRequestSummary(readProjectId));
+  });
+
+  app.get("/api/projects/:projectId/home/incident-trend", async (c) => {
+    const projectId = c.req.param("projectId");
+    const { readProjectId } = await requireAccess(c, projectId);
+    return c.json(await getProjectHomeIncidentTrend(readProjectId));
   });
 
   app.get("/api/projects/:projectId/home/signal-series", async (c) => {

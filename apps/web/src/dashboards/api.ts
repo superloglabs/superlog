@@ -73,6 +73,28 @@ export function useAgentPullRequestSummary(projectId: string | undefined) {
   });
 }
 
+export type HomeIncidentTrend = {
+  active: number;
+  rows: Array<{
+    day: string;
+    label: string;
+    sev1: number;
+    sev2: number;
+    sev3: number;
+    untriaged: number;
+  }>;
+};
+
+export function useHomeIncidentTrend(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["home-incident-trend", projectId],
+    queryFn: () => fetcher<HomeIncidentTrend>(`/api/projects/${projectId}/home/incident-trend`),
+    enabled: !!projectId,
+    staleTime: 30_000,
+  });
+}
+
 export type HomeSignalSeries = {
   step: string;
   rows: Array<{
