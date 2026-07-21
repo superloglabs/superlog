@@ -33,6 +33,7 @@ export const communityRunnerBackend: AgentRunnerBackend = {
         noiseClassification: null,
         resolutionClassification: null,
       },
+      declaredCustomToolNames: [],
       unknownCustomTools: [],
       latestMessage: null,
       modelUsage: {

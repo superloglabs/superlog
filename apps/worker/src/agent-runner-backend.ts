@@ -223,7 +223,7 @@ export type AgentRunnerSnapshot = {
   // Custom tools fixed in the provider session's start-time schema. Runtimes
   // that can recover this list should return it so later nudges never
   // advertise a tool that was connected only after the session started.
-  declaredCustomToolNames?: string[];
+  declaredCustomToolNames: string[];
   // How many custom_tool_result acks this collect pass sent. When > 0 the
   // `status` above is stale — it was captured before the acks went out and
   // the model is about to resume with the tool results. sync.ts uses this to

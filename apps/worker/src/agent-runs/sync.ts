@@ -460,7 +460,7 @@ export function terminalOutcomeNudgePrompt(
 }
 
 export function terminalOutcomeNudgeCapabilities(
-  snapshot: Pick<AgentRunnerSnapshot, "declaredCustomToolNames">,
+  snapshot: Partial<Pick<AgentRunnerSnapshot, "declaredCustomToolNames">>,
   fallback: {
     prCreationAvailable: boolean;
     completeInvestigationAvailable: boolean;
