@@ -503,6 +503,7 @@ test("metricSeries spreads cumulative monotonic sum increases across the interva
   assert.match(sumQuery, /lagInFrame\(toNullable\(TemporalityValue\), 1, NULL\)/);
   assert.match(sumQuery, /TemporalityValue - previous_value/);
   assert.match(sumQuery, /TimeUnix < now\(\) - INTERVAL 1 HOUR/);
+  assert.match(sumQuery, /TimeUnix >= \(now\(\) - INTERVAL 1 HOUR\) - INTERVAL 1 DAY/);
   // The increase is spread over the wall-clock interval (prev sample -> this
   // sample) by weighting each render bucket's overlap with that interval —
   // this is what removes the "comb" when the step is finer than the export

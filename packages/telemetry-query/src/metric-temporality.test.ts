@@ -243,6 +243,51 @@ test(
 );
 
 test(
+  "cumulative queries drop an unbounded first point when no recent predecessor exists",
+  { skip: !clickhouseUrl },
+  async () => {
+    await ch.insert({
+      table: "otel_metrics_sum",
+      format: "JSONEachRow",
+      values: [
+        {
+          ...cumulativeSumPoint("2026-01-01 00:30:00", 10),
+          MetricName: "stale_predecessor.total",
+        },
+        {
+          ...cumulativeSumPoint("2026-01-03 00:30:00", 30),
+          MetricName: "stale_predecessor.total",
+        },
+        {
+          ...cumulativeSumPoint("2026-01-03 01:30:00", 50),
+          MetricName: "stale_predecessor.total",
+        },
+      ],
+    });
+
+    const rows = await metricSeries(
+      ch,
+      "project-1",
+      "stale_predecessor.total",
+      {
+        range: {
+          since: "2026-01-03T00:00:00Z",
+          until: "2026-01-03T02:00:00Z",
+        },
+      },
+      undefined,
+      { n: 1, unit: "HOUR" },
+      "sum",
+    );
+
+    assert.deepEqual(rows, [
+      { bucket: "2026-01-03 00:00:00", group: "", value: 10 },
+      { bucket: "2026-01-03 01:00:00", group: "", value: 10 },
+    ]);
+  },
+);
+
+test(
   "a known cumulative reset is distributed over its declared start-to-end interval",
   { skip: !clickhouseUrl },
   async () => {

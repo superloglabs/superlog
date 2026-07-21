@@ -1137,25 +1137,31 @@ function histogramQuantileQuery(args: {
             group_key,
             QuantileBucketValues,
             if(
-              series_row = 1,
+              series_row = 0,
+              QuantileBucketCounts,
               if(
-                b < ${sinceNs} OR b = toUnixTimestamp64Nano(StartTimeUnix),
-                [],
-                QuantileBucketCounts
-              ),
-              if(
-                QuantileBucketValues = previous_values
-                  AND length(QuantileBucketCounts) = length(previous_counts),
-                arrayMap(
-                  (current, previous) -> if(current >= previous, current - previous, 0),
-                  QuantileBucketCounts,
-                  previous_counts
+                series_row = 1,
+                if(
+                  b < ${sinceNs}
+                    OR b = toUnixTimestamp64Nano(StartTimeUnix)
+                    OR toUnixTimestamp64Nano(StartTimeUnix) < ${sinceNs},
+                  [],
+                  QuantileBucketCounts
                 ),
-                []
+                if(
+                  QuantileBucketValues = previous_values
+                    AND length(QuantileBucketCounts) = length(previous_counts),
+                  arrayMap(
+                    (current, previous) -> if(current >= previous, current - previous, 0),
+                    QuantileBucketCounts,
+                    previous_counts
+                  ),
+                  []
+                )
               )
             ) AS DeltaBucketCounts,
             if(
-              series_row = 1,
+              series_row <= 1,
               toUnixTimestamp64Nano(StartTimeUnix),
               toUnixTimestamp64Nano(previous_time)
             ) AS a,
@@ -1194,6 +1200,7 @@ function histogramQuantileQuery(args: {
               FROM ${table}
               WHERE ${baseWhere}
                 AND TimeUnix < ${sinceExpr}
+                AND TimeUnix >= (${sinceExpr}) - INTERVAL 1 DAY
                 AND AggregationTemporality = 2
               QUALIFY row_number() OVER (
                 PARTITION BY ${seriesKey}
@@ -1214,10 +1221,8 @@ function histogramQuantileQuery(args: {
               ${bucketCountsExpr} AS QuantileBucketCounts,
               ${bucketValuesExpr} AS QuantileBucketValues,
               ${groupExpr} AS group_key,
-              -- Delta histograms already contain the interval contribution;
-              -- route them through the first-row branch so their bucket counts
-              -- are used directly rather than differenced against an empty row.
-              1 AS series_row,
+              -- Delta histograms already contain the interval contribution.
+              0 AS series_row,
               [] AS previous_counts,
               [] AS previous_values,
               StartTimeUnix AS previous_time,
@@ -1327,7 +1332,11 @@ function temporalityAwareScalarQuery(args: {
           group_key,
           if(
             previous_value IS NULL
-              AND (b < ${sinceNs} OR b = toUnixTimestamp64Nano(StartTimeUnix)),
+              AND (
+                b < ${sinceNs}
+                  OR b = toUnixTimestamp64Nano(StartTimeUnix)
+                  OR toUnixTimestamp64Nano(StartTimeUnix) < ${sinceNs}
+              ),
             -- A predecessor included only for boundary differencing contributes
             -- nothing itself. A zero-duration first point is an unknown-start
             -- reset, whose initial rate contribution is also zero.
@@ -1396,6 +1405,7 @@ function temporalityAwareScalarQuery(args: {
               FROM ${table}
               WHERE ${baseWhere}
                 AND TimeUnix < ${sinceExpr}
+                AND TimeUnix >= (${sinceExpr}) - INTERVAL 1 DAY
                 AND AggregationTemporality = 2
               QUALIFY row_number() OVER (
                 PARTITION BY ${seriesKey}
