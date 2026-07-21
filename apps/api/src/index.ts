@@ -51,6 +51,7 @@ import { loadIncidentAlertEpisodes, loadTriggeringAlertForIssue } from "./alerts
 import { mountAlerts } from "./alerts.js";
 import { mountAnomalyScanner } from "./anomaly-scanner.js";
 import { auth } from "./auth.js";
+import { buildAutomationSettingsConflictUpdate } from "./automation-settings-update.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
 import { mountCloudflareAuthed, mountCloudflarePublic } from "./cloudflare.js";
@@ -1293,6 +1294,7 @@ async function getProjectAutomation(projectId: string): Promise<{
   prPolicy: schema.PrPolicy;
   approvalPromptsEnabled: boolean;
   createLinearTicketOnResolve: boolean;
+  autoResolveStaleIncidentsEnabled: boolean;
   prBaseBranch: string | null;
   autoMergeFixPrs: schema.AutoMergePolicy;
   autoMergeMethod: schema.AutoMergeMethod;
@@ -1314,6 +1316,7 @@ async function getProjectAutomation(projectId: string): Promise<{
     prPolicy: row?.prPolicy ?? "on_ready_to_pr",
     approvalPromptsEnabled: row?.approvalPromptsEnabled ?? true,
     createLinearTicketOnResolve: row?.createLinearTicketOnResolve ?? false,
+    autoResolveStaleIncidentsEnabled: row?.autoResolveStaleIncidentsEnabled ?? true,
     prBaseBranch: schema.normalizePrBaseBranch(row?.prBaseBranch),
     autoMergeFixPrs: row?.autoMergeFixPrs ?? "never",
     autoMergeMethod: row?.autoMergeMethod ?? "squash",
@@ -1868,6 +1871,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     prPolicy?: unknown;
     approvalPromptsEnabled?: unknown;
     createLinearTicketOnResolve?: unknown;
+    autoResolveStaleIncidentsEnabled?: unknown;
     prBaseBranch?: unknown;
     autoMergeFixPrs?: unknown;
     autoMergeMethod?: unknown;
@@ -1931,6 +1935,10 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     typeof body.createLinearTicketOnResolve === "boolean"
       ? body.createLinearTicketOnResolve
       : current.createLinearTicketOnResolve;
+  const autoResolveStaleIncidentsEnabled =
+    typeof body.autoResolveStaleIncidentsEnabled === "boolean"
+      ? body.autoResolveStaleIncidentsEnabled
+      : current.autoResolveStaleIncidentsEnabled;
   const prBaseBranch = parsePrBaseBranch(body.prBaseBranch, current.prBaseBranch);
   const autoMergeFixPrs: schema.AutoMergePolicy =
     typeof body.autoMergeFixPrs === "string" && VALID_AUTO_MERGE_POLICIES.has(body.autoMergeFixPrs)
@@ -1975,6 +1983,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     }
   }
 
+  const updatedAt = new Date();
   const values = {
     projectId,
     autoInvestigateIssuesEnabled,
@@ -1989,11 +1998,12 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     prPolicy,
     approvalPromptsEnabled,
     createLinearTicketOnResolve,
+    autoResolveStaleIncidentsEnabled,
     prBaseBranch,
     autoMergeFixPrs,
     autoMergeMethod,
     issueFilterConfig,
-    updatedAt: new Date(),
+    updatedAt,
   };
 
   const updated = await db
@@ -2001,25 +2011,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     .values(values)
     .onConflictDoUpdate({
       target: schema.projectAutomationSettings.projectId,
-      set: {
-        autoInvestigateIssuesEnabled,
-        agentRunProvider,
-        maxRuntimeMinutes,
-        maxHumanResumeCount,
-        customInstructions,
-        agentRunEnabled,
-        chatEnabled,
-        linearTicketPolicy,
-        linearTicketInstructions,
-        prPolicy,
-        approvalPromptsEnabled,
-        createLinearTicketOnResolve,
-        prBaseBranch,
-        autoMergeFixPrs,
-        autoMergeMethod,
-        issueFilterConfig,
-        updatedAt: new Date(),
-      },
+      set: buildAutomationSettingsConflictUpdate(body, values, updatedAt),
     })
     .returning();
 

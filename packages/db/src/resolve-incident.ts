@@ -143,6 +143,17 @@ export type ResolveIncidentWithProofResult = ResolveIncidentResult & {
   resolutionProof: IncidentResolutionProof | null;
 };
 
+export type ResolveQuietIncidentResult =
+  | {
+      disposition: "resolved";
+      linkedIssueCount: number;
+      quietSince: Date;
+      resolutionProof: IncidentResolutionProof;
+    }
+  | {
+      disposition: "disabled" | "incident_not_open" | "no_linked_issues" | "recent_recurrence";
+    };
+
 function materializeIncidentResolutionEpoch(input: ResolveIncidentInput): {
   input: ResolveIncidentInput;
   resolutionProof: IncidentResolutionProof;
@@ -648,6 +659,46 @@ export function createIncidentLifecycle(database: DB = db) {
     },
 
     resolve,
+
+    async resolveIfAllIssuesQuiet(
+      input: ResolveIncidentInput & { kind: "auto_inactivity"; cutoff: Date },
+    ): Promise<ResolveQuietIncidentResult> {
+      const { cutoff, ...unmaterializedResolutionInput } = input;
+      const epoch = materializeIncidentResolutionEpoch(unmaterializedResolutionInput);
+      const result = await repository.transaction(async (tx) => {
+        const incident = await repository.lockOpenIncidentInTx(tx, input.incidentId);
+        if (!incident) return { disposition: "incident_not_open" as const };
+
+        const automation = await tx.query.projectAutomationSettings.findFirst({
+          where: eq(schema.projectAutomationSettings.projectId, incident.projectId),
+          columns: { autoResolveStaleIncidentsEnabled: true },
+        });
+        if (automation?.autoResolveStaleIncidentsEnabled === false) {
+          return { disposition: "disabled" as const };
+        }
+
+        const issues = await repository.lockCurrentIssuesForIncidentInTx(tx, input.incidentId);
+        if (issues.length === 0) return { disposition: "no_linked_issues" as const };
+        const quietSince = new Date(Math.max(...issues.map((issue) => issue.lastSeen.getTime())));
+        if (quietSince.getTime() > cutoff.getTime()) {
+          return { disposition: "recent_recurrence" as const };
+        }
+
+        const resolved = await resolveIncidentInTx(tx, epoch.input, repository, incident);
+        return resolved.resolved
+          ? {
+              disposition: "resolved" as const,
+              linkedIssueCount: issues.length,
+              quietSince,
+              resolutionProof: epoch.resolutionProof,
+            }
+          : { disposition: "incident_not_open" as const };
+      });
+      if (result.disposition === "resolved") {
+        await emitIncidentResolved(database, input.incidentId);
+      }
+      return result;
+    },
 
     async resolveWithProof(input: ResolveIncidentInput): Promise<ResolveIncidentWithProofResult> {
       const epoch = materializeIncidentResolutionEpoch(input);
@@ -1175,11 +1226,15 @@ async function resolveIncidentInTx(
   const outcome: ResolveIssueOutcome = input.issueOutcome ?? { kind: "resolve" };
   let resolvedIssueCount = 0;
   if (input.issueOutcomes || outcome.kind !== "none") {
-    resolvedIssueCount = issues.length;
     const explicitByIssue = new Map(
       (input.issueOutcomes ?? []).map((issueOutcome) => [issueOutcome.issueId, issueOutcome]),
     );
     for (const issue of issues) {
+      // Inactivity resolves the incident episode, not a durable suppression
+      // verdict. Preserve silenced/observed signatures exactly so a future
+      // occurrence remains suppressed under the user's chosen policy.
+      if (input.kind === "auto_inactivity" && issue.status !== "open") continue;
+      resolvedIssueCount += 1;
       // Alert-episode issues are only ever open or resolved (no silenced /
       // under-observation: a noisy alert is tuned or disabled, not silenced
       // per episode), so a silence/observe cascade resolves them plainly.

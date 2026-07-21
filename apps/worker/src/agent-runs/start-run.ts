@@ -69,7 +69,6 @@ async function notifyAgentRunStarted(
       status: "Investigation ongoing",
       title: ctx.incident.title,
       incidentCodename: ctx.incident.codename,
-      projectName: ctx.project.name,
       service: ctx.incident.service,
       buttons: [{ text: "View incident", url: incidentUrl, actionId: "view_incident" }],
       incidentId: ctx.incident.id,

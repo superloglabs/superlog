@@ -348,7 +348,6 @@ async function applyMergeOutcome(opts: {
       status: `Merged into ${targetLabel}`,
       title: ctx.incident.title,
       tagline: evidence,
-      projectName: ctx.project.name,
       service: ctx.incident.service,
       buttons: [],
       links: [

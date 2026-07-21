@@ -1747,6 +1747,7 @@ export type AgentSettings = {
   prPolicy: PrPolicy;
   approvalPromptsEnabled: boolean;
   createLinearTicketOnResolve: boolean;
+  autoResolveStaleIncidentsEnabled: boolean;
   prBaseBranch: string | null;
   autoMergeFixPrs: AutoMergePolicy;
   autoMergeMethod: AutoMergeMethod;
