@@ -839,7 +839,6 @@ export function slackProjectEndpoints(projectId: string) {
   return {
     installation: `${base}/installation`,
     installUrl: `${base}/install-url`,
-    importOpenIssues: `${base}/import-open-issues`,
     uninstall: `${base}/uninstall`,
     channels: `${base}/channels`,
   };
