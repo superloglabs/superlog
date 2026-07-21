@@ -828,9 +828,21 @@ test("terminalOutcomeNudgePrompt preserves the explicit Linear handoff", () => {
   const prompt = terminalOutcomeNudgePrompt({
     completeInvestigationAvailable: true,
     linearTicketCreationAvailable: true,
+    prCreationAvailable: false,
   });
   assert.match(prompt, /create_linear_issue/);
   assert.doesNotMatch(prompt, /complete_investigation/);
+  assert.doesNotMatch(prompt, /propose_pr/);
+});
+
+test("terminalOutcomeNudgePrompt keeps PR creation alongside the Linear handoff", () => {
+  const prompt = terminalOutcomeNudgePrompt({
+    completeInvestigationAvailable: false,
+    linearTicketCreationAvailable: true,
+    prCreationAvailable: true,
+  });
+  assert.match(prompt, /create_linear_issue/);
+  assert.match(prompt, /propose_pr/);
 });
 
 test("partialPullRequestRetryNudgePrompt requires exactly the pending repositories", () => {

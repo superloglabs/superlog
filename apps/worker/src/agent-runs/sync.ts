@@ -439,15 +439,22 @@ export function terminalOutcomeNudgePrompt(
   args: {
     completeInvestigationAvailable?: boolean;
     linearTicketCreationAvailable?: boolean;
+    prCreationAvailable?: boolean;
   } = {},
 ): string {
+  const terminalTools: string[] = [];
+  const prCreationAvailable = args.prCreationAvailable ?? !args.completeInvestigationAvailable;
+  if (prCreationAvailable) terminalTools.push("batched `propose_pr`");
+  if (args.linearTicketCreationAvailable) terminalTools.push("`create_linear_issue`");
+  else if (args.completeInvestigationAvailable) terminalTools.push("`complete_investigation`");
+  terminalTools.push(
+    "`resolve_incident` with all Issue outcomes",
+    "`report_external_cause`",
+    "`ask_human`",
+  );
   return [
     TERMINAL_OUTCOME_NUDGE_MARKER,
-    args.linearTicketCreationAvailable
-      ? "Call `report_findings` now, then explicitly end your turn with `create_linear_issue`, `report_external_cause`, `resolve_incident` with all Issue outcomes, or `ask_human`."
-      : args.completeInvestigationAvailable
-        ? "Call `report_findings` now, then explicitly end your turn with `complete_investigation`, `report_external_cause`, `resolve_incident` with all Issue outcomes, or `ask_human`."
-        : "Call `report_findings` now if you have findings to record, then end the turn with exactly one terminal tool: batched `propose_pr`, `resolve_incident` with all Issue outcomes, `report_external_cause`, or `ask_human`.",
+    `Call \`report_findings\` now if you have findings to record, then end the turn with exactly one terminal tool: ${terminalTools.join(", ")}.`,
   ].join("\n");
 }
 
@@ -1424,6 +1431,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
               approvalPromptToolsAvailable: true,
             }),
             linearTicketCreationAvailable: !!ctx.linearInstall,
+            prCreationAvailable: ctx.githubInstalls.length > 0 && ctx.prPolicy !== "never",
           });
         const redeliveryMarker = partialRetryPrompt
           ? `${PARTIAL_PULL_REQUEST_RETRY_NUDGE_MARKER} ${JSON.stringify(pendingRepoFullNames)}`
