@@ -706,7 +706,7 @@ export async function queryMetrics(
       // Count/Sum (and Min/Max for histograms) so a point conveys more than just
       // "an observation happened". Min/Max don't exist on the summary table.
       const valueExpr =
-        kind === "histogram"
+        kind === "histogram" || kind === "exponential_histogram"
           ? "NULL AS value, Count AS count, Sum AS sum, Min AS min, Max AS max"
           : kind === "summary"
             ? "NULL AS value, Count AS count, Sum AS sum, NULL AS min, NULL AS max"
@@ -716,10 +716,13 @@ export async function queryMetrics(
       SELECT
         '${kind}' AS kind,
         toString(TimeUnix) AS timestamp,
+        toString(StartTimeUnix) AS start_time,
         MetricName AS metric_name,
         MetricUnit AS unit,
         ResourceAttributes['service.name'] AS service,
         ${valueExpr},
+        ${kind === "sum" || kind === "histogram" || kind === "exponential_histogram" ? "AggregationTemporality" : "NULL"} AS aggregation_temporality,
+        ${kind === "sum" ? "IsMonotonic" : "NULL"} AS is_monotonic,
         Attributes AS attributes,
         ResourceAttributes AS resource_attrs
       FROM ${table}
@@ -745,7 +748,7 @@ export async function queryMetrics(
         return (await r.json()) as Record<string, unknown>[];
       } catch (err) {
         // metric tables may not exist if no metrics of this kind have been ingested yet
-        if (!(err instanceof Error && /UNKNOWN_TABLE|doesn't exist/i.test(err.message))) throw err;
+        if (!isMissingMetricTableError(err)) throw err;
         return [];
       }
     }),
@@ -818,7 +821,7 @@ export async function listServices(ch: ClickHouseClient, projectId: string, rang
         const rows = (await r.json()) as { service: string }[];
         return rows.map((row) => row.service);
       } catch (err) {
-        if (!(err instanceof Error && /UNKNOWN_TABLE|doesn't exist/i.test(err.message))) throw err;
+        if (!isMissingMetricTableError(err)) throw err;
         return [];
       }
     }),
@@ -970,17 +973,25 @@ export async function listAttributeValues(
   return rows.map((row) => ({ value: row.v, count: Number(row.c) }));
 }
 
-export type MetricKind = "gauge" | "sum" | "histogram" | "summary";
+export type MetricKind = "gauge" | "sum" | "histogram" | "exponential_histogram" | "summary";
 export type MetricName = { name: string; kind: MetricKind; unit: string };
 export type MetricSeriesRow = { bucket: string; group: string; value: number };
 
 export const METRIC_AGGREGATIONS = ["sum", "avg", "min", "max", "p95", "p99"] as const;
 export type MetricAggregation = (typeof METRIC_AGGREGATIONS)[number];
 
+function isMissingMetricTableError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    /UNKNOWN_TABLE|Unknown table expression identifier|doesn't exist/i.test(err.message)
+  );
+}
+
 const METRIC_TABLES: { table: string; kind: MetricKind }[] = [
   { table: "otel_metrics_gauge", kind: "gauge" },
   { table: "otel_metrics_sum", kind: "sum" },
   { table: "otel_metrics_histogram", kind: "histogram" },
+  { table: "otel_metrics_exp_histogram", kind: "exponential_histogram" },
   { table: "otel_metrics_summary", kind: "summary" },
 ];
 
@@ -989,6 +1000,7 @@ const DEFAULT_AGG_EXPR: Record<MetricKind, string> = {
   gauge: "avg(Value)",
   sum: "sum(Value)",
   histogram: "toFloat64(sum(Count))",
+  exponential_histogram: "toFloat64(sum(Count))",
   summary: "avg(Sum)",
 };
 
@@ -996,42 +1008,48 @@ const DEFAULT_AGG_EXPR: Record<MetricKind, string> = {
 // is not supported on this metric kind" — we skip the table for that query.
 //
 // Histograms and summaries have no scalar Value column. We map sum/avg onto the
-// rolled-up Sum/Count columns. min/max use Min/Max where present (histogram only).
-// True quantile reconstruction from histogram bucket arrays / summary
-// ValueAtQuantiles is non-trivial and intentionally not supported here.
+// rolled-up Sum/Count columns. Explicit and exponential histogram quantiles are
+// reconstructed from their bucket arrays; summary quantiles remain unavailable
+// because the stored precomputed quantiles cannot be reaggregated correctly.
 const AGG_EXPR: Record<MetricAggregation, Partial<Record<MetricKind, string>>> = {
   sum: {
     gauge: "sum(Value)",
     sum: "sum(Value)",
     histogram: "sum(Sum)",
+    exponential_histogram: "sum(Sum)",
     summary: "sum(Sum)",
   },
   avg: {
     gauge: "avg(Value)",
     sum: "avg(Value)",
     histogram: "sum(Sum) / nullIf(toFloat64(sum(Count)), 0)",
+    exponential_histogram: "sum(Sum) / nullIf(toFloat64(sum(Count)), 0)",
     summary: "sum(Sum) / nullIf(toFloat64(sum(Count)), 0)",
   },
   min: {
     gauge: "min(Value)",
     sum: "min(Value)",
     histogram: "min(Min)",
+    exponential_histogram: "min(Min)",
   },
   max: {
     gauge: "max(Value)",
     sum: "max(Value)",
     histogram: "max(Max)",
+    exponential_histogram: "max(Max)",
   },
   p95: {
     gauge: "quantile(0.95)(Value)",
     sum: "quantile(0.95)(Value)",
     // histogram handled via ARRAY JOIN path below — see histogramQuantileQuery.
     histogram: "__histogram_quantile__",
+    exponential_histogram: "__histogram_quantile__",
   },
   p99: {
     gauge: "quantile(0.99)(Value)",
     sum: "quantile(0.99)(Value)",
     histogram: "__histogram_quantile__",
+    exponential_histogram: "__histogram_quantile__",
   },
 };
 
@@ -1046,38 +1064,185 @@ function histogramQuantileQuery(args: {
   table: string;
   step: Step;
   groupExpr: string;
-  conds: string[];
+  baseConds: string[];
+  sinceExpr: string;
+  untilExpr: string;
+  bucketCountsExpr: string;
+  bucketValuesExpr: string;
   q: number;
 }): string {
-  const { table, step, groupExpr, conds, q } = args;
+  const {
+    table,
+    step,
+    groupExpr,
+    baseConds,
+    sinceExpr,
+    untilExpr,
+    bucketCountsExpr,
+    bucketValuesExpr,
+    q,
+  } = args;
+  const baseWhere = baseConds.join(" AND ");
+  const stepNs = stepSeconds(step) * 1_000_000_000;
+  const sinceNs = `toUnixTimestamp64Nano(${sinceExpr})`;
+  const seriesKey = `cityHash64(
+    ServiceName,
+    MetricName,
+    MetricUnit,
+    ResourceSchemaUrl,
+    ScopeName,
+    ScopeVersion,
+    toString(ScopeAttributes),
+    ScopeSchemaUrl,
+    toString(ResourceAttributes),
+    toString(Attributes),
+    toString(StartTimeUnix)
+  )`;
   return `
     SELECT
-      toString(toStartOfInterval(TimeUnix, INTERVAL ${step.n} ${step.unit})) AS bucket,
-      ${groupExpr} AS group_key,
-      quantileExactWeighted(${q})(
-        if(
-          idx <= length(ExplicitBounds),
-          ExplicitBounds[idx],
-          if(Max > 0, Max, ExplicitBounds[length(ExplicitBounds)])
-        ),
-        BucketCounts[idx]
-      ) AS v
-    FROM ${table}
-    ARRAY JOIN arrayEnumerate(BucketCounts) AS idx
-    WHERE ${conds.join(" AND ")} AND BucketCounts[idx] > 0
+      bucket,
+      group_key,
+      quantileExactWeighted(${q})(bucket_value, weight) AS v
+    FROM (
+      SELECT
+        toString(toStartOfInterval(toDateTime(intDiv(sp.1, 1000000000)), INTERVAL ${step.n} ${step.unit})) AS bucket,
+        group_key,
+        QuantileBucketValues[idx] AS bucket_value,
+        toUInt64(round(DeltaBucketCounts[idx] * sp.2 * 1000000)) AS weight
+      FROM (
+        SELECT
+          group_key,
+          QuantileBucketValues,
+          DeltaBucketCounts,
+          if(
+            b <= a,
+            [],
+            arrayMap(
+              g -> tuple(
+                g,
+                (least(b, g + ${stepNs}) - greatest(a, g, ${sinceNs})) / dt
+              ),
+              arrayMap(
+                i -> first_bucket + i * ${stepNs},
+                range(toUInt32(intDiv(intDiv(b - 1, ${stepNs}) * ${stepNs} - first_bucket, ${stepNs}) + 1))
+              )
+            )
+          ) AS spread
+        FROM (
+          SELECT
+            group_key,
+            QuantileBucketValues,
+            if(
+              series_row = 1,
+              if(
+                b < ${sinceNs} OR b = toUnixTimestamp64Nano(StartTimeUnix),
+                [],
+                QuantileBucketCounts
+              ),
+              if(
+                QuantileBucketValues = previous_values
+                  AND length(QuantileBucketCounts) = length(previous_counts),
+                arrayMap(
+                  (current, previous) -> if(current >= previous, current - previous, 0),
+                  QuantileBucketCounts,
+                  previous_counts
+                ),
+                []
+              )
+            ) AS DeltaBucketCounts,
+            if(
+              series_row = 1,
+              toUnixTimestamp64Nano(StartTimeUnix),
+              toUnixTimestamp64Nano(previous_time)
+            ) AS a,
+            b,
+            greatest(b - a, 1) AS dt,
+            intDiv(greatest(a, ${sinceNs}), ${stepNs}) * ${stepNs} AS first_bucket
+          FROM (
+            SELECT
+              TimeUnix,
+              StartTimeUnix,
+              QuantileBucketCounts,
+              QuantileBucketValues,
+              ${groupExpr} AS group_key,
+              row_number() OVER series AS series_row,
+              lagInFrame(QuantileBucketCounts, 1, []) OVER series AS previous_counts,
+              lagInFrame(QuantileBucketValues, 1, []) OVER series AS previous_values,
+              lagInFrame(TimeUnix, 1, TimeUnix) OVER series AS previous_time,
+              toUnixTimestamp64Nano(TimeUnix) AS b
+            FROM (
+              SELECT
+                *,
+                ${bucketCountsExpr} AS QuantileBucketCounts,
+                ${bucketValuesExpr} AS QuantileBucketValues
+              FROM ${table}
+              WHERE ${baseWhere}
+                AND TimeUnix >= ${sinceExpr}
+                AND TimeUnix <= ${untilExpr}
+                AND AggregationTemporality = 2
+
+              UNION ALL
+
+              SELECT
+                *,
+                ${bucketCountsExpr} AS QuantileBucketCounts,
+                ${bucketValuesExpr} AS QuantileBucketValues
+              FROM ${table}
+              WHERE ${baseWhere}
+                AND TimeUnix < ${sinceExpr}
+                AND AggregationTemporality = 2
+              QUALIFY row_number() OVER (
+                PARTITION BY ${seriesKey}
+                ORDER BY TimeUnix DESC
+              ) = 1
+            )
+            WINDOW series AS (
+              PARTITION BY ${seriesKey}
+              ORDER BY TimeUnix ASC
+              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            )
+
+            UNION ALL
+
+            SELECT
+              TimeUnix,
+              StartTimeUnix,
+              ${bucketCountsExpr} AS QuantileBucketCounts,
+              ${bucketValuesExpr} AS QuantileBucketValues,
+              ${groupExpr} AS group_key,
+              -- Delta histograms already contain the interval contribution;
+              -- route them through the first-row branch so their bucket counts
+              -- are used directly rather than differenced against an empty row.
+              1 AS series_row,
+              [] AS previous_counts,
+              [] AS previous_values,
+              StartTimeUnix AS previous_time,
+              toUnixTimestamp64Nano(TimeUnix) AS b
+            FROM ${table}
+            WHERE ${baseWhere}
+              AND TimeUnix >= ${sinceExpr}
+              AND TimeUnix <= ${untilExpr}
+              AND AggregationTemporality = 1
+          )
+        )
+      )
+      ARRAY JOIN spread AS sp
+      ARRAY JOIN arrayEnumerate(DeltaBucketCounts) AS idx
+      WHERE DeltaBucketCounts[idx] > 0
+    )
+    WHERE weight > 0
     GROUP BY bucket, group_key
     ORDER BY bucket ASC
     LIMIT 10000
   `;
 }
 
-// Cumulative monotonic counters (OTel temporality=2, IsMonotonic) report a
-// running total per series. To chart them we need the *increase* per render
-// bucket. The naive approach — diff consecutive samples and drop each diff into
-// the single bucket the later sample lands in — produces a "comb" whenever the
-// render step is finer than the export interval: every bucket without a sample
-// renders as zero, so a 60s-exported counter drawn at a 30s step alternates
-// full/empty bars that read as two interleaved series.
+// OTel cumulative sums and histogram fields report a running total per stream;
+// delta points report the contribution over their declared start/end interval.
+// Both must become interval contributions before temporal reaggregation. The
+// naive cumulative approach — diff consecutive samples and drop each diff into
+// the single bucket the later sample lands in — also produces a "comb" whenever
+// the render step is finer than the export interval.
 //
 // Instead we spread each sample's increase across the wall-clock interval it
 // actually covers (previous sample -> this sample), à la Prometheus rate(),
@@ -1088,25 +1253,62 @@ function histogramQuantileQuery(args: {
 // only its distribution across buckets is smoothed. When the step is coarser
 // than the export interval the whole interval lands in one bucket and this
 // collapses back to the plain per-bucket delta.
-function cumulativeMonotonicSumQuery(args: {
+function temporalityAwareScalarQuery(args: {
   table: string;
   step: Step;
   groupExpr: string;
-  conds: string[];
+  baseConds: string[];
   sinceExpr: string;
+  untilExpr: string;
+  valueExpr: string;
+  isMonotonicExpr: string;
+  aggregation?: MetricAggregation;
 }): string {
-  const { table, step, groupExpr, conds, sinceExpr } = args;
-  const where = conds.join(" AND ");
+  const {
+    table,
+    step,
+    groupExpr,
+    baseConds,
+    sinceExpr,
+    untilExpr,
+    valueExpr,
+    isMonotonicExpr,
+    aggregation = "sum",
+  } = args;
+  const baseWhere = baseConds.join(" AND ");
   // Bucket arithmetic is done in nanoseconds (TimeUnix is DateTime64) so that
   // sub-second sample intervals aren't quantized away — truncating to whole
   // seconds can collapse a short interval to zero duration and silently drop
   // its increase.
   const stepNs = stepSeconds(step) * 1_000_000_000;
+  const sinceNs = `toUnixTimestamp64Nano(${sinceExpr})`;
+  const seriesKey = `cityHash64(
+    ServiceName,
+    MetricName,
+    MetricUnit,
+    ResourceSchemaUrl,
+    ScopeName,
+    ScopeVersion,
+    toString(ScopeAttributes),
+    ScopeSchemaUrl,
+    toString(ResourceAttributes),
+    toString(Attributes),
+    toString(TemporalityIsMonotonic),
+    toString(StartTimeUnix)
+  )`;
+  const aggregationExpr: Record<MetricAggregation, string> = {
+    sum: "sum(v)",
+    avg: "avg(v)",
+    min: "min(v)",
+    max: "max(v)",
+    p95: "quantile(0.95)(v)",
+    p99: "quantile(0.99)(v)",
+  };
   return `
     SELECT
       bucket,
       group_key,
-      sum(v) AS v
+      ${aggregationExpr[aggregation]} AS v
     FROM (
       SELECT
         toString(toStartOfInterval(toDateTime(intDiv(sp.1, 1000000000)), INTERVAL ${step.n} ${step.unit})) AS bucket,
@@ -1116,15 +1318,17 @@ function cumulativeMonotonicSumQuery(args: {
         SELECT
           group_key,
           if(
-            previous_value IS NULL,
-            -- First sample of a series: no interval to spread over. Only count
-            -- it when the series started inside the window, dropped into the
-            -- bucket the sample lands in.
-            [ tuple(intDiv(b, ${stepNs}) * ${stepNs}, if(StartTimeUnix >= ${sinceExpr}, Value, 0)) ],
+            previous_value IS NULL
+              AND (b < ${sinceNs} OR b = toUnixTimestamp64Nano(StartTimeUnix)),
+            -- A predecessor included only for boundary differencing contributes
+            -- nothing itself. A zero-duration first point is an unknown-start
+            -- reset, whose initial rate contribution is also zero.
+            [],
             -- Spread the increase across every step-aligned bucket the interval
-            -- (a, b] touches, weighted by overlap nanos / interval nanos.
+            -- (a, b] touches. For a known reset, a is StartTimeUnix and the
+            -- implicit previous value is zero.
             arrayMap(
-              g -> tuple(g, delta * (least(b, g + ${stepNs}) - greatest(a, g)) / dt),
+              g -> tuple(g, delta * (least(b, g + ${stepNs}) - greatest(a, g, ${sinceNs})) / dt),
               arrayMap(
                 i -> first_bucket + i * ${stepNs},
                 range(toUInt32(intDiv(intDiv(b - 1, ${stepNs}) * ${stepNs} - first_bucket, ${stepNs}) + 1))
@@ -1135,34 +1339,63 @@ function cumulativeMonotonicSumQuery(args: {
           SELECT
             group_key,
             StartTimeUnix,
-            Value,
+            TemporalityValue,
+            TemporalityIsMonotonic,
             previous_value,
-            if(Value >= previous_value, Value - previous_value, 0) AS delta,
-            toUnixTimestamp64Nano(prev_time) AS a,
+            if(
+              previous_value IS NULL,
+              TemporalityValue,
+              if(
+                TemporalityIsMonotonic AND TemporalityValue < previous_value,
+                0,
+                TemporalityValue - previous_value
+              )
+            ) AS delta,
+            if(
+              previous_value IS NULL,
+              toUnixTimestamp64Nano(StartTimeUnix),
+              toUnixTimestamp64Nano(prev_time)
+            ) AS a,
             toUnixTimestamp64Nano(TimeUnix) AS b,
-            greatest(toUnixTimestamp64Nano(TimeUnix) - toUnixTimestamp64Nano(prev_time), 1) AS dt,
-            intDiv(toUnixTimestamp64Nano(prev_time), ${stepNs}) * ${stepNs} AS first_bucket
+            greatest(b - a, 1) AS dt,
+            intDiv(greatest(a, ${sinceNs}), ${stepNs}) * ${stepNs} AS first_bucket
           FROM (
             SELECT
               TimeUnix,
               StartTimeUnix,
-              Value,
+              TemporalityValue,
+              TemporalityIsMonotonic,
               ${groupExpr} AS group_key,
-              lagInFrame(toNullable(Value), 1, NULL) OVER series AS previous_value,
+              lagInFrame(toNullable(TemporalityValue), 1, NULL) OVER series AS previous_value,
               lagInFrame(TimeUnix, 1, TimeUnix) OVER series AS prev_time
-            FROM ${table}
-            WHERE ${where}
-              AND AggregationTemporality = 2
-              AND IsMonotonic
+            FROM (
+              SELECT
+                *,
+                toFloat64(${valueExpr}) AS TemporalityValue,
+                ${isMonotonicExpr} AS TemporalityIsMonotonic
+              FROM ${table}
+              WHERE ${baseWhere}
+                AND TimeUnix >= ${sinceExpr}
+                AND TimeUnix <= ${untilExpr}
+                AND AggregationTemporality = 2
+
+              UNION ALL
+
+              SELECT
+                *,
+                toFloat64(${valueExpr}) AS TemporalityValue,
+                ${isMonotonicExpr} AS TemporalityIsMonotonic
+              FROM ${table}
+              WHERE ${baseWhere}
+                AND TimeUnix < ${sinceExpr}
+                AND AggregationTemporality = 2
+              QUALIFY row_number() OVER (
+                PARTITION BY ${seriesKey}
+                ORDER BY TimeUnix DESC
+              ) = 1
+            )
             WINDOW series AS (
-              PARTITION BY cityHash64(
-                ServiceName,
-                MetricName,
-                MetricUnit,
-                toString(ResourceAttributes),
-                toString(Attributes),
-                toString(StartTimeUnix)
-              )
+              PARTITION BY ${seriesKey}
               ORDER BY TimeUnix ASC
               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
             )
@@ -1174,14 +1407,66 @@ function cumulativeMonotonicSumQuery(args: {
       UNION ALL
 
       SELECT
-        toString(toStartOfInterval(TimeUnix, INTERVAL ${step.n} ${step.unit})) AS bucket,
-        ${groupExpr} AS group_key,
-        Value AS v
-      FROM ${table}
-      WHERE ${where}
-        AND NOT (AggregationTemporality = 2 AND IsMonotonic)
+        toString(toStartOfInterval(toDateTime(intDiv(sp.1, 1000000000)), INTERVAL ${step.n} ${step.unit})) AS bucket,
+        group_key,
+        sp.2 AS v
+      FROM (
+        SELECT
+          group_key,
+          if(
+            b <= a,
+            [],
+            arrayMap(
+              g -> tuple(g, TemporalityValue * (least(b, g + ${stepNs}) - greatest(a, g, ${sinceNs})) / dt),
+              arrayMap(
+                i -> first_bucket + i * ${stepNs},
+                range(toUInt32(intDiv(intDiv(b - 1, ${stepNs}) * ${stepNs} - first_bucket, ${stepNs}) + 1))
+              )
+            )
+          ) AS spread
+        FROM (
+          SELECT
+            toFloat64(${valueExpr}) AS TemporalityValue,
+            ${groupExpr} AS group_key,
+            toUnixTimestamp64Nano(StartTimeUnix) AS a,
+            toUnixTimestamp64Nano(TimeUnix) AS b,
+            greatest(b - a, 1) AS dt,
+            intDiv(greatest(a, ${sinceNs}), ${stepNs}) * ${stepNs} AS first_bucket
+          FROM ${table}
+          WHERE ${baseWhere}
+            AND TimeUnix >= ${sinceExpr}
+            AND TimeUnix <= ${untilExpr}
+            AND AggregationTemporality = 1
+        )
+      )
+      ARRAY JOIN spread AS sp
     )
     GROUP BY bucket, group_key
+    ORDER BY bucket ASC
+    LIMIT 10000
+  `;
+}
+
+function temporalityAwareHistogramAverageQuery(
+  args: Omit<Parameters<typeof temporalityAwareScalarQuery>[0], "valueExpr" | "isMonotonicExpr">,
+): string {
+  const sums = temporalityAwareScalarQuery({
+    ...args,
+    valueExpr: "Sum",
+    isMonotonicExpr: "false",
+  });
+  const counts = temporalityAwareScalarQuery({
+    ...args,
+    valueExpr: "Count",
+    isMonotonicExpr: "true",
+  });
+  return `
+    SELECT
+      sums.bucket AS bucket,
+      sums.group_key AS group_key,
+      sums.v / nullIf(counts.v, 0) AS v
+    FROM (${sums}) AS sums
+    INNER JOIN (${counts}) AS counts USING (bucket, group_key)
     ORDER BY bucket ASC
     LIMIT 10000
   `;
@@ -1275,43 +1560,89 @@ export async function listMetricNames(
   // on the raw tables the project filter is a ResourceAttributes map lookup
   // that no primary-key or partition pruning helps with — on high-volume
   // projects each per-table GROUP BY reads millions of rows (~0.5 GiB of map
-  // column) and the four scans added up to 10s+ picker loads. Row-capped
+  // column) and the per-table scans added up to 10s+ picker loads. Row-capped
   // sampling (à la ATTRIBUTE_KEY_SCAN_ROW_CAP) is not an option: the raw
   // tables sort by (ServiceName, MetricName, ...), so a capped scan
   // systematically drops metrics late in the sort order. The rollup answers
   // exactly, in milliseconds; anything without it falls back to the raw scan.
   if (await tableExists(ch, "metric_names_per_hour")) {
     if (await metricNamesRollupCoversWindow(ch, projectId, sinceExpr, sinceSql)) {
-      return listMetricNamesFromRollup(ch, projectId, sinceExpr, untilExpr, sinceSql, untilSql);
+      // The original rollup predates exponential-histogram support. Keep its
+      // fast path for the four covered tables, then scan the exponential table
+      // exactly so historical and newly ingested exponential histograms never
+      // disappear from discovery. De-duplication also makes this forward-safe
+      // if a later rollup migration starts populating that kind.
+      const [rolledUp, exponentialHistograms] = await Promise.all([
+        listMetricNamesFromRollup(ch, projectId, sinceExpr, untilExpr, sinceSql, untilSql),
+        listMetricNamesFromRawTable(
+          ch,
+          projectId,
+          sinceExpr,
+          untilExpr,
+          sinceSql,
+          untilSql,
+          "otel_metrics_exp_histogram",
+          "exponential_histogram",
+        ),
+      ]);
+      const byIdentity = new Map<string, MetricName>();
+      for (const metric of [...rolledUp, ...exponentialHistograms]) {
+        byIdentity.set(`${metric.kind}\0${metric.name}\0${metric.unit}`, metric);
+      }
+      return [...byIdentity.values()].sort(
+        (a, b) => (METRIC_KIND_ORDER.get(a.kind) ?? 0) - (METRIC_KIND_ORDER.get(b.kind) ?? 0),
+      );
     }
   }
 
   const perTable = await Promise.all(
-    METRIC_TABLES.map(async ({ table, kind }): Promise<MetricName[]> => {
-      try {
-        const r = await ch.query({
-          query: `
-          SELECT MetricName AS name, MetricUnit AS unit, count() AS c
-          FROM ${table}
-          WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
-            AND TimeUnix >= ${sinceExpr}
-            AND TimeUnix <= ${untilExpr}
-          GROUP BY name, unit
-          ORDER BY c DESC
-          LIMIT 200
-        `,
-          query_params: { projectId, since: sinceSql, until: untilSql },
-          format: "JSONEachRow",
-        });
-        const rows = (await r.json()) as { name: string; unit: string; c: string | number }[];
-        return rows.map((row) => ({ name: row.name, kind, unit: row.unit }));
-      } catch (err) {
-        if (!(err instanceof Error && /UNKNOWN_TABLE|doesn't exist/i.test(err.message))) throw err;
-        return [];
-      }
-    }),
+    METRIC_TABLES.map(({ table, kind }) =>
+      listMetricNamesFromRawTable(
+        ch,
+        projectId,
+        sinceExpr,
+        untilExpr,
+        sinceSql,
+        untilSql,
+        table,
+        kind,
+      ),
+    ),
   );
   return perTable.flat();
+}
+
+async function listMetricNamesFromRawTable(
+  ch: ClickHouseClient,
+  projectId: string,
+  sinceExpr: string,
+  untilExpr: string,
+  sinceSql: string,
+  untilSql: string,
+  table: string,
+  kind: MetricKind,
+): Promise<MetricName[]> {
+  try {
+    const r = await ch.query({
+      query: `
+        SELECT MetricName AS name, MetricUnit AS unit, count() AS c
+        FROM ${table}
+        WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+          AND TimeUnix >= ${sinceExpr}
+          AND TimeUnix <= ${untilExpr}
+        GROUP BY name, unit
+        ORDER BY c DESC
+        LIMIT 200
+      `,
+      query_params: { projectId, since: sinceSql, until: untilSql },
+      format: "JSONEachRow",
+    });
+    const rows = (await r.json()) as { name: string; unit: string; c: string | number }[];
+    return rows.map((row) => ({ name: row.name, kind, unit: row.unit }));
+  } catch (err) {
+    if (!isMissingMetricTableError(err)) throw err;
+    return [];
+  }
 }
 
 export type MetricSeriesFilter = {
@@ -1352,32 +1683,96 @@ export async function metricSeries(
     METRIC_TABLES.map(async ({ table, kind }): Promise<MetricSeriesRow[]> => {
       const valueExpr = aggregation ? AGG_EXPR[aggregation][kind] : DEFAULT_AGG_EXPR[kind];
       if (!valueExpr) return [];
-      const conds: string[] = [
+      const baseConds: string[] = [
         "ResourceAttributes['superlog.project_id'] = {projectId:String}",
-        `TimeUnix >= ${sinceExpr}`,
-        `TimeUnix <= ${untilExpr}`,
         "MetricName = {metricName:String}",
         ...attr.conds,
       ];
-      if (filter.service) conds.push("ServiceName = {service:String}");
+      if (filter.service) baseConds.push("ServiceName = {service:String}");
+      const conds = [...baseConds, `TimeUnix >= ${sinceExpr}`, `TimeUnix <= ${untilExpr}`];
+      // Cumulative histogram min/max describe the entire start-to-current
+      // population. They cannot be converted into extrema for the latest
+      // interval, so only delta histogram points can answer these queries.
+      if (
+        (kind === "histogram" || kind === "exponential_histogram") &&
+        (aggregation === "min" || aggregation === "max")
+      ) {
+        conds.push("AggregationTemporality = 1");
+      }
       const query =
-        kind === "histogram" && (aggregation === "p95" || aggregation === "p99")
+        (kind === "histogram" || kind === "exponential_histogram") &&
+        (aggregation === "p95" || aggregation === "p99")
           ? histogramQuantileQuery({
               table,
               step,
               groupExpr,
-              conds,
+              baseConds,
+              sinceExpr,
+              untilExpr,
+              bucketCountsExpr:
+                kind === "histogram"
+                  ? "BucketCounts"
+                  : "arrayConcat(arrayReverse(NegativeBucketCounts), [ZeroCount], PositiveBucketCounts)",
+              bucketValuesExpr:
+                kind === "histogram"
+                  ? `arrayMap(
+                      idx -> if(
+                        idx <= length(ExplicitBounds),
+                        ExplicitBounds[idx],
+                        if(Max != 0, Max, if(empty(ExplicitBounds), 0, ExplicitBounds[length(ExplicitBounds)]))
+                      ),
+                      arrayEnumerate(BucketCounts)
+                    )`
+                  : `arrayConcat(
+                      arrayMap(
+                        idx -> -pow(
+                          2,
+                          (NegativeOffset + length(NegativeBucketCounts) - idx) * pow(2, -Scale)
+                        ),
+                        arrayEnumerate(NegativeBucketCounts)
+                      ),
+                      [toFloat64(0)],
+                      arrayMap(
+                        idx -> pow(2, (PositiveOffset + idx) * pow(2, -Scale)),
+                        arrayEnumerate(PositiveBucketCounts)
+                      )
+                    )`,
               q: aggregation === "p95" ? 0.95 : 0.99,
             })
-          : kind === "sum" && (!aggregation || aggregation === "sum")
-            ? cumulativeMonotonicSumQuery({
+          : (kind === "histogram" || kind === "exponential_histogram") && aggregation === "avg"
+            ? temporalityAwareHistogramAverageQuery({
                 table,
                 step,
                 groupExpr,
-                conds,
+                baseConds,
                 sinceExpr,
+                untilExpr,
               })
-            : `
+            : kind === "sum"
+              ? temporalityAwareScalarQuery({
+                  table,
+                  step,
+                  groupExpr,
+                  baseConds,
+                  sinceExpr,
+                  untilExpr,
+                  valueExpr: "Value",
+                  isMonotonicExpr: "IsMonotonic",
+                  aggregation,
+                })
+              : (kind === "histogram" || kind === "exponential_histogram") &&
+                  (!aggregation || aggregation === "sum")
+                ? temporalityAwareScalarQuery({
+                    table,
+                    step,
+                    groupExpr,
+                    baseConds,
+                    sinceExpr,
+                    untilExpr,
+                    valueExpr: aggregation === "sum" ? "Sum" : "Count",
+                    isMonotonicExpr: aggregation === "sum" ? "false" : "true",
+                  })
+                : `
           SELECT
             toString(toStartOfInterval(TimeUnix, INTERVAL ${step.n} ${step.unit})) AS bucket,
             ${groupExpr} AS group_key,
@@ -1416,13 +1811,7 @@ export async function metricSeries(
         }
         return parsed;
       } catch (err) {
-        if (
-          !(
-            err instanceof Error &&
-            /UNKNOWN_TABLE|UNKNOWN_IDENTIFIER|doesn't exist/i.test(err.message)
-          )
-        )
-          throw err;
+        if (!isMissingMetricTableError(err)) throw err;
         return [];
       }
     }),

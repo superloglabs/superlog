@@ -1,20 +1,9 @@
 import type { ClickHouseClient } from "@clickhouse/client";
 import type { schema } from "@superlog/db";
+import { metricSeries } from "@superlog/telemetry-query";
 import type { EvaluationRange } from "./domain.js";
 
 export type AlertMetricsRepository = ReturnType<typeof createAlertMetricsRepository>;
-
-// All entries return a server-side *sum* of the per-point values, and the
-// JS-side aggregation in aggregateMetric divides by count() for `avg`. If a
-// row returned a server-side average (e.g. avg(Value)), the JS code would
-// compute avg / count() = totalSum / N² — incorrect. Keep this consistent.
-const METRIC_SERIES_TABLES: { table: string; valueExpr: string }[] = [
-  { table: "otel_metrics_gauge", valueExpr: "sum(Value)" },
-  { table: "otel_metrics_sum", valueExpr: "sum(Value)" },
-  { table: "otel_metrics_histogram", valueExpr: "sum(Sum)" },
-  { table: "otel_metrics_summary", valueExpr: "sum(Sum)" },
-  { table: "otel_metrics_exp_histogram", valueExpr: "sum(Sum)" },
-];
 
 function attrConds(attrs: { key: string; value: string }[] | undefined): {
   conds: string[];
@@ -45,13 +34,6 @@ function groupExprFor(groupBy: string | null | undefined): {
     expr: "ResourceAttributes[{aalert_groupKey:String}]",
     params: { aalert_groupKey: groupBy },
   };
-}
-
-function isMissingTableError(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    /UNKNOWN_TABLE|UNKNOWN_IDENTIFIER|doesn't exist/i.test(err.message)
-  );
 }
 
 export function createAlertMetricsRepository(ch: ClickHouseClient) {
@@ -111,53 +93,25 @@ export function createAlertMetricsRepository(ch: ClickHouseClient) {
     range: EvaluationRange,
   ): Promise<Map<string, number>> {
     if (!alert.metricName) return new Map();
-    const attr = attrConds(alert.filter.resourceAttrs);
-    const group = groupExprFor(alert.groupBy);
-
+    const rows = await metricSeries(
+      ch,
+      alert.projectId,
+      alert.metricName,
+      {
+        range,
+        service: alert.filter.service,
+        resourceAttrs: alert.filter.resourceAttrs,
+      },
+      alert.groupBy ?? undefined,
+      { n: 1, unit: "MINUTE" },
+      alert.aggregation === "avg" ? "avg" : "sum",
+    );
     const sums = new Map<string, number>();
     const counts = new Map<string, number>();
-    for (const { table, valueExpr } of METRIC_SERIES_TABLES) {
-      const conds: string[] = [
-        "ResourceAttributes['superlog.project_id'] = {projectId:String}",
-        "TimeUnix >= parseDateTime64BestEffortOrZero({since:String})",
-        "TimeUnix <= parseDateTime64BestEffortOrZero({until:String})",
-        "MetricName = {metricName:String}",
-        ...attr.conds,
-      ];
-      if (alert.filter.service) conds.push("ServiceName = {service:String}");
-      try {
-        const r = await ch.query({
-          query: `
-            SELECT ${group.expr} AS group_key, ${valueExpr} AS v, count() AS n
-            FROM ${table}
-            WHERE ${conds.join(" AND ")}
-            GROUP BY group_key
-            LIMIT 1000
-          `,
-          query_params: {
-            projectId: alert.projectId,
-            since: range.since,
-            until: range.until,
-            metricName: alert.metricName,
-            service: alert.filter.service ?? "",
-            ...attr.params,
-            ...group.params,
-          },
-          format: "JSONEachRow",
-        });
-        const rows = (await r.json()) as {
-          group_key: string;
-          v: string | number;
-          n: string | number;
-        }[];
-        for (const row of rows) {
-          const key = row.group_key ?? "";
-          sums.set(key, (sums.get(key) ?? 0) + Number(row.v));
-          counts.set(key, (counts.get(key) ?? 0) + Number(row.n));
-        }
-      } catch (err) {
-        if (!isMissingTableError(err)) throw err;
-      }
+    for (const row of rows) {
+      const key = row.group ?? "";
+      sums.set(key, (sums.get(key) ?? 0) + row.value);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
     }
 
     const out = new Map<string, number>();

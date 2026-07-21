@@ -29,7 +29,7 @@ function fakeClickhouse(capture: { query?: string; params?: Record<string, unkno
   } as unknown as ClickHouseClient;
 }
 
-// queryMetrics fans out across four metric tables, so a single-slot capture
+// queryMetrics fans out across all metric tables, so a single-slot capture
 // would only retain the last query. This collects every query it runs.
 function fakeClickhouseMulti(queries: string[]) {
   return {
@@ -231,12 +231,7 @@ test("listServices discovers services across traces, logs, and metrics", async (
     until: "now()",
   });
 
-  assert.deepEqual(services, [
-    "api",
-    "exp-histogram-only",
-    "log-only-worker",
-    "metric-only-cron",
-  ]);
+  assert.deepEqual(services, ["api", "exp-histogram-only", "log-only-worker", "metric-only-cron"]);
   assert.deepEqual(queriedTables.sort(), [
     "otel_logs",
     "otel_metrics_exp_histogram",
@@ -502,12 +497,11 @@ test("metricSeries spreads cumulative monotonic sum increases across the interva
   assert.ok(sumQuery, "expected a sum metric query");
   assert.match(sumQuery, /AggregationTemporality = 2/);
   assert.match(sumQuery, /IsMonotonic/);
-  // Per-sample increase (delta) from the cumulative value.
-  assert.match(sumQuery, /lagInFrame\(toNullable\(Value\), 1, NULL\)/);
-  assert.match(sumQuery, /Value - previous_value/);
-  // First sample of a series has no predecessor: only count it if the series
-  // actually started inside the window.
-  assert.match(sumQuery, /StartTimeUnix >= now\(\) - INTERVAL 1 HOUR/);
+  // Per-sample increase from cumulative values, including one predecessor
+  // before the requested boundary.
+  assert.match(sumQuery, /lagInFrame\(toNullable\(TemporalityValue\), 1, NULL\)/);
+  assert.match(sumQuery, /TemporalityValue - previous_value/);
+  assert.match(sumQuery, /TimeUnix < now\(\) - INTERVAL 1 HOUR/);
   // The increase is spread over the wall-clock interval (prev sample -> this
   // sample) by weighting each render bucket's overlap with that interval —
   // this is what removes the "comb" when the step is finer than the export
@@ -517,12 +511,20 @@ test("metricSeries spreads cumulative monotonic sum increases across the interva
   // Interval math is in nanoseconds (1 MINUTE step = 60e9 ns) so sub-second
   // sample intervals aren't quantized away.
   assert.match(sumQuery, /toUnixTimestamp64Nano\(prev_time\)/);
-  assert.match(sumQuery, /least\(b, g \+ 60000000000\) - greatest\(a, g\)/);
+  assert.match(sumQuery, /least\(b, g \+ 60000000000\) - greatest\(a, g, toUnixTimestamp64Nano\(/);
   assert.match(sumQuery, /\/ dt/);
-  // Non-cumulative / non-monotonic points are still summed as-is.
-  assert.match(sumQuery, /NOT \(AggregationTemporality = 2 AND IsMonotonic\)/);
+  // Delta points use their declared start/end interval and are spread through
+  // the same bucket-overlap path.
+  assert.match(sumQuery, /AggregationTemporality = 1/);
+  assert.match(sumQuery, /toUnixTimestamp64Nano\(StartTimeUnix\) AS a/);
+  // Scope and resource identity are part of the cumulative stream key, so two
+  // distinct producers cannot be differenced against each other.
+  assert.match(sumQuery, /ScopeName/);
+  assert.match(sumQuery, /ScopeVersion/);
+  assert.match(sumQuery, /ScopeAttributes/);
+  assert.match(sumQuery, /ResourceAttributes/);
   assert.match(sumQuery, /Attributes\[\{groupKey:String\}\] AS group_key/);
-  assert.equal(queries.length, 4);
+  assert.equal(queries.length, 5);
 });
 
 test("queryTraces returns resource attributes and flattened exception fields", async () => {
@@ -541,7 +543,7 @@ test("queryTraces returns resource attributes and flattened exception fields", a
 });
 
 // Tracks how many queries are in flight at once so tests can assert that a
-// fan-out across the four metric tables actually runs concurrently instead of
+// fan-out across all metric tables actually runs concurrently instead of
 // awaiting each table before starting the next.
 function fakeClickhouseConcurrent(state: { inFlight: number; maxInFlight: number }) {
   return {
@@ -570,6 +572,7 @@ function fakeClickhouseMetricNamesRollup(
   // total`, so rows come back keyed by `total`, which is what
   // listMetricNamesFromRollup sorts on within a kind.
   rows: { kind: string; name: string; unit: string; total: number }[] = [],
+  exponentialHistogramRows: { name: string; unit: string; c: number }[] = [],
 ) {
   return {
     async query(input: { query: string; query_params?: Record<string, unknown> }) {
@@ -587,6 +590,13 @@ function fakeClickhouseMetricNamesRollup(
           },
         };
       }
+      if (/FROM otel_metrics_exp_histogram/.test(input.query)) {
+        return {
+          async json() {
+            return exponentialHistogramRows;
+          },
+        };
+      }
       capture.query = input.query;
       capture.params = input.query_params;
       return {
@@ -598,7 +608,7 @@ function fakeClickhouseMetricNamesRollup(
   } as unknown as ClickHouseClient;
 }
 
-test("listMetricNames reads the metric_names_per_hour rollup instead of scanning the raw tables", async () => {
+test("listMetricNames supplements the legacy rollup with exponential histograms", async () => {
   const capture: { query?: string; params?: Record<string, unknown> } = {};
 
   const names = await listMetricNames(
@@ -606,12 +616,18 @@ test("listMetricNames reads the metric_names_per_hour rollup instead of scanning
     // (Number(b.total) - Number(a.total)) is actually exercised, not just the
     // primary kind ordering. ClickHouse can return them in any order, so seed
     // them low-then-high to prove the sort flips them.
-    fakeClickhouseMetricNamesRollup(capture, true, true, [
-      { kind: "sum", name: "http.retries", unit: "1", total: 12 },
-      { kind: "sum", name: "http.requests", unit: "1", total: 500 },
-      { kind: "gauge", name: "process.memory", unit: "By", total: 100 },
-      { kind: "bogus", name: "ignored", unit: "", total: 1 },
-    ]),
+    fakeClickhouseMetricNamesRollup(
+      capture,
+      true,
+      true,
+      [
+        { kind: "sum", name: "http.retries", unit: "1", total: 12 },
+        { kind: "sum", name: "http.requests", unit: "1", total: 500 },
+        { kind: "gauge", name: "process.memory", unit: "By", total: 100 },
+        { kind: "bogus", name: "ignored", unit: "", total: 1 },
+      ],
+      [{ name: "http.duration.exp", unit: "ms", c: 7 }],
+    ),
     "project-1",
     { since: "now() - INTERVAL 24 HOUR", until: "now()" },
   );
@@ -620,7 +636,6 @@ test("listMetricNames reads the metric_names_per_hour rollup instead of scanning
   assert.match(capture.query ?? "", /sum\(c\)/);
   // the partial first hour rounds down to its cell boundary so it is included
   assert.match(capture.query ?? "", /hour >= toStartOfHour\(/);
-  assert.doesNotMatch(capture.query ?? "", /FROM otel_metrics/);
   assert.equal(capture.params?.projectId, "project-1");
   // Rows come back in METRIC_TABLES kind order; within a kind, most frequent
   // first (http.requests before http.retries); unknown kinds are dropped.
@@ -628,7 +643,43 @@ test("listMetricNames reads the metric_names_per_hour rollup instead of scanning
     { name: "process.memory", kind: "gauge", unit: "By" },
     { name: "http.requests", kind: "sum", unit: "1" },
     { name: "http.retries", kind: "sum", unit: "1" },
+    { name: "http.duration.exp", kind: "exponential_histogram", unit: "ms" },
   ]);
+});
+
+test("listMetricNames keeps the rollup result when the exponential histogram table is absent", async () => {
+  const names = await listMetricNames(
+    {
+      async query(input: { query: string }) {
+        if (/^EXISTS TABLE/i.test(input.query.trim())) {
+          return {
+            async json() {
+              return [{ result: 1 }];
+            },
+          };
+        }
+        if (/count\(\) AS c/i.test(input.query) && /FROM \(/.test(input.query)) {
+          return {
+            async json() {
+              return [{ c: 1 }];
+            },
+          };
+        }
+        if (/FROM otel_metrics_exp_histogram/.test(input.query)) {
+          throw new Error("Unknown table expression identifier 'otel_metrics_exp_histogram'");
+        }
+        return {
+          async json() {
+            return [{ kind: "sum", name: "http.requests", unit: "1", total: 5 }];
+          },
+        };
+      },
+    } as unknown as ClickHouseClient,
+    "project-1",
+    { since: "now() - INTERVAL 24 HOUR", until: "now()" },
+  );
+
+  assert.deepEqual(names, [{ name: "http.requests", kind: "sum", unit: "1" }]);
 });
 
 test("listMetricNames falls back to the raw tables when the rollup is absent", async () => {
@@ -656,24 +707,23 @@ test("listMetricNames falls back to the raw tables when the rollup is absent", a
     { since: "now() - INTERVAL 24 HOUR", until: "now()" },
   );
 
-  assert.equal(queries.length, 4);
+  assert.equal(queries.length, 5);
   for (const q of queries) assert.match(q, /FROM otel_metrics_/);
 });
 
 test("listMetricNames falls back to the raw tables when the rollup does not cover the window", async () => {
   const capture: { query?: string; params?: Record<string, unknown> } = {};
 
-  await listMetricNames(
-    fakeClickhouseMetricNamesRollup(capture, true, false),
-    "project-1",
-    { since: "now() - INTERVAL 24 HOUR", until: "now()" },
-  );
+  await listMetricNames(fakeClickhouseMetricNamesRollup(capture, true, false), "project-1", {
+    since: "now() - INTERVAL 24 HOUR",
+    until: "now()",
+  });
 
   assert.match(capture.query ?? "", /FROM otel_metrics_/);
   assert.doesNotMatch(capture.query ?? "", /FROM metric_names_per_hour/);
 });
 
-test("listMetricNames raw fallback queries the four metric tables concurrently", async () => {
+test("listMetricNames raw fallback queries all metric tables concurrently", async () => {
   const state = { inFlight: 0, maxInFlight: 0 };
 
   await listMetricNames(
@@ -701,10 +751,10 @@ test("listMetricNames raw fallback queries the four metric tables concurrently",
     { since: "now() - INTERVAL 24 HOUR", until: "now()" },
   );
 
-  assert.equal(state.maxInFlight, 4);
+  assert.equal(state.maxInFlight, 5);
 });
 
-test("queryMetrics queries the four metric tables concurrently", async () => {
+test("queryMetrics queries all metric tables concurrently", async () => {
   const state = { inFlight: 0, maxInFlight: 0 };
 
   await queryMetrics(fakeClickhouseConcurrent(state), "project-1", {
@@ -712,7 +762,7 @@ test("queryMetrics queries the four metric tables concurrently", async () => {
     limit: 100,
   });
 
-  assert.equal(state.maxInFlight, 4);
+  assert.equal(state.maxInFlight, 5);
 });
 
 test("metricSeries queries the metric tables concurrently", async () => {
@@ -728,7 +778,7 @@ test("metricSeries queries the metric tables concurrently", async () => {
     "avg",
   );
 
-  assert.equal(state.maxInFlight, 4);
+  assert.equal(state.maxInFlight, 5);
 });
 
 test("queryMetrics returns data-point attributes for every metric kind", async () => {
@@ -739,7 +789,7 @@ test("queryMetrics returns data-point attributes for every metric kind", async (
     limit: 100,
   });
 
-  assert.equal(queries.length, 4);
+  assert.equal(queries.length, 5);
   for (const q of queries) {
     assert.match(q, /Attributes AS attributes/);
     assert.match(q, /ResourceAttributes AS resource_attrs/);

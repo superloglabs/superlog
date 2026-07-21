@@ -126,6 +126,7 @@ export async function evaluateAlertQuery(
       },
       groupBy,
       step,
+      alert.aggregation === "avg" ? "avg" : "sum",
     );
     for (const row of rows) {
       const key = row.group ?? "";
