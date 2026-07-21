@@ -42,6 +42,22 @@ export type ApiKey = {
   plaintext?: string;
 };
 
+export type PorterSetup = {
+  dashboardUrl: string;
+  addonName: string;
+  chart: {
+    repositoryUrl: string;
+    name: string;
+    version: string;
+  };
+  key: {
+    id: string;
+    prefix: string;
+    plaintext: string;
+  };
+  valuesYaml: string;
+};
+
 export type Stats = {
   window: string;
   traces: number;
@@ -408,6 +424,23 @@ export function useCreateKey(projectId: string) {
         body: JSON.stringify({ name }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["keys", projectId] }),
+  });
+}
+
+export function usePorterSetup(projectId: string) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["porter-setup", projectId],
+    queryFn: () =>
+      fetcher<PorterSetup>(`/api/projects/${projectId}/integrations/porter/setup`, {
+        method: "POST",
+        signal: AbortSignal.timeout(10_000),
+      }),
+    enabled: projectId.length > 0,
+    staleTime: Number.POSITIVE_INFINITY,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }
 

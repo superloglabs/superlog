@@ -151,6 +151,7 @@ import { IntegrationConfigDialog } from "./settings/IntegrationConfigDialog.tsx"
 import { OrgDangerCard } from "./settings/OrgDangerCard.tsx";
 import { OrgGeneralCard } from "./settings/OrgGeneralCard.tsx";
 import { OrgMembersCard } from "./settings/OrgMembersCard.tsx";
+import { PorterIntegrationSetup } from "./settings/PorterIntegrationSetup.tsx";
 import {
   type IngestSignal,
   type IngestSource,
@@ -1129,7 +1130,8 @@ type ProjectIntegrationId =
   | "railway"
   | "render"
   | "gcp"
-  | "aws";
+  | "aws"
+  | "porter";
 
 type IntegrationBentoItem = IntegrationCatalogItem & {
   id: ProjectIntegrationId;
@@ -1147,6 +1149,7 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
   const render = useRenderInstallation(projectId);
   const gcp = useGcpConnection(projectId);
   const aws = useCloudConnections(projectId);
+  const keys = useKeys(projectId);
 
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<ProjectIntegrationId | null>(null);
@@ -1158,6 +1161,10 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
     : 0;
   const awsConnections = aws.data ?? [];
   const connectedAws = awsConnections.some((connection) => connection.status === "connected");
+  const porterKeys = (keys.data ?? []).filter(
+    (key) => key.name === "Porter Helm install" && !key.revokedAt,
+  );
+  const connectedPorter = porterKeys.some((key) => key.lastUsedAt !== null);
 
   const items: IntegrationBentoItem[] = [
     {
@@ -1260,6 +1267,15 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
           : "Connected",
     },
     {
+      id: "porter",
+      name: "Porter",
+      description: "Collect Kubernetes logs, metrics, events, and application OTLP signals.",
+      category: "Cloud & hosting",
+      keywords: ["kubernetes", "helm", "otel", "opentelemetry", "logs", "metrics", "traces"],
+      installed: connectedPorter,
+      statusLabel: "Connected",
+    },
+    {
       id: "aws",
       name: "AWS",
       description: "Inventory resources and stream CloudWatch telemetry through a read-only role.",
@@ -1283,6 +1299,7 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
     render,
     gcp,
     aws,
+    keys,
   ].some((query) => query.isLoading);
   const selectedItem = items.find((item) => item.id === selectedId);
 
@@ -1503,6 +1520,8 @@ function IntegrationGlyph({ id }: { id: ProjectIntegrationId }) {
           <AwsIcon size={20} />
         </span>
       );
+    case "porter":
+      return <span className={`${className} text-[15px] font-semibold`}>P</span>;
     case "linear":
       return <span className={`${className} text-[15px] font-semibold`}>L</span>;
     case "notion":
@@ -1538,6 +1557,8 @@ function IntegrationConfiguration({
       return <GcpCard projectId={projectId} />;
     case "aws":
       return <AwsCard projectId={projectId} />;
+    case "porter":
+      return <PorterIntegrationSetup projectId={projectId} />;
   }
 }
 
