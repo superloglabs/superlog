@@ -1390,6 +1390,8 @@ app.get("/api/projects/:projectId/issues", async (c) => {
   if (rows.length === 0) return c.json([]);
 
   let activityRows: { fingerprint: string; day: string; count: string | number }[] = [];
+  const activityFingerprints = [...new Set(rows.map((row) => row.fingerprint))];
+  const activityQueryStartedAt = Date.now();
   try {
     const activity = await ch.query({
       query: `
@@ -1403,7 +1405,7 @@ app.get("/api/projects/:projectId/issues", async (c) => {
       `,
       query_params: {
         projectId,
-        fingerprints: [...new Set(rows.map((row) => row.fingerprint))],
+        fingerprints: activityFingerprints,
         days: DEFAULT_ISSUE_LIST_WINDOW_DAYS,
       },
       format: "JSONEachRow",
@@ -1419,7 +1421,15 @@ app.get("/api/projects/:projectId/issues", async (c) => {
       count: row.count,
     }));
   } catch (err) {
-    logger.warn({ err, projectId }, "issue list activity unavailable; returning empty sparklines");
+    logger.warn(
+      {
+        err,
+        projectId,
+        fingerprintCount: activityFingerprints.length,
+        durationMs: Date.now() - activityQueryStartedAt,
+      },
+      "issue list activity unavailable; returning empty sparklines",
+    );
   }
 
   return c.json(
