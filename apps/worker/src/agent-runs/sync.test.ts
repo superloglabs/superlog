@@ -412,7 +412,7 @@ test("a terminal result wins when it lands at the runtime budget boundary", () =
   );
 });
 
-test("complete_investigation is rejected when an intervention is available", () => {
+test("complete_investigation is rejected for PR runs but allowed for findings-only runs", () => {
   const result = {
     state: "complete" as const,
     summary: "Findings ready.",
@@ -434,7 +434,7 @@ test("complete_investigation is rejected when an intervention is available", () 
       approvalPromptsEnabled: true,
       approvalPromptToolsAvailable: true,
     }),
-    false,
+    true,
   );
   assert.equal(
     isCompleteInvestigationAllowed(result, {

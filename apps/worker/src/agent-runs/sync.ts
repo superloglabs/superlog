@@ -138,9 +138,7 @@ export function completeInvestigationAvailable(capabilities: {
   approvalPromptToolsAvailable: boolean;
 }): boolean {
   const prCreation = capabilities.githubConnected && capabilities.prPolicy !== "never";
-  const approvalPrompts =
-    capabilities.approvalPromptsEnabled && capabilities.approvalPromptToolsAvailable;
-  return !prCreation && !approvalPrompts;
+  return !prCreation;
 }
 
 const agentRunLifecycle = createAgentRunLifecycle(db);
@@ -1318,7 +1316,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         const failed = await failAgentRun(
           ctx,
           "sync_failed",
-          "Investigation tried to finish while a remediation intervention was still available.",
+          "Investigation tried to finish without a pull request while PR creation was still available.",
           { existingResult: snapshot.result },
         );
         if (failed) {
