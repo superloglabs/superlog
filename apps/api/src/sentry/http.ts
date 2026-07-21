@@ -1,5 +1,8 @@
 import type { Hono } from "hono";
+import { requestBodyLimit } from "../request-body-limits.js";
 import { type SentryIssueEvent, hasValidSentrySignature, parseSentryIssueEvent } from "./domain.js";
+
+export const SENTRY_WEBHOOK_BODY_BYTES = 2 * 1024 * 1024;
 
 export type SentryPublicDependencies = {
   clientSecret: string | undefined;
@@ -9,6 +12,7 @@ export type SentryPublicDependencies = {
 
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
 export function mountSentryPublic(app: Hono<any>, deps: SentryPublicDependencies): void {
+  app.use("/sentry/webhook", requestBodyLimit(SENTRY_WEBHOOK_BODY_BYTES));
   app.post("/sentry/webhook", async (c) => {
     if (!deps.clientSecret) return c.json({ error: "sentry not configured" }, 503);
     const rawBody = await c.req.text();

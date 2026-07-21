@@ -105,3 +105,40 @@ test("refreshes an expired Sentry token before relaying investigation queries", 
   ]);
   assert.deepEqual(upstreamAuth, ["Sentry-Bearer fresh-access"]);
 });
+
+test("marks the installation for reconnect when Sentry rejects its OAuth token", async () => {
+  const reauth: Array<{ id: string; reason: string }> = [];
+  const app = new Hono();
+  mountSentryMcpRelayPublic(app, {
+    repository: {
+      getActive: async () => ({
+        id: "sentry-install-1",
+        organizationSlug: "acme",
+        projectSlug: "storefront",
+        accessToken: "revoked-access-token",
+        refreshToken: "refresh-token",
+        relayToken: "relay-token",
+        expiresAt: null,
+      }),
+      updateToken: async () => assert.fail("a non-expired token must not refresh eagerly"),
+      markNeedsReauth: async (id, reason) => {
+        reauth.push({ id, reason });
+      },
+    },
+    now: () => new Date("2026-07-21T12:00:00.000Z"),
+    fetch: async () => Response.json({ detail: "Invalid token" }, { status: 401 }),
+    clientId: "client-1",
+    clientSecret: "secret-1",
+  });
+
+  const response = await app.request("/api/sentry-mcp-relay/project-1", {
+    method: "POST",
+    headers: { authorization: "Bearer relay-token" },
+    body: "{}",
+  });
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(reauth, [
+    { id: "sentry-install-1", reason: "Sentry MCP rejected OAuth token (401)" },
+  ]);
+});

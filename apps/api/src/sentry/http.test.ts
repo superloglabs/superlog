@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import crypto from "node:crypto";
 import { test } from "node:test";
 import { Hono } from "hono";
-import { mountSentryPublic } from "./http.js";
+import { SENTRY_WEBHOOK_BODY_BYTES, mountSentryPublic } from "./http.js";
 
 test("accepts a signed new Sentry issue without doing incident work inline", async () => {
   const secret = "test-sentry-client-secret";
@@ -90,4 +90,28 @@ test("accepts a signed Sentry App uninstall so stale project connections are rev
 
   assert.equal(response.status, 202);
   assert.deepEqual(revoked, ["installation-1"]);
+});
+
+test("rejects an oversized public Sentry webhook before reading or handling it", async () => {
+  let handled = false;
+  const app = new Hono();
+  mountSentryPublic(app, {
+    clientSecret: "test-sentry-client-secret",
+    receiveIssueEvent: async () => {
+      handled = true;
+    },
+  });
+
+  const response = await app.request("/sentry/webhook", {
+    method: "POST",
+    headers: {
+      "content-length": String(SENTRY_WEBHOOK_BODY_BYTES + 1),
+      "content-type": "application/json",
+    },
+    body: "{}",
+  });
+
+  assert.equal(response.status, 413);
+  assert.equal(handled, false);
+  assert.deepEqual(await response.json(), { error: "payload too large" });
 });

@@ -85,6 +85,12 @@ export function mountSentryMcpRelayPublic<E extends Env>(
       body: c.req.method === "GET" ? undefined : await c.req.arrayBuffer(),
       redirect: "manual",
     });
+    if (upstream.status === 401 || upstream.status === 403) {
+      await deps.repository.markNeedsReauth(
+        credential.id,
+        `Sentry MCP rejected OAuth token (${upstream.status})`,
+      );
+    }
     const responseHeaders = new Headers();
     for (const name of RESPONSE_HEADERS) {
       const value = upstream.headers.get(name);
