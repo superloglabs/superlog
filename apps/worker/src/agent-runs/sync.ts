@@ -123,6 +123,7 @@ export function isCompleteInvestigationAllowed(
   },
 ): boolean {
   if (result.completionKind !== "investigation_complete") return true;
+  if (result.linearTicketRequested) return true;
   return completeInvestigationAvailable(capabilities);
 }
 
@@ -437,13 +438,16 @@ export function shouldDeferSteering(snapshot: {
 export function terminalOutcomeNudgePrompt(
   args: {
     completeInvestigationAvailable?: boolean;
+    linearTicketCreationAvailable?: boolean;
   } = {},
 ): string {
   return [
     TERMINAL_OUTCOME_NUDGE_MARKER,
-    args.completeInvestigationAvailable
-      ? "Call `report_findings` now, then explicitly end your turn with `complete_investigation`, `report_external_cause`, `resolve_incident` with all Issue outcomes, or `ask_human`."
-      : "Call `report_findings` now if you have findings to record, then end the turn with exactly one terminal tool: batched `propose_pr`, `resolve_incident` with all Issue outcomes, `report_external_cause`, or `ask_human`.",
+    args.linearTicketCreationAvailable
+      ? "Call `report_findings` now, then explicitly end your turn with `create_linear_issue`, `report_external_cause`, `resolve_incident` with all Issue outcomes, or `ask_human`."
+      : args.completeInvestigationAvailable
+        ? "Call `report_findings` now, then explicitly end your turn with `complete_investigation`, `report_external_cause`, `resolve_incident` with all Issue outcomes, or `ask_human`."
+        : "Call `report_findings` now if you have findings to record, then end the turn with exactly one terminal tool: batched `propose_pr`, `resolve_incident` with all Issue outcomes, `report_external_cause`, or `ask_human`.",
   ].join("\n");
 }
 
@@ -1419,6 +1423,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
               approvalPromptsEnabled: ctx.approvalPromptsEnabled,
               approvalPromptToolsAvailable: true,
             }),
+            linearTicketCreationAvailable: !!ctx.linearInstall,
           });
         const redeliveryMarker = partialRetryPrompt
           ? `${PARTIAL_PULL_REQUEST_RETRY_NUDGE_MARKER} ${JSON.stringify(pendingRepoFullNames)}`

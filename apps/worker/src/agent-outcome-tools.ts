@@ -1140,6 +1140,9 @@ export function assembleAgentRunResult(args: {
   if (terminal?.name === "complete_investigation" || terminal?.name === "create_linear_issue") {
     result.completionKind = "investigation_complete";
   }
+  if (terminal?.name === "create_linear_issue") {
+    result.linearTicketRequested = true;
+  }
   if (terminal?.name === "ask_human") {
     result.question = terminal.payload.question;
   }

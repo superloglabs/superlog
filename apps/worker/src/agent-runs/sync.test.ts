@@ -446,6 +446,26 @@ test("complete_investigation is rejected when an intervention is available", () 
   );
 });
 
+test("an explicit Linear handoff is allowed when another intervention is available", () => {
+  assert.equal(
+    isCompleteInvestigationAllowed(
+      {
+        state: "complete",
+        summary: "Findings ready for the owning team.",
+        completionKind: "investigation_complete",
+        linearTicketRequested: true,
+      },
+      {
+        prPolicy: "always",
+        githubConnected: true,
+        approvalPromptsEnabled: true,
+        approvalPromptToolsAvailable: true,
+      },
+    ),
+    true,
+  );
+});
+
 test("steerIdleRunnerWithPendingContext steers idle sessions with joined context deltas", async () => {
   const steered: Array<{ sessionId: string; message: string }> = [];
   const processedIds: string[][] = [];
@@ -802,6 +822,15 @@ test("terminalOutcomeNudgePrompt uses complete_investigation when interventions 
   const prompt = terminalOutcomeNudgePrompt({ completeInvestigationAvailable: true });
   assert.match(prompt, /complete_investigation/);
   assert.doesNotMatch(prompt, /propose_pr/);
+});
+
+test("terminalOutcomeNudgePrompt preserves the explicit Linear handoff", () => {
+  const prompt = terminalOutcomeNudgePrompt({
+    completeInvestigationAvailable: true,
+    linearTicketCreationAvailable: true,
+  });
+  assert.match(prompt, /create_linear_issue/);
+  assert.doesNotMatch(prompt, /complete_investigation/);
 });
 
 test("partialPullRequestRetryNudgePrompt requires exactly the pending repositories", () => {

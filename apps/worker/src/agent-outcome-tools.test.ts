@@ -338,6 +338,7 @@ test("create_linear_issue completes a findings handoff without resolving the inc
   });
   assert.equal(result.state, "complete");
   assert.equal(result.completionKind, "investigation_complete");
+  assert.equal(result.linearTicketRequested, true);
   assert.equal(result.incidentResolution, undefined);
 });
 
