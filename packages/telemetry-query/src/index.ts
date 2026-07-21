@@ -1136,7 +1136,7 @@ function histogramQuantileQuery(args: {
               ),
               arrayMap(
                 i -> first_bucket + i * ${stepNs},
-                range(toUInt32(intDiv(intDiv(least(b, ${untilNs}) - 1, ${stepNs}) * ${stepNs} - first_bucket, ${stepNs}) + 1))
+                range(toUInt32(intDiv(least(b, ${untilNs}) - 1 - first_bucket, ${stepNs}) + 1))
               )
             )
           ) AS spread
@@ -1410,7 +1410,7 @@ function temporalityAwareScalarQuery(args: {
               ),
               arrayMap(
                 i -> first_bucket + i * ${stepNs},
-                range(toUInt32(intDiv(intDiv(least(b, ${untilNs}) - 1, ${stepNs}) * ${stepNs} - first_bucket, ${stepNs}) + 1))
+                range(toUInt32(intDiv(least(b, ${untilNs}) - 1 - first_bucket, ${stepNs}) + 1))
               )
             )
           ) AS spread
@@ -1520,7 +1520,7 @@ function temporalityAwareScalarQuery(args: {
               ),
               arrayMap(
                 i -> first_bucket + i * ${stepNs},
-                range(toUInt32(intDiv(intDiv(least(b, ${untilNs}) - 1, ${stepNs}) * ${stepNs} - first_bucket, ${stepNs}) + 1))
+                range(toUInt32(intDiv(least(b, ${untilNs}) - 1 - first_bucket, ${stepNs}) + 1))
               )
             )
           ) AS spread

@@ -396,6 +396,40 @@ test(
 );
 
 test(
+  "metric aggregates anchor spread buckets at a window start away from midnight",
+  { skip: !clickhouseUrl },
+  async () => {
+    await ch.insert({
+      table: "otel_metrics_sum",
+      format: "JSONEachRow",
+      values: [
+        {
+          ...cumulativeSumPoint("2026-01-02 10:05:00", 100),
+          MetricName: "anchored.total",
+          StartTimeUnix: "2026-01-01 10:00:00",
+        },
+      ],
+    });
+
+    const rows = await metricAggregate(
+      ch,
+      "project-1",
+      "anchored.total",
+      {
+        range: {
+          since: "2026-01-01T10:00:00Z",
+          until: "2026-01-02T10:05:00Z",
+        },
+      },
+      undefined,
+      "sum",
+    );
+
+    assert.deepEqual(rows, [{ group: "", value: 100 }]);
+  },
+);
+
+test(
   "cumulative non-monotonic sums preserve negative and positive changes",
   { skip: !clickhouseUrl },
   async () => {
