@@ -1072,6 +1072,8 @@ function histogramQuantileQuery(args: {
   sinceExpr: string;
   untilExpr: string;
   bucketCountsExpr: string;
+  bucketKeysExpr: string;
+  bucketLayoutExpr: string;
   bucketValuesExpr: string;
   q: number;
 }): string {
@@ -1083,6 +1085,8 @@ function histogramQuantileQuery(args: {
     sinceExpr,
     untilExpr,
     bucketCountsExpr,
+    bucketKeysExpr,
+    bucketLayoutExpr,
     bucketValuesExpr,
     q,
   } = args;
@@ -1135,6 +1139,7 @@ function histogramQuantileQuery(args: {
         FROM (
           SELECT
             group_key,
+            QuantileBucketKeys,
             QuantileBucketValues,
             if(
               series_row = 0,
@@ -1145,18 +1150,30 @@ function histogramQuantileQuery(args: {
                   b < ${sinceNs}
                     OR b = toUnixTimestamp64Nano(StartTimeUnix)
                     OR toUnixTimestamp64Nano(StartTimeUnix) < ${sinceNs},
-                  [],
+                  emptyArrayUInt64(),
                   QuantileBucketCounts
                 ),
                 if(
-                  QuantileBucketValues = previous_values
-                    AND length(QuantileBucketCounts) = length(previous_counts),
+                  QuantileBucketLayout = previous_layout
+                    AND arrayAll(
+                      (key, count) -> count = 0 OR has(QuantileBucketKeys, key),
+                      previous_keys,
+                      previous_counts
+                    ),
                   arrayMap(
-                    (current, previous) -> if(current >= previous, current - previous, 0),
-                    QuantileBucketCounts,
-                    previous_counts
+                    (key, current) -> if(
+                      indexOf(previous_keys, key) = 0,
+                      current,
+                      if(
+                        current >= previous_counts[indexOf(previous_keys, key)],
+                        current - previous_counts[indexOf(previous_keys, key)],
+                        toUInt64(0)
+                      )
+                    ),
+                    QuantileBucketKeys,
+                    QuantileBucketCounts
                   ),
-                  []
+                  emptyArrayUInt64()
                 )
               )
             ) AS DeltaBucketCounts,
@@ -1173,17 +1190,22 @@ function histogramQuantileQuery(args: {
               TimeUnix,
               StartTimeUnix,
               QuantileBucketCounts,
+              QuantileBucketKeys,
+              QuantileBucketLayout,
               QuantileBucketValues,
               ${groupExpr} AS group_key,
               row_number() OVER series AS series_row,
-              lagInFrame(QuantileBucketCounts, 1, []) OVER series AS previous_counts,
-              lagInFrame(QuantileBucketValues, 1, []) OVER series AS previous_values,
+              lagInFrame(QuantileBucketCounts, 1, emptyArrayUInt64()) OVER series AS previous_counts,
+              lagInFrame(QuantileBucketKeys, 1, emptyArrayString()) OVER series AS previous_keys,
+              lagInFrame(QuantileBucketLayout, 1, '') OVER series AS previous_layout,
               lagInFrame(TimeUnix, 1, TimeUnix) OVER series AS previous_time,
               toUnixTimestamp64Nano(TimeUnix) AS b
             FROM (
               SELECT
                 *,
                 ${bucketCountsExpr} AS QuantileBucketCounts,
+                ${bucketKeysExpr} AS QuantileBucketKeys,
+                toString(${bucketLayoutExpr}) AS QuantileBucketLayout,
                 ${bucketValuesExpr} AS QuantileBucketValues
               FROM ${table}
               WHERE ${baseWhere}
@@ -1196,6 +1218,8 @@ function histogramQuantileQuery(args: {
               SELECT
                 *,
                 ${bucketCountsExpr} AS QuantileBucketCounts,
+                ${bucketKeysExpr} AS QuantileBucketKeys,
+                toString(${bucketLayoutExpr}) AS QuantileBucketLayout,
                 ${bucketValuesExpr} AS QuantileBucketValues
               FROM ${table}
               WHERE ${baseWhere}
@@ -1219,12 +1243,15 @@ function histogramQuantileQuery(args: {
               TimeUnix,
               StartTimeUnix,
               ${bucketCountsExpr} AS QuantileBucketCounts,
+              ${bucketKeysExpr} AS QuantileBucketKeys,
+              toString(${bucketLayoutExpr}) AS QuantileBucketLayout,
               ${bucketValuesExpr} AS QuantileBucketValues,
               ${groupExpr} AS group_key,
               -- Delta histograms already contain the interval contribution.
               0 AS series_row,
-              [] AS previous_counts,
-              [] AS previous_values,
+              emptyArrayUInt64() AS previous_counts,
+              emptyArrayString() AS previous_keys,
+              '' AS previous_layout,
               StartTimeUnix AS previous_time,
               toUnixTimestamp64Nano(TimeUnix) AS b
             FROM ${table}
@@ -1741,6 +1768,24 @@ export async function metricSeries(
                 kind === "histogram"
                   ? "BucketCounts"
                   : "arrayConcat(arrayReverse(NegativeBucketCounts), [ZeroCount], PositiveBucketCounts)",
+              bucketKeysExpr:
+                kind === "histogram"
+                  ? "arrayMap(idx -> concat('e:', toString(idx)), arrayEnumerate(BucketCounts))"
+                  : `arrayConcat(
+                      arrayMap(
+                        idx -> concat(
+                          'n:',
+                          toString(NegativeOffset + length(NegativeBucketCounts) - idx)
+                        ),
+                        arrayEnumerate(NegativeBucketCounts)
+                      ),
+                      ['z'],
+                      arrayMap(
+                        idx -> concat('p:', toString(PositiveOffset + idx - 1)),
+                        arrayEnumerate(PositiveBucketCounts)
+                      )
+                    )`,
+              bucketLayoutExpr: kind === "histogram" ? "ExplicitBounds" : "Scale",
               bucketValuesExpr:
                 kind === "histogram"
                   ? `arrayMap(

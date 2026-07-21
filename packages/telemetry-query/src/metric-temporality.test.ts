@@ -755,6 +755,46 @@ test(
 );
 
 test(
+  "cumulative exponential histogram percentiles align expanding and shifted sparse bucket runs",
+  { skip: !clickhouseUrl },
+  async () => {
+    await ch.insert({
+      table: "otel_metrics_exp_histogram",
+      format: "JSONEachRow",
+      values: [
+        {
+          ...cumulativeExponentialHistogramPoint("2026-01-01 00:00:30", 10, 100),
+          MetricName: "request.exp_sparse",
+        },
+        {
+          ...cumulativeExponentialHistogramPoint("2026-01-01 00:01:30", 30, 300),
+          MetricName: "request.exp_sparse",
+          PositiveOffset: -1,
+          PositiveBucketCounts: [5, 10, 15],
+        },
+      ],
+    });
+
+    const rows = await metricSeries(
+      ch,
+      "project-1",
+      "request.exp_sparse",
+      {
+        range: {
+          since: "2026-01-01T00:01:00Z",
+          until: "2026-01-01T00:02:00Z",
+        },
+      },
+      undefined,
+      { n: 1, unit: "MINUTE" },
+      "p95",
+    );
+
+    assert.deepEqual(rows, [{ bucket: "2026-01-01 00:01:00", group: "", value: 2 }]);
+  },
+);
+
+test(
   "raw exponential histogram points expose their temporality and start time",
   { skip: !clickhouseUrl },
   async () => {
