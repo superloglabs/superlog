@@ -1390,6 +1390,7 @@ app.get("/api/projects/:projectId/issues", async (c) => {
   if (rows.length === 0) return c.json([]);
 
   let activityRows: { fingerprint: string; day: string; count: string | number }[] = [];
+  let activityAvailable = true;
   const activityFingerprints = [...new Set(rows.map((row) => row.fingerprint))];
   const activityQueryStartedAt = Date.now();
   try {
@@ -1421,6 +1422,7 @@ app.get("/api/projects/:projectId/issues", async (c) => {
       count: row.count,
     }));
   } catch (err) {
+    activityAvailable = false;
     logger.warn(
       {
         err,
@@ -1433,7 +1435,10 @@ app.get("/api/projects/:projectId/issues", async (c) => {
   }
 
   return c.json(
-    buildIssueListItems(rows, activityRows, { windowDays: DEFAULT_ISSUE_LIST_WINDOW_DAYS }),
+    buildIssueListItems(rows, activityRows, {
+      windowDays: DEFAULT_ISSUE_LIST_WINDOW_DAYS,
+      activityAvailable,
+    }),
   );
 });
 

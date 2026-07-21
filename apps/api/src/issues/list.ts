@@ -31,7 +31,7 @@ export function parseIssueListWindow(value: string | undefined): IssueListWindow
 export function buildIssueListItems<T extends IssueListSource>(
   issues: T[],
   activityRows: IssueActivityRow[],
-  opts: { windowDays: number; now?: Date },
+  opts: { windowDays: number; now?: Date; activityAvailable?: boolean },
 ): (T & { activityBuckets: { day: string; count: number }[] })[] {
   const activityByFingerprint = new Map<string, Map<string, number>>();
   for (const row of activityRows) {
@@ -42,10 +42,13 @@ export function buildIssueListItems<T extends IssueListSource>(
 
   return issues.map((issue) => ({
     ...issue,
-    activityBuckets: buildBucketsFromMap(
-      activityByFingerprint.get(issue.fingerprint) ?? new Map(),
-      opts.windowDays,
-      opts.now,
-    ),
+    activityBuckets:
+      opts.activityAvailable === false
+        ? []
+        : buildBucketsFromMap(
+            activityByFingerprint.get(issue.fingerprint) ?? new Map(),
+            opts.windowDays,
+            opts.now,
+          ),
   }));
 }

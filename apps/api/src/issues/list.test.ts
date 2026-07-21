@@ -47,3 +47,24 @@ test("issue list exposes a continuous 12-day frequency series for every error", 
   assert.equal(rows[0]?.activityBuckets.find((bucket) => bucket.day === "2026-07-20")?.count, 17);
   assert.equal(rows[1]?.activityBuckets.find((bucket) => bucket.day === "2026-07-18")?.count, 3);
 });
+
+test("issue list leaves sparklines empty when activity data is unavailable", () => {
+  const rows = buildIssueListItems(
+    [
+      {
+        id: "issue-1",
+        fingerprint: "fp-1",
+        eventCount: 21,
+        lastSeen: new Date("2026-07-20T08:00:00.000Z"),
+      },
+    ],
+    [],
+    {
+      now: new Date("2026-07-21T12:00:00.000Z"),
+      windowDays: 12,
+      activityAvailable: false,
+    },
+  );
+
+  assert.deepEqual(rows[0]?.activityBuckets, []);
+});
