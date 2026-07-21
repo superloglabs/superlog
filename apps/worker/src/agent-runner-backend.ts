@@ -303,6 +303,9 @@ export type AgentRunnerBackend = {
     input: {
       continuationMessage: string;
       authorizeRepository(fullName: string): Promise<string>;
+      // Call and await this after resource refresh succeeds, immediately
+      // before attempting the externally delivered continuation message.
+      markContinuationAttempted(): Promise<void>;
     },
   ): Promise<void>;
   // Optional: classify a resume/steer delivery failure so the caller can

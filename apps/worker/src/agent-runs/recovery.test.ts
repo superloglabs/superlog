@@ -76,13 +76,15 @@ test("an exhausted turn refreshes authorized repositories and continues its exis
     },
     runner: {
       async recover(sessionId, input) {
+        const tokens = [
+          await input.authorizeRepository("acme/api"),
+          await input.authorizeRepository("acme/web"),
+        ];
+        await input.markContinuationAttempted();
         recovered.push({
           sessionId,
           message: input.continuationMessage,
-          tokens: [
-            await input.authorizeRepository("acme/api"),
-            await input.authorizeRepository("acme/web"),
-          ],
+          tokens,
         });
       },
     },
@@ -180,4 +182,44 @@ test("a failed credential refresh releases the recovery claim for a later sync p
   );
 
   assert.deepEqual(released, ["recovery-claim-1"]);
+});
+
+test("an ambiguous continuation delivery keeps the completed claim", async () => {
+  const released: string[] = [];
+  const completed: string[] = [];
+
+  await assert.rejects(
+    recoverExhaustedRunnerTurn({
+      sessionId: "session-1",
+      failure: {
+        kind: "provider_retries_exhausted",
+        providerEventId: "sevt-capacity",
+      },
+      runner: {
+        async recover(_sessionId, input) {
+          await input.markContinuationAttempted();
+          throw new Error("response timed out after delivery");
+        },
+      },
+      async listRepositories() {
+        return [];
+      },
+      async createRepositoryReadToken() {
+        return "token";
+      },
+      async claimRecovery() {
+        return { id: "recovery-claim-1" };
+      },
+      async releaseRecoveryClaim(id) {
+        released.push(id);
+      },
+      async completeRecoveryClaim(id) {
+        completed.push(id);
+      },
+    }),
+    /response timed out after delivery/,
+  );
+
+  assert.deepEqual(completed, ["recovery-claim-1"]);
+  assert.deepEqual(released, []);
 });

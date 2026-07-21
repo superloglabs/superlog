@@ -53,6 +53,7 @@ export async function recoverExhaustedRunnerTurn(input: {
   const claim = await input.claimRecovery(input.failure.providerEventId);
   if (!claim) return "already_claimed";
 
+  let continuationAttempted = false;
   try {
     const repositories = new Map(
       (await input.listRepositories()).map((repository) => [repository.fullName, repository]),
@@ -66,11 +67,23 @@ export async function recoverExhaustedRunnerTurn(input: {
         }
         return input.createRepositoryReadToken(repository.installationId, repository.id);
       },
+      markContinuationAttempted: async () => {
+        continuationAttempted = true;
+        await input.completeRecoveryClaim(claim.id);
+      },
     });
-    await input.completeRecoveryClaim(claim.id);
+    if (!continuationAttempted) {
+      throw new Error("agent runner did not mark the recovery continuation attempt");
+    }
     return "recovered";
   } catch (err) {
-    await input.releaseRecoveryClaim(claim.id);
+    // Resource/token failures happen before external delivery and are safe to
+    // retry. Once delivery starts, its outcome may be ambiguous (for example,
+    // a timeout after provider acceptance), so retain the completed claim and
+    // never enqueue the same continuation twice.
+    if (!continuationAttempted) {
+      await input.releaseRecoveryClaim(claim.id);
+    }
     throw err;
   }
 }
