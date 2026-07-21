@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TERMINAL_OUTCOME_NUDGE_MARKER } from "../agent-outcome-tools.js";
 import {
+  completeInvestigationAvailable,
   continueSettledPullRequestLifecycle,
   isCompleteInvestigationAllowed,
   isSessionBusyError,
@@ -444,6 +445,18 @@ test("complete_investigation is rejected for PR runs but allowed for findings-on
       approvalPromptToolsAvailable: true,
     }),
     true,
+  );
+});
+
+test("legacy sessions do not advertise completion tools absent from their schema", () => {
+  assert.equal(
+    completeInvestigationAvailable({
+      prPolicy: "never",
+      githubConnected: true,
+      approvalPromptsEnabled: true,
+      approvalPromptToolsAvailable: true,
+    }),
+    false,
   );
 });
 

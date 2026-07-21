@@ -128,7 +128,8 @@ export function isCompleteInvestigationAllowed(
 ): boolean {
   if (result.completionKind !== "investigation_complete") return true;
   if (result.linearTicketRequested) return true;
-  return completeInvestigationAvailable(capabilities);
+  const prCreation = capabilities.githubConnected && capabilities.prPolicy !== "never";
+  return !prCreation;
 }
 
 export function completeInvestigationAvailable(capabilities: {
@@ -138,7 +139,9 @@ export function completeInvestigationAvailable(capabilities: {
   approvalPromptToolsAvailable: boolean;
 }): boolean {
   const prCreation = capabilities.githubConnected && capabilities.prPolicy !== "never";
-  return !prCreation;
+  const approvalPrompts =
+    capabilities.approvalPromptsEnabled && capabilities.approvalPromptToolsAvailable;
+  return !prCreation && !approvalPrompts;
 }
 
 const agentRunLifecycle = createAgentRunLifecycle(db);
