@@ -688,7 +688,7 @@ export function createIncidentLifecycle(database: DB = db) {
         return resolved.resolved
           ? {
               disposition: "resolved" as const,
-              linkedIssueCount: resolved.resolvedIssueCount,
+              linkedIssueCount: issues.length,
               quietSince,
               resolutionProof: epoch.resolutionProof,
             }
@@ -1226,11 +1226,15 @@ async function resolveIncidentInTx(
   const outcome: ResolveIssueOutcome = input.issueOutcome ?? { kind: "resolve" };
   let resolvedIssueCount = 0;
   if (input.issueOutcomes || outcome.kind !== "none") {
-    resolvedIssueCount = issues.length;
     const explicitByIssue = new Map(
       (input.issueOutcomes ?? []).map((issueOutcome) => [issueOutcome.issueId, issueOutcome]),
     );
     for (const issue of issues) {
+      // Inactivity resolves the incident episode, not a durable suppression
+      // verdict. Preserve silenced/observed signatures exactly so a future
+      // occurrence remains suppressed under the user's chosen policy.
+      if (input.kind === "auto_inactivity" && issue.status !== "open") continue;
+      resolvedIssueCount += 1;
       // Alert-episode issues are only ever open or resolved (no silenced /
       // under-observation: a noisy alert is tuned or disabled, not silenced
       // per episode), so a silence/observe cascade resolves them plainly.

@@ -51,6 +51,7 @@ import { loadIncidentAlertEpisodes, loadTriggeringAlertForIssue } from "./alerts
 import { mountAlerts } from "./alerts.js";
 import { mountAnomalyScanner } from "./anomaly-scanner.js";
 import { auth } from "./auth.js";
+import { buildAutomationSettingsConflictUpdate } from "./automation-settings-update.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
 import { mountCloudflareAuthed, mountCloudflarePublic } from "./cloudflare.js";
@@ -1982,6 +1983,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     }
   }
 
+  const updatedAt = new Date();
   const values = {
     projectId,
     autoInvestigateIssuesEnabled,
@@ -2001,7 +2003,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     autoMergeFixPrs,
     autoMergeMethod,
     issueFilterConfig,
-    updatedAt: new Date(),
+    updatedAt,
   };
 
   const updated = await db
@@ -2009,26 +2011,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     .values(values)
     .onConflictDoUpdate({
       target: schema.projectAutomationSettings.projectId,
-      set: {
-        autoInvestigateIssuesEnabled,
-        agentRunProvider,
-        maxRuntimeMinutes,
-        maxHumanResumeCount,
-        customInstructions,
-        agentRunEnabled,
-        chatEnabled,
-        linearTicketPolicy,
-        linearTicketInstructions,
-        prPolicy,
-        approvalPromptsEnabled,
-        createLinearTicketOnResolve,
-        autoResolveStaleIncidentsEnabled,
-        prBaseBranch,
-        autoMergeFixPrs,
-        autoMergeMethod,
-        issueFilterConfig,
-        updatedAt: new Date(),
-      },
+      set: buildAutomationSettingsConflictUpdate(body, values, updatedAt),
     })
     .returning();
 

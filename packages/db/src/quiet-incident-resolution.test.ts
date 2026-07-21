@@ -15,6 +15,8 @@ const { createIncidentLifecycle } = await import("./resolve-incident.js");
 const MIGRATIONS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../migrations");
 const NOW = new Date("2026-07-21T03:00:00.000Z");
 const CUTOFF = new Date("2026-07-07T03:00:00.000Z");
+const SILENCED_AT = new Date("2026-06-10T03:00:00.000Z");
+const OBSERVATION_STARTED_AT = new Date("2026-06-11T03:00:00.000Z");
 
 function one<T>(rows: T[]): T {
   const row = rows[0];
@@ -69,6 +71,30 @@ test("quiet resolution rechecks current issues atomically before closing", async
           firstSeen: new Date("2026-06-01T00:00:00.000Z"),
           lastSeen: new Date("2026-07-08T03:00:00.000Z"),
         },
+        {
+          projectId: project.id,
+          fingerprint: "silenced",
+          kind: "log" as const,
+          exceptionType: "Error",
+          title: "Silenced error",
+          firstSeen: new Date("2026-06-01T00:00:00.000Z"),
+          lastSeen: CUTOFF,
+          status: "silenced" as const,
+          silencedAt: SILENCED_AT,
+        },
+        {
+          projectId: project.id,
+          fingerprint: "observing",
+          kind: "log" as const,
+          exceptionType: "Error",
+          title: "Observed error",
+          firstSeen: new Date("2026-06-01T00:00:00.000Z"),
+          lastSeen: CUTOFF,
+          status: "under_observation" as const,
+          escalationTrigger: { kind: "count" as const, count: 20 },
+          observationStartedAt: OBSERVATION_STARTED_AT,
+          observationBaselineEventCount: 5,
+        },
       ])
       .returning();
     await db
@@ -108,7 +134,7 @@ test("quiet resolution rechecks current issues atomically before closing", async
 
     assert.deepEqual(resolved, {
       disposition: "resolved",
-      linkedIssueCount: 2,
+      linkedIssueCount: 4,
       quietSince: CUTOFF,
       resolutionProof: {
         agentRunId: null,
@@ -121,10 +147,16 @@ test("quiet resolution rechecks current issues atomically before closing", async
     assert.equal(closed.status, "resolved");
     assert.equal(closed.resolvedByKind, "auto_inactivity");
     const issueRows = await db.select().from(schema.issues);
-    assert.deepEqual(
-      issueRows.map((issue) => issue.status),
-      ["resolved", "resolved"],
-    );
+    assert.equal(issueRows.find((issue) => issue.fingerprint === "old")?.status, "resolved");
+    assert.equal(issueRows.find((issue) => issue.fingerprint === "recent")?.status, "resolved");
+    const silenced = issueRows.find((issue) => issue.fingerprint === "silenced");
+    assert.equal(silenced?.status, "silenced");
+    assert.deepEqual(silenced?.silencedAt, SILENCED_AT);
+    const observing = issueRows.find((issue) => issue.fingerprint === "observing");
+    assert.equal(observing?.status, "under_observation");
+    assert.deepEqual(observing?.escalationTrigger, { kind: "count", count: 20 });
+    assert.deepEqual(observing?.observationStartedAt, OBSERVATION_STARTED_AT);
+    assert.equal(observing?.observationBaselineEventCount, 5);
   } finally {
     await client.close();
   }
