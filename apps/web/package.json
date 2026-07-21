@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && pnpm prerender && pnpm test:prerender",
+    "prerender": "vite build --ssr src/prerender/entry.tsx --outDir .prerender && node .prerender/entry.js",
+    "test:prerender": "tsx --test scripts/prerender-output.test.ts",
     "preview": "vite preview",
     "test": "tsx --import ./src/test-setup.ts --test src/*.test.ts src/content/*.test.ts src/incidents/*.test.ts src/incidents/*.test.tsx",
     "typecheck": "tsc --noEmit"

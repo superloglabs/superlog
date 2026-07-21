@@ -159,7 +159,7 @@ export function CommandPalette() {
                   return;
                 }
                 setOpen(false);
-                window.location.assign("/");
+                window.location.assign("/app");
               },
             },
           ]
@@ -196,7 +196,7 @@ export function CommandPalette() {
           setOpen(false);
           // Hard reload so every query and the active-org cookie reflect the
           // new session.
-          window.location.assign("/");
+          window.location.assign("/app");
         },
       });
     }

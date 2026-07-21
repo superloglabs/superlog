@@ -3,11 +3,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AutumnProvider } from "autumn-js/react";
 import { PostHogProvider } from "posthog-js/react";
 import React, { type ReactNode } from "react";
-import ReactDOM from "react-dom/client";
+import { createRoot, hydrateRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
-import { App } from "./App.tsx";
-import { DesignLanguage } from "./design/DesignLanguage.tsx";
-import { HomeDashboardMockups } from "./design/HomeDashboardMockups.tsx";
+import { surfaceForPath } from "./entry-surface.ts";
 import { tracer } from "./instrumentation";
 import "./index.css";
 import "react-grid-layout/css/styles.css";
@@ -39,21 +37,26 @@ function Analytics({ children }: { children: ReactNode }) {
   );
 }
 
-const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+const rootElement = document.getElementById("root") as HTMLElement;
+const queryClient = () =>
+  new QueryClient({
+    defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } },
+  });
 
-if (window.location.pathname.startsWith("/design")) {
+async function renderDesign() {
+  const [{ DesignLanguage }, { HomeDashboardMockups }] = await Promise.all([
+    import("./design/DesignLanguage.tsx"),
+    import("./design/HomeDashboardMockups.tsx"),
+  ]);
   // The storybook composes real app components (e.g. IncidentRow), some of which
   // call react-query hooks. useQuery calls useQueryClient() unconditionally —
   // even when `enabled: false` — so a provider must wrap the storybook too, or
   // any such page throws "No QueryClient set". Queries that do fire just fail
   // gracefully against the unauthenticated /design origin.
-  const designQueryClient = new QueryClient({
-    defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } },
-  });
-  root.render(
+  createRoot(rootElement).render(
     <React.StrictMode>
       <BrowserRouter>
-        <QueryClientProvider client={designQueryClient}>
+        <QueryClientProvider client={queryClient()}>
           {window.location.pathname === "/design/home-dashboard-mockups" ? (
             <HomeDashboardMockups />
           ) : (
@@ -64,17 +67,33 @@ if (window.location.pathname.startsWith("/design")) {
     </React.StrictMode>,
   );
   bootSpan.setAttribute("app.mode", "design");
-  bootSpan.end();
-} else {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } },
-  });
+}
 
-  root.render(
+async function renderMarketing() {
+  const { MarketingApp } = await import("./marketing/MarketingApp.tsx");
+  const tree = (
     <React.StrictMode>
       <Analytics>
         <BrowserRouter>
-          <QueryClientProvider client={queryClient}>
+          <QueryClientProvider client={queryClient()}>
+            <MarketingApp />
+          </QueryClientProvider>
+        </BrowserRouter>
+      </Analytics>
+    </React.StrictMode>
+  );
+  if (rootElement.hasChildNodes()) hydrateRoot(rootElement, tree);
+  else createRoot(rootElement).render(tree);
+  bootSpan.setAttribute("app.mode", "marketing");
+}
+
+async function renderProduct() {
+  const { App } = await import("./App.tsx");
+  createRoot(rootElement).render(
+    <React.StrictMode>
+      <Analytics>
+        <BrowserRouter>
+          <QueryClientProvider client={queryClient()}>
             {/* Billing context. Web and API are separate origins, so point
                 Autumn at the API; useBetterAuth routes through /api/auth/autumn
                 with the session cookie. Harmless when billing is unconfigured. */}
@@ -89,6 +108,20 @@ if (window.location.pathname.startsWith("/design")) {
       </Analytics>
     </React.StrictMode>,
   );
-  bootSpan.setAttribute("app.mode", "main");
+  bootSpan.setAttribute("app.mode", "product");
+}
+
+async function bootstrap() {
+  if (window.location.pathname === "/design" || window.location.pathname.startsWith("/design/")) {
+    await renderDesign();
+  } else if (surfaceForPath(window.location.pathname, window.location.search) === "marketing") {
+    await renderMarketing();
+  } else await renderProduct();
   bootSpan.end();
 }
+
+void bootstrap().catch((error: unknown) => {
+  bootSpan.recordException(error instanceof Error ? error : new Error(String(error)));
+  bootSpan.end();
+  throw error;
+});

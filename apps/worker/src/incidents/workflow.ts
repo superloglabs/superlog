@@ -17,6 +17,7 @@ import { dispatchAgentRunJob } from "../agent-runs/enqueue.js";
 import { investigationGate } from "../billing/investigation-gate.js";
 import { usageNotifier } from "../billing/usage-notifier-infra.js";
 import { isAutoAgentRunSuppressed } from "../incident-cooldown.js";
+import { buildAppUrl } from "../incident-route.js";
 import {
   type EnsureIncidentForIssueResult,
   type IssueIntakePreference,
@@ -306,7 +307,7 @@ export async function handleIssueTransitionWithResult(
   } else if (queueStatus === "no_credits") {
     await postIncidentThreadMessage(
       incident.id,
-      `:credit_card: Investigation not started — you've gone over the Free plan's monthly investigation limit. Upgrade to pay-as-you-go for more investigations: <${WEB_ORIGIN}/settings?scope=org&section=billing|Manage billing>`,
+      `:credit_card: Investigation not started — you've gone over the Free plan's monthly investigation limit. Upgrade to pay-as-you-go for more investigations: <${buildAppUrl(WEB_ORIGIN, "/settings?scope=org&section=billing")}|Manage billing>`,
     );
   }
   if (agentRun && linkedIssue && !createdIncident && isActiveAgentRunState(agentRun.state)) {

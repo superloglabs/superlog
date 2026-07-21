@@ -42,6 +42,7 @@ import { logger } from "./logger.js";
 import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
+import { buildAppWebUrl } from "./project-web-route.js";
 import { recordPrClosedMetric, recordPrMergedMetric } from "./pr-metrics.js";
 import {
   enqueueObservabilityReview,
@@ -147,7 +148,7 @@ export function mountGithubPublic(
     const mgmt = verifyMgmtState(state, stateSecret);
     if (mgmt) {
       const callbackWebOrigin = resolveCallbackWebOrigin(c, webOrigin);
-      const failTarget = mgmt.returnUrl ?? `${callbackWebOrigin}/`;
+      const failTarget = mgmt.returnUrl ?? buildAppWebUrl(callbackWebOrigin);
       if (!Number.isFinite(installationId) || installationId <= 0) {
         return c.redirect(`${failTarget}${failTarget.includes("?") ? "&" : "?"}gh=error`, 302);
       }
@@ -182,7 +183,7 @@ export function mountGithubPublic(
         clientSecret: oauthClientSecret,
         redirectUrl: installRedirectUrl,
       });
-      const successTarget = mgmt.returnUrl ?? `${callbackWebOrigin}/`;
+      const successTarget = mgmt.returnUrl ?? buildAppWebUrl(callbackWebOrigin);
       return c.redirect(
         `${successTarget}${successTarget.includes("?") ? "&" : "?"}gh=${marker}`,
         302,
@@ -203,7 +204,7 @@ export function mountGithubPublic(
         })))
     ) {
       const callbackWebOrigin = resolveCallbackWebOrigin(c, webOrigin);
-      return c.redirect(`${callbackWebOrigin}/?gh=error`, 302);
+      return c.redirect(buildAppWebUrl(callbackWebOrigin, "?gh=error"), 302);
     }
 
     // "cli" kind: value is userCode → resolve org+project from device.
@@ -259,7 +260,7 @@ export function mountGithubPublic(
     // decoded.kind === "web" — value resolved to project above.
     const callbackWebOrigin = resolveCallbackWebOrigin(c, webOrigin);
     if (!Number.isFinite(installationId) || installationId <= 0 || !orgId || !projectId) {
-      return c.redirect(`${callbackWebOrigin}/?gh=error`, 302);
+      return c.redirect(buildAppWebUrl(callbackWebOrigin, "?gh=error"), 302);
     }
     const rowId = await upsertInstallation({ orgId, projectId, installationId });
     await resumeBlockedAgentRunsForProjects([projectId], "github_install");
@@ -271,7 +272,7 @@ export function mountGithubPublic(
       clientSecret: oauthClientSecret,
       redirectUrl: installRedirectUrl,
     });
-    return c.redirect(`${callbackWebOrigin}/?gh=${marker}`, 302);
+    return c.redirect(buildAppWebUrl(callbackWebOrigin, `?gh=${marker}`), 302);
   });
 
   app.post("/github/webhook", async (c) => {
@@ -2331,21 +2332,21 @@ export function mountGithubAuthed(app: Hono<any>): void {
       c.var.userId as string | undefined,
       c.var.orgId as string | null | undefined,
     );
-    if (!active) return c.redirect(`${webOrigin}/`, 302);
+    if (!active) return c.redirect(buildAppWebUrl(webOrigin), 302);
 
     const installs = await listAccessibleGithubInstallsForProject(active.projectId);
-    if (installs.length > 0) return c.redirect(`${webOrigin}/`, 302);
+    if (installs.length > 0) return c.redirect(buildAppWebUrl(webOrigin), 302);
 
     try {
       await requireProjectManagerContext(c, active.projectId);
     } catch {
-      return c.redirect(`${webOrigin}/`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin), 302);
     }
 
     if (!appSlug || !stateSecret) {
       // GitHub app not configured in this env — just send the user home so
       // they aren't stuck on a blank page.
-      return c.redirect(`${webOrigin}/`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin), 302);
     }
     const state = signGithubWebState(
       { projectId: active.projectId, userId: c.var.userId as string },
@@ -2587,11 +2588,11 @@ export function mountGithubAuthorOAuth(app: Hono<any>): void {
       return c.json({ error: "github oauth not configured" }, 503);
     }
     const err = c.req.query("error");
-    if (err) return c.redirect(`${webOrigin}/settings?github_author=denied`, 302);
+    if (err) return c.redirect(buildAppWebUrl(webOrigin, "/settings?github_author=denied"), 302);
 
     const code = c.req.query("code");
     const state = c.req.query("state") ?? "";
-    if (!code) return c.redirect(`${webOrigin}/settings?github_author=error`, 302);
+    if (!code) return c.redirect(buildAppWebUrl(webOrigin, "/settings?github_author=error"), 302);
 
     const decoded = verifyAuthorState(state, stateSecret);
     if (!decoded) return c.json({ error: "invalid state" }, 400);
@@ -2602,7 +2603,7 @@ export function mountGithubAuthorOAuth(app: Hono<any>): void {
         projectId: decoded.projectId,
       }))
     ) {
-      return c.redirect(`${webOrigin}/settings?github_author=error`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "/settings?github_author=error"), 302);
     }
 
     let token: string;
@@ -2610,7 +2611,7 @@ export function mountGithubAuthorOAuth(app: Hono<any>): void {
       token = await exchangeGithubOAuthCode({ clientId, clientSecret, code, redirectUrl });
     } catch (e) {
       log.error({ err: e, org_id: decoded.orgId }, "github author oauth exchange failed");
-      return c.redirect(`${webOrigin}/settings?github_author=error`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "/settings?github_author=error"), 302);
     }
 
     let author: CommitAuthor | null = null;
@@ -2631,7 +2632,7 @@ export function mountGithubAuthorOAuth(app: Hono<any>): void {
       );
     } catch (e) {
       log.error({ err: e, org_id: decoded.orgId }, "github author fetch failed");
-      return c.redirect(`${webOrigin}/settings?github_author=error`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "/settings?github_author=error"), 302);
     }
 
     if (installations.length === 0) {
@@ -2640,7 +2641,7 @@ export function mountGithubAuthorOAuth(app: Hono<any>): void {
         "github oauth connected but no accessible app installation found",
       );
       const param = decoded.purpose === "author" ? "github_author" : "github";
-      return c.redirect(`${webOrigin}/settings?${param}=no_install`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, `/settings?${param}=no_install`), 302);
     }
 
     const upserted = await db.transaction(async (tx) => {
@@ -2734,10 +2735,10 @@ export function mountGithubAuthorOAuth(app: Hono<any>): void {
       log.warn({ err, org_id: decoded.orgId }, "loops contact sync failed after github connect");
     });
     if (decoded.purpose === "author") {
-      return c.redirect(`${webOrigin}/settings?github_author=connected`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "/settings?github_author=connected"), 302);
     }
     // access flow: send back to root so the gate can pick up and show onboarding
-    return c.redirect(`${webOrigin}/`, 302);
+    return c.redirect(buildAppWebUrl(webOrigin), 302);
   });
 }
 

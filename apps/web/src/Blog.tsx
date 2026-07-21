@@ -1,4 +1,3 @@
-import { Link } from "react-router-dom";
 import { BLOG_POSTS } from "./blogPosts.ts";
 import { PublicShell } from "./content/PublicShell.tsx";
 import { formatBlogDate } from "./content/formatBlogDate.ts";
@@ -27,19 +26,19 @@ export function Blog() {
               </div>
               <div className="min-w-0">
                 <h2 className="text-[20px] font-semibold tracking-tight text-fg">
-                  <Link to={`/blog/${post.slug}`} className="transition-colors hover:text-accent">
+                  <a href={`/blog/${post.slug}`} className="transition-colors hover:text-accent">
                     {post.title}
-                  </Link>
+                  </a>
                 </h2>
                 {post.excerpt && (
                   <p className="mt-3 text-[15px] leading-7 text-muted">{post.excerpt}</p>
                 )}
-                <Link
-                  to={`/blog/${post.slug}`}
+                <a
+                  href={`/blog/${post.slug}`}
                   className="mt-4 inline-block text-[13px] font-medium text-accent underline-offset-4 hover:underline"
                 >
                   Read more →
-                </Link>
+                </a>
               </div>
             </article>
           ))}

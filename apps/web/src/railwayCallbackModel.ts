@@ -9,7 +9,7 @@ export type RailwayCallbackView = {
   title: string;
   body: string;
   /**
-   * Where "Back to Superlog" goes. Failures carry the outcome back to `/` so
+   * Where "Back to Superlog" goes. Failures carry the outcome back to `/app` so
    * the onboarding wizard (which reads `?railway=` there) resets out of its
    * waiting state when the consent happened in the same tab.
    */
@@ -28,7 +28,7 @@ export function railwayCallbackView(raw: string | null | undefined): RailwayCall
         // Carry the outcome so the onboarding wizard drops into the Railway
         // flow's connected panel (which waits for first events) instead of
         // bouncing back to the integration chooser.
-        backHref: "/?railway=installed",
+        backHref: "/app?railway=installed",
         backLabel: "Open Superlog",
       };
     case "no_projects":
@@ -36,7 +36,7 @@ export function railwayCallbackView(raw: string | null | undefined): RailwayCall
         tone: "error",
         title: "No Railway projects were shared",
         body: "The grant went through, but no projects were selected on Railway's consent screen, so there is nothing to pull telemetry from. Nothing was connected. Connect again and pick at least one project.",
-        backHref: "/?railway=no_projects",
+        backHref: "/app?railway=no_projects",
         backLabel: "Back to Superlog",
       };
     case "denied":
@@ -44,7 +44,7 @@ export function railwayCallbackView(raw: string | null | undefined): RailwayCall
         tone: "error",
         title: "Railway authorization was declined",
         body: "The request was cancelled on Railway's side, so nothing was connected. You can try again from Superlog whenever you're ready.",
-        backHref: "/?railway=denied",
+        backHref: "/app?railway=denied",
         backLabel: "Back to Superlog",
       };
     case "error":
@@ -52,7 +52,7 @@ export function railwayCallbackView(raw: string | null | undefined): RailwayCall
         tone: "error",
         title: "We couldn't finish connecting Railway",
         body: "Something went wrong completing the connection, and nothing was connected. Go back to Superlog and try again — if it keeps failing, contact us.",
-        backHref: "/?railway=error",
+        backHref: "/app?railway=error",
         backLabel: "Back to Superlog",
       };
     default:
@@ -60,7 +60,7 @@ export function railwayCallbackView(raw: string | null | undefined): RailwayCall
         tone: "error",
         title: "No connection result found",
         body: "This page shows the result of a Railway connection, but the link is missing its outcome. Head back to Superlog and check the integration's status in settings.",
-        backHref: "/",
+        backHref: "/app",
         backLabel: "Back to Superlog",
       };
   }

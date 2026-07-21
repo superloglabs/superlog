@@ -4,9 +4,18 @@ export type IncidentRoute = {
   incidentId: string;
 };
 
-export function buildIncidentUrl(webOrigin: string, route: IncidentRoute): string {
+export function buildAppUrl(webOrigin: string, appPath = ""): string {
   const origin = webOrigin.replace(/\/$/, "");
-  return `${origin}/org/${encodeURIComponent(route.orgSlug)}/project/${encodeURIComponent(route.projectSlug)}/incidents/${encodeURIComponent(route.incidentId)}`;
+  if (appPath === "") return `${origin}/app`;
+  if (appPath.startsWith("?") || appPath.startsWith("#")) return `${origin}/app${appPath}`;
+  return `${origin}/app${appPath.startsWith("/") ? appPath : `/${appPath}`}`;
+}
+
+export function buildIncidentUrl(webOrigin: string, route: IncidentRoute): string {
+  return buildAppUrl(
+    webOrigin,
+    `/org/${encodeURIComponent(route.orgSlug)}/project/${encodeURIComponent(route.projectSlug)}/incidents/${encodeURIComponent(route.incidentId)}`,
+  );
 }
 
 export function buildContextIncidentUrl(

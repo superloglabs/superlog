@@ -2,52 +2,55 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
+import { ProjectRouteProvider } from "../ProjectRouteContext.tsx";
 import { AnomalyScanDetailView } from "./AnomalyScanDetail.tsx";
 
 test("scan detail explains telemetry evidence, code grounding, and incident outcome", () => {
   const html = renderToStaticMarkup(
     <MemoryRouter>
-      <AnomalyScanDetailView
-        scan={{
-          id: "scan-1",
-          status: "completed",
-          metricSeriesScanned: 42,
-          findingsCount: 1,
-          incidentsOpened: 0,
-          incidentsDeduped: 1,
-          audit: null,
-          error: null,
-          startedAt: "2026-07-14T12:00:00.000Z",
-          completedAt: "2026-07-14T12:03:00.000Z",
-          findings: [
-            {
-              title: "Checkout latency jumped",
-              summary: "Latency remained elevated across the full observation window.",
-              metricName: "http.server.duration",
-              service: "checkout-api",
-              direction: "spike",
-              dimensions: { route: "/checkout" },
-              observedValue: 820,
-              baselineValue: 240,
-              observedSince: "2026-07-14T11:00:00.000Z",
-              observedUntil: "2026-07-14T12:00:00.000Z",
-              evidence: "p95 was 3.4× its preceding baseline.",
-              codeEvidence: [
-                {
-                  repository: "superloglabs/store",
-                  path: "src/checkout.ts",
-                  line: 84,
-                  quote: "await inventory.reserve(items)",
-                  explanation: "The reservation call is serialized on the request path.",
-                },
-              ],
-              incidentOutcome: "deduped",
-              issueId: "issue-1",
-              incidentId: "incident-1",
-            },
-          ],
-        }}
-      />
+      <ProjectRouteProvider slugs={{ orgSlug: "acme", projectSlug: "default" }}>
+        <AnomalyScanDetailView
+          scan={{
+            id: "scan-1",
+            status: "completed",
+            metricSeriesScanned: 42,
+            findingsCount: 1,
+            incidentsOpened: 0,
+            incidentsDeduped: 1,
+            audit: null,
+            error: null,
+            startedAt: "2026-07-14T12:00:00.000Z",
+            completedAt: "2026-07-14T12:03:00.000Z",
+            findings: [
+              {
+                title: "Checkout latency jumped",
+                summary: "Latency remained elevated across the full observation window.",
+                metricName: "http.server.duration",
+                service: "checkout-api",
+                direction: "spike",
+                dimensions: { route: "/checkout" },
+                observedValue: 820,
+                baselineValue: 240,
+                observedSince: "2026-07-14T11:00:00.000Z",
+                observedUntil: "2026-07-14T12:00:00.000Z",
+                evidence: "p95 was 3.4× its preceding baseline.",
+                codeEvidence: [
+                  {
+                    repository: "superloglabs/store",
+                    path: "src/checkout.ts",
+                    line: 84,
+                    quote: "await inventory.reserve(items)",
+                    explanation: "The reservation call is serialized on the request path.",
+                  },
+                ],
+                incidentOutcome: "deduped",
+                issueId: "issue-1",
+                incidentId: "incident-1",
+              },
+            ],
+          }}
+        />
+      </ProjectRouteProvider>
     </MemoryRouter>,
   );
 
@@ -58,7 +61,7 @@ test("scan detail explains telemetry evidence, code grounding, and incident outc
   assert.match(html, /superloglabs\/store/);
   assert.match(html, /src\/checkout.ts:84/);
   assert.match(html, /await inventory.reserve\(items\)/);
-  assert.match(html, /href="\/incidents\/incident-1"/);
+  assert.match(html, /href="\/app\/org\/acme\/project\/default\/incidents\/incident-1"/);
   assert.match(html, /Joined existing incident/);
 });
 

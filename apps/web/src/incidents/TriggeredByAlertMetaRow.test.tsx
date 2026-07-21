@@ -3,6 +3,7 @@ import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import type { IncidentAlertEpisode } from "../api.ts";
+import { ProjectRouteProvider } from "../ProjectRouteContext.tsx";
 import { TriggeredByAlertMetaRow } from "./TriggeredByAlertMetaRow.tsx";
 
 function episode(overrides: Partial<IncidentAlertEpisode> = {}): IncidentAlertEpisode {
@@ -24,7 +25,9 @@ function episode(overrides: Partial<IncidentAlertEpisode> = {}): IncidentAlertEp
 function render(episodes: IncidentAlertEpisode[]): string {
   return renderToStaticMarkup(
     <MemoryRouter>
-      <TriggeredByAlertMetaRow episodes={episodes} />
+      <ProjectRouteProvider slugs={{ orgSlug: "acme", projectSlug: "default" }}>
+        <TriggeredByAlertMetaRow episodes={episodes} />
+      </ProjectRouteProvider>
     </MemoryRouter>,
   );
 }
@@ -33,7 +36,7 @@ test("links the alert that fired straight to the alert page", () => {
   const html = render([episode()]);
   assert.match(html, /Triggered by/);
   assert.match(html, /p95 latency &gt; 500ms/);
-  assert.match(html, /href="\/alerts\/alert-1"/);
+  assert.match(html, /href="\/app\/org\/acme\/project\/default\/alerts\/alert-1"/);
 });
 
 test("renders nothing when there are no alert episodes", () => {
@@ -45,7 +48,7 @@ test("collapses multiple episodes of the same alert to a single link", () => {
     episode({ id: "ep-1", seq: 1 }),
     episode({ id: "ep-2", seq: 2, state: "resolved" }),
   ]);
-  const links = html.match(/href="\/alerts\/alert-1"/g) ?? [];
+  const links = html.match(/href="\/app\/org\/acme\/project\/default\/alerts\/alert-1"/g) ?? [];
   assert.equal(links.length, 1);
 });
 
@@ -54,8 +57,8 @@ test("lists each distinct alert when an incident groups more than one", () => {
     episode({ id: "ep-1", alertId: "alert-1", alertName: "latency" }),
     episode({ id: "ep-2", alertId: "alert-2", alertName: "error rate" }),
   ]);
-  assert.match(html, /href="\/alerts\/alert-1"/);
-  assert.match(html, /href="\/alerts\/alert-2"/);
+  assert.match(html, /href="\/app\/org\/acme\/project\/default\/alerts\/alert-1"/);
+  assert.match(html, /href="\/app\/org\/acme\/project\/default\/alerts\/alert-2"/);
   assert.match(html, /latency/);
   assert.match(html, /error rate/);
 });

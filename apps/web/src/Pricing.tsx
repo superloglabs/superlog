@@ -86,8 +86,14 @@ const packs: Pack[] = [
 const included = [
   ["OTel-first install", "Agent-generated PRs wire your services into vendor-neutral telemetry."],
   ["Incident control plane", "Similar errors become one clear incident with severity and impact."],
-  ["Investigations as credits", "Each completed investigation is one credit; packs bundle them at a discount."],
-  ["Metered telemetry", "Spans, logs, and metric points are billed per signal — cheaper than per-GB, metadata-neutral."],
+  [
+    "Investigations as credits",
+    "Each completed investigation is one credit; packs bundle them at a discount.",
+  ],
+  [
+    "Metered telemetry",
+    "Spans, logs, and metric points are billed per signal — cheaper than per-GB, metadata-neutral.",
+  ],
 ];
 
 export function Pricing() {
@@ -139,7 +145,16 @@ export function Pricing() {
               <p className="mt-2 text-sm leading-relaxed text-muted lg:mt-6 lg:text-[16px] lg:leading-relaxed">
                 You pay for telemetry you send and investigations you run — nothing else. The
                 plumbing, incident intelligence, and agent workflows come together as one system.
-                Need higher volumes, custom retention, or SAML? <a href={ENTERPRISE_CONTACT_URL} className="text-fg underline underline-offset-4 hover:text-accent" target="_blank" rel="noopener noreferrer">Talk to us about Enterprise</a>.
+                Need higher volumes, custom retention, or SAML?{" "}
+                <a
+                  href={ENTERPRISE_CONTACT_URL}
+                  className="text-fg underline underline-offset-4 hover:text-accent"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Talk to us about Enterprise
+                </a>
+                .
               </p>
             </header>
 
@@ -316,7 +331,9 @@ function FreeRow({ onSignUp }: { onSignUp: () => void }) {
         {/* Right — price + CTA */}
         <div className="flex flex-col lg:items-end lg:text-right">
           <div className="flex items-end gap-2">
-            <span className="text-[40px] font-semibold leading-none tracking-tight text-fg">$0</span>
+            <span className="text-[40px] font-semibold leading-none tracking-tight text-fg">
+              $0
+            </span>
             <span className="pb-1 text-[13px] font-medium text-muted">forever</span>
           </div>
           <Btn size="lg" className="mt-6 self-start lg:self-end" onClick={onSignUp}>
@@ -590,7 +607,7 @@ function AuthModal({
           initialMode={mode}
           onClose={onClose}
           onSuccess={() => {
-            window.location.href = "/";
+            window.location.href = "/app";
           }}
         />
       </div>

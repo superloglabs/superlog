@@ -59,7 +59,8 @@ function InvitationAuthentication({ id }: { id: string }) {
         <div className="mb-4 text-center">
           <h1 className="text-[17px] font-medium text-fg">You&apos;re invited</h1>
           <p className="mt-2 text-[13px] text-muted">
-            You&apos;ve been invited to join an organization. Sign in or create an account to continue.
+            You&apos;ve been invited to join an organization. Sign in or create an account to
+            continue.
           </p>
         </div>
         <AuthForm
@@ -82,9 +83,9 @@ function AcceptInvitationInner({
   autoAccept: boolean;
 }) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
-  const [action, setAction] = useState<"idle" | "accepting" | "rejecting" | "accepted" | "rejected">(
-    "idle",
-  );
+  const [action, setAction] = useState<
+    "idle" | "accepting" | "rejecting" | "accepted" | "rejected"
+  >("idle");
   const [actionError, setActionError] = useState<string | null>(null);
   const qc = useQueryClient();
   const autoAcceptAttempted = useRef(false);
@@ -131,7 +132,10 @@ function AcceptInvitationInner({
       const res = await authClient.organization.getInvitation({ query: { id } });
       if (cancelled) return;
       if (res.error) {
-        setState({ kind: "error", message: res.error.message ?? "Invitation not found or expired." });
+        setState({
+          kind: "error",
+          message: res.error.message ?? "Invitation not found or expired.",
+        });
         return;
       }
       const data = res.data as unknown as InviteDetails;
@@ -181,7 +185,7 @@ function AcceptInvitationInner({
   const wrongAccount = invite.email.toLowerCase() !== userEmail.toLowerCase();
 
   if (action === "accepted") {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/app" replace />;
   }
   if (action === "rejected") {
     return (
@@ -218,16 +222,25 @@ function AcceptInvitationInner({
         </p>
         {wrongAccount && (
           <p className="mt-3 text-[12px] text-warning">
-            This invite was sent to {invite.email}, but you're signed in as {userEmail}. Sign out and
-            sign in with the invited address to accept.
+            This invite was sent to {invite.email}, but you're signed in as {userEmail}. Sign out
+            and sign in with the invited address to accept.
           </p>
         )}
         {actionError && <p className="mt-3 text-[12px] text-danger">{actionError}</p>}
         <div className="mt-5 flex items-center gap-2">
-          <Btn onClick={accept} loading={action === "accepting"} disabled={wrongAccount || action !== "idle"}>
+          <Btn
+            onClick={accept}
+            loading={action === "accepting"}
+            disabled={wrongAccount || action !== "idle"}
+          >
             Accept
           </Btn>
-          <Btn variant="ghost" onClick={reject} loading={action === "rejecting"} disabled={action !== "idle"}>
+          <Btn
+            variant="ghost"
+            onClick={reject}
+            loading={action === "rejecting"}
+            disabled={action !== "idle"}
+          >
             Decline
           </Btn>
         </div>

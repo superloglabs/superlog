@@ -5,6 +5,7 @@ import {
   appPathFromProjectRoute,
   buildProjectPath,
   canonicalProjectLocation,
+  legacyProductLocation,
 } from "./project-route.ts";
 
 test("buildProjectPath creates shareable incident URLs with org and project slugs", () => {
@@ -13,14 +14,14 @@ test("buildProjectPath creates shareable incident URLs with org and project slug
       { orgSlug: "superlog", projectSlug: "demo-project" },
       "/incidents/4b44c317-0d30-4c53-8938-9e1970a50cc5",
     ),
-    "/org/superlog/project/demo-project/incidents/4b44c317-0d30-4c53-8938-9e1970a50cc5",
+    "/app/org/superlog/project/demo-project/incidents/4b44c317-0d30-4c53-8938-9e1970a50cc5",
   );
 });
 
 test("appPathFromProjectRoute exposes the incident route inside a scoped URL", () => {
   assert.equal(
     appPathFromProjectRoute(
-      "/org/superlog/project/demo-project/incidents/4b44c317-0d30-4c53-8938-9e1970a50cc5",
+      "/app/org/superlog/project/demo-project/incidents/4b44c317-0d30-4c53-8938-9e1970a50cc5",
     ),
     "/incidents/4b44c317-0d30-4c53-8938-9e1970a50cc5",
   );
@@ -39,12 +40,15 @@ test("all project pages have canonical org and project URLs", () => {
   ];
 
   for (const appPath of appPaths) {
-    assert.equal(buildProjectPath(slugs, appPath), `/org/superlog/project/demo-project${appPath}`);
+    assert.equal(
+      buildProjectPath(slugs, appPath),
+      `/app/org/superlog/project/demo-project${appPath}`,
+    );
   }
 });
 
 test("the project root is the canonical overview URL", () => {
-  const scopedRoot = "/org/superlog/project/demo-project";
+  const scopedRoot = "/app/org/superlog/project/demo-project";
 
   assert.equal(
     buildProjectPath({ orgSlug: "superlog", projectSlug: "demo-project" }, "/"),
@@ -52,6 +56,37 @@ test("the project root is the canonical overview URL", () => {
   );
   assert.equal(appPathFromProjectRoute(scopedRoot), "/");
   assert.equal(appPathFromProjectRoute(`${scopedRoot}/`), "/");
+});
+
+test("unscoped app entry URLs are translated into project-local paths", () => {
+  assert.equal(appPathFromProjectRoute("/app"), "/");
+  assert.equal(appPathFromProjectRoute("/app/"), "/");
+  assert.equal(appPathFromProjectRoute("/app/settings"), "/settings");
+});
+
+test("legacy product entries move under /app without losing query or hash state", () => {
+  assert.equal(
+    legacyProductLocation({
+      pathname: "/settings",
+      search: "?scope=org&section=billing",
+      hash: "#plan",
+    }),
+    "/app/settings?scope=org&section=billing#plan",
+  );
+  assert.equal(
+    legacyProductLocation({ pathname: "/", search: "?slack=installed", hash: "" }),
+    "/app?slack=installed",
+  );
+});
+
+test("the app entry URL canonicalizes to the active project root", () => {
+  assert.equal(
+    canonicalProjectLocation(
+      { orgSlug: "superlog", projectSlug: "demo-project" },
+      { pathname: "/app", search: "", hash: "" },
+    ).pathname,
+    "/app/org/superlog/project/demo-project",
+  );
 });
 
 test("canonical project navigation preserves search and hash state", () => {
@@ -65,7 +100,7 @@ test("canonical project navigation preserves search and hash state", () => {
       },
     ),
     {
-      pathname: "/org/superlog/project/demo-project/explore/logs",
+      pathname: "/app/org/superlog/project/demo-project/explore/logs",
       search: "?service=api&severity=error",
       hash: "#selected",
     },
@@ -83,7 +118,7 @@ test("canonical project navigation replaces an existing project scope", () => {
       },
     ),
     {
-      pathname: "/org/new-org/project/new-project/incidents/incident-1",
+      pathname: "/app/org/new-org/project/new-project/incidents/incident-1",
       search: "?tab=timeline",
       hash: "#event-1",
     },
@@ -93,7 +128,7 @@ test("canonical project navigation replaces an existing project scope", () => {
 test("scoped browser locations are translated back to app routes", () => {
   assert.deepEqual(
     appLocationFromProjectRoute({
-      pathname: "/org/superlog/project/demo-project/dashboards/dashboard-1",
+      pathname: "/app/org/superlog/project/demo-project/dashboards/dashboard-1",
       search: "?range=1h",
       hash: "#latency",
     }),

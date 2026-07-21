@@ -32,6 +32,7 @@ import { logger } from "./logger.js";
 import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
+import { buildAppWebUrl } from "./project-web-route.js";
 import { mergeAgentPullRequestAndResolveIncident } from "./pr-merge-service.js";
 import { classifyIncidentSlackReply } from "./slack-reply-intent.js";
 
@@ -116,14 +117,14 @@ export function mountSlackPublic(app: Hono<any>): void {
     const err = c.req.query("error");
     if (err) {
       log.warn({ error: err, host }, "slack oauth callback denied at slack");
-      return c.redirect(`${callbackWebOrigin}/?slack=denied`, 302);
+      return c.redirect(buildAppWebUrl(callbackWebOrigin, "?slack=denied"), 302);
     }
 
     const code = c.req.query("code");
     const state = c.req.query("state") ?? "";
     if (!code) {
       log.warn({ host }, "slack oauth callback missing code");
-      return c.redirect(`${callbackWebOrigin}/?slack=error`, 302);
+      return c.redirect(buildAppWebUrl(callbackWebOrigin, "?slack=error"), 302);
     }
 
     const decoded = verifyState(state, stateSecret);
@@ -134,7 +135,7 @@ export function mountSlackPublic(app: Hono<any>): void {
       // back to the app with a retryable error instead of dead-ending on a bare
       // JSON 400, and log it so connect drop-offs are diagnosable.
       log.warn({ host }, "slack oauth callback rejected: invalid or expired state");
-      return c.redirect(`${callbackWebOrigin}/?slack=error`, 302);
+      return c.redirect(buildAppWebUrl(callbackWebOrigin, "?slack=error"), 302);
     }
     const orgId = decoded.orgId;
     const projectId = decoded.projectId;
@@ -146,7 +147,7 @@ export function mountSlackPublic(app: Hono<any>): void {
         projectId: decoded.projectId,
       }))
     ) {
-      return c.redirect(`${callbackWebOrigin}/?slack=error`, 302);
+      return c.redirect(buildAppWebUrl(callbackWebOrigin, "?slack=error"), 302);
     }
     log.info(
       { org_id: orgId, project_id: projectId, host: c.req.header("host") ?? null },
@@ -166,7 +167,7 @@ export function mountSlackPublic(app: Hono<any>): void {
     const data = (await res.json()) as SlackOAuthResponse;
     if (!data.ok || !data.access_token || !data.team?.id) {
       log.error({ error: data.error ?? "no_access_token" }, "oauth exchange failed");
-      return c.redirect(`${callbackWebOrigin}/?slack=error`, 302);
+      return c.redirect(buildAppWebUrl(callbackWebOrigin, "?slack=error"), 302);
     }
 
     await upsertInstallation({
@@ -221,7 +222,7 @@ export function mountSlackPublic(app: Hono<any>): void {
         302,
       );
     }
-    return c.redirect(`${callbackWebOrigin}/?slack=installed`, 302);
+    return c.redirect(buildAppWebUrl(callbackWebOrigin, "?slack=installed"), 302);
   });
 
   app.post("/slack/events", async (c) => {

@@ -11,6 +11,7 @@ import sqlLang from "shiki/langs/sql.mjs";
 import goLang from "shiki/langs/go.mjs";
 import yamlLang from "shiki/langs/yaml.mjs";
 import githubDarkDefault from "shiki/themes/github-dark-default.mjs";
+import { useProjectPath } from "./ProjectRouteContext.tsx";
 
 // Renders the evidence markdown the agent run emits. The agent's
 // output is a constrained subset of markdown:
@@ -191,9 +192,7 @@ function InlineMarkdown({ text, ctx }: { text: string; ctx: EvidenceLinkContext 
   let key = 0;
   while ((match = re.exec(text)) !== null) {
     if (match.index > lastIndex) {
-      tokens.push(
-        <AutoLinkText key={key++} text={text.slice(lastIndex, match.index)} ctx={ctx} />,
-      );
+      tokens.push(<AutoLinkText key={key++} text={text.slice(lastIndex, match.index)} ctx={ctx} />);
     }
     const t = match[0]!;
     if (t.startsWith("**")) {
@@ -222,6 +221,7 @@ function InlineMarkdown({ text, ctx }: { text: string; ctx: EvidenceLinkContext 
 
 // Detects link-worthy substrings in plain text and wraps them in <a>.
 function AutoLinkText({ text, ctx }: { text: string; ctx: EvidenceLinkContext }) {
+  const projectPath = useProjectPath();
   const segments = autolinkSegments(text, ctx);
   return (
     <>
@@ -229,7 +229,7 @@ function AutoLinkText({ text, ctx }: { text: string; ctx: EvidenceLinkContext })
         seg.href ? (
           <a
             key={i}
-            href={seg.href}
+            href={seg.href.startsWith("/") ? projectPath(seg.href) : seg.href}
             target="_blank"
             rel="noreferrer"
             className="text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
@@ -445,13 +445,9 @@ function CodeBlockHeader({
         </a>
       );
     }
-    return (
-      <span className="truncate font-mono text-[11px] text-muted">{label}</span>
-    );
+    return <span className="truncate font-mono text-[11px] text-muted">{label}</span>;
   }
   return (
-    <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-subtle">
-      {lang}
-    </span>
+    <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-subtle">{lang}</span>
   );
 }

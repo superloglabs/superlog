@@ -32,6 +32,7 @@ import { logger } from "./logger.js";
 import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
+import { buildAppWebUrl, buildIncidentWebUrl } from "./project-web-route.js";
 
 const log = logger.child({ scope: "linear" });
 const incidentLifecycle = createIncidentLifecycle(db);
@@ -75,11 +76,11 @@ export function mountLinearPublic(app: Hono<any>): void {
       return c.json({ error: "linear not configured" }, 503);
     }
     const err = c.req.query("error");
-    if (err) return c.redirect(`${webOrigin}/settings?linear=denied`, 302);
+    if (err) return c.redirect(buildAppWebUrl(webOrigin, "/settings?linear=denied"), 302);
 
     const code = c.req.query("code");
     const state = c.req.query("state") ?? "";
-    if (!code) return c.redirect(`${webOrigin}/settings?linear=error`, 302);
+    if (!code) return c.redirect(buildAppWebUrl(webOrigin, "/settings?linear=error"), 302);
 
     const decoded = verifyState(state, stateSecret);
     if (!decoded) return c.json({ error: "invalid state" }, 400);
@@ -90,7 +91,7 @@ export function mountLinearPublic(app: Hono<any>): void {
         projectId: decoded.projectId,
       }))
     ) {
-      return c.redirect(`${webOrigin}/settings?linear=error`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "/settings?linear=error"), 302);
     }
 
     let token: Awaited<ReturnType<typeof exchangeLinearCode>>;
@@ -103,7 +104,7 @@ export function mountLinearPublic(app: Hono<any>): void {
       });
     } catch (e) {
       log.error({ err: e }, "linear oauth exchange failed");
-      return c.redirect(`${webOrigin}/settings?linear=error`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "/settings?linear=error"), 302);
     }
 
     let viewer: Awaited<ReturnType<typeof fetchLinearViewer>>;
@@ -111,7 +112,7 @@ export function mountLinearPublic(app: Hono<any>): void {
       viewer = await fetchLinearViewer(token.access_token);
     } catch (e) {
       log.error({ err: e }, "linear viewer fetch failed");
-      return c.redirect(`${webOrigin}/settings?linear=error`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "/settings?linear=error"), 302);
     }
 
     const expiresAt =
@@ -144,7 +145,7 @@ export function mountLinearPublic(app: Hono<any>): void {
       "linear installed",
     );
 
-    return c.redirect(`${webOrigin}/settings?linear=installed`, 302);
+    return c.redirect(buildAppWebUrl(webOrigin, "/settings?linear=installed"), 302);
   });
 
   app.post("/linear/webhook", async (c) => {
@@ -711,7 +712,11 @@ async function linearIncidentUrl(incident: schema.Incident): Promise<string | nu
   });
   if (!org) return null;
   const origin = process.env.WEB_ORIGIN ?? "http://localhost:5173";
-  return `${origin.replace(/\/$/, "")}/org/${encodeURIComponent(org.slug)}/project/${encodeURIComponent(project.slug)}/incidents/${encodeURIComponent(incident.id)}`;
+  return buildIncidentWebUrl(origin, {
+    orgSlug: org.slug,
+    projectSlug: project.slug,
+    incidentId: incident.id,
+  });
 }
 
 export function linearTicketResolutionInput(

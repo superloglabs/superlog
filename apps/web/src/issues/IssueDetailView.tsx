@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { IncidentEvent, Issue } from "../api.ts";
 import { Btn, Chip } from "../design/ui.tsx";
+import { useProjectPath } from "../ProjectRouteContext.tsx";
 
 export type IssueDetailViewProps = {
   issue: Issue;
@@ -28,6 +29,7 @@ export function IssueDetailView({
   linkedIncident,
   feedbackAction,
 }: IssueDetailViewProps) {
+  const projectPath = useProjectPath();
   const silenced = Boolean(issue.silencedAt) || issue.status === "silenced";
   const sample = issue.lastSample;
   const stacktrace = issue.symbolication?.stacktrace ?? sample?.stacktrace ?? null;
@@ -97,7 +99,7 @@ export function IssueDetailView({
               <section className="mt-7 border-t border-border pt-6">
                 <SectionLabel>Triggered by</SectionLabel>
                 <Link
-                  to={`/alerts/${issue.triggeringAlert.id}`}
+                  to={projectPath(`/alerts/${issue.triggeringAlert.id}`)}
                   className="mt-2 flex items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-fg transition-colors hover:border-muted"
                 >
                   <AlertIcon />
@@ -213,10 +215,10 @@ function IssueActivityTimeline({ issueId, events }: { issueId: string; events: I
         : event.kind === "issue_unsilenced"
           ? { status: "Un-silenced", tone: "neutral" as const }
           : event.kind === "issue_observed"
-          ? { status: "Under observation", tone: "warning" as const }
-          : event.kind === "issue_resolved"
-            ? { status: "Resolved", tone: "success" as const }
-            : null;
+            ? { status: "Under observation", tone: "warning" as const }
+            : event.kind === "issue_resolved"
+              ? { status: "Resolved", tone: "success" as const }
+              : null;
     if (!presentation || event.detail?.issueId !== issueId) return [];
     const reason = typeof event.detail.reason === "string" ? event.detail.reason.trim() : "";
     const evidence = typeof event.detail.evidence === "string" ? event.detail.evidence.trim() : "";

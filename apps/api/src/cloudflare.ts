@@ -53,6 +53,7 @@ import { logger } from "./logger.js";
 import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
+import { buildAppWebUrl } from "./project-web-route.js";
 
 const log = logger.child({ scope: "cloudflare" });
 
@@ -376,16 +377,16 @@ export function mountCloudflarePublic(
     const err = c.req.query("error");
     if (err) {
       log.warn({ error: err }, "cloudflare oauth callback denied");
-      return c.redirect(`${webOrigin}/?cloudflare=denied`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "?cloudflare=denied"), 302);
     }
     const code = c.req.query("code");
     const state = c.req.query("state") ?? "";
-    if (!code) return c.redirect(`${webOrigin}/?cloudflare=error`, 302);
+    if (!code) return c.redirect(buildAppWebUrl(webOrigin, "?cloudflare=error"), 302);
 
     const decoded = verifyState(state, stateSecret);
     if (!decoded) {
       log.warn("cloudflare oauth callback rejected: invalid or expired state");
-      return c.redirect(`${webOrigin}/?cloudflare=error`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "?cloudflare=error"), 302);
     }
     if (
       !(await hasProjectManagerAccess({
@@ -394,13 +395,13 @@ export function mountCloudflarePublic(
         projectId: decoded.projectId,
       }))
     ) {
-      return c.redirect(`${webOrigin}/?cloudflare=error`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "?cloudflare=error"), 302);
     }
 
     const token = await exchangeCodeForToken({ config, code, fetchImpl });
     if (!token.ok) {
       log.error({ error: token.error }, "cloudflare token exchange failed");
-      return c.redirect(`${webOrigin}/?cloudflare=error`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "?cloudflare=error"), 302);
     }
 
     const accounts = await listAccounts(token.accessToken, fetchImpl);
@@ -410,7 +411,7 @@ export function mountCloudflarePublic(
       // We exchanged the code but won't use the grant — revoke it so the token
       // doesn't stay live at Cloudflare after we abort. Best-effort.
       await revokeToken({ config, token: token.accessToken, fetchImpl });
-      return c.redirect(`${webOrigin}/?cloudflare=error`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "?cloudflare=error"), 302);
     }
     // Cloudflare's OAuth consent is account-scoped — the user picks which account
     // to grant — so the granted token normally resolves to a single account. If a
@@ -422,7 +423,7 @@ export function mountCloudflarePublic(
         "cloudflare connect: token grants multiple accounts; refusing to guess",
       );
       await revokeToken({ config, token: token.accessToken, fetchImpl });
-      return c.redirect(`${webOrigin}/?cloudflare=error`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "?cloudflare=error"), 302);
     }
 
     try {
@@ -441,14 +442,14 @@ export function mountCloudflarePublic(
       // nothing flowing). Surface as an error so the flow can reset rather than
       // spin in the waiting state.
       log.error({ err: e, project_id: decoded.projectId }, "cloudflare provisioning failed");
-      return c.redirect(`${webOrigin}/?cloudflare=error`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "?cloudflare=error"), 302);
     }
 
     log.info(
       { project_id: decoded.projectId, account_id: account.id },
       "cloudflare connected and destinations provisioned",
     );
-    return c.redirect(`${webOrigin}/?cloudflare=installed`, 302);
+    return c.redirect(buildAppWebUrl(webOrigin, "?cloudflare=installed"), 302);
   });
 }
 

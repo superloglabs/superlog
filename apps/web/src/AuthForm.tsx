@@ -1,6 +1,5 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
 import { authClient } from "./auth-client.ts";
 
 // Two-step auth form. Step 1: enter email (or click a social provider). Step 2:
@@ -130,7 +129,7 @@ export function AuthForm({
     try {
       await authClient.signIn.social({
         provider: "google",
-        callbackURL: socialCallbackURL ?? `${window.location.origin}/`,
+        callbackURL: socialCallbackURL ?? `${window.location.origin}/app`,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Google sign-in failed");
@@ -193,12 +192,7 @@ export function AuthForm({
       )}
       <div className="flex justify-center">
         <div className="flex h-14 w-14 items-center justify-center rounded-[10px] bg-white">
-          <img
-            src="/superlog-pictogram-dark.svg"
-            alt=""
-            aria-hidden="true"
-            className="h-8 w-8"
-          />
+          <img src="/superlog-pictogram-dark.svg" alt="" aria-hidden="true" className="h-8 w-8" />
         </div>
       </div>
       <h1 className="mt-5 text-center text-[22px] font-semibold tracking-[-0.015em] text-fg">
@@ -287,9 +281,9 @@ export function AuthForm({
               ← Use a different email
             </button>
             {mode === "sign-in" && (
-              <Link to="/forgot-password" className="text-[13px] text-muted hover:text-fg">
+              <a href="/forgot-password" className="text-[13px] text-muted hover:text-fg">
                 Forgot password?
-              </Link>
+              </a>
             )}
           </div>
           <PrimaryButton type="submit" loading={submitting}>

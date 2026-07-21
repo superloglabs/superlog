@@ -6,6 +6,7 @@ import { signState, verifyState } from "./oauth-state.js";
 import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
+import { buildAppWebUrl } from "./project-web-route.js";
 
 const log = logger.child({ scope: "notion" });
 
@@ -48,11 +49,11 @@ export function mountNotionPublic(app: Hono<any>): void {
       return c.json({ error: "notion not configured" }, 503);
     }
     const err = c.req.query("error");
-    if (err) return c.redirect(`${webOrigin}/settings?notion=denied`, 302);
+    if (err) return c.redirect(buildAppWebUrl(webOrigin, "/settings?notion=denied"), 302);
 
     const code = c.req.query("code");
     const state = c.req.query("state") ?? "";
-    if (!code) return c.redirect(`${webOrigin}/settings?notion=error`, 302);
+    if (!code) return c.redirect(buildAppWebUrl(webOrigin, "/settings?notion=error"), 302);
 
     const decoded = verifyState(state, stateSecret);
     if (!decoded) return c.json({ error: "invalid state" }, 400);
@@ -63,7 +64,7 @@ export function mountNotionPublic(app: Hono<any>): void {
         projectId: decoded.projectId,
       }))
     ) {
-      return c.redirect(`${webOrigin}/settings?notion=error`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "/settings?notion=error"), 302);
     }
 
     let token: Awaited<ReturnType<typeof exchangeNotionCode>>;
@@ -76,7 +77,7 @@ export function mountNotionPublic(app: Hono<any>): void {
       });
     } catch (e) {
       log.error({ err: e }, "notion oauth exchange failed");
-      return c.redirect(`${webOrigin}/settings?notion=error`, 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "/settings?notion=error"), 302);
     }
 
     await upsertInstallation({
@@ -100,7 +101,7 @@ export function mountNotionPublic(app: Hono<any>): void {
       "notion installed",
     );
 
-    return c.redirect(`${webOrigin}/settings?notion=installed`, 302);
+    return c.redirect(buildAppWebUrl(webOrigin, "/settings?notion=installed"), 302);
   });
 }
 

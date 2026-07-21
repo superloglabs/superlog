@@ -246,7 +246,7 @@ test("ticket description includes every open PR link", () => {
   assert.ok(desc.includes("Proposed fixes:"));
   assert.ok(desc.includes("- https://github.com/acme/shop/pull/12"));
   assert.ok(desc.includes("- https://github.com/acme/api/pull/15"));
-  assert.ok(desc.includes("/org/acme/project/shop/incidents/inc-1"));
+  assert.ok(desc.includes("/app/org/acme/project/shop/incidents/inc-1"));
   assert.ok(desc.includes(investigationMarker("inc-1", "run-1")));
 });
 

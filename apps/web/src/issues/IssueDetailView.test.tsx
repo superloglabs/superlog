@@ -3,6 +3,7 @@ import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import type { IncidentEvent, Issue } from "../api.ts";
+import { ProjectRouteProvider } from "../ProjectRouteContext.tsx";
 import { IssueDetailView } from "./IssueDetailView.tsx";
 
 const issue: Issue = {
@@ -155,22 +156,24 @@ test("error detail shows system-generated resolution activity without a reason",
 test("an alert-episode error links straight to the alert that fired", () => {
   const html = renderToStaticMarkup(
     <MemoryRouter>
-      <IssueDetailView
-        issue={{
-          ...issue,
-          kind: "alert",
-          exceptionType: "AlertFired",
-          triggeringAlert: { id: "alert-9", name: "checkout-api p95 latency > 500ms" },
-        }}
-        environment="production"
-        onBack={() => {}}
-      />
+      <ProjectRouteProvider slugs={{ orgSlug: "acme", projectSlug: "default" }}>
+        <IssueDetailView
+          issue={{
+            ...issue,
+            kind: "alert",
+            exceptionType: "AlertFired",
+            triggeringAlert: { id: "alert-9", name: "checkout-api p95 latency > 500ms" },
+          }}
+          environment="production"
+          onBack={() => {}}
+        />
+      </ProjectRouteProvider>
     </MemoryRouter>,
   );
 
   assert.match(html, /Triggered by/);
   assert.match(html, /checkout-api p95 latency &gt; 500ms/);
-  assert.match(html, /href="\/alerts\/alert-9"/);
+  assert.match(html, /href="\/app\/org\/acme\/project\/default\/alerts\/alert-9"/);
 });
 
 test("a normal error shows no alert link", () => {

@@ -125,7 +125,7 @@ function GcpProjectPicker({ authorizationId }: { authorizationId: string }) {
 
       {connect.error && <p className="mt-3 text-[12.5px] text-danger">{String(connect.error)}</p>}
       <div className="mt-9 flex items-center justify-between border-t border-[rgba(255,255,255,0.07)] pt-5">
-        <Btn size="md" onClick={() => window.location.assign("/settings")}>
+        <Btn size="md" onClick={() => window.location.assign("/app/settings")}>
           Cancel
         </Btn>
         <Btn

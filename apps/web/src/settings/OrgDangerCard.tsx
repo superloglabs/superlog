@@ -58,7 +58,7 @@ export function OrgDangerCard() {
           qc.invalidateQueries({ queryKey: ["me"] }),
           qc.invalidateQueries({ queryKey: ["org-projects"] }),
         ]);
-        navigate("/");
+        navigate("/app");
       },
       onError: (err) => setError(fetchErrorMessage(err, "Failed to delete organization")),
     });

@@ -34,7 +34,7 @@ export function CreateOrgCard() {
           qc.invalidateQueries({ queryKey: ["org-projects"] }),
         ]);
         setName("");
-        navigate("/");
+        navigate("/app");
       },
       onError: (err) => setError(fetchErrorMessage(err, "Failed to create organization")),
     });

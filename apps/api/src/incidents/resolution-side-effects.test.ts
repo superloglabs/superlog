@@ -231,7 +231,7 @@ test("buildResolvedIncidentSlackRoot removes resolve action and keeps rating act
   assert.equal(json.includes("resolve_incident:"), false);
   // The incident link now lives on the title, not a standalone button.
   assert.equal(json.includes("open_superlog"), false);
-  assert.equal(json.includes("/org/acme/project/shop/incidents/inc-1"), true);
+  assert.equal(json.includes("/app/org/acme/project/shop/incidents/inc-1"), true);
   assert.equal(json.includes("rate_incident:helpful:inc-1"), true);
   assert.equal(json.includes("rate_incident:unhelpful:inc-1"), true);
 });

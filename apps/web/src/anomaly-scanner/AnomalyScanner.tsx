@@ -13,6 +13,7 @@ import {
   useSaveAnomalyScannerSettings,
 } from "../api.ts";
 import { Btn, Chip, PageHeader, Tabs } from "../design/ui.tsx";
+import { useProjectPath } from "../ProjectRouteContext.tsx";
 
 type ScannerTab = "history" | "configuration";
 
@@ -84,6 +85,7 @@ export function AnomalyScannerView({
 }
 
 function HistoryPanel({ data }: { data: AnomalyScannerData }) {
+  const projectPath = useProjectPath();
   const latest = data.scans[0];
   return (
     <div className="space-y-5">
@@ -144,7 +146,7 @@ function HistoryPanel({ data }: { data: AnomalyScannerData }) {
                       {duration(scan.startedAt, scan.completedAt)}
                     </span>
                     <Link
-                      to={`/anomaly-scanner/scans/${scan.id}`}
+                      to={projectPath(`/anomaly-scanner/scans/${scan.id}`)}
                       className="text-[11px] font-medium text-accent hover:underline"
                     >
                       View scan
@@ -176,7 +178,7 @@ function HistoryPanel({ data }: { data: AnomalyScannerData }) {
                         </div>
                         {finding.incidentId && (
                           <Link
-                            to={`/incidents/${finding.incidentId}`}
+                            to={projectPath(`/incidents/${finding.incidentId}`)}
                             className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-accent hover:underline"
                           >
                             View incident

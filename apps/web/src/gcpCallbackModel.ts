@@ -13,7 +13,7 @@ export function gcpCallbackView(outcome: string | null | undefined): GcpCallback
       title: "Choose a Google Cloud project",
       body: "Select one of the active projects available to your Google account.",
       backLabel: "Back to settings",
-      backHref: "/settings",
+      backHref: "/app/settings",
     };
   }
   if (outcome === "connected") {
@@ -22,7 +22,7 @@ export function gcpCallbackView(outcome: string | null | undefined): GcpCallback
       title: "Google Cloud connected",
       body: "Logs are streaming and bounded metric collection is enabled. Superlog pays for Pub/Sub and Monitoring API reads.",
       backLabel: "Back to settings",
-      backHref: "/settings",
+      backHref: "/app/settings",
     };
   }
   if (outcome === "denied") {
@@ -31,7 +31,7 @@ export function gcpCallbackView(outcome: string | null | undefined): GcpCallback
       title: "Google Cloud access not granted",
       body: "Access was not granted, so nothing was changed. Return to settings when you're ready to try again.",
       backLabel: "Back to settings",
-      backHref: "/settings",
+      backHref: "/app/settings",
     };
   }
   return {
@@ -39,6 +39,6 @@ export function gcpCallbackView(outcome: string | null | undefined): GcpCallback
     title: "Google Cloud setup failed",
     body: "We couldn't finish the connection. No user OAuth token was saved; return to settings to retry.",
     backLabel: "Back to settings",
-    backHref: "/settings",
+    backHref: "/app/settings",
   };
 }

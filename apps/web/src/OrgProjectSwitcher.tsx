@@ -222,15 +222,24 @@ function SwitcherDropdown({ me, onClose }: { me: MeWithOrg; onClose: () => void 
   };
 
   const manageOrg = async (orgId: string) => {
-    if (activeOrgId !== orgId) {
-      await authClient.organization.setActive({ organizationId: orgId });
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["me"] }),
-        qc.invalidateQueries({ queryKey: ["org-projects"] }),
-      ]);
+    let route: { org: { slug: string }; defaultProjectSlug: string };
+    try {
+      route = await fetcher(`/api/me/org-route?orgId=${encodeURIComponent(orgId)}`);
+    } catch {
+      onClose();
+      return;
     }
     onClose();
-    navigate("/settings?scope=org&section=members");
+    navigate(
+      canonicalProjectLocation(
+        { orgSlug: route.org.slug, projectSlug: route.defaultProjectSlug },
+        {
+          pathname: "/settings",
+          search: "?scope=org&section=members",
+          hash: "",
+        },
+      ),
+    );
   };
 
   const pickProject = async (projectId: string) => {

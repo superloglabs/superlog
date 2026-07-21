@@ -13,6 +13,7 @@ import { db, fetchOrgMemberContacts, schema } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import { postSlackMessage } from "../infra/slack/api.js";
 import { fetchSlackTargetsForOrg } from "../infra/slack/incident-messages.js";
+import { buildAppUrl } from "../incident-route.js";
 import { logger } from "../logger.js";
 import { renderUsageEmail } from "./usage-email.js";
 import {
@@ -25,7 +26,7 @@ import {
 const log = logger.child({ scope: "billing.usage-notify" });
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
-const MANAGE_BILLING_URL = `${WEB_ORIGIN}/settings?scope=org&section=billing`;
+const MANAGE_BILLING_URL = buildAppUrl(WEB_ORIGIN, "/settings?scope=org&section=billing");
 const AUTUMN_BASE_URL = "https://api.useautumn.com/v1";
 const RESEND_API_URL = "https://api.resend.com/emails";
 const FROM_EMAIL = process.env.SUPERLOG_FROM_EMAIL ?? "Superlog <no-reply@superlog.sh>";

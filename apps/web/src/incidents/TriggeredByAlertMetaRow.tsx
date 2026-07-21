@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import type { IncidentAlertEpisode } from "../api.ts";
+import { useProjectPath } from "../ProjectRouteContext.tsx";
 
 function ArrowUpRightIcon() {
   return (
@@ -26,6 +27,7 @@ function ArrowUpRightIcon() {
 // One incident can group several episodes (and occasionally several alerts) —
 // collapse to one link per distinct alert.
 export function TriggeredByAlertMetaRow({ episodes }: { episodes: IncidentAlertEpisode[] }) {
+  const projectPath = useProjectPath();
   const alerts = useMemo(() => {
     const byId = new Map<string, { alertId: string; alertName: string }>();
     for (const ep of episodes) {
@@ -45,7 +47,7 @@ export function TriggeredByAlertMetaRow({ episodes }: { episodes: IncidentAlertE
         {alerts.map((alert) => (
           <Link
             key={alert.alertId}
-            to={`/alerts/${alert.alertId}`}
+            to={projectPath(`/alerts/${alert.alertId}`)}
             className="flex min-w-0 items-center gap-[5px] text-fg transition-colors hover:text-muted"
           >
             <ArrowUpRightIcon />

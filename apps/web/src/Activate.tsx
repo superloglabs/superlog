@@ -63,9 +63,7 @@ function PageHeader({ title, subtitle }: { title: string; subtitle: React.ReactN
 
 function Card({ children, label }: { children: React.ReactNode; label?: string }) {
   return (
-    <div
-      className={`overflow-hidden rounded-[14px] border bg-[#0a0a0c] ${SOFT_LINE}`}
-    >
+    <div className={`overflow-hidden rounded-[14px] border bg-[#0a0a0c] ${SOFT_LINE}`}>
       {label && (
         <div
           className={`flex items-center gap-2 border-b bg-[rgba(255,255,255,0.02)] px-[22px] py-2 ${SOFT_LINE}`}
@@ -207,7 +205,7 @@ function ApproveFlow({
             /* ignore */
           }
         }
-        window.location.assign("/");
+        window.location.assign("/app");
         return;
       }
       if (data.githubSetupNeeded === false) {
@@ -238,9 +236,7 @@ function ApproveFlow({
               : "You can close this tab and return to your terminal."
           }
         />
-        <div
-          className="flex items-center gap-2.5 rounded-[10px] border border-[rgba(65,209,149,0.35)] bg-[rgba(65,209,149,0.06)] px-4 py-3"
-        >
+        <div className="flex items-center gap-2.5 rounded-[10px] border border-[rgba(65,209,149,0.35)] bg-[rgba(65,209,149,0.06)] px-4 py-3">
           <span className="text-success">
             <CheckIcon size={14} />
           </span>
@@ -255,7 +251,7 @@ function ApproveFlow({
 
   if (state.kind === "step-done") {
     startSkillOnboarding();
-    window.location.assign("/");
+    window.location.assign("/app");
     return null;
   }
 
@@ -420,7 +416,8 @@ function useScopeSelection(): Scope {
     }
   };
 
-  const busy = orgsQuery.isPending || activeOrgQuery.isPending || projectsQuery.isPending || switching;
+  const busy =
+    orgsQuery.isPending || activeOrgQuery.isPending || projectsQuery.isPending || switching;
   const ready = !busy && !!pickedProjectId;
   const needsPicker = !busy && (orgs.length > 1 || projects.length > 1);
 

@@ -45,7 +45,7 @@ test("the shell renders a collapse toggle and expanded nav labels by default", (
 
 test("primary navigation emits canonical project URLs", () => {
   const html = renderToStaticMarkup(
-    <MemoryRouter initialEntries={["/org/superlog/project/demo-project/explore/logs"]}>
+    <MemoryRouter initialEntries={["/app/org/superlog/project/demo-project/explore/logs"]}>
       <ProjectRouteProvider slugs={{ orgSlug: "superlog", projectSlug: "demo-project" }}>
         <ProductShell>
           <main>Explore page</main>
@@ -54,9 +54,9 @@ test("primary navigation emits canonical project URLs", () => {
     </MemoryRouter>,
   );
 
-  assert.match(html, /href="\/org\/superlog\/project\/demo-project"/);
+  assert.match(html, /href="\/app\/org\/superlog\/project\/demo-project"/);
   for (const appPath of ["incidents", "issues", "alerts", "explore", "dashboards", "settings"]) {
-    assert.match(html, new RegExp(`href="/org/superlog/project/demo-project/${appPath}"`));
+    assert.match(html, new RegExp(`href="/app/org/superlog/project/demo-project/${appPath}"`));
   }
 });
 

@@ -1,4 +1,4 @@
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { getBlogPost } from "./blogPosts.ts";
 import { Markdown } from "./content/Markdown.tsx";
 import { PublicShell } from "./content/PublicShell.tsx";
@@ -13,9 +13,9 @@ export function BlogPost() {
       <PublicShell eyebrow="Blog" title="Post not found">
         <p className="text-[15px] text-muted">
           We couldn't find that post.{" "}
-          <Link to="/blog" className="text-accent underline underline-offset-4">
+          <a href="/blog" className="text-accent underline underline-offset-4">
             Back to the blog
-          </Link>
+          </a>
           .
         </p>
       </PublicShell>
@@ -29,12 +29,12 @@ export function BlogPost() {
       <div className="max-w-[720px]">
         <Markdown text={post.body} />
         <div className="mt-14 border-t border-border pt-8">
-          <Link
-            to="/blog"
+          <a
+            href="/blog"
             className="text-[13px] font-medium text-accent underline-offset-4 hover:underline"
           >
             ← All posts
-          </Link>
+          </a>
         </div>
       </div>
     </PublicShell>

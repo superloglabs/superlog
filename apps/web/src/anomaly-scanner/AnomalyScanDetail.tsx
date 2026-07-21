@@ -12,6 +12,7 @@ import {
   useMe,
 } from "../api.ts";
 import { Chip, PageHeader, Tabs } from "../design/ui.tsx";
+import { useProjectPath } from "../ProjectRouteContext.tsx";
 
 type ScanDetailTab = "findings" | "coverage" | "decisions";
 
@@ -43,10 +44,11 @@ export function AnomalyScanDetailView({
   activeTab?: ScanDetailTab;
   onTabChange?: (tab: ScanDetailTab) => void;
 }) {
+  const projectPath = useProjectPath();
   return (
     <div className="flex flex-col gap-6">
       <Link
-        to="/anomaly-scanner"
+        to={projectPath("/anomaly-scanner")}
         className="inline-flex w-fit items-center gap-1.5 text-[11px] font-medium text-muted hover:text-fg"
       >
         <ArrowLeftIcon size={13} aria-hidden />
@@ -329,6 +331,7 @@ function WindowCard({ label, start, end }: { label: string; start: string; end: 
 }
 
 function FindingDetail({ finding }: { finding: AnomalyScanFinding }) {
+  const projectPath = useProjectPath();
   const observedValue = finding.observedValue;
   const baselineValue = finding.baselineValue;
   const hasDetailedEvidence =
@@ -356,7 +359,7 @@ function FindingDetail({ finding }: { finding: AnomalyScanFinding }) {
           </div>
           {finding.incidentId && (
             <Link
-              to={`/incidents/${finding.incidentId}`}
+              to={projectPath(`/incidents/${finding.incidentId}`)}
               className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-accent hover:underline"
             >
               View incident

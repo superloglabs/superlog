@@ -27,19 +27,19 @@ test("oauth callback with an invalid/expired state redirects back to the app wit
   // error, not dead-end on a bare JSON 400.
   const res = await app.request("/slack/oauth/callback?code=abc&state=not-a-valid-state");
   assert.equal(res.status, 302);
-  assert.equal(res.headers.get("location"), "https://app.example.test/?slack=error");
+  assert.equal(res.headers.get("location"), "https://app.example.test/app?slack=error");
 });
 
 test("oauth callback with a Slack error param redirects back with ?slack=denied", async () => {
   const app = await mountCallback();
   const res = await app.request("/slack/oauth/callback?error=access_denied");
   assert.equal(res.status, 302);
-  assert.equal(res.headers.get("location"), "https://app.example.test/?slack=denied");
+  assert.equal(res.headers.get("location"), "https://app.example.test/app?slack=denied");
 });
 
 test("oauth callback with no code redirects back with ?slack=error", async () => {
   const app = await mountCallback();
   const res = await app.request("/slack/oauth/callback?state=whatever");
   assert.equal(res.status, 302);
-  assert.equal(res.headers.get("location"), "https://app.example.test/?slack=error");
+  assert.equal(res.headers.get("location"), "https://app.example.test/app?slack=error");
 });

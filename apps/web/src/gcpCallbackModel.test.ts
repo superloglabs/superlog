@@ -8,7 +8,7 @@ test("GCP callback explains successful zero-customer-cost setup", () => {
     title: "Google Cloud connected",
     body: "Logs are streaming and bounded metric collection is enabled. Superlog pays for Pub/Sub and Monitoring API reads.",
     backLabel: "Back to settings",
-    backHref: "/settings",
+    backHref: "/app/settings",
   });
 });
 
@@ -23,6 +23,6 @@ test("GCP callback introduces project selection after authorization", () => {
     title: "Choose a Google Cloud project",
     body: "Select one of the active projects available to your Google account.",
     backLabel: "Back to settings",
-    backHref: "/settings",
+    backHref: "/app/settings",
   });
 });

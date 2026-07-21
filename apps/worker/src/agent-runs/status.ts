@@ -13,7 +13,7 @@ import {
   type PauseForEventsOutcome,
   createAgentRunLifecycle,
 } from "../agent-run.js";
-import { buildContextIncidentUrl } from "../incident-route.js";
+import { buildAppUrl, buildContextIncidentUrl } from "../incident-route.js";
 import {
   postLinearIncidentElicitation,
   postLinearIncidentError,
@@ -640,7 +640,7 @@ export async function moveAgentRunToBlockedNoGithub(
         ),
       );
     const incidentUrl = buildContextIncidentUrl(WEB_ORIGIN, ctx);
-    const installUrl = `${WEB_ORIGIN}/settings?tab=github`;
+    const installUrl = buildAppUrl(WEB_ORIGIN, "/settings?tab=github");
     const tagline = "Connect a GitHub repo so we can investigate.";
     await deps.postIncidentThreadMessage(
       ctx.incident.id,

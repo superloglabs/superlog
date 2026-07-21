@@ -12,6 +12,7 @@ import {
 import { and, eq } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { resolveActiveOrgContext } from "./org-context.js";
+import { buildAppWebUrl } from "./project-web-route.js";
 import {
   type ProjectMcpAuthDetection,
   detectProjectMcpAuth,
@@ -146,17 +147,17 @@ export function mountProjectMcpOAuthPublic(app: Hono<any>): void {
     const code = c.req.query("code");
     const webOrigin = (process.env.WEB_ORIGIN ?? "http://localhost:5173").replace(/\/$/, "");
     if (!state || !code || c.req.query("error")) {
-      return c.redirect(`${webOrigin}/settings?section=agent-mcps&mcp_oauth=error`);
+      return c.redirect(buildAppWebUrl(webOrigin, "/settings?section=agent-mcps&mcp_oauth=error"));
     }
     try {
       const server = await oauth.complete({ state, code });
-      const target = new URL(`${webOrigin}/settings`);
+      const target = new URL(buildAppWebUrl(webOrigin, "/settings"));
       target.searchParams.set("section", "agent-mcps");
       target.searchParams.set("projectId", server.projectId);
       target.searchParams.set("mcp_oauth", "connected");
       return c.redirect(target.toString());
     } catch {
-      return c.redirect(`${webOrigin}/settings?section=agent-mcps&mcp_oauth=error`);
+      return c.redirect(buildAppWebUrl(webOrigin, "/settings?section=agent-mcps&mcp_oauth=error"));
     }
   });
 }

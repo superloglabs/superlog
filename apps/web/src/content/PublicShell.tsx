@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { Link } from "react-router-dom";
 import { Wordmark } from "../design/ui.tsx";
 import { LANDING_GITHUB_REPO_URL } from "../landingLinks.ts";
 
@@ -47,13 +46,13 @@ export function PublicShell({
                   {link.label}
                 </a>
               ) : (
-                <Link
+                <a
                   key={link.href}
-                  to={link.href}
+                  href={link.href}
                   className="shrink-0 text-[12px] font-medium text-muted transition-colors hover:text-fg"
                 >
                   {link.label}
-                </Link>
+                </a>
               ),
             )}
           </nav>

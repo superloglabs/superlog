@@ -5,6 +5,7 @@ import type {
 } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
 import { logger } from "../logger.js";
+import { buildIncidentWebUrl } from "../project-web-route.js";
 import { escapeSlackLinkText, escapeSlackLinkUrl } from "../slack-format.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
@@ -184,21 +185,24 @@ export function buildResolvedIncidentSlackRoot(opts: {
   // message says so and offers the un-silence action.
   silencedByClosedPr?: { closedByLogin: string | null };
 }): ResolvedIncidentSlackRoot {
-  const origin = WEB_ORIGIN.replace(/\/$/, "");
   const incidentUrl = escapeSlackLinkUrl(
-    `${origin}/org/${encodeURIComponent(opts.projectRoute.orgSlug)}/project/${encodeURIComponent(opts.projectRoute.projectSlug)}/incidents/${encodeURIComponent(opts.incident.id)}`,
+    buildIncidentWebUrl(WEB_ORIGIN, { ...opts.projectRoute, incidentId: opts.incident.id }),
   );
   const titleLabel = escapeSlackLinkText(opts.incident.title);
   const silenced = opts.silencedByClosedPr;
   const lines = [
-    silenced ? ":no_bell: *Incident resolved — errors silenced*" : ":white_check_mark: *Incident resolved*",
+    silenced
+      ? ":no_bell: *Incident resolved — errors silenced*"
+      : ":white_check_mark: *Incident resolved*",
     `*<${incidentUrl}|${titleLabel}>*`,
     opts.incident.service
       ? `\`${opts.projectName}\` · \`${opts.incident.service}\``
       : `\`${opts.projectName}\``,
   ];
   if (silenced) {
-    const closedBy = silenced.closedByLogin ? `PR closed by @${silenced.closedByLogin}` : "PR closed";
+    const closedBy = silenced.closedByLogin
+      ? `PR closed by @${silenced.closedByLogin}`
+      : "PR closed";
     lines.push(
       `${closedBy} — this incident and its errors are silenced and will not raise incidents anymore. ` +
         `If you'd like these errors to reopen incidents, click *Do not silence, resolve*.`,
@@ -245,9 +249,8 @@ export function buildIncidentResolutionCompensationSlackRoot(opts: {
     return buildResolvedIncidentSlackRoot(opts);
   }
 
-  const origin = WEB_ORIGIN.replace(/\/$/, "");
   const incidentUrl = escapeSlackLinkUrl(
-    `${origin}/org/${encodeURIComponent(opts.projectRoute.orgSlug)}/project/${encodeURIComponent(opts.projectRoute.projectSlug)}/incidents/${encodeURIComponent(opts.incident.id)}`,
+    buildIncidentWebUrl(WEB_ORIGIN, { ...opts.projectRoute, incidentId: opts.incident.id }),
   );
   const titleLabel = escapeSlackLinkText(opts.incident.title);
   const lines = [

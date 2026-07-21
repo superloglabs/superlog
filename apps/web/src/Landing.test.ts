@@ -39,12 +39,24 @@ test("landing top nav feeds the live star count from the repo URL", async () => 
   assert.match(source, /useGithubStarCount\(LANDING_GITHUB_REPO_URL\)/);
 });
 
+test("the marketing surface captures first-touch signup attribution", async () => {
+  const marketingSource = await readFile(
+    new URL("./marketing/MarketingApp.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(marketingSource, /<SignupSourceCapture \/>/);
+});
+
 test("landing footer links to the terms of service page", async () => {
   const source = await readFile(new URL("./Landing.tsx", import.meta.url), "utf8");
-  const appSource = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+  const marketingSource = await readFile(
+    new URL("./marketing/MarketingApp.tsx", import.meta.url),
+    "utf8",
+  );
 
   assert.match(source, /href="\/tos"[\s\S]*Terms of Service\s*<\/a>/);
-  assert.match(appSource, /<Route path="\/tos" element=\{<TermsOfService \/>\} \/>/);
+  assert.match(marketingSource, /<Route path="\/tos" element=\{<TermsOfService \/>\} \/>/);
 });
 
 test("landing renders the client-logo marquee between the hero and the first content section", async () => {

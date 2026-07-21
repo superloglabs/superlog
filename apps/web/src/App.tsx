@@ -5,9 +5,6 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, matchPath, useLocation } from "react-router-dom";
 import { AcceptInvitation } from "./AcceptInvitation.tsx";
 import { Activate } from "./Activate.tsx";
-import { Blog } from "./Blog.tsx";
-import { BlogPost } from "./BlogPost.tsx";
-import { Changelog } from "./Changelog.tsx";
 import { CommandPalette } from "./CommandPalette.tsx";
 import { Explore } from "./Explore.tsx";
 import { ForgotPassword } from "./ForgotPassword.tsx";
@@ -18,16 +15,12 @@ import { OauthConsent } from "./OauthConsent.tsx";
 import { OrgProjectSwitcher } from "./OrgProjectSwitcher.tsx";
 import { Overview } from "./Overview.tsx";
 import { PrFeedback } from "./PrFeedback.tsx";
-import { Pricing } from "./Pricing.tsx";
-import { PrivacyPolicy } from "./PrivacyPolicy.tsx";
 import { ProjectRouteBoundary } from "./ProjectRouteBoundary.tsx";
 import { ProjectRouteProvider, useProjectPath } from "./ProjectRouteContext.tsx";
 import { RailwayCallback } from "./RailwayCallback.tsx";
 import { ResetPassword } from "./ResetPassword.tsx";
-import { Roadmap } from "./Roadmap.tsx";
 import { Settings } from "./Settings.tsx";
-import { Team } from "./Team.tsx";
-import { TermsOfService } from "./TermsOfService.tsx";
+import { SignupSourceCapture } from "./SignupSourceCapture.tsx";
 import { VercelCallback } from "./VercelCallback.tsx";
 import { AlertEdit } from "./alerts/AlertEdit.tsx";
 import { AlertsList } from "./alerts/AlertsList.tsx";
@@ -46,50 +39,19 @@ import { useDemoExploration } from "./onboarding/demoExploration.tsx";
 import {
   appLocationFromProjectRoute,
   appPathFromProjectRoute,
+  buildProjectPath,
   canonicalProjectLocation,
+  legacyProductLocation,
 } from "./project-route.ts";
 import {
   APP_FRAME_CLASS,
   PAGE_SCROLL_CONTAINER_CLASS,
   isDetailWorkspacePath,
 } from "./route-layout.ts";
-import {
-  buildSignupEventProperties,
-  parseAttribution,
-  persistFirstTouchAttribution,
-  readFirstTouchAttribution,
-} from "./signupAttribution.ts";
+import { buildSignupEventProperties, readFirstTouchAttribution } from "./signupAttribution.ts";
 import { startSkillOnboarding } from "./skillOnboarding.ts";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4100";
-
-function SignupSourceCapture() {
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const attr = parseAttribution(window.location.search, document.referrer);
-    // The `?source=` tag is also forwarded to /api/me as a header and persisted
-    // on orgs.signup_source, so keep its dedicated key untouched (see api.ts).
-    if (attr.source) {
-      try {
-        const existing = window.localStorage.getItem("superlog.signup_source");
-        if (!existing) window.localStorage.setItem("superlog.signup_source", attr.source);
-      } catch {
-        /* ignore */
-      }
-    }
-    // Stash the full first-touch attribution (source + UTM + referrer) so the
-    // PostHog signup event can report it once the user creates their first org.
-    // landingPath is passed unconditionally on purpose: persistFirstTouchAttribution
-    // only writes when there's real attribution signal (source/UTM/referrer) and
-    // treats landingPath as ride-along context, so this can't lock in a
-    // landingPath-only record on a plain pageview and shut out a later landing.
-    persistFirstTouchAttribution(window.localStorage, {
-      ...attr,
-      landingPath: window.location.pathname,
-    });
-  }, []);
-  return null;
-}
 
 function GithubInstallCallbackForwarder() {
   useEffect(() => {
@@ -169,14 +131,6 @@ export function App() {
         <Route path="/activate" element={<Activate />} />
         <Route path="/accept-invitation" element={<AcceptInvitation />} />
         <Route path="/oauth/consent" element={<OauthConsent />} />
-        <Route path="/pricing" element={<Pricing />} />
-        <Route path="/privacy" element={<PrivacyPolicy />} />
-        <Route path="/changelog" element={<Changelog />} />
-        <Route path="/blog" element={<Blog />} />
-        <Route path="/blog/:slug" element={<BlogPost />} />
-        <Route path="/roadmap" element={<Roadmap />} />
-        <Route path="/team" element={<Team />} />
-        <Route path="/tos" element={<TermsOfService />} />
         <Route path="/signup" element={<SignupRoute />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
@@ -188,7 +142,9 @@ export function App() {
         <Route path="/connect/vercel" element={<VercelCallback />} />
         <Route path="/connect/railway" element={<RailwayCallback />} />
         <Route path="/connect/gcp" element={<GcpCallback />} />
-        <Route path="*" element={<AuthenticatedApp />} />
+        <Route path="/app/*" element={<AuthenticatedApp />} />
+        <Route path="/org/*" element={<LegacyProductRouteRedirect />} />
+        <Route path="*" element={<LegacyProductRouteRedirect />} />
       </Routes>
     </>
   );
@@ -206,7 +162,7 @@ function SignupRoute() {
     }
   }
   if (isPending) return null;
-  if (data) return <Navigate to="/" replace />;
+  if (data) return <Navigate to="/app" replace />;
   return <Landing initialAuthMode="sign-up" />;
 }
 
@@ -234,7 +190,7 @@ function AuthenticatedApp() {
     ["spans", "logs", "metric_points"].some((f) => signalAtHardCap(check, f));
   if (isPending) return null;
   if (!data) return <Landing />;
-  const scopedRoute = matchPath("/org/:orgSlug/project/:projectSlug/*", pathname);
+  const scopedRoute = matchPath("/app/org/:orgSlug/project/:projectSlug/*", pathname);
   const orgSlug = scopedRoute?.params.orgSlug;
   const projectSlug = scopedRoute?.params.projectSlug;
   if (!orgSlug && me.data?.org && me.data.project) {
@@ -253,6 +209,8 @@ function AuthenticatedApp() {
     search: location.search,
     hash: location.hash,
   });
+  const projectRoot =
+    orgSlug && projectSlug ? buildProjectPath({ orgSlug, projectSlug }, "/") : "/app";
   const app = (
     <OnboardingGate>
       <div className={APP_FRAME_CLASS}>
@@ -283,7 +241,7 @@ function AuthenticatedApp() {
                   me.data?.features?.anomalyScanner === true ? (
                     <AnomalyScanner />
                   ) : (
-                    <Navigate to="/" replace />
+                    <Navigate to={projectRoot} replace />
                   )
                 }
               />
@@ -293,7 +251,7 @@ function AuthenticatedApp() {
                   me.data?.features?.anomalyScanner === true ? (
                     <AnomalyScanDetail />
                   ) : (
-                    <Navigate to="/" replace />
+                    <Navigate to={projectRoot} replace />
                   )
                 }
               />
@@ -321,6 +279,11 @@ function AuthenticatedApp() {
   );
 }
 
+function LegacyProductRouteRedirect() {
+  const location = useLocation();
+  return <Navigate replace to={legacyProductLocation(location)} />;
+}
+
 function useGlobalKeybinds(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
@@ -340,7 +303,7 @@ function useGlobalKeybinds(enabled: boolean) {
       if (mod && e.shiftKey && e.key.toLowerCase() === "p") {
         e.preventDefault();
         void authClient.admin.stopImpersonating().then((result) => {
-          if (!result?.error) window.location.assign("/");
+          if (!result?.error) window.location.assign("/app");
         });
       }
     }
@@ -395,7 +358,7 @@ function ImpersonationBar({ email }: { email: string }) {
         type="button"
         onClick={() => {
           void authClient.admin.stopImpersonating().finally(() => {
-            window.location.assign("/");
+            window.location.assign("/app");
           });
         }}
         className="underline underline-offset-2 hover:opacity-80"

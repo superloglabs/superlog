@@ -2,14 +2,20 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const appSource = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+const marketingSource = await readFile(
+  new URL("./marketing/MarketingApp.tsx", import.meta.url),
+  "utf8",
+);
 const landingSource = await readFile(new URL("./Landing.tsx", import.meta.url), "utf8");
-const publicShellSource = await readFile(new URL("./content/PublicShell.tsx", import.meta.url), "utf8");
+const publicShellSource = await readFile(
+  new URL("./content/PublicShell.tsx", import.meta.url),
+  "utf8",
+);
 const teamSource = await readFile(new URL("./Team.tsx", import.meta.url), "utf8");
 
 test("team page is available as a public /team route", () => {
-  assert.match(appSource, /import \{ Team \} from "\.\/Team\.tsx";/);
-  assert.match(appSource, /<Route path="\/team" element=\{<Team \/>\} \/>/);
+  assert.match(marketingSource, /import \{ Team \} from "\.\.\/Team\.tsx";/);
+  assert.match(marketingSource, /<Route path="\/team" element=\{<Team \/>\} \/>/);
 });
 
 test("landing and public content navigation link to the team page", () => {
@@ -52,7 +58,10 @@ test("team page uses the dark public landing-page treatment", () => {
 });
 
 test("team page keeps the intro compact and starts profiles without an extra section", () => {
-  assert.doesNotMatch(teamSource, /<section className="grid gap-4 border-t border-border pt-8 first:border-t-0 first:pt-0/);
+  assert.doesNotMatch(
+    teamSource,
+    /<section className="grid gap-4 border-t border-border pt-8 first:border-t-0 first:pt-0/,
+  );
   assert.match(teamSource, /index === 0 \? "border-t-0 pt-0" : "border-t border-border pt-8"/);
   assert.doesNotMatch(teamSource, /Why this team/);
   assert.doesNotMatch(teamSource, /The product combines native OpenTelemetry setup/);
