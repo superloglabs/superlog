@@ -2,10 +2,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useMe } from "../api.ts";
 import { authClient } from "../auth-client.ts";
+import { Dropdown, type DropdownOption } from "../design/Dropdown.tsx";
 import { Btn, Chip, Input, Tile } from "../design/ui.tsx";
 
 type Role = "owner" | "admin" | "member";
 const ROLES: Role[] = ["owner", "admin", "member"];
+const ROLE_OPTIONS: DropdownOption[] = ROLES.map((r) => ({ value: r, label: r }));
 
 type Member = {
   id: string;
@@ -171,7 +173,7 @@ function InviteForm({ orgId, canManage }: { orgId: string; canManage: boolean })
           <label className="mb-1.5 block text-[12px] text-muted">Role</label>
           <RoleSelect value={role} onChange={(v) => setRole(v)} />
         </div>
-        <Btn type="submit" loading={invite.isPending} disabled={!email.trim()}>
+        <Btn type="submit" className="h-9" loading={invite.isPending} disabled={!email.trim()}>
           Send invite
         </Btn>
       </form>
@@ -241,15 +243,17 @@ function MemberRow({
       </div>
       <div className="flex items-center gap-2">
         {canEditRole ? (
-          <RoleSelect
-            value={role}
-            disabled={updateRole.isPending}
-            onChange={(v) => {
-              if (v === role) return;
-              setError(null);
-              updateRole.mutate(v);
-            }}
-          />
+          <div className="w-32">
+            <RoleSelect
+              value={role}
+              disabled={updateRole.isPending}
+              onChange={(v) => {
+                if (v === role) return;
+                setError(null);
+                updateRole.mutate(v);
+              }}
+            />
+          </div>
         ) : (
           <Chip tone={role === "owner" ? "accent" : "neutral"}>{role}</Chip>
         )}
@@ -332,29 +336,12 @@ function RoleSelect({
   disabled?: boolean;
 }) {
   return (
-    <div className="relative">
-      <select
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value as Role)}
-        className="h-8 appearance-none rounded-sm border border-border bg-surface-2 pl-3 pr-7 text-[12.5px] text-fg focus:border-border-strong focus:outline-none disabled:opacity-50"
-      >
-        {ROLES.map((r) => (
-          <option key={r} value={r}>
-            {r}
-          </option>
-        ))}
-      </select>
-      <svg
-        aria-hidden
-        className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-subtle"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-      >
-        <path d="m6 9 6 6 6-6" />
-      </svg>
-    </div>
+    <Dropdown
+      value={value}
+      onChange={(v) => onChange(v as Role)}
+      options={ROLE_OPTIONS}
+      disabled={disabled}
+      searchable={false}
+    />
   );
 }
