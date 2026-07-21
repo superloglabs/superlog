@@ -269,7 +269,6 @@ export async function failAgentRun(
         title: ctx.incident.title,
         titleUrl: incidentUrl,
         tagline: summary,
-        projectName: ctx.project.name,
         service: ctx.incident.service,
         buttons: [],
         incidentId: ctx.incident.id,
@@ -331,7 +330,6 @@ export async function moveAgentRunToAwaitingHuman(
         title: ctx.incident.title,
         titleUrl: incidentUrl,
         tagline: question,
-        projectName: ctx.project.name,
         service: ctx.incident.service,
         buttons: [],
         incidentId: ctx.incident.id,
@@ -477,7 +475,6 @@ export async function reconcileStaleAgentRunPublication(ctx: AgentRunContext): P
       title: incident.title,
       titleUrl: incidentUrl,
       tagline,
-      projectName: ctx.project.name,
       service: incident.service,
       buttons: [],
       incidentId: incident.id,
@@ -554,7 +551,6 @@ export async function moveAgentRunToAwaitingEvents(
           tagline: isExternalCause
             ? `${externalCause.source}: ${externalCause.cause}`
             : result.summary || "The investigation opened PRs and is waiting for review or merge.",
-          projectName: ctx.project.name,
           service: ctx.incident.service,
           buttons: [
             { text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" },
@@ -659,7 +655,6 @@ export async function moveAgentRunToBlockedNoGithub(
         title: ctx.incident.title,
         titleUrl: incidentUrl,
         tagline,
-        projectName: ctx.project.name,
         service: ctx.incident.service,
         buttons: [
           { text: "View incident", url: incidentUrl, actionId: "view_incident" },

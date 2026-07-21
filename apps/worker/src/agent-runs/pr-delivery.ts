@@ -680,7 +680,6 @@ export async function completeWithPullRequest(
         title: ctx.incident.title,
         titleUrl: incidentUrl,
         tagline: result.summary || undefined,
-        projectName: ctx.project.name,
         service: ctx.incident.service,
         buttons: [],
         links: [
@@ -1561,7 +1560,6 @@ export async function deliverProposedPullRequest(
           status: "PR Ready",
           title: ctx.incident.title,
           tagline: pr.title,
-          projectName: ctx.project.name,
           service: ctx.incident.service,
           buttons: [
             { text: "Open in Superlog", url: incidentUrl, actionId: "open_superlog" },

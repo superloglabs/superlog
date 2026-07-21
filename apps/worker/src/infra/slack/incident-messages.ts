@@ -150,7 +150,6 @@ export function incidentBlocks(opts: {
   // standalone "Open in Superlog" button — it frees an actions-row slot.
   titleUrl?: string | null;
   tagline?: string | null;
-  projectName: string;
   service?: string | null;
   environment?: string | null;
   buttons: Array<{ text: string; url?: string; actionId: string }>;
@@ -184,13 +183,14 @@ export function incidentBlocks(opts: {
       ]
     : [`:${opts.emoji}: *${opts.status}*`, titleText];
   if (opts.tagline) lines.push(`_${opts.tagline}_`);
-  // `project · service · environment`, each a code chip; service/environment
-  // only appear when present on the triggering error.
-  const context = [opts.projectName, opts.service, opts.environment]
+  // `service · environment`, each a code chip; both only appear when present
+  // on the triggering error. The project is implicit — the Slack channel is
+  // per-project — so it's not repeated here.
+  const context = [opts.service, opts.environment]
     .filter((part): part is string => Boolean(part))
     .map((part) => `\`${part}\``)
     .join(" · ");
-  lines.push(context);
+  if (context) lines.push(context);
   if (opts.links && opts.links.length > 0) {
     lines.push(
       opts.links
@@ -394,7 +394,6 @@ async function postAndRememberIncidentRoot(opts: {
 export async function postIncidentRootMessage(opts: {
   incident: schema.Incident;
   projectId: string;
-  projectName: string;
   firstIssue: schema.Issue;
 }): Promise<void> {
   if (opts.incident.slackThreadTs) return;
@@ -406,7 +405,6 @@ export async function postIncidentRootMessage(opts: {
     emoji: "rotating_light",
     status: "New Incident",
     title: opts.firstIssue.title,
-    projectName: opts.projectName,
     service: opts.firstIssue.service,
     environment:
       opts.incident.environment ??
@@ -425,16 +423,12 @@ async function createIncidentRootInCurrentRoute(
 ): Promise<{ target: SlackTarget; threadTs: string } | null> {
   const target = await fetchSlackTarget(incident.projectId);
   if (!target) return null;
-  const project = await db.query.projects.findFirst({
-    where: eq(schema.projects.id, incident.projectId),
-  });
   const incidentUrl = await incidentUrlForProject(incident.projectId, incident.id);
   const text = `:rotating_light: Incident: ${incident.title}`;
   const blocks = incidentBlocks({
     emoji: "rotating_light",
     status: "Incident",
     title: incident.title,
-    projectName: project?.name ?? incident.projectId,
     service: incident.service,
     environment: incident.environment,
     titleUrl: incidentUrl,
