@@ -8,6 +8,7 @@ const EMPTY_TICK = {
   logs: 0,
   agentRuns: 0,
   agentChats: 0,
+  sentryEvents: 0,
   alerts: 0,
   digests: 0,
   webhooks: 0,

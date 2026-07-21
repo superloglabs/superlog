@@ -6,6 +6,7 @@ import { tickDigests } from "../digest.js";
 import { handleIssueTransition } from "../incidents/workflow.js";
 import { logger } from "../logger.js";
 import { tickObservedIssues } from "../observation.js";
+import { tickSentryIssueEvents } from "../sentry/tick.js";
 import type { TelemetryIngestor } from "../telemetry/ingest.js";
 import { tickWebhooks } from "../webhooks.js";
 
@@ -18,6 +19,7 @@ export type WorkerTickResult = {
   logs: number;
   agentRuns: number;
   agentChats: number;
+  sentryEvents: number;
   alerts: number;
   digests: number;
   webhooks: number;
@@ -32,6 +34,7 @@ export type WorkerTickResult = {
 export type SkippableTickStep =
   | "agent_runs"
   | "agent_chats"
+  | "sentry_events"
   | "alerts"
   | "digests"
   | "webhooks"
@@ -83,6 +86,9 @@ export function createWorkerTick(opts: {
         const agentChats = skip.has("agent_chats")
           ? 0
           : await safe("agent_chats", tickAgentChats, 0);
+        const sentryEvents = skip.has("sentry_events")
+          ? 0
+          : await safe("sentry_events", () => tickSentryIssueEvents(onIssueTransition), 0);
         const alerts = skip.has("alerts")
           ? 0
           : await safe("alerts", () => tickAlerts(opts.clickhouse, onIssueTransition), 0);
@@ -95,6 +101,7 @@ export function createWorkerTick(opts: {
         span.setAttribute("tick.logs", logs);
         span.setAttribute("tick.agent_runs", agentRuns);
         span.setAttribute("tick.agent_chats", agentChats);
+        span.setAttribute("tick.sentry_events", sentryEvents);
         span.setAttribute("tick.alerts", alerts);
         span.setAttribute("tick.digests", digests);
         span.setAttribute("tick.webhooks", webhooks);
@@ -104,6 +111,7 @@ export function createWorkerTick(opts: {
           logs,
           agentRuns,
           agentChats,
+          sentryEvents,
           alerts,
           digests,
           webhooks,

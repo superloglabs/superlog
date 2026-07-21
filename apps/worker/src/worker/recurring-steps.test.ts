@@ -26,6 +26,7 @@ test("every remaining sub-cron tick step has a chain", () => {
     buildRecurringSteps(depsOf()).map((s) => [s.queue, s.tickStep]),
     [
       ["agent-chat-sweep", "agent_chats"],
+      ["sentry-issue-sweep", "sentry_events"],
       ["webhook-deliveries", "webhooks"],
       ["alert-evaluation", "alerts"],
       ["digest-sweep", "digests"],
@@ -45,6 +46,7 @@ test("every remaining sub-cron tick step has a chain", () => {
 test("latency-sensitive sweeps keep a sub-minute cadence", () => {
   const byQueue = new Map(buildRecurringSteps(depsOf()).map((s) => [s.queue, s.intervalSeconds]));
   assert.ok((byQueue.get("webhook-deliveries") ?? 61) < 60, "webhook delivery must stay snappy");
+  assert.ok((byQueue.get("sentry-issue-sweep") ?? 61) < 60, "Sentry issues must stay snappy");
   assert.ok((byQueue.get("agent-chat-sweep") ?? 61) < 60, "chat replies must stay snappy");
   assert.ok((byQueue.get("alert-evaluation") ?? 61) < 60, "alert evaluation must stay snappy");
 });
@@ -78,7 +80,13 @@ test("a failed registration doesn't block the rest and is retried in the backgro
   // The failed step must not block the others — and must NOT be reported as
   // registered (the caller never runs it locally; see RECURRING_TICK_STEPS).
   assert.ok(!migrated.has("digests"), "the failed step must be reported unregistered");
-  assert.deepEqual([...migrated].sort(), ["agent_chats", "alerts", "observation", "webhooks"]);
+  assert.deepEqual([...migrated].sort(), [
+    "agent_chats",
+    "alerts",
+    "observation",
+    "sentry_events",
+    "webhooks",
+  ]);
   assert.ok(!consumers.includes("digest-sweep"));
 
   // The background retry completes the registration once the failure clears,

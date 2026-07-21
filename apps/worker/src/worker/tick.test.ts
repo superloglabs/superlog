@@ -8,6 +8,7 @@ import { type SkippableTickStep, createWorkerTick } from "./tick.js";
 const ALL_SKIPPABLE: SkippableTickStep[] = [
   "agent_runs",
   "agent_chats",
+  "sentry_events",
   "alerts",
   "digests",
   "webhooks",
@@ -41,6 +42,7 @@ test("skipped steps never run; the telemetry scan always does", async () => {
     logs: 4,
     agentRuns: 0,
     agentChats: 0,
+    sentryEvents: 0,
     alerts: 0,
     digests: 0,
     webhooks: 0,

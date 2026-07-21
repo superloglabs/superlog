@@ -27,17 +27,26 @@ export async function runWorker(opts: {
   logger.info({ pollMs: opts.pollIntervalMs, batchSize: opts.batchSize }, "worker up");
   while (!opts.signal?.aborted) {
     try {
-      const { spans, logs, agentRuns, alerts, digests, webhooks } = await opts.tick();
+      const { spans, logs, agentRuns, sentryEvents, alerts, digests, webhooks } = await opts.tick();
       // Heartbeat for the tick-lateness gauge/alarm: recorded only on a
       // completed cycle, so a wedged step shows up as a climbing age even
       // while the process stays alive.
       recordTickHeartbeat();
-      if (spans > 0 || logs > 0 || agentRuns > 0 || alerts > 0 || digests > 0 || webhooks > 0) {
+      if (
+        spans > 0 ||
+        logs > 0 ||
+        agentRuns > 0 ||
+        sentryEvents > 0 ||
+        alerts > 0 ||
+        digests > 0 ||
+        webhooks > 0
+      ) {
         logger.info(
           {
             spans,
             logs,
             agentRuns,
+            sentryEvents,
             alerts,
             digests,
             webhooks,

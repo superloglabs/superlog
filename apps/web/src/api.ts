@@ -1612,6 +1612,44 @@ export function useUninstallNotion() {
   });
 }
 
+export type SentryInstallation =
+  | { installed: false }
+  | {
+      installed: true;
+      organizationSlug: string;
+      projectSlug: string;
+      needsReauth: boolean;
+      reauthReason: string | null;
+    };
+
+export function useSentryInstallation() {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["sentry-installation"],
+    queryFn: () => fetcher<SentryInstallation>("/api/sentry/installation"),
+  });
+}
+
+export function useStartSentryInstall() {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: (projectSlug: string) =>
+      fetcher<{ url: string }>("/api/sentry/install-url", {
+        method: "POST",
+        body: JSON.stringify({ projectSlug }),
+      }),
+  });
+}
+
+export function useUninstallSentry() {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => fetcher<{ ok: true }>("/api/sentry/uninstall", { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["sentry-installation"] }),
+  });
+}
+
 export type OrgProject = { id: string; name: string; slug: string; projectContext: string };
 
 export function useOrgProjects() {

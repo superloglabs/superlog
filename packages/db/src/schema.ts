@@ -2257,6 +2257,77 @@ export const notionInstallations = pgTable(
   }),
 );
 
+export const sentryInstallations = pgTable(
+  "sentry_installations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sentryInstallationId: text("sentry_installation_id").notNull(),
+    organizationSlug: text("organization_slug").notNull(),
+    sentryProjectSlug: text("sentry_project_slug").notNull(),
+    accessTokenCiphertext: bytea("access_token_ciphertext").notNull(),
+    accessTokenNonce: text("access_token_nonce").notNull(),
+    accessTokenKeyVersion: integer("access_token_key_version").notNull().default(1),
+    refreshTokenCiphertext: bytea("refresh_token_ciphertext"),
+    refreshTokenNonce: text("refresh_token_nonce"),
+    refreshTokenKeyVersion: integer("refresh_token_key_version"),
+    relayTokenCiphertext: bytea("relay_token_ciphertext").notNull(),
+    relayTokenNonce: text("relay_token_nonce").notNull(),
+    relayTokenKeyVersion: integer("relay_token_key_version").notNull().default(1),
+    oauthExpiresAt: timestamp("oauth_expires_at", { withTimezone: true }),
+    actorUserId: uuid("actor_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    reauthRequiredAt: timestamp("reauth_required_at", { withTimezone: true }),
+    reauthReason: text("reauth_reason"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    activeUniq: uniqueIndex("sentry_installations_project_active_idx")
+      .on(t.projectId)
+      .where(sql`revoked_at IS NULL`),
+    installationProjectIdx: index("sentry_installations_external_project_idx").on(
+      t.sentryInstallationId,
+      t.sentryProjectSlug,
+    ),
+  }),
+);
+
+export const sentryWebhookEvents = pgTable(
+  "sentry_webhook_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    installationId: uuid("installation_id")
+      .notNull()
+      .references(() => sentryInstallations.id, { onDelete: "cascade" }),
+    dedupeKey: text("dedupe_key").notNull().unique(),
+    action: text("action").$type<"created" | "unresolved">().notNull(),
+    sentryIssueId: text("sentry_issue_id").notNull(),
+    title: text("title").notNull(),
+    culprit: text("culprit"),
+    level: text("level"),
+    firstSeen: timestamp("first_seen", { withTimezone: true }),
+    lastSeen: timestamp("last_seen", { withTimezone: true }),
+    eventCount: bigint("event_count", { mode: "number" }).notNull().default(1),
+    issueUrl: text("issue_url"),
+    rawPayload: jsonb("raw_payload").$type<Record<string, unknown>>().notNull(),
+    status: text("status").$type<"pending" | "processed" | "failed">().notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    lastError: text("last_error"),
+    receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+  },
+  (t) => ({
+    pendingIdx: index("sentry_webhook_events_pending_idx")
+      .on(t.receivedAt)
+      .where(sql`status = 'pending' OR (status = 'failed' AND attempt_count < 10)`),
+  }),
+);
+
 export const orgAgentSettings = pgTable(
   "org_agent_settings",
   {

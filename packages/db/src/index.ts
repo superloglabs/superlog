@@ -9,6 +9,11 @@ export {
 } from "./agent-runtime.js";
 export { runMigrations } from "./migrate.js";
 export {
+  createSentryCredentialRepository,
+  type SentryCredential,
+  type SentryCredentialRepository,
+} from "./sentry.js";
+export {
   type AnalyticsClient,
   type CaptureServerEventInput,
   captureServerEvent,

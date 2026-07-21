@@ -12,6 +12,7 @@ import {
   captureServerEvent,
   confirmResolutionProposal,
   createIncidentLifecycle,
+  createSentryCredentialRepository,
   db,
   dismissResolutionProposal,
   isAgentRunProvider,
@@ -130,6 +131,7 @@ import {
   VALID_MANUAL_MERGE_METHODS,
   mergeAgentPullRequestAndResolveIncident,
 } from "./pr-merge-service.js";
+import { strictProjectMcpFetch } from "./project-mcp-http.js";
 import { mountProjectMcpRelayPublic } from "./project-mcp-relay.js";
 import {
   mountProjectMcpOAuthPublic,
@@ -148,6 +150,14 @@ import {
 } from "./request-actor-log.js";
 import { mountApiRequestSecurity, requestBodyLimit } from "./request-body-limits.js";
 import { mountSavedViews } from "./saved-views/interfaces.js";
+import { receiveSentryIssueEvent } from "./sentry/application.js";
+import { mountSentryPublic } from "./sentry/http.js";
+import {
+  mountSentryInstallationAuthed,
+  mountSentryInstallationPublic,
+} from "./sentry/installation.js";
+import { mountSentryMcpRelayPublic } from "./sentry/relay.js";
+import { createDrizzleSentryWebhookInbox } from "./sentry/repository.js";
 import { mountSettingsAuthed } from "./settings.js";
 import { normalizeSignupIntentKeyHash, normalizeSignupIntentKeyPrefix } from "./signup-intents.js";
 import { mountSlackAuthed, mountSlackPublic } from "./slack.js";
@@ -345,6 +355,20 @@ mountGithubPublic(app);
 mountGithubAuthorOAuth(app);
 mountLinearPublic(app);
 mountNotionPublic(app);
+mountSentryInstallationPublic(app);
+const sentryWebhookInbox = createDrizzleSentryWebhookInbox();
+mountSentryPublic(app, {
+  clientSecret: process.env.SENTRY_CLIENT_SECRET,
+  receiveIssueEvent: (event) => receiveSentryIssueEvent(sentryWebhookInbox, event),
+  revokeInstallation: (installationId) => sentryWebhookInbox.revokeInstallation(installationId),
+});
+mountSentryMcpRelayPublic(app, {
+  repository: createSentryCredentialRepository(),
+  fetch: strictProjectMcpFetch,
+  now: () => new Date(),
+  clientId: process.env.SENTRY_CLIENT_ID,
+  clientSecret: process.env.SENTRY_CLIENT_SECRET,
+});
 mountMcpPublic(app, ch);
 mountSlackPublic(app);
 mountCloudflarePublic(app);
@@ -407,6 +431,7 @@ mountProjectRouteContext(app);
 mountGithubAuthed(app);
 mountLinearAuthed(app);
 mountNotionAuthed(app);
+mountSentryInstallationAuthed(app);
 mountSlackAuthed(app);
 mountCloudflareAuthed(app);
 mountVercelAuthed(app);

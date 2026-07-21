@@ -72,6 +72,7 @@ import {
   useSaveIntegration,
   useSaveOrgAgentSettings,
   useSaveProjectDigest,
+  useSentryInstallation,
   useSetCloudflareAutoWire,
   useSetIngestFilters,
   useSetSlackRoute,
@@ -87,6 +88,7 @@ import {
   useStartLinearInstall,
   useStartNotionInstall,
   useStartRailwayInstall,
+  useStartSentryInstall,
   useStartSlackInstall,
   useStartVercelInstall,
   useSystemCapabilities,
@@ -96,6 +98,7 @@ import {
   useUninstallNotion,
   useUninstallRailway,
   useUninstallRender,
+  useUninstallSentry,
   useUninstallSlack,
   useUninstallVercel,
   useUnwireCloudflareWorker,
@@ -1130,6 +1133,7 @@ type ProjectIntegrationId =
   | "slack"
   | "linear"
   | "notion"
+  | "sentry"
   | "cloudflare"
   | "vercel"
   | "railway"
@@ -1148,6 +1152,7 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
   const slack = useSlackInstallation(projectId, !!projectId);
   const linear = useLinearInstallation();
   const notion = useNotionInstallation();
+  const sentry = useSentryInstallation();
   const cloudflare = useCloudflareInstallation(projectId);
   const vercel = useVercelInstallation(projectId);
   const railway = useRailwayInstallation(projectId);
@@ -1219,6 +1224,20 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
           ? "Needs reconnect"
           : notion.data?.installed
             ? (notion.data.workspaceName ?? "Workspace")
+            : "Connected",
+    },
+    {
+      id: "sentry",
+      name: "Sentry",
+      description: "Start investigations for new and regressed issues with live Sentry context.",
+      category: "Observability",
+      keywords: ["errors", "issues", "traces", "logs", "metrics", "performance"],
+      installed: sentry.data?.installed === true,
+      statusLabel:
+        sentry.data?.installed && sentry.data.needsReauth
+          ? "Needs reconnect"
+          : sentry.data?.installed
+            ? `${sentry.data.organizationSlug}/${sentry.data.projectSlug}`
             : "Connected",
     },
     {
@@ -1298,6 +1317,7 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
     slack,
     linear,
     notion,
+    sentry,
     cloudflare,
     vercel,
     railway,
@@ -1531,6 +1551,8 @@ function IntegrationGlyph({ id }: { id: ProjectIntegrationId }) {
       return <span className={`${className} text-[15px] font-semibold`}>L</span>;
     case "notion":
       return <span className={`${className} text-[15px] font-semibold`}>N</span>;
+    case "sentry":
+      return <span className={`${className} text-[15px] font-semibold`}>S</span>;
   }
 }
 
@@ -1550,6 +1572,8 @@ function IntegrationConfiguration({
       return <LinearCard />;
     case "notion":
       return <NotionCard />;
+    case "sentry":
+      return <SentryCard />;
     case "cloudflare":
       return <CloudflareCard projectId={projectId} />;
     case "vercel":
@@ -2606,6 +2630,82 @@ function NotionCard() {
           }}
         >
           {needsReauth ? "Reconnect Notion" : installed ? "Reconnect" : "Connect Notion"}
+        </Btn>
+        {installed && (
+          <Btn
+            size="sm"
+            variant="danger"
+            loading={uninstall.isPending}
+            onClick={() => uninstall.mutate()}
+          >
+            Disconnect
+          </Btn>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SentryCard() {
+  const install = useSentryInstallation();
+  const start = useStartSentryInstall();
+  const uninstall = useUninstallSentry();
+  const sentryInstall = install.data?.installed === true ? install.data : null;
+  const [projectSlug, setProjectSlug] = useState("");
+
+  useEffect(() => {
+    if (sentryInstall?.projectSlug) setProjectSlug(sentryInstall.projectSlug);
+  }, [sentryInstall?.projectSlug]);
+
+  const installed = sentryInstall !== null;
+  const needsReauth = sentryInstall?.needsReauth === true;
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[13px] text-muted">
+        Sentry Cloud sends new and regressed issues in near real time. Investigations can then query
+        read-only issue, event, trace, log, metric, profile, replay, and performance context for the
+        selected Sentry project.
+      </p>
+      <div>
+        {sentryInstall ? (
+          <Chip tone={needsReauth ? "warning" : "success"} dot>
+            {needsReauth
+              ? `${sentryInstall.organizationSlug}/${sentryInstall.projectSlug} needs reconnect`
+              : `${sentryInstall.organizationSlug}/${sentryInstall.projectSlug}`}
+          </Chip>
+        ) : (
+          <Chip tone="muted" dot>
+            Not connected
+          </Chip>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        <FieldLabel>Sentry project slug</FieldLabel>
+        <Input
+          value={projectSlug}
+          onChange={(event) => setProjectSlug(event.target.value)}
+          placeholder="storefront"
+          autoCapitalize="none"
+          spellCheck={false}
+        />
+        <p className="text-[11.5px] text-subtle">
+          You will choose the Sentry organization during authorization. Sentry self-hosted is not
+          supported yet.
+        </p>
+      </div>
+      <div className="flex items-center gap-2">
+        <Btn
+          size="sm"
+          variant={installed ? "secondary" : "primary"}
+          loading={start.isPending}
+          disabled={!projectSlug.trim() || start.isPending}
+          onClick={async () => {
+            const { url } = await start.mutateAsync(projectSlug.trim());
+            window.location.href = url;
+          }}
+        >
+          {needsReauth ? "Reconnect Sentry" : installed ? "Reconnect" : "Connect Sentry"}
         </Btn>
         {installed && (
           <Btn

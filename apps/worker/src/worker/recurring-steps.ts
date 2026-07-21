@@ -12,6 +12,7 @@ import type { handleIssueTransition } from "../incidents/workflow.js";
 import { logger as defaultLogger } from "../logger.js";
 import { tickObservedIssues } from "../observation.js";
 import { loadQueueHealthCounts } from "../queue-health.js";
+import { tickSentryIssueEvents } from "../sentry/tick.js";
 import { tickWebhooks } from "../webhooks.js";
 import {
   type ChainCounts,
@@ -45,6 +46,7 @@ export type RecurringStepSpec = RecurringStep & {
 // while stuck-queue alerting catches a queue left without any consumer.
 export const RECURRING_TICK_STEPS: readonly SkippableTickStep[] = [
   "agent_chats",
+  "sentry_events",
   "webhooks",
   "alerts",
   "digests",
@@ -63,6 +65,12 @@ export function buildRecurringSteps(deps: RecurringStepsDeps): RecurringStepSpec
       // A pass may legitimately start provider sessions for a whole batch of
       // chats; only warn once it runs well past that.
       passWarnAfterMs: 600_000,
+    },
+    {
+      queue: "sentry-issue-sweep",
+      tickStep: "sentry_events",
+      intervalSeconds: 5,
+      run: () => tickSentryIssueEvents(deps.onIssueTransition),
     },
     {
       queue: "webhook-deliveries",
