@@ -35,6 +35,7 @@ import {
   count,
   desc,
   eq,
+  gte,
   inArray,
   isNotNull,
   isNull,
@@ -94,6 +95,11 @@ import {
 } from "./incidents/stats.js";
 import { mountIngestFilters } from "./ingest-filters.js";
 import { sanitizeIssueFilterConfig } from "./issue-filter-service.js";
+import {
+  DEFAULT_ISSUE_LIST_WINDOW_DAYS,
+  buildIssueListItems,
+  parseIssueListWindow,
+} from "./issues/list.js";
 import { mountLinearAuthed, mountLinearPublic } from "./linear.js";
 import { logger } from "./logger.js";
 import { mountManagementApi, mountOrgKeyManagementAuthed } from "./management.js";
@@ -1341,6 +1347,12 @@ app.get("/api/projects/:projectId/issues", async (c) => {
   const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const limit = clampLimit(Number(c.req.query("limit") ?? 50), 50, 200);
   const projectFilter = eq(schema.issues.projectId, projectId);
+  let listWindow: ReturnType<typeof parseIssueListWindow>;
+  try {
+    listWindow = parseIssueListWindow(c.req.query("recentDays"));
+  } catch (err) {
+    throw new HTTPException(400, { message: String(err).replace(/^Error:\s*/, "") });
+  }
   // `status` supersedes the legacy `silenced` param: one of the IssueStatus
   // values, or "all". The legacy values map onto statuses ("active" = not
   // silenced) so existing clients keep working.
@@ -1364,12 +1376,55 @@ app.get("/api/projects/:projectId/issues", async (c) => {
         ? and(projectFilter, eq(schema.issues.status, "silenced"))
         : and(projectFilter, inArray(schema.issues.status, ["open", "under_observation"]));
   }
+  if (listWindow.days !== null) {
+    const cutoff = new Date();
+    cutoff.setUTCHours(0, 0, 0, 0);
+    cutoff.setUTCDate(cutoff.getUTCDate() - listWindow.days + 1);
+    where = and(where, gte(schema.issues.lastSeen, cutoff));
+  }
   const rows = await db.query.issues.findMany({
     where,
     orderBy: [desc(schema.issues.lastSeen)],
     limit,
   });
-  return c.json(rows);
+  if (rows.length === 0) return c.json([]);
+
+  let activityRows: { fingerprint: string; day: string; count: string | number }[] = [];
+  try {
+    const activity = await ch.query({
+      query: `
+        SELECT fingerprint, toString(day) AS bucket_day, sum(event_count) AS count
+        FROM issue_activity_daily
+        WHERE project_id = {projectId:String}
+          AND fingerprint IN {fingerprints:Array(String)}
+          AND day >= today() - ({days:UInt32} - 1)
+        GROUP BY fingerprint, day
+        ORDER BY fingerprint, day ASC
+      `,
+      query_params: {
+        projectId,
+        fingerprints: [...new Set(rows.map((row) => row.fingerprint))],
+        days: DEFAULT_ISSUE_LIST_WINDOW_DAYS,
+      },
+      format: "JSONEachRow",
+    });
+    const activityResultRows = (await activity.json()) as {
+      fingerprint: string;
+      bucket_day: string;
+      count: string | number;
+    }[];
+    activityRows = activityResultRows.map((row) => ({
+      fingerprint: row.fingerprint,
+      day: row.bucket_day,
+      count: row.count,
+    }));
+  } catch (err) {
+    logger.warn({ err, projectId }, "issue list activity unavailable; returning empty sparklines");
+  }
+
+  return c.json(
+    buildIssueListItems(rows, activityRows, { windowDays: DEFAULT_ISSUE_LIST_WINDOW_DAYS }),
+  );
 });
 
 app.get("/api/projects/:projectId/issues/:issueId", async (c) => {

@@ -33,6 +33,7 @@ import {
   type IncidentSeverity,
   type IncidentStats,
   type Issue,
+  type IssueListItem,
   type IssueSample,
   type LogRow,
   type PendingResolutionProposal,
@@ -94,6 +95,12 @@ import {
 import { TriggeredByAlertMetaRow } from "./incidents/TriggeredByAlertMetaRow.tsx";
 import { getIssueIncidentLinkState } from "./issue-incident-link-state.ts";
 import { IssueDetailView } from "./issues/IssueDetailView.tsx";
+import { IssueFrequencySparkline } from "./issues/IssueFrequencySparkline.tsx";
+import {
+  DEFAULT_ISSUE_LIST_FILTER,
+  ISSUE_STATUS_TABS,
+  type IssueListWindow,
+} from "./issues/issue-list-model.ts";
 import { useProjectPath } from "./ProjectRouteContext.tsx";
 import {
   appPathFromProjectRoute,
@@ -109,7 +116,6 @@ import {
 
 const IncidentPrDiffView = lazy(() => import("./IncidentPrDiffView.tsx"));
 
-type IssueFilter = "active" | "silenced" | "all";
 type IncidentStatus = "open" | "resolved" | "autoresolved_noise" | "all";
 type Tab = "issues" | "incidents";
 
@@ -236,10 +242,14 @@ type EventTarget =
   | null;
 
 function IssuesTab({ projectId, slugs }: { projectId: string; slugs: ProjectRouteSlugs }) {
-  const [filter, setFilter] = useState<IssueFilter>("active");
+  const [filter, setFilter] = useState(DEFAULT_ISSUE_LIST_FILTER);
   const [eventTarget, setEventTarget] = useState<EventTarget>(null);
   const { id: selectedId, openItem, closeItem } = useNav(slugs);
-  const issues = useIssues(projectId, filter, { groupingFilter: "ungrouped" });
+  const issues = useIssues(projectId, {
+    status: filter.status,
+    recentDays: filter.window === "12d" ? 12 : "all",
+    groupingFilter: "ungrouped",
+  });
   const silence = useSilenceIssue(projectId);
   const unsilence = useUnsilenceIssue(projectId);
 
@@ -253,12 +263,6 @@ function IssuesTab({ projectId, slugs }: { projectId: string; slugs: ProjectRout
     else openItem(issueId, "issues");
   }
 
-  const tabs: { id: IssueFilter; label: string }[] = [
-    { id: "active", label: "Active" },
-    { id: "silenced", label: "Silenced" },
-    { id: "all", label: "All" },
-  ];
-
   function handleSilenceToggle(issue: Issue) {
     const mutation = issue.silencedAt ? unsilence : silence;
     mutation.mutate(issue.id);
@@ -266,17 +270,18 @@ function IssuesTab({ projectId, slugs }: { projectId: string; slugs: ProjectRout
 
   return (
     <div>
-      <div className="mb-4 flex items-center justify-between">
-        <div className="flex items-center gap-1">
-          {tabs.map((t) => (
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex max-w-full items-center gap-1 overflow-x-auto">
+          {ISSUE_STATUS_TABS.map((t) => (
             <button
+              type="button"
               key={t.id}
               onClick={() => {
-                setFilter(t.id);
+                setFilter((current) => ({ ...current, status: t.id }));
                 selectIssue(null);
               }}
               className={
-                filter === t.id
+                filter.status === t.id
                   ? "rounded-md bg-surface-3 px-3 py-1.5 text-[13px] font-medium tracking-tight text-fg"
                   : "rounded-md px-3 py-1.5 text-[13px] font-medium tracking-tight text-muted hover:text-fg"
               }
@@ -285,11 +290,31 @@ function IssuesTab({ projectId, slugs }: { projectId: string; slugs: ProjectRout
             </button>
           ))}
         </div>
-        {issues.data && (
-          <span className="text-[12px] text-muted">
-            {issues.data.length} error{issues.data.length !== 1 ? "s" : ""}
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[12px] text-muted">
+            <span>Last seen</span>
+            <select
+              aria-label="Last seen"
+              value={filter.window}
+              onChange={(event) => {
+                setFilter((current) => ({
+                  ...current,
+                  window: event.target.value as IssueListWindow,
+                }));
+                selectIssue(null);
+              }}
+              className="cursor-pointer bg-transparent font-medium text-fg outline-none"
+            >
+              <option value="12d">Last 12 days</option>
+              <option value="all">Any time</option>
+            </select>
+          </label>
+          {issues.data && (
+            <span className="whitespace-nowrap text-[12px] text-muted">
+              {issues.data.length} error{issues.data.length !== 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
       </div>
 
       {issues.isLoading && <IssueListSkeleton />}
@@ -299,7 +324,8 @@ function IssuesTab({ projectId, slugs }: { projectId: string; slugs: ProjectRout
       {issues.data && issues.data.length === 0 && (
         <div className="rounded-xl border border-border bg-surface p-12 text-center">
           <p className="text-[13px] text-muted">
-            No {filter === "all" ? "" : filter + " "}ungrouped errors
+            No {filter.status === "all" ? "" : `${filter.status.replace("_", " ")} `}errors
+            {filter.window === "12d" ? " seen in the last 12 days" : ""}
           </p>
         </div>
       )}
@@ -385,12 +411,13 @@ export function IssueRow({
   selected,
   onClick,
 }: {
-  issue: Issue;
+  issue: IssueListItem;
   selected: boolean;
   onClick: () => void;
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       className={`w-full px-4 py-3 text-left transition-colors hover:bg-surface-2 ${selected ? "bg-surface-2" : ""}`}
     >
@@ -407,6 +434,9 @@ export function IssueRow({
           {issue.message && (
             <p className="mt-0.5 truncate font-sans text-[11px] text-muted">{issue.message}</p>
           )}
+        </div>
+        <div className="hidden shrink-0 self-center sm:block">
+          <IssueFrequencySparkline buckets={issue.activityBuckets} />
         </div>
         <div className="shrink-0 text-right">
           <div className="font-sans text-[11px] tabular-nums text-muted">
@@ -1381,7 +1411,7 @@ function LazyRowSparkline({
 }) {
   if (activity) {
     return activity.buckets.length > 0 ? (
-      <RowSparkline buckets={activity.buckets} />
+      <IssueFrequencySparkline buckets={activity.buckets} />
     ) : (
       <div className="h-10 w-[112px]" aria-hidden />
     );
@@ -1462,55 +1492,6 @@ function RowUsersImpacted({
     <div className="mt-1 font-sans text-[11px] tabular-nums text-subtle">
       {label} user{count === 1 && !capped ? "" : "s"}
     </div>
-  );
-}
-
-function RowSparkline({ buckets }: { buckets: { day: string; count: number }[] }) {
-  if (buckets.length === 0) return null;
-  const max = Math.max(1, ...buckets.map((b) => b.count));
-  // Tiebreaker = earliest matching day so the value mark stays put across renders.
-  const peakIdx = max > 0 ? buckets.findIndex((b) => b.count === max) : -1;
-  return (
-    // Outer wrapper is taller than the bar area so the peak marker has room to
-    // sit above the bars without scaling them down. Bars are pinned to the
-    // bottom; the marker is positioned via bottom:100% on the peak bar so it
-    // always rests at the bar's top edge.
-    <div className="relative h-10 w-[112px]" role="img" aria-label="Last 14 days activity">
-      <div className="absolute inset-x-0 bottom-0 flex h-6 items-end gap-[2px]">
-        {buckets.map((b, idx) => {
-          const heightPct = (b.count / max) * 100;
-          const isPeak = idx === peakIdx;
-          return (
-            <div
-              key={b.day}
-              title={`${b.day}: ${b.count.toLocaleString()} events`}
-              className="relative flex-1 rounded-[1px]"
-              style={{
-                height: `max(1px, ${heightPct}%)`,
-                backgroundColor: "var(--color-accent)",
-                opacity: b.count === 0 ? 0.18 : isPeak ? 1 : 0.5,
-              }}
-            >
-              {isPeak && <PeakMarker value={b.count} />}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// "Value mark" anchored to the top of the peak bar. bottom:100% means the label
-// rests on the bar regardless of bar height (works for both tall and short peaks).
-function PeakMarker({ value }: { value: number }) {
-  return (
-    <span
-      className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 whitespace-nowrap pb-0.5 font-sans text-[9px] leading-none tabular-nums"
-      style={{ color: "var(--color-accent)" }}
-      aria-hidden
-    >
-      {value.toLocaleString()}
-    </span>
   );
 }
 

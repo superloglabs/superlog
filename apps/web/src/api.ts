@@ -2452,18 +2452,31 @@ export type Issue = {
   triggeringAlert?: { id: string; name: string } | null;
 };
 
+export type IssueListItem = Issue & {
+  activityBuckets: { day: string; count: number }[];
+};
+
 export function useIssues(
   projectId: string | undefined,
-  silenced: "active" | "silenced" | "all" = "active",
-  opts: { groupingFilter?: "ungrouped" } = {},
+  opts: {
+    status?: Issue["status"] | "all";
+    recentDays?: number | "all";
+    groupingFilter?: "ungrouped";
+  } = {},
 ) {
   const fetcher = useFetcher();
+  const status = opts.status ?? "open";
+  const recentDays = opts.recentDays ?? 12;
   return useQuery({
-    queryKey: ["issues", projectId, silenced, opts.groupingFilter ?? "all"],
+    queryKey: ["issues", projectId, status, recentDays, opts.groupingFilter ?? "all"],
     queryFn: () => {
-      const params = new URLSearchParams({ silenced, limit: "200" });
+      const params = new URLSearchParams({
+        status,
+        recentDays: String(recentDays),
+        limit: "200",
+      });
       if (opts.groupingFilter) params.set("grouping", opts.groupingFilter);
-      return fetcher<Issue[]>(`/api/projects/${projectId}/issues?${params.toString()}`);
+      return fetcher<IssueListItem[]>(`/api/projects/${projectId}/issues?${params.toString()}`);
     },
     enabled: !!projectId,
   });
