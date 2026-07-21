@@ -26,8 +26,13 @@ const METRIC_TABLES = [
 
 type HomeSignalSchema = {
   eventsRollup: boolean;
+  metricTables: ReadonlySet<string>;
   optimizedMetricTables: ReadonlySet<string>;
 };
+
+export function clampHomeSignalStep(step: Step): Step {
+  return step.unit === "SECOND" ? { n: 1, unit: "MINUTE" } : step;
+}
 
 async function inspectHomeSignalSchema(clickhouse: ClickHouseClient): Promise<HomeSignalSchema> {
   try {
@@ -54,12 +59,17 @@ async function inspectHomeSignalSchema(clickhouse: ClickHouseClient): Promise<Ho
     }>;
     return {
       eventsRollup: rows.some(({ table }) => table === "events_per_minute"),
+      metricTables: new Set(
+        rows
+          .map(({ table }) => table)
+          .filter((table) => METRIC_TABLES.includes(table as (typeof METRIC_TABLES)[number])),
+      ),
       optimizedMetricTables: new Set(
         rows.filter(({ optimized }) => Number(optimized) === 1).map(({ table }) => table),
       ),
     };
   } catch {
-    return { eventsRollup: false, optimizedMetricTables: new Set() };
+    return { eventsRollup: false, metricTables: new Set(), optimizedMetricTables: new Set() };
   }
 }
 
@@ -85,6 +95,7 @@ export async function getHomeSignalSeries(
   step: Step,
 ): Promise<{ step: string; rows: HomeSignalSeriesPoint[] }> {
   const schema = await inspectHomeSignalSchema(clickhouse);
+  const safeStep = clampHomeSignalStep(step);
   // Traces and logs use the per-minute event rollup. Metrics use the exact-count
   // usage projections, whose materialized project column avoids scanning the
   // ResourceAttributes map. Older/self-hosted schemas retain a raw-table fallback.
@@ -94,7 +105,7 @@ export async function getHomeSignalSeries(
     ? [
         `
       SELECT
-        toString(toStartOfInterval(minute, INTERVAL ${step.n} ${step.unit})) AS bucket,
+        toString(toStartOfInterval(minute, INTERVAL ${safeStep.n} ${safeStep.unit})) AS bucket,
         signal,
         sum(c) AS count
       FROM events_per_minute
@@ -108,7 +119,7 @@ export async function getHomeSignalSeries(
     : [
         `
           SELECT
-            toString(toStartOfInterval(Timestamp, INTERVAL ${step.n} ${step.unit})) AS bucket,
+            toString(toStartOfInterval(Timestamp, INTERVAL ${safeStep.n} ${safeStep.unit})) AS bucket,
             'traces' AS signal,
             count() AS count
           FROM otel_traces
@@ -119,7 +130,7 @@ export async function getHomeSignalSeries(
         `,
         `
           SELECT
-            toString(toStartOfInterval(TimestampTime, INTERVAL ${step.n} ${step.unit})) AS bucket,
+            toString(toStartOfInterval(TimestampTime, INTERVAL ${safeStep.n} ${safeStep.unit})) AS bucket,
             'logs' AS signal,
             count() AS count
           FROM otel_logs
@@ -129,13 +140,14 @@ export async function getHomeSignalSeries(
           GROUP BY bucket
         `,
       ];
-  const metricParts = METRIC_TABLES.map((table) => {
-    const projectId = schema.optimizedMetricTables.has(table)
-      ? "SuperlogProjectId"
-      : "ResourceAttributes['superlog.project_id']";
-    return `
+  const metricParts = METRIC_TABLES.filter((table) => schema.metricTables.has(table)).map(
+    (table) => {
+      const projectId = schema.optimizedMetricTables.has(table)
+        ? "SuperlogProjectId"
+        : "ResourceAttributes['superlog.project_id']";
+      return `
       SELECT
-        toString(toStartOfInterval(TimeUnix, INTERVAL ${step.n} ${step.unit})) AS bucket,
+        toString(toStartOfInterval(TimeUnix, INTERVAL ${safeStep.n} ${safeStep.unit})) AS bucket,
         'metrics' AS signal,
         count() AS count
       FROM ${table}
@@ -144,7 +156,8 @@ export async function getHomeSignalSeries(
       WHERE ${projectId} = {projectId:String}
       GROUP BY bucket
     `;
-  });
+    },
+  );
   const parts = [...eventParts, ...metricParts];
   const result = await clickhouse.query({
     query: `
@@ -158,5 +171,8 @@ export async function getHomeSignalSeries(
     format: "JSONEachRow",
   });
   const rows = (await result.json()) as RawSignalSeriesRow[];
-  return { step: `${step.n} ${step.unit}`, rows: mergeHomeSignalSeriesRows(rows) };
+  return {
+    step: `${safeStep.n} ${safeStep.unit}`,
+    rows: mergeHomeSignalSeriesRows(rows),
+  };
 }
