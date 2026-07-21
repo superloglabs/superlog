@@ -16,9 +16,14 @@ export type SentryCredential = {
 
 export type SentryCredentialRepository = {
   getActive(projectId: string): Promise<SentryCredential | null>;
-  updateToken(
+  refreshIfExpiring(
     installationId: string,
-    token: { accessToken: string; refreshToken: string | null; expiresAt: Date | null },
+    refreshAt: Date,
+    issueToken: (credential: SentryCredential) => Promise<{
+      accessToken: string;
+      refreshToken: string | null;
+      expiresAt: Date | null;
+    }>,
   ): Promise<SentryCredential>;
   markNeedsReauth(installationId: string, reason: string): Promise<void>;
 };
@@ -37,28 +42,44 @@ export function createSentryCredentialRepository(
       return row ? decryptRow(row) : null;
     },
 
-    async updateToken(installationId, token) {
-      const access = encryptIntegrationSecret(token.accessToken);
-      const refresh = token.refreshToken ? encryptIntegrationSecret(token.refreshToken) : null;
-      const rows = await database
-        .update(sentryInstallations)
-        .set({
-          accessTokenCiphertext: access.ciphertext,
-          accessTokenNonce: access.nonce.toString("base64"),
-          accessTokenKeyVersion: access.keyVersion,
-          refreshTokenCiphertext: refresh?.ciphertext ?? null,
-          refreshTokenNonce: refresh?.nonce.toString("base64") ?? null,
-          refreshTokenKeyVersion: refresh?.keyVersion ?? null,
-          oauthExpiresAt: token.expiresAt,
-          reauthRequiredAt: null,
-          reauthReason: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(sentryInstallations.id, installationId))
-        .returning();
-      const row = rows[0];
-      if (!row) throw new Error("Sentry installation disappeared during token refresh");
-      return decryptRow(row);
+    async refreshIfExpiring(installationId, refreshAt, issueToken) {
+      return database.transaction(async (tx) => {
+        const [row] = await tx
+          .select()
+          .from(sentryInstallations)
+          .where(
+            and(eq(sentryInstallations.id, installationId), isNull(sentryInstallations.revokedAt)),
+          )
+          .for("update");
+        if (!row) throw new Error("Sentry installation disappeared during token refresh");
+        const current = decryptRow(row);
+        if (!current.expiresAt || current.expiresAt.getTime() > refreshAt.getTime()) {
+          return current;
+        }
+
+        const token = await issueToken(current);
+        const access = encryptIntegrationSecret(token.accessToken);
+        const refresh = token.refreshToken ? encryptIntegrationSecret(token.refreshToken) : null;
+        const rows = await tx
+          .update(sentryInstallations)
+          .set({
+            accessTokenCiphertext: access.ciphertext,
+            accessTokenNonce: access.nonce.toString("base64"),
+            accessTokenKeyVersion: access.keyVersion,
+            refreshTokenCiphertext: refresh?.ciphertext ?? null,
+            refreshTokenNonce: refresh?.nonce.toString("base64") ?? null,
+            refreshTokenKeyVersion: refresh?.keyVersion ?? null,
+            oauthExpiresAt: token.expiresAt,
+            reauthRequiredAt: null,
+            reauthReason: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(sentryInstallations.id, installationId))
+          .returning();
+        const updated = rows[0];
+        if (!updated) throw new Error("Sentry installation disappeared during token refresh");
+        return decryptRow(updated);
+      });
     },
 
     async markNeedsReauth(installationId, reason) {

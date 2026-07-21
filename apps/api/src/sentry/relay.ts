@@ -24,9 +24,14 @@ export type SentryMcpCredential = {
 
 export type SentryMcpCredentialRepository = {
   getActive(projectId: string): Promise<SentryMcpCredential | null>;
-  updateToken(
+  refreshIfExpiring(
     installationId: string,
-    token: { accessToken: string; refreshToken: string | null; expiresAt: Date | null },
+    refreshAt: Date,
+    issueToken: (credential: SentryMcpCredential) => Promise<{
+      accessToken: string;
+      refreshToken: string | null;
+      expiresAt: Date | null;
+    }>,
   ): Promise<SentryMcpCredential>;
   markNeedsReauth(installationId: string, reason: string): Promise<void>;
 };
@@ -110,18 +115,24 @@ async function refreshCredential(
   deps: RelayDependencies,
   credential: SentryMcpCredential,
 ): Promise<SentryMcpCredential> {
-  const token = await requestSentryInstallationToken({
-    installationId: credential.sentryInstallationId,
-    clientId: deps.clientId ?? "",
-    clientSecret: deps.clientSecret ?? "",
-    grant: { type: "refresh_token", refreshToken: credential.refreshToken ?? "" },
-    fetchImpl: deps.fetch,
-  });
-  return deps.repository.updateToken(credential.id, {
-    accessToken: token.accessToken,
-    refreshToken: token.refreshToken,
-    expiresAt: token.expiresAt,
-  });
+  return deps.repository.refreshIfExpiring(
+    credential.id,
+    new Date(deps.now().getTime() + 60_000),
+    async (lockedCredential) => {
+      const token = await requestSentryInstallationToken({
+        installationId: lockedCredential.sentryInstallationId,
+        clientId: deps.clientId ?? "",
+        clientSecret: deps.clientSecret ?? "",
+        grant: { type: "refresh_token", refreshToken: lockedCredential.refreshToken ?? "" },
+        fetchImpl: deps.fetch,
+      });
+      return {
+        accessToken: token.accessToken,
+        refreshToken: token.refreshToken,
+        expiresAt: token.expiresAt,
+      };
+    },
+  );
 }
 
 function safeEqual(left: string, right: string): boolean {

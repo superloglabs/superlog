@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { Hono } from "hono";
-import { mountSentryMcpRelayPublic } from "./relay.js";
+import { type SentryMcpCredential, mountSentryMcpRelayPublic } from "./relay.js";
 
 test("relays an authenticated project-scoped MCP request with Sentry-Bearer auth", async () => {
   const upstream: Array<{ url: string; init: RequestInit }> = [];
@@ -18,7 +18,7 @@ test("relays an authenticated project-scoped MCP request with Sentry-Bearer auth
         relayToken: "relay-token",
         expiresAt: new Date("2026-07-22T12:00:00.000Z"),
       }),
-      updateToken: async () => assert.fail("fresh credentials must not refresh"),
+      refreshIfExpiring: async () => assert.fail("fresh credentials must not refresh"),
       markNeedsReauth: async () => assert.fail("fresh credentials must not need reauth"),
     },
     now: () => new Date("2026-07-21T12:00:00.000Z"),
@@ -69,7 +69,8 @@ test("refreshes an expired Sentry token before relaying investigation queries", 
   mountSentryMcpRelayPublic(app, {
     repository: {
       getActive: async () => current,
-      updateToken: async (id, token) => {
+      refreshIfExpiring: async (id, _refreshAt, issueToken) => {
+        const token = await issueToken(current);
         updated.push({ id, token });
         return { ...current, ...token };
       },
@@ -135,7 +136,7 @@ test("marks the installation for reconnect when Sentry rejects its OAuth token",
         relayToken: "relay-token",
         expiresAt: null,
       }),
-      updateToken: async () => assert.fail("a non-expired token must not refresh eagerly"),
+      refreshIfExpiring: async () => assert.fail("a non-expired token must not refresh eagerly"),
       markNeedsReauth: async (id, reason) => {
         reauth.push({ id, reason });
       },
@@ -156,4 +157,75 @@ test("marks the installation for reconnect when Sentry rejects its OAuth token",
   assert.deepEqual(reauth, [
     { id: "sentry-install-1", reason: "Sentry MCP rejected OAuth token (401)" },
   ]);
+});
+
+test("parallel MCP requests rotate an expiring Sentry App grant only once", async () => {
+  let credential: SentryMcpCredential = {
+    id: "sentry-install-1",
+    sentryInstallationId: "sentry-external-installation-1",
+    organizationSlug: "acme",
+    projectSlug: "storefront",
+    accessToken: "expiring-access",
+    refreshToken: "single-use-refresh",
+    relayToken: "relay-token",
+    expiresAt: new Date("2026-07-21T12:00:30.000Z"),
+  };
+  let refreshCalls = 0;
+  const reauth: string[] = [];
+  let refreshTail: Promise<void> = Promise.resolve();
+  const app = new Hono();
+  mountSentryMcpRelayPublic(app, {
+    repository: {
+      getActive: async () => credential,
+      refreshIfExpiring: async (_id, refreshAt, issueToken) => {
+        const refresh = refreshTail.then(async () => {
+          if (!credential.expiresAt || credential.expiresAt.getTime() > refreshAt.getTime()) {
+            return credential;
+          }
+          const token = await issueToken(credential);
+          credential = { ...credential, ...token };
+          return credential;
+        });
+        refreshTail = refresh.then(
+          () => undefined,
+          () => undefined,
+        );
+        return refresh;
+      },
+      markNeedsReauth: async (_id, reason) => {
+        reauth.push(reason);
+      },
+    },
+    now: () => new Date("2026-07-21T12:00:00.000Z"),
+    fetch: async (input) => {
+      if (String(input).includes("/authorizations/")) {
+        refreshCalls += 1;
+        if (refreshCalls > 1) return Response.json({ detail: "stale refresh" }, { status: 401 });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return Response.json({
+          token: "fresh-access",
+          refreshToken: "next-refresh",
+          expiresAt: "2026-07-21T20:00:00.000Z",
+        });
+      }
+      return Response.json({ jsonrpc: "2.0", result: {} });
+    },
+    clientId: "client-1",
+    clientSecret: "secret-1",
+  });
+
+  const request = () =>
+    app.request("/api/sentry-mcp-relay/project-1", {
+      method: "POST",
+      headers: { authorization: "Bearer relay-token" },
+      body: "{}",
+    });
+  const responses = await Promise.all([request(), request()]);
+
+  assert.deepEqual(
+    responses.map((response) => response.status),
+    [200, 200],
+  );
+  assert.equal(refreshCalls, 1);
+  assert.deepEqual(reauth, []);
 });
