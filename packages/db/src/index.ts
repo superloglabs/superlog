@@ -195,6 +195,7 @@ export {
   requestFollowUpAgentRun,
   requestOpenPrAgentRun,
   OPEN_PR_REQUEST_TEXT,
+  type RequestOpenPrAgentRunResult,
   type RestartAgentRunResult,
   type RetryBlockedAgentRunResult,
   FOLLOW_UP_MAX_AGE_DAYS,

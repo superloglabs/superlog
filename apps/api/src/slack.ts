@@ -479,7 +479,9 @@ async function handleSlackOpenPr(
   const result = await requestOpenPrAgentRun(db, {
     incidentId,
     requestedBy: payload.user?.id ?? null,
+    requestId: `${payload.user?.id ?? "anon"}:${payload.actions?.[0]?.action_ts ?? crypto.randomUUID()}`,
   });
+  if (result.outcome === "duplicate") return;
   const installation = await installationForIncident({
     pinnedId: incident.slackInstallationId,
     teamId: payload.team?.id ?? "",

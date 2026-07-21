@@ -237,22 +237,56 @@ type RequestFollowUpArgs = {
 export const OPEN_PR_REQUEST_TEXT =
   "Fix the confirmed incident cause and open a pull request with the validated changes.";
 
-export function requestOpenPrAgentRun(
+export type RequestOpenPrAgentRunResult = RequestFollowUpResult | { outcome: "duplicate" };
+
+export async function requestOpenPrAgentRun(
   db: DB,
-  args: { incidentId: string; requestedBy: string | null; now?: Date },
-): Promise<RequestFollowUpResult> {
+  args: {
+    incidentId: string;
+    requestedBy: string | null;
+    requestId: string;
+    now?: Date;
+  },
+): Promise<RequestOpenPrAgentRunResult> {
   const now = args.now ?? new Date();
-  return requestFollowUpAgentRun(db, {
-    incidentId: args.incidentId,
-    trigger: "slack_open_pr",
-    confirmed: true,
-    interaction: {
-      channel: "slack_open_pr",
-      author: args.requestedBy,
-      text: OPEN_PR_REQUEST_TEXT,
-      occurredAt: now.toISOString(),
-    },
-    now,
+  return db.transaction(async (tx) => {
+    const aggregate = await lockAgentFollowUpAggregate(tx, args.incidentId);
+    if (!aggregate) return { outcome: "skipped", reason: "no_prior_run" };
+
+    // Slack retries a block action with the same action timestamp when the
+    // acknowledgement misses its deadline. Claim that stable request id in
+    // the same transaction as enqueueing so a retry cannot append duplicate
+    // instructions or produce a second acknowledgement message.
+    const [claimed] = await tx
+      .insert(schema.incidentEvents)
+      .values({
+        incidentId: args.incidentId,
+        kind: "open_pr_requested",
+        summary: "Pull request implementation requested from Slack.",
+        detail: { requestedBy: args.requestedBy },
+        dedupeKey: `open_pr_request:${args.requestId}`,
+        processedAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: schema.incidentEvents.id });
+    if (!claimed) return { outcome: "duplicate" };
+
+    return requestFollowUpAgentRunInTx(
+      tx,
+      {
+        incidentId: args.incidentId,
+        trigger: "slack_open_pr",
+        confirmed: true,
+        interaction: {
+          channel: "slack_open_pr",
+          author: args.requestedBy,
+          text: OPEN_PR_REQUEST_TEXT,
+          occurredAt: now.toISOString(),
+        },
+        now,
+      },
+      aggregate,
+    );
   });
 }
 
