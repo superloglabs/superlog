@@ -472,6 +472,13 @@ export function terminalOutcomeNudgeCapabilities(
 } {
   const declared = snapshot.declaredCustomToolNames;
   if (!declared) {
+    logger.info(
+      {
+        scope: "agent_run.nudge",
+        fallback_capabilities: fallback,
+      },
+      "terminal outcome nudge is using legacy snapshot capabilities",
+    );
     return {
       ...fallback,
       linearTicketCreationAvailable: false,

@@ -613,6 +613,18 @@ export async function completeWithoutPullRequest(
         }
         let deliveredTicket = null;
         try {
+          if (explicitLinearHandoff && !shouldCreateTicket) {
+            logger.error(
+              {
+                scope: "agent_run.linear_handoff",
+                agent_run_id: ctx.agentRun.id,
+                incident_id: ctx.incident.id,
+                terminal_outcome: terminalOutcome,
+                should_create_ticket: shouldCreateTicket,
+              },
+              "explicit Linear handoff skipped by completion policy",
+            );
+          }
           deliveredTicket = shouldCreateTicket
             ? await scheduleLinearHandoff(
                 ctx,
@@ -653,6 +665,8 @@ export async function completeWithoutPullRequest(
               agent_run_id: ctx.agentRun.id,
               incident_id: ctx.incident.id,
               terminal_outcome: terminalOutcome,
+              should_create_ticket: shouldCreateTicket,
+              delivered_ticket: !!deliveredTicket,
             },
             "explicit Linear handoff returned without a ticket",
           );
