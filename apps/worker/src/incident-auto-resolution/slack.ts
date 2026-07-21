@@ -41,7 +41,6 @@ export async function postQuietIncidentResolvedSlackNotification(
       title: incident.title,
       titleUrl: incidentUrl,
       tagline: "No linked errors recurred for 14 days.",
-      projectName: project.name,
       service: incident.service,
       environment: incident.environment,
       buttons: [],
