@@ -136,33 +136,58 @@ export function dashboardRouteCanMutateDashboard({
   return !isHome;
 }
 
+const HOME_BUILTIN_DEFINITIONS = {
+  setup_todos: {
+    type: "setup_todos",
+    title: "Setup",
+    config: { filter: {} },
+    layout: defaultWidgetLayout("setup_todos"),
+  },
+  active_incidents: {
+    type: "active_incidents",
+    title: "Active critical incidents",
+    config: { filter: {} },
+    layout: defaultWidgetLayout("active_incidents"),
+  },
+  service_map: {
+    type: "service_map",
+    title: "Service map",
+    config: { filter: {} },
+    layout: defaultWidgetLayout("service_map"),
+  },
+  incoming_signals: {
+    type: "incoming_signals",
+    title: "Incoming signals",
+    config: { filter: {} },
+    layout: defaultWidgetLayout("incoming_signals"),
+  },
+  incident_count: {
+    type: "incident_count",
+    title: "Active incidents",
+    config: { filter: {} },
+    layout: defaultWidgetLayout("incident_count"),
+  },
+  agent_pull_requests: {
+    type: "agent_pull_requests",
+    title: "PRs opened by Superlog",
+    config: { filter: {} },
+    layout: defaultWidgetLayout("agent_pull_requests"),
+  },
+} satisfies Record<HomeBuiltinType, DashboardWidgetCreateInput>;
+
+export function homeBuiltinDefinition(type: HomeBuiltinType): DashboardWidgetCreateInput {
+  return HOME_BUILTIN_DEFINITIONS[type];
+}
+
+const DEFAULT_HOME_BUILTIN_TYPES = [
+  "setup_todos",
+  "incoming_signals",
+  "incident_count",
+  "agent_pull_requests",
+] as const satisfies readonly HomeBuiltinType[];
+
 export function defaultHomeWidgets(): DashboardWidgetCreateInput[] {
-  return [
-    {
-      type: "setup_todos",
-      title: "Setup",
-      config: { filter: {} },
-      layout: defaultWidgetLayout("setup_todos"),
-    },
-    {
-      type: "incoming_signals",
-      title: "Incoming signals",
-      config: { filter: {} },
-      layout: defaultWidgetLayout("incoming_signals"),
-    },
-    {
-      type: "incident_count",
-      title: "Active incidents",
-      config: { filter: {} },
-      layout: defaultWidgetLayout("incident_count"),
-    },
-    {
-      type: "agent_pull_requests",
-      title: "PRs opened by Superlog",
-      config: { filter: {} },
-      layout: defaultWidgetLayout("agent_pull_requests"),
-    },
-  ];
+  return DEFAULT_HOME_BUILTIN_TYPES.map(homeBuiltinDefinition);
 }
 
 // A dashboard-level template variable. Widget filters reference it from a
@@ -342,9 +367,7 @@ export async function setHomeBuiltin(
   const home = await getOrCreateHomeDashboard(projectId, userId);
   const existing = home.widgets.find((widget) => widget.type === type);
   if (enabled && !existing) {
-    const definition = defaultHomeWidgets().find((widget) => widget.type === type);
-    if (!definition) throw new Error(`missing definition for home widget: ${type}`);
-    await insertDashboardWidget(home.id, definition);
+    await insertDashboardWidget(home.id, homeBuiltinDefinition(type));
   }
   if (!enabled && existing) {
     await removeDashboardWidget(home.id, existing.id);

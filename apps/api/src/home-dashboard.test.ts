@@ -4,11 +4,20 @@ import { test } from "node:test";
 process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
 
 const {
+  HOME_BUILTIN_TYPES,
   defaultHomeWidgets,
+  homeBuiltinDefinition,
   homeLinkCreateSchema,
   dashboardRouteCanMutateDashboard,
   dashboardRouteCanWriteWidget,
 } = await import("./dashboards-service.js");
+
+test("every customizable home built-in keeps a definition even when it is not a default", () => {
+  assert.deepEqual(
+    HOME_BUILTIN_TYPES.map((type) => homeBuiltinDefinition(type).type),
+    HOME_BUILTIN_TYPES,
+  );
+});
 
 test("a new project home starts with the three operational pulse widgets", () => {
   const widgets = defaultHomeWidgets();
