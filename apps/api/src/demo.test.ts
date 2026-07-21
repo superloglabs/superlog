@@ -171,6 +171,7 @@ test("isDemoBlockedWrite matches the full mutating project-route inventory", () 
     { method: "POST", path: "/api/projects/p1/issues/lookup", block: false },
     { method: "POST", path: "/api/projects/p1/issue-filter/preview", block: false },
     { method: "POST", path: "/api/projects/p1/alerts/preview", block: false },
+    { method: "POST", path: "/api/projects/p1/alerts/preview-series", block: false },
   ];
   for (const r of ROUTES) {
     assert.equal(

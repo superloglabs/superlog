@@ -24,6 +24,8 @@ test("isReadOnlyPostPath treats Explore queries, lookups and previews as reads",
     "/api/projects/p1/issues/lookup",
     "/api/projects/p1/issue-filter/preview",
     "/api/projects/p1/alerts/preview",
+    "/api/projects/p1/alerts/preview-series",
+    "/api/projects/p1/explore/series",
   ]) {
     assert.equal(isReadOnlyPostPath(p), true, `${p} should be read-only`);
   }

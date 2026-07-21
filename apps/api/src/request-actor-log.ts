@@ -24,7 +24,12 @@ export function isMutatingMethod(method: string): boolean {
 // Project-scoped POST endpoints that are semantically reads — they carry query
 // filters in the body. The demo read-only guard (demo.ts) excludes the same
 // set; keep the two in sync.
-const POST_READ_SUBPATHS = new Set(["issues/lookup", "issue-filter/preview", "alerts/preview"]);
+const POST_READ_SUBPATHS = new Set([
+  "issues/lookup",
+  "issue-filter/preview",
+  "alerts/preview",
+  "alerts/preview-series",
+]);
 
 /**
  * Is this a POST that's really a read (Explore queries, lookups, previews)?
