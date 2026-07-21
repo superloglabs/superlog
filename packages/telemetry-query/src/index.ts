@@ -1093,8 +1093,10 @@ function histogramQuantileQuery(args: {
   const baseWhere = baseConds.join(" AND ");
   const stepNs = stepSeconds(step) * 1_000_000_000;
   const sinceNs = unixTimestamp64NanoExpr(sinceExpr);
+  const untilNs = unixTimestamp64NanoExpr(untilExpr);
   const predecessorLookbackExpr = `(${sinceExpr}) - INTERVAL 1 DAY`;
   const predecessorLookbackNs = unixTimestamp64NanoExpr(predecessorLookbackExpr);
+  const successorLookaheadExpr = `(${untilExpr}) + INTERVAL 1 DAY`;
   const seriesKey = `cityHash64(
     ServiceName,
     MetricName,
@@ -1125,16 +1127,16 @@ function histogramQuantileQuery(args: {
           QuantileBucketValues,
           DeltaBucketCounts,
           if(
-            b <= a,
+            least(b, ${untilNs}) <= greatest(a, ${sinceNs}),
             [],
             arrayMap(
               g -> tuple(
                 g,
-                (least(b, g + ${stepNs}) - greatest(a, g, ${sinceNs})) / dt
+                (least(b, g + ${stepNs}, ${untilNs}) - greatest(a, g, ${sinceNs})) / dt
               ),
               arrayMap(
                 i -> first_bucket + i * ${stepNs},
-                range(toUInt32(intDiv(intDiv(b - 1, ${stepNs}) * ${stepNs} - first_bucket, ${stepNs}) + 1))
+                range(toUInt32(intDiv(intDiv(least(b, ${untilNs}) - 1, ${stepNs}) * ${stepNs} - first_bucket, ${stepNs}) + 1))
               )
             )
           ) AS spread
@@ -1232,6 +1234,25 @@ function histogramQuantileQuery(args: {
                 PARTITION BY ${seriesKey}
                 ORDER BY TimeUnix DESC
               ) = 1
+
+              UNION ALL
+
+              SELECT
+                *,
+                ${bucketCountsExpr} AS QuantileBucketCounts,
+                ${bucketKeysExpr} AS QuantileBucketKeys,
+                toString(${bucketLayoutExpr}) AS QuantileBucketLayout,
+                ${bucketValuesExpr} AS QuantileBucketValues
+              FROM ${table}
+              WHERE ${baseWhere}
+                AND TimeUnix > ${untilExpr}
+                AND TimeUnix <= ${successorLookaheadExpr}
+                AND StartTimeUnix < ${untilExpr}
+                AND AggregationTemporality = 2
+              QUALIFY row_number() OVER (
+                PARTITION BY ${seriesKey}
+                ORDER BY TimeUnix ASC
+              ) = 1
             )
             WINDOW series AS (
               PARTITION BY ${seriesKey}
@@ -1259,7 +1280,8 @@ function histogramQuantileQuery(args: {
             FROM ${table}
             WHERE ${baseWhere}
               AND TimeUnix >= ${sinceExpr}
-              AND TimeUnix <= ${untilExpr}
+              AND TimeUnix <= ${successorLookaheadExpr}
+              AND StartTimeUnix < ${untilExpr}
               AND AggregationTemporality = 1
           )
         )
@@ -1324,8 +1346,10 @@ function temporalityAwareScalarQuery(args: {
   // its increase.
   const stepNs = stepSeconds(step) * 1_000_000_000;
   const sinceNs = unixTimestamp64NanoExpr(sinceExpr);
+  const untilNs = unixTimestamp64NanoExpr(untilExpr);
   const predecessorLookbackExpr = `(${sinceExpr}) - INTERVAL 1 DAY`;
   const predecessorLookbackNs = unixTimestamp64NanoExpr(predecessorLookbackExpr);
+  const successorLookaheadExpr = `(${untilExpr}) + INTERVAL 1 DAY`;
   const seriesKey = `cityHash64(
     ServiceName,
     MetricName,
@@ -1362,11 +1386,14 @@ function temporalityAwareScalarQuery(args: {
         SELECT
           group_key,
           if(
-            previous_value IS NULL
-              AND (
-                b < ${sinceNs}
-                  OR b = toUnixTimestamp64Nano(StartTimeUnix)
-                  OR toUnixTimestamp64Nano(StartTimeUnix) < ${predecessorLookbackNs}
+            least(b, ${untilNs}) <= greatest(a, ${sinceNs})
+              OR (
+                previous_value IS NULL
+                  AND (
+                    b < ${sinceNs}
+                      OR b = toUnixTimestamp64Nano(StartTimeUnix)
+                      OR toUnixTimestamp64Nano(StartTimeUnix) < ${predecessorLookbackNs}
+                  )
               ),
             -- A predecessor included only for boundary differencing contributes
             -- nothing itself. A zero-duration first point is an unknown-start
@@ -1377,10 +1404,13 @@ function temporalityAwareScalarQuery(args: {
             -- (a, b] touches. For a known reset, a is StartTimeUnix and the
             -- implicit previous value is zero.
             arrayMap(
-              g -> tuple(g, delta * (least(b, g + ${stepNs}) - greatest(a, g, ${sinceNs})) / dt),
+              g -> tuple(
+                g,
+                delta * (least(b, g + ${stepNs}, ${untilNs}) - greatest(a, g, ${sinceNs})) / dt
+              ),
               arrayMap(
                 i -> first_bucket + i * ${stepNs},
-                range(toUInt32(intDiv(intDiv(b - 1, ${stepNs}) * ${stepNs} - first_bucket, ${stepNs}) + 1))
+                range(toUInt32(intDiv(intDiv(least(b, ${untilNs}) - 1, ${stepNs}) * ${stepNs} - first_bucket, ${stepNs}) + 1))
               )
             )
           ) AS spread
@@ -1443,6 +1473,23 @@ function temporalityAwareScalarQuery(args: {
                 PARTITION BY ${seriesKey}
                 ORDER BY TimeUnix DESC
               ) = 1
+
+              UNION ALL
+
+              SELECT
+                *,
+                toFloat64(${valueExpr}) AS TemporalityValue,
+                ${isMonotonicExpr} AS TemporalityIsMonotonic
+              FROM ${table}
+              WHERE ${baseWhere}
+                AND TimeUnix > ${untilExpr}
+                AND TimeUnix <= ${successorLookaheadExpr}
+                AND StartTimeUnix < ${untilExpr}
+                AND AggregationTemporality = 2
+              QUALIFY row_number() OVER (
+                PARTITION BY ${seriesKey}
+                ORDER BY TimeUnix ASC
+              ) = 1
             )
             WINDOW series AS (
               PARTITION BY ${seriesKey}
@@ -1464,13 +1511,16 @@ function temporalityAwareScalarQuery(args: {
         SELECT
           group_key,
           if(
-            b <= a,
+            least(b, ${untilNs}) <= greatest(a, ${sinceNs}),
             [],
             arrayMap(
-              g -> tuple(g, TemporalityValue * (least(b, g + ${stepNs}) - greatest(a, g, ${sinceNs})) / dt),
+              g -> tuple(
+                g,
+                TemporalityValue * (least(b, g + ${stepNs}, ${untilNs}) - greatest(a, g, ${sinceNs})) / dt
+              ),
               arrayMap(
                 i -> first_bucket + i * ${stepNs},
-                range(toUInt32(intDiv(intDiv(b - 1, ${stepNs}) * ${stepNs} - first_bucket, ${stepNs}) + 1))
+                range(toUInt32(intDiv(intDiv(least(b, ${untilNs}) - 1, ${stepNs}) * ${stepNs} - first_bucket, ${stepNs}) + 1))
               )
             )
           ) AS spread
@@ -1485,7 +1535,8 @@ function temporalityAwareScalarQuery(args: {
           FROM ${table}
           WHERE ${baseWhere}
             AND TimeUnix >= ${sinceExpr}
-            AND TimeUnix <= ${untilExpr}
+            AND TimeUnix <= ${successorLookaheadExpr}
+            AND StartTimeUnix < ${untilExpr}
             AND AggregationTemporality = 1
         )
       )

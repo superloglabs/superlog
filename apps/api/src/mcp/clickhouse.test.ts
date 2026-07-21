@@ -513,8 +513,15 @@ test("metricSeries spreads cumulative monotonic sum increases across the interva
   // Interval math is in nanoseconds (1 MINUTE step = 60e9 ns) so sub-second
   // sample intervals aren't quantized away.
   assert.match(sumQuery, /toUnixTimestamp64Nano\(prev_time\)/);
-  assert.match(sumQuery, /least\(b, g \+ 60000000000\) - greatest\(a, g, toUnixTimestamp64Nano\(/);
+  assert.match(
+    sumQuery,
+    /least\(b, g \+ 60000000000, toUnixTimestamp64Nano\(toDateTime64\(now\(\), 9\)\)\) - greatest\(a, g, toUnixTimestamp64Nano\(/,
+  );
   assert.match(sumQuery, /\/ dt/);
+  // Historical windows include one bounded successor sample so an interval
+  // crossing the right boundary can be clipped at until instead of dropped.
+  assert.match(sumQuery, /TimeUnix > now\(\)/);
+  assert.match(sumQuery, /TimeUnix <= \(now\(\)\) \+ INTERVAL 1 DAY/);
   // Delta points use their declared start/end interval and are spread through
   // the same bucket-overlap path.
   assert.match(sumQuery, /AggregationTemporality = 1/);

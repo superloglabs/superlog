@@ -359,6 +359,43 @@ test(
 );
 
 test(
+  "metric aggregates include a cumulative interval closed by the first sample after until",
+  { skip: !clickhouseUrl },
+  async () => {
+    await ch.insert({
+      table: "otel_metrics_sum",
+      format: "JSONEachRow",
+      values: [
+        {
+          ...cumulativeSumPoint("2026-01-01 00:00:30", 10),
+          MetricName: "successor.total",
+        },
+        {
+          ...cumulativeSumPoint("2026-01-01 00:01:30", 30),
+          MetricName: "successor.total",
+        },
+      ],
+    });
+
+    const rows = await metricAggregate(
+      ch,
+      "project-1",
+      "successor.total",
+      {
+        range: {
+          since: "2026-01-01T00:00:45Z",
+          until: "2026-01-01T00:01:15Z",
+        },
+      },
+      undefined,
+      "sum",
+    );
+
+    assert.deepEqual(rows, [{ group: "", value: 10 }]);
+  },
+);
+
+test(
   "cumulative non-monotonic sums preserve negative and positive changes",
   { skip: !clickhouseUrl },
   async () => {
@@ -432,6 +469,37 @@ test(
     ]);
   },
 );
+
+test("delta aggregates include an interval crossing until", { skip: !clickhouseUrl }, async () => {
+  await ch.insert({
+    table: "otel_metrics_sum",
+    format: "JSONEachRow",
+    values: [
+      {
+        ...cumulativeSumPoint("2026-01-01 00:01:30", 20),
+        MetricName: "delta_successor.total",
+        StartTimeUnix: "2026-01-01 00:00:30",
+        AggregationTemporality: 1,
+      },
+    ],
+  });
+
+  const rows = await metricAggregate(
+    ch,
+    "project-1",
+    "delta_successor.total",
+    {
+      range: {
+        since: "2026-01-01T00:00:45Z",
+        until: "2026-01-01T00:01:15Z",
+      },
+    },
+    undefined,
+    "sum",
+  );
+
+  assert.deepEqual(rows, [{ group: "", value: 10 }]);
+});
 
 test(
   "non-sum counter aggregations operate on normalized interval contributions",
@@ -645,6 +713,47 @@ test(
 );
 
 test(
+  "cumulative histogram percentiles include an interval closed by the first sample after until",
+  { skip: !clickhouseUrl },
+  async () => {
+    await ch.insert({
+      table: "otel_metrics_histogram",
+      format: "JSONEachRow",
+      values: [
+        {
+          ...cumulativeHistogramPoint("2026-01-01 00:00:30", 10, 100, [10, 0]),
+          MetricName: "successor.duration",
+        },
+        {
+          ...cumulativeHistogramPoint("2026-01-01 00:01:30", 30, 500, [10, 20]),
+          MetricName: "successor.duration",
+        },
+      ],
+    });
+
+    const rows = await metricSeries(
+      ch,
+      "project-1",
+      "successor.duration",
+      {
+        range: {
+          since: "2026-01-01T00:00:45Z",
+          until: "2026-01-01T00:01:15Z",
+        },
+      },
+      undefined,
+      { n: 30, unit: "SECOND" },
+      "p95",
+    );
+
+    assert.deepEqual(rows, [
+      { bucket: "2026-01-01 00:00:30", group: "", value: 20 },
+      { bucket: "2026-01-01 00:01:00", group: "", value: 20 },
+    ]);
+  },
+);
+
+test(
   "delta histogram percentiles use the buckets from their declared interval",
   { skip: !clickhouseUrl },
   async () => {
@@ -677,6 +786,45 @@ test(
     );
 
     assert.deepEqual(rows, [{ bucket: "2026-01-01 00:01:00", group: "", value: 20 }]);
+  },
+);
+
+test(
+  "delta histogram percentiles include an interval crossing until",
+  { skip: !clickhouseUrl },
+  async () => {
+    await ch.insert({
+      table: "otel_metrics_histogram",
+      format: "JSONEachRow",
+      values: [
+        {
+          ...cumulativeHistogramPoint("2026-01-01 00:01:30", 20, 400, [0, 20]),
+          MetricName: "delta_successor.duration",
+          StartTimeUnix: "2026-01-01 00:00:30",
+          AggregationTemporality: 1,
+        },
+      ],
+    });
+
+    const rows = await metricSeries(
+      ch,
+      "project-1",
+      "delta_successor.duration",
+      {
+        range: {
+          since: "2026-01-01T00:00:45Z",
+          until: "2026-01-01T00:01:15Z",
+        },
+      },
+      undefined,
+      { n: 30, unit: "SECOND" },
+      "p95",
+    );
+
+    assert.deepEqual(rows, [
+      { bucket: "2026-01-01 00:00:30", group: "", value: 20 },
+      { bucket: "2026-01-01 00:01:00", group: "", value: 20 },
+    ]);
   },
 );
 
