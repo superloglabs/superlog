@@ -141,6 +141,7 @@ import {
   type ActorAuditDeps,
   createAuthActorAuditMiddleware,
   isMutatingMethod,
+  statusFromThrown,
   writeActorAuditLog,
 } from "./request-actor-log.js";
 import { mountApiRequestSecurity, requestBodyLimit } from "./request-body-limits.js";
@@ -376,9 +377,18 @@ app.use("/api/*", async (c, next) => {
   // admin is acting as another user; surface it on `c.var` so /api/me can
   // expose a boolean without the web client having to inspect raw session.
   c.set("impersonating", typeof session.session.impersonatedBy === "string");
-  await next();
-  if (isMutatingMethod(c.req.method)) {
-    await writeActorAuditLog(actorAuditDeps, session, c.req.method, path, c.res.status);
+  if (!isMutatingMethod(c.req.method)) return next();
+  // Audit in a finally so writes that fail by throwing an HTTPException (e.g.
+  // invalid input) are attributed too, not just those returning an error body.
+  let status = 500;
+  try {
+    await next();
+    status = c.res.status;
+  } catch (err) {
+    status = statusFromThrown(err);
+    throw err;
+  } finally {
+    await writeActorAuditLog(actorAuditDeps, session, c.req.method, path, status);
   }
 });
 

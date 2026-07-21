@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
 import {
   type ActorAuditDeps,
   type ActorSession,
@@ -13,7 +14,7 @@ const SESSION: ActorSession = {
   session: { id: "sess_1", activeOrganizationId: "org_1", impersonatedBy: null },
 };
 
-function buildApp(overrides: Partial<ActorAuditDeps> = {}) {
+function buildApp(overrides: Partial<ActorAuditDeps> = {}, throwStatus?: number) {
   const logs: Record<string, unknown>[] = [];
   let getSessionCalls = 0;
   let sawVars: { userId?: string; orgId: string | null } | undefined;
@@ -39,8 +40,12 @@ function buildApp(overrides: Partial<ActorAuditDeps> = {}) {
     sawVars = { userId: c.get("userId"), orgId: c.get("orgId") };
   });
   app.use("/api/auth/*", createAuthActorAuditMiddleware(deps));
-  // Mimics Better Auth's terminating handler — never calls next().
-  app.on(["POST", "GET"], "/api/auth/*", (c) => c.json({ error: "denied" }, 403));
+  // Mimics Better Auth's handler: either returns an error response or throws
+  // an HTTPException (e.g. invalid input), depending on the test.
+  app.on(["POST", "GET"], "/api/auth/*", (c) => {
+    if (throwStatus) throw new HTTPException(throwStatus as 400, { message: "boom" });
+    return c.json({ error: "denied" }, 403);
+  });
 
   return { app, logs, getSessionCalls: () => getSessionCalls, sawVars: () => sawVars };
 }
@@ -84,6 +89,17 @@ test("mutating auth route with no session passes through unlogged (sign-in/sign-
   assert.equal(res.status, 403);
   assert.equal(h.logs.length, 0);
   assert.equal(h.sawVars()?.userId, undefined, "no identity stamped without a session");
+});
+
+test("audits a mutation that fails by throwing, with the thrown status", async () => {
+  const h = buildApp({}, 400);
+  const res = await h.app.request("/api/auth/organization/update-member-role", { method: "POST" });
+
+  assert.equal(res.status, 400, "the thrown HTTPException still produces the response");
+  const [entry] = h.logs;
+  assert.ok(entry, "a throwing mutation is still attributed");
+  assert.equal(entry.status, 400);
+  assert.equal(entry.userId, "user_1");
 });
 
 test("a logging failure never breaks the request", async () => {

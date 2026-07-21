@@ -1,4 +1,5 @@
 import type { MiddlewareHandler } from "hono";
+import { HTTPException } from "hono/http-exception";
 
 // Actor attribution for authenticated API requests.
 //
@@ -18,6 +19,15 @@ const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
  */
 export function isMutatingMethod(method: string): boolean {
   return MUTATING_METHODS.has(method.toUpperCase());
+}
+
+/**
+ * Response status to attribute a mutation to when the handler threw before
+ * producing a response — mirrors the HTTP-observability middleware so a failed
+ * write (e.g. an HTTPException on invalid input) is still audited, not dropped.
+ */
+export function statusFromThrown(err: unknown): number {
+  return err instanceof HTTPException ? err.status : 500;
 }
 
 /** Minimal shape of a resolved Better Auth session used for attribution. */
@@ -90,6 +100,11 @@ export async function writeActorAuditLog(
  * onto the context (for span attribution), and audit-logs after the handler.
  * Reads are passed straight through so we don't double the session lookup on
  * the hot get-session poll. Must be registered before the auth handler mount.
+ *
+ * The logged org is the actor's *active* org at request time. A few Better Auth
+ * flows target a different org (accepting an invitation before setActive, or
+ * passing an explicit organizationId), so this is best-effort context, not a
+ * guarantee of the mutated org — the user is always attributed correctly.
  */
 export function createAuthActorAuditMiddleware(
   deps: ActorAuditDeps,
@@ -103,9 +118,19 @@ export function createAuthActorAuditMiddleware(
       c.set("orgId", session.session.activeOrganizationId ?? null);
       c.set("impersonating", typeof session.session.impersonatedBy === "string");
     }
-    await next();
-    if (session) {
-      await writeActorAuditLog(deps, session, c.req.method, c.req.path, c.res.status);
+    // Audit in a finally so mutations that fail by throwing (not just those that
+    // return an error response) are still attributed, then rethrow.
+    let status = 500;
+    try {
+      await next();
+      status = c.res.status;
+    } catch (err) {
+      status = statusFromThrown(err);
+      throw err;
+    } finally {
+      if (session) {
+        await writeActorAuditLog(deps, session, c.req.method, c.req.path, status);
+      }
     }
   };
 }
