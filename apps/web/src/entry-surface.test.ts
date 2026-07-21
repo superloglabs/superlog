@@ -60,7 +60,14 @@ test("the legacy GitHub installation callback still boots the product surface", 
 });
 
 test("legacy root OAuth callback markers still boot the product surface", () => {
-  for (const search of ["?gh=done", "?gh=error", "?slack=installed", "?slack=error"]) {
+  for (const search of [
+    "?gh=done",
+    "?gh=error",
+    "?slack=installed",
+    "?slack=error",
+    "?sentry=installed",
+    "?sentry=error",
+  ]) {
     assert.equal(surfaceForPath("/", search), "product", search);
   }
 });
