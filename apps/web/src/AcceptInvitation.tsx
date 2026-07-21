@@ -1,8 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, Navigate, useSearchParams } from "react-router-dom";
+import { AuthForm } from "./AuthForm.tsx";
 import { authClient, useSession } from "./auth-client.ts";
-import { Landing } from "./Landing.tsx";
 import { Btn, CenteredShell, Wordmark } from "./design/ui.tsx";
 
 type InviteDetails = {
@@ -37,22 +37,93 @@ export function AcceptInvitation() {
 
   if (session.isPending) return null;
   if (!session.data) {
-    // /accept-invitation stays in the URL bar; once the user signs in via
-    // the modal the session hook updates and we fall through to the inner
-    // component without a navigation.
-    return <Landing initialAuthMode="sign-up" />;
+    return <InvitationAuthentication id={id} />;
   }
 
-  return <AcceptInvitationInner id={id} userEmail={session.data.user.email} />;
+  return (
+    <AcceptInvitationInner
+      id={id}
+      userEmail={session.data.user.email}
+      autoAccept={params.get("join") === "1"}
+    />
+  );
 }
 
-function AcceptInvitationInner({ id, userEmail }: { id: string; userEmail: string }) {
+function InvitationAuthentication({ id }: { id: string }) {
+  const continuationUrl = `${window.location.origin}/accept-invitation?id=${encodeURIComponent(id)}&join=1`;
+
+  return (
+    <CenteredShell>
+      <Wordmark />
+      <div className="mt-8 w-full max-w-md">
+        <div className="mb-4 text-center">
+          <h1 className="text-[17px] font-medium text-fg">You&apos;re invited</h1>
+          <p className="mt-2 text-[13px] text-muted">
+            You&apos;ve been invited to join an organization. Sign in or create an account to continue.
+          </p>
+        </div>
+        <AuthForm
+          initialMode="sign-up"
+          socialCallbackURL={continuationUrl}
+          onSuccess={() => window.location.assign(continuationUrl)}
+        />
+      </div>
+    </CenteredShell>
+  );
+}
+
+function AcceptInvitationInner({
+  id,
+  userEmail,
+  autoAccept,
+}: {
+  id: string;
+  userEmail: string;
+  autoAccept: boolean;
+}) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [action, setAction] = useState<"idle" | "accepting" | "rejecting" | "accepted" | "rejected">(
     "idle",
   );
   const [actionError, setActionError] = useState<string | null>(null);
   const qc = useQueryClient();
+  const autoAcceptAttempted = useRef(false);
+
+  const accept = useCallback(async () => {
+    setAction("accepting");
+    setActionError(null);
+    const res = await authClient.organization.acceptInvitation({ invitationId: id });
+    if (res.error) {
+      console.error("[AcceptInvitation] acceptInvitation failed", {
+        invitationId: id,
+        error: res.error.message,
+      });
+      setAction("idle");
+      setActionError(res.error.message ?? "Failed to accept invitation.");
+      return;
+    }
+    const orgId = (res.data as unknown as { invitation: { organizationId: string } }).invitation
+      .organizationId;
+    const setActiveRes = await authClient.organization.setActive({ organizationId: orgId });
+    if (setActiveRes.error) {
+      console.error("[AcceptInvitation] setActive failed after acceptance", {
+        invitationId: id,
+        organizationId: orgId,
+        error: setActiveRes.error.message,
+      });
+      // The invitation is already accepted at this point — surface the
+      // switch failure so the user can retry from the org switcher instead
+      // of landing in a stale active-org state.
+      setAction("idle");
+      setActionError(
+        setActiveRes.error.message ??
+          "Invitation accepted, but switching to the org failed. Use the org switcher to open it.",
+      );
+      return;
+    }
+    qc.clear();
+    setAction("accepted");
+  }, [id, qc]);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,6 +141,20 @@ function AcceptInvitationInner({ id, userEmail }: { id: string; userEmail: strin
       cancelled = true;
     };
   }, [id]);
+
+  useEffect(() => {
+    if (autoAcceptAttempted.current) return;
+    if (
+      !autoAccept ||
+      action !== "idle" ||
+      state.kind !== "ready" ||
+      state.invite.email.toLowerCase() !== userEmail.toLowerCase()
+    ) {
+      return;
+    }
+    autoAcceptAttempted.current = true;
+    void accept();
+  }, [accept, action, autoAccept, state, userEmail]);
 
   if (state.kind === "loading") {
     return (
@@ -109,33 +194,6 @@ function AcceptInvitationInner({ id, userEmail }: { id: string; userEmail: strin
       </CenteredShell>
     );
   }
-
-  const accept = async () => {
-    setAction("accepting");
-    setActionError(null);
-    const res = await authClient.organization.acceptInvitation({ invitationId: id });
-    if (res.error) {
-      setAction("idle");
-      setActionError(res.error.message ?? "Failed to accept invitation.");
-      return;
-    }
-    const orgId = (res.data as unknown as { invitation: { organizationId: string } }).invitation
-      .organizationId;
-    const setActiveRes = await authClient.organization.setActive({ organizationId: orgId });
-    if (setActiveRes.error) {
-      // The invitation is already accepted at this point — surface the
-      // switch failure so the user can retry from the org switcher instead
-      // of landing in a stale active-org state.
-      setAction("idle");
-      setActionError(
-        setActiveRes.error.message ??
-          "Invitation accepted, but switching to the org failed. Use the org switcher to open it.",
-      );
-      return;
-    }
-    qc.clear();
-    setAction("accepted");
-  };
 
   const reject = async () => {
     setAction("rejecting");
