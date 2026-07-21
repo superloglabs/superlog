@@ -123,6 +123,7 @@ import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { resolveActiveOrgContext, resolveMaybeActiveOrgContext } from "./org-context.js";
 import { ORG_NAME_MAX, createOrgWithDefaults, mountOrgCrud } from "./orgs.js";
 import { mountPersonalAccessTokens } from "./personal-access-tokens.js";
+import { mountPorterAuthed } from "./porter.js";
 import {
   type ManualMergeMethod,
   VALID_MANUAL_MERGE_METHODS,
@@ -413,6 +414,7 @@ mountGcpAuthed(app);
 mountRenderAuthed(app);
 mountSettingsAuthed(app);
 mountProjectMcpServersAuthed(app);
+mountPorterAuthed(app);
 mountOrgKeyManagementAuthed(app);
 mountDashboards(app);
 mountSavedViews(app);

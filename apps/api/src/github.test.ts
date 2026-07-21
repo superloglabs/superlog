@@ -914,7 +914,7 @@ test("the GitHub app's own PR comments do not resume its investigation", async (
   assert.equal(continuations.length, 0);
 });
 
-test("closing the last live agent PR without merge resolves the incident and linked issue", async () => {
+test("closing the last live agent PR without merge resolves the incident and silences the linked issue", async () => {
   const fixture = await seedAgentPrFixture("closed");
   const app = new Hono();
   mountGithubPublic(app);
@@ -941,8 +941,9 @@ test("closing the last live agent PR without merge resolves the incident and lin
   });
   assert.equal(pr?.state, "closed");
 
-  // The close settled the incident's only PR: the human's decision on the
-  // delivery resolves the incident instead of parking it behind a question.
+  // The close settled the incident's only PR: the human's decision resolves
+  // the incident and silences the still-firing issue so it does not recur into
+  // another investigation for the same declined fix.
   const incident = await db.query.incidents.findFirst({
     where: eq(schema.incidents.id, fixture.incidentId),
   });
@@ -954,7 +955,8 @@ test("closing the last live agent PR without merge resolves the incident and lin
   const issue = await db.query.issues.findFirst({
     where: eq(schema.issues.id, fixture.issueId),
   });
-  assert.equal(issue?.status, "resolved");
+  assert.equal(issue?.status, "silenced");
+  assert.ok(issue?.silencedAt);
 
   const resolvedEvent = await db.query.incidentEvents.findFirst({
     where: and(

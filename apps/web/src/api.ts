@@ -42,6 +42,22 @@ export type ApiKey = {
   plaintext?: string;
 };
 
+export type PorterSetup = {
+  dashboardUrl: string;
+  addonName: string;
+  chart: {
+    repositoryUrl: string;
+    name: string;
+    version: string;
+  };
+  key: {
+    id: string;
+    prefix: string;
+    plaintext: string;
+  };
+  valuesYaml: string;
+};
+
 export type Stats = {
   window: string;
   traces: number;
@@ -395,6 +411,14 @@ export function useKeys(projectId: string | undefined) {
     queryKey: ["keys", projectId],
     queryFn: () => fetcher<ApiKey[]>(`/api/projects/${projectId}/keys`),
     enabled: !!projectId,
+    refetchInterval: (query) => {
+      const porterKeys = (query.state.data ?? []).filter(
+        (key) => key.name === "Porter Helm install" && !key.revokedAt,
+      );
+      return porterKeys.length > 0 && porterKeys.every((key) => key.lastUsedAt === null)
+        ? 10_000
+        : false;
+    },
   });
 }
 
@@ -408,6 +432,30 @@ export function useCreateKey(projectId: string) {
         body: JSON.stringify({ name }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["keys", projectId] }),
+  });
+}
+
+export function usePorterSetup(projectId: string) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useQuery({
+    queryKey: ["porter-setup", projectId],
+    queryFn: async () => {
+      const setup = await fetcher<PorterSetup>(
+        `/api/projects/${projectId}/integrations/porter/setup`,
+        {
+          method: "POST",
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+      void qc.invalidateQueries({ queryKey: ["keys", projectId] });
+      return setup;
+    },
+    enabled: projectId.length > 0,
+    staleTime: Number.POSITIVE_INFINITY,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }
 
