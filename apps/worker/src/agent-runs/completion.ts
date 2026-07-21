@@ -628,7 +628,7 @@ export async function completeWithoutPullRequest(
                 agent_run_id: ctx.agentRun.id,
                 incident_id: ctx.incident.id,
                 terminal_outcome: terminalOutcome,
-                err: err instanceof Error ? err.message : String(err),
+                err,
               },
               "explicit Linear handoff failed",
             );
