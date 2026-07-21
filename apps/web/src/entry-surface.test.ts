@@ -31,6 +31,18 @@ test("marketing and product URLs boot independent client surfaces", () => {
     "/connect/vercel",
     "/feedback/pr/acme/repo/1",
     "/design",
+    "/explore",
+    "/explore/traces",
+    "/incidents",
+    "/incidents/incident-1",
+    "/issues",
+    "/issues/incident-1",
+    "/alerts",
+    "/alerts/alert-1",
+    "/dashboards",
+    "/dashboards/dashboard-1",
+    "/anomaly-scanner",
+    "/anomaly-scanner/scans/scan-1",
   ]) {
     assert.equal(surfaceForPath(path), "product", path);
   }

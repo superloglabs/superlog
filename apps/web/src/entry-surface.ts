@@ -13,6 +13,12 @@ const PRODUCT_ROUTE_ROOTS = [
   "/connect",
   "/feedback/pr",
   "/design",
+  "/explore",
+  "/incidents",
+  "/issues",
+  "/alerts",
+  "/dashboards",
+  "/anomaly-scanner",
 ];
 
 export function surfaceForPath(pathname: string, search = ""): EntrySurface {
