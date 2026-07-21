@@ -1053,6 +1053,10 @@ const AGG_EXPR: Record<MetricAggregation, Partial<Record<MetricKind, string>>> =
   },
 };
 
+function unixTimestamp64NanoExpr(expr: string): string {
+  return `toUnixTimestamp64Nano(toDateTime64(${expr}, 9))`;
+}
+
 // Histograms have no scalar Value column — quantiles must be reconstructed from
 // BucketCounts + ExplicitBounds. We approximate by treating each bucket's upper
 // bound as its representative value (the overflow bucket falls back to Max,
@@ -1084,7 +1088,7 @@ function histogramQuantileQuery(args: {
   } = args;
   const baseWhere = baseConds.join(" AND ");
   const stepNs = stepSeconds(step) * 1_000_000_000;
-  const sinceNs = `toUnixTimestamp64Nano(${sinceExpr})`;
+  const sinceNs = unixTimestamp64NanoExpr(sinceExpr);
   const seriesKey = `cityHash64(
     ServiceName,
     MetricName,
@@ -1285,7 +1289,7 @@ function temporalityAwareScalarQuery(args: {
   // seconds can collapse a short interval to zero duration and silently drop
   // its increase.
   const stepNs = stepSeconds(step) * 1_000_000_000;
-  const sinceNs = `toUnixTimestamp64Nano(${sinceExpr})`;
+  const sinceNs = unixTimestamp64NanoExpr(sinceExpr);
   const seriesKey = `cityHash64(
     ServiceName,
     MetricName,
@@ -1866,7 +1870,7 @@ export async function metricAggregate(
     { n: 1, unit: "DAY" },
     aggregation,
     {
-      bucketAnchorNs: `toUnixTimestamp64Nano(${sinceExpr})`,
+      bucketAnchorNs: unixTimestamp64NanoExpr(sinceExpr),
       rawBucketExpr: sinceExpr,
       rowLimit: 1000,
     },

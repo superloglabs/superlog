@@ -544,7 +544,7 @@ test("metricAggregate caps groups without capping time-series bucket rows", asyn
   assert.ok(sumQuery, "expected a sum metric query");
   assert.match(sumQuery, /LIMIT 1000/);
   assert.doesNotMatch(sumQuery, /LIMIT 10000/);
-  assert.match(sumQuery, /toUnixTimestamp64Nano\(now\(\) - INTERVAL 1 DAY\)/);
+  assert.match(sumQuery, /toUnixTimestamp64Nano\(toDateTime64\(now\(\) - INTERVAL 1 DAY, 9\)\)/);
 });
 
 test("queryTraces returns resource attributes and flattened exception fields", async () => {

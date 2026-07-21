@@ -149,6 +149,20 @@ test(
   },
 );
 
+test("temporality queries accept relative DateTime bounds", { skip: !clickhouseUrl }, async () => {
+  const rows = await metricSeries(
+    ch,
+    "project-1",
+    "missing.relative.metric",
+    { range: { since: "now() - INTERVAL 1 HOUR", until: "now()" } },
+    undefined,
+    { n: 1, unit: "MINUTE" },
+    "sum",
+  );
+
+  assert.deepEqual(rows, []);
+});
+
 test(
   "cumulative counters do not count an unknown-start reset as a new increase",
   { skip: !clickhouseUrl },
