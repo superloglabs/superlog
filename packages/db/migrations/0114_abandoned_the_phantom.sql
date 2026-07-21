@@ -1,0 +1,1 @@
+ALTER TABLE "project_automation_settings" ADD COLUMN "auto_resolve_stale_incidents_enabled" boolean DEFAULT true NOT NULL;

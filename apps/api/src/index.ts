@@ -1293,6 +1293,7 @@ async function getProjectAutomation(projectId: string): Promise<{
   prPolicy: schema.PrPolicy;
   approvalPromptsEnabled: boolean;
   createLinearTicketOnResolve: boolean;
+  autoResolveStaleIncidentsEnabled: boolean;
   prBaseBranch: string | null;
   autoMergeFixPrs: schema.AutoMergePolicy;
   autoMergeMethod: schema.AutoMergeMethod;
@@ -1314,6 +1315,7 @@ async function getProjectAutomation(projectId: string): Promise<{
     prPolicy: row?.prPolicy ?? "on_ready_to_pr",
     approvalPromptsEnabled: row?.approvalPromptsEnabled ?? true,
     createLinearTicketOnResolve: row?.createLinearTicketOnResolve ?? false,
+    autoResolveStaleIncidentsEnabled: row?.autoResolveStaleIncidentsEnabled ?? true,
     prBaseBranch: schema.normalizePrBaseBranch(row?.prBaseBranch),
     autoMergeFixPrs: row?.autoMergeFixPrs ?? "never",
     autoMergeMethod: row?.autoMergeMethod ?? "squash",
@@ -1868,6 +1870,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     prPolicy?: unknown;
     approvalPromptsEnabled?: unknown;
     createLinearTicketOnResolve?: unknown;
+    autoResolveStaleIncidentsEnabled?: unknown;
     prBaseBranch?: unknown;
     autoMergeFixPrs?: unknown;
     autoMergeMethod?: unknown;
@@ -1931,6 +1934,10 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     typeof body.createLinearTicketOnResolve === "boolean"
       ? body.createLinearTicketOnResolve
       : current.createLinearTicketOnResolve;
+  const autoResolveStaleIncidentsEnabled =
+    typeof body.autoResolveStaleIncidentsEnabled === "boolean"
+      ? body.autoResolveStaleIncidentsEnabled
+      : current.autoResolveStaleIncidentsEnabled;
   const prBaseBranch = parsePrBaseBranch(body.prBaseBranch, current.prBaseBranch);
   const autoMergeFixPrs: schema.AutoMergePolicy =
     typeof body.autoMergeFixPrs === "string" && VALID_AUTO_MERGE_POLICIES.has(body.autoMergeFixPrs)
@@ -1989,6 +1996,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     prPolicy,
     approvalPromptsEnabled,
     createLinearTicketOnResolve,
+    autoResolveStaleIncidentsEnabled,
     prBaseBranch,
     autoMergeFixPrs,
     autoMergeMethod,
@@ -2014,6 +2022,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
         prPolicy,
         approvalPromptsEnabled,
         createLinearTicketOnResolve,
+        autoResolveStaleIncidentsEnabled,
         prBaseBranch,
         autoMergeFixPrs,
         autoMergeMethod,

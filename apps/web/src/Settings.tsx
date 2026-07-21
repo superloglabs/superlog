@@ -148,10 +148,12 @@ import { AgentMemoriesCard } from "./settings/AgentMemoriesCard.tsx";
 import { BillingCard } from "./settings/BillingCard.tsx";
 import { CreateOrgCard } from "./settings/CreateOrgCard.tsx";
 import { IntegrationConfigDialog } from "./settings/IntegrationConfigDialog.tsx";
+import { InactiveIncidentResolutionCard } from "./settings/InactiveIncidentResolutionCard.tsx";
 import { OrgDangerCard } from "./settings/OrgDangerCard.tsx";
 import { OrgGeneralCard } from "./settings/OrgGeneralCard.tsx";
 import { OrgMembersCard } from "./settings/OrgMembersCard.tsx";
 import { PorterIntegrationSetup } from "./settings/PorterIntegrationSetup.tsx";
+import { Toggle } from "./settings/Toggle.tsx";
 import {
   type IngestSignal,
   type IngestSource,
@@ -776,9 +778,12 @@ function ProjectSectionView({
       return (
         <Section
           title="Bug-investigating agent"
-          subtitle="The flow each incident runs through. Toggle steps and configure their policies."
+          subtitle="Configure the investigation flow and automatic incident lifecycle policies."
         >
-          <AgentFlowchart projectId={projectId} />
+          <div className="flex flex-col gap-8">
+            <AgentFlowchart projectId={projectId} />
+            <InactiveIncidentResolutionSettings projectId={projectId} />
+          </div>
         </Section>
       );
     case "agent-memories":
@@ -3310,6 +3315,7 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
     prPolicy: "on_ready_to_pr",
     approvalPromptsEnabled: true,
     createLinearTicketOnResolve: false,
+    autoResolveStaleIncidentsEnabled: true,
     prBaseBranch: null,
     autoMergeFixPrs: "never",
     autoMergeMethod: "squash",
@@ -3493,6 +3499,23 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
         </FlowNode>
       </div>
     </Tile>
+  );
+}
+
+function InactiveIncidentResolutionSettings({
+  projectId,
+}: {
+  projectId: string | undefined;
+}) {
+  const settings = useAgentSettings(projectId);
+  const save = useSaveAgentSettings(projectId);
+
+  return (
+    <InactiveIncidentResolutionCard
+      enabled={settings.data?.autoResolveStaleIncidentsEnabled ?? true}
+      disabled={!projectId || settings.isLoading || save.isPending}
+      onChange={(enabled) => save.mutate({ autoResolveStaleIncidentsEnabled: enabled })}
+    />
   );
 }
 
@@ -4200,38 +4223,6 @@ function FlowConnector({ active }: { active: boolean }) {
       </div>
       <div />
     </div>
-  );
-}
-
-function Toggle({
-  ariaLabel,
-  checked,
-  disabled = false,
-  onChange,
-}: {
-  ariaLabel?: string;
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-label={ariaLabel}
-      aria-checked={checked}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors ${
-        checked ? "border-accent bg-accent" : "border-border bg-surface-3"
-      } ${disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}
-    >
-      <span
-        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-accent-ink transition-transform ${
-          checked ? "translate-x-[18px]" : "translate-x-[2px]"
-        }`}
-      />
-    </button>
   );
 }
 

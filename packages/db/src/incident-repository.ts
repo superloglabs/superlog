@@ -327,6 +327,21 @@ export function createIncidentRepository(database: DB) {
       return tx.query.issues.findMany({ where: inArray(schema.issues.id, ids) });
     },
 
+    async lockCurrentIssuesForIncidentInTx(tx: Tx, incidentId: string): Promise<schema.Issue[]> {
+      const issues = await this.listCurrentIssuesForIncidentInTx(tx, incidentId);
+      if (issues.length === 0) return [];
+      return tx
+        .select()
+        .from(schema.issues)
+        .where(
+          inArray(
+            schema.issues.id,
+            issues.map((issue) => issue.id),
+          ),
+        )
+        .for("update");
+    },
+
     async updateIssueInTx(tx: Tx, issueId: string, updates: Partial<schema.Issue>): Promise<void> {
       await tx.update(schema.issues).set(updates).where(eq(schema.issues.id, issueId));
     },

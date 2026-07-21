@@ -228,6 +228,7 @@ export type IncidentResolvedByKind =
   | "agent_classification" // agent run completed with resolutionClassification.reason set
   | "slack_manual" // human clicked the Resolve button in Slack
   | "autorecovery_confirmed" // autorecovery agent proposed, human clicked Confirm
+  | "auto_inactivity" // deterministic sweep closed after every linked Issue stayed quiet
   | "dashboard_manual"; // human used the dashboard's mark-resolved control
 
 // Free-form code emitted by the autorecovery agent to describe *why* an incident
@@ -1140,6 +1141,9 @@ export const projectAutomationSettings = pgTable(
     createLinearTicketOnResolve: boolean("create_linear_ticket_on_resolve")
       .notNull()
       .default(false),
+    autoResolveStaleIncidentsEnabled: boolean("auto_resolve_stale_incidents_enabled")
+      .notNull()
+      .default(true),
     prBaseBranch: text("pr_base_branch"),
     // Slack digests follow the same project boundary as the installation and
     // incident channel. Null means this project has not adopted/configured a

@@ -143,6 +143,10 @@ export type ResolveIncidentWithProofResult = ResolveIncidentResult & {
   resolutionProof: IncidentResolutionProof | null;
 };
 
+export type ResolveQuietIncidentResult =
+  | { disposition: "resolved"; linkedIssueCount: number; quietSince: Date }
+  | { disposition: "incident_not_open" | "no_linked_issues" | "recent_recurrence" };
+
 function materializeIncidentResolutionEpoch(input: ResolveIncidentInput): {
   input: ResolveIncidentInput;
   resolutionProof: IncidentResolutionProof;
@@ -648,6 +652,36 @@ export function createIncidentLifecycle(database: DB = db) {
     },
 
     resolve,
+
+    async resolveIfAllIssuesQuiet(
+      input: ResolveIncidentInput & { kind: "auto_inactivity"; cutoff: Date },
+    ): Promise<ResolveQuietIncidentResult> {
+      const { cutoff, ...resolutionInput } = input;
+      const result = await repository.transaction(async (tx) => {
+        const incident = await repository.lockOpenIncidentInTx(tx, input.incidentId);
+        if (!incident) return { disposition: "incident_not_open" as const };
+
+        const issues = await repository.lockCurrentIssuesForIncidentInTx(tx, input.incidentId);
+        if (issues.length === 0) return { disposition: "no_linked_issues" as const };
+        const quietSince = new Date(Math.max(...issues.map((issue) => issue.lastSeen.getTime())));
+        if (quietSince.getTime() > cutoff.getTime()) {
+          return { disposition: "recent_recurrence" as const };
+        }
+
+        const resolved = await resolveIncidentInTx(tx, resolutionInput, repository, incident);
+        return resolved.resolved
+          ? {
+              disposition: "resolved" as const,
+              linkedIssueCount: resolved.resolvedIssueCount,
+              quietSince,
+            }
+          : { disposition: "incident_not_open" as const };
+      });
+      if (result.disposition === "resolved") {
+        await emitIncidentResolved(database, input.incidentId);
+      }
+      return result;
+    },
 
     async resolveWithProof(input: ResolveIncidentInput): Promise<ResolveIncidentWithProofResult> {
       const epoch = materializeIncidentResolutionEpoch(input);
