@@ -411,6 +411,13 @@ export function useKeys(projectId: string | undefined) {
     queryKey: ["keys", projectId],
     queryFn: () => fetcher<ApiKey[]>(`/api/projects/${projectId}/keys`),
     enabled: !!projectId,
+    refetchInterval: (query) =>
+      query.state.data?.some(
+        (key) =>
+          key.name === "Porter Helm install" && !key.revokedAt && key.lastUsedAt === null,
+      )
+        ? 10_000
+        : false,
   });
 }
 
@@ -429,13 +436,20 @@ export function useCreateKey(projectId: string) {
 
 export function usePorterSetup(projectId: string) {
   const fetcher = useFetcher();
+  const qc = useQueryClient();
   return useQuery({
     queryKey: ["porter-setup", projectId],
-    queryFn: () =>
-      fetcher<PorterSetup>(`/api/projects/${projectId}/integrations/porter/setup`, {
-        method: "POST",
-        signal: AbortSignal.timeout(10_000),
-      }),
+    queryFn: async () => {
+      const setup = await fetcher<PorterSetup>(
+        `/api/projects/${projectId}/integrations/porter/setup`,
+        {
+          method: "POST",
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+      void qc.invalidateQueries({ queryKey: ["keys", projectId] });
+      return setup;
+    },
     enabled: projectId.length > 0,
     staleTime: Number.POSITIVE_INFINITY,
     retry: false,
