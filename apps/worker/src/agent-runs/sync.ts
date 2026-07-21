@@ -41,7 +41,7 @@ import {
   reconcileDeliveredPullRequests,
   selectDeliveredPullRequestsForOutcome,
 } from "./pr-result-reconciliation.js";
-import { recoverExhaustedRunnerTurn } from "./recovery.js";
+import { isRecoveryClaimReclaimable, recoverExhaustedRunnerTurn } from "./recovery.js";
 import { supersededSnapshotCompletionResult } from "./resolution-completion.js";
 import {
   awaitingHumanSecondsFromEvents,
@@ -658,22 +658,57 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
             })),
           createRepositoryReadToken,
           claimRecovery: async (providerEventId) => {
-            const rows = await db
-              .insert(schema.incidentEvents)
-              .values({
-                agentRunId: ctx.agentRun.id,
-                kind: "session_recovery",
-                summary:
-                  "Refreshing repository access and continuing after the managed service exhausted its retries.",
-                providerEventId: `session_recovery:${providerEventId}`,
-                processedAt: new Date(),
+            const recoveryEventId = `session_recovery:${providerEventId}`;
+            const insertClaim = () =>
+              db
+                .insert(schema.incidentEvents)
+                .values({
+                  agentRunId: ctx.agentRun.id,
+                  kind: "session_recovery",
+                  summary:
+                    "Refreshing repository access and continuing after the managed service exhausted its retries.",
+                  providerEventId: recoveryEventId,
+                })
+                .onConflictDoNothing()
+                .returning({ id: schema.incidentEvents.id });
+            const inserted = await insertClaim();
+            if (inserted[0]) return inserted[0];
+
+            // An unprocessed claim is a lease, not a permanent lock. If its
+            // owner crashed (or failed to delete it after a recovery error),
+            // a later sync pass may reclaim it. Completed claims retain
+            // processed_at and continue to deduplicate the provider event.
+            const staleClaim = await db.query.incidentEvents.findFirst({
+              where: and(
+                eq(schema.incidentEvents.agentRunId, ctx.agentRun.id),
+                eq(schema.incidentEvents.providerEventId, recoveryEventId),
+              ),
+              columns: { id: true, createdAt: true, processedAt: true },
+            });
+            if (
+              !staleClaim ||
+              !isRecoveryClaimReclaimable({
+                ...staleClaim,
+                now: new Date(),
               })
-              .onConflictDoNothing()
+            ) {
+              return null;
+            }
+            const deleted = await db
+              .delete(schema.incidentEvents)
+              .where(eq(schema.incidentEvents.id, staleClaim.id))
               .returning({ id: schema.incidentEvents.id });
-            return rows[0] ?? null;
+            if (!deleted[0]) return null;
+            return (await insertClaim())[0] ?? null;
           },
           releaseRecoveryClaim: async (id) => {
             await db.delete(schema.incidentEvents).where(eq(schema.incidentEvents.id, id));
+          },
+          completeRecoveryClaim: async (id) => {
+            await db
+              .update(schema.incidentEvents)
+              .set({ processedAt: new Date() })
+              .where(eq(schema.incidentEvents.id, id));
           },
         });
         logger.info(

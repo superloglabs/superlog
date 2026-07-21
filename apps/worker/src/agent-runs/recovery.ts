@@ -6,6 +6,19 @@ export type RecoverableRepository = {
   installationId: number;
 };
 
+const RECOVERY_CLAIM_LEASE_MS = 2 * 60_000;
+
+export function isRecoveryClaimReclaimable(input: {
+  createdAt: Date;
+  processedAt: Date | null;
+  now: Date;
+}): boolean {
+  return (
+    input.processedAt === null &&
+    input.now.getTime() - input.createdAt.getTime() >= RECOVERY_CLAIM_LEASE_MS
+  );
+}
+
 export async function recoverExhaustedRunnerTurn(input: {
   sessionId: string;
   failure: NonNullable<AgentRunnerSnapshot["recoverableFailure"]>;
@@ -14,6 +27,7 @@ export async function recoverExhaustedRunnerTurn(input: {
   createRepositoryReadToken(installationId: number, repositoryId: number): Promise<string>;
   claimRecovery(providerEventId: string): Promise<{ id: string } | null>;
   releaseRecoveryClaim(id: string): Promise<void>;
+  completeRecoveryClaim(id: string): Promise<void>;
 }): Promise<"recovered" | "already_claimed" | "unsupported"> {
   if (!input.runner.recover) return "unsupported";
 
@@ -34,9 +48,10 @@ export async function recoverExhaustedRunnerTurn(input: {
         return input.createRepositoryReadToken(repository.installationId, repository.id);
       },
     });
+    await input.completeRecoveryClaim(claim.id);
     return "recovered";
   } catch (err) {
-    await input.releaseRecoveryClaim(claim.id).catch(() => undefined);
+    await input.releaseRecoveryClaim(claim.id);
     throw err;
   }
 }

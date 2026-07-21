@@ -1,10 +1,40 @@
 import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { recoverExhaustedRunnerTurn } from "./recovery.js";
+import { isRecoveryClaimReclaimable, recoverExhaustedRunnerTurn } from "./recovery.js";
+
+test("only abandoned recovery claims are reclaimable", () => {
+  const now = new Date("2026-07-21T19:00:00.000Z");
+
+  assert.equal(
+    isRecoveryClaimReclaimable({
+      createdAt: new Date("2026-07-21T18:57:00.000Z"),
+      processedAt: null,
+      now,
+    }),
+    true,
+  );
+  assert.equal(
+    isRecoveryClaimReclaimable({
+      createdAt: new Date("2026-07-21T18:59:00.000Z"),
+      processedAt: null,
+      now,
+    }),
+    false,
+  );
+  assert.equal(
+    isRecoveryClaimReclaimable({
+      createdAt: new Date("2026-07-21T18:55:00.000Z"),
+      processedAt: new Date("2026-07-21T18:55:10.000Z"),
+      now,
+    }),
+    false,
+  );
+});
 
 test("an exhausted turn refreshes authorized repositories and continues its existing session", async () => {
   const recovered: Array<{ sessionId: string; message: string; tokens: string[] }> = [];
+  const completedClaims: string[] = [];
 
   const outcome = await recoverExhaustedRunnerTurn({
     sessionId: "session-1",
@@ -37,6 +67,9 @@ test("an exhausted turn refreshes authorized repositories and continues its exis
       return { id: "recovery-claim-1" };
     },
     async releaseRecoveryClaim() {},
+    async completeRecoveryClaim(id) {
+      completedClaims.push(id);
+    },
   });
 
   assert.equal(outcome, "recovered");
@@ -48,6 +81,7 @@ test("an exhausted turn refreshes authorized repositories and continues its exis
       tokens: ["token-101-11", "token-102-12"],
     },
   ]);
+  assert.deepEqual(completedClaims, ["recovery-claim-1"]);
 });
 
 test("a concurrent sync pass does not recover the same exhausted turn twice", async () => {
@@ -74,6 +108,7 @@ test("a concurrent sync pass does not recover the same exhausted turn twice", as
       return null;
     },
     async releaseRecoveryClaim() {},
+    async completeRecoveryClaim() {},
   });
 
   assert.equal(outcome, "already_claimed");
@@ -107,6 +142,7 @@ test("a failed credential refresh releases the recovery claim for a later sync p
       async releaseRecoveryClaim(id) {
         released.push(id);
       },
+      async completeRecoveryClaim() {},
     }),
     /GitHub temporarily unavailable/,
   );
