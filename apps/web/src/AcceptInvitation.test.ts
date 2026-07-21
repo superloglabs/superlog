@@ -24,3 +24,12 @@ test("automatic acceptance tries once, leaving a failed invitation available for
   assert.match(source, /const autoAcceptAttempted = useRef\(false\);/);
   assert.match(source, /if \(autoAcceptAttempted\.current\) return;/);
 });
+
+test("invitation acceptance failures retain enough context for client diagnostics", async () => {
+  const source = await readFile(new URL("./AcceptInvitation.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /\[AcceptInvitation\] acceptInvitation failed/);
+  assert.match(source, /invitationId: id/);
+  assert.match(source, /\[AcceptInvitation\] setActive failed after acceptance/);
+  assert.match(source, /organizationId: orgId/);
+});

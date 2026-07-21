@@ -94,6 +94,10 @@ function AcceptInvitationInner({
     setActionError(null);
     const res = await authClient.organization.acceptInvitation({ invitationId: id });
     if (res.error) {
+      console.error("[AcceptInvitation] acceptInvitation failed", {
+        invitationId: id,
+        error: res.error.message,
+      });
       setAction("idle");
       setActionError(res.error.message ?? "Failed to accept invitation.");
       return;
@@ -102,6 +106,11 @@ function AcceptInvitationInner({
       .organizationId;
     const setActiveRes = await authClient.organization.setActive({ organizationId: orgId });
     if (setActiveRes.error) {
+      console.error("[AcceptInvitation] setActive failed after acceptance", {
+        invitationId: id,
+        organizationId: orgId,
+        error: setActiveRes.error.message,
+      });
       // The invitation is already accepted at this point — surface the
       // switch failure so the user can retry from the org switcher instead
       // of landing in a stale active-org state.
