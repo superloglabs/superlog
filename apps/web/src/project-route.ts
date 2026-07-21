@@ -40,3 +40,8 @@ export function appLocationFromProjectRoute(location: ProjectRouteLocation): Pro
     pathname: appPathFromProjectRoute(location.pathname),
   };
 }
+
+export function legacyProductLocation(location: ProjectRouteLocation): string {
+  const pathname = location.pathname === "/" ? "" : location.pathname;
+  return `/app${pathname}${location.search}${location.hash}`;
+}

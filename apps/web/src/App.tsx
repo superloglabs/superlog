@@ -41,6 +41,7 @@ import {
   appPathFromProjectRoute,
   buildProjectPath,
   canonicalProjectLocation,
+  legacyProductLocation,
 } from "./project-route.ts";
 import {
   APP_FRAME_CLASS,
@@ -142,8 +143,8 @@ export function App() {
         <Route path="/connect/railway" element={<RailwayCallback />} />
         <Route path="/connect/gcp" element={<GcpCallback />} />
         <Route path="/app/*" element={<AuthenticatedApp />} />
-        <Route path="/org/*" element={<LegacyProjectRouteRedirect />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="/org/*" element={<LegacyProductRouteRedirect />} />
+        <Route path="*" element={<LegacyProductRouteRedirect />} />
       </Routes>
     </>
   );
@@ -278,9 +279,9 @@ function AuthenticatedApp() {
   );
 }
 
-function LegacyProjectRouteRedirect() {
+function LegacyProductRouteRedirect() {
   const location = useLocation();
-  return <Navigate replace to={`/app${location.pathname}${location.search}${location.hash}`} />;
+  return <Navigate replace to={legacyProductLocation(location)} />;
 }
 
 function useGlobalKeybinds(enabled: boolean) {

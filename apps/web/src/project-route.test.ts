@@ -5,6 +5,7 @@ import {
   appPathFromProjectRoute,
   buildProjectPath,
   canonicalProjectLocation,
+  legacyProductLocation,
 } from "./project-route.ts";
 
 test("buildProjectPath creates shareable incident URLs with org and project slugs", () => {
@@ -61,6 +62,21 @@ test("unscoped app entry URLs are translated into project-local paths", () => {
   assert.equal(appPathFromProjectRoute("/app"), "/");
   assert.equal(appPathFromProjectRoute("/app/"), "/");
   assert.equal(appPathFromProjectRoute("/app/settings"), "/settings");
+});
+
+test("legacy product entries move under /app without losing query or hash state", () => {
+  assert.equal(
+    legacyProductLocation({
+      pathname: "/settings",
+      search: "?scope=org&section=billing",
+      hash: "#plan",
+    }),
+    "/app/settings?scope=org&section=billing#plan",
+  );
+  assert.equal(
+    legacyProductLocation({ pathname: "/", search: "?slack=installed", hash: "" }),
+    "/app?slack=installed",
+  );
 });
 
 test("the app entry URL canonicalizes to the active project root", () => {

@@ -54,7 +54,7 @@ test("primary navigation emits canonical project URLs", () => {
     </MemoryRouter>,
   );
 
-  assert.match(html, /href="\/org\/superlog\/project\/demo-project"/);
+  assert.match(html, /href="\/app\/org\/superlog\/project\/demo-project"/);
   for (const appPath of ["incidents", "issues", "alerts", "explore", "dashboards", "settings"]) {
     assert.match(html, new RegExp(`href="/app/org/superlog/project/demo-project/${appPath}"`));
   }
