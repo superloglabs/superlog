@@ -11,7 +11,7 @@ test("an active investigation ends the transcript with rotating progress copy", 
   assert.match(html, /Investigation in progress/);
   assert.doesNotMatch(html, /border-accent\/40|rounded-full[^>]*investigation-progress-dot/);
   assert.doesNotMatch(html, /w-px bg-border/);
-  assert.match(html, /class="-ml-7 -mt-3 mb-6/);
+  assert.match(html, /class="-ml-\[18px\] -mt-1\.5 mb-6/);
   for (const phrase of [
     "Looking for evidence",
     "Following the signal",
