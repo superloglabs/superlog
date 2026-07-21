@@ -24,6 +24,16 @@ test("home signal series reads event rollups and metric usage projections", asyn
       queries.push(query);
       return {
         async json() {
+          if (query.includes("FROM system.columns")) {
+            return [
+              { table: "events_per_minute", optimized: 0 },
+              { table: "otel_metrics_gauge", optimized: 1 },
+              { table: "otel_metrics_sum", optimized: 1 },
+              { table: "otel_metrics_histogram", optimized: 1 },
+              { table: "otel_metrics_summary", optimized: 1 },
+              { table: "otel_metrics_exp_histogram", optimized: 1 },
+            ];
+          }
           return [];
         },
       };
@@ -37,8 +47,33 @@ test("home signal series reads event rollups and metric usage projections", asyn
     { n: 5, unit: "MINUTE" },
   );
 
-  assert.equal(queries.length, 1);
-  assert.match(queries[0] ?? "", /FROM events_per_minute/);
-  assert.match(queries[0] ?? "", /SuperlogProjectId/);
-  assert.doesNotMatch(queries[0] ?? "", /ResourceAttributes/);
+  assert.equal(queries.length, 2);
+  assert.match(queries[1] ?? "", /FROM events_per_minute/);
+  assert.match(queries[1] ?? "", /SuperlogProjectId/);
+  assert.doesNotMatch(queries[1] ?? "", /ResourceAttributes/);
+});
+
+test("home signal series falls back when optional rollups are absent", async () => {
+  const queries: string[] = [];
+  const clickhouse = {
+    async query({ query }: { query: string }) {
+      queries.push(query);
+      return {
+        async json() {
+          return [];
+        },
+      };
+    },
+  };
+
+  await getHomeSignalSeries(
+    clickhouse as never,
+    "project-1",
+    { since: "2026-07-21T09:00:00.000Z", until: "2026-07-21T10:00:00.000Z" },
+    { n: 5, unit: "MINUTE" },
+  );
+
+  assert.equal(queries.length, 2);
+  assert.doesNotMatch(queries[1] ?? "", /FROM events_per_minute/);
+  assert.match(queries[1] ?? "", /ResourceAttributes\['superlog\.project_id'\]/);
 });
