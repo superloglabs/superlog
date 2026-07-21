@@ -33,7 +33,7 @@ const MODEL = process.env.ANTHROPIC_GROUPING_MODEL ?? "claude-sonnet-4-6";
 
 const MAX_TOOL_ITERATIONS = parsePositiveIntegerEnv(
   process.env.INCIDENT_GROUPING_TOOL_ITERATIONS,
-  5,
+  12,
 );
 
 function parsePositiveIntegerEnv(value: string | undefined, fallback: number): number {

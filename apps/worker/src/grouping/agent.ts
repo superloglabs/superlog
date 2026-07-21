@@ -105,12 +105,13 @@ export async function runGroupingAgent(
     );
     if (toolUses.length === 0) {
       const parsed = parseVerdictFromText(extractText(message), candidateIds);
-      return parsed.decision === "join"
-        ? parsed
-        : {
-            decision: "standalone",
-            evidence: parsed.evidence ?? "Model did not call a grouping tool.",
-          };
+      if (parsed.decision === "join") return parsed;
+      if (parsed.evidence) return parsed; // a real standalone verdict, just written as text
+      return {
+        decision: "standalone",
+        evidence: "Model did not call a grouping tool.",
+        mechanicalFailure: "no_tool_call",
+      };
     }
 
     conversation.push({ role: "assistant", content: message.content });
@@ -134,6 +135,7 @@ export async function runGroupingAgent(
   return {
     decision: "standalone",
     evidence: "Grouping agent exhausted its tool-use budget without a valid decision.",
+    mechanicalFailure: "budget_exhausted",
   };
 }
 

@@ -4,6 +4,28 @@ import {
   type GroupingNewIssue,
 } from "./domain.js";
 
+// One compact line per candidate so the model sees the WHOLE candidate set
+// up front instead of discovering it through blind tool calls. ~40-60 tokens
+// per candidate; even a few hundred open incidents fit comfortably. Details
+// (stack traces, sibling issues) stay behind inspect_incident.
+function candidateIndexLine(candidate: GroupingCandidateIncident): string {
+  const representative = candidate.representative;
+  const issue = candidate.issues?.[0];
+  const codePath = issue?.logAttrs?.["code.file.path"];
+  const codeFn = issue?.logAttrs?.["code.function.name"];
+  const parts = [
+    candidate.id,
+    `[${candidate.service ?? "?"}]`,
+    candidate.title,
+    representative
+      ? `| ${representative.exceptionType}: ${(representative.message ?? "").slice(0, 140)}`
+      : "",
+    codePath ? `| at ${codePath}${codeFn ? `:${codeFn}` : ""}` : "",
+    `| issues=${candidate.issueCount} lastSeen=${candidate.lastSeen}`,
+  ];
+  return parts.filter(Boolean).join(" ").replace(/\s+/g, " ");
+}
+
 export function buildInitialUserMessage(input: {
   projectName: string;
   newIssue: GroupingNewIssue;
@@ -27,25 +49,9 @@ export function buildInitialUserMessage(input: {
     "New issue to classify:",
     JSON.stringify(input.newIssue, null, 2),
     "",
-    "Open incident candidate index:",
-    JSON.stringify(
-      {
-        count: input.candidates.length,
-        services,
-        environments,
-        newestCandidates: input.candidates.slice(0, 5).map((candidate) => ({
-          id: candidate.id,
-          title: candidate.title,
-          service: candidate.service,
-          issueCount: candidate.issueCount,
-          lastSeen: candidate.lastSeen,
-          environment: environmentForResourceAttrs(candidate.representative?.resourceAttrs),
-        })),
-      },
-      null,
-      2,
-    ),
+    `Open incident candidates (${input.candidates.length} total, services: ${services.join(", ") || "-"}, environments: ${environments.join(", ") || "-"}), one per line:`,
+    ...input.candidates.map(candidateIndexLine),
     "",
-    "Use list_incident_titles/list_incident_facets to orient, then search and inspect plausible join targets.",
+    "Inspect any plausible join target with inspect_incident before deciding; search_incidents/list_incident_titles remain available for narrowing.",
   ].join("\n");
 }

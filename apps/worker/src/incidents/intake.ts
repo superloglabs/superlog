@@ -28,6 +28,7 @@ import {
 
 export type IntakeLogger = {
   warn(obj: Record<string, unknown>, msg?: string): void;
+  error(obj: Record<string, unknown>, msg?: string): void;
 };
 
 export type IntakeRepository = {
@@ -594,6 +595,23 @@ async function findLlmMatchingIncident(issue: schema.Issue, deps: IntakeDeps): P
         failedReason: null,
       };
     }
+    if (verdict.mechanicalFailure) {
+      // The agent never reached a real verdict (loop budget ran out, or the
+      // reply was unparseable). Record it as a grouping FAILURE — not a
+      // considered standalone decision — and log at error level so it alerts.
+      const reason = `LLM grouping ${verdict.mechanicalFailure}: ${verdict.evidence ?? ""}`;
+      deps.logger.error(
+        {
+          scope: "issue_grouping",
+          issue_id: issue.id,
+          project_id: issue.projectId,
+          mechanical_failure: verdict.mechanicalFailure,
+          candidate_count: groupingCandidates.length,
+        },
+        `issue grouping mechanical failure: ${verdict.mechanicalFailure}`,
+      );
+      return { match: null, standaloneSource: "llm", standaloneReason: null, failedReason: reason };
+    }
     return {
       match: null,
       standaloneSource: "llm",
@@ -602,7 +620,7 @@ async function findLlmMatchingIncident(issue: schema.Issue, deps: IntakeDeps): P
     };
   } catch (err) {
     const reason = `LLM grouping failed: ${err instanceof Error ? err.message : String(err)}`;
-    deps.logger.warn(
+    deps.logger.error(
       {
         scope: "issue_grouping",
         issue_id: issue.id,

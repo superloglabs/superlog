@@ -90,10 +90,31 @@ test("groupingIssueInput and buildGroupingCandidate keep LLM input shape explici
     stacktrace: "stack",
     traceId: "trace-1",
     spanId: "span-1",
+    logAttrs: null,
   });
   assert.ok(candidate?.representative);
   assert.equal(candidate.representative.traceId, "trace-2");
   assert.deepEqual(candidate.representative.normalizedFrames, ["svc/a.ts"]);
+  // Linked issues now travel with the candidate so inspect_incident can show
+  // stack traces and code locations.
+  assert.equal(candidate.issues?.length, 1);
+  assert.equal(candidate.issues?.[0]?.id, "iss-linked");
+});
+
+test("buildGroupingCandidate reads log-sample stacktraces and strips them from logAttrs", () => {
+  const candidate = buildGroupingCandidate(makeIncident("inc-1"), [
+    {
+      ...makeLinkedIssue("inc-1", []),
+      lastSample: {
+        logAttrs: {
+          "exception.stacktrace": "Traceback (most recent call last): boom",
+          "code.file.path": "/app/x.py",
+        },
+      } as unknown as LinkedIncidentIssue["lastSample"],
+    },
+  ]);
+  assert.equal(candidate?.issues?.[0]?.stacktrace, "Traceback (most recent call last): boom");
+  assert.deepEqual(candidate?.issues?.[0]?.logAttrs, { "code.file.path": "/app/x.py" });
 });
 
 function makeIssue(normalizedFrames: string[]): schema.Issue {
@@ -125,6 +146,8 @@ function makeIncident(id: string): schema.Incident {
 function makeLinkedIssue(incidentId: string, normalizedFrames: string[]): LinkedIncidentIssue {
   return {
     incidentId,
+    issueId: "iss-linked",
+    service: null,
     title: "Linked issue",
     exceptionType: "TypeError",
     message: "boom",

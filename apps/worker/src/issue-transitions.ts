@@ -17,9 +17,28 @@
 // at-most-once. The inline path logged-and-skipped a throwing handler; the
 // queue worker does the same per job instead of relying on pg-boss retries,
 // because the handler is not written to be safely re-runnable in all cases.
+import { metrics } from "@opentelemetry/api";
 import type { schema } from "@superlog/db";
 import type { IssueTransition } from "./incidents/workflow.js";
 import { logger as defaultLogger } from "./logger.js";
+
+// Queue-health telemetry: how long a transition waited before a consumer
+// picked it up, and how long the side effects took. Queue lag growing past
+// tens of seconds means the LLM grouping calls are outpacing WORKER_CONCURRENCY
+// — the signal to scale consumers or shed load, watched via a product alert.
+const meter = metrics.getMeter("@superlog/worker/issue-transitions");
+const queueLagHistogram = meter.createHistogram("superlog.issue_transitions.queue_lag_ms", {
+  description: "Delay between enqueueing an issue transition and a consumer starting it.",
+  unit: "ms",
+});
+const durationHistogram = meter.createHistogram("superlog.issue_transitions.duration_ms", {
+  description: "Wall-clock duration of issue-transition side effects (incident intake, grouping, notifications).",
+  unit: "ms",
+});
+const failureCounter = meter.createCounter("superlog.issue_transitions.failures", {
+  description: "Issue transitions whose side effects threw and were skipped (at-most-once).",
+  unit: "1",
+});
 
 export const ISSUE_TRANSITION_QUEUE = "issue-transition";
 
@@ -42,6 +61,8 @@ export type IssueTransitionJobData = {
   issueId: string;
   projectId: string;
   transition: IssueTransition;
+  /** Epoch ms at enqueue; lets the consumer report queue lag. */
+  enqueuedAtMs?: number;
 };
 
 type LoggerLike = Pick<typeof defaultLogger, "warn" | "error">;
@@ -73,6 +94,7 @@ function parseJobData(data: unknown): IssueTransitionJobData | null {
     issueId: record.issueId,
     projectId: record.projectId,
     transition: record.transition,
+    enqueuedAtMs: typeof record.enqueuedAtMs === "number" ? record.enqueuedAtMs : undefined,
   };
 }
 
@@ -105,6 +127,7 @@ export function createIssueTransitionDispatcher(opts: {
       issueId: issue.id,
       projectId: issue.projectId,
       transition,
+      enqueuedAtMs: Date.now(),
     };
     try {
       // singletonKey dedupes while a matching job is queued: a rapid
@@ -157,6 +180,12 @@ export async function registerIssueTransitionWorker(
             );
             return;
           }
+          if (data.enqueuedAtMs) {
+            queueLagHistogram.record(Math.max(0, Date.now() - data.enqueuedAtMs), {
+              transition: data.transition,
+            });
+          }
+          const startedAt = Date.now();
           try {
             const issue = await opts.loadIssue(data.issueId);
             if (!issue) {
@@ -168,6 +197,7 @@ export async function registerIssueTransitionWorker(
             }
             await opts.handle(issue, data.transition);
           } catch (err) {
+            failureCounter.add(1, { transition: data.transition });
             logger.error(
               {
                 scope: "issue-transitions",
@@ -178,6 +208,8 @@ export async function registerIssueTransitionWorker(
               },
               "issue transition failed; skipping",
             );
+          } finally {
+            durationHistogram.record(Date.now() - startedAt, { transition: data.transition });
           }
         }),
       );

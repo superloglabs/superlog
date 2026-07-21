@@ -97,7 +97,9 @@ export async function loadLinkedIncidentIssues(
   return db
     .select({
       incidentId: schema.incidentIssues.incidentId,
+      issueId: schema.issues.id,
       title: schema.issues.title,
+      service: schema.issues.service,
       exceptionType: schema.issues.exceptionType,
       message: schema.issues.message,
       topFrame: schema.issues.topFrame,

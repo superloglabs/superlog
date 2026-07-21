@@ -68,11 +68,18 @@ export type GroupingNewIssue = {
   traceId: string | null;
   spanId: string | null;
   resourceAttrs?: ResourceAttrs;
+  /** Log-record attributes from the sample (code location, route, …). */
+  logAttrs?: Record<string, string> | null;
 };
 
 export type GroupingVerdict =
   | { decision: "join"; incidentId: string; evidence: string }
-  | { decision: "standalone"; evidence: string | null };
+  | { decision: "standalone"; evidence: string | null; mechanicalFailure?: GroupingMechanicalFailure };
+
+// A mechanical failure means the agent never reached a real verdict (loop
+// budget ran out, or the model replied with unparseable text). Callers must
+// treat these as retryable errors — not as a considered "standalone" decision.
+export type GroupingMechanicalFailure = "budget_exhausted" | "no_tool_call";
 
 export function environmentForResourceAttrs(attrs: ResourceAttrs | undefined): string | null {
   if (!attrs) return null;

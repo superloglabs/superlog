@@ -51,10 +51,13 @@ test("dispatcher enqueues the transition instead of running it inline", async ()
   assert.equal(inlineRuns, 0, "inline handler must not run when the queue is available");
   assert.equal(fb.sent.length, 1);
   assert.equal(fb.sent[0]?.name, ISSUE_TRANSITION_QUEUE);
-  assert.deepEqual(fb.sent[0]?.data, {
+  const sentData = fb.sent[0]?.data as { enqueuedAtMs?: number };
+  assert.equal(typeof sentData.enqueuedAtMs, "number");
+  assert.deepEqual({ ...sentData, enqueuedAtMs: undefined }, {
     issueId: "issue-1",
     projectId: "project-1",
     transition: "new",
+    enqueuedAtMs: undefined,
   });
   // Rapid duplicate dispatches of the same (issue, transition) must dedupe
   // while a matching job is still queued.
@@ -174,10 +177,13 @@ test("observation escalations dispatch through the queue too", async () => {
 
   await dispatch(issueOf("issue-1", "project-1"), "escalated");
 
-  assert.deepEqual(fb.sent[0]?.data, {
+  const escData = fb.sent[0]?.data as { enqueuedAtMs?: number };
+  assert.equal(typeof escData.enqueuedAtMs, "number");
+  assert.deepEqual({ ...escData, enqueuedAtMs: undefined }, {
     issueId: "issue-1",
     projectId: "project-1",
     transition: "escalated",
+    enqueuedAtMs: undefined,
   });
 
   const handled: string[] = [];

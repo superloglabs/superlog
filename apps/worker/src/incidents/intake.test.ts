@@ -169,6 +169,9 @@ function makeDeps(overrides: {
       warn(_obj, msg) {
         overrides.calls.push(`logger.warn:${msg ?? ""}`);
       },
+      error(_obj, msg) {
+        overrides.calls.push(`logger.error:${msg ?? ""}`);
+      },
     },
     serializeCreate: overrides.serializeCreate,
   };
@@ -294,6 +297,8 @@ test("intake: recurred issue goes through grouping and joins an existing inciden
   repo.loadLinkedIncidentIssues = async (incidents) =>
     incidents.map((incident) => ({
       incidentId: incident.id,
+      issueId: "iss-linked",
+      service: null,
       title: incident.title,
       exceptionType: "ERROR",
       message: "Recall.ai returned insufficient_credit_balance",
@@ -515,6 +520,8 @@ test("intake: heuristic match links to existing incident as 'grouped'", async ()
   repo.loadLinkedIncidentIssues = async () => [
     {
       incidentId: "inc-match",
+      issueId: "iss-linked",
+      service: null,
       title: existing.title,
       exceptionType: "ECONNREFUSED",
       message: null,
@@ -684,6 +691,8 @@ test("intake: create/link section runs under serializeCreate, with grouping anal
   repo.loadLinkedIncidentIssues = async () => [
     {
       incidentId: "inc-unrelated",
+      issueId: "iss-linked",
+      service: null,
       title: "something else",
       exceptionType: "Error",
       message: null,
@@ -778,6 +787,8 @@ test("intake: first-ever alert episode goes through LLM grouping like an error",
   repo.loadLinkedIncidentIssues = async () => [
     {
       incidentId: "inc-error",
+      issueId: "iss-linked",
+      service: null,
       title: "DB down",
       exceptionType: "ECONNREFUSED",
       message: null,
@@ -862,6 +873,8 @@ test("intake: LLM 'join' verdict links to the chosen incident", async () => {
     calls.push(`loadLinkedIncidentIssues:${incidents.length}`);
     return incidents.map((incident) => ({
       incidentId: incident.id,
+      issueId: "iss-linked",
+      service: null,
       title: incident.title,
       exceptionType: "ECONNREFUSED",
       message: "conn refused",
@@ -916,6 +929,8 @@ test("intake: LLM 'join' verdict with unknown id falls back to standalone (and o
   repo.loadLinkedIncidentIssues = async (incidents) =>
     incidents.map((incident) => ({
       incidentId: incident.id,
+      issueId: "iss-linked",
+      service: null,
       title: incident.title,
       exceptionType: "ECONNREFUSED",
       message: "conn refused",
@@ -945,7 +960,7 @@ test("intake: LLM 'join' verdict with unknown id falls back to standalone (and o
   );
 });
 
-test("intake: LLM error logs a warning and marks issue 'failed'", async () => {
+test("intake: LLM error logs an error and marks issue 'failed'", async () => {
   const calls: string[] = [];
   const candidate = makeIncident({ id: "inc-x", issueCount: 1 });
   const newInc = makeIncident({ id: "inc-fresh" });
@@ -957,6 +972,8 @@ test("intake: LLM error logs a warning and marks issue 'failed'", async () => {
   repo.loadLinkedIncidentIssues = async (incidents) =>
     incidents.map((incident) => ({
       incidentId: incident.id,
+      issueId: "iss-linked",
+      service: null,
       title: incident.title,
       exceptionType: "ECONNREFUSED",
       message: "conn refused",
@@ -978,10 +995,57 @@ test("intake: LLM error logs a warning and marks issue 'failed'", async () => {
       },
     }),
   );
-  assert.ok(calls.includes("logger.warn:llm grouping failed"));
+  assert.ok(calls.includes("logger.error:llm grouping failed"));
   assert.ok(
     calls.some((c) =>
       c.startsWith("updateIssueGrouping:iss-new:failed:llm:LLM grouping failed: anthropic 500"),
+    ),
+  );
+});
+
+test("intake: mechanical grouping failure (budget) logs an error and marks issue 'failed'", async () => {
+  const calls: string[] = [];
+  const candidate = makeIncident({ id: "inc-x", issueCount: 1 });
+  const newInc = makeIncident({ id: "inc-fresh" });
+  const repo = makeRepo({
+    calls,
+    openCandidates: { withService: [], withoutService: [candidate] },
+    incidentById: new Map([["inc-fresh", newInc]]),
+  });
+  repo.loadLinkedIncidentIssues = async (incidents) =>
+    incidents.map((incident) => ({
+      incidentId: incident.id,
+      issueId: "iss-linked",
+      service: null,
+      title: incident.title,
+      exceptionType: "ECONNREFUSED",
+      message: "conn refused",
+      topFrame: "db.query",
+      normalizedFrames: ["db.query"],
+      lastSample: null,
+      lastSeen: incident.lastSeen,
+    }));
+  const lifecycle = makeLifecycle({ calls, createdIncident: newInc });
+  await ensureIncidentForIssueWorkflow(
+    makeIssue(),
+    "new",
+    makeDeps({
+      repo,
+      lifecycle,
+      calls,
+      async analyzeGrouping() {
+        return {
+          decision: "standalone",
+          evidence: "Grouping agent exhausted its tool-use budget without a valid decision.",
+          mechanicalFailure: "budget_exhausted",
+        };
+      },
+    }),
+  );
+  assert.ok(calls.includes("logger.error:issue grouping mechanical failure: budget_exhausted"));
+  assert.ok(
+    calls.some((c) =>
+      c.startsWith("updateIssueGrouping:iss-new:failed:llm:LLM grouping budget_exhausted"),
     ),
   );
 });

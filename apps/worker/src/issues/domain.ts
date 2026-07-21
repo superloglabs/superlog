@@ -6,7 +6,9 @@ export type IssueGroupingSource = "heuristic" | "llm" | "manual" | null;
 
 export type LinkedIncidentIssue = {
   incidentId: string;
+  issueId: string;
   title: string;
+  service: string | null;
   exceptionType: string;
   message: string | null;
   topFrame: string | null;
@@ -30,6 +32,29 @@ export function issueSample(issue: schema.Issue): IssueSample | null {
   return (issue.lastSample ?? null) as IssueSample | null;
 }
 
+const GROUPING_STACKTRACE_CAP = 4000;
+
+// Log-derived samples carry their traceback in logAttrs['exception.stacktrace']
+// (the OTel log-record convention) rather than the sample's own stacktrace
+// field — read both so log-kind issues aren't presented traceless.
+export function sampleStacktrace(sample: IssueSample | null): string | null {
+  const raw = sample?.stacktrace ?? sample?.logAttrs?.["exception.stacktrace"] ?? null;
+  return raw ? raw.slice(0, GROUPING_STACKTRACE_CAP) : null;
+}
+
+// Everything except the (potentially huge) inline stacktrace — code location,
+// route, request ids. Cheap, structured signal for the grouping agent.
+export function sampleLogAttrs(sample: IssueSample | null): Record<string, string> | null {
+  const attrs = sample?.logAttrs;
+  if (!attrs) return null;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "exception.stacktrace") continue;
+    out[key] = String(value).slice(0, 300);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 export function groupingIssueInput(issue: schema.Issue): GroupingNewIssue {
   const sample = issueSample(issue);
   return {
@@ -41,9 +66,10 @@ export function groupingIssueInput(issue: schema.Issue): GroupingNewIssue {
     topFrame: issue.topFrame,
     normalizedFrames: issue.normalizedFrames ?? [],
     observedAt: issue.lastSeen.toISOString(),
-    stacktrace: sample?.stacktrace ?? null,
+    stacktrace: sampleStacktrace(sample),
     traceId: sample?.traceId ?? null,
     spanId: sample?.spanId ?? null,
+    logAttrs: sampleLogAttrs(sample),
   };
 }
 
@@ -105,13 +131,18 @@ export function findSameTraceIncidentMatch(
   };
 }
 
+// How many linked issues each candidate carries into inspect_incident. The
+// newest ones carry the freshest samples; older siblings add little.
+const GROUPING_CANDIDATE_ISSUE_LIMIT = 5;
+
 export function buildGroupingCandidate(
   incident: schema.Incident,
   linked: LinkedIncidentIssue[],
 ): GroupingCandidateIncident | null {
-  const representative = linked
+  const rows = linked
     .filter((row) => row.incidentId === incident.id)
-    .sort((a, b) => b.lastSeen.getTime() - a.lastSeen.getTime())[0];
+    .sort((a, b) => b.lastSeen.getTime() - a.lastSeen.getTime());
+  const representative = rows[0];
   if (!representative) return null;
   return {
     id: incident.id,
@@ -128,5 +159,22 @@ export function buildGroupingCandidate(
       traceId: representative.lastSample?.traceId ?? null,
       spanId: representative.lastSample?.spanId ?? null,
     },
+    // Full per-issue context (stack traces, code locations) so the agent can
+    // compare root causes instead of message wording. Surfaced by
+    // inspect_incident; the index line only uses the first entry.
+    issues: rows.slice(0, GROUPING_CANDIDATE_ISSUE_LIMIT).map((row) => ({
+      id: row.issueId,
+      title: row.title,
+      service: row.service,
+      exceptionType: row.exceptionType,
+      message: row.message,
+      topFrame: row.topFrame,
+      normalizedFrames: row.normalizedFrames ?? [],
+      traceId: row.lastSample?.traceId ?? null,
+      spanId: row.lastSample?.spanId ?? null,
+      logAttrs: sampleLogAttrs(row.lastSample),
+      stacktrace: sampleStacktrace(row.lastSample),
+      lastSeen: row.lastSeen.toISOString(),
+    })),
   };
 }
