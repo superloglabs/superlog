@@ -411,13 +411,14 @@ export function useKeys(projectId: string | undefined) {
     queryKey: ["keys", projectId],
     queryFn: () => fetcher<ApiKey[]>(`/api/projects/${projectId}/keys`),
     enabled: !!projectId,
-    refetchInterval: (query) =>
-      query.state.data?.some(
-        (key) =>
-          key.name === "Porter Helm install" && !key.revokedAt && key.lastUsedAt === null,
-      )
+    refetchInterval: (query) => {
+      const porterKeys = (query.state.data ?? []).filter(
+        (key) => key.name === "Porter Helm install" && !key.revokedAt,
+      );
+      return porterKeys.length > 0 && porterKeys.every((key) => key.lastUsedAt === null)
         ? 10_000
-        : false,
+        : false;
+    },
   });
 }
 
