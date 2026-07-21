@@ -150,7 +150,7 @@ test("splits the contract into dispatched and terminal tools", () => {
   assert.ok(!isDispatchedOutcomeToolName("report_external_cause"));
 });
 
-test("offers complete_investigation only when no intervention tool is available", () => {
+test("offers complete_investigation when no PR or ticket handoff is available", () => {
   const withPrs = outcomeToolDefinitionsForCapabilities({
     prCreation: true,
     approvalPrompts: false,
@@ -172,7 +172,7 @@ test("offers complete_investigation only when no intervention tool is available"
     approvalPrompts: true,
     linearTicketCreation: false,
   }).map((definition) => definition.name);
-  assert.ok(!withApprovals.includes("complete_investigation"));
+  assert.ok(withApprovals.includes("complete_investigation"));
 });
 
 test("offers create_linear_issue whenever Linear ticket creation is available", () => {

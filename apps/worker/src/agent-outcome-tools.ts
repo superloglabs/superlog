@@ -406,7 +406,7 @@ const CREATE_LINEAR_ISSUE_DEFINITION: OutcomeToolDefinition = {
 const COMPLETE_INVESTIGATION_DEFINITION: OutcomeToolDefinition = {
   name: "complete_investigation",
   description:
-    "Terminal: finish the investigation and hand the recorded findings to the configured external ticket workflow, while leaving the incident open. Use this only after report_findings when no PR or approval action is available. This does not resolve the incident and does not require every linked issue to be classified.",
+    "Terminal: finish the investigation and hand the recorded findings to the configured external workflow, while leaving the incident open. Use this only after report_findings when no PR or ticket handoff is being produced and no specific human answer or approval is needed. This does not resolve the incident and does not require every linked issue to be classified.",
   input_schema: {
     type: "object",
     properties: {},
@@ -455,7 +455,7 @@ export function outcomeToolDefinitionsForCapabilities(
     REPORT_FINDINGS_DEFINITION,
     ...(capabilities.prCreation ? [PROPOSE_PR_DEFINITION] : []),
     ...(capabilities.linearTicketCreation ? [CREATE_LINEAR_ISSUE_DEFINITION] : []),
-    ...(!hasInterventionTools(capabilities) && !capabilities.linearTicketCreation
+    ...(!capabilities.prCreation && !capabilities.linearTicketCreation
       ? [COMPLETE_INVESTIGATION_DEFINITION]
       : []),
     ASK_HUMAN_DEFINITION,

@@ -128,7 +128,8 @@ export function isCompleteInvestigationAllowed(
 ): boolean {
   if (result.completionKind !== "investigation_complete") return true;
   if (result.linearTicketRequested) return true;
-  return completeInvestigationAvailable(capabilities);
+  const prCreation = capabilities.githubConnected && capabilities.prPolicy !== "never";
+  return !prCreation;
 }
 
 export function completeInvestigationAvailable(capabilities: {
@@ -1318,7 +1319,7 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         const failed = await failAgentRun(
           ctx,
           "sync_failed",
-          "Investigation tried to finish while a remediation intervention was still available.",
+          "Investigation tried to finish without a pull request while PR creation was still available.",
           { existingResult: snapshot.result },
         );
         if (failed) {
