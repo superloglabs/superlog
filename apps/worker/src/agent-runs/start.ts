@@ -320,6 +320,7 @@ async function startRunnerSession(
         // project setting decides whether it counts as an available
         // intervention when terminal tools are registered.
         approvalPromptToolsAvailable: true,
+        linearTicketCreationAvailable: !!ctx.linearInstall,
         prBaseBranch: ctx.prBaseBranch,
         githubConnected: ctx.githubInstalls.length > 0,
         telemetryInvestigationHint: TELEMETRY_INVESTIGATION_HINT,

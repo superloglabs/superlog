@@ -17,6 +17,7 @@ import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { TERMINAL_OUTCOME_NUDGE_MARKER, assembleAgentRunResult } from "../agent-outcome-tools.js";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { type PauseForEventsOutcome, createAgentRunLifecycle } from "../agent-run.js";
+import type { AgentRunnerSnapshot } from "../agent-runner-backend.js";
 import { type AgentRunOutcome, recordAgentRunCompletion } from "../ai-usage.js";
 import { investigationGate } from "../billing/investigation-gate.js";
 import { usageNotifier } from "../billing/usage-notifier-infra.js";
@@ -123,6 +124,7 @@ export function isCompleteInvestigationAllowed(
   },
 ): boolean {
   if (result.completionKind !== "investigation_complete") return true;
+  if (result.linearTicketRequested) return true;
   return completeInvestigationAvailable(capabilities);
 }
 
@@ -437,14 +439,57 @@ export function shouldDeferSteering(snapshot: {
 export function terminalOutcomeNudgePrompt(
   args: {
     completeInvestigationAvailable?: boolean;
+    linearTicketCreationAvailable?: boolean;
+    prCreationAvailable?: boolean;
   } = {},
 ): string {
+  const terminalTools: string[] = [];
+  const prCreationAvailable = args.prCreationAvailable ?? !args.completeInvestigationAvailable;
+  if (prCreationAvailable) terminalTools.push("batched `propose_pr`");
+  if (args.linearTicketCreationAvailable) terminalTools.push("`create_linear_issue`");
+  else if (args.completeInvestigationAvailable) terminalTools.push("`complete_investigation`");
+  terminalTools.push(
+    "`resolve_incident` with all Issue outcomes",
+    "`report_external_cause`",
+    "`ask_human`",
+  );
   return [
     TERMINAL_OUTCOME_NUDGE_MARKER,
-    args.completeInvestigationAvailable
-      ? "Call `report_findings` now, then explicitly end your turn with `complete_investigation`, `report_external_cause`, `resolve_incident` with all Issue outcomes, or `ask_human`."
-      : "Call `report_findings` now if you have findings to record, then end the turn with exactly one terminal tool: batched `propose_pr`, `resolve_incident` with all Issue outcomes, `report_external_cause`, or `ask_human`.",
+    `Call \`report_findings\` now if you have findings to record, then end the turn with exactly one terminal tool: ${terminalTools.join(", ")}.`,
   ].join("\n");
+}
+
+export function terminalOutcomeNudgeCapabilities(
+  snapshot: Partial<Pick<AgentRunnerSnapshot, "declaredCustomToolNames">>,
+  fallback: {
+    prCreationAvailable: boolean;
+    completeInvestigationAvailable: boolean;
+  },
+): {
+  prCreationAvailable: boolean;
+  linearTicketCreationAvailable: boolean;
+  completeInvestigationAvailable: boolean;
+} {
+  const declared = snapshot.declaredCustomToolNames;
+  if (!declared) {
+    logger.info(
+      {
+        scope: "agent_run.nudge",
+        fallback_capabilities: fallback,
+      },
+      "terminal outcome nudge is using legacy snapshot capabilities",
+    );
+    return {
+      ...fallback,
+      linearTicketCreationAvailable: false,
+    };
+  }
+  const names = new Set(declared);
+  return {
+    prCreationAvailable: names.has("propose_pr"),
+    linearTicketCreationAvailable: names.has("create_linear_issue"),
+    completeInvestigationAvailable: names.has("complete_investigation"),
+  };
 }
 
 const PARTIAL_PULL_REQUEST_RETRY_NUDGE_MARKER = "[superlog:partial-pull-request-retry-nudge]";
@@ -1412,14 +1457,17 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         // steering a duplicate.
         const nudgePrompt =
           partialRetryPrompt ??
-          terminalOutcomeNudgePrompt({
-            completeInvestigationAvailable: completeInvestigationAvailable({
-              prPolicy: ctx.prPolicy,
-              githubConnected: ctx.githubInstalls.length > 0,
-              approvalPromptsEnabled: ctx.approvalPromptsEnabled,
-              approvalPromptToolsAvailable: true,
+          terminalOutcomeNudgePrompt(
+            terminalOutcomeNudgeCapabilities(snapshot, {
+              completeInvestigationAvailable: completeInvestigationAvailable({
+                prPolicy: ctx.prPolicy,
+                githubConnected: ctx.githubInstalls.length > 0,
+                approvalPromptsEnabled: ctx.approvalPromptsEnabled,
+                approvalPromptToolsAvailable: true,
+              }),
+              prCreationAvailable: ctx.githubInstalls.length > 0 && ctx.prPolicy !== "never",
             }),
-          });
+          );
         const redeliveryMarker = partialRetryPrompt
           ? `${PARTIAL_PULL_REQUEST_RETRY_NUDGE_MARKER} ${JSON.stringify(pendingRepoFullNames)}`
           : TERMINAL_OUTCOME_NUDGE_MARKER;

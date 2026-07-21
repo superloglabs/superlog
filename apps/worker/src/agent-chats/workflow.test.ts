@@ -66,6 +66,7 @@ function snapshot(overrides: Partial<AgentRunnerSnapshot> = {}): AgentRunnerSnap
     activeSeconds: 30,
     events: [],
     result: null,
+    declaredCustomToolNames: [],
     unknownCustomTools: [],
     latestMessage: "The deploy at 02:10 broke checkout.",
     modelUsage: {

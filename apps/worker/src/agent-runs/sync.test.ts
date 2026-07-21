@@ -20,6 +20,7 @@ import {
   shouldFailForRuntimeBudget,
   shouldParkCompatibilityPullRequests,
   steerIdleRunnerWithPendingContext,
+  terminalOutcomeNudgeCapabilities,
   terminalOutcomeNudgePrompt,
 } from "./sync.js";
 
@@ -446,6 +447,26 @@ test("complete_investigation is rejected when an intervention is available", () 
   );
 });
 
+test("an explicit Linear handoff is allowed when another intervention is available", () => {
+  assert.equal(
+    isCompleteInvestigationAllowed(
+      {
+        state: "complete",
+        summary: "Findings ready for the owning team.",
+        completionKind: "investigation_complete",
+        linearTicketRequested: true,
+      },
+      {
+        prPolicy: "always",
+        githubConnected: true,
+        approvalPromptsEnabled: true,
+        approvalPromptToolsAvailable: true,
+      },
+    ),
+    true,
+  );
+});
+
 test("steerIdleRunnerWithPendingContext steers idle sessions with joined context deltas", async () => {
   const steered: Array<{ sessionId: string; message: string }> = [];
   const processedIds: string[][] = [];
@@ -802,6 +823,66 @@ test("terminalOutcomeNudgePrompt uses complete_investigation when interventions 
   const prompt = terminalOutcomeNudgePrompt({ completeInvestigationAvailable: true });
   assert.match(prompt, /complete_investigation/);
   assert.doesNotMatch(prompt, /propose_pr/);
+});
+
+test("terminalOutcomeNudgePrompt preserves the explicit Linear handoff", () => {
+  const prompt = terminalOutcomeNudgePrompt({
+    completeInvestigationAvailable: true,
+    linearTicketCreationAvailable: true,
+    prCreationAvailable: false,
+  });
+  assert.match(prompt, /create_linear_issue/);
+  assert.doesNotMatch(prompt, /complete_investigation/);
+  assert.doesNotMatch(prompt, /propose_pr/);
+});
+
+test("terminalOutcomeNudgePrompt keeps PR creation alongside the Linear handoff", () => {
+  const prompt = terminalOutcomeNudgePrompt({
+    completeInvestigationAvailable: false,
+    linearTicketCreationAvailable: true,
+    prCreationAvailable: true,
+  });
+  assert.match(prompt, /create_linear_issue/);
+  assert.match(prompt, /propose_pr/);
+});
+
+test("terminalOutcomeNudgeCapabilities uses the tools declared for the running session", () => {
+  assert.deepEqual(
+    terminalOutcomeNudgeCapabilities(
+      { declaredCustomToolNames: ["report_findings", "propose_pr"] },
+      { prCreationAvailable: false, completeInvestigationAvailable: true },
+    ),
+    {
+      prCreationAvailable: true,
+      linearTicketCreationAvailable: false,
+      completeInvestigationAvailable: false,
+    },
+  );
+  assert.deepEqual(
+    terminalOutcomeNudgeCapabilities(
+      { declaredCustomToolNames: ["report_findings", "create_linear_issue"] },
+      { prCreationAvailable: true, completeInvestigationAvailable: false },
+    ),
+    {
+      prCreationAvailable: false,
+      linearTicketCreationAvailable: true,
+      completeInvestigationAvailable: false,
+    },
+  );
+});
+
+test("terminalOutcomeNudgeCapabilities does not add Linear to legacy snapshots", () => {
+  assert.deepEqual(
+    terminalOutcomeNudgeCapabilities(
+      {},
+      { prCreationAvailable: true, completeInvestigationAvailable: false },
+    ),
+    {
+      prCreationAvailable: true,
+      linearTicketCreationAvailable: false,
+      completeInvestigationAvailable: false,
+    },
+  );
 });
 
 test("partialPullRequestRetryNudgePrompt requires exactly the pending repositories", () => {
