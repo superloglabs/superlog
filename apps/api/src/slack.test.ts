@@ -322,6 +322,29 @@ test("a mention sent before resolution does not become Q&A when its twin arrives
   );
 });
 
+test("closed incident Q&A keeps the installation that owns the incident", async () => {
+  const { findIncidentChatInstallation } = await import("./slack.js");
+  const wrongChannelDefault = { id: "install-b", projectId: "project-b" };
+  const incidentInstallation = { id: "install-a", projectId: "project-a" };
+
+  assert.equal(
+    findIncidentChatInstallation(
+      [wrongChannelDefault, incidentInstallation],
+      "project-a",
+      "install-a",
+    ),
+    incidentInstallation,
+  );
+  assert.equal(
+    findIncidentChatInstallation(
+      [wrongChannelDefault, incidentInstallation],
+      "project-a",
+      "deleted-install",
+    ),
+    incidentInstallation,
+  );
+});
+
 // The bot posts to public channels via chat:write.public WITHOUT joining them,
 // but Slack's Events API only delivers message events for channels the bot is
 // a member of — so thread replies in a never-joined channel vanish silently.
