@@ -5,6 +5,7 @@ export default {
   theme: {
     extend: {
       fontFamily: {
+        pixel: ["Geist Pixel", "ui-monospace", "monospace"],
         sans: [
           "Inter",
           "ui-sans-serif",
@@ -37,8 +38,12 @@ export default {
         border: "var(--color-border)",
         "border-strong": "var(--color-border-strong)",
         fg: "rgb(var(--color-fg-rgb) / <alpha-value>)",
+        foreground: "rgb(var(--color-fg-rgb) / <alpha-value>)",
         muted: "rgb(var(--color-muted-rgb) / <alpha-value>)",
+        "muted-foreground": "rgb(var(--color-muted-rgb) / <alpha-value>)",
         subtle: "rgb(var(--color-subtle-rgb) / <alpha-value>)",
+        popover: "rgb(var(--color-surface-rgb) / <alpha-value>)",
+        "popover-foreground": "rgb(var(--color-fg-rgb) / <alpha-value>)",
         accent: "rgb(var(--color-accent-rgb) / <alpha-value>)",
         "accent-ink": "rgb(var(--color-accent-ink-rgb) / <alpha-value>)",
         "accent-soft": "var(--color-accent-soft)",

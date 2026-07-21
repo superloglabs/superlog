@@ -1,5 +1,5 @@
-import { Btn } from "../design/ui.tsx";
 import type { HomeBuiltinType } from "../dashboards/api.ts";
+import { Btn } from "../design/ui.tsx";
 
 const BUILTINS: Array<{
   type: HomeBuiltinType;
@@ -20,6 +20,21 @@ const BUILTINS: Array<{
     type: "service_map",
     label: "Service map",
     description: "Connected services and infrastructure",
+  },
+  {
+    type: "incoming_signals",
+    label: "Incoming signals",
+    description: "Traces, logs, and metrics received in the last hour",
+  },
+  {
+    type: "incident_count",
+    label: "Incident count",
+    description: "Open incidents grouped by severity",
+  },
+  {
+    type: "agent_pull_requests",
+    label: "Superlog pull requests",
+    description: "Merged and unmerged PRs from the last 30 days",
   },
 ];
 

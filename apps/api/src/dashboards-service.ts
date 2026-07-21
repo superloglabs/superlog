@@ -12,6 +12,9 @@ export const dashboardWidgetTypeSchema = z.enum([
   "setup_todos",
   "active_incidents",
   "service_map",
+  "incoming_signals",
+  "incident_count",
+  "agent_pull_requests",
 ]);
 
 export const dashboardDataWidgetTypeSchema = z.enum([
@@ -77,6 +80,12 @@ export function defaultWidgetLayout(type: DashboardWidgetType): DashboardWidgetL
       return { x: 0, y: 5, w: 6, h: 3 };
     case "service_map":
       return { x: 6, y: 5, w: 6, h: 8 };
+    case "incoming_signals":
+      return { x: 0, y: 5, w: 4, h: 5 };
+    case "incident_count":
+      return { x: 4, y: 5, w: 4, h: 5 };
+    case "agent_pull_requests":
+      return { x: 8, y: 5, w: 4, h: 5 };
     case "trace_table":
     case "log_table":
       return { x: 0, y: 9999, w: 12, h: 6 };
@@ -96,6 +105,9 @@ export const HOME_BUILTIN_TYPES = [
   "setup_todos",
   "active_incidents",
   "service_map",
+  "incoming_signals",
+  "incident_count",
+  "agent_pull_requests",
 ] as const satisfies readonly DashboardWidgetType[];
 
 export type HomeBuiltinType = (typeof HOME_BUILTIN_TYPES)[number];
@@ -133,16 +145,22 @@ export function defaultHomeWidgets(): DashboardWidgetCreateInput[] {
       layout: defaultWidgetLayout("setup_todos"),
     },
     {
-      type: "active_incidents",
-      title: "Active critical incidents",
+      type: "incoming_signals",
+      title: "Incoming signals",
       config: { filter: {} },
-      layout: defaultWidgetLayout("active_incidents"),
+      layout: defaultWidgetLayout("incoming_signals"),
     },
     {
-      type: "service_map",
-      title: "Service map",
+      type: "incident_count",
+      title: "Active incidents",
       config: { filter: {} },
-      layout: defaultWidgetLayout("service_map"),
+      layout: defaultWidgetLayout("incident_count"),
+    },
+    {
+      type: "agent_pull_requests",
+      title: "PRs opened by Superlog",
+      config: { filter: {} },
+      layout: defaultWidgetLayout("agent_pull_requests"),
     },
   ];
 }

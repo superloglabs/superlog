@@ -448,7 +448,7 @@ mountSettingsAuthed(app);
 mountProjectMcpServersAuthed(app);
 mountPorterAuthed(app);
 mountOrgKeyManagementAuthed(app);
-mountDashboards(app);
+mountDashboards(app, { clickhouse: ch });
 mountSavedViews(app);
 mountCloudConnectionsAuthed(app);
 mountIngestFilters(app);

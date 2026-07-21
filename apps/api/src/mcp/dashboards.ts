@@ -18,11 +18,11 @@ import {
   homeBuiltinTypeSchema,
   listDashboardsForProject,
   setDashboardVariables,
+  setHomeBuiltin,
   updateDashboard,
   updateDashboardLayout,
   updateDashboardWidget,
   updateHomeLayout,
-  setHomeBuiltin,
 } from "../dashboards-service.js";
 import { assertProjectAccess } from "./projects.js";
 
@@ -80,7 +80,7 @@ export function registerDashboardTools(
     {
       title: "Enable or disable a home built-in",
       description:
-        "Show or hide one of the built-in home widgets: setup_todos, active_incidents, or service_map.",
+        "Show or hide one of the built-in home widgets: setup_todos, active_incidents, service_map, incoming_signals, incident_count, or agent_pull_requests.",
       inputSchema: {
         project_id: projectIdSchema,
         type: homeBuiltinTypeSchema,

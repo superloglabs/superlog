@@ -2,13 +2,6 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import GridLayout, { type Layout, type LayoutItem, useContainerWidth } from "react-grid-layout";
 import { verticalCompactor } from "react-grid-layout";
 import { type ExploreRange, useCloudConnections } from "../api.ts";
-import {
-  RANGE_PRESETS,
-  RangePicker,
-  type RangeSelection,
-  rangeFromSeconds,
-} from "../design/RangePicker.tsx";
-import { Btn, Input, PageHeader } from "../design/ui.tsx";
 import { WidgetForm } from "../dashboards/WidgetForm.tsx";
 import {
   type HomeBuiltinType,
@@ -23,11 +16,23 @@ import type { Widget, WidgetLayout } from "../dashboards/types.ts";
 import { defaultLayoutFor } from "../dashboards/types.ts";
 import { emptyWidgetForm } from "../dashboards/widget-config.ts";
 import { WidgetBody } from "../dashboards/widgets/WidgetBody.tsx";
+import {
+  RANGE_PRESETS,
+  RangePicker,
+  type RangeSelection,
+  rangeFromSeconds,
+} from "../design/RangePicker.tsx";
+import { Btn, Input, PageHeader } from "../design/ui.tsx";
 import { SetupTodos } from "../onboarding/SetupTodos.tsx";
 import type { ProjectRouteSlugs } from "../project-route.ts";
 import { ActiveIncidentsHomeWidget, ServiceMapHomeWidget } from "./BuiltinHomeWidgets.tsx";
 import { HomeCustomizePanel } from "./HomeCustomizePanel.tsx";
-import { homeWidgetPresentation, splitHomeWidgets } from "./home-layout.ts";
+import {
+  AgentPullRequestsHomeWidget,
+  IncidentCountHomeWidget,
+  IncomingSignalsHomeWidget,
+} from "./HomePulseWidgets.tsx";
+import { homeWidgetMinWidth, homeWidgetPresentation, splitHomeWidgets } from "./home-layout.ts";
 
 const GRID_CONFIG = {
   cols: 12,
@@ -36,7 +41,14 @@ const GRID_CONFIG = {
   containerPadding: [0, 0] as [number, number],
 };
 const DEFAULT_RANGE: RangeSelection = { seconds: 3 * 60 * 60, label: "Last 3h" };
-const BUILTIN_TYPES = new Set<HomeBuiltinType>(["setup_todos", "active_incidents", "service_map"]);
+const BUILTIN_TYPES = new Set<HomeBuiltinType>([
+  "setup_todos",
+  "active_incidents",
+  "service_map",
+  "incoming_signals",
+  "incident_count",
+  "agent_pull_requests",
+]);
 
 export function HomeDashboard({
   projectId,
@@ -75,12 +87,8 @@ export function HomeDashboard({
   // doesn't flicker away (or stay hidden on a transient failure). Also keep it while
   // customizing so it stays draggable/removable.
   const hideServiceMap =
-    cloudConnections.isSuccess &&
-    (cloudConnections.data?.length ?? 0) === 0 &&
-    !customizing;
-  const visibleGrid = grid.filter(
-    (widget) => widget.type !== "service_map" || !hideServiceMap,
-  );
+    cloudConnections.isSuccess && (cloudConnections.data?.length ?? 0) === 0 && !customizing;
+  const visibleGrid = grid.filter((widget) => widget.type !== "service_map" || !hideServiceMap);
 
   return (
     <div className="flex flex-col gap-6">
@@ -180,8 +188,7 @@ function HomeGrid({
       widgets.map((widget) => ({
         i: widget.id,
         ...widget.layout,
-        minW:
-          widget.type === "link" ? 3 : BUILTIN_TYPES.has(widget.type as HomeBuiltinType) ? 6 : 3,
+        minW: homeWidgetMinWidth(widget.type),
         minH: widget.type === "link" ? 2 : 3,
       })),
     [widgets],
@@ -276,9 +283,7 @@ function HomeItemTile({
           </button>
         )}
       </div>
-      <div
-        className={`min-h-0 flex-1 overflow-auto ${presentation.bodyPadding ? "p-4" : ""}`}
-      >
+      <div className={`min-h-0 flex-1 overflow-auto ${presentation.bodyPadding ? "p-4" : ""}`}>
         <HomeItemBody projectId={projectId} slugs={slugs} range={range} widget={widget} />
       </div>
     </section>
@@ -303,6 +308,12 @@ function HomeItemBody({
       return <ActiveIncidentsHomeWidget projectId={projectId} slugs={slugs} />;
     case "service_map":
       return <ServiceMapHomeWidget projectId={projectId} />;
+    case "incoming_signals":
+      return <IncomingSignalsHomeWidget projectId={projectId} range={range} />;
+    case "incident_count":
+      return <IncidentCountHomeWidget projectId={projectId} />;
+    case "agent_pull_requests":
+      return <AgentPullRequestsHomeWidget projectId={projectId} />;
     case "link":
       return <HomeLink widget={widget} />;
     default:
@@ -414,6 +425,7 @@ function Dialog({
 }: { title: string; children: ReactNode; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" role="presentation">
+      {/* biome-ignore lint/a11y/useSemanticElements: this controlled overlay intentionally avoids native dialog top-layer behavior */}
       <section
         role="dialog"
         aria-modal="true"
@@ -439,6 +451,7 @@ function Dialog({
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
+    // biome-ignore lint/a11y/noLabelWithoutControl: every caller passes its form control as children
     <label className="block">
       <span className="mb-2 block text-[11px] font-medium text-muted">{label}</span>
       {children}

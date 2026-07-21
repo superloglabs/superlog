@@ -1,4 +1,5 @@
 import "./instrumentation";
+import "@fontsource/geist-pixel/latin.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AutumnProvider } from "autumn-js/react";
 import { PostHogProvider } from "posthog-js/react";

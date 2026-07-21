@@ -36,6 +36,11 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    resolve: {
+      alias: {
+        "@": path.resolve(process.cwd(), "src"),
+      },
+    },
     server: {
       host: env.HOST ?? "127.0.0.1",
       port: Number(env.PORT ?? env.WEB_PORT ?? 5173),

@@ -12,7 +12,10 @@ export type WidgetType =
   | "link"
   | "setup_todos"
   | "active_incidents"
-  | "service_map";
+  | "service_map"
+  | "incoming_signals"
+  | "incident_count"
+  | "agent_pull_requests";
 
 export type ChartType = "line" | "bar";
 
@@ -107,6 +110,15 @@ export function defaultLayoutFor(type: WidgetType): WidgetLayout {
   }
   if (type === "service_map") {
     return { x: 6, y: 5, w: 6, h: 8 };
+  }
+  if (type === "incoming_signals") {
+    return { x: 0, y: 5, w: 4, h: 5 };
+  }
+  if (type === "incident_count") {
+    return { x: 4, y: 5, w: 4, h: 5 };
+  }
+  if (type === "agent_pull_requests") {
+    return { x: 8, y: 5, w: 4, h: 5 };
   }
   if (type === "trace_table" || type === "log_table") {
     return { x: 0, y: 9999, w: 12, h: 6 };

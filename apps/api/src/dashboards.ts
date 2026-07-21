@@ -1,4 +1,6 @@
+import type { ClickHouseClient } from "@clickhouse/client";
 import { db, schema } from "@superlog/db";
+import { pickStep } from "@superlog/telemetry-query";
 import { eq } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -13,27 +15,32 @@ import {
   dashboardWidgetCreateSchema,
   dashboardWidgetLayoutSchema,
   dashboardWidgetUpdateSchema,
-  deleteHomeItem,
   deleteDashboard,
   deleteDashboardWidget,
+  deleteHomeItem,
   getDashboardWithWidgets,
   getOrCreateHomeDashboard,
   homeBuiltinTypeSchema,
   homeDataWidgetCreateSchema,
   homeLinkCreateSchema,
   listDashboardsForProject,
+  setHomeBuiltin,
   updateDashboard,
   updateDashboardLayout,
   updateDashboardWidget,
   updateHomeLayout,
-  setHomeBuiltin,
 } from "./dashboards-service.js";
 import { resolveEffectiveReadProjectId } from "./demo.js";
+import { getHomeSignalSeries } from "./home-signal-series.js";
+import { getProjectAgentPullRequestSummary } from "./home-summary.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 
 type Vars = { userId: string; orgId: string | null; demoReadProjectId?: string };
 
-export function mountDashboards(app: Hono<{ Variables: Vars }>) {
+export function mountDashboards(
+  app: Hono<{ Variables: Vars }>,
+  deps: { clickhouse: ClickHouseClient },
+) {
   // Authorizes against the real project and also returns `readProjectId` — the
   // demo project's id when the real project hasn't ingested yet (read-only
   // overlay), else the real id. GET handlers read from `readProjectId`; writes
@@ -64,6 +71,33 @@ export function mountDashboards(app: Hono<{ Variables: Vars }>) {
     const projectId = c.req.param("projectId");
     const { user } = await requireAccess(c, projectId);
     return c.json(await getOrCreateHomeDashboard(projectId, user.id));
+  });
+
+  app.get("/api/projects/:projectId/home/pull-request-summary", async (c) => {
+    const projectId = c.req.param("projectId");
+    const { readProjectId } = await requireAccess(c, projectId);
+    return c.json(await getProjectAgentPullRequestSummary(readProjectId));
+  });
+
+  app.get("/api/projects/:projectId/home/signal-series", async (c) => {
+    const projectId = c.req.param("projectId");
+    const { readProjectId } = await requireAccess(c, projectId);
+    const parsed = z
+      .object({ since: z.string().datetime(), until: z.string().datetime() })
+      .safeParse({ since: c.req.query("since"), until: c.req.query("until") });
+    if (!parsed.success) throw new HTTPException(400, { message: "invalid signal range" });
+    const rangeSeconds = (Date.parse(parsed.data.until) - Date.parse(parsed.data.since)) / 1000;
+    if (rangeSeconds <= 0 || rangeSeconds > 7 * 24 * 60 * 60) {
+      throw new HTTPException(400, { message: "signal range must be between 0 and 7 days" });
+    }
+    return c.json(
+      await getHomeSignalSeries(
+        deps.clickhouse,
+        readProjectId,
+        parsed.data,
+        pickStep(rangeSeconds, 36),
+      ),
+    );
   });
 
   app.put("/api/projects/:projectId/home/builtins/:type", async (c) => {

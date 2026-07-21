@@ -2025,7 +2025,10 @@ export type DashboardWidgetType =
   | "link"
   | "setup_todos"
   | "active_incidents"
-  | "service_map";
+  | "service_map"
+  | "incoming_signals"
+  | "incident_count"
+  | "agent_pull_requests";
 
 export type DashboardWidgetConfig = {
   source?: "logs" | "traces";
