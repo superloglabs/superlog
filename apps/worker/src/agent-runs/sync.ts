@@ -17,6 +17,7 @@ import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { TERMINAL_OUTCOME_NUDGE_MARKER, assembleAgentRunResult } from "../agent-outcome-tools.js";
 import type { AgentRunContext } from "../agent-run-context.js";
 import { type PauseForEventsOutcome, createAgentRunLifecycle } from "../agent-run.js";
+import type { AgentRunnerSnapshot } from "../agent-runner-backend.js";
 import { type AgentRunOutcome, recordAgentRunCompletion } from "../ai-usage.js";
 import { investigationGate } from "../billing/investigation-gate.js";
 import { usageNotifier } from "../billing/usage-notifier-infra.js";
@@ -66,6 +67,19 @@ export function shouldFailForRuntimeBudget(args: {
   hasResult: boolean;
 }): boolean {
   return !args.hasResult && args.activeRuntimeMinutes >= args.maxRuntimeMinutes;
+}
+
+export function planRunnerInfrastructureFailure(
+  snapshot: Pick<AgentRunnerSnapshot, "result" | "infrastructureFailure">,
+): { reason: schema.AgentRunFailureReason; summary: string } | null {
+  const failure = snapshot.infrastructureFailure;
+  if (snapshot.result || !failure) return null;
+
+  const toolNames = [...new Set(failure.toolNames)].join(", ");
+  return {
+    reason: "sandbox_tool_execution_failed",
+    summary: `Investigation stopped after its sandbox failed to execute ${failure.consecutiveFailures} tools in a row${toolNames ? ` (${toolNames})` : ""}. Restart it to retry in a fresh environment.`,
+  };
 }
 
 export function planPullRequestAwaitingEvents<
@@ -511,6 +525,12 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         providerEventId: event.id,
         detail: event.detail,
       });
+    }
+
+    const infrastructureFailure = planRunnerInfrastructureFailure(snapshot);
+    if (infrastructureFailure) {
+      await failAgentRun(ctx, infrastructureFailure.reason, infrastructureFailure.summary);
+      return;
     }
 
     const nextRuntimeMinutes = Math.ceil(snapshot.activeSeconds / 60);

@@ -213,6 +213,14 @@ export type AgentRunnerSnapshot = {
       url: string | null;
     }>;
   } | null;
+  // Present when the runner has confirmed that its isolated execution
+  // environment cannot run tools reliably. Optional so runners without a
+  // sandbox remain source-compatible.
+  infrastructureFailure?: {
+    kind: "sandbox_tool_execution";
+    consecutiveFailures: number;
+    toolNames: string[];
+  } | null;
   // Custom tools the runtime had no handler for. The collector ack's them
   // with an error result so the session can leave requires_action; sync.ts
   // then fails the run with `unknown_custom_tool` so we can audit them later.

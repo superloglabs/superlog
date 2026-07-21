@@ -2532,6 +2532,7 @@ export type AgentRunFailureReason =
   | "pr_open_failed"
   | "terminated_without_result"
   | "runtime_budget_exhausted"
+  | "sandbox_tool_execution_failed"
   | "human_resume_budget_exhausted"
   | "start_failed"
   | "sync_failed"
