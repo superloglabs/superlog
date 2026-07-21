@@ -49,8 +49,36 @@ export function createDrizzleSentryIssueIngestRepository(
       return rows satisfies PendingSentryIssueEvent[];
     },
 
-    async upsertIssue(occurrence) {
-      return upsertSentryIssue(database, occurrence);
+    async prepareIssue(eventId, occurrence) {
+      return database.transaction(async (tx) => {
+        const [event] = await tx
+          .select({
+            transition: schema.sentryWebhookEvents.transition,
+            issueId: schema.sentryWebhookEvents.issueId,
+          })
+          .from(schema.sentryWebhookEvents)
+          .where(eq(schema.sentryWebhookEvents.id, eventId))
+          .for("update");
+        if (!event) throw new Error("Sentry webhook event disappeared while preparing issue");
+
+        if (event.transition) {
+          if (event.transition !== "new" && event.transition !== "recurred") {
+            return { transition: event.transition, issue: null };
+          }
+          const issue = event.issueId
+            ? await tx.query.issues.findFirst({ where: eq(schema.issues.id, event.issueId) })
+            : null;
+          if (!issue) throw new Error("failed to reload prepared Sentry issue");
+          return { transition: event.transition, issue };
+        }
+
+        const prepared = await upsertSentryIssue(tx, occurrence);
+        await tx
+          .update(schema.sentryWebhookEvents)
+          .set({ transition: prepared.transition, issueId: prepared.issue?.id ?? null })
+          .where(eq(schema.sentryWebhookEvents.id, eventId));
+        return prepared;
+      });
     },
 
     async markProcessed(eventId) {
@@ -73,7 +101,9 @@ export function createDrizzleSentryIssueIngestRepository(
   };
 }
 
-async function upsertSentryIssue(database: DB, occurrence: SentryIssueOccurrence) {
+type SentryIssueDatabase = Pick<DB, "execute" | "query">;
+
+async function upsertSentryIssue(database: SentryIssueDatabase, occurrence: SentryIssueOccurrence) {
   const sample: IssueSample = {
     kind: "log",
     service: occurrence.service,
@@ -127,14 +157,14 @@ async function upsertSentryIssue(database: DB, occurrence: SentryIssueOccurrence
       (SELECT issue_id::text FROM prev) AS prev_issue_id,
       (SELECT issue_status FROM prev) AS prev_issue_status
   `);
-  const row = (
-    result as unknown as Array<{
-      id: string;
-      xmax: string;
-      prev_issue_id: string | null;
-      prev_issue_status: string | null;
-    }>
-  )[0];
+  type UpsertRow = {
+    id: string;
+    xmax: string;
+    prev_issue_id: string | null;
+    prev_issue_status: string | null;
+  };
+  const rawResult = result as unknown as UpsertRow[] | { rows: UpsertRow[] };
+  const row = (Array.isArray(rawResult) ? rawResult : rawResult.rows)[0];
   const transition = classifyTransition({
     action: occurrence.action,
     inserted: row?.xmax === "0",

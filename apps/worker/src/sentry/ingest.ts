@@ -35,7 +35,8 @@ type IssueTransition = "new" | "recurred" | "suppressed" | "seen";
 
 export type SentryIssueIngestRepository = {
   claimPending(limit: number): Promise<PendingSentryIssueEvent[]>;
-  upsertIssue(
+  prepareIssue(
+    eventId: string,
     occurrence: SentryIssueOccurrence,
   ): Promise<{ transition: IssueTransition; issue: schema.Issue | null }>;
   markProcessed(eventId: string): Promise<void>;
@@ -60,7 +61,7 @@ export function createSentryIssueIngestor(input: {
       let processed = 0;
       for (const event of events) {
         try {
-          const result = await input.repository.upsertIssue(toOccurrence(event, now()));
+          const result = await input.repository.prepareIssue(event.id, toOccurrence(event, now()));
           if ((result.transition === "new" || result.transition === "recurred") && result.issue) {
             await input.handleIssueTransition(result.issue, result.transition);
           }

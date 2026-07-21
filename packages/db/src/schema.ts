@@ -2315,6 +2315,8 @@ export const sentryWebhookEvents = pgTable(
     eventCount: bigint("event_count", { mode: "number" }).notNull().default(1),
     issueUrl: text("issue_url"),
     rawPayload: jsonb("raw_payload").$type<Record<string, unknown>>().notNull(),
+    transition: text("transition").$type<"new" | "recurred" | "suppressed" | "seen">(),
+    issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
     status: text("status").$type<"pending" | "processed" | "failed">().notNull().default("pending"),
     attemptCount: integer("attempt_count").notNull().default(0),
     lastError: text("last_error"),
