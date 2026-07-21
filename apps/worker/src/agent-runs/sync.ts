@@ -41,7 +41,7 @@ import {
   reconcileDeliveredPullRequests,
   selectDeliveredPullRequestsForOutcome,
 } from "./pr-result-reconciliation.js";
-import { isRecoveryClaimReclaimable, recoverExhaustedRunnerTurn } from "./recovery.js";
+import { reclaimStaleRecoveryClaim, recoverExhaustedRunnerTurn } from "./recovery.js";
 import { supersededSnapshotCompletionResult } from "./resolution-completion.js";
 import {
   awaitingHumanSecondsFromEvents,
@@ -685,24 +685,31 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
               ),
               columns: { id: true, createdAt: true, processedAt: true },
             });
-            if (
-              !staleClaim ||
-              !isRecoveryClaimReclaimable({
-                ...staleClaim,
-                now: new Date(),
-              })
-            ) {
-              return null;
-            }
-            const deleted = await db
-              .delete(schema.incidentEvents)
-              .where(eq(schema.incidentEvents.id, staleClaim.id))
-              .returning({ id: schema.incidentEvents.id });
-            if (!deleted[0]) return null;
-            return (await insertClaim())[0] ?? null;
+            if (!staleClaim) return null;
+            return reclaimStaleRecoveryClaim({
+              staleClaim,
+              now: new Date(),
+              deleteIfStillUnprocessed: async (id) => {
+                const deleted = await db
+                  .delete(schema.incidentEvents)
+                  .where(
+                    and(
+                      eq(schema.incidentEvents.id, id),
+                      isNull(schema.incidentEvents.processedAt),
+                    ),
+                  )
+                  .returning({ id: schema.incidentEvents.id });
+                return !!deleted[0];
+              },
+              insertReplacement: async () => (await insertClaim())[0] ?? null,
+            });
           },
           releaseRecoveryClaim: async (id) => {
-            await db.delete(schema.incidentEvents).where(eq(schema.incidentEvents.id, id));
+            await db
+              .delete(schema.incidentEvents)
+              .where(
+                and(eq(schema.incidentEvents.id, id), isNull(schema.incidentEvents.processedAt)),
+              );
           },
           completeRecoveryClaim: async (id) => {
             await db

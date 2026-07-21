@@ -1,7 +1,11 @@
 import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isRecoveryClaimReclaimable, recoverExhaustedRunnerTurn } from "./recovery.js";
+import {
+  isRecoveryClaimReclaimable,
+  reclaimStaleRecoveryClaim,
+  recoverExhaustedRunnerTurn,
+} from "./recovery.js";
 
 test("only abandoned recovery claims are reclaimable", () => {
   const now = new Date("2026-07-21T19:00:00.000Z");
@@ -32,8 +36,36 @@ test("only abandoned recovery claims are reclaimable", () => {
   );
 });
 
+test("a claim completed during stale reclamation is not deleted or replaced", async () => {
+  let replacementAttempts = 0;
+
+  const claim = await reclaimStaleRecoveryClaim({
+    staleClaim: {
+      id: "recovery-claim-1",
+      createdAt: new Date("2026-07-21T18:55:00.000Z"),
+      processedAt: null,
+    },
+    now: new Date("2026-07-21T19:00:00.000Z"),
+    async deleteIfStillUnprocessed() {
+      // The original owner completed the claim after it was read.
+      return false;
+    },
+    async insertReplacement() {
+      replacementAttempts += 1;
+      return { id: "recovery-claim-2" };
+    },
+  });
+
+  assert.equal(claim, null);
+  assert.equal(replacementAttempts, 0);
+});
+
 test("an exhausted turn refreshes authorized repositories and continues its existing session", async () => {
-  const recovered: Array<{ sessionId: string; message: string; tokens: string[] }> = [];
+  const recovered: Array<{
+    sessionId: string;
+    message: string;
+    tokens: string[];
+  }> = [];
   const completedClaims: string[] = [];
 
   const outcome = await recoverExhaustedRunnerTurn({

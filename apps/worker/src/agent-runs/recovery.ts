@@ -19,6 +19,25 @@ export function isRecoveryClaimReclaimable(input: {
   );
 }
 
+export async function reclaimStaleRecoveryClaim<Claim extends { id: string }>(input: {
+  staleClaim: {
+    id: string;
+    createdAt: Date;
+    processedAt: Date | null;
+  };
+  now: Date;
+  deleteIfStillUnprocessed(id: string): Promise<boolean>;
+  insertReplacement(): Promise<Claim | null>;
+}): Promise<Claim | null> {
+  if (!isRecoveryClaimReclaimable({ ...input.staleClaim, now: input.now })) {
+    return null;
+  }
+  if (!(await input.deleteIfStillUnprocessed(input.staleClaim.id))) {
+    return null;
+  }
+  return input.insertReplacement();
+}
+
 export async function recoverExhaustedRunnerTurn(input: {
   sessionId: string;
   failure: NonNullable<AgentRunnerSnapshot["recoverableFailure"]>;
