@@ -222,7 +222,7 @@ const INVESTIGATION_PROGRESS_DOTS = [
 
 function InvestigationProgressEntry() {
   return (
-    <div className="-ml-7 -mt-3 mb-6 flex min-h-[22px] min-w-0 items-center gap-2">
+    <div className="-ml-[18px] -mt-1.5 mb-6 flex min-h-[22px] min-w-0 items-center gap-2">
       <span aria-hidden className="grid shrink-0 grid-cols-3 gap-[2px]">
         {INVESTIGATION_PROGRESS_DOTS.map((dot, index) => (
           <span
