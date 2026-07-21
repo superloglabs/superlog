@@ -9,19 +9,18 @@ function contextLine(blocks: unknown[]): string {
   return lines.at(-1) ?? "";
 }
 
-test("incidentBlocks renders project · service · environment as code chips", () => {
+test("incidentBlocks renders service · environment as code chips", () => {
   const line = contextLine(
     incidentBlocks({
       emoji: "rotating_light",
       status: "New Incident",
       title: "boom",
-      projectName: "Acme",
       service: "api",
       environment: "production",
       buttons: [],
     }),
   );
-  assert.equal(line, "`Acme` · `api` · `production`");
+  assert.equal(line, "`api` · `production`");
 });
 
 test("incidentBlocks renders the un-silence button ahead of the rating buttons", () => {
@@ -29,7 +28,6 @@ test("incidentBlocks renders the un-silence button ahead of the rating buttons",
     emoji: "no_bell",
     status: "Incident resolved - errors silenced (agent PR closed)",
     title: "boom",
-    projectName: "Acme",
     buttons: [],
     incidentId: "inc-1",
     showUnsilenceButton: true,
@@ -47,13 +45,12 @@ test("incidentBlocks omits environment when absent", () => {
       emoji: "rotating_light",
       status: "New Incident",
       title: "boom",
-      projectName: "Acme",
       service: "api",
       environment: null,
       buttons: [],
     }),
   );
-  assert.equal(line, "`Acme` · `api`");
+  assert.equal(line, "`api`");
 });
 
 test("incidentBlocks labels an ongoing investigation by codename and formats its error as code", () => {
@@ -63,7 +60,6 @@ test("incidentBlocks labels an ongoing investigation by codename and formats its
     title:
       "*ERROR: START RequestId: b19ab794-1b70-4261-a23e-acf19135aee6\n[POST] /api/plants/nullingia status=500\nEND RequestId: b19ab794-1b*",
     incidentCodename: "code_name",
-    projectName: "demo-project",
     service: "superlog-sample",
     buttons: [],
   });
@@ -79,7 +75,7 @@ test("incidentBlocks labels an ongoing investigation by codename and formats its
       "[POST] /api/plants/nullingia status=500\n" +
       "END RequestId: b19ab794-1b*\n" +
       "```\n" +
-      "`demo-project` · `superlog-sample`",
+      "`superlog-sample`",
   );
 });
 
@@ -89,7 +85,6 @@ test("incidentBlocks renders the title as a link when titleUrl is set", () => {
     status: "New Incident",
     title: "boom",
     titleUrl: "https://app/incidents/inc-1",
-    projectName: "Acme",
     service: "api",
     buttons: [],
   });
@@ -105,7 +100,6 @@ test("incidentBlocks escapes angle brackets in a linked title", () => {
     status: "New Incident",
     title: "a < b > c & d",
     titleUrl: "https://app/incidents/inc-1",
-    projectName: "Acme",
     buttons: [],
   });
   const section = blocks[0] as { text: { text: string } };
@@ -117,7 +111,6 @@ test("incidentBlocks renders auxiliary links as a body line", () => {
     emoji: "bulb",
     status: "PR Ready",
     title: "boom",
-    projectName: "Acme",
     buttons: [],
     links: [
       { text: "View PR", url: "https://gh/pr/1" },
@@ -135,7 +128,6 @@ test("incidentBlocks percent-encodes | and > in link URLs so they can't break th
     status: "PR Ready",
     title: "boom",
     titleUrl: "https://app/incidents/inc-1?q=a|b>c",
-    projectName: "Acme",
     buttons: [],
     links: [{ text: "View PR", url: "https://gh/pr/1?x=y|z>w" }],
   });
@@ -150,7 +142,6 @@ test("incidentBlocks renders 👍/👎 rating buttons when showFeedbackButtons i
     emoji: "bulb",
     status: "PR Ready",
     title: "boom",
-    projectName: "Acme",
     buttons: [],
     incidentId: "inc-1",
     showFeedbackButtons: true,
@@ -167,7 +158,6 @@ test("incidentBlocks omits rating buttons when showFeedbackButtons is unset", ()
     emoji: "rotating_light",
     status: "New Incident",
     title: "boom",
-    projectName: "Acme",
     buttons: [],
     incidentId: "inc-1",
   });
@@ -179,7 +169,6 @@ test("incidentBlocks renders an Open a PR button for a findings-only investigati
     emoji: "white_check_mark",
     status: "Investigation complete",
     title: "boom",
-    projectName: "Acme",
     buttons: [],
     incidentId: "inc-1",
     showOpenPrButton: true,

@@ -263,7 +263,6 @@ export async function handleIssueTransitionWithResult(
     await postIncidentRootMessage({
       incident,
       projectId: issue.projectId,
-      projectName: project.name,
       firstIssue: issue,
     });
     if (recurrenceIncident) {
