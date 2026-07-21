@@ -6,8 +6,13 @@ import {
 import { buildQuietIncidentResolvedSlackMessage } from "./slack-message.js";
 
 export type QuietIncidentResolveResult =
-  | { kind: "resolved"; linkedIssueCount: number; quietSince: Date }
-  | { kind: "not_open" | "no_linked_issues" | "recent_recurrence" };
+  | {
+      kind: "resolved";
+      linkedIssueCount: number;
+      quietSince: Date;
+      resolutionProof: { agentRunId: string | null; eventDedupeKey: string };
+    }
+  | { kind: "disabled" | "not_open" | "no_linked_issues" | "recent_recurrence" };
 
 export type QuietIncidentResolutionSweepDeps = {
   now(): Date;
@@ -17,6 +22,10 @@ export type QuietIncidentResolutionSweepDeps = {
     cutoff: Date;
     resolvedAt: Date;
   }): Promise<QuietIncidentResolveResult>;
+  closeOpenPullRequests(input: {
+    incidentId: string;
+    resolutionProof: { agentRunId: string | null; eventDedupeKey: string };
+  }): Promise<void>;
   postSlackNotification(input: { incidentId: string; message: string }): Promise<void>;
   logger: {
     error(obj: Record<string, unknown>, message: string): void;
@@ -43,6 +52,10 @@ export async function runQuietIncidentResolutionSweep(
       });
       if (result.kind !== "resolved") continue;
       resolvedCount += 1;
+      await deps.closeOpenPullRequests({
+        incidentId: candidate.incidentId,
+        resolutionProof: result.resolutionProof,
+      });
       await deps.postSlackNotification({
         incidentId: candidate.incidentId,
         message: buildQuietIncidentResolvedSlackMessage(result),

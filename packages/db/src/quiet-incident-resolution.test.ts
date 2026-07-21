@@ -110,6 +110,10 @@ test("quiet resolution rechecks current issues atomically before closing", async
       disposition: "resolved",
       linkedIssueCount: 2,
       quietSince: CUTOFF,
+      resolutionProof: {
+        agentRunId: null,
+        eventDedupeKey: `incident_resolved:auto_inactivity:${incident.id}:${NOW.getTime()}`,
+      },
     });
     const closed = one(
       await db.select().from(schema.incidents).where(eq(schema.incidents.id, incident.id)),

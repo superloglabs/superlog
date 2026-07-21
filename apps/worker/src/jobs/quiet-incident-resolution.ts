@@ -1,3 +1,4 @@
+import { closeOpenPullRequestsForResolvedIncident } from "../agent-runs/completion.js";
 import { createQuietIncidentResolutionRepository } from "../incident-auto-resolution/repository.js";
 import { postQuietIncidentResolvedSlackNotification } from "../incident-auto-resolution/slack.js";
 import { runQuietIncidentResolutionSweep } from "../incident-auto-resolution/sweep.js";
@@ -20,6 +21,8 @@ export function createQuietIncidentResolutionJob(
         now: () => new Date(),
         listCandidates: repository.listCandidates,
         resolveIfStillQuiet: repository.resolveIfStillQuiet,
+        closeOpenPullRequests: ({ incidentId, resolutionProof }) =>
+          closeOpenPullRequestsForResolvedIncident(incidentId, resolutionProof),
         postSlackNotification: (input) =>
           postQuietIncidentResolvedSlackNotification(deps.db, input),
         logger,

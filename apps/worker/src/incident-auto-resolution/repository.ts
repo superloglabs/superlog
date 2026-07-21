@@ -76,6 +76,7 @@ export function createQuietIncidentResolutionRepository(database: DB) {
               kind: "resolved",
               linkedIssueCount: result.linkedIssueCount,
               quietSince: result.quietSince,
+              resolutionProof: result.resolutionProof,
             }
           : { kind: result.disposition };
     },

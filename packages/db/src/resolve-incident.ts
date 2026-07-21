@@ -144,8 +144,15 @@ export type ResolveIncidentWithProofResult = ResolveIncidentResult & {
 };
 
 export type ResolveQuietIncidentResult =
-  | { disposition: "resolved"; linkedIssueCount: number; quietSince: Date }
-  | { disposition: "incident_not_open" | "no_linked_issues" | "recent_recurrence" };
+  | {
+      disposition: "resolved";
+      linkedIssueCount: number;
+      quietSince: Date;
+      resolutionProof: IncidentResolutionProof;
+    }
+  | {
+      disposition: "disabled" | "incident_not_open" | "no_linked_issues" | "recent_recurrence";
+    };
 
 function materializeIncidentResolutionEpoch(input: ResolveIncidentInput): {
   input: ResolveIncidentInput;
@@ -656,10 +663,19 @@ export function createIncidentLifecycle(database: DB = db) {
     async resolveIfAllIssuesQuiet(
       input: ResolveIncidentInput & { kind: "auto_inactivity"; cutoff: Date },
     ): Promise<ResolveQuietIncidentResult> {
-      const { cutoff, ...resolutionInput } = input;
+      const { cutoff, ...unmaterializedResolutionInput } = input;
+      const epoch = materializeIncidentResolutionEpoch(unmaterializedResolutionInput);
       const result = await repository.transaction(async (tx) => {
         const incident = await repository.lockOpenIncidentInTx(tx, input.incidentId);
         if (!incident) return { disposition: "incident_not_open" as const };
+
+        const automation = await tx.query.projectAutomationSettings.findFirst({
+          where: eq(schema.projectAutomationSettings.projectId, incident.projectId),
+          columns: { autoResolveStaleIncidentsEnabled: true },
+        });
+        if (automation?.autoResolveStaleIncidentsEnabled === false) {
+          return { disposition: "disabled" as const };
+        }
 
         const issues = await repository.lockCurrentIssuesForIncidentInTx(tx, input.incidentId);
         if (issues.length === 0) return { disposition: "no_linked_issues" as const };
@@ -668,12 +684,13 @@ export function createIncidentLifecycle(database: DB = db) {
           return { disposition: "recent_recurrence" as const };
         }
 
-        const resolved = await resolveIncidentInTx(tx, resolutionInput, repository, incident);
+        const resolved = await resolveIncidentInTx(tx, epoch.input, repository, incident);
         return resolved.resolved
           ? {
               disposition: "resolved" as const,
               linkedIssueCount: resolved.resolvedIssueCount,
               quietSince,
+              resolutionProof: epoch.resolutionProof,
             }
           : { disposition: "incident_not_open" as const };
       });

@@ -27,7 +27,14 @@ test("the daily sweep resolves eligible incidents and posts their Slack notifica
         kind: "resolved",
         linkedIssueCount: 1,
         quietSince,
+        resolutionProof: {
+          agentRunId: null,
+          eventDedupeKey: "incident_resolved:auto_inactivity:quiet",
+        },
       };
+    },
+    async closeOpenPullRequests(input) {
+      calls.push(`close-prs:${input.incidentId}:${input.resolutionProof.eventDedupeKey}`);
     },
     async postSlackNotification(input) {
       calls.push(`slack:${input.incidentId}:${input.message}`);
@@ -41,6 +48,7 @@ test("the daily sweep resolves eligible incidents and posts their Slack notifica
   assert.deepEqual(calls, [
     "list:2026-07-07T03:00:00.000Z",
     "resolve:quiet:2026-07-07T03:00:00.000Z",
+    "close-prs:quiet:incident_resolved:auto_inactivity:quiet",
     "slack:quiet::white_check_mark: Automatically resolved after 14 days without recurrence. Latest activity across the linked error was <!date^1783393200^{date_short_pretty} at {time}|2026-07-07 03:00 UTC>.",
   ]);
 });
