@@ -263,6 +263,32 @@ test("chat anchors: DMs have no thread anchor (one conversation per channel)", a
   );
 });
 
+test("resolved incident threads route mentions to Q&A chat", async () => {
+  const { slackIncidentThreadRoute } = await import("./slack.js");
+
+  assert.equal(
+    slackIncidentThreadRoute({ incidentStatus: "resolved", eventType: "app_mention" }),
+    "chat",
+  );
+  assert.equal(
+    slackIncidentThreadRoute({ incidentStatus: "resolved", eventType: "message" }),
+    "chat",
+  );
+});
+
+test("open incident threads continue the investigation from the message event", async () => {
+  const { slackIncidentThreadRoute } = await import("./slack.js");
+
+  assert.equal(
+    slackIncidentThreadRoute({ incidentStatus: "open", eventType: "message" }),
+    "incident",
+  );
+  assert.equal(
+    slackIncidentThreadRoute({ incidentStatus: "open", eventType: "app_mention" }),
+    "ignore",
+  );
+});
+
 // The bot posts to public channels via chat:write.public WITHOUT joining them,
 // but Slack's Events API only delivers message events for channels the bot is
 // a member of — so thread replies in a never-joined channel vanish silently.

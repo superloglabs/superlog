@@ -1513,10 +1513,12 @@ async function handleSlackEventEnvelope(payload: SlackEventEnvelope): Promise<vo
     text: event.text,
   };
 
-  // Incident threads first: replies there talk to the investigation, never to
-  // a chat. A channel mention fires BOTH a `message` and an `app_mention`
-  // event (with distinct event_ids), so only the `message` copy is processed
-  // here — otherwise one reply would record two human_reply events.
+  // Open incident threads continue the investigation. Once an incident is
+  // closed, the thread becomes an ordinary Q&A surface: an explicit mention
+  // starts a chat and subsequent replies continue it through handleChatEvent.
+  // A channel mention fires BOTH a `message` and an `app_mention` event (with
+  // distinct event_ids), so open incidents process only the `message` copy —
+  // otherwise one reply would record two human_reply events.
   if (inbound.thread_ts && inbound.thread_ts !== inbound.ts) {
     const incident = await db.query.incidents.findFirst({
       where: and(
@@ -1525,13 +1527,27 @@ async function handleSlackEventEnvelope(payload: SlackEventEnvelope): Promise<vo
       ),
     });
     if (incident) {
-      if (inbound.type !== "message") return;
-      await handleIncidentThreadReply(payload, inbound, incident);
-      return;
+      const route = slackIncidentThreadRoute({
+        incidentStatus: incident.status,
+        eventType: inbound.type,
+      });
+      if (route === "ignore") return;
+      if (route === "incident") {
+        await handleIncidentThreadReply(payload, inbound, incident);
+        return;
+      }
     }
   }
 
   await handleChatEvent(payload, inbound);
+}
+
+export function slackIncidentThreadRoute(input: {
+  incidentStatus: schema.IncidentStatus;
+  eventType?: string;
+}): "incident" | "chat" | "ignore" {
+  if (input.incidentStatus !== "open") return "chat";
+  return input.eventType === "message" ? "incident" : "ignore";
 }
 
 type SlackInboundEvent = NonNullable<SlackEventEnvelope["event"]> & {
