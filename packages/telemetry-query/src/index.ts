@@ -1646,6 +1646,7 @@ async function metricNamesRollupCoversWindow(
 
 const METRIC_KIND_SET = new Set<string>(METRIC_TABLES.map((t) => t.kind));
 const METRIC_KIND_ORDER = new Map<string, number>(METRIC_TABLES.map((t, i) => [t.kind, i]));
+const METRIC_NAME_SUPPLEMENTAL_SCAN_TIMEOUT_SECONDS = 1;
 
 // Single read over the (project, kind, name, unit, hour) summing rollup —
 // milliseconds at any range where the raw per-table GROUP BYs read millions of
@@ -1711,10 +1712,10 @@ export async function listMetricNames(
   if (await tableExists(ch, "metric_names_per_hour")) {
     if (await metricNamesRollupCoversWindow(ch, projectId, sinceExpr, sinceSql)) {
       // The original rollup predates exponential-histogram support. Keep its
-      // fast path for the four covered tables, then scan the exponential table
-      // exactly so historical and newly ingested exponential histograms never
-      // disappear from discovery. De-duplication also makes this forward-safe
-      // if a later rollup migration starts populating that kind.
+      // fast path for the four covered tables, then supplement it with a short,
+      // best-effort exponential-histogram scan. A high-volume raw scan must not
+      // make the already-available rollup result fail. De-duplication also makes
+      // this forward-safe if a later rollup migration starts populating that kind.
       const [rolledUp, exponentialHistograms] = await Promise.all([
         listMetricNamesFromRollup(ch, projectId, sinceExpr, untilExpr, sinceSql, untilSql),
         listMetricNamesFromRawTable(
@@ -1726,6 +1727,10 @@ export async function listMetricNames(
           untilSql,
           "otel_metrics_exp_histogram",
           "exponential_histogram",
+          {
+            bestEffort: true,
+            maxExecutionTimeSeconds: METRIC_NAME_SUPPLEMENTAL_SCAN_TIMEOUT_SECONDS,
+          },
         ),
       ]);
       const byIdentity = new Map<string, MetricName>();
@@ -1764,6 +1769,7 @@ async function listMetricNamesFromRawTable(
   untilSql: string,
   table: string,
   kind: MetricKind,
+  options: { bestEffort?: boolean; maxExecutionTimeSeconds?: number } = {},
 ): Promise<MetricName[]> {
   try {
     const r = await ch.query({
@@ -1779,11 +1785,14 @@ async function listMetricNamesFromRawTable(
       `,
       query_params: { projectId, since: sinceSql, until: untilSql },
       format: "JSONEachRow",
+      ...(options.maxExecutionTimeSeconds
+        ? { clickhouse_settings: { max_execution_time: options.maxExecutionTimeSeconds } }
+        : {}),
     });
     const rows = (await r.json()) as { name: string; unit: string; c: string | number }[];
     return rows.map((row) => ({ name: row.name, kind, unit: row.unit }));
   } catch (err) {
-    if (!isMissingMetricTableError(err)) throw err;
+    if (!options.bestEffort && !isMissingMetricTableError(err)) throw err;
     return [];
   }
 }

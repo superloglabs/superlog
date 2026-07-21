@@ -710,6 +710,44 @@ test("listMetricNames keeps the rollup result when the exponential histogram tab
   assert.deepEqual(names, [{ name: "http.requests", kind: "sum", unit: "1" }]);
 });
 
+test("listMetricNames keeps the rollup result when the exponential histogram scan times out", async () => {
+  let supplementalSettings: Record<string, unknown> | undefined;
+  const names = await listMetricNames(
+    {
+      async query(input: { query: string; clickhouse_settings?: Record<string, unknown> }) {
+        if (/^EXISTS TABLE/i.test(input.query.trim())) {
+          return {
+            async json() {
+              return [{ result: 1 }];
+            },
+          };
+        }
+        if (/count\(\) AS c/i.test(input.query) && /FROM \(/.test(input.query)) {
+          return {
+            async json() {
+              return [{ c: 1 }];
+            },
+          };
+        }
+        if (/FROM otel_metrics_exp_histogram/.test(input.query)) {
+          supplementalSettings = input.clickhouse_settings;
+          throw new Error("TIMEOUT_EXCEEDED");
+        }
+        return {
+          async json() {
+            return [{ kind: "sum", name: "http.requests", unit: "1", total: 5 }];
+          },
+        };
+      },
+    } as unknown as ClickHouseClient,
+    "project-1",
+    { since: "now() - INTERVAL 24 HOUR", until: "now()" },
+  );
+
+  assert.deepEqual(names, [{ name: "http.requests", kind: "sum", unit: "1" }]);
+  assert.equal(supplementalSettings?.max_execution_time, 1);
+});
+
 test("listMetricNames falls back to the raw tables when the rollup is absent", async () => {
   const queries: string[] = [];
 
