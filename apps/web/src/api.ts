@@ -839,6 +839,7 @@ export function slackProjectEndpoints(projectId: string) {
   return {
     installation: `${base}/installation`,
     installUrl: `${base}/install-url`,
+    importOpenIssues: `${base}/import-open-issues`,
     uninstall: `${base}/uninstall`,
     channels: `${base}/channels`,
   };
@@ -1634,6 +1635,7 @@ export function sentryProjectEndpoints(projectId: string) {
   return {
     installation: `${base}/installation`,
     installUrl: `${base}/install-url`,
+    importOpenIssues: `${base}/import-open-issues`,
     uninstall: `${base}/uninstall`,
   };
 }
@@ -1679,6 +1681,19 @@ export function useUninstallSentry(projectId: string | undefined) {
       }),
     onSuccess: () =>
       qc.invalidateQueries({ queryKey: ["sentry-installation", projectId] }),
+  });
+}
+
+export function useImportOpenSentryIssues(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      fetcher<{ imported: number }>(
+        sentryProjectEndpoints(requiredSentryProjectId(projectId)).importOpenIssues,
+        { method: "POST" },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["me"] }),
   });
 }
 

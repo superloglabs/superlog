@@ -8,6 +8,7 @@ const {
   completeSentryInstallation,
   exchangeSentryInstallationGrant,
   parseSentryInstallationCallback,
+  startSentryOpenIssueImport,
 } = await import("./installation.js");
 
 test("accepts the documented Sentry App callback without an organization slug", () => {
@@ -53,6 +54,25 @@ test("routes an onboarding OAuth callback back into onboarding", async () => {
     sentryOAuthRedirect("https://app.superlog.dev", "settings", "denied"),
     "https://app.superlog.dev/settings?sentry=denied",
   );
+});
+
+test("starts the open-issue import without holding the OAuth redirect open", async () => {
+  let finishImport: ((count: number) => void) | undefined;
+  const pendingImport = new Promise<number>((resolve) => {
+    finishImport = resolve;
+  });
+  const completed: number[] = [];
+
+  startSentryOpenIssueImport(
+    async () => pendingImport,
+    (count) => completed.push(count),
+    () => assert.fail("import should not fail"),
+  );
+
+  assert.deepEqual(completed, []);
+  finishImport?.(3);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(completed, [3]);
 });
 
 test("exchanges a Sentry App grant on its installation authorization endpoint", async () => {

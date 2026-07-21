@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { db, encryptIntegrationSecret, schema } from "@superlog/db";
+import { type SentryCredential, db, encryptIntegrationSecret, schema } from "@superlog/db";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Hono } from "hono";
 import { logger } from "../logger.js";
@@ -26,7 +26,7 @@ type SentryGrant = {
   sentryInstallationId: string;
 };
 
-type SentryInstallationDeps = {
+export type SentryInstallationDeps = {
   importOpenIssues(input: {
     accessToken: string;
     organizationSlug: string;
@@ -34,6 +34,7 @@ type SentryInstallationDeps = {
     installationId: string;
     targetProjectId: string;
   }): Promise<number>;
+  getActiveCredential(projectId: string): Promise<SentryCredential | null>;
 };
 
 function config() {
@@ -102,20 +103,37 @@ export function mountSentryInstallationPublic(app: Hono<any>, deps: SentryInstal
         token,
         grant,
       });
-      const importedIssueCount = await deps.importOpenIssues({
+      const importInput = {
         accessToken: token.accessToken,
         organizationSlug: grant.organizationSlug,
         projectSlug: grant.sentryProjectSlug,
         installationId: grant.sentryInstallationId,
         targetProjectId: callback.state.projectId,
-      });
+      };
+      startSentryOpenIssueImport(
+        () => deps.importOpenIssues(importInput),
+        (importedIssueCount) => {
+          log.info(
+            {
+              project_id: callback.state.projectId,
+              imported_issue_count: importedIssueCount,
+            },
+            "sentry open issues imported",
+          );
+        },
+        (error) => {
+          log.warn(
+            { err: error, project_id: callback.state.projectId },
+            "sentry open issue import failed",
+          );
+        },
+      );
       log.info(
         {
           org_id: callback.state.orgId,
           project_id: callback.state.projectId,
           sentry_organization_slug: grant.organizationSlug,
           sentry_project_slug: grant.sentryProjectSlug,
-          imported_issue_count: importedIssueCount,
         },
         "sentry installed",
       );
@@ -128,7 +146,7 @@ export function mountSentryInstallationPublic(app: Hono<any>, deps: SentryInstal
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
-export function mountSentryInstallationAuthed(app: Hono<any>): void {
+export function mountSentryInstallationAuthed(app: Hono<any>, deps: SentryInstallationDeps): void {
   const { clientId, clientSecret, appSlug, stateSecret } = config();
 
   app.get("/api/projects/:projectId/sentry/installation", async (c) => {
@@ -189,6 +207,29 @@ export function mountSentryInstallationAuthed(app: Hono<any>): void {
     log.info({ org_id: ctx.access.orgId, project_id: projectId }, "sentry disconnected");
     return c.json({ ok: true });
   });
+
+  app.post("/api/projects/:projectId/sentry/import-open-issues", async (c) => {
+    const projectId = c.req.param("projectId");
+    await requireProjectManagerContext(c, projectId);
+    const credential = await deps.getActiveCredential(projectId);
+    if (!credential) return c.json({ error: "sentry not installed" }, 404);
+    const imported = await deps.importOpenIssues({
+      accessToken: credential.accessToken,
+      organizationSlug: credential.organizationSlug,
+      projectSlug: credential.projectSlug,
+      installationId: credential.sentryInstallationId,
+      targetProjectId: projectId,
+    });
+    return c.json({ imported });
+  });
+}
+
+export function startSentryOpenIssueImport(
+  importIssues: () => Promise<number>,
+  onComplete: (count: number) => void,
+  onError: (error: unknown) => void,
+): void {
+  void Promise.resolve().then(importIssues).then(onComplete, onError);
 }
 
 export function sentryOAuthRedirect(

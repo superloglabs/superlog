@@ -161,6 +161,7 @@ import { importOpenSentryIssues, receiveSentryIssueEvent } from "./sentry/applic
 import { listOpenSentryIssues } from "./sentry/client.js";
 import { mountSentryPublic } from "./sentry/http.js";
 import {
+  type SentryInstallationDeps,
   mountSentryInstallationAuthed,
   mountSentryInstallationPublic,
 } from "./sentry/installation.js";
@@ -364,21 +365,24 @@ mountGithubAuthorOAuth(app);
 mountLinearPublic(app);
 mountNotionPublic(app);
 const sentryWebhookInbox = createDrizzleSentryWebhookInbox();
-mountSentryInstallationPublic(app, {
+const sentryCredentialRepository = createSentryCredentialRepository();
+const sentryInstallationDeps: SentryInstallationDeps = {
   importOpenIssues: (input) =>
     importOpenSentryIssues(
       { listOpenIssues: (query) => listOpenSentryIssues(query) },
       sentryWebhookInbox,
       input,
     ),
-});
+  getActiveCredential: (projectId: string) => sentryCredentialRepository.getActive(projectId),
+};
+mountSentryInstallationPublic(app, sentryInstallationDeps);
 mountSentryPublic(app, {
   clientSecret: process.env.SENTRY_CLIENT_SECRET,
   receiveIssueEvent: (event) => receiveSentryIssueEvent(sentryWebhookInbox, event),
   revokeInstallation: (installationId) => sentryWebhookInbox.revokeInstallation(installationId),
 });
 mountSentryMcpRelayPublic(app, {
-  repository: createSentryCredentialRepository(),
+  repository: sentryCredentialRepository,
   fetch: strictProjectMcpFetch,
   now: () => new Date(),
   clientId: process.env.SENTRY_CLIENT_ID,
@@ -446,7 +450,7 @@ mountProjectRouteContext(app);
 mountGithubAuthed(app);
 mountLinearAuthed(app);
 mountNotionAuthed(app);
-mountSentryInstallationAuthed(app);
+mountSentryInstallationAuthed(app, sentryInstallationDeps);
 mountSlackAuthed(app);
 mountCloudflareAuthed(app);
 mountVercelAuthed(app);
