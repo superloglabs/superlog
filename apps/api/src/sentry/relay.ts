@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { Env, Hono } from "hono";
+import { requestSentryInstallationToken } from "./authorization.js";
 
 const REQUEST_HEADERS = [
   "accept",
@@ -12,6 +13,7 @@ const RESPONSE_HEADERS = ["cache-control", "content-type", "mcp-session-id", "re
 
 export type SentryMcpCredential = {
   id: string;
+  sentryInstallationId: string;
   organizationSlug: string;
   projectSlug: string;
   accessToken: string;
@@ -108,31 +110,17 @@ async function refreshCredential(
   deps: RelayDependencies,
   credential: SentryMcpCredential,
 ): Promise<SentryMcpCredential> {
-  const response = await deps.fetch("https://sentry.io/oauth/token/", {
-    method: "POST",
-    headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: deps.clientId ?? "",
-      client_secret: deps.clientSecret ?? "",
-      grant_type: "refresh_token",
-      refresh_token: credential.refreshToken ?? "",
-    }),
-    redirect: "error",
+  const token = await requestSentryInstallationToken({
+    installationId: credential.sentryInstallationId,
+    clientId: deps.clientId ?? "",
+    clientSecret: deps.clientSecret ?? "",
+    grant: { type: "refresh_token", refreshToken: credential.refreshToken ?? "" },
+    fetchImpl: deps.fetch,
   });
-  const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-  if (!response.ok || typeof payload?.access_token !== "string") {
-    throw new Error(`Sentry OAuth refresh failed (${response.status})`);
-  }
   return deps.repository.updateToken(credential.id, {
-    accessToken: payload.access_token,
-    refreshToken:
-      typeof payload.refresh_token === "string" ? payload.refresh_token : credential.refreshToken,
-    expiresAt:
-      typeof payload.expires_at === "string"
-        ? validDate(payload.expires_at)
-        : typeof payload.expires_in === "number"
-          ? new Date(deps.now().getTime() + payload.expires_in * 1000)
-          : null,
+    accessToken: token.accessToken,
+    refreshToken: token.refreshToken,
+    expiresAt: token.expiresAt,
   });
 }
 
@@ -140,9 +128,4 @@ function safeEqual(left: string, right: string): boolean {
   const leftBytes = Buffer.from(left);
   const rightBytes = Buffer.from(right);
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
-}
-
-function validDate(value: string): Date | null {
-  const parsed = new Date(value);
-  return Number.isFinite(parsed.getTime()) ? parsed : null;
 }

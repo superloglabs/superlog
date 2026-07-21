@@ -5,6 +5,7 @@ import { sentryInstallations } from "./schema.js";
 
 export type SentryCredential = {
   id: string;
+  sentryInstallationId: string;
   organizationSlug: string;
   projectSlug: string;
   accessToken: string;
@@ -76,6 +77,7 @@ export function createSentryCredentialRepository(
 function decryptRow(row: typeof sentryInstallations.$inferSelect): SentryCredential {
   return {
     id: row.id,
+    sentryInstallationId: row.sentryInstallationId,
     organizationSlug: row.organizationSlug,
     projectSlug: row.sentryProjectSlug,
     accessToken: decryptIntegrationSecret({

@@ -10,6 +10,7 @@ test("relays an authenticated project-scoped MCP request with Sentry-Bearer auth
     repository: {
       getActive: async () => ({
         id: "sentry-install-1",
+        sentryInstallationId: "sentry-external-installation-1",
         organizationSlug: "acme",
         projectSlug: "storefront",
         accessToken: "sentry-access-token",
@@ -55,6 +56,7 @@ test("refreshes an expired Sentry token before relaying investigation queries", 
   const updated: unknown[] = [];
   const current = {
     id: "sentry-install-1",
+    sentryInstallationId: "sentry-external-installation-1",
     organizationSlug: "acme",
     projectSlug: "storefront",
     accessToken: "expired-access",
@@ -75,9 +77,21 @@ test("refreshes an expired Sentry token before relaying investigation queries", 
     },
     now: () => new Date("2026-07-21T12:00:00.000Z"),
     fetch: async (input, init) => {
-      if (String(input) === "https://sentry.io/oauth/token/") {
-        assert.match(String(init?.body), /grant_type=refresh_token/);
-        return Response.json({ access_token: "fresh-access", expires_in: 3600 });
+      if (
+        String(input) ===
+        "https://sentry.io/api/0/sentry-app-installations/sentry-external-installation-1/authorizations/"
+      ) {
+        assert.deepEqual(JSON.parse(String(init?.body)), {
+          grant_type: "refresh_token",
+          refresh_token: "refresh-token",
+          client_id: "client-1",
+          client_secret: "secret-1",
+        });
+        return Response.json({
+          token: "fresh-access",
+          refreshToken: "next-refresh-token",
+          expiresAt: "2026-07-21T20:00:00.000Z",
+        });
       }
       upstreamAuth.push(new Headers(init?.headers).get("authorization") ?? "");
       return Response.json({ jsonrpc: "2.0", result: {} });
@@ -98,8 +112,8 @@ test("refreshes an expired Sentry token before relaying investigation queries", 
       id: "sentry-install-1",
       token: {
         accessToken: "fresh-access",
-        refreshToken: "refresh-token",
-        expiresAt: new Date("2026-07-21T13:00:00.000Z"),
+        refreshToken: "next-refresh-token",
+        expiresAt: new Date("2026-07-21T20:00:00.000Z"),
       },
     },
   ]);
@@ -113,6 +127,7 @@ test("marks the installation for reconnect when Sentry rejects its OAuth token",
     repository: {
       getActive: async () => ({
         id: "sentry-install-1",
+        sentryInstallationId: "sentry-external-installation-1",
         organizationSlug: "acme",
         projectSlug: "storefront",
         accessToken: "revoked-access-token",
