@@ -913,10 +913,21 @@ export class IngestQueue {
       // is as undeliverable as a poison envelope — drop it instead of cycling it to the DLQ.
       const permanentCollectorRejection =
         !poison && collectorFailure !== undefined && isPermanentCollectorFailure(collectorFailure.status);
-      const drop = poison || permanentCollectorRejection;
+      // SQS delivers at-least-once: if a re-delivered oversize message references an S3 key
+      // that no longer exists, the payload was already successfully processed and the S3 object
+      // was deleted after the first delivery. The message is a zombie — drop it immediately
+      // instead of cycling through all retries to the DLQ. S3 always writes the object before
+      // SQS enqueues the message, so NoSuchKey on a received message unambiguously means it
+      // was already handled.
+      const missingS3Body =
+        !poison &&
+        !permanentCollectorRejection &&
+        (err as { name?: string })?.name === "NoSuchKey" &&
+        parsed?.body?.storage === "s3";
+      const drop = poison || permanentCollectorRejection || missingS3Body;
       const metric = queueDeliveryMetricFromParsedMessage(
         parsed,
-        poison ? "invalid_message" : collectorFailure ? "collector_error" : "delivery_error",
+        poison || missingS3Body ? "invalid_message" : collectorFailure ? "collector_error" : "delivery_error",
         collectorFailure?.status,
         performance.now() - startedAt,
         parsed && typeof parsed === "object" && "receivedAt" in parsed
@@ -931,6 +942,7 @@ export class IngestQueue {
           err,
           poison,
           permanentCollectorRejection,
+          missingS3Body,
           messageId: message.MessageId,
           collectorStatus: collectorFailure?.status,
           collectorResponseBody: collectorFailure?.body,
@@ -947,19 +959,23 @@ export class IngestQueue {
           ? "dropping poison ingest message"
           : permanentCollectorRejection
             ? "dropping ingest message permanently rejected by collector"
-            : "failed to deliver queued ingest payload",
+            : missingS3Body
+              ? "dropping zombie ingest message: S3 body already deleted (re-delivered after successful processing)"
+              : "failed to deliver queued ingest payload",
       );
 
-      // An undeliverable message (poison envelope or permanent collector 4xx) can never
-      // succeed; leaving it in place means 50 redeliveries (15-min visibility each) before
-      // it reaches the DLQ, which pins oldest-message-age into a sawtooth and keeps the bad
-      // payload churning in-flight. Mark it for deletion so it stops cycling; the S3 body
-      // is only purged once the SQS delete actually succeeded (see deleteProcessedMessages).
+      // An undeliverable message (poison envelope, permanent collector 4xx, or zombie
+      // re-delivery whose S3 body is already gone) can never succeed; leaving it in place
+      // means 50 redeliveries (15-min visibility each) before it reaches the DLQ, which pins
+      // oldest-message-age into a sawtooth and keeps the bad payload churning in-flight. Mark
+      // it for deletion so it stops cycling; the S3 body is only purged once the SQS delete
+      // actually succeeded (see deleteProcessedMessages). For missingS3Body the key is already
+      // gone so s3Cleanup is omitted — S3 DeleteObject would be a no-op anyway.
       return {
         message,
         shouldDelete: drop,
         s3Cleanup:
-          drop && parsed?.body?.storage === "s3" && parsed.body.bucket && parsed.body.key
+          drop && !missingS3Body && parsed?.body?.storage === "s3" && parsed.body.bucket && parsed.body.key
             ? { bucket: parsed.body.bucket, key: parsed.body.key }
             : undefined,
       };
