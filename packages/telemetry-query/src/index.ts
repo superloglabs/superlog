@@ -1263,6 +1263,8 @@ function temporalityAwareScalarQuery(args: {
   valueExpr: string;
   isMonotonicExpr: string;
   aggregation?: MetricAggregation;
+  bucketAnchorNs?: string;
+  rowLimit?: number | null;
 }): string {
   const {
     table,
@@ -1274,6 +1276,8 @@ function temporalityAwareScalarQuery(args: {
     valueExpr,
     isMonotonicExpr,
     aggregation = "sum",
+    bucketAnchorNs = "0",
+    rowLimit = 10000,
   } = args;
   const baseWhere = baseConds.join(" AND ");
   // Bucket arithmetic is done in nanoseconds (TimeUnix is DateTime64) so that
@@ -1358,7 +1362,7 @@ function temporalityAwareScalarQuery(args: {
             ) AS a,
             toUnixTimestamp64Nano(TimeUnix) AS b,
             greatest(b - a, 1) AS dt,
-            intDiv(greatest(a, ${sinceNs}), ${stepNs}) * ${stepNs} AS first_bucket
+            intDiv(greatest(a, ${sinceNs}) - ${bucketAnchorNs}, ${stepNs}) * ${stepNs} + ${bucketAnchorNs} AS first_bucket
           FROM (
             SELECT
               TimeUnix,
@@ -1431,7 +1435,7 @@ function temporalityAwareScalarQuery(args: {
             toUnixTimestamp64Nano(StartTimeUnix) AS a,
             toUnixTimestamp64Nano(TimeUnix) AS b,
             greatest(b - a, 1) AS dt,
-            intDiv(greatest(a, ${sinceNs}), ${stepNs}) * ${stepNs} AS first_bucket
+            intDiv(greatest(a, ${sinceNs}) - ${bucketAnchorNs}, ${stepNs}) * ${stepNs} + ${bucketAnchorNs} AS first_bucket
           FROM ${table}
           WHERE ${baseWhere}
             AND TimeUnix >= ${sinceExpr}
@@ -1443,22 +1447,25 @@ function temporalityAwareScalarQuery(args: {
     )
     GROUP BY bucket, group_key
     ORDER BY bucket ASC
-    LIMIT 10000
+    ${rowLimit === null ? "" : `LIMIT ${rowLimit}`}
   `;
 }
 
 function temporalityAwareHistogramAverageQuery(
   args: Omit<Parameters<typeof temporalityAwareScalarQuery>[0], "valueExpr" | "isMonotonicExpr">,
 ): string {
+  const { rowLimit = 10000, ...scalarArgs } = args;
   const sums = temporalityAwareScalarQuery({
-    ...args,
+    ...scalarArgs,
     valueExpr: "Sum",
     isMonotonicExpr: "false",
+    rowLimit: null,
   });
   const counts = temporalityAwareScalarQuery({
-    ...args,
+    ...scalarArgs,
     valueExpr: "Count",
     isMonotonicExpr: "true",
+    rowLimit: null,
   });
   return `
     SELECT
@@ -1468,7 +1475,7 @@ function temporalityAwareHistogramAverageQuery(
     FROM (${sums}) AS sums
     INNER JOIN (${counts}) AS counts USING (bucket, group_key)
     ORDER BY bucket ASC
-    LIMIT 10000
+    ${rowLimit === null ? "" : `LIMIT ${rowLimit}`}
   `;
 }
 
@@ -1651,6 +1658,12 @@ export type MetricSeriesFilter = {
   resourceAttrs?: ResourceAttrFilter[];
 };
 
+type MetricSeriesQueryOptions = {
+  bucketAnchorNs?: string;
+  rawBucketExpr?: string;
+  rowLimit?: number | null;
+};
+
 export async function metricSeries(
   ch: ClickHouseClient,
   projectId: string,
@@ -1659,6 +1672,7 @@ export async function metricSeries(
   groupBy: string | undefined,
   step: Step,
   aggregation?: MetricAggregation,
+  queryOptions: MetricSeriesQueryOptions = {},
 ): Promise<MetricSeriesRow[]> {
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(filter.range);
   const attr = attrConds(filter.resourceAttrs);
@@ -1747,6 +1761,8 @@ export async function metricSeries(
                 baseConds,
                 sinceExpr,
                 untilExpr,
+                bucketAnchorNs: queryOptions.bucketAnchorNs,
+                rowLimit: queryOptions.rowLimit,
               })
             : kind === "sum"
               ? temporalityAwareScalarQuery({
@@ -1759,6 +1775,8 @@ export async function metricSeries(
                   valueExpr: "Value",
                   isMonotonicExpr: "IsMonotonic",
                   aggregation,
+                  bucketAnchorNs: queryOptions.bucketAnchorNs,
+                  rowLimit: queryOptions.rowLimit,
                 })
               : (kind === "histogram" || kind === "exponential_histogram") &&
                   (!aggregation || aggregation === "sum")
@@ -1771,17 +1789,19 @@ export async function metricSeries(
                     untilExpr,
                     valueExpr: aggregation === "sum" ? "Sum" : "Count",
                     isMonotonicExpr: aggregation === "sum" ? "false" : "true",
+                    bucketAnchorNs: queryOptions.bucketAnchorNs,
+                    rowLimit: queryOptions.rowLimit,
                   })
                 : `
           SELECT
-            toString(toStartOfInterval(TimeUnix, INTERVAL ${step.n} ${step.unit})) AS bucket,
+            toString(${queryOptions.rawBucketExpr ?? `toStartOfInterval(TimeUnix, INTERVAL ${step.n} ${step.unit})`}) AS bucket,
             ${groupExpr} AS group_key,
             ${valueExpr} AS v
           FROM ${table}
           WHERE ${conds.join(" AND ")}
           GROUP BY bucket, group_key
           ORDER BY bucket ASC
-          LIMIT 10000
+          ${queryOptions.rowLimit === null ? "" : `LIMIT ${queryOptions.rowLimit ?? 10000}`}
         `;
       try {
         const r = await ch.query({
@@ -1819,6 +1839,48 @@ export async function metricSeries(
   const results = perTable.flat();
   results.sort((a, b) => a.bucket.localeCompare(b.bucket));
   return results;
+}
+
+export type MetricAggregateRow = { group: string; value: number };
+
+// Aggregate a complete alert/evaluation window directly by group. Anchoring a
+// one-day bucket at the requested start keeps every supported alert window in
+// one SQL row per group, so the row cap limits groups rather than silently
+// truncating time-series buckets. Histogram averages remain count-weighted
+// because they use the shared normalized Sum/Count query before this reduction.
+export async function metricAggregate(
+  ch: ClickHouseClient,
+  projectId: string,
+  metricName: string,
+  filter: MetricSeriesFilter,
+  groupBy: string | undefined,
+  aggregation: "sum" | "avg",
+): Promise<MetricAggregateRow[]> {
+  const { sinceExpr } = resolveRange(filter.range);
+  const rows = await metricSeries(
+    ch,
+    projectId,
+    metricName,
+    filter,
+    groupBy,
+    { n: 1, unit: "DAY" },
+    aggregation,
+    {
+      bucketAnchorNs: `toUnixTimestamp64Nano(${sinceExpr})`,
+      rawBucketExpr: sinceExpr,
+      rowLimit: 1000,
+    },
+  );
+  const sums = new Map<string, number>();
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    sums.set(row.group, (sums.get(row.group) ?? 0) + row.value);
+    counts.set(row.group, (counts.get(row.group) ?? 0) + 1);
+  }
+  return [...sums].map(([group, sum]) => ({
+    group,
+    value: aggregation === "avg" ? sum / (counts.get(group) ?? 1) : sum,
+  }));
 }
 
 export type SeriesSource = "logs" | "traces";

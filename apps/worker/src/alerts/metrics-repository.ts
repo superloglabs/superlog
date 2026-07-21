@@ -1,6 +1,6 @@
 import type { ClickHouseClient } from "@clickhouse/client";
 import type { schema } from "@superlog/db";
-import { metricSeries } from "@superlog/telemetry-query";
+import { metricAggregate } from "@superlog/telemetry-query";
 import type { EvaluationRange } from "./domain.js";
 
 export type AlertMetricsRepository = ReturnType<typeof createAlertMetricsRepository>;
@@ -93,7 +93,7 @@ export function createAlertMetricsRepository(ch: ClickHouseClient) {
     range: EvaluationRange,
   ): Promise<Map<string, number>> {
     if (!alert.metricName) return new Map();
-    const rows = await metricSeries(
+    const rows = await metricAggregate(
       ch,
       alert.projectId,
       alert.metricName,
@@ -103,27 +103,9 @@ export function createAlertMetricsRepository(ch: ClickHouseClient) {
         resourceAttrs: alert.filter.resourceAttrs,
       },
       alert.groupBy ?? undefined,
-      { n: 1, unit: "MINUTE" },
       alert.aggregation === "avg" ? "avg" : "sum",
     );
-    const sums = new Map<string, number>();
-    const counts = new Map<string, number>();
-    for (const row of rows) {
-      const key = row.group ?? "";
-      sums.set(key, (sums.get(key) ?? 0) + row.value);
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-
-    const out = new Map<string, number>();
-    if (alert.aggregation === "avg") {
-      for (const [key, sum] of sums) {
-        const n = counts.get(key) ?? 1;
-        out.set(key, n > 0 ? sum / n : 0);
-      }
-    } else {
-      for (const [key, sum] of sums) out.set(key, sum);
-    }
-    return out;
+    return new Map(rows.map((row) => [row.group ?? "", row.value]));
   }
 
   return {

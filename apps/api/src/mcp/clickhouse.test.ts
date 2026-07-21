@@ -8,6 +8,7 @@ import {
   listAttributeValues,
   listMetricNames,
   listServices,
+  metricAggregate,
   metricSeries,
   queryLogs,
   queryMetrics,
@@ -525,6 +526,25 @@ test("metricSeries spreads cumulative monotonic sum increases across the interva
   assert.match(sumQuery, /ResourceAttributes/);
   assert.match(sumQuery, /Attributes\[\{groupKey:String\}\] AS group_key/);
   assert.equal(queries.length, 5);
+});
+
+test("metricAggregate caps groups without capping time-series bucket rows", async () => {
+  const queries: string[] = [];
+
+  await metricAggregate(
+    fakeClickhouseMulti(queries),
+    "project-1",
+    "superlog.proxy.ingest.requests",
+    { range: { since: "now() - INTERVAL 1 DAY", until: "now()" } },
+    "service.name",
+    "sum",
+  );
+
+  const sumQuery = queries.find((q) => q.includes("FROM otel_metrics_sum"));
+  assert.ok(sumQuery, "expected a sum metric query");
+  assert.match(sumQuery, /LIMIT 1000/);
+  assert.doesNotMatch(sumQuery, /LIMIT 10000/);
+  assert.match(sumQuery, /toUnixTimestamp64Nano\(now\(\) - INTERVAL 1 DAY\)/);
 });
 
 test("queryTraces returns resource attributes and flattened exception fields", async () => {

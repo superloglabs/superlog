@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { type ClickHouseClient, createClient } from "@clickhouse/client";
-import { metricSeries, queryMetrics } from "./index.js";
+import { metricAggregate, metricSeries, queryMetrics } from "./index.js";
 
 const clickhouseUrl = process.env.CLICKHOUSE_URL;
 const database = `metric_temporality_${randomUUID().replaceAll("-", "")}`;
@@ -551,6 +551,48 @@ test(
     );
 
     assert.deepEqual(rows, [{ bucket: "2026-01-01 00:01:00", group: "", value: 20 }]);
+  },
+);
+
+test(
+  "window-level histogram averages are weighted by observation count",
+  { skip: !clickhouseUrl },
+  async () => {
+    await ch.insert({
+      table: "otel_metrics_histogram",
+      format: "JSONEachRow",
+      values: [
+        {
+          ...cumulativeHistogramPoint("2026-01-01 00:01:00", 100, 100, [100, 0]),
+          MetricName: "weighted.duration",
+          StartTimeUnix: "2026-01-01 00:00:00",
+          AggregationTemporality: 1,
+        },
+        {
+          ...cumulativeHistogramPoint("2026-01-01 00:02:00", 1, 100, [0, 1]),
+          MetricName: "weighted.duration",
+          StartTimeUnix: "2026-01-01 00:01:00",
+          AggregationTemporality: 1,
+        },
+      ],
+    });
+
+    const rows = await metricAggregate(
+      ch,
+      "project-1",
+      "weighted.duration",
+      {
+        range: {
+          since: "2026-01-01T00:00:00Z",
+          until: "2026-01-01T00:02:00Z",
+        },
+      },
+      undefined,
+      "avg",
+    );
+
+    assert.equal(rows.length, 1);
+    assert.ok(Math.abs((rows[0]?.value ?? 0) - 200 / 101) < 1e-12);
   },
 );
 
