@@ -16,12 +16,13 @@ import {
 import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { TERMINAL_OUTCOME_NUDGE_MARKER, assembleAgentRunResult } from "../agent-outcome-tools.js";
 import type { AgentRunContext } from "../agent-run-context.js";
+import { listAccessibleGithubRepositories } from "../agent-run-context.js";
 import { type PauseForEventsOutcome, createAgentRunLifecycle } from "../agent-run.js";
-import type { AgentRunnerSnapshot } from "../agent-runner-backend.js";
 import { type AgentRunOutcome, recordAgentRunCompletion } from "../ai-usage.js";
 import { investigationGate } from "../billing/investigation-gate.js";
 import { usageNotifier } from "../billing/usage-notifier-infra.js";
 import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
+import { createRepositoryReadToken } from "../infra/github/repositories.js";
 import { postIncidentThreadMessage } from "../infra/slack/incident-messages.js";
 import { type ResolvedIntegration, loadEnabledIntegrationsForOrg } from "../integrations.js";
 import { logger } from "../logger.js";
@@ -40,6 +41,7 @@ import {
   reconcileDeliveredPullRequests,
   selectDeliveredPullRequestsForOutcome,
 } from "./pr-result-reconciliation.js";
+import { recoverExhaustedRunnerTurn } from "./recovery.js";
 import { supersededSnapshotCompletionResult } from "./resolution-completion.js";
 import {
   awaitingHumanSecondsFromEvents,
@@ -67,19 +69,6 @@ export function shouldFailForRuntimeBudget(args: {
   hasResult: boolean;
 }): boolean {
   return !args.hasResult && args.activeRuntimeMinutes >= args.maxRuntimeMinutes;
-}
-
-export function planRunnerInfrastructureFailure(
-  snapshot: Pick<AgentRunnerSnapshot, "result" | "infrastructureFailure">,
-): { reason: schema.AgentRunFailureReason; summary: string } | null {
-  const failure = snapshot.infrastructureFailure;
-  if (snapshot.result || !failure) return null;
-
-  const toolNames = [...new Set(failure.toolNames)].join(", ");
-  return {
-    reason: "sandbox_tool_execution_failed",
-    summary: `Investigation stopped after its sandbox failed to execute ${failure.consecutiveFailures} tools in a row${toolNames ? ` (${toolNames})` : ""}. Restart it to retry in a fresh environment.`,
-  };
 }
 
 export function planPullRequestAwaitingEvents<
@@ -527,12 +516,6 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
       });
     }
 
-    const infrastructureFailure = planRunnerInfrastructureFailure(snapshot);
-    if (infrastructureFailure) {
-      await failAgentRun(ctx, infrastructureFailure.reason, infrastructureFailure.summary);
-      return;
-    }
-
     const nextRuntimeMinutes = Math.ceil(snapshot.activeSeconds / 60);
     if (
       shouldFailForRuntimeBudget({
@@ -657,6 +640,62 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
           columns: { id: true },
         }));
         await meterAgentRun(hasPr ? "complete_with_pr" : "complete_no_pr", hasPr);
+      }
+      return;
+    }
+
+    if (!snapshot.result && snapshot.recoverableFailure) {
+      try {
+        const recovery = await recoverExhaustedRunnerTurn({
+          sessionId,
+          failure: snapshot.recoverableFailure,
+          runner,
+          listRepositories: async () =>
+            (await listAccessibleGithubRepositories(ctx)).map((repository) => ({
+              fullName: repository.fullName,
+              id: repository.id,
+              installationId: repository.installation.installationId,
+            })),
+          createRepositoryReadToken,
+          claimRecovery: async (providerEventId) => {
+            const rows = await db
+              .insert(schema.incidentEvents)
+              .values({
+                agentRunId: ctx.agentRun.id,
+                kind: "session_recovery",
+                summary:
+                  "Refreshing repository access and continuing after the managed service exhausted its retries.",
+                providerEventId: `session_recovery:${providerEventId}`,
+                processedAt: new Date(),
+              })
+              .onConflictDoNothing()
+              .returning({ id: schema.incidentEvents.id });
+            return rows[0] ?? null;
+          },
+          releaseRecoveryClaim: async (id) => {
+            await db.delete(schema.incidentEvents).where(eq(schema.incidentEvents.id, id));
+          },
+        });
+        logger.info(
+          {
+            agent_run_id: ctx.agentRun.id,
+            incident_id: ctx.incident.id,
+            provider_session_id: sessionId,
+            provider_event_id: snapshot.recoverableFailure.providerEventId,
+            recovery,
+          },
+          "handled exhausted managed-agent turn",
+        );
+      } catch (err) {
+        logger.warn(
+          {
+            err,
+            agent_run_id: ctx.agentRun.id,
+            incident_id: ctx.incident.id,
+            provider_session_id: sessionId,
+          },
+          "managed-agent turn recovery failed; leaving it retryable",
+        );
       }
       return;
     }

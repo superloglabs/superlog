@@ -75,7 +75,6 @@ export type AgentRunFailureReason =
   | "terminated_without_result"
   | "runtime_budget_exhausted"
   | "wall_clock_timeout"
-  | "sandbox_tool_execution_failed"
   | "unknown_custom_tool"
   | "human_resume_budget_exhausted"
   | "start_failed"

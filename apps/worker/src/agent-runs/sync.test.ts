@@ -14,7 +14,6 @@ import {
   partialPullRequestRetryNudgePrompt,
   planAwaitingEventsTransition,
   planPullRequestAwaitingEvents,
-  planRunnerInfrastructureFailure,
   planSettledPullRequestFallback,
   selectDeliveredPullRequestsForCurrentTurn,
   shouldDeferSteering,
@@ -23,38 +22,6 @@ import {
   steerIdleRunnerWithPendingContext,
   terminalOutcomeNudgePrompt,
 } from "./sync.js";
-
-test("repeated sandbox tool failures stop a resultless investigation with an actionable reason", () => {
-  assert.deepEqual(
-    planRunnerInfrastructureFailure({
-      result: null,
-      infrastructureFailure: {
-        kind: "sandbox_tool_execution",
-        consecutiveFailures: 3,
-        toolNames: ["bash", "glob", "bash"],
-      },
-    }),
-    {
-      reason: "sandbox_tool_execution_failed",
-      summary:
-        "Investigation stopped after its sandbox failed to execute 3 tools in a row (bash, glob). Restart it to retry in a fresh environment.",
-    },
-  );
-});
-
-test("a completed investigation is not failed for earlier sandbox errors", () => {
-  assert.equal(
-    planRunnerInfrastructureFailure({
-      result: { state: "complete", summary: "Recovered and completed." },
-      infrastructureFailure: {
-        kind: "sandbox_tool_execution",
-        consecutiveFailures: 3,
-        toolNames: ["bash"],
-      },
-    }),
-    null,
-  );
-});
 
 test("completion metering runs only for the sync pass that claimed the transition", async () => {
   let metered = 0;
