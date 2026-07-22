@@ -125,6 +125,10 @@ export function isCompleteInvestigationAllowed(
   },
 ): boolean {
   if (result.completionKind !== "investigation_complete") return true;
+  // Pre-cutover sessions persisted this flag for the provider-specific handoff
+  // terminal. Let those immutable snapshots drain even when PR creation would
+  // block a newly declared complete_investigation call.
+  if (result.linearTicketRequested) return true;
   const prCreation = capabilities.githubConnected && capabilities.prPolicy !== "never";
   return !prCreation;
 }

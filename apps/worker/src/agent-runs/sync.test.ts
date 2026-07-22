@@ -442,6 +442,24 @@ test("complete_investigation is rejected for PR runs but allowed for findings-on
   );
 });
 
+test("persisted legacy Linear handoffs can drain after the tool contract changes", () => {
+  assert.equal(
+    isCompleteInvestigationAllowed(
+      {
+        state: "complete",
+        summary: "Findings ready.",
+        completionKind: "investigation_complete",
+        linearTicketRequested: true,
+      },
+      {
+        prPolicy: "always",
+        githubConnected: true,
+      },
+    ),
+    true,
+  );
+});
+
 test("findings-only completion remains available alongside approval prompts when PRs are disabled", () => {
   assert.equal(
     completeInvestigationAvailable({

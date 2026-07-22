@@ -229,13 +229,19 @@ test("rejects retired tools (incl. mark_already_resolved) with redirect guidance
   }
 });
 
-test("redirects legacy create_linear_issue calls to deterministic completion", () => {
+test("maps legacy create_linear_issue calls to deterministic completion", () => {
   const validation = validateOutcomeToolInput("create_linear_issue", {}, { hasFindings: true });
-  assert.equal(validation.ok, false);
-  if (!validation.ok) {
-    assert.match(validation.errors.join(" "), /complete_investigation/);
-    assert.match(validation.errors.join(" "), /Linear/);
+  assert.equal(validation.ok, true);
+  if (validation.ok) {
+    assert.equal(validation.tool, "complete_investigation");
+    assert.deepEqual(validation.payload, {});
   }
+});
+
+test("keeps the findings gate for legacy create_linear_issue calls", () => {
+  const validation = validateOutcomeToolInput("create_linear_issue", {}, { hasFindings: false });
+  assert.equal(validation.ok, false);
+  if (!validation.ok) assert.match(validation.errors.join(" "), /report_findings/);
 });
 
 test("validates immutable legacy resolve calls without relaxing the advertised contract", () => {

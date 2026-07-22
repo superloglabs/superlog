@@ -736,11 +736,16 @@ export function validateOutcomeToolInput(
   ctx: { hasFindings: boolean },
 ): ValidateOutcome {
   if (name === "create_linear_issue") {
+    if (!ctx.hasFindings) {
+      return {
+        ok: false,
+        errors: ["Call report_findings before create_linear_issue."],
+      };
+    }
     return {
-      ok: false,
-      errors: [
-        "`create_linear_issue` is no longer available. Call `complete_investigation`; the platform creates or reuses the connected Linear issue deterministically as part of completion.",
-      ],
+      ok: true,
+      tool: "complete_investigation",
+      payload: {},
     };
   }
   if ((RETIRED_OUTCOME_TOOL_NAMES as readonly string[]).includes(name)) {

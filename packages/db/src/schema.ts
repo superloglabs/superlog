@@ -356,6 +356,9 @@ export type AgentRunResult = {
   // Explicit terminal signal for runs that finish their investigation while
   // deliberately leaving the incident open for an external ticket workflow.
   completionKind?: "investigation_complete" | null;
+  // Compatibility marker persisted by pre-cutover sessions that explicitly
+  // requested the provider-specific handoff terminal. New runs never set it.
+  linearTicketRequested?: boolean | null;
   // Why an awaiting_events run is parked when it is not waiting on a PR.
   waitReason?: "external_cause" | null;
   externalCause?: AgentRunExternalCause | null;
