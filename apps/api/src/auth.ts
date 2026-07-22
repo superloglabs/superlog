@@ -254,8 +254,9 @@ export const auth = betterAuth({
           });
           // Vendor-neutral growth seam: a deployment may forward this to
           // external destinations (see @superlog/db lifecycle-events). No-op
-          // unless a sink was registered at boot; never blocks the signup.
-          await emitLifecycleEvent({
+          // unless a sink was registered at boot; fire-and-forget so a slow
+          // sink never blocks signup or delays enqueueUserCreated below.
+          void emitLifecycleEvent({
             event: "signup",
             userId: user.id,
             email: user.email,
