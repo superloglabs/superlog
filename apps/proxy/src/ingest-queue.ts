@@ -267,6 +267,27 @@ export class PoisonMessageError extends Error {
   }
 }
 
+export class SqsBatchEntryRejectedError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(`SQS batch entry failed: ${code}: ${message}`);
+    this.name = "SqsBatchEntryRejectedError";
+  }
+}
+
+export function shouldCleanupOversizeObjectAfterQueueFailure(err: unknown): boolean {
+  if (err instanceof SqsBatchEntryRejectedError) return true;
+  if (!err || typeof err !== "object") return false;
+
+  const status = (err as { $metadata?: { httpStatusCode?: unknown } }).$metadata?.httpStatusCode;
+  // A completed 4xx response proves SQS rejected the request. A 408 is the
+  // exception: the server can time out after accepting work, so its outcome is
+  // just as ambiguous as a transport error or a 5xx response.
+  return typeof status === "number" && status >= 400 && status < 500 && status !== 408;
+}
+
 export function isPoisonMessageError(err: unknown): err is PoisonMessageError {
   return err instanceof PoisonMessageError;
 }
@@ -276,7 +297,9 @@ export function parseIngestMessage(body: string): IngestQueueMessage {
   try {
     parsed = JSON.parse(body) as IngestQueueMessage;
   } catch (err) {
-    throw new PoisonMessageError(`ingest queue message is not valid JSON: ${(err as Error).message}`);
+    throw new PoisonMessageError(
+      `ingest queue message is not valid JSON: ${(err as Error).message}`,
+    );
   }
   try {
     assertIngestMessage(parsed);
@@ -314,7 +337,9 @@ export function describeCollectorFailure(
       : trimmedBody;
 
   return {
-    message: boundedBody ? `collector returned ${status}: ${boundedBody}` : `collector returned ${status}`,
+    message: boundedBody
+      ? `collector returned ${status}: ${boundedBody}`
+      : `collector returned ${status}`,
     status,
     ...(boundedBody ? { body: boundedBody } : {}),
   };
@@ -337,12 +362,10 @@ type PendingSend = {
 };
 
 /** Outcome of processing one received message: whether the consume loop should
- *  delete it from the queue, and which offloaded S3 body to purge once that
- *  delete has succeeded. */
+ *  delete it from the queue. */
 type ProcessedMessage = {
   message: Message;
   shouldDelete: boolean;
-  s3Cleanup?: { bucket: string; key: string };
 };
 
 export class IngestQueue {
@@ -405,6 +428,7 @@ export class IngestQueue {
   async enqueue(input: IngestQueueInput): Promise<"inline" | "s3"> {
     const encoded = encodeIngestMessage(input, this.config);
     let uploadedObject: EncodedIngestMessage["s3Object"];
+    let queueSendStarted = false;
 
     try {
       if (encoded.s3Object) {
@@ -419,16 +443,24 @@ export class IngestQueue {
         );
       }
 
+      queueSendStarted = true;
       await this.sendToQueue(encoded.messageBody);
       return encoded.storage;
     } catch (err) {
-      if (uploadedObject) {
+      const shouldCleanup =
+        uploadedObject && (!queueSendStarted || shouldCleanupOversizeObjectAfterQueueFailure(err));
+      if (shouldCleanup && uploadedObject) {
         await this.deleteS3Object(uploadedObject.bucket, uploadedObject.key).catch((deleteErr) => {
           this.logger.warn(
             { err: deleteErr, bucket: uploadedObject?.bucket, key: uploadedObject?.key },
             "failed to clean up oversize ingest object after enqueue failure",
           );
         });
+      } else if (uploadedObject && queueSendStarted) {
+        this.logger.warn(
+          { err, bucket: uploadedObject.bucket, key: uploadedObject.key },
+          "preserving oversize ingest object after ambiguous SQS enqueue failure",
+        );
       }
       throw err;
     }
@@ -487,14 +519,19 @@ export class IngestQueue {
     try {
       await this.sendToQueue(JSON.stringify(message));
     } catch (err) {
-      // The object already landed; clean up the orphan so a failed enqueue does
-      // not leak S3 storage, mirroring enqueue()'s rollback.
-      await this.deleteS3Object(bucket, key).catch((deleteErr) => {
+      if (shouldCleanupOversizeObjectAfterQueueFailure(err)) {
+        await this.deleteS3Object(bucket, key).catch((deleteErr) => {
+          this.logger.warn(
+            { err: deleteErr, bucket, key },
+            "failed to clean up oversize ingest object after enqueue failure",
+          );
+        });
+      } else {
         this.logger.warn(
-          { err: deleteErr, bucket, key },
-          "failed to clean up oversize ingest object after enqueue failure",
+          { err, bucket, key },
+          "preserving oversize ingest object after ambiguous SQS enqueue failure",
         );
-      });
+      }
       throw err;
     }
     return { storage: "s3", bytes: result.totalBytes };
@@ -638,8 +675,9 @@ export class IngestQueue {
         const failure = failed.get(String(index));
         if (failure) {
           entry.reject(
-            new Error(
-              `SQS batch entry failed: ${failure.Code ?? "unknown"}: ${failure.Message ?? "no message"}`,
+            new SqsBatchEntryRejectedError(
+              failure.Code ?? "unknown",
+              failure.Message ?? "no message",
             ),
           );
         } else {
@@ -701,13 +739,16 @@ export class IngestQueue {
     // producer sends that are also draining. Healthy receives get their full
     // server-side long-poll window plus network slack.
     const abortTimer = this.consumersDone
-      ? setTimeout(() => {
-          this.logger.warn(
-            { queueUrl: this.config.queueUrl },
-            "aborting stalled SQS receive after shutdown drain deadline",
-          );
-          this.shutdownController.abort();
-        }, this.config.waitTimeSeconds * 1_000 + SHUTDOWN_RECEIVE_ABORT_SLACK_MS)
+      ? setTimeout(
+          () => {
+            this.logger.warn(
+              { queueUrl: this.config.queueUrl },
+              "aborting stalled SQS receive after shutdown drain deadline",
+            );
+            this.shutdownController.abort();
+          },
+          this.config.waitTimeSeconds * 1_000 + SHUTDOWN_RECEIVE_ABORT_SLACK_MS,
+        )
       : null;
     abortTimer?.unref?.();
     // Flush any sends still waiting on the linger timer so a producer-only
@@ -852,10 +893,6 @@ export class IngestQueue {
           return {
             message,
             shouldDelete: true,
-            s3Cleanup:
-              parsed.body.storage === "s3"
-                ? { bucket: parsed.body.bucket, key: parsed.body.key }
-                : undefined,
           };
         }
       }
@@ -902,17 +939,15 @@ export class IngestQueue {
       return {
         message,
         shouldDelete: true,
-        s3Cleanup:
-          parsed.body.storage === "s3"
-            ? { bucket: parsed.body.bucket, key: parsed.body.key }
-            : undefined,
       };
     } catch (err) {
       const poison = isPoisonMessageError(err);
       // A collector 4xx (other than 408/429) rejects these exact bytes permanently, so it
       // is as undeliverable as a poison envelope — drop it instead of cycling it to the DLQ.
       const permanentCollectorRejection =
-        !poison && collectorFailure !== undefined && isPermanentCollectorFailure(collectorFailure.status);
+        !poison &&
+        collectorFailure !== undefined &&
+        isPermanentCollectorFailure(collectorFailure.status);
       const drop = poison || permanentCollectorRejection;
       const metric = queueDeliveryMetricFromParsedMessage(
         parsed,
@@ -941,7 +976,9 @@ export class IngestQueue {
           storage: parsed?.body?.storage,
           s3SizeBytes: parsed?.body?.storage === "s3" ? parsed.body.sizeBytes : undefined,
           inlineBodyBase64Bytes:
-            parsed?.body?.storage === "inline" ? Buffer.byteLength(parsed.body.base64 ?? "") : undefined,
+            parsed?.body?.storage === "inline"
+              ? Buffer.byteLength(parsed.body.base64 ?? "")
+              : undefined,
         },
         poison
           ? "dropping poison ingest message"
@@ -953,15 +990,10 @@ export class IngestQueue {
       // An undeliverable message (poison envelope or permanent collector 4xx) can never
       // succeed; leaving it in place means 50 redeliveries (15-min visibility each) before
       // it reaches the DLQ, which pins oldest-message-age into a sawtooth and keeps the bad
-      // payload churning in-flight. Mark it for deletion so it stops cycling; the S3 body
-      // is only purged once the SQS delete actually succeeded (see deleteProcessedMessages).
+      // payload churning in-flight. Mark it for deletion so it stops cycling.
       return {
         message,
         shouldDelete: drop,
-        s3Cleanup:
-          drop && parsed?.body?.storage === "s3" && parsed.body.bucket && parsed.body.key
-            ? { bucket: parsed.body.bucket, key: parsed.body.key }
-            : undefined,
       };
     }
   }
@@ -970,8 +1002,9 @@ export class IngestQueue {
    * Delete a processed batch of messages with DeleteMessageBatch (one billed
    * request per 10 messages instead of one per message). A failed entry is only
    * logged — the message redelivers after its visibility timeout, which at worst
-   * forwards the same payload to the collector twice; its offloaded S3 body is
-   * kept so the retry can still read it.
+   * forwards the same payload to the collector twice. Offloaded S3 bodies remain
+   * available for SQS's at-least-once delivery window and expire through the
+   * bucket lifecycle policy instead of being deleted eagerly here.
    */
   private async deleteProcessedMessages(outcomes: ProcessedMessage[]): Promise<void> {
     const deletable = outcomes.filter((outcome) => {
@@ -1005,27 +1038,14 @@ export class IngestQueue {
         continue;
       }
 
-      await Promise.all(
-        chunk.map(async (outcome, index) => {
-          if (failedIds.has(String(index))) {
-            this.logger.warn(
-              { messageId: outcome.message.MessageId },
-              "failed to delete processed ingest message; it will be redelivered",
-            );
-            return;
-          }
-          if (outcome.s3Cleanup) {
-            await this.deleteS3Object(outcome.s3Cleanup.bucket, outcome.s3Cleanup.key).catch(
-              (err) => {
-                this.logger.warn(
-                  { err, ...outcome.s3Cleanup },
-                  "failed to delete oversize ingest object after delivery",
-                );
-              },
-            );
-          }
-        }),
-      );
+      chunk.forEach((outcome, index) => {
+        if (failedIds.has(String(index))) {
+          this.logger.warn(
+            { messageId: outcome.message.MessageId },
+            "failed to delete processed ingest message; it will be redelivered",
+          );
+        }
+      });
     }
   }
 

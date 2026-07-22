@@ -19,6 +19,8 @@ after(() => {
 
 class FakeSqs {
   sent: string[] = [];
+  batchError: Error | null = null;
+  rejectEntries = false;
   // biome-ignore lint/suspicious/noExplicitAny: test double for the AWS client surface
   async send(cmd: any): Promise<unknown> {
     if (cmd.constructor.name !== "SendMessageBatchCommand") {
@@ -26,7 +28,31 @@ class FakeSqs {
     }
     const entries = cmd.input.Entries as Array<{ Id: string; MessageBody: string }>;
     for (const entry of entries) this.sent.push(entry.MessageBody);
+    if (this.batchError) throw this.batchError;
+    if (this.rejectEntries) {
+      return {
+        Successful: [],
+        Failed: entries.map((entry) => ({
+          Id: entry.Id,
+          Code: "InvalidMessageContents",
+          Message: "invalid body",
+        })),
+      };
+    }
     return { Successful: entries.map((entry) => ({ Id: entry.Id })), Failed: [] };
+  }
+}
+
+class FakeS3 {
+  deletes: string[] = [];
+
+  // biome-ignore lint/suspicious/noExplicitAny: test double for the AWS client surface
+  async send(cmd: any): Promise<unknown> {
+    if (cmd.constructor.name !== "DeleteObjectCommand") {
+      throw new Error(`unexpected S3 command: ${cmd.constructor.name}`);
+    }
+    this.deletes.push(String(cmd.input.Key));
+    return {};
   }
 }
 
@@ -53,6 +79,7 @@ const noopLogger = { info: () => {}, warn: () => {}, error: () => {} };
 function buildQueue(overrides: Partial<IngestQueueConfig> = {}): {
   queue: IngestQueue;
   sqs: FakeSqs;
+  s3: FakeS3;
   sinks: RecordingSink[];
 } {
   const config: IngestQueueConfig = {
@@ -80,8 +107,10 @@ function buildQueue(overrides: Partial<IngestQueueConfig> = {}): {
   };
   const queue = new IngestQueue(config, noopLogger, spillSinkFactory);
   const sqs = new FakeSqs();
+  const s3 = new FakeS3();
   (queue as unknown as { sqs: FakeSqs }).sqs = sqs;
-  return { queue, sqs, sinks };
+  (queue as unknown as { s3: FakeS3 }).s3 = s3;
+  return { queue, sqs, s3, sinks };
 }
 
 async function* streamOf(...chunks: string[]): AsyncIterable<Uint8Array> {
@@ -136,6 +165,41 @@ test("large body streams to the spill sink and enqueues an s3 pointer with the b
   assert.equal(msg.body.bucket, "test-bucket");
   assert.equal(msg.body.sizeBytes, 3000);
   assert.match(msg.body.key, /^otlp-oversize\/\d{4}\/\d{2}\/\d{2}\/.+\.otlp$/);
+});
+
+test("an ambiguous streamed SQS failure preserves the completed S3 upload", async () => {
+  const { queue, sqs, s3 } = buildQueue();
+  sqs.batchError = new Error("request timed out after SQS may have accepted the batch");
+
+  await assert.rejects(
+    queue.enqueueStream({
+      path: "/v1/traces",
+      projectId: "proj-1",
+      contentType: "application/x-protobuf",
+      body: streamOf("X".repeat(3000)),
+    }),
+    /request timed out/,
+  );
+
+  assert.deepEqual(s3.deletes, []);
+});
+
+test("a definitive streamed SQS rejection cleans up the completed S3 upload", async () => {
+  const { queue, sqs, s3 } = buildQueue();
+  sqs.rejectEntries = true;
+
+  await assert.rejects(
+    queue.enqueueStream({
+      path: "/v1/traces",
+      projectId: "proj-1",
+      contentType: "application/x-protobuf",
+      body: streamOf("X".repeat(3000)),
+    }),
+    /SQS batch entry failed: InvalidMessageContents: invalid body/,
+  );
+
+  assert.equal(s3.deletes.length, 1);
+  assert.match(s3.deletes[0] ?? "", /^otlp-oversize\/\d{4}\/\d{2}\/\d{2}\/.+\.otlp$/);
 });
 
 test("a body over maxBodyBytes is rejected with PayloadTooLargeError and enqueues nothing", async () => {

@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
   PoisonMessageError,
+  SqsBatchEntryRejectedError,
   describeCollectorFailure,
   encodeIngestMessage,
   getIngestQueueConfig,
@@ -10,6 +11,7 @@ import {
   isPoisonMessageError,
   parseIngestMessage,
   queueDeliveryMetricFromParsedMessage,
+  shouldCleanupOversizeObjectAfterQueueFailure,
 } from "./ingest-queue.js";
 
 const baseInput = {
@@ -165,6 +167,50 @@ test("parseIngestMessage flags valid JSON with malformed envelope fields as pois
 test("isPoisonMessageError discriminates transient errors", () => {
   assert.equal(isPoisonMessageError(new Error("collector returned 503")), false);
   assert.equal(isPoisonMessageError(new PoisonMessageError("bad")), true);
+});
+
+test("ambiguous SQS send failures preserve the oversize object", () => {
+  assert.equal(shouldCleanupOversizeObjectAfterQueueFailure(new Error("request timed out")), false);
+  assert.equal(
+    shouldCleanupOversizeObjectAfterQueueFailure(
+      Object.assign(new Error("service unavailable"), {
+        $fault: "server",
+        $metadata: { httpStatusCode: 503 },
+      }),
+    ),
+    false,
+  );
+});
+
+test("definitive SQS batch entry rejections clean up the oversize object", () => {
+  assert.equal(
+    shouldCleanupOversizeObjectAfterQueueFailure(
+      new SqsBatchEntryRejectedError("InvalidMessageContents", "invalid body"),
+    ),
+    true,
+  );
+});
+
+test("definitive whole-request SQS rejections clean up the oversize object", () => {
+  assert.equal(
+    shouldCleanupOversizeObjectAfterQueueFailure(
+      Object.assign(new Error("queue does not exist"), {
+        name: "QueueDoesNotExist",
+        $fault: "client",
+        $metadata: { httpStatusCode: 400 },
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    shouldCleanupOversizeObjectAfterQueueFailure(
+      Object.assign(new Error("request timeout"), {
+        $fault: "client",
+        $metadata: { httpStatusCode: 408 },
+      }),
+    ),
+    false,
+  );
 });
 
 test("queueDeliveryMetricFromParsedMessage ignores malformed parsed payloads", () => {
