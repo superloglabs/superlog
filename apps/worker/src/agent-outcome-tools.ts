@@ -388,7 +388,12 @@ const REPORT_EXTERNAL_CAUSE_DEFINITION: OutcomeToolDefinition = {
 
 export type AskHumanPayload = { question: string };
 
-export type CompleteInvestigationPayload = Record<string, never>;
+export type CompleteInvestigationPayload = {
+  // Internal drain marker for pre-cutover sessions whose frozen schema still
+  // declared the provider-specific handoff terminal. Never exposed in the
+  // complete_investigation input schema and never set by new sessions.
+  legacyLinearTicketRequested?: true;
+};
 
 const COMPLETE_INVESTIGATION_DEFINITION: OutcomeToolDefinition = {
   name: "complete_investigation",
@@ -745,7 +750,7 @@ export function validateOutcomeToolInput(
     return {
       ok: true,
       tool: "complete_investigation",
-      payload: {},
+      payload: { legacyLinearTicketRequested: true },
     };
   }
   if ((RETIRED_OUTCOME_TOOL_NAMES as readonly string[]).includes(name)) {
@@ -1130,6 +1135,9 @@ export function assembleAgentRunResult(args: {
   }
   if (terminal?.name === "complete_investigation") {
     result.completionKind = "investigation_complete";
+    if (terminal.payload.legacyLinearTicketRequested) {
+      result.linearTicketRequested = true;
+    }
   }
   if (terminal?.name === "ask_human") {
     result.question = terminal.payload.question;

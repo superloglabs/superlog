@@ -865,6 +865,16 @@ test("terminalOutcomeNudgePrompt does not expose findings-only completion with P
   assert.match(prompt, /propose_pr/);
 });
 
+test("terminalOutcomeNudgePrompt names the frozen handoff terminal for legacy sessions", () => {
+  const prompt = terminalOutcomeNudgePrompt({
+    legacyLinearHandoffAvailable: true,
+    prCreationAvailable: true,
+  });
+  assert.match(prompt, /create_linear_issue/);
+  assert.doesNotMatch(prompt, /complete_investigation/);
+  assert.match(prompt, /propose_pr/);
+});
+
 test("terminalOutcomeNudgeCapabilities uses the tools declared for the running session", () => {
   assert.deepEqual(
     terminalOutcomeNudgeCapabilities(
@@ -884,6 +894,17 @@ test("terminalOutcomeNudgeCapabilities uses the tools declared for the running s
     {
       prCreationAvailable: false,
       completeInvestigationAvailable: true,
+    },
+  );
+  assert.deepEqual(
+    terminalOutcomeNudgeCapabilities(
+      { declaredCustomToolNames: ["report_findings", "propose_pr", "create_linear_issue"] },
+      { prCreationAvailable: false, completeInvestigationAvailable: true },
+    ),
+    {
+      prCreationAvailable: true,
+      completeInvestigationAvailable: false,
+      legacyLinearHandoffAvailable: true,
     },
   );
 });

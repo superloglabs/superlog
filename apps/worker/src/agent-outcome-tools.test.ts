@@ -234,7 +234,7 @@ test("maps legacy create_linear_issue calls to deterministic completion", () => 
   assert.equal(validation.ok, true);
   if (validation.ok) {
     assert.equal(validation.tool, "complete_investigation");
-    assert.deepEqual(validation.payload, {});
+    assert.deepEqual(validation.payload, { legacyLinearTicketRequested: true });
   }
 });
 
@@ -336,7 +336,20 @@ test("complete_investigation finishes without resolving the incident", () => {
   });
   assert.equal(result.state, "complete");
   assert.equal(result.completionKind, "investigation_complete");
+  assert.equal(result.linearTicketRequested, undefined);
   assert.equal(result.incidentResolution, undefined);
+});
+
+test("legacy handoff aliases preserve their compatibility marker in the result", () => {
+  const result = assembleAgentRunResult({
+    findings: FINDINGS,
+    terminal: {
+      name: "complete_investigation",
+      payload: { legacyLinearTicketRequested: true },
+    },
+  });
+  assert.equal(result.completionKind, "investigation_complete");
+  assert.equal(result.linearTicketRequested, true);
 });
 
 test("allows ask_human without findings", () => {
