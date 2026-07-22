@@ -9,7 +9,7 @@ function fakeBoss() {
   const calls: string[] = [];
   const queues: string[] = [];
   const queueUpdates: Array<{ name: string; options: unknown }> = [];
-  const schedules: Array<{ name: string; cron: string }> = [];
+  const schedules: Array<{ name: string; cron: string; options: unknown }> = [];
   const workers = new Map<string, WorkHandler>();
   const boss: JobBoss = {
     async start() {
@@ -27,8 +27,8 @@ function fakeBoss() {
       workers.set(name, handler);
       calls.push(`work:${name}`);
     },
-    async schedule(name, cron) {
-      schedules.push({ name, cron });
+    async schedule(name, cron, _data, options) {
+      schedules.push({ name, cron, options });
       calls.push(`schedule:${name}:${cron}`);
     },
   };
@@ -52,8 +52,8 @@ test("registerJobs starts the boss and registers a queue, worker, and cron sched
   assert.equal(fb.calls[0], "start", "boss must be started before registration");
   assert.deepEqual(fb.queues, ["a.sync", "b.sync"]);
   assert.deepEqual(fb.schedules, [
-    { name: "a.sync", cron: "0 */6 * * *" },
-    { name: "b.sync", cron: "*/5 * * * *" },
+    { name: "a.sync", cron: "0 */6 * * *", options: undefined },
+    { name: "b.sync", cron: "*/5 * * * *", options: undefined },
   ]);
   // Each queue is created exclusive (at most one queued-or-active).
   assert.ok(fb.calls.includes('createQueue:a.sync:{"policy":"exclusive","expireInSeconds":3600}'));
@@ -115,5 +115,18 @@ test("a job that fails to register is skipped without aborting the others", asyn
   ]);
 
   // good.sync still got scheduled despite bad.sync throwing.
-  assert.deepEqual(fb.schedules, [{ name: "good.sync", cron: "* * * * *" }]);
+  assert.deepEqual(fb.schedules, [{ name: "good.sync", cron: "* * * * *", options: undefined }]);
+});
+
+test("a job's timezone is passed through to the cron schedule; a job without one is not", async () => {
+  const fb = fakeBoss();
+  await registerJobs(fb.boss, [
+    { name: "tz.sync", schedule: "30 8 * * *", tz: "Europe/Rome", handler: async () => {} },
+    { name: "utc.sync", schedule: "0 8 * * *", handler: async () => {} },
+  ]);
+
+  assert.deepEqual(fb.schedules, [
+    { name: "tz.sync", cron: "30 8 * * *", options: { tz: "Europe/Rome" } },
+    { name: "utc.sync", cron: "0 8 * * *", options: undefined },
+  ]);
 });

@@ -44,7 +44,9 @@ export async function registerJobs(boss: JobBoss, jobs: LoadedJob[]): Promise<vo
         if (!queuedJob || typeof queuedJob !== "object") return;
         await job.handler(queuedJob as { id: string; data: unknown });
       });
-      if (job.schedule) await boss.schedule(job.name, job.schedule);
+      if (job.schedule) {
+        await boss.schedule(job.name, job.schedule, undefined, job.tz ? { tz: job.tz } : undefined);
+      }
       logger.info(
         { scope: "jobs.runner", job: job.name, schedule: job.schedule },
         job.schedule ? "scheduled background job" : "registered background event consumer",

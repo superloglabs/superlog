@@ -42,6 +42,9 @@ export type JobDefinition = {
   // Omit schedule for event-driven queues. Scheduled jobs default to an
   // exclusive queue; event consumers default to standard unless overridden.
   schedule?: string;
+  // IANA timezone (e.g. "Europe/Rome") the cron `schedule` is evaluated in.
+  // Omit to keep pg-boss's default of UTC. Only meaningful alongside a schedule.
+  tz?: string;
   policy?: JobQueuePolicy;
   // Durable active-job lease. Set this above the handler's legitimate worst
   // case so pg-boss never starts an overlapping successor while a slow run is
@@ -57,6 +60,7 @@ export type JobDefinition = {
 export type LoadedJob = {
   name: string;
   schedule?: string;
+  tz?: string;
   policy?: JobQueuePolicy;
   expireInSeconds?: number;
   handler: JobHandler;
@@ -120,6 +124,7 @@ export async function loadJobs(deps: JobDeps, options: { dir?: URL } = {}): Prom
       jobs.push({
         name: def.name,
         schedule: def.schedule,
+        tz: def.tz,
         policy: def.policy,
         expireInSeconds: def.expireInSeconds,
         handler,
