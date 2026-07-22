@@ -127,7 +127,7 @@ function TopNav({
                   ? `Superlog on GitHub, ${stars.toLocaleString()} stars`
                   : "Superlog on GitHub"
               }
-              className="hidden items-center gap-1.5 text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline-flex"
+              className="hidden items-center gap-1.5 text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline-flex"
             >
               <GitHubIcon />
               <span className="tabular-nums">
@@ -138,37 +138,37 @@ function TopNav({
               href={LANDING_DOCS_URL}
               target="_blank"
               rel="noreferrer"
-              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
+              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline"
             >
               Docs
             </a>
             <a
               href="/blog"
-              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
+              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline"
             >
               Blog
             </a>
             <a
               href="/changelog"
-              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
+              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline"
             >
               Changelog
             </a>
             <a
               href="/roadmap"
-              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
+              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline"
             >
               Roadmap
             </a>
             <a
               href="/team"
-              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
+              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline"
             >
               Team
             </a>
             <a
               href="/pricing"
-              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
+              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline"
             >
               Pricing
             </a>
