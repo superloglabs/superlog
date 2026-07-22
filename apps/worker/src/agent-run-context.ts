@@ -393,7 +393,7 @@ export async function listAccessibleGithubRepositories(
   );
 
   const repos = dedupeInstalledGithubRepos(results.flatMap((result) => result.repos));
-  if (repos.length === 0 && results.some((result) => result.err)) {
+  if (repos.length === 0 && results.length > 0 && results.every((result) => result.err)) {
     const firstError = results.find((result) => result.err)?.err;
     throw firstError instanceof Error
       ? firstError
