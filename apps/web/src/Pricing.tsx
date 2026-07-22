@@ -2,6 +2,9 @@ import { usePostHog } from "posthog-js/react";
 import { useEffect, useState } from "react";
 import { AuthForm } from "./AuthForm.tsx";
 import { Btn, Label, Tile, Wordmark } from "./design/ui.tsx";
+import { formatStarCount } from "./githubStars.ts";
+import { LANDING_DOCS_URL, LANDING_GITHUB_REPO_URL } from "./landingLinks.ts";
+import { useGithubStarCount } from "./useGithubStars.ts";
 
 type AuthMode = "sign-in" | "sign-up" | null;
 
@@ -212,6 +215,7 @@ function PricingNav({
   onSignIn: () => void;
   onSignUp: () => void;
 }) {
+  const stars = useGithubStarCount(LANDING_GITHUB_REPO_URL);
   return (
     <header className="sticky top-0 z-40 bg-bg">
       <div className="mx-auto w-full max-w-[1400px] px-6 md:px-8 xl:px-12">
@@ -220,6 +224,54 @@ function PricingNav({
             <Wordmark />
           </a>
           <div className="flex items-center gap-3">
+            <a
+              href={LANDING_GITHUB_REPO_URL}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={
+                stars != null
+                  ? `Superlog on GitHub, ${stars.toLocaleString()} stars`
+                  : "Superlog on GitHub"
+              }
+              className="hidden items-center gap-1.5 text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline-flex"
+            >
+              <GitHubIcon />
+              <span className="tabular-nums">
+                {stars != null ? formatStarCount(stars) : "GitHub"}
+              </span>
+            </a>
+            <a
+              href={LANDING_DOCS_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
+            >
+              Docs
+            </a>
+            <a
+              href="/blog"
+              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
+            >
+              Blog
+            </a>
+            <a
+              href="/changelog"
+              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
+            >
+              Changelog
+            </a>
+            <a
+              href="/roadmap"
+              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
+            >
+              Roadmap
+            </a>
+            <a
+              href="/team"
+              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
+            >
+              Team
+            </a>
             <a
               href="/pricing"
               className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg sm:inline"
@@ -236,6 +288,14 @@ function PricingNav({
         </nav>
       </div>
     </header>
+  );
+}
+
+function GitHubIcon() {
+  return (
+    <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38v-1.33c-2.22.48-2.69-1.07-2.69-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.06-.49.06-.49.81.06 1.23.83 1.23.83.72 1.23 1.88.87 2.34.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.13 0 0 .67-.21 2.2.82A7.6 7.6 0 0 1 8 3.86c.68 0 1.36.09 2 .27 1.53-1.03 2.2-.82 2.2-.82.44 1.11.16 1.93.08 2.13.51.56.82 1.28.82 2.15 0 3.07-1.87 3.74-3.65 3.94.29.25.54.73.54 1.48v2.19c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+    </svg>
   );
 }
 
@@ -311,11 +371,13 @@ function PlanCard({
 function FreeRow({ onSignUp }: { onSignUp: () => void }) {
   return (
     <Tile className="mt-8 rounded-lg bg-surface/30">
-      <div className="flex flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
+      {/* Same column grid as the pay-as-you-go card below (1fr + 240px) so the
+          left content and the price/CTA panel line up across both cards. */}
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_240px]">
         {/* Left — plan name + description + what's included */}
-        <div className="max-w-md">
+        <div>
           <h2 className="text-[27px] font-semibold tracking-tight text-fg">Free</h2>
-          <p className="mt-2 text-[13.5px] leading-relaxed text-muted">
+          <p className="mt-2 max-w-md text-[13.5px] leading-relaxed text-muted">
             For side projects and first installs — useful telemetry and a few investigations, free.
           </p>
           <ul className="mt-6 flex flex-col gap-2 text-[13.5px] leading-relaxed text-fg">
@@ -328,15 +390,15 @@ function FreeRow({ onSignUp }: { onSignUp: () => void }) {
           </ul>
         </div>
 
-        {/* Right — price + CTA */}
-        <div className="flex flex-col lg:items-end lg:text-right">
+        {/* Right — price + CTA, mirroring the estimator's 240px panel */}
+        <div className="flex flex-col justify-center border-border lg:border-l lg:pl-8">
           <div className="flex items-end gap-2">
-            <span className="text-[40px] font-semibold leading-none tracking-tight text-fg">
+            <span className="text-[44px] font-semibold leading-none tracking-tight text-fg">
               $0
             </span>
-            <span className="pb-1 text-[13px] font-medium text-muted">forever</span>
+            <span className="pb-1.5 text-[13px] font-medium text-muted">forever</span>
           </div>
-          <Btn size="lg" className="mt-6 self-start lg:self-end" onClick={onSignUp}>
+          <Btn size="lg" className="mt-6 w-full justify-center" onClick={onSignUp}>
             Start free
           </Btn>
         </div>
@@ -537,6 +599,30 @@ function PricingFooter() {
                 className="text-[14px] font-medium text-muted transition-colors hover:text-fg"
               >
                 Pricing
+              </a>
+              <a
+                href="/blog"
+                className="text-[14px] font-medium text-muted transition-colors hover:text-fg"
+              >
+                Blog
+              </a>
+              <a
+                href="/changelog"
+                className="text-[14px] font-medium text-muted transition-colors hover:text-fg"
+              >
+                Changelog
+              </a>
+              <a
+                href="/roadmap"
+                className="text-[14px] font-medium text-muted transition-colors hover:text-fg"
+              >
+                Roadmap
+              </a>
+              <a
+                href="/team"
+                className="text-[14px] font-medium text-muted transition-colors hover:text-fg"
+              >
+                Team
               </a>
               <a
                 href="/tos"
