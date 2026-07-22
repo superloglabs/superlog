@@ -2,9 +2,11 @@
 // of GroupingCandidateIncident. Used by the agent's tool dispatcher and
 // directly callable from tests.
 import {
+  GROUPING_SEARCH_MESSAGE_MAX_CHARS,
   type GroupingCandidateIncident,
   candidateIssues,
   candidateMatchesFilters,
+  compactDiagnosticText,
   endpointHostsFromText,
   endpointKind,
   environmentForResourceAttrs,
@@ -66,7 +68,7 @@ export function candidatePreview(candidate: GroupingCandidateIncident) {
     representative: representative
       ? {
           exceptionType: representative.exceptionType,
-          message: representative.message,
+          message: compactDiagnosticText(representative.message, GROUPING_SEARCH_MESSAGE_MAX_CHARS),
           topFrame: representative.topFrame,
           traceId: representative.traceId,
           spanId: representative.spanId,
@@ -209,5 +211,17 @@ export function inspectCandidate(
   const incidentId = typeof obj.incident_id === "string" ? obj.incident_id : "";
   const candidate = candidates.find((item) => item.id === incidentId);
   if (!candidate) return { error: `unknown incident_id: ${incidentId}` };
-  return candidate;
+  return {
+    ...candidate,
+    representative: candidate.representative
+      ? {
+          ...candidate.representative,
+          message: compactDiagnosticText(candidate.representative.message),
+        }
+      : null,
+    issues: candidate.issues?.map((issue) => ({
+      ...issue,
+      message: compactDiagnosticText(issue.message),
+    })),
+  };
 }

@@ -1,5 +1,6 @@
 import type { IssueSample, schema } from "@superlog/db";
 import type { GroupingCandidateIncident, GroupingNewIssue } from "../grouping.js";
+import { compactDiagnosticText } from "../grouping/domain.js";
 
 export type IssueGroupingState = "grouped" | "pending" | "standalone" | "failed";
 export type IssueGroupingSource = "heuristic" | "llm" | "manual" | null;
@@ -62,7 +63,7 @@ export function groupingIssueInput(issue: schema.Issue): GroupingNewIssue {
     title: issue.title,
     service: issue.service,
     exceptionType: issue.exceptionType,
-    message: issue.message,
+    message: compactDiagnosticText(issue.message),
     topFrame: issue.topFrame,
     normalizedFrames: issue.normalizedFrames ?? [],
     observedAt: issue.lastSeen.toISOString(),

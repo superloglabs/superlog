@@ -101,6 +101,23 @@ test("groupingIssueInput and buildGroupingCandidate keep LLM input shape explici
   assert.equal(candidate.issues?.[0]?.id, "iss-linked");
 });
 
+test("groupingIssueInput compacts an oversized generated-code frame without losing diagnostics", () => {
+  const headline =
+    'Internal server error: Failed to resolve import "./missing.png" from "app/feature.tsx".';
+  const stackTail = "at TransformPluginContext.error\nat normalizeUrl";
+  const generatedLine = `1 | ${"jsxDEV(path, generatedMetadata);".repeat(25_000)}`;
+  const message = `${headline}\nPlugin: vite:import-analysis\n${generatedLine}\n${stackTail}`;
+  const issue = { ...makeIssue([]), message } as schema.Issue;
+
+  const input = groupingIssueInput(issue);
+
+  assert.ok(message.length > 600_000);
+  assert.ok((input.message?.length ?? 0) <= 12_000);
+  assert.match(input.message ?? "", /Failed to resolve import/);
+  assert.match(input.message ?? "", /omitted [\d,]+ chars/);
+  assert.match(input.message ?? "", /at normalizeUrl/);
+});
+
 test("buildGroupingCandidate reads log-sample stacktraces and strips them from logAttrs", () => {
   const candidate = buildGroupingCandidate(makeIncident("inc-1"), [
     {

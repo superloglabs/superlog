@@ -58,6 +58,32 @@ export type RunGroupingAgentDeps = {
   maxIterations: number;
 };
 
+const MAX_GROUPING_CONVERSATION_CHARS = 550_000;
+const OMITTED_TOOL_RESULT =
+  "[earlier tool result omitted to keep grouping context bounded; call the tool again if needed]";
+
+function boundConversationContext(conversation: Anthropic.Messages.MessageParam[]): void {
+  if (JSON.stringify(conversation).length <= MAX_GROUPING_CONVERSATION_CHARS) return;
+
+  const priorResults: Anthropic.Messages.ToolResultBlockParam[] = [];
+  for (const turn of conversation) {
+    if (turn.role !== "user" || !Array.isArray(turn.content)) continue;
+    for (const block of turn.content) {
+      if (block.type === "tool_result" && typeof block.content === "string") {
+        priorResults.push(block);
+      }
+    }
+  }
+
+  // Preserve the newest result: it is normally the inspect the model needs
+  // for its next decision. Older results remain structurally paired with
+  // their tool calls, but their bulky payload can be fetched again if useful.
+  for (const result of priorResults.slice(0, -1)) {
+    if (JSON.stringify(conversation).length <= MAX_GROUPING_CONVERSATION_CHARS) break;
+    result.content = OMITTED_TOOL_RESULT;
+  }
+}
+
 function extractText(message: Anthropic.Messages.Message): string {
   return message.content
     .map((block) => (block.type === "text" ? block.text : ""))
@@ -76,6 +102,7 @@ export async function runGroupingAgent(
   const inspectedCandidateIds = new Set<string>();
 
   for (let iter = 0; iter < deps.maxIterations; iter++) {
+    boundConversationContext(conversation);
     const message = await deps.client.send({
       model: deps.model,
       system: GROUPING_SYSTEM_PROMPT,

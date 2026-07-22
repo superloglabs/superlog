@@ -9,6 +9,36 @@ export const MIN_EVIDENCE_LENGTH = 20;
 export const DEFAULT_SEARCH_LIMIT = 10;
 export const MAX_SEARCH_LIMIT = 25;
 export const MAX_LIST_LIMIT = 200;
+export const GROUPING_DETAIL_MESSAGE_MAX_CHARS = 12_000;
+export const GROUPING_SEARCH_MESSAGE_MAX_CHARS = 1_000;
+
+function omissionMarker(omittedChars: number): string {
+  return `\n\n[omitted ${omittedChars.toLocaleString("en-US")} chars]\n\n`;
+}
+
+// Telemetry can contain a generated source line hundreds of kilobytes long
+// (for example, a bundler code frame). Keep normal diagnostics untouched, but
+// preserve the diagnostic headline and stack tail when one sample would
+// otherwise dominate the grouping context.
+export function compactDiagnosticText(
+  text: string | null,
+  maxChars = GROUPING_DETAIL_MESSAGE_MAX_CHARS,
+): string | null {
+  if (text === null || text.length <= maxChars) return text;
+
+  let marker = omissionMarker(text.length - maxChars);
+  let available = Math.max(0, maxChars - marker.length);
+  let headChars = Math.ceil(available * 0.7);
+  let tailChars = available - headChars;
+  marker = omissionMarker(text.length - headChars - tailChars);
+  available = Math.max(0, maxChars - marker.length);
+  headChars = Math.ceil(available * 0.7);
+  tailChars = available - headChars;
+
+  return `${text.slice(0, headChars)}${omissionMarker(
+    text.length - headChars - tailChars,
+  )}${text.slice(text.length - tailChars)}`;
+}
 
 export type GroupingCandidateIssue = {
   id: string;

@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  type GroupingCandidateIncident,
   candidateIssues,
   candidateMatchesFilters,
+  compactDiagnosticText,
   endpointHostsFromText,
   endpointKind,
   environmentForResourceAttrs,
-  type GroupingCandidateIncident,
   parseDecisionToolInput,
   parseListFilters,
   parseSearchInput,
@@ -14,6 +15,12 @@ import {
   tokenize,
   uniqueSorted,
 } from "./domain.js";
+
+test("compactDiagnosticText leaves normal diagnostics byte-for-byte unchanged", () => {
+  const message = "TypeError: cannot read properties of undefined\n    at render (app.tsx:42:7)";
+  assert.equal(compactDiagnosticText(message), message);
+  assert.equal(compactDiagnosticText(null), null);
+});
 
 function makeCandidate(overrides: Partial<GroupingCandidateIncident> = {}): GroupingCandidateIncident {
   return {

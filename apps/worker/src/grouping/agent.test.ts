@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type Anthropic from "@anthropic-ai/sdk";
 import { type GroupingLLMClient, runGroupingAgent } from "./agent.js";
-import type { GroupingCandidateIncident, GroupingNewIssue } from "./domain.js";
+import {
+  type GroupingCandidateIncident,
+  type GroupingNewIssue,
+  compactDiagnosticText,
+} from "./domain.js";
 
 function makeMessage(blocks: Anthropic.Messages.ContentBlock[]): Anthropic.Messages.Message {
   return {
@@ -186,6 +190,170 @@ test("runGroupingAgent: search → inspect → decide chain", async () => {
     deps,
   );
   assert.equal(verdict.decision, "join");
+});
+
+test("runGroupingAgent: 100-candidate oversized bundler replay stays bounded and joins", async () => {
+  const headline = 'Failed to resolve import "./missing.png" from "app/cart.tsx"';
+  const oversizedMessage = `${headline}\nPlugin: vite:import-analysis\n${"generatedCall();".repeat(
+    40_000,
+  )}\nat normalizeUrl`;
+  const target = makeCandidate("target", {
+    title: headline,
+    service: "web",
+    representative: {
+      exceptionType: "Error",
+      message: oversizedMessage,
+      topFrame: "normalizeUrl",
+      normalizedFrames: ["normalizeUrl"],
+      traceId: null,
+      spanId: null,
+    },
+    issues: [
+      {
+        id: "old-issue",
+        title: headline,
+        service: "web",
+        exceptionType: "Error",
+        message: oversizedMessage,
+        topFrame: "normalizeUrl",
+        normalizedFrames: ["normalizeUrl"],
+        traceId: null,
+        spanId: null,
+        lastSeen: "2026-05-23T00:00:00Z",
+      },
+    ],
+  });
+  const candidates = [
+    target,
+    ...Array.from({ length: 99 }, (_, index) =>
+      makeCandidate(`unrelated-${index}`, {
+        title: `Unrelated failure ${index}`,
+        lastSeen: new Date(Date.UTC(2026, 4, 22, 0, index)).toISOString(),
+      }),
+    ),
+  ];
+  const requestChars: number[] = [];
+  let turn = 0;
+  const client: GroupingLLMClient = {
+    async send(input) {
+      requestChars.push(JSON.stringify(input.messages).length);
+      turn += 1;
+      if (turn === 1) {
+        return makeMessage([toolUse("search_incidents", { query: "missing.png vite" }, "search")]);
+      }
+      if (turn === 2) {
+        return makeMessage([toolUse("inspect_incident", { incident_id: "target" }, "inspect")]);
+      }
+      return makeMessage([
+        toolUse(
+          "decide_grouping",
+          {
+            decision: "join",
+            incidentId: "target",
+            evidence: "both errors are the same unresolved asset import in the same module",
+          },
+          "decide",
+        ),
+      ]);
+    },
+  };
+  const newIssue: GroupingNewIssue = {
+    ...NEW_ISSUE,
+    title: headline,
+    service: "web",
+    exceptionType: "Error",
+    message: compactDiagnosticText(oversizedMessage),
+    topFrame: "normalizeUrl",
+    normalizedFrames: ["normalizeUrl"],
+  };
+
+  const verdict = await runGroupingAgent(
+    { projectName: "p", newIssue, candidates },
+    {
+      client,
+      model: "test-model",
+      maxIterations: 5,
+      accountant: { record() {} },
+    },
+  );
+
+  assert.equal(oversizedMessage.length > 600_000, true);
+  assert.deepEqual(verdict, {
+    decision: "join",
+    incidentId: "target",
+    evidence: "both errors are the same unresolved asset import in the same module",
+  });
+  assert.equal(requestChars.length, 3);
+  assert.ok(
+    Math.max(...requestChars) < 100_000,
+    `largest request was ${Math.max(...requestChars)}`,
+  );
+});
+
+test("runGroupingAgent: repeated oversized inspections keep the conversation below 600 KB", async () => {
+  const oversizedMessage = `Build failed\n${"generatedCall();".repeat(40_000)}\nat normalizeUrl`;
+  const target = makeCandidate("target", {
+    representative: {
+      exceptionType: "Error",
+      message: oversizedMessage,
+      topFrame: "normalizeUrl",
+      normalizedFrames: ["normalizeUrl"],
+      traceId: null,
+      spanId: null,
+    },
+    issues: Array.from({ length: 5 }, (_, index) => ({
+      id: `old-issue-${index}`,
+      title: "Build failed",
+      service: "web",
+      exceptionType: "Error",
+      message: oversizedMessage,
+      topFrame: "normalizeUrl",
+      normalizedFrames: ["normalizeUrl"],
+      traceId: null,
+      spanId: null,
+      lastSeen: "2026-05-23T00:00:00Z",
+    })),
+  });
+  const requestChars: number[] = [];
+  let turn = 0;
+  const client: GroupingLLMClient = {
+    async send(input) {
+      requestChars.push(JSON.stringify(input.messages).length);
+      turn += 1;
+      if (turn <= 10) {
+        return makeMessage([
+          toolUse("inspect_incident", { incident_id: "target" }, `inspect-${turn}`),
+        ]);
+      }
+      return makeMessage([
+        toolUse(
+          "decide_grouping",
+          {
+            decision: "join",
+            incidentId: "target",
+            evidence: "the inspected diagnostics share the same failing module and stack frame",
+          },
+          "decide",
+        ),
+      ]);
+    },
+  };
+
+  const verdict = await runGroupingAgent(
+    { projectName: "p", newIssue: NEW_ISSUE, candidates: [target] },
+    {
+      client,
+      model: "test-model",
+      maxIterations: 12,
+      accountant: { record() {} },
+    },
+  );
+
+  assert.equal(verdict.decision, "join");
+  assert.ok(
+    Math.max(...requestChars) < 600_000,
+    `largest request was ${Math.max(...requestChars)}`,
+  );
 });
 
 test("runGroupingAgent: text-only fallback parses JSON verdict from text", async () => {

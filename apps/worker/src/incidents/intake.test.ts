@@ -1,7 +1,9 @@
 import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type Anthropic from "@anthropic-ai/sdk";
 import type { schema } from "@superlog/db";
+import { type GroupingLLMClient, runGroupingAgent } from "../grouping/agent.js";
 import {
   type IntakeDeps,
   type IntakeLifecycle,
@@ -909,6 +911,114 @@ test("intake: LLM 'join' verdict links to the chosen incident", async () => {
     ),
   );
   assert.ok(calls.some((c) => c.startsWith("updateIssueGrouping:iss-new:grouped:llm")));
+});
+
+test("intake replay: oversized related bundler errors reuse one incident", async () => {
+  const calls: string[] = [];
+  const headline = 'Failed to resolve import "./missing.png" from "app/cart.tsx"';
+  const oversizedMessage = `${headline}\nPlugin: vite:import-analysis\n${"generatedCall();".repeat(
+    40_000,
+  )}\nat normalizeUrl`;
+  const candidate = makeIncident({
+    id: "inc-existing",
+    title: headline,
+    service: "web",
+    issueCount: 1,
+  });
+  const repo = makeRepo({
+    calls,
+    openCandidates: { withService: [], withoutService: [candidate] },
+    incidentById: new Map([[candidate.id, candidate]]),
+    project: { id: "proj-1", orgId: "org-1", name: "Production" } as schema.Project,
+  });
+  repo.loadLinkedIncidentIssues = async () => [
+    {
+      incidentId: candidate.id,
+      issueId: "iss-existing",
+      service: "web",
+      title: headline,
+      exceptionType: "Error",
+      message: oversizedMessage,
+      topFrame: "normalizeUrl",
+      normalizedFrames: ["normalizeUrl"],
+      lastSample: null,
+      lastSeen: NOW,
+    },
+  ];
+  const requestChars: number[] = [];
+  let turn = 0;
+  const client: GroupingLLMClient = {
+    async send(input) {
+      requestChars.push(JSON.stringify(input.messages).length);
+      turn += 1;
+      const content =
+        turn === 1
+          ? [
+              {
+                type: "tool_use",
+                id: "inspect",
+                name: "inspect_incident",
+                input: { incident_id: candidate.id },
+              },
+            ]
+          : [
+              {
+                type: "tool_use",
+                id: "decide",
+                name: "decide_grouping",
+                input: {
+                  decision: "join",
+                  incidentId: candidate.id,
+                  evidence: "both failures are the same unresolved asset import in the same module",
+                },
+              },
+            ];
+      return {
+        content,
+        usage: { input_tokens: 10, output_tokens: 5 },
+      } as unknown as Anthropic.Messages.Message;
+    },
+  };
+
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue({
+      service: "web",
+      exceptionType: "Error",
+      title: headline,
+      message: oversizedMessage,
+      topFrame: "normalizeUrl",
+      normalizedFrames: [],
+    }),
+    "new",
+    makeDeps({
+      repo,
+      lifecycle: makeLifecycle({ calls }),
+      calls,
+      async analyzeGrouping(input) {
+        assert.ok((input.newIssue.message?.length ?? 0) <= 12_000);
+        return runGroupingAgent(
+          {
+            projectName: input.projectName,
+            newIssue: input.newIssue,
+            candidates: input.candidates,
+          },
+          {
+            client,
+            model: "test-model",
+            maxIterations: 3,
+            accountant: { record() {} },
+          },
+        );
+      },
+    }),
+  );
+
+  assert.ok(oversizedMessage.length > 600_000);
+  assert.equal(result.createdIncident, false);
+  assert.equal(result.incident.id, candidate.id);
+  assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-existing"));
+  assert.ok(!calls.some((call) => call.startsWith("createOpen:")));
+  assert.ok(Math.max(...requestChars) < 100_000);
 });
 
 test("intake: LLM 'join' verdict with unknown id falls back to standalone (and opens new incident)", async () => {
