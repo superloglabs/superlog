@@ -55,6 +55,9 @@
     "resend": "^6.12.3",
     "zod": "^4.4.3"
   },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "devDependencies": {
     "@types/node": "^22.10.1",
     "tsx": "^4.19.2",
