@@ -359,17 +359,19 @@ function isGithubRepoEnabled(repoAccess: GithubRepoAccess, repoId: number): bool
 export async function listAccessibleGithubRepositories(
   // Only the installs are needed — chats (no incident) share this path.
   ctx: Pick<AgentRunContext, "githubInstalls">,
-  deps: {
-    listInstallationRepositories: typeof listInstallationRepositories;
-  } = { listInstallationRepositories },
+  options: {
+    toleratePartialFailure?: boolean;
+    listInstallationRepositories?: typeof listInstallationRepositories;
+  } = {},
 ): Promise<InstalledGithubRepo[]> {
+  const listRepositories = options.listInstallationRepositories ?? listInstallationRepositories;
   const results = await Promise.all(
     ctx.githubInstalls
       .filter(({ installation }) => installation.agentEnabled)
       .map(async ({ installation, allowedRepoIds }) => {
         try {
           const repoAccess = normalizeGithubRepoAccess(installation.repoAccess);
-          const repos = await deps.listInstallationRepositories(installation.installationId);
+          const repos = await listRepositories(installation.installationId);
           const grantSet = allowedRepoIds === null ? null : new Set(allowedRepoIds);
           return {
             repos: repos
@@ -393,7 +395,10 @@ export async function listAccessibleGithubRepositories(
   );
 
   const repos = dedupeInstalledGithubRepos(results.flatMap((result) => result.repos));
-  if (repos.length === 0 && results.length > 0 && results.every((result) => result.err)) {
+  const failedEnoughToAbort = options.toleratePartialFailure
+    ? results.every((result) => result.err)
+    : results.some((result) => result.err);
+  if (repos.length === 0 && results.length > 0 && failedEnoughToAbort) {
     const firstError = results.find((result) => result.err)?.err;
     throw firstError instanceof Error
       ? firstError

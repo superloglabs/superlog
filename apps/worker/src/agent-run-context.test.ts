@@ -200,6 +200,43 @@ test("repository discovery surfaces failure when every enabled installation erro
   );
 });
 
+test("repository lookup surfaces a partial failure when successful installs have no usable repos", async () => {
+  const githubUnavailable = new Error("github returned 503");
+  const githubInstalls = [
+    {
+      installation: {
+        installationId: 101,
+        agentEnabled: true,
+        repoAccess: { disabledRepoIds: [42] },
+      } as schema.GithubInstallation,
+      allowedRepoIds: null,
+    },
+    {
+      installation: {
+        installationId: 202,
+        agentEnabled: true,
+        repoAccess: null,
+      } as schema.GithubInstallation,
+      allowedRepoIds: null,
+    },
+  ];
+
+  await assert.rejects(
+    listAccessibleGithubRepositories(
+      { githubInstalls },
+      {
+        listInstallationRepositories: async (installationId) => {
+          if (installationId === 101) {
+            return [{ id: 42, fullName: "acme/disabled", private: true }];
+          }
+          throw githubUnavailable;
+        },
+      },
+    ),
+    githubUnavailable,
+  );
+});
+
 test("repository discovery tolerates a partial failure when another enabled install succeeds", async () => {
   const githubUnavailable = new Error("github returned 503");
   const githubInstalls = [
@@ -224,6 +261,7 @@ test("repository discovery tolerates a partial failure when another enabled inst
   const repositories = await listAccessibleGithubRepositories(
     { githubInstalls },
     {
+      toleratePartialFailure: true,
       listInstallationRepositories: async (installationId) => {
         if (installationId === 101) {
           return [{ id: 42, fullName: "acme/disabled", private: true }];
