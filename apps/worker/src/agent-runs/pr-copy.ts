@@ -24,7 +24,9 @@ export function buildPrTitle(opts: {
   pr: PrCopyPr;
 }): string {
   const explicit = opts.pr.title?.trim();
-  if (explicit) return withSuperlogPrefix(explicit);
+  // The explicit title already reflects repository and organization guidance;
+  // delivery must not silently override required or forbidden conventions.
+  if (explicit) return explicit;
   const proposed = opts.result.proposedTitle?.trim();
   if (proposed) return withSuperlogPrefix(proposed);
   return withSuperlogPrefix(opts.ctx.incident.title);

@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildPrBody, buildPrTitle } from "./pr-copy.js";
 
-test("buildPrTitle prefers explicit PR title and keeps a single superlog prefix", () => {
+test("buildPrTitle preserves an explicit PR title with repository conventions", () => {
   const title = buildPrTitle({
     ctx: { incident: { id: "inc-1", title: "API returns 403" } },
     result: { summary: "summary", proposedTitle: "Allow members to access projects" },
-    pr: { title: "[superlog] Allow members to access projects outside the active org" },
+    pr: { title: "fix(auth): allow members to access projects #SUPERLOG" },
   });
 
-  assert.equal(title, "[superlog] Allow members to access projects outside the active org");
+  assert.equal(title, "fix(auth): allow members to access projects #SUPERLOG");
 });
 
 test("buildPrTitle falls back to proposedTitle without adding Fix to the incident title", () => {
