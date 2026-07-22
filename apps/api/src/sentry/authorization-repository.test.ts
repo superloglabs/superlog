@@ -1,5 +1,6 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { after, before, test } from "node:test";
 import { closeDb, db, runMigrations, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
@@ -9,6 +10,7 @@ import { SentryAuthorizationError } from "./authorization-session.js";
 import { mountSentryInstallationAuthed } from "./installation.js";
 
 process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
+process.env.AGENT_SECRETS_KEY ||= randomBytes(32).toString("base64");
 
 const orgIds: string[] = [];
 const userIds: string[] = [];
