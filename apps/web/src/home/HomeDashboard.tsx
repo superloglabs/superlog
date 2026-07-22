@@ -225,7 +225,7 @@ function HomeGrid({
           width={width}
           layout={layout}
           gridConfig={GRID_CONFIG}
-          dragConfig={{ enabled: customizing, handle: ".home-widget-handle" }}
+          dragConfig={{ enabled: customizing, handle: ".home-widget-drag-handle" }}
           resizeConfig={{ enabled: customizing }}
           compactor={verticalCompactor}
           onLayoutChange={handleLayoutChange}
@@ -270,8 +270,31 @@ function HomeItemTile({
         customizing ? "border-accent/50" : "border-border"
       }`}
     >
-      <div className="home-widget-handle flex min-h-11 items-center justify-between gap-3 border-b border-border px-4">
-        <h2 className="truncate text-[13px] font-medium text-fg">{widget.title}</h2>
+      <div className="flex min-h-11 items-center justify-between gap-3 border-b border-border px-4">
+        <div className="flex min-w-0 items-center gap-2">
+          {customizing && (
+            <span
+              className="home-widget-drag-handle -ml-1 grid h-7 w-5 shrink-0 cursor-grab place-items-center rounded-md text-subtle hover:bg-hover hover:text-fg active:cursor-grabbing"
+              title="Drag to move"
+            >
+              <svg
+                aria-hidden="true"
+                width="12"
+                height="18"
+                viewBox="0 0 12 18"
+                fill="currentColor"
+              >
+                <circle cx="3" cy="4" r="1.25" />
+                <circle cx="9" cy="4" r="1.25" />
+                <circle cx="3" cy="9" r="1.25" />
+                <circle cx="9" cy="9" r="1.25" />
+                <circle cx="3" cy="14" r="1.25" />
+                <circle cx="9" cy="14" r="1.25" />
+              </svg>
+            </span>
+          )}
+          <h2 className="truncate text-[13px] font-medium text-fg">{widget.title}</h2>
+        </div>
         {customizing && (
           <button
             type="button"

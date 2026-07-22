@@ -29,9 +29,9 @@ test("a new project home starts with the three operational pulse widgets", () =>
   assert.deepEqual(
     widgets.slice(1).map((widget) => widget.layout),
     [
-      { x: 0, y: 5, w: 4, h: 5 },
-      { x: 4, y: 5, w: 4, h: 5 },
-      { x: 8, y: 5, w: 4, h: 5 },
+      { x: 0, y: 0, w: 4, h: 5 },
+      { x: 4, y: 0, w: 4, h: 5 },
+      { x: 8, y: 0, w: 4, h: 5 },
     ],
   );
 });

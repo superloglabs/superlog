@@ -1,6 +1,12 @@
 import { db, schema } from "@superlog/db";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, lt } from "drizzle-orm";
 import { z } from "zod";
+import {
+  CURRENT_HOME_LAYOUT_VERSION,
+  type HomePulseRowType,
+  homePulseRowLayout,
+  planHomePulseRowUpgrade,
+} from "./home-layout-upgrade.js";
 
 export const dashboardWidgetTypeSchema = z.enum([
   "timeseries_count",
@@ -81,11 +87,11 @@ export function defaultWidgetLayout(type: DashboardWidgetType): DashboardWidgetL
     case "service_map":
       return { x: 6, y: 5, w: 6, h: 8 };
     case "incoming_signals":
-      return { x: 0, y: 5, w: 4, h: 5 };
+      return homePulseRowLayout("incoming_signals");
     case "incident_count":
-      return { x: 4, y: 5, w: 4, h: 5 };
+      return homePulseRowLayout("incident_count");
     case "agent_pull_requests":
-      return { x: 8, y: 5, w: 4, h: 5 };
+      return homePulseRowLayout("agent_pull_requests");
     case "trace_table":
     case "log_table":
       return { x: 0, y: 9999, w: 12, h: 6 };
@@ -310,6 +316,9 @@ export async function getOrCreateHomeDashboard(
     where: and(eq(schema.dashboards.projectId, projectId), eq(schema.dashboards.isHome, true)),
   });
   if (existing) {
+    if (existing.homeLayoutVersion < CURRENT_HOME_LAYOUT_VERSION) {
+      return upgradeHomeDashboard(existing.id);
+    }
     const widgets = await db.query.dashboardWidgets.findMany({
       where: eq(schema.dashboardWidgets.dashboardId, existing.id),
       orderBy: [asc(schema.dashboardWidgets.position)],
@@ -325,6 +334,7 @@ export async function getOrCreateHomeDashboard(
         name: "Home",
         slug: "__home__",
         isHome: true,
+        homeLayoutVersion: CURRENT_HOME_LAYOUT_VERSION,
         createdBy: userId,
       })
       .onConflictDoNothing()
@@ -352,6 +362,71 @@ export async function getOrCreateHomeDashboard(
 
     const widgets = await tx.query.dashboardWidgets.findMany({
       where: eq(schema.dashboardWidgets.dashboardId, home.id),
+      orderBy: [asc(schema.dashboardWidgets.position)],
+    });
+    return { ...home, widgets };
+  });
+}
+
+async function upgradeHomeDashboard(
+  dashboardId: string,
+): Promise<schema.Dashboard & { widgets: schema.DashboardWidget[] }> {
+  return db.transaction(async (tx) => {
+    const upgraded = await tx
+      .update(schema.dashboards)
+      .set({ homeLayoutVersion: CURRENT_HOME_LAYOUT_VERSION, updatedAt: new Date() })
+      .where(
+        and(
+          eq(schema.dashboards.id, dashboardId),
+          lt(schema.dashboards.homeLayoutVersion, CURRENT_HOME_LAYOUT_VERSION),
+        ),
+      )
+      .returning();
+
+    if (upgraded[0]) {
+      const widgets = await tx.query.dashboardWidgets.findMany({
+        where: eq(schema.dashboardWidgets.dashboardId, dashboardId),
+        orderBy: [asc(schema.dashboardWidgets.position)],
+      });
+      const plan = planHomePulseRowUpgrade(widgets);
+
+      for (const update of plan.layoutUpdates) {
+        await tx
+          .update(schema.dashboardWidgets)
+          .set({ layout: update.layout, updatedAt: new Date() })
+          .where(
+            and(
+              eq(schema.dashboardWidgets.id, update.id),
+              eq(schema.dashboardWidgets.dashboardId, dashboardId),
+            ),
+          );
+      }
+
+      if (plan.missingTypes.length > 0) {
+        const nextPosition =
+          widgets.reduce((max, widget) => Math.max(max, widget.position), -1) + 1;
+        await tx.insert(schema.dashboardWidgets).values(
+          plan.missingTypes.map((type: HomePulseRowType, index) => {
+            const definition = homeBuiltinDefinition(type);
+            return {
+              dashboardId,
+              type: definition.type,
+              title: definition.title,
+              config: definition.config,
+              layout: homePulseRowLayout(type),
+              position: nextPosition + index,
+            };
+          }),
+        );
+      }
+    }
+
+    const home =
+      upgraded[0] ??
+      (await tx.query.dashboards.findFirst({ where: eq(schema.dashboards.id, dashboardId) }));
+    if (!home) throw new Error("home dashboard disappeared during layout upgrade");
+    const widgets = await tx.query.dashboardWidgets.findMany({
+      where: eq(schema.dashboardWidgets.dashboardId, dashboardId),
       orderBy: [asc(schema.dashboardWidgets.position)],
     });
     return { ...home, widgets };

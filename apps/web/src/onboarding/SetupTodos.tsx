@@ -75,9 +75,7 @@ function isStatsZero(stats: Stats | undefined): boolean {
   return stats.traces + stats.logs + stats.metrics === 0;
 }
 
-export function setupSignalsSettled(
-  signals: Array<{ data: unknown; error: unknown }>,
-): boolean {
+export function setupSignalsSettled(signals: Array<{ data: unknown; error: unknown }>): boolean {
   return signals.every((signal) => signal.data !== undefined || signal.error != null);
 }
 
@@ -113,6 +111,7 @@ export function SetupTodos({ projectId }: { projectId: string }) {
   const mcpConnected = mcp.data?.connected === true;
 
   const todos = buildTodos({ githubConnected, slackConnected, hasEvents, mcpConnected });
+  if (todos.length === 0) return null;
 
   // The stepper covers the four auto-detected setup steps. Each flips when its
   // underlying signal does — events arriving, GitHub install, Slack install,
