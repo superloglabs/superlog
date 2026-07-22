@@ -356,6 +356,110 @@ test("runGroupingAgent: repeated oversized inspections keep the conversation bel
   );
 });
 
+test("runGroupingAgent: an omitted inspection must be repeated before joining", async () => {
+  const oversizedMessage = `Build failed\n${"generatedCall();".repeat(40_000)}\nat normalizeUrl`;
+  const oversizedCandidate = (id: string) =>
+    makeCandidate(id, {
+      representative: {
+        exceptionType: "Error",
+        message: oversizedMessage,
+        topFrame: "normalizeUrl",
+        normalizedFrames: ["normalizeUrl"],
+        traceId: null,
+        spanId: null,
+      },
+      issues: Array.from({ length: 5 }, (_, index) => ({
+        id: `${id}-issue-${index}`,
+        title: "Build failed",
+        service: "web",
+        exceptionType: "Error",
+        message: oversizedMessage,
+        topFrame: "normalizeUrl",
+        normalizedFrames: ["normalizeUrl"],
+        traceId: null,
+        spanId: null,
+        lastSeen: "2026-05-23T00:00:00Z",
+      })),
+    });
+  const oldTarget = oversizedCandidate("old-target");
+  const recentTarget = oversizedCandidate("recent-target");
+  let turn = 0;
+  let sawReinspectionError = false;
+  const client: GroupingLLMClient = {
+    async send(input) {
+      turn += 1;
+      if (turn === 1) {
+        return makeMessage([
+          toolUse("inspect_incident", { incident_id: oldTarget.id }, "inspect-old"),
+        ]);
+      }
+      if (turn <= 10) {
+        return makeMessage([
+          toolUse(
+            "inspect_incident",
+            { incident_id: recentTarget.id },
+            `inspect-recent-${turn}`,
+          ),
+        ]);
+      }
+      if (turn === 11) {
+        return makeMessage([
+          toolUse(
+            "decide_grouping",
+            {
+              decision: "join",
+              incidentId: oldTarget.id,
+              evidence: "the old target originally showed the same module and stack frame",
+            },
+            "premature-decide",
+          ),
+        ]);
+      }
+      if (turn === 12) {
+        sawReinspectionError = JSON.stringify(input.messages).includes(
+          "Before joining, call inspect_incident",
+        );
+        return makeMessage([
+          toolUse("inspect_incident", { incident_id: oldTarget.id }, "reinspect-old"),
+        ]);
+      }
+      return makeMessage([
+        toolUse(
+          "decide_grouping",
+          {
+            decision: "join",
+            incidentId: oldTarget.id,
+            evidence: "the refreshed inspection shows the same module and stack frame",
+          },
+          "final-decide",
+        ),
+      ]);
+    },
+  };
+
+  const verdict = await runGroupingAgent(
+    {
+      projectName: "p",
+      newIssue: NEW_ISSUE,
+      candidates: [oldTarget, recentTarget],
+    },
+    {
+      client,
+      model: "test-model",
+      maxIterations: 14,
+      accountant: { record() {} },
+    },
+  );
+
+  assert.equal(turn, 13);
+  assert.equal(sawReinspectionError, true);
+  assert.deepEqual(verdict, {
+    decision: "join",
+    incidentId: oldTarget.id,
+    evidence: "the refreshed inspection shows the same module and stack frame",
+  });
+});
+
 test("runGroupingAgent: text-only fallback parses JSON verdict from text", async () => {
   const deps = makeDeps([
     [

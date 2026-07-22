@@ -62,8 +62,10 @@ const MAX_GROUPING_CONVERSATION_CHARS = 550_000;
 const OMITTED_TOOL_RESULT =
   "[earlier tool result omitted to keep grouping context bounded; call the tool again if needed]";
 
-function boundConversationContext(conversation: Anthropic.Messages.MessageParam[]): void {
-  if (JSON.stringify(conversation).length <= MAX_GROUPING_CONVERSATION_CHARS) return;
+function boundConversationContext(
+  conversation: Anthropic.Messages.MessageParam[],
+): string[] {
+  if (JSON.stringify(conversation).length <= MAX_GROUPING_CONVERSATION_CHARS) return [];
 
   const priorResults: Anthropic.Messages.ToolResultBlockParam[] = [];
   for (const turn of conversation) {
@@ -78,10 +80,14 @@ function boundConversationContext(conversation: Anthropic.Messages.MessageParam[
   // Preserve the newest result: it is normally the inspect the model needs
   // for its next decision. Older results remain structurally paired with
   // their tool calls, but their bulky payload can be fetched again if useful.
+  const omittedToolUseIds: string[] = [];
   for (const result of priorResults.slice(0, -1)) {
     if (JSON.stringify(conversation).length <= MAX_GROUPING_CONVERSATION_CHARS) break;
+    if (result.content === OMITTED_TOOL_RESULT) continue;
     result.content = OMITTED_TOOL_RESULT;
+    omittedToolUseIds.push(result.tool_use_id);
   }
+  return omittedToolUseIds;
 }
 
 function extractText(message: Anthropic.Messages.Message): string {
@@ -99,10 +105,22 @@ export async function runGroupingAgent(
   const conversation: Anthropic.Messages.MessageParam[] = [
     { role: "user", content: buildInitialUserMessage(input) },
   ];
-  const inspectedCandidateIds = new Set<string>();
+  const inspectionState = {
+    visibleCandidateIds: new Set<string>(),
+    candidateByToolUseId: new Map<string, string>(),
+    latestToolUseIdByCandidate: new Map<string, string>(),
+  };
 
   for (let iter = 0; iter < deps.maxIterations; iter++) {
-    boundConversationContext(conversation);
+    for (const toolUseId of boundConversationContext(conversation)) {
+      const incidentId = inspectionState.candidateByToolUseId.get(toolUseId);
+      if (
+        incidentId &&
+        inspectionState.latestToolUseIdByCandidate.get(incidentId) === toolUseId
+      ) {
+        inspectionState.visibleCandidateIds.delete(incidentId);
+      }
+    }
     const message = await deps.client.send({
       model: deps.model,
       system: GROUPING_SYSTEM_PROMPT,
@@ -149,7 +167,7 @@ export async function runGroupingAgent(
     let terminal: GroupingVerdict | null = null;
 
     for (const toolUse of toolUses) {
-      const dispatch = dispatchTool(toolUse, input.candidates, candidateIds, inspectedCandidateIds);
+      const dispatch = dispatchTool(toolUse, input.candidates, candidateIds, inspectionState);
       if (dispatch.kind === "terminal") {
         terminal = dispatch.verdict;
         break;
@@ -172,15 +190,21 @@ type DispatchResult =
   | { kind: "terminal"; verdict: GroupingVerdict }
   | { kind: "continue"; result: Anthropic.Messages.ToolResultBlockParam };
 
+type InspectionState = {
+  visibleCandidateIds: Set<string>;
+  candidateByToolUseId: Map<string, string>;
+  latestToolUseIdByCandidate: Map<string, string>;
+};
+
 function dispatchTool(
   toolUse: Anthropic.Messages.ToolUseBlock,
   candidates: GroupingCandidateIncident[],
   candidateIds: ReadonlySet<string>,
-  inspectedCandidateIds: Set<string>,
+  inspectionState: InspectionState,
 ): DispatchResult {
   switch (toolUse.name) {
     case "decide_grouping":
-      return dispatchDecide(toolUse, candidateIds, inspectedCandidateIds);
+      return dispatchDecide(toolUse, candidateIds, inspectionState.visibleCandidateIds);
     case "search_incidents":
       return {
         kind: "continue",
@@ -214,7 +238,11 @@ function dispatchTool(
           ? (toolUse.input as Record<string, unknown>)
           : {};
       const incidentId = typeof obj.incident_id === "string" ? obj.incident_id : "";
-      if (candidateIds.has(incidentId)) inspectedCandidateIds.add(incidentId);
+      if (candidateIds.has(incidentId)) {
+        inspectionState.visibleCandidateIds.add(incidentId);
+        inspectionState.candidateByToolUseId.set(toolUse.id, incidentId);
+        inspectionState.latestToolUseIdByCandidate.set(incidentId, toolUse.id);
+      }
       return {
         kind: "continue",
         result: {
