@@ -5,6 +5,7 @@ import type {
   InstalledGithubRepo,
   ScoredGithubRepo,
 } from "../agent-run-context.js";
+import { PartialGithubRepoDiscoveryError } from "../agent-run-context.js";
 import type { AgentRunLifecycle } from "../agent-run.js";
 import type {
   AgentRunnerBackend,
@@ -186,6 +187,17 @@ async function discoverAccessibleRepositories(
   try {
     repos = await deps.listRepositories(ctx);
   } catch (err) {
+    if (err instanceof PartialGithubRepoDiscoveryError) {
+      logger.warn(
+        {
+          err,
+          agent_run_id: ctx.agentRun.id,
+          incident_id: ctx.incident.id,
+        },
+        "repository discovery partially unavailable; will retry on the next sweep",
+      );
+      return null;
+    }
     await deps.fail(
       ctx,
       "github_repo_discovery_failed",

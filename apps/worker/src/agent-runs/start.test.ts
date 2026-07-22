@@ -2,7 +2,11 @@ import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { schema } from "@superlog/db";
-import type { AgentRunContext, InstalledGithubRepo } from "../agent-run-context.js";
+import {
+  type AgentRunContext,
+  type InstalledGithubRepo,
+  PartialGithubRepoDiscoveryError,
+} from "../agent-run-context.js";
 import type { AgentRunnerBackend, AgentRunnerStartInput } from "../agent-runner-backend.js";
 import { type StartQueuedAgentRunDeps, startQueuedAgentRunWorkflow } from "./start.js";
 
@@ -81,6 +85,24 @@ test("startQueuedAgentRunWorkflow blocks before repo discovery when GitHub is no
     "getRunnerBackend",
     "blockForGithub:no_github_install:Investigation blocked: no GitHub App install for this project.",
   ]);
+});
+
+test("startQueuedAgentRunWorkflow leaves a partial GitHub failure active for the next sweep", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+
+  await startQueuedAgentRunWorkflow(
+    ctx,
+    makeDeps(calls, {
+      async listRepositories() {
+        calls.push("listRepositories");
+        throw new PartialGithubRepoDiscoveryError(new Error("github returned 503"));
+      },
+    }),
+  );
+
+  assert.deepEqual(calls, ["beginRepoDiscovery", "getRunnerBackend", "listRepositories"]);
+  assert.equal(ctx.agentRun.state, "repo_discovery");
 });
 
 test("startQueuedAgentRunWorkflow asks for human repo selection when scoring produces no candidates", async () => {

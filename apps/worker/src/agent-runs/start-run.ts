@@ -29,8 +29,7 @@ export async function startQueuedAgentRun(ctx: AgentRunContext): Promise<void> {
   await startQueuedAgentRunWorkflow(ctx, {
     lifecycle: agentRunLifecycle,
     getRunnerBackend: getAgentRunnerBackend,
-    listRepositories: (ctx) =>
-      listAccessibleGithubRepositories(ctx, { toleratePartialFailure: true }),
+    listRepositories: listAccessibleGithubRepositories,
     scoreRepositories: scoreRepos,
     createRepositoryReadToken,
     listRepositoryInstructionFiles,

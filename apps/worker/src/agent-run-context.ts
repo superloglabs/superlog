@@ -23,6 +23,15 @@ export type InstalledGithubRepo = {
   installation: schema.GithubInstallation;
 };
 
+export class PartialGithubRepoDiscoveryError extends Error {
+  constructor(cause: unknown) {
+    super("some GitHub installations failed before repository access could be determined", {
+      cause,
+    });
+    this.name = "PartialGithubRepoDiscoveryError";
+  }
+}
+
 type GithubRepoAccess = {
   disabledRepoIds?: number[];
 };
@@ -360,7 +369,6 @@ export async function listAccessibleGithubRepositories(
   // Only the installs are needed — chats (no incident) share this path.
   ctx: Pick<AgentRunContext, "githubInstalls">,
   options: {
-    toleratePartialFailure?: boolean;
     listInstallationRepositories?: typeof listInstallationRepositories;
   } = {},
 ): Promise<InstalledGithubRepo[]> {
@@ -395,11 +403,12 @@ export async function listAccessibleGithubRepositories(
   );
 
   const repos = dedupeInstalledGithubRepos(results.flatMap((result) => result.repos));
-  const failedEnoughToAbort = options.toleratePartialFailure
-    ? results.every((result) => result.err)
-    : results.some((result) => result.err);
-  if (repos.length === 0 && results.length > 0 && failedEnoughToAbort) {
+  const errors = results.filter((result) => result.err);
+  if (repos.length === 0 && errors.length > 0) {
     const firstError = results.find((result) => result.err)?.err;
+    if (errors.length < results.length) {
+      throw new PartialGithubRepoDiscoveryError(firstError);
+    }
     throw firstError instanceof Error
       ? firstError
       : new Error("failed to list repositories for all GitHub installations");
