@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToString } from "react-dom/server";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import {
   appLocationFromProjectRoute,
   appPathFromProjectRoute,
@@ -133,9 +136,47 @@ test("scoped browser locations are translated back to app routes", () => {
       hash: "#latency",
     }),
     {
-      pathname: "/dashboards/dashboard-1",
+      pathname: "/app/dashboards/dashboard-1",
       search: "?range=1h",
       hash: "#latency",
     },
+  );
+});
+
+test("scoped project locations can render inside the /app route boundary", () => {
+  const browserPath = "/app/org/superlog/project/demo-project/settings";
+  const productLocation = appLocationFromProjectRoute({
+    pathname: browserPath,
+    search: "",
+    hash: "",
+  });
+
+  function ProductRoutes() {
+    return createElement(
+      Routes,
+      { location: productLocation },
+      createElement(Route, {
+        path: "settings",
+        element: createElement("p", null, "Project settings"),
+      }),
+    );
+  }
+
+  assert.match(
+    renderToString(
+      createElement(
+        MemoryRouter,
+        { initialEntries: [browserPath] },
+        createElement(
+          Routes,
+          null,
+          createElement(Route, {
+            path: "/app/*",
+            element: createElement(ProductRoutes),
+          }),
+        ),
+      ),
+    ),
+    /Project settings/,
   );
 });

@@ -35,9 +35,13 @@ export function canonicalProjectLocation(
 }
 
 export function appLocationFromProjectRoute(location: ProjectRouteLocation): ProjectRouteLocation {
+  const appPath = appPathFromProjectRoute(location.pathname);
   return {
     ...location,
-    pathname: appPathFromProjectRoute(location.pathname),
+    // This location is consumed by a descendant <Routes> below the top-level
+    // /app/* route. React Router requires an overridden location to retain the
+    // already-matched parent pathname base; only the project scope is virtual.
+    pathname: appPath === "/" ? "/app" : `/app${appPath}`,
   };
 }
 

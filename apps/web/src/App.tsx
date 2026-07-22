@@ -225,18 +225,18 @@ function AuthenticatedApp() {
         >
           <RouteContainer>
             <Routes location={appLocation}>
-              <Route path="/explore/*" element={<Explore />} />
-              <Route path="/incidents" element={<Issues />} />
-              <Route path="/incidents/:id" element={<Issues />} />
-              <Route path="/issues" element={<Issues />} />
-              <Route path="/issues/:id" element={<Issues />} />
-              <Route path="/alerts" element={<AlertsList />} />
-              <Route path="/alerts/new" element={<AlertEdit />} />
-              <Route path="/alerts/:id" element={<AlertEdit />} />
-              <Route path="/dashboards" element={<DashboardsList />} />
-              <Route path="/dashboards/:id" element={<DashboardView />} />
+              <Route path="explore/*" element={<Explore />} />
+              <Route path="incidents" element={<Issues />} />
+              <Route path="incidents/:id" element={<Issues />} />
+              <Route path="issues" element={<Issues />} />
+              <Route path="issues/:id" element={<Issues />} />
+              <Route path="alerts" element={<AlertsList />} />
+              <Route path="alerts/new" element={<AlertEdit />} />
+              <Route path="alerts/:id" element={<AlertEdit />} />
+              <Route path="dashboards" element={<DashboardsList />} />
+              <Route path="dashboards/:id" element={<DashboardView />} />
               <Route
-                path="/anomaly-scanner"
+                path="anomaly-scanner"
                 element={
                   me.data?.features?.anomalyScanner === true ? (
                     <AnomalyScanner />
@@ -246,7 +246,7 @@ function AuthenticatedApp() {
                 }
               />
               <Route
-                path="/anomaly-scanner/scans/:scanId"
+                path="anomaly-scanner/scans/:scanId"
                 element={
                   me.data?.features?.anomalyScanner === true ? (
                     <AnomalyScanDetail />
@@ -255,7 +255,7 @@ function AuthenticatedApp() {
                   )
                 }
               />
-              <Route path="/settings" element={<Settings />} />
+              <Route path="settings" element={<Settings />} />
               <Route path="*" element={<Overview />} />
             </Routes>
           </RouteContainer>
