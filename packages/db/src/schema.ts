@@ -2122,6 +2122,9 @@ export const dashboards = pgTable(
     name: text("name").notNull(),
     slug: text("slug").notNull(),
     isHome: boolean("is_home").notNull().default(false),
+    // Inert compatibility tombstone for the completed one-time home-layout
+    // backfill. Runtime code does not read or write it. Keep the declaration
+    // while dashboard queries select full rows and migrations run pre-deploy.
     homeLayoutVersion: integer("home_layout_version").notNull().default(0),
     variables: jsonb("variables").$type<DashboardVariable[]>().notNull().default(sql`'[]'::jsonb`),
     createdBy: uuid("created_by")
