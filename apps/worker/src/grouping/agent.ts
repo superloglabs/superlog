@@ -67,21 +67,24 @@ function boundConversationContext(
 ): string[] {
   if (JSON.stringify(conversation).length <= MAX_GROUPING_CONVERSATION_CHARS) return [];
 
-  const priorResults: Anthropic.Messages.ToolResultBlockParam[] = [];
+  const resultTurns: Anthropic.Messages.ToolResultBlockParam[][] = [];
   for (const turn of conversation) {
     if (turn.role !== "user" || !Array.isArray(turn.content)) continue;
+    const turnResults: Anthropic.Messages.ToolResultBlockParam[] = [];
     for (const block of turn.content) {
       if (block.type === "tool_result" && typeof block.content === "string") {
-        priorResults.push(block);
+        turnResults.push(block);
       }
     }
+    if (turnResults.length > 0) resultTurns.push(turnResults);
   }
 
-  // Preserve the newest result: it is normally the inspect the model needs
-  // for its next decision. Older results remain structurally paired with
-  // their tool calls, but their bulky payload can be fetched again if useful.
+  // Preserve every result from the newest tool turn: the model has not seen
+  // any of them yet. Older results remain structurally paired with their tool
+  // calls, but their bulky payload can be fetched again if useful.
+  const priorResults = resultTurns.slice(0, -1).flat();
   const omittedToolUseIds: string[] = [];
-  for (const result of priorResults.slice(0, -1)) {
+  for (const result of priorResults) {
     if (JSON.stringify(conversation).length <= MAX_GROUPING_CONVERSATION_CHARS) break;
     if (result.content === OMITTED_TOOL_RESULT) continue;
     result.content = OMITTED_TOOL_RESULT;

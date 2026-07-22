@@ -460,6 +460,84 @@ test("runGroupingAgent: an omitted inspection must be repeated before joining", 
   });
 });
 
+test("runGroupingAgent: preserves every inspection result from the latest tool turn", async () => {
+  const oversizedMessage = `Build failed\n${"generatedCall();".repeat(40_000)}\nat normalizeUrl`;
+  const candidates = Array.from({ length: 8 }, (_, candidateIndex) =>
+    makeCandidate(`target-${candidateIndex}`, {
+      representative: {
+        exceptionType: "Error",
+        message: oversizedMessage,
+        topFrame: "normalizeUrl",
+        normalizedFrames: ["normalizeUrl"],
+        traceId: null,
+        spanId: null,
+      },
+      issues: Array.from({ length: 5 }, (_, issueIndex) => ({
+        id: `target-${candidateIndex}-issue-${issueIndex}`,
+        title: "Build failed",
+        service: "web",
+        exceptionType: "Error",
+        message: oversizedMessage,
+        topFrame: "normalizeUrl",
+        normalizedFrames: ["normalizeUrl"],
+        traceId: null,
+        spanId: null,
+        lastSeen: "2026-05-23T00:00:00Z",
+      })),
+    }),
+  );
+  let turn = 0;
+  let latestResultsWereVisible = false;
+  let latestRequestChars = 0;
+  const client: GroupingLLMClient = {
+    async send(input) {
+      turn += 1;
+      if (turn === 1) {
+        return makeMessage(
+          candidates.map((candidate, index) =>
+            toolUse("inspect_incident", { incident_id: candidate.id }, `inspect-${index}`),
+          ),
+        );
+      }
+
+      const messages = JSON.stringify(input.messages);
+      latestRequestChars = messages.length;
+      latestResultsWereVisible = candidates.every(
+        (_, index) =>
+          messages.includes(`target-${index}-issue-4`) &&
+          !messages.includes(
+            `\"tool_use_id\":\"inspect-${index}\",\"content\":\"[earlier tool result omitted`,
+          ),
+      );
+      return makeMessage([
+        toolUse(
+          "decide_grouping",
+          { decision: "standalone", evidence: "The inspected incidents are unrelated" },
+          "decide",
+        ),
+      ]);
+    },
+  };
+
+  const verdict = await runGroupingAgent(
+    { projectName: "p", newIssue: NEW_ISSUE, candidates },
+    {
+      client,
+      model: "test-model",
+      maxIterations: 3,
+      accountant: { record() {} },
+    },
+  );
+
+  assert.equal(latestResultsWereVisible, true);
+  assert.ok(latestRequestChars > 550_000, `latest request was ${latestRequestChars}`);
+  assert.ok(latestRequestChars < 650_000, `latest request was ${latestRequestChars}`);
+  assert.deepEqual(verdict, {
+    decision: "standalone",
+    evidence: "The inspected incidents are unrelated",
+  });
+});
+
 test("runGroupingAgent: text-only fallback parses JSON verdict from text", async () => {
   const deps = makeDeps([
     [
