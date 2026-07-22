@@ -61,6 +61,7 @@ export type RunGroupingAgentDeps = {
 const MAX_GROUPING_CONVERSATION_CHARS = 550_000;
 const MAX_FRESH_INSPECTION_TURN_CHARS = 400_000;
 const MAX_SINGLE_INSPECTION_CHARS = 80_000;
+const FRESH_TOOL_TURN_STRUCTURE_RESERVE_CHARS = 10_000;
 const OMITTED_TOOL_RESULT =
   "[earlier tool result omitted to keep grouping context bounded; call the tool again if needed]";
 
@@ -114,10 +115,12 @@ export async function runGroupingAgent(
     visibleCandidateIds: new Set<string>(),
     candidateByToolUseId: new Map<string, string>(),
     latestToolUseIdByCandidate: new Map<string, string>(),
+    pendingToolUseIds: new Set<string>(),
   };
 
   for (let iter = 0; iter < deps.maxIterations; iter++) {
-    for (const toolUseId of boundConversationContext(conversation)) {
+    const omittedToolUseIds = new Set(boundConversationContext(conversation));
+    for (const toolUseId of omittedToolUseIds) {
       const incidentId = inspectionState.candidateByToolUseId.get(toolUseId);
       if (
         incidentId &&
@@ -126,6 +129,17 @@ export async function runGroupingAgent(
         inspectionState.visibleCandidateIds.delete(incidentId);
       }
     }
+    for (const toolUseId of inspectionState.pendingToolUseIds) {
+      const incidentId = inspectionState.candidateByToolUseId.get(toolUseId);
+      if (
+        incidentId &&
+        !omittedToolUseIds.has(toolUseId) &&
+        inspectionState.latestToolUseIdByCandidate.get(incidentId) === toolUseId
+      ) {
+        inspectionState.visibleCandidateIds.add(incidentId);
+      }
+    }
+    inspectionState.pendingToolUseIds.clear();
     const message = await deps.client.send({
       model: deps.model,
       system: GROUPING_SYSTEM_PROMPT,
@@ -173,9 +187,19 @@ export async function runGroupingAgent(
     const inspectionCount = toolUses.filter(
       (toolUse) => toolUse.name === "inspect_incident",
     ).length;
+    const remainingConversationChars = Math.max(
+      1,
+      MAX_GROUPING_CONVERSATION_CHARS -
+        JSON.stringify(conversation).length -
+        FRESH_TOOL_TURN_STRUCTURE_RESERVE_CHARS,
+    );
+    const freshInspectionTurnChars = Math.min(
+      MAX_FRESH_INSPECTION_TURN_CHARS,
+      remainingConversationChars,
+    );
     const inspectionResultMaxChars = Math.min(
       MAX_SINGLE_INSPECTION_CHARS,
-      Math.floor(MAX_FRESH_INSPECTION_TURN_CHARS / Math.max(1, inspectionCount)),
+      Math.max(1, Math.floor(freshInspectionTurnChars / Math.max(1, inspectionCount))),
     );
 
     for (const toolUse of toolUses) {
@@ -212,6 +236,7 @@ type InspectionState = {
   visibleCandidateIds: Set<string>;
   candidateByToolUseId: Map<string, string>;
   latestToolUseIdByCandidate: Map<string, string>;
+  pendingToolUseIds: Set<string>;
 };
 
 function dispatchTool(
@@ -258,9 +283,9 @@ function dispatchTool(
           : {};
       const incidentId = typeof obj.incident_id === "string" ? obj.incident_id : "";
       if (candidateIds.has(incidentId)) {
-        inspectionState.visibleCandidateIds.add(incidentId);
         inspectionState.candidateByToolUseId.set(toolUse.id, incidentId);
         inspectionState.latestToolUseIdByCandidate.set(incidentId, toolUse.id);
+        inspectionState.pendingToolUseIds.add(toolUse.id);
       }
       return {
         kind: "continue",

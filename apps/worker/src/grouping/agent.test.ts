@@ -157,6 +157,57 @@ test("runGroupingAgent: join requires prior inspect_incident (else the tool resu
   }
 });
 
+test("runGroupingAgent: inspect and join in the same model turn requires a later decision", async () => {
+  let turn = 0;
+  let inspectionWasVisible = false;
+  const client: GroupingLLMClient = {
+    async send(input) {
+      turn += 1;
+      if (turn === 1) {
+        return makeMessage([
+          toolUse("inspect_incident", { incident_id: "a" }, "inspect"),
+          toolUse(
+            "decide_grouping",
+            {
+              decision: "join",
+              incidentId: "a",
+              evidence: "both fail on the same upstream postgres host and port",
+            },
+            "premature-decision",
+          ),
+        ]);
+      }
+
+      inspectionWasVisible = JSON.stringify(input.messages).includes('"tool_use_id":"inspect"');
+      return makeMessage([
+        toolUse(
+          "decide_grouping",
+          {
+            decision: "join",
+            incidentId: "a",
+            evidence: "both fail on the same upstream postgres host and port",
+          },
+          "later-decision",
+        ),
+      ]);
+    },
+  };
+
+  const verdict = await runGroupingAgent(
+    { projectName: "p", newIssue: NEW_ISSUE, candidates: [makeCandidate("a")] },
+    {
+      client,
+      model: "test-model",
+      maxIterations: 3,
+      accountant: { record() {} },
+    },
+  );
+
+  assert.equal(turn, 2);
+  assert.equal(inspectionWasVisible, true);
+  assert.equal(verdict.decision, "join");
+});
+
 test("runGroupingAgent: malformed decide_grouping input → is_error result, agent gets another shot", async () => {
   const deps = makeDeps([
     [toolUse("decide_grouping", { decision: "yes-maybe" }, "t_bad")],
@@ -356,7 +407,7 @@ test("runGroupingAgent: repeated oversized inspections keep the conversation bel
   );
 });
 
-test("runGroupingAgent: an omitted inspection must be repeated before joining", async () => {
+test("runGroupingAgent: a retained inspection remains valid while later results are compacted", async () => {
   const oversizedMessage = `Build failed\n${"generatedCall();".repeat(40_000)}\nat normalizeUrl`;
   const oversizedCandidate = (id: string) =>
     makeCandidate(id, {
@@ -451,12 +502,12 @@ test("runGroupingAgent: an omitted inspection must be repeated before joining", 
     },
   );
 
-  assert.equal(turn, 13);
-  assert.equal(sawReinspectionError, true);
+  assert.equal(turn, 11);
+  assert.equal(sawReinspectionError, false);
   assert.deepEqual(verdict, {
     decision: "join",
     incidentId: oldTarget.id,
-    evidence: "the refreshed inspection shows the same module and stack frame",
+    evidence: "the old target originally showed the same module and stack frame",
   });
 });
 
@@ -535,6 +586,74 @@ test("runGroupingAgent: preserves every inspection result from the latest tool t
     decision: "standalone",
     evidence: "The inspected incidents are unrelated",
   });
+});
+
+test("runGroupingAgent: inspection burst uses only the remaining conversation headroom", async () => {
+  const oversizedMessage = `Build failed\n${"generatedCall();".repeat(40_000)}\nat normalizeUrl`;
+  const candidates = Array.from({ length: 200 }, (_, candidateIndex) =>
+    makeCandidate(`target-${candidateIndex}`, {
+      title: `Build failed ${"candidate-title".repeat(65)} ${candidateIndex}`,
+      representative: {
+        exceptionType: "Error",
+        message: oversizedMessage,
+        topFrame: "normalizeUrl",
+        normalizedFrames: ["normalizeUrl"],
+        traceId: null,
+        spanId: null,
+      },
+      issues: Array.from({ length: 5 }, (_, issueIndex) => ({
+        id: `target-${candidateIndex}-issue-${issueIndex}`,
+        title: "Build failed",
+        service: "web",
+        exceptionType: "Error",
+        message: oversizedMessage,
+        topFrame: "normalizeUrl",
+        normalizedFrames: ["normalizeUrl"],
+        traceId: null,
+        spanId: null,
+        logAttrs: { "code.file.path": "a/very/long/path/".repeat(18) },
+        lastSeen: "2026-05-23T00:00:00Z",
+      })),
+    }),
+  );
+  const requestChars: number[] = [];
+  let turn = 0;
+  const client: GroupingLLMClient = {
+    async send(input) {
+      requestChars.push(JSON.stringify(input.messages).length);
+      turn += 1;
+      if (turn === 1) {
+        return makeMessage(
+          candidates.slice(0, 8).map((candidate, index) =>
+            toolUse("inspect_incident", { incident_id: candidate.id }, `inspect-${index}`),
+          ),
+        );
+      }
+      return makeMessage([
+        toolUse(
+          "decide_grouping",
+          { decision: "standalone", evidence: "The inspected incidents are unrelated" },
+          "decide",
+        ),
+      ]);
+    },
+  };
+
+  await runGroupingAgent(
+    { projectName: "p", newIssue: NEW_ISSUE, candidates },
+    {
+      client,
+      model: "test-model",
+      maxIterations: 3,
+      accountant: { record() {} },
+    },
+  );
+
+  assert.equal(requestChars.length, 2);
+  const [initialRequestChars = Number.POSITIVE_INFINITY, inspectionRequestChars = Number.POSITIVE_INFINITY] =
+    requestChars;
+  assert.ok(initialRequestChars < 550_000, `initial request was ${initialRequestChars}`);
+  assert.ok(inspectionRequestChars < 550_000, `inspection request was ${inspectionRequestChars}`);
 });
 
 test("runGroupingAgent: text-only fallback parses JSON verdict from text", async () => {
