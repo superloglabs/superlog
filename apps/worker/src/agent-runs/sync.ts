@@ -122,12 +122,9 @@ export function isCompleteInvestigationAllowed(
   capabilities: {
     prPolicy: schema.PrPolicy;
     githubConnected: boolean;
-    approvalPromptsEnabled: boolean;
-    approvalPromptToolsAvailable: boolean;
   },
 ): boolean {
   if (result.completionKind !== "investigation_complete") return true;
-  if (result.linearTicketRequested) return true;
   const prCreation = capabilities.githubConnected && capabilities.prPolicy !== "never";
   return !prCreation;
 }
@@ -135,13 +132,9 @@ export function isCompleteInvestigationAllowed(
 export function completeInvestigationAvailable(capabilities: {
   prPolicy: schema.PrPolicy;
   githubConnected: boolean;
-  approvalPromptsEnabled: boolean;
-  approvalPromptToolsAvailable: boolean;
 }): boolean {
   const prCreation = capabilities.githubConnected && capabilities.prPolicy !== "never";
-  const approvalPrompts =
-    capabilities.approvalPromptsEnabled && capabilities.approvalPromptToolsAvailable;
-  return !prCreation && !approvalPrompts;
+  return !prCreation;
 }
 
 const agentRunLifecycle = createAgentRunLifecycle(db);
@@ -443,15 +436,13 @@ export function shouldDeferSteering(snapshot: {
 export function terminalOutcomeNudgePrompt(
   args: {
     completeInvestigationAvailable?: boolean;
-    linearTicketCreationAvailable?: boolean;
     prCreationAvailable?: boolean;
   } = {},
 ): string {
   const terminalTools: string[] = [];
   const prCreationAvailable = args.prCreationAvailable ?? !args.completeInvestigationAvailable;
   if (prCreationAvailable) terminalTools.push("batched `propose_pr`");
-  if (args.linearTicketCreationAvailable) terminalTools.push("`create_linear_issue`");
-  else if (args.completeInvestigationAvailable) terminalTools.push("`complete_investigation`");
+  if (args.completeInvestigationAvailable) terminalTools.push("`complete_investigation`");
   terminalTools.push(
     "`resolve_incident` with all Issue outcomes",
     "`report_external_cause`",
@@ -471,7 +462,6 @@ export function terminalOutcomeNudgeCapabilities(
   },
 ): {
   prCreationAvailable: boolean;
-  linearTicketCreationAvailable: boolean;
   completeInvestigationAvailable: boolean;
 } {
   const declared = snapshot.declaredCustomToolNames;
@@ -483,15 +473,11 @@ export function terminalOutcomeNudgeCapabilities(
       },
       "terminal outcome nudge is using legacy snapshot capabilities",
     );
-    return {
-      ...fallback,
-      linearTicketCreationAvailable: false,
-    };
+    return fallback;
   }
   const names = new Set(declared);
   return {
     prCreationAvailable: names.has("propose_pr"),
-    linearTicketCreationAvailable: names.has("create_linear_issue"),
     completeInvestigationAvailable: names.has("complete_investigation"),
   };
 }
@@ -1312,8 +1298,6 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
         !isCompleteInvestigationAllowed(snapshot.result, {
           prPolicy: ctx.prPolicy,
           githubConnected: ctx.githubInstalls.length > 0,
-          approvalPromptsEnabled: ctx.approvalPromptsEnabled,
-          approvalPromptToolsAvailable: true,
         })
       ) {
         const failed = await failAgentRun(
@@ -1564,8 +1548,6 @@ export async function syncRunningAgentRun(ctx: AgentRunContext): Promise<void> {
               completeInvestigationAvailable: completeInvestigationAvailable({
                 prPolicy: ctx.prPolicy,
                 githubConnected: ctx.githubInstalls.length > 0,
-                approvalPromptsEnabled: ctx.approvalPromptsEnabled,
-                approvalPromptToolsAvailable: true,
               }),
               prCreationAvailable: ctx.githubInstalls.length > 0 && ctx.prPolicy !== "never",
             }),

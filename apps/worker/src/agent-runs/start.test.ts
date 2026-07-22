@@ -165,22 +165,6 @@ test("startQueuedAgentRunWorkflow exposes ask_human as an approval boundary", as
   assert.equal(approvalPromptToolsAvailable, true);
 });
 
-test("startQueuedAgentRunWorkflow exposes Linear ticket creation only for an active install", async () => {
-  const calls: string[] = [];
-  const ctx = makeContext();
-  ctx.linearInstall = { id: "linear-install-1" } as schema.LinearInstallation;
-  let linearTicketCreationAvailable: boolean | null = null;
-
-  await startQueuedAgentRunWorkflow(
-    ctx,
-    makeDeps(calls, {}, (input) => {
-      linearTicketCreationAvailable = input.linearTicketCreationAvailable;
-    }),
-  );
-
-  assert.equal(linearTicketCreationAvailable, true);
-});
-
 test("startQueuedAgentRunWorkflow passes agent memories to the runner", async () => {
   const calls: string[] = [];
   const ctx = makeContext();

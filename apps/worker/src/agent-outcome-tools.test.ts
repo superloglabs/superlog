@@ -108,7 +108,6 @@ test("exposes the desired outcome tools with API-safe schemas", () => {
     [
       "report_findings",
       "propose_pr",
-      "create_linear_issue",
       "complete_investigation",
       "ask_human",
       "report_external_cause",
@@ -135,7 +134,6 @@ test("splits the contract into dispatched and terminal tools", () => {
     [...TERMINAL_OUTCOME_TOOL_NAMES],
     [
       "propose_pr",
-      "create_linear_issue",
       "complete_investigation",
       "ask_human",
       "report_external_cause",
@@ -150,45 +148,27 @@ test("splits the contract into dispatched and terminal tools", () => {
   assert.ok(!isDispatchedOutcomeToolName("report_external_cause"));
 });
 
-test("offers complete_investigation when no PR or ticket handoff is available", () => {
+test("offers complete_investigation whenever PR creation is unavailable", () => {
   const withPrs = outcomeToolDefinitionsForCapabilities({
     prCreation: true,
     approvalPrompts: false,
-    linearTicketCreation: false,
   }).map((definition) => definition.name);
   assert.ok(withPrs.includes("propose_pr"));
   assert.ok(!withPrs.includes("complete_investigation"));
 
-  const ticketOnly = outcomeToolDefinitionsForCapabilities({
+  const findingsOnly = outcomeToolDefinitionsForCapabilities({
     prCreation: false,
     approvalPrompts: false,
-    linearTicketCreation: false,
   }).map((definition) => definition.name);
-  assert.ok(!ticketOnly.includes("propose_pr"));
-  assert.ok(ticketOnly.includes("complete_investigation"));
+  assert.ok(!findingsOnly.includes("propose_pr"));
+  assert.ok(findingsOnly.includes("complete_investigation"));
 
   const withApprovals = outcomeToolDefinitionsForCapabilities({
     prCreation: false,
     approvalPrompts: true,
-    linearTicketCreation: false,
   }).map((definition) => definition.name);
   assert.ok(withApprovals.includes("complete_investigation"));
-});
-
-test("offers create_linear_issue whenever Linear ticket creation is available", () => {
-  const withEveryIntervention = outcomeToolDefinitionsForCapabilities({
-    prCreation: true,
-    approvalPrompts: true,
-    linearTicketCreation: true,
-  }).map((definition) => definition.name);
-  assert.ok(withEveryIntervention.includes("create_linear_issue"));
-
-  const withoutLinear = outcomeToolDefinitionsForCapabilities({
-    prCreation: true,
-    approvalPrompts: true,
-    linearTicketCreation: false,
-  }).map((definition) => definition.name);
-  assert.ok(!withoutLinear.includes("create_linear_issue"));
+  assert.ok(!withApprovals.includes("create_linear_issue"));
 });
 
 // The load-bearing guidance in tool descriptions. Losing any of these
@@ -232,7 +212,9 @@ test("resolve_incident description requires atomic per-issue outcomes", () => {
 // unknown-tool path would hard-fail the run instead.
 test("rejects retired tools (incl. mark_already_resolved) with redirect guidance", () => {
   assert.ok((RETIRED_OUTCOME_TOOL_NAMES as readonly string[]).includes("mark_already_resolved"));
-  for (const name of RETIRED_OUTCOME_TOOL_NAMES) {
+  for (const name of RETIRED_OUTCOME_TOOL_NAMES.filter(
+    (toolName) => toolName !== "create_linear_issue",
+  )) {
     const v = validateOutcomeToolInput(
       name,
       { reason: "upstream_recovered", evidence: "e" },
@@ -244,6 +226,15 @@ test("rejects retired tools (incl. mark_already_resolved) with redirect guidance
       assert.ok(text.includes("resolve_incident"), name);
       assert.ok(text.includes("issueOutcomes"), name);
     }
+  }
+});
+
+test("redirects legacy create_linear_issue calls to deterministic completion", () => {
+  const validation = validateOutcomeToolInput("create_linear_issue", {}, { hasFindings: true });
+  assert.equal(validation.ok, false);
+  if (!validation.ok) {
+    assert.match(validation.errors.join(" "), /complete_investigation/);
+    assert.match(validation.errors.join(" "), /Linear/);
   }
 });
 
@@ -321,7 +312,6 @@ test("requires findings before findings-backed terminal tools", () => {
       },
     ],
     ["complete_investigation", {}],
-    ["create_linear_issue", {}],
   ];
   for (const [name, input] of cases) {
     const v = validateOutcomeToolInput(name, input, { hasFindings: false });
@@ -340,20 +330,6 @@ test("complete_investigation finishes without resolving the incident", () => {
   });
   assert.equal(result.state, "complete");
   assert.equal(result.completionKind, "investigation_complete");
-  assert.equal(result.incidentResolution, undefined);
-});
-
-test("create_linear_issue completes a findings handoff without resolving the incident", () => {
-  const validation = validateOutcomeToolInput("create_linear_issue", {}, { hasFindings: true });
-  assert.equal(validation.ok, true);
-
-  const result = assembleAgentRunResult({
-    findings: FINDINGS,
-    terminal: { name: "create_linear_issue", payload: {} },
-  });
-  assert.equal(result.state, "complete");
-  assert.equal(result.completionKind, "investigation_complete");
-  assert.equal(result.linearTicketRequested, true);
   assert.equal(result.incidentResolution, undefined);
 });
 

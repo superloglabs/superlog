@@ -356,10 +356,6 @@ export type AgentRunResult = {
   // Explicit terminal signal for runs that finish their investigation while
   // deliberately leaving the incident open for an external ticket workflow.
   completionKind?: "investigation_complete" | null;
-  // The agent explicitly chose the Linear handoff terminal. This lets the
-  // completion gate distinguish it from a findings-only completion when
-  // remediation tools were also available.
-  linearTicketRequested?: boolean | null;
   // Why an awaiting_events run is parked when it is not waiting on a PR.
   waitReason?: "external_cause" | null;
   externalCause?: AgentRunExternalCause | null;

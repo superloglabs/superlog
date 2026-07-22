@@ -249,7 +249,7 @@ This tool is only for defects with real user or business impact. Noise is classi
 
 #### 3. `complete_investigation`
 
-Available only when PR creation is disabled or unavailable and no approval-prompt action is available. It finishes a findings-only investigation while leaving the Incident open. When Linear is connected, it triggers the Linear handoff. Requires `report_findings`; does not classify issues. No params.
+Available whenever PR creation is disabled or unavailable. It finishes a findings-only investigation while leaving the Incident open; approval prompts remain available separately when a specific authorization is required. When Linear is connected, the platform deterministically triggers the Linear handoff from this outcome — Linear issue creation is not an agent tool. Requires `report_findings`; does not classify issues. No params.
 
 #### 4. `ask_human`
 
@@ -330,3 +330,4 @@ July 9, 2026 - merged the managed-agent spec into this document
 July 10, 2026 - agent loop rework: full-text reasons, non-terminal propose_pr (multiple PRs, keyed by branch), per-issue classification tools, terminal resolve_incident, awaiting_events parking, PR merge/close resumes the session
 July 14, 2026 - deterministic Linear handoff: when Linear is connected, each explicitly completed investigation gets its own ticket, while PR-producing runs create/reuse their run-scoped ticket on the first recorded PR and cross-link every later PR; resolve-time filing is configurable; completed Linear tickets resolve incidents and count as accepted remediation. Projects without PR or approval actions finish through complete_investigation.
 July 14, 2026 - desired agent contract: terminal batched PR proposals (one PR and patch per repository), atomic per-Issue outcomes inside resolve_incident, report_external_cause waiting with the Incident open, and Approval prompts documented as in progress
+July 22, 2026 - restored deterministic findings handoff: `complete_investigation` is the only findings-only terminal when PR creation is unavailable, and the platform creates or reuses the connected Linear issue as a completion side effect rather than exposing Linear mutation as an agent tool.
