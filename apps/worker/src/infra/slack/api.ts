@@ -51,6 +51,11 @@ export async function postSlackMessage(opts: {
         channel: opts.target.channelId,
         thread_ts: opts.threadTs ?? undefined,
         text: opts.text,
+        // Incident messages carry the incident/ticket URL as a text link, and
+        // Slack would otherwise unfurl it into a generic Open Graph card for
+        // the site (the page itself is behind auth). Suppress that noise.
+        unfurl_links: false,
+        unfurl_media: false,
         ...(opts.blocks ? { blocks: opts.blocks } : {}),
       }),
       ...(opts.timeoutMs ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
@@ -144,6 +149,10 @@ export async function updateSlackMessage(opts: {
         channel: opts.target.channelId,
         ts: opts.ts,
         text: opts.text,
+        // Match postSlackMessage: don't let Slack unfurl the incident/ticket
+        // URL into a generic Open Graph card when we repaint the message.
+        unfurl_links: false,
+        unfurl_media: false,
         ...(opts.blocks ? { blocks: opts.blocks } : {}),
       }),
     });
