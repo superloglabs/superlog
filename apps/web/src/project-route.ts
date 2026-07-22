@@ -9,6 +9,8 @@ export type ProjectRouteLocation = {
   hash: string;
 };
 
+const PROJECT_ROUTE_PATTERN = "org/:orgSlug/project/:projectSlug";
+
 export function buildProjectPath(slugs: ProjectRouteSlugs, appPath: string): string {
   const root = `/app/org/${encodeURIComponent(slugs.orgSlug)}/project/${encodeURIComponent(slugs.projectSlug)}`;
   if (appPath === "/" || appPath === "") return root;
@@ -34,15 +36,10 @@ export function canonicalProjectLocation(
   };
 }
 
-export function appLocationFromProjectRoute(location: ProjectRouteLocation): ProjectRouteLocation {
-  const appPath = appPathFromProjectRoute(location.pathname);
-  return {
-    ...location,
-    // This location is consumed by a descendant <Routes> below the top-level
-    // /app/* route. React Router requires an overridden location to retain the
-    // already-matched parent pathname base; only the project scope is virtual.
-    pathname: appPath === "/" ? "/app" : `/app${appPath}`,
-  };
+export function scopedProjectRoutePattern(appPath: string): string {
+  if (appPath === "/" || appPath === "") return PROJECT_ROUTE_PATTERN;
+  const suffix = appPath.startsWith("/") ? appPath.slice(1) : appPath;
+  return `${PROJECT_ROUTE_PATTERN}/${suffix}`;
 }
 
 export function legacyProductLocation(location: ProjectRouteLocation): string {

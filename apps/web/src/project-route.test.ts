@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, NavLink, Route, Routes } from "react-router-dom";
 import {
-  appLocationFromProjectRoute,
   appPathFromProjectRoute,
   buildProjectPath,
   canonicalProjectLocation,
   legacyProductLocation,
+  scopedProjectRoutePattern,
 } from "./project-route.ts";
 
 test("buildProjectPath creates shareable incident URLs with org and project slugs", () => {
@@ -128,36 +128,33 @@ test("canonical project navigation replaces an existing project scope", () => {
   );
 });
 
-test("scoped browser locations are translated back to app routes", () => {
-  assert.deepEqual(
-    appLocationFromProjectRoute({
-      pathname: "/app/org/superlog/project/demo-project/dashboards/dashboard-1",
-      search: "?range=1h",
-      hash: "#latency",
-    }),
-    {
-      pathname: "/app/dashboards/dashboard-1",
-      search: "?range=1h",
-      hash: "#latency",
-    },
+test("scoped product route patterns remain relative to the /app boundary", () => {
+  assert.equal(
+    scopedProjectRoutePattern("/dashboards/:id"),
+    "org/:orgSlug/project/:projectSlug/dashboards/:id",
+  );
+  assert.equal(
+    scopedProjectRoutePattern("/*"),
+    "org/:orgSlug/project/:projectSlug/*",
   );
 });
 
 test("scoped project locations can render inside the /app route boundary", () => {
   const browserPath = "/app/org/superlog/project/demo-project/settings";
-  const productLocation = appLocationFromProjectRoute({
-    pathname: browserPath,
-    search: "",
-    hash: "",
-  });
-
   function ProductRoutes() {
     return createElement(
       Routes,
-      { location: productLocation },
+      null,
       createElement(Route, {
-        path: "settings",
-        element: createElement("p", null, "Project settings"),
+        path: scopedProjectRoutePattern("/settings"),
+        element: createElement(
+          NavLink,
+          {
+            to: browserPath,
+            className: ({ isActive }) => (isActive ? "active" : "inactive"),
+          },
+          "Project settings",
+        ),
       }),
     );
   }
@@ -177,6 +174,6 @@ test("scoped project locations can render inside the /app route boundary", () =>
         ),
       ),
     ),
-    /Project settings/,
+    /class="active"/,
   );
 });

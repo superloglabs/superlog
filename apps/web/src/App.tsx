@@ -37,11 +37,11 @@ import { McpInstallPill } from "./onboarding/McpInstallPill.tsx";
 import { OnboardingGate } from "./onboarding/OnboardingGate.tsx";
 import { useDemoExploration } from "./onboarding/demoExploration.tsx";
 import {
-  appLocationFromProjectRoute,
   appPathFromProjectRoute,
   buildProjectPath,
   canonicalProjectLocation,
   legacyProductLocation,
+  scopedProjectRoutePattern,
 } from "./project-route.ts";
 import {
   APP_FRAME_CLASS,
@@ -204,11 +204,6 @@ function AuthenticatedApp() {
       />
     );
   }
-  const appLocation = appLocationFromProjectRoute({
-    pathname,
-    search: location.search,
-    hash: location.hash,
-  });
   const projectRoot =
     orgSlug && projectSlug ? buildProjectPath({ orgSlug, projectSlug }, "/") : "/app";
   const app = (
@@ -224,19 +219,22 @@ function AuthenticatedApp() {
           anomalyScannerEnabled={me.data?.features?.anomalyScanner === true}
         >
           <RouteContainer>
-            <Routes location={appLocation}>
-              <Route path="explore/*" element={<Explore />} />
-              <Route path="incidents" element={<Issues />} />
-              <Route path="incidents/:id" element={<Issues />} />
-              <Route path="issues" element={<Issues />} />
-              <Route path="issues/:id" element={<Issues />} />
-              <Route path="alerts" element={<AlertsList />} />
-              <Route path="alerts/new" element={<AlertEdit />} />
-              <Route path="alerts/:id" element={<AlertEdit />} />
-              <Route path="dashboards" element={<DashboardsList />} />
-              <Route path="dashboards/:id" element={<DashboardView />} />
+            <Routes>
+              <Route path={scopedProjectRoutePattern("/explore/*")} element={<Explore />} />
+              <Route path={scopedProjectRoutePattern("/incidents")} element={<Issues />} />
+              <Route path={scopedProjectRoutePattern("/incidents/:id")} element={<Issues />} />
+              <Route path={scopedProjectRoutePattern("/issues")} element={<Issues />} />
+              <Route path={scopedProjectRoutePattern("/issues/:id")} element={<Issues />} />
+              <Route path={scopedProjectRoutePattern("/alerts")} element={<AlertsList />} />
+              <Route path={scopedProjectRoutePattern("/alerts/new")} element={<AlertEdit />} />
+              <Route path={scopedProjectRoutePattern("/alerts/:id")} element={<AlertEdit />} />
+              <Route path={scopedProjectRoutePattern("/dashboards")} element={<DashboardsList />} />
               <Route
-                path="anomaly-scanner"
+                path={scopedProjectRoutePattern("/dashboards/:id")}
+                element={<DashboardView />}
+              />
+              <Route
+                path={scopedProjectRoutePattern("/anomaly-scanner")}
                 element={
                   me.data?.features?.anomalyScanner === true ? (
                     <AnomalyScanner />
@@ -246,7 +244,7 @@ function AuthenticatedApp() {
                 }
               />
               <Route
-                path="anomaly-scanner/scans/:scanId"
+                path={scopedProjectRoutePattern("/anomaly-scanner/scans/:scanId")}
                 element={
                   me.data?.features?.anomalyScanner === true ? (
                     <AnomalyScanDetail />
@@ -255,8 +253,8 @@ function AuthenticatedApp() {
                   )
                 }
               />
-              <Route path="settings" element={<Settings />} />
-              <Route path="*" element={<Overview />} />
+              <Route path={scopedProjectRoutePattern("/settings")} element={<Settings />} />
+              <Route path={scopedProjectRoutePattern("/*")} element={<Overview />} />
             </Routes>
           </RouteContainer>
         </ProductShell>
