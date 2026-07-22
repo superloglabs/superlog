@@ -325,9 +325,6 @@ export async function getOrCreateHomeDashboard(
         name: "Home",
         slug: "__home__",
         isHome: true,
-        // Temporary marker for the one-time production data backfill. Runtime
-        // reads never branch on this value; remove it after the backfill deploy.
-        homeLayoutVersion: 1,
         createdBy: userId,
       })
       .onConflictDoNothing()
