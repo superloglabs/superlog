@@ -21,6 +21,14 @@ export {
   shutdownAnalytics,
 } from "./analytics.js";
 export {
+  type LifecycleEvent,
+  type LifecycleEventName,
+  type LifecycleEventSink,
+  emitLifecycleEvent,
+  registerLifecycleEventSink,
+  resetLifecycleEventSink,
+} from "./lifecycle-events.js";
+export {
   type AgentPrAnalyticsOrg,
   type AgentPrAnalyticsPr,
   type AgentPrLifecycleEventInput,
