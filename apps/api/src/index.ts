@@ -3023,6 +3023,9 @@ app.post("/api/projects/:projectId/incidents/:incidentId/agent-run/restart", asy
   if (restart.outcome === "incident_not_open") {
     throw new HTTPException(409, { message: "incident is no longer open" });
   }
+  if (restart.outcome === "latest_run_changed") {
+    throw new HTTPException(409, { message: "agent run changed before restart" });
+  }
 
   return c.json(restart.agentRun);
 });
