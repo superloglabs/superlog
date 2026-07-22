@@ -1,4 +1,4 @@
-import { captureServerEvent, db, schema } from "@superlog/db";
+import { captureServerEvent, db, emitLifecycleEvent, schema } from "@superlog/db";
 import { autumn } from "autumn-js/better-auth";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
@@ -251,6 +251,16 @@ export const auth = betterAuth({
             distinctId: user.id,
             event: "user_signed_up",
             set: { email: user.email, name: user.name },
+          });
+          // Vendor-neutral growth seam: a deployment may forward this to
+          // external destinations (see @superlog/db lifecycle-events). No-op
+          // unless a sink was registered at boot; fire-and-forget so a slow
+          // sink never blocks signup or delays enqueueUserCreated below.
+          void emitLifecycleEvent({
+            event: "signup",
+            userId: user.id,
+            email: user.email,
+            dedupeId: `signup-${user.id}`,
           });
           await enqueueUserCreated(user);
         },

@@ -4,6 +4,7 @@ import { serve } from "@hono/node-server";
 import { type Span, SpanStatusCode, metrics, trace } from "@opentelemetry/api";
 import {
   captureServerEvent,
+  emitLifecycleEvent,
   hashApiKey,
   schema,
   shutdownAnalytics,
@@ -293,9 +294,14 @@ async function maybeCaptureProjectActivation(projectId: string): Promise<void> {
     if (claimed.length === 0) return; // already activated; don't double-fire
 
     const [owner] = await db
-      .select({ userId: schema.orgMembers.userId, orgId: schema.orgMembers.orgId })
+      .select({
+        userId: schema.orgMembers.userId,
+        orgId: schema.orgMembers.orgId,
+        email: schema.users.email,
+      })
       .from(schema.projects)
       .innerJoin(schema.orgMembers, eq(schema.orgMembers.orgId, schema.projects.orgId))
+      .innerJoin(schema.users, eq(schema.users.id, schema.orgMembers.userId))
       .where(and(eq(schema.projects.id, projectId), eq(schema.orgMembers.role, "owner")))
       .limit(1);
     if (!owner) return;
@@ -303,6 +309,16 @@ async function maybeCaptureProjectActivation(projectId: string): Promise<void> {
       distinctId: owner.userId,
       event: "first_telemetry_received",
       properties: { project_id: projectId, org_id: owner.orgId },
+    });
+    // Vendor-neutral growth seam: a deployment may forward this to external
+    // destinations (see @superlog/db lifecycle-events). No-op unless a sink
+    // was registered at boot; fire-and-forget so it never delays ingest.
+    void emitLifecycleEvent({
+      event: "first_telemetry",
+      userId: owner.userId,
+      email: owner.email,
+      dedupeId: `first_telemetry-${projectId}`,
+      properties: { projectId, orgId: owner.orgId },
     });
   } catch (err) {
     // Don't cache on failure — a transient DB error should be retried on the
