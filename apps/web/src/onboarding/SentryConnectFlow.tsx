@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useImportOpenSentryIssues, useSentryInstallation, useStartSentryInstall } from "../api.ts";
 import { Btn } from "../design/ui.tsx";
+import { SentryProjectPicker } from "../sentry/SentryProjectPicker.tsx";
 import { CheckIcon, ExternalLinkIcon, SpinnerIcon } from "./icons.tsx";
 import { ExploreDemoLink, SOFT_LINE, StepFooter, StepHeader } from "./wizardChrome.tsx";
 
@@ -22,24 +23,25 @@ export function SentryConnectFlow({
   const start = useStartSentryInstall(projectId, "onboarding");
   const issueImport = useImportOpenSentryIssues(projectId);
   const installed = installation.data?.installed === true ? installation.data : null;
-  const [projectSlug, setProjectSlug] = useState("");
   const [outcomeError, setOutcomeError] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
+  const authorizationId = searchParams.get("sentryAuthorization");
+  const authorizationProjectId = searchParams.get("sentryProjectId") ?? projectId;
+  const choosingProject = searchParams.get("sentry") === "choose-project" && !!authorizationId;
   const importAttempted = useRef(false);
-
-  useEffect(() => {
-    if (installed?.projectSlug) setProjectSlug(installed.projectSlug);
-  }, [installed?.projectSlug]);
 
   useEffect(() => {
     const outcome = searchParams.get("sentry");
     if (!outcome) return;
+    if (outcome === "choose-project") return;
     if (outcome === "denied") setOutcomeError("Sentry authorization was cancelled.");
     if (outcome === "error") {
       setOutcomeError("Sentry connected incompletely. Reconnect to retry the issue import.");
     }
     const next = new URLSearchParams(searchParams);
     next.delete("sentry");
+    next.delete("sentryAuthorization");
+    next.delete("sentryProjectId");
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
@@ -50,11 +52,10 @@ export function SentryConnectFlow({
   }, [installed, issuesArrived, issueImport.mutate]);
 
   const connect = async () => {
-    const slug = projectSlug.trim().toLowerCase();
-    if (!slug || start.isPending) return;
+    if (start.isPending) return;
     setOutcomeError(null);
     try {
-      const { url } = await start.mutateAsync(slug);
+      const { url } = await start.mutateAsync();
       window.location.assign(url);
     } catch {
       // The mutation renders its own error below.
@@ -74,8 +75,10 @@ export function SentryConnectFlow({
         }
       />
 
-      <div className={`overflow-hidden rounded-[14px] border bg-surface ${SOFT_LINE}`}>
-        {installed ? (
+      <div
+        className={`${choosingProject ? "overflow-visible" : "overflow-hidden"} rounded-[14px] border bg-surface ${SOFT_LINE}`}
+      >
+        {installed && !choosingProject ? (
           <>
             <div className={`flex items-center gap-2.5 border-b px-[18px] py-[12px] ${SOFT_LINE}`}>
               <span className="text-success">
@@ -130,37 +133,37 @@ export function SentryConnectFlow({
               </div>
             </div>
           </>
+        ) : choosingProject && authorizationId ? (
+          <div className="px-[22px] py-[18px]">
+            <SentryProjectPicker
+              projectId={authorizationProjectId}
+              authorizationId={authorizationId}
+              onConnected={() => {
+                const next = new URLSearchParams(searchParams);
+                next.delete("sentry");
+                next.delete("sentryAuthorization");
+                next.delete("sentryProjectId");
+                setSearchParams(next, { replace: true });
+              }}
+              onRestart={async () => {
+                const { url } = await start.mutateAsync();
+                window.location.assign(url);
+              }}
+            />
+          </div>
         ) : (
           <div className="space-y-4 px-[22px] py-[18px]">
-            <div>
-              <label
-                htmlFor="onboarding-sentry-project"
-                className="block text-[11.5px] uppercase tracking-[0.08em] text-subtle"
-              >
-                Sentry project slug
-              </label>
-              <input
-                id="onboarding-sentry-project"
-                value={projectSlug}
-                onChange={(event) => setProjectSlug(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") void connect();
-                }}
-                placeholder="storefront"
-                autoCapitalize="none"
-                spellCheck={false}
-                className="mt-2 block w-full rounded-[10px] border border-[rgba(255,255,255,0.12)] bg-[#0f1014] px-3 py-2 text-[14px] text-fg outline-none transition-colors focus:border-[#8C98F0]"
-              />
-              <p className="m-0 mt-2 text-[11.5px] text-subtle">
-                You choose the organization in Sentry. Self-hosted Sentry is not supported yet.
-              </p>
-            </div>
+            <p className="m-0 text-[12.5px] leading-[1.5] text-muted">
+              Choose the organization in Sentry. If it has one project, we connect it automatically;
+              otherwise you will choose from a project list here. Self-hosted Sentry is not
+              supported yet.
+            </p>
             <Btn
               variant="primary"
               size="md"
               onClick={() => void connect()}
               loading={start.isPending}
-              disabled={!projectSlug.trim() || start.isPending}
+              disabled={start.isPending}
               className="!h-[36px] !rounded-[8px] !px-[14px] !text-[13px]"
             >
               {start.isPending ? "Preparing…" : "Connect Sentry"}

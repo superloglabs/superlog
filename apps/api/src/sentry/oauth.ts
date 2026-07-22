@@ -6,7 +6,6 @@ export type SentryOAuthState = {
   orgId: string;
   projectId: string;
   userId: string;
-  sentryProjectSlug: string;
   returnTo: "settings" | "onboarding";
 };
 
@@ -50,7 +49,6 @@ export function verifySentryState(
     typeof payload.orgId !== "string" ||
     typeof payload.projectId !== "string" ||
     typeof payload.userId !== "string" ||
-    typeof payload.sentryProjectSlug !== "string" ||
     (payload.returnTo !== undefined &&
       payload.returnTo !== "settings" &&
       payload.returnTo !== "onboarding") ||
@@ -64,7 +62,6 @@ export function verifySentryState(
     orgId: payload.orgId,
     projectId: payload.projectId,
     userId: payload.userId,
-    sentryProjectSlug: payload.sentryProjectSlug,
     returnTo: payload.returnTo === "onboarding" ? "onboarding" : "settings",
   };
 }

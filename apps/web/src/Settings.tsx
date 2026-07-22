@@ -114,6 +114,7 @@ import {
 } from "./api";
 import { AWS_REGIONS } from "./awsRegions.ts";
 import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
+import { SentryProjectPicker } from "./sentry/SentryProjectPicker.tsx";
 import {
   Btn,
   Chip,
@@ -1148,6 +1149,7 @@ type IntegrationBentoItem = IntegrationCatalogItem & {
 };
 
 function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
+  const [searchParams] = useSearchParams();
   const github = useGithubInstallation();
   const slack = useSlackInstallation(projectId, !!projectId);
   const linear = useLinearInstallation();
@@ -1163,6 +1165,10 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
 
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<ProjectIntegrationId | null>(null);
+
+  useEffect(() => {
+    if (searchParams.has("sentry")) setSelectedId("sentry");
+  }, [searchParams]);
 
   const githubAccounts = github.data?.installed ? github.data.installations.length : 0;
   const railwayProjects = railway.data?.installed ? railway.data.grantedProjects.length : 0;
@@ -2651,11 +2657,9 @@ function SentryCard({ projectId }: { projectId: string | undefined }) {
   const start = useStartSentryInstall(projectId);
   const uninstall = useUninstallSentry(projectId);
   const sentryInstall = install.data?.installed === true ? install.data : null;
-  const [projectSlug, setProjectSlug] = useState("");
-
-  useEffect(() => {
-    if (sentryInstall?.projectSlug) setProjectSlug(sentryInstall.projectSlug);
-  }, [sentryInstall?.projectSlug]);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const authorizationId = searchParams.get("sentryAuthorization");
+  const choosingProject = searchParams.get("sentry") === "choose-project" && !!authorizationId;
 
   const installed = sentryInstall !== null;
   const needsReauth = sentryInstall?.needsReauth === true;
@@ -2680,33 +2684,42 @@ function SentryCard({ projectId }: { projectId: string | undefined }) {
           </Chip>
         )}
       </div>
-      <div className="space-y-1.5">
-        <FieldLabel>Sentry project slug</FieldLabel>
-        <Input
-          value={projectSlug}
-          onChange={(event) => setProjectSlug(event.target.value)}
-          placeholder="storefront"
-          autoCapitalize="none"
-          spellCheck={false}
-        />
-        <p className="text-[11.5px] text-subtle">
-          You will choose the Sentry organization during authorization. Sentry self-hosted is not
-          supported yet.
-        </p>
-      </div>
-      <div className="flex items-center gap-2">
-        <Btn
-          size="sm"
-          variant={installed ? "secondary" : "primary"}
-          loading={start.isPending}
-          disabled={!projectId || !projectSlug.trim() || start.isPending}
-          onClick={async () => {
-            const { url } = await start.mutateAsync(projectSlug.trim());
+      {choosingProject && authorizationId ? (
+        <SentryProjectPicker
+          projectId={projectId}
+          authorizationId={authorizationId}
+          onConnected={() => {
+            const next = new URLSearchParams(searchParams);
+            next.delete("sentry");
+            next.delete("sentryAuthorization");
+            setSearchParams(next, { replace: true });
+          }}
+          onRestart={async () => {
+            const { url } = await start.mutateAsync();
             window.location.href = url;
           }}
-        >
-          {needsReauth ? "Reconnect Sentry" : installed ? "Reconnect" : "Connect Sentry"}
-        </Btn>
+        />
+      ) : (
+        <p className="text-[11.5px] text-subtle">
+          Choose the organization in Sentry. A single project connects automatically; if there are
+          several, you will choose one from a list. Sentry self-hosted is not supported yet.
+        </p>
+      )}
+      <div className="flex items-center gap-2">
+        {!choosingProject && (
+          <Btn
+            size="sm"
+            variant={installed ? "secondary" : "primary"}
+            loading={start.isPending}
+            disabled={!projectId || start.isPending}
+            onClick={async () => {
+              const { url } = await start.mutateAsync();
+              window.location.href = url;
+            }}
+          >
+            {needsReauth ? "Reconnect Sentry" : installed ? "Reconnect" : "Connect Sentry"}
+          </Btn>
+        )}
         {installed && (
           <Btn
             size="sm"

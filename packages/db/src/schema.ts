@@ -2312,6 +2312,54 @@ export const sentryInstallations = pgTable(
   }),
 );
 
+export type SentryAuthorizationStatus = "ready" | "consumed" | "failed";
+
+export type SentryAuthorizationProject = {
+  id: string;
+  slug: string;
+  name: string;
+};
+
+/**
+ * A short-lived, user-bound Sentry App grant held between organization
+ * authorization and project selection. OAuth tokens stay encrypted on the
+ * server, are cleared on first use, and never cross the browser boundary.
+ */
+export const sentryAuthorizationSessions = pgTable(
+  "sentry_authorization_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    status: text("status").$type<SentryAuthorizationStatus>().notNull().default("ready"),
+    organizationSlug: text("organization_slug").notNull(),
+    sentryInstallationId: text("sentry_installation_id").notNull(),
+    projects: jsonb("projects").$type<SentryAuthorizationProject[]>().notNull().default([]),
+    accessTokenCiphertext: bytea("access_token_ciphertext"),
+    accessTokenNonce: bytea("access_token_nonce"),
+    accessTokenKeyVersion: integer("access_token_key_version"),
+    refreshTokenCiphertext: bytea("refresh_token_ciphertext"),
+    refreshTokenNonce: bytea("refresh_token_nonce"),
+    refreshTokenKeyVersion: integer("refresh_token_key_version"),
+    oauthExpiresAt: timestamp("oauth_expires_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    projectIdx: index("sentry_authorization_sessions_project_idx").on(t.projectId),
+    userIdx: index("sentry_authorization_sessions_user_idx").on(t.userId),
+    expiryIdx: index("sentry_authorization_sessions_expiry_idx").on(t.expiresAt),
+  }),
+);
+
+export type SentryAuthorizationSession = typeof sentryAuthorizationSessions.$inferSelect;
+
 export const sentryWebhookEvents = pgTable(
   "sentry_webhook_events",
   {

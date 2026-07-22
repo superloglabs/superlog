@@ -20,6 +20,12 @@ In Sentry Cloud, create a public custom integration with:
 The callback supports both immediately installed apps and Sentry's verified
 installation flow.
 
+Superlog discovers the projects available in the organization selected during
+OAuth. A single project connects automatically. When the organization has
+multiple projects, the OAuth grant stays encrypted on the server while the user
+chooses one from a short-lived project picker. No Sentry organization or project
+slug has to be copied into Superlog.
+
 ## Configure the API
 
 Set these variables on the API service:

@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { listOpenSentryIssues, sentryProjectIsAccessible } from "./client.js";
+import { listOpenSentryIssues, listSentryProjects, sentryProjectIsAccessible } from "./client.js";
 import { signSentryState } from "./oauth.js";
 
 process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
@@ -17,7 +17,6 @@ test("accepts the documented Sentry App callback without an organization slug", 
       orgId: "org-1",
       projectId: "project-1",
       userId: "user-1",
-      sentryProjectSlug: "storefront",
       returnTo: "onboarding",
     },
     "state-secret",
@@ -37,7 +36,6 @@ test("accepts the documented Sentry App callback without an organization slug", 
         orgId: "org-1",
         projectId: "project-1",
         userId: "user-1",
-        sentryProjectSlug: "storefront",
         returnTo: "onboarding",
       },
     },
@@ -51,8 +49,28 @@ test("routes an onboarding OAuth callback back into onboarding", async () => {
     "https://app.superlog.dev/?sentry=installed",
   );
   assert.equal(
-    sentryOAuthRedirect("https://app.superlog.dev", "settings", "denied"),
-    "https://app.superlog.dev/settings?sentry=denied",
+    sentryOAuthRedirect(
+      "https://app.superlog.dev",
+      "onboarding",
+      "choose-project",
+      "authorization-1",
+      "project-1",
+    ),
+    "https://app.superlog.dev/?sentry=choose-project&sentryAuthorization=authorization-1&sentryProjectId=project-1",
+  );
+  assert.equal(
+    sentryOAuthRedirect("https://app.superlog.dev", "settings", "denied", undefined, "project-1"),
+    "https://app.superlog.dev/settings?scope=project&section=integrations&projectId=project-1&sentry=denied",
+  );
+  assert.equal(
+    sentryOAuthRedirect(
+      "https://app.superlog.dev/",
+      "settings",
+      "choose-project",
+      "authorization-1",
+      "project-1",
+    ),
+    "https://app.superlog.dev/settings?scope=project&section=integrations&projectId=project-1&sentry=choose-project&sentryAuthorization=authorization-1",
   );
 });
 
@@ -169,6 +187,45 @@ test("an OAuth install can select a Sentry project after the first cursor page",
   });
 
   assert.equal(accessible, true);
+  assert.deepEqual(requested, [
+    "https://sentry.io/api/0/organizations/acme/projects/",
+    "https://sentry.io/api/0/organizations/acme/projects/?cursor=second",
+  ]);
+});
+
+test("discovers every accessible Sentry project for the organization selected in OAuth", async () => {
+  const requested: string[] = [];
+  const projects = await listSentryProjects({
+    accessToken: "token",
+    organizationSlug: "acme",
+    fetchImpl: async (input, init) => {
+      requested.push(String(input));
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer token");
+      if (requested.length === 1) {
+        return new Response(
+          JSON.stringify([
+            { id: "1", slug: "storefront", name: "Storefront", hasAccess: true },
+            { id: "2", slug: "private", name: "Private", hasAccess: false },
+          ]),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              link: '<https://sentry.io/api/0/organizations/acme/projects/?cursor=second>; rel="next"; results="true"',
+            },
+          },
+        );
+      }
+      return Response.json([
+        { id: "3", slug: "worker", name: "Background worker", hasAccess: true },
+      ]);
+    },
+  });
+
+  assert.deepEqual(projects, [
+    { id: "1", slug: "storefront", name: "Storefront" },
+    { id: "3", slug: "worker", name: "Background worker" },
+  ]);
   assert.deepEqual(requested, [
     "https://sentry.io/api/0/organizations/acme/projects/",
     "https://sentry.io/api/0/organizations/acme/projects/?cursor=second",

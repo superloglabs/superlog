@@ -15,13 +15,12 @@ test("builds a Sentry Cloud public-app installation URL", () => {
   assert.equal(url.searchParams.get("state"), "signed-state");
 });
 
-test("round-trips the selected Sentry project through short-lived signed state", () => {
+test("round-trips the local project through short-lived signed state without a Sentry slug", () => {
   const state = signSentryState(
     {
       orgId: "org-1",
       projectId: "project-1",
       userId: "user-1",
-      sentryProjectSlug: "storefront",
       returnTo: "settings",
     },
     "state-secret",
@@ -32,7 +31,6 @@ test("round-trips the selected Sentry project through short-lived signed state",
     orgId: "org-1",
     projectId: "project-1",
     userId: "user-1",
-    sentryProjectSlug: "storefront",
     returnTo: "settings",
   });
   assert.equal(verifySentryState(state, "wrong-secret", 1001), null);
