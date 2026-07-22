@@ -74,13 +74,13 @@ test("legacy completion derives a stable opaque delivery identity per run and re
     agentRunId: "run-1",
     repoFullName: "acme/api",
     requestedBranchName: "superlog/fix-api",
-    input: { patch: "first patch" },
+    input: { patch: "first patch", title: "[superlog] Fix API" },
   });
   const replay = pullRequestDeliveryIdentityForLegacyCompletion({
     agentRunId: "run-1",
     repoFullName: "acme/api",
     requestedBranchName: "superlog/fix-api",
-    input: { patch: "first patch" },
+    input: { patch: "first patch", title: "Fix API" },
   });
   const conflictingInput = pullRequestDeliveryIdentityForLegacyCompletion({
     agentRunId: "run-1",

@@ -49,7 +49,7 @@ import type { DeliveredLinearTicket } from "./linear-delivery.js";
 import { scheduleLinearHandoff } from "./linear-handoff.js";
 import { linearTicketSlackReference } from "./linear-pr-linking.js";
 import { outcomeActionInputHash } from "./outcome-action-receipts.js";
-import { buildPrBody, buildPrTitle } from "./pr-copy.js";
+import { buildLegacyPrReceiptTitle, buildPrBody, buildPrTitle } from "./pr-copy.js";
 import { summarizePrOpenFailure } from "./pr-open-failure.js";
 import {
   failAgentRun,
@@ -164,6 +164,14 @@ export function pullRequestDeliveryIdentityForLegacyCompletion(args: {
   requestedBranchName: string;
   input: unknown;
 }): PullRequestDeliveryIdentity {
+  const input =
+    args.input && typeof args.input === "object" && !Array.isArray(args.input)
+      ? (args.input as Record<string, unknown>)
+      : null;
+  const receiptInput =
+    input && typeof input.title === "string"
+      ? { ...input, title: buildLegacyPrReceiptTitle(input.title) }
+      : args.input;
   return {
     // The provider marker must survive retries of the same durable run and
     // repository, even when two pollers reach delivery concurrently.
@@ -172,7 +180,9 @@ export function pullRequestDeliveryIdentityForLegacyCompletion(args: {
       agentRunId: args.agentRunId,
       repoFullName: args.repoFullName,
     }),
-    inputHash: outcomeActionInputHash(args.input),
+    // Keep hashes compatible with receipts written before explicit titles
+    // began passing through to GitHub unchanged.
+    inputHash: outcomeActionInputHash(receiptInput),
     requestedBranchName: args.requestedBranchName,
   };
 }
