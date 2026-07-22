@@ -309,6 +309,7 @@ export function createOutcomeActionExecutor(
     if (call.name === "create_linear_issue") {
       logger.info(
         {
+          scope: "agent_run.outcome_action",
           agentRunId: ctx.agentRun.id,
           incidentId: ctx.incident.id,
           sessionId,
