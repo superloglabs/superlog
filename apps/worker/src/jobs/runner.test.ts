@@ -79,6 +79,27 @@ test("the registered worker invokes the job handler", async () => {
   assert.equal(ran, 1);
 });
 
+test("registers an event consumer without a cron schedule and passes through its job payload", async () => {
+  const fb = fakeBoss();
+  let received: unknown;
+  await registerJobs(fb.boss, [
+    {
+      name: "user.created",
+      policy: "standard",
+      handler: async (job) => {
+        received = job;
+      },
+    },
+  ]);
+
+  assert.deepEqual(fb.schedules, []);
+  assert.ok(fb.calls.includes('createQueue:user.created:{"policy":"standard"}'));
+  const worker = fb.workers.get("user.created");
+  assert.ok(worker);
+  await worker([{ id: "job-1", data: { userId: "user-1" } }]);
+  assert.deepEqual(received, { id: "job-1", data: { userId: "user-1" } });
+});
+
 test("a job that fails to register is skipped without aborting the others", async () => {
   const fb = fakeBoss();
   const boss: JobBoss = {

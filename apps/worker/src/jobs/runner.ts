@@ -30,7 +30,7 @@ export async function registerJobs(boss: JobBoss, jobs: LoadedJob[]): Promise<vo
   for (const job of jobs) {
     try {
       await boss.createQueue(job.name, {
-        policy: "exclusive",
+        policy: job.policy ?? (job.schedule ? "exclusive" : "standard"),
         ...(job.expireInSeconds ? { expireInSeconds: job.expireInSeconds } : {}),
       });
       // pg-boss createQueue does not update an existing queue. Keep mutable
@@ -39,13 +39,15 @@ export async function registerJobs(boss: JobBoss, jobs: LoadedJob[]): Promise<vo
       if (job.expireInSeconds) {
         await boss.updateQueue(job.name, { expireInSeconds: job.expireInSeconds });
       }
-      await boss.work(job.name, async () => {
-        await job.handler();
+      await boss.work(job.name, async (jobs) => {
+        const [queuedJob] = jobs;
+        if (!queuedJob || typeof queuedJob !== "object") return;
+        await job.handler(queuedJob as { id: string; data: unknown });
       });
-      await boss.schedule(job.name, job.schedule);
+      if (job.schedule) await boss.schedule(job.name, job.schedule);
       logger.info(
         { scope: "jobs.runner", job: job.name, schedule: job.schedule },
-        "scheduled background job",
+        job.schedule ? "scheduled background job" : "registered background event consumer",
       );
     } catch (err) {
       logger.error(

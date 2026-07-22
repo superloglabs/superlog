@@ -1,5 +1,5 @@
 # Build context: repo root. Build with `docker build -f apps/api/Dockerfile .`
-FROM node:20-slim
+FROM node:22-slim
 
 WORKDIR /app
 
