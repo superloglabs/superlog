@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { ApiError } from "../api-error.ts";
 import { useConnectSentryProject, useSentryAuthorization } from "../api.ts";
 import { Dropdown } from "../design/Dropdown.tsx";
 import { Btn } from "../design/ui.tsx";
@@ -32,7 +33,9 @@ export function SentryProjectPicker({
   if (authorization.isLoading) {
     return <p className="text-[12.5px] text-muted">Loading Sentry projects…</p>;
   }
-  if (authorization.error || !authorization.data) {
+  const connectNeedsRestart =
+    connect.error instanceof ApiError && [404, 409, 410].includes(connect.error.status);
+  if (authorization.error || !authorization.data || connectNeedsRestart) {
     return (
       <div className="space-y-3">
         <p className="text-[12.5px] text-danger">
