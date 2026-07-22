@@ -211,7 +211,7 @@ const PULL_REQUEST_PROPERTIES = {
   title: {
     type: "string",
     description:
-      "Exact PR title for human review: '[superlog] <imperative fix summary>' describing the fix outcome, not the incident title.",
+      "Exact PR title for human review, describing the fix outcome rather than the incident title. Preserve every title convention from the repository's agent-instruction files and organization-specific guidance, including required or forbidden prefixes and required suffixes. When neither defines a format, use a concise imperative fix summary.",
   },
   body: {
     type: "string",

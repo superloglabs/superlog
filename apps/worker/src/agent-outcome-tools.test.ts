@@ -205,6 +205,21 @@ test("propose_pr description explains the terminal multi-PR contract", () => {
   assert.ok(text.includes("NOT for noise"));
 });
 
+test("propose_pr title guidance defers to repository and organization conventions", () => {
+  const proposePr = OUTCOME_TOOL_DEFINITIONS.find((definition) => definition.name === "propose_pr");
+  assert.ok(proposePr);
+  const pullRequests = proposePr.input_schema.properties.pullRequests;
+  assert.ok(pullRequests);
+  const item = pullRequests.items as {
+    properties: Record<string, { description?: string }>;
+  };
+  const titleDescription = item.properties.title?.description ?? "";
+
+  assert.match(titleDescription, /repository's agent-instruction files/i);
+  assert.match(titleDescription, /organization-specific guidance/i);
+  assert.doesNotMatch(titleDescription, /\[superlog\]/i);
+});
+
 test("resolve_incident description requires atomic per-issue outcomes", () => {
   const def = OUTCOME_TOOL_DEFINITIONS.find((d) => d.name === "resolve_incident");
   assert.ok(def?.description.includes("exactly one outcome for every linked Issue"));
