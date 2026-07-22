@@ -1123,6 +1123,10 @@ async function postSlackThreadReply(opts: {
         channel: opts.channel,
         thread_ts: opts.threadTs ?? undefined,
         text: opts.text,
+        // Agent replies often quote incident/PR URLs; don't let Slack unfurl
+        // them into Open Graph preview cards.
+        unfurl_links: false,
+        unfurl_media: false,
       }),
     });
     const data = (await res.json()) as { ok: boolean; error?: string };

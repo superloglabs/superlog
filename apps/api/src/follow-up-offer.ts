@@ -86,6 +86,8 @@ export async function offerFollowUpForFeedback(feedback: schema.Feedback): Promi
         channel: incident.slackChannelId,
         thread_ts: incident.slackThreadTs,
         text,
+        unfurl_links: false,
+        unfurl_media: false,
         blocks: [
           { type: "section", text: { type: "mrkdwn", text } },
           {
