@@ -3105,6 +3105,11 @@ export function useRestartAgentRun(projectId: string) {
       qc.invalidateQueries({ queryKey: ["incident", projectId, incidentId] });
       qc.invalidateQueries({ queryKey: ["incident-agent run", projectId, incidentId] });
     },
+    onError: (_error, { incidentId }) => {
+      qc.invalidateQueries({ queryKey: ["incidents", projectId] });
+      qc.invalidateQueries({ queryKey: ["incident", projectId, incidentId] });
+      qc.invalidateQueries({ queryKey: ["incident-agent run", projectId, incidentId] });
+    },
   });
 }
 
