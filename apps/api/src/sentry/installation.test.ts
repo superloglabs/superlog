@@ -49,8 +49,8 @@ test("routes an onboarding OAuth callback back into onboarding", async () => {
     "https://app.superlog.dev/?sentry=installed",
   );
   assert.equal(
-    sentryOAuthRedirect("https://app.superlog.dev", "settings", "denied"),
-    "https://app.superlog.dev/settings?sentry=denied",
+    sentryOAuthRedirect("https://app.superlog.dev", "settings", "denied", undefined, "project-1"),
+    "https://app.superlog.dev/settings?scope=project&section=integrations&projectId=project-1&sentry=denied",
   );
   assert.equal(
     sentryOAuthRedirect(
@@ -58,8 +58,9 @@ test("routes an onboarding OAuth callback back into onboarding", async () => {
       "settings",
       "choose-project",
       "authorization-1",
+      "project-1",
     ),
-    "https://app.superlog.dev/settings?sentry=choose-project&sentryAuthorization=authorization-1",
+    "https://app.superlog.dev/settings?scope=project&section=integrations&projectId=project-1&sentry=choose-project&sentryAuthorization=authorization-1",
   );
 });
 

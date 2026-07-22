@@ -69,7 +69,13 @@ export function mountSentryInstallationPublic(app: Hono<any>, deps: SentryInstal
       const rawState = c.req.query("state");
       const state = rawState ? verifySentryState(rawState, stateSecret) : null;
       return c.redirect(
-        sentryOAuthRedirect(webOrigin, state?.returnTo ?? "settings", "denied"),
+        sentryOAuthRedirect(
+          webOrigin,
+          state?.returnTo ?? "settings",
+          "denied",
+          undefined,
+          state?.projectId,
+        ),
         302,
       );
     }
@@ -91,7 +97,16 @@ export function mountSentryInstallationPublic(app: Hono<any>, deps: SentryInstal
         projectId: callback.state.projectId,
       }))
     ) {
-      return c.redirect(sentryOAuthRedirect(webOrigin, callback.state.returnTo, "error"), 302);
+      return c.redirect(
+        sentryOAuthRedirect(
+          webOrigin,
+          callback.state.returnTo,
+          "error",
+          undefined,
+          callback.state.projectId,
+        ),
+        302,
+      );
     }
 
     try {
@@ -133,6 +148,7 @@ export function mountSentryInstallationPublic(app: Hono<any>, deps: SentryInstal
             callback.state.returnTo,
             "choose-project",
             authorization.id,
+            callback.state.projectId,
           ),
           302,
         );
@@ -158,10 +174,28 @@ export function mountSentryInstallationPublic(app: Hono<any>, deps: SentryInstal
         },
         "sentry installed",
       );
-      return c.redirect(sentryOAuthRedirect(webOrigin, callback.state.returnTo, "installed"), 302);
+      return c.redirect(
+        sentryOAuthRedirect(
+          webOrigin,
+          callback.state.returnTo,
+          "installed",
+          undefined,
+          callback.state.projectId,
+        ),
+        302,
+      );
     } catch (error) {
       log.error({ err: error }, "sentry oauth callback failed");
-      return c.redirect(sentryOAuthRedirect(webOrigin, callback.state.returnTo, "error"), 302);
+      return c.redirect(
+        sentryOAuthRedirect(
+          webOrigin,
+          callback.state.returnTo,
+          "error",
+          undefined,
+          callback.state.projectId,
+        ),
+        302,
+      );
     }
   });
 }
@@ -317,9 +351,16 @@ export function sentryOAuthRedirect(
   returnTo: SentryOAuthState["returnTo"],
   outcome: "installed" | "choose-project" | "denied" | "error",
   authorizationId?: string,
+  projectId?: string,
 ): string {
   const path = returnTo === "onboarding" ? "/" : "/settings";
-  const query = new URLSearchParams({ sentry: outcome });
+  const query = new URLSearchParams();
+  if (returnTo === "settings") {
+    query.set("scope", "project");
+    query.set("section", "integrations");
+    if (projectId) query.set("projectId", projectId);
+  }
+  query.set("sentry", outcome);
   if (authorizationId) query.set("sentryAuthorization", authorizationId);
   return `${webOrigin.replace(/\/$/, "")}${path}?${query.toString()}`;
 }
