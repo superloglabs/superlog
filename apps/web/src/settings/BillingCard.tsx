@@ -46,7 +46,7 @@ const PLAN_OPTIONS = [
     name: "Free",
     price: "$0",
     cta: "Switch to Free",
-    details: ["5 investigations / mo", "1M spans · 5M logs · 10M metrics", "Hard caps — ingest pauses at limit"],
+    details: ["5 incidents investigated / mo", "1M spans · 5M logs · 10M metrics", "Hard caps — ingest pauses at limit"],
   },
 ];
 

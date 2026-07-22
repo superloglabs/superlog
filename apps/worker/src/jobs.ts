@@ -27,13 +27,22 @@ export type JobDeps = {
 // The unit of work for a scheduled job: run once per fire. pg-boss owns the
 // schedule, retries, and single-active semantics, so handlers do NOT self-gate
 // or loop — they just do one pass.
-export type JobHandler = () => Promise<void>;
+export type BackgroundJob<Data = unknown> = {
+  id: string;
+  data: Data;
+};
+
+export type JobHandler<Data = unknown> = (job?: BackgroundJob<Data>) => Promise<void>;
+
+export type JobQueuePolicy = "standard" | "short" | "singleton" | "stately" | "exclusive";
 
 // The shape each file in the jobs dir exports as `job`.
 export type JobDefinition = {
   name: string;
-  // 5-field cron expression (minute precision); pg-boss checks every 30s.
-  schedule: string;
+  // Omit schedule for event-driven queues. Scheduled jobs default to an
+  // exclusive queue; event consumers default to standard unless overridden.
+  schedule?: string;
+  policy?: JobQueuePolicy;
   // Durable active-job lease. Set this above the handler's legitimate worst
   // case so pg-boss never starts an overlapping successor while a slow run is
   // still alive.
@@ -47,7 +56,8 @@ export type JobDefinition = {
 // A discovered, ready-to-schedule job.
 export type LoadedJob = {
   name: string;
-  schedule: string;
+  schedule?: string;
+  policy?: JobQueuePolicy;
   expireInSeconds?: number;
   handler: JobHandler;
 };
@@ -67,8 +77,7 @@ function isJobDefinition(value: unknown): value is JobDefinition {
   const def = value as Partial<JobDefinition>;
   return (
     typeof def.name === "string" &&
-    typeof def.schedule === "string" &&
-    def.schedule.length > 0 &&
+    (def.schedule === undefined || (typeof def.schedule === "string" && def.schedule.length > 0)) &&
     (def.expireInSeconds === undefined ||
       (Number.isFinite(def.expireInSeconds) && def.expireInSeconds > 0)) &&
     typeof def.create === "function"
@@ -111,6 +120,7 @@ export async function loadJobs(deps: JobDeps, options: { dir?: URL } = {}): Prom
       jobs.push({
         name: def.name,
         schedule: def.schedule,
+        policy: def.policy,
         expireInSeconds: def.expireInSeconds,
         handler,
       });

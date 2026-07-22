@@ -12,23 +12,47 @@ type PublicPage = {
   ogType?: "website" | "article";
   publishedTime?: string;
   author?: string;
+  lastModified: string;
   structuredData?: Record<string, unknown>;
 };
 
 const SITE_ORIGIN = "https://superlog.sh";
+const SITE_CONTENT_LAST_MODIFIED = "2026-07-22";
+const SOCIAL_IMAGE_ALT = "Superlog wordmark over a blue and violet abstract background";
 const pages: PublicPage[] = [
   {
     path: "/",
     title: "Superlog | Observability that fixes your bugs",
     description:
       "AI-native observability that groups incidents, investigates production telemetry, and prepares fixes.",
+    lastModified: SITE_CONTENT_LAST_MODIFIED,
     structuredData: {
       "@context": "https://schema.org",
-      "@type": "Organization",
-      name: "Superlog",
-      url: SITE_ORIGIN,
-      logo: `${SITE_ORIGIN}/superlog-pictogram-dark.svg`,
-      sameAs: ["https://github.com/superloglabs/superlog"],
+      "@graph": [
+        {
+          "@type": "Organization",
+          "@id": `${SITE_ORIGIN}/#organization`,
+          name: "Superlog",
+          url: SITE_ORIGIN,
+          description:
+            "AI-native observability that groups incidents, investigates production telemetry, and prepares fixes.",
+          logo: {
+            "@type": "ImageObject",
+            url: `${SITE_ORIGIN}/web-app-manifest-512x512.png`,
+            width: 512,
+            height: 512,
+          },
+          sameAs: ["https://github.com/superloglabs/superlog"],
+        },
+        {
+          "@type": "WebSite",
+          "@id": `${SITE_ORIGIN}/#website`,
+          name: "Superlog",
+          url: SITE_ORIGIN,
+          publisher: { "@id": `${SITE_ORIGIN}/#organization` },
+          inLanguage: "en",
+        },
+      ],
     },
   },
   {
@@ -36,59 +60,111 @@ const pages: PublicPage[] = [
     title: "Pricing | Superlog",
     description:
       "Start with free OpenTelemetry ingest and pay only for the telemetry and investigations your team uses.",
+    lastModified: SITE_CONTENT_LAST_MODIFIED,
   },
   {
     path: "/blog",
     title: "Blog | Superlog",
     description: "Product updates, engineering notes, and lessons from building Superlog.",
+    lastModified: SITE_CONTENT_LAST_MODIFIED,
   },
-  ...BLOG_POSTS.map((post) => ({
-    path: `/blog/${post.slug}`,
-    title: `${post.title} | Superlog`,
-    description: post.excerpt || `Read ${post.title} on the Superlog blog.`,
-    ogType: "article" as const,
-    publishedTime: post.date,
-    author: post.author,
-    structuredData: {
-      "@context": "https://schema.org",
-      "@type": "BlogPosting",
-      headline: post.title,
-      description: post.excerpt || `Read ${post.title} on the Superlog blog.`,
-      datePublished: post.date,
-      author: { "@type": "Person", name: post.author || "Superlog" },
-      publisher: {
-        "@type": "Organization",
-        name: "Superlog",
-        logo: { "@type": "ImageObject", url: `${SITE_ORIGIN}/superlog-pictogram-dark.svg` },
+  ...BLOG_POSTS.map((post) => {
+    const url = `${SITE_ORIGIN}/blog/${post.slug}`;
+    const description = post.excerpt || `Read ${post.title} on the Superlog blog.`;
+    return {
+      path: `/blog/${post.slug}`,
+      title: `${post.title} | Superlog`,
+      description,
+      ogType: "article" as const,
+      publishedTime: post.date,
+      author: post.author,
+      lastModified: post.date,
+      structuredData: {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "BlogPosting",
+            "@id": `${url}/#article`,
+            headline: post.title,
+            description,
+            image: `${SITE_ORIGIN}/og-image.png`,
+            datePublished: post.date,
+            dateModified: post.date,
+            author: {
+              "@type": "Person",
+              name: post.author || "Superlog",
+              url: `${SITE_ORIGIN}/team`,
+            },
+            publisher: {
+              "@type": "Organization",
+              "@id": `${SITE_ORIGIN}/#organization`,
+              name: "Superlog",
+              logo: {
+                "@type": "ImageObject",
+                url: `${SITE_ORIGIN}/web-app-manifest-512x512.png`,
+                width: 512,
+                height: 512,
+              },
+            },
+            mainEntityOfPage: { "@type": "WebPage", "@id": url },
+          },
+          {
+            "@type": "BreadcrumbList",
+            itemListElement: [
+              {
+                "@type": "ListItem",
+                position: 1,
+                name: "Home",
+                item: SITE_ORIGIN,
+              },
+              {
+                "@type": "ListItem",
+                position: 2,
+                name: "Blog",
+                item: `${SITE_ORIGIN}/blog`,
+              },
+              {
+                "@type": "ListItem",
+                position: 3,
+                name: post.title,
+                item: url,
+              },
+            ],
+          },
+        ],
       },
-      mainEntityOfPage: `${SITE_ORIGIN}/blog/${post.slug}`,
-    },
-  })),
+    };
+  }),
   {
     path: "/changelog",
     title: "Changelog | Superlog",
     description:
       "See the latest product improvements, fixes, and integrations shipped by Superlog.",
+    lastModified: SITE_CONTENT_LAST_MODIFIED,
   },
   {
     path: "/roadmap",
     title: "Roadmap | Superlog",
     description: "See what the Superlog team is building next for AI-native observability.",
+    lastModified: SITE_CONTENT_LAST_MODIFIED,
   },
   {
     path: "/team",
     title: "Team | Superlog",
     description: "Meet the team building Superlog, the observability platform that fixes bugs.",
+    lastModified: SITE_CONTENT_LAST_MODIFIED,
   },
   {
     path: "/privacy",
     title: "Privacy Policy | Superlog",
     description: "Read the Superlog privacy policy.",
+    lastModified: SITE_CONTENT_LAST_MODIFIED,
   },
   {
     path: "/tos",
     title: "Terms of Service | Superlog",
     description: "Read the Superlog terms of service.",
+    lastModified: SITE_CONTENT_LAST_MODIFIED,
   },
 ];
 
@@ -108,6 +184,7 @@ function documentForPage(template: string, markup: string, page: PublicPage): st
     `<link rel="canonical" href="${escapeAttribute(canonical)}" />`,
     `<meta property="og:type" content="${page.ogType ?? "website"}" />`,
     `<meta property="og:site_name" content="Superlog" />`,
+    '<meta property="og:locale" content="en_US" />',
     `<meta property="og:title" content="${escapeAttribute(page.title)}" />`,
     `<meta property="og:description" content="${escapeAttribute(page.description)}" />`,
     `<meta property="og:url" content="${escapeAttribute(canonical)}" />`,
@@ -115,14 +192,17 @@ function documentForPage(template: string, markup: string, page: PublicPage): st
     '<meta property="og:image:type" content="image/png" />',
     '<meta property="og:image:width" content="1200" />',
     '<meta property="og:image:height" content="630" />',
-    '<meta property="og:image:alt" content="Superlog" />',
+    `<meta property="og:image:alt" content="${SOCIAL_IMAGE_ALT}" />`,
     '<meta name="twitter:card" content="summary_large_image" />',
     `<meta name="twitter:title" content="${escapeAttribute(page.title)}" />`,
     `<meta name="twitter:description" content="${escapeAttribute(page.description)}" />`,
     `<meta name="twitter:image" content="${image}" />`,
-    '<meta name="twitter:image:alt" content="Superlog" />',
+    `<meta name="twitter:image:alt" content="${SOCIAL_IMAGE_ALT}" />`,
     ...(page.publishedTime
       ? [`<meta property="article:published_time" content="${page.publishedTime}" />`]
+      : []),
+    ...(page.ogType === "article"
+      ? [`<meta property="article:modified_time" content="${page.lastModified}" />`]
       : []),
     ...(page.author
       ? [`<meta property="article:author" content="${escapeAttribute(page.author)}" />`]
@@ -183,7 +263,7 @@ async function prerender() {
     '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
     ...pages.map((page) => {
       const url = `${SITE_ORIGIN}${page.path === "/" ? "" : page.path}`;
-      return `  <url><loc>${escapeAttribute(url)}</loc></url>`;
+      return `  <url><loc>${escapeAttribute(url)}</loc><lastmod>${page.lastModified}</lastmod></url>`;
     }),
     "</urlset>",
     "",
@@ -193,6 +273,31 @@ async function prerender() {
     resolve(process.cwd(), "dist/robots.txt"),
     `User-agent: *\nAllow: /\n\nSitemap: ${SITE_ORIGIN}/sitemap.xml\n`,
   );
+
+  const llms = [
+    "# Superlog",
+    "",
+    "> AI-native observability that groups incidents, investigates production telemetry, and prepares fixes.",
+    "",
+    "## Website",
+    "",
+    ...pages.map((page) => {
+      const url = `${SITE_ORIGIN}${page.path === "/" ? "" : page.path}`;
+      const label = page.path === "/" ? "Home" : page.title.replace(/ \| Superlog$/, "");
+      return `- [${label}](${url}): ${page.description}`;
+    }),
+    "",
+    "## Documentation",
+    "",
+    "- [Documentation index](https://docs.superlog.sh/llms.txt)",
+    "- [Complete documentation](https://docs.superlog.sh/llms-full.txt)",
+    "",
+    "## Open source",
+    "",
+    "- [Superlog on GitHub](https://github.com/superloglabs/superlog)",
+    "",
+  ].join("\n");
+  await writeFile(resolve(process.cwd(), "dist/llms.txt"), llms);
 }
 
 void prerender();

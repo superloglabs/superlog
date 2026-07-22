@@ -220,9 +220,15 @@ function Hero() {
         <div className="relative mx-auto mt-14 rounded-none md:rounded-lg">
           <div className="absolute inset-0 overflow-hidden rounded-none md:rounded-lg">
             <img
-              src="/hero-rocket.png"
+              src="/hero-rocket.webp"
+              srcSet="/hero-rocket-768.webp 768w, /hero-rocket.webp 1586w"
+              sizes="(max-width: 768px) 100vw, 1400px"
               alt=""
               aria-hidden="true"
+              width={1586}
+              height={992}
+              fetchPriority="high"
+              decoding="async"
               className="absolute inset-0 h-full w-full object-cover object-top"
             />
             <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(8,9,11,0.72),rgba(8,9,11,0.08)_64%),linear-gradient(90deg,rgba(8,9,11,0.54),rgba(8,9,11,0.06)_56%,rgba(8,9,11,0.42))]" />
@@ -485,9 +491,15 @@ function InstallStory() {
   return (
     <div className="relative mt-24 min-h-[420px] overflow-hidden rounded-none md:min-h-[520px] md:rounded-lg">
       <img
-        src="/observability-motion.jpg"
+        src="/observability-motion.webp"
+        srcSet="/observability-motion-768.webp 768w, /observability-motion-1600.webp 1600w, /observability-motion.webp 3024w"
+        sizes="(max-width: 768px) 100vw, 1400px"
         alt=""
         aria-hidden="true"
+        width={3024}
+        height={3780}
+        loading="lazy"
+        decoding="async"
         className="absolute inset-0 h-full w-full object-cover"
       />
       <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(8,9,11,0.88),rgba(8,9,11,0.5)_48%,rgba(8,9,11,0.2)),linear-gradient(0deg,rgba(8,9,11,0.68),rgba(8,9,11,0.08)_55%)]" />
@@ -527,9 +539,15 @@ function DriftSection() {
 
       <div className="relative min-h-[420px] overflow-hidden rounded-none md:min-h-[520px] md:rounded-lg">
         <img
-          src="/observability-drift.jpg"
+          src="/observability-drift.webp"
+          srcSet="/observability-drift-768.webp 768w, /observability-drift-1600.webp 1600w, /observability-drift.webp 5304w"
+          sizes="(min-width: 1024px) 50vw, 100vw"
           alt=""
           aria-hidden="true"
+          width={5304}
+          height={7952}
+          loading="lazy"
+          decoding="async"
           className="absolute inset-0 h-full w-full object-cover"
         />
         <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(8,9,11,0.72),rgba(8,9,11,0.36)),linear-gradient(0deg,rgba(8,9,11,0.72),rgba(8,9,11,0.12)_58%)]" />
@@ -706,9 +724,15 @@ function FixSection() {
 
       <div className="relative min-h-[420px] overflow-hidden rounded-none md:min-h-[520px] md:rounded-lg">
         <img
-          src="/fix-bugs-motion.png"
+          src="/fix-bugs-motion.webp"
+          srcSet="/fix-bugs-motion-768.webp 768w, /fix-bugs-motion.webp 1536w"
+          sizes="(min-width: 1024px) 50vw, 100vw"
           alt=""
           aria-hidden="true"
+          width={1536}
+          height={1024}
+          loading="lazy"
+          decoding="async"
           className="absolute inset-0 h-full w-full object-cover"
         />
         <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(8,9,11,0.48),rgba(8,9,11,0.18)),linear-gradient(0deg,rgba(8,9,11,0.68),rgba(8,9,11,0.04)_62%)]" />
@@ -800,9 +824,15 @@ function PlatformSection() {
 
       <div className="relative min-h-[420px] overflow-hidden rounded-none md:min-h-[560px] md:rounded-lg">
         <img
-          src="/zero-clicks-motion.png"
+          src="/zero-clicks-motion.webp"
+          srcSet="/zero-clicks-motion-768.webp 768w, /zero-clicks-motion.webp 1122w"
+          sizes="(max-width: 768px) 100vw, 1400px"
           alt=""
           aria-hidden="true"
+          width={1122}
+          height={1402}
+          loading="lazy"
+          decoding="async"
           className="absolute inset-0 h-full w-full object-cover"
         />
         <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(8,9,11,0.82),rgba(8,9,11,0.42)_48%,rgba(8,9,11,0.16)),linear-gradient(0deg,rgba(8,9,11,0.66),rgba(8,9,11,0.08)_58%)]" />
@@ -878,9 +908,15 @@ function FinalCTA() {
 
       <div className="relative mt-16 min-h-[420px] overflow-hidden rounded-none px-4 py-12 md:min-h-[560px] md:rounded-lg md:px-10 md:py-16">
         <img
-          src="/no-lock-in-motion.jpg"
+          src="/no-lock-in-motion.webp"
+          srcSet="/no-lock-in-motion-768.webp 768w, /no-lock-in-motion-1600.webp 1600w, /no-lock-in-motion.webp 3024w"
+          sizes="(max-width: 768px) 100vw, 1400px"
           alt=""
           aria-hidden="true"
+          width={3024}
+          height={3024}
+          loading="lazy"
+          decoding="async"
           className="absolute inset-0 h-full w-full object-cover"
         />
         <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(8,9,11,0.74),rgba(8,9,11,0.34)_48%,rgba(8,9,11,0.16)),linear-gradient(0deg,rgba(8,9,11,0.7),rgba(8,9,11,0.08)_60%)]" />

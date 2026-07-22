@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Btn } from "../design/ui.tsx";
 import { TodoCard } from "./TodoCard.tsx";
-import { ArrowIcon, ArrowLeftIcon, CheckIcon } from "./icons.tsx";
+import { ArrowIcon, ArrowLeftIcon } from "./icons.tsx";
 import type { Todo, TodoId } from "./types.ts";
 
 export function TodoCarousel({
@@ -28,16 +28,7 @@ export function TodoCarousel({
 
   const pct = total === 0 ? 0 : Math.round((completed / total) * 100);
 
-  if (!current) {
-    return (
-      <div className="rounded-[14px] border border-border bg-surface px-8 py-10 text-center">
-        <div className="mx-auto mb-3 grid h-11 w-11 place-items-center rounded-full bg-success/15 text-success">
-          <CheckIcon size={20} />
-        </div>
-        <div className="text-[17px] font-semibold text-fg">You're all set</div>
-      </div>
-    );
-  }
+  if (!current) return null;
 
   return (
     <section>

@@ -24,7 +24,7 @@ const FREE_INCLUDED = [
   "5M logs",
   "10M metric points",
   "30-day retention",
-  "5 investigations / month",
+  "5 incidents investigated / month",
 ];
 
 type Pack = {

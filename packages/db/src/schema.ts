@@ -2122,6 +2122,7 @@ export const dashboards = pgTable(
     name: text("name").notNull(),
     slug: text("slug").notNull(),
     isHome: boolean("is_home").notNull().default(false),
+    homeLayoutVersion: integer("home_layout_version").notNull().default(0),
     variables: jsonb("variables").$type<DashboardVariable[]>().notNull().default(sql`'[]'::jsonb`),
     createdBy: uuid("created_by")
       .notNull()

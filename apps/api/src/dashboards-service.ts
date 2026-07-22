@@ -81,11 +81,11 @@ export function defaultWidgetLayout(type: DashboardWidgetType): DashboardWidgetL
     case "service_map":
       return { x: 6, y: 5, w: 6, h: 8 };
     case "incoming_signals":
-      return { x: 0, y: 5, w: 4, h: 5 };
+      return { x: 0, y: 0, w: 4, h: 5 };
     case "incident_count":
-      return { x: 4, y: 5, w: 4, h: 5 };
+      return { x: 4, y: 0, w: 4, h: 5 };
     case "agent_pull_requests":
-      return { x: 8, y: 5, w: 4, h: 5 };
+      return { x: 8, y: 0, w: 4, h: 5 };
     case "trace_table":
     case "log_table":
       return { x: 0, y: 9999, w: 12, h: 6 };
@@ -325,6 +325,9 @@ export async function getOrCreateHomeDashboard(
         name: "Home",
         slug: "__home__",
         isHome: true,
+        // Temporary marker for the one-time production data backfill. Runtime
+        // reads never branch on this value; remove it after the backfill deploy.
+        homeLayoutVersion: 1,
         createdBy: userId,
       })
       .onConflictDoNothing()

@@ -1,4 +1,5 @@
 import "./instrumentation";
+import { initGtm } from "./gtm";
 import "@fontsource/geist-pixel/latin.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AutumnProvider } from "autumn-js/react";
@@ -15,6 +16,11 @@ import "./dashboards/grid.css";
 const bootSpan = tracer.startSpan("app.bootstrap", {
   attributes: { "app.path": window.location.pathname },
 });
+
+// Load Google Tag Manager as early as possible on every surface. No-ops unless
+// VITE_GTM_CONTAINER_ID is set at build time, so dev/worktrees/self-hosted
+// builds ship no tag manager (same gating as PostHog below).
+initGtm(import.meta.env.VITE_GTM_CONTAINER_ID);
 
 // Wrap the app in PostHog only when a project token is configured. Local dev
 // and worktrees don't set VITE_PUBLIC_POSTHOG_PROJECT_TOKEN, so analytics stays

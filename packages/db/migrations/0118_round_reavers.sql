@@ -1,0 +1,1 @@
+ALTER TABLE "dashboards" ADD COLUMN "home_layout_version" integer DEFAULT 0 NOT NULL;
