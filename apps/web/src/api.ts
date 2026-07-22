@@ -1629,6 +1629,13 @@ export type SentryInstallation =
       reauthReason: string | null;
     };
 
+export type SentryAuthorization = {
+  id: string;
+  organizationSlug: string;
+  projects: Array<{ id: string; slug: string; name: string }>;
+  expiresAt: string;
+};
+
 export function sentryProjectEndpoints(projectId: string) {
   const base = `/api/projects/${projectId}/sentry`;
   return {
@@ -1636,6 +1643,9 @@ export function sentryProjectEndpoints(projectId: string) {
     installUrl: `${base}/install-url`,
     importOpenIssues: `${base}/import-open-issues`,
     uninstall: `${base}/uninstall`,
+    authorization: (authorizationId: string) => `${base}/authorizations/${authorizationId}`,
+    connectAuthorization: (authorizationId: string) =>
+      `${base}/authorizations/${authorizationId}/connect`,
   };
 }
 
@@ -1662,11 +1672,55 @@ export function useStartSentryInstall(
 ) {
   const fetcher = useFetcher();
   return useMutation({
+    mutationFn: () =>
+      fetcher<{ url: string }>(
+        sentryProjectEndpoints(requiredSentryProjectId(projectId)).installUrl,
+        {
+          method: "POST",
+          body: JSON.stringify({ returnTo }),
+        },
+      ),
+  });
+}
+
+export function useSentryAuthorization(
+  projectId: string | undefined,
+  authorizationId: string | null,
+) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["sentry-authorization", projectId, authorizationId],
+    queryFn: () =>
+      fetcher<SentryAuthorization>(
+        sentryProjectEndpoints(requiredSentryProjectId(projectId)).authorization(
+          authorizationId ?? "",
+        ),
+      ),
+    enabled: !!projectId && !!authorizationId,
+    retry: false,
+  });
+}
+
+export function useConnectSentryProject(
+  projectId: string | undefined,
+  authorizationId: string | null,
+) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
     mutationFn: (projectSlug: string) =>
-      fetcher<{ url: string }>(sentryProjectEndpoints(requiredSentryProjectId(projectId)).installUrl, {
-        method: "POST",
-        body: JSON.stringify({ projectSlug, returnTo }),
-      }),
+      fetcher<{ installed: true; organizationSlug: string; projectSlug: string }>(
+        sentryProjectEndpoints(requiredSentryProjectId(projectId)).connectAuthorization(
+          authorizationId ?? "",
+        ),
+        { method: "POST", body: JSON.stringify({ projectSlug }) },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["sentry-installation", projectId] });
+      void qc.invalidateQueries({
+        queryKey: ["sentry-authorization", projectId, authorizationId],
+      });
+    },
   });
 }
 

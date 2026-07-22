@@ -2,6 +2,52 @@ import type { SentryIssue } from "./domain.js";
 
 const SENTRY_API_ORIGIN = "https://sentry.io";
 
+export type SentryProject = {
+  id: string;
+  slug: string;
+  name: string;
+};
+
+export async function listSentryProjects(input: {
+  accessToken: string;
+  organizationSlug: string;
+  fetchImpl?: typeof fetch;
+}): Promise<SentryProject[]> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  let nextUrl: URL | null = new URL(
+    `/api/0/organizations/${encodeURIComponent(input.organizationSlug)}/projects/`,
+    SENTRY_API_ORIGIN,
+  );
+  const visited = new Set<string>();
+  const projects: SentryProject[] = [];
+
+  while (nextUrl) {
+    if (visited.has(nextUrl.href)) throw new Error("Sentry API pagination loop detected");
+    visited.add(nextUrl.href);
+    const response = await fetchImpl(nextUrl.href, {
+      headers: { accept: "application/json", authorization: `Bearer ${input.accessToken}` },
+      redirect: "error",
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(`Sentry projects request failed (${response.status})`);
+    if (!Array.isArray(payload)) throw new Error("Sentry projects response was not a list");
+    for (const value of payload) {
+      if (
+        isRecord(value) &&
+        typeof value.id === "string" &&
+        typeof value.slug === "string" &&
+        typeof value.name === "string" &&
+        value.hasAccess !== false
+      ) {
+        projects.push({ id: value.id, slug: value.slug, name: value.name });
+      }
+    }
+    nextUrl = nextSentryPage(response.headers.get("link"));
+  }
+
+  return projects;
+}
+
 export async function listOpenSentryIssues(input: {
   accessToken: string;
   organizationSlug: string;

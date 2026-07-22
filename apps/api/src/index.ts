@@ -158,7 +158,8 @@ import {
 import { mountApiRequestSecurity, requestBodyLimit } from "./request-body-limits.js";
 import { mountSavedViews } from "./saved-views/interfaces.js";
 import { importOpenSentryIssues, receiveSentryIssueEvent } from "./sentry/application.js";
-import { listOpenSentryIssues } from "./sentry/client.js";
+import { DrizzleSentryAuthorizationRepository } from "./sentry/authorization-repository.js";
+import { listOpenSentryIssues, listSentryProjects } from "./sentry/client.js";
 import { mountSentryPublic } from "./sentry/http.js";
 import {
   type SentryInstallationDeps,
@@ -366,7 +367,10 @@ mountLinearPublic(app);
 mountNotionPublic(app);
 const sentryWebhookInbox = createDrizzleSentryWebhookInbox();
 const sentryCredentialRepository = createSentryCredentialRepository();
+const sentryAuthorizationRepository = new DrizzleSentryAuthorizationRepository();
 const sentryInstallationDeps: SentryInstallationDeps = {
+  authorizations: sentryAuthorizationRepository,
+  listProjects: (input) => listSentryProjects(input),
   importOpenIssues: (input) =>
     importOpenSentryIssues(
       { listOpenIssues: (query) => listOpenSentryIssues(query) },

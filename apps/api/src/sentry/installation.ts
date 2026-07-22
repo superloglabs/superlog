@@ -5,18 +5,23 @@ import type { Hono } from "hono";
 import { logger } from "../logger.js";
 import { requireProjectManagerContext } from "../org-authorization-http.js";
 import { hasProjectManagerAccess } from "../org-authorization.js";
+import {
+  SentryAuthorizationError,
+  type SentryAuthorizationRepository,
+} from "./authorization-session.js";
 import { type SentryInstallationToken, requestSentryInstallationToken } from "./authorization.js";
-import { sentryProjectIsAccessible } from "./client.js";
+import type { SentryProject } from "./client.js";
 import {
   type SentryOAuthState,
   buildSentryAuthorizeUrl,
   signSentryState,
   verifySentryState,
 } from "./oauth.js";
+import { planSentryProjectSelection } from "./project-selection.js";
 
 const log = logger.child({ scope: "sentry" });
 const SENTRY_API_ORIGIN = "https://sentry.io";
-const SENTRY_PROJECT_SLUG = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const SENTRY_AUTHORIZATION_TTL_MS = 10 * 60 * 1000;
 
 type Vars = { userId: string; orgId: string | null };
 
@@ -27,6 +32,11 @@ type SentryGrant = {
 };
 
 export type SentryInstallationDeps = {
+  authorizations: SentryAuthorizationRepository;
+  listProjects(input: {
+    accessToken: string;
+    organizationSlug: string;
+  }): Promise<SentryProject[]>;
   importOpenIssues(input: {
     accessToken: string;
     organizationSlug: string;
@@ -91,43 +101,54 @@ export function mountSentryInstallationPublic(app: Hono<any>, deps: SentryInstal
         code: callback.code,
         installationId: callback.installationId,
       });
-      const grant = await resolveSentryGrant({
+      const installation = await completeSentryInstallation({
         accessToken: token.accessToken,
-        appSlug,
-        sentryInstallationId: callback.installationId,
-        sentryProjectSlug: callback.state.sentryProjectSlug,
+        installationId: callback.installationId,
       });
+      if (installation.appSlug !== appSlug) {
+        throw new Error("Sentry App installation belongs to a different app");
+      }
+      const selection = planSentryProjectSelection(
+        await deps.listProjects({
+          accessToken: token.accessToken,
+          organizationSlug: installation.organizationSlug,
+        }),
+      );
+      if (selection.kind === "choose") {
+        const now = new Date();
+        const authorization = await deps.authorizations.create({
+          projectId: callback.state.projectId,
+          userId: callback.state.userId,
+          organizationSlug: installation.organizationSlug,
+          sentryInstallationId: callback.installationId,
+          projects: selection.projects,
+          token,
+          expiresAt: new Date(
+            Math.min(now.getTime() + SENTRY_AUTHORIZATION_TTL_MS, token.expiresAt.getTime()),
+          ),
+        });
+        return c.redirect(
+          sentryOAuthRedirect(
+            webOrigin,
+            callback.state.returnTo,
+            "choose-project",
+            authorization.id,
+          ),
+          302,
+        );
+      }
+      const grant: SentryGrant = {
+        organizationSlug: installation.organizationSlug,
+        sentryProjectSlug: selection.project.slug,
+        sentryInstallationId: callback.installationId,
+      };
       await installSentryGrant({
         projectId: callback.state.projectId,
         actorUserId: callback.state.userId,
         token,
         grant,
       });
-      const importInput = {
-        accessToken: token.accessToken,
-        organizationSlug: grant.organizationSlug,
-        projectSlug: grant.sentryProjectSlug,
-        installationId: grant.sentryInstallationId,
-        targetProjectId: callback.state.projectId,
-      };
-      startSentryOpenIssueImport(
-        () => deps.importOpenIssues(importInput),
-        (importedIssueCount) => {
-          log.info(
-            {
-              project_id: callback.state.projectId,
-              imported_issue_count: importedIssueCount,
-            },
-            "sentry open issues imported",
-          );
-        },
-        (error) => {
-          log.warn(
-            { err: error, project_id: callback.state.projectId },
-            "sentry open issue import failed",
-          );
-        },
-      );
+      startSentryGrantImport(deps, callback.state.projectId, token.accessToken, grant);
       log.info(
         {
           org_id: callback.state.orgId,
@@ -169,27 +190,86 @@ export function mountSentryInstallationAuthed(app: Hono<any>, deps: SentryInstal
     }
     const projectId = c.req.param("projectId");
     const ctx = await requireProjectManagerContext(c, projectId);
-    const body = (await c.req.json().catch(() => null)) as {
-      projectSlug?: unknown;
-      returnTo?: unknown;
-    } | null;
-    const sentryProjectSlug =
-      typeof body?.projectSlug === "string" ? body.projectSlug.trim().toLowerCase() : "";
-    if (!SENTRY_PROJECT_SLUG.test(sentryProjectSlug)) {
-      return c.json({ error: "valid Sentry project slug required" }, 400);
-    }
+    const body = (await c.req.json().catch(() => null)) as { returnTo?: unknown } | null;
     const returnTo = body?.returnTo === "onboarding" ? "onboarding" : "settings";
     const state = signSentryState(
       {
         orgId: ctx.access.orgId,
         projectId,
         userId: ctx.access.userId,
-        sentryProjectSlug,
         returnTo,
       },
       stateSecret,
     );
     return c.json({ url: buildSentryAuthorizeUrl({ appSlug, state }) });
+  });
+
+  app.get("/api/projects/:projectId/sentry/authorizations/:authorizationId", async (c) => {
+    const projectId = c.req.param("projectId");
+    const ctx = await requireProjectManagerContext(c, projectId);
+    const authorization = await deps.authorizations.findReady({
+      id: c.req.param("authorizationId"),
+      projectId,
+      userId: ctx.access.userId,
+      now: new Date(),
+    });
+    if (!authorization) return c.json({ error: "Sentry authorization not found" }, 404);
+    return c.json({
+      id: authorization.id,
+      organizationSlug: authorization.organizationSlug,
+      projects: authorization.projects,
+      expiresAt: authorization.expiresAt.toISOString(),
+    });
+  });
+
+  app.post("/api/projects/:projectId/sentry/authorizations/:authorizationId/connect", async (c) => {
+    const projectId = c.req.param("projectId");
+    const ctx = await requireProjectManagerContext(c, projectId);
+    const body = (await c.req.json().catch(() => null)) as { projectSlug?: unknown } | null;
+    if (typeof body?.projectSlug !== "string" || !body.projectSlug) {
+      return c.json({ error: "Sentry project required" }, 400);
+    }
+    try {
+      const claim = await deps.authorizations.claim({
+        id: c.req.param("authorizationId"),
+        projectId,
+        userId: ctx.access.userId,
+        sentryProjectSlug: body.projectSlug,
+        now: new Date(),
+      });
+      const grant: SentryGrant = {
+        organizationSlug: claim.organizationSlug,
+        sentryProjectSlug: claim.project.slug,
+        sentryInstallationId: claim.sentryInstallationId,
+      };
+      await installSentryGrant({
+        projectId,
+        actorUserId: ctx.access.userId,
+        token: claim.token,
+        grant,
+      });
+      startSentryGrantImport(deps, projectId, claim.token.accessToken, grant);
+      log.info(
+        {
+          org_id: ctx.access.orgId,
+          project_id: projectId,
+          sentry_organization_slug: grant.organizationSlug,
+          sentry_project_slug: grant.sentryProjectSlug,
+        },
+        "sentry installed after project selection",
+      );
+      return c.json({
+        installed: true,
+        organizationSlug: grant.organizationSlug,
+        projectSlug: grant.sentryProjectSlug,
+      });
+    } catch (error) {
+      if (!(error instanceof SentryAuthorizationError)) throw error;
+      if (error.code === "not_found") return c.json({ error: error.message }, 404);
+      if (error.code === "invalid_selection") return c.json({ error: error.message }, 400);
+      if (error.code === "expired") return c.json({ error: error.message }, 410);
+      return c.json({ error: error.message }, 409);
+    }
   });
 
   app.post("/api/projects/:projectId/sentry/uninstall", async (c) => {
@@ -235,10 +315,13 @@ export function startSentryOpenIssueImport(
 export function sentryOAuthRedirect(
   webOrigin: string,
   returnTo: SentryOAuthState["returnTo"],
-  outcome: "installed" | "denied" | "error",
+  outcome: "installed" | "choose-project" | "denied" | "error",
+  authorizationId?: string,
 ): string {
   const path = returnTo === "onboarding" ? "/" : "/settings";
-  return `${webOrigin.replace(/\/$/, "")}${path}?sentry=${outcome}`;
+  const query = new URLSearchParams({ sentry: outcome });
+  if (authorizationId) query.set("sentryAuthorization", authorizationId);
+  return `${webOrigin.replace(/\/$/, "")}${path}?${query.toString()}`;
 }
 
 export function parseSentryInstallationCallback(
@@ -265,35 +348,6 @@ export function exchangeSentryInstallationGrant(input: {
     grant: { type: "authorization_code", code: input.code },
     fetchImpl: input.fetchImpl,
   });
-}
-
-async function resolveSentryGrant(input: {
-  accessToken: string;
-  appSlug: string;
-  sentryInstallationId: string;
-  sentryProjectSlug: string;
-}): Promise<SentryGrant> {
-  const installation = await completeSentryInstallation({
-    accessToken: input.accessToken,
-    installationId: input.sentryInstallationId,
-  });
-  if (installation.appSlug !== input.appSlug) {
-    throw new Error("Sentry App installation belongs to a different app");
-  }
-  if (
-    !(await sentryProjectIsAccessible({
-      accessToken: input.accessToken,
-      organizationSlug: installation.organizationSlug,
-      projectSlug: input.sentryProjectSlug,
-    }))
-  ) {
-    throw new Error(`Sentry project ${input.sentryProjectSlug} is not accessible`);
-  }
-  return {
-    organizationSlug: installation.organizationSlug,
-    sentryProjectSlug: input.sentryProjectSlug,
-    sentryInstallationId: input.sentryInstallationId,
-  };
 }
 
 export async function completeSentryInstallation(input: {
@@ -382,6 +436,33 @@ function findCurrentInstallation(projectId: string) {
       isNull(schema.sentryInstallations.revokedAt),
     ),
   });
+}
+
+function startSentryGrantImport(
+  deps: SentryInstallationDeps,
+  projectId: string,
+  accessToken: string,
+  grant: SentryGrant,
+): void {
+  startSentryOpenIssueImport(
+    () =>
+      deps.importOpenIssues({
+        accessToken,
+        organizationSlug: grant.organizationSlug,
+        projectSlug: grant.sentryProjectSlug,
+        installationId: grant.sentryInstallationId,
+        targetProjectId: projectId,
+      }),
+    (importedIssueCount) => {
+      log.info(
+        { project_id: projectId, imported_issue_count: importedIssueCount },
+        "sentry open issues imported",
+      );
+    },
+    (error) => {
+      log.warn({ err: error, project_id: projectId }, "sentry open issue import failed");
+    },
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
