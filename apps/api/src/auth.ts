@@ -11,6 +11,7 @@ import {
   sendEmail,
   verificationEmailBody,
 } from "./email.js";
+import { enqueueUserCreated } from "./user-created-publisher.js";
 
 // Better Auth server config. Mounted at /api/auth/* by apps/api/src/index.ts.
 //
@@ -251,6 +252,7 @@ export const auth = betterAuth({
             event: "user_signed_up",
             set: { email: user.email, name: user.name },
           });
+          await enqueueUserCreated(user);
         },
       },
     },
