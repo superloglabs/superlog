@@ -32,6 +32,7 @@
     "@smithy/node-http-handler": "^4.7.4",
     "@superlog/db": "workspace:*",
     "@superlog/fingerprint": "workspace:*",
+    "@superlog/otel": "workspace:*",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "google-auth-library": "^10.9.0",

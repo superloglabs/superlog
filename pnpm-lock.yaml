@@ -159,6 +159,9 @@ importers:
       '@superlog/net-guard':
         specifier: workspace:*
         version: link:../../packages/net-guard
+      '@superlog/otel':
+        specifier: workspace:*
+        version: link:../../packages/otel
       '@superlog/railway':
         specifier: workspace:*
         version: link:../../packages/railway
@@ -277,6 +280,9 @@ importers:
       '@superlog/fingerprint':
         specifier: workspace:*
         version: link:../../packages/fingerprint
+      '@superlog/otel':
+        specifier: workspace:*
+        version: link:../../packages/otel
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
@@ -547,6 +553,9 @@ importers:
       '@superlog/net-guard':
         specifier: workspace:*
         version: link:../../packages/net-guard
+      '@superlog/otel':
+        specifier: workspace:*
+        version: link:../../packages/otel
       '@superlog/railway':
         specifier: workspace:*
         version: link:../../packages/railway
@@ -685,6 +694,22 @@ importers:
       undici:
         specifier: ^7.16.0
         version: 7.28.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.1
+        version: 22.19.17
+      tsx:
+        specifier: ^4.19.2
+        version: 4.21.0
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
+  packages/otel:
+    dependencies:
+      '@opentelemetry/sdk-logs':
+        specifier: ^0.220.0
+        version: 0.220.0(@opentelemetry/api@1.9.1)
     devDependencies:
       '@types/node':
         specifier: ^22.10.1

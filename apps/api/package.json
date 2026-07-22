@@ -39,6 +39,7 @@
     "@superlog/fingerprint": "workspace:*",
     "@superlog/gcp-auth": "workspace:*",
     "@superlog/net-guard": "workspace:*",
+    "@superlog/otel": "workspace:*",
     "@superlog/railway": "workspace:*",
     "@superlog/render": "workspace:*",
     "@superlog/telemetry-query": "workspace:*",
