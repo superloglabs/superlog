@@ -278,7 +278,14 @@ export class SqsBatchEntryRejectedError extends Error {
 }
 
 export function shouldCleanupOversizeObjectAfterQueueFailure(err: unknown): boolean {
-  return err instanceof SqsBatchEntryRejectedError;
+  if (err instanceof SqsBatchEntryRejectedError) return true;
+  if (!err || typeof err !== "object") return false;
+
+  const status = (err as { $metadata?: { httpStatusCode?: unknown } }).$metadata?.httpStatusCode;
+  // A completed 4xx response proves SQS rejected the request. A 408 is the
+  // exception: the server can time out after accepting work, so its outcome is
+  // just as ambiguous as a transport error or a 5xx response.
+  return typeof status === "number" && status >= 400 && status < 500 && status !== 408;
 }
 
 export function isPoisonMessageError(err: unknown): err is PoisonMessageError {

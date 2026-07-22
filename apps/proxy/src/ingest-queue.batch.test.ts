@@ -202,6 +202,23 @@ test("preserves the uploaded S3 object when the SQS batch outcome is ambiguous",
   );
 });
 
+test("cleans up the uploaded S3 object after a definitive whole-batch rejection", async () => {
+  const { queue, sqs, s3 } = buildQueue({
+    maxMessageBytes: 64, // force the S3 offload path
+    oversizeBucket: "test-bucket",
+  });
+  sqs.batchError = Object.assign(new Error("queue does not exist"), {
+    name: "QueueDoesNotExist",
+    $fault: "client",
+    $metadata: { httpStatusCode: 400 },
+  });
+
+  await assert.rejects(queue.enqueue(input("p-rejected")), /queue does not exist/);
+
+  assert.equal(s3.puts.length, 1, "the oversize body must be uploaded before the send");
+  assert.deepEqual(s3.deletes, s3.puts, "a definitively rejected pointer cannot be delivered");
+});
+
 /** Fake SQS for the consumer side: delivers one fixed batch on the first receive,
  *  then completes later polls empty after a short delay, like a scaled-down SQS
  *  long poll. Deletes must arrive as DeleteMessageBatch; entries whose receipt

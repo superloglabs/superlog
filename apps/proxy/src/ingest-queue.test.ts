@@ -171,6 +171,15 @@ test("isPoisonMessageError discriminates transient errors", () => {
 
 test("ambiguous SQS send failures preserve the oversize object", () => {
   assert.equal(shouldCleanupOversizeObjectAfterQueueFailure(new Error("request timed out")), false);
+  assert.equal(
+    shouldCleanupOversizeObjectAfterQueueFailure(
+      Object.assign(new Error("service unavailable"), {
+        $fault: "server",
+        $metadata: { httpStatusCode: 503 },
+      }),
+    ),
+    false,
+  );
 });
 
 test("definitive SQS batch entry rejections clean up the oversize object", () => {
@@ -179,6 +188,28 @@ test("definitive SQS batch entry rejections clean up the oversize object", () =>
       new SqsBatchEntryRejectedError("InvalidMessageContents", "invalid body"),
     ),
     true,
+  );
+});
+
+test("definitive whole-request SQS rejections clean up the oversize object", () => {
+  assert.equal(
+    shouldCleanupOversizeObjectAfterQueueFailure(
+      Object.assign(new Error("queue does not exist"), {
+        name: "QueueDoesNotExist",
+        $fault: "client",
+        $metadata: { httpStatusCode: 400 },
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    shouldCleanupOversizeObjectAfterQueueFailure(
+      Object.assign(new Error("request timeout"), {
+        $fault: "client",
+        $metadata: { httpStatusCode: 408 },
+      }),
+    ),
+    false,
   );
 });
 
