@@ -75,7 +75,9 @@ export function SentryConnectFlow({
         }
       />
 
-      <div className={`overflow-hidden rounded-[14px] border bg-surface ${SOFT_LINE}`}>
+      <div
+        className={`${choosingProject ? "overflow-visible" : "overflow-hidden"} rounded-[14px] border bg-surface ${SOFT_LINE}`}
+      >
         {installed && !choosingProject ? (
           <>
             <div className={`flex items-center gap-2.5 border-b px-[18px] py-[12px] ${SOFT_LINE}`}>
