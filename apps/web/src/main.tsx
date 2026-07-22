@@ -1,5 +1,6 @@
 import "./instrumentation";
 import { initGtm } from "./gtm";
+import { initXPixel } from "./x-pixel";
 import "@fontsource/geist-pixel/latin.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AutumnProvider } from "autumn-js/react";
@@ -21,6 +22,10 @@ const bootSpan = tracer.startSpan("app.bootstrap", {
 // VITE_GTM_CONTAINER_ID is set at build time, so dev/worktrees/self-hosted
 // builds ship no tag manager (same gating as PostHog below).
 initGtm(import.meta.env.VITE_GTM_CONTAINER_ID);
+
+// Install the X (Twitter) base pixel (page views / site visits). Same gating as
+// GTM — no-op unless VITE_X_PIXEL_ID is set in the prod build.
+initXPixel(import.meta.env.VITE_X_PIXEL_ID);
 
 // Wrap the app in PostHog only when a project token is configured. Local dev
 // and worktrees don't set VITE_PUBLIC_POSTHOG_PROJECT_TOKEN, so analytics stays
