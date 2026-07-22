@@ -1139,6 +1139,39 @@ test("restart preserves durable termination work for the superseded provider ses
   }
 });
 
+test("restart rejects a stale expected latest run without superseding its successor", async () => {
+  const { db, client } = await freshFollowUpDb();
+  try {
+    const { incident, priorRun } = await seedFollowUpIncident(db);
+    const successor = one(
+      await db
+        .insert(schema.agentRuns)
+        .values({
+          incidentId: incident.id,
+          runtime: "test",
+          state: "running",
+        })
+        .returning(),
+    );
+
+    const result = await restartAgentRun(db, {
+      incidentId: incident.id,
+      runtime: "test",
+      expectedLatestRunId: priorRun.id,
+      now: NOW,
+    });
+
+    assert.deepEqual(result, { outcome: "latest_run_changed" });
+    const runs = await db.query.agentRuns.findMany({
+      where: eq(schema.agentRuns.incidentId, incident.id),
+    });
+    assert.equal(runs.length, 2);
+    assert.equal(runs.find((run) => run.id === successor.id)?.state, "running");
+  } finally {
+    await client.close();
+  }
+});
+
 test("restart transfers an unprocessed PR lifecycle event to its viable successor", async () => {
   const { db, client } = await freshFollowUpDb();
   try {

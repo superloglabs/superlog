@@ -304,7 +304,8 @@ const RESTARTABLE_AGENT_RUN_STATES = [
 export type RestartAgentRunResult =
   | { outcome: "restarted"; agentRun: schema.AgentRun }
   | { outcome: "incident_not_open" }
-  | { outcome: "no_prior_run" };
+  | { outcome: "no_prior_run" }
+  | { outcome: "latest_run_changed" };
 
 export type RetryBlockedAgentRunResult =
   | { outcome: "retried"; agentRun: schema.AgentRun }
@@ -315,7 +316,12 @@ export type RetryBlockedAgentRunResult =
 
 export async function restartAgentRun(
   db: DB,
-  args: { incidentId: string; runtime: string; now?: Date },
+  args: {
+    incidentId: string;
+    runtime: string;
+    expectedLatestRunId?: string;
+    now?: Date;
+  },
 ): Promise<RestartAgentRunResult> {
   const now = args.now ?? new Date();
   return db.transaction(async (tx) => {
@@ -324,6 +330,9 @@ export async function restartAgentRun(
     if (aggregate.incident.status !== "open") return { outcome: "incident_not_open" };
     const latest = aggregate.runs[0];
     if (!latest) return { outcome: "no_prior_run" };
+    if (args.expectedLatestRunId && latest.id !== args.expectedLatestRunId) {
+      return { outcome: "latest_run_changed" };
+    }
 
     const created = await createRestartedAgentRun(tx, aggregate, {
       incidentId: args.incidentId,
