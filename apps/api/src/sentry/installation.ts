@@ -362,6 +362,9 @@ export function sentryOAuthRedirect(
   }
   query.set("sentry", outcome);
   if (authorizationId) query.set("sentryAuthorization", authorizationId);
+  if (returnTo === "onboarding" && outcome === "choose-project" && projectId) {
+    query.set("sentryProjectId", projectId);
+  }
   return `${webOrigin.replace(/\/$/, "")}${path}?${query.toString()}`;
 }
 

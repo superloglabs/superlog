@@ -26,6 +26,7 @@ export function SentryConnectFlow({
   const [outcomeError, setOutcomeError] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const authorizationId = searchParams.get("sentryAuthorization");
+  const authorizationProjectId = searchParams.get("sentryProjectId") ?? projectId;
   const choosingProject = searchParams.get("sentry") === "choose-project" && !!authorizationId;
   const importAttempted = useRef(false);
 
@@ -40,6 +41,7 @@ export function SentryConnectFlow({
     const next = new URLSearchParams(searchParams);
     next.delete("sentry");
     next.delete("sentryAuthorization");
+    next.delete("sentryProjectId");
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
@@ -132,12 +134,13 @@ export function SentryConnectFlow({
         ) : choosingProject && authorizationId ? (
           <div className="px-[22px] py-[18px]">
             <SentryProjectPicker
-              projectId={projectId}
+              projectId={authorizationProjectId}
               authorizationId={authorizationId}
               onConnected={() => {
                 const next = new URLSearchParams(searchParams);
                 next.delete("sentry");
                 next.delete("sentryAuthorization");
+                next.delete("sentryProjectId");
                 setSearchParams(next, { replace: true });
               }}
               onRestart={async () => {
