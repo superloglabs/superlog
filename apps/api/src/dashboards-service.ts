@@ -7,6 +7,9 @@ import {
   homePulseRowLayout,
   planHomePulseRowUpgrade,
 } from "./home-layout-upgrade.js";
+import { logger } from "./logger.js";
+
+const log = logger.child({ scope: "dashboards" });
 
 export const dashboardWidgetTypeSchema = z.enum([
   "timeseries_count",
@@ -419,6 +422,8 @@ async function upgradeHomeDashboard(
           }),
         );
       }
+    } else {
+      log.info({ dashboardId }, "home layout already upgraded by a concurrent request");
     }
 
     const home =
