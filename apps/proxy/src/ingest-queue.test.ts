@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
   PoisonMessageError,
+  SqsBatchEntryRejectedError,
   describeCollectorFailure,
   encodeIngestMessage,
   getIngestQueueConfig,
@@ -10,6 +11,7 @@ import {
   isPoisonMessageError,
   parseIngestMessage,
   queueDeliveryMetricFromParsedMessage,
+  shouldCleanupOversizeObjectAfterQueueFailure,
 } from "./ingest-queue.js";
 
 const baseInput = {
@@ -165,6 +167,19 @@ test("parseIngestMessage flags valid JSON with malformed envelope fields as pois
 test("isPoisonMessageError discriminates transient errors", () => {
   assert.equal(isPoisonMessageError(new Error("collector returned 503")), false);
   assert.equal(isPoisonMessageError(new PoisonMessageError("bad")), true);
+});
+
+test("ambiguous SQS send failures preserve the oversize object", () => {
+  assert.equal(shouldCleanupOversizeObjectAfterQueueFailure(new Error("request timed out")), false);
+});
+
+test("definitive SQS batch entry rejections clean up the oversize object", () => {
+  assert.equal(
+    shouldCleanupOversizeObjectAfterQueueFailure(
+      new SqsBatchEntryRejectedError("InvalidMessageContents", "invalid body"),
+    ),
+    true,
+  );
 });
 
 test("queueDeliveryMetricFromParsedMessage ignores malformed parsed payloads", () => {

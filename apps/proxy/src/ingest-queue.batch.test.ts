@@ -54,6 +54,7 @@ function input(projectId: string, body: Buffer = Buffer.from(`body-${projectId}`
 class FakeSendSqs {
   batchEntries: Array<Array<{ Id: string; MessageBody: string }>> = [];
   failBodiesContaining: string | null = null;
+  batchError: Error | null = null;
 
   // biome-ignore lint/suspicious/noExplicitAny: minimal AWS client test double
   async send(cmd: any): Promise<unknown> {
@@ -61,6 +62,7 @@ class FakeSendSqs {
     if (name === "SendMessageBatchCommand") {
       const entries = cmd.input.Entries as Array<{ Id: string; MessageBody: string }>;
       this.batchEntries.push(entries);
+      if (this.batchError) throw this.batchError;
       const marker = this.failBodiesContaining;
       const failed = marker ? entries.filter((e) => e.MessageBody.includes(marker)) : [];
       return {
@@ -148,9 +150,7 @@ test("splits a flush into multiple batch calls when the 256 KiB payload budget w
 
   // Three ~107 KiB message bodies (80 KB raw, base64-inflated): two fit in one
   // 256 KiB SendMessageBatch, the third must roll into a second call.
-  await Promise.all(
-    [1, 2, 3].map((i) => queue.enqueue(input(`p-${i}`, Buffer.alloc(80_000, i)))),
-  );
+  await Promise.all([1, 2, 3].map((i) => queue.enqueue(input(`p-${i}`, Buffer.alloc(80_000, i)))));
 
   assert.equal(sqs.batchEntries.length, 2, "three oversized entries must split into two batches");
   const totalEntries = sqs.batchEntries.reduce((n, entries) => n + entries.length, 0);
@@ -185,6 +185,23 @@ test("cleans up the uploaded S3 object when its batched send fails", async () =>
   assert.deepEqual(s3.deletes, s3.puts, "the orphaned object must be rolled back");
 });
 
+test("preserves the uploaded S3 object when the SQS batch outcome is ambiguous", async () => {
+  const { queue, sqs, s3 } = buildQueue({
+    maxMessageBytes: 64, // force the S3 offload path
+    oversizeBucket: "test-bucket",
+  });
+  sqs.batchError = new Error("request timed out after SQS may have accepted the batch");
+
+  await assert.rejects(queue.enqueue(input("p-ambiguous")), /request timed out/);
+
+  assert.equal(s3.puts.length, 1, "the oversize body must be uploaded before the send");
+  assert.deepEqual(
+    s3.deletes,
+    [],
+    "an accepted SQS message must retain the body when the client cannot prove rejection",
+  );
+});
+
 /** Fake SQS for the consumer side: delivers one fixed batch on the first receive,
  *  then completes later polls empty after a short delay, like a scaled-down SQS
  *  long poll. Deletes must arrive as DeleteMessageBatch; entries whose receipt
@@ -195,7 +212,9 @@ class FakeConsumerSqs {
   failReceipts: string[] = [];
   private delivered = false;
 
-  constructor(private readonly messages: Array<{ MessageId: string; ReceiptHandle: string; Body: string }>) {}
+  constructor(
+    private readonly messages: Array<{ MessageId: string; ReceiptHandle: string; Body: string }>,
+  ) {}
 
   // biome-ignore lint/suspicious/noExplicitAny: minimal AWS client test double
   async send(cmd: any): Promise<unknown> {
@@ -262,13 +281,9 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<voi
   }
 }
 
-async function withCollectorReturning(
-  status: number,
-  run: () => Promise<void>,
-): Promise<void> {
+async function withCollectorReturning(status: number, run: () => Promise<void>): Promise<void> {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () =>
-    new Response(new Uint8Array(0), { status })) as typeof fetch;
+  globalThis.fetch = (async () => new Response(new Uint8Array(0), { status })) as typeof fetch;
   try {
     await run();
   } finally {
@@ -312,7 +327,7 @@ test("poison messages are dropped through the same batched delete", async () => 
   assert.deepEqual(sqs.deleteBatches, [["r-1", "r-2"]]);
 });
 
-test("keeps the S3 body when its SQS delete fails so the redelivery can still read it", async () => {
+test("retains S3 bodies after delivery so duplicate SQS messages can still read them", async () => {
   const sqs = new FakeConsumerSqs([
     { MessageId: "m-1", ReceiptHandle: "r-1", Body: s3MessageBody("p-1", "k-1") },
     { MessageId: "m-2", ReceiptHandle: "r-2", Body: s3MessageBody("p-2", "k-2") },
@@ -331,7 +346,11 @@ test("keeps the S3 body when its SQS delete fails so the redelivery can still re
     await queue.stop();
   });
 
-  assert.deepEqual(s3.deletes, ["k-1"], "only the successfully-deleted message may purge its body");
+  assert.deepEqual(
+    s3.deletes,
+    [],
+    "bucket lifecycle expiration, not eager deletion, must retire delivered bodies",
+  );
 });
 
 test("stop() flushes pending batched sends before resolving", async () => {
