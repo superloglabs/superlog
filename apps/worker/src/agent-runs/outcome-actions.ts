@@ -306,7 +306,18 @@ export function createOutcomeActionExecutor(
     // Frozen pre-cutover sessions still declare this findings terminal. It is
     // normalized and acknowledged by terminal collection, not dispatched as a
     // provider mutation. New sessions never declare it.
-    if (call.name === "create_linear_issue") return { handled: false };
+    if (call.name === "create_linear_issue") {
+      logger.info(
+        {
+          agentRunId: ctx.agentRun.id,
+          incidentId: ctx.incident.id,
+          sessionId,
+          toolUseId: call.toolUseId,
+        },
+        "leaving legacy handoff terminal to terminal collection",
+      );
+      return { handled: false };
+    }
     if (!isDispatchedOutcomeToolName(call.name) && !isRetiredOutcomeToolName(call.name)) {
       return { handled: false };
     }
