@@ -123,6 +123,47 @@ test("keeps a Sentry grant server-side until the user chooses one discovered pro
   assert.equal(consumed?.refreshTokenCiphertext, null);
 });
 
+test("clears encrypted grants from abandoned Sentry authorizations after their TTL", async () => {
+  const tag = `sentry-expiry-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const [user] = await db
+    .insert(schema.users)
+    .values({ email: `${tag}@example.com` })
+    .returning();
+  assert.ok(user);
+  userIds.push(user.id);
+  const [org] = await db.insert(schema.orgs).values({ name: tag, slug: tag }).returning();
+  assert.ok(org);
+  orgIds.push(org.id);
+  const [project] = await db
+    .insert(schema.projects)
+    .values({ orgId: org.id, name: "Default", slug: "default" })
+    .returning();
+  assert.ok(project);
+
+  const repository = new DrizzleSentryAuthorizationRepository();
+  const authorization = await repository.create({
+    projectId: project.id,
+    userId: user.id,
+    organizationSlug: "acme",
+    sentryInstallationId: "abandoned-installation",
+    projects: [{ id: "1", slug: "storefront", name: "Storefront" }],
+    token: {
+      accessToken: "abandoned-access-token",
+      refreshToken: "abandoned-refresh-token",
+      expiresAt: new Date("2026-07-22T13:00:00.000Z"),
+    },
+    expiresAt: new Date("2026-07-22T12:10:00.000Z"),
+  });
+
+  assert.equal(await repository.expireReady(new Date("2026-07-22T12:11:00.000Z")), 1);
+  const expired = await db.query.sentryAuthorizationSessions.findFirst({
+    where: eq(schema.sentryAuthorizationSessions.id, authorization.id),
+  });
+  assert.equal(expired?.status, "failed");
+  assert.equal(expired?.accessTokenCiphertext, null);
+  assert.equal(expired?.refreshTokenCiphertext, null);
+});
+
 test("connects only the Sentry project claimed from the user-bound authorization", async () => {
   const tag = `sentry-connect-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
   const [user] = await db

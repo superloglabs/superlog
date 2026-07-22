@@ -25,6 +25,7 @@ export class SentryAuthorizationError extends Error {
 }
 
 export type SentryAuthorizationRepository = {
+  expireReady(now: Date): Promise<number>;
   create(input: {
     projectId: string;
     userId: string;

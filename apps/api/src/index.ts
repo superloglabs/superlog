@@ -158,6 +158,7 @@ import {
 import { mountApiRequestSecurity, requestBodyLimit } from "./request-body-limits.js";
 import { mountSavedViews } from "./saved-views/interfaces.js";
 import { importOpenSentryIssues, receiveSentryIssueEvent } from "./sentry/application.js";
+import { startSentryAuthorizationCleanup } from "./sentry/authorization-cleanup.js";
 import { DrizzleSentryAuthorizationRepository } from "./sentry/authorization-repository.js";
 import { listOpenSentryIssues, listSentryProjects } from "./sentry/client.js";
 import { mountSentryPublic } from "./sentry/http.js";
@@ -368,6 +369,11 @@ mountNotionPublic(app);
 const sentryWebhookInbox = createDrizzleSentryWebhookInbox();
 const sentryCredentialRepository = createSentryCredentialRepository();
 const sentryAuthorizationRepository = new DrizzleSentryAuthorizationRepository();
+startSentryAuthorizationCleanup({
+  repository: sentryAuthorizationRepository,
+  onError: (error) =>
+    logger.warn({ err: error }, "failed to clear expired Sentry authorization grants"),
+});
 const sentryInstallationDeps: SentryInstallationDeps = {
   authorizations: sentryAuthorizationRepository,
   listProjects: (input) => listSentryProjects(input),

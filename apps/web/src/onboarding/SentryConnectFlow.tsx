@@ -140,6 +140,10 @@ export function SentryConnectFlow({
                 next.delete("sentryAuthorization");
                 setSearchParams(next, { replace: true });
               }}
+              onRestart={async () => {
+                const { url } = await start.mutateAsync();
+                window.location.assign(url);
+              }}
             />
           </div>
         ) : (

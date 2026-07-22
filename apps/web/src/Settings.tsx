@@ -2694,6 +2694,10 @@ function SentryCard({ projectId }: { projectId: string | undefined }) {
             next.delete("sentryAuthorization");
             setSearchParams(next, { replace: true });
           }}
+          onRestart={async () => {
+            const { url } = await start.mutateAsync();
+            window.location.href = url;
+          }}
         />
       ) : (
         <p className="text-[11.5px] text-subtle">

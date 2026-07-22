@@ -7,14 +7,18 @@ export function SentryProjectPicker({
   projectId,
   authorizationId,
   onConnected,
+  onRestart,
 }: {
   projectId: string | undefined;
   authorizationId: string;
   onConnected: () => void;
+  onRestart: () => Promise<void>;
 }) {
   const authorization = useSentryAuthorization(projectId, authorizationId);
   const connect = useConnectSentryProject(projectId, authorizationId);
   const [projectSlug, setProjectSlug] = useState("");
+  const [restarting, setRestarting] = useState(false);
+  const [restartError, setRestartError] = useState<unknown>(null);
   const options = useMemo(
     () =>
       (authorization.data?.projects ?? []).map((project) => ({
@@ -30,9 +34,32 @@ export function SentryProjectPicker({
   }
   if (authorization.error || !authorization.data) {
     return (
-      <p className="text-[12.5px] text-danger">
-        This Sentry authorization expired or is no longer available. Start the connection again.
-      </p>
+      <div className="space-y-3">
+        <p className="text-[12.5px] text-danger">
+          This Sentry authorization expired or is no longer available.
+        </p>
+        <Btn
+          size="sm"
+          variant="primary"
+          loading={restarting}
+          disabled={restarting}
+          onClick={async () => {
+            setRestartError(null);
+            setRestarting(true);
+            try {
+              await onRestart();
+            } catch (error) {
+              setRestartError(error);
+              setRestarting(false);
+            }
+          }}
+        >
+          Restart connection
+        </Btn>
+        {restartError !== null && (
+          <p className="text-[12.5px] text-danger">{String(restartError)}</p>
+        )}
+      </div>
     );
   }
 

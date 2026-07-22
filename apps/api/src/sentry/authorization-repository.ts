@@ -1,5 +1,5 @@
 import { db, decryptIntegrationSecret, encryptIntegrationSecret, schema } from "@superlog/db";
-import { and, eq, gt } from "drizzle-orm";
+import { and, eq, gt, lte } from "drizzle-orm";
 import type {
   SentryAuthorizationClaim,
   SentryAuthorizationRepository,
@@ -19,6 +19,29 @@ function toView(row: Row): SentryAuthorizationView {
 }
 
 export class DrizzleSentryAuthorizationRepository implements SentryAuthorizationRepository {
+  async expireReady(now: Date): Promise<number> {
+    const expired = await db
+      .update(schema.sentryAuthorizationSessions)
+      .set({
+        status: "failed",
+        accessTokenCiphertext: null,
+        accessTokenNonce: null,
+        accessTokenKeyVersion: null,
+        refreshTokenCiphertext: null,
+        refreshTokenNonce: null,
+        refreshTokenKeyVersion: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(schema.sentryAuthorizationSessions.status, "ready"),
+          lte(schema.sentryAuthorizationSessions.expiresAt, now),
+        ),
+      )
+      .returning({ id: schema.sentryAuthorizationSessions.id });
+    return expired.length;
+  }
+
   async create(
     input: Parameters<SentryAuthorizationRepository["create"]>[0],
   ): Promise<SentryAuthorizationView> {
