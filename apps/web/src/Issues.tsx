@@ -1200,7 +1200,11 @@ function IncidentDetailBody({
   }
 
   function handleRestartAgentRun() {
-    restartAgentRun.mutate(incident.id);
+    if (!agentRun) return;
+    restartAgentRun.mutate({
+      incidentId: incident.id,
+      expectedLatestRunId: agentRun.id,
+    });
   }
 
   function handleRetryPrDelivery() {

@@ -3089,11 +3089,18 @@ export function useRestartAgentRun(projectId: string) {
   const fetcher = useFetcher();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (incidentId: string) =>
+    mutationFn: ({
+      incidentId,
+      expectedLatestRunId,
+    }: {
+      incidentId: string;
+      expectedLatestRunId: string;
+    }) =>
       fetcher<AgentRun>(`/api/projects/${projectId}/incidents/${incidentId}/agent-run/restart`, {
         method: "POST",
+        body: JSON.stringify({ expectedLatestRunId }),
       }),
-    onSuccess: (_agentRun, incidentId) => {
+    onSuccess: (_agentRun, { incidentId }) => {
       qc.invalidateQueries({ queryKey: ["incidents", projectId] });
       qc.invalidateQueries({ queryKey: ["incident", projectId, incidentId] });
       qc.invalidateQueries({ queryKey: ["incident-agent run", projectId, incidentId] });
