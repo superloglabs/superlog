@@ -254,6 +254,32 @@ test("retired outcome tools are handled with migration guidance", async () => {
   assert.match(JSON.stringify(result.payload), /resolve_incident\.issueOutcomes/);
 });
 
+test("the legacy handoff alias remains owned by terminal collection", async () => {
+  let receiptClaims = 0;
+  const receiptLock: OutcomeActionReceiptLock = {
+    async exclusive(_args, task) {
+      receiptClaims += 1;
+      return task({
+        async load() {
+          return null;
+        },
+        async save() {},
+      });
+    },
+  };
+  const execute = createOutcomeActionExecutor(receiptContext, "session-1", receiptLock);
+  const result = await execute({
+    toolUseId: "legacy-linear-1",
+    name: "create_linear_issue",
+    input: {},
+    hasFindings: true,
+    findings: null,
+  });
+
+  assert.deepEqual(result, { handled: false });
+  assert.equal(receiptClaims, 0);
+});
+
 test("a durable legacy issue action is error-acked with classification-at-resolution guidance", async () => {
   const calls: Array<Record<string, unknown>> = [];
   const dependencies = {
