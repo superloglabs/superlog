@@ -3,7 +3,7 @@
 
 import type Anthropic from "@anthropic-ai/sdk";
 import {
-  inspectCandidate,
+  inspectCandidateResult,
   listIncidentFacets,
   listIncidentTitles,
   searchCandidates,
@@ -59,6 +59,8 @@ export type RunGroupingAgentDeps = {
 };
 
 const MAX_GROUPING_CONVERSATION_CHARS = 550_000;
+const MAX_FRESH_INSPECTION_TURN_CHARS = 400_000;
+const MAX_SINGLE_INSPECTION_CHARS = 80_000;
 const OMITTED_TOOL_RESULT =
   "[earlier tool result omitted to keep grouping context bounded; call the tool again if needed]";
 
@@ -168,9 +170,22 @@ export async function runGroupingAgent(
 
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
     let terminal: GroupingVerdict | null = null;
+    const inspectionCount = toolUses.filter(
+      (toolUse) => toolUse.name === "inspect_incident",
+    ).length;
+    const inspectionResultMaxChars = Math.min(
+      MAX_SINGLE_INSPECTION_CHARS,
+      Math.floor(MAX_FRESH_INSPECTION_TURN_CHARS / Math.max(1, inspectionCount)),
+    );
 
     for (const toolUse of toolUses) {
-      const dispatch = dispatchTool(toolUse, input.candidates, candidateIds, inspectionState);
+      const dispatch = dispatchTool(
+        toolUse,
+        input.candidates,
+        candidateIds,
+        inspectionState,
+        inspectionResultMaxChars,
+      );
       if (dispatch.kind === "terminal") {
         terminal = dispatch.verdict;
         break;
@@ -204,6 +219,7 @@ function dispatchTool(
   candidates: GroupingCandidateIncident[],
   candidateIds: ReadonlySet<string>,
   inspectionState: InspectionState,
+  inspectionResultMaxChars: number,
 ): DispatchResult {
   switch (toolUse.name) {
     case "decide_grouping":
@@ -251,7 +267,11 @@ function dispatchTool(
         result: {
           type: "tool_result",
           tool_use_id: toolUse.id,
-          content: JSON.stringify(inspectCandidate(candidates, toolUse.input)),
+          content: inspectCandidateResult(
+            candidates,
+            toolUse.input,
+            inspectionResultMaxChars,
+          ),
         },
       };
     }

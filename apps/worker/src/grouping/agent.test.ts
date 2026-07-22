@@ -530,8 +530,7 @@ test("runGroupingAgent: preserves every inspection result from the latest tool t
   );
 
   assert.equal(latestResultsWereVisible, true);
-  assert.ok(latestRequestChars > 550_000, `latest request was ${latestRequestChars}`);
-  assert.ok(latestRequestChars < 650_000, `latest request was ${latestRequestChars}`);
+  assert.ok(latestRequestChars < 550_000, `latest request was ${latestRequestChars}`);
   assert.deepEqual(verdict, {
     decision: "standalone",
     evidence: "The inspected incidents are unrelated",

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   candidatePreview,
   inspectCandidate,
+  inspectCandidateResult,
   listIncidentFacets,
   listIncidentTitles,
   searchCandidates,
@@ -261,4 +262,44 @@ test("inspectCandidate bounds oversized messages while retaining detailed contex
     message,
     "tool projection must not mutate source data",
   );
+});
+
+test("inspectCandidateResult enforces a whole-result budget and keeps diagnostic edges", () => {
+  const headline = 'Failed to resolve import "./missing.png" from "app/feature.tsx"';
+  const message = `${headline}\n${"generatedCall();".repeat(40_000)}\nat normalizeUrl`;
+  const candidate = makeCandidate({
+    representative: {
+      exceptionType: "Error",
+      message,
+      topFrame: "normalizeUrl",
+      normalizedFrames: ["normalizeUrl"],
+      traceId: null,
+      spanId: null,
+    },
+    issues: Array.from({ length: 5 }, (_, index) => ({
+      id: `issue-${index}`,
+      title: headline,
+      service: "web",
+      exceptionType: "Error",
+      message,
+      topFrame: "normalizeUrl",
+      normalizedFrames: ["normalizeUrl"],
+      traceId: null,
+      spanId: null,
+      lastSeen: "2026-05-23T00:00:00Z",
+    })),
+  });
+
+  const result = inspectCandidateResult([candidate], { incident_id: "inc-1" }, 20_000);
+  const parsed = JSON.parse(result) as {
+    truncated: boolean;
+    representative: { message: string };
+    issues: Array<{ id: string; message: string }>;
+  };
+
+  assert.ok(result.length <= 20_000, `inspection result was ${result.length}`);
+  assert.equal(parsed.truncated, true);
+  assert.match(parsed.representative.message, /Failed to resolve import/);
+  assert.equal(parsed.issues[4]?.id, "issue-4");
+  assert.match(parsed.issues[4]?.message ?? "", /at normalizeUrl/);
 });
