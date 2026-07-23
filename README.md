@@ -1,6 +1,6 @@
 
 <a href="https://superlog.sh">
-  <img width="1200" height="675" alt="Twitter post - 2" src="https://github.com/user-attachments/assets/c6ac3418-8e2f-4f8b-b25c-d75b3a094036" />
+  <img width="1200" height="675" alt="Superlog Banner" src="https://github.com/user-attachments/assets/c6ac3418-8e2f-4f8b-b25c-d75b3a094036" />
 
 </a>
 
