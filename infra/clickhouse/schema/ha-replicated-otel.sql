@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS superlog.otel_traces ON CLUSTER superlog_ha
     `SpanKind` LowCardinality(String) CODEC(ZSTD(1)),
     `ServiceName` LowCardinality(String) CODEC(ZSTD(1)),
     `ResourceAttributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    `SuperlogProjectId` LowCardinality(String) MATERIALIZED ResourceAttributes['superlog.project_id'],
     `ScopeName` String CODEC(ZSTD(1)),
     `ScopeVersion` String CODEC(ZSTD(1)),
     `SpanAttributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
@@ -31,7 +32,7 @@ CREATE TABLE IF NOT EXISTS superlog.otel_traces ON CLUSTER superlog_ha
     INDEX idx_span_attr_key mapKeys(SpanAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_span_attr_value mapValues(SpanAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_duration Duration TYPE minmax GRANULARITY 1,
-    INDEX idx_superlog_project_id ResourceAttributes['superlog.project_id'] TYPE set(0) GRANULARITY 4
+    INDEX idx_superlog_project_id_materialized SuperlogProjectId TYPE set(0) GRANULARITY 1
 )
 ENGINE = ReplicatedMergeTree('/clickhouse/{cluster}/tables/{shard}/{database}/{table}', '{replica}')
 PARTITION BY toDate(Timestamp)
@@ -52,6 +53,7 @@ CREATE TABLE IF NOT EXISTS superlog.otel_logs ON CLUSTER superlog_ha
     `Body` String CODEC(ZSTD(1)),
     `ResourceSchemaUrl` LowCardinality(String) CODEC(ZSTD(1)),
     `ResourceAttributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    `SuperlogProjectId` LowCardinality(String) MATERIALIZED ResourceAttributes['superlog.project_id'],
     `ScopeSchemaUrl` LowCardinality(String) CODEC(ZSTD(1)),
     `ScopeName` String CODEC(ZSTD(1)),
     `ScopeVersion` LowCardinality(String) CODEC(ZSTD(1)),
@@ -66,7 +68,7 @@ CREATE TABLE IF NOT EXISTS superlog.otel_logs ON CLUSTER superlog_ha
     INDEX idx_log_attr_key mapKeys(LogAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_log_attr_value mapValues(LogAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_body Body TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 8,
-    INDEX idx_superlog_project_id ResourceAttributes['superlog.project_id'] TYPE set(0) GRANULARITY 4
+    INDEX idx_superlog_project_id_materialized SuperlogProjectId TYPE set(0) GRANULARITY 1
 )
 ENGINE = ReplicatedMergeTree('/clickhouse/{cluster}/tables/{shard}/{database}/{table}', '{replica}')
 PARTITION BY toDate(TimestampTime)

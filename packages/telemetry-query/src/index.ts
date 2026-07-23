@@ -196,7 +196,7 @@ export async function queryLogs(
   const logAttr = attrConds([...split.log, ...(params.logAttrs ?? [])], "LogAttributes", "lattr");
   const field = fieldConds(split.field, "logs");
   const conds: string[] = [
-    "ResourceAttributes['superlog.project_id'] = {projectId:String}",
+    "SuperlogProjectId = {projectId:String}",
     `Timestamp >= ${sinceExpr}`,
     `Timestamp <= ${untilExpr}`,
     // otel_logs is partitioned by toDate(TimestampTime) and sorted by
@@ -281,7 +281,7 @@ export async function queryTraces(
   );
   const field = fieldConds(split.field, "traces");
   const conds: string[] = [
-    "ResourceAttributes['superlog.project_id'] = {projectId:String}",
+    "SuperlogProjectId = {projectId:String}",
     `Timestamp >= ${sinceExpr}`,
     `Timestamp <= ${untilExpr}`,
     ...attr.conds,
@@ -503,7 +503,7 @@ export async function queryTracesAggregated(
   // trace in the window so span_count / duration_ms / error_count describe the
   // whole trace rather than only the spans matching span-level filters.
   const outerConds: string[] = [
-    "ResourceAttributes['superlog.project_id'] = {projectId:String}",
+    "SuperlogProjectId = {projectId:String}",
     `Timestamp >= ${sinceExpr}`,
     `Timestamp <= ${untilExpr}`,
     ...attr.conds,
@@ -637,7 +637,7 @@ export async function getTraceDetail(ch: ClickHouseClient, projectId: string, tr
         if(exception_event_index = 0, '', Events.Attributes[exception_event_index]['exception.message']) AS exception_message,
         if(exception_event_index = 0, '', Events.Attributes[exception_event_index]['exception.stacktrace']) AS exception_stacktrace
       FROM otel_traces
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+      WHERE SuperlogProjectId = {projectId:String}
         AND TraceId = {traceId:String}${traceWindow}
       ORDER BY Timestamp ASC, SpanId ASC
       LIMIT 5000
@@ -662,7 +662,7 @@ export async function getTraceDetail(ch: ClickHouseClient, projectId: string, tr
         LogAttributes['exception.message'] AS exception_message,
         LogAttributes['exception.stacktrace'] AS exception_stacktrace
       FROM otel_logs
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+      WHERE SuperlogProjectId = {projectId:String}
         AND TraceId = {traceId:String}${logWindow}
       ORDER BY Timestamp ASC
       LIMIT 5000
@@ -802,10 +802,13 @@ export async function listServices(ch: ClickHouseClient, projectId: string, rang
           AND TimestampTime >= (${sinceExpr}) - INTERVAL 1 SECOND
           AND TimestampTime <= ${untilExpr}`
           : "";
+      const projectFilter = source.table.startsWith("otel_metrics_")
+        ? "ResourceAttributes['superlog.project_id'] = {projectId:String}"
+        : "SuperlogProjectId = {projectId:String}";
       const query = `
         SELECT DISTINCT ${source.service} AS service
         FROM ${source.table}
-        WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+        WHERE ${projectFilter}
           AND ${source.time} >= ${sinceExpr}
           AND ${source.time} <= ${untilExpr}${logPartitionWindow}
           AND ${source.service} != ''
@@ -859,7 +862,7 @@ export async function listAttributeKeys(
       SELECT ${keyExpr} AS k, count() AS c FROM (
         SELECT mapKeys(${column}) AS mk
         FROM ${table}
-        WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+        WHERE SuperlogProjectId = {projectId:String}
           AND Timestamp >= ${sinceExpr}
           AND Timestamp <= ${untilExpr}
         LIMIT ${ATTRIBUTE_KEY_SCAN_ROW_CAP}
@@ -919,7 +922,7 @@ export async function listAttributeValues(
       subqueries.push(`
       SELECT ResourceAttributes[{key:String}] AS v, count() AS c
       FROM otel_logs
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+      WHERE SuperlogProjectId = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
         AND mapContains(ResourceAttributes, {key:String})
@@ -929,7 +932,7 @@ export async function listAttributeValues(
       subqueries.push(`
       SELECT ResourceAttributes[{key:String}] AS v, count() AS c
       FROM otel_traces
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+      WHERE SuperlogProjectId = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
         AND mapContains(ResourceAttributes, {key:String})
@@ -939,7 +942,7 @@ export async function listAttributeValues(
     subqueries.push(`
       SELECT LogAttributes[{key:String}] AS v, count() AS c
       FROM otel_logs
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+      WHERE SuperlogProjectId = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
         AND mapContains(LogAttributes, {key:String})
@@ -948,7 +951,7 @@ export async function listAttributeValues(
     subqueries.push(`
       SELECT SpanAttributes[{key:String}] AS v, count() AS c
       FROM otel_traces
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+      WHERE SuperlogProjectId = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
         AND mapContains(SpanAttributes, {key:String})
@@ -2265,7 +2268,7 @@ export async function countSeries(
   const field = fieldConds(split.field, source === "logs" ? "logs" : "traces");
   const table = source === "logs" ? "otel_logs" : "otel_traces";
   const conds: string[] = [
-    "ResourceAttributes['superlog.project_id'] = {projectId:String}",
+    "SuperlogProjectId = {projectId:String}",
     `Timestamp >= ${sinceExpr}`,
     `Timestamp <= ${untilExpr}`,
     ...attr.conds,
@@ -2343,28 +2346,28 @@ export async function listIssueFilterAttributeKeys(
     SELECT k, sum(c) AS c FROM (
       SELECT arrayJoin(mapKeys(ResourceAttributes)) AS k, count() AS c
       FROM otel_logs
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+      WHERE SuperlogProjectId = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
       GROUP BY k
       UNION ALL
       SELECT arrayJoin(mapKeys(LogAttributes)) AS k, count() AS c
       FROM otel_logs
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+      WHERE SuperlogProjectId = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
       GROUP BY k
       UNION ALL
       SELECT arrayJoin(mapKeys(ResourceAttributes)) AS k, count() AS c
       FROM otel_traces
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+      WHERE SuperlogProjectId = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
       GROUP BY k
       UNION ALL
       SELECT arrayJoin(mapKeys(SpanAttributes)) AS k, count() AS c
       FROM otel_traces
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+      WHERE SuperlogProjectId = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
       GROUP BY k
@@ -2395,7 +2398,7 @@ export async function listIssueFilterAttributeValues(
     SELECT v, sum(c) AS c FROM (
       SELECT ResourceAttributes[{key:String}] AS v, count() AS c
       FROM otel_logs
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+      WHERE SuperlogProjectId = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
         AND mapContains(ResourceAttributes, {key:String})
@@ -2403,7 +2406,7 @@ export async function listIssueFilterAttributeValues(
       UNION ALL
       SELECT LogAttributes[{key:String}] AS v, count() AS c
       FROM otel_logs
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+      WHERE SuperlogProjectId = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
         AND mapContains(LogAttributes, {key:String})
@@ -2411,7 +2414,7 @@ export async function listIssueFilterAttributeValues(
       UNION ALL
       SELECT ResourceAttributes[{key:String}] AS v, count() AS c
       FROM otel_traces
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+      WHERE SuperlogProjectId = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
         AND mapContains(ResourceAttributes, {key:String})
@@ -2419,7 +2422,7 @@ export async function listIssueFilterAttributeValues(
       UNION ALL
       SELECT SpanAttributes[{key:String}] AS v, count() AS c
       FROM otel_traces
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+      WHERE SuperlogProjectId = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
         AND mapContains(SpanAttributes, {key:String})
@@ -2528,7 +2531,7 @@ export async function previewIssueFilterMatches(
         coalesce(LogAttributes['exception.type'], '') AS exception_type,
         mapConcat(ResourceAttributes, LogAttributes) AS attrs
       FROM otel_logs
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+      WHERE SuperlogProjectId = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
         AND SeverityNumber >= 17
@@ -2545,7 +2548,7 @@ export async function previewIssueFilterMatches(
         mapConcat(ResourceAttributes, SpanAttributes) AS attrs
       FROM otel_traces
       ARRAY JOIN Events.Name AS event_name, Events.Attributes AS event_attrs
-      WHERE ResourceAttributes['superlog.project_id'] = {projectId:String}
+      WHERE SuperlogProjectId = {projectId:String}
         AND Timestamp >= ${sinceExpr}
         AND Timestamp <= ${untilExpr}
         AND event_name = 'exception'
