@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS superlog.otel_logs ON CLUSTER superlog_ha
     INDEX idx_scope_attr_value mapValues(ScopeAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_log_attr_key mapKeys(LogAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_log_attr_value mapValues(LogAttributes) TYPE bloom_filter(0.01) GRANULARITY 1,
-    INDEX idx_body Body TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 8
+    INDEX idx_body Body TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 8,
+    INDEX idx_superlog_project_id ResourceAttributes['superlog.project_id'] TYPE set(0) GRANULARITY 4
 )
 ENGINE = ReplicatedMergeTree('/clickhouse/{cluster}/tables/{shard}/{database}/{table}', '{replica}')
 PARTITION BY toDate(TimestampTime)
