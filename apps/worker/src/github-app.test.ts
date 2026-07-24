@@ -36,6 +36,10 @@ test("GitHub HTTP retry policy distinguishes transient provider failures", () =>
     true,
   );
   assert.equal(isRetryableGithubHttpFailure(429, '{"message":"API rate limit exceeded"}'), true);
+  assert.equal(
+    isRetryableGithubHttpFailure(403, '{"message":"API rate limit exceeded"}', "0"),
+    true,
+  );
   assert.equal(isRetryableGithubHttpFailure(503, "service unavailable"), true);
   assert.equal(isRetryableGithubHttpFailure(403, '{"message":"Resource not accessible"}'), false);
   assert.equal(isRetryableGithubHttpFailure(404, '{"message":"Not Found"}'), false);

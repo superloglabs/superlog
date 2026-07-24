@@ -72,11 +72,15 @@ export function isRetryableGithubRequestError(error: unknown): error is GithubRe
   return error instanceof GithubRequestError && error.retryable;
 }
 
-export function isRetryableGithubHttpFailure(status: number, responseBody: string): boolean {
+export function isRetryableGithubHttpFailure(
+  status: number,
+  responseBody: string,
+  rateLimitRemaining?: string | null,
+): boolean {
   return (
     status === 429 ||
     status >= 500 ||
-    (status === 403 && /secondary rate limit/i.test(responseBody))
+    (status === 403 && (rateLimitRemaining === "0" || /secondary rate limit/i.test(responseBody)))
   );
 }
 
@@ -376,7 +380,11 @@ async function githubRequest<T>(
     const text = await res.text().catch(() => "");
     const retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"));
     throw new GithubRequestError(`github ${method} ${pathname} failed: ${res.status} ${text}`, {
-      retryable: isRetryableGithubHttpFailure(res.status, text),
+      retryable: isRetryableGithubHttpFailure(
+        res.status,
+        text,
+        res.headers.get("x-ratelimit-remaining"),
+      ),
       status: res.status,
       retryAfterMs,
     });
