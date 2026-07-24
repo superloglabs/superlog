@@ -284,6 +284,7 @@ test("startQueuedAgentRunWorkflow retries transient GitHub token failures withou
 test("startQueuedAgentRunWorkflow defers partial transient GitHub token failures", async () => {
   const calls: string[] = [];
   const ctx = makeContext();
+  let instructionProbes = 0;
   const firstRepo = makeRepo("repo-1", 1);
   const secondRepo = makeRepo("repo-2", 2);
   secondRepo.installation = {
@@ -303,6 +304,10 @@ test("startQueuedAgentRunWorkflow defers partial transient GitHub token failures
       }
       return "token-456";
     },
+    async listRepositoryInstructionFiles() {
+      instructionProbes += 1;
+      return [];
+    },
   });
   const getRunnerBackend = deps.getRunnerBackend;
   deps.getRunnerBackend = async (runtime) => ({
@@ -317,6 +322,7 @@ test("startQueuedAgentRunWorkflow defers partial transient GitHub token failures
     calls.some((call) => call.startsWith("runner.start:") || call.startsWith("fail:")),
     false,
   );
+  assert.equal(instructionProbes, 0);
 });
 
 test("startQueuedAgentRunWorkflow exposes ask_human as an approval boundary", async () => {

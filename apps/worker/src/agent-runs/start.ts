@@ -294,6 +294,9 @@ async function createRunnerRepoCandidates(
     for (const [repo, token] of result.tokens) tokenByRepo.set(repo, token);
     repoCandidateErrors.push(...result.errors);
   }
+  if (repoCandidateErrors.some(deps.isRetryableRepositoryError)) {
+    return { candidates: [], errors: repoCandidateErrors };
+  }
 
   const candidates = await Promise.all(
     topScored.map(async (repo, index) => {
