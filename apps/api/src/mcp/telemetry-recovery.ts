@@ -21,7 +21,7 @@ function getTelemetryQueryOutcomeCounter(): Counter {
     .getMeter("@superlog/api/mcp")
     .createCounter("superlog.mcp.telemetry_query.outcomes", {
       description:
-        "Recovered timeouts and permanent failures at the MCP telemetry query boundary.",
+        "Successful queries, recovered timeouts, and permanent failures at the MCP telemetry boundary.",
       unit: "1",
     });
   return telemetryQueryOutcomeCounter;
@@ -214,7 +214,12 @@ export async function executeRecoverableTelemetryQuery<T>(
   onPermanentFailure?: (error: unknown) => void,
 ): Promise<T | TelemetryRetryRequired> {
   try {
-    return await query();
+    const result = await query();
+    getTelemetryQueryOutcomeCounter().add(1, {
+      tool,
+      outcome: "success",
+    });
+    return result;
   } catch (error) {
     const recovery = recoverTelemetryTimeout(tool, input, error);
     if (!recovery) {
