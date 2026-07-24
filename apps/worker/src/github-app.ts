@@ -389,6 +389,7 @@ async function githubRequest<T>(
     const retryAfterMs = parseGithubRetryDelayMs({
       retryAfter: res.headers.get("retry-after"),
       rateLimitReset: res.headers.get("x-ratelimit-reset"),
+      rateLimitRemaining: res.headers.get("x-ratelimit-remaining"),
     });
     throw new GithubRequestError(`github ${method} ${pathname} failed: ${res.status} ${text}`, {
       retryable: isRetryableGithubHttpFailure(
@@ -406,13 +407,14 @@ async function githubRequest<T>(
 export function parseGithubRetryDelayMs(opts: {
   retryAfter: string | null;
   rateLimitReset: string | null;
+  rateLimitRemaining: string | null;
   now?: () => number;
 }): number | undefined {
   const now = opts.now ?? Date.now;
   const retryAfterMs = parseRetryAfterMs(opts.retryAfter, now);
   if (retryAfterMs !== undefined) return retryAfterMs;
 
-  if (!opts.rateLimitReset) return undefined;
+  if (opts.rateLimitRemaining !== "0" || !opts.rateLimitReset) return undefined;
   const resetEpochSeconds = Number(opts.rateLimitReset);
   if (!Number.isFinite(resetEpochSeconds) || resetEpochSeconds < 0) return undefined;
   return Math.max(0, resetEpochSeconds * 1_000 - now());

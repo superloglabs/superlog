@@ -51,6 +51,7 @@ test("GitHub retry delay honors the primary rate-limit reset window", () => {
     parseGithubRetryDelayMs({
       retryAfter: null,
       rateLimitReset: "1753366805",
+      rateLimitRemaining: "0",
       now: () => 1_753_366_800_000,
     }),
     5_000,
@@ -59,9 +60,19 @@ test("GitHub retry delay honors the primary rate-limit reset window", () => {
     parseGithubRetryDelayMs({
       retryAfter: "120",
       rateLimitReset: "1753366805",
+      rateLimitRemaining: "0",
       now: () => 1_753_366_800_000,
     }),
     120_000,
+  );
+  assert.equal(
+    parseGithubRetryDelayMs({
+      retryAfter: null,
+      rateLimitReset: "1753370400",
+      rateLimitRemaining: "4999",
+      now: () => 1_753_366_800_000,
+    }),
+    undefined,
   );
 });
 
