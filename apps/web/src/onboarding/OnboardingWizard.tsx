@@ -11,7 +11,7 @@ import {
   useStartSlackInstall,
 } from "../api.ts";
 import { authClient, useSession } from "../auth-client.ts";
-import { Wordmark } from "../design/ui.tsx";
+import { Btn, Wordmark } from "../design/ui.tsx";
 import { getSkillOnboardingIntent } from "../skillOnboarding.ts";
 import { AwsConnectFlow } from "./AwsConnectFlow.tsx";
 import { CloudflareConnectFlow } from "./CloudflareConnectFlow.tsx";
@@ -22,7 +22,13 @@ import { RenderConnectFlow } from "./RenderConnectFlow.tsx";
 import { SentryConnectFlow } from "./SentryConnectFlow.tsx";
 import { VercelConnectFlow } from "./VercelConnectFlow.tsx";
 import type { ConnectAction } from "./connectChoices.ts";
-import { CheckIcon, GithubIcon, SlackIcon, SpinnerIcon } from "./icons.tsx";
+import {
+  CheckIcon,
+  ExternalLinkIcon,
+  GithubIcon,
+  SlackIcon,
+  SpinnerIcon,
+} from "./icons.tsx";
 import {
   type WebView,
   initialWebViewFromSearch,
@@ -171,7 +177,10 @@ export function OnboardingWizard({
       <main className="flex justify-center px-8 pb-16 pt-12">
         <div className="w-full max-w-[640px]">
           {!projectId ? (
-            <CreateOrgStep userName={userName} userEmail={userEmail} />
+            <>
+              <CreateOrgStep userName={userName} userEmail={userEmail} />
+              <FounderCallCard />
+            </>
           ) : mode === "agent" ? (
             <AgentSetupFlow
               projectId={projectId}
@@ -327,6 +336,91 @@ function CreateOrgStep({ userName, userEmail }: { userName: string; userEmail: s
         nextDisabled={!trimmed || createOrg.isPending}
       />
     </>
+  );
+}
+
+// Book-a-call link for the founder onboarding chat. Opened in a new tab so the
+// user doesn't lose their half-finished create-org step.
+const FOUNDER_CALL_URL = "https://cal.com/superlog/superlog-onboarding";
+
+// The founder-call nudge is a hosted-offering promo, so it only shows on the
+// official hosted deployment (and the local dev domain, so it can be previewed)
+// — a self-hosted deployment on its own domain never renders it.
+function isHostedOfferingHost(): boolean {
+  if (typeof window === "undefined") return false;
+  const h = window.location.hostname;
+  return (
+    h === "superlog.sh" ||
+    h.endsWith(".superlog.sh") ||
+    h.endsWith(".superlog.localhost") // local dev (portless) preview
+  );
+}
+
+// Floating bottom-right nudge shown on the create-org step. Compact card: one
+// line of copy + a Book-a-call button, with the founders illustration tucked
+// into the bottom-right corner and spilling slightly past the card edge (the
+// right founder + phone break the frame, PostHog-style). Dismissible; matches
+// the wizard's dark surface + accent tokens so it reads as part of the app.
+function FounderCallCard() {
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed || !isHostedOfferingHost()) return null;
+  return (
+    <div className="pointer-events-none fixed bottom-6 right-6 z-50 hidden w-[320px] sm:block">
+      <style>{`
+        @keyframes founder-call-in {
+          0% { opacity: 0; transform: translateY(16px) scale(0.98); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .animate-founder-call-in { animation: founder-call-in 420ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+      `}</style>
+      <div
+        className={`animate-founder-call-in pointer-events-auto relative rounded-[16px] border bg-[#0b0b0e] shadow-[0_22px_60px_-14px_rgba(0,0,0,0.75)] ${STRONG_LINE}`}
+      >
+        <button
+          type="button"
+          onClick={() => setDismissed(true)}
+          aria-label="Dismiss"
+          className="absolute right-2.5 top-2.5 z-20 flex h-6 w-6 items-center justify-center rounded-md text-subtle transition-colors hover:bg-[rgba(255,255,255,0.06)] hover:text-fg"
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 14 14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            aria-hidden="true"
+          >
+            <path d="m3.5 3.5 7 7m0-7-7 7" />
+          </svg>
+        </button>
+        {/* Founders spilling out of the bottom-right corner. */}
+        <img
+          src="/founders-call.webp"
+          alt="Superlog founders on the phone"
+          className="pointer-events-none absolute -bottom-3 -right-4 z-10 w-[150px] max-w-none select-none drop-shadow-[0_10px_22px_rgba(0,0,0,0.5)]"
+        />
+        <div className="px-[18px] py-[16px] pr-[116px]">
+          <p className="m-0 text-[14px] font-semibold leading-[1.25] tracking-[-0.01em] text-fg">
+            Talk to the founders
+          </p>
+          <p className="m-0 mt-1.5 text-[13px] leading-[1.55] text-muted">
+            Tell us about your use case and we'll set you up with a{" "}
+            <span className="font-semibold text-accent">free month of Pro</span>.
+          </p>
+          <Btn
+            variant="primary"
+            size="md"
+            onClick={() => window.open(FOUNDER_CALL_URL, "_blank", "noopener,noreferrer")}
+            className="mt-3.5 !h-[34px] !rounded-[9px] !px-[13px] !text-[13px]"
+          >
+            Book a call
+            <ExternalLinkIcon size={13} />
+          </Btn>
+        </div>
+      </div>
+    </div>
   );
 }
 
