@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { suggestedOrgName } from "./orgNameSuggestion.ts";
+import { suggestedOrgName } from "./onboarding/orgNameSuggestion.ts";
 
 test("prefers a Google Workspace organization suggestion over the user's display name", () => {
   assert.equal(
