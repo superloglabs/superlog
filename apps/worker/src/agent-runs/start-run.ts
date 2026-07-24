@@ -5,7 +5,9 @@ import { createAgentRunLifecycle } from "../agent-run.js";
 import { buildContextIncidentUrl } from "../incident-route.js";
 import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
 import {
-  createRepositoryReadToken,
+  createRepositoryReadTokenForRepositories,
+  isGithubRepositorySelectionError,
+  isRetryableGithubRequestError,
   listRepositoryInstructionFiles,
 } from "../infra/github/repositories.js";
 import {
@@ -31,7 +33,9 @@ export async function startQueuedAgentRun(ctx: AgentRunContext): Promise<void> {
     getRunnerBackend: getAgentRunnerBackend,
     listRepositories: listAccessibleGithubRepositories,
     scoreRepositories: scoreRepos,
-    createRepositoryReadToken,
+    createRepositoryReadTokenForRepositories,
+    isRepositorySelectionError: isGithubRepositorySelectionError,
+    isRetryableRepositoryError: isRetryableGithubRequestError,
     listRepositoryInstructionFiles,
     buildIssueSummaries: (ctx) =>
       Promise.all(ctx.issueRows.map((issue) => buildIssueSummaryWithTrace(ctx.project.id, issue))),

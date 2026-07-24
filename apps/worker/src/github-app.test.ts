@@ -6,6 +6,8 @@ import path from "node:path";
 import { test } from "node:test";
 import {
   type GithubDirEntry,
+  GithubInstallationTokenGate,
+  GithubRequestError,
   MAX_REPO_INSTRUCTION_FILES,
   applyAgentPatch,
   buildPullRequestDeliveryCommitMessage,
@@ -17,12 +19,85 @@ import {
   isGitPushBranchCollision,
   isMissingRemoteBranchFailure,
   isRetryableGitPushFailure,
+  isRetryableGithubHttpFailure,
   loadGithubPullRequestProviderObservationWithToken,
   openedAgentPullRequest,
+  parseGithubRetryDelayMs,
   recoverPullRequestDelivery,
   redactGitSecrets,
   reopenGithubPullRequestWithToken,
 } from "./github-app.js";
+
+test("GitHub HTTP retry policy distinguishes transient provider failures", () => {
+  assert.equal(
+    isRetryableGithubHttpFailure(
+      403,
+      '{"message":"You have exceeded a secondary rate limit. Please wait a few minutes."}',
+    ),
+    true,
+  );
+  assert.equal(isRetryableGithubHttpFailure(429, '{"message":"API rate limit exceeded"}'), true);
+  assert.equal(
+    isRetryableGithubHttpFailure(403, '{"message":"API rate limit exceeded"}', "0"),
+    true,
+  );
+  assert.equal(isRetryableGithubHttpFailure(503, "service unavailable"), true);
+  assert.equal(isRetryableGithubHttpFailure(403, '{"message":"Resource not accessible"}'), false);
+  assert.equal(isRetryableGithubHttpFailure(404, '{"message":"Not Found"}'), false);
+});
+
+test("GitHub retry delay honors the primary rate-limit reset window", () => {
+  assert.equal(
+    parseGithubRetryDelayMs({
+      retryAfter: null,
+      rateLimitReset: "1753366805",
+      rateLimitRemaining: "0",
+      now: () => 1_753_366_800_000,
+    }),
+    5_000,
+  );
+  assert.equal(
+    parseGithubRetryDelayMs({
+      retryAfter: "120",
+      rateLimitReset: "1753366805",
+      rateLimitRemaining: "0",
+      now: () => 1_753_366_800_000,
+    }),
+    120_000,
+  );
+  assert.equal(
+    parseGithubRetryDelayMs({
+      retryAfter: null,
+      rateLimitReset: "1753370400",
+      rateLimitRemaining: "4999",
+      now: () => 1_753_366_800_000,
+    }),
+    undefined,
+  );
+});
+
+test("GitHub installation token gate honors a transient failure's retry window", async () => {
+  let now = 1_000;
+  let requests = 0;
+  const gate = new GithubInstallationTokenGate(() => now);
+  const request = async () => {
+    requests += 1;
+    throw new GithubRequestError("secondary rate limit", {
+      retryable: true,
+      status: 403,
+      retryAfterMs: 120_000,
+    });
+  };
+
+  await assert.rejects(() => gate.run(123, request));
+  now += 60_000;
+  await assert.rejects(() => gate.run(123, request));
+  assert.equal(requests, 1);
+
+  now += 60_001;
+  await assert.rejects(() => gate.run(123, request));
+  assert.equal(requests, 2);
+});
 
 test("PR review tokens are restricted to the queued repository", () => {
   assert.deepEqual(githubPullRequestReviewTokenScope(123, 456), {

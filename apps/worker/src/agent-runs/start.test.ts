@@ -5,9 +5,10 @@ import type { schema } from "@superlog/db";
 import {
   type AgentRunContext,
   type InstalledGithubRepo,
-  PartialGithubRepoDiscoveryError,
+  RetryableGithubRepoDiscoveryError,
 } from "../agent-run-context.js";
 import type { AgentRunnerBackend, AgentRunnerStartInput } from "../agent-runner-backend.js";
+import { GithubRequestError, isGithubRepositorySelectionError } from "../github-app.js";
 import { type StartQueuedAgentRunDeps, startQueuedAgentRunWorkflow } from "./start.js";
 
 test("startQueuedAgentRunWorkflow stops before external work when the Incident no longer owns the queued run", async () => {
@@ -96,7 +97,7 @@ test("startQueuedAgentRunWorkflow leaves a partial GitHub failure active for the
     makeDeps(calls, {
       async listRepositories() {
         calls.push("listRepositories");
-        throw new PartialGithubRepoDiscoveryError(new Error("github returned 503"));
+        throw new RetryableGithubRepoDiscoveryError(new Error("github returned 503"));
       },
     }),
   );
@@ -135,7 +136,7 @@ test("startQueuedAgentRunWorkflow starts runner with capped repo candidates", as
     "beginRepoDiscovery",
     "getRunnerBackend",
     "listRepositories",
-    "createRepositoryReadToken:repo-1",
+    "createRepositoryReadToken:repos-1",
     "buildIssueSummaries",
     "runner.start:1",
     "prBaseBranch:development",
@@ -145,6 +146,258 @@ test("startQueuedAgentRunWorkflow starts runner with capped repo candidates", as
     "startRunning:session-1:1",
     "notifyStarted:1",
   ]);
+});
+
+test("startQueuedAgentRunWorkflow bounds concurrent GitHub token creation", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+  let activeTokenRequests = 0;
+  let maxActiveTokenRequests = 0;
+  const deps = makeDeps(calls, {
+    async listRepositories() {
+      return Array.from({ length: 12 }, (_, index) => makeRepo(`repo-${index + 1}`, index + 1));
+    },
+    async createRepositoryReadTokenForRepositories(_installationId, repositoryIds) {
+      activeTokenRequests += 1;
+      maxActiveTokenRequests = Math.max(maxActiveTokenRequests, activeTokenRequests);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      activeTokenRequests -= 1;
+      return `token-${repositoryIds.join("-")}`;
+    },
+  });
+  const getRunnerBackend = deps.getRunnerBackend;
+  deps.getRunnerBackend = async (runtime) => ({
+    ...(await getRunnerBackend(runtime)),
+    maxRepoResources: 12,
+  });
+
+  await startQueuedAgentRunWorkflow(ctx, deps);
+
+  assert.equal(maxActiveTokenRequests, 1);
+});
+
+test("startQueuedAgentRunWorkflow chunks installation tokens at GitHub's repository limit", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+  const tokenRequests: number[][] = [];
+  let candidateTokens: string[] = [];
+  const deps = makeDeps(
+    calls,
+    {
+      async listRepositories() {
+        return Array.from({ length: 501 }, (_, index) => makeRepo(`repo-${index + 1}`, index + 1));
+      },
+      async createRepositoryReadTokenForRepositories(_installationId, repositoryIds) {
+        tokenRequests.push(repositoryIds);
+        return `token-${tokenRequests.length}`;
+      },
+    },
+    (input) => {
+      candidateTokens = input.repoCandidates.map((repo) => repo.installationToken);
+    },
+  );
+  const getRunnerBackend = deps.getRunnerBackend;
+  deps.getRunnerBackend = async (runtime) => ({
+    ...(await getRunnerBackend(runtime)),
+    maxRepoResources: 501,
+  });
+
+  await startQueuedAgentRunWorkflow(ctx, deps);
+
+  assert.deepEqual(
+    tokenRequests.map((repositoryIds) => repositoryIds.length),
+    [500, 1],
+  );
+  assert.equal(candidateTokens[0], "token-1");
+  assert.equal(candidateTokens[499], "token-1");
+  assert.equal(candidateTokens[500], "token-2");
+});
+
+test("startQueuedAgentRunWorkflow bisects a permanently invalid token batch", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+  const tokenRequests: number[][] = [];
+  let candidateNames: string[] = [];
+  const deps = makeDeps(
+    calls,
+    {
+      async listRepositories() {
+        return [makeRepo("repo-1", 1), makeRepo("removed-repo", 2), makeRepo("repo-3", 3)];
+      },
+      async createRepositoryReadTokenForRepositories(_installationId, repositoryIds) {
+        tokenRequests.push(repositoryIds);
+        if (repositoryIds.includes(2)) {
+          throw new GithubRequestError("repository is not accessible to the installation", {
+            retryable: false,
+            status: 422,
+          });
+        }
+        return `token-${repositoryIds.join("-")}`;
+      },
+    },
+    (input) => {
+      candidateNames = input.repoCandidates.map((repo) => repo.fullName);
+    },
+  );
+  const getRunnerBackend = deps.getRunnerBackend;
+  deps.getRunnerBackend = async (runtime) => ({
+    ...(await getRunnerBackend(runtime)),
+    maxRepoResources: 3,
+  });
+
+  await startQueuedAgentRunWorkflow(ctx, deps);
+
+  assert.deepEqual(tokenRequests, [[1, 2, 3], [1], [2, 3], [2], [3]]);
+  assert.deepEqual(candidateNames, ["org/repo-1", "org/repo-3"]);
+  assert.equal(
+    calls.some((call) => call.startsWith("fail:")),
+    false,
+  );
+});
+
+test("startQueuedAgentRunWorkflow does not bisect installation-wide token failures", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+  let tokenRequests = 0;
+  const deps = makeDeps(calls, {
+    async listRepositories() {
+      return Array.from({ length: 501 }, (_, index) => makeRepo(`repo-${index + 1}`, index + 1));
+    },
+    async createRepositoryReadTokenForRepositories() {
+      tokenRequests += 1;
+      throw new GithubRequestError("installation not found", {
+        retryable: false,
+        status: 404,
+      });
+    },
+  });
+  const getRunnerBackend = deps.getRunnerBackend;
+  deps.getRunnerBackend = async (runtime) => ({
+    ...(await getRunnerBackend(runtime)),
+    maxRepoResources: 501,
+  });
+
+  await startQueuedAgentRunWorkflow(ctx, deps);
+
+  assert.equal(tokenRequests, 1);
+  assert.equal(
+    calls.some((call) => call.startsWith("runner.start:")),
+    false,
+  );
+  assert.equal(
+    calls.some((call) => call.startsWith("fail:github_repo_token_failed:")),
+    true,
+  );
+});
+
+test("startQueuedAgentRunWorkflow stops bisection after a retryable half fails", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+  const tokenRequests: number[][] = [];
+  let instructionProbes = 0;
+  const deps = makeDeps(calls, {
+    async listRepositories() {
+      return [makeRepo("repo-1", 1), makeRepo("repo-2", 2), makeRepo("repo-3", 3)];
+    },
+    async createRepositoryReadTokenForRepositories(_installationId, repositoryIds) {
+      tokenRequests.push(repositoryIds);
+      if (repositoryIds.length > 1) {
+        throw new GithubRequestError("repository selection is invalid", {
+          retryable: false,
+          status: 422,
+        });
+      }
+      throw new GithubRequestError("github returned 503", {
+        retryable: true,
+        status: 503,
+      });
+    },
+    async listRepositoryInstructionFiles() {
+      instructionProbes += 1;
+      return [];
+    },
+  });
+  const getRunnerBackend = deps.getRunnerBackend;
+  deps.getRunnerBackend = async (runtime) => ({
+    ...(await getRunnerBackend(runtime)),
+    maxRepoResources: 3,
+  });
+
+  await startQueuedAgentRunWorkflow(ctx, deps);
+
+  assert.deepEqual(tokenRequests, [[1, 2, 3], [1]]);
+  assert.equal(instructionProbes, 0);
+  assert.equal(ctx.agentRun.state, "repo_discovery");
+});
+
+test("startQueuedAgentRunWorkflow retries transient GitHub token failures without announcing failure", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+
+  await startQueuedAgentRunWorkflow(
+    ctx,
+    makeDeps(calls, {
+      async createRepositoryReadTokenForRepositories() {
+        throw new GithubRequestError(
+          "github POST /app/installations/123/access_tokens failed before receiving a response",
+          {
+            retryable: true,
+            cause: new TypeError("fetch failed"),
+          },
+        );
+      },
+    }),
+  );
+
+  assert.equal(ctx.agentRun.state, "repo_discovery");
+  assert.equal(
+    calls.some((call) => call.startsWith("fail:")),
+    false,
+  );
+});
+
+test("startQueuedAgentRunWorkflow defers partial transient GitHub token failures", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+  let instructionProbes = 0;
+  const firstRepo = makeRepo("repo-1", 1);
+  const secondRepo = makeRepo("repo-2", 2);
+  secondRepo.installation = {
+    ...secondRepo.installation,
+    installationId: 456,
+  };
+  const deps = makeDeps(calls, {
+    async listRepositories() {
+      return [firstRepo, secondRepo];
+    },
+    async createRepositoryReadTokenForRepositories(installationId) {
+      if (installationId === 123) {
+        throw new GithubRequestError("github returned 503", {
+          retryable: true,
+          status: 503,
+        });
+      }
+      return "token-456";
+    },
+    async listRepositoryInstructionFiles() {
+      instructionProbes += 1;
+      return [];
+    },
+  });
+  const getRunnerBackend = deps.getRunnerBackend;
+  deps.getRunnerBackend = async (runtime) => ({
+    ...(await getRunnerBackend(runtime)),
+    maxRepoResources: 2,
+  });
+
+  await startQueuedAgentRunWorkflow(ctx, deps);
+
+  assert.equal(ctx.agentRun.state, "repo_discovery");
+  assert.equal(
+    calls.some((call) => call.startsWith("runner.start:") || call.startsWith("fail:")),
+    false,
+  );
+  assert.equal(instructionProbes, 0);
 });
 
 test("startQueuedAgentRunWorkflow exposes ask_human as an approval boundary", async () => {
@@ -377,9 +630,13 @@ function makeDeps(
     scoreRepositories(repos) {
       return repos.map((repo, index) => ({ ...repo, score: 100 - index }));
     },
-    async createRepositoryReadToken(_installationId, repoId) {
-      calls.push(`createRepositoryReadToken:repo-${repoId}`);
-      return `token-${repoId}`;
+    async createRepositoryReadTokenForRepositories(_installationId, repositoryIds) {
+      calls.push(`createRepositoryReadToken:repos-${repositoryIds.join("-")}`);
+      return `token-${repositoryIds.join("-")}`;
+    },
+    isRepositorySelectionError: isGithubRepositorySelectionError,
+    isRetryableRepositoryError(error) {
+      return error instanceof GithubRequestError && error.retryable;
     },
     async listRepositoryInstructionFiles() {
       return [];

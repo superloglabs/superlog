@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { schema } from "@superlog/db";
 import {
-  PartialGithubRepoDiscoveryError,
+  RetryableGithubRepoDiscoveryError,
   buildFollowUpContext,
   effectivePrPolicyForAgentRun,
   listAccessibleGithubRepositories,
 } from "./agent-run-context.js";
 import { buildAgentRunInstructions } from "./agent-run-instructions.js";
+import { GithubRequestError } from "./github-app.js";
 
 test("agent run instructions include org guidance, project context, and project instructions", () => {
   const instructions = buildAgentRunInstructions({
@@ -201,6 +202,42 @@ test("repository discovery surfaces failure when every enabled installation erro
   );
 });
 
+test("repository discovery retries when every installation hits a transient GitHub failure", async () => {
+  const connectTimeout = new GithubRequestError(
+    "github POST /app/installations/101/access_tokens failed before receiving a response",
+    {
+      retryable: true,
+      cause: new TypeError("fetch failed"),
+    },
+  );
+  const githubInstalls = [
+    {
+      installation: {
+        installationId: 101,
+        agentEnabled: true,
+        repoAccess: null,
+      } as schema.GithubInstallation,
+      allowedRepoIds: null,
+    },
+  ];
+
+  await assert.rejects(
+    listAccessibleGithubRepositories(
+      { githubInstalls },
+      {
+        listInstallationRepositories: async () => {
+          throw connectTimeout;
+        },
+      },
+    ),
+    (error) => {
+      assert.ok(error instanceof RetryableGithubRepoDiscoveryError);
+      assert.equal(error.cause, connectTimeout);
+      return true;
+    },
+  );
+});
+
 test("repository lookup preserves a partial failure when successful installs have no usable repos", async () => {
   const githubUnavailable = new Error("github returned 503");
   const githubInstalls = [
@@ -235,7 +272,7 @@ test("repository lookup preserves a partial failure when successful installs hav
       },
     ),
     (error) => {
-      assert.ok(error instanceof PartialGithubRepoDiscoveryError);
+      assert.ok(error instanceof RetryableGithubRepoDiscoveryError);
       assert.equal(error.cause, githubUnavailable);
       return true;
     },
