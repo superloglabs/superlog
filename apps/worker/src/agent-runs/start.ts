@@ -33,6 +33,7 @@ export type StartQueuedAgentRunDeps = {
     installationId: number,
     repositoryIds: number[],
   ): Promise<string>;
+  isRepositorySelectionError(error: unknown): boolean;
   isRetryableRepositoryError(error: unknown): boolean;
   listRepositoryInstructionFiles(
     installationToken: string,
@@ -284,6 +285,14 @@ async function createRunnerRepoCandidates(
         );
         for (const [repo, token] of result.tokens) tokens.set(repo, token);
         errors.push(...result.errors);
+        if (
+          result.errors.some(
+            (error) =>
+              deps.isRetryableRepositoryError(error) || !deps.isRepositorySelectionError(error),
+          )
+        ) {
+          break;
+        }
       }
       return { tokens, errors };
     }),
@@ -337,7 +346,11 @@ async function authorizeRepositoryChunk(
       },
       "failed to authorize GitHub repository candidates",
     );
-    if (deps.isRetryableRepositoryError(error) || repos.length === 1) {
+    if (
+      deps.isRetryableRepositoryError(error) ||
+      !deps.isRepositorySelectionError(error) ||
+      repos.length === 1
+    ) {
       return { tokens: new Map(), errors: [error] };
     }
 

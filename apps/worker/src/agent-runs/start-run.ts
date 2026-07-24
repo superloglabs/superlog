@@ -6,6 +6,7 @@ import { buildContextIncidentUrl } from "../incident-route.js";
 import { getAgentRunnerBackend } from "../infra/agent-runner/backend.js";
 import {
   createRepositoryReadTokenForRepositories,
+  isGithubRepositorySelectionError,
   isRetryableGithubRequestError,
   listRepositoryInstructionFiles,
 } from "../infra/github/repositories.js";
@@ -33,6 +34,7 @@ export async function startQueuedAgentRun(ctx: AgentRunContext): Promise<void> {
     listRepositories: listAccessibleGithubRepositories,
     scoreRepositories: scoreRepos,
     createRepositoryReadTokenForRepositories,
+    isRepositorySelectionError: isGithubRepositorySelectionError,
     isRetryableRepositoryError: isRetryableGithubRequestError,
     listRepositoryInstructionFiles,
     buildIssueSummaries: (ctx) =>

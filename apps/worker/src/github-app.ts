@@ -72,6 +72,15 @@ export function isRetryableGithubRequestError(error: unknown): error is GithubRe
   return error instanceof GithubRequestError && error.retryable;
 }
 
+export function isGithubRepositorySelectionError(error: unknown): error is GithubRequestError {
+  return (
+    error instanceof GithubRequestError &&
+    !error.retryable &&
+    error.status === 422 &&
+    /repositor(?:y|ies)|repository_ids/i.test(error.message)
+  );
+}
+
 export function isRetryableGithubHttpFailure(
   status: number,
   responseBody: string,

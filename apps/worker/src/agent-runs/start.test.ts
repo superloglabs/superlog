@@ -8,7 +8,7 @@ import {
   RetryableGithubRepoDiscoveryError,
 } from "../agent-run-context.js";
 import type { AgentRunnerBackend, AgentRunnerStartInput } from "../agent-runner-backend.js";
-import { GithubRequestError } from "../github-app.js";
+import { GithubRequestError, isGithubRepositorySelectionError } from "../github-app.js";
 import { type StartQueuedAgentRunDeps, startQueuedAgentRunWorkflow } from "./start.js";
 
 test("startQueuedAgentRunWorkflow stops before external work when the Incident no longer owns the queued run", async () => {
@@ -252,6 +252,41 @@ test("startQueuedAgentRunWorkflow bisects a permanently invalid token batch", as
   assert.equal(
     calls.some((call) => call.startsWith("fail:")),
     false,
+  );
+});
+
+test("startQueuedAgentRunWorkflow does not bisect installation-wide token failures", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+  let tokenRequests = 0;
+  const deps = makeDeps(calls, {
+    async listRepositories() {
+      return Array.from({ length: 501 }, (_, index) => makeRepo(`repo-${index + 1}`, index + 1));
+    },
+    async createRepositoryReadTokenForRepositories() {
+      tokenRequests += 1;
+      throw new GithubRequestError("installation not found", {
+        retryable: false,
+        status: 404,
+      });
+    },
+  });
+  const getRunnerBackend = deps.getRunnerBackend;
+  deps.getRunnerBackend = async (runtime) => ({
+    ...(await getRunnerBackend(runtime)),
+    maxRepoResources: 501,
+  });
+
+  await startQueuedAgentRunWorkflow(ctx, deps);
+
+  assert.equal(tokenRequests, 1);
+  assert.equal(
+    calls.some((call) => call.startsWith("runner.start:")),
+    false,
+  );
+  assert.equal(
+    calls.some((call) => call.startsWith("fail:github_repo_token_failed:")),
+    true,
   );
 });
 
@@ -559,6 +594,7 @@ function makeDeps(
       calls.push(`createRepositoryReadToken:repos-${repositoryIds.join("-")}`);
       return `token-${repositoryIds.join("-")}`;
     },
+    isRepositorySelectionError: isGithubRepositorySelectionError,
     isRetryableRepositoryError(error) {
       return error instanceof GithubRequestError && error.retryable;
     },

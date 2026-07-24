@@ -1,4 +1,5 @@
 export {
+  isGithubRepositorySelectionError,
   isRetryableGithubRequestError,
   createGithubReadToken as createRepositoryReadToken,
   createGithubReadTokenForRepositories as createRepositoryReadTokenForRepositories,
