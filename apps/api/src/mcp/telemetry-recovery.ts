@@ -1,4 +1,4 @@
-import { metrics, type Counter } from "@opentelemetry/api";
+import { metrics, type Counter, type Histogram } from "@opentelemetry/api";
 
 export type McpTelemetryToolName =
   | "query_logs"
@@ -15,6 +15,7 @@ export type TelemetryRetryRequired = {
 };
 
 let telemetryQueryOutcomeCounter: Counter | undefined;
+let telemetryQueryDurationHistogram: Histogram | undefined;
 
 function getTelemetryQueryOutcomeCounter(): Counter {
   telemetryQueryOutcomeCounter ??= metrics
@@ -25,6 +26,26 @@ function getTelemetryQueryOutcomeCounter(): Counter {
       unit: "1",
     });
   return telemetryQueryOutcomeCounter;
+}
+
+function getTelemetryQueryDurationHistogram(): Histogram {
+  telemetryQueryDurationHistogram ??= metrics
+    .getMeter("@superlog/api/mcp")
+    .createHistogram("superlog.mcp.telemetry_query.duration", {
+      description: "Elapsed time of MCP telemetry queries.",
+      unit: "ms",
+    });
+  return telemetryQueryDurationHistogram;
+}
+
+function recordTelemetryQueryOutcome(
+  tool: McpTelemetryToolName,
+  outcome: "success" | "timeout_recovered" | "permanent_failure",
+  durationMs: number,
+): void {
+  const attributes = { tool, outcome };
+  getTelemetryQueryOutcomeCounter().add(1, attributes);
+  getTelemetryQueryDurationHistogram().record(durationMs, attributes);
 }
 
 function isRetryableTelemetryTimeout(error: unknown): boolean {
@@ -213,27 +234,27 @@ export async function executeRecoverableTelemetryQuery<T>(
   onTimeout?: (error: unknown, recovery: TelemetryRetryRequired) => void,
   onPermanentFailure?: (error: unknown) => void,
 ): Promise<T | TelemetryRetryRequired> {
+  const startedAt = performance.now();
   try {
     const result = await query();
-    getTelemetryQueryOutcomeCounter().add(1, {
-      tool,
-      outcome: "success",
-    });
+    recordTelemetryQueryOutcome(tool, "success", performance.now() - startedAt);
     return result;
   } catch (error) {
     const recovery = recoverTelemetryTimeout(tool, input, error);
     if (!recovery) {
-      getTelemetryQueryOutcomeCounter().add(1, {
+      recordTelemetryQueryOutcome(
         tool,
-        outcome: "permanent_failure",
-      });
+        "permanent_failure",
+        performance.now() - startedAt,
+      );
       onPermanentFailure?.(error);
       throw error;
     }
-    getTelemetryQueryOutcomeCounter().add(1, {
+    recordTelemetryQueryOutcome(
       tool,
-      outcome: "timeout_recovered",
-    });
+      "timeout_recovered",
+      performance.now() - startedAt,
+    );
     onTimeout?.(error, recovery);
     return recovery;
   }
