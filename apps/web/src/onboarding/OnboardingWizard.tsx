@@ -343,6 +343,19 @@ function CreateOrgStep({ userName, userEmail }: { userName: string; userEmail: s
 // user doesn't lose their half-finished create-org step.
 const FOUNDER_CALL_URL = "https://cal.com/superlog/superlog-onboarding";
 
+// The founder-call nudge is a hosted-offering promo, so it only shows on the
+// official hosted deployment (and the local dev domain, so it can be previewed)
+// — a self-hosted deployment on its own domain never renders it.
+function isHostedOfferingHost(): boolean {
+  if (typeof window === "undefined") return false;
+  const h = window.location.hostname;
+  return (
+    h === "superlog.sh" ||
+    h.endsWith(".superlog.sh") ||
+    h.endsWith(".superlog.localhost") // local dev (portless) preview
+  );
+}
+
 // Floating bottom-right nudge shown on the create-org step. Compact card: one
 // line of copy + a Book-a-call button, with the founders illustration tucked
 // into the bottom-right corner and spilling slightly past the card edge (the
@@ -350,7 +363,7 @@ const FOUNDER_CALL_URL = "https://cal.com/superlog/superlog-onboarding";
 // the wizard's dark surface + accent tokens so it reads as part of the app.
 function FounderCallCard() {
   const [dismissed, setDismissed] = useState(false);
-  if (dismissed) return null;
+  if (dismissed || !isHostedOfferingHost()) return null;
   return (
     <div className="pointer-events-none fixed bottom-6 right-6 z-50 hidden w-[320px] sm:block">
       <style>{`
