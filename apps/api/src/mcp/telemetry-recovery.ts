@@ -183,6 +183,17 @@ function suggestedRetryRange(
 
   const relativeSince = since ? resolveRelativeDate(since, now) : undefined;
   if (
+    until?.trim().toLowerCase() === "now()" &&
+    Number.isFinite(sinceMs) &&
+    now.getTime() > sinceMs
+  ) {
+    const duration = narrowedDuration(now.getTime() - sinceMs);
+    return {
+      since: new Date(now.getTime() - duration).toISOString(),
+      until: "now()",
+    };
+  }
+  if (
     until?.trim().toLowerCase() === "now()" ||
     (!until && relativeSince)
   ) {
