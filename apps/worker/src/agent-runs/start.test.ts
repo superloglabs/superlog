@@ -213,6 +213,48 @@ test("startQueuedAgentRunWorkflow chunks installation tokens at GitHub's reposit
   assert.equal(candidateTokens[500], "token-2");
 });
 
+test("startQueuedAgentRunWorkflow bisects a permanently invalid token batch", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+  const tokenRequests: number[][] = [];
+  let candidateNames: string[] = [];
+  const deps = makeDeps(
+    calls,
+    {
+      async listRepositories() {
+        return [makeRepo("repo-1", 1), makeRepo("removed-repo", 2), makeRepo("repo-3", 3)];
+      },
+      async createRepositoryReadTokenForRepositories(_installationId, repositoryIds) {
+        tokenRequests.push(repositoryIds);
+        if (repositoryIds.includes(2)) {
+          throw new GithubRequestError("repository is not accessible to the installation", {
+            retryable: false,
+            status: 422,
+          });
+        }
+        return `token-${repositoryIds.join("-")}`;
+      },
+    },
+    (input) => {
+      candidateNames = input.repoCandidates.map((repo) => repo.fullName);
+    },
+  );
+  const getRunnerBackend = deps.getRunnerBackend;
+  deps.getRunnerBackend = async (runtime) => ({
+    ...(await getRunnerBackend(runtime)),
+    maxRepoResources: 3,
+  });
+
+  await startQueuedAgentRunWorkflow(ctx, deps);
+
+  assert.deepEqual(tokenRequests, [[1, 2, 3], [1], [2, 3], [2], [3]]);
+  assert.deepEqual(candidateNames, ["org/repo-1", "org/repo-3"]);
+  assert.equal(
+    calls.some((call) => call.startsWith("fail:")),
+    false,
+  );
+});
+
 test("startQueuedAgentRunWorkflow retries transient GitHub token failures without announcing failure", async () => {
   const calls: string[] = [];
   const ctx = makeContext();

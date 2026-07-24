@@ -268,57 +268,89 @@ async function createRunnerRepoCandidates(
   // Sharing each token across a bounded chunk preserves the run's aggregate
   // access while avoiding one token POST per repository (a 100-request burst
   // previously triggered GitHub's secondary rate limit).
-  type TokenResult = { token: string; error: null } | { token: null; error: unknown };
-  const tokenResults: Promise<TokenResult>[] = [];
-  const tokenResultByRepo = new Map<ScoredGithubRepo, Promise<TokenResult>>();
-  for (const [installationId, repos] of reposByInstallation) {
-    let previousChunk = Promise.resolve();
-    for (let offset = 0; offset < repos.length; offset += GITHUB_TOKEN_MAX_REPOSITORIES) {
-      const chunk = repos.slice(offset, offset + GITHUB_TOKEN_MAX_REPOSITORIES);
-      const tokenResult = previousChunk
-        .then(() =>
-          deps.createRepositoryReadTokenForRepositories(
-            installationId,
-            chunk.map((repo) => repo.id),
-          ),
-        )
-        .then<TokenResult, TokenResult>(
-          (token) => ({ token, error: null }),
-          (error: unknown) => {
-            logger.error(
-              {
-                err: error,
-                installationId,
-                repo_count: chunk.length,
-              },
-              "failed to authorize GitHub repository candidates",
-            );
-            return { token: null, error };
-          },
+  const installationResults = await Promise.all(
+    Array.from(reposByInstallation, async ([installationId, repos]) => {
+      const tokens = new Map<ScoredGithubRepo, string>();
+      const errors: unknown[] = [];
+      // Token requests for one installation stay sequential even when its
+      // selected repositories require multiple 500-repository chunks.
+      // Different installations may authorize concurrently.
+      for (let offset = 0; offset < repos.length; offset += GITHUB_TOKEN_MAX_REPOSITORIES) {
+        const result = await authorizeRepositoryChunk(
+          ctx,
+          installationId,
+          repos.slice(offset, offset + GITHUB_TOKEN_MAX_REPOSITORIES),
+          deps,
         );
-      previousChunk = tokenResult.then(() => undefined);
-      tokenResults.push(tokenResult);
-      for (const repo of chunk) tokenResultByRepo.set(repo, tokenResult);
-    }
+        for (const [repo, token] of result.tokens) tokens.set(repo, token);
+        errors.push(...result.errors);
+      }
+      return { tokens, errors };
+    }),
+  );
+  const tokenByRepo = new Map<ScoredGithubRepo, string>();
+  const repoCandidateErrors: unknown[] = [];
+  for (const result of installationResults) {
+    for (const [repo, token] of result.tokens) tokenByRepo.set(repo, token);
+    repoCandidateErrors.push(...result.errors);
   }
 
   const candidates = await Promise.all(
     topScored.map(async (repo, index) => {
-      const tokenResult = await tokenResultByRepo.get(repo);
-      if (!tokenResult?.token) return null;
-      return createRunnerRepoCandidate(
-        repo,
-        tokenResult.token,
-        index < INSTRUCTION_FILE_PROBE_LIMIT,
-        deps,
-      );
+      const token = tokenByRepo.get(repo);
+      if (!token) return null;
+      return createRunnerRepoCandidate(repo, token, index < INSTRUCTION_FILE_PROBE_LIMIT, deps);
     }),
   );
-  const resolvedTokenResults = await Promise.all(tokenResults);
   return {
     candidates: candidates.filter((repo): repo is AgentRunnerRepoCandidate => repo !== null),
-    errors: resolvedTokenResults.flatMap((result) => (result.error === null ? [] : [result.error])),
+    errors: repoCandidateErrors,
   };
+}
+
+async function authorizeRepositoryChunk(
+  ctx: AgentRunContext,
+  installationId: number,
+  repos: ScoredGithubRepo[],
+  deps: StartQueuedAgentRunDeps,
+): Promise<{ tokens: Map<ScoredGithubRepo, string>; errors: unknown[] }> {
+  try {
+    const token = await deps.createRepositoryReadTokenForRepositories(
+      installationId,
+      repos.map((repo) => repo.id),
+    );
+    return {
+      tokens: new Map(repos.map((repo) => [repo, token])),
+      errors: [],
+    };
+  } catch (error) {
+    logger.error(
+      {
+        err: error,
+        agent_run_id: ctx.agentRun.id,
+        incident_id: ctx.incident.id,
+        installationId,
+        repo_count: repos.length,
+      },
+      "failed to authorize GitHub repository candidates",
+    );
+    if (deps.isRetryableRepositoryError(error) || repos.length === 1) {
+      return { tokens: new Map(), errors: [error] };
+    }
+
+    const midpoint = Math.floor(repos.length / 2);
+    const left = await authorizeRepositoryChunk(
+      ctx,
+      installationId,
+      repos.slice(0, midpoint),
+      deps,
+    );
+    const right = await authorizeRepositoryChunk(ctx, installationId, repos.slice(midpoint), deps);
+    return {
+      tokens: new Map([...left.tokens, ...right.tokens]),
+      errors: [...left.errors, ...right.errors],
+    };
+  }
 }
 
 const GITHUB_TOKEN_MAX_REPOSITORIES = 500;
