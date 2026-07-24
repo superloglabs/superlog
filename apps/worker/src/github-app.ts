@@ -378,7 +378,10 @@ async function githubRequest<T>(
   }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    const retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"));
+    const retryAfterMs = parseGithubRetryDelayMs({
+      retryAfter: res.headers.get("retry-after"),
+      rateLimitReset: res.headers.get("x-ratelimit-reset"),
+    });
     throw new GithubRequestError(`github ${method} ${pathname} failed: ${res.status} ${text}`, {
       retryable: isRetryableGithubHttpFailure(
         res.status,
@@ -392,13 +395,28 @@ async function githubRequest<T>(
   return (await res.json()) as T;
 }
 
-function parseRetryAfterMs(value: string | null): number | undefined {
+export function parseGithubRetryDelayMs(opts: {
+  retryAfter: string | null;
+  rateLimitReset: string | null;
+  now?: () => number;
+}): number | undefined {
+  const now = opts.now ?? Date.now;
+  const retryAfterMs = parseRetryAfterMs(opts.retryAfter, now);
+  if (retryAfterMs !== undefined) return retryAfterMs;
+
+  if (!opts.rateLimitReset) return undefined;
+  const resetEpochSeconds = Number(opts.rateLimitReset);
+  if (!Number.isFinite(resetEpochSeconds) || resetEpochSeconds < 0) return undefined;
+  return Math.max(0, resetEpochSeconds * 1_000 - now());
+}
+
+function parseRetryAfterMs(value: string | null, now: () => number): number | undefined {
   if (!value) return undefined;
   const seconds = Number(value);
   if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
   const date = Date.parse(value);
   if (Number.isNaN(date)) return undefined;
-  return Math.max(0, date - Date.now());
+  return Math.max(0, date - now());
 }
 
 const installationTokenGate = new GithubInstallationTokenGate();

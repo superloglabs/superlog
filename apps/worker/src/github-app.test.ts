@@ -22,6 +22,7 @@ import {
   isRetryableGithubHttpFailure,
   loadGithubPullRequestProviderObservationWithToken,
   openedAgentPullRequest,
+  parseGithubRetryDelayMs,
   recoverPullRequestDelivery,
   redactGitSecrets,
   reopenGithubPullRequestWithToken,
@@ -43,6 +44,25 @@ test("GitHub HTTP retry policy distinguishes transient provider failures", () =>
   assert.equal(isRetryableGithubHttpFailure(503, "service unavailable"), true);
   assert.equal(isRetryableGithubHttpFailure(403, '{"message":"Resource not accessible"}'), false);
   assert.equal(isRetryableGithubHttpFailure(404, '{"message":"Not Found"}'), false);
+});
+
+test("GitHub retry delay honors the primary rate-limit reset window", () => {
+  assert.equal(
+    parseGithubRetryDelayMs({
+      retryAfter: null,
+      rateLimitReset: "1753366805",
+      now: () => 1_753_366_800_000,
+    }),
+    5_000,
+  );
+  assert.equal(
+    parseGithubRetryDelayMs({
+      retryAfter: "120",
+      rateLimitReset: "1753366805",
+      now: () => 1_753_366_800_000,
+    }),
+    120_000,
+  );
 });
 
 test("GitHub installation token gate honors a transient failure's retry window", async () => {
