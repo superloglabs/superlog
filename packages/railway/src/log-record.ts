@@ -127,7 +127,9 @@ function parseHttpAccess(
   }
 
   const status = Number(statusText);
-  const [path, query] = target.split("?", 2);
+  const queryStart = target.indexOf("?");
+  const path = queryStart === -1 ? target : target.slice(0, queryStart);
+  const query = queryStart === -1 ? null : target.slice(queryStart + 1);
   if (!path || !Number.isInteger(status)) return null;
   const responseSize = sizeText && sizeText !== "-" ? Number(sizeText) : null;
   const durationSeconds = durationText && durationText !== "-" ? Number(durationText) : null;

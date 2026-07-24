@@ -258,6 +258,17 @@ test("railwayLogsToOtlp keeps HTTP server failures at error severity", () => {
   assert.equal(record.severityNumber, 17);
 });
 
+test("railwayLogsToOtlp preserves question marks inside HTTP query strings", () => {
+  const message =
+    '100.64.0.6 - - [2026-07-22 20:25:33] "GET /login?redirect=https://example.com/a?b=c HTTP/1.1" 302 0 0.012';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["url.path"]?.stringValue, "/login");
+  assert.equal(attrs["url.query"]?.stringValue, "redirect=https://example.com/a?b=c");
+});
+
 test("railwayLogsToOtlp keeps Railway severity when a parsed native level is unknown", () => {
   const message = 'level=verbose msg="something happened" request_id=req-1';
   const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
