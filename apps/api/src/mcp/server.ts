@@ -145,9 +145,14 @@ export function createMcpServerForSession(session: McpSession): McpServer {
       tool,
       input,
       query,
-      (error) => {
+      (error, recovery) => {
         logger.info(
-          { err: error, tool, projectId },
+          {
+            err: error,
+            tool,
+            projectId,
+            suggestedRange: recovery.suggested_input.range,
+          },
           "MCP telemetry query timed out; returning narrower retry guidance",
         );
       },

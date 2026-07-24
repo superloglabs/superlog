@@ -210,7 +210,7 @@ export async function executeRecoverableTelemetryQuery<T>(
   tool: McpTelemetryToolName,
   input: Record<string, unknown>,
   query: () => Promise<T>,
-  onTimeout?: (error: unknown) => void,
+  onTimeout?: (error: unknown, recovery: TelemetryRetryRequired) => void,
   onPermanentFailure?: (error: unknown) => void,
 ): Promise<T | TelemetryRetryRequired> {
   try {
@@ -234,7 +234,7 @@ export async function executeRecoverableTelemetryQuery<T>(
       tool,
       outcome: "timeout_recovered",
     });
-    onTimeout?.(error);
+    onTimeout?.(error, recovery);
     return recovery;
   }
 }
