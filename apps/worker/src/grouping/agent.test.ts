@@ -1,8 +1,8 @@
 import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type Anthropic from "@anthropic-ai/sdk";
-import { type GroupingLLMClient, runGroupingAgent } from "./agent.js";
+import Anthropic, { type APIConnectionError } from "@anthropic-ai/sdk";
+import { type GroupingLLMClient, asGroupingLLMClient, runGroupingAgent } from "./agent.js";
 import {
   type GroupingCandidateIncident,
   type GroupingNewIssue,
@@ -780,4 +780,129 @@ test("runGroupingAgent: tells the decision model to inspect correlated bursts be
     systemPrompt,
     /Only join when inspected evidence supports that shared explanation; otherwise return standalone\./,
   );
+});
+
+// ---------------------------------------------------------------------------
+// asGroupingLLMClient retry behaviour
+// ---------------------------------------------------------------------------
+
+function makeConnErr(): APIConnectionError {
+  // Create an instance without invoking the real constructor so tests do not
+  // depend on the exact SDK constructor signature.
+  return Object.assign(Object.create(Anthropic.APIConnectionError.prototype) as APIConnectionError, {
+    message: "Connection error.: fetch failed",
+    name: "APIConnectionError",
+  });
+}
+
+test("asGroupingLLMClient: succeeds on first attempt with no errors", async () => {
+  let calls = 0;
+  const goodMessage = makeMessage([textBlock("ok")]);
+  const client = asGroupingLLMClient(
+    {
+      messages: {
+        create: async () => {
+          calls++;
+          return goodMessage;
+        },
+      } as unknown as Anthropic["messages"],
+    },
+    { retryDelayMs: 0 },
+  );
+  const result = await client.send({
+    model: "test",
+    system: "sys",
+    tools: [],
+    messages: [],
+    maxTokens: 100,
+    temperature: 0,
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.content[0]?.type, "text");
+});
+
+test("asGroupingLLMClient: retries APIConnectionError up to 2 times then succeeds", async () => {
+  let calls = 0;
+  const connErr = makeConnErr();
+  const goodMessage = makeMessage([textBlock("ok")]);
+  const client = asGroupingLLMClient(
+    {
+      messages: {
+        create: async () => {
+          calls++;
+          if (calls <= 2) throw connErr;
+          return goodMessage;
+        },
+      } as unknown as Anthropic["messages"],
+    },
+    { retryDelayMs: 0 },
+  );
+  const result = await client.send({
+    model: "test",
+    system: "sys",
+    tools: [],
+    messages: [],
+    maxTokens: 100,
+    temperature: 0,
+  });
+  assert.equal(calls, 3, "should have tried 3 times (1 initial + 2 retries)");
+  assert.deepEqual(result, goodMessage);
+});
+
+test("asGroupingLLMClient: rethrows APIConnectionError after exhausting retries", async () => {
+  let calls = 0;
+  const connErr = makeConnErr();
+  const client = asGroupingLLMClient(
+    {
+      messages: {
+        create: async () => {
+          calls++;
+          throw connErr;
+        },
+      } as unknown as Anthropic["messages"],
+    },
+    { retryDelayMs: 0 },
+  );
+  await assert.rejects(
+    () =>
+      client.send({
+        model: "test",
+        system: "sys",
+        tools: [],
+        messages: [],
+        maxTokens: 100,
+        temperature: 0,
+      }),
+    connErr,
+  );
+  assert.equal(calls, 3, "should have tried 3 times before giving up");
+});
+
+test("asGroupingLLMClient: does not retry non-connection errors", async () => {
+  let calls = 0;
+  const otherErr = new Error("bad request");
+  const client = asGroupingLLMClient(
+    {
+      messages: {
+        create: async () => {
+          calls++;
+          throw otherErr;
+        },
+      } as unknown as Anthropic["messages"],
+    },
+    { retryDelayMs: 0 },
+  );
+  await assert.rejects(
+    () =>
+      client.send({
+        model: "test",
+        system: "sys",
+        tools: [],
+        messages: [],
+        maxTokens: 100,
+        temperature: 0,
+      }),
+    otherErr,
+  );
+  assert.equal(calls, 1, "should not retry on non-connection errors");
 });
