@@ -246,6 +246,24 @@ test("railwayLogsToOtlp structures logfmt without a native level", () => {
   assert.equal(attrs["log.record.original"], message);
 });
 
+test("railwayLogsToOtlp parses escaped logfmt values", () => {
+  const message = 'level=info msg="worker said \\"ready\\" at C:\\\\jobs" request_id=req-1';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, 'worker said "ready" at C:\\jobs');
+  assert.equal(record.severityText, "INFO");
+});
+
+test("railwayLogsToOtlp safely rejects a long unterminated logfmt value", () => {
+  const message = `level=info msg="${"\\!".repeat(10_000)}`;
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "ERROR");
+});
+
 test("railwayLogsToOtlp bounds extracted structured attributes", () => {
   const longKey = "x".repeat(129);
   const message = JSON.stringify({

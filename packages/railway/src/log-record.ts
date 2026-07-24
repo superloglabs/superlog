@@ -7,7 +7,6 @@ export type ParsedRailwayLogRecord = {
   attributes: ParsedAttribute[];
 };
 
-const LOGFMT_FIELD = /([A-Za-z_][A-Za-z0-9_.-]*)=(?:"((?:\\.|[^"])*)"|(\S+))/g;
 const HTTP_ACCESS_RECORD =
   /^(\S+) \S+ \S+ \[([^\]]+)\] "([A-Z]+) (\S+) HTTP\/(\d(?:\.\d)?)" (\d{3}) (\d+|-)(?: ([\d.]+|-))?$/;
 const POSTGRESQL_RECORD =
@@ -255,24 +254,68 @@ function parseLogfmt(message: string): Record<string, string> | null {
   const fields: Record<string, string> = {};
   let cursor = 0;
   let count = 0;
-  for (const match of message.matchAll(LOGFMT_FIELD)) {
-    if (match.index === undefined || message.slice(cursor, match.index).trim() !== "") return null;
-    const key = match[1];
-    const value = match[2] !== undefined ? unescapeQuoted(match[2]) : match[3];
-    if (!key || value === undefined || (match[2] === undefined && value.startsWith('"'))) {
-      return null;
+
+  while (cursor < message.length) {
+    while (cursor < message.length && isWhitespace(message[cursor])) cursor += 1;
+    if (cursor === message.length) break;
+
+    const keyStart = cursor;
+    if (!isLogfmtKeyStart(message[cursor])) return null;
+    cursor += 1;
+    while (cursor < message.length && isLogfmtKeyPart(message[cursor])) cursor += 1;
+    const key = message.slice(keyStart, cursor);
+    if (message[cursor] !== "=") return null;
+    cursor += 1;
+
+    let value = "";
+    if (message[cursor] === '"') {
+      cursor += 1;
+      let closed = false;
+      while (cursor < message.length) {
+        const character = message[cursor];
+        if (character === '"') {
+          cursor += 1;
+          closed = true;
+          break;
+        }
+        if (character === "\\" && cursor + 1 < message.length) {
+          const escaped = message[cursor + 1];
+          if (escaped === '"' || escaped === "\\") {
+            value += escaped;
+            cursor += 2;
+            continue;
+          }
+        }
+        value += character;
+        cursor += 1;
+      }
+      if (!closed || (cursor < message.length && !isWhitespace(message[cursor]))) return null;
+    } else {
+      const valueStart = cursor;
+      while (cursor < message.length && !isWhitespace(message[cursor])) cursor += 1;
+      if (valueStart === cursor) return null;
+      value = message.slice(valueStart, cursor);
     }
+
     fields[key] = value;
-    cursor = match.index + match[0].length;
     count += 1;
     if (count > MAX_PARSED_FIELDS) return null;
   }
-  if (count < 2 || message.slice(cursor).trim() !== "") return null;
+
+  if (count < 2) return null;
   return fields;
 }
 
-function unescapeQuoted(value: string): string {
-  return value.replace(/\\(["\\])/g, "$1");
+function isWhitespace(character: string | undefined): boolean {
+  return character === " " || character === "\t" || character === "\n" || character === "\r";
+}
+
+function isLogfmtKeyStart(character: string | undefined): boolean {
+  return character !== undefined && /[A-Za-z_]/.test(character);
+}
+
+function isLogfmtKeyPart(character: string | undefined): boolean {
+  return character !== undefined && /[A-Za-z0-9_.-]/.test(character);
 }
 
 function normalizeAttributeKey(key: string): string {
