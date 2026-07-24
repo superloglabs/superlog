@@ -55,6 +55,42 @@ test("a current or omitted range narrows to the latest hour", () => {
   }
 });
 
+test("a historical relative range retries the final hour within that range", () => {
+  const recovery = recoverTelemetryTimeout(
+    "query_logs",
+    {
+      range: {
+        since: "now() - INTERVAL 30 DAY",
+        until: "now() - INTERVAL 1 DAY",
+      },
+    },
+    new Error("Timeout error."),
+  );
+
+  assert.deepEqual(recovery?.suggested_input.range, {
+    since: "now() - INTERVAL 25 HOUR",
+    until: "now() - INTERVAL 1 DAY",
+  });
+});
+
+test("an absolute range shorter than one hour is narrowed within its bounds", () => {
+  const recovery = recoverTelemetryTimeout(
+    "query_traces",
+    {
+      range: {
+        since: "2026-07-01T00:00:00Z",
+        until: "2026-07-01T00:10:00Z",
+      },
+    },
+    new Error("Timeout error."),
+  );
+
+  assert.deepEqual(recovery?.suggested_input.range, {
+    since: "2026-07-01T00:05:00.000Z",
+    until: "2026-07-01T00:10:00Z",
+  });
+});
+
 test("a historical since-only range retries its first hour", () => {
   const recovery = recoverTelemetryTimeout(
     "query_metrics",
