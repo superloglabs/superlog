@@ -201,6 +201,74 @@ test("repository discovery surfaces failure when every enabled installation erro
   );
 });
 
+test("repository discovery treats a GitHub secondary rate limit as transient even when all installations fail", async () => {
+  // A 403 secondary rate limit on the access_tokens endpoint is transient; the
+  // run should retry on the next sweep rather than be permanently failed.
+  const rateLimitError = new Error(
+    'github POST /app/installations/42/access_tokens failed: 403 ' +
+      '{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.","documentation_url":"https://docs.github.com/..."}',
+  );
+  const githubInstalls = [
+    {
+      installation: {
+        installationId: 42,
+        agentEnabled: true,
+        repoAccess: null,
+      } as schema.GithubInstallation,
+      allowedRepoIds: null,
+    },
+  ];
+
+  await assert.rejects(
+    listAccessibleGithubRepositories(
+      { githubInstalls },
+      {
+        listInstallationRepositories: async () => {
+          throw rateLimitError;
+        },
+      },
+    ),
+    (error) => {
+      assert.ok(error instanceof PartialGithubRepoDiscoveryError);
+      assert.equal(error.cause, rateLimitError);
+      return true;
+    },
+  );
+});
+
+test("repository discovery treats a GitHub primary rate limit (429) as transient even when all installations fail", async () => {
+  const rateLimitError = new Error(
+    "github GET /installation/repositories failed: 429 " +
+      '{"message":"API rate limit exceeded for installation ID 42.","documentation_url":"https://docs.github.com/..."}',
+  );
+  const githubInstalls = [
+    {
+      installation: {
+        installationId: 42,
+        agentEnabled: true,
+        repoAccess: null,
+      } as schema.GithubInstallation,
+      allowedRepoIds: null,
+    },
+  ];
+
+  await assert.rejects(
+    listAccessibleGithubRepositories(
+      { githubInstalls },
+      {
+        listInstallationRepositories: async () => {
+          throw rateLimitError;
+        },
+      },
+    ),
+    (error) => {
+      assert.ok(error instanceof PartialGithubRepoDiscoveryError);
+      assert.equal(error.cause, rateLimitError);
+      return true;
+    },
+  );
+});
+
 test("repository lookup preserves a partial failure when successful installs have no usable repos", async () => {
   const githubUnavailable = new Error("github returned 503");
   const githubInstalls = [
