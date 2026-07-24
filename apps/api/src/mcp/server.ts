@@ -3,10 +3,16 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { logger } from "../logger.js";
 import { registerAgentConfigTools } from "./agent-config.js";
 import { registerAlertTools } from "./alerts.js";
 import { instrumentMcpToolAnalytics } from "./analytics.js";
-import { listServices, queryLogs, queryMetrics, queryTraces } from "./clickhouse.js";
+import {
+  listServices,
+  queryLogs,
+  queryMetrics,
+  queryTraces,
+} from "./clickhouse.js";
 import { registerDashboardTools } from "./dashboards.js";
 import { registerIncidentTools } from "./incidents.js";
 import {
@@ -14,6 +20,10 @@ import {
   listAccessibleProjects,
   setActiveProjectForToken,
 } from "./projects.js";
+import {
+  type McpTelemetryToolName,
+  executeRecoverableTelemetryQuery,
+} from "./telemetry-recovery.js";
 
 const timeRangeSchema = z
   .object({
@@ -25,7 +35,9 @@ const timeRangeSchema = z
       .optional(),
     until: z
       .string()
-      .describe("ISO-8601 timestamp or ClickHouse time expression. Defaults to 'now()'.")
+      .describe(
+        "ISO-8601 timestamp or ClickHouse time expression. Defaults to 'now()'.",
+      )
       .optional(),
   })
   .optional();
@@ -114,12 +126,47 @@ export function createMcpServerForSession(session: McpSession): McpServer {
     }
   };
 
-  const resolveProject = async (explicit: string | undefined): Promise<string> => {
+  const resolveProject = async (
+    explicit: string | undefined,
+  ): Promise<string> => {
     const id = explicit ?? session.activeProjectId;
     await assertTokenScope(id);
     await assertProjectAccess(session.userId, id);
     return id;
   };
+
+  const executeTelemetryQuery = <T>(
+    tool: McpTelemetryToolName,
+    input: Record<string, unknown>,
+    projectId: string,
+    query: () => Promise<T>,
+  ) =>
+    executeRecoverableTelemetryQuery(
+      tool,
+      { ...input, project_id: projectId },
+      query,
+      (error, recovery) => {
+        const suggestedRange = recovery.suggested_input.range as
+          | { since?: unknown; until?: unknown }
+          | undefined;
+        logger.info(
+          {
+            err: error,
+            tool,
+            projectId,
+            retrySince: suggestedRange?.since,
+            retryUntil: suggestedRange?.until,
+          },
+          "MCP telemetry query timed out; returning narrower retry guidance",
+        );
+      },
+      (error) => {
+        logger.error(
+          { err: error, tool, projectId },
+          "MCP telemetry query failed permanently",
+        );
+      },
+    );
 
   server.registerTool(
     "query_logs",
@@ -135,7 +182,10 @@ export function createMcpServerForSession(session: McpSession): McpServer {
           .string()
           .optional()
           .describe("Filter by severity text (e.g. 'ERROR', 'WARN', 'INFO')"),
-        search: z.string().optional().describe("Case-insensitive substring match on log body"),
+        search: z
+          .string()
+          .optional()
+          .describe("Case-insensitive substring match on log body"),
         resource_attrs: resourceAttrsSchema,
         log_attrs: logAttrsSchema,
         limit: z.number().int().positive().max(500).default(50),
@@ -143,16 +193,22 @@ export function createMcpServerForSession(session: McpSession): McpServer {
     },
     async (input) => {
       const projectId = await resolveProject(input.project_id);
-      const rows = await queryLogs(session.ch, projectId, {
-        range: input.range,
-        service: input.service,
-        severity: input.severity,
-        search: input.search,
-        resourceAttrs: input.resource_attrs,
-        logAttrs: input.log_attrs,
-        limit: input.limit,
-      });
-      return { content: [{ type: "text", text: JSON.stringify(rows) }] };
+      const result = await executeTelemetryQuery(
+        "query_logs",
+        input,
+        projectId,
+        () =>
+          queryLogs(session.ch, projectId, {
+            range: input.range,
+            service: input.service,
+            severity: input.severity,
+            search: input.search,
+            resourceAttrs: input.resource_attrs,
+            logAttrs: input.log_attrs,
+            limit: input.limit,
+          }),
+      );
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
     },
   );
 
@@ -181,17 +237,23 @@ export function createMcpServerForSession(session: McpSession): McpServer {
     },
     async (input) => {
       const projectId = await resolveProject(input.project_id);
-      const rows = await queryTraces(session.ch, projectId, {
-        range: input.range,
-        service: input.service,
-        spanName: input.span_name,
-        statusCode: input.status_code,
-        minDurationMs: input.min_duration_ms,
-        resourceAttrs: input.resource_attrs,
-        spanAttrs: input.span_attrs,
-        limit: input.limit,
-      });
-      return { content: [{ type: "text", text: JSON.stringify(rows) }] };
+      const result = await executeTelemetryQuery(
+        "query_traces",
+        input,
+        projectId,
+        () =>
+          queryTraces(session.ch, projectId, {
+            range: input.range,
+            service: input.service,
+            spanName: input.span_name,
+            statusCode: input.status_code,
+            minDurationMs: input.min_duration_ms,
+            resourceAttrs: input.resource_attrs,
+            spanAttrs: input.span_attrs,
+            limit: input.limit,
+          }),
+      );
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
     },
   );
 
@@ -212,14 +274,20 @@ export function createMcpServerForSession(session: McpSession): McpServer {
     },
     async (input) => {
       const projectId = await resolveProject(input.project_id);
-      const rows = await queryMetrics(session.ch, projectId, {
-        metricName: input.metric_name,
-        service: input.service,
-        range: input.range,
-        resourceAttrs: input.resource_attrs,
-        limit: input.limit,
-      });
-      return { content: [{ type: "text", text: JSON.stringify(rows) }] };
+      const result = await executeTelemetryQuery(
+        "query_metrics",
+        input,
+        projectId,
+        () =>
+          queryMetrics(session.ch, projectId, {
+            metricName: input.metric_name,
+            service: input.service,
+            range: input.range,
+            resourceAttrs: input.resource_attrs,
+            limit: input.limit,
+          }),
+      );
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
     },
   );
 
@@ -227,7 +295,8 @@ export function createMcpServerForSession(session: McpSession): McpServer {
     "list_services",
     {
       title: "List services",
-      description: "List distinct service.name values emitting telemetry in the given window.",
+      description:
+        "List distinct service.name values emitting telemetry in the given window.",
       inputSchema: {
         project_id: projectIdSchema,
         range: timeRangeSchema,
@@ -235,8 +304,13 @@ export function createMcpServerForSession(session: McpSession): McpServer {
     },
     async (input) => {
       const projectId = await resolveProject(input.project_id);
-      const services = await listServices(session.ch, projectId, input.range);
-      return { content: [{ type: "text", text: JSON.stringify(services) }] };
+      const result = await executeTelemetryQuery(
+        "list_services",
+        input,
+        projectId,
+        () => listServices(session.ch, projectId, input.range),
+      );
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
     },
   );
 
@@ -264,14 +338,16 @@ export function createMcpServerForSession(session: McpSession): McpServer {
     "get_active_project",
     {
       title: "Get active project",
-      description: "Return the project that tools default to when project_id is omitted.",
+      description:
+        "Return the project that tools default to when project_id is omitted.",
       inputSchema: {},
     },
     async () => {
       const projects = (await listAccessibleProjects(session.userId)).filter(
         (p) => !session.allowedOrgId || p.orgId === session.allowedOrgId,
       );
-      const active = projects.find((p) => p.id === session.activeProjectId) ?? null;
+      const active =
+        projects.find((p) => p.id === session.activeProjectId) ?? null;
       return {
         content: [
           {
