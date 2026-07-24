@@ -22,6 +22,7 @@ export type Me = {
     hasIngested: boolean;
     hasSentryIssues: boolean;
   } | null;
+  suggestedOrgName: string | null;
   // True when a shared demo project is configured and this project hasn't
   // ingested yet — the server is serving it read-only sample data. Drives the
   // demo-explore experience + the persistent install nudge. Flips false the

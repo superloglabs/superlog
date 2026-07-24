@@ -34,6 +34,7 @@ import {
   initialWebViewFromSearch,
   stripHandledOnboardingParams,
 } from "./onboardingWebView.ts";
+import { suggestedOrgName } from "./orgNameSuggestion.ts";
 import {
   ExploreDemoLink,
   InstallPromptCard,
@@ -77,6 +78,7 @@ export function OnboardingWizard({
   hasSentryIssues,
   userName,
   userEmail,
+  workspaceOrgName,
   onComplete,
   onExploreDemo,
 }: {
@@ -92,6 +94,7 @@ export function OnboardingWizard({
   hasSentryIssues: boolean;
   userName: string;
   userEmail: string;
+  workspaceOrgName?: string | null;
   onComplete: () => void;
   // Present only when a shared demo project is configured. Lets the user skip
   // ahead and explore sample data instead of instrumenting first.
@@ -178,7 +181,11 @@ export function OnboardingWizard({
         <div className="w-full max-w-[640px]">
           {!projectId ? (
             <>
-              <CreateOrgStep userName={userName} userEmail={userEmail} />
+              <CreateOrgStep
+                userName={userName}
+                userEmail={userEmail}
+                workspaceOrgName={workspaceOrgName}
+              />
               <FounderCallCard />
             </>
           ) : mode === "agent" ? (
@@ -271,19 +278,18 @@ export function OnboardingWizard({
   );
 }
 
-// Suggest an org name from whatever we know about the user. Google sign-in
-// gives us a real display name ("Jane Doe"); email/password gives us nothing,
-// so we fall back to the email local part.
-function suggestedOrgName(userName: string, userEmail: string): string {
-  const trimmedName = userName.trim();
-  if (trimmedName) return `${trimmedName}'s org`;
-  const local = userEmail.split("@")[0] ?? "";
-  if (local) return `${local}'s org`;
-  return "";
-}
-
-function CreateOrgStep({ userName, userEmail }: { userName: string; userEmail: string }) {
-  const [name, setName] = useState(() => suggestedOrgName(userName, userEmail));
+function CreateOrgStep({
+  userName,
+  userEmail,
+  workspaceOrgName,
+}: {
+  userName: string;
+  userEmail: string;
+  workspaceOrgName?: string | null;
+}) {
+  const [name, setName] = useState(() =>
+    suggestedOrgName({ workspaceOrgName, userName, userEmail }),
+  );
   const inputRef = useRef<HTMLInputElement>(null);
   const createOrg = useCreateMyFirstOrg();
   const trimmed = name.trim();

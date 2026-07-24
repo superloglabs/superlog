@@ -128,6 +128,7 @@ import {
 } from "./mcp/clickhouse.js";
 import { mountMcpAuthed, mountMcpPublic } from "./mcp/index.js";
 import { mountNotionAuthed, mountNotionPublic } from "./notion.js";
+import { suggestOrgNameFromGoogleIdToken } from "./onboarding-org-suggestion.js";
 import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { resolveActiveOrgContext, resolveMaybeActiveOrgContext } from "./org-context.js";
 import { ORG_NAME_MAX, createOrgWithDefaults, mountOrgCrud } from "./orgs.js";
@@ -500,6 +501,16 @@ app.get("/api/me", async (c) => {
   // null org/project so the web client can route them to the create-org step
   // in the onboarding wizard.
   if (!ctx.org) {
+    const googleAccount = await db.query.accounts.findFirst({
+      where: and(eq(schema.accounts.userId, user.id), eq(schema.accounts.providerId, "google")),
+      columns: { idToken: true },
+    });
+    // Better Auth validated this provider token before persisting it. The claim
+    // is used only as an editable onboarding suggestion, never for access.
+    const suggestedOrgName = googleAccount?.idToken
+      ? suggestOrgNameFromGoogleIdToken(googleAccount.idToken)
+      : null;
+
     return c.json({
       user: {
         id: user.id,
@@ -510,6 +521,7 @@ app.get("/api/me", async (c) => {
       },
       org: null,
       project: null,
+      suggestedOrgName,
       favorite: { orgId: user.favoriteOrgId, projectId: user.favoriteProjectId },
       billingEnforcement,
       features: { anomalyScanner: false },
@@ -571,6 +583,7 @@ app.get("/api/me", async (c) => {
       hasIngested,
       hasSentryIssues,
     },
+    suggestedOrgName: null,
     favorite: { orgId: user.favoriteOrgId, projectId: user.favoriteProjectId },
     demoMode,
     billingEnforcement,
