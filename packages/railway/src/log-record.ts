@@ -390,7 +390,6 @@ function parseLogfmt(message: string): Record<string, string> | null {
     } else {
       const valueStart = cursor;
       while (cursor < message.length && !isWhitespace(message[cursor])) cursor += 1;
-      if (valueStart === cursor) return null;
       value = message.slice(valueStart, cursor);
     }
 

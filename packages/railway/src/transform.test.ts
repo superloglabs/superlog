@@ -322,6 +322,15 @@ test("railwayLogsToOtlp parses escaped logfmt values", () => {
   assert.equal(record.severityText, "INFO");
 });
 
+test("railwayLogsToOtlp accepts empty unquoted logfmt values", () => {
+  const message = 'level=info msg="request complete" err=';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "request complete");
+  assert.equal(record.severityText, "INFO");
+});
+
 test("railwayLogsToOtlp safely rejects a long unterminated logfmt value", () => {
   const message = `level=info msg="${"\\!".repeat(10_000)}`;
   const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
