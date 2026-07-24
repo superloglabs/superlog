@@ -23,7 +23,27 @@ export type SignupAttribution = {
   referrer?: string;
   referringDomain?: string;
   landingPath?: string;
+  // Ad-network click identifiers appended to landing URLs. Generic first-party
+  // marketing attribution (same category as UTM) — no single vendor is special.
+  // A deployment forwards these to whatever ad network(s) it runs; open-core
+  // neither knows nor cares which. Read straight from the URL so they survive
+  // even when an ad-blocker prevents a vendor pixel from loading.
+  twclid?: string;
+  gclid?: string;
+  fbclid?: string;
+  msclkid?: string;
+  liFatId?: string;
 };
+
+// Query-param name → attribution field. Order-independent; the source of truth
+// for which click ids we recognize.
+const CLICK_ID_PARAMS: ReadonlyArray<readonly [param: string, field: keyof SignupAttribution]> = [
+  ["twclid", "twclid"],
+  ["gclid", "gclid"],
+  ["fbclid", "fbclid"],
+  ["msclkid", "msclkid"],
+  ["li_fat_id", "liFatId"],
+];
 
 // Kept in sync with the API's ALLOWED_SIGNUP_SOURCES validation shape: a short
 // slug of lower-case letters/digits/_/-. We normalize case but otherwise pass
@@ -62,6 +82,11 @@ export function parseAttribution(search: string, referrer: string): SignupAttrib
     }
   }
 
+  const clickIds: SignupAttribution = {};
+  for (const [param, field] of CLICK_ID_PARAMS) {
+    clickIds[field] = cleanParam(params.get(param));
+  }
+
   return sanitize({
     source,
     utmSource: cleanParam(params.get("utm_source")),
@@ -71,6 +96,7 @@ export function parseAttribution(search: string, referrer: string): SignupAttrib
     utmContent: cleanParam(params.get("utm_content")),
     referrer: ref,
     referringDomain,
+    ...clickIds,
   });
 }
 
@@ -84,6 +110,11 @@ const ATTRIBUTION_KEYS = [
   "referrer",
   "referringDomain",
   "landingPath",
+  "twclid",
+  "gclid",
+  "fbclid",
+  "msclkid",
+  "liFatId",
 ] as const;
 
 // `landingPath` is context that rides along with a real touch, not a touch in
@@ -158,10 +189,40 @@ export function buildSignupEventProperties(
     referring_domain: attr.referringDomain,
     landing_path: attr.landingPath,
     auth_method: ctx.authMethod,
+    // Surfaced on the PostHog person so "signed up from a paid ad click" is
+    // queryable as "click id is set", per network.
+    twclid: attr.twclid,
+    gclid: attr.gclid,
+    fbclid: attr.fbclid,
+    msclkid: attr.msclkid,
+    li_fat_id: attr.liFatId,
   };
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(props)) {
     if (v !== undefined && v !== null && v !== "") out[k] = v;
   }
   return out;
+}
+
+// Name of the first-party cookie that carries click ids to the server at
+// sign-up. Kept short-lived and holds only the click ids the ad network already
+// put in the URL. localStorage can't reach the server — and can't cross the
+// OAuth redirect to the API origin — so a cookie is the carrier. The server
+// reads it in the user-create path; keep this name in sync there.
+export const CLICK_ID_COOKIE = "sl_click_ids";
+
+/** Present click ids, keyed by their standard query-param name. */
+export function clickIdsFromAttribution(attr: SignupAttribution): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [param, field] of CLICK_ID_PARAMS) {
+    const v = attr[field];
+    if (typeof v === "string" && v !== "") out[param] = v;
+  }
+  return out;
+}
+
+/** JSON body for the click-id cookie, or null when there are no click ids. */
+export function serializeClickIdsCookie(attr: SignupAttribution): string | null {
+  const ids = clickIdsFromAttribution(attr);
+  return Object.keys(ids).length > 0 ? JSON.stringify(ids) : null;
 }

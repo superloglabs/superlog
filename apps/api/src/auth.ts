@@ -11,6 +11,7 @@ import {
   sendEmail,
   verificationEmailBody,
 } from "./email.js";
+import { readClickIdsFromCookieHeader } from "./signup-click-ids.js";
 import { enqueueUserCreated } from "./user-created-publisher.js";
 
 // Better Auth server config. Mounted at /api/auth/* by apps/api/src/index.ts.
@@ -241,7 +242,7 @@ export const auth = betterAuth({
   databaseHooks: {
     user: {
       create: {
-        after: async (user) => {
+        after: async (user, context) => {
           // Fires on every new users row — email and social signups alike, and
           // users who never finish onboarding — so the signup count is captured
           // server-side and can't be lost to a blocked or bounced browser. The
@@ -252,6 +253,11 @@ export const auth = betterAuth({
             event: "user_signed_up",
             set: { email: user.email, name: user.name },
           });
+          // Ad-network click ids captured on the landing URL and carried here in
+          // a first-party cookie (see signup-click-ids.ts). Forwarded on the
+          // event so a sink can click-attribute the conversion; empty when the
+          // user didn't arrive from a tagged ad click.
+          const clickIds = readClickIdsFromCookieHeader(context?.headers?.get("cookie"));
           // Vendor-neutral growth seam: a deployment may forward this to
           // external destinations (see @superlog/db lifecycle-events). No-op
           // unless a sink was registered at boot; fire-and-forget so a slow
@@ -261,6 +267,7 @@ export const auth = betterAuth({
             userId: user.id,
             email: user.email,
             dedupeId: `signup-${user.id}`,
+            properties: Object.keys(clickIds).length > 0 ? { clickIds } : undefined,
           });
           await enqueueUserCreated(user);
         },
