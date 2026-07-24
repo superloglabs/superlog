@@ -266,6 +266,71 @@ test("skips an installation whose token expired with no refresh token", async ()
   assert.equal(calls.cursors.length, 0);
 });
 
+test("uses firstPullLogBatchLimit instead of logBatchLimit when no cursor exists for the environment", async () => {
+  const { store } = fakeStore([installation()]);
+  const capturedLimits: number[] = [];
+  const fetchImpl: typeof fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url);
+    if (u === RAILWAY_GRAPHQL_URL) {
+      const body = JSON.parse(String(init?.body)) as { query: string; variables: Record<string, unknown> };
+      if (body.query.includes("externalWorkspaces")) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              externalWorkspaces: [
+                { id: "ws", name: "Superlog", projects: [{ id: "rp-1", name: "blackbird" }] },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      if (body.query.includes("environments { edges")) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              project: {
+                environments: { edges: [{ node: { id: "env-1", name: "production" } }] },
+                services: { edges: [{ node: { id: "svc-1", name: "blackbird-app" } }] },
+              },
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      if (body.query.includes("environmentLogs")) {
+        const limit =
+          (body.variables["beforeLimit"] as number | undefined) ??
+          (body.variables["afterLimit"] as number | undefined);
+        if (limit !== undefined) capturedLimits.push(limit);
+        return new Response(JSON.stringify({ data: { environmentLogs: [] } }), { status: 200 });
+      }
+      if (body.query.includes("metrics(")) {
+        return new Response(JSON.stringify({ data: { metrics: [] } }), { status: 200 });
+      }
+    }
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+
+  await runRailwayPullOnce({
+    store,
+    config: CONFIG,
+    intakeBaseUrl: "https://intake.test",
+    log: LOGGER,
+    now: () => NOW,
+    fetchImpl,
+    logBatchLimit: 1000,
+    firstPullLogBatchLimit: 50,
+    metricsIntervalSeconds: 999999,
+    metricsPollState: new Map([["inst-1:env-1:svc-1", Math.floor(NOW.getTime() / 1000)]]),
+  });
+
+  assert.ok(capturedLimits.length > 0, "expected at least one environmentLogs request");
+  for (const limit of capturedLimits) {
+    assert.equal(limit, 50, "first-pull should use firstPullLogBatchLimit, not logBatchLimit");
+  }
+});
+
 test("polls metrics on the interval, forwards gauges, and advances the sample cursor", async () => {
   const { store, calls } = fakeStore([
     installation({ logCursor: { "env-1": "2026-07-07T15:00:00Z" } }),

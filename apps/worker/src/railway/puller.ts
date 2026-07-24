@@ -67,6 +67,14 @@ export type RailwayPullerDeps = {
   now?: () => Date;
   /** Max log lines per environment per pass. */
   logBatchLimit?: number;
+  /**
+   * Max log lines per environment on the very first pull (no prior cursor).
+   * Kept small to avoid a large historical backfill creating a burst of
+   * issue transitions that saturates the LLM-grouping queue when a new
+   * installation connects with many projects/environments. Subsequent passes
+   * advance the cursor and use logBatchLimit to catch up incrementally.
+   */
+  firstPullLogBatchLimit?: number;
   /** Minimum seconds between metrics polls per service. */
   metricsIntervalSeconds?: number;
   metricsSampleRateSeconds?: number;
@@ -95,6 +103,10 @@ export async function runRailwayPullOnce(deps: RailwayPullerDeps): Promise<Railw
   const fetchImpl = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date());
   const logBatchLimit = deps.logBatchLimit ?? 1000;
+  // First-pull environments get a much smaller cap so a new installation
+  // with many environments cannot dump thousands of historical log lines in
+  // one pass and saturate the issue-transition grouping queue.
+  const firstPullLogBatchLimit = deps.firstPullLogBatchLimit ?? 50;
   const metricsInterval = deps.metricsIntervalSeconds ?? 300;
   const sampleRate = deps.metricsSampleRateSeconds ?? 60;
   const pollState = deps.metricsPollState ?? sharedMetricsPollState;
@@ -208,11 +220,16 @@ export async function runRailwayPullOnce(deps: RailwayPullerDeps): Promise<Railw
 
         // --- Logs ---------------------------------------------------------
         const cursorTs = logCursor[environment.id];
+        // Use a smaller limit when there is no prior cursor: this is the
+        // first pull for this environment and we anchor backward from now,
+        // so a large limit would backfill thousands of historical lines in
+        // one pass and saturate the issue-transition grouping queue.
+        const effectiveLogLimit = cursorTs ? logBatchLimit : firstPullLogBatchLimit;
         const logsRead = await fetchEnvironmentLogs({
           accessToken,
           environmentId: environment.id,
           ...(cursorTs ? { afterDate: cursorTs } : { anchorDate: now().toISOString() }),
-          limit: logBatchLimit,
+          limit: effectiveLogLimit,
           fetchImpl,
         });
         if (!logsRead.ok) {
