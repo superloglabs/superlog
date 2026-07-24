@@ -264,42 +264,47 @@ async function createRunnerRepoCandidates(
     repos.push(repo);
     reposByInstallation.set(installationId, repos);
   }
-  // One token can be scoped to every selected repository from an installation.
-  // Sharing it across those runner resources preserves the run's aggregate
+  // One token can cover up to 500 selected repositories from an installation.
+  // Sharing each token across a bounded chunk preserves the run's aggregate
   // access while avoiding one token POST per repository (a 100-request burst
   // previously triggered GitHub's secondary rate limit).
-  const tokenResults = new Map<
-    number,
-    Promise<{ token: string; error: null } | { token: null; error: unknown }>
-  >();
+  type TokenResult = { token: string; error: null } | { token: null; error: unknown };
+  const tokenResults: Promise<TokenResult>[] = [];
+  const tokenResultByRepo = new Map<ScoredGithubRepo, Promise<TokenResult>>();
   for (const [installationId, repos] of reposByInstallation) {
-    tokenResults.set(
-      installationId,
-      deps
-        .createRepositoryReadTokenForRepositories(
-          installationId,
-          repos.map((repo) => repo.id),
+    let previousChunk = Promise.resolve();
+    for (let offset = 0; offset < repos.length; offset += GITHUB_TOKEN_MAX_REPOSITORIES) {
+      const chunk = repos.slice(offset, offset + GITHUB_TOKEN_MAX_REPOSITORIES);
+      const tokenResult = previousChunk
+        .then(() =>
+          deps.createRepositoryReadTokenForRepositories(
+            installationId,
+            chunk.map((repo) => repo.id),
+          ),
         )
-        .then(
+        .then<TokenResult, TokenResult>(
           (token) => ({ token, error: null }),
           (error: unknown) => {
-            logger.warn(
+            logger.error(
               {
                 err: error,
                 installationId,
-                repo_count: repos.length,
+                repo_count: chunk.length,
               },
               "failed to authorize GitHub repository candidates",
             );
             return { token: null, error };
           },
-        ),
-    );
+        );
+      previousChunk = tokenResult.then(() => undefined);
+      tokenResults.push(tokenResult);
+      for (const repo of chunk) tokenResultByRepo.set(repo, tokenResult);
+    }
   }
 
   const candidates = await Promise.all(
     topScored.map(async (repo, index) => {
-      const tokenResult = await tokenResults.get(repo.installation.installationId);
+      const tokenResult = await tokenResultByRepo.get(repo);
       if (!tokenResult?.token) return null;
       return createRunnerRepoCandidate(
         repo,
@@ -309,12 +314,14 @@ async function createRunnerRepoCandidates(
       );
     }),
   );
-  const resolvedTokenResults = await Promise.all(tokenResults.values());
+  const resolvedTokenResults = await Promise.all(tokenResults);
   return {
     candidates: candidates.filter((repo): repo is AgentRunnerRepoCandidate => repo !== null),
     errors: resolvedTokenResults.flatMap((result) => (result.error === null ? [] : [result.error])),
   };
 }
+
+const GITHUB_TOKEN_MAX_REPOSITORIES = 500;
 
 // Each probe costs up to three GitHub contents-API requests, so only the
 // strongest candidates get one; the rest start with an empty list and the

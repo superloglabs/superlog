@@ -176,6 +176,43 @@ test("startQueuedAgentRunWorkflow bounds concurrent GitHub token creation", asyn
   assert.equal(maxActiveTokenRequests, 1);
 });
 
+test("startQueuedAgentRunWorkflow chunks installation tokens at GitHub's repository limit", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+  const tokenRequests: number[][] = [];
+  let candidateTokens: string[] = [];
+  const deps = makeDeps(
+    calls,
+    {
+      async listRepositories() {
+        return Array.from({ length: 501 }, (_, index) => makeRepo(`repo-${index + 1}`, index + 1));
+      },
+      async createRepositoryReadTokenForRepositories(_installationId, repositoryIds) {
+        tokenRequests.push(repositoryIds);
+        return `token-${tokenRequests.length}`;
+      },
+    },
+    (input) => {
+      candidateTokens = input.repoCandidates.map((repo) => repo.installationToken);
+    },
+  );
+  const getRunnerBackend = deps.getRunnerBackend;
+  deps.getRunnerBackend = async (runtime) => ({
+    ...(await getRunnerBackend(runtime)),
+    maxRepoResources: 501,
+  });
+
+  await startQueuedAgentRunWorkflow(ctx, deps);
+
+  assert.deepEqual(
+    tokenRequests.map((repositoryIds) => repositoryIds.length),
+    [500, 1],
+  );
+  assert.equal(candidateTokens[0], "token-1");
+  assert.equal(candidateTokens[499], "token-1");
+  assert.equal(candidateTokens[500], "token-2");
+});
+
 test("startQueuedAgentRunWorkflow retries transient GitHub token failures without announcing failure", async () => {
   const calls: string[] = [];
   const ctx = makeContext();
