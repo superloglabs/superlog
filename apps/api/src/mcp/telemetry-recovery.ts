@@ -1,4 +1,4 @@
-import { metrics } from "@opentelemetry/api";
+import { metrics, type Counter } from "@opentelemetry/api";
 
 export type McpTelemetryToolName =
   | "query_logs"
@@ -14,13 +14,18 @@ export type TelemetryRetryRequired = {
   suggested_input: Record<string, unknown>;
 };
 
-const telemetryQueryOutcomeCounter = metrics
-  .getMeter("@superlog/api/mcp")
-  .createCounter("superlog.mcp.telemetry_query.outcomes", {
-    description:
-      "Recovered timeouts and permanent failures at the MCP telemetry query boundary.",
-    unit: "1",
-  });
+let telemetryQueryOutcomeCounter: Counter | undefined;
+
+function getTelemetryQueryOutcomeCounter(): Counter {
+  telemetryQueryOutcomeCounter ??= metrics
+    .getMeter("@superlog/api/mcp")
+    .createCounter("superlog.mcp.telemetry_query.outcomes", {
+      description:
+        "Recovered timeouts and permanent failures at the MCP telemetry query boundary.",
+      unit: "1",
+    });
+  return telemetryQueryOutcomeCounter;
+}
 
 function isRetryableTelemetryTimeout(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
@@ -213,14 +218,14 @@ export async function executeRecoverableTelemetryQuery<T>(
   } catch (error) {
     const recovery = recoverTelemetryTimeout(tool, input, error);
     if (!recovery) {
-      telemetryQueryOutcomeCounter.add(1, {
+      getTelemetryQueryOutcomeCounter().add(1, {
         tool,
         outcome: "permanent_failure",
       });
       onPermanentFailure?.(error);
       throw error;
     }
-    telemetryQueryOutcomeCounter.add(1, {
+    getTelemetryQueryOutcomeCounter().add(1, {
       tool,
       outcome: "timeout_recovered",
     });
