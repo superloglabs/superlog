@@ -146,7 +146,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
       input,
       query,
       (error) => {
-        logger.warn(
+        logger.info(
           { err: error, tool, projectId },
           "MCP telemetry query timed out; returning narrower retry guidance",
         );
