@@ -182,6 +182,36 @@ test("railwayLogsToOtlp decodes Railway's JSON-encoded scalar attributes", () =>
   assert.equal(attrs["railway.attr.metadata"]?.stringValue, '{"nested":true}');
 });
 
+test("railwayLogsToOtlp preserves unsafe integer attributes as exact strings", () => {
+  const out = railwayLogsToOtlp(
+    [
+      {
+        ...LOG,
+        attributes: [{ key: "order_id", value: "9007199254740993" }],
+      },
+    ],
+    NAMES,
+  );
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["railway.attr.order_id"]?.stringValue, "9007199254740993");
+  assert.equal(attrs["railway.attr.order_id"]?.intValue, undefined);
+});
+
+test("railwayLogsToOtlp maps common numeric JSON levels", () => {
+  const message = JSON.stringify({ level: 30, msg: "worker started" });
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "worker started");
+  assert.equal(record.severityText, "INFO");
+  assert.equal(record.severityNumber, 9);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["railway.log.level"]?.intValue, "30");
+  assert.equal(attrs["railway.log.severity_source"]?.stringValue, "json");
+});
+
 test("railwayLogsToOtlp maps successful common access logs to structured HTTP info", () => {
   const message =
     '100.64.0.6 - - [2026-07-22 20:25:33] "POST /v1/audio/speech HTTP/1.1" 200 10761 1.317203';

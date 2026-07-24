@@ -29,6 +29,14 @@ const NATIVE_SEVERITY: Record<string, string> = {
   alert: "fatal",
   emergency: "fatal",
 };
+const NUMERIC_JSON_SEVERITY: Record<number, string> = {
+  10: "trace",
+  20: "debug",
+  30: "info",
+  40: "warn",
+  50: "error",
+  60: "fatal",
+};
 const POSTGRESQL_SEVERITY: Record<string, string> = {
   DEBUG: "debug",
   DEBUG1: "debug",
@@ -90,6 +98,9 @@ export function parseRailwayLogRecord(
 export function parseRailwayAttributeValue(value: string): ParsedAttributeValue {
   try {
     const parsed: unknown = JSON.parse(value);
+    if (typeof parsed === "number" && Number.isInteger(parsed) && !Number.isSafeInteger(parsed)) {
+      return value;
+    }
     return isScalar(parsed) ? parsed : value;
   } catch {
     return value;
@@ -171,14 +182,8 @@ function parseJson(
         ? record.msg
         : null;
   if (!body) return null;
-  const nativeSeverity =
-    typeof record.level === "string"
-      ? record.level
-      : typeof record.severity === "string"
-        ? record.severity
-        : null;
-  const parsedSeverity =
-    typeof nativeSeverity === "string" ? normalizeNativeSeverity(nativeSeverity) : null;
+  const nativeSeverity = record.level ?? record.severity;
+  const parsedSeverity = normalizeJsonSeverity(nativeSeverity);
 
   const parsedFields = Object.entries(record)
     .filter(
@@ -332,6 +337,12 @@ function isScalar(value: unknown): value is ParsedAttributeValue {
 
 function normalizeNativeSeverity(value: string): string | null {
   return NATIVE_SEVERITY[value.trim().toLowerCase()] ?? null;
+}
+
+function normalizeJsonSeverity(value: unknown): string | null {
+  if (typeof value === "string") return normalizeNativeSeverity(value);
+  if (typeof value === "number") return NUMERIC_JSON_SEVERITY[value] ?? null;
+  return null;
 }
 
 function isBoundedField(key: string, value: ParsedAttributeValue): boolean {
