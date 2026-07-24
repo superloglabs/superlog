@@ -361,6 +361,7 @@ async function authorizeRepositoryChunk(
       repos.slice(0, midpoint),
       deps,
     );
+    if (left.errors.some(deps.isRetryableRepositoryError)) return left;
     const right = await authorizeRepositoryChunk(ctx, installationId, repos.slice(midpoint), deps);
     return {
       tokens: new Map([...left.tokens, ...right.tokens]),

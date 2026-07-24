@@ -290,6 +290,46 @@ test("startQueuedAgentRunWorkflow does not bisect installation-wide token failur
   );
 });
 
+test("startQueuedAgentRunWorkflow stops bisection after a retryable half fails", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+  const tokenRequests: number[][] = [];
+  let instructionProbes = 0;
+  const deps = makeDeps(calls, {
+    async listRepositories() {
+      return [makeRepo("repo-1", 1), makeRepo("repo-2", 2), makeRepo("repo-3", 3)];
+    },
+    async createRepositoryReadTokenForRepositories(_installationId, repositoryIds) {
+      tokenRequests.push(repositoryIds);
+      if (repositoryIds.length > 1) {
+        throw new GithubRequestError("repository selection is invalid", {
+          retryable: false,
+          status: 422,
+        });
+      }
+      throw new GithubRequestError("github returned 503", {
+        retryable: true,
+        status: 503,
+      });
+    },
+    async listRepositoryInstructionFiles() {
+      instructionProbes += 1;
+      return [];
+    },
+  });
+  const getRunnerBackend = deps.getRunnerBackend;
+  deps.getRunnerBackend = async (runtime) => ({
+    ...(await getRunnerBackend(runtime)),
+    maxRepoResources: 3,
+  });
+
+  await startQueuedAgentRunWorkflow(ctx, deps);
+
+  assert.deepEqual(tokenRequests, [[1, 2, 3], [1]]);
+  assert.equal(instructionProbes, 0);
+  assert.equal(ctx.agentRun.state, "repo_discovery");
+});
+
 test("startQueuedAgentRunWorkflow retries transient GitHub token failures without announcing failure", async () => {
   const calls: string[] = [];
   const ctx = makeContext();
