@@ -298,17 +298,21 @@ async function maybeCaptureProjectActivation(projectId: string): Promise<void> {
         userId: schema.orgMembers.userId,
         orgId: schema.orgMembers.orgId,
         email: schema.users.email,
+        orgName: schema.orgs.name,
       })
       .from(schema.projects)
       .innerJoin(schema.orgMembers, eq(schema.orgMembers.orgId, schema.projects.orgId))
       .innerJoin(schema.users, eq(schema.users.id, schema.orgMembers.userId))
+      .innerJoin(schema.orgs, eq(schema.orgs.id, schema.projects.orgId))
       .where(and(eq(schema.projects.id, projectId), eq(schema.orgMembers.role, "owner")))
       .limit(1);
     if (!owner) return;
     captureServerEvent({
       distinctId: owner.userId,
       event: "first_telemetry_received",
-      properties: { project_id: projectId, org_id: owner.orgId },
+      // Carry the org name alongside org_id so the event is readable in the
+      // funnel without a separate join back to Postgres.
+      properties: { project_id: projectId, org_id: owner.orgId, org_name: owner.orgName },
     });
     // Vendor-neutral growth seam: a deployment may forward this to external
     // destinations (see @superlog/db lifecycle-events). No-op unless a sink
