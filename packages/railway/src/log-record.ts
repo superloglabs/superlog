@@ -84,6 +84,7 @@ export function parseRailwayLogRecord(
       "logfmt",
       Object.entries(fields)
         .filter(([key, value]) => isBoundedField(key, value))
+        .slice(0, MAX_PARSED_FIELDS)
         .map(([key, value]) => ({
           key: `railway.log.${normalizeAttributeKey(key)}`,
           value,
@@ -188,8 +189,8 @@ function parseJson(
         ? record.msg
         : null;
   if (!body) return null;
-  const nativeSeverity = record.level ?? record.severity;
-  const parsedSeverity = normalizeJsonSeverity(nativeSeverity);
+  const parsedSeverity =
+    normalizeJsonSeverity(record.level) ?? normalizeJsonSeverity(record.severity);
 
   const parsedFields = Object.entries(record)
     .filter(
@@ -393,9 +394,10 @@ function parseLogfmt(message: string): Record<string, string> | null {
       value = message.slice(valueStart, cursor);
     }
 
-    fields[key] = value;
+    if (count < MAX_PARSED_FIELDS || key === "level" || key === "msg" || key === "message") {
+      fields[key] = value;
+    }
     count += 1;
-    if (count > MAX_PARSED_FIELDS) return null;
   }
 
   if (count < 2) return null;

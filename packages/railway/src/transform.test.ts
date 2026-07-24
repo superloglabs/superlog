@@ -212,6 +212,21 @@ test("railwayLogsToOtlp maps common numeric JSON levels", () => {
   assert.equal(attrs["railway.log.severity_source"]?.stringValue, "json");
 });
 
+test("railwayLogsToOtlp uses a recognized JSON severity when level is unknown", () => {
+  const message = JSON.stringify({
+    level: "verbose",
+    severity: "info",
+    message: "worker started",
+  });
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.severityText, "INFO");
+  assert.equal(record.severityNumber, 9);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["railway.log.severity_source"]?.stringValue, "json");
+});
+
 test("railwayLogsToOtlp preserves unsafe JSON integer fields as exact strings", () => {
   const message = '{"level":30,"msg":"order accepted","order_id":9007199254740993}';
   const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
@@ -314,6 +329,19 @@ test("railwayLogsToOtlp safely rejects a long unterminated logfmt value", () => 
   const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
   assert.equal(record.body.stringValue, message);
   assert.equal(record.severityText, "ERROR");
+});
+
+test("railwayLogsToOtlp caps logfmt attributes without rejecting the record", () => {
+  const fields = Array.from({ length: 33 }, (_, index) => `field${index}=value${index}`).join(" ");
+  const message = `level=info msg="many fields" ${fields}`;
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "many fields");
+  assert.equal(record.severityText, "INFO");
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["railway.log.field0"]?.stringValue, "value0");
+  assert.equal(attrs["railway.log.field32"], undefined);
 });
 
 test("railwayLogsToOtlp bounds extracted structured attributes", () => {
