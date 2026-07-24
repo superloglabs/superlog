@@ -239,6 +239,44 @@ test("startQueuedAgentRunWorkflow retries transient GitHub token failures withou
   );
 });
 
+test("startQueuedAgentRunWorkflow defers partial transient GitHub token failures", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+  const firstRepo = makeRepo("repo-1", 1);
+  const secondRepo = makeRepo("repo-2", 2);
+  secondRepo.installation = {
+    ...secondRepo.installation,
+    installationId: 456,
+  };
+  const deps = makeDeps(calls, {
+    async listRepositories() {
+      return [firstRepo, secondRepo];
+    },
+    async createRepositoryReadTokenForRepositories(installationId) {
+      if (installationId === 123) {
+        throw new GithubRequestError("github returned 503", {
+          retryable: true,
+          status: 503,
+        });
+      }
+      return "token-456";
+    },
+  });
+  const getRunnerBackend = deps.getRunnerBackend;
+  deps.getRunnerBackend = async (runtime) => ({
+    ...(await getRunnerBackend(runtime)),
+    maxRepoResources: 2,
+  });
+
+  await startQueuedAgentRunWorkflow(ctx, deps);
+
+  assert.equal(ctx.agentRun.state, "repo_discovery");
+  assert.equal(
+    calls.some((call) => call.startsWith("runner.start:") || call.startsWith("fail:")),
+    false,
+  );
+});
+
 test("startQueuedAgentRunWorkflow exposes ask_human as an approval boundary", async () => {
   const calls: string[] = [];
   const ctx = makeContext();

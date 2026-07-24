@@ -89,18 +89,18 @@ export async function startQueuedAgentRunWorkflow(
   try {
     const { candidates: repoCandidates, errors: repoCandidateErrors } =
       await createRunnerRepoCandidates(ctx, runner, scored, deps);
+    if (repoCandidateErrors.some(deps.isRetryableRepositoryError)) {
+      logger.error(
+        {
+          agent_run_id: ctx.agentRun.id,
+          incident_id: ctx.incident.id,
+          failed_installation_count: repoCandidateErrors.length,
+        },
+        "repository authorization temporarily unavailable; will retry on the next sweep",
+      );
+      return;
+    }
     if (repoCandidates.length === 0) {
-      if (repoCandidateErrors.some(deps.isRetryableRepositoryError)) {
-        logger.error(
-          {
-            agent_run_id: ctx.agentRun.id,
-            incident_id: ctx.incident.id,
-            failed_installation_count: repoCandidateErrors.length,
-          },
-          "repository authorization temporarily unavailable; will retry on the next sweep",
-        );
-        return;
-      }
       await deps.fail(
         ctx,
         "github_repo_token_failed",
