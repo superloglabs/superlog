@@ -160,12 +160,16 @@ export async function executeRecoverableTelemetryQuery<T>(
   input: Record<string, unknown>,
   query: () => Promise<T>,
   onTimeout?: (error: unknown) => void,
+  onPermanentFailure?: (error: unknown) => void,
 ): Promise<T | TelemetryRetryRequired> {
   try {
     return await query();
   } catch (error) {
     const recovery = recoverTelemetryTimeout(tool, input, error);
-    if (!recovery) throw error;
+    if (!recovery) {
+      onPermanentFailure?.(error);
+      throw error;
+    }
     onTimeout?.(error);
     return recovery;
   }

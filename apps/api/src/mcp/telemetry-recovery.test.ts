@@ -136,11 +136,19 @@ test("the MCP boundary still rejects permanent backend failures", async () => {
     code: 60,
     type: "UNKNOWN_TABLE",
   });
+  const observed: unknown[] = [];
 
   await assert.rejects(
-    executeRecoverableTelemetryQuery("query_logs", {}, async () => {
-      throw error;
-    }),
+    executeRecoverableTelemetryQuery(
+      "query_logs",
+      {},
+      async () => {
+        throw error;
+      },
+      undefined,
+      (cause) => observed.push(cause),
+    ),
     (cause) => cause === error,
   );
+  assert.deepEqual(observed, [error]);
 });

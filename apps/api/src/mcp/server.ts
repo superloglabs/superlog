@@ -141,12 +141,23 @@ export function createMcpServerForSession(session: McpSession): McpServer {
     projectId: string,
     query: () => Promise<T>,
   ) =>
-    executeRecoverableTelemetryQuery(tool, input, query, (error) => {
-      logger.warn(
-        { err: error, tool, projectId },
-        "MCP telemetry query timed out; returning narrower retry guidance",
-      );
-    });
+    executeRecoverableTelemetryQuery(
+      tool,
+      input,
+      query,
+      (error) => {
+        logger.warn(
+          { err: error, tool, projectId },
+          "MCP telemetry query timed out; returning narrower retry guidance",
+        );
+      },
+      (error) => {
+        logger.error(
+          { err: error, tool, projectId },
+          "MCP telemetry query failed permanently",
+        );
+      },
+    );
 
   server.registerTool(
     "query_logs",
