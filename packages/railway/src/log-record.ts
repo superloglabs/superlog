@@ -166,15 +166,19 @@ function parseJson(
 ): ParsedRailwayLogRecord | null {
   let value: unknown;
   try {
-    value = JSON.parse(message, (_key: string, parsed: unknown, context?: { source?: string }) =>
-      preserveUnsafeInteger(parsed, context?.source),
-    );
+    value = JSON.parse(message);
   } catch {
     return null;
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 
-  const record = value as Record<string, unknown>;
+  const sources = parseTopLevelJsonSources(message);
+  const record = Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, fieldValue]) => [
+      key,
+      preserveUnsafeInteger(fieldValue, sources?.get(key)),
+    ]),
+  );
   const body =
     typeof record.message === "string"
       ? record.message
@@ -206,6 +210,91 @@ function parseJson(
       message,
     ),
   };
+}
+
+function parseTopLevelJsonSources(message: string): Map<string, string> | null {
+  const sources = new Map<string, string>();
+  let cursor = skipWhitespace(message, 0);
+  if (message[cursor] !== "{") return null;
+  cursor += 1;
+
+  while (cursor < message.length) {
+    cursor = skipWhitespace(message, cursor);
+    if (message[cursor] === "}") return sources;
+    if (message[cursor] !== '"') return null;
+
+    const keyEnd = scanJsonStringEnd(message, cursor);
+    if (keyEnd === null) return null;
+    const key: unknown = JSON.parse(message.slice(cursor, keyEnd));
+    if (typeof key !== "string") return null;
+    cursor = skipWhitespace(message, keyEnd);
+    if (message[cursor] !== ":") return null;
+
+    cursor = skipWhitespace(message, cursor + 1);
+    const valueStart = cursor;
+    const valueEnd = scanJsonValueEnd(message, valueStart);
+    if (valueEnd === null) return null;
+    sources.set(key, message.slice(valueStart, valueEnd).trim());
+
+    cursor = skipWhitespace(message, valueEnd);
+    if (message[cursor] === ",") {
+      cursor += 1;
+      continue;
+    }
+    if (message[cursor] === "}") return sources;
+    return null;
+  }
+
+  return null;
+}
+
+function scanJsonValueEnd(message: string, start: number): number | null {
+  const first = message[start];
+  if (first === '"') return scanJsonStringEnd(message, start);
+
+  if (first === "{" || first === "[") {
+    const stack = [first];
+    let cursor = start + 1;
+    while (cursor < message.length) {
+      const character = message[cursor];
+      if (character === '"') {
+        const stringEnd = scanJsonStringEnd(message, cursor);
+        if (stringEnd === null) return null;
+        cursor = stringEnd;
+        continue;
+      }
+      if (character === "{" || character === "[") stack.push(character);
+      if (character === "}" || character === "]") {
+        stack.pop();
+        if (stack.length === 0) return cursor + 1;
+      }
+      cursor += 1;
+    }
+    return null;
+  }
+
+  let cursor = start;
+  while (cursor < message.length && message[cursor] !== "," && message[cursor] !== "}") cursor += 1;
+  return cursor;
+}
+
+function scanJsonStringEnd(message: string, start: number): number | null {
+  let cursor = start + 1;
+  while (cursor < message.length) {
+    if (message[cursor] === "\\") {
+      cursor += 2;
+      continue;
+    }
+    if (message[cursor] === '"') return cursor + 1;
+    cursor += 1;
+  }
+  return null;
+}
+
+function skipWhitespace(message: string, start: number): number {
+  let cursor = start;
+  while (cursor < message.length && isWhitespace(message[cursor])) cursor += 1;
+  return cursor;
 }
 
 function parsePostgresql(
