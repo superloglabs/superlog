@@ -3,9 +3,11 @@ import test from "node:test";
 import {
   FIRST_TOUCH_STORAGE_KEY,
   buildSignupEventProperties,
+  clickIdsFromAttribution,
   parseAttribution,
   persistFirstTouchAttribution,
   readFirstTouchAttribution,
+  serializeClickIdsCookie,
 } from "./signupAttribution.ts";
 
 // A tiny in-memory localStorage stand-in so the storage helpers can be tested
@@ -112,6 +114,45 @@ test("readFirstTouchAttribution drops non-string and unknown values from tampere
   });
   const got = readFirstTouchAttribution(store);
   assert.deepEqual(got, { source: "skill" });
+});
+
+test("parseAttribution captures ad-network click ids", () => {
+  const attr = parseAttribution(
+    "?twclid=tw123&gclid=gg456&fbclid=fb789&msclkid=ms012&li_fat_id=li345",
+    "",
+  );
+  assert.equal(attr.twclid, "tw123");
+  assert.equal(attr.gclid, "gg456");
+  assert.equal(attr.fbclid, "fb789");
+  assert.equal(attr.msclkid, "ms012");
+  assert.equal(attr.liFatId, "li345");
+});
+
+test("a click id alone is enough signal to persist first-touch", () => {
+  // A paid X click often lands with only ?twclid= (no UTM). It must persist so
+  // the conversion + PostHog attribution survive the OAuth round-trip.
+  const store = fakeStorage();
+  persistFirstTouchAttribution(store, { twclid: "tw123" });
+  assert.equal(readFirstTouchAttribution(store)?.twclid, "tw123");
+});
+
+test("buildSignupEventProperties surfaces click ids for PostHog breakdowns", () => {
+  // "signup from X ads" in PostHog = `twclid is set`.
+  const props = buildSignupEventProperties({ twclid: "tw123", gclid: "gg456" }, {});
+  assert.equal(props.twclid, "tw123");
+  assert.equal(props.gclid, "gg456");
+});
+
+test("clickIdsFromAttribution collects present click ids keyed by param name", () => {
+  assert.deepEqual(clickIdsFromAttribution({ twclid: "tw123", source: "web" }), {
+    twclid: "tw123",
+  });
+  assert.deepEqual(clickIdsFromAttribution({ source: "web" }), {});
+});
+
+test("serializeClickIdsCookie yields JSON when present, null when empty", () => {
+  assert.equal(serializeClickIdsCookie({ twclid: "tw123" }), JSON.stringify({ twclid: "tw123" }));
+  assert.equal(serializeClickIdsCookie({ source: "web" }), null);
 });
 
 test("buildSignupEventProperties emits snake_case keys and omits undefined", () => {
