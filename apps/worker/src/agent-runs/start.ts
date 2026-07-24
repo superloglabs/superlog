@@ -241,10 +241,10 @@ async function createRunnerRepoCandidates(
     );
   }
 
-  const candidates = await Promise.all(
-    topScored.map(async (repo, index) =>
-      createRunnerRepoCandidate(repo, index < INSTRUCTION_FILE_PROBE_LIMIT, deps),
-    ),
+  const candidates = await pooledMap(
+    TOKEN_CREATION_CONCURRENCY,
+    topScored,
+    async (repo, index) => createRunnerRepoCandidate(repo, index < INSTRUCTION_FILE_PROBE_LIMIT, deps),
   );
   return candidates.filter((repo): repo is AgentRunnerRepoCandidate => repo !== null);
 }
@@ -253,6 +253,27 @@ async function createRunnerRepoCandidates(
 // strongest candidates get one; the rest start with an empty list and the
 // agent falls back to looking for instruction files itself after cloning.
 const INSTRUCTION_FILE_PROBE_LIMIT = 10;
+
+// GitHub's secondary rate limit triggers on bursts of concurrent requests to
+// the same endpoint. Cap installation-token creation so we never fire more than
+// this many simultaneous POST /app/installations/:id/access_tokens calls.
+const TOKEN_CREATION_CONCURRENCY = 5;
+
+// Run an async mapper over `items` with at most `concurrency` promises in
+// flight at once, preserving the original order of results.
+async function pooledMap<T, U>(
+  concurrency: number,
+  items: T[],
+  fn: (item: T, index: number) => Promise<U>,
+): Promise<U[]> {
+  const results: U[] = [];
+  for (let i = 0; i < items.length; i += concurrency) {
+    const batch = items.slice(i, i + concurrency);
+    const batchResults = await Promise.all(batch.map((item, j) => fn(item, i + j)));
+    results.push(...batchResults);
+  }
+  return results;
+}
 
 // Best-effort: the probe must never cost us a repo candidate, so both
 // rejected promises and synchronous throws from the dep degrade to [].
