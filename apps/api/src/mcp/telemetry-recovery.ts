@@ -34,6 +34,11 @@ function getTelemetryQueryDurationHistogram(): Histogram {
     .createHistogram("superlog.mcp.telemetry_query.duration", {
       description: "Elapsed time of MCP telemetry queries.",
       unit: "ms",
+      advice: {
+        explicitBucketBoundaries: [
+          100, 500, 1_000, 2_000, 5_000, 10_000, 20_000, 30_000,
+        ],
+      },
     });
   return telemetryQueryDurationHistogram;
 }

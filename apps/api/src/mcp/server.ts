@@ -146,12 +146,16 @@ export function createMcpServerForSession(session: McpSession): McpServer {
       input,
       query,
       (error, recovery) => {
+        const suggestedRange = recovery.suggested_input.range as
+          | { since?: unknown; until?: unknown }
+          | undefined;
         logger.info(
           {
             err: error,
             tool,
             projectId,
-            suggestedRange: recovery.suggested_input.range,
+            retrySince: suggestedRange?.since,
+            retryUntil: suggestedRange?.until,
           },
           "MCP telemetry query timed out; returning narrower retry guidance",
         );
