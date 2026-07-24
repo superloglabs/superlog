@@ -73,6 +73,25 @@ test("a historical relative range retries the final hour within that range", () 
   });
 });
 
+test("a historical calendar-month range retries inside its original bounds", () => {
+  const recovery = recoverTelemetryTimeout(
+    "query_logs",
+    {
+      range: {
+        since: "now() - INTERVAL 2 MONTH",
+        until: "now() - INTERVAL 1 MONTH",
+      },
+    },
+    new Error("Timeout error."),
+    new Date("2026-07-24T12:00:00Z"),
+  );
+
+  assert.deepEqual(recovery?.suggested_input.range, {
+    since: "2026-05-24T12:00:00.000Z",
+    until: "2026-05-24T13:00:00.000Z",
+  });
+});
+
 test("an absolute range shorter than one hour is narrowed within its bounds", () => {
   const recovery = recoverTelemetryTimeout(
     "query_traces",

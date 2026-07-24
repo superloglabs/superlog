@@ -33,6 +33,8 @@ function isRetryableTelemetryTimeout(error: unknown): boolean {
 const HOUR_MS = 60 * 60_000;
 const RELATIVE_TIME_RE =
   /^now\(\)(?:\s*-\s*INTERVAL\s+([1-9][0-9]*)\s+(SECOND|MINUTE|HOUR|DAY|WEEK))?$/i;
+const RELATIVE_MONTH_RE =
+  /^now\(\)(?:\s*-\s*INTERVAL\s+([1-9][0-9]*)\s+MONTH)?$/i;
 const UNIT_MS = {
   SECOND: 1_000,
   MINUTE: 60_000,
@@ -61,6 +63,24 @@ function relativeTimeFromOffset(offsetMs: number): string {
   return `now() - INTERVAL ${Math.ceil(offsetMs / 1_000)} SECOND`;
 }
 
+function relativeMonthOffset(value: string): number | undefined {
+  const match = RELATIVE_MONTH_RE.exec(value.trim().replace(/\s+/g, " "));
+  if (!match) return undefined;
+  return match[1] ? Number(match[1]) : 0;
+}
+
+function subtractUtcMonths(now: Date, months: number): Date {
+  const result = new Date(now);
+  const originalDay = result.getUTCDate();
+  result.setUTCDate(1);
+  result.setUTCMonth(result.getUTCMonth() - months);
+  const daysInTargetMonth = new Date(
+    Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0),
+  ).getUTCDate();
+  result.setUTCDate(Math.min(originalDay, daysInTargetMonth));
+  return result;
+}
+
 function narrowedDuration(durationMs: number): number {
   if (durationMs > HOUR_MS) return HOUR_MS;
   return Math.max(1, Math.floor(durationMs / 2));
@@ -68,6 +88,7 @@ function narrowedDuration(durationMs: number): number {
 
 function suggestedRetryRange(
   input: Record<string, unknown>,
+  now: Date,
 ): Record<string, unknown> {
   const candidate = input.range;
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
@@ -108,6 +129,20 @@ function suggestedRetryRange(
     };
   }
 
+  const sinceMonthOffset = since ? relativeMonthOffset(since) : undefined;
+  const untilMonthOffset = until ? relativeMonthOffset(until) : 0;
+  if (
+    sinceMonthOffset !== undefined &&
+    untilMonthOffset !== undefined &&
+    sinceMonthOffset > untilMonthOffset
+  ) {
+    const retrySince = subtractUtcMonths(now, sinceMonthOffset);
+    return {
+      since: retrySince.toISOString(),
+      until: new Date(retrySince.getTime() + HOUR_MS).toISOString(),
+    };
+  }
+
   if (!until || until.trim().toLowerCase() === "now()") {
     if (since && Number.isFinite(sinceMs) && !until) {
       return {
@@ -139,6 +174,7 @@ export function recoverTelemetryTimeout(
   tool: McpTelemetryToolName,
   input: Record<string, unknown>,
   error: unknown,
+  now = new Date(),
 ): TelemetryRetryRequired | undefined {
   if (!isRetryableTelemetryTimeout(error)) return undefined;
 
@@ -150,7 +186,7 @@ export function recoverTelemetryTimeout(
     retryable: true,
     suggested_input: {
       ...input,
-      range: suggestedRetryRange(input),
+      range: suggestedRetryRange(input, now),
     },
   };
 }
