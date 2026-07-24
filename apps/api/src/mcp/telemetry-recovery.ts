@@ -122,6 +122,17 @@ function subtractUtcMonths(now: Date, months: number): Date {
   return result;
 }
 
+function resolveRelativeDate(value: string, now: Date): Date | undefined {
+  const offsetMs = relativeOffsetMs(value);
+  if (offsetMs !== undefined) {
+    return new Date(now.getTime() - offsetMs);
+  }
+  const monthOffset = relativeMonthOffset(value);
+  return monthOffset === undefined
+    ? undefined
+    : subtractUtcMonths(now, monthOffset);
+}
+
 function narrowedDuration(durationMs: number): number {
   if (durationMs > HOUR_MS) return HOUR_MS;
   return Math.max(1, Math.floor(durationMs / 2));
@@ -170,17 +181,19 @@ function suggestedRetryRange(
     };
   }
 
-  const sinceMonthOffset = since ? relativeMonthOffset(since) : undefined;
-  const untilMonthOffset = until ? relativeMonthOffset(until) : 0;
+  const relativeSince = since ? resolveRelativeDate(since, now) : undefined;
+  const relativeUntil = resolveRelativeDate(until ?? "now()", now);
   if (
-    sinceMonthOffset !== undefined &&
-    untilMonthOffset !== undefined &&
-    sinceMonthOffset > untilMonthOffset
+    relativeSince &&
+    relativeUntil &&
+    relativeUntil.getTime() > relativeSince.getTime()
   ) {
-    const retrySince = subtractUtcMonths(now, sinceMonthOffset);
     return {
-      since: retrySince.toISOString(),
-      until: new Date(retrySince.getTime() + HOUR_MS).toISOString(),
+      since: relativeSince.toISOString(),
+      until: new Date(
+        relativeSince.getTime() +
+          narrowedDuration(relativeUntil.getTime() - relativeSince.getTime()),
+      ).toISOString(),
     };
   }
 

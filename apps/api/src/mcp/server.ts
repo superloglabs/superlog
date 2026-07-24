@@ -143,7 +143,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
   ) =>
     executeRecoverableTelemetryQuery(
       tool,
-      input,
+      { ...input, project_id: projectId },
       query,
       (error, recovery) => {
         const suggestedRange = recovery.suggested_input.range as
