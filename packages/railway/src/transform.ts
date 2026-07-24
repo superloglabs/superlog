@@ -3,6 +3,7 @@
 // shapes mirror the Vercel log-drain adapter's.
 
 import type { RailwayLog, RailwayMetricsResult } from "./graphql.js";
+import { parseRailwayAttributeValue, parseRailwayLogRecord } from "./log-record.js";
 
 type OtlpAnyValue = {
   stringValue?: string;
@@ -95,6 +96,7 @@ export function railwayLogsToOtlp(
       const serviceId = log.tags?.serviceId ?? null;
       const serviceName = (serviceId && ctx.serviceNamesById[serviceId]) || "railway";
       const nanos = rfc3339ToNanos(log.timestamp) ?? 0n;
+      const parsed = parseRailwayLogRecord(stripAnsi(log.message), log.severity);
       return {
         resource: {
           attributes: [
@@ -114,13 +116,16 @@ export function railwayLogsToOtlp(
               {
                 timeUnixNano: nanos.toString(),
                 observedTimeUnixNano: nanos.toString(),
-                ...severity(log.severity),
-                body: { stringValue: stripAnsi(log.message) },
+                ...severity(parsed.severity),
+                body: { stringValue: parsed.body },
                 attributes: [
                   kv("railway.deployment_id", log.tags?.deploymentId),
                   kv("railway.deployment_instance_id", log.tags?.deploymentInstanceId),
                   kv("railway.snapshot_id", log.tags?.snapshotId),
-                  ...log.attributes.map((a) => kv(`railway.attr.${a.key}`, a.value)),
+                  ...log.attributes.map((a) =>
+                    kv(`railway.attr.${a.key}`, parseRailwayAttributeValue(a.value)),
+                  ),
+                  ...parsed.attributes.map((a) => kv(a.key, a.value)),
                 ].filter(isKv),
               },
             ],
