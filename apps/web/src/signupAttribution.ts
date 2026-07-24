@@ -28,11 +28,11 @@ export type SignupAttribution = {
   // A deployment forwards these to whatever ad network(s) it runs; open-core
   // neither knows nor cares which. Read straight from the URL so they survive
   // even when an ad-blocker prevents a vendor pixel from loading.
-  twclid?: string; // X / Twitter
-  gclid?: string; // Google
-  fbclid?: string; // Meta
-  msclkid?: string; // Microsoft
-  liFatId?: string; // LinkedIn
+  twclid?: string;
+  gclid?: string;
+  fbclid?: string;
+  msclkid?: string;
+  liFatId?: string;
 };
 
 // Query-param name → attribution field. Order-independent; the source of truth
@@ -189,8 +189,8 @@ export function buildSignupEventProperties(
     referring_domain: attr.referringDomain,
     landing_path: attr.landingPath,
     auth_method: ctx.authMethod,
-    // Surfaced on the PostHog person so "signup from X ads" is just
-    // `twclid is set` (and the same for other networks).
+    // Surfaced on the PostHog person so "signed up from a paid ad click" is
+    // queryable as "click id is set", per network.
     twclid: attr.twclid,
     gclid: attr.gclid,
     fbclid: attr.fbclid,
