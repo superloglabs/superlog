@@ -212,6 +212,17 @@ test("railwayLogsToOtlp maps common numeric JSON levels", () => {
   assert.equal(attrs["railway.log.severity_source"]?.stringValue, "json");
 });
 
+test("railwayLogsToOtlp preserves unsafe JSON integer fields as exact strings", () => {
+  const message = '{"level":30,"msg":"order accepted","order_id":9007199254740993}';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["railway.log.order_id"]?.stringValue, "9007199254740993");
+  assert.equal(attrs["railway.log.order_id"]?.intValue, undefined);
+  assert.equal(attrs["log.record.original"]?.stringValue, message);
+});
+
 test("railwayLogsToOtlp maps successful common access logs to structured HTTP info", () => {
   const message =
     '100.64.0.6 - - [2026-07-22 20:25:33] "POST /v1/audio/speech HTTP/1.1" 200 10761 1.317203';

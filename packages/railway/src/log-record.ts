@@ -98,10 +98,8 @@ export function parseRailwayLogRecord(
 export function parseRailwayAttributeValue(value: string): ParsedAttributeValue {
   try {
     const parsed: unknown = JSON.parse(value);
-    if (typeof parsed === "number" && Number.isInteger(parsed) && !Number.isSafeInteger(parsed)) {
-      return value;
-    }
-    return isScalar(parsed) ? parsed : value;
+    const lossless = preserveUnsafeInteger(parsed, value);
+    return isScalar(lossless) ? lossless : value;
   } catch {
     return value;
   }
@@ -168,7 +166,9 @@ function parseJson(
 ): ParsedRailwayLogRecord | null {
   let value: unknown;
   try {
-    value = JSON.parse(message);
+    value = JSON.parse(message, (_key: string, parsed: unknown, context?: { source?: string }) =>
+      preserveUnsafeInteger(parsed, context?.source),
+    );
   } catch {
     return null;
   }
@@ -333,6 +333,13 @@ function isScalar(value: unknown): value is ParsedAttributeValue {
     typeof value === "boolean" ||
     (typeof value === "number" && Number.isFinite(value))
   );
+}
+
+function preserveUnsafeInteger(value: unknown, source: string | undefined): unknown {
+  if (typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value)) {
+    return source ?? value;
+  }
+  return value;
 }
 
 function normalizeNativeSeverity(value: string): string | null {
