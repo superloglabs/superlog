@@ -129,15 +129,15 @@ test("parseAttribution captures ad-network click ids", () => {
 });
 
 test("a click id alone is enough signal to persist first-touch", () => {
-  // A paid X click often lands with only ?twclid= (no UTM). It must persist so
-  // the conversion + PostHog attribution survive the OAuth round-trip.
+  // A paid click may land with only a click id and no UTM parameters. It must
+  // persist so conversion and analytics attribution survive the OAuth round-trip.
   const store = fakeStorage();
   persistFirstTouchAttribution(store, { twclid: "tw123" });
   assert.equal(readFirstTouchAttribution(store)?.twclid, "tw123");
 });
 
 test("buildSignupEventProperties surfaces click ids for PostHog breakdowns", () => {
-  // "signup from X ads" in PostHog = `twclid is set`.
+  // Analytics breakdowns can identify the source from the populated click-id field.
   const props = buildSignupEventProperties({ twclid: "tw123", gclid: "gg456" }, {});
   assert.equal(props.twclid, "tw123");
   assert.equal(props.gclid, "gg456");
