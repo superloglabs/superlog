@@ -91,7 +91,7 @@ export async function startQueuedAgentRunWorkflow(
       await createRunnerRepoCandidates(ctx, runner, scored, deps);
     if (repoCandidates.length === 0) {
       if (repoCandidateErrors.some(deps.isRetryableRepositoryError)) {
-        logger.warn(
+        logger.error(
           {
             agent_run_id: ctx.agentRun.id,
             incident_id: ctx.incident.id,

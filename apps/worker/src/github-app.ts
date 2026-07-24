@@ -107,7 +107,7 @@ export class GithubInstallationTokenGate {
       const blockedUntil = this.blockedUntil.get(installationId) ?? 0;
       if (blockedUntil > now) {
         const retryAfterMs = blockedUntil - now;
-        logger.info(
+        logger.error(
           {
             installationId,
             retry_after_ms: retryAfterMs,
