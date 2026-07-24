@@ -406,7 +406,12 @@ export async function listAccessibleGithubRepositories(
   const errors = results.filter((result) => result.err);
   if (repos.length === 0 && errors.length > 0) {
     const firstError = results.find((result) => result.err)?.err;
-    if (errors.length < results.length) {
+    // Some installations succeeded but yielded no accessible repos → partial
+    // failure; retry on the next sweep. Also treat transient GitHub rate limits
+    // (secondary 403 or primary 429) the same way even when every installation
+    // failed — a rate limit is temporary, and permanently failing the run on a
+    // single installation project would require manual restart.
+    if (errors.length < results.length || isGithubRateLimitError(firstError)) {
       throw new PartialGithubRepoDiscoveryError(firstError);
     }
     throw firstError instanceof Error
@@ -414,4 +419,16 @@ export async function listAccessibleGithubRepositories(
       : new Error("failed to list repositories for all GitHub installations");
   }
   return repos;
+}
+
+/**
+ * Returns true when the error looks like a transient GitHub rate limit:
+ * secondary rate limits (403 with "secondary rate limit" in the body) or
+ * primary rate limits (429 response). Both are temporary and the caller
+ * should retry rather than permanently fail the operation.
+ */
+export function isGithubRateLimitError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message;
+  return msg.includes("secondary rate limit") || /failed: 429 /.test(msg);
 }
