@@ -46,6 +46,91 @@ const GITHUB_API = "https://api.github.com";
 const GIT_PUSH_MAX_ATTEMPTS = 3;
 const GIT_PUSH_RETRY_DELAYS_MS = [1_000, 3_000] as const;
 
+export class GithubRequestError extends Error {
+  readonly retryable: boolean;
+  readonly status: number | null;
+  readonly retryAfterMs: number | null;
+
+  constructor(
+    message: string,
+    options: {
+      retryable: boolean;
+      status?: number;
+      retryAfterMs?: number;
+      cause?: unknown;
+    },
+  ) {
+    super(message, { cause: options.cause });
+    this.name = "GithubRequestError";
+    this.retryable = options.retryable;
+    this.status = options.status ?? null;
+    this.retryAfterMs = options.retryAfterMs ?? null;
+  }
+}
+
+export function isRetryableGithubRequestError(error: unknown): error is GithubRequestError {
+  return error instanceof GithubRequestError && error.retryable;
+}
+
+export function isRetryableGithubHttpFailure(status: number, responseBody: string): boolean {
+  return (
+    status === 429 ||
+    status >= 500 ||
+    (status === 403 && /secondary rate limit/i.test(responseBody))
+  );
+}
+
+const DEFAULT_GITHUB_RETRY_DELAY_MS = 60_000;
+
+export class GithubInstallationTokenGate {
+  private readonly blockedUntil = new Map<number, number>();
+  private readonly queueTails = new Map<number, Promise<void>>();
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  async run<T>(installationId: number, request: () => Promise<T>): Promise<T> {
+    const predecessor = this.queueTails.get(installationId) ?? Promise.resolve();
+    let release!: () => void;
+    const turn = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = predecessor.catch(() => undefined).then(() => turn);
+    this.queueTails.set(installationId, tail);
+    await predecessor.catch(() => undefined);
+
+    try {
+      const now = this.now();
+      const blockedUntil = this.blockedUntil.get(installationId) ?? 0;
+      if (blockedUntil > now) {
+        throw new GithubRequestError(
+          `GitHub installation ${installationId} is temporarily rate limited`,
+          {
+            retryable: true,
+            retryAfterMs: blockedUntil - now,
+          },
+        );
+      }
+      const result = await request();
+      this.blockedUntil.delete(installationId);
+      return result;
+    } catch (error) {
+      if (isRetryableGithubRequestError(error)) {
+        const retryAfterMs = error.retryAfterMs ?? DEFAULT_GITHUB_RETRY_DELAY_MS;
+        this.blockedUntil.set(
+          installationId,
+          Math.max(this.blockedUntil.get(installationId) ?? 0, this.now() + retryAfterMs),
+        );
+      }
+      throw error;
+    } finally {
+      release();
+      if (this.queueTails.get(installationId) === tail) {
+        this.queueTails.delete(installationId);
+      }
+    }
+  }
+}
+
 function formatGitCommand(args: string[]): string {
   return `git ${args.join(" ")}`;
 }
@@ -264,23 +349,51 @@ async function githubRequest<T>(
     bearerToken: string;
   },
 ): Promise<T> {
-  const res = await fetch(`${GITHUB_API}${pathname}`, {
-    method: opts.method ?? "GET",
-    headers: {
-      accept: "application/vnd.github+json",
-      authorization: `Bearer ${opts.bearerToken}`,
-      "content-type": "application/json; charset=utf-8",
-      "x-github-api-version": "2022-11-28",
-      "user-agent": "superlog-worker",
-    },
-    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
-  });
+  const method = opts.method ?? "GET";
+  let res: Response;
+  try {
+    res = await fetch(`${GITHUB_API}${pathname}`, {
+      method,
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${opts.bearerToken}`,
+        "content-type": "application/json; charset=utf-8",
+        "x-github-api-version": "2022-11-28",
+        "user-agent": "superlog-worker",
+      },
+      body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+    });
+  } catch (cause) {
+    throw new GithubRequestError(
+      `github ${method} ${pathname} failed before receiving a response`,
+      {
+        retryable: true,
+        cause,
+      },
+    );
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`github ${opts.method ?? "GET"} ${pathname} failed: ${res.status} ${text}`);
+    const retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"));
+    throw new GithubRequestError(`github ${method} ${pathname} failed: ${res.status} ${text}`, {
+      retryable: isRetryableGithubHttpFailure(res.status, text),
+      status: res.status,
+      retryAfterMs,
+    });
   }
   return (await res.json()) as T;
 }
+
+function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
+  const date = Date.parse(value);
+  if (Number.isNaN(date)) return undefined;
+  return Math.max(0, date - Date.now());
+}
+
+const installationTokenGate = new GithubInstallationTokenGate();
 
 async function createInstallationToken(opts: {
   installationId: number;
@@ -289,19 +402,21 @@ async function createInstallationToken(opts: {
 }): Promise<string> {
   const cfg = getGithubAppConfig();
   if (!cfg) throw new Error("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY are required");
-  const appJwt = signGithubAppJwt(cfg.appId, cfg.privateKey);
-  const data = await githubRequest<{ token: string }>(
-    `/app/installations/${opts.installationId}/access_tokens`,
-    {
-      method: "POST",
-      bearerToken: appJwt,
-      body: {
-        permissions: opts.permissions,
-        repository_ids: opts.repositoryIds,
+  return installationTokenGate.run(opts.installationId, async () => {
+    const appJwt = signGithubAppJwt(cfg.appId, cfg.privateKey);
+    const data = await githubRequest<{ token: string }>(
+      `/app/installations/${opts.installationId}/access_tokens`,
+      {
+        method: "POST",
+        bearerToken: appJwt,
+        body: {
+          permissions: opts.permissions,
+          repository_ids: opts.repositoryIds,
+        },
       },
-    },
-  );
-  return data.token;
+    );
+    return data.token;
+  });
 }
 
 export async function createGithubReadToken(
@@ -311,6 +426,17 @@ export async function createGithubReadToken(
   return createInstallationToken({
     installationId,
     repositoryIds: repositoryId ? [repositoryId] : undefined,
+    permissions: { contents: "read" },
+  });
+}
+
+export async function createGithubReadTokenForRepositories(
+  installationId: number,
+  repositoryIds: number[],
+): Promise<string> {
+  return createInstallationToken({
+    installationId,
+    repositoryIds,
     permissions: { contents: "read" },
   });
 }

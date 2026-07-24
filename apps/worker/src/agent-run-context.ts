@@ -13,7 +13,10 @@ import type {
   AgentRunnerFollowUp,
   AgentRunnerPredecessorIncident,
 } from "./agent-runner-backend.js";
-import { listInstallationRepositories } from "./infra/github/repositories.js";
+import {
+  isRetryableGithubRequestError,
+  listInstallationRepositories,
+} from "./infra/github/repositories.js";
 import { logger } from "./logger.js";
 
 export type InstalledGithubRepo = {
@@ -23,12 +26,12 @@ export type InstalledGithubRepo = {
   installation: schema.GithubInstallation;
 };
 
-export class PartialGithubRepoDiscoveryError extends Error {
+export class RetryableGithubRepoDiscoveryError extends Error {
   constructor(cause: unknown) {
-    super("some GitHub installations failed before repository access could be determined", {
+    super("GitHub repository access could not be determined yet", {
       cause,
     });
-    this.name = "PartialGithubRepoDiscoveryError";
+    this.name = "RetryableGithubRepoDiscoveryError";
   }
 }
 
@@ -406,8 +409,9 @@ export async function listAccessibleGithubRepositories(
   const errors = results.filter((result) => result.err);
   if (repos.length === 0 && errors.length > 0) {
     const firstError = results.find((result) => result.err)?.err;
-    if (errors.length < results.length) {
-      throw new PartialGithubRepoDiscoveryError(firstError);
+    const retryableError = errors.find((result) => isRetryableGithubRequestError(result.err))?.err;
+    if (errors.length < results.length || retryableError) {
+      throw new RetryableGithubRepoDiscoveryError(retryableError ?? firstError);
     }
     throw firstError instanceof Error
       ? firstError

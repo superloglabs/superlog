@@ -5,7 +5,7 @@ import type {
   InstalledGithubRepo,
   ScoredGithubRepo,
 } from "../agent-run-context.js";
-import { PartialGithubRepoDiscoveryError } from "../agent-run-context.js";
+import { RetryableGithubRepoDiscoveryError } from "../agent-run-context.js";
 import type { AgentRunLifecycle } from "../agent-run.js";
 import type {
   AgentRunnerBackend,
@@ -29,7 +29,11 @@ export type StartQueuedAgentRunDeps = {
   getRunnerBackend(runtime: string): AgentRunnerBackend | Promise<AgentRunnerBackend>;
   listRepositories(ctx: AgentRunContext): Promise<InstalledGithubRepo[]>;
   scoreRepositories(repos: InstalledGithubRepo[], ctx: AgentRunContext): ScoredGithubRepo[];
-  createRepositoryReadToken(installationId: number, repoId: number): Promise<string>;
+  createRepositoryReadTokenForRepositories(
+    installationId: number,
+    repositoryIds: number[],
+  ): Promise<string>;
+  isRetryableRepositoryError(error: unknown): boolean;
   listRepositoryInstructionFiles(
     installationToken: string,
     repoFullName: string,
@@ -83,8 +87,20 @@ export async function startQueuedAgentRunWorkflow(
   }
 
   try {
-    const repoCandidates = await createRunnerRepoCandidates(ctx, runner, scored, deps);
+    const { candidates: repoCandidates, errors: repoCandidateErrors } =
+      await createRunnerRepoCandidates(ctx, runner, scored, deps);
     if (repoCandidates.length === 0) {
+      if (repoCandidateErrors.some(deps.isRetryableRepositoryError)) {
+        logger.warn(
+          {
+            agent_run_id: ctx.agentRun.id,
+            incident_id: ctx.incident.id,
+            failed_installation_count: repoCandidateErrors.length,
+          },
+          "repository authorization temporarily unavailable; will retry on the next sweep",
+        );
+        return;
+      }
       await deps.fail(
         ctx,
         "github_repo_token_failed",
@@ -187,14 +203,14 @@ async function discoverAccessibleRepositories(
   try {
     repos = await deps.listRepositories(ctx);
   } catch (err) {
-    if (err instanceof PartialGithubRepoDiscoveryError) {
+    if (err instanceof RetryableGithubRepoDiscoveryError) {
       logger.warn(
         {
           err,
           agent_run_id: ctx.agentRun.id,
           incident_id: ctx.incident.id,
         },
-        "repository discovery partially unavailable; will retry on the next sweep",
+        "repository discovery temporarily unavailable; will retry on the next sweep",
       );
       return null;
     }
@@ -226,7 +242,7 @@ async function createRunnerRepoCandidates(
   runner: AgentRunnerBackend,
   scored: ScoredGithubRepo[],
   deps: StartQueuedAgentRunDeps,
-): Promise<AgentRunnerRepoCandidate[]> {
+): Promise<{ candidates: AgentRunnerRepoCandidate[]; errors: unknown[] }> {
   const topScored = scored.slice(0, runner.maxRepoResources);
   if (scored.length > topScored.length) {
     logger.info(
@@ -241,12 +257,63 @@ async function createRunnerRepoCandidates(
     );
   }
 
+  const reposByInstallation = new Map<number, ScoredGithubRepo[]>();
+  for (const repo of topScored) {
+    const installationId = repo.installation.installationId;
+    const repos = reposByInstallation.get(installationId) ?? [];
+    repos.push(repo);
+    reposByInstallation.set(installationId, repos);
+  }
+  // One token can be scoped to every selected repository from an installation.
+  // Sharing it across those runner resources preserves the run's aggregate
+  // access while avoiding one token POST per repository (a 100-request burst
+  // previously triggered GitHub's secondary rate limit).
+  const tokenResults = new Map<
+    number,
+    Promise<{ token: string; error: null } | { token: null; error: unknown }>
+  >();
+  for (const [installationId, repos] of reposByInstallation) {
+    tokenResults.set(
+      installationId,
+      deps
+        .createRepositoryReadTokenForRepositories(
+          installationId,
+          repos.map((repo) => repo.id),
+        )
+        .then(
+          (token) => ({ token, error: null }),
+          (error: unknown) => {
+            logger.warn(
+              {
+                err: error,
+                installationId,
+                repo_count: repos.length,
+              },
+              "failed to authorize GitHub repository candidates",
+            );
+            return { token: null, error };
+          },
+        ),
+    );
+  }
+
   const candidates = await Promise.all(
-    topScored.map(async (repo, index) =>
-      createRunnerRepoCandidate(repo, index < INSTRUCTION_FILE_PROBE_LIMIT, deps),
-    ),
+    topScored.map(async (repo, index) => {
+      const tokenResult = await tokenResults.get(repo.installation.installationId);
+      if (!tokenResult?.token) return null;
+      return createRunnerRepoCandidate(
+        repo,
+        tokenResult.token,
+        index < INSTRUCTION_FILE_PROBE_LIMIT,
+        deps,
+      );
+    }),
   );
-  return candidates.filter((repo): repo is AgentRunnerRepoCandidate => repo !== null);
+  const resolvedTokenResults = await Promise.all(tokenResults.values());
+  return {
+    candidates: candidates.filter((repo): repo is AgentRunnerRepoCandidate => repo !== null),
+    errors: resolvedTokenResults.flatMap((result) => (result.error === null ? [] : [result.error])),
+  };
 }
 
 // Each probe costs up to three GitHub contents-API requests, so only the
@@ -274,35 +341,19 @@ async function probeRepoInstructionFiles(
 
 async function createRunnerRepoCandidate(
   repo: ScoredGithubRepo,
+  installationToken: string,
   probeInstructionFiles: boolean,
   deps: StartQueuedAgentRunDeps,
-): Promise<AgentRunnerRepoCandidate | null> {
-  try {
-    const installationToken = await deps.createRepositoryReadToken(
-      repo.installation.installationId,
-      repo.id,
-    );
-    return {
-      fullName: repo.fullName,
-      cloneUrl: `https://github.com/${repo.fullName}`,
-      installationToken,
-      score: repo.score,
-      instructionFiles: probeInstructionFiles
-        ? await probeRepoInstructionFiles(repo, installationToken, deps)
-        : [],
-    };
-  } catch (err) {
-    logger.warn(
-      {
-        err,
-        installationId: repo.installation.installationId,
-        repo: repo.fullName,
-        repoId: repo.id,
-      },
-      "skipping inaccessible GitHub repo candidate",
-    );
-    return null;
-  }
+): Promise<AgentRunnerRepoCandidate> {
+  return {
+    fullName: repo.fullName,
+    cloneUrl: `https://github.com/${repo.fullName}`,
+    installationToken,
+    score: repo.score,
+    instructionFiles: probeInstructionFiles
+      ? await probeRepoInstructionFiles(repo, installationToken, deps)
+      : [],
+  };
 }
 
 async function startRunnerSession(

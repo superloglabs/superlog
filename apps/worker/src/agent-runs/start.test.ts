@@ -5,9 +5,10 @@ import type { schema } from "@superlog/db";
 import {
   type AgentRunContext,
   type InstalledGithubRepo,
-  PartialGithubRepoDiscoveryError,
+  RetryableGithubRepoDiscoveryError,
 } from "../agent-run-context.js";
 import type { AgentRunnerBackend, AgentRunnerStartInput } from "../agent-runner-backend.js";
+import { GithubRequestError } from "../github-app.js";
 import { type StartQueuedAgentRunDeps, startQueuedAgentRunWorkflow } from "./start.js";
 
 test("startQueuedAgentRunWorkflow stops before external work when the Incident no longer owns the queued run", async () => {
@@ -96,7 +97,7 @@ test("startQueuedAgentRunWorkflow leaves a partial GitHub failure active for the
     makeDeps(calls, {
       async listRepositories() {
         calls.push("listRepositories");
-        throw new PartialGithubRepoDiscoveryError(new Error("github returned 503"));
+        throw new RetryableGithubRepoDiscoveryError(new Error("github returned 503"));
       },
     }),
   );
@@ -135,7 +136,7 @@ test("startQueuedAgentRunWorkflow starts runner with capped repo candidates", as
     "beginRepoDiscovery",
     "getRunnerBackend",
     "listRepositories",
-    "createRepositoryReadToken:repo-1",
+    "createRepositoryReadToken:repos-1",
     "buildIssueSummaries",
     "runner.start:1",
     "prBaseBranch:development",
@@ -145,6 +146,60 @@ test("startQueuedAgentRunWorkflow starts runner with capped repo candidates", as
     "startRunning:session-1:1",
     "notifyStarted:1",
   ]);
+});
+
+test("startQueuedAgentRunWorkflow bounds concurrent GitHub token creation", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+  let activeTokenRequests = 0;
+  let maxActiveTokenRequests = 0;
+  const deps = makeDeps(calls, {
+    async listRepositories() {
+      return Array.from({ length: 12 }, (_, index) => makeRepo(`repo-${index + 1}`, index + 1));
+    },
+    async createRepositoryReadTokenForRepositories(_installationId, repositoryIds) {
+      activeTokenRequests += 1;
+      maxActiveTokenRequests = Math.max(maxActiveTokenRequests, activeTokenRequests);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      activeTokenRequests -= 1;
+      return `token-${repositoryIds.join("-")}`;
+    },
+  });
+  const getRunnerBackend = deps.getRunnerBackend;
+  deps.getRunnerBackend = async (runtime) => ({
+    ...(await getRunnerBackend(runtime)),
+    maxRepoResources: 12,
+  });
+
+  await startQueuedAgentRunWorkflow(ctx, deps);
+
+  assert.equal(maxActiveTokenRequests, 1);
+});
+
+test("startQueuedAgentRunWorkflow retries transient GitHub token failures without announcing failure", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+
+  await startQueuedAgentRunWorkflow(
+    ctx,
+    makeDeps(calls, {
+      async createRepositoryReadTokenForRepositories() {
+        throw new GithubRequestError(
+          "github POST /app/installations/123/access_tokens failed before receiving a response",
+          {
+            retryable: true,
+            cause: new TypeError("fetch failed"),
+          },
+        );
+      },
+    }),
+  );
+
+  assert.equal(ctx.agentRun.state, "repo_discovery");
+  assert.equal(
+    calls.some((call) => call.startsWith("fail:")),
+    false,
+  );
 });
 
 test("startQueuedAgentRunWorkflow exposes ask_human as an approval boundary", async () => {
@@ -377,9 +432,12 @@ function makeDeps(
     scoreRepositories(repos) {
       return repos.map((repo, index) => ({ ...repo, score: 100 - index }));
     },
-    async createRepositoryReadToken(_installationId, repoId) {
-      calls.push(`createRepositoryReadToken:repo-${repoId}`);
-      return `token-${repoId}`;
+    async createRepositoryReadTokenForRepositories(_installationId, repositoryIds) {
+      calls.push(`createRepositoryReadToken:repos-${repositoryIds.join("-")}`);
+      return `token-${repositoryIds.join("-")}`;
+    },
+    isRetryableRepositoryError(error) {
+      return error instanceof GithubRequestError && error.retryable;
     },
     async listRepositoryInstructionFiles() {
       return [];

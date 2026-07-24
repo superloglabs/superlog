@@ -6,6 +6,8 @@ import path from "node:path";
 import { test } from "node:test";
 import {
   type GithubDirEntry,
+  GithubInstallationTokenGate,
+  GithubRequestError,
   MAX_REPO_INSTRUCTION_FILES,
   applyAgentPatch,
   buildPullRequestDeliveryCommitMessage,
@@ -17,12 +19,50 @@ import {
   isGitPushBranchCollision,
   isMissingRemoteBranchFailure,
   isRetryableGitPushFailure,
+  isRetryableGithubHttpFailure,
   loadGithubPullRequestProviderObservationWithToken,
   openedAgentPullRequest,
   recoverPullRequestDelivery,
   redactGitSecrets,
   reopenGithubPullRequestWithToken,
 } from "./github-app.js";
+
+test("GitHub HTTP retry policy distinguishes transient provider failures", () => {
+  assert.equal(
+    isRetryableGithubHttpFailure(
+      403,
+      '{"message":"You have exceeded a secondary rate limit. Please wait a few minutes."}',
+    ),
+    true,
+  );
+  assert.equal(isRetryableGithubHttpFailure(429, '{"message":"API rate limit exceeded"}'), true);
+  assert.equal(isRetryableGithubHttpFailure(503, "service unavailable"), true);
+  assert.equal(isRetryableGithubHttpFailure(403, '{"message":"Resource not accessible"}'), false);
+  assert.equal(isRetryableGithubHttpFailure(404, '{"message":"Not Found"}'), false);
+});
+
+test("GitHub installation token gate honors a transient failure's retry window", async () => {
+  let now = 1_000;
+  let requests = 0;
+  const gate = new GithubInstallationTokenGate(() => now);
+  const request = async () => {
+    requests += 1;
+    throw new GithubRequestError("secondary rate limit", {
+      retryable: true,
+      status: 403,
+      retryAfterMs: 120_000,
+    });
+  };
+
+  await assert.rejects(() => gate.run(123, request));
+  now += 60_000;
+  await assert.rejects(() => gate.run(123, request));
+  assert.equal(requests, 1);
+
+  now += 60_001;
+  await assert.rejects(() => gate.run(123, request));
+  assert.equal(requests, 2);
+});
 
 test("PR review tokens are restricted to the queued repository", () => {
   assert.deepEqual(githubPullRequestReviewTokenScope(123, 456), {

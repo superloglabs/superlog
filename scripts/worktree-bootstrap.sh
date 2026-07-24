@@ -132,6 +132,17 @@ echo "==> worktree:    $WT_NAME"
 echo "==> main repo:   $MAIN_REPO"
 echo "==> mode:        $MODE"
 
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Docker is required for worktree bootstrap but the CLI is not installed." >&2
+  echo "Install Docker Desktop, start it, then rerun this command." >&2
+  exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker is installed but its daemon is not running." >&2
+  echo "Start Docker Desktop, wait until it is ready, then rerun this command." >&2
+  exit 1
+fi
+
 # -----------------------------------------------------------------------------
 # 0. orphan Docker resource check
 # -----------------------------------------------------------------------------
