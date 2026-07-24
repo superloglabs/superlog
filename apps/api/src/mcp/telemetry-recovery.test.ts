@@ -42,6 +42,7 @@ test("a current or omitted range narrows to the latest hour", () => {
   for (const input of [
     {},
     { range: { since: "now() - INTERVAL 30 DAY", until: "now()" } },
+    { range: { since: "now() - INTERVAL 1 MONTH", until: "now()" } },
   ]) {
     const recovery = recoverTelemetryTimeout(
       "query_traces",

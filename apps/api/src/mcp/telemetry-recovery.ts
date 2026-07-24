@@ -181,6 +181,10 @@ function suggestedRetryRange(
     };
   }
 
+  if (until?.trim().toLowerCase() === "now()") {
+    return { since: "now() - INTERVAL 1 HOUR", until: "now()" };
+  }
+
   const relativeSince = since ? resolveRelativeDate(since, now) : undefined;
   const relativeUntil = resolveRelativeDate(until ?? "now()", now);
   if (
