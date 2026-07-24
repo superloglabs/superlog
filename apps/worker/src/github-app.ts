@@ -106,11 +106,19 @@ export class GithubInstallationTokenGate {
       const now = this.now();
       const blockedUntil = this.blockedUntil.get(installationId) ?? 0;
       if (blockedUntil > now) {
+        const retryAfterMs = blockedUntil - now;
+        logger.info(
+          {
+            installationId,
+            retry_after_ms: retryAfterMs,
+          },
+          "GitHub installation token gate is rate-limited; skipping request until window expires",
+        );
         throw new GithubRequestError(
           `GitHub installation ${installationId} is temporarily rate limited`,
           {
             retryable: true,
-            retryAfterMs: blockedUntil - now,
+            retryAfterMs,
           },
         );
       }
