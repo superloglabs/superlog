@@ -128,6 +128,22 @@ async function bootstrap() {
 }
 
 void bootstrap().catch((error: unknown) => {
+  // When a fresh deployment replaces a content-hashed chunk while the browser
+  // still holds an old main bundle, the dynamic import throws a TypeError.
+  // Reload once so the browser fetches the latest bundle and recovers silently.
+  // The sessionStorage flag prevents an infinite reload loop if the new chunk
+  // also fails to load (e.g. network error), in which case the error is
+  // recorded normally on the second attempt.
+  if (
+    error instanceof TypeError &&
+    error.message.includes("Failed to fetch dynamically imported module") &&
+    !sessionStorage.getItem("_sl_chunk_reload")
+  ) {
+    sessionStorage.setItem("_sl_chunk_reload", "1");
+    bootSpan.end();
+    window.location.reload();
+    return;
+  }
   bootSpan.recordException(error instanceof Error ? error : new Error(String(error)));
   bootSpan.end();
   throw error;
