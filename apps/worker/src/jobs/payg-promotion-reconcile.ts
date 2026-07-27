@@ -8,7 +8,7 @@ import {
 import type { JobDefinition } from "../jobs.js";
 import { logger as defaultLogger } from "../logger.js";
 
-type PromotionOutcome = "examined" | "granted" | "already_granted" | "failed";
+type PromotionOutcome = "examined" | "granted" | "already_granted" | "failed" | "skipped";
 type LoggerLike = {
   info: (context: Record<string, unknown>, message: string) => void;
 };
@@ -98,22 +98,27 @@ export function createPaygPromotionReconcileJob(
     expireInSeconds: 110,
     create: () => {
       const logger = options.logger ?? defaultLogger;
+      const recordOutcome =
+        options.recordOutcome ??
+        ((outcome: PromotionOutcome, count: number) => {
+          promotionOutcomeCounter.add(count, { outcome });
+        });
       const secretKey = (options.env ?? process.env).AUTUMN_SECRET_KEY?.trim();
       if (!secretKey) {
         logger.info(
           { scope: "billing.payg-promotion-reconcile" },
           "PAYG promotion reconciliation skipped: AUTUMN_SECRET_KEY is not configured",
         );
+        recordOutcome("skipped", 1);
         return null;
       }
       const provider = (options.createProvider ?? createAutumnPaygPromotionProvider)(secretKey);
       return async () => {
+        logger.info(
+          { scope: "billing.payg-promotion-reconcile" },
+          "PAYG promotion reconciliation started",
+        );
         const summary = await reconcilePaygPromotions(provider);
-        const recordOutcome =
-          options.recordOutcome ??
-          ((outcome: PromotionOutcome, count: number) => {
-            promotionOutcomeCounter.add(count, { outcome });
-          });
         recordOutcome("examined", summary.examined);
         recordOutcome("granted", summary.granted);
         recordOutcome("already_granted", summary.alreadyGranted);

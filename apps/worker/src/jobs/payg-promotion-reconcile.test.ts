@@ -6,9 +6,13 @@ import { createPaygPromotionReconcileJob } from "./payg-promotion-reconcile.js";
 test("the scheduled reconciliation grants every active PAYG customer exactly once", async () => {
   const created: string[] = [];
   const outcomes: Array<[string, number]> = [];
+  const messages: string[] = [];
   const definition = createPaygPromotionReconcileJob({
     env: { AUTUMN_SECRET_KEY: "configured" },
     recordOutcome: (outcome, count) => outcomes.push([outcome, count]),
+    logger: {
+      info: (_context, message) => messages.push(message),
+    },
     createProvider: () => ({
       listActivePaygCustomers: async () => ({
         customerIds: ["org-1", "org-2"],
@@ -33,12 +37,18 @@ test("the scheduled reconciliation grants every active PAYG customer exactly onc
     ["already_granted", 1],
     ["failed", 0],
   ]);
+  assert.deepEqual(messages, [
+    "PAYG promotion reconciliation started",
+    "PAYG promotions reconciled",
+  ]);
 });
 
 test("a missing billing secret logs why reconciliation is disabled", async () => {
   const messages: string[] = [];
+  const outcomes: Array<[string, number]> = [];
   const definition = createPaygPromotionReconcileJob({
     env: {},
+    recordOutcome: (outcome, count) => outcomes.push([outcome, count]),
     logger: {
       info: (_context, message) => messages.push(message),
     },
@@ -48,4 +58,5 @@ test("a missing billing secret logs why reconciliation is disabled", async () =>
   assert.deepEqual(messages, [
     "PAYG promotion reconciliation skipped: AUTUMN_SECRET_KEY is not configured",
   ]);
+  assert.deepEqual(outcomes, [["skipped", 1]]);
 });
