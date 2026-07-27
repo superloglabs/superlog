@@ -96,7 +96,9 @@ export function railwayLogsToOtlp(
       const serviceId = log.tags?.serviceId ?? null;
       const serviceName = (serviceId && ctx.serviceNamesById[serviceId]) || "railway";
       const nanos = rfc3339ToNanos(log.timestamp) ?? 0n;
-      const parsed = parseRailwayLogRecord(stripAnsi(log.message), log.severity);
+      const parsed = parseRailwayLogRecord(stripAnsi(log.message), log.severity, {
+        applicationError: hasApplicationErrorAttribute(log.attributes),
+      });
       const parsedAttributes = parsed.attributes.map((attribute) =>
         attribute.key === "log.record.original" ? { ...attribute, value: log.message } : attribute,
       );
@@ -194,6 +196,17 @@ export function railwayMetricsToOtlp(
       },
     ],
   };
+}
+
+function hasApplicationErrorAttribute(attributes: RailwayLog["attributes"]): boolean {
+  return attributes.some((attribute) => {
+    if (!["err", "error"].includes(attribute.key.trim().toLowerCase())) return false;
+    const value = parseRailwayAttributeValue(attribute.value);
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") return value !== 0;
+    const normalized = value.trim().toLowerCase();
+    return normalized !== "" && normalized !== "false" && normalized !== "null";
+  });
 }
 
 // ---------------------------------------------------------------------------

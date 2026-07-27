@@ -7,10 +7,25 @@ export type ParsedRailwayLogRecord = {
   attributes: ParsedAttribute[];
 };
 
+export type RailwayLogRecordContext = {
+  applicationError: boolean;
+};
+
 const HTTP_ACCESS_RECORD =
   /^(\S+) \S+ \S+ \[([^\]]+)\] "([A-Z]+) (\S+) HTTP\/(\d(?:\.\d)?)" (\d{3}) (\d+|-)(?: ([\d.]+|-))?$/;
 const POSTGRESQL_RECORD =
   /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? [A-Z]+) \[(\d+)\] (?:(\S+?)@(\S+) )?([A-Z][A-Z0-9]*):\s*(.*)$/s;
+const LEADING_TEXT_SEVERITY =
+  /^\s*(trace|debug|info|notice|warn|warning|err|error|fatal|critical|panic)(?=$|[\s:=-])/i;
+const BRACKETED_TEXT_SEVERITY =
+  /\[(trace|debug|info|notice|warn|warning|err|error|fatal|critical|panic)\]/i;
+const TIMESTAMPED_TEXT_SEVERITY =
+  /^\s*\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?\s+(trace|debug|info|notice|warn|warning|err|error|fatal|critical|panic)(?=$|[\s:=-])/i;
+const STRONG_TEXT_ERROR =
+  /(?:\b[A-Z][A-Za-z0-9_]*(?:Error|Exception)\b|\b(?:failed|failure|exception|unauthorized|econnreset|connection (?:refused|reset)|premature (?:stream )?close|timed? out|cannot|unable to)\b|\bSIG(?:ABRT|BUS|FPE|ILL|QUIT|SEGV|SYS|TRAP)\b|\bsending to (?:the )?(?:dlq|dead[- ]letter queue)\b|\bsubquery uses ungrouped column\b|\b(?:relation|column|operator|function|type|constraint|database|schema) .+ does not exist\b|\bsyntax error at or near\b|\bduplicate key value violates\b|\bpermission denied for\b|\binvalid input syntax\b)/i;
+const NEGATED_FAILURE_COUNT = /\b(?:0|no|zero)\s+(?:failed|failures?|errors?|exceptions?)\b/gi;
+const DEPLOYMENT_SHUTDOWN_WRAPPER =
+  /^(?:error: script .+ terminated by signal SIGTERM \(Polite quit request\)|npm error (?:A complete log of this run can be found in:|command sh -c |location |path |signal SIGTERM(?:\s|$)|workspace ))/i;
 const MAX_PARSED_FIELDS = 32;
 const MAX_PARSED_KEY_LENGTH = 128;
 const MAX_PARSED_STRING_LENGTH = 4096;
@@ -38,6 +53,7 @@ const NATIVE_SEVERITY: Record<string, string> = {
   error: "error",
   fatal: "fatal",
   critical: "fatal",
+  panic: "fatal",
   alert: "fatal",
   emergency: "fatal",
 };
@@ -71,8 +87,9 @@ const POSTGRESQL_SEVERITY: Record<string, string> = {
 export function parseRailwayLogRecord(
   message: string,
   providerSeverity: string | null,
+  context: RailwayLogRecordContext = { applicationError: false },
 ): ParsedRailwayLogRecord {
-  const json = parseJson(message, providerSeverity);
+  const json = parseJson(message, providerSeverity, context);
   if (json) return json;
 
   const httpAccess = parseHttpAccess(message, providerSeverity);
@@ -86,17 +103,45 @@ export function parseRailwayLogRecord(
   const nativeSeverity = fields?.level;
   const parsedSeverity = nativeSeverity ? normalizeNativeSeverity(nativeSeverity) : null;
   if (!fields || (body === undefined && !parsedSeverity)) {
-    return { body: message, severity: providerSeverity, attributes: [] };
+    const textSeverity = explicitTextSeverity(message);
+    const severity = textSeverity ?? unstructuredProviderSeverity(providerSeverity, context);
+    return {
+      body: message,
+      severity,
+      attributes: parsedAttributes(
+        "text",
+        [],
+        providerSeverity,
+        textSeverity
+          ? "text"
+          : context.applicationError
+            ? "railway_error_attribute"
+            : severity
+              ? "railway"
+              : "unclassified",
+        message,
+      ),
+    };
   }
 
+  const bodySeverity = body === undefined ? null : explicitTextSeverity(body);
   return {
     body: body ?? message,
-    severity: parsedSeverity ?? providerSeverity,
+    severity:
+      parsedSeverity ?? bodySeverity ?? unstructuredProviderSeverity(providerSeverity, context),
     attributes: parsedAttributes(
       "logfmt",
       structuredFields(Object.entries(fields)),
       providerSeverity,
-      parsedSeverity ? "logfmt" : "railway",
+      parsedSeverity
+        ? "logfmt"
+        : bodySeverity
+          ? "logfmt_message"
+          : context.applicationError
+            ? "railway_error_attribute"
+            : unstructuredProviderSeverity(providerSeverity, context)
+              ? "railway"
+              : "unclassified",
       message,
     ),
   };
@@ -172,6 +217,7 @@ function parseHttpAccess(
 function parseJson(
   message: string,
   providerSeverity: string | null,
+  context: RailwayLogRecordContext,
 ): ParsedRailwayLogRecord | null {
   let value: unknown;
   try {
@@ -198,15 +244,25 @@ function parseJson(
     normalizeJsonSeverity(record.level) ?? normalizeJsonSeverity(record.severity);
   if (body === null && !parsedSeverity) return null;
 
+  const bodySeverity = body === null ? null : explicitTextSeverity(body);
   const parsedFields = structuredFields(Object.entries(record));
   return {
     body: body ?? message,
-    severity: parsedSeverity ?? providerSeverity,
+    severity:
+      parsedSeverity ?? bodySeverity ?? unstructuredProviderSeverity(providerSeverity, context),
     attributes: parsedAttributes(
       "json",
       parsedFields,
       providerSeverity,
-      parsedSeverity ? "json" : "railway",
+      parsedSeverity
+        ? "json"
+        : bodySeverity
+          ? "json_message"
+          : context.applicationError
+            ? "railway_error_attribute"
+            : unstructuredProviderSeverity(providerSeverity, context)
+              ? "railway"
+              : "unclassified",
       message,
     ),
   };
@@ -397,7 +453,7 @@ function parseLogfmt(message: string): Record<string, string> | null {
     count += 1;
   }
 
-  if (count < 2) return null;
+  if (count < 2 && fields.level === undefined) return null;
   return fields;
 }
 
@@ -456,6 +512,26 @@ function normalizeJsonSeverity(value: unknown): string | null {
   if (typeof value === "string") return normalizeNativeSeverity(value);
   if (typeof value === "number") return NUMERIC_JSON_SEVERITY[value] ?? null;
   return null;
+}
+
+function explicitTextSeverity(message: string): string | null {
+  const evidenceMessage = message.replace(DEPLOYMENT_SHUTDOWN_WRAPPER, "");
+  const label =
+    evidenceMessage.match(LEADING_TEXT_SEVERITY)?.[1] ??
+    evidenceMessage.match(TIMESTAMPED_TEXT_SEVERITY)?.[1] ??
+    evidenceMessage.match(BRACKETED_TEXT_SEVERITY)?.[1];
+  if (label) return normalizeNativeSeverity(label);
+  const failureEvidenceText = evidenceMessage.replace(NEGATED_FAILURE_COUNT, "");
+  return STRONG_TEXT_ERROR.test(failureEvidenceText) ? "error" : null;
+}
+
+function unstructuredProviderSeverity(
+  providerSeverity: string | null,
+  context: RailwayLogRecordContext,
+): string | null {
+  if (context.applicationError) return "error";
+  const normalized = providerSeverity?.trim().toLowerCase();
+  return normalized === "error" || normalized === "fatal" ? null : providerSeverity;
 }
 
 function isBoundedField(key: string, value: ParsedAttributeValue): boolean {

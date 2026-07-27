@@ -97,6 +97,225 @@ test("railwayLogsToOtlp uses native logfmt fields instead of Railway's stderr se
   assert.equal(attrs["log.record.original"], message);
 });
 
+test("railwayLogsToOtlp does not treat raw Railway stderr as semantic error evidence", () => {
+  const message = "++++++++++++++++++++++++++++++++++++*.......";
+  const out = railwayLogsToOtlp(
+    [
+      {
+        ...LOG,
+        severity: "error",
+        message,
+        attributes: [{ key: "level", value: '"error"' }],
+      },
+    ],
+    NAMES,
+  );
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "");
+  assert.equal(record.severityNumber, 0);
+  const attrs = Object.fromEntries(
+    record.attributes.map((attribute) => [attribute.key, attribute.value.stringValue]),
+  );
+  assert.equal(attrs["railway.log.format"], "text");
+  assert.equal(attrs["railway.log.provider_severity"], "error");
+  assert.equal(attrs["railway.log.severity_source"], "unclassified");
+  assert.equal(attrs["log.record.original"], message);
+});
+
+test("railwayLogsToOtlp keeps a raw line at error when Railway carries an application error", () => {
+  const message = "nightly failed";
+  const out = railwayLogsToOtlp(
+    [
+      {
+        ...LOG,
+        severity: "error",
+        message,
+        attributes: [
+          { key: "level", value: '"error"' },
+          { key: "err", value: '"error: relation \\"events\\" does not exist"' },
+        ],
+      },
+    ],
+    NAMES,
+  );
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "ERROR");
+  assert.equal(record.severityNumber, 17);
+  const attrs = Object.fromEntries(
+    record.attributes.map((attribute) => [attribute.key, attribute.value.stringValue]),
+  );
+  assert.equal(attrs["railway.log.severity_source"], "text");
+});
+
+test("railwayLogsToOtlp preserves an explicit severity label in raw application text", () => {
+  const message =
+    "2026-07-20T22:55:36.155Z ERROR [Better Auth]: Invalid callbackURL: https://example.com";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "ERROR");
+  assert.equal(record.severityNumber, 17);
+  const attrs = Object.fromEntries(
+    record.attributes.map((attribute) => [attribute.key, attribute.value.stringValue]),
+  );
+  assert.equal(attrs["railway.log.severity_source"], "text");
+});
+
+test("railwayLogsToOtlp prefers timestamp-adjacent severity over later bracketed prose", () => {
+  const message = "2026-07-20T22:55:36Z INFO handler returned [ERROR] as a value";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "INFO");
+  assert.equal(record.severityNumber, 9);
+});
+
+test("railwayLogsToOtlp accepts comma-delimited timestamp fractions", () => {
+  const message = "2026-07-20 22:55:36,155 ERROR worker stopped";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "ERROR");
+  assert.equal(record.severityNumber, 17);
+});
+
+test("railwayLogsToOtlp does not treat severity words in ordinary prose as labels", () => {
+  const message = "Recovered from error and resumed processing";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "");
+  assert.equal(record.severityNumber, 0);
+});
+
+test("railwayLogsToOtlp does not treat zero failure counts as errors", () => {
+  const message = "Tests: 10 passed, 0 failed";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "");
+  assert.equal(record.severityNumber, 0);
+});
+
+test("railwayLogsToOtlp preserves independent failure evidence after a zero count", () => {
+  const message = "0 failed health checks; connection refused while starting worker";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "ERROR");
+  assert.equal(record.severityNumber, 17);
+});
+
+test("railwayLogsToOtlp preserves strong failure evidence in raw application text", () => {
+  for (const message of [
+    "Task abc123 exceeded max rescues (0/0), sending to DLQ",
+    'subquery uses ungrouped column "vft.visitor_id" from outer query at character 413',
+    "ValueError: invalid literal",
+    "KeyError: 'id'",
+    "TypeError: x is not a function",
+  ]) {
+    const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+    const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+    assert.equal(record.body.stringValue, message);
+    assert.equal(record.severityText, "ERROR");
+    assert.equal(record.severityNumber, 17);
+  }
+});
+
+test("railwayLogsToOtlp preserves failure evidence after an npm wrapper prefix", () => {
+  const message = "npm error command sh -c vite build failed";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "ERROR");
+  assert.equal(record.severityNumber, 17);
+});
+
+test("railwayLogsToOtlp does not promote deployment shutdown wrapper lines to errors", () => {
+  for (const message of [
+    'error: script "start" was terminated by signal SIGTERM (Polite quit request)',
+    "npm error signal SIGTERM",
+    "npm error command sh -c next start",
+    "npm error A complete log of this run can be found in: /root/.npm/_logs/debug-0.log",
+  ]) {
+    const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+    const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+    assert.equal(record.body.stringValue, message);
+    assert.equal(record.severityText, "");
+    assert.equal(record.severityNumber, 0);
+  }
+});
+
+test("railwayLogsToOtlp preserves genuine npm failures as errors", () => {
+  for (const message of ["npm error signal SIGSEGV", "npm error command failed"]) {
+    const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+    const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+    assert.equal(record.body.stringValue, message);
+    assert.equal(record.severityText, "ERROR");
+    assert.equal(record.severityNumber, 17);
+  }
+});
+
+test("railwayLogsToOtlp maps explicit panic labels to fatal", () => {
+  for (const message of [
+    "PANIC unrecoverable worker state",
+    JSON.stringify({ message: "PANIC unrecoverable worker state" }),
+    'message="PANIC unrecoverable worker state" event=worker_crash',
+  ]) {
+    const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+    const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+    assert.equal(record.body.stringValue, "PANIC unrecoverable worker state");
+    assert.equal(record.severityText, "FATAL");
+    assert.equal(record.severityNumber, 21);
+  }
+});
+
+test("railwayLogsToOtlp attributes explicit labels ahead of application error fields", () => {
+  for (const message of [
+    "INFO request recovered",
+    JSON.stringify({ message: "INFO request recovered" }),
+    'message="INFO request recovered" event=recovery',
+  ]) {
+    const out = railwayLogsToOtlp(
+      [
+        {
+          ...LOG,
+          severity: "error",
+          message,
+          attributes: [
+            { key: "level", value: '"error"' },
+            { key: "err", value: '"previous request failed"' },
+          ],
+        },
+      ],
+      NAMES,
+    );
+    const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+    assert.equal(record.body.stringValue, "INFO request recovered");
+    assert.equal(record.severityText, "INFO");
+    assert.equal(record.severityNumber, 9);
+    const attrs = Object.fromEntries(
+      record.attributes.map((attribute) => [attribute.key, attribute.value.stringValue]),
+    );
+    assert.ok(
+      ["text", "json_message", "logfmt_message"].includes(
+        attrs["railway.log.severity_source"] ?? "",
+      ),
+    );
+  }
+});
+
 test("railwayLogsToOtlp keeps the raw Railway payload as the original record", () => {
   const message = 'level=info msg="\u001b[32mready\u001b[0m"';
   const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
@@ -191,7 +410,7 @@ test("railwayLogsToOtlp reserves collector-owned structured attribute names", ()
   const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
   assert.equal(attrs["railway.log.format"]?.stringValue, "json");
   assert.equal(attrs["railway.log.provider_severity"]?.stringValue, "error");
-  assert.equal(attrs["railway.log.severity_source"]?.stringValue, "railway");
+  assert.equal(attrs["railway.log.severity_source"]?.stringValue, "unclassified");
   for (const key of [
     "railway.log.format",
     "railway.log.provider_severity",
@@ -308,13 +527,36 @@ test("railwayLogsToOtlp preserves native severity for event-style JSON", () => {
   assert.equal(attrs["log.record.original"], message);
 });
 
+test("railwayLogsToOtlp does not inherit stderr severity for JSON without a native level", () => {
+  const message = JSON.stringify({ message: "worker ready", event: "heartbeat" });
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "worker ready");
+  assert.equal(record.severityText, "");
+  assert.equal(record.severityNumber, 0);
+});
+
+test("railwayLogsToOtlp preserves explicit severity evidence in structured message bodies", () => {
+  for (const message of [
+    JSON.stringify({ message: "ERROR database unavailable" }),
+    'message="ERROR database unavailable" event=connection_check',
+  ]) {
+    const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+    const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+    assert.equal(record.body.stringValue, "ERROR database unavailable");
+    assert.equal(record.severityText, "ERROR");
+    assert.equal(record.severityNumber, 17);
+  }
+});
+
 test("railwayLogsToOtlp preserves explicit empty JSON message bodies", () => {
   const message = JSON.stringify({ message: "", event: "heartbeat" });
   const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
 
   const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
   assert.equal(record.body.stringValue, "");
-  assert.equal(record.severityText, "ERROR");
+  assert.equal(record.severityText, "");
   const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
   assert.equal(attrs["railway.log.format"], "json");
   assert.equal(attrs["railway.log.event"], "heartbeat");
@@ -378,18 +620,33 @@ test("railwayLogsToOtlp preserves question marks inside HTTP query strings", () 
   assert.equal(attrs["url.query"]?.stringValue, "redirect=https://example.com/a?b=c");
 });
 
-test("railwayLogsToOtlp keeps Railway severity when a parsed native level is unknown", () => {
+test("railwayLogsToOtlp leaves an unknown native level unclassified", () => {
   const message = 'level=verbose msg="something happened" request_id=req-1';
   const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
 
   const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
   assert.equal(record.body.stringValue, "something happened");
-  assert.equal(record.severityText, "ERROR");
-  assert.equal(record.severityNumber, 17);
+  assert.equal(record.severityText, "");
+  assert.equal(record.severityNumber, 0);
   const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
   assert.equal(attrs["railway.log.level"], "verbose");
   assert.equal(attrs["railway.log.provider_severity"], "error");
-  assert.equal(attrs["railway.log.severity_source"], "railway");
+  assert.equal(attrs["railway.log.severity_source"], "unclassified");
+});
+
+test("railwayLogsToOtlp preserves a standalone native logfmt level", () => {
+  const message = "level=error";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "ERROR");
+  assert.equal(record.severityNumber, 17);
+  const attrs = Object.fromEntries(
+    record.attributes.map((attribute) => [attribute.key, attribute.value.stringValue]),
+  );
+  assert.equal(attrs["railway.log.format"], "logfmt");
+  assert.equal(attrs["railway.log.severity_source"], "logfmt");
 });
 
 test("railwayLogsToOtlp structures logfmt without a native level", () => {
@@ -458,7 +715,7 @@ test("railwayLogsToOtlp preserves explicit empty logfmt message bodies", () => {
 
   const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
   assert.equal(record.body.stringValue, "");
-  assert.equal(record.severityText, "ERROR");
+  assert.equal(record.severityText, "");
   const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
   assert.equal(attrs["railway.log.format"], "logfmt");
   assert.equal(attrs["railway.log.event"], "heartbeat");
@@ -471,7 +728,7 @@ test("railwayLogsToOtlp safely rejects a long unterminated logfmt value", () => 
 
   const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
   assert.equal(record.body.stringValue, message);
-  assert.equal(record.severityText, "ERROR");
+  assert.equal(record.severityText, "");
 });
 
 test("railwayLogsToOtlp caps logfmt attributes without rejecting the record", () => {
@@ -505,17 +762,18 @@ test("railwayLogsToOtlp bounds extracted structured attributes", () => {
   assert.equal(attrs[`railway.log.${longKey}`], undefined);
 });
 
-test("railwayLogsToOtlp leaves malformed structured messages lossless", () => {
+test("railwayLogsToOtlp leaves malformed structured messages lossless and unclassified", () => {
   const message = 'level=info msg="unterminated';
   const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
 
   const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
   assert.equal(record.body.stringValue, message);
-  assert.equal(record.severityText, "ERROR");
-  assert.equal(record.severityNumber, 17);
+  assert.equal(record.severityText, "");
+  assert.equal(record.severityNumber, 0);
   const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
-  assert.equal(attrs["railway.log.format"], undefined);
-  assert.equal(attrs["log.record.original"], undefined);
+  assert.equal(attrs["railway.log.format"], "text");
+  assert.equal(attrs["railway.log.severity_source"], "unclassified");
+  assert.equal(attrs["log.record.original"], message);
 });
 
 test("railwayLogsToOtlp falls back to a railway service name when unmapped", () => {
