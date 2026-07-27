@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { type EntitlementBalance, signalAtHardCap } from "./billing.ts";
+import {
+  type EntitlementBalance,
+  isPaygPromotionAvailable,
+  signalAtHardCap,
+} from "./billing.ts";
 
 // A `check` stand-in that returns a fixed balance.
 const checkReturning = (balance: EntitlementBalance) => () => ({ balance });
@@ -57,4 +61,18 @@ test("signalAtHardCap returns false (never throws) when check() throws", () => {
   };
   assert.doesNotThrow(() => signalAtHardCap(throwingCheck, "spans"));
   assert.equal(signalAtHardCap(throwingCheck, "spans"), false);
+});
+
+test("PAYG promotion availability stays false while customer balances are not hydrated", () => {
+  assert.doesNotThrow(() =>
+    isPaygPromotionAvailable({
+      id: "org_123",
+    }),
+  );
+  assert.equal(
+    isPaygPromotionAvailable({
+      id: "org_123",
+    }),
+    false,
+  );
 });

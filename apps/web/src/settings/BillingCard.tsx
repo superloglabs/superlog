@@ -108,7 +108,7 @@ export function BillingCard() {
   const promotionCustomerId = customer?.id ?? null;
   const promotionAlreadyClaimed = hasClaimedPaygPromotion(
     customer?.id,
-    customer?.balances.investigations?.breakdown,
+    customer?.balances?.investigations?.breakdown,
   );
 
   useEffect(() => {
