@@ -16,6 +16,7 @@ export {
 export {
   type AnalyticsClient,
   type CaptureServerEventInput,
+  aliasServerDistinctId,
   captureServerEvent,
   setAnalyticsClientForTests,
   shutdownAnalytics,

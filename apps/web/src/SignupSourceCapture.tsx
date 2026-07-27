@@ -1,10 +1,12 @@
 import { useEffect } from "react";
+import { usePostHog } from "posthog-js/react";
 import {
   CLICK_ID_COOKIE,
   parseAttribution,
   persistFirstTouchAttribution,
   serializeClickIdsCookie,
 } from "./signupAttribution.ts";
+import { refreshSignupAttributionCookie } from "./signupAttributionCookie.ts";
 
 // How long the click-id cookie lives. Just long enough to survive landing →
 // "Get started" → sign up (including an OAuth round-trip), then it expires on
@@ -37,6 +39,8 @@ function writeClickIdCookie(value: string) {
 }
 
 export function SignupSourceCapture() {
+  const posthog = usePostHog();
+
   useEffect(() => {
     const attr = parseAttribution(window.location.search, document.referrer);
     if (attr.source) {
@@ -52,9 +56,14 @@ export function SignupSourceCapture() {
       landingPath: window.location.pathname,
     });
     // Carry any ad-network click ids to the server for the sign-up conversion.
+    // Legacy carrier — kept during the transition to the attribution cookie
+    // below so an older API still finds the click ids.
     const clickIds = serializeClickIdsCookie(attr);
     if (clickIds) writeClickIdCookie(clickIds);
-  }, []);
+    // Full attribution + PostHog ids for the server-side signup event. Also
+    // refreshed at auth time (AuthForm) so the ids are current at sign-up.
+    refreshSignupAttributionCookie(posthog);
+  }, [posthog]);
 
   return null;
 }
