@@ -97,6 +97,9 @@ export function railwayLogsToOtlp(
       const serviceName = (serviceId && ctx.serviceNamesById[serviceId]) || "railway";
       const nanos = rfc3339ToNanos(log.timestamp) ?? 0n;
       const parsed = parseRailwayLogRecord(stripAnsi(log.message), log.severity);
+      const parsedAttributes = parsed.attributes.map((attribute) =>
+        attribute.key === "log.record.original" ? { ...attribute, value: log.message } : attribute,
+      );
       return {
         resource: {
           attributes: [
@@ -125,7 +128,7 @@ export function railwayLogsToOtlp(
                   ...log.attributes.map((a) =>
                     kv(`railway.attr.${a.key}`, parseRailwayAttributeValue(a.value)),
                   ),
-                  ...parsed.attributes.map((a) => kv(a.key, a.value)),
+                  ...parsedAttributes.map((a) => kv(a.key, a.value)),
                 ].filter(isKv),
               },
             ],

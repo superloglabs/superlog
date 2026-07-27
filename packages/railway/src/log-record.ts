@@ -14,6 +14,11 @@ const POSTGRESQL_RECORD =
 const MAX_PARSED_FIELDS = 32;
 const MAX_PARSED_KEY_LENGTH = 128;
 const MAX_PARSED_STRING_LENGTH = 4096;
+const RESERVED_STRUCTURED_ATTRIBUTE_KEYS = new Set([
+  "format",
+  "provider_severity",
+  "severity_source",
+]);
 const NATIVE_SEVERITY: Record<string, string> = {
   trace: "trace",
   debug: "debug",
@@ -83,7 +88,9 @@ export function parseRailwayLogRecord(
     attributes: parsedAttributes(
       "logfmt",
       Object.entries(fields)
-        .filter(([key, value]) => isBoundedField(key, value))
+        .filter(
+          ([key, value]) => isBoundedField(key, value) && !isReservedStructuredAttributeKey(key),
+        )
         .slice(0, MAX_PARSED_FIELDS)
         .map(([key, value]) => ({
           key: `railway.log.${normalizeAttributeKey(key)}`,
@@ -195,7 +202,9 @@ function parseJson(
   const parsedFields = Object.entries(record)
     .filter(
       (entry): entry is [string, ParsedAttributeValue] =>
-        isScalar(entry[1]) && isBoundedField(entry[0], entry[1]),
+        isScalar(entry[1]) &&
+        isBoundedField(entry[0], entry[1]) &&
+        !isReservedStructuredAttributeKey(entry[0]),
     )
     .slice(0, MAX_PARSED_FIELDS)
     .map(([key, fieldValue]) => ({
@@ -417,6 +426,10 @@ function isLogfmtKeyPart(character: string | undefined): boolean {
 
 function normalizeAttributeKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9_.-]/g, "_");
+}
+
+function isReservedStructuredAttributeKey(key: string): boolean {
+  return RESERVED_STRUCTURED_ATTRIBUTE_KEYS.has(normalizeAttributeKey(key));
 }
 
 function isScalar(value: unknown): value is ParsedAttributeValue {

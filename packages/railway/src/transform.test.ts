@@ -97,6 +97,16 @@ test("railwayLogsToOtlp uses native logfmt fields instead of Railway's stderr se
   assert.equal(attrs["log.record.original"], message);
 });
 
+test("railwayLogsToOtlp keeps the raw Railway payload as the original record", () => {
+  const message = 'level=info msg="\u001b[32mready\u001b[0m"';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "ready");
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["log.record.original"], message);
+});
+
 test("railwayLogsToOtlp maps PostgreSQL LOG records to informational structured logs", () => {
   const message =
     "2026-07-24 09:24:40.055 UTC [59] LOG:  checkpoint complete: wrote 1114 buffers (6.8%)";
@@ -156,6 +166,29 @@ test("railwayLogsToOtlp preserves scalar fields from structured JSON logs", () =
   assert.equal(attrs["railway.log.provider_severity"]?.stringValue, "error");
   assert.equal(attrs["railway.log.severity_source"]?.stringValue, "json");
   assert.equal(attrs["log.record.original"]?.stringValue, message);
+});
+
+test("railwayLogsToOtlp reserves collector-owned structured attribute names", () => {
+  const message = JSON.stringify({
+    message: "request complete",
+    FORMAT: "text",
+    provider_severity: "info",
+    severity_source: "application",
+  });
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["railway.log.format"]?.stringValue, "json");
+  assert.equal(attrs["railway.log.provider_severity"]?.stringValue, "error");
+  assert.equal(attrs["railway.log.severity_source"]?.stringValue, "railway");
+  for (const key of [
+    "railway.log.format",
+    "railway.log.provider_severity",
+    "railway.log.severity_source",
+  ]) {
+    assert.equal(record.attributes.filter((attribute) => attribute.key === key).length, 1);
+  }
 });
 
 test("railwayLogsToOtlp decodes Railway's JSON-encoded scalar attributes", () => {
