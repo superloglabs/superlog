@@ -18,9 +18,11 @@ import { PostHog } from "posthog-node";
 const DEFAULT_POSTHOG_HOST = "https://eu.i.posthog.com";
 
 // The slice of the PostHog client we use. Narrowed so tests can pass a plain
-// recorder and callers can inject one.
+// recorder and callers can inject one. `alias` is optional so existing
+// recorders that only capture keep working.
 export type AnalyticsClient = {
   capture(args: { distinctId: string; event: string; properties?: Record<string, unknown> }): void;
+  alias?(args: { distinctId: string; alias: string }): void;
 };
 
 export type CaptureServerEventInput = {
@@ -73,6 +75,23 @@ export function captureServerEvent(input: CaptureServerEventInput): void {
     if (input.set) properties.$set = input.set;
     if (input.setOnce) properties.$set_once = input.setOnce;
     client.capture({ distinctId: input.distinctId, event: input.event, properties });
+  } catch {
+    /* analytics is best-effort */
+  }
+}
+
+/**
+ * Link a new distinct id (`alias`) to an existing person (`distinctId`) —
+ * e.g. `distinctId` = the browser's anonymous PostHog id, `alias` = the new
+ * user id, per posthog-node's alias semantics. Lets the server-side signup
+ * event land on an already-merged person instead of waiting for the SPA to
+ * identify() later. No-op when analytics isn't configured; never throws.
+ */
+export function aliasServerDistinctId(input: { distinctId: string; alias: string }): void {
+  const client = activeClient();
+  if (!client?.alias) return;
+  try {
+    client.alias({ distinctId: input.distinctId, alias: input.alias });
   } catch {
     /* analytics is best-effort */
   }

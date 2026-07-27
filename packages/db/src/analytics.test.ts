@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
-import { captureServerEvent, setAnalyticsClientForTests, shutdownAnalytics } from "./analytics.js";
+import {
+  aliasServerDistinctId,
+  captureServerEvent,
+  setAnalyticsClientForTests,
+  shutdownAnalytics,
+} from "./analytics.js";
 
 type Captured = { distinctId: string; event: string; properties?: Record<string, unknown> };
 
@@ -91,4 +96,35 @@ test("shutdownAnalytics no-ops when unconfigured or the client can't shut down",
   await assert.doesNotReject(() => shutdownAnalytics());
   setAnalyticsClientForTests({ capture() {} });
   await assert.doesNotReject(() => shutdownAnalytics());
+});
+
+test("aliasServerDistinctId forwards to the client's alias", () => {
+  const aliases: Array<{ distinctId: string; alias: string }> = [];
+  setAnalyticsClientForTests({
+    capture() {},
+    alias(args: { distinctId: string; alias: string }) {
+      aliases.push(args);
+    },
+  });
+  // distinctId = the existing (anonymous) id, alias = the new id linked to it.
+  aliasServerDistinctId({ distinctId: "anon-123", alias: "user-1" });
+  assert.deepEqual(aliases, [{ distinctId: "anon-123", alias: "user-1" }]);
+});
+
+test("aliasServerDistinctId no-ops when unconfigured or the client lacks alias", () => {
+  setAnalyticsClientForTests(null);
+  assert.doesNotThrow(() => aliasServerDistinctId({ distinctId: "u", alias: "a" }));
+  // A recorder without alias() (older seam) must not crash the caller.
+  setAnalyticsClientForTests({ capture() {} });
+  assert.doesNotThrow(() => aliasServerDistinctId({ distinctId: "u", alias: "a" }));
+});
+
+test("aliasServerDistinctId swallows client errors", () => {
+  setAnalyticsClientForTests({
+    capture() {},
+    alias() {
+      throw new Error("network down");
+    },
+  });
+  assert.doesNotThrow(() => aliasServerDistinctId({ distinctId: "u", alias: "a" }));
 });
