@@ -8,6 +8,7 @@ import {
   persistFirstTouchAttribution,
   readFirstTouchAttribution,
   serializeClickIdsCookie,
+  serializeSignupAttributionCookie,
 } from "./signupAttribution.ts";
 
 // A tiny in-memory localStorage stand-in so the storage helpers can be tested
@@ -170,4 +171,32 @@ test("buildSignupEventProperties emits snake_case keys and omits undefined", () 
 
 test("buildSignupEventProperties yields an empty object for empty inputs", () => {
   assert.deepEqual(buildSignupEventProperties({}, {}), {});
+});
+
+test("serializeSignupAttributionCookie carries props and posthog ids", () => {
+  const value = serializeSignupAttributionCookie(
+    { utm_source: "x", utm_medium: "paid_social" },
+    { distinctId: "anon-123", sessionId: "sess-456" },
+  );
+  assert.ok(value);
+  assert.deepEqual(JSON.parse(value), {
+    props: { utm_source: "x", utm_medium: "paid_social" },
+    ph: { did: "anon-123", sid: "sess-456" },
+  });
+});
+
+test("serializeSignupAttributionCookie omits empty props and absent ids", () => {
+  const value = serializeSignupAttributionCookie({}, { sessionId: "sess-456" });
+  assert.ok(value);
+  assert.deepEqual(JSON.parse(value), { ph: { sid: "sess-456" } });
+});
+
+test("serializeSignupAttributionCookie drops blank posthog ids", () => {
+  const value = serializeSignupAttributionCookie({ utm_source: "x" }, { distinctId: "" });
+  assert.ok(value);
+  assert.deepEqual(JSON.parse(value), { props: { utm_source: "x" } });
+});
+
+test("serializeSignupAttributionCookie yields null when there is nothing to carry", () => {
+  assert.equal(serializeSignupAttributionCookie({}, {}), null);
 });

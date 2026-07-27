@@ -1,11 +1,18 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { usePostHog } from "posthog-js/react";
 import { authClient } from "./auth-client.ts";
+import { refreshSignupAttributionCookie } from "./signupAttributionCookie.ts";
 
 // Two-step auth form. Step 1: enter email (or click a social provider). Step 2:
 // enter password (sign-in) or name + password (sign-up). The previously-used
 // provider gets a "Last used" pill so returning users land on the right
 // button. Replaces Clerk's prebuilt <SignIn> / <SignUp>.
+//
+// Funnel instrumentation: auth_form_viewed → auth_email_continued →
+// auth_submitted → (auth_error)* fills the previously-dark gap between the
+// landing CTA click and the server-side signup event, so drop-off inside the
+// form is attributable to a step and an error instead of being invisible.
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4100";
 const LAST_PROVIDER_KEY = "superlog.auth.last_provider";
@@ -65,6 +72,7 @@ export function AuthForm({
   socialCallbackURL?: string;
 }) {
   const providers = useAuthProviders();
+  const posthog = usePostHog();
   const anySocial = providers.google || providers.github;
   const [mode, setMode] = useState<Mode>(initialMode);
   const [step, setStep] = useState<Step>("email");
@@ -82,6 +90,17 @@ export function AuthForm({
     else passwordRef.current?.focus();
   }, [step]);
 
+  useEffect(() => {
+    // Refires on mode switch so sign-in ↔ sign-up hops stay visible.
+    posthog?.capture("auth_form_viewed", { mode });
+  }, [posthog, mode]);
+
+  function trackAuthError(method: Provider, message: string) {
+    // Better Auth error messages are static, non-PII strings ("Invalid email
+    // or password", …) — safe to attach for a drop-off-by-reason breakdown.
+    posthog?.capture("auth_error", { mode, method, message });
+  }
+
   function onEmailSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
@@ -89,6 +108,7 @@ export function AuthForm({
       setError("Enter a valid email address.");
       return;
     }
+    posthog?.capture("auth_email_continued", { mode });
     setStep("credentials");
   }
 
@@ -96,6 +116,10 @@ export function AuthForm({
     e.preventDefault();
     setError(null);
     setSubmitting(true);
+    // Snapshot fresh PostHog ids into the attribution cookie so the API's
+    // user-create hook can session-attribute the server-side signup event.
+    refreshSignupAttributionCookie(posthog, { authMethod: "email" });
+    posthog?.capture("auth_submitted", { mode, method: "email" });
     try {
       if (mode === "sign-up") {
         const result = await authClient.signUp.email({
@@ -104,20 +128,26 @@ export function AuthForm({
           name: name || email.split("@")[0] || "",
         });
         if (result.error) {
-          setError(result.error.message ?? "Sign-up failed");
+          const message = result.error.message ?? "Sign-up failed";
+          trackAuthError("email", message);
+          setError(message);
           return;
         }
       } else {
         const result = await authClient.signIn.email({ email, password });
         if (result.error) {
-          setError(result.error.message ?? "Sign-in failed");
+          const message = result.error.message ?? "Sign-in failed";
+          trackAuthError("email", message);
+          setError(message);
           return;
         }
       }
       rememberProvider("email");
       onSuccess?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unexpected error");
+      const message = err instanceof Error ? err.message : "Unexpected error";
+      trackAuthError("email", message);
+      setError(message);
     } finally {
       setSubmitting(false);
     }
@@ -126,26 +156,36 @@ export function AuthForm({
   async function onGoogle() {
     setError(null);
     rememberProvider("google");
+    // A social "sign-in" click can create a brand-new user, so the attribution
+    // cookie must be fresh before the OAuth redirect leaves the page.
+    refreshSignupAttributionCookie(posthog, { authMethod: "google" });
+    posthog?.capture("auth_submitted", { mode, method: "google" });
     try {
       await authClient.signIn.social({
         provider: "google",
         callbackURL: socialCallbackURL ?? `${window.location.origin}/app`,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Google sign-in failed");
+      const message = err instanceof Error ? err.message : "Google sign-in failed";
+      trackAuthError("google", message);
+      setError(message);
     }
   }
 
   async function onGithub() {
     setError(null);
     rememberProvider("github");
+    refreshSignupAttributionCookie(posthog, { authMethod: "github" });
+    posthog?.capture("auth_submitted", { mode, method: "github" });
     try {
       await authClient.signIn.social({
         provider: "github",
         callbackURL: socialCallbackURL ?? `${API_URL}/api/github/post-signin`,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "GitHub sign-in failed");
+      const message = err instanceof Error ? err.message : "GitHub sign-in failed";
+      trackAuthError("github", message);
+      setError(message);
     }
   }
 

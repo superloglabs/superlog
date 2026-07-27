@@ -211,6 +211,37 @@ export function buildSignupEventProperties(
 // reads it in the user-create path; keep this name in sync there.
 export const CLICK_ID_COOKIE = "sl_click_ids";
 
+// Successor carrier: the full first-touch attribution (as snake_case event
+// properties) plus the browser's PostHog ids. The server puts the attribution
+// on the server-side signup event itself and uses the ids to merge the
+// anonymous web person / tie the event to the web session at ingestion time —
+// person-on-events freezes person properties per event, so attribution that
+// only arrives with the SPA's later identify() is invisible on the signup
+// event. Keep the name in sync with the API's reader.
+export const SIGNUP_ATTRIBUTION_COOKIE = "sl_signup_attr";
+
+export type PosthogClientIds = {
+  distinctId?: string;
+  sessionId?: string;
+};
+
+/**
+ * JSON body for the signup-attribution cookie, or null when there is nothing
+ * to carry. Compact keys (`ph.did` / `ph.sid`) keep the cookie small.
+ */
+export function serializeSignupAttributionCookie(
+  props: Record<string, string>,
+  ids: PosthogClientIds,
+): string | null {
+  const payload: { props?: Record<string, string>; ph?: { did?: string; sid?: string } } = {};
+  if (Object.keys(props).length > 0) payload.props = props;
+  const ph: { did?: string; sid?: string } = {};
+  if (ids.distinctId) ph.did = ids.distinctId;
+  if (ids.sessionId) ph.sid = ids.sessionId;
+  if (Object.keys(ph).length > 0) payload.ph = ph;
+  return Object.keys(payload).length > 0 ? JSON.stringify(payload) : null;
+}
+
 /** Present click ids, keyed by their standard query-param name. */
 export function clickIdsFromAttribution(attr: SignupAttribution): Record<string, string> {
   const out: Record<string, string> = {};
