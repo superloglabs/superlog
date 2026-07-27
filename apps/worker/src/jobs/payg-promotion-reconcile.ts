@@ -14,6 +14,9 @@ type LoggerLike = {
 };
 
 const meter = metrics.getMeter("@superlog/worker/billing");
+const AUTUMN_REQUEST_TIMEOUT_MS = 10_000;
+const PAYG_GRANT_CONCURRENCY = 25;
+const PAYG_MAX_CUSTOMERS_PER_RUN = 5_000;
 const promotionOutcomeCounter = meter.createCounter("superlog.billing.payg_promotion.outcomes", {
   description: "PAYG promotion reconciliation outcomes.",
   unit: "1",
@@ -37,8 +40,10 @@ function isExistingPromotionBalance(error: unknown, balanceId: string): boolean 
 }
 
 function createAutumnPaygPromotionProvider(secretKey: string): PaygPromotionReconciliationDeps {
-  const autumn = new Autumn({ secretKey });
+  const autumn = new Autumn({ secretKey, timeoutMs: AUTUMN_REQUEST_TIMEOUT_MS });
   return {
+    grantConcurrency: PAYG_GRANT_CONCURRENCY,
+    maxCustomers: PAYG_MAX_CUSTOMERS_PER_RUN,
     listActivePaygCustomers: async (cursor) => {
       const page = await autumn.customers.list({
         startCursor: cursor,
@@ -95,7 +100,11 @@ export function createPaygPromotionReconcileJob(
     name: "billing.payg-promotion-reconcile",
     schedule: "* * * * *",
     policy: "exclusive",
-    expireInSeconds: 110,
+    // Each pass is capped at 5,000 customers: roughly 34 minutes at 25-way
+    // concurrency and the SDK's 10-second request timeout. Already-granted
+    // customers are filtered on the next pass, so a large rollout progresses
+    // page by page without letting a later cron tick overlap the active lease.
+    expireInSeconds: 3_600,
     create: () => {
       const logger = options.logger ?? defaultLogger;
       const recordOutcome =

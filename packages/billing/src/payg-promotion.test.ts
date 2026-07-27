@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PAYG_PROMOTION_CREDITS, ensurePaygPromotion } from "./payg-promotion.js";
+import {
+  PAYG_PROMOTION_CREDITS,
+  ensurePaygPromotion,
+  hasClaimedPaygPromotion,
+} from "./payg-promotion.js";
 
 test("an active PAYG customer receives the one-time investigation promotion", async () => {
   const created: Array<{
@@ -62,4 +66,16 @@ test("the deterministic balance makes repeat promotion requests idempotent", asy
   );
 
   assert.equal(result, "already_granted");
+});
+
+test("promotion copy is suppressed after the deterministic balance has been claimed", () => {
+  assert.equal(
+    hasClaimedPaygPromotion("org-123", [
+      { id: "monthly-investigations" },
+      { id: "payg-welcome-investigations-org-123" },
+    ]),
+    true,
+  );
+  assert.equal(hasClaimedPaygPromotion("org-123", [{ id: "monthly-investigations" }]), false);
+  assert.equal(hasClaimedPaygPromotion(null, []), false);
 });

@@ -405,6 +405,9 @@ importers:
       '@radix-ui/react-scroll-area':
         specifier: ^1.2.10
         version: 1.2.10(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      '@superlog/billing':
+        specifier: workspace:*
+        version: link:../../packages/billing
       '@superlog/topology':
         specifier: workspace:*
         version: link:../../packages/topology

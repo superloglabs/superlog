@@ -1,3 +1,4 @@
+import { hasClaimedPaygPromotion } from "@superlog/billing";
 import { useAggregateEvents, useCustomer } from "autumn-js/react";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -105,6 +106,10 @@ export function BillingCard() {
   const activeSub = customer?.subscriptions?.find((s) => s.status === "active");
   const planId = activeSub?.planId ?? "free";
   const promotionCustomerId = customer?.id ?? null;
+  const promotionAlreadyClaimed = hasClaimedPaygPromotion(
+    customer?.id,
+    customer?.balances.investigations?.breakdown,
+  );
 
   useEffect(() => {
     if (planId !== "payg" || !promotionCustomerId) return;
@@ -135,6 +140,21 @@ export function BillingCard() {
   }
 
   const planName = PLAN_NAMES[planId] ?? planId;
+  const planOptions = promotionAlreadyClaimed
+    ? PLAN_OPTIONS.map((option) =>
+        option.id === "payg"
+          ? {
+              ...option,
+              cta: "Upgrade to pay as you go",
+              details: [
+                "50 investigations included / month",
+                "then $1.50 / investigation",
+                "$0.50/M spans · logs · $0.15/M metrics",
+              ],
+            }
+          : option,
+      )
+    : PLAN_OPTIONS;
 
   // A scheduled downgrade (e.g. Pro → PAYG) shows up as a second subscription
   // with status "scheduled" that takes effect at the end of the current cycle.
@@ -247,8 +267,10 @@ export function BillingCard() {
         {atLimit && (
           <div className="mt-3 border-t border-border pt-3 text-[12.5px] leading-relaxed text-fg">
             <span className="font-semibold">You’ve reached your Free plan limits.</span> Ingest is
-            paused for capped signals. Switch to pay-as-you-go to resume with no caps and receive a
-            one-time grant of 100 promotional investigations — you’ll add a card at checkout.
+            paused for capped signals.{" "}
+            {promotionAlreadyClaimed
+              ? "Switch to pay-as-you-go to resume with no caps — you’ll add a card at checkout."
+              : "Switch to pay-as-you-go to resume with no caps and receive a one-time grant of 100 promotional investigations — you’ll add a card at checkout."}
           </div>
         )}
       </div>
@@ -259,15 +281,17 @@ export function BillingCard() {
           {atLimit ? "Choose a plan to resume" : "Change plan"}
         </div>
         <div className="grid gap-3">
-          {PLAN_OPTIONS.filter((o) => o.id !== planId).map((o) => (
-            <PlanOption
-              key={o.id}
-              option={o}
-              busy={busy}
-              highlight={atLimit && o.id === "payg"}
-              onAttach={onAttach}
-            />
-          ))}
+          {planOptions
+            .filter((o) => o.id !== planId)
+            .map((o) => (
+              <PlanOption
+                key={o.id}
+                option={o}
+                busy={busy}
+                highlight={atLimit && o.id === "payg"}
+                onAttach={onAttach}
+              />
+            ))}
         </div>
         {error && <p className="text-[12px] text-danger">{error}</p>}
       </div>

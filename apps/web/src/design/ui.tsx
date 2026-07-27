@@ -1,5 +1,7 @@
 import { CreditCardIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { hasClaimedPaygPromotion } from "@superlog/billing";
+import { useCustomer } from "autumn-js/react";
 import { type CSSProperties, type ReactNode, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useProjectPath } from "../ProjectRouteContext.tsx";
@@ -675,6 +677,10 @@ export function OutOfCreditsBadge() {
 
 export function OutOfCreditsBanner() {
   const projectPath = useProjectPath();
+  const { data: customer } = useCustomer();
+  const promotionAvailable =
+    !!customer &&
+    !hasClaimedPaygPromotion(customer.id, customer.balances.investigations?.breakdown);
   return (
     <div
       className="rounded-md border p-4"
@@ -694,15 +700,17 @@ export function OutOfCreditsBanner() {
         style={{ color: "color-mix(in srgb, var(--color-danger) 82%, var(--color-fg))" }}
       >
         Your organization is over its plan's monthly investigation limit, so auto-investigation was
-        skipped. Switch to pay-as-you-go for a one-time grant of 100 promotional investigations and
-        keep investigating new incidents.
+        skipped.{" "}
+        {promotionAvailable
+          ? "Switch to pay-as-you-go for a one-time grant of 100 promotional investigations and keep investigating new incidents."
+          : "Switch to pay-as-you-go to keep investigating new incidents with no monthly cap."}
       </p>
       <div className="flex items-center justify-end">
         <Link
           to={projectPath("/settings?scope=org&section=billing")}
           className="inline-flex items-center rounded-md bg-fg px-3 py-1.5 text-[13px] font-medium text-bg transition-opacity hover:opacity-90"
         >
-          Upgrade and get 100 free credits
+          {promotionAvailable ? "Upgrade and get 100 free credits" : "Upgrade to pay as you go"}
         </Link>
       </div>
     </div>

@@ -4,6 +4,15 @@ export function paygPromotionBalanceId(customerId: string): string {
   return `payg-welcome-investigations-${customerId}`;
 }
 
+export function hasClaimedPaygPromotion(
+  customerId: string | null | undefined,
+  balances: ReadonlyArray<{ id: string }> | null | undefined,
+): boolean {
+  if (!customerId) return false;
+  const promotionBalanceId = paygPromotionBalanceId(customerId);
+  return balances?.some((balance) => balance.id === promotionBalanceId) ?? false;
+}
+
 export type PaygSubscription = {
   planId: string;
   status: string;

@@ -27,6 +27,7 @@ test("the scheduled reconciliation grants every active PAYG customer exactly onc
 
   assert.equal(definition.schedule, "* * * * *");
   assert.equal(definition.policy, "exclusive");
+  assert.equal(definition.expireInSeconds, 3_600);
   const handler = await definition.create({} as JobDeps);
   assert.ok(handler);
   await handler();

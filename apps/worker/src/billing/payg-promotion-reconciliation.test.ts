@@ -66,3 +66,43 @@ test("a provider page failure is reported and counted before reconciliation stop
     failed: 1,
   });
 });
+
+test("grants are applied with bounded concurrency", async () => {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const summary = await reconcilePaygPromotions({
+    grantConcurrency: 2,
+    listActivePaygCustomers: async () => ({
+      customerIds: ["org-1", "org-2", "org-3", "org-4"],
+      nextCursor: null,
+    }),
+    grantPromotion: async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return "granted";
+    },
+  });
+
+  assert.equal(maxInFlight, 2);
+  assert.equal(summary.granted, 4);
+});
+
+test("a reconciliation pass stops at its customer budget", async () => {
+  const attempted: string[] = [];
+  const summary = await reconcilePaygPromotions({
+    maxCustomers: 2,
+    listActivePaygCustomers: async () => ({
+      customerIds: ["org-1", "org-2", "org-3"],
+      nextCursor: "page-2",
+    }),
+    grantPromotion: async (customerId) => {
+      attempted.push(customerId);
+      return "granted";
+    },
+  });
+
+  assert.deepEqual(attempted, ["org-1", "org-2"]);
+  assert.equal(summary.examined, 2);
+});

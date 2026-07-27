@@ -33,6 +33,7 @@
     "@phosphor-icons/react": "^2.1.10",
     "@pierre/diffs": "^1.2.7",
     "@radix-ui/react-scroll-area": "^1.2.10",
+    "@superlog/billing": "workspace:*",
     "@superlog/topology": "workspace:*",
     "@tanstack/react-query": "^5.62.8",
     "@types/react-grid-layout": "^2.1.0",
