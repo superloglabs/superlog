@@ -111,8 +111,8 @@ export function BillingCard() {
     if (promotionRequestedFor.current === promotionCustomerId) return;
     promotionRequestedFor.current = promotionCustomerId;
     paygPromotion.mutate(undefined, {
-      onError: () => {
-        promotionRequestedFor.current = null;
+      onError: (err) => {
+        console.error("[payg-promotion] failed to ensure promotion balance", err);
       },
     });
   }, [paygPromotion.mutate, planId, promotionCustomerId]);

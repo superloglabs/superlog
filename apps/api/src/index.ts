@@ -1005,6 +1005,10 @@ app.post("/api/me/billing/payg-promotion", async (c) => {
     ctx.org.id,
   );
 
+  logger.info(
+    { scope: "billing.payg-promotion", customerId: ctx.org.id, result },
+    "PAYG promotion evaluated",
+  );
   return c.json({ result });
 });
 
