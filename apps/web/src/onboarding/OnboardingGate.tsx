@@ -76,9 +76,6 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
         projectId={null}
         hasIngested={hasIngested}
         hasSentryIssues={hasSentryIssues}
-        userName={me.data.user.name}
-        userEmail={me.data.user.email}
-        workspaceOrgName={me.data.suggestedOrgName}
         onComplete={() => {
           if (skillMode) finishSkillOnboarding();
           setDismissed(true);
@@ -94,9 +91,6 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
         projectId={me.data.project.id}
         hasIngested={hasIngested}
         hasSentryIssues={hasSentryIssues}
-        userName={me.data.user.name}
-        userEmail={me.data.user.email}
-        workspaceOrgName={me.data.suggestedOrgName}
         onComplete={() => {
           finishSkillOnboarding();
           setDismissed(true);
@@ -120,9 +114,6 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
       projectId={me.data.project.id}
       hasIngested={hasIngested}
       hasSentryIssues={hasSentryIssues}
-      userName={me.data.user.name}
-      userEmail={me.data.user.email}
-      workspaceOrgName={me.data.suggestedOrgName}
       onComplete={() => {
         setDismissed(true);
       }}
