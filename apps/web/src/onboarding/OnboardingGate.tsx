@@ -49,10 +49,6 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
     }
   }, [me.data, demoMode, exploring]);
 
-  const startExploring = () => {
-    setExploring(true);
-    writeDemoExploring(true);
-  };
   const stopExploring = () => {
     setExploring(false);
     writeDemoExploring(false);
@@ -130,7 +126,6 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
       onComplete={() => {
         setDismissed(true);
       }}
-      onExploreDemo={demoMode ? startExploring : undefined}
     />
   );
 }
