@@ -1,3 +1,4 @@
+import { metrics } from "@opentelemetry/api";
 import { PAYG_PROMOTION_CREDITS, paygPromotionBalanceId } from "@superlog/billing";
 import { Autumn, AutumnError } from "autumn-js";
 import {
@@ -5,11 +6,24 @@ import {
   reconcilePaygPromotions,
 } from "../billing/payg-promotion-reconciliation.js";
 import type { JobDefinition } from "../jobs.js";
-import { logger } from "../logger.js";
+import { logger as defaultLogger } from "../logger.js";
+
+type PromotionOutcome = "granted" | "already_granted" | "failed";
+type LoggerLike = {
+  info: (context: Record<string, unknown>, message: string) => void;
+};
+
+const meter = metrics.getMeter("@superlog/worker/billing");
+const promotionOutcomeCounter = meter.createCounter("superlog.billing.payg_promotion.outcomes", {
+  description: "PAYG promotion reconciliation outcomes.",
+  unit: "1",
+});
 
 type PaygPromotionReconcileJobOptions = {
   env?: NodeJS.ProcessEnv;
   createProvider?: (secretKey: string) => PaygPromotionReconciliationDeps;
+  logger?: LoggerLike;
+  recordOutcome?: (outcome: PromotionOutcome, count: number) => void;
 };
 
 function isExistingPromotionBalance(error: unknown, balanceId: string): boolean {
@@ -60,7 +74,7 @@ function createAutumnPaygPromotionProvider(secretKey: string): PaygPromotionReco
       }
     },
     onGrantError: (customerId, error) => {
-      logger.error(
+      defaultLogger.error(
         { scope: "billing.payg-promotion-reconcile", customerId, err: error },
         "failed to reconcile PAYG promotion",
       );
@@ -77,11 +91,26 @@ export function createPaygPromotionReconcileJob(
     policy: "exclusive",
     expireInSeconds: 110,
     create: () => {
+      const logger = options.logger ?? defaultLogger;
       const secretKey = (options.env ?? process.env).AUTUMN_SECRET_KEY?.trim();
-      if (!secretKey) return null;
+      if (!secretKey) {
+        logger.info(
+          { scope: "billing.payg-promotion-reconcile" },
+          "PAYG promotion reconciliation skipped: AUTUMN_SECRET_KEY is not configured",
+        );
+        return null;
+      }
       const provider = (options.createProvider ?? createAutumnPaygPromotionProvider)(secretKey);
       return async () => {
         const summary = await reconcilePaygPromotions(provider);
+        const recordOutcome =
+          options.recordOutcome ??
+          ((outcome: PromotionOutcome, count: number) => {
+            promotionOutcomeCounter.add(count, { outcome });
+          });
+        recordOutcome("granted", summary.granted);
+        recordOutcome("already_granted", summary.alreadyGranted);
+        recordOutcome("failed", summary.failed);
         logger.info(
           { scope: "billing.payg-promotion-reconcile", ...summary },
           "PAYG promotions reconciled",
