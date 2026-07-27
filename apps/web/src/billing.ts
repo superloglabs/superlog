@@ -1,3 +1,5 @@
+import { hasClaimedPaygPromotion } from "@superlog/billing";
+
 // Billing entitlement helpers shared by the app-wide "ingest paused" banner
 // (App.tsx) and the billing settings card (BillingCard.tsx).
 //
@@ -15,6 +17,35 @@ export type EntitlementBalance =
   | undefined;
 
 export type EntitlementCheck = (args: { featureId: string }) => { balance: EntitlementBalance };
+
+type PromotionCustomer =
+  | {
+      id?: string | null;
+      balances?: {
+        investigations?: {
+          breakdown?: ReadonlyArray<{ id: string }> | null;
+        };
+      } | null;
+    }
+  | null
+  | undefined;
+
+export type PaygPromotionStatus = "unknown" | "available" | "claimed";
+
+// Autumn can expose a customer without balances while a new billing customer
+// is being populated or when a response is incomplete. Treat that state as
+// unknown/unavailable so login can render without advertising a promotion from
+// incomplete billing data.
+export function paygPromotionStatus(customer: PromotionCustomer): PaygPromotionStatus {
+  if (!customer?.id || !customer.balances) return "unknown";
+  return hasClaimedPaygPromotion(customer.id, customer.balances.investigations?.breakdown)
+    ? "claimed"
+    : "available";
+}
+
+export function isPaygPromotionAvailable(customer: PromotionCustomer): boolean {
+  return paygPromotionStatus(customer) === "available";
+}
 
 // True when a signal is at a *hard* cap: a bounded (granted > 0), non-overage
 // feature whose usage has reached its allowance — the Free-tier state where

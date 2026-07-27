@@ -1,4 +1,3 @@
-import { hasClaimedPaygPromotion } from "@superlog/billing";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCustomer } from "autumn-js/react";
 import { usePostHog } from "posthog-js/react";
@@ -29,7 +28,7 @@ import { AnomalyScanDetail } from "./anomaly-scanner/AnomalyScanDetail.tsx";
 import { AnomalyScanner } from "./anomaly-scanner/AnomalyScanner.tsx";
 import { useMe } from "./api.ts";
 import { authClient, useSession } from "./auth-client.ts";
-import { signalAtHardCap } from "./billing.ts";
+import { isPaygPromotionAvailable, signalAtHardCap } from "./billing.ts";
 import { DashboardView } from "./dashboards/DashboardView.tsx";
 import { DashboardsList } from "./dashboards/DashboardsList.tsx";
 import { ProductShell } from "./design/ProductShell.tsx";
@@ -189,12 +188,7 @@ function AuthenticatedApp() {
     // signalAtHardCap swallows autumn-js check() throwing on a not-yet-hydrated
     // customer (e.g. a brand-new org) so billing state can't black-screen the app.
     ["spans", "logs", "metric_points"].some((f) => signalAtHardCap(check, f));
-  const paygPromotionAvailable =
-    !!billingCustomer &&
-    !hasClaimedPaygPromotion(
-      billingCustomer.id,
-      billingCustomer.balances.investigations?.breakdown,
-    );
+  const paygPromotionAvailable = isPaygPromotionAvailable(billingCustomer);
   if (isPending) return null;
   if (!data) return <Landing />;
   const scopedRoute = matchPath("/app/org/:orgSlug/project/:projectSlug/*", pathname);
