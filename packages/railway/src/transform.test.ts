@@ -452,6 +452,19 @@ test("railwayLogsToOtlp accepts empty unquoted logfmt values", () => {
   assert.equal(record.severityText, "INFO");
 });
 
+test("railwayLogsToOtlp preserves explicit empty logfmt message bodies", () => {
+  const message = 'msg="" event=heartbeat';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "");
+  assert.equal(record.severityText, "ERROR");
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["railway.log.format"], "logfmt");
+  assert.equal(attrs["railway.log.event"], "heartbeat");
+  assert.equal(attrs["log.record.original"], message);
+});
+
 test("railwayLogsToOtlp safely rejects a long unterminated logfmt value", () => {
   const message = `level=info msg="${"\\!".repeat(10_000)}`;
   const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
