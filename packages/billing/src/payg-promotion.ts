@@ -1,6 +1,10 @@
 export const PAYG_PROMOTION_CREDITS = 100;
 
-type Subscription = {
+export function paygPromotionBalanceId(customerId: string): string {
+  return `payg-welcome-investigations-${customerId}`;
+}
+
+export type PaygSubscription = {
   planId: string;
   status: string;
 };
@@ -13,7 +17,7 @@ type PromotionBalance = {
 };
 
 export type PaygPromotionDeps = {
-  loadSubscriptions: (customerId: string) => Promise<Subscription[]>;
+  loadSubscriptions: (customerId: string) => Promise<PaygSubscription[]>;
   createPromotionBalance: (input: PromotionBalance) => Promise<"created" | "already_exists">;
 };
 
@@ -33,7 +37,7 @@ export async function ensurePaygPromotion(
     customerId,
     featureId: "investigations",
     includedGrant: PAYG_PROMOTION_CREDITS,
-    balanceId: `payg-welcome-investigations-${customerId}`,
+    balanceId: paygPromotionBalanceId(customerId),
     // No reset: this is a single non-renewing grant, stacked on the monthly
     // PAYG allowance rather than replenished with it.
   });

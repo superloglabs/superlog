@@ -3,6 +3,7 @@ import "./net.js";
 import { createClient } from "@clickhouse/client";
 import { serve } from "@hono/node-server";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
+import { ensurePaygPromotion } from "@superlog/billing";
 import {
   INTERNAL_INCIDENT_EVENT_KIND_SQL_PATTERN,
   ISSUE_STATUSES,
@@ -54,7 +55,6 @@ import { mountAlerts } from "./alerts.js";
 import { mountAnomalyScanner } from "./anomaly-scanner.js";
 import { auth } from "./auth.js";
 import { buildAutomationSettingsConflictUpdate } from "./automation-settings-update.js";
-import { ensurePaygPromotion } from "./billing/payg-promotion.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
 import { mountCloudflareAuthed, mountCloudflarePublic } from "./cloudflare.js";
