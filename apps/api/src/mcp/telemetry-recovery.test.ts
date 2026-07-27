@@ -228,3 +228,42 @@ test("the MCP boundary still rejects permanent backend failures", async () => {
   );
   assert.deepEqual(observed, [error]);
 });
+
+test("input validation errors are not passed to onPermanentFailure", async () => {
+  const validationError = Object.assign(new Error("invalid since time bound: bad-value"), {
+    name: "TimeRangeValidationError",
+  });
+  const permanentFailures: unknown[] = [];
+
+  await assert.rejects(
+    executeRecoverableTelemetryQuery(
+      "query_logs",
+      {},
+      async () => {
+        throw validationError;
+      },
+      undefined,
+      (cause) => permanentFailures.push(cause),
+    ),
+    (cause) => cause === validationError,
+  );
+
+  assert.deepEqual(permanentFailures, [], "onPermanentFailure must not be called for validation errors");
+});
+
+test("input validation errors are still thrown so the MCP layer can return isError", async () => {
+  const validationError = Object.assign(new Error("invalid until time bound: now()) UNION ALL SELECT 1"), {
+    name: "TimeRangeValidationError",
+  });
+
+  await assert.rejects(
+    executeRecoverableTelemetryQuery(
+      "query_logs",
+      {},
+      async () => {
+        throw validationError;
+      },
+    ),
+    (cause) => cause === validationError,
+  );
+});

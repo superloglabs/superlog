@@ -41,11 +41,24 @@ const RELATIVE_TIME_EXPR_RE =
 const ISO_TIME_BOUND_RE =
   /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
 
+/**
+ * Thrown when a caller-supplied time bound is not a recognised ISO-8601
+ * timestamp or a supported ClickHouse relative expression. Distinct from
+ * backend/network errors so the MCP layer can route it to a user-facing
+ * bad-input response rather than the permanent-failure error path.
+ */
+export class TimeRangeValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TimeRangeValidationError";
+  }
+}
+
 function timeBoundExpr(value: string, paramName: "since" | "until"): string {
   const normalized = value.trim().replace(/\s+/g, " ");
   if (RELATIVE_TIME_EXPR_RE.test(normalized)) return normalized;
   if (!ISO_TIME_BOUND_RE.test(normalized) || Number.isNaN(Date.parse(normalized))) {
-    throw new Error(`invalid ${paramName} time bound: ${value}`);
+    throw new TimeRangeValidationError(`invalid ${paramName} time bound: ${value}`);
   }
   return `parseDateTime64BestEffortOrZero({${paramName}:String})`;
 }

@@ -53,6 +53,13 @@ function recordTelemetryQueryOutcome(
   getTelemetryQueryDurationHistogram().record(durationMs, attributes);
 }
 
+// TimeRangeValidationError is thrown by timeBoundExpr in @superlog/telemetry-query
+// when the caller supplies an unrecognised time bound (e.g. arbitrary SQL, random
+// strings). Checked by name so this module doesn't need to import the class.
+function isInputValidationError(error: unknown): boolean {
+  return error instanceof Error && error.name === "TimeRangeValidationError";
+}
+
 function isRetryableTelemetryTimeout(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const details = error as Error & {
@@ -287,7 +294,10 @@ export async function executeRecoverableTelemetryQuery<T>(
         "permanent_failure",
         performance.now() - startedAt,
       );
-      onPermanentFailure?.(error);
+      // Input-validation errors (bad caller-supplied time range) are not backend
+      // failures — skip the permanent-failure callback so the MCP layer can
+      // handle them as a user-facing bad-input response without logging ERROR.
+      if (!isInputValidationError(error)) onPermanentFailure?.(error);
       throw error;
     }
     recordTelemetryQueryOutcome(
