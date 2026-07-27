@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { JobDeps } from "../jobs.js";
-import { createPaygPromotionReconcileJob } from "./payg-promotion-reconcile.js";
+import {
+  createPaygPromotionReconcileJob,
+  paygPromotionPageSize,
+} from "./payg-promotion-reconcile.js";
+
+test("customer pages stay within the provider limit independently of the run budget", () => {
+  assert.equal(paygPromotionPageSize(5_000), 1_000);
+  assert.equal(paygPromotionPageSize(700), 700);
+});
 
 test("the scheduled reconciliation grants every active PAYG customer exactly once", async () => {
   const created: string[] = [];

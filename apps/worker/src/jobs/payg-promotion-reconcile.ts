@@ -18,6 +18,7 @@ type LoggerLike = {
 
 const meter = metrics.getMeter("@superlog/worker/billing");
 const AUTUMN_REQUEST_TIMEOUT_MS = 10_000;
+const AUTUMN_CUSTOMER_PAGE_SIZE = 1_000;
 const PAYG_GRANT_CONCURRENCY = 25;
 const PAYG_MAX_CUSTOMERS_PER_RUN = 5_000;
 const promotionExaminedCounter = meter.createCounter("superlog.billing.payg_promotion.examined", {
@@ -44,6 +45,10 @@ type PaygPromotionCursorStore = {
 };
 
 const PAYG_PROMOTION_CURSOR_NAME = "billing_payg_promotion_reconcile";
+
+export function paygPromotionPageSize(remainingCustomerBudget: number): number {
+  return Math.min(AUTUMN_CUSTOMER_PAGE_SIZE, Math.max(1, Math.floor(remainingCustomerBudget)));
+}
 
 function createPaygPromotionCursorStore(database: DB): PaygPromotionCursorStore {
   return {
@@ -95,7 +100,7 @@ function createAutumnPaygPromotionProvider(secretKey: string): PaygPromotionReco
     listActivePaygCustomers: async (cursor, limit) => {
       const page = await autumn.customers.list({
         startCursor: cursor,
-        limit,
+        limit: paygPromotionPageSize(limit),
         plans: [{ id: "payg" }],
         subscriptionStatus: "active",
       });
