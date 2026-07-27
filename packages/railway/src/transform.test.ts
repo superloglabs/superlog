@@ -289,6 +289,23 @@ test("railwayLogsToOtlp uses a recognized JSON severity when level is unknown", 
   assert.equal(attrs["railway.log.severity_source"]?.stringValue, "json");
 });
 
+test("railwayLogsToOtlp preserves native severity for event-style JSON", () => {
+  const message = JSON.stringify({ level: "info", event: "heartbeat", request_id: "req-1" });
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "INFO");
+  assert.equal(record.severityNumber, 9);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["railway.log.format"], "json");
+  assert.equal(attrs["railway.log.event"], "heartbeat");
+  assert.equal(attrs["railway.log.request_id"], "req-1");
+  assert.equal(attrs["railway.log.provider_severity"], "error");
+  assert.equal(attrs["railway.log.severity_source"], "json");
+  assert.equal(attrs["log.record.original"], message);
+});
+
 test("railwayLogsToOtlp preserves unsafe JSON integer fields as exact strings", () => {
   const message = '{"level":30,"msg":"order accepted","order_id":9007199254740993}';
   const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
