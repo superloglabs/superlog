@@ -114,8 +114,10 @@ export function BillingCard() {
       onSuccess: () => {
         void refetch();
       },
-      onError: (err) => {
-        console.error("[payg-promotion] failed to ensure promotion balance", err);
+      onError: () => {
+        setError(
+          "We couldn’t apply the 100-credit promotion. Refresh this page to try again or contact support.",
+        );
       },
     });
   }, [paygPromotion.mutate, planId, promotionCustomerId, refetch]);
