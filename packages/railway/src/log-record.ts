@@ -17,7 +17,8 @@ const POSTGRESQL_RECORD =
   /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? [A-Z]+) \[(\d+)\] (?:(\S+?)@(\S+) )?([A-Z][A-Z0-9]*):\s*(.*)$/s;
 const EXPLICIT_TEXT_SEVERITY =
   /(?:^|[\s[\]():-])(trace|debug|info|notice|warn|warning|err|error|fatal|critical|panic)(?=$|[\s[\]():-])/i;
-const STRONG_TEXT_ERROR = /\bsending to (?:the )?(?:dlq|dead[- ]letter queue)\b/i;
+const STRONG_TEXT_ERROR =
+  /(?:\b(?:failed|failure|exception|unauthorized|econnreset|connection (?:refused|reset)|premature (?:stream )?close|timed? out|cannot|unable to)\b|\bsending to (?:the )?(?:dlq|dead[- ]letter queue)\b|\bsubquery uses ungrouped column\b|\b(?:relation|column|operator|function|type|constraint|database|schema) .+ does not exist\b|\bsyntax error at or near\b|\bduplicate key value violates\b|\bpermission denied for\b|\binvalid input syntax\b)/i;
 const DEPLOYMENT_SHUTDOWN_WRAPPER =
   /^(?:error: script .+ terminated by signal SIGTERM \(Polite quit request\)|npm error (?:A complete log of this run can be found in:|Lifecycle script |command (?:failed|sh -c )|location |path |signal |workspace ))/i;
 const MAX_PARSED_FIELDS = 32;
@@ -105,10 +106,10 @@ export function parseRailwayLogRecord(
         "text",
         [],
         providerSeverity,
-        textSeverity
-          ? "text"
-          : context.applicationError
-            ? "railway_error_attribute"
+        context.applicationError
+          ? "railway_error_attribute"
+          : textSeverity
+            ? "text"
             : severity
               ? "railway"
               : "unclassified",

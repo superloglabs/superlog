@@ -167,13 +167,16 @@ test("railwayLogsToOtlp preserves an explicit severity label in raw application 
 });
 
 test("railwayLogsToOtlp preserves strong failure evidence in raw application text", () => {
-  const message = "Task abc123 exceeded max rescues (0/0), sending to DLQ";
-  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
-
-  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
-  assert.equal(record.body.stringValue, message);
-  assert.equal(record.severityText, "ERROR");
-  assert.equal(record.severityNumber, 17);
+  for (const message of [
+    "Task abc123 exceeded max rescues (0/0), sending to DLQ",
+    'subquery uses ungrouped column "vft.visitor_id" from outer query at character 413',
+  ]) {
+    const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+    const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+    assert.equal(record.body.stringValue, message);
+    assert.equal(record.severityText, "ERROR");
+    assert.equal(record.severityNumber, 17);
+  }
 });
 
 test("railwayLogsToOtlp does not promote deployment shutdown wrapper lines to errors", () => {
