@@ -55,3 +55,12 @@ test("an upstream load balancer can own idle connection closure", async () => {
     });
   }
 });
+
+test("an invalid keep-alive timeout cannot silently disable idle closure", () => {
+  const server = createServer();
+
+  assert.throws(
+    () => configureHttpServerTimeouts(server, { HTTP_KEEP_ALIVE_TIMEOUT_MS: "" }),
+    /HTTP_KEEP_ALIVE_TIMEOUT_MS must be a nonnegative integer/,
+  );
+});
