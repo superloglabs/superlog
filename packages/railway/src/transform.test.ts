@@ -313,6 +313,24 @@ test("railwayLogsToOtlp structures logfmt without a native level", () => {
   assert.equal(attrs["log.record.original"], message);
 });
 
+test("railwayLogsToOtlp preserves native severity for event-style logfmt", () => {
+  const message = "level=info event=heartbeat request_id=req-1";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "INFO");
+  assert.equal(record.severityNumber, 9);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["railway.log.format"], "logfmt");
+  assert.equal(attrs["railway.log.level"], "info");
+  assert.equal(attrs["railway.log.event"], "heartbeat");
+  assert.equal(attrs["railway.log.request_id"], "req-1");
+  assert.equal(attrs["railway.log.provider_severity"], "error");
+  assert.equal(attrs["railway.log.severity_source"], "logfmt");
+  assert.equal(attrs["log.record.original"], message);
+});
+
 test("railwayLogsToOtlp parses escaped logfmt values", () => {
   const message = 'level=info msg="worker said \\"ready\\" at C:\\\\jobs" request_id=req-1';
   const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);

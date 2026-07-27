@@ -72,13 +72,13 @@ export function parseRailwayLogRecord(
   const fields = parseLogfmt(message);
   const body = fields?.msg ?? fields?.message;
   const nativeSeverity = fields?.level;
-  if (!fields || !body) {
+  const parsedSeverity = nativeSeverity ? normalizeNativeSeverity(nativeSeverity) : null;
+  if (!fields || (!body && !parsedSeverity)) {
     return { body: message, severity: providerSeverity, attributes: [] };
   }
-  const parsedSeverity = nativeSeverity ? normalizeNativeSeverity(nativeSeverity) : null;
 
   return {
-    body,
+    body: body ?? message,
     severity: parsedSeverity ?? providerSeverity,
     attributes: parsedAttributes(
       "logfmt",
