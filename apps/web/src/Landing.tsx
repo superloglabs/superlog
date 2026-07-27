@@ -101,8 +101,19 @@ function CopyPromptCard({ prompt }: { prompt: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Nav — wordmark left, sign-in right
+// Nav — three columns: brand left · links center · auth actions right.
+// The center column is `hidden md:flex`, so below md the `1fr auto 1fr` grid
+// collapses to brand-left / actions-right and stays balanced at every width.
 // ---------------------------------------------------------------------------
+
+const NAV_LINKS: { href: string; label: string; external?: boolean }[] = [
+  { href: LANDING_DOCS_URL, label: "Docs", external: true },
+  { href: "/blog", label: "Blog" },
+  { href: "/changelog", label: "Changelog" },
+  { href: "/roadmap", label: "Roadmap" },
+  { href: "/team", label: "Team" },
+  { href: "/pricing", label: "Pricing" },
+];
 
 function TopNav({
   onSignIn,
@@ -115,9 +126,26 @@ function TopNav({
   return (
     <header className="sticky top-0 z-40 bg-bg">
       <div className="mx-auto w-full max-w-[1400px] px-4 md:px-8 xl:px-12">
-        <nav className="flex items-center justify-between py-5">
-          <Wordmark />
-          <div className="flex items-center gap-3">
+        <nav className="grid grid-cols-[1fr_auto_1fr] items-center py-5">
+          <div className="flex items-center justify-self-start">
+            <Wordmark />
+          </div>
+
+          <div className="hidden items-center gap-6 justify-self-center md:flex">
+            {NAV_LINKS.map((link) => (
+              <a
+                key={link.href}
+                href={link.href}
+                target={link.external ? "_blank" : undefined}
+                rel={link.external ? "noreferrer" : undefined}
+                className="text-[12px] font-medium text-muted transition-colors hover:text-fg"
+              >
+                {link.label}
+              </a>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-3 justify-self-end">
             <a
               href={LANDING_GITHUB_REPO_URL}
               target="_blank"
@@ -133,44 +161,6 @@ function TopNav({
               <span className="tabular-nums">
                 {stars != null ? formatStarCount(stars) : "GitHub"}
               </span>
-            </a>
-            <a
-              href={LANDING_DOCS_URL}
-              target="_blank"
-              rel="noreferrer"
-              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline"
-            >
-              Docs
-            </a>
-            <a
-              href="/blog"
-              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline"
-            >
-              Blog
-            </a>
-            <a
-              href="/changelog"
-              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline"
-            >
-              Changelog
-            </a>
-            <a
-              href="/roadmap"
-              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline"
-            >
-              Roadmap
-            </a>
-            <a
-              href="/team"
-              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline"
-            >
-              Team
-            </a>
-            <a
-              href="/pricing"
-              className="hidden text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline"
-            >
-              Pricing
             </a>
             <Btn variant="ghost" size="sm" onClick={onSignIn}>
               Sign in
