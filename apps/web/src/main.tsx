@@ -1,4 +1,4 @@
-import "./instrumentation";
+import { reportBrowserException, tracer } from "./instrumentation";
 import { initGtm } from "./gtm";
 import "@fontsource/geist-pixel/latin.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -7,8 +7,8 @@ import { PostHogProvider } from "posthog-js/react";
 import React, { type ReactNode } from "react";
 import { createRoot, hydrateRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
+import { BrowserErrorBoundary } from "./BrowserErrorBoundary.tsx";
 import { surfaceForPath } from "./entry-surface.ts";
-import { tracer } from "./instrumentation";
 import "./index.css";
 import "react-grid-layout/css/styles.css";
 import "./dashboards/grid.css";
@@ -62,15 +62,17 @@ async function renderDesign() {
   // gracefully against the unauthenticated /design origin.
   createRoot(rootElement).render(
     <React.StrictMode>
-      <BrowserRouter>
-        <QueryClientProvider client={queryClient()}>
-          {window.location.pathname === "/design/home-dashboard-mockups" ? (
-            <HomeDashboardMockups />
-          ) : (
-            <DesignLanguage />
-          )}
-        </QueryClientProvider>
-      </BrowserRouter>
+      <BrowserErrorBoundary>
+        <BrowserRouter>
+          <QueryClientProvider client={queryClient()}>
+            {window.location.pathname === "/design/home-dashboard-mockups" ? (
+              <HomeDashboardMockups />
+            ) : (
+              <DesignLanguage />
+            )}
+          </QueryClientProvider>
+        </BrowserRouter>
+      </BrowserErrorBoundary>
     </React.StrictMode>,
   );
   bootSpan.setAttribute("app.mode", "design");
@@ -80,13 +82,15 @@ async function renderMarketing() {
   const { MarketingApp } = await import("./marketing/MarketingApp.tsx");
   const tree = (
     <React.StrictMode>
-      <Analytics>
-        <BrowserRouter>
-          <QueryClientProvider client={queryClient()}>
-            <MarketingApp />
-          </QueryClientProvider>
-        </BrowserRouter>
-      </Analytics>
+      <BrowserErrorBoundary>
+        <Analytics>
+          <BrowserRouter>
+            <QueryClientProvider client={queryClient()}>
+              <MarketingApp />
+            </QueryClientProvider>
+          </BrowserRouter>
+        </Analytics>
+      </BrowserErrorBoundary>
     </React.StrictMode>
   );
   if (rootElement.hasChildNodes()) hydrateRoot(rootElement, tree);
@@ -98,21 +102,23 @@ async function renderProduct() {
   const { App } = await import("./App.tsx");
   createRoot(rootElement).render(
     <React.StrictMode>
-      <Analytics>
-        <BrowserRouter>
-          <QueryClientProvider client={queryClient()}>
-            {/* Billing context. Web and API are separate origins, so point
-                Autumn at the API; useBetterAuth routes through /api/auth/autumn
-                with the session cookie. Harmless when billing is unconfigured. */}
-            <AutumnProvider
-              backendUrl={import.meta.env.VITE_API_URL ?? "http://localhost:4100"}
-              useBetterAuth
-            >
-              <App />
-            </AutumnProvider>
-          </QueryClientProvider>
-        </BrowserRouter>
-      </Analytics>
+      <BrowserErrorBoundary>
+        <Analytics>
+          <BrowserRouter>
+            <QueryClientProvider client={queryClient()}>
+              {/* Billing context. Web and API are separate origins, so point
+                  Autumn at the API; useBetterAuth routes through /api/auth/autumn
+                  with the session cookie. Harmless when billing is unconfigured. */}
+              <AutumnProvider
+                backendUrl={import.meta.env.VITE_API_URL ?? "http://localhost:4100"}
+                useBetterAuth
+              >
+                <App />
+              </AutumnProvider>
+            </QueryClientProvider>
+          </BrowserRouter>
+        </Analytics>
+      </BrowserErrorBoundary>
     </React.StrictMode>,
   );
   bootSpan.setAttribute("app.mode", "product");
@@ -128,7 +134,7 @@ async function bootstrap() {
 }
 
 void bootstrap().catch((error: unknown) => {
-  bootSpan.recordException(error instanceof Error ? error : new Error(String(error)));
+  reportBrowserException(error, "bootstrap");
   bootSpan.end();
   throw error;
 });

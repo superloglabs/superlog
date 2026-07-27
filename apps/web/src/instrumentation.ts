@@ -1,5 +1,5 @@
 // OpenTelemetry browser instrumentation. Loaded as the first import in main.tsx.
-import { trace } from "@opentelemetry/api";
+import { SpanStatusCode, trace, type Attributes } from "@opentelemetry/api";
 import { ZoneContextManager } from "@opentelemetry/context-zone";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { registerInstrumentations } from "@opentelemetry/instrumentation";
@@ -15,6 +15,7 @@ const env = (import.meta.env ?? {}) as Record<string, string | undefined>;
 const endpoint = env.VITE_OTEL_EXPORTER_OTLP_ENDPOINT;
 const headersRaw = env.VITE_OTEL_EXPORTER_OTLP_HEADERS;
 const serviceName = env.VITE_OTEL_SERVICE_NAME ?? "@superlog/web";
+const serviceVersion = env.VITE_OTEL_SERVICE_VERSION;
 // Always stamp an `env` resource attribute so every browser span is filterable
 // by deployment environment. VITE_SUPERLOG_ENV is the explicit knob; MODE is
 // vite's build mode (production/development); "development" is the last resort.
@@ -36,11 +37,11 @@ function parseHeaders(raw: string | undefined): Record<string, string> {
     }, {});
 }
 
+let browserTracerProvider: WebTracerProvider | undefined;
+
 if (!endpoint) {
   // eslint-disable-next-line no-console
-  console.warn(
-    "[otel] VITE_OTEL_EXPORTER_OTLP_ENDPOINT not set; tracing disabled",
-  );
+  console.warn("[otel] VITE_OTEL_EXPORTER_OTLP_ENDPOINT not set; tracing disabled");
 } else {
   try {
     const headers = parseHeaders(headersRaw);
@@ -50,16 +51,17 @@ if (!endpoint) {
       headers,
     });
 
-    const provider = new WebTracerProvider({
+    browserTracerProvider = new WebTracerProvider({
       resource: resourceFromAttributes({
         [ATTR_SERVICE_NAME]: serviceName,
         "deployment.environment.name": deploymentEnv,
         env: deploymentEnv,
+        ...(serviceVersion ? { "service.version": serviceVersion } : {}),
       }),
       spanProcessors: [new BatchSpanProcessor(exporter)],
     });
 
-    provider.register({
+    browserTracerProvider.register({
       contextManager: new ZoneContextManager(),
     });
 
@@ -83,3 +85,60 @@ if (!endpoint) {
 }
 
 export const tracer = trace.getTracer("@superlog/web");
+
+type BrowserExceptionSource =
+  | "bootstrap"
+  | "react.render"
+  | "window.error"
+  | "window.unhandledrejection";
+
+const reportedErrors = new WeakSet<object>();
+
+function normalizeError(error: unknown): Error {
+  if (error instanceof Error) return error;
+  if (typeof error === "string") return new Error(error);
+  try {
+    return new Error(JSON.stringify(error));
+  } catch {
+    return new Error(String(error));
+  }
+}
+
+export function reportBrowserException(
+  error: unknown,
+  source: BrowserExceptionSource,
+  attributes: Attributes = {},
+): void {
+  if (typeof error === "object" && error !== null) {
+    if (reportedErrors.has(error)) return;
+    reportedErrors.add(error);
+  }
+
+  const normalized = normalizeError(error);
+  const span = tracer.startSpan("browser.exception", {
+    attributes: {
+      "app.path": window.location.pathname,
+      "error.source": source,
+      ...attributes,
+    },
+  });
+  span.recordException(normalized);
+  span.setStatus({ code: SpanStatusCode.ERROR, message: normalized.message });
+  span.end();
+  void browserTracerProvider?.forceFlush().catch(() => {
+    // The exception is already recorded locally. Telemetry export failures must
+    // never replace the original browser error or break the recovery screen.
+  });
+}
+
+window.addEventListener("error", (event) => {
+  reportBrowserException(event.error ?? event.message, "window.error", {
+    "code.file": event.filename,
+    "code.line.number": event.lineno,
+    "code.column.number": event.colno,
+  });
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  reportBrowserException(event.reason, "window.unhandledrejection");
+});
