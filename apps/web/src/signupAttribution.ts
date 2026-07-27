@@ -225,20 +225,93 @@ export type PosthogClientIds = {
   sessionId?: string;
 };
 
+// The slice of posthog-js we read. Structural so callers can pass the
+// uninitialized global instance (methods present but inert) or nothing.
+export type PosthogIdSource = {
+  get_distinct_id?: () => string;
+  get_session_id?: () => string;
+  get_property?: (key: string) => unknown;
+} | null;
+
+/**
+ * Snapshot the PostHog ids worth carrying to the server. The distinct id is
+ * only carried while the browser is anonymous: after identify(), the current
+ * distinct id belongs to a real account, and aliasing it onto a *different*
+ * new signup (stale identified state — previous account, expired server
+ * session) would merge two real users. The session id is always safe — it
+ * names the physical browsing session, not a person.
+ */
+export function readPosthogClientIds(posthog: PosthogIdSource): PosthogClientIds {
+  let distinctId: string | undefined;
+  let sessionId: string | undefined;
+  try {
+    const identified = posthog?.get_property?.("$user_state") === "identified";
+    if (!identified) distinctId = posthog?.get_distinct_id?.();
+    sessionId = posthog?.get_session_id?.();
+  } catch {
+    /* posthog not booted — attribution still rides without the ids */
+  }
+  return { distinctId, sessionId };
+}
+
+// Each value is truncated to what the server-side reader accepts (it drops
+// anything longer), and the whole encoded cookie must stay under common
+// browser per-cookie limits (~4 KB) or the write is silently rejected.
+const MAX_ATTRIBUTION_VALUE_LENGTH = 256;
+const MAX_COOKIE_ENCODED_LENGTH = 3072;
+
+// Order in which attribution fields are fitted into the size budget: the
+// coarse channel fields and click ids matter most; long free-text fields
+// (full referrer URL, landing path) go last and are dropped first.
+const COOKIE_PROP_PRIORITY = [
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "signup_source",
+  "referring_domain",
+  "auth_method",
+  "twclid",
+  "gclid",
+  "fbclid",
+  "msclkid",
+  "li_fat_id",
+  "utm_term",
+  "utm_content",
+  "landing_path",
+  "referrer",
+] as const;
+
+type CookiePayload = { props?: Record<string, string>; ph?: { did?: string; sid?: string } };
+
+function encodedLength(payload: CookiePayload): number {
+  return encodeURIComponent(JSON.stringify(payload)).length;
+}
+
 /**
  * JSON body for the signup-attribution cookie, or null when there is nothing
- * to carry. Compact keys (`ph.did` / `ph.sid`) keep the cookie small.
+ * to carry. Compact keys (`ph.did` / `ph.sid`) keep the cookie small; fields
+ * are added in priority order and dropped once the size budget is exhausted
+ * (the PostHog ids always fit — they're first and bounded).
  */
 export function serializeSignupAttributionCookie(
   props: Record<string, string>,
   ids: PosthogClientIds,
 ): string | null {
-  const payload: { props?: Record<string, string>; ph?: { did?: string; sid?: string } } = {};
-  if (Object.keys(props).length > 0) payload.props = props;
+  const payload: CookiePayload = {};
   const ph: { did?: string; sid?: string } = {};
   if (ids.distinctId) ph.did = ids.distinctId;
   if (ids.sessionId) ph.sid = ids.sessionId;
   if (Object.keys(ph).length > 0) payload.ph = ph;
+
+  for (const key of COOKIE_PROP_PRIORITY) {
+    const raw = props[key];
+    if (typeof raw !== "string" || raw === "") continue;
+    const value = raw.slice(0, MAX_ATTRIBUTION_VALUE_LENGTH);
+    const next: CookiePayload = { ...payload, props: { ...payload.props, [key]: value } };
+    if (encodedLength(next) > MAX_COOKIE_ENCODED_LENGTH) continue;
+    payload.props = next.props;
+  }
+
   return Object.keys(payload).length > 0 ? JSON.stringify(payload) : null;
 }
 

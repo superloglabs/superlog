@@ -7,9 +7,11 @@
 // snapshot alone can go stale before the user signs up.
 
 import {
+  type PosthogIdSource,
   SIGNUP_ATTRIBUTION_COOKIE,
   buildSignupEventProperties,
   readFirstTouchAttribution,
+  readPosthogClientIds,
   serializeSignupAttributionCookie,
 } from "./signupAttribution.ts";
 
@@ -22,13 +24,6 @@ const COOKIE_MAX_AGE_SECONDS = 30 * 60;
 // when web and api share a host.
 const COOKIE_DOMAIN = import.meta.env.VITE_ATTRIBUTION_COOKIE_DOMAIN as string | undefined;
 
-// The slice of posthog-js we read. Structural so callers can pass the
-// uninitialized global instance (methods present but inert) or nothing at all.
-type PosthogLike = {
-  get_distinct_id?: () => string;
-  get_session_id?: () => string;
-} | null;
-
 /**
  * Write (or refresh) the signup-attribution cookie. Unlike the legacy
  * click-id cookie this overwrites on every call: the attribution part is
@@ -36,7 +31,7 @@ type PosthogLike = {
  * fresh at auth time. No-op outside a DOM or when there's nothing to carry.
  */
 export function refreshSignupAttributionCookie(
-  posthog: PosthogLike,
+  posthog: PosthogIdSource,
   opts: { authMethod?: string } = {},
 ): void {
   if (typeof document === "undefined") return;
@@ -47,15 +42,7 @@ export function refreshSignupAttributionCookie(
     /* storage unavailable — carry the PostHog ids alone */
   }
   const props = buildSignupEventProperties(attr, { authMethod: opts.authMethod });
-  let distinctId: string | undefined;
-  let sessionId: string | undefined;
-  try {
-    distinctId = posthog?.get_distinct_id?.();
-    sessionId = posthog?.get_session_id?.();
-  } catch {
-    /* posthog not booted — attribution still rides without the ids */
-  }
-  const value = serializeSignupAttributionCookie(props, { distinctId, sessionId });
+  const value = serializeSignupAttributionCookie(props, readPosthogClientIds(posthog));
   if (!value) return;
   const parts = [
     `${SIGNUP_ATTRIBUTION_COOKIE}=${encodeURIComponent(value)}`,
