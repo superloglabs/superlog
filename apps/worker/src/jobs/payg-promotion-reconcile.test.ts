@@ -8,12 +8,19 @@ test("the scheduled reconciliation grants every active PAYG customer exactly onc
   const examined: number[] = [];
   const outcomes: Array<[string, number]> = [];
   const messages: string[] = [];
+  let cursor: string | undefined;
   const definition = createPaygPromotionReconcileJob({
     env: { AUTUMN_SECRET_KEY: "configured" },
     recordExamined: (count) => examined.push(count),
     recordOutcome: (outcome, count) => outcomes.push([outcome, count]),
     logger: {
       info: (_context, message) => messages.push(message),
+    },
+    cursorStore: {
+      load: async () => cursor,
+      save: async (nextCursor) => {
+        cursor = nextCursor ?? undefined;
+      },
     },
     createProvider: () => ({
       listActivePaygCustomers: async () => ({

@@ -9,7 +9,12 @@ type ActivePaygCustomerPage = {
 export type PaygPromotionReconciliationDeps = {
   grantConcurrency?: number;
   maxCustomers?: number;
-  listActivePaygCustomers: (cursor?: string) => Promise<ActivePaygCustomerPage>;
+  loadCursor?: () => Promise<string | undefined>;
+  saveCursor?: (cursor: string | null) => Promise<void>;
+  listActivePaygCustomers: (
+    cursor: string | undefined,
+    limit: number,
+  ) => Promise<ActivePaygCustomerPage>;
   grantPromotion: (customerId: string) => Promise<PromotionResult>;
   onGrantError?: (customerId: string, error: unknown) => void;
   onPageError?: (error: unknown) => void;
@@ -35,12 +40,12 @@ export async function reconcilePaygPromotions(
   };
   const grantConcurrency = Math.max(1, Math.floor(deps.grantConcurrency ?? 25));
   const maxCustomers = Math.max(0, Math.floor(deps.maxCustomers ?? Number.POSITIVE_INFINITY));
-  let cursor: string | undefined;
+  let cursor = await deps.loadCursor?.();
 
   do {
     let page: ActivePaygCustomerPage;
     try {
-      page = await deps.listActivePaygCustomers(cursor);
+      page = await deps.listActivePaygCustomers(cursor, maxCustomers - summary.scanned);
     } catch (error) {
       summary.failed += 1;
       deps.onPageError?.(error);
@@ -67,6 +72,7 @@ export async function reconcilePaygPromotions(
       );
     }
     cursor = page.nextCursor ?? undefined;
+    await deps.saveCursor?.(page.nextCursor);
   } while (cursor && summary.scanned < maxCustomers);
 
   return summary;

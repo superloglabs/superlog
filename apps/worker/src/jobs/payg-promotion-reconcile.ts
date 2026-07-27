@@ -1,6 +1,9 @@
 import { metrics } from "@opentelemetry/api";
 import { PAYG_PROMOTION_CREDITS, paygPromotionBalanceId } from "@superlog/billing";
+import type { DB } from "@superlog/db";
+import * as schema from "@superlog/db/schema";
 import { Autumn, AutumnError } from "autumn-js";
+import { eq } from "drizzle-orm";
 import {
   type PaygPromotionReconciliationDeps,
   reconcilePaygPromotions,
@@ -32,7 +35,47 @@ type PaygPromotionReconcileJobOptions = {
   logger?: LoggerLike;
   recordExamined?: (count: number) => void;
   recordOutcome?: (outcome: PromotionOutcome, count: number) => void;
+  cursorStore?: PaygPromotionCursorStore;
 };
+
+type PaygPromotionCursorStore = {
+  load: () => Promise<string | undefined>;
+  save: (cursor: string | null) => Promise<void>;
+};
+
+const PAYG_PROMOTION_CURSOR_NAME = "billing_payg_promotion_reconcile";
+
+function createPaygPromotionCursorStore(database: DB): PaygPromotionCursorStore {
+  return {
+    load: async () => {
+      const row = await database.query.workerState.findFirst({
+        where: eq(schema.workerState.name, PAYG_PROMOTION_CURSOR_NAME),
+      });
+      return row?.cursorKey;
+    },
+    save: async (cursor) => {
+      if (cursor === null) {
+        await database
+          .delete(schema.workerState)
+          .where(eq(schema.workerState.name, PAYG_PROMOTION_CURSOR_NAME));
+        return;
+      }
+      const now = new Date();
+      await database
+        .insert(schema.workerState)
+        .values({
+          name: PAYG_PROMOTION_CURSOR_NAME,
+          cursor: now,
+          cursorKey: cursor,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: schema.workerState.name,
+          set: { cursorKey: cursor, updatedAt: now },
+        });
+    },
+  };
+}
 
 function isExistingPromotionBalance(error: unknown, balanceId: string): boolean {
   if (!(error instanceof AutumnError) || error.statusCode !== 409) return false;
@@ -49,10 +92,10 @@ function createAutumnPaygPromotionProvider(secretKey: string): PaygPromotionReco
   return {
     grantConcurrency: PAYG_GRANT_CONCURRENCY,
     maxCustomers: PAYG_MAX_CUSTOMERS_PER_RUN,
-    listActivePaygCustomers: async (cursor) => {
+    listActivePaygCustomers: async (cursor, limit) => {
       const page = await autumn.customers.list({
         startCursor: cursor,
-        limit: 5000,
+        limit,
         plans: [{ id: "payg" }],
         subscriptionStatus: "active",
       });
@@ -107,11 +150,11 @@ export function createPaygPromotionReconcileJob(
     schedule: "* * * * *",
     policy: "exclusive",
     // Each pass is capped at 5,000 customers: roughly 34 minutes at 25-way
-    // concurrency and the SDK's 10-second request timeout. Already-granted
-    // customers are filtered on the next pass, so a large rollout progresses
-    // page by page without letting a later cron tick overlap the active lease.
+    // concurrency and the SDK's 10-second request timeout. A durable provider
+    // cursor resumes the next pass at the following page, while a completed
+    // sweep resets the cursor so newly eligible customers are discovered.
     expireInSeconds: 3_600,
-    create: () => {
+    create: (deps) => {
       const logger = options.logger ?? defaultLogger;
       const recordOutcome =
         options.recordOutcome ??
@@ -130,12 +173,17 @@ export function createPaygPromotionReconcileJob(
         return null;
       }
       const provider = (options.createProvider ?? createAutumnPaygPromotionProvider)(secretKey);
+      const cursorStore = options.cursorStore ?? createPaygPromotionCursorStore(deps.db);
       return async () => {
         logger.info(
           { scope: "billing.payg-promotion-reconcile" },
           "PAYG promotion reconciliation started",
         );
-        const summary = await reconcilePaygPromotions(provider);
+        const summary = await reconcilePaygPromotions({
+          ...provider,
+          loadCursor: cursorStore.load,
+          saveCursor: cursorStore.save,
+        });
         if (summary.examined > 0) recordExamined(summary.examined);
         if (summary.granted > 0) recordOutcome("granted", summary.granted);
         if (summary.alreadyGranted > 0) {

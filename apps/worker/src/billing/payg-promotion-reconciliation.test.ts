@@ -96,13 +96,17 @@ test("grants are applied with bounded concurrency", async () => {
 
 test("a reconciliation pass stops at its raw-customer scan budget", async () => {
   const attempted: string[] = [];
+  const savedCursors: Array<string | null> = [];
   const summary = await reconcilePaygPromotions({
     maxCustomers: 2,
-    listActivePaygCustomers: async () => ({
-      customerIds: ["org-1", "org-2", "org-3"],
-      scanned: 3,
+    listActivePaygCustomers: async (_cursor, limit) => ({
+      customerIds: ["org-1", "org-2"].slice(0, limit),
+      scanned: Math.min(2, limit),
       nextCursor: "page-2",
     }),
+    saveCursor: async (cursor) => {
+      savedCursors.push(cursor);
+    },
     grantPromotion: async (customerId) => {
       attempted.push(customerId);
       return "granted";
@@ -110,6 +114,38 @@ test("a reconciliation pass stops at its raw-customer scan budget", async () => 
   });
 
   assert.deepEqual(attempted, ["org-1", "org-2"]);
+  assert.deepEqual(savedCursors, ["page-2"]);
   assert.equal(summary.scanned, 2);
   assert.equal(summary.examined, 2);
+});
+
+test("bounded reconciliation runs resume from their durable cursor", async () => {
+  let durableCursor: string | undefined;
+  const listedCursors: Array<string | undefined> = [];
+  const granted: string[] = [];
+  const deps = {
+    maxCustomers: 2,
+    loadCursor: async () => durableCursor,
+    saveCursor: async (cursor: string | null) => {
+      durableCursor = cursor ?? undefined;
+    },
+    listActivePaygCustomers: async (cursor: string | undefined) => {
+      listedCursors.push(cursor);
+      return cursor === undefined
+        ? { customerIds: ["org-1", "org-2"], scanned: 2, nextCursor: "page-2" }
+        : { customerIds: ["org-3"], scanned: 1, nextCursor: null };
+    },
+    grantPromotion: async (customerId: string) => {
+      granted.push(customerId);
+      return "granted" as const;
+    },
+  };
+
+  await reconcilePaygPromotions(deps);
+  assert.equal(durableCursor, "page-2");
+
+  await reconcilePaygPromotions(deps);
+  assert.equal(durableCursor, undefined);
+  assert.deepEqual(listedCursors, [undefined, "page-2"]);
+  assert.deepEqual(granted, ["org-1", "org-2", "org-3"]);
 });
