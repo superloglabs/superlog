@@ -267,7 +267,7 @@ export function advanceMetricsCursor(
 
 function kv(key: string, value: unknown): OtlpKeyValue | null {
   if (value === undefined || value === null) return null;
-  if (typeof value === "string") return value ? { key, value: { stringValue: value } } : null;
+  if (typeof value === "string") return { key, value: { stringValue: value } };
   if (typeof value === "number") {
     return Number.isInteger(value)
       ? { key, value: { intValue: String(value) } }

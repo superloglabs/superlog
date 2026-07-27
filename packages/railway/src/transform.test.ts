@@ -229,6 +229,7 @@ test("railwayLogsToOtlp decodes Railway's JSON-encoded scalar attributes", () =>
           { key: "level", value: '"info"' },
           { key: "attempt", value: "3" },
           { key: "healthy", value: "false" },
+          { key: "error", value: '""' },
           { key: "metadata", value: '{"nested":true}' },
         ],
       },
@@ -241,6 +242,7 @@ test("railwayLogsToOtlp decodes Railway's JSON-encoded scalar attributes", () =>
   assert.equal(attrs["railway.attr.level"]?.stringValue, "info");
   assert.equal(attrs["railway.attr.attempt"]?.intValue, "3");
   assert.equal(attrs["railway.attr.healthy"]?.boolValue, false);
+  assert.equal(attrs["railway.attr.error"]?.stringValue, "");
   assert.equal(attrs["railway.attr.metadata"]?.stringValue, '{"nested":true}');
 });
 
