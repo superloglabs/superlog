@@ -20,9 +20,9 @@ const LEADING_TEXT_SEVERITY =
 const BRACKETED_TEXT_SEVERITY =
   /\[(trace|debug|info|notice|warn|warning|err|error|fatal|critical|panic)\]/i;
 const TIMESTAMPED_TEXT_SEVERITY =
-  /^\s*\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\s+(trace|debug|info|notice|warn|warning|err|error|fatal|critical|panic)(?=$|[\s:=-])/i;
+  /^\s*\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?\s+(trace|debug|info|notice|warn|warning|err|error|fatal|critical|panic)(?=$|[\s:=-])/i;
 const STRONG_TEXT_ERROR =
-  /(?:\b(?:failed|failure|exception|unauthorized|econnreset|connection (?:refused|reset)|premature (?:stream )?close|timed? out|cannot|unable to)\b|\bSIG(?:ABRT|BUS|FPE|ILL|QUIT|SEGV|SYS|TRAP)\b|\bsending to (?:the )?(?:dlq|dead[- ]letter queue)\b|\bsubquery uses ungrouped column\b|\b(?:relation|column|operator|function|type|constraint|database|schema) .+ does not exist\b|\bsyntax error at or near\b|\bduplicate key value violates\b|\bpermission denied for\b|\binvalid input syntax\b)/i;
+  /(?:\b[A-Z][A-Za-z0-9_]*(?:Error|Exception)\b|\b(?:failed|failure|exception|unauthorized|econnreset|connection (?:refused|reset)|premature (?:stream )?close|timed? out|cannot|unable to)\b|\bSIG(?:ABRT|BUS|FPE|ILL|QUIT|SEGV|SYS|TRAP)\b|\bsending to (?:the )?(?:dlq|dead[- ]letter queue)\b|\bsubquery uses ungrouped column\b|\b(?:relation|column|operator|function|type|constraint|database|schema) .+ does not exist\b|\bsyntax error at or near\b|\bduplicate key value violates\b|\bpermission denied for\b|\binvalid input syntax\b)/i;
 const NEGATED_FAILURE_COUNT = /\b(?:0|no|zero)\s+(?:failed|failures?|errors?|exceptions?)\b/gi;
 const DEPLOYMENT_SHUTDOWN_WRAPPER =
   /^(?:error: script .+ terminated by signal SIGTERM \(Polite quit request\)|npm error (?:A complete log of this run can be found in:|command sh -c |location |path |signal SIGTERM(?:\s|$)|workspace ))/i;
@@ -515,13 +515,13 @@ function normalizeJsonSeverity(value: unknown): string | null {
 }
 
 function explicitTextSeverity(message: string): string | null {
-  if (DEPLOYMENT_SHUTDOWN_WRAPPER.test(message)) return null;
+  const evidenceMessage = message.replace(DEPLOYMENT_SHUTDOWN_WRAPPER, "");
   const label =
-    message.match(LEADING_TEXT_SEVERITY)?.[1] ??
-    message.match(TIMESTAMPED_TEXT_SEVERITY)?.[1] ??
-    message.match(BRACKETED_TEXT_SEVERITY)?.[1];
+    evidenceMessage.match(LEADING_TEXT_SEVERITY)?.[1] ??
+    evidenceMessage.match(TIMESTAMPED_TEXT_SEVERITY)?.[1] ??
+    evidenceMessage.match(BRACKETED_TEXT_SEVERITY)?.[1];
   if (label) return normalizeNativeSeverity(label);
-  const failureEvidenceText = message.replace(NEGATED_FAILURE_COUNT, "");
+  const failureEvidenceText = evidenceMessage.replace(NEGATED_FAILURE_COUNT, "");
   return STRONG_TEXT_ERROR.test(failureEvidenceText) ? "error" : null;
 }
 

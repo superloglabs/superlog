@@ -176,6 +176,16 @@ test("railwayLogsToOtlp prefers timestamp-adjacent severity over later bracketed
   assert.equal(record.severityNumber, 9);
 });
 
+test("railwayLogsToOtlp accepts comma-delimited timestamp fractions", () => {
+  const message = "2026-07-20 22:55:36,155 ERROR worker stopped";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "ERROR");
+  assert.equal(record.severityNumber, 17);
+});
+
 test("railwayLogsToOtlp does not treat severity words in ordinary prose as labels", () => {
   const message = "Recovered from error and resumed processing";
   const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
@@ -210,6 +220,9 @@ test("railwayLogsToOtlp preserves strong failure evidence in raw application tex
   for (const message of [
     "Task abc123 exceeded max rescues (0/0), sending to DLQ",
     'subquery uses ungrouped column "vft.visitor_id" from outer query at character 413',
+    "ValueError: invalid literal",
+    "KeyError: 'id'",
+    "TypeError: x is not a function",
   ]) {
     const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
     const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
@@ -217,6 +230,16 @@ test("railwayLogsToOtlp preserves strong failure evidence in raw application tex
     assert.equal(record.severityText, "ERROR");
     assert.equal(record.severityNumber, 17);
   }
+});
+
+test("railwayLogsToOtlp preserves failure evidence after an npm wrapper prefix", () => {
+  const message = "npm error command sh -c vite build failed";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "ERROR");
+  assert.equal(record.severityNumber, 17);
 });
 
 test("railwayLogsToOtlp does not promote deployment shutdown wrapper lines to errors", () => {
