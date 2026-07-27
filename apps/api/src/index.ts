@@ -988,27 +988,31 @@ app.post("/api/me/billing/payg-promotion", async (c) => {
   if (!key) throw new HTTPException(400, { message: "billing is not configured" });
 
   const autumn = new Autumn({ secretKey: key });
-  const result = await ensurePaygPromotion(
-    {
-      loadSubscriptions: async (customerId) =>
-        (await autumn.customers.get({ customerId })).subscriptions,
-      createPromotionBalance: async (input) => {
-        try {
-          await autumn.balances.create(input);
-          return "created";
-        } catch (err) {
-          if (isBalanceAlreadyCreated(err, input.balanceId)) return "already_exists";
-          throw err;
-        }
+  const customerId = ctx.org.id;
+  let result: Awaited<ReturnType<typeof ensurePaygPromotion>>;
+  try {
+    result = await ensurePaygPromotion(
+      {
+        loadSubscriptions: async (id) =>
+          (await autumn.customers.get({ customerId: id })).subscriptions,
+        createPromotionBalance: async (input) => {
+          try {
+            await autumn.balances.create(input);
+            return "created";
+          } catch (err) {
+            if (isBalanceAlreadyCreated(err, input.balanceId)) return "already_exists";
+            throw err;
+          }
+        },
       },
-    },
-    ctx.org.id,
-  );
+      customerId,
+    );
+  } catch (err) {
+    logger.error({ scope: "billing.payg-promotion", customerId, err }, "PAYG promotion failed");
+    throw err;
+  }
 
-  logger.info(
-    { scope: "billing.payg-promotion", customerId: ctx.org.id, result },
-    "PAYG promotion evaluated",
-  );
+  logger.info({ scope: "billing.payg-promotion", customerId, result }, "PAYG promotion evaluated");
   return c.json({ result });
 });
 
