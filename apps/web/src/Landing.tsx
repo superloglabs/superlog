@@ -132,7 +132,9 @@ export function TopNav({
       <div className="mx-auto w-full max-w-[1400px] px-4 md:px-8 xl:px-12">
         <nav className="grid grid-cols-[1fr_auto_1fr] items-center py-5">
           <div className="flex items-center justify-self-start">
-            <Wordmark />
+            <a href="/" aria-label="Superlog home" className="inline-flex items-center">
+              <Wordmark />
+            </a>
           </div>
 
           <div className="hidden items-center gap-6 justify-self-center lg:flex">
