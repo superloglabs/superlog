@@ -111,11 +111,14 @@ export function BillingCard() {
     if (promotionRequestedFor.current === promotionCustomerId) return;
     promotionRequestedFor.current = promotionCustomerId;
     paygPromotion.mutate(undefined, {
+      onSuccess: () => {
+        void refetch();
+      },
       onError: (err) => {
         console.error("[payg-promotion] failed to ensure promotion balance", err);
       },
     });
-  }, [paygPromotion.mutate, planId, promotionCustomerId]);
+  }, [paygPromotion.mutate, planId, promotionCustomerId, refetch]);
 
   if (isLoading) {
     return <p className="text-[13.5px] text-muted">Loading billing…</p>;
