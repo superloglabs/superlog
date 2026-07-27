@@ -3,6 +3,7 @@
 // shapes mirror the Vercel log-drain adapter's.
 
 import type { RailwayLog, RailwayMetricsResult } from "./graphql.js";
+import { parseRailwayAttributeValue, parseRailwayLogRecord } from "./log-record.js";
 
 type OtlpAnyValue = {
   stringValue?: string;
@@ -95,6 +96,10 @@ export function railwayLogsToOtlp(
       const serviceId = log.tags?.serviceId ?? null;
       const serviceName = (serviceId && ctx.serviceNamesById[serviceId]) || "railway";
       const nanos = rfc3339ToNanos(log.timestamp) ?? 0n;
+      const parsed = parseRailwayLogRecord(stripAnsi(log.message), log.severity);
+      const parsedAttributes = parsed.attributes.map((attribute) =>
+        attribute.key === "log.record.original" ? { ...attribute, value: log.message } : attribute,
+      );
       return {
         resource: {
           attributes: [
@@ -114,13 +119,16 @@ export function railwayLogsToOtlp(
               {
                 timeUnixNano: nanos.toString(),
                 observedTimeUnixNano: nanos.toString(),
-                ...severity(log.severity),
-                body: { stringValue: stripAnsi(log.message) },
+                ...severity(parsed.severity),
+                body: { stringValue: stripAnsi(parsed.body) },
                 attributes: [
                   kv("railway.deployment_id", log.tags?.deploymentId),
                   kv("railway.deployment_instance_id", log.tags?.deploymentInstanceId),
                   kv("railway.snapshot_id", log.tags?.snapshotId),
-                  ...log.attributes.map((a) => kv(`railway.attr.${a.key}`, a.value)),
+                  ...log.attributes.map((a) =>
+                    kv(`railway.attr.${a.key}`, parseRailwayAttributeValue(a.value)),
+                  ),
+                  ...parsedAttributes.map((a) => kv(a.key, a.value)),
                 ].filter(isKv),
               },
             ],
@@ -259,7 +267,7 @@ export function advanceMetricsCursor(
 
 function kv(key: string, value: unknown): OtlpKeyValue | null {
   if (value === undefined || value === null) return null;
-  if (typeof value === "string") return value ? { key, value: { stringValue: value } } : null;
+  if (typeof value === "string") return { key, value: { stringValue: value } };
   if (typeof value === "number") {
     return Number.isInteger(value)
       ? { key, value: { intValue: String(value) } }

@@ -1,0 +1,466 @@
+type ParsedAttributeValue = string | number | boolean;
+type ParsedAttribute = { key: string; value: ParsedAttributeValue };
+
+export type ParsedRailwayLogRecord = {
+  body: string;
+  severity: string | null;
+  attributes: ParsedAttribute[];
+};
+
+const HTTP_ACCESS_RECORD =
+  /^(\S+) \S+ \S+ \[([^\]]+)\] "([A-Z]+) (\S+) HTTP\/(\d(?:\.\d)?)" (\d{3}) (\d+|-)(?: ([\d.]+|-))?$/;
+const POSTGRESQL_RECORD =
+  /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? [A-Z]+) \[(\d+)\] (?:(\S+?)@(\S+) )?([A-Z][A-Z0-9]*):\s*(.*)$/s;
+const MAX_PARSED_FIELDS = 32;
+const MAX_PARSED_KEY_LENGTH = 128;
+const MAX_PARSED_STRING_LENGTH = 4096;
+const RESERVED_STRUCTURED_ATTRIBUTE_KEYS = new Set([
+  "format",
+  "provider_severity",
+  "severity_source",
+]);
+const LOGFMT_QUOTED_ESCAPES: Record<string, string> = {
+  '"': '"',
+  "\\": "\\",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+};
+const NATIVE_SEVERITY: Record<string, string> = {
+  trace: "trace",
+  debug: "debug",
+  info: "info",
+  information: "info",
+  notice: "info",
+  warn: "warn",
+  warning: "warn",
+  err: "error",
+  error: "error",
+  fatal: "fatal",
+  critical: "fatal",
+  alert: "fatal",
+  emergency: "fatal",
+};
+const NUMERIC_JSON_SEVERITY: Record<number, string> = {
+  10: "trace",
+  20: "debug",
+  30: "info",
+  40: "warn",
+  50: "error",
+  60: "fatal",
+};
+const POSTGRESQL_SEVERITY: Record<string, string> = {
+  DEBUG: "debug",
+  DEBUG1: "debug",
+  DEBUG2: "debug",
+  DEBUG3: "debug",
+  DEBUG4: "debug",
+  DEBUG5: "debug",
+  DETAIL: "info",
+  HINT: "info",
+  INFO: "info",
+  LOG: "info",
+  NOTICE: "info",
+  STATEMENT: "info",
+  WARNING: "warn",
+  ERROR: "error",
+  FATAL: "fatal",
+  PANIC: "fatal",
+};
+
+export function parseRailwayLogRecord(
+  message: string,
+  providerSeverity: string | null,
+): ParsedRailwayLogRecord {
+  const json = parseJson(message, providerSeverity);
+  if (json) return json;
+
+  const httpAccess = parseHttpAccess(message, providerSeverity);
+  if (httpAccess) return httpAccess;
+
+  const postgresql = parsePostgresql(message, providerSeverity);
+  if (postgresql) return postgresql;
+
+  const fields = parseLogfmt(message);
+  const body = fields?.msg ?? fields?.message;
+  const nativeSeverity = fields?.level;
+  const parsedSeverity = nativeSeverity ? normalizeNativeSeverity(nativeSeverity) : null;
+  if (!fields || (body === undefined && !parsedSeverity)) {
+    return { body: message, severity: providerSeverity, attributes: [] };
+  }
+
+  return {
+    body: body ?? message,
+    severity: parsedSeverity ?? providerSeverity,
+    attributes: parsedAttributes(
+      "logfmt",
+      structuredFields(Object.entries(fields)),
+      providerSeverity,
+      parsedSeverity ? "logfmt" : "railway",
+      message,
+    ),
+  };
+}
+
+export function parseRailwayAttributeValue(value: string): ParsedAttributeValue {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    const lossless = preserveUnsafeInteger(parsed, value);
+    return isScalar(lossless) ? lossless : value;
+  } catch {
+    return value;
+  }
+}
+
+function parseHttpAccess(
+  message: string,
+  providerSeverity: string | null,
+): ParsedRailwayLogRecord | null {
+  const match = message.match(HTTP_ACCESS_RECORD);
+  if (!match) return null;
+  const [
+    ,
+    peerAddress,
+    timestamp,
+    method,
+    target,
+    protocolVersion,
+    statusText,
+    sizeText,
+    durationText,
+  ] = match;
+  if (!peerAddress || !timestamp || !method || !target || !protocolVersion || !statusText) {
+    return null;
+  }
+
+  const status = Number(statusText);
+  const queryStart = target.indexOf("?");
+  const path = queryStart === -1 ? target : target.slice(0, queryStart);
+  const query = queryStart === -1 ? null : target.slice(queryStart + 1);
+  if (!path || !Number.isInteger(status)) return null;
+  const responseSize = sizeText && sizeText !== "-" ? Number(sizeText) : null;
+  const durationSeconds = durationText && durationText !== "-" ? Number(durationText) : null;
+
+  return {
+    body: `${method} ${path} ${status}`,
+    severity: status >= 500 ? "error" : status >= 400 ? "warn" : "info",
+    attributes: parsedAttributes(
+      "http_access",
+      [
+        { key: "network.peer.address", value: peerAddress },
+        { key: "railway.log.timestamp", value: timestamp },
+        { key: "http.request.method", value: method },
+        { key: "url.path", value: path },
+        ...(query ? [{ key: "url.query", value: query }] : []),
+        { key: "network.protocol.name", value: "http" },
+        { key: "network.protocol.version", value: protocolVersion },
+        { key: "http.response.status_code", value: status },
+        ...(responseSize !== null && Number.isFinite(responseSize)
+          ? [{ key: "http.response.body.size", value: responseSize }]
+          : []),
+        ...(durationSeconds !== null && Number.isFinite(durationSeconds)
+          ? [{ key: "railway.log.duration_seconds", value: durationSeconds }]
+          : []),
+      ],
+      providerSeverity,
+      "http_status",
+      message,
+    ),
+  };
+}
+
+function parseJson(
+  message: string,
+  providerSeverity: string | null,
+): ParsedRailwayLogRecord | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(message);
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+
+  const sources = parseTopLevelJsonSources(message);
+  const record = Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, fieldValue]) => [
+      key,
+      preserveUnsafeInteger(fieldValue, sources?.get(key)),
+    ]),
+  );
+  const body =
+    typeof record.message === "string"
+      ? record.message
+      : typeof record.msg === "string"
+        ? record.msg
+        : null;
+  const parsedSeverity =
+    normalizeJsonSeverity(record.level) ?? normalizeJsonSeverity(record.severity);
+  if (body === null && !parsedSeverity) return null;
+
+  const parsedFields = structuredFields(Object.entries(record));
+  return {
+    body: body ?? message,
+    severity: parsedSeverity ?? providerSeverity,
+    attributes: parsedAttributes(
+      "json",
+      parsedFields,
+      providerSeverity,
+      parsedSeverity ? "json" : "railway",
+      message,
+    ),
+  };
+}
+
+function parseTopLevelJsonSources(message: string): Map<string, string> | null {
+  const sources = new Map<string, string>();
+  let cursor = skipWhitespace(message, 0);
+  if (message[cursor] !== "{") return null;
+  cursor += 1;
+
+  while (cursor < message.length) {
+    cursor = skipWhitespace(message, cursor);
+    if (message[cursor] === "}") return sources;
+    if (message[cursor] !== '"') return null;
+
+    const keyEnd = scanJsonStringEnd(message, cursor);
+    if (keyEnd === null) return null;
+    const key: unknown = JSON.parse(message.slice(cursor, keyEnd));
+    if (typeof key !== "string") return null;
+    cursor = skipWhitespace(message, keyEnd);
+    if (message[cursor] !== ":") return null;
+
+    cursor = skipWhitespace(message, cursor + 1);
+    const valueStart = cursor;
+    const valueEnd = scanJsonValueEnd(message, valueStart);
+    if (valueEnd === null) return null;
+    sources.set(key, message.slice(valueStart, valueEnd).trim());
+
+    cursor = skipWhitespace(message, valueEnd);
+    if (message[cursor] === ",") {
+      cursor += 1;
+      continue;
+    }
+    if (message[cursor] === "}") return sources;
+    return null;
+  }
+
+  return null;
+}
+
+function scanJsonValueEnd(message: string, start: number): number | null {
+  const first = message[start];
+  if (first === '"') return scanJsonStringEnd(message, start);
+
+  if (first === "{" || first === "[") {
+    const stack = [first];
+    let cursor = start + 1;
+    while (cursor < message.length) {
+      const character = message[cursor];
+      if (character === '"') {
+        const stringEnd = scanJsonStringEnd(message, cursor);
+        if (stringEnd === null) return null;
+        cursor = stringEnd;
+        continue;
+      }
+      if (character === "{" || character === "[") stack.push(character);
+      if (character === "}" || character === "]") {
+        stack.pop();
+        if (stack.length === 0) return cursor + 1;
+      }
+      cursor += 1;
+    }
+    return null;
+  }
+
+  let cursor = start;
+  while (cursor < message.length && message[cursor] !== "," && message[cursor] !== "}") cursor += 1;
+  return cursor;
+}
+
+function scanJsonStringEnd(message: string, start: number): number | null {
+  let cursor = start + 1;
+  while (cursor < message.length) {
+    if (message[cursor] === "\\") {
+      cursor += 2;
+      continue;
+    }
+    if (message[cursor] === '"') return cursor + 1;
+    cursor += 1;
+  }
+  return null;
+}
+
+function skipWhitespace(message: string, start: number): number {
+  let cursor = start;
+  while (cursor < message.length && isWhitespace(message[cursor])) cursor += 1;
+  return cursor;
+}
+
+function parsePostgresql(
+  message: string,
+  providerSeverity: string | null,
+): ParsedRailwayLogRecord | null {
+  const match = message.match(POSTGRESQL_RECORD);
+  if (!match) return null;
+  const [, timestamp, pid, user, database, level, body] = match;
+  if (!timestamp || !pid || !level || body === undefined) return null;
+  const severity = POSTGRESQL_SEVERITY[level];
+  if (!severity) return null;
+  return {
+    body,
+    severity,
+    attributes: parsedAttributes(
+      "postgresql",
+      [
+        { key: "railway.log.timestamp", value: timestamp },
+        { key: "railway.log.pid", value: pid },
+        ...(user ? [{ key: "railway.log.user", value: user }] : []),
+        ...(database ? [{ key: "railway.log.database", value: database }] : []),
+        { key: "railway.log.level", value: level },
+      ],
+      providerSeverity,
+      "postgresql",
+      message,
+    ),
+  };
+}
+
+function parsedAttributes(
+  format: string,
+  fields: ParsedAttribute[],
+  providerSeverity: string | null,
+  severitySource: string,
+  original: string,
+): ParsedAttribute[] {
+  return [
+    { key: "railway.log.format", value: format },
+    ...fields,
+    ...(providerSeverity
+      ? [{ key: "railway.log.provider_severity", value: providerSeverity }]
+      : []),
+    { key: "railway.log.severity_source", value: severitySource },
+    { key: "log.record.original", value: original },
+  ];
+}
+
+function parseLogfmt(message: string): Record<string, string> | null {
+  const fields: Record<string, string> = {};
+  let cursor = 0;
+  let count = 0;
+
+  while (cursor < message.length) {
+    while (cursor < message.length && isWhitespace(message[cursor])) cursor += 1;
+    if (cursor === message.length) break;
+
+    const keyStart = cursor;
+    if (!isLogfmtKeyStart(message[cursor])) return null;
+    cursor += 1;
+    while (cursor < message.length && isLogfmtKeyPart(message[cursor])) cursor += 1;
+    const key = message.slice(keyStart, cursor);
+    if (message[cursor] !== "=") return null;
+    cursor += 1;
+
+    let value = "";
+    if (message[cursor] === '"') {
+      cursor += 1;
+      let closed = false;
+      while (cursor < message.length) {
+        const character = message[cursor];
+        if (character === '"') {
+          cursor += 1;
+          closed = true;
+          break;
+        }
+        if (character === "\\" && cursor + 1 < message.length) {
+          const escaped = message[cursor + 1];
+          const decoded = escaped ? LOGFMT_QUOTED_ESCAPES[escaped] : undefined;
+          if (decoded !== undefined) {
+            value += decoded;
+            cursor += 2;
+            continue;
+          }
+        }
+        value += character;
+        cursor += 1;
+      }
+      if (!closed || (cursor < message.length && !isWhitespace(message[cursor]))) return null;
+    } else {
+      const valueStart = cursor;
+      while (cursor < message.length && !isWhitespace(message[cursor])) cursor += 1;
+      value = message.slice(valueStart, cursor);
+    }
+
+    if (count < MAX_PARSED_FIELDS || key === "level" || key === "msg" || key === "message") {
+      fields[key] = value;
+    }
+    count += 1;
+  }
+
+  if (count < 2) return null;
+  return fields;
+}
+
+function isWhitespace(character: string | undefined): boolean {
+  return character === " " || character === "\t" || character === "\n" || character === "\r";
+}
+
+function isLogfmtKeyStart(character: string | undefined): boolean {
+  return character !== undefined && /[A-Za-z_]/.test(character);
+}
+
+function isLogfmtKeyPart(character: string | undefined): boolean {
+  return character !== undefined && /[A-Za-z0-9_.-]/.test(character);
+}
+
+function normalizeAttributeKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9_.-]/g, "_");
+}
+
+function structuredFields(entries: Array<[string, unknown]>): ParsedAttribute[] {
+  const attributes: ParsedAttribute[] = [];
+  const seenKeys = new Set<string>();
+  for (const [key, value] of entries) {
+    if (!isScalar(value) || !isBoundedField(key, value)) continue;
+    const normalizedKey = normalizeAttributeKey(key);
+    if (RESERVED_STRUCTURED_ATTRIBUTE_KEYS.has(normalizedKey) || seenKeys.has(normalizedKey)) {
+      continue;
+    }
+    seenKeys.add(normalizedKey);
+    attributes.push({ key: `railway.log.${normalizedKey}`, value });
+    if (attributes.length === MAX_PARSED_FIELDS) break;
+  }
+  return attributes;
+}
+
+function isScalar(value: unknown): value is ParsedAttributeValue {
+  return (
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  );
+}
+
+function preserveUnsafeInteger(value: unknown, source: string | undefined): unknown {
+  if (typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value)) {
+    return source ?? value;
+  }
+  return value;
+}
+
+function normalizeNativeSeverity(value: string): string | null {
+  return NATIVE_SEVERITY[value.trim().toLowerCase()] ?? null;
+}
+
+function normalizeJsonSeverity(value: unknown): string | null {
+  if (typeof value === "string") return normalizeNativeSeverity(value);
+  if (typeof value === "number") return NUMERIC_JSON_SEVERITY[value] ?? null;
+  return null;
+}
+
+function isBoundedField(key: string, value: ParsedAttributeValue): boolean {
+  return (
+    key.length <= MAX_PARSED_KEY_LENGTH &&
+    (typeof value !== "string" || value.length <= MAX_PARSED_STRING_LENGTH)
+  );
+}

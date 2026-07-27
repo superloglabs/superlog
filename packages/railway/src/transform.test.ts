@@ -68,6 +68,456 @@ test("railwayLogsToOtlp maps a Railway log line to an OTLP log record", () => {
   assert.equal(attrs["railway.deployment_id"], "dep-1");
 });
 
+test("railwayLogsToOtlp uses native logfmt fields instead of Railway's stderr severity", () => {
+  const message =
+    'time="2026-07-22T13:57:21.842594391Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.healthcheck type=io.containerd.grpc.v1';
+  const out = railwayLogsToOtlp(
+    [
+      {
+        ...LOG,
+        severity: "error",
+        message,
+        attributes: [{ key: "level", value: '"error"' }],
+      },
+    ],
+    NAMES,
+  );
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "loading plugin");
+  assert.equal(record.severityText, "INFO");
+  assert.equal(record.severityNumber, 9);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["railway.log.format"], "logfmt");
+  assert.equal(attrs["railway.log.level"], "info");
+  assert.equal(attrs["railway.log.id"], "io.containerd.grpc.v1.healthcheck");
+  assert.equal(attrs["railway.log.type"], "io.containerd.grpc.v1");
+  assert.equal(attrs["railway.log.provider_severity"], "error");
+  assert.equal(attrs["railway.log.severity_source"], "logfmt");
+  assert.equal(attrs["log.record.original"], message);
+});
+
+test("railwayLogsToOtlp keeps the raw Railway payload as the original record", () => {
+  const message = 'level=info msg="\u001b[32mready\u001b[0m"';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "ready");
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["log.record.original"], message);
+});
+
+test("railwayLogsToOtlp strips decoded ANSI controls from JSON bodies", () => {
+  const message = JSON.stringify({ level: "info", message: "\u001b[32mready\u001b[0m" });
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "ready");
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["log.record.original"], message);
+});
+
+test("railwayLogsToOtlp maps PostgreSQL LOG records to informational structured logs", () => {
+  const message =
+    "2026-07-24 09:24:40.055 UTC [59] LOG:  checkpoint complete: wrote 1114 buffers (6.8%)";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "checkpoint complete: wrote 1114 buffers (6.8%)");
+  assert.equal(record.severityText, "INFO");
+  assert.equal(record.severityNumber, 9);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["railway.log.format"], "postgresql");
+  assert.equal(attrs["railway.log.level"], "LOG");
+  assert.equal(attrs["railway.log.timestamp"], "2026-07-24 09:24:40.055 UTC");
+  assert.equal(attrs["railway.log.pid"], "59");
+  assert.equal(attrs["railway.log.provider_severity"], "error");
+  assert.equal(attrs["railway.log.severity_source"], "postgresql");
+  assert.equal(attrs["log.record.original"], message);
+});
+
+test("railwayLogsToOtlp preserves PostgreSQL warning severity and connection fields", () => {
+  const message =
+    "2026-07-24 16:42:04.651 UTC [1386] app@railway WARNING:  there is no transaction in progress";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "there is no transaction in progress");
+  assert.equal(record.severityText, "WARN");
+  assert.equal(record.severityNumber, 13);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["railway.log.level"], "WARNING");
+  assert.equal(attrs["railway.log.user"], "app");
+  assert.equal(attrs["railway.log.database"], "railway");
+});
+
+test("railwayLogsToOtlp preserves scalar fields from structured JSON logs", () => {
+  const message = JSON.stringify({
+    level: "warn",
+    message: "queue depth high",
+    job: "emails",
+    attempt: 3,
+    healthy: false,
+    nested: { ignored: true },
+  });
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "queue depth high");
+  assert.equal(record.severityText, "WARN");
+  assert.equal(record.severityNumber, 13);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["railway.log.format"]?.stringValue, "json");
+  assert.equal(attrs["railway.log.level"]?.stringValue, "warn");
+  assert.equal(attrs["railway.log.job"]?.stringValue, "emails");
+  assert.equal(attrs["railway.log.attempt"]?.intValue, "3");
+  assert.equal(attrs["railway.log.healthy"]?.boolValue, false);
+  assert.equal(attrs["railway.log.nested"], undefined);
+  assert.equal(attrs["railway.log.provider_severity"]?.stringValue, "error");
+  assert.equal(attrs["railway.log.severity_source"]?.stringValue, "json");
+  assert.equal(attrs["log.record.original"]?.stringValue, message);
+});
+
+test("railwayLogsToOtlp reserves collector-owned structured attribute names", () => {
+  const message = JSON.stringify({
+    message: "request complete",
+    FORMAT: "text",
+    provider_severity: "info",
+    severity_source: "application",
+  });
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["railway.log.format"]?.stringValue, "json");
+  assert.equal(attrs["railway.log.provider_severity"]?.stringValue, "error");
+  assert.equal(attrs["railway.log.severity_source"]?.stringValue, "railway");
+  for (const key of [
+    "railway.log.format",
+    "railway.log.provider_severity",
+    "railway.log.severity_source",
+  ]) {
+    assert.equal(record.attributes.filter((attribute) => attribute.key === key).length, 1);
+  }
+});
+
+test("railwayLogsToOtlp deduplicates normalized structured attribute keys", () => {
+  const message = JSON.stringify({
+    message: "request complete",
+    userId: "first",
+    userid: "second",
+    "foo bar": "first punctuation",
+    "foo@bar": "second punctuation",
+  });
+  const out = railwayLogsToOtlp([{ ...LOG, message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  const userIds = record.attributes.filter((attribute) => attribute.key === "railway.log.userid");
+  assert.equal(userIds.length, 1);
+  assert.equal(at(userIds, 0).value.stringValue, "first");
+  const fooBars = record.attributes.filter((attribute) => attribute.key === "railway.log.foo_bar");
+  assert.equal(fooBars.length, 1);
+  assert.equal(at(fooBars, 0).value.stringValue, "first punctuation");
+});
+
+test("railwayLogsToOtlp decodes Railway's JSON-encoded scalar attributes", () => {
+  const out = railwayLogsToOtlp(
+    [
+      {
+        ...LOG,
+        attributes: [
+          { key: "level", value: '"info"' },
+          { key: "attempt", value: "3" },
+          { key: "healthy", value: "false" },
+          { key: "error", value: '""' },
+          { key: "metadata", value: '{"nested":true}' },
+        ],
+      },
+    ],
+    NAMES,
+  );
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["railway.attr.level"]?.stringValue, "info");
+  assert.equal(attrs["railway.attr.attempt"]?.intValue, "3");
+  assert.equal(attrs["railway.attr.healthy"]?.boolValue, false);
+  assert.equal(attrs["railway.attr.error"]?.stringValue, "");
+  assert.equal(attrs["railway.attr.metadata"]?.stringValue, '{"nested":true}');
+});
+
+test("railwayLogsToOtlp preserves unsafe integer attributes as exact strings", () => {
+  const out = railwayLogsToOtlp(
+    [
+      {
+        ...LOG,
+        attributes: [{ key: "order_id", value: "9007199254740993" }],
+      },
+    ],
+    NAMES,
+  );
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["railway.attr.order_id"]?.stringValue, "9007199254740993");
+  assert.equal(attrs["railway.attr.order_id"]?.intValue, undefined);
+});
+
+test("railwayLogsToOtlp maps common numeric JSON levels", () => {
+  const message = JSON.stringify({ level: 30, msg: "worker started" });
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "worker started");
+  assert.equal(record.severityText, "INFO");
+  assert.equal(record.severityNumber, 9);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["railway.log.level"]?.intValue, "30");
+  assert.equal(attrs["railway.log.severity_source"]?.stringValue, "json");
+});
+
+test("railwayLogsToOtlp uses a recognized JSON severity when level is unknown", () => {
+  const message = JSON.stringify({
+    level: "verbose",
+    severity: "info",
+    message: "worker started",
+  });
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.severityText, "INFO");
+  assert.equal(record.severityNumber, 9);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["railway.log.severity_source"]?.stringValue, "json");
+});
+
+test("railwayLogsToOtlp preserves native severity for event-style JSON", () => {
+  const message = JSON.stringify({ level: "info", event: "heartbeat", request_id: "req-1" });
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "INFO");
+  assert.equal(record.severityNumber, 9);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["railway.log.format"], "json");
+  assert.equal(attrs["railway.log.event"], "heartbeat");
+  assert.equal(attrs["railway.log.request_id"], "req-1");
+  assert.equal(attrs["railway.log.provider_severity"], "error");
+  assert.equal(attrs["railway.log.severity_source"], "json");
+  assert.equal(attrs["log.record.original"], message);
+});
+
+test("railwayLogsToOtlp preserves explicit empty JSON message bodies", () => {
+  const message = JSON.stringify({ message: "", event: "heartbeat" });
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "");
+  assert.equal(record.severityText, "ERROR");
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["railway.log.format"], "json");
+  assert.equal(attrs["railway.log.event"], "heartbeat");
+  assert.equal(attrs["log.record.original"], message);
+});
+
+test("railwayLogsToOtlp preserves unsafe JSON integer fields as exact strings", () => {
+  const message = '{"level":30,"msg":"order accepted","order_id":9007199254740993}';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["railway.log.order_id"]?.stringValue, "9007199254740993");
+  assert.equal(attrs["railway.log.order_id"]?.intValue, undefined);
+  assert.equal(attrs["log.record.original"]?.stringValue, message);
+});
+
+test("railwayLogsToOtlp maps successful common access logs to structured HTTP info", () => {
+  const message =
+    '100.64.0.6 - - [2026-07-22 20:25:33] "POST /v1/audio/speech HTTP/1.1" 200 10761 1.317203';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "POST /v1/audio/speech 200");
+  assert.equal(record.severityText, "INFO");
+  assert.equal(record.severityNumber, 9);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["railway.log.format"]?.stringValue, "http_access");
+  assert.equal(attrs["network.peer.address"]?.stringValue, "100.64.0.6");
+  assert.equal(attrs["railway.log.timestamp"]?.stringValue, "2026-07-22 20:25:33");
+  assert.equal(attrs["http.request.method"]?.stringValue, "POST");
+  assert.equal(attrs["url.path"]?.stringValue, "/v1/audio/speech");
+  assert.equal(attrs["network.protocol.name"]?.stringValue, "http");
+  assert.equal(attrs["network.protocol.version"]?.stringValue, "1.1");
+  assert.equal(attrs["http.response.status_code"]?.intValue, "200");
+  assert.equal(attrs["http.response.body.size"]?.intValue, "10761");
+  assert.equal(attrs["railway.log.duration_seconds"]?.doubleValue, 1.317203);
+  assert.equal(attrs["railway.log.provider_severity"]?.stringValue, "error");
+  assert.equal(attrs["railway.log.severity_source"]?.stringValue, "http_status");
+  assert.equal(attrs["log.record.original"]?.stringValue, message);
+});
+
+test("railwayLogsToOtlp keeps HTTP server failures at error severity", () => {
+  const message = '100.64.0.6 - - [2026-07-22 20:25:33] "GET /health HTTP/1.1" 503 19 0.012';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "info", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "GET /health 503");
+  assert.equal(record.severityText, "ERROR");
+  assert.equal(record.severityNumber, 17);
+});
+
+test("railwayLogsToOtlp preserves question marks inside HTTP query strings", () => {
+  const message =
+    '100.64.0.6 - - [2026-07-22 20:25:33] "GET /login?redirect=https://example.com/a?b=c HTTP/1.1" 302 0 0.012';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["url.path"]?.stringValue, "/login");
+  assert.equal(attrs["url.query"]?.stringValue, "redirect=https://example.com/a?b=c");
+});
+
+test("railwayLogsToOtlp keeps Railway severity when a parsed native level is unknown", () => {
+  const message = 'level=verbose msg="something happened" request_id=req-1';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "something happened");
+  assert.equal(record.severityText, "ERROR");
+  assert.equal(record.severityNumber, 17);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["railway.log.level"], "verbose");
+  assert.equal(attrs["railway.log.provider_severity"], "error");
+  assert.equal(attrs["railway.log.severity_source"], "railway");
+});
+
+test("railwayLogsToOtlp structures logfmt without a native level", () => {
+  const message = 'msg="request finished" request_id=req-1';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "warning", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "request finished");
+  assert.equal(record.severityText, "WARN");
+  assert.equal(record.severityNumber, 13);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["railway.log.format"], "logfmt");
+  assert.equal(attrs["railway.log.request_id"], "req-1");
+  assert.equal(attrs["railway.log.severity_source"], "railway");
+  assert.equal(attrs["log.record.original"], message);
+});
+
+test("railwayLogsToOtlp preserves native severity for event-style logfmt", () => {
+  const message = "level=info event=heartbeat request_id=req-1";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "INFO");
+  assert.equal(record.severityNumber, 9);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["railway.log.format"], "logfmt");
+  assert.equal(attrs["railway.log.level"], "info");
+  assert.equal(attrs["railway.log.event"], "heartbeat");
+  assert.equal(attrs["railway.log.request_id"], "req-1");
+  assert.equal(attrs["railway.log.provider_severity"], "error");
+  assert.equal(attrs["railway.log.severity_source"], "logfmt");
+  assert.equal(attrs["log.record.original"], message);
+});
+
+test("railwayLogsToOtlp parses escaped logfmt values", () => {
+  const message = 'level=info msg="worker said \\"ready\\" at C:\\\\jobs" request_id=req-1';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, 'worker said "ready" at C:\\jobs');
+  assert.equal(record.severityText, "INFO");
+});
+
+test("railwayLogsToOtlp decodes common control escapes in quoted logfmt values", () => {
+  const message = String.raw`level=info msg="first\nsecond\tready\rnext"`;
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "first\nsecond\tready\rnext");
+  assert.equal(record.severityText, "INFO");
+});
+
+test("railwayLogsToOtlp accepts empty unquoted logfmt values", () => {
+  const message = 'level=info msg="request complete" err=';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "request complete");
+  assert.equal(record.severityText, "INFO");
+});
+
+test("railwayLogsToOtlp preserves explicit empty logfmt message bodies", () => {
+  const message = 'msg="" event=heartbeat';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "");
+  assert.equal(record.severityText, "ERROR");
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["railway.log.format"], "logfmt");
+  assert.equal(attrs["railway.log.event"], "heartbeat");
+  assert.equal(attrs["log.record.original"], message);
+});
+
+test("railwayLogsToOtlp safely rejects a long unterminated logfmt value", () => {
+  const message = `level=info msg="${"\\!".repeat(10_000)}`;
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "ERROR");
+});
+
+test("railwayLogsToOtlp caps logfmt attributes without rejecting the record", () => {
+  const fields = Array.from({ length: 33 }, (_, index) => `field${index}=value${index}`).join(" ");
+  const message = `level=info msg="many fields" ${fields}`;
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "many fields");
+  assert.equal(record.severityText, "INFO");
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["railway.log.field0"]?.stringValue, "value0");
+  assert.equal(attrs["railway.log.field32"], undefined);
+});
+
+test("railwayLogsToOtlp bounds extracted structured attributes", () => {
+  const longKey = "x".repeat(129);
+  const message = JSON.stringify({
+    level: "info",
+    message: "bounded fields",
+    accepted: "yes",
+    oversized: "x".repeat(4097),
+    [longKey]: "too long",
+  });
+  const out = railwayLogsToOtlp([{ ...LOG, message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value]));
+  assert.equal(attrs["railway.log.accepted"]?.stringValue, "yes");
+  assert.equal(attrs["railway.log.oversized"], undefined);
+  assert.equal(attrs[`railway.log.${longKey}`], undefined);
+});
+
+test("railwayLogsToOtlp leaves malformed structured messages lossless", () => {
+  const message = 'level=info msg="unterminated';
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "ERROR");
+  assert.equal(record.severityNumber, 17);
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["railway.log.format"], undefined);
+  assert.equal(attrs["log.record.original"], undefined);
+});
+
 test("railwayLogsToOtlp falls back to a railway service name when unmapped", () => {
   const out = railwayLogsToOtlp(
     [{ ...LOG, tags: { ...LOG.tags, serviceId: "unknown-svc" } }],
