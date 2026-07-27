@@ -152,14 +152,14 @@ export function IssueDetailSkeleton() {
 export function IncidentDetailSkeleton() {
   return (
     <SkeletonStatus label="Loading incident detail" className="flex min-h-0 flex-1 flex-col bg-bg">
-      <div className="flex shrink-0 items-center gap-2 border-b border-border px-5 py-3">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-5 py-3 sm:px-6 lg:px-8">
         <SkeletonBlock className="h-4 w-20" />
         <SkeletonBlock className="h-4 w-3/5" />
         <SkeletonBlock className="ml-auto h-7 w-28" />
         <SkeletonBlock className="h-7 w-7" />
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[390px_minmax(0,1fr)]">
-        <aside className="border-b border-border px-7 py-7 lg:border-b-0 lg:border-r">
+        <aside className="border-b border-border px-5 py-7 sm:px-6 lg:border-b-0 lg:border-r lg:px-8">
           <div className="space-y-4">
             <SkeletonBlock className="h-3 w-28" />
             <SkeletonBlock className="h-7 w-4/5" />

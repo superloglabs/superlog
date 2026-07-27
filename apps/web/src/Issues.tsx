@@ -1639,7 +1639,7 @@ export function IncidentDetailContent({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-bg text-fg">
-      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-bg px-5 py-3">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-bg px-5 py-3 sm:px-6 lg:px-8">
         <span className="text-[13px] text-muted">Incidents</span>
         <span className="text-subtle">›</span>
         <span className="min-w-0 flex-1 truncate text-[13px] text-fg">{incident.title}</span>
@@ -1676,7 +1676,7 @@ export function IncidentDetailContent({
 
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[390px_minmax(0,1fr)]">
         <aside className="flex min-w-0 flex-col border-b border-border bg-bg lg:border-b-0 lg:border-r">
-          <div className="px-7 pb-7 pt-7">
+          <div className="px-5 pb-7 pt-7 sm:px-6 lg:px-8">
             <div className="font-sans text-[11px] text-subtle">#{incident.codename}</div>
             <h2 className="mt-2 break-words text-[20px] font-semibold leading-[1.1] tracking-tight text-fg">
               {incident.title}
