@@ -6,8 +6,8 @@ import type { SavedExploreViewState } from "./saved-view-state.ts";
 const API_URL = import.meta.env?.VITE_API_URL ?? "http://localhost:4100";
 
 export function apiRequestUrl(path: string, apiUrl = API_URL): string {
-	if (/^https?:\/\//i.test(path)) return path;
-	return `${apiUrl.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${apiUrl.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
 }
 
 export type Me = {
@@ -1733,8 +1733,7 @@ export function useUninstallSentry(projectId: string | undefined) {
       fetcher<{ ok: true }>(sentryProjectEndpoints(requiredSentryProjectId(projectId)).uninstall, {
         method: "POST",
       }),
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ["sentry-installation", projectId] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["sentry-installation", projectId] }),
   });
 }
 
@@ -2506,6 +2505,18 @@ export function useCancelBilling() {
   const fetcher = useFetcher();
   return useMutation({
     mutationFn: () => fetcher<{ ok: boolean }>("/api/me/billing/cancel", { method: "POST" }),
+  });
+}
+
+export function useEnsurePaygPromotion() {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: () =>
+      fetcher<{ result: "granted" | "already_granted" | "not_eligible" }>(
+        "/api/me/billing/payg-promotion",
+        { method: "POST" },
+      ),
+    retry: 2,
   });
 }
 

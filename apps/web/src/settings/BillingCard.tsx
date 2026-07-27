@@ -1,7 +1,15 @@
 import { useAggregateEvents, useCustomer } from "autumn-js/react";
-import { useState } from "react";
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { useCancelBilling } from "../api.ts";
+import { useEffect, useRef, useState } from "react";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { useCancelBilling, useEnsurePaygPromotion } from "../api.ts";
 import { signalAtHardCap } from "../billing.ts";
 import { Btn } from "../design/ui.tsx";
 
@@ -24,29 +32,24 @@ const PLAN_OPTIONS = [
     id: "payg",
     name: "Pay as you go",
     price: "Usage-based",
-    cta: "Switch to pay as you go",
-    details: ["No caps — never paused", "$1.50 / investigation", "$0.50/M spans · logs · $0.15/M metrics"],
-  },
-  {
-    id: "pack_150",
-    name: "Pro",
-    price: "$150/mo",
-    cta: "Upgrade to Pro",
-    details: ["120 investigation credits / mo", "then $1.25 / investigation", "Telemetry metered (PAYG rates)"],
-  },
-  {
-    id: "pack_300",
-    name: "Max",
-    price: "$300/mo",
-    cta: "Upgrade to Max",
-    details: ["300 investigation credits / mo", "then $1.00 / investigation", "Telemetry metered (PAYG rates)"],
+    cta: "Upgrade and get 100 free credits",
+    details: [
+      "One-time grant of 100 promotional investigations",
+      "50 investigations included / month",
+      "then $1.50 / investigation",
+      "$0.50/M spans · logs · $0.15/M metrics",
+    ],
   },
   {
     id: "free",
     name: "Free",
     price: "$0",
     cta: "Switch to Free",
-    details: ["5 incidents investigated / mo", "1M spans · 5M logs · 10M metrics", "Hard caps — ingest pauses at limit"],
+    details: [
+      "50 incidents investigated / mo",
+      "1M spans · 5M logs · 10M metrics",
+      "Hard caps — ingest pauses at limit",
+    ],
   },
 ];
 
@@ -65,15 +68,26 @@ function formatUsd(n: number): string {
 // Metered rates + plan base fees / per-credit overage (mirror pricing.ts). Used
 // to estimate the current bill from this period's usage. Free is never billed
 // (hard caps), so its bill is always $0.
-const SIGNAL_RATE_PER_MILLION_USD: Record<string, number> = { spans: 0.5, logs: 0.5, metric_points: 0.15 };
+const SIGNAL_RATE_PER_MILLION_USD: Record<string, number> = {
+  spans: 0.5,
+  logs: 0.5,
+  metric_points: 0.15,
+};
 const PLAN_BASE_USD: Record<string, number> = { free: 0, payg: 0, pack_150: 150, pack_300: 300 };
-const CREDIT_OVERAGE_USD: Record<string, number> = { free: 0, payg: 1.5, pack_150: 1.25, pack_300: 1.0 };
+const CREDIT_OVERAGE_USD: Record<string, number> = {
+  free: 0,
+  payg: 1.5,
+  pack_150: 1.25,
+  pack_300: 1.0,
+};
 
 export function BillingCard() {
   const { data: customer, isLoading, attach, openCustomerPortal, check, refetch } = useCustomer();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const cancelBilling = useCancelBilling();
+  const paygPromotion = useEnsurePaygPromotion();
+  const promotionRequestedFor = useRef<string | null>(null);
   // Usage time-series straight from Autumn (same source as the meters above), so
   // the graph and the meters always reconcile. customerId is inferred from the
   // Better Auth org session.
@@ -88,6 +102,20 @@ export function BillingCard() {
     logs: p.values?.logs ?? 0,
     metric_points: p.values?.metric_points ?? 0,
   }));
+  const activeSub = customer?.subscriptions?.find((s) => s.status === "active");
+  const planId = activeSub?.planId ?? "free";
+  const promotionCustomerId = customer?.id ?? null;
+
+  useEffect(() => {
+    if (planId !== "payg" || !promotionCustomerId) return;
+    if (promotionRequestedFor.current === promotionCustomerId) return;
+    promotionRequestedFor.current = promotionCustomerId;
+    paygPromotion.mutate(undefined, {
+      onError: () => {
+        promotionRequestedFor.current = null;
+      },
+    });
+  }, [paygPromotion.mutate, planId, promotionCustomerId]);
 
   if (isLoading) {
     return <p className="text-[13.5px] text-muted">Loading billing…</p>;
@@ -100,14 +128,14 @@ export function BillingCard() {
     );
   }
 
-  const activeSub = customer.subscriptions?.find((s) => s.status === "active");
-  const planId = activeSub?.planId ?? "free";
   const planName = PLAN_NAMES[planId] ?? planId;
 
   // A scheduled downgrade (e.g. Pro → PAYG) shows up as a second subscription
   // with status "scheduled" that takes effect at the end of the current cycle.
   const scheduledSub = customer.subscriptions?.find((s) => s.status === "scheduled");
-  const scheduledName = scheduledSub ? (PLAN_NAMES[scheduledSub.planId] ?? scheduledSub.planId) : null;
+  const scheduledName = scheduledSub
+    ? (PLAN_NAMES[scheduledSub.planId] ?? scheduledSub.planId)
+    : null;
   const scheduledAtMs = scheduledSub?.startedAt ?? activeSub?.currentPeriodEnd ?? null;
 
   // check() reads customer.flags[featureId] unguarded in autumn-js, so it throws
@@ -164,7 +192,11 @@ export function BillingCard() {
         // Upgrade: apply now, carrying usage over (continuous metering closes the
         // toggle-reset loophole; the carried free-tier usage sits inside the new
         // plan's included allowance, so it isn't billed).
-        await attach({ planId: target, planSchedule: "immediate", carryOverUsages: { enabled: true } });
+        await attach({
+          planId: target,
+          planSchedule: "immediate",
+          carryOverUsages: { enabled: true },
+        });
       }
       await refetch(); // reflect the new plan / scheduled change immediately
     } catch (e) {
@@ -202,15 +234,15 @@ export function BillingCard() {
         {scheduledName && (
           <div className="mt-3 border-t border-border pt-3 text-[12.5px] leading-relaxed text-muted">
             Scheduled: switching to <span className="font-medium text-fg">{scheduledName}</span>
-            {scheduledAtMs ? ` on ${new Date(scheduledAtMs).toLocaleDateString()}` : " next cycle"}. You
-            keep {planName} until then.
+            {scheduledAtMs ? ` on ${new Date(scheduledAtMs).toLocaleDateString()}` : " next cycle"}.
+            You keep {planName} until then.
           </div>
         )}
         {atLimit && (
           <div className="mt-3 border-t border-border pt-3 text-[12.5px] leading-relaxed text-fg">
             <span className="font-semibold">You’ve reached your Free plan limits.</span> Ingest is
-            paused for capped signals. Switch to pay-as-you-go (no caps) or pick a pack to resume —
-            you’ll add a card at checkout.
+            paused for capped signals. Switch to pay-as-you-go to resume with no caps and receive a
+            one-time grant of 100 promotional investigations — you’ll add a card at checkout.
           </div>
         )}
       </div>
@@ -220,7 +252,7 @@ export function BillingCard() {
         <div className="text-[11px] tracking-wide text-subtle">
           {atLimit ? "Choose a plan to resume" : "Change plan"}
         </div>
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3">
           {PLAN_OPTIONS.filter((o) => o.id !== planId).map((o) => (
             <PlanOption
               key={o.id}
@@ -238,17 +270,29 @@ export function BillingCard() {
       <div className="rounded-lg border border-border bg-surface/30 p-4">
         <div className="mb-3 text-[11px] tracking-wide text-subtle">This period</div>
         <div className="grid gap-2">
-          <UsageMeter label="Investigation credits" balance={balanceOf("investigations")} format={(n) => n.toLocaleString()} />
+          <UsageMeter
+            label="Investigation credits"
+            balance={balanceOf("investigations")}
+            format={(n) => n.toLocaleString()}
+          />
           <UsageMeter label="Spans" balance={balanceOf("spans")} format={formatCount} />
           <UsageMeter label="Logs" balance={balanceOf("logs")} format={formatCount} />
-          <UsageMeter label="Metric points" balance={balanceOf("metric_points")} format={formatCount} />
+          <UsageMeter
+            label="Metric points"
+            balance={balanceOf("metric_points")}
+            format={formatCount}
+          />
         </div>
         <div className="mt-3 flex items-baseline justify-between border-t border-border pt-3">
           <div>
             <div className="text-[13px] font-medium text-fg">Current bill</div>
-            <div className="text-[11px] text-muted">Plan fee + metered usage so far this period (estimate)</div>
+            <div className="text-[11px] text-muted">
+              Plan fee + metered usage so far this period (estimate)
+            </div>
           </div>
-          <div className="text-[16px] font-semibold tabular-nums text-fg">{formatUsd(currentBillUsd)}</div>
+          <div className="text-[16px] font-semibold tabular-nums text-fg">
+            {formatUsd(currentBillUsd)}
+          </div>
         </div>
       </div>
 
@@ -300,7 +344,9 @@ function UsageMeter({
       <div className="flex items-baseline justify-between gap-3 py-1">
         <span className="text-[13px] text-fg">{label}</span>
         <div className="text-right">
-          <div className="text-[12.5px] font-medium tabular-nums text-fg">{format(balance.usage)} used</div>
+          <div className="text-[12.5px] font-medium tabular-nums text-fg">
+            {format(balance.usage)} used
+          </div>
           <div className="text-[11px] tabular-nums text-subtle">
             {format(balance.granted)} included{over > 0 ? ` · +${format(over)} billed` : ""}
           </div>
@@ -313,7 +359,9 @@ function UsageMeter({
   // "At cap" is the exact usage>=granted check (not the rounded %), so 99.9% never
   // shows as "limit reached"; the % floors below 100 until actually exhausted.
   const atCap = balance.usage >= balance.granted;
-  const pct = atCap ? 100 : Math.max(0, Math.min(99, Math.floor((balance.usage / balance.granted) * 100)));
+  const pct = atCap
+    ? 100
+    : Math.max(0, Math.min(99, Math.floor((balance.usage / balance.granted) * 100)));
   return (
     <div className="py-1">
       <div className="flex items-baseline justify-between gap-3">
@@ -428,9 +476,33 @@ function BillingUsageChart({ series, loading }: { series: UsagePoint[]; loading:
                   fontSize: 12,
                 }}
               />
-              <Area type="monotone" dataKey="spans" name="Spans" stackId="u" stroke="var(--color-accent)" fill="var(--color-accent)" fillOpacity={0.22} />
-              <Area type="monotone" dataKey="logs" name="Logs" stackId="u" stroke="var(--color-success)" fill="var(--color-success)" fillOpacity={0.22} />
-              <Area type="monotone" dataKey="metric_points" name="Metric points" stackId="u" stroke="var(--color-warning)" fill="var(--color-warning)" fillOpacity={0.22} />
+              <Area
+                type="monotone"
+                dataKey="spans"
+                name="Spans"
+                stackId="u"
+                stroke="var(--color-accent)"
+                fill="var(--color-accent)"
+                fillOpacity={0.22}
+              />
+              <Area
+                type="monotone"
+                dataKey="logs"
+                name="Logs"
+                stackId="u"
+                stroke="var(--color-success)"
+                fill="var(--color-success)"
+                fillOpacity={0.22}
+              />
+              <Area
+                type="monotone"
+                dataKey="metric_points"
+                name="Metric points"
+                stackId="u"
+                stroke="var(--color-warning)"
+                fill="var(--color-warning)"
+                fillOpacity={0.22}
+              />
             </AreaChart>
           </ResponsiveContainer>
         </div>

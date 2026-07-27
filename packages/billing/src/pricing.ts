@@ -64,7 +64,7 @@ export const PLANS: Record<PlanKey, Plan> = {
     key: "free",
     displayName: "Free",
     baseMonthlyUsd: 0,
-    includedCredits: 5,
+    includedCredits: 50,
     creditOverageUsd: PAYG_RATES.investigationCreditUsd, // unused: free blocks
     includedTelemetry: { spans: 1_000_000, logs: 5_000_000, metric_points: 10_000_000 },
     overage: "block",
@@ -79,8 +79,8 @@ export const PLANS: Record<PlanKey, Plan> = {
     // (so a maxed-out cap can't be reset by toggling Free↔paid) WITHOUT billing
     // anyone for their free-tier usage: the carried usage lands inside these
     // included units. Free blocks at the same allowance; paid plans meter past it.
-    includedCredits: 5,
-    creditOverageUsd: PAYG_RATES.investigationCreditUsd, // $1.50 beyond the 5 free
+    includedCredits: 50,
+    creditOverageUsd: PAYG_RATES.investigationCreditUsd, // $1.50 beyond the 50 free
     includedTelemetry: { spans: 1_000_000, logs: 5_000_000, metric_points: 10_000_000 },
     overage: "payg",
     recurring: true,

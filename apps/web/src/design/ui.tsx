@@ -694,14 +694,15 @@ export function OutOfCreditsBanner() {
         style={{ color: "color-mix(in srgb, var(--color-danger) 82%, var(--color-fg))" }}
       >
         Your organization is over its plan's monthly investigation limit, so auto-investigation was
-        skipped. Upgrade to pay-as-you-go to keep investigating new incidents.
+        skipped. Switch to pay-as-you-go for a one-time grant of 100 promotional investigations and
+        keep investigating new incidents.
       </p>
       <div className="flex items-center justify-end">
         <Link
           to={projectPath("/settings?scope=org&section=billing")}
           className="inline-flex items-center rounded-md bg-fg px-3 py-1.5 text-[13px] font-medium text-bg transition-opacity hover:opacity-90"
         >
-          Manage billing
+          Upgrade and get 100 free credits
         </Link>
       </div>
     </div>

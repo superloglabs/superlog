@@ -377,7 +377,7 @@ function BillingLimitBar() {
         to={projectPath("/settings?scope=org&section=billing")}
         className="font-medium underline underline-offset-2 hover:opacity-80"
       >
-        Add a card to switch to pay-as-you-go →
+        Upgrade and get 100 free credits →
       </Link>
     </div>
   );

@@ -310,3 +310,18 @@ test("100% Slack copy differs by enforcement + feature", () => {
     /new investigations are paused/,
   );
 });
+
+test("every Slack upsell mentions the 100-investigation PAYG promotion", () => {
+  for (const opts of [
+    { feature: "logs", pct: 50, threshold: 50, enforcement: false },
+    { feature: "logs", pct: 100, threshold: 100, enforcement: false },
+    { feature: "investigations", pct: 100, threshold: 100, enforcement: true },
+  ]) {
+    const text = buildUsageSlackText({
+      orgName: "Acme",
+      manageBillingUrl: "https://x/billing",
+      ...opts,
+    });
+    assert.match(text, /one-time grant of 100 promotional investigations/);
+  }
+});

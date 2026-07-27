@@ -54,6 +54,7 @@ import { mountAlerts } from "./alerts.js";
 import { mountAnomalyScanner } from "./anomaly-scanner.js";
 import { auth } from "./auth.js";
 import { buildAutomationSettingsConflictUpdate } from "./automation-settings-update.js";
+import { ensurePaygPromotion } from "./billing/payg-promotion.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
 import { mountCloudflareAuthed, mountCloudflarePublic } from "./cloudflare.js";
@@ -966,6 +967,46 @@ function isPlanAlreadyAttached(err: unknown): boolean {
     err.body.includes("plan_already_attached")
   );
 }
+
+function isBalanceAlreadyCreated(err: unknown, balanceId: string): boolean {
+  if (!(err instanceof AutumnError) || err.statusCode !== 409) return false;
+  const body = err.body.toLowerCase();
+  return (
+    body.includes("balance_already_exists") ||
+    body.includes("balance already exists") ||
+    (body.includes("duplicate") && body.includes(balanceId.toLowerCase()))
+  );
+}
+
+app.post("/api/me/billing/payg-promotion", async (c) => {
+  const ctx = await resolveMaybeActiveOrgContext({
+    userId: c.var.userId,
+    preferredOrgId: c.var.orgId,
+  });
+  if (!ctx.org) throw new HTTPException(400, { message: "no active org" });
+  const key = process.env.AUTUMN_SECRET_KEY;
+  if (!key) throw new HTTPException(400, { message: "billing is not configured" });
+
+  const autumn = new Autumn({ secretKey: key });
+  const result = await ensurePaygPromotion(
+    {
+      loadSubscriptions: async (customerId) =>
+        (await autumn.customers.get({ customerId })).subscriptions,
+      createPromotionBalance: async (input) => {
+        try {
+          await autumn.balances.create(input);
+          return "created";
+        } catch (err) {
+          if (isBalanceAlreadyCreated(err, input.balanceId)) return "already_exists";
+          throw err;
+        }
+      },
+    },
+    ctx.org.id,
+  );
+
+  return c.json({ result });
+});
 
 // Immediate "switch to Free" — per Autumn's guidance, attach the Free plan now
 // (planSchedule "immediate") and carry usage over, rather than cancelling. Free

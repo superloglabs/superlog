@@ -154,18 +154,18 @@ export function buildUsageSlackText(opts: {
   manageBillingUrl: string;
 }): string {
   const label = featureLabel(opts.feature);
-  const link = `<${opts.manageBillingUrl}|Upgrade>`;
+  const link = `<${opts.manageBillingUrl}|Upgrade and get 100 free credits>`;
   if (opts.threshold < 100) {
-    return `:chart_with_upwards_trend: *${opts.orgName}* has used ${opts.pct}% of its Free plan ${label} this month. ${link} to avoid hitting the limit.`;
+    return `:chart_with_upwards_trend: *${opts.orgName}* has used ${opts.pct}% of its Free plan ${label} this month. ${link} to pay-as-you-go with a one-time grant of 100 promotional investigations and avoid hitting the limit.`;
   }
   if (opts.enforcement) {
     const paused =
       opts.feature === "investigations"
         ? "new investigations are paused"
         : `new ${label} are being dropped`;
-    return `:credit_card: *${opts.orgName}* has hit its Free plan ${label} limit — ${paused}. ${link} to resume.`;
+    return `:credit_card: *${opts.orgName}* has hit its Free plan ${label} limit — ${paused}. ${link} to pay-as-you-go with a one-time grant of 100 promotional investigations and resume.`;
   }
-  return `:warning: *${opts.orgName}* has reached its Free plan ${label} limit. ${link} to avoid interruption to ingest and investigations.`;
+  return `:warning: *${opts.orgName}* has reached its Free plan ${label} limit. ${link} to pay-as-you-go with a one-time grant of 100 promotional investigations and avoid interruption to ingest and investigations.`;
 }
 
 // Evaluate one org and fire a notification if a new threshold step was crossed.

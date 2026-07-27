@@ -40,17 +40,32 @@ const telemetryItems = () => [
   item({
     featureId: spans.id,
     included: 1_000_000,
-    price: { amount: 0.5, interval: "month", billingUnits: 1_000_000, billingMethod: "usage_based" },
+    price: {
+      amount: 0.5,
+      interval: "month",
+      billingUnits: 1_000_000,
+      billingMethod: "usage_based",
+    },
   }),
   item({
     featureId: logs.id,
     included: 5_000_000,
-    price: { amount: 0.5, interval: "month", billingUnits: 1_000_000, billingMethod: "usage_based" },
+    price: {
+      amount: 0.5,
+      interval: "month",
+      billingUnits: 1_000_000,
+      billingMethod: "usage_based",
+    },
   }),
   item({
     featureId: metricPoints.id,
     included: 10_000_000,
-    price: { amount: 0.15, interval: "month", billingUnits: 1_000_000, billingMethod: "usage_based" },
+    price: {
+      amount: 0.15,
+      interval: "month",
+      billingUnits: 1_000_000,
+      billingMethod: "usage_based",
+    },
   }),
 ];
 
@@ -70,7 +85,7 @@ export const free = plan({
   autoEnable: true,
   items: [
     // No price on any item → hard cap: check() denies once the allowance is hit.
-    item({ featureId: investigations.id, included: 5, reset: { interval: "month" } }),
+    item({ featureId: investigations.id, included: 50, reset: { interval: "month" } }),
     item({ featureId: spans.id, included: 1_000_000, reset: { interval: "month" } }),
     item({ featureId: logs.id, included: 5_000_000, reset: { interval: "month" } }),
     item({ featureId: metricPoints.id, included: 10_000_000, reset: { interval: "month" } }),
@@ -82,10 +97,10 @@ export const payg = plan({
   name: "Pay as you go",
   group: "main",
   items: [
-    // 5 free investigations (same as Free), then $1.50 each.
+    // 50 free investigations (same as Free), then $1.50 each.
     item({
       featureId: investigations.id,
-      included: 5,
+      included: 50,
       price: { amount: 1.5, interval: "month", billingUnits: 1, billingMethod: "usage_based" },
     }),
     ...telemetryItems(),

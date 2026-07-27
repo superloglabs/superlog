@@ -111,7 +111,7 @@ function variantCopy(input: UsageEmailInput): VariantCopy {
       headline: "You're approaching your Free plan limit",
       intro: `<strong>${org}</strong> has used ${input.pct}% of its monthly Free plan ${label} so far this cycle. You'll keep sending data and running investigations until you reach the limit, then they pause until your next cycle.`,
       ctaCopy:
-        "Pay-as-you-go and the Pro and Max packs raise your limits and add investigation credits.",
+        "Switch to pay-as-you-go for a one-time grant of 100 promotional investigations, then keep going with no hard caps.",
     };
   }
   if (!input.enforcement) {
@@ -120,7 +120,7 @@ function variantCopy(input: UsageEmailInput): VariantCopy {
       headline: "You've reached your Free plan limit",
       intro: `<strong>${org}</strong> has reached its monthly Free plan ${label} limit. Upgrade to keep telemetry and automated investigations running without interruption.`,
       ctaCopy:
-        "Switching to pay-as-you-go or a Pro or Max pack restores ingest and investigations and lifts your monthly limits.",
+        "Switch to pay-as-you-go for a one-time grant of 100 promotional investigations and restore ingest and investigations right away.",
     };
   }
   return {
@@ -128,7 +128,7 @@ function variantCopy(input: UsageEmailInput): VariantCopy {
     headline: "Your ingest and investigations are paused",
     intro: `<strong>${org}</strong> has hit its monthly Free plan limit, so new telemetry and automated investigations are paused until your usage resets next cycle. Upgrade to resume right away.`,
     ctaCopy:
-      "Switching to pay-as-you-go or a Pro or Max pack restores ingest and investigations immediately and lifts your monthly limits.",
+      "Switch to pay-as-you-go for a one-time grant of 100 promotional investigations and resume ingest and investigations immediately.",
   };
 }
 
@@ -138,7 +138,7 @@ export function renderUsageEmail(input: UsageEmailInput): { subject: string; htm
     .replace("{{intro}}", copy.intro)
     .replace("{{usageRows}}", usageRowsHtml(input.balances, input.feature))
     .replace("{{ctaCopy}}", esc(copy.ctaCopy))
-    .replace("{{ctaLabel}}", "Upgrade")
+    .replace("{{ctaLabel}}", "Upgrade and get 100 free credits")
     .replace("{{ctaUrl}}", esc(input.manageBillingUrl));
   return { subject: copy.subject, html };
 }

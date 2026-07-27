@@ -28,10 +28,10 @@ test("credit rate tapers $1.50 (PAYG) → $1.25 ($150) → $1.00 ($300)", () => 
   assert.equal(creditOverageUsd(getPlan("pack_300"), 40), 40);
 });
 
-test("free plan: 5 credits, 1M/5M/10M telemetry, hard block at cap", () => {
+test("free plan: 50 credits, 1M/5M/10M telemetry, hard block at cap", () => {
   const free = getPlan("free");
   assert.equal(free.baseMonthlyUsd, 0);
-  assert.equal(free.includedCredits, 5);
+  assert.equal(free.includedCredits, 50);
   assert.deepEqual(free.includedTelemetry, {
     spans: 1_000_000,
     logs: 5_000_000,
@@ -40,11 +40,11 @@ test("free plan: 5 credits, 1M/5M/10M telemetry, hard block at cap", () => {
   assert.equal(free.overage, "block");
 });
 
-test("pay-as-you-go: no base fee, nothing included, everything metered", () => {
+test("pay-as-you-go: no base fee, Free allowances included, then metered", () => {
   const payg = getPlan("payg");
   assert.equal(payg.baseMonthlyUsd, 0);
   // PAYG includes the free tier's allowance as free units, then meters beyond.
-  assert.equal(payg.includedCredits, 5);
+  assert.equal(payg.includedCredits, 50);
   assert.deepEqual(payg.includedTelemetry, {
     spans: 1_000_000,
     logs: 5_000_000,

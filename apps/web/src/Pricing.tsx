@@ -8,11 +8,6 @@ import { useGithubStarCount } from "./useGithubStars.ts";
 
 type AuthMode = "sign-in" | "sign-up" | null;
 
-// Where the "Contact us" / "Talk to us about Enterprise" links route. Enterprise
-// is a contact-sales plan, so its CTA books a discovery call instead of opening
-// the sign-up modal.
-const ENTERPRISE_CONTACT_URL = "https://cal.com/superlog/yc";
-
 // Pay-as-you-go unit prices. Source of truth: packages/billing/src/pricing.ts —
 // keep in sync if those change.
 const PAYG = {
@@ -20,6 +15,11 @@ const PAYG = {
   spansPerMillionUsd: 0.5,
   logsPerMillionUsd: 0.5,
   metricPointsPerMillionUsd: 0.15,
+  includedInvestigations: 50,
+  promotionalInvestigations: 100,
+  includedSpans: 1_000_000,
+  includedLogs: 5_000_000,
+  includedMetricPoints: 10_000_000,
 };
 
 const FREE_INCLUDED = [
@@ -27,63 +27,7 @@ const FREE_INCLUDED = [
   "5M logs",
   "10M metric points",
   "30-day retention",
-  "5 incidents investigated / month",
-];
-
-type Pack = {
-  name: string;
-  price: string;
-  cadence: string;
-  description: string;
-  cta: string;
-  highlighted: boolean;
-  features: string[];
-  // When set, the CTA is a contact link to this URL instead of the sign-up modal.
-  href?: string;
-};
-
-const packs: Pack[] = [
-  {
-    name: "Pro",
-    price: "$150",
-    cadence: "per month",
-    description: "For developers shipping fixes from real telemetry, every week.",
-    cta: "Get started",
-    highlighted: false,
-    features: [
-      "120 investigation credits / month",
-      "then $1.25 per investigation",
-      "Telemetry metered at pay-as-you-go rates",
-    ],
-  },
-  {
-    name: "Max",
-    price: "$300",
-    cadence: "per month",
-    description: "For teams that want more investigation throughput at a lower marginal price.",
-    cta: "Get started",
-    highlighted: true,
-    features: [
-      "300 investigation credits / month",
-      "then $1.00 per investigation",
-      "Telemetry metered at pay-as-you-go rates",
-    ],
-  },
-  {
-    name: "Enterprise",
-    price: "Custom",
-    cadence: "",
-    description: "For high-volume teams that need committed pricing, security review, and support.",
-    cta: "Contact us",
-    highlighted: false,
-    href: ENTERPRISE_CONTACT_URL,
-    features: [
-      "Custom investigation & telemetry volumes",
-      "SAML / SSO and custom retention",
-      "Dedicated support with SLAs",
-      "Invoicing and annual commitments",
-    ],
-  },
+  "50 incidents investigated / month",
 ];
 
 const included = [
@@ -91,7 +35,7 @@ const included = [
   ["Incident control plane", "Similar errors become one clear incident with severity and impact."],
   [
     "Investigations as credits",
-    "Each completed investigation is one credit; packs bundle them at a discount.",
+    "Each completed investigation is one credit; Free and PAYG each include 50 every month.",
   ],
   [
     "Metered telemetry",
@@ -134,11 +78,6 @@ export function Pricing() {
         <div className="mx-auto w-full max-w-[1400px] px-6 pb-24 md:px-8 xl:px-12">
           <FreeRow onSignUp={openSignUp} />
           <PaygEstimator onSignUp={openSignUp} />
-          <section className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-3">
-            {packs.map((plan) => (
-              <PlanCard key={plan.name} plan={plan} onSignUp={openSignUp} />
-            ))}
-          </section>
 
           <section className="mt-24 grid scroll-mt-24 grid-cols-1 gap-6 lg:grid-cols-2">
             <header className="flex max-w-3xl flex-col justify-center lg:max-w-none">
@@ -148,16 +87,6 @@ export function Pricing() {
               <p className="mt-2 text-sm leading-relaxed text-muted lg:mt-6 lg:text-[16px] lg:leading-relaxed">
                 You pay for telemetry you send and investigations you run — nothing else. The
                 plumbing, incident intelligence, and agent workflows come together as one system.
-                Need higher volumes, custom retention, or SAML?{" "}
-                <a
-                  href={ENTERPRISE_CONTACT_URL}
-                  className="text-fg underline underline-offset-4 hover:text-accent"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Talk to us about Enterprise
-                </a>
-                .
               </p>
             </header>
 
@@ -188,14 +117,6 @@ export function Pricing() {
               <Btn size="lg" onClick={openSignUp}>
                 Get started
               </Btn>
-              <a
-                href={ENTERPRISE_CONTACT_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex h-10 items-center rounded-sm border border-border px-4 text-[14px] font-medium tracking-tight text-fg transition-colors hover:border-border-strong"
-              >
-                Contact us
-              </a>
             </div>
           </section>
 
@@ -299,75 +220,6 @@ function GitHubIcon() {
   );
 }
 
-function PlanCard({
-  plan,
-  onSignUp,
-}: {
-  plan: Pack;
-  onSignUp: () => void;
-}) {
-  return (
-    <Tile
-      className={`h-full rounded-lg ${
-        plan.highlighted
-          ? "bg-surface/70 shadow-[0_28px_100px_rgba(72,90,226,0.13)] ring-1 ring-accent/40"
-          : "bg-surface/30"
-      }`}
-    >
-      <div className="flex h-full min-h-[560px] flex-col">
-        <h2 className="text-[27px] font-semibold tracking-tight text-fg">{plan.name}</h2>
-
-        <div className="mt-6">
-          <div className="flex items-end gap-2">
-            <span className="text-[48px] font-semibold leading-none tracking-tight text-fg">
-              {plan.price}
-            </span>
-            {plan.cadence && (
-              <span className="pb-1.5 text-[13px] font-medium text-muted">{plan.cadence}</span>
-            )}
-          </div>
-          <p className="mt-4 min-h-[66px] text-[13.5px] leading-relaxed text-muted">
-            {plan.description}
-          </p>
-        </div>
-
-        <ul className="mt-8 flex flex-col gap-2 text-[13.5px] leading-relaxed text-fg">
-          {plan.features.map((feature) => (
-            <li key={feature} className="flex items-baseline gap-2.5">
-              <span className="text-muted">•</span>
-              <span>{feature}</span>
-            </li>
-          ))}
-        </ul>
-
-        <div className="mt-auto pt-6">
-          {plan.href ? (
-            // Contact-sales CTA: an anchor styled to match the secondary button
-            // (Btn only renders a <button>), routing to the discovery call.
-            <a
-              href={plan.href}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-sm border border-border px-4 text-[14px] font-medium tracking-tight text-fg transition-all duration-150 hover:border-border-strong"
-            >
-              {plan.cta}
-            </a>
-          ) : (
-            <Btn
-              variant={plan.highlighted ? "primary" : "secondary"}
-              size="lg"
-              className="w-full justify-center"
-              onClick={onSignUp}
-            >
-              {plan.cta}
-            </Btn>
-          )}
-        </div>
-      </div>
-    </Tile>
-  );
-}
-
 function FreeRow({ onSignUp }: { onSignUp: () => void }) {
   return (
     <Tile className="mt-8 rounded-lg bg-surface/30">
@@ -378,7 +230,8 @@ function FreeRow({ onSignUp }: { onSignUp: () => void }) {
         <div>
           <h2 className="text-[27px] font-semibold tracking-tight text-fg">Free</h2>
           <p className="mt-2 max-w-md text-[13.5px] leading-relaxed text-muted">
-            For side projects and first installs — useful telemetry and a few investigations, free.
+            For side projects and first installs — useful telemetry and 50 investigations every
+            month, free.
           </p>
           <ul className="mt-6 flex flex-col gap-2 text-[13.5px] leading-relaxed text-fg">
             {FREE_INCLUDED.map((feature) => (
@@ -514,10 +367,16 @@ function PaygEstimator({ onSignUp }: { onSignUp: () => void }) {
   const [logs, setLogs] = useState(5_000_000);
   const [metrics, setMetrics] = useState(20_000_000);
 
-  const spansUsd = (spans / 1_000_000) * PAYG.spansPerMillionUsd;
-  const logsUsd = (logs / 1_000_000) * PAYG.logsPerMillionUsd;
-  const metricsUsd = (metrics / 1_000_000) * PAYG.metricPointsPerMillionUsd;
-  const total = investigations * PAYG.investigationUsd + spansUsd + logsUsd + metricsUsd;
+  const billableInvestigations = Math.max(
+    0,
+    investigations - PAYG.includedInvestigations - PAYG.promotionalInvestigations,
+  );
+  const spansUsd = (Math.max(0, spans - PAYG.includedSpans) / 1_000_000) * PAYG.spansPerMillionUsd;
+  const logsUsd = (Math.max(0, logs - PAYG.includedLogs) / 1_000_000) * PAYG.logsPerMillionUsd;
+  const metricsUsd =
+    (Math.max(0, metrics - PAYG.includedMetricPoints) / 1_000_000) * PAYG.metricPointsPerMillionUsd;
+  const investigationUsd = billableInvestigations * PAYG.investigationUsd;
+  const total = investigationUsd + spansUsd + logsUsd + metricsUsd;
 
   return (
     <Tile className="mt-6 rounded-lg bg-surface/30">
@@ -525,14 +384,15 @@ function PaygEstimator({ onSignUp }: { onSignUp: () => void }) {
         <div>
           <h2 className="text-[27px] font-semibold tracking-tight text-fg">Pay as you go</h2>
           <p className="mt-2 text-[13.5px] leading-relaxed text-muted">
-            Only pay for what you send — no base fee, no commitment. Drag to estimate your bill.
+            Switch with a one-time grant of 100 promotional investigations, plus 50 included every
+            month. No base fee, no commitment.
           </p>
           <div className="mt-7">
             <ScaleSlider
               label="Investigations"
               anchors={INVESTIGATION_ANCHORS}
               value={investigations}
-              lineUsd={investigations * PAYG.investigationUsd}
+              lineUsd={investigationUsd}
               formatValue={(n) => `${n} / mo`}
               formatTick={(n) => `${n}`}
               onChange={setInvestigations}
@@ -567,7 +427,7 @@ function PaygEstimator({ onSignUp }: { onSignUp: () => void }) {
           </div>
         </div>
         <div className="flex flex-col justify-center border-border lg:border-l lg:pl-8">
-          <Label>estimated</Label>
+          <Label>estimated with one-time promotion</Label>
           <div className="mt-3 flex items-end gap-2">
             <span className="text-[44px] font-semibold leading-none tracking-tight text-fg">
               ${total.toFixed(2)}
@@ -575,7 +435,8 @@ function PaygEstimator({ onSignUp }: { onSignUp: () => void }) {
             <span className="pb-1.5 text-[13px] font-medium text-muted">/ month</span>
           </div>
           <p className="mt-3 text-[12.5px] leading-relaxed text-muted">
-            $1.50 / investigation · $0.50 / M spans · $0.50 / M logs · $0.15 / M metric points
+            Usage beyond your included and promotional investigations is $1.50 each. Telemetry
+            overages are $0.50 / M spans and logs, and $0.15 / M metric points.
           </p>
           <Btn size="lg" className="mt-6 w-full justify-center" onClick={onSignUp}>
             Get started
