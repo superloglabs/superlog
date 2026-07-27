@@ -67,7 +67,11 @@ function isRetryableTelemetryTimeout(error: unknown): boolean {
     details.type === "TIMEOUT_EXCEEDED" ||
     details.type === "QUERY_WAS_CANCELLED" ||
     String(details.code) === "159" ||
-    String(details.code) === "394"
+    String(details.code) === "394" ||
+    // Node.js socket reset — emitted by @clickhouse/client when the server
+    // cancels a running query (e.g. cancel_http_readonly_queries_on_client_close)
+    // or when the connection drops mid-query. Semantically a transient timeout.
+    details.code === "ECONNRESET"
   );
 }
 
