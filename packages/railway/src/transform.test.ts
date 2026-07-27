@@ -107,6 +107,16 @@ test("railwayLogsToOtlp keeps the raw Railway payload as the original record", (
   assert.equal(attrs["log.record.original"], message);
 });
 
+test("railwayLogsToOtlp strips decoded ANSI controls from JSON bodies", () => {
+  const message = JSON.stringify({ level: "info", message: "\u001b[32mready\u001b[0m" });
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "ready");
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["log.record.original"], message);
+});
+
 test("railwayLogsToOtlp maps PostgreSQL LOG records to informational structured logs", () => {
   const message =
     "2026-07-24 09:24:40.055 UTC [59] LOG:  checkpoint complete: wrote 1114 buffers (6.8%)";
@@ -189,6 +199,25 @@ test("railwayLogsToOtlp reserves collector-owned structured attribute names", ()
   ]) {
     assert.equal(record.attributes.filter((attribute) => attribute.key === key).length, 1);
   }
+});
+
+test("railwayLogsToOtlp deduplicates normalized structured attribute keys", () => {
+  const message = JSON.stringify({
+    message: "request complete",
+    userId: "first",
+    userid: "second",
+    "foo bar": "first punctuation",
+    "foo@bar": "second punctuation",
+  });
+  const out = railwayLogsToOtlp([{ ...LOG, message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  const userIds = record.attributes.filter((attribute) => attribute.key === "railway.log.userid");
+  assert.equal(userIds.length, 1);
+  assert.equal(at(userIds, 0).value.stringValue, "first");
+  const fooBars = record.attributes.filter((attribute) => attribute.key === "railway.log.foo_bar");
+  assert.equal(fooBars.length, 1);
+  assert.equal(at(fooBars, 0).value.stringValue, "first punctuation");
 });
 
 test("railwayLogsToOtlp decodes Railway's JSON-encoded scalar attributes", () => {
@@ -370,6 +399,15 @@ test("railwayLogsToOtlp parses escaped logfmt values", () => {
 
   const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
   assert.equal(record.body.stringValue, 'worker said "ready" at C:\\jobs');
+  assert.equal(record.severityText, "INFO");
+});
+
+test("railwayLogsToOtlp decodes common control escapes in quoted logfmt values", () => {
+  const message = String.raw`level=info msg="first\nsecond\tready\rnext"`;
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "first\nsecond\tready\rnext");
   assert.equal(record.severityText, "INFO");
 });
 

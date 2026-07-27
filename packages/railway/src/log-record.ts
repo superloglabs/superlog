@@ -19,6 +19,13 @@ const RESERVED_STRUCTURED_ATTRIBUTE_KEYS = new Set([
   "provider_severity",
   "severity_source",
 ]);
+const LOGFMT_QUOTED_ESCAPES: Record<string, string> = {
+  '"': '"',
+  "\\": "\\",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+};
 const NATIVE_SEVERITY: Record<string, string> = {
   trace: "trace",
   debug: "debug",
@@ -87,15 +94,7 @@ export function parseRailwayLogRecord(
     severity: parsedSeverity ?? providerSeverity,
     attributes: parsedAttributes(
       "logfmt",
-      Object.entries(fields)
-        .filter(
-          ([key, value]) => isBoundedField(key, value) && !isReservedStructuredAttributeKey(key),
-        )
-        .slice(0, MAX_PARSED_FIELDS)
-        .map(([key, value]) => ({
-          key: `railway.log.${normalizeAttributeKey(key)}`,
-          value,
-        })),
+      structuredFields(Object.entries(fields)),
       providerSeverity,
       parsedSeverity ? "logfmt" : "railway",
       message,
@@ -199,18 +198,7 @@ function parseJson(
   const parsedSeverity =
     normalizeJsonSeverity(record.level) ?? normalizeJsonSeverity(record.severity);
 
-  const parsedFields = Object.entries(record)
-    .filter(
-      (entry): entry is [string, ParsedAttributeValue] =>
-        isScalar(entry[1]) &&
-        isBoundedField(entry[0], entry[1]) &&
-        !isReservedStructuredAttributeKey(entry[0]),
-    )
-    .slice(0, MAX_PARSED_FIELDS)
-    .map(([key, fieldValue]) => ({
-      key: `railway.log.${normalizeAttributeKey(key)}`,
-      value: fieldValue,
-    }));
+  const parsedFields = structuredFields(Object.entries(record));
   return {
     body,
     severity: parsedSeverity ?? providerSeverity,
@@ -386,8 +374,9 @@ function parseLogfmt(message: string): Record<string, string> | null {
         }
         if (character === "\\" && cursor + 1 < message.length) {
           const escaped = message[cursor + 1];
-          if (escaped === '"' || escaped === "\\") {
-            value += escaped;
+          const decoded = escaped ? LOGFMT_QUOTED_ESCAPES[escaped] : undefined;
+          if (decoded !== undefined) {
+            value += decoded;
             cursor += 2;
             continue;
           }
@@ -428,8 +417,20 @@ function normalizeAttributeKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9_.-]/g, "_");
 }
 
-function isReservedStructuredAttributeKey(key: string): boolean {
-  return RESERVED_STRUCTURED_ATTRIBUTE_KEYS.has(normalizeAttributeKey(key));
+function structuredFields(entries: Array<[string, unknown]>): ParsedAttribute[] {
+  const attributes: ParsedAttribute[] = [];
+  const seenKeys = new Set<string>();
+  for (const [key, value] of entries) {
+    if (!isScalar(value) || !isBoundedField(key, value)) continue;
+    const normalizedKey = normalizeAttributeKey(key);
+    if (RESERVED_STRUCTURED_ATTRIBUTE_KEYS.has(normalizedKey) || seenKeys.has(normalizedKey)) {
+      continue;
+    }
+    seenKeys.add(normalizedKey);
+    attributes.push({ key: `railway.log.${normalizedKey}`, value });
+    if (attributes.length === MAX_PARSED_FIELDS) break;
+  }
+  return attributes;
 }
 
 function isScalar(value: unknown): value is ParsedAttributeValue {

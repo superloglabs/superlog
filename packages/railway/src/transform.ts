@@ -120,7 +120,7 @@ export function railwayLogsToOtlp(
                 timeUnixNano: nanos.toString(),
                 observedTimeUnixNano: nanos.toString(),
                 ...severity(parsed.severity),
-                body: { stringValue: parsed.body },
+                body: { stringValue: stripAnsi(parsed.body) },
                 attributes: [
                   kv("railway.deployment_id", log.tags?.deploymentId),
                   kv("railway.deployment_instance_id", log.tags?.deploymentInstanceId),
