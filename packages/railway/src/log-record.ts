@@ -7,10 +7,19 @@ export type ParsedRailwayLogRecord = {
   attributes: ParsedAttribute[];
 };
 
+export type RailwayLogRecordContext = {
+  applicationError: boolean;
+};
+
 const HTTP_ACCESS_RECORD =
   /^(\S+) \S+ \S+ \[([^\]]+)\] "([A-Z]+) (\S+) HTTP\/(\d(?:\.\d)?)" (\d{3}) (\d+|-)(?: ([\d.]+|-))?$/;
 const POSTGRESQL_RECORD =
   /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? [A-Z]+) \[(\d+)\] (?:(\S+?)@(\S+) )?([A-Z][A-Z0-9]*):\s*(.*)$/s;
+const EXPLICIT_TEXT_SEVERITY =
+  /(?:^|[\s[\]():-])(trace|debug|info|notice|warn|warning|err|error|fatal|critical|panic)(?=$|[\s[\]():-])/i;
+const STRONG_TEXT_ERROR = /\bsending to (?:the )?(?:dlq|dead[- ]letter queue)\b/i;
+const DEPLOYMENT_SHUTDOWN_WRAPPER =
+  /^(?:error: script .+ terminated by signal SIGTERM \(Polite quit request\)|npm error (?:A complete log of this run can be found in:|Lifecycle script |command (?:failed|sh -c )|location |path |signal |workspace ))/i;
 const MAX_PARSED_FIELDS = 32;
 const MAX_PARSED_KEY_LENGTH = 128;
 const MAX_PARSED_STRING_LENGTH = 4096;
@@ -71,8 +80,9 @@ const POSTGRESQL_SEVERITY: Record<string, string> = {
 export function parseRailwayLogRecord(
   message: string,
   providerSeverity: string | null,
+  context: RailwayLogRecordContext = { applicationError: false },
 ): ParsedRailwayLogRecord {
-  const json = parseJson(message, providerSeverity);
+  const json = parseJson(message, providerSeverity, context);
   if (json) return json;
 
   const httpAccess = parseHttpAccess(message, providerSeverity);
@@ -86,12 +96,30 @@ export function parseRailwayLogRecord(
   const nativeSeverity = fields?.level;
   const parsedSeverity = nativeSeverity ? normalizeNativeSeverity(nativeSeverity) : null;
   if (!fields || (body === undefined && !parsedSeverity)) {
-    return { body: message, severity: providerSeverity, attributes: [] };
+    const textSeverity = explicitTextSeverity(message);
+    const severity = textSeverity ?? unstructuredProviderSeverity(providerSeverity, context);
+    return {
+      body: message,
+      severity,
+      attributes: parsedAttributes(
+        "text",
+        [],
+        providerSeverity,
+        textSeverity
+          ? "text"
+          : context.applicationError
+            ? "railway_error_attribute"
+            : severity
+              ? "railway"
+              : "unclassified",
+        message,
+      ),
+    };
   }
 
   return {
     body: body ?? message,
-    severity: parsedSeverity ?? providerSeverity,
+    severity: parsedSeverity ?? unstructuredProviderSeverity(providerSeverity, context),
     attributes: parsedAttributes(
       "logfmt",
       structuredFields(Object.entries(fields)),
@@ -172,6 +200,7 @@ function parseHttpAccess(
 function parseJson(
   message: string,
   providerSeverity: string | null,
+  context: RailwayLogRecordContext,
 ): ParsedRailwayLogRecord | null {
   let value: unknown;
   try {
@@ -201,7 +230,7 @@ function parseJson(
   const parsedFields = structuredFields(Object.entries(record));
   return {
     body: body ?? message,
-    severity: parsedSeverity ?? providerSeverity,
+    severity: parsedSeverity ?? unstructuredProviderSeverity(providerSeverity, context),
     attributes: parsedAttributes(
       "json",
       parsedFields,
@@ -456,6 +485,22 @@ function normalizeJsonSeverity(value: unknown): string | null {
   if (typeof value === "string") return normalizeNativeSeverity(value);
   if (typeof value === "number") return NUMERIC_JSON_SEVERITY[value] ?? null;
   return null;
+}
+
+function explicitTextSeverity(message: string): string | null {
+  if (DEPLOYMENT_SHUTDOWN_WRAPPER.test(message)) return null;
+  const label = message.match(EXPLICIT_TEXT_SEVERITY)?.[1];
+  if (label) return normalizeNativeSeverity(label);
+  return STRONG_TEXT_ERROR.test(message) ? "error" : null;
+}
+
+function unstructuredProviderSeverity(
+  providerSeverity: string | null,
+  context: RailwayLogRecordContext,
+): string | null {
+  if (context.applicationError) return "error";
+  const normalized = providerSeverity?.trim().toLowerCase();
+  return normalized === "error" || normalized === "fatal" ? null : providerSeverity;
 }
 
 function isBoundedField(key: string, value: ParsedAttributeValue): boolean {
