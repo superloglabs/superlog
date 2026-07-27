@@ -34,7 +34,6 @@ import {
   initialWebViewFromSearch,
   stripHandledOnboardingParams,
 } from "./onboardingWebView.ts";
-import { suggestedOrgName } from "./orgNameSuggestion.ts";
 import {
   ExploreDemoLink,
   InstallPromptCard,
@@ -76,9 +75,6 @@ export function OnboardingWizard({
   projectId,
   hasIngested,
   hasSentryIssues,
-  userName,
-  userEmail,
-  workspaceOrgName,
   onComplete,
   onExploreDemo,
 }: {
@@ -92,9 +88,6 @@ export function OnboardingWizard({
   // make the wizard claim "first events received" while showing demo data.
   hasIngested: boolean;
   hasSentryIssues: boolean;
-  userName: string;
-  userEmail: string;
-  workspaceOrgName?: string | null;
   onComplete: () => void;
   // Present only when a shared demo project is configured. Lets the user skip
   // ahead and explore sample data instead of instrumenting first.
@@ -181,11 +174,7 @@ export function OnboardingWizard({
         <div className="w-full max-w-[640px]">
           {!projectId ? (
             <>
-              <CreateOrgStep
-                userName={userName}
-                userEmail={userEmail}
-                workspaceOrgName={workspaceOrgName}
-              />
+              <CreateOrgStep />
               <FounderCallCard />
             </>
           ) : mode === "agent" ? (
@@ -278,18 +267,10 @@ export function OnboardingWizard({
   );
 }
 
-function CreateOrgStep({
-  userName,
-  userEmail,
-  workspaceOrgName,
-}: {
-  userName: string;
-  userEmail: string;
-  workspaceOrgName?: string | null;
-}) {
-  const [name, setName] = useState(() =>
-    suggestedOrgName({ workspaceOrgName, userName, userEmail }),
-  );
+function CreateOrgStep() {
+  // Start blank on purpose — no suggested/pre-filled name. We want the user to
+  // deliberately type their org name rather than accept an auto-generated one.
+  const [name, setName] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const createOrg = useCreateMyFirstOrg();
   const trimmed = name.trim();
