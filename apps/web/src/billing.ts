@@ -30,12 +30,21 @@ type PromotionCustomer =
   | null
   | undefined;
 
-// Autumn briefly exposes a customer before its balances are hydrated. Treat
-// that intermediate state as unknown/unavailable so login can render without
-// advertising a promotion from incomplete billing data.
+export type PaygPromotionStatus = "unknown" | "available" | "claimed";
+
+// Autumn can expose a customer without balances while a new billing customer
+// is being populated or when a response is incomplete. Treat that state as
+// unknown/unavailable so login can render without advertising a promotion from
+// incomplete billing data.
+export function paygPromotionStatus(customer: PromotionCustomer): PaygPromotionStatus {
+  if (!customer?.id || !customer.balances) return "unknown";
+  return hasClaimedPaygPromotion(customer.id, customer.balances.investigations?.breakdown)
+    ? "claimed"
+    : "available";
+}
+
 export function isPaygPromotionAvailable(customer: PromotionCustomer): boolean {
-  if (!customer?.id || !customer.balances) return false;
-  return !hasClaimedPaygPromotion(customer.id, customer.balances.investigations?.breakdown);
+  return paygPromotionStatus(customer) === "available";
 }
 
 // True when a signal is at a *hard* cap: a bounded (granted > 0), non-overage

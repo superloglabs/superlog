@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   type EntitlementBalance,
   isPaygPromotionAvailable,
+  paygPromotionStatus,
   signalAtHardCap,
 } from "./billing.ts";
 
@@ -74,5 +75,32 @@ test("PAYG promotion availability stays false while customer balances are not hy
       id: "org_123",
     }),
     false,
+  );
+  assert.equal(
+    paygPromotionStatus({
+      id: "org_123",
+    }),
+    "unknown",
+  );
+});
+
+test("PAYG promotion status distinguishes available and claimed hydrated balances", () => {
+  assert.equal(
+    paygPromotionStatus({
+      id: "org_123",
+      balances: { investigations: { breakdown: [] } },
+    }),
+    "available",
+  );
+  assert.equal(
+    paygPromotionStatus({
+      id: "org_123",
+      balances: {
+        investigations: {
+          breakdown: [{ id: "payg-welcome-investigations-org_123" }],
+        },
+      },
+    }),
+    "claimed",
   );
 });

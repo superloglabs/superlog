@@ -1,10 +1,10 @@
 import { CreditCardIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { hasClaimedPaygPromotion } from "@superlog/billing";
 import { useCustomer } from "autumn-js/react";
 import { type CSSProperties, type ReactNode, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useProjectPath } from "../ProjectRouteContext.tsx";
+import { isPaygPromotionAvailable } from "../billing.ts";
 
 // ---------------------------------------------------------------------------
 // Canonical shared primitives — used across the app and the /design sheet.
@@ -719,8 +719,6 @@ export function OutOfCreditsBanner({
 
 export function BillingAwareOutOfCreditsBanner() {
   const { data: customer } = useCustomer();
-  const promotionAvailable =
-    !!customer &&
-    !hasClaimedPaygPromotion(customer.id, customer.balances.investigations?.breakdown);
+  const promotionAvailable = isPaygPromotionAvailable(customer);
   return <OutOfCreditsBanner promotionAvailable={promotionAvailable} />;
 }

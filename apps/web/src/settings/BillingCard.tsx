@@ -1,4 +1,3 @@
-import { hasClaimedPaygPromotion } from "@superlog/billing";
 import { useAggregateEvents, useCustomer } from "autumn-js/react";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -11,7 +10,7 @@ import {
   YAxis,
 } from "recharts";
 import { useCancelBilling, useEnsurePaygPromotion } from "../api.ts";
-import { signalAtHardCap } from "../billing.ts";
+import { isPaygPromotionAvailable, signalAtHardCap } from "../billing.ts";
 import { Btn } from "../design/ui.tsx";
 
 // Autumn plan ids → display names (must match autumn.config.ts / pricing.ts).
@@ -106,10 +105,7 @@ export function BillingCard() {
   const activeSub = customer?.subscriptions?.find((s) => s.status === "active");
   const planId = activeSub?.planId ?? "free";
   const promotionCustomerId = customer?.id ?? null;
-  const promotionAlreadyClaimed = hasClaimedPaygPromotion(
-    customer?.id,
-    customer?.balances?.investigations?.breakdown,
-  );
+  const promotionAvailable = isPaygPromotionAvailable(customer);
 
   useEffect(() => {
     if (planId !== "payg" || !promotionCustomerId) return;
@@ -140,8 +136,9 @@ export function BillingCard() {
   }
 
   const planName = PLAN_NAMES[planId] ?? planId;
-  const planOptions = promotionAlreadyClaimed
-    ? PLAN_OPTIONS.map((option) =>
+  const planOptions = promotionAvailable
+    ? PLAN_OPTIONS
+    : PLAN_OPTIONS.map((option) =>
         option.id === "payg"
           ? {
               ...option,
@@ -153,8 +150,7 @@ export function BillingCard() {
               ],
             }
           : option,
-      )
-    : PLAN_OPTIONS;
+      );
 
   // A scheduled downgrade (e.g. Pro → PAYG) shows up as a second subscription
   // with status "scheduled" that takes effect at the end of the current cycle.
@@ -268,9 +264,9 @@ export function BillingCard() {
           <div className="mt-3 border-t border-border pt-3 text-[12.5px] leading-relaxed text-fg">
             <span className="font-semibold">You’ve reached your Free plan limits.</span> Ingest is
             paused for capped signals.{" "}
-            {promotionAlreadyClaimed
-              ? "Switch to pay-as-you-go to resume with no caps — you’ll add a card at checkout."
-              : "Switch to pay-as-you-go to resume with no caps and receive a one-time grant of 100 promotional investigations — you’ll add a card at checkout."}
+            {promotionAvailable
+              ? "Switch to pay-as-you-go to resume with no caps and receive a one-time grant of 100 promotional investigations — you’ll add a card at checkout."
+              : "Switch to pay-as-you-go to resume with no caps — you’ll add a card at checkout."}
           </div>
         )}
       </div>
