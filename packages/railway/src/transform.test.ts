@@ -148,7 +148,7 @@ test("railwayLogsToOtlp keeps a raw line at error when Railway carries an applic
   const attrs = Object.fromEntries(
     record.attributes.map((attribute) => [attribute.key, attribute.value.stringValue]),
   );
-  assert.equal(attrs["railway.log.severity_source"], "railway_error_attribute");
+  assert.equal(attrs["railway.log.severity_source"], "text");
 });
 
 test("railwayLogsToOtlp preserves an explicit severity label in raw application text", () => {
@@ -168,6 +168,16 @@ test("railwayLogsToOtlp preserves an explicit severity label in raw application 
 
 test("railwayLogsToOtlp does not treat severity words in ordinary prose as labels", () => {
   const message = "Recovered from error and resumed processing";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "");
+  assert.equal(record.severityNumber, 0);
+});
+
+test("railwayLogsToOtlp does not treat zero failure counts as errors", () => {
+  const message = "Tests: 10 passed, 0 failed";
   const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
 
   const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
@@ -204,14 +214,49 @@ test("railwayLogsToOtlp does not promote deployment shutdown wrapper lines to er
   }
 });
 
-test("railwayLogsToOtlp preserves crash signals as errors", () => {
-  const message = "npm error signal SIGSEGV";
-  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+test("railwayLogsToOtlp preserves genuine npm failures as errors", () => {
+  for (const message of ["npm error signal SIGSEGV", "npm error command failed"]) {
+    const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+    const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+    assert.equal(record.body.stringValue, message);
+    assert.equal(record.severityText, "ERROR");
+    assert.equal(record.severityNumber, 17);
+  }
+});
 
-  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
-  assert.equal(record.body.stringValue, message);
-  assert.equal(record.severityText, "ERROR");
-  assert.equal(record.severityNumber, 17);
+test("railwayLogsToOtlp attributes explicit labels ahead of application error fields", () => {
+  for (const message of [
+    "INFO request recovered",
+    JSON.stringify({ message: "INFO request recovered" }),
+    'message="INFO request recovered" event=recovery',
+  ]) {
+    const out = railwayLogsToOtlp(
+      [
+        {
+          ...LOG,
+          severity: "error",
+          message,
+          attributes: [
+            { key: "level", value: '"error"' },
+            { key: "err", value: '"previous request failed"' },
+          ],
+        },
+      ],
+      NAMES,
+    );
+    const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+    assert.equal(record.body.stringValue, "INFO request recovered");
+    assert.equal(record.severityText, "INFO");
+    assert.equal(record.severityNumber, 9);
+    const attrs = Object.fromEntries(
+      record.attributes.map((attribute) => [attribute.key, attribute.value.stringValue]),
+    );
+    assert.ok(
+      ["text", "json_message", "logfmt_message"].includes(
+        attrs["railway.log.severity_source"] ?? "",
+      ),
+    );
+  }
 });
 
 test("railwayLogsToOtlp keeps the raw Railway payload as the original record", () => {
