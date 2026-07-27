@@ -55,7 +55,11 @@ type ProvidersInfo = { google: boolean; github: boolean };
 function buildTimeProviders(): ProvidersInfo | null {
   const google = import.meta.env.VITE_AUTH_GOOGLE;
   const github = import.meta.env.VITE_AUTH_GITHUB;
-  if (google === undefined && github === undefined) return null;
+  // Absent covers both undefined (var not defined) and "" — a Docker build with
+  // no --build-arg still emits `ENV VITE_AUTH_GOOGLE=` as an empty string, and
+  // that must fall through to the runtime probe + skeletons, not be read as
+  // "both providers disabled".
+  if (!google && !github) return null;
   return { google: google === "true", github: github === "true" };
 }
 
