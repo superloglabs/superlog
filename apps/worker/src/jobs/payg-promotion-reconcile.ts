@@ -8,7 +8,7 @@ import {
 import type { JobDefinition } from "../jobs.js";
 import { logger as defaultLogger } from "../logger.js";
 
-type PromotionOutcome = "granted" | "already_granted" | "failed";
+type PromotionOutcome = "examined" | "granted" | "already_granted" | "failed";
 type LoggerLike = {
   info: (context: Record<string, unknown>, message: string) => void;
 };
@@ -79,6 +79,12 @@ function createAutumnPaygPromotionProvider(secretKey: string): PaygPromotionReco
         "failed to reconcile PAYG promotion",
       );
     },
+    onPageError: (error) => {
+      defaultLogger.error(
+        { scope: "billing.payg-promotion-reconcile", err: error },
+        "failed to list active PAYG customers",
+      );
+    },
   };
 }
 
@@ -108,6 +114,7 @@ export function createPaygPromotionReconcileJob(
           ((outcome: PromotionOutcome, count: number) => {
             promotionOutcomeCounter.add(count, { outcome });
           });
+        recordOutcome("examined", summary.examined);
         recordOutcome("granted", summary.granted);
         recordOutcome("already_granted", summary.alreadyGranted);
         recordOutcome("failed", summary.failed);

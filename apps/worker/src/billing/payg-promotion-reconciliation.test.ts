@@ -46,3 +46,23 @@ test("one customer failure does not prevent later PAYG grants", async () => {
     failed: 1,
   });
 });
+
+test("a provider page failure is reported and counted before reconciliation stops", async () => {
+  const pageErrors: unknown[] = [];
+  const providerError = new Error("provider unavailable");
+  const summary = await reconcilePaygPromotions({
+    listActivePaygCustomers: async () => {
+      throw providerError;
+    },
+    grantPromotion: async () => "granted",
+    onPageError: (error) => pageErrors.push(error),
+  });
+
+  assert.deepEqual(pageErrors, [providerError]);
+  assert.deepEqual(summary, {
+    examined: 0,
+    granted: 0,
+    alreadyGranted: 0,
+    failed: 1,
+  });
+});

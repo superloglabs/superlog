@@ -28,6 +28,7 @@ test("the scheduled reconciliation grants every active PAYG customer exactly onc
   await handler();
   assert.deepEqual(created, ["org-1", "org-2"]);
   assert.deepEqual(outcomes, [
+    ["examined", 2],
     ["granted", 1],
     ["already_granted", 1],
     ["failed", 0],

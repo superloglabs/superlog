@@ -9,6 +9,7 @@ export type PaygPromotionReconciliationDeps = {
   listActivePaygCustomers: (cursor?: string) => Promise<ActivePaygCustomerPage>;
   grantPromotion: (customerId: string) => Promise<PromotionResult>;
   onGrantError?: (customerId: string, error: unknown) => void;
+  onPageError?: (error: unknown) => void;
 };
 
 export type PaygPromotionReconciliationSummary = {
@@ -30,7 +31,14 @@ export async function reconcilePaygPromotions(
   let cursor: string | undefined;
 
   do {
-    const page = await deps.listActivePaygCustomers(cursor);
+    let page: ActivePaygCustomerPage;
+    try {
+      page = await deps.listActivePaygCustomers(cursor);
+    } catch (error) {
+      summary.failed += 1;
+      deps.onPageError?.(error);
+      break;
+    }
     for (const customerId of page.customerIds) {
       summary.examined += 1;
       try {
