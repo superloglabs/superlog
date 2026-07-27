@@ -11,13 +11,17 @@ test("landing navbar uses the public Superlog docs URL", () => {
   assert.equal(LANDING_DOCS_URL, "https://docs.superlog.sh");
 });
 
-test("landing top nav renders a Docs link wired to the docs URL", async () => {
+test("landing top nav wires the Docs link to the docs URL in a new tab", async () => {
   const source = await readFile(new URL("./Landing.tsx", import.meta.url), "utf8");
 
+  // Docs is a data-driven nav link marked external so it opens in a new tab.
   assert.match(
     source,
-    /href=\{LANDING_DOCS_URL\}[\s\S]*?target="_blank"[\s\S]*?rel="noreferrer"[\s\S]*?Docs\s*<\/a>/,
+    /\{\s*href:\s*LANDING_DOCS_URL,\s*label:\s*"Docs",\s*external:\s*true\s*\}/,
   );
+  // External nav links render target="_blank" rel="noreferrer".
+  assert.match(source, /target=\{link\.external \? "_blank" : undefined\}/);
+  assert.match(source, /rel=\{link\.external \? "noreferrer" : undefined\}/);
 });
 
 test("landing top nav renders a GitHub link wired to the repository URL", async () => {
