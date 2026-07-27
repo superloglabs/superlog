@@ -102,8 +102,12 @@ function CopyPromptCard({ prompt }: { prompt: string }) {
 
 // ---------------------------------------------------------------------------
 // Nav — three columns: brand left · links center · auth actions right.
-// The center column is `hidden md:flex`, so below md the `1fr auto 1fr` grid
-// collapses to brand-left / actions-right and stays balanced at every width.
+// The center column is `hidden lg:flex`. Below lg the `1fr auto 1fr` grid
+// collapses to brand-left / actions-right and stays balanced. We wait for lg
+// (not md) because at the ~704px md content width the six links plus the
+// wordmark and action group overflow, and grid can't keep the two 1fr side
+// tracks equal once the right track's min-content exceeds half the free space
+// — the center would drift and the links could butt against the buttons.
 // ---------------------------------------------------------------------------
 
 const NAV_LINKS: { href: string; label: string; external?: boolean }[] = [
@@ -131,7 +135,7 @@ function TopNav({
             <Wordmark />
           </div>
 
-          <div className="hidden items-center gap-6 justify-self-center md:flex">
+          <div className="hidden items-center gap-6 justify-self-center lg:flex">
             {NAV_LINKS.map((link) => (
               <a
                 key={link.href}
