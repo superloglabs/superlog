@@ -2,6 +2,7 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { usePostHog } from "posthog-js/react";
 import { authClient } from "./auth-client.ts";
+import { SkeletonBlock } from "./design/ui.tsx";
 import { refreshSignupAttributionCookie } from "./signupAttributionCookie.ts";
 
 // Two-step auth form. Step 1: enter email (or click a social provider). Step 2:
@@ -45,7 +46,21 @@ function rememberProvider(p: Provider) {
 // no GOOGLE_CLIENT_ID / GITHUB_CLIENT_ID).
 type ProvidersInfo = { google: boolean; github: boolean };
 
-function useAuthProviders(): ProvidersInfo {
+// Build-time hint: the prod web build already knows which social providers are
+// configured, so we bake it in as VITE_AUTH_GOOGLE / VITE_AUTH_GITHUB and paint
+// the buttons on first render — no /api/auth-providers round-trip, no flash of
+// the form with the buttons missing that then pops them in. Returns null when
+// the build didn't declare them (dev / worktree), where we fall back to the
+// runtime probe and render skeletons while it's in flight.
+function buildTimeProviders(): ProvidersInfo | null {
+  const google = import.meta.env.VITE_AUTH_GOOGLE;
+  const github = import.meta.env.VITE_AUTH_GITHUB;
+  if (google === undefined && github === undefined) return null;
+  return { google: google === "true", github: github === "true" };
+}
+
+function useAuthProviders(): { providers: ProvidersInfo; loading: boolean } {
+  const buildTime = buildTimeProviders();
   const query = useQuery({
     queryKey: ["auth-providers"],
     queryFn: async (): Promise<ProvidersInfo> => {
@@ -53,11 +68,16 @@ function useAuthProviders(): ProvidersInfo {
       if (!res.ok) throw new Error(`${res.status}`);
       return (await res.json()) as ProvidersInfo;
     },
-    // Until the response lands, assume nothing is configured — better to
-    // render no social buttons for half a tick than to flash a broken one.
+    // Seed the buttons from the build-time hint so prod renders them instantly;
+    // the fetch still runs to reconcile if a provider was toggled since build.
+    placeholderData: buildTime ?? undefined,
     staleTime: 60_000,
   });
-  return query.data ?? { google: false, github: false };
+  const providers = query.data ?? buildTime ?? { google: false, github: false };
+  // Only hold skeletons when the build gave no hint and the probe is still in
+  // flight. Prod always has a hint, so it never renders a skeleton.
+  const loading = buildTime === null && query.isLoading;
+  return { providers, loading };
 }
 
 export function AuthForm({
@@ -71,7 +91,7 @@ export function AuthForm({
   onClose?: () => void;
   socialCallbackURL?: string;
 }) {
-  const providers = useAuthProviders();
+  const { providers, loading: providersLoading } = useAuthProviders();
   const posthog = usePostHog();
   const anySocial = providers.google || providers.github;
   const [mode, setMode] = useState<Mode>(initialMode);
@@ -242,26 +262,35 @@ export function AuthForm({
 
       {step === "email" ? (
         <>
-          {anySocial && (
-            <div className="mt-6 flex flex-col gap-2">
-              {providers.google && (
-                <SocialButton
-                  provider="google"
-                  lastUsed={lastProvider.current === "google"}
-                  onClick={onGoogle}
-                />
-              )}
-              {providers.github && (
-                <SocialButton
-                  provider="github"
-                  lastUsed={lastProvider.current === "github"}
-                  onClick={onGithub}
-                />
-              )}
+          {providersLoading ? (
+            // Reserve the social area while the runtime probe resolves so the
+            // buttons don't shove the form down when they land.
+            <div className="mt-6 flex flex-col gap-2" role="status" aria-label="Loading sign-in options">
+              <SkeletonBlock className="h-11 w-full rounded-[8px]" />
+              <SkeletonBlock className="h-11 w-full rounded-[8px]" />
             </div>
+          ) : (
+            anySocial && (
+              <div className="mt-6 flex flex-col gap-2">
+                {providers.google && (
+                  <SocialButton
+                    provider="google"
+                    lastUsed={lastProvider.current === "google"}
+                    onClick={onGoogle}
+                  />
+                )}
+                {providers.github && (
+                  <SocialButton
+                    provider="github"
+                    lastUsed={lastProvider.current === "github"}
+                    onClick={onGithub}
+                  />
+                )}
+              </div>
+            )
           )}
 
-          {anySocial ? <Divider /> : <div className="mt-6" />}
+          {providersLoading || anySocial ? <Divider /> : <div className="mt-6" />}
 
           <form onSubmit={onEmailSubmit} className="flex flex-col gap-4">
             <Field label="Email address">
