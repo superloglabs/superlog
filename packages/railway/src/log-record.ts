@@ -15,12 +15,16 @@ const HTTP_ACCESS_RECORD =
   /^(\S+) \S+ \S+ \[([^\]]+)\] "([A-Z]+) (\S+) HTTP\/(\d(?:\.\d)?)" (\d{3}) (\d+|-)(?: ([\d.]+|-))?$/;
 const POSTGRESQL_RECORD =
   /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? [A-Z]+) \[(\d+)\] (?:(\S+?)@(\S+) )?([A-Z][A-Z0-9]*):\s*(.*)$/s;
-const EXPLICIT_TEXT_SEVERITY =
-  /(?:^|[\s[\]():-])(trace|debug|info|notice|warn|warning|err|error|fatal|critical|panic)(?=$|[\s[\]():-])/i;
+const LEADING_TEXT_SEVERITY =
+  /^\s*(trace|debug|info|notice|warn|warning|err|error|fatal|critical|panic)(?=$|[\s:=-])/i;
+const BRACKETED_TEXT_SEVERITY =
+  /\[(trace|debug|info|notice|warn|warning|err|error|fatal|critical|panic)\]/i;
+const TIMESTAMPED_TEXT_SEVERITY =
+  /^\s*\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\s+(trace|debug|info|notice|warn|warning|err|error|fatal|critical|panic)(?=$|[\s:=-])/i;
 const STRONG_TEXT_ERROR =
-  /(?:\b(?:failed|failure|exception|unauthorized|econnreset|connection (?:refused|reset)|premature (?:stream )?close|timed? out|cannot|unable to)\b|\bsending to (?:the )?(?:dlq|dead[- ]letter queue)\b|\bsubquery uses ungrouped column\b|\b(?:relation|column|operator|function|type|constraint|database|schema) .+ does not exist\b|\bsyntax error at or near\b|\bduplicate key value violates\b|\bpermission denied for\b|\binvalid input syntax\b)/i;
+  /(?:\b(?:failed|failure|exception|unauthorized|econnreset|connection (?:refused|reset)|premature (?:stream )?close|timed? out|cannot|unable to)\b|\bSIG(?:ABRT|BUS|FPE|ILL|QUIT|SEGV|SYS|TRAP)\b|\bsending to (?:the )?(?:dlq|dead[- ]letter queue)\b|\bsubquery uses ungrouped column\b|\b(?:relation|column|operator|function|type|constraint|database|schema) .+ does not exist\b|\bsyntax error at or near\b|\bduplicate key value violates\b|\bpermission denied for\b|\binvalid input syntax\b)/i;
 const DEPLOYMENT_SHUTDOWN_WRAPPER =
-  /^(?:error: script .+ terminated by signal SIGTERM \(Polite quit request\)|npm error (?:A complete log of this run can be found in:|Lifecycle script |command (?:failed|sh -c )|location |path |signal |workspace ))/i;
+  /^(?:error: script .+ terminated by signal SIGTERM \(Polite quit request\)|npm error (?:A complete log of this run can be found in:|Lifecycle script |command (?:failed|sh -c )|location |path |signal SIGTERM(?:\s|$)|workspace ))/i;
 const MAX_PARSED_FIELDS = 32;
 const MAX_PARSED_KEY_LENGTH = 128;
 const MAX_PARSED_STRING_LENGTH = 4096;
@@ -118,14 +122,24 @@ export function parseRailwayLogRecord(
     };
   }
 
+  const bodySeverity = body === undefined ? null : explicitTextSeverity(body);
   return {
     body: body ?? message,
-    severity: parsedSeverity ?? unstructuredProviderSeverity(providerSeverity, context),
+    severity:
+      parsedSeverity ?? bodySeverity ?? unstructuredProviderSeverity(providerSeverity, context),
     attributes: parsedAttributes(
       "logfmt",
       structuredFields(Object.entries(fields)),
       providerSeverity,
-      parsedSeverity ? "logfmt" : "railway",
+      parsedSeverity
+        ? "logfmt"
+        : context.applicationError
+          ? "railway_error_attribute"
+          : bodySeverity
+            ? "logfmt_message"
+            : unstructuredProviderSeverity(providerSeverity, context)
+              ? "railway"
+              : "unclassified",
       message,
     ),
   };
@@ -228,15 +242,25 @@ function parseJson(
     normalizeJsonSeverity(record.level) ?? normalizeJsonSeverity(record.severity);
   if (body === null && !parsedSeverity) return null;
 
+  const bodySeverity = body === null ? null : explicitTextSeverity(body);
   const parsedFields = structuredFields(Object.entries(record));
   return {
     body: body ?? message,
-    severity: parsedSeverity ?? unstructuredProviderSeverity(providerSeverity, context),
+    severity:
+      parsedSeverity ?? bodySeverity ?? unstructuredProviderSeverity(providerSeverity, context),
     attributes: parsedAttributes(
       "json",
       parsedFields,
       providerSeverity,
-      parsedSeverity ? "json" : "railway",
+      parsedSeverity
+        ? "json"
+        : context.applicationError
+          ? "railway_error_attribute"
+          : bodySeverity
+            ? "json_message"
+            : unstructuredProviderSeverity(providerSeverity, context)
+              ? "railway"
+              : "unclassified",
       message,
     ),
   };
@@ -490,7 +514,10 @@ function normalizeJsonSeverity(value: unknown): string | null {
 
 function explicitTextSeverity(message: string): string | null {
   if (DEPLOYMENT_SHUTDOWN_WRAPPER.test(message)) return null;
-  const label = message.match(EXPLICIT_TEXT_SEVERITY)?.[1];
+  const label =
+    message.match(LEADING_TEXT_SEVERITY)?.[1] ??
+    message.match(BRACKETED_TEXT_SEVERITY)?.[1] ??
+    message.match(TIMESTAMPED_TEXT_SEVERITY)?.[1];
   if (label) return normalizeNativeSeverity(label);
   return STRONG_TEXT_ERROR.test(message) ? "error" : null;
 }
