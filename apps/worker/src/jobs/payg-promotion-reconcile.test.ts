@@ -5,10 +5,12 @@ import { createPaygPromotionReconcileJob } from "./payg-promotion-reconcile.js";
 
 test("the scheduled reconciliation grants every active PAYG customer exactly once", async () => {
   const created: string[] = [];
+  const examined: number[] = [];
   const outcomes: Array<[string, number]> = [];
   const messages: string[] = [];
   const definition = createPaygPromotionReconcileJob({
     env: { AUTUMN_SECRET_KEY: "configured" },
+    recordExamined: (count) => examined.push(count),
     recordOutcome: (outcome, count) => outcomes.push([outcome, count]),
     logger: {
       info: (_context, message) => messages.push(message),
@@ -32,11 +34,10 @@ test("the scheduled reconciliation grants every active PAYG customer exactly onc
   assert.ok(handler);
   await handler();
   assert.deepEqual(created, ["org-1", "org-2"]);
+  assert.deepEqual(examined, [2]);
   assert.deepEqual(outcomes, [
-    ["examined", 2],
     ["granted", 1],
     ["already_granted", 1],
-    ["failed", 0],
   ]);
   assert.deepEqual(messages, [
     "PAYG promotion reconciliation started",

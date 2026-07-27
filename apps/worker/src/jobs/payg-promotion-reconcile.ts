@@ -8,7 +8,7 @@ import {
 import type { JobDefinition } from "../jobs.js";
 import { logger as defaultLogger } from "../logger.js";
 
-type PromotionOutcome = "examined" | "granted" | "already_granted" | "failed" | "skipped";
+type PromotionOutcome = "granted" | "already_granted" | "failed" | "skipped";
 type LoggerLike = {
   info: (context: Record<string, unknown>, message: string) => void;
 };
@@ -17,6 +17,10 @@ const meter = metrics.getMeter("@superlog/worker/billing");
 const AUTUMN_REQUEST_TIMEOUT_MS = 10_000;
 const PAYG_GRANT_CONCURRENCY = 25;
 const PAYG_MAX_CUSTOMERS_PER_RUN = 5_000;
+const promotionExaminedCounter = meter.createCounter("superlog.billing.payg_promotion.examined", {
+  description: "Active PAYG customers examined during promotion reconciliation.",
+  unit: "1",
+});
 const promotionOutcomeCounter = meter.createCounter("superlog.billing.payg_promotion.outcomes", {
   description: "PAYG promotion reconciliation outcomes.",
   unit: "1",
@@ -26,6 +30,7 @@ type PaygPromotionReconcileJobOptions = {
   env?: NodeJS.ProcessEnv;
   createProvider?: (secretKey: string) => PaygPromotionReconciliationDeps;
   logger?: LoggerLike;
+  recordExamined?: (count: number) => void;
   recordOutcome?: (outcome: PromotionOutcome, count: number) => void;
 };
 
@@ -112,6 +117,8 @@ export function createPaygPromotionReconcileJob(
         ((outcome: PromotionOutcome, count: number) => {
           promotionOutcomeCounter.add(count, { outcome });
         });
+      const recordExamined =
+        options.recordExamined ?? ((count: number) => promotionExaminedCounter.add(count));
       const secretKey = (options.env ?? process.env).AUTUMN_SECRET_KEY?.trim();
       if (!secretKey) {
         logger.info(
@@ -128,10 +135,12 @@ export function createPaygPromotionReconcileJob(
           "PAYG promotion reconciliation started",
         );
         const summary = await reconcilePaygPromotions(provider);
-        recordOutcome("examined", summary.examined);
-        recordOutcome("granted", summary.granted);
-        recordOutcome("already_granted", summary.alreadyGranted);
-        recordOutcome("failed", summary.failed);
+        if (summary.examined > 0) recordExamined(summary.examined);
+        if (summary.granted > 0) recordOutcome("granted", summary.granted);
+        if (summary.alreadyGranted > 0) {
+          recordOutcome("already_granted", summary.alreadyGranted);
+        }
+        if (summary.failed > 0) recordOutcome("failed", summary.failed);
         logger.info(
           { scope: "billing.payg-promotion-reconcile", ...summary },
           "PAYG promotions reconciled",
