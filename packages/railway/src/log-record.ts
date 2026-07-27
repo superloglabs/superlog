@@ -23,7 +23,7 @@ const TIMESTAMPED_TEXT_SEVERITY =
   /^\s*\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\s+(trace|debug|info|notice|warn|warning|err|error|fatal|critical|panic)(?=$|[\s:=-])/i;
 const STRONG_TEXT_ERROR =
   /(?:\b(?:failed|failure|exception|unauthorized|econnreset|connection (?:refused|reset)|premature (?:stream )?close|timed? out|cannot|unable to)\b|\bSIG(?:ABRT|BUS|FPE|ILL|QUIT|SEGV|SYS|TRAP)\b|\bsending to (?:the )?(?:dlq|dead[- ]letter queue)\b|\bsubquery uses ungrouped column\b|\b(?:relation|column|operator|function|type|constraint|database|schema) .+ does not exist\b|\bsyntax error at or near\b|\bduplicate key value violates\b|\bpermission denied for\b|\binvalid input syntax\b)/i;
-const NEGATED_FAILURE_COUNT = /\b(?:0|no|zero)\s+(?:failed|failures?|errors?|exceptions?)\b/i;
+const NEGATED_FAILURE_COUNT = /\b(?:0|no|zero)\s+(?:failed|failures?|errors?|exceptions?)\b/gi;
 const DEPLOYMENT_SHUTDOWN_WRAPPER =
   /^(?:error: script .+ terminated by signal SIGTERM \(Polite quit request\)|npm error (?:A complete log of this run can be found in:|command sh -c |location |path |signal SIGTERM(?:\s|$)|workspace ))/i;
 const MAX_PARSED_FIELDS = 32;
@@ -53,6 +53,7 @@ const NATIVE_SEVERITY: Record<string, string> = {
   error: "error",
   fatal: "fatal",
   critical: "fatal",
+  panic: "fatal",
   alert: "fatal",
   emergency: "fatal",
 };
@@ -520,8 +521,8 @@ function explicitTextSeverity(message: string): string | null {
     message.match(BRACKETED_TEXT_SEVERITY)?.[1] ??
     message.match(TIMESTAMPED_TEXT_SEVERITY)?.[1];
   if (label) return normalizeNativeSeverity(label);
-  if (NEGATED_FAILURE_COUNT.test(message)) return null;
-  return STRONG_TEXT_ERROR.test(message) ? "error" : null;
+  const failureEvidenceText = message.replace(NEGATED_FAILURE_COUNT, "");
+  return STRONG_TEXT_ERROR.test(failureEvidenceText) ? "error" : null;
 }
 
 function unstructuredProviderSeverity(

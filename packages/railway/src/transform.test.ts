@@ -186,6 +186,16 @@ test("railwayLogsToOtlp does not treat zero failure counts as errors", () => {
   assert.equal(record.severityNumber, 0);
 });
 
+test("railwayLogsToOtlp preserves independent failure evidence after a zero count", () => {
+  const message = "0 failed health checks; connection refused while starting worker";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "ERROR");
+  assert.equal(record.severityNumber, 17);
+});
+
 test("railwayLogsToOtlp preserves strong failure evidence in raw application text", () => {
   for (const message of [
     "Task abc123 exceeded max rescues (0/0), sending to DLQ",
@@ -221,6 +231,20 @@ test("railwayLogsToOtlp preserves genuine npm failures as errors", () => {
     assert.equal(record.body.stringValue, message);
     assert.equal(record.severityText, "ERROR");
     assert.equal(record.severityNumber, 17);
+  }
+});
+
+test("railwayLogsToOtlp maps explicit panic labels to fatal", () => {
+  for (const message of [
+    "PANIC unrecoverable worker state",
+    JSON.stringify({ message: "PANIC unrecoverable worker state" }),
+    'message="PANIC unrecoverable worker state" event=worker_crash',
+  ]) {
+    const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+    const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+    assert.equal(record.body.stringValue, "PANIC unrecoverable worker state");
+    assert.equal(record.severityText, "FATAL");
+    assert.equal(record.severityNumber, 21);
   }
 });
 
