@@ -4,5 +4,6 @@
 // infrastructure layer.
 export * from "./pricing.js";
 export * from "./period.js";
+export * from "./payg-promotion.js";
 export * from "./quota.js";
 export * from "./usage-notifications.js";

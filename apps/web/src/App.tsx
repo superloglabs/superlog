@@ -1,3 +1,4 @@
+import { hasClaimedPaygPromotion } from "@superlog/billing";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCustomer } from "autumn-js/react";
 import { usePostHog } from "posthog-js/react";
@@ -188,6 +189,12 @@ function AuthenticatedApp() {
     // signalAtHardCap swallows autumn-js check() throwing on a not-yet-hydrated
     // customer (e.g. a brand-new org) so billing state can't black-screen the app.
     ["spans", "logs", "metric_points"].some((f) => signalAtHardCap(check, f));
+  const paygPromotionAvailable =
+    !!billingCustomer &&
+    !hasClaimedPaygPromotion(
+      billingCustomer.id,
+      billingCustomer.balances.investigations?.breakdown,
+    );
   if (isPending) return null;
   if (!data) return <Landing />;
   const scopedRoute = matchPath("/app/org/:orgSlug/project/:projectSlug/*", pathname);
@@ -213,6 +220,7 @@ function AuthenticatedApp() {
           impersonating={impersonating}
           email={data.user.email}
           billingPaused={billingPaused}
+          paygPromotionAvailable={paygPromotionAvailable}
         />
         <ProductShell
           toolbar={<ProductToolbar />}
@@ -317,15 +325,17 @@ function TopRibbon({
   impersonating,
   email,
   billingPaused,
+  paygPromotionAvailable,
 }: {
   impersonating: boolean;
   email: string;
   billingPaused: boolean;
+  paygPromotionAvailable: boolean;
 }) {
   const { exploring } = useDemoExploration();
   if (impersonating) return <ImpersonationBar email={email} />;
   if (exploring) return <DemoModeBar />;
-  if (billingPaused) return <BillingLimitBar />;
+  if (billingPaused) return <BillingLimitBar paygPromotionAvailable={paygPromotionAvailable} />;
   return null;
 }
 
@@ -367,7 +377,7 @@ function ImpersonationBar({ email }: { email: string }) {
   );
 }
 
-function BillingLimitBar() {
+function BillingLimitBar({ paygPromotionAvailable }: { paygPromotionAvailable: boolean }) {
   const projectPath = useProjectPath();
   return (
     <div className="flex h-7 w-full items-center justify-center gap-2 bg-danger px-3 text-[11px] text-white">
@@ -377,7 +387,9 @@ function BillingLimitBar() {
         to={projectPath("/settings?scope=org&section=billing")}
         className="font-medium underline underline-offset-2 hover:opacity-80"
       >
-        Add a card to switch to pay-as-you-go →
+        {paygPromotionAvailable
+          ? "Upgrade and get 100 free credits →"
+          : "Upgrade to pay as you go →"}
       </Link>
     </div>
   );

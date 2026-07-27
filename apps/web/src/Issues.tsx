@@ -19,6 +19,7 @@ import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { type EvidenceLinkContext, EvidenceMarkdown } from "./EvidenceMarkdown.tsx";
 import { FeedbackTrigger } from "./FeedbackDialog.tsx";
 import { LogDrawer } from "./LogDetail.tsx";
+import { useProjectPath } from "./ProjectRouteContext.tsx";
 import { TraceDrawer } from "./TraceDetail.tsx";
 import { useAlertSeries } from "./alerts/api.ts";
 import type { AlertPreviewSeries, AlertSeriesRow } from "./alerts/types.ts";
@@ -60,10 +61,10 @@ import {
 } from "./api.ts";
 import { CountChart } from "./dashboards/widgets/CountChart.tsx";
 import {
+  BillingAwareOutOfCreditsBanner,
   Btn,
   Chip,
   OutOfCreditsBadge,
-  OutOfCreditsBanner,
   PageHeader,
   Tabs,
 } from "./design/ui.tsx";
@@ -74,6 +75,7 @@ import {
   IncidentSummaryTelemetry,
   fmtRelative,
 } from "./incidents/IncidentTranscript.tsx";
+import { TriggeredByAlertMetaRow } from "./incidents/TriggeredByAlertMetaRow.tsx";
 import {
   getIncidentDetailAccess,
   resolveIncidentPullRequestDiff,
@@ -85,14 +87,13 @@ import {
   resolveIncidentDetailTab,
   visibleIncidentDetailTabs,
 } from "./incidents/incident-detail-tabs.ts";
-import { isInvestigationInProgress } from "./incidents/investigation-progress.ts";
 import {
   type IncidentMetaRow,
   buildIncidentDetailMeta,
   latestIncidentLinearTicket,
   linearTicketSidebarTarget,
 } from "./incidents/incident-detail-view-model.ts";
-import { TriggeredByAlertMetaRow } from "./incidents/TriggeredByAlertMetaRow.tsx";
+import { isInvestigationInProgress } from "./incidents/investigation-progress.ts";
 import { getIssueIncidentLinkState } from "./issue-incident-link-state.ts";
 import { IssueDetailView } from "./issues/IssueDetailView.tsx";
 import { IssueFrequencySparkline } from "./issues/IssueFrequencySparkline.tsx";
@@ -101,11 +102,10 @@ import {
   ISSUE_STATUS_TABS,
   type IssueListWindow,
 } from "./issues/issue-list-model.ts";
-import { useProjectPath } from "./ProjectRouteContext.tsx";
 import {
+  type ProjectRouteSlugs,
   appPathFromProjectRoute,
   buildProjectPath,
-  type ProjectRouteSlugs,
 } from "./project-route.ts";
 import {
   IncidentDetailSkeleton,
@@ -1686,9 +1686,7 @@ export function IncidentDetailContent({
             <div className="mt-7 grid gap-3.5">
               {/* "Agent run" stays last; Linked issues slots in where Findings used to be. */}
               <IncidentSidebarMetaRows rows={detailMeta.slice(0, -1)} />
-              {alertEpisodes.length > 0 && (
-                <TriggeredByAlertMetaRow episodes={alertEpisodes} />
-              )}
+              {alertEpisodes.length > 0 && <TriggeredByAlertMetaRow episodes={alertEpisodes} />}
               <LinkedIssuesMetaRow issues={issues} onViewIssue={onViewIssue} />
               {linearTicketTarget && (
                 <div className="grid grid-cols-[132px_minmax(0,1fr)] items-start gap-3 text-[13px]">
@@ -1754,7 +1752,7 @@ export function IncidentDetailContent({
           <IncidentDetailScrollArea>
             {activeTab === "activity" && (
               <div className="space-y-8">
-                {outOfCredits && <OutOfCreditsBanner />}
+                {outOfCredits && <BillingAwareOutOfCreditsBanner />}
                 <div className="space-y-3">
                   {eventsLoading && <p className="text-[12px] text-muted">loading…</p>}
                   {eventsError && (
@@ -1843,7 +1841,7 @@ export function IncidentDetailContent({
                   />
                 )}
 
-                {outOfCredits && <OutOfCreditsBanner />}
+                {outOfCredits && <BillingAwareOutOfCreditsBanner />}
 
                 <AgentRunView
                   incident={incident}

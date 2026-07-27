@@ -7,13 +7,17 @@
 // is unreachable or the org isn't provisioned yet, we allow the run and skip the
 // charge rather than block a customer's incident response. Autumn itself also
 // fail-opens on degraded downstream providers.
+import { hasClaimedPaygPromotion as balanceShowsClaimedPromotion } from "@superlog/billing";
 import { logger } from "../logger.js";
 
 export const INVESTIGATION_FEATURE_ID = "investigations";
+const AUTUMN_REQUEST_TIMEOUT_MS = 10_000;
 
 export type InvestigationGate = {
   // True if the org has at least one investigation credit (or overage) left.
   canRunInvestigation(orgId: string): Promise<boolean>;
+  // Used to keep out-of-credit upsell copy honest for returning PAYG users.
+  hasClaimedPaygPromotion(orgId: string): Promise<boolean>;
   // Record one completed investigation against the org's credit balance.
   recordInvestigation(orgId: string): Promise<void>;
 };
@@ -21,6 +25,7 @@ export type InvestigationGate = {
 // Used in local dev / worktrees with no AUTUMN_SECRET_KEY: never gate.
 const allowAllGate: InvestigationGate = {
   canRunInvestigation: async () => true,
+  hasClaimedPaygPromotion: async () => false,
   recordInvestigation: async () => {},
 };
 
@@ -30,6 +35,7 @@ export function createAutumnInvestigationGate(opts: {
   secretKey: string;
   baseUrl?: string;
   fetchImpl?: FetchLike;
+  requestTimeoutMs?: number;
   // When false, usage is still tracked (recordInvestigation) but the gate never
   // blocks — i.e. metering-on, enforcement-off. Defaults to enforcing.
   enforce?: boolean;
@@ -37,6 +43,7 @@ export function createAutumnInvestigationGate(opts: {
   const baseUrl = opts.baseUrl ?? "https://api.useautumn.com/v1";
   const doFetch = opts.fetchImpl ?? fetch;
   const enforce = opts.enforce !== false;
+  const requestTimeoutMs = opts.requestTimeoutMs ?? AUTUMN_REQUEST_TIMEOUT_MS;
 
   async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
     const res = await doFetch(`${baseUrl}${path}`, {
@@ -46,6 +53,7 @@ export function createAutumnInvestigationGate(opts: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(requestTimeoutMs),
     });
     if (!res.ok) {
       throw new Error(`autumn ${path} -> ${res.status}`);
@@ -70,6 +78,28 @@ export function createAutumnInvestigationGate(opts: {
         logger.error(
           { scope: "billing.gate", orgId, err: err instanceof Error ? err.message : String(err) },
           "investigation credit check failed; allowing run (fail-open)",
+        );
+        return true;
+      }
+    },
+    hasClaimedPaygPromotion: async (orgId) => {
+      try {
+        const res = await doFetch(`${baseUrl}/customers/${encodeURIComponent(orgId)}`, {
+          headers: { Authorization: `Bearer ${opts.secretKey}` },
+          signal: AbortSignal.timeout(requestTimeoutMs),
+        });
+        if (!res.ok) throw new Error(`autumn customer -> ${res.status}`);
+        const customer = (await res.json()) as {
+          balances?: { investigations?: { breakdown?: Array<{ id?: unknown }> } };
+        };
+        const breakdown = customer.balances?.investigations?.breakdown?.flatMap((balance) =>
+          typeof balance.id === "string" ? [{ id: balance.id }] : [],
+        );
+        return balanceShowsClaimedPromotion(orgId, breakdown);
+      } catch (err) {
+        logger.error(
+          { scope: "billing.gate", orgId, err: err instanceof Error ? err.message : String(err) },
+          "PAYG promotion eligibility check failed; suppressing promotional copy",
         );
         return true;
       }

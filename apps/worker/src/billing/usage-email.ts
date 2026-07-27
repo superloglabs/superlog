@@ -91,6 +91,7 @@ export type UsageEmailInput = {
   pct: number; // watermark percentage
   threshold: number; // 50 | 85 | 100
   enforcement: boolean;
+  promotionAvailable: boolean;
   manageBillingUrl: string;
   balances: FeatureBalance[];
 };
@@ -105,13 +106,17 @@ type VariantCopy = {
 function variantCopy(input: UsageEmailInput): VariantCopy {
   const org = esc(input.orgName);
   const label = featureLabel(input.feature);
+  const ctaCopy = (promotional: string, generic: string) =>
+    input.promotionAvailable ? promotional : generic;
   if (input.threshold < 100) {
     return {
       subject: `You've used ${input.pct}% of your Free plan ${label}`,
       headline: "You're approaching your Free plan limit",
       intro: `<strong>${org}</strong> has used ${input.pct}% of its monthly Free plan ${label} so far this cycle. You'll keep sending data and running investigations until you reach the limit, then they pause until your next cycle.`,
-      ctaCopy:
-        "Pay-as-you-go and the Pro and Max packs raise your limits and add investigation credits.",
+      ctaCopy: ctaCopy(
+        "Switch to pay-as-you-go for a one-time grant of 100 promotional investigations, then keep going with no hard caps.",
+        "Switch to pay-as-you-go to keep going with no hard caps.",
+      ),
     };
   }
   if (!input.enforcement) {
@@ -119,16 +124,20 @@ function variantCopy(input: UsageEmailInput): VariantCopy {
       subject: `${input.orgName} has reached its Free plan ${label} limit`,
       headline: "You've reached your Free plan limit",
       intro: `<strong>${org}</strong> has reached its monthly Free plan ${label} limit. Upgrade to keep telemetry and automated investigations running without interruption.`,
-      ctaCopy:
-        "Switching to pay-as-you-go or a Pro or Max pack restores ingest and investigations and lifts your monthly limits.",
+      ctaCopy: ctaCopy(
+        "Switch to pay-as-you-go for a one-time grant of 100 promotional investigations and restore ingest and investigations right away.",
+        "Switch to pay-as-you-go and restore ingest and investigations right away.",
+      ),
     };
   }
   return {
     subject: `${input.orgName}: ingest and investigations are paused`,
     headline: "Your ingest and investigations are paused",
     intro: `<strong>${org}</strong> has hit its monthly Free plan limit, so new telemetry and automated investigations are paused until your usage resets next cycle. Upgrade to resume right away.`,
-    ctaCopy:
-      "Switching to pay-as-you-go or a Pro or Max pack restores ingest and investigations immediately and lifts your monthly limits.",
+    ctaCopy: ctaCopy(
+      "Switch to pay-as-you-go for a one-time grant of 100 promotional investigations and resume ingest and investigations immediately.",
+      "Switch to pay-as-you-go and resume ingest and investigations immediately.",
+    ),
   };
 }
 
@@ -138,7 +147,10 @@ export function renderUsageEmail(input: UsageEmailInput): { subject: string; htm
     .replace("{{intro}}", copy.intro)
     .replace("{{usageRows}}", usageRowsHtml(input.balances, input.feature))
     .replace("{{ctaCopy}}", esc(copy.ctaCopy))
-    .replace("{{ctaLabel}}", "Upgrade")
+    .replace(
+      "{{ctaLabel}}",
+      input.promotionAvailable ? "Upgrade and get 100 free credits" : "Upgrade to pay as you go",
+    )
     .replace("{{ctaUrl}}", esc(input.manageBillingUrl));
   return { subject: copy.subject, html };
 }

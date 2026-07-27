@@ -4,6 +4,7 @@ import type { FeatureBalance } from "@superlog/billing";
 import {
   type UsageNotificationEvent,
   type UsageNotifierDeps,
+  buildNoCreditsIncidentSlackText,
   buildUsageSlackText,
   isFreePlan,
   mapAutumnFeatures,
@@ -31,6 +32,7 @@ function harness(overrides: Partial<UsageNotifierDeps> = {}): Harness {
     hasMaxNotified: async () => false,
     fetchOrgUsage: async () => ({
       orgName: "Acme",
+      promotionAvailable: true,
       balances: [capped("logs", 4_500_000, 5_000_000)], // 90%
     }),
     claimThresholds: async (_org, _period, thresholds) => {
@@ -75,6 +77,7 @@ test("paid / overage-allowed org is never notified", async () => {
   const h = harness({
     fetchOrgUsage: async () => ({
       orgName: "Acme",
+      promotionAvailable: true,
       balances: [
         {
           featureId: "logs",
@@ -96,6 +99,7 @@ test("below the first step does not claim or send", async () => {
   const h = harness({
     fetchOrgUsage: async () => ({
       orgName: "Acme",
+      promotionAvailable: true,
       balances: [capped("logs", 100_000, 5_000_000)],
     }), // 2%
   });
@@ -119,6 +123,7 @@ test("crossing 100% later fires 100 once (50/85 already claimed)", async () => {
   // Now usage jumps to the cap.
   h.deps.fetchOrgUsage = async () => ({
     orgName: "Acme",
+    promotionAvailable: true,
     balances: [capped("logs", 5_000_000, 5_000_000)], // 100%
   });
   const r = await notifyOrgUsage(h.deps, "org_1");
@@ -281,6 +286,7 @@ test("100% Slack copy differs by enforcement + feature", () => {
       pct: 100,
       threshold: 100,
       enforcement: false,
+      promotionAvailable: true,
       manageBillingUrl: url,
     }),
     /reached its Free plan spans limit/,
@@ -293,6 +299,7 @@ test("100% Slack copy differs by enforcement + feature", () => {
       pct: 100,
       threshold: 100,
       enforcement: true,
+      promotionAvailable: true,
       manageBillingUrl: url,
     }),
     /new spans are being dropped/,
@@ -305,8 +312,56 @@ test("100% Slack copy differs by enforcement + feature", () => {
       pct: 100,
       threshold: 100,
       enforcement: true,
+      promotionAvailable: true,
       manageBillingUrl: url,
     }),
     /new investigations are paused/,
   );
+});
+
+test("every Slack upsell mentions the 100-investigation PAYG promotion", () => {
+  for (const opts of [
+    { feature: "logs", pct: 50, threshold: 50, enforcement: false },
+    { feature: "logs", pct: 100, threshold: 100, enforcement: false },
+    { feature: "investigations", pct: 100, threshold: 100, enforcement: true },
+  ]) {
+    const text = buildUsageSlackText({
+      orgName: "Acme",
+      manageBillingUrl: "https://x/billing",
+      promotionAvailable: true,
+      ...opts,
+    });
+    assert.match(text, /one-time grant of 100 promotional investigations/);
+  }
+});
+
+test("Slack uses generic PAYG copy after the promotion was already claimed", () => {
+  const text = buildUsageSlackText({
+    orgName: "Acme",
+    feature: "investigations",
+    pct: 100,
+    threshold: 100,
+    enforcement: true,
+    manageBillingUrl: "https://x/billing",
+    promotionAvailable: false,
+  });
+
+  assert.match(text, /Upgrade to pay as you go/);
+  assert.doesNotMatch(text, /100 promotional investigations|100 free credits/);
+});
+
+test("incident out-of-credit copy only promises the promotion when available", () => {
+  const manageBillingUrl = "https://x/billing";
+  const promotional = buildNoCreditsIncidentSlackText({
+    manageBillingUrl,
+    promotionAvailable: true,
+  });
+  const returning = buildNoCreditsIncidentSlackText({
+    manageBillingUrl,
+    promotionAvailable: false,
+  });
+
+  assert.match(promotional, /100 promotional investigations/);
+  assert.match(returning, /Upgrade to pay as you go/);
+  assert.doesNotMatch(returning, /100 promotional investigations|100 free credits/);
 });

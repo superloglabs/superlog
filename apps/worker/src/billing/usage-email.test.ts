@@ -11,7 +11,7 @@ const balances = [
   capped("spans", 620_000, 1_000_000),
   capped("logs", 4_300_000, 5_000_000),
   capped("metric_points", 3_100_000, 10_000_000),
-  capped("investigations", 3, 5),
+  capped("investigations", 30, 50),
 ];
 
 test("formatCount is compact and email-friendly", () => {
@@ -34,7 +34,7 @@ test("usage rows: leader is cobalt, others muted, last row has no divider", () =
   assert.equal((html.match(/border-bottom:1px solid #e6e6e8;/g) || []).length, 3);
   // formatted values
   assert.match(html, /4\.3M \/ 5M/);
-  assert.match(html, /3 \/ 5/);
+  assert.match(html, /30 \/ 50/);
 });
 
 test("a feature at/over 100% is red", () => {
@@ -49,6 +49,7 @@ test("approaching variant: subject + headline + filled placeholders", () => {
     pct: 86,
     threshold: 85,
     enforcement: false,
+    promotionAvailable: true,
     manageBillingUrl: "https://superlog.sh/settings?scope=org&section=billing",
     balances,
   });
@@ -65,6 +66,7 @@ test("limit-reached vs paused headlines depend on enforcement", () => {
     feature: "logs",
     pct: 100,
     threshold: 100,
+    promotionAvailable: true,
     manageBillingUrl: "https://x/billing",
     balances,
   };
@@ -75,6 +77,26 @@ test("limit-reached vs paused headlines depend on enforcement", () => {
   assert.match(renderUsageEmail({ ...base, enforcement: true }).html, /are paused/);
 });
 
+test("every upgrade email mentions the 100-investigation PAYG grant without hidden plans", () => {
+  const base = {
+    orgName: "Acme",
+    feature: "investigations",
+    pct: 100,
+    promotionAvailable: true,
+    manageBillingUrl: "https://x/billing",
+    balances,
+  };
+  for (const input of [
+    { ...base, pct: 50, threshold: 50, enforcement: false },
+    { ...base, threshold: 100, enforcement: false },
+    { ...base, threshold: 100, enforcement: true },
+  ]) {
+    const { html } = renderUsageEmail(input);
+    assert.match(html, /one-time grant of 100 promotional investigations/);
+    assert.doesNotMatch(html, /\bPro\b|\bMax\b/);
+  }
+});
+
 test("orgName is HTML-escaped in the body", () => {
   const { html } = renderUsageEmail({
     orgName: "A & <B>",
@@ -82,9 +104,26 @@ test("orgName is HTML-escaped in the body", () => {
     pct: 50,
     threshold: 50,
     enforcement: false,
+    promotionAvailable: true,
     manageBillingUrl: "https://x/billing",
     balances,
   });
   assert.match(html, /A &amp; &lt;B&gt;/);
   assert.doesNotMatch(html, /A & <B>/);
+});
+
+test("a returning PAYG customer receives generic upgrade copy", () => {
+  const { html } = renderUsageEmail({
+    orgName: "Acme",
+    feature: "investigations",
+    pct: 100,
+    threshold: 100,
+    enforcement: true,
+    promotionAvailable: false,
+    manageBillingUrl: "https://x/billing",
+    balances,
+  });
+
+  assert.match(html, /Upgrade to pay as you go/);
+  assert.doesNotMatch(html, /100 promotional investigations|100 free credits/);
 });

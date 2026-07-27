@@ -3,6 +3,7 @@ import "./net.js";
 import { createClient } from "@clickhouse/client";
 import { serve } from "@hono/node-server";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
+import { ensurePaygPromotion } from "@superlog/billing";
 import {
   INTERNAL_INCIDENT_EVENT_KIND_SQL_PATTERN,
   ISSUE_STATUSES,
@@ -966,6 +967,54 @@ function isPlanAlreadyAttached(err: unknown): boolean {
     err.body.includes("plan_already_attached")
   );
 }
+
+function isBalanceAlreadyCreated(err: unknown, balanceId: string): boolean {
+  if (!(err instanceof AutumnError) || err.statusCode !== 409) return false;
+  const body = err.body.toLowerCase();
+  return (
+    body.includes("balance_already_exists") ||
+    body.includes("balance already exists") ||
+    (body.includes("duplicate") && body.includes(balanceId.toLowerCase()))
+  );
+}
+
+app.post("/api/me/billing/payg-promotion", async (c) => {
+  const ctx = await resolveMaybeActiveOrgContext({
+    userId: c.var.userId,
+    preferredOrgId: c.var.orgId,
+  });
+  if (!ctx.org) throw new HTTPException(400, { message: "no active org" });
+  const key = process.env.AUTUMN_SECRET_KEY;
+  if (!key) throw new HTTPException(400, { message: "billing is not configured" });
+
+  const autumn = new Autumn({ secretKey: key });
+  const customerId = ctx.org.id;
+  let result: Awaited<ReturnType<typeof ensurePaygPromotion>>;
+  try {
+    result = await ensurePaygPromotion(
+      {
+        loadSubscriptions: async (id) =>
+          (await autumn.customers.get({ customerId: id })).subscriptions,
+        createPromotionBalance: async (input) => {
+          try {
+            await autumn.balances.create(input);
+            return "created";
+          } catch (err) {
+            if (isBalanceAlreadyCreated(err, input.balanceId)) return "already_exists";
+            throw err;
+          }
+        },
+      },
+      customerId,
+    );
+  } catch (err) {
+    logger.error({ scope: "billing.payg-promotion", customerId, err }, "PAYG promotion failed");
+    throw err;
+  }
+
+  logger.info({ scope: "billing.payg-promotion", customerId, result }, "PAYG promotion evaluated");
+  return c.json({ result });
+});
 
 // Immediate "switch to Free" — per Autumn's guidance, attach the Free plan now
 // (planSchedule "immediate") and carry usage over, rather than cancelling. Free

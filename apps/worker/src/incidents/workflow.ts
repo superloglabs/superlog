@@ -16,13 +16,14 @@ import { TERMINAL_STATES as AGENT_RUN_TERMINAL_STATES } from "../agent-runs/doma
 import { dispatchAgentRunJob } from "../agent-runs/enqueue.js";
 import { investigationGate } from "../billing/investigation-gate.js";
 import { usageNotifier } from "../billing/usage-notifier-infra.js";
+import { buildNoCreditsIncidentSlackText } from "../billing/usage-notifier.js";
 import { isAutoAgentRunSuppressed } from "../incident-cooldown.js";
-import { buildAppUrl } from "../incident-route.js";
 import {
   type EnsureIncidentForIssueResult,
   type IssueIntakePreference,
   ensureIncidentForIssue,
 } from "../incident-intake.js";
+import { buildAppUrl } from "../incident-route.js";
 import {
   postIncidentRootMessage,
   postIncidentThreadMessage,
@@ -48,6 +49,7 @@ export type ReopenedIncidentQueueStatus =
 async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
   agentRun: schema.AgentRun | null;
   queueStatus: ReopenedIncidentQueueStatus;
+  paygPromotionAvailable?: boolean;
 }> {
   const automation = await getProjectAutomation(incident.projectId);
   if (!automation.autoInvestigateIssuesEnabled) {
@@ -81,6 +83,7 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
     orderBy: [desc(schema.agentRuns.createdAt)],
   });
   let creditApproved = false;
+  let paygPromotionAvailable = true;
   const authorizeNewRun = async (): Promise<"incident_closed" | "no_credits" | null> => {
     // Investigation credit gate (Autumn). The org is the Autumn customer. Free
     // orgs that have spent their monthly credits are blocked here; paid plans
@@ -116,6 +119,7 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
       { scope: "agent_run", incidentId: incident.id, orgId: project.orgId },
       "skipping auto-agent run; org is out of investigation credits",
     );
+    paygPromotionAvailable = !(await investigationGate.hasClaimedPaygPromotion(project.orgId));
     // Blocked because the org hit its investigation cap → fire the upgrade
     // nudge (email + Slack). Deduped per period, so one notice, not one per
     // blocked incident. The per-incident "not started" Slack line is added
@@ -130,7 +134,13 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
   // credits and retry instead of queueing an unmetered successor.
   if (!observedActiveRun) {
     const blocked = await authorizeNewRun();
-    if (blocked) return { agentRun: null, queueStatus: blocked };
+    if (blocked) {
+      return {
+        agentRun: null,
+        queueStatus: blocked,
+        paygPromotionAvailable: blocked === "no_credits" ? paygPromotionAvailable : undefined,
+      };
+    }
   }
 
   type QueueAttempt =
@@ -177,7 +187,13 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
   let result = await attemptQueue();
   if (result.queueStatus === "needs_credit_check") {
     const blocked = await authorizeNewRun();
-    if (blocked) return { agentRun: null, queueStatus: blocked };
+    if (blocked) {
+      return {
+        agentRun: null,
+        queueStatus: blocked,
+        paygPromotionAvailable: blocked === "no_credits" ? paygPromotionAvailable : undefined,
+      };
+    }
     result = await attemptQueue();
     if (result.queueStatus === "needs_credit_check") {
       throw new Error("credit authorization did not settle investigation queueing");
@@ -301,13 +317,16 @@ export async function handleIssueTransitionWithResult(
     return intakeResult;
   }
 
-  const { agentRun, queueStatus } = await queueAgentRunIfNeeded(incident);
+  const { agentRun, queueStatus, paygPromotionAvailable } = await queueAgentRunIfNeeded(incident);
   if (queueStatus === "queued") {
     await postIncidentThreadMessage(incident.id, ":mag: Investigation queued.");
   } else if (queueStatus === "no_credits") {
     await postIncidentThreadMessage(
       incident.id,
-      `:credit_card: Investigation not started — you've gone over the Free plan's monthly investigation limit. Upgrade to pay-as-you-go for more investigations: <${buildAppUrl(WEB_ORIGIN, "/settings?scope=org&section=billing")}|Manage billing>`,
+      buildNoCreditsIncidentSlackText({
+        manageBillingUrl: buildAppUrl(WEB_ORIGIN, "/settings?scope=org&section=billing"),
+        promotionAvailable: paygPromotionAvailable !== false,
+      }),
     );
   }
   if (agentRun && linkedIssue && !createdIncident && isActiveAgentRunState(agentRun.state)) {

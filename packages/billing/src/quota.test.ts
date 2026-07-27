@@ -67,11 +67,11 @@ test("a plan WITH an included telemetry allowance bills only the slice above it"
 
 test("free plan allows investigations until included credits run out, then blocks", () => {
   const free = getPlan("free");
-  assert.deepEqual(evaluateCreditQuota({ plan: free, granted: 5, consumed: 4 }), {
+  assert.deepEqual(evaluateCreditQuota({ plan: free, granted: 50, consumed: 49 }), {
     allowed: true,
     billable: false,
   });
-  assert.deepEqual(evaluateCreditQuota({ plan: free, granted: 5, consumed: 5 }), {
+  assert.deepEqual(evaluateCreditQuota({ plan: free, granted: 50, consumed: 50 }), {
     allowed: false,
     reason: "no_credits",
   });

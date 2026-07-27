@@ -8,12 +8,16 @@
 // Gated on USAGE_NOTIFICATIONS_ENABLED + AUTUMN_SECRET_KEY: otherwise
 // createUsageNotifier returns null and every trigger is a no-op (the
 // `usageNotifier?.` callers below).
-import { currentBillingPeriod, periodKey as toPeriodKey } from "@superlog/billing";
+import {
+  currentBillingPeriod,
+  hasClaimedPaygPromotion,
+  periodKey as toPeriodKey,
+} from "@superlog/billing";
 import { db, fetchOrgMemberContacts, schema } from "@superlog/db";
 import { and, eq } from "drizzle-orm";
+import { buildAppUrl } from "../incident-route.js";
 import { postSlackMessage } from "../infra/slack/api.js";
 import { fetchSlackTargetsForOrg } from "../infra/slack/incident-messages.js";
-import { buildAppUrl } from "../incident-route.js";
 import { logger } from "../logger.js";
 import { renderUsageEmail } from "./usage-email.js";
 import {
@@ -49,6 +53,17 @@ function createResendSend(apiKey: string, fetchImpl: typeof fetch): ResendSend {
 }
 
 const MAX_THRESHOLD = 100;
+
+function paygPromotionAvailable(customer: unknown, orgId: string): boolean {
+  const balances = (customer as { balances?: Record<string, unknown> } | null)?.balances;
+  const investigations = balances?.investigations as
+    | { breakdown?: Array<{ id?: unknown }> }
+    | undefined;
+  const breakdown = investigations?.breakdown?.flatMap((balance) =>
+    typeof balance.id === "string" ? [{ id: balance.id }] : [],
+  );
+  return !hasClaimedPaygPromotion(orgId, breakdown);
+}
 
 // Calendar-month dedup window (anchor day 1). Slightly independent of each org's
 // Autumn reset day, which keeps the math simple; the safe direction is that an
@@ -115,7 +130,11 @@ function buildDeps(
         .from(schema.orgs)
         .where(eq(schema.orgs.id, orgId))
         .limit(1);
-      return { orgName: rows[0]?.name ?? "Your organization", balances };
+      return {
+        orgName: rows[0]?.name ?? "Your organization",
+        balances,
+        promotionAvailable: paygPromotionAvailable(customer, orgId),
+      };
     },
 
     // Atomic claim: insert one row per step, ignore conflicts, and return the
@@ -147,6 +166,7 @@ function buildDeps(
         pct: event.pct,
         threshold: event.threshold,
         enforcement: event.enforcement,
+        promotionAvailable: event.promotionAvailable,
         manageBillingUrl: event.manageBillingUrl,
         balances: event.balances,
       });
