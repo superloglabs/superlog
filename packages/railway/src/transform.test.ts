@@ -308,6 +308,19 @@ test("railwayLogsToOtlp preserves native severity for event-style JSON", () => {
   assert.equal(attrs["log.record.original"], message);
 });
 
+test("railwayLogsToOtlp preserves explicit empty JSON message bodies", () => {
+  const message = JSON.stringify({ message: "", event: "heartbeat" });
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, "");
+  assert.equal(record.severityText, "ERROR");
+  const attrs = Object.fromEntries(record.attributes.map((a) => [a.key, a.value.stringValue]));
+  assert.equal(attrs["railway.log.format"], "json");
+  assert.equal(attrs["railway.log.event"], "heartbeat");
+  assert.equal(attrs["log.record.original"], message);
+});
+
 test("railwayLogsToOtlp preserves unsafe JSON integer fields as exact strings", () => {
   const message = '{"level":30,"msg":"order accepted","order_id":9007199254740993}';
   const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);

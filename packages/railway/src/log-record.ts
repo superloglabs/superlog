@@ -196,11 +196,11 @@ function parseJson(
         : null;
   const parsedSeverity =
     normalizeJsonSeverity(record.level) ?? normalizeJsonSeverity(record.severity);
-  if (!body && !parsedSeverity) return null;
+  if (body === null && !parsedSeverity) return null;
 
   const parsedFields = structuredFields(Object.entries(record));
   return {
-    body: body || message,
+    body: body ?? message,
     severity: parsedSeverity ?? providerSeverity,
     attributes: parsedAttributes(
       "json",
