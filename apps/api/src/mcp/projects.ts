@@ -55,6 +55,24 @@ export async function assertProjectAccess(userId: string, projectId: string): Pr
   if (!membership) throw new HTTPException(403, { message: "no access to project" });
 }
 
+// Enforce the org boundary carried by an org-scoped MCP token (OAuth/PAT with a
+// `superlog:org:<id>` scope). A user who belongs to several orgs can mint a
+// token scoped to one of them and delegate it; without this check a tool that
+// only calls assertProjectAccess would let that token reach the user's *other*
+// orgs, escaping the token's declared scope. No-op for unscoped tokens.
+export async function assertTokenScope(
+  allowedOrgId: string | undefined,
+  projectId: string,
+): Promise<void> {
+  if (!allowedOrgId) return;
+  const project = await db.query.projects.findFirst({
+    where: eq(schema.projects.id, projectId),
+  });
+  if (!project || project.orgId !== allowedOrgId) {
+    throw new HTTPException(403, { message: "project is outside this MCP token's org scope" });
+  }
+}
+
 export async function setActiveProjectForToken(
   tokenId: string,
   userId: string,
