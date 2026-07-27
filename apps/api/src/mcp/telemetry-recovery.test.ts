@@ -166,6 +166,23 @@ test("a historical since-only range retries its first hour", () => {
   });
 });
 
+test("an ECONNRESET from ClickHouse is treated as a retryable timeout", () => {
+  const error = Object.assign(new Error("aborted"), { code: "ECONNRESET" });
+  const recovery = recoverTelemetryTimeout(
+    "list_services",
+    { range: { since: "now() - INTERVAL 24 HOUR", until: "now()" } },
+    error,
+  );
+
+  assert.ok(recovery !== undefined, "expected recovery guidance, got undefined");
+  assert.equal(recovery?.status, "retry_required");
+  assert.equal(recovery?.tool, "list_services");
+  assert.deepEqual(recovery?.suggested_input.range, {
+    since: "now() - INTERVAL 1 HOUR",
+    until: "now()",
+  });
+});
+
 test("permanent telemetry errors are not converted into retry guidance", () => {
   const error = Object.assign(new Error("Unknown table otel_logs"), {
     code: 60,
