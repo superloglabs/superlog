@@ -106,8 +106,9 @@ test("aliasServerDistinctId forwards to the client's alias", () => {
       aliases.push(args);
     },
   });
-  aliasServerDistinctId({ distinctId: "user-1", alias: "anon-123" });
-  assert.deepEqual(aliases, [{ distinctId: "user-1", alias: "anon-123" }]);
+  // distinctId = the existing (anonymous) id, alias = the new id linked to it.
+  aliasServerDistinctId({ distinctId: "anon-123", alias: "user-1" });
+  assert.deepEqual(aliases, [{ distinctId: "anon-123", alias: "user-1" }]);
 });
 
 test("aliasServerDistinctId no-ops when unconfigured or the client lacks alias", () => {

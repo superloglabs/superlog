@@ -266,9 +266,11 @@ export const auth = betterAuth({
             context?.headers?.get("cookie"),
           );
           if (attribution.posthogDistinctId && attribution.posthogDistinctId !== user.id) {
+            // Argument order per posthog-node: distinctId is the existing
+            // (anonymous) id, alias is the new user id being linked to it.
             aliasServerDistinctId({
-              distinctId: user.id,
-              alias: attribution.posthogDistinctId,
+              distinctId: attribution.posthogDistinctId,
+              alias: user.id,
             });
           }
           const hasEventProps = Object.keys(attribution.eventProperties).length > 0;

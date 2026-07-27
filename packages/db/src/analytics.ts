@@ -81,10 +81,11 @@ export function captureServerEvent(input: CaptureServerEventInput): void {
 }
 
 /**
- * Merge another distinct id (typically the browser's anonymous PostHog id)
- * into `distinctId`'s person. Lets the server-side signup event land on an
- * already-merged person instead of waiting for the SPA to identify() later.
- * No-op when analytics isn't configured; never throws.
+ * Link a new distinct id (`alias`) to an existing person (`distinctId`) —
+ * e.g. `distinctId` = the browser's anonymous PostHog id, `alias` = the new
+ * user id, per posthog-node's alias semantics. Lets the server-side signup
+ * event land on an already-merged person instead of waiting for the SPA to
+ * identify() later. No-op when analytics isn't configured; never throws.
  */
 export function aliasServerDistinctId(input: { distinctId: string; alias: string }): void {
   const client = activeClient();
