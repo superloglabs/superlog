@@ -119,7 +119,7 @@ const NAV_LINKS: { href: string; label: string; external?: boolean }[] = [
   { href: "/pricing", label: "Pricing" },
 ];
 
-function TopNav({
+export function TopNav({
   onSignIn,
   onSignUp,
 }: {
