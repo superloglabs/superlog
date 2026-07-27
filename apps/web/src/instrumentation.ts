@@ -65,10 +65,19 @@ if (!endpoint) {
       contextManager: new ZoneContextManager(),
     });
 
+    // UserInteractionInstrumentation has a class field initialization order bug
+    // when bundled by Vite/esbuild: InstrumentationBase calls enable() inside
+    // super() before the derived class's _eventNames field initializer runs.
+    // With { enabled: false } enable() is deferred past the constructor so
+    // Zone.js is only patched after _eventNames = new Set(['click']) is set,
+    // preventing TypeError: this._eventNames is undefined on every click.
+    const userInteractionInstr = new UserInteractionInstrumentation({ enabled: false });
+    userInteractionInstr.enable();
+
     registerInstrumentations({
       instrumentations: [
         new DocumentLoadInstrumentation(),
-        new UserInteractionInstrumentation(),
+        userInteractionInstr,
         new FetchInstrumentation({
           // Only propagate traceparent to first-party hosts. Third parties
           // Some third-party hosts reject traceparent in their CORS allowlist and
