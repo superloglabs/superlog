@@ -114,7 +114,8 @@ export function BillingCard() {
       onSuccess: () => {
         void refetch();
       },
-      onError: () => {
+      onError: (err) => {
+        console.error("[billing] PAYG promotion request failed", err);
         setError(
           "We couldn’t apply the 100-credit promotion. Refresh this page to try again or contact support.",
         );
