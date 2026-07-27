@@ -11,6 +11,7 @@ import { hasClaimedPaygPromotion as balanceShowsClaimedPromotion } from "@superl
 import { logger } from "../logger.js";
 
 export const INVESTIGATION_FEATURE_ID = "investigations";
+const AUTUMN_REQUEST_TIMEOUT_MS = 10_000;
 
 export type InvestigationGate = {
   // True if the org has at least one investigation credit (or overage) left.
@@ -34,6 +35,7 @@ export function createAutumnInvestigationGate(opts: {
   secretKey: string;
   baseUrl?: string;
   fetchImpl?: FetchLike;
+  requestTimeoutMs?: number;
   // When false, usage is still tracked (recordInvestigation) but the gate never
   // blocks — i.e. metering-on, enforcement-off. Defaults to enforcing.
   enforce?: boolean;
@@ -41,6 +43,7 @@ export function createAutumnInvestigationGate(opts: {
   const baseUrl = opts.baseUrl ?? "https://api.useautumn.com/v1";
   const doFetch = opts.fetchImpl ?? fetch;
   const enforce = opts.enforce !== false;
+  const requestTimeoutMs = opts.requestTimeoutMs ?? AUTUMN_REQUEST_TIMEOUT_MS;
 
   async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
     const res = await doFetch(`${baseUrl}${path}`, {
@@ -50,6 +53,7 @@ export function createAutumnInvestigationGate(opts: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(requestTimeoutMs),
     });
     if (!res.ok) {
       throw new Error(`autumn ${path} -> ${res.status}`);
@@ -82,6 +86,7 @@ export function createAutumnInvestigationGate(opts: {
       try {
         const res = await doFetch(`${baseUrl}/customers/${encodeURIComponent(orgId)}`, {
           headers: { Authorization: `Bearer ${opts.secretKey}` },
+          signal: AbortSignal.timeout(requestTimeoutMs),
         });
         if (!res.ok) throw new Error(`autumn customer -> ${res.status}`);
         const customer = (await res.json()) as {

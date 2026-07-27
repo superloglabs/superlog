@@ -58,6 +58,30 @@ test("detects whether the organization already claimed the PAYG promotion", asyn
   assert.equal(await gate.hasClaimedPaygPromotion("new"), false);
 });
 
+test("promotion lookup is bounded when the billing provider stalls", async () => {
+  const impl = (async (_url: string, init?: RequestInit) => {
+    await new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    });
+    throw new Error("unreachable");
+  }) as typeof fetch;
+  const gate = createAutumnInvestigationGate({
+    secretKey: "k",
+    fetchImpl: impl,
+    requestTimeoutMs: 1,
+  });
+
+  assert.equal(
+    await Promise.race([
+      gate.hasClaimedPaygPromotion("org_1"),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("promotion lookup did not time out")), 100);
+      }),
+    ]),
+    true,
+  );
+});
+
 test("check fails OPEN on API error (billing outage must not block investigations)", async () => {
   const { impl } = fakeFetch(() => ({ status: 500, json: { error: "boom" } }));
   const gate = createAutumnInvestigationGate({ secretKey: "k", fetchImpl: impl });
