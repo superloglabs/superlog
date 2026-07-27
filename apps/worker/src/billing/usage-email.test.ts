@@ -49,6 +49,7 @@ test("approaching variant: subject + headline + filled placeholders", () => {
     pct: 86,
     threshold: 85,
     enforcement: false,
+    promotionAvailable: true,
     manageBillingUrl: "https://superlog.sh/settings?scope=org&section=billing",
     balances,
   });
@@ -65,6 +66,7 @@ test("limit-reached vs paused headlines depend on enforcement", () => {
     feature: "logs",
     pct: 100,
     threshold: 100,
+    promotionAvailable: true,
     manageBillingUrl: "https://x/billing",
     balances,
   };
@@ -80,6 +82,7 @@ test("every upgrade email mentions the 100-investigation PAYG grant without hidd
     orgName: "Acme",
     feature: "investigations",
     pct: 100,
+    promotionAvailable: true,
     manageBillingUrl: "https://x/billing",
     balances,
   };
@@ -101,9 +104,26 @@ test("orgName is HTML-escaped in the body", () => {
     pct: 50,
     threshold: 50,
     enforcement: false,
+    promotionAvailable: true,
     manageBillingUrl: "https://x/billing",
     balances,
   });
   assert.match(html, /A &amp; &lt;B&gt;/);
   assert.doesNotMatch(html, /A & <B>/);
+});
+
+test("a returning PAYG customer receives generic upgrade copy", () => {
+  const { html } = renderUsageEmail({
+    orgName: "Acme",
+    feature: "investigations",
+    pct: 100,
+    threshold: 100,
+    enforcement: true,
+    promotionAvailable: false,
+    manageBillingUrl: "https://x/billing",
+    balances,
+  });
+
+  assert.match(html, /Upgrade to pay as you go/);
+  assert.doesNotMatch(html, /100 promotional investigations|100 free credits/);
 });

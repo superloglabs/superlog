@@ -7,6 +7,7 @@
 // is unreachable or the org isn't provisioned yet, we allow the run and skip the
 // charge rather than block a customer's incident response. Autumn itself also
 // fail-opens on degraded downstream providers.
+import { hasClaimedPaygPromotion as balanceShowsClaimedPromotion } from "@superlog/billing";
 import { logger } from "../logger.js";
 
 export const INVESTIGATION_FEATURE_ID = "investigations";
@@ -14,6 +15,8 @@ export const INVESTIGATION_FEATURE_ID = "investigations";
 export type InvestigationGate = {
   // True if the org has at least one investigation credit (or overage) left.
   canRunInvestigation(orgId: string): Promise<boolean>;
+  // Used to keep out-of-credit upsell copy honest for returning PAYG users.
+  hasClaimedPaygPromotion(orgId: string): Promise<boolean>;
   // Record one completed investigation against the org's credit balance.
   recordInvestigation(orgId: string): Promise<void>;
 };
@@ -21,6 +24,7 @@ export type InvestigationGate = {
 // Used in local dev / worktrees with no AUTUMN_SECRET_KEY: never gate.
 const allowAllGate: InvestigationGate = {
   canRunInvestigation: async () => true,
+  hasClaimedPaygPromotion: async () => false,
   recordInvestigation: async () => {},
 };
 
@@ -70,6 +74,27 @@ export function createAutumnInvestigationGate(opts: {
         logger.error(
           { scope: "billing.gate", orgId, err: err instanceof Error ? err.message : String(err) },
           "investigation credit check failed; allowing run (fail-open)",
+        );
+        return true;
+      }
+    },
+    hasClaimedPaygPromotion: async (orgId) => {
+      try {
+        const res = await doFetch(`${baseUrl}/customers/${encodeURIComponent(orgId)}`, {
+          headers: { Authorization: `Bearer ${opts.secretKey}` },
+        });
+        if (!res.ok) throw new Error(`autumn customer -> ${res.status}`);
+        const customer = (await res.json()) as {
+          balances?: { investigations?: { breakdown?: Array<{ id?: unknown }> } };
+        };
+        const breakdown = customer.balances?.investigations?.breakdown?.flatMap((balance) =>
+          typeof balance.id === "string" ? [{ id: balance.id }] : [],
+        );
+        return balanceShowsClaimedPromotion(orgId, breakdown);
+      } catch (err) {
+        logger.error(
+          { scope: "billing.gate", orgId, err: err instanceof Error ? err.message : String(err) },
+          "PAYG promotion eligibility check failed; suppressing promotional copy",
         );
         return true;
       }

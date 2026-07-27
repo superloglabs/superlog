@@ -65,6 +65,7 @@ function createAutumnPaygPromotionProvider(secretKey: string): PaygPromotionReco
           );
           return alreadyGranted ? [] : [customer.id];
         }),
+        scanned: page.list.length,
         nextCursor: page.nextCursor,
       };
     },

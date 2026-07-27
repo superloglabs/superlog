@@ -7,8 +7,8 @@ test("reconciles the one-time grant for every active PAYG customer across pages"
   const summary = await reconcilePaygPromotions({
     listActivePaygCustomers: async (cursor) =>
       cursor === undefined
-        ? { customerIds: ["org-1", "org-2"], nextCursor: "page-2" }
-        : { customerIds: ["org-3"], nextCursor: null },
+        ? { customerIds: ["org-1", "org-2"], scanned: 2, nextCursor: "page-2" }
+        : { customerIds: ["org-3"], scanned: 1, nextCursor: null },
     grantPromotion: async (customerId) => {
       granted.push(customerId);
       return customerId === "org-2" ? "already_granted" : "granted";
@@ -17,6 +17,7 @@ test("reconciles the one-time grant for every active PAYG customer across pages"
 
   assert.deepEqual(granted, ["org-1", "org-2", "org-3"]);
   assert.deepEqual(summary, {
+    scanned: 3,
     examined: 3,
     granted: 2,
     alreadyGranted: 1,
@@ -29,6 +30,7 @@ test("one customer failure does not prevent later PAYG grants", async () => {
   const summary = await reconcilePaygPromotions({
     listActivePaygCustomers: async () => ({
       customerIds: ["org-fails", "org-succeeds"],
+      scanned: 2,
       nextCursor: null,
     }),
     grantPromotion: async (customerId) => {
@@ -40,6 +42,7 @@ test("one customer failure does not prevent later PAYG grants", async () => {
 
   assert.deepEqual(attempted, ["org-fails", "org-succeeds"]);
   assert.deepEqual(summary, {
+    scanned: 2,
     examined: 2,
     granted: 1,
     alreadyGranted: 0,
@@ -60,6 +63,7 @@ test("a provider page failure is reported and counted before reconciliation stop
 
   assert.deepEqual(pageErrors, [providerError]);
   assert.deepEqual(summary, {
+    scanned: 0,
     examined: 0,
     granted: 0,
     alreadyGranted: 0,
@@ -74,6 +78,7 @@ test("grants are applied with bounded concurrency", async () => {
     grantConcurrency: 2,
     listActivePaygCustomers: async () => ({
       customerIds: ["org-1", "org-2", "org-3", "org-4"],
+      scanned: 4,
       nextCursor: null,
     }),
     grantPromotion: async () => {
@@ -89,12 +94,13 @@ test("grants are applied with bounded concurrency", async () => {
   assert.equal(summary.granted, 4);
 });
 
-test("a reconciliation pass stops at its customer budget", async () => {
+test("a reconciliation pass stops at its raw-customer scan budget", async () => {
   const attempted: string[] = [];
   const summary = await reconcilePaygPromotions({
     maxCustomers: 2,
     listActivePaygCustomers: async () => ({
       customerIds: ["org-1", "org-2", "org-3"],
+      scanned: 3,
       nextCursor: "page-2",
     }),
     grantPromotion: async (customerId) => {
@@ -104,5 +110,6 @@ test("a reconciliation pass stops at its customer budget", async () => {
   });
 
   assert.deepEqual(attempted, ["org-1", "org-2"]);
+  assert.equal(summary.scanned, 2);
   assert.equal(summary.examined, 2);
 });

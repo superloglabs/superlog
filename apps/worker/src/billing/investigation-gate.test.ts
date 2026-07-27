@@ -26,16 +26,36 @@ test("no AUTUMN_SECRET_KEY → allow-all gate (dev/worktrees never blocked)", as
 
 test("canRunInvestigation reads allowed and posts org as customer_id", async () => {
   const { impl, calls } = fakeFetch(() => ({ status: 200, json: { allowed: true } }));
-  const gate = createAutumnInvestigationGate({ secretKey: "am_sk_test_x", fetchImpl: impl });
+  const gate = createAutumnInvestigationGate({ secretKey: "test-key", fetchImpl: impl });
   assert.equal(await gate.canRunInvestigation("org_42"), true);
-  assert.match(calls[0]!.url, /\/check$/);
-  assert.deepEqual(calls[0]!.body, { customer_id: "org_42", feature_id: "investigations" });
+  assert.match(calls[0]?.url ?? "", /\/check$/);
+  assert.deepEqual(calls[0]?.body, { customer_id: "org_42", feature_id: "investigations" });
 });
 
 test("allowed:false blocks (free tier exhausted)", async () => {
   const { impl } = fakeFetch(() => ({ status: 200, json: { allowed: false } }));
   const gate = createAutumnInvestigationGate({ secretKey: "k", fetchImpl: impl });
   assert.equal(await gate.canRunInvestigation("org_1"), false);
+});
+
+test("detects whether the organization already claimed the PAYG promotion", async () => {
+  const { impl } = fakeFetch((url) => ({
+    status: 200,
+    json: {
+      id: "org_1",
+      balances: {
+        investigations: {
+          breakdown: url.includes("claimed")
+            ? [{ id: "payg-welcome-investigations-claimed" }]
+            : [{ id: "monthly-investigations" }],
+        },
+      },
+    },
+  }));
+  const gate = createAutumnInvestigationGate({ secretKey: "k", fetchImpl: impl });
+
+  assert.equal(await gate.hasClaimedPaygPromotion("claimed"), true);
+  assert.equal(await gate.hasClaimedPaygPromotion("new"), false);
 });
 
 test("check fails OPEN on API error (billing outage must not block investigations)", async () => {
@@ -48,8 +68,12 @@ test("recordInvestigation tracks value 1 for the org", async () => {
   const { impl, calls } = fakeFetch(() => ({ status: 200, json: { ok: true } }));
   const gate = createAutumnInvestigationGate({ secretKey: "k", fetchImpl: impl });
   await gate.recordInvestigation("org_7");
-  assert.match(calls[0]!.url, /\/track$/);
-  assert.deepEqual(calls[0]!.body, { customer_id: "org_7", feature_id: "investigations", value: 1 });
+  assert.match(calls[0]?.url ?? "", /\/track$/);
+  assert.deepEqual(calls[0]?.body, {
+    customer_id: "org_7",
+    feature_id: "investigations",
+    value: 1,
+  });
 });
 
 test("recordInvestigation swallows API errors (no throw)", async () => {
@@ -64,5 +88,5 @@ test("enforce:false meters but never blocks (no /check call; /track still fires)
   assert.equal(await gate.canRunInvestigation("org_1"), true); // allowed despite allowed:false
   assert.equal(calls.length, 0); // didn't even call /check
   await gate.recordInvestigation("org_1");
-  assert.match(calls[0]!.url, /\/track$/); // usage still metered
+  assert.match(calls[0]?.url ?? "", /\/track$/); // usage still metered
 });

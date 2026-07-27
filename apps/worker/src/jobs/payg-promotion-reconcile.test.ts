@@ -18,6 +18,7 @@ test("the scheduled reconciliation grants every active PAYG customer exactly onc
     createProvider: () => ({
       listActivePaygCustomers: async () => ({
         customerIds: ["org-1", "org-2"],
+        scanned: 2,
         nextCursor: null,
       }),
       grantPromotion: async (customerId) => {

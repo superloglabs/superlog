@@ -98,6 +98,7 @@ export type UsageNotificationEvent = {
   pct: number;
   threshold: number;
   enforcement: boolean;
+  promotionAvailable: boolean;
   manageBillingUrl: string;
   // Full per-feature balances so the email can render the usage table (not just
   // the watermark-leading feature).
@@ -111,7 +112,9 @@ export type UsageNotifierDeps = {
   // skip the Autumn round-trip for orgs already maxed out.
   hasMaxNotified: (orgId: string, periodKey: string) => Promise<boolean>;
   // Current usage snapshot from the billing provider; null on error/unprovisioned.
-  fetchOrgUsage: (orgId: string) => Promise<{ orgName: string; balances: FeatureBalance[] } | null>;
+  fetchOrgUsage: (
+    orgId: string,
+  ) => Promise<{ orgName: string; balances: FeatureBalance[]; promotionAvailable: boolean } | null>;
   // Atomically claim the given threshold steps for (org, period); returns the
   // subset that were NOT already claimed (i.e. newly won by this call).
   claimThresholds: (
@@ -151,21 +154,36 @@ export function buildUsageSlackText(opts: {
   pct: number;
   threshold: number;
   enforcement: boolean;
+  promotionAvailable: boolean;
   manageBillingUrl: string;
 }): string {
   const label = featureLabel(opts.feature);
-  const link = `<${opts.manageBillingUrl}|Upgrade and get 100 free credits>`;
+  const link = `<${opts.manageBillingUrl}|${
+    opts.promotionAvailable ? "Upgrade and get 100 free credits" : "Upgrade to pay as you go"
+  }>`;
+  const upgrade = (promotional: string, generic: string) =>
+    opts.promotionAvailable ? promotional : generic;
   if (opts.threshold < 100) {
-    return `:chart_with_upwards_trend: *${opts.orgName}* has used ${opts.pct}% of its Free plan ${label} this month. ${link} to pay-as-you-go with a one-time grant of 100 promotional investigations and avoid hitting the limit.`;
+    return `:chart_with_upwards_trend: *${opts.orgName}* has used ${opts.pct}% of its Free plan ${label} this month. ${link} ${upgrade("to pay-as-you-go with a one-time grant of 100 promotional investigations and avoid hitting the limit.", "and avoid hitting the limit with no hard caps.")}`;
   }
   if (opts.enforcement) {
     const paused =
       opts.feature === "investigations"
         ? "new investigations are paused"
         : `new ${label} are being dropped`;
-    return `:credit_card: *${opts.orgName}* has hit its Free plan ${label} limit — ${paused}. ${link} to pay-as-you-go with a one-time grant of 100 promotional investigations and resume.`;
+    return `:credit_card: *${opts.orgName}* has hit its Free plan ${label} limit — ${paused}. ${link} ${upgrade("to pay-as-you-go with a one-time grant of 100 promotional investigations and resume.", "and resume with no hard caps.")}`;
   }
-  return `:warning: *${opts.orgName}* has reached its Free plan ${label} limit. ${link} to pay-as-you-go with a one-time grant of 100 promotional investigations and avoid interruption to ingest and investigations.`;
+  return `:warning: *${opts.orgName}* has reached its Free plan ${label} limit. ${link} ${upgrade("to pay-as-you-go with a one-time grant of 100 promotional investigations and avoid interruption to ingest and investigations.", "and avoid interruption to ingest and investigations with no hard caps.")}`;
+}
+
+export function buildNoCreditsIncidentSlackText(opts: {
+  manageBillingUrl: string;
+  promotionAvailable: boolean;
+}): string {
+  if (opts.promotionAvailable) {
+    return `:credit_card: Investigation not started — you've gone over the Free plan's monthly investigation limit. Switch to pay-as-you-go for a one-time grant of 100 promotional investigations: <${opts.manageBillingUrl}|Upgrade and get 100 free credits>`;
+  }
+  return `:credit_card: Investigation not started — you've gone over the Free plan's monthly investigation limit. <${opts.manageBillingUrl}|Upgrade to pay as you go> to resume with no hard caps.`;
 }
 
 // Evaluate one org and fire a notification if a new threshold step was crossed.
@@ -211,6 +229,7 @@ export async function notifyOrgUsage(
         pct: wm.pct,
         threshold,
         enforcement: deps.enforcement,
+        promotionAvailable: usage.promotionAvailable,
         manageBillingUrl: deps.manageBillingUrl,
         balances: usage.balances,
       });
@@ -232,6 +251,7 @@ export async function notifyOrgUsage(
         pct: wm.pct,
         threshold,
         enforcement: deps.enforcement,
+        promotionAvailable: usage.promotionAvailable,
         manageBillingUrl: deps.manageBillingUrl,
       }),
     );

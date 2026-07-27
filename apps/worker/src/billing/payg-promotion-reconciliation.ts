@@ -2,6 +2,7 @@ type PromotionResult = "granted" | "already_granted";
 
 type ActivePaygCustomerPage = {
   customerIds: string[];
+  scanned: number;
   nextCursor: string | null;
 };
 
@@ -15,6 +16,7 @@ export type PaygPromotionReconciliationDeps = {
 };
 
 export type PaygPromotionReconciliationSummary = {
+  scanned: number;
   examined: number;
   granted: number;
   alreadyGranted: number;
@@ -25,6 +27,7 @@ export async function reconcilePaygPromotions(
   deps: PaygPromotionReconciliationDeps,
 ): Promise<PaygPromotionReconciliationSummary> {
   const summary: PaygPromotionReconciliationSummary = {
+    scanned: 0,
     examined: 0,
     granted: 0,
     alreadyGranted: 0,
@@ -43,8 +46,10 @@ export async function reconcilePaygPromotions(
       deps.onPageError?.(error);
       break;
     }
-    const remainingCustomerBudget = maxCustomers - summary.examined;
-    const customerIds = page.customerIds.slice(0, remainingCustomerBudget);
+    const remainingCustomerBudget = maxCustomers - summary.scanned;
+    const scanned = Math.min(Math.max(0, page.scanned), remainingCustomerBudget);
+    summary.scanned += scanned;
+    const customerIds = page.customerIds.slice(0, scanned);
     for (let offset = 0; offset < customerIds.length; offset += grantConcurrency) {
       const batch = customerIds.slice(offset, offset + grantConcurrency);
       summary.examined += batch.length;
@@ -62,7 +67,7 @@ export async function reconcilePaygPromotions(
       );
     }
     cursor = page.nextCursor ?? undefined;
-  } while (cursor && summary.examined < maxCustomers);
+  } while (cursor && summary.scanned < maxCustomers);
 
   return summary;
 }
