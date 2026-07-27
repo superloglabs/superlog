@@ -64,3 +64,15 @@ test("an invalid keep-alive timeout cannot silently disable idle closure", () =>
     /HTTP_KEEP_ALIVE_TIMEOUT_MS must be a nonnegative integer/,
   );
 });
+
+test("an oversized keep-alive timeout cannot collapse to an immediate Node timer", () => {
+  const server = createServer();
+
+  assert.throws(
+    () =>
+      configureHttpServerTimeouts(server, {
+        HTTP_KEEP_ALIVE_TIMEOUT_MS: "2147482648",
+      }),
+    /HTTP_KEEP_ALIVE_TIMEOUT_MS must not exceed 2147482647/,
+  );
+});
