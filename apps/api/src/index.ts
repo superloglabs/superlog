@@ -974,6 +974,7 @@ function isBalanceAlreadyCreated(err: unknown, balanceId: string): boolean {
   return (
     body.includes("balance_already_exists") ||
     body.includes("balance already exists") ||
+    body.includes("is already in use") ||
     (body.includes("duplicate") && body.includes(balanceId.toLowerCase()))
   );
 }
