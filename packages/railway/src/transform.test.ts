@@ -166,6 +166,16 @@ test("railwayLogsToOtlp preserves an explicit severity label in raw application 
   assert.equal(attrs["railway.log.severity_source"], "text");
 });
 
+test("railwayLogsToOtlp prefers timestamp-adjacent severity over later bracketed prose", () => {
+  const message = "2026-07-20T22:55:36Z INFO handler returned [ERROR] as a value";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "INFO");
+  assert.equal(record.severityNumber, 9);
+});
+
 test("railwayLogsToOtlp does not treat severity words in ordinary prose as labels", () => {
   const message = "Recovered from error and resumed processing";
   const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
@@ -599,6 +609,21 @@ test("railwayLogsToOtlp leaves an unknown native level unclassified", () => {
   assert.equal(attrs["railway.log.level"], "verbose");
   assert.equal(attrs["railway.log.provider_severity"], "error");
   assert.equal(attrs["railway.log.severity_source"], "unclassified");
+});
+
+test("railwayLogsToOtlp preserves a standalone native logfmt level", () => {
+  const message = "level=error";
+  const out = railwayLogsToOtlp([{ ...LOG, severity: "error", message }], NAMES);
+
+  const record = at(at(at(out.resourceLogs, 0).scopeLogs, 0).logRecords, 0);
+  assert.equal(record.body.stringValue, message);
+  assert.equal(record.severityText, "ERROR");
+  assert.equal(record.severityNumber, 17);
+  const attrs = Object.fromEntries(
+    record.attributes.map((attribute) => [attribute.key, attribute.value.stringValue]),
+  );
+  assert.equal(attrs["railway.log.format"], "logfmt");
+  assert.equal(attrs["railway.log.severity_source"], "logfmt");
 });
 
 test("railwayLogsToOtlp structures logfmt without a native level", () => {

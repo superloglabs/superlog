@@ -453,7 +453,7 @@ function parseLogfmt(message: string): Record<string, string> | null {
     count += 1;
   }
 
-  if (count < 2) return null;
+  if (count < 2 && fields.level === undefined) return null;
   return fields;
 }
 
@@ -518,8 +518,8 @@ function explicitTextSeverity(message: string): string | null {
   if (DEPLOYMENT_SHUTDOWN_WRAPPER.test(message)) return null;
   const label =
     message.match(LEADING_TEXT_SEVERITY)?.[1] ??
-    message.match(BRACKETED_TEXT_SEVERITY)?.[1] ??
-    message.match(TIMESTAMPED_TEXT_SEVERITY)?.[1];
+    message.match(TIMESTAMPED_TEXT_SEVERITY)?.[1] ??
+    message.match(BRACKETED_TEXT_SEVERITY)?.[1];
   if (label) return normalizeNativeSeverity(label);
   const failureEvidenceText = message.replace(NEGATED_FAILURE_COUNT, "");
   return STRONG_TEXT_ERROR.test(failureEvidenceText) ? "error" : null;
