@@ -675,12 +675,12 @@ export function OutOfCreditsBadge() {
   );
 }
 
-export function OutOfCreditsBanner() {
+export function OutOfCreditsBanner({
+  promotionAvailable = true,
+}: {
+  promotionAvailable?: boolean;
+}) {
   const projectPath = useProjectPath();
-  const { data: customer } = useCustomer();
-  const promotionAvailable =
-    !!customer &&
-    !hasClaimedPaygPromotion(customer.id, customer.balances.investigations?.breakdown);
   return (
     <div
       className="rounded-md border p-4"
@@ -715,4 +715,12 @@ export function OutOfCreditsBanner() {
       </div>
     </div>
   );
+}
+
+export function BillingAwareOutOfCreditsBanner() {
+  const { data: customer } = useCustomer();
+  const promotionAvailable =
+    !!customer &&
+    !hasClaimedPaygPromotion(customer.id, customer.balances.investigations?.breakdown);
+  return <OutOfCreditsBanner promotionAvailable={promotionAvailable} />;
 }
