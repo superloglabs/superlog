@@ -36,6 +36,7 @@ import {
   resolveGcpPubSubPushAudience,
 } from "./gcp-pubsub.js";
 import { mountGcpMetricsPullRoute } from "./gcp-pull-routes.js";
+import { configureHttpServerTimeouts } from "./http-server.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import { createIngestKeyCache, createLastUsedRecorder } from "./ingest-key-auth.js";
 import { IngestQueue, getIngestQueueConfig } from "./ingest-queue.js";
@@ -1094,18 +1095,11 @@ async function forwardFirehose(
 }
 
 const server = serve({ fetch: app.fetch, port: PORT });
-// When deployed behind a load balancer (typically a 60s idle timeout), Node's
-// default 5s keepAliveTimeout closes idle keep-alive sockets the balancer still
-// considers pooled; reusing one then gets a RST and surfaces as a 502 to the
-// client even though the app returned 200. Periodic OTLP metric exporters
-// (default ~60s interval) hit this race the hardest. Keep the keep-alive
-// comfortably above the balancer idle timeout: a thin (~5s) margin still leaks
-// 502s in bursts where many wall-clock-aligned exporters reuse pooled sockets at
-// once and the event loop is briefly busy, so we keep a wide margin. headersTimeout
-// stays above keepAliveTimeout per Node's required ordering.
-if ("keepAliveTimeout" in server) {
-  server.keepAliveTimeout = 75_000;
-  server.headersTimeout = 76_000;
+// Keep the backend timeout configurable independently from any upstream load
+// balancer. Setting HTTP_KEEP_ALIVE_TIMEOUT_MS=0 leaves idle-connection closure
+// to the upstream, preventing it from reusing a socket while Node closes it.
+if ("keepAliveTimeout" in server && "headersTimeout" in server) {
+  configureHttpServerTimeouts(server);
 }
 if (ingestQueue && ingestQueueConfig?.consumerEnabled) {
   ingestQueue.startConsumer(COLLECTOR_URL);
