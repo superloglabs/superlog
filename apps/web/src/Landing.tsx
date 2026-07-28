@@ -451,7 +451,7 @@ function HeroSlackMessage() {
   const [activeMessageIndex, setActiveMessageIndex] = useState(0);
   const message = HERO_SLACK_MESSAGES[activeMessageIndex] ?? HERO_SLACK_MESSAGES[0];
   const secondaryAction =
-    "inline-flex shrink-0 items-center gap-1 rounded-[4px] border border-black/30 bg-white px-[7px] py-[5px] text-[12px] font-bold leading-[17px] text-[#1d1c1d] transition-colors hover:bg-black/[0.04]";
+    "inline-flex shrink-0 items-center gap-1 rounded-[4px] border border-black/30 bg-white px-[7px] py-[5px] text-[12px] font-bold leading-[17px] text-[#1d1c1d]";
 
   return (
     <div className="landing-slack-card w-full max-w-[660px]">
@@ -510,33 +510,28 @@ function HeroSlackMessage() {
               </p>
 
               <div className="mt-auto flex flex-wrap items-center gap-1.5">
-                <button type="button" className={secondaryAction}>
-                  Open in Superlog
-                </button>
-                <button type="button" className={secondaryAction}>
-                  View PR
-                </button>
-                <button
-                  type="button"
-                  className="inline-flex shrink-0 items-center gap-1 rounded-[4px] bg-[#007a5a] px-[7px] py-[5px] text-[12px] font-bold leading-[17px] text-white transition-colors hover:bg-[#006b4f]"
+                <span className={secondaryAction}>Open in Superlog</span>
+                <span className={secondaryAction}>View PR</span>
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 rounded-[4px] bg-[#007a5a] px-[7px] py-[5px] text-[12px] font-bold leading-[17px] text-white"
                 >
                   <span aria-hidden="true" className="font-['Apple_Color_Emoji'] text-[14px]">
                     🔀
                   </span>
                   Merge PR
-                </button>
-                <button type="button" className={secondaryAction}>
+                </span>
+                <span className={secondaryAction}>
                   <span aria-hidden="true" className="font-['Apple_Color_Emoji'] text-[14px]">
                     ✅
                   </span>
                   Problem resolved
-                </button>
-                <button type="button" className={secondaryAction}>
+                </span>
+                <span className={secondaryAction}>
                   <span aria-hidden="true" className="font-['Apple_Color_Emoji'] text-[14px]">
                     🔕
                   </span>
                   Not an issue
-                </button>
+                </span>
               </div>
             </div>
           </div>
