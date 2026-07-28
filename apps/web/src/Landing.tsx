@@ -41,6 +41,8 @@ export function Landing({ initialAuthMode }: { initialAuthMode?: AuthMode } = {}
         <Hero onSignUp={openSignUp} />
 
         <div className="mx-auto w-full max-w-[1400px] px-0 pb-24 md:px-8 xl:px-12">
+          <AcceptanceStat />
+
           <ErrorImportSection />
 
           <AgentContextSection />
@@ -910,6 +912,75 @@ function FixSection() {
         <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(8,9,11,0.48),rgba(8,9,11,0.18)),linear-gradient(0deg,rgba(8,9,11,0.68),rgba(8,9,11,0.04)_62%)]" />
         <div className="relative flex min-h-[420px] items-center p-5 md:min-h-[520px] md:p-8">
           <SlackPrNotification />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance stat — oversized pixel figure paired with a short claim.
+// The number renders in Geist Pixel with font-smoothing off so the pixels
+// stay crisp (same treatment as the home pulse widgets).
+// ---------------------------------------------------------------------------
+
+const PIXEL_NUMBER_STYLE: React.CSSProperties = {
+  fontFamily: '"Geist Pixel", ui-monospace, monospace',
+  fontSynthesis: "none",
+  WebkitFontSmoothing: "none",
+};
+
+function AcceptanceStat() {
+  const [count, setCount] = useState(0);
+  const ref = useRef<HTMLDivElement>(null);
+  const started = useRef(false);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry?.isIntersecting || started.current) return;
+        started.current = true;
+        const duration = 1400;
+        const start = performance.now();
+        const step = (now: number) => {
+          const t = Math.min(1, (now - start) / duration);
+          const eased = 1 - (1 - t) ** 3; // ease-out cubic
+          setCount(Math.round(eased * 90));
+          if (t < 1) requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+      },
+      { threshold: 0.5 },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <section id="acceptance" className="mt-24 scroll-mt-24">
+      <div
+        ref={ref}
+        className="flex flex-col items-center gap-6 px-4 py-16 text-center md:flex-row md:justify-center md:gap-16 md:px-0 md:py-28 md:text-left"
+      >
+        <div
+          className="relative text-[104px] leading-none tracking-tight text-fg tabular-nums md:text-[150px]"
+          style={PIXEL_NUMBER_STYLE}
+        >
+          {/* Invisible final value reserves the slot so counting up doesn't
+              reflow the adjacent copy. */}
+          <span aria-hidden="true" className="invisible">
+            90%
+          </span>
+          <span className="absolute inset-0">{count}%</span>
+        </div>
+        <div className="max-w-md">
+          <div className="text-[16px] font-semibold text-fg md:text-[18px]">Acceptance rate</div>
+          <p className="mt-2 text-[18px] leading-tight tracking-tight text-muted md:text-[26px]">
+            Leading teams merge 9 out of 10 Superlog PRs.
+          </p>
         </div>
       </div>
     </section>
