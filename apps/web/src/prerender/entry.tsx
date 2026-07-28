@@ -18,14 +18,14 @@ type PublicPage = {
 
 const SITE_ORIGIN = "https://superlog.sh";
 const SITE_CONTENT_LAST_MODIFIED = "2026-07-22";
+const HOME_PAGE_LAST_MODIFIED = "2026-07-28";
 const SOCIAL_IMAGE_ALT = "Superlog wordmark over a blue and violet abstract background";
 const pages: PublicPage[] = [
   {
     path: "/",
-    title: "Superlog | Observability that fixes your bugs",
-    description:
-      "AI-native observability that groups incidents, investigates production telemetry, and prepares fixes.",
-    lastModified: SITE_CONTENT_LAST_MODIFIED,
+    title: "Superlog | Fix bugs on autopilot",
+    description: "Connect your app and get pull requests with production fixes delivered in Slack.",
+    lastModified: HOME_PAGE_LAST_MODIFIED,
     structuredData: {
       "@context": "https://schema.org",
       "@graph": [

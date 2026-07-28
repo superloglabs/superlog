@@ -247,18 +247,17 @@ body {
 }
 
 .landing-fluid-hero-overlay {
-  background:
-    linear-gradient(
+  background: linear-gradient(
       0deg,
       var(--color-bg) 0%,
-      rgb(var(--color-bg-rgb) / 86%) 8%,
-      rgb(var(--color-bg-rgb) / 0%) 42%
+      rgb(var(--color-bg-rgb) / 70%) 6%,
+      rgb(var(--color-bg-rgb) / 0%) 34%
     ),
     linear-gradient(
       90deg,
-      rgb(var(--color-bg-rgb) / 54%) 0%,
-      rgb(var(--color-bg-rgb) / 8%) 58%,
-      rgb(var(--color-bg-rgb) / 22%) 100%
+      rgb(var(--color-bg-rgb) / 42%) 0%,
+      rgb(var(--color-bg-rgb) / 4%) 58%,
+      rgb(var(--color-bg-rgb) / 14%) 100%
     );
 }
 
