@@ -4,6 +4,7 @@ import {
   type AwsDiagnosticClientFactory,
   createAwsDiagnosticProbe,
 } from "./aws-diagnostics-aws.js";
+import { AwsDiagnosticProbeError } from "./aws-diagnostics.js";
 
 const client = (respond: (commandName: string, command: object) => unknown) => ({
   async send(command: object) {
@@ -156,4 +157,45 @@ test("the AWS probe returns structured delivery facts without retaining raw erro
   assert.equal(assumeRoleInputs[0]?.DurationSeconds, 900);
   assert.ok((assumeRoleInputs[0]?.Policy?.length ?? Number.POSITIVE_INFINITY) <= 2048);
   assert.doesNotMatch(assumeRoleInputs[0]?.Policy ?? "", /GetObject|GetSecretValue|Decrypt/);
+});
+
+test("a downstream AWS failure retains the successfully assumed role identity", async () => {
+  const factory: AwsDiagnosticClientFactory = {
+    sts: () =>
+      client((command) =>
+        command === "AssumeRoleCommand"
+          ? {
+              Credentials: {
+                AccessKeyId: "temporary-key",
+                SecretAccessKey: "temporary-secret",
+                SessionToken: "temporary-token",
+              },
+            }
+          : { Account: "123456789012" },
+      ),
+    cloudFormation: () =>
+      client(() => {
+        throw Object.assign(new Error("slow down"), { name: "ThrottlingException" });
+      }),
+    cloudWatch: () => client(() => ({ Entries: [] })),
+    firehose: () => client(() => ({ DeliveryStreamNames: [] })),
+    logs: () => client(() => ({ accountPolicies: [] })),
+  };
+
+  await assert.rejects(
+    createAwsDiagnosticProbe(factory).inspect({
+      connectionId: "abcdef12-3456-7890-abcd-ef1234567890",
+      projectId: "project-id",
+      region: "us-east-1",
+      roleArn: "arn:aws:iam::123456789012:role/SuperlogScrape",
+      externalId: "external-id",
+      expectedAccountId: "123456789012",
+      requestedByUserId: "user-id",
+      reason: null,
+    }),
+    (error: unknown) =>
+      error instanceof AwsDiagnosticProbeError &&
+      error.code === "ThrottlingException" &&
+      error.context?.identityAccountId === "123456789012",
+  );
 });

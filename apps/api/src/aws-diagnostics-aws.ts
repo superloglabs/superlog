@@ -474,6 +474,15 @@ export function createAwsDiagnosticProbe(
     async inspect(target) {
       const credentials = await assumeDiagnosticRole(target, factory);
       const config = { region: target.region, credentials };
+      let identityAccountId: string;
+      try {
+        identityAccountId = await inspectIdentity(target, credentials, factory);
+      } catch (error) {
+        throw new AwsDiagnosticProbeError(
+          error instanceof AwsDiagnosticProbeError ? error.code : errorCode(error),
+          { roleAssumed: true },
+        );
+      }
       const permissionGaps: string[] = [];
       const prefixes = {
         metrics: streamResourcePrefix("metrics", target.connectionId),
@@ -483,38 +492,51 @@ export function createAwsDiagnosticProbe(
         metrics: `${prefixes.metrics}-stream`,
         logs: `${prefixes.logs}-stream`,
       };
-      const [identityAccountId, stacks, metricStream, deliveryStreams, logSubscriptionPolicyCount] =
-        await Promise.all([
-          inspectIdentity(target, credentials, factory),
-          inspectStacks(factory.cloudFormation(config), target.connectionId, permissionGaps),
-          inspectMetricStream(
-            factory.cloudWatch(config),
-            expectedDeliveryStreams.metrics,
-            permissionGaps,
-          ),
-          inspectDeliveryStreams(factory.firehose(config), expectedDeliveryStreams, permissionGaps),
-          inspectLogSubscription(
-            factory.logs(config),
-            `${prefixes.logs}-subscription`,
-            permissionGaps,
-          ),
-        ]);
-      await inspectDeliveryMetrics(factory.cloudWatch(config), deliveryStreams, permissionGaps);
-      const deliveryErrors = await inspectDeliveryErrors(
-        factory.logs(config),
-        prefixes,
-        permissionGaps,
-      );
-      return {
-        expectedAccountId: target.expectedAccountId,
-        identityAccountId,
-        stacks,
-        metricStream,
-        deliveryStreams,
-        logSubscriptionPolicyCount,
-        deliveryErrors,
-        permissionGaps: [...new Set(permissionGaps)],
-      };
+      try {
+        const [stacks, metricStream, deliveryStreams, logSubscriptionPolicyCount] =
+          await Promise.all([
+            inspectStacks(factory.cloudFormation(config), target.connectionId, permissionGaps),
+            inspectMetricStream(
+              factory.cloudWatch(config),
+              expectedDeliveryStreams.metrics,
+              permissionGaps,
+            ),
+            inspectDeliveryStreams(
+              factory.firehose(config),
+              expectedDeliveryStreams,
+              permissionGaps,
+            ),
+            inspectLogSubscription(
+              factory.logs(config),
+              `${prefixes.logs}-subscription`,
+              permissionGaps,
+            ),
+          ]);
+        await inspectDeliveryMetrics(factory.cloudWatch(config), deliveryStreams, permissionGaps);
+        const deliveryErrors = await inspectDeliveryErrors(
+          factory.logs(config),
+          prefixes,
+          permissionGaps,
+        );
+        return {
+          expectedAccountId: target.expectedAccountId,
+          identityAccountId,
+          stacks,
+          metricStream,
+          deliveryStreams,
+          logSubscriptionPolicyCount,
+          deliveryErrors,
+          permissionGaps: [...new Set(permissionGaps)],
+        };
+      } catch (error) {
+        throw new AwsDiagnosticProbeError(
+          error instanceof AwsDiagnosticProbeError ? error.code : errorCode(error),
+          {
+            roleAssumed: true,
+            identityAccountId,
+          },
+        );
+      }
     },
   };
 }

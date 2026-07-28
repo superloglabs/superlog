@@ -87,6 +87,49 @@ test("records an audited, sanitized result when the diagnostic role cannot be as
   assert.doesNotMatch(JSON.stringify(recorded[0]), /arn:aws:iam/);
 });
 
+test("preserves a successful role check when a downstream AWS probe is unavailable", async () => {
+  const result = await runAwsDiagnostics(
+    {
+      connectionId: "connection-id",
+      projectId: "project-id",
+      region: "us-east-1",
+      roleArn: "arn:aws:iam::123456789012:role/SuperlogScrape",
+      externalId: "secret-external-id",
+      expectedAccountId: "123456789012",
+      requestedByUserId: "user-id",
+      reason: null,
+    },
+    {
+      probe: {
+        async inspect() {
+          throw new AwsDiagnosticProbeError("ThrottlingException", {
+            roleAssumed: true,
+            identityAccountId: "123456789012",
+          });
+        },
+      },
+      recorder: {
+        async record(run) {
+          return { ...run, id: "run-id", createdAt: new Date("2026-07-28T12:00:00Z") };
+        },
+      },
+    },
+  );
+
+  assert.equal(result.status, "error");
+  assert.deepEqual(
+    result.checks.map((check) => [check.key, check.status]),
+    [
+      ["role", "pass"],
+      ["stack", "warning"],
+      ["metrics", "warning"],
+      ["logs", "warning"],
+    ],
+  );
+  assert.match(result.checks[0]?.summary ?? "", /assumable/i);
+  assert.equal(result.checks[1]?.evidence.errorCode, "ThrottlingException");
+});
+
 test("explains when an existing customer role needs the diagnostic permissions update", () => {
   const result = evaluateAwsDiagnostics({
     expectedAccountId: "123456789012",

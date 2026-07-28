@@ -72,7 +72,10 @@ export interface AwsDiagnosticRecorder {
 }
 
 export class AwsDiagnosticProbeError extends Error {
-  constructor(readonly code: string) {
+  constructor(
+    readonly code: string,
+    readonly context?: { roleAssumed: true; identityAccountId?: string },
+  ) {
     super("AWS diagnostics are unavailable");
     this.name = "AwsDiagnosticProbeError";
   }
@@ -252,8 +255,17 @@ export function evaluateAwsDiagnostics(facts: AwsDiagnosticFacts): AwsDiagnostic
   };
 }
 
-function unavailableResult(error: unknown): AwsDiagnosticResult {
+function unavailableResult(error: unknown, target: AwsDiagnosticTarget): AwsDiagnosticResult {
   const errorCode = error instanceof AwsDiagnosticProbeError ? error.code : "DiagnosticUnavailable";
+  const roleAssumed = error instanceof AwsDiagnosticProbeError && error.context?.roleAssumed;
+  const identityAccountId =
+    error instanceof AwsDiagnosticProbeError ? error.context?.identityAccountId : undefined;
+  const roleMatches =
+    roleAssumed &&
+    (identityAccountId == null ||
+      target.expectedAccountId == null ||
+      identityAccountId === target.expectedAccountId);
+  const unavailableEvidence = { checked: false, errorCode };
   return {
     status: "error",
     summary: "Superlog could not inspect the AWS telemetry connection.",
@@ -261,30 +273,40 @@ function unavailableResult(error: unknown): AwsDiagnosticResult {
       {
         key: "role",
         label: "Read-only AWS role",
-        status: "fail",
-        summary: "The diagnostic role could not be assumed.",
-        evidence: { errorCode },
+        status: roleMatches ? "pass" : "fail",
+        summary: !roleAssumed
+          ? "The diagnostic role could not be assumed."
+          : identityAccountId == null
+            ? "The diagnostic role was assumed, but AWS identity inspection was unavailable."
+            : roleMatches
+              ? `The role is assumable in AWS account ${identityAccountId}.`
+              : "The assumed role belongs to a different AWS account.",
+        evidence: {
+          accountId: identityAccountId ?? null,
+          expectedAccountId: target.expectedAccountId,
+          errorCode,
+        },
       },
       {
         key: "stack",
         label: "CloudFormation stack",
         status: "warning",
         summary: "This check could not run.",
-        evidence: { checked: false },
+        evidence: unavailableEvidence,
       },
       {
         key: "metrics",
         label: "CloudWatch metrics",
         status: "warning",
         summary: "This check could not run.",
-        evidence: { checked: false },
+        evidence: unavailableEvidence,
       },
       {
         key: "logs",
         label: "CloudWatch logs",
         status: "warning",
         summary: "This check could not run.",
-        evidence: { checked: false },
+        evidence: unavailableEvidence,
       },
     ],
   };
@@ -298,7 +320,7 @@ export async function runAwsDiagnostics(
   try {
     result = evaluateAwsDiagnostics(await deps.probe.inspect(target));
   } catch (error) {
-    result = unavailableResult(error);
+    result = unavailableResult(error, target);
   }
 
   return deps.recorder.record({
