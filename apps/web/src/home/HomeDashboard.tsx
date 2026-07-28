@@ -190,12 +190,20 @@ function HomeGrid({
 
   const layout: Layout = useMemo(
     () =>
-      widgets.map((widget) => ({
-        i: widget.id,
-        ...widget.layout,
-        minW: homeWidgetMinWidth(widget.type),
-        minH: homeWidgetMinHeight(widget.type),
-      })),
+      widgets.map((widget) => {
+        const minH = homeWidgetMinHeight(widget.type);
+        return {
+          i: widget.id,
+          ...widget.layout,
+          // minH only constrains interactive resizing — it does not enlarge an
+          // already-persisted item. Widgets saved before a min bump (e.g. an
+          // active_incidents that stored h:3) would still render clipped, so
+          // clamp the rendered height up to the current minimum.
+          h: Math.max(widget.layout.h, minH),
+          minW: homeWidgetMinWidth(widget.type),
+          minH,
+        };
+      }),
     [widgets],
   );
 
@@ -259,11 +267,12 @@ function HomeGrid({
 // crossing an edge animates gently instead of snapping. Driven by real scroll
 // position (not a background-attachment trick, which slid with the content here)
 // and re-measured when the body resizes or its data loads in.
-function useScrollEdges<T extends HTMLElement>() {
-  const ref = useRef<T | null>(null);
+function useScrollEdges<S extends HTMLElement, C extends HTMLElement>() {
+  const scrollRef = useRef<S | null>(null);
+  const contentRef = useRef<C | null>(null);
   const [edges, setEdges] = useState({ top: false, bottom: false });
   useEffect(() => {
-    const el = ref.current;
+    const el = scrollRef.current;
     if (!el) return;
     const measure = () => {
       const top = el.scrollTop > 1;
@@ -274,13 +283,17 @@ function useScrollEdges<T extends HTMLElement>() {
     el.addEventListener("scroll", measure, { passive: true });
     const observer = new ResizeObserver(measure);
     observer.observe(el);
-    if (el.firstElementChild) observer.observe(el.firstElementChild);
+    // Observe a stable content wrapper (not el.firstElementChild) so the observer
+    // survives an async widget swapping its loading node for loaded content — the
+    // fixed-height scroll container itself doesn't resize when scrollHeight grows,
+    // so this is what re-fires measure and reveals the overflow shadow on load.
+    if (contentRef.current) observer.observe(contentRef.current);
     return () => {
       el.removeEventListener("scroll", measure);
       observer.disconnect();
     };
   }, []);
-  return { ref, edges };
+  return { scrollRef, contentRef, edges };
 }
 
 function HomeItemTile({
@@ -299,7 +312,7 @@ function HomeItemTile({
   onRemove: () => void;
 }) {
   const presentation = homeWidgetPresentation(widget.type);
-  const { ref: scrollRef, edges } = useScrollEdges<HTMLDivElement>();
+  const { scrollRef, contentRef, edges } = useScrollEdges<HTMLDivElement, HTMLDivElement>();
   return (
     <section
       className={`flex h-full flex-col overflow-hidden rounded-xl border bg-surface ${
@@ -347,7 +360,9 @@ function HomeItemTile({
           ref={scrollRef}
           className={`h-full overflow-auto ${presentation.bodyPadding ? "p-4" : ""}`}
         >
-          <HomeItemBody projectId={projectId} slugs={slugs} range={range} widget={widget} />
+          <div ref={contentRef}>
+            <HomeItemBody projectId={projectId} slugs={slugs} range={range} widget={widget} />
+          </div>
         </div>
         <div
           aria-hidden="true"
