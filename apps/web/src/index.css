@@ -106,6 +106,162 @@ body {
   outline-offset: 2px;
 }
 
+@keyframes landing-nav-unblur {
+  from {
+    opacity: 0;
+    filter: blur(8px);
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+
+@keyframes landing-slack-enter {
+  from {
+    opacity: 0;
+    filter: blur(14px);
+    transform: translate3d(0, 34px, 0) scale(0.965);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes landing-slack-shuffle {
+  0% {
+    opacity: 0;
+    filter: blur(5px);
+    transform: translate3d(48px, 0, 0) rotate(2.4deg) scale(0.965);
+  }
+  16% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translate3d(0, 0, 0) rotate(0) scale(1);
+  }
+  78% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translate3d(0, 0, 0) rotate(0) scale(1);
+  }
+  88% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translate3d(-14px, 0, 0) rotate(-0.7deg) scale(0.99);
+  }
+  100% {
+    opacity: 0;
+    filter: blur(5px);
+    transform: translate3d(-56px, 0, 0) rotate(-2.5deg) scale(0.96);
+  }
+}
+
+@keyframes landing-slack-deck-one {
+  0%,
+  100% {
+    transform: translate3d(12px, 9px, 0) rotate(1.1deg);
+  }
+  12%,
+  82% {
+    transform: translate3d(8px, 9px, 0) rotate(0.7deg);
+  }
+  94% {
+    transform: translate3d(16px, 9px, 0) rotate(1.5deg);
+  }
+}
+
+@keyframes landing-slack-deck-two {
+  0%,
+  100% {
+    transform: translate3d(22px, 16px, 0) rotate(2deg);
+  }
+  12%,
+  82% {
+    transform: translate3d(17px, 16px, 0) rotate(1.5deg);
+  }
+  94% {
+    transform: translate3d(25px, 16px, 0) rotate(2.4deg);
+  }
+}
+
+@keyframes landing-slack-stack-float {
+  0%,
+  100% {
+    transform: translate3d(0, -10px, 0) rotate(-0.42deg);
+  }
+  50% {
+    transform: translate3d(0, 10px, 0) rotate(0.42deg);
+  }
+}
+
+.landing-nav-unblur {
+  animation: landing-nav-unblur 680ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: filter, opacity, transform;
+}
+
+.landing-hero-unblur {
+  animation: landing-nav-unblur 820ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: filter, opacity, transform;
+}
+
+.landing-slack-card {
+  transform-origin: 50% 65%;
+  animation: landing-slack-enter 900ms 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: filter, opacity, transform;
+}
+
+.landing-slack-card-back {
+  pointer-events: none;
+  background: rgb(255 255 255 / 72%);
+  border: 1px solid rgb(0 0 0 / 8%);
+  box-shadow: 0 20px 56px rgb(0 0 0 / 18%);
+}
+
+.landing-slack-card-back-one {
+  z-index: 2;
+  transform: translate3d(12px, 9px, 0) rotate(1.1deg);
+  animation: landing-slack-deck-one 2.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.landing-slack-card-back-two {
+  z-index: 1;
+  opacity: 0.48;
+  transform: translate3d(22px, 16px, 0) rotate(2deg);
+  animation: landing-slack-deck-two 2.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.landing-slack-shuffle-card {
+  transform-origin: 50% 55%;
+  animation: landing-slack-shuffle 2.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  will-change: filter, opacity, transform;
+}
+
+.landing-slack-float {
+  transform-origin: 50% 50%;
+  animation: landing-slack-stack-float 5.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  will-change: transform;
+}
+
+.landing-fluid-hero-overlay {
+  background:
+    linear-gradient(
+      0deg,
+      var(--color-bg) 0%,
+      rgb(var(--color-bg-rgb) / 86%) 8%,
+      rgb(var(--color-bg-rgb) / 0%) 42%
+    ),
+    linear-gradient(
+      90deg,
+      rgb(var(--color-bg-rgb) / 54%) 0%,
+      rgb(var(--color-bg-rgb) / 8%) 58%,
+      rgb(var(--color-bg-rgb) / 22%) 100%
+    );
+}
+
 .superlog-code {
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
@@ -709,6 +865,22 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .landing-nav-unblur,
+  .landing-hero-unblur,
+  .landing-slack-card,
+  .landing-slack-shuffle-card,
+  .landing-slack-float {
+    animation: none;
+    filter: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  .landing-slack-card-back-one,
+  .landing-slack-card-back-two {
+    animation: none;
+  }
+
   .marquee-track {
     animation: none;
     transform: none;
