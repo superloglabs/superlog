@@ -22,9 +22,8 @@ const SOCIAL_IMAGE_ALT = "Superlog wordmark over a blue and violet abstract back
 const pages: PublicPage[] = [
   {
     path: "/",
-    title: "Superlog | Observability that fixes your bugs",
-    description:
-      "AI-native observability that groups incidents, investigates production telemetry, and prepares fixes.",
+    title: "Superlog | Fix bugs on autopilot",
+    description: "Connect your app and get pull requests with production fixes delivered in Slack.",
     lastModified: SITE_CONTENT_LAST_MODIFIED,
     structuredData: {
       "@context": "https://schema.org",

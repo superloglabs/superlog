@@ -16,18 +16,12 @@ test("the social preview image has the declared PNG dimensions", async () => {
 test("the production homepage contains useful HTML before JavaScript runs", async () => {
   const html = await readFile(new URL("index.html", distUrl), "utf8");
 
-  assert.match(html, /<h1[^>]*>\s*Observability that fixes your bugs\s*<\/h1>/);
+  assert.match(html, /<h1[^>]*>\s*Fix bugs on autopilot\s*<\/h1>/);
   assert.doesNotMatch(html, /<div id="root"><\/div>/);
   assert.match(html, /<meta property="og:type" content="website"/);
-  assert.match(
-    html,
-    /<meta property="og:title" content="Superlog \| Observability that fixes your bugs"/,
-  );
+  assert.match(html, /<meta property="og:title" content="Superlog \| Fix bugs on autopilot"/);
   assert.match(html, /<meta name="twitter:card" content="summary_large_image"/);
-  assert.match(
-    html,
-    /<meta property="og:image" content="https:\/\/superlog\.sh\/og-image\.png"/,
-  );
+  assert.match(html, /<meta property="og:image" content="https:\/\/superlog\.sh\/og-image\.png"/);
   assert.match(html, /<meta property="og:image:type" content="image\/png"/);
   assert.match(html, /<meta property="og:image:width" content="1200"/);
   assert.match(html, /<meta property="og:image:height" content="630"/);
@@ -148,10 +142,7 @@ test("crawlers receive a sitemap of public pages and no product URLs", async () 
   const robots = await readFile(new URL("robots.txt", distUrl), "utf8");
 
   assert.match(sitemap, /<loc>https:\/\/superlog\.sh<\/loc>/);
-  assert.match(
-    sitemap,
-    /<loc>https:\/\/superlog\.sh<\/loc><lastmod>2026-07-22<\/lastmod>/,
-  );
+  assert.match(sitemap, /<loc>https:\/\/superlog\.sh<\/loc><lastmod>2026-07-22<\/lastmod>/);
   assert.match(sitemap, /<loc>https:\/\/superlog\.sh\/pricing<\/loc>/);
   assert.match(sitemap, /<loc>https:\/\/superlog\.sh\/blog\//);
   assert.doesNotMatch(sitemap, /\/app(?:\/|<)/);

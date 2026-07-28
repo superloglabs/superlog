@@ -1,8 +1,8 @@
 import { usePostHog } from "posthog-js/react";
 import { useEffect, useRef, useState } from "react";
 import { AuthForm } from "./AuthForm.tsx";
-import { Arrow, Btn, Chip, Label, Tile, Wordmark } from "./design/ui.tsx";
 import { FluidSignalField } from "./FluidSignalField.tsx";
+import { Arrow, Btn, Chip, Label, Tile, Wordmark } from "./design/ui.tsx";
 import { formatStarCount } from "./githubStars.ts";
 import { INSTALL_PROMPT } from "./installPrompt.ts";
 import { LANDING_DOCS_URL, LANDING_GITHUB_REPO_URL } from "./landingLinks.ts";
@@ -33,7 +33,6 @@ export function Landing({ initialAuthMode }: { initialAuthMode?: AuthMode } = {}
 
       <main className="relative">
         <Hero onSignUp={openSignUp} />
-        <ClientLogos />
 
         <div className="mx-auto w-full max-w-[1400px] px-0 pb-24 md:px-8 xl:px-12">
           <Section
@@ -172,17 +171,16 @@ export function TopNav({
               style={{ animationDelay: "430ms" }}
             >
               <GitHubIcon />
-              <span className="tabular-nums">{stars != null ? formatStarCount(stars) : "GitHub"}</span>
+              <span className="tabular-nums">
+                {stars != null ? formatStarCount(stars) : "GitHub"}
+              </span>
             </a>
             <Btn variant="ghost" size="sm" onClick={onSignIn}>
               <span className="landing-nav-unblur" style={{ animationDelay: "485ms" }}>
                 Sign in
               </span>
             </Btn>
-            <span
-              className="landing-nav-unblur inline-flex"
-              style={{ animationDelay: "540ms" }}
-            >
+            <span className="landing-nav-unblur inline-flex" style={{ animationDelay: "540ms" }}>
               <Btn variant="primary" size="sm" onClick={onSignUp}>
                 Get started
               </Btn>
@@ -208,18 +206,18 @@ function GitHubIcon() {
 
 function Hero({ onSignUp }: { onSignUp: () => void }) {
   return (
-    <section className="relative overflow-hidden bg-bg px-4 md:px-8 xl:px-12">
+    <section className="relative flex min-h-[640px] flex-col overflow-hidden bg-bg lg:min-h-[calc(88svh-64px)]">
       <div className="pointer-events-none absolute inset-0">
-        <div className="absolute left-1/2 top-0 h-full w-[min(2800px,190vw)] -translate-x-1/2 overflow-hidden [mask-image:linear-gradient(to_right,transparent,black_5%,black_95%,transparent)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_5%,black_95%,transparent)]">
+        <div className="absolute left-1/2 top-0 h-full w-[min(3200px,220vw)] -translate-x-1/2 overflow-hidden [mask-image:linear-gradient(to_right,transparent,black_3%,black_97%,transparent)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_3%,black_97%,transparent)]">
           <FluidSignalField />
         </div>
         <div className="landing-fluid-hero-overlay absolute inset-0" />
       </div>
 
-      <div className="relative mx-auto grid min-h-[calc(100svh-64px)] max-w-[1400px] items-center gap-10 pb-8 pt-12 md:pt-16 lg:grid-cols-[minmax(0,560px)_minmax(0,1fr)] lg:gap-[72px] lg:pb-10 lg:pt-24">
+      <div className="relative mx-auto grid w-full max-w-[1400px] flex-1 items-center gap-8 px-4 py-8 md:px-8 md:py-10 lg:grid-cols-[minmax(0,560px)_minmax(0,1fr)] lg:gap-12 xl:px-12">
         <div className="flex flex-col items-center text-center lg:items-start lg:text-left">
           <div
-            className="landing-hero-unblur mb-10 inline-flex items-center gap-2 text-[11px] font-medium text-muted md:text-[12px]"
+            className="landing-hero-unblur mb-5 inline-flex items-center gap-2 text-[11px] font-medium text-muted md:text-[12px]"
             style={{ animationDelay: "180ms" }}
           >
             <img src="/yc-logo-square.svg" alt="" aria-hidden="true" className="h-4 w-4" />
@@ -229,16 +227,16 @@ function Hero({ onSignUp }: { onSignUp: () => void }) {
             className="landing-hero-unblur max-w-[410px] text-balance text-[2.4375rem] leading-[0.98] tracking-[-0.035em] text-fg md:text-[57px] md:leading-[56px]"
             style={{ fontWeight: 450, animationDelay: "260ms" }}
           >
-            Observability that fixes your bugs
+            Fix bugs on autopilot
           </h1>
           <p
-            className="landing-hero-unblur mt-5 max-w-lg text-[13.5px] leading-relaxed text-muted md:text-[18px]"
+            className="landing-hero-unblur mt-4 max-w-lg text-[13.5px] leading-relaxed text-muted md:text-[18px]"
             style={{ animationDelay: "340ms" }}
           >
-            Install in one prompt, get PRs in Slack
+            Connect your app and get PRs with fixes in Slack
           </p>
           <div
-            className="landing-hero-unblur mt-8 flex flex-col items-center gap-3 sm:flex-row lg:items-start"
+            className="landing-hero-unblur mt-6 flex flex-col items-center gap-3 sm:flex-row lg:items-start"
             style={{ animationDelay: "420ms" }}
           >
             <Btn variant="primary" size="lg" onClick={onSignUp}>
@@ -253,6 +251,8 @@ function Hero({ onSignUp }: { onSignUp: () => void }) {
           <HeroSlackMessage />
         </div>
       </div>
+
+      <ClientLogos />
     </section>
   );
 }
@@ -283,9 +283,9 @@ const CLIENT_LOGOS: { name: string; src?: string; icon?: boolean; label?: string
 
 function ClientLogos() {
   return (
-    <section aria-label="Trusted by teams" className="relative mt-12 md:mt-16">
+    <section aria-label="Trusted by teams" className="relative pb-5 md:pb-6">
       <div className="mx-auto w-full max-w-[1400px] px-4 md:px-8 xl:px-12">
-        <p className="mb-6 text-center text-[11px] font-medium uppercase tracking-[0.2em] text-subtle md:mb-8 md:text-[12px]">
+        <p className="mb-4 text-center text-[11px] font-medium uppercase tracking-[0.2em] text-subtle md:mb-5 md:text-[12px]">
           Trusted by teams at
         </p>
         <div className="marquee-fade overflow-hidden py-2">
@@ -392,32 +392,31 @@ const HERO_SLACK_MESSAGES = [
     id: "review",
     emoji: "⌛",
     status: "Waiting on PR review",
-    title: "Onboarding advance jobs stuck up to 24h after retry exhaustion",
+    title: "Fix checkout crash when the promo code is empty",
     time: "10:01 AM",
     body: (
       <>
-        The pg-boss queue alert fired because a <SlackCode>growth.onboarding.advance</SlackCode> job
-        from July 25 08:00 was revived by the daily reconciliation on July 26 08:00, appearing 24h
-        old in the <SlackCode>oldest_pending_age_ms</SlackCode> metric and spiking the cross-queue
-        average to ~976K ms. The underlying defect is that the only recovery mechanism is the
-        once-daily <SlackCode>growth.onboarding.scan</SlackCode> cron at 8 AM UTC, so exhausted jobs
-        can be delayed by up to ~24 hours before onboarding resumes.
+        Superlog traced failed checkouts to a missing empty-value check when a customer submits
+        without a promo code.
+        <br />
+        This PR adds a safe fallback and a test that confirms checkout completes with or without a
+        code.
       </>
     ),
   },
   {
-    id: "ready",
-    emoji: "🔀",
-    status: "PR ready to merge",
-    title: "Prevent duplicate Stripe charges after worker lock timeouts",
+    id: "noise",
+    emoji: "🔕",
+    status: "Marked as noise",
+    title: "Browser extension errors aren't affecting your app",
     time: "10:07 AM",
     body: (
       <>
-        Superlog traced duplicate charges to <SlackCode>billing.webhook.process</SlackCode> retrying
-        after <SlackCode>lock_timeout_ms</SlackCode> while the first attempt was still committing.
-        The PR records <SlackCode>stripe_event_id</SlackCode> before dispatch, adds an idempotency
-        guard at the application boundary, and includes a concurrency regression test. Production
-        replay now shows one charge per event.
+        These errors came from a browser extension injecting a script into the page, not from your
+        application code.
+        <br />
+        No customers were blocked. Superlog marked the pattern as noise so future occurrences won't
+        alert the team.
       </>
     ),
   },
@@ -425,27 +424,11 @@ const HERO_SLACK_MESSAGES = [
     id: "resolved",
     emoji: "✅",
     status: "Problem resolved",
-    title: "Checkout recovered after Stripe credential validation fix",
+    title: "Email delivery recovered after a brief provider slowdown",
     time: "10:14 AM",
-    body: (
-      <>
-        Deploy <SlackCode>api-2026.07.28.3</SlackCode> added startup validation for{" "}
-        <SlackCode>STRIPE_SECRET_KEY</SlackCode>, replaced the generic HTTP 400 with an actionable
-        configuration error, and added a health check for <SlackCode>checkout-api</SlackCode>. Error
-        rate returned to baseline within three minutes, and no failed payments remain in the current
-        window.
-      </>
-    ),
+    body: "Password reset emails were delayed for four minutes while the email provider was responding slowly. Delivery returned to normal, all queued emails were sent, and no code or configuration change was needed. Superlog closed the incident automatically.",
   },
 ] as const;
-
-function SlackCode({ children }: { children: string }) {
-  return (
-    <code className="whitespace-nowrap rounded-[4px] border border-[#d9d9d9] bg-[#f7f7f7] px-[5px] py-px font-mono text-[11px] not-italic leading-4 text-[#e01e5a]">
-      {children}
-    </code>
-  );
-}
 
 function HeroSlackMessage() {
   const [activeMessageIndex, setActiveMessageIndex] = useState(0);
@@ -505,33 +488,28 @@ function HeroSlackMessage() {
                 </h2>
               </div>
 
-              <p className="pb-3.5 text-[11.5px] italic leading-[18px] tracking-[-0.005em] text-[#2a282a]">
+              <p className="pb-3.5 text-[14px] italic leading-[21px] tracking-[-0.005em] text-[#2a282a]">
                 {message.body}
               </p>
 
               <div className="mt-auto flex flex-wrap items-center gap-1.5">
-                <span className={secondaryAction}>Open in Superlog</span>
-                <span className={secondaryAction}>View PR</span>
-                <span
-                  className="inline-flex shrink-0 items-center gap-1 rounded-[4px] bg-[#007a5a] px-[7px] py-[5px] text-[12px] font-bold leading-[17px] text-white"
-                >
-                  <span aria-hidden="true" className="font-['Apple_Color_Emoji'] text-[14px]">
-                    🔀
-                  </span>
-                  Merge PR
-                </span>
                 <span className={secondaryAction}>
-                  <span aria-hidden="true" className="font-['Apple_Color_Emoji'] text-[14px]">
-                    ✅
-                  </span>
-                  Problem resolved
+                  {message.id === "noise" ? "Open incident in Superlog" : "Open in Superlog"}
                 </span>
-                <span className={secondaryAction}>
-                  <span aria-hidden="true" className="font-['Apple_Color_Emoji'] text-[14px]">
-                    🔕
-                  </span>
-                  Not an issue
-                </span>
+                {message.id === "review" && (
+                  <>
+                    <span className={secondaryAction}>View PR</span>
+                    <span className="inline-flex shrink-0 items-center gap-1 rounded-[4px] bg-[#007a5a] px-[7px] py-[5px] text-[12px] font-bold leading-[17px] text-white">
+                      <span aria-hidden="true" className="font-['Apple_Color_Emoji'] text-[14px]">
+                        🔀
+                      </span>
+                      Merge PR
+                    </span>
+                  </>
+                )}
+                {message.id === "resolved" && (
+                  <span className={secondaryAction}>View timeline</span>
+                )}
               </div>
             </div>
           </div>
@@ -557,7 +535,7 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section id={id} className="mt-24 scroll-mt-24">
+    <section id={id} className={`${id === "install" ? "mt-28" : "mt-24"} scroll-mt-24`}>
       <header className="mb-6 grid grid-cols-1 gap-2 px-4 text-center md:px-0 lg:grid-cols-2 lg:items-end lg:text-left">
         <h2 className="mx-auto text-[28px] font-semibold tracking-tight text-fg md:whitespace-nowrap md:text-[32px] lg:mx-0 lg:text-[36px] lg:leading-none">
           {title}
