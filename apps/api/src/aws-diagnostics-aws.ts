@@ -89,7 +89,7 @@ function diagnosticSessionPolicy(target: AwsDiagnosticTarget): string {
       {
         Effect: "Allow",
         Action: "cloudformation:DescribeStacks",
-        Resource: `arn:${partition}:cloudformation:${target.region}:${accountId}:stack/superlog-*/*`,
+        Resource: `arn:${partition}:cloudformation:${target.region}:${accountId}:stack/*/*`,
       },
       {
         Effect: "Allow",
@@ -185,10 +185,7 @@ async function inspectStacks(
         NextToken?: string;
       };
       for (const summary of output.StackSummaries ?? []) {
-        if (
-          summary.StackName?.startsWith("superlog-") &&
-          summary.StackStatus !== "DELETE_COMPLETE"
-        ) {
+        if (summary.StackName && summary.StackStatus !== "DELETE_COMPLETE") {
           candidateNames.push(summary.StackName);
         }
       }

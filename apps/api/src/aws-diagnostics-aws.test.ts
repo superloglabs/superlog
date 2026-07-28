@@ -36,7 +36,7 @@ test("the AWS probe returns structured delivery facts without retaining raw erro
         if (command === "ListStacksCommand") {
           return {
             StackSummaries: [
-              { StackName: "superlog-renamed", StackStatus: "CREATE_COMPLETE" },
+              { StackName: "production-observability", StackStatus: "CREATE_COMPLETE" },
               { StackName: "superlog-metrics-renamed", StackStatus: "UPDATE_COMPLETE" },
               { StackName: "other-product", StackStatus: "CREATE_COMPLETE" },
             ],
@@ -51,7 +51,10 @@ test("the AWS probe returns structured delivery facts without retaining raw erro
               Parameters: [
                 {
                   ParameterKey: "ConnectionId",
-                  ParameterValue: "abcdef12-3456-7890-abcd-ef1234567890",
+                  ParameterValue:
+                    stackName === "other-product"
+                      ? "another-connection"
+                      : "abcdef12-3456-7890-abcd-ef1234567890",
                 },
               ],
             },
@@ -127,7 +130,7 @@ test("the AWS probe returns structured delivery facts without retaining raw erro
   assert.deepEqual(
     (facts as unknown as { stacks: Array<{ name: string; status: string }> }).stacks,
     [
-      { name: "superlog-renamed", status: "CREATE_COMPLETE" },
+      { name: "production-observability", status: "CREATE_COMPLETE" },
       { name: "superlog-metrics-renamed", status: "UPDATE_COMPLETE" },
     ],
   );
@@ -157,6 +160,8 @@ test("the AWS probe returns structured delivery facts without retaining raw erro
   assert.equal(assumeRoleInputs[0]?.DurationSeconds, 900);
   assert.ok((assumeRoleInputs[0]?.Policy?.length ?? Number.POSITIVE_INFINITY) <= 2048);
   assert.doesNotMatch(assumeRoleInputs[0]?.Policy ?? "", /GetObject|GetSecretValue|Decrypt/);
+  assert.match(assumeRoleInputs[0]?.Policy ?? "", /:stack\/\*\/\*/);
+  assert.doesNotMatch(assumeRoleInputs[0]?.Policy ?? "", /:stack\/superlog-\*/);
 });
 
 test("a downstream AWS failure retains the successfully assumed role identity", async () => {

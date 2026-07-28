@@ -93,7 +93,7 @@ Resources:
                 Effect: Allow
                 Action:
                   - "cloudformation:DescribeStacks"
-                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/superlog-*/*"
+                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/*/*"
               - Sid: TelemetryDiagnosticsDeliveryStreams
                 Effect: Allow
                 Action:
