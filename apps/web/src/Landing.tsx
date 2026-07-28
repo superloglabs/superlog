@@ -570,8 +570,8 @@ function ErrorImportSection() {
           Connect to any platform
         </h2>
         <p className="mx-auto max-w-3xl text-sm leading-relaxed text-muted lg:col-span-5 lg:col-start-8 lg:mx-0 lg:max-w-none lg:text-[18px] lg:leading-7">
-          Import errors from Sentry, connect debugging MCPs like Datadog, or take logs directly
-          from your infrastructure provider
+          Import errors from Datadog or Sentry, or take logs directly from your infrastructure
+          provider
         </p>
       </header>
 
@@ -591,7 +591,7 @@ function ErrorImportSection() {
         <ProviderGroup
           className="top-[20%] -translate-y-1/2"
           name="Observability platforms"
-          detail="Import errors from Sentry and add debugging context through MCPs like Datadog"
+          detail="Import errors and debugging MCPs from Sentry or Datadog"
           copyClassName="lg:max-w-[68%]"
         >
           <div className="flex items-center gap-1.5">
