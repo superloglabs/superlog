@@ -865,6 +865,11 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .marquee-track {
+    animation: none;
+    transform: none;
+  }
+
   .landing-nav-unblur,
   .landing-hero-unblur,
   .landing-slack-card,
@@ -879,10 +884,5 @@ body {
   .landing-slack-card-back-one,
   .landing-slack-card-back-two {
     animation: none;
-  }
-
-  .marquee-track {
-    animation: none;
-    transform: none;
   }
 }
