@@ -326,6 +326,12 @@ function HomeItemTile({
 }) {
   const presentation = homeWidgetPresentation(widget.type);
   const { scrollRef, edges } = useScrollEdges<HTMLDivElement>();
+  // The edge shadow only belongs on widgets that scroll in this outer body — the
+  // builtin list widgets (active_incidents et al.). Framed widgets (trace/log
+  // tables, markdown, charts) own their scrolling via an inner overflow-auto, so
+  // the outer element never scrolls; attaching the shadow there would leave dead
+  // overlays over a container that never moves.
+  const showScrollShadow = !presentation.innerShell;
   return (
     <section
       className={`flex h-full flex-col overflow-hidden rounded-xl border bg-surface ${
@@ -370,23 +376,27 @@ function HomeItemTile({
       </div>
       <div className="relative min-h-0 flex-1">
         <div
-          ref={scrollRef}
+          ref={showScrollShadow ? scrollRef : undefined}
           className={`h-full overflow-auto ${presentation.bodyPadding ? "p-4" : ""}`}
         >
           <HomeItemBody projectId={projectId} slugs={slugs} range={range} widget={widget} />
         </div>
-        <div
-          aria-hidden="true"
-          className={`pointer-events-none absolute inset-x-0 top-0 h-10 bg-gradient-to-b from-black/55 to-transparent transition-opacity duration-500 ease-out ${
-            edges.top ? "opacity-100" : "opacity-0"
-          }`}
-        />
-        <div
-          aria-hidden="true"
-          className={`pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-black/55 to-transparent transition-opacity duration-500 ease-out ${
-            edges.bottom ? "opacity-100" : "opacity-0"
-          }`}
-        />
+        {showScrollShadow && (
+          <>
+            <div
+              aria-hidden="true"
+              className={`pointer-events-none absolute inset-x-0 top-0 h-10 bg-gradient-to-b from-black/55 to-transparent transition-opacity duration-500 ease-out ${
+                edges.top ? "opacity-100" : "opacity-0"
+              }`}
+            />
+            <div
+              aria-hidden="true"
+              className={`pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-black/55 to-transparent transition-opacity duration-500 ease-out ${
+                edges.bottom ? "opacity-100" : "opacity-0"
+              }`}
+            />
+          </>
+        )}
       </div>
     </section>
   );
