@@ -267,9 +267,8 @@ function HomeGrid({
 // crossing an edge animates gently instead of snapping. Driven by real scroll
 // position (not a background-attachment trick, which slid with the content here)
 // and re-measured when the body resizes or its data loads in.
-function useScrollEdges<S extends HTMLElement, C extends HTMLElement>() {
+function useScrollEdges<S extends HTMLElement>() {
   const scrollRef = useRef<S | null>(null);
-  const contentRef = useRef<C | null>(null);
   const [edges, setEdges] = useState({ top: false, bottom: false });
   useEffect(() => {
     const el = scrollRef.current;
@@ -281,19 +280,33 @@ function useScrollEdges<S extends HTMLElement, C extends HTMLElement>() {
     };
     measure();
     el.addEventListener("scroll", measure, { passive: true });
+    // The fixed-height scroll container doesn't resize when its content's
+    // scrollHeight grows, so watch the content node too. It's observed directly
+    // (no layout wrapper — that would break widgets whose body relies on h-full).
+    // An async widget can swap that node when it goes from loading to loaded, so a
+    // MutationObserver re-points the ResizeObserver to the live child and
+    // re-measures, keeping the overflow shadow correct on load.
     const observer = new ResizeObserver(measure);
     observer.observe(el);
-    // Observe a stable content wrapper (not el.firstElementChild) so the observer
-    // survives an async widget swapping its loading node for loaded content — the
-    // fixed-height scroll container itself doesn't resize when scrollHeight grows,
-    // so this is what re-fires measure and reveals the overflow shadow on load.
-    if (contentRef.current) observer.observe(contentRef.current);
+    let child = el.firstElementChild;
+    if (child) observer.observe(child);
+    const mutations = new MutationObserver(() => {
+      const next = el.firstElementChild;
+      if (next !== child) {
+        if (child) observer.unobserve(child);
+        if (next) observer.observe(next);
+        child = next;
+      }
+      measure();
+    });
+    mutations.observe(el, { childList: true });
     return () => {
       el.removeEventListener("scroll", measure);
       observer.disconnect();
+      mutations.disconnect();
     };
   }, []);
-  return { scrollRef, contentRef, edges };
+  return { scrollRef, edges };
 }
 
 function HomeItemTile({
@@ -312,7 +325,7 @@ function HomeItemTile({
   onRemove: () => void;
 }) {
   const presentation = homeWidgetPresentation(widget.type);
-  const { scrollRef, contentRef, edges } = useScrollEdges<HTMLDivElement, HTMLDivElement>();
+  const { scrollRef, edges } = useScrollEdges<HTMLDivElement>();
   return (
     <section
       className={`flex h-full flex-col overflow-hidden rounded-xl border bg-surface ${
@@ -360,9 +373,7 @@ function HomeItemTile({
           ref={scrollRef}
           className={`h-full overflow-auto ${presentation.bodyPadding ? "p-4" : ""}`}
         >
-          <div ref={contentRef}>
-            <HomeItemBody projectId={projectId} slugs={slugs} range={range} widget={widget} />
-          </div>
+          <HomeItemBody projectId={projectId} slugs={slugs} range={range} widget={widget} />
         </div>
         <div
           aria-hidden="true"
