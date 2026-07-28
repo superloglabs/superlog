@@ -2,6 +2,11 @@ import { usePostHog } from "posthog-js/react";
 import { useEffect, useRef, useState } from "react";
 import { AuthForm } from "./AuthForm.tsx";
 import { Btn, Chip, Label, Tile, Wordmark } from "./design/ui.tsx";
+import {
+  DEFAULT_FLUID_SIGNAL_SETTINGS,
+  FluidSignalField,
+  type FluidSignalSettings,
+} from "./FluidSignalField.tsx";
 import { formatStarCount } from "./githubStars.ts";
 import { INSTALL_PROMPT } from "./installPrompt.ts";
 import { LANDING_DOCS_URL, LANDING_GITHUB_REPO_URL } from "./landingLinks.ts";
@@ -31,7 +36,7 @@ export function Landing({ initialAuthMode }: { initialAuthMode?: AuthMode } = {}
       <TopNav onSignIn={openSignIn} onSignUp={openSignUp} />
 
       <main className="relative">
-        <Hero />
+        <Hero onSignUp={openSignUp} />
         <ClientLogos />
 
         <div className="mx-auto w-full max-w-[1400px] px-0 pb-24 md:px-8 xl:px-12">
@@ -193,46 +198,221 @@ function GitHubIcon() {
 // Hero
 // ---------------------------------------------------------------------------
 
-function Hero() {
-  return (
-    <section className="relative px-0 pb-8 pt-20 md:px-8 md:pt-24 xl:px-12">
-      <div className="mx-auto max-w-[1400px]">
-        <div className="px-4 text-center md:px-0">
-          <div className="mb-10 inline-flex items-center gap-2 text-[11px] font-medium text-muted md:text-[12px]">
-            <img src="/yc-logo-square.svg" alt="" aria-hidden="true" className="h-4 w-4" />
-            <span>Backed by Y Combinator</span>
-          </div>
-          <h1
-            className="mx-auto max-w-4xl text-balance text-[2.4375rem] leading-[0.98] tracking-tight text-fg md:text-[4.3125rem] lg:text-[57px]"
-            style={{ fontWeight: 450 }}
-          >
-            Observability that fixes your bugs
-          </h1>
-          <p className="mx-auto mt-4 max-w-2xl text-[13.5px] leading-relaxed text-muted md:text-[18px]">
-            Install in one prompt, get PRs in Slack
-          </p>
-        </div>
+function Hero({ onSignUp }: { onSignUp: () => void }) {
+  const [signalSettings, setSignalSettings] = useState<FluidSignalSettings>(() => ({
+    ...DEFAULT_FLUID_SIGNAL_SETTINGS,
+  }));
 
-        <div className="relative mx-auto mt-14 rounded-none md:rounded-lg">
-          <div className="absolute inset-0 overflow-hidden rounded-none md:rounded-lg">
-            <img
-              src="/hero-rocket.webp"
-              srcSet="/hero-rocket-768.webp 768w, /hero-rocket.webp 1586w"
-              sizes="(max-width: 768px) 100vw, 1400px"
-              alt=""
-              aria-hidden="true"
-              width={1586}
-              height={992}
-              fetchPriority="high"
-              decoding="async"
-              className="absolute inset-0 h-full w-full object-cover object-top"
-            />
-            <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(8,9,11,0.72),rgba(8,9,11,0.08)_64%),linear-gradient(90deg,rgba(8,9,11,0.54),rgba(8,9,11,0.06)_56%,rgba(8,9,11,0.42))]" />
+  return (
+    <section className="relative isolate overflow-hidden px-0 md:px-8 xl:px-12">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute left-1/2 top-0 -z-10 h-full w-[min(2800px,190vw)] -translate-x-1/2 overflow-hidden [mask-image:linear-gradient(to_right,transparent,black_5%,black_95%,transparent)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_5%,black_95%,transparent)]"
+      >
+        <FluidSignalField settings={signalSettings} />
+      </div>
+
+      <div className="relative mx-auto max-w-[1400px]">
+        <WaveControls settings={signalSettings} onChange={setSignalSettings} />
+
+        <div className="grid min-h-[590px] grid-cols-1 content-end gap-10 px-4 pb-16 pt-28 md:min-h-[620px] md:px-0 md:pb-20 md:pt-36 lg:grid-cols-12 lg:items-end lg:gap-6">
+          <div className="lg:col-span-6">
+            <div className="mb-8 inline-flex items-center gap-2 text-[11px] font-medium text-muted md:text-[12px]">
+              <img src="/yc-logo-square.svg" alt="" aria-hidden="true" className="h-4 w-4" />
+              <span>Backed by Y Combinator</span>
+            </div>
+            <h1
+              className="max-w-[13ch] text-balance text-[2.75rem] leading-[0.98] tracking-tight text-fg md:text-[4rem] lg:text-[68px]"
+              style={{ fontWeight: 450 }}
+            >
+              Observability that fixes your bugs
+            </h1>
+            <div className="mt-8 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={onSignUp}
+                className="inline-flex h-11 items-center justify-center rounded-full bg-fg px-5 text-[14px] font-semibold text-bg transition-colors hover:bg-white"
+              >
+                Get started
+              </button>
+              <HeroCopyPromptButton />
+            </div>
           </div>
-          <CodingAgentWindow />
+
+          <div className="lg:col-start-8 lg:col-end-13">
+            <p className="max-w-[38ch] text-balance text-[17px] leading-relaxed text-muted md:text-[19px]">
+              Install in one prompt. Superlog investigates production telemetry and sends
+              ready-to-review fixes to Slack.
+            </p>
+          </div>
         </div>
       </div>
     </section>
+  );
+}
+
+function WaveControls({
+  settings,
+  onChange,
+}: {
+  settings: FluidSignalSettings;
+  onChange: (settings: FluidSignalSettings) => void;
+}) {
+  const [open, setOpen] = useState(true);
+
+  function update<Key extends keyof FluidSignalSettings>(
+    key: Key,
+    value: FluidSignalSettings[Key],
+  ) {
+    onChange({ ...settings, [key]: value });
+  }
+
+  return (
+    <div className="absolute right-4 top-5 z-20 md:right-0 md:top-8">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        className="ml-auto flex h-9 items-center gap-2 rounded-full border border-white/15 bg-bg/75 px-3.5 text-[12px] font-medium text-fg shadow-[0_12px_32px_rgba(0,0,0,0.28)] backdrop-blur-md transition-colors hover:border-white/30 hover:bg-bg/90"
+      >
+        <span aria-hidden="true" className="text-[14px] text-muted">
+          ≋
+        </span>
+        Tune waves
+      </button>
+
+      {open && (
+        <div className="mt-2 w-[min(300px,calc(100vw-2rem))] rounded-2xl border border-white/15 bg-bg/88 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.5)] backdrop-blur-xl">
+          <div className="grid gap-3.5">
+            <WaveRange
+              label="Amplitude"
+              value={settings.amplitude}
+              min={0.4}
+              max={3}
+              step={0.05}
+              onChange={(value) => update("amplitude", value)}
+            />
+            <WaveRange
+              label="Wave density"
+              value={settings.frequency}
+              min={0.45}
+              max={2}
+              step={0.05}
+              onChange={(value) => update("frequency", value)}
+            />
+            <WaveRange
+              label="Speed"
+              value={settings.speed}
+              min={0.1}
+              max={1.5}
+              step={0.05}
+              onChange={(value) => update("speed", value)}
+            />
+            <WaveRange
+              label="Choppiness"
+              value={settings.choppiness}
+              min={0}
+              max={2.5}
+              step={0.05}
+              onChange={(value) => update("choppiness", value)}
+            />
+            <WaveRange
+              label="Particle size"
+              value={settings.pointSize}
+              min={0.5}
+              max={2.4}
+              step={0.05}
+              onChange={(value) => update("pointSize", value)}
+            />
+            <WaveRange
+              label="Brightness"
+              value={settings.intensity}
+              min={0.35}
+              max={2}
+              step={0.05}
+              onChange={(value) => update("intensity", value)}
+            />
+          </div>
+
+          <div className="mt-4 flex items-center gap-2 border-t border-white/10 pt-3">
+            <button
+              type="button"
+              onClick={() => update("paused", !settings.paused)}
+              className="flex h-8 flex-1 items-center justify-center rounded-full border border-white/15 bg-white/[0.04] text-[11px] font-medium text-fg transition-colors hover:border-white/30 hover:bg-white/[0.08]"
+            >
+              {settings.paused ? "Play" : "Pause"}
+            </button>
+            <button
+              type="button"
+              onClick={() => onChange({ ...DEFAULT_FLUID_SIGNAL_SETTINGS })}
+              className="flex h-8 flex-1 items-center justify-center rounded-full border border-white/15 bg-white/[0.04] text-[11px] font-medium text-muted transition-colors hover:border-white/30 hover:bg-white/[0.08] hover:text-fg"
+            >
+              Reset
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WaveRange({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="grid gap-1.5">
+      <span className="flex items-center justify-between gap-4 text-[11px] font-medium text-muted">
+        <span>{label}</span>
+        <span className="font-mono tabular-nums text-fg">{value.toFixed(2)}</span>
+      </span>
+      <input
+        type="range"
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="h-4 w-full cursor-pointer accent-accent"
+      />
+    </label>
+  );
+}
+
+function HeroCopyPromptButton() {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(INSTALL_PROMPT);
+    } catch {
+      return;
+    }
+    setCopied(true);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setCopied(false), 2000);
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      className="inline-flex h-11 items-center justify-center rounded-full border border-white/15 bg-bg/65 px-5 text-[14px] font-medium text-fg backdrop-blur-sm transition-colors hover:border-white/30 hover:bg-bg/80"
+    >
+      {copied ? "Copied" : "Copy install prompt"}
+    </button>
   );
 }
 
@@ -303,149 +483,6 @@ function ClientLogos() {
         </div>
       </div>
     </section>
-  );
-}
-
-function CodingAgentWindow() {
-  const [copied, setCopied] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(INSTALL_PROMPT);
-    } catch {
-      return;
-    }
-    setCopied(true);
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => setCopied(false), 2000);
-  }
-
-  return (
-    <div className="relative flex min-h-[520px] flex-col items-center justify-center gap-4 p-5 md:min-h-[620px] md:gap-5 md:p-8">
-      <div className="mx-auto w-full overflow-hidden rounded-2xl border border-white/10 bg-[#050608] shadow-[0_28px_100px_rgba(0,0,0,0.65)] lg:max-w-[75%]">
-        <div className="flex items-center gap-2 bg-[#050608] px-4 py-3">
-          <span className="h-2.5 w-2.5 rounded-full bg-danger" />
-          <span className="h-2.5 w-2.5 rounded-full bg-warning" />
-          <span className="h-2.5 w-2.5 rounded-full bg-success" />
-          <span className="ml-3 font-mono text-[10px] uppercase tracking-[0.2em] text-subtle">
-            coding agent
-          </span>
-        </div>
-        <div className="grid gap-4 p-4 font-mono text-[12px] leading-relaxed md:p-5 md:text-[13px]">
-          <div className="bg-[#050608] p-4">
-            <div className="mb-2 text-subtle">prompt</div>
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0 break-words text-fg">
-                <span className="mr-1 text-subtle" aria-hidden="true">
-                  &gt;
-                </span>
-                {INSTALL_PROMPT}
-                <span className="ml-1 inline-block h-4 w-2 translate-y-0.5 animate-pulse bg-accent" />
-              </div>
-              <button
-                type="button"
-                onClick={copy}
-                className="shrink-0 rounded-md bg-accent px-3 py-1.5 font-sans text-[11px] font-semibold uppercase tracking-[0.12em] text-accent-ink transition-[filter] hover:brightness-110"
-              >
-                {copied ? "Copied" : "Copy"}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-      <OnboardingAgenda />
-    </div>
-  );
-}
-
-function OnboardingAgenda() {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const steps = [
-    "Map every app, service, and edge function in your repo",
-    "Install native OpenTelemetry — traces, logs, metrics — per language",
-    "Open superlog.sh in a browser to finish signup in parallel",
-    "Add spans, counters, and structured logs around critical operations",
-    "Verify the app still runs and OTLP reaches /v1/traces, /logs, /metrics",
-  ];
-
-  useEffect(() => {
-    if (!open) return;
-    function onDocClick(e: MouseEvent) {
-      if (!containerRef.current) return;
-      if (e.target instanceof Node && containerRef.current.contains(e.target)) return;
-      setOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("mousedown", onDocClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDocClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  function toggle() {
-    setOpen((prev) => !prev);
-  }
-
-  return (
-    <div ref={containerRef} className="relative">
-      <button
-        type="button"
-        onClick={toggle}
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-bg/70 px-4 py-2 text-[12px] font-medium text-fg shadow-[0_12px_30px_rgba(0,0,0,0.32)] backdrop-blur-md transition-colors hover:border-white/30 hover:bg-bg/85 md:text-[13px]"
-      >
-        <span
-          aria-hidden="true"
-          className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-white/30 text-[10px] font-semibold text-subtle"
-        >
-          ?
-        </span>
-        <span>What will the agent do?</span>
-        <span
-          aria-hidden="true"
-          className={`text-subtle transition-transform ${open ? "rotate-180" : ""}`}
-        >
-          ▾
-        </span>
-      </button>
-
-      {open && (
-        <div
-          role="dialog"
-          aria-label="What the agent will do"
-          className="absolute left-1/2 top-[calc(100%+10px)] z-30 w-[min(92vw,520px)] -translate-x-1/2 rounded-2xl border border-white/15 bg-bg/95 p-5 text-left shadow-[0_28px_80px_rgba(0,0,0,0.55)] backdrop-blur-md md:p-6"
-        >
-          <span
-            aria-hidden="true"
-            className="absolute -top-1.5 left-1/2 h-3 w-3 -translate-x-1/2 rotate-45 border-l border-t border-white/15 bg-bg/95"
-          />
-          <div className="mb-3 font-mono text-[10px] uppercase tracking-[0.18em] text-subtle">
-            via superloglabs/skills
-          </div>
-          <ol className="grid gap-2 text-[13px] leading-relaxed text-fg md:text-[14px]">
-            {steps.map((step, i) => (
-              <li key={step} className="flex gap-3">
-                <span className="w-5 shrink-0 font-mono text-subtle" aria-hidden="true">
-                  {String(i + 1).padStart(2, "0")}
-                </span>
-                <span className="min-w-0 break-words">{step}</span>
-              </li>
-            ))}
-          </ol>
-          <p className="mt-4 text-[12px] leading-relaxed text-muted md:text-[13px]">
-            Public ingest token is inlined in the bootstrap — no env vars, no .env edits. Existing
-            vendors (Sentry, Datadog, etc.) stay in place.
-          </p>
-        </div>
-      )}
-    </div>
   );
 }
 
