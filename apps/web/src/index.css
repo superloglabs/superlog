@@ -313,6 +313,29 @@ body {
   animation: memory-terminal-glow 4.8s ease-in-out infinite;
 }
 
+@keyframes memory-spoke-pulse {
+  0% {
+    opacity: 0;
+    transform: translate(var(--memory-pulse-x), var(--memory-pulse-y))
+      rotate(var(--memory-pulse-angle));
+  }
+  6% {
+    opacity: 0.5;
+  }
+  34% {
+    opacity: 0.26;
+  }
+  44%,
+  100% {
+    opacity: 0;
+    transform: translate(220px, 175px) rotate(var(--memory-pulse-angle));
+  }
+}
+
+.memory-spoke-pulse {
+  animation: memory-spoke-pulse 5.6s linear infinite;
+}
+
 @keyframes pr-check-appear {
   0%,
   8% {
@@ -965,7 +988,9 @@ body {
   }
 
   .memory-spoke-pulse {
+    animation: none;
     opacity: 0;
+    transform: none;
   }
 
   .memory-terminal-glow {

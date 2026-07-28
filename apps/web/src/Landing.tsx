@@ -955,7 +955,7 @@ const CONTEXT_SOURCES = [
   { label: "Notion", icon: "notion" },
   { label: "Linear", icon: "linear" },
   { label: "GitHub", icon: "github" },
-  { label: "AGENT.md", icon: "file" },
+  { label: "AGENTS.md", icon: "file" },
   { label: "CLAUDE.md", icon: "file" },
   { label: "Custom prompt", icon: "prompt" },
   { label: "Custom MCP", icon: "mcp" },
@@ -1135,26 +1135,16 @@ function MemoryIllustration() {
               fill="currentColor"
               opacity="0"
               filter="url(#memory-pulse-streak)"
-              transform={`rotate(${(Math.atan2(175 - node.y, 220 - node.x) * 180) / Math.PI})`}
-            >
-              <animateMotion
-                path={`M ${node.x} ${node.y} L 220 175`}
-                dur={`${5.6 + (index % 4) * 0.7}s`}
-                begin={`${((index * 7) % nodes.length) * 0.31}s`}
-                repeatCount="indefinite"
-                keyPoints="0;1;1"
-                keyTimes="0;.44;1"
-                calcMode="linear"
-              />
-              <animate
-                attributeName="opacity"
-                values="0;.5;.26;0;0"
-                keyTimes="0;.06;.34;.44;1"
-                dur={`${5.6 + (index % 4) * 0.7}s`}
-                begin={`${((index * 7) % nodes.length) * 0.31}s`}
-                repeatCount="indefinite"
-              />
-            </ellipse>
+              style={
+                {
+                  "--memory-pulse-x": `${node.x}px`,
+                  "--memory-pulse-y": `${node.y}px`,
+                  "--memory-pulse-angle": `${(Math.atan2(175 - node.y, 220 - node.x) * 180) / Math.PI}deg`,
+                  animationDelay: `${((index * 7) % nodes.length) * 0.31}s`,
+                  animationDuration: `${5.6 + (index % 4) * 0.7}s`,
+                } as React.CSSProperties
+              }
+            />
             {node.dot && (
               <>
                 <circle
