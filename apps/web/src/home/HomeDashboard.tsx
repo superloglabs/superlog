@@ -32,7 +32,12 @@ import {
   IncidentCountHomeWidget,
   IncomingSignalsHomeWidget,
 } from "./HomePulseWidgets.tsx";
-import { homeWidgetMinWidth, homeWidgetPresentation, splitHomeWidgets } from "./home-layout.ts";
+import {
+  homeWidgetMinHeight,
+  homeWidgetMinWidth,
+  homeWidgetPresentation,
+  splitHomeWidgets,
+} from "./home-layout.ts";
 
 const GRID_CONFIG = {
   cols: 12,
@@ -185,12 +190,20 @@ function HomeGrid({
 
   const layout: Layout = useMemo(
     () =>
-      widgets.map((widget) => ({
-        i: widget.id,
-        ...widget.layout,
-        minW: homeWidgetMinWidth(widget.type),
-        minH: widget.type === "link" ? 2 : 3,
-      })),
+      widgets.map((widget) => {
+        const minH = homeWidgetMinHeight(widget.type);
+        return {
+          i: widget.id,
+          ...widget.layout,
+          // minH only constrains interactive resizing — it does not enlarge an
+          // already-persisted item. Widgets saved before a min bump (e.g. an
+          // active_incidents that stored h:3) would still render clipped, so
+          // clamp the rendered height up to the current minimum.
+          h: Math.max(widget.layout.h, minH),
+          minW: homeWidgetMinWidth(widget.type),
+          minH,
+        };
+      }),
     [widgets],
   );
 
@@ -248,6 +261,54 @@ function HomeGrid({
   );
 }
 
+// Reports whether content is hidden above/below the viewport, so the tile can
+// fade its edge shadows in and out. The fade itself is a slow, eased CSS opacity
+// transition on the overlays (see below) rather than tracking scroll position, so
+// crossing an edge animates gently instead of snapping. Driven by real scroll
+// position (not a background-attachment trick, which slid with the content here)
+// and re-measured when the body resizes or its data loads in.
+function useScrollEdges<S extends HTMLElement>() {
+  const scrollRef = useRef<S | null>(null);
+  const [edges, setEdges] = useState({ top: false, bottom: false });
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const measure = () => {
+      const top = el.scrollTop > 1;
+      const bottom = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+      setEdges((prev) => (prev.top === top && prev.bottom === bottom ? prev : { top, bottom }));
+    };
+    measure();
+    el.addEventListener("scroll", measure, { passive: true });
+    // The fixed-height scroll container doesn't resize when its content's
+    // scrollHeight grows, so watch the content node too. It's observed directly
+    // (no layout wrapper — that would break widgets whose body relies on h-full).
+    // An async widget can swap that node when it goes from loading to loaded, so a
+    // MutationObserver re-points the ResizeObserver to the live child and
+    // re-measures, keeping the overflow shadow correct on load.
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    let child = el.firstElementChild;
+    if (child) observer.observe(child);
+    const mutations = new MutationObserver(() => {
+      const next = el.firstElementChild;
+      if (next !== child) {
+        if (child) observer.unobserve(child);
+        if (next) observer.observe(next);
+        child = next;
+      }
+      measure();
+    });
+    mutations.observe(el, { childList: true });
+    return () => {
+      el.removeEventListener("scroll", measure);
+      observer.disconnect();
+      mutations.disconnect();
+    };
+  }, []);
+  return { scrollRef, edges };
+}
+
 function HomeItemTile({
   projectId,
   slugs,
@@ -264,6 +325,13 @@ function HomeItemTile({
   onRemove: () => void;
 }) {
   const presentation = homeWidgetPresentation(widget.type);
+  const { scrollRef, edges } = useScrollEdges<HTMLDivElement>();
+  // The edge shadow only belongs on widgets that scroll in this outer body — the
+  // builtin list widgets (active_incidents et al.). Framed widgets (trace/log
+  // tables, markdown, charts) own their scrolling via an inner overflow-auto, so
+  // the outer element never scrolls; attaching the shadow there would leave dead
+  // overlays over a container that never moves.
+  const showScrollShadow = !presentation.innerShell;
   return (
     <section
       className={`flex h-full flex-col overflow-hidden rounded-xl border bg-surface ${
@@ -306,8 +374,29 @@ function HomeItemTile({
           </button>
         )}
       </div>
-      <div className={`min-h-0 flex-1 overflow-auto ${presentation.bodyPadding ? "p-4" : ""}`}>
-        <HomeItemBody projectId={projectId} slugs={slugs} range={range} widget={widget} />
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={showScrollShadow ? scrollRef : undefined}
+          className={`h-full overflow-auto ${presentation.bodyPadding ? "p-4" : ""}`}
+        >
+          <HomeItemBody projectId={projectId} slugs={slugs} range={range} widget={widget} />
+        </div>
+        {showScrollShadow && (
+          <>
+            <div
+              aria-hidden="true"
+              className={`pointer-events-none absolute inset-x-0 top-0 h-10 bg-gradient-to-b from-black/55 to-transparent transition-opacity duration-500 ease-out ${
+                edges.top ? "opacity-100" : "opacity-0"
+              }`}
+            />
+            <div
+              aria-hidden="true"
+              className={`pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-black/55 to-transparent transition-opacity duration-500 ease-out ${
+                edges.bottom ? "opacity-100" : "opacity-0"
+              }`}
+            />
+          </>
+        )}
       </div>
     </section>
   );

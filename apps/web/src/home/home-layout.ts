@@ -15,8 +15,10 @@ export function homeWidgetPresentation(type: string): {
   innerShell: boolean;
   defaultHeight: number | undefined;
 } {
+  if (type === "active_incidents") {
+    return { bodyPadding: false, innerShell: false, defaultHeight: 5 };
+  }
   if (
-    type === "active_incidents" ||
     type === "incoming_signals" ||
     type === "incident_count" ||
     type === "agent_pull_requests"
@@ -32,5 +34,15 @@ export function homeWidgetMinWidth(type: string): number {
     return 4;
   }
   if (type === "setup_todos" || type === "active_incidents" || type === "service_map") return 6;
+  return 3;
+}
+
+// Minimum grid-row height per widget. The incident list packs ~84px per row plus
+// a 44px header, so a 3-row default (~200px) clipped the second incident. Floor
+// active_incidents at 5 rows (~344px) so at least three incidents show before the
+// body scrolls; other widgets keep the generic 3-row minimum (links 2).
+export function homeWidgetMinHeight(type: string): number {
+  if (type === "link") return 2;
+  if (type === "active_incidents") return 5;
   return 3;
 }

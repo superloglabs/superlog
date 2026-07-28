@@ -1,13 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { homeWidgetPresentation, splitHomeWidgets } from "./home-layout.ts";
+import {
+  homeWidgetMinHeight,
+  homeWidgetPresentation,
+  splitHomeWidgets,
+} from "./home-layout.ts";
 
 test("active incidents use the home tile as their only shell", () => {
   const presentation = homeWidgetPresentation("active_incidents");
 
   assert.equal(presentation.bodyPadding, false);
   assert.equal(presentation.innerShell, false);
-  assert.equal(presentation.defaultHeight, 3);
+  assert.equal(presentation.defaultHeight, 5);
+});
+
+test("active incidents floor at five rows so three incidents show before scrolling", () => {
+  assert.equal(homeWidgetMinHeight("active_incidents"), 5);
+  assert.equal(homeWidgetMinHeight("link"), 2);
+  assert.equal(homeWidgetMinHeight("incoming_signals"), 3);
 });
 
 test("setup stays outside the framed home widget grid", () => {
