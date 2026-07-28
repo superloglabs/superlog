@@ -198,6 +198,305 @@ body {
   }
 }
 
+.error-import-grid {
+  background-image: radial-gradient(rgb(var(--color-fg-rgb) / 0.1) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+.error-import-grid-fade {
+  -webkit-mask-image: radial-gradient(
+    ellipse at center,
+    #000 36%,
+    rgb(0 0 0 / 72%) 66%,
+    transparent 100%
+  );
+  mask-image: radial-gradient(
+    ellipse at center,
+    #000 36%,
+    rgb(0 0 0 / 72%) 66%,
+    transparent 100%
+  );
+}
+
+@keyframes error-import-particle-top {
+  0%,
+  4% {
+    left: var(--error-import-source-edge);
+    top: 20%;
+    opacity: 0;
+  }
+
+  8% {
+    left: var(--error-import-source-edge);
+    top: 20%;
+    opacity: 1;
+  }
+
+  28% {
+    left: calc(50% - 32px);
+    top: 20%;
+    opacity: 1;
+  }
+
+  30.5% {
+    left: calc(50% - 20px);
+    top: calc(20% + 2px);
+    opacity: 1;
+  }
+
+  33% {
+    left: calc(50% - 9px);
+    top: calc(20% + 9px);
+    opacity: 1;
+  }
+
+  35.5% {
+    left: calc(50% - 2px);
+    top: calc(20% + 20px);
+    opacity: 1;
+  }
+
+  38% {
+    left: 50%;
+    top: calc(20% + 32px);
+    opacity: 1;
+  }
+
+  48% {
+    left: 50%;
+    top: 50%;
+    opacity: 1;
+  }
+
+  88% {
+    left: var(--error-import-destination-edge);
+    top: 50%;
+    opacity: 1;
+  }
+
+  96%,
+  100% {
+    left: var(--error-import-destination-edge);
+    top: 50%;
+    opacity: 0;
+  }
+}
+
+@keyframes error-import-particle-middle {
+  0%,
+  4% {
+    left: var(--error-import-source-edge);
+    top: 50%;
+    opacity: 0;
+  }
+
+  8% {
+    left: var(--error-import-source-edge);
+    top: 50%;
+    opacity: 1;
+  }
+
+  48% {
+    left: 50%;
+    top: 50%;
+    opacity: 1;
+  }
+
+  50%,
+  100% {
+    left: 50%;
+    top: 50%;
+    opacity: 0;
+  }
+}
+
+@keyframes error-import-particle-bottom {
+  0%,
+  4% {
+    left: var(--error-import-source-edge);
+    top: 80%;
+    opacity: 0;
+  }
+
+  8% {
+    left: var(--error-import-source-edge);
+    top: 80%;
+    opacity: 1;
+  }
+
+  28% {
+    left: calc(50% - 32px);
+    top: 80%;
+    opacity: 1;
+  }
+
+  30.5% {
+    left: calc(50% - 20px);
+    top: calc(80% - 2px);
+    opacity: 1;
+  }
+
+  33% {
+    left: calc(50% - 9px);
+    top: calc(80% - 9px);
+    opacity: 1;
+  }
+
+  35.5% {
+    left: calc(50% - 2px);
+    top: calc(80% - 20px);
+    opacity: 1;
+  }
+
+  38% {
+    left: 50%;
+    top: calc(80% - 32px);
+    opacity: 1;
+  }
+
+  48% {
+    left: 50%;
+    top: 50%;
+    opacity: 1;
+  }
+
+  50%,
+  100% {
+    left: 50%;
+    top: 50%;
+    opacity: 0;
+  }
+}
+
+.error-import-line {
+  border-color: rgb(122 129 140 / 0.48);
+}
+
+.error-import-particle {
+  --error-import-source-edge: calc(40% + 16px);
+  --error-import-destination-edge: 59%;
+
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgb(var(--color-fg-rgb));
+  box-shadow:
+    0 0 5px 2px rgb(var(--color-fg-rgb) / 0.42),
+    0 0 12px 4px rgb(var(--color-fg-rgb) / 0.16);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  will-change: left, top, opacity;
+}
+
+.error-import-particle-top {
+  animation: error-import-particle-top 8s linear infinite;
+}
+
+.error-import-particle-middle {
+  animation: error-import-particle-middle 8s linear infinite;
+}
+
+.error-import-particle-bottom {
+  animation: error-import-particle-bottom 8s linear infinite;
+}
+
+.error-stack-card-back {
+  pointer-events: none;
+}
+
+.error-stack-card-back-one {
+  z-index: 2;
+  transform: translate3d(12px, 9px, 0) rotate(1.1deg);
+  animation: landing-slack-deck-one 2.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.error-stack-card-back-two {
+  z-index: 1;
+  transform: translate3d(22px, 16px, 0) rotate(2deg);
+  animation: landing-slack-deck-two 2.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.error-stack-shuffle-card {
+  transform-origin: 50% 55%;
+  animation: landing-slack-shuffle 2.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  will-change: filter, opacity, transform;
+}
+
+.error-import-line-from-source {
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 77%);
+  mask-image: linear-gradient(to right, transparent 0%, #000 77%);
+}
+
+.error-import-line-to-destination {
+  -webkit-mask-image: linear-gradient(to right, #000 33%, transparent 100%);
+  mask-image: linear-gradient(to right, #000 33%, transparent 100%);
+}
+
+@media (min-width: 640px) {
+  .error-import-particle {
+    --error-import-source-edge: calc(32% + 16px);
+    --error-import-destination-edge: 66%;
+  }
+
+  .error-import-line-from-source {
+    -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 51%);
+    mask-image: linear-gradient(to right, transparent 0%, #000 51%);
+  }
+
+  .error-import-line-to-destination {
+    -webkit-mask-image: linear-gradient(to right, #000 53%, transparent 100%);
+    mask-image: linear-gradient(to right, #000 53%, transparent 100%);
+  }
+}
+
+@media (min-width: 768px) {
+  .error-import-particle {
+    --error-import-source-edge: 32%;
+  }
+
+  .error-import-line-from-source {
+    -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 47%);
+    mask-image: linear-gradient(to right, transparent 0%, #000 47%);
+  }
+}
+
+@media (min-width: 1024px) {
+  .error-import-particle {
+    --error-import-source-edge: 30%;
+  }
+
+  .error-import-line-from-source {
+    -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 43%);
+    mask-image: linear-gradient(to right, transparent 0%, #000 43%);
+  }
+
+  .error-import-line-to-destination {
+    -webkit-mask-image: linear-gradient(to right, #000 55%, transparent 100%);
+    mask-image: linear-gradient(to right, #000 55%, transparent 100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .error-import-particle {
+    animation: none;
+    display: none;
+  }
+
+  .error-stack-card-back-one,
+  .error-stack-card-back-two,
+  .error-stack-shuffle-card {
+    animation: none;
+  }
+
+  .error-stack-shuffle-card {
+    filter: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .landing-nav-unblur {
   animation: landing-nav-unblur 680ms cubic-bezier(0.22, 1, 0.36, 1) both;
   will-change: filter, opacity, transform;
