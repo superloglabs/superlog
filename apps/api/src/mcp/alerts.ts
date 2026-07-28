@@ -18,6 +18,7 @@ import {
   updateAlertRecord,
 } from "../alerts-service.js";
 import { assertProjectAccess } from "./projects.js";
+import { READ_ONLY_TOOL } from "./scope-authorization.js";
 
 const projectIdSchema = z
   .string()
@@ -139,6 +140,7 @@ export function registerAlertTools(
     {
       title: "List alerts",
       description: "List all alerts in the active project (or the project_id you pass).",
+      annotations: READ_ONLY_TOOL,
       inputSchema: { project_id: projectIdSchema },
     },
     async (input) => text(await listAlertsForProject(await resolve(input.project_id))),
@@ -149,6 +151,7 @@ export function registerAlertTools(
     {
       title: "Get alert",
       description: "Fetch a single alert plus its 50 most recent firings.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: { project_id: projectIdSchema, id: alertIdSchema },
     },
     async (input) => {
@@ -225,6 +228,7 @@ export function registerAlertTools(
       title: "Preview alert",
       description:
         "Evaluate a draft alert spec against current data without saving. Returns whether it would breach right now.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: { project_id: projectIdSchema, ...alertInputShape },
     },
     async (input) => {
@@ -238,6 +242,7 @@ export function registerAlertTools(
     {
       title: "Test alert",
       description: "Re-evaluate a saved alert against current data and return the result.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: { project_id: projectIdSchema, id: alertIdSchema },
     },
     async (input) => {

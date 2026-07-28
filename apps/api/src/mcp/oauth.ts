@@ -14,6 +14,7 @@ import { HTTPException } from "hono/http-exception";
 import { logger } from "../logger.js";
 import { resolveActiveOrgContext } from "../org-context.js";
 import type { McpConfig } from "./config.js";
+import { resolveMcpOauthScope } from "./scope-authorization.js";
 
 const log = logger.child({ scope: "mcp-oauth" });
 
@@ -417,6 +418,11 @@ async function validateAuthorizeParams(
   if (!params.codeChallenge) {
     return { code: "invalid_request", description: "code_challenge is required" };
   }
+  const resolvedScope = resolveMcpOauthScope(params.scope);
+  if ("error" in resolvedScope) {
+    return { code: "invalid_scope", description: resolvedScope.error };
+  }
+  params.scope = resolvedScope.scope;
   const matched = pickMatchingResource(params.receivedResources, cfg);
   if (!matched) {
     return {

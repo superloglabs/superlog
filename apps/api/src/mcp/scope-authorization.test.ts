@@ -1,0 +1,94 @@
+import "../project-mcp-test-env.js";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import type { ClickHouseClient } from "@clickhouse/client";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { resolveMcpOauthScope } from "./scope-authorization.js";
+import { createMcpServerForSession } from "./server.js";
+
+const fakeCh = {} as ClickHouseClient;
+
+async function connectedClient(
+  session: Parameters<typeof createMcpServerForSession>[0],
+): Promise<Client> {
+  const server = createMcpServerForSession({
+    ...session,
+    ch: fakeCh,
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "scope-test-client", version: "0.0.0" });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  return client;
+}
+
+const session = {
+  ch: fakeCh,
+  userId: "00000000-0000-4000-8000-000000000001",
+  tokenId: "scope-test-token",
+  tokenKind: "oauth" as const,
+  activeProjectId: "00000000-0000-4000-8000-000000000002",
+};
+
+test("OAuth defaults to mcp:read and rejects unsupported scopes", () => {
+  assert.deepEqual(resolveMcpOauthScope(null), { scope: "mcp:read" });
+  assert.deepEqual(resolveMcpOauthScope("  mcp:read   mcp:write  "), {
+    error: "unsupported MCP scope: mcp:write",
+  });
+});
+
+test("mcp:read sessions expose reads but not writes or deletes", async () => {
+  const client = await connectedClient({ ...session, scopes: ["mcp:read"] });
+  const tools = await client.listTools();
+  const names = tools.tools.map((tool) => tool.name).sort();
+
+  assert.deepEqual(names, [
+    "get_active_project",
+    "get_alert",
+    "get_dashboard",
+    "get_incident",
+    "get_issue_filter",
+    "get_project_context",
+    "list_agent_mcp_servers",
+    "list_agent_memories",
+    "list_alerts",
+    "list_dashboards",
+    "list_projects",
+    "list_services",
+    "preview_alert",
+    "preview_issue_filter",
+    "query_logs",
+    "query_metrics",
+    "query_traces",
+    "search_incidents",
+    "test_alert",
+  ]);
+});
+
+test("mcp:read sessions reject direct calls to mutation tools", async () => {
+  const client = await connectedClient({ ...session, scopes: ["mcp:read"] });
+
+  const result = await client.callTool({
+    name: "delete_agent_memory",
+    arguments: {
+      id: "00000000-0000-4000-8000-000000000003",
+    },
+  });
+
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result.content), /not found/i);
+});
+
+test("unscoped personal tokens retain full MCP tool access", async () => {
+  const client = await connectedClient({
+    ...session,
+    tokenKind: "pat",
+    scopes: [],
+  });
+  const tools = await client.listTools();
+  const names = tools.tools.map((tool) => tool.name);
+
+  assert.ok(names.includes("query_logs"));
+  assert.ok(names.includes("create_agent_memory"));
+  assert.ok(names.includes("delete_agent_memory"));
+});
