@@ -77,7 +77,7 @@ export function defaultWidgetLayout(type: DashboardWidgetType): DashboardWidgetL
     case "setup_todos":
       return { x: 0, y: 0, w: 12, h: 5 };
     case "active_incidents":
-      return { x: 0, y: 5, w: 6, h: 3 };
+      return { x: 0, y: 5, w: 6, h: 5 };
     case "service_map":
       return { x: 6, y: 5, w: 6, h: 8 };
     case "incoming_signals":

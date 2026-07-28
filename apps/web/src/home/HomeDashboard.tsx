@@ -32,7 +32,12 @@ import {
   IncidentCountHomeWidget,
   IncomingSignalsHomeWidget,
 } from "./HomePulseWidgets.tsx";
-import { homeWidgetMinWidth, homeWidgetPresentation, splitHomeWidgets } from "./home-layout.ts";
+import {
+  homeWidgetMinHeight,
+  homeWidgetMinWidth,
+  homeWidgetPresentation,
+  splitHomeWidgets,
+} from "./home-layout.ts";
 
 const GRID_CONFIG = {
   cols: 12,
@@ -189,7 +194,7 @@ function HomeGrid({
         i: widget.id,
         ...widget.layout,
         minW: homeWidgetMinWidth(widget.type),
-        minH: widget.type === "link" ? 2 : 3,
+        minH: homeWidgetMinHeight(widget.type),
       })),
     [widgets],
   );
@@ -248,6 +253,36 @@ function HomeGrid({
   );
 }
 
+// Reports whether content is hidden above/below the viewport, so the tile can
+// fade its edge shadows in and out. The fade itself is a slow, eased CSS opacity
+// transition on the overlays (see below) rather than tracking scroll position, so
+// crossing an edge animates gently instead of snapping. Driven by real scroll
+// position (not a background-attachment trick, which slid with the content here)
+// and re-measured when the body resizes or its data loads in.
+function useScrollEdges<T extends HTMLElement>() {
+  const ref = useRef<T | null>(null);
+  const [edges, setEdges] = useState({ top: false, bottom: false });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const top = el.scrollTop > 1;
+      const bottom = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+      setEdges((prev) => (prev.top === top && prev.bottom === bottom ? prev : { top, bottom }));
+    };
+    measure();
+    el.addEventListener("scroll", measure, { passive: true });
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    if (el.firstElementChild) observer.observe(el.firstElementChild);
+    return () => {
+      el.removeEventListener("scroll", measure);
+      observer.disconnect();
+    };
+  }, []);
+  return { ref, edges };
+}
+
 function HomeItemTile({
   projectId,
   slugs,
@@ -264,6 +299,7 @@ function HomeItemTile({
   onRemove: () => void;
 }) {
   const presentation = homeWidgetPresentation(widget.type);
+  const { ref: scrollRef, edges } = useScrollEdges<HTMLDivElement>();
   return (
     <section
       className={`flex h-full flex-col overflow-hidden rounded-xl border bg-surface ${
@@ -306,8 +342,25 @@ function HomeItemTile({
           </button>
         )}
       </div>
-      <div className={`min-h-0 flex-1 overflow-auto ${presentation.bodyPadding ? "p-4" : ""}`}>
-        <HomeItemBody projectId={projectId} slugs={slugs} range={range} widget={widget} />
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          className={`h-full overflow-auto ${presentation.bodyPadding ? "p-4" : ""}`}
+        >
+          <HomeItemBody projectId={projectId} slugs={slugs} range={range} widget={widget} />
+        </div>
+        <div
+          aria-hidden="true"
+          className={`pointer-events-none absolute inset-x-0 top-0 h-10 bg-gradient-to-b from-black/55 to-transparent transition-opacity duration-500 ease-out ${
+            edges.top ? "opacity-100" : "opacity-0"
+          }`}
+        />
+        <div
+          aria-hidden="true"
+          className={`pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-black/55 to-transparent transition-opacity duration-500 ease-out ${
+            edges.bottom ? "opacity-100" : "opacity-0"
+          }`}
+        />
       </div>
     </section>
   );
