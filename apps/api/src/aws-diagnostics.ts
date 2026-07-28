@@ -6,7 +6,7 @@ export type AwsDeliveryKind = "metrics" | "logs";
 export type AwsDiagnosticFacts = {
   expectedAccountId: string | null;
   identityAccountId: string;
-  stack: { name: string; status: string } | null;
+  stacks: Array<{ name: string; status: string }>;
   metricStream: { name: string; state: string } | null;
   deliveryStreams: Array<{
     kind: AwsDeliveryKind;
@@ -191,7 +191,7 @@ export function evaluateAwsDiagnostics(facts: AwsDiagnosticFacts): AwsDiagnostic
   };
 
   let stack: AwsDiagnosticCheck;
-  if (!facts.stack) {
+  if (facts.stacks.length === 0) {
     stack = {
       key: "stack",
       label: "CloudFormation stack",
@@ -200,21 +200,24 @@ export function evaluateAwsDiagnostics(facts: AwsDiagnosticFacts): AwsDiagnostic
       evidence: { found: false },
     };
   } else {
-    const broken = /FAILED|ROLLBACK|DELETE/.test(facts.stack.status);
-    const complete = /_COMPLETE$/.test(facts.stack.status) && !broken;
+    const brokenStack = facts.stacks.find((candidate) =>
+      /FAILED|ROLLBACK|DELETE/.test(candidate.status),
+    );
+    const incompleteStack = facts.stacks.find((candidate) => !/_COMPLETE$/.test(candidate.status));
     stack = {
       key: "stack",
       label: "CloudFormation stack",
-      status: broken ? "fail" : complete ? "pass" : "warning",
-      summary: broken
-        ? `The CloudFormation stack is ${facts.stack.status}.`
-        : complete
-          ? "The CloudFormation stack is deployed."
-          : `The CloudFormation stack is ${facts.stack.status}.`,
+      status: brokenStack ? "fail" : incompleteStack ? "warning" : "pass",
+      summary: brokenStack
+        ? `${brokenStack.name} is ${brokenStack.status}.`
+        : incompleteStack
+          ? `${incompleteStack.name} is ${incompleteStack.status}.`
+          : `${facts.stacks.length} CloudFormation stack${facts.stacks.length === 1 ? " is" : "s are"} deployed.`,
       evidence: {
         found: true,
-        stackName: facts.stack.name,
-        stackStatus: facts.stack.status,
+        stackCount: facts.stacks.length,
+        problemStackName: brokenStack?.name ?? incompleteStack?.name ?? null,
+        problemStackStatus: brokenStack?.status ?? incompleteStack?.status ?? null,
       },
     };
   }

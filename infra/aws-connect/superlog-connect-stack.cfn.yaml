@@ -149,6 +149,7 @@ Resources:
                   - "cloudwatch:ListMetricStreams"
                   - "cloudwatch:GetMetricData"
                   - "logs:DescribeAccountPolicies"
+                  - "cloudformation:ListStacks"
                 Resource: "*"
               - Sid: TelemetryDiagnosticsStacks
                 Effect: Allow

@@ -1,4 +1,8 @@
-import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
+import {
+  CloudFormationClient,
+  DescribeStacksCommand,
+  ListStacksCommand,
+} from "@aws-sdk/client-cloudformation";
 import {
   CloudWatchClient,
   GetMetricDataCommand,
@@ -78,6 +82,7 @@ function diagnosticSessionPolicy(target: AwsDiagnosticTarget): string {
           "cloudwatch:ListMetricStreams",
           "cloudwatch:GetMetricData",
           "logs:DescribeAccountPolicies",
+          "cloudformation:ListStacks",
         ],
         Resource: "*",
       },
@@ -166,32 +171,65 @@ async function inspectIdentity(
   }
 }
 
-async function inspectStack(
+async function inspectStacks(
   client: DiagnosticClient,
+  connectionId: string,
   permissionGaps: string[],
-): Promise<AwsDiagnosticFacts["stack"]> {
-  for (const stackName of ["superlog-connect", "superlog-metrics-stream", "superlog-logs-stream"]) {
+): Promise<AwsDiagnosticFacts["stacks"]> {
+  const candidateNames: string[] = [];
+  try {
+    let nextToken: string | undefined;
+    do {
+      const output = (await client.send(new ListStacksCommand({ NextToken: nextToken }))) as {
+        StackSummaries?: Array<{ StackName?: string; StackStatus?: string }>;
+        NextToken?: string;
+      };
+      for (const summary of output.StackSummaries ?? []) {
+        if (
+          summary.StackName?.startsWith("superlog-") &&
+          summary.StackStatus !== "DELETE_COMPLETE"
+        ) {
+          candidateNames.push(summary.StackName);
+        }
+      }
+      nextToken = output.NextToken;
+    } while (nextToken);
+  } catch (error) {
+    if (isDenied(error)) {
+      permissionGaps.push("stack");
+      return [];
+    }
+    throw new AwsDiagnosticProbeError(errorCode(error));
+  }
+
+  const stacks: AwsDiagnosticFacts["stacks"] = [];
+  for (const stackName of [...new Set(candidateNames)]) {
     try {
       const output = (await client.send(new DescribeStacksCommand({ StackName: stackName }))) as {
         Stacks?: Array<{
           StackName?: string;
           StackStatus?: string;
+          Parameters?: Array<{ ParameterKey?: string; ParameterValue?: string }>;
         }>;
       };
       const stack = output.Stacks?.at(0);
-      if (stack?.StackName && stack.StackStatus) {
-        return { name: stack.StackName, status: stack.StackStatus };
+      const belongsToConnection = stack?.Parameters?.some(
+        (parameter) =>
+          parameter.ParameterKey === "ConnectionId" && parameter.ParameterValue === connectionId,
+      );
+      if (belongsToConnection && stack?.StackName && stack.StackStatus) {
+        stacks.push({ name: stack.StackName, status: stack.StackStatus });
       }
     } catch (error) {
       if (isMissing(error)) continue;
       if (isDenied(error)) {
         permissionGaps.push("stack");
-        return null;
+        return [];
       }
       throw new AwsDiagnosticProbeError(errorCode(error));
     }
   }
-  return null;
+  return stacks;
 }
 
 async function inspectMetricStream(
@@ -445,10 +483,10 @@ export function createAwsDiagnosticProbe(
         metrics: `${prefixes.metrics}-stream`,
         logs: `${prefixes.logs}-stream`,
       };
-      const [identityAccountId, stack, metricStream, deliveryStreams, logSubscriptionPolicyCount] =
+      const [identityAccountId, stacks, metricStream, deliveryStreams, logSubscriptionPolicyCount] =
         await Promise.all([
           inspectIdentity(target, credentials, factory),
-          inspectStack(factory.cloudFormation(config), permissionGaps),
+          inspectStacks(factory.cloudFormation(config), target.connectionId, permissionGaps),
           inspectMetricStream(
             factory.cloudWatch(config),
             expectedDeliveryStreams.metrics,
@@ -470,7 +508,7 @@ export function createAwsDiagnosticProbe(
       return {
         expectedAccountId: target.expectedAccountId,
         identityAccountId,
-        stack,
+        stacks,
         metricStream,
         deliveryStreams,
         logSubscriptionPolicyCount,

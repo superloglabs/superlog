@@ -31,9 +31,32 @@ test("the AWS probe returns structured delivery facts without retaining raw erro
         return { Account: "123456789012" };
       }),
     cloudFormation: () =>
-      client(() => ({
-        Stacks: [{ StackName: "superlog-connect", StackStatus: "CREATE_COMPLETE" }],
-      })),
+      client((command, value) => {
+        if (command === "ListStacksCommand") {
+          return {
+            StackSummaries: [
+              { StackName: "superlog-renamed", StackStatus: "CREATE_COMPLETE" },
+              { StackName: "superlog-metrics-renamed", StackStatus: "UPDATE_COMPLETE" },
+              { StackName: "other-product", StackStatus: "CREATE_COMPLETE" },
+            ],
+          };
+        }
+        const stackName = (value as { input: { StackName?: string } }).input.StackName;
+        return {
+          Stacks: [
+            {
+              StackName: stackName,
+              StackStatus: stackName?.includes("metrics") ? "UPDATE_COMPLETE" : "CREATE_COMPLETE",
+              Parameters: [
+                {
+                  ParameterKey: "ConnectionId",
+                  ParameterValue: "abcdef12-3456-7890-abcd-ef1234567890",
+                },
+              ],
+            },
+          ],
+        };
+      }),
     cloudWatch: () =>
       client((command) =>
         command === "ListMetricStreamsCommand"
@@ -100,7 +123,13 @@ test("the AWS probe returns structured delivery facts without retaining raw erro
   });
 
   assert.equal(facts.identityAccountId, "123456789012");
-  assert.equal(facts.stack?.status, "CREATE_COMPLETE");
+  assert.deepEqual(
+    (facts as unknown as { stacks: Array<{ name: string; status: string }> }).stacks,
+    [
+      { name: "superlog-renamed", status: "CREATE_COMPLETE" },
+      { name: "superlog-metrics-renamed", status: "UPDATE_COMPLETE" },
+    ],
+  );
   assert.equal(facts.metricStream?.name, "superlog-metrics-abcdef1-stream");
   assert.equal(facts.logSubscriptionPolicyCount, 1);
   assert.deepEqual(

@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
+  type AwsDiagnosticFacts,
   AwsDiagnosticProbeError,
   type AwsDiagnosticRun,
   evaluateAwsDiagnostics,
@@ -11,7 +12,7 @@ test("reports a healthy connection when the integration stack and both streams a
   const result = evaluateAwsDiagnostics({
     expectedAccountId: "123456789012",
     identityAccountId: "123456789012",
-    stack: { name: "superlog-connect", status: "CREATE_COMPLETE" },
+    stacks: [{ name: "superlog-connect", status: "CREATE_COMPLETE" }],
     metricStream: { name: "superlog-metrics-abc1234", state: "running" },
     deliveryStreams: [
       {
@@ -90,7 +91,7 @@ test("explains when an existing customer role needs the diagnostic permissions u
   const result = evaluateAwsDiagnostics({
     expectedAccountId: "123456789012",
     identityAccountId: "123456789012",
-    stack: null,
+    stacks: [],
     metricStream: null,
     deliveryStreams: [],
     logSubscriptionPolicyCount: 0,
@@ -109,7 +110,7 @@ test("flags a failed Firehose delivery attempt even when the stream is active", 
   const result = evaluateAwsDiagnostics({
     expectedAccountId: "123456789012",
     identityAccountId: "123456789012",
-    stack: { name: "superlog-connect", status: "CREATE_COMPLETE" },
+    stacks: [{ name: "superlog-connect", status: "CREATE_COMPLETE" }],
     metricStream: { name: "superlog-metrics-abc1234", state: "running" },
     deliveryStreams: [
       {
@@ -131,4 +132,25 @@ test("flags a failed Firehose delivery attempt even when the stream is active", 
     result.checks.find((check) => check.key === "metrics")?.summary ?? "",
     /failed delivery attempt/i,
   );
+});
+
+test("fails the stack check when any stack in a legacy connection rolled back", () => {
+  const result = evaluateAwsDiagnostics({
+    expectedAccountId: "123456789012",
+    identityAccountId: "123456789012",
+    stacks: [
+      { name: "superlog-connect", status: "CREATE_COMPLETE" },
+      { name: "superlog-metrics-stream", status: "CREATE_COMPLETE" },
+      { name: "superlog-logs-stream", status: "ROLLBACK_COMPLETE" },
+    ],
+    metricStream: { name: "superlog-metrics-abc1234", state: "running" },
+    deliveryStreams: [],
+    logSubscriptionPolicyCount: 0,
+    deliveryErrors: [],
+    permissionGaps: [],
+  } satisfies AwsDiagnosticFacts);
+
+  const stack = result.checks.find((check) => check.key === "stack");
+  assert.equal(stack?.status, "fail");
+  assert.match(stack?.summary ?? "", /superlog-logs-stream.*ROLLBACK_COMPLETE/);
 });

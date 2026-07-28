@@ -134,7 +134,7 @@ test("a manager can run and retrieve an audited AWS diagnostic", async () => {
       return {
         expectedAccountId: accountId,
         identityAccountId: accountId,
-        stack: { name: "superlog-connect", status: "CREATE_COMPLETE" },
+        stacks: [{ name: "superlog-connect", status: "CREATE_COMPLETE" }],
         metricStream: { name: "superlog-metrics-abc1234", state: "running" },
         deliveryStreams: [
           {
