@@ -2,7 +2,7 @@ import { usePostHog } from "posthog-js/react";
 import { useEffect, useRef, useState } from "react";
 import { AuthForm } from "./AuthForm.tsx";
 import { FluidSignalField } from "./FluidSignalField.tsx";
-import { Arrow, Btn, Chip, Label, Tile, Wordmark } from "./design/ui.tsx";
+import { Arrow, Btn, Label, Wordmark } from "./design/ui.tsx";
 import { formatStarCount } from "./githubStars.ts";
 import { INSTALL_PROMPT } from "./installPrompt.ts";
 import { LANDING_DOCS_URL, LANDING_GITHUB_REPO_URL } from "./landingLinks.ts";
@@ -42,6 +42,8 @@ export function Landing({ initialAuthMode }: { initialAuthMode?: AuthMode } = {}
           >
             <InstallStory />
           </Section>
+
+          <AgentContextSection />
 
           <DriftSection />
 
@@ -869,6 +871,373 @@ function SlackPrNotification() {
             <span className="font-bold text-[#1264a3]">3 replies</span>
             <span>Last reply 2 min ago</span>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Agent context — the sources and feedback loop behind higher-quality fixes.
+// ---------------------------------------------------------------------------
+
+function AgentContextSection() {
+  return (
+    <section id="context" className="mt-28 scroll-mt-24">
+      <header className="px-4 md:px-0">
+        <h2 className="text-[28px] font-semibold tracking-tight text-fg md:text-[32px] lg:text-[36px] lg:leading-none">
+          Full context for your agent
+        </h2>
+      </header>
+
+      <div className="mt-14 grid gap-y-12 md:grid-cols-3 md:gap-y-0">
+        <AgentContextTile
+          illustration={<ContextSourcesIllustration />}
+          title="Custom context for your fixes."
+          body="Add custom MCPs, your Notion knowledge base, and Linear tickets to help the agent produce perfect fixes."
+          position="first"
+        />
+        <AgentContextTile
+          illustration={<MemoryIllustration />}
+          title="Memory system."
+          body="Every comment and review on Superlog PRs improves accuracy and quality."
+          position="middle"
+        />
+        <AgentContextTile
+          illustration={<PullRequestIllustration />}
+          title="PR autopilot."
+          body="Superlog follows up on PRs, passes them through review, and addresses your comments."
+          position="last"
+        />
+      </div>
+    </section>
+  );
+}
+
+function AgentContextTile({
+  illustration,
+  title,
+  body,
+  position,
+}: {
+  illustration: React.ReactNode;
+  title: string;
+  body: string;
+  position: "first" | "middle" | "last";
+}) {
+  const desktopBorder =
+    position === "first"
+      ? "md:rounded-l-xl md:rounded-r-none"
+      : position === "last"
+        ? "md:-ml-px md:rounded-l-none md:rounded-r-xl"
+        : "md:-ml-px md:rounded-none";
+
+  return (
+    <article className="min-w-0">
+      <div
+        className={`relative flex h-[350px] items-center justify-center overflow-hidden rounded-xl border border-border bg-bg ${desktopBorder}`}
+      >
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 bg-[radial-gradient(circle_at_50%_48%,rgba(255,255,255,0.045),transparent_58%)]"
+        />
+        {illustration}
+      </div>
+      <p className="px-4 pt-6 text-[17px] leading-[1.55] md:px-5 lg:px-6 lg:text-[18px]">
+        <strong className="font-semibold text-fg">{title}</strong>{" "}
+        <span className="text-muted">{body}</span>
+      </p>
+    </article>
+  );
+}
+
+const CONTEXT_SOURCES = [
+  { label: "Notion", icon: "notion" },
+  { label: "Linear", icon: "linear" },
+  { label: "GitHub", icon: "github" },
+  { label: "AGENT.md", icon: "file" },
+  { label: "CLAUDE.md", icon: "file" },
+  { label: "Custom prompt", icon: "prompt" },
+  { label: "Custom MCP", icon: "mcp" },
+] as const;
+
+function ContextSourcesIllustration() {
+  const rows = [
+    CONTEXT_SOURCES.slice(0, 4),
+    [...CONTEXT_SOURCES.slice(4), CONTEXT_SOURCES[0]],
+    CONTEXT_SOURCES.slice(2, 6),
+    [CONTEXT_SOURCES[6], ...CONTEXT_SOURCES.slice(0, 3)],
+    CONTEXT_SOURCES.slice(1, 5),
+    CONTEXT_SOURCES.slice(3, 7),
+    [...CONTEXT_SOURCES.slice(5), ...CONTEXT_SOURCES.slice(0, 2)],
+  ];
+
+  return (
+    <div className="relative z-10 grid w-full gap-3 overflow-hidden">
+      {rows.map((row, rowIndex) => (
+        <div
+          key={row.map((source) => source.label).join("-")}
+          className={`context-pill-track flex w-max ${rowIndex % 2 === 1 ? "context-pill-track-reverse" : ""}`}
+        >
+          {[0, 1].map((copy) => (
+            <div
+              key={`${rowIndex}-${copy}`}
+              aria-hidden={copy === 1 || undefined}
+              className="flex shrink-0 gap-3 pr-3"
+            >
+              {row.map((source) => (
+                <ContextSourcePill
+                  key={`${copy}-${source.label}`}
+                  label={source.label}
+                  icon={source.icon}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ContextSourcePill({
+  label,
+  icon,
+}: {
+  label: string;
+  icon: (typeof CONTEXT_SOURCES)[number]["icon"];
+}) {
+  return (
+    <span className="inline-flex h-12 shrink-0 items-center gap-2.5 rounded-full border border-border-strong bg-surface/80 px-4 text-[14px] font-medium text-fg shadow-[0_14px_36px_rgba(0,0,0,0.28)] backdrop-blur">
+      <ContextSourceIcon kind={icon} />
+      {label}
+    </span>
+  );
+}
+
+function ContextSourceIcon({
+  kind,
+}: {
+  kind: (typeof CONTEXT_SOURCES)[number]["icon"];
+}) {
+  if (kind === "github") {
+    return <GitHubIcon />;
+  }
+
+  if (kind === "notion") {
+    return (
+      <span className="flex h-5 w-5 items-center justify-center rounded-[3px] border border-fg/60 font-serif text-[11px] font-bold leading-none">
+        N
+      </span>
+    );
+  }
+
+  if (kind === "linear") {
+    return (
+      <svg className="h-5 w-5" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <path d="M4.1 3.85a8.35 8.35 0 0 1 12.05 12.04L4.1 3.85Z" fill="currentColor" />
+        <path d="m3.1 6.2 10.7 10.7M2.25 9.05l8.7 8.7M2.7 12.9l4.4 4.4" stroke="currentColor" />
+      </svg>
+    );
+  }
+
+  if (kind === "file") {
+    return (
+      <svg className="h-5 w-5" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <path d="M5.25 2.5h6l3.5 3.5v11.5h-9.5V2.5Z" stroke="currentColor" strokeWidth="1.25" />
+        <path d="M11.25 2.75V6h3.25M7.5 9h5M7.5 12h5" stroke="currentColor" />
+      </svg>
+    );
+  }
+
+  if (kind === "prompt") {
+    return (
+      <svg className="h-5 w-5" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <path
+          d="M10 2.5c.4 3.25 2.25 5.1 5.5 5.5-3.25.4-5.1 2.25-5.5 5.5C9.6 10.25 7.75 8.4 4.5 8 7.75 7.6 9.6 5.75 10 2.5Z"
+          stroke="currentColor"
+          strokeWidth="1.25"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M15.25 12.25c.18 1.42 1.08 2.32 2.5 2.5-1.42.18-2.32 1.08-2.5 2.5-.18-1.42-1.08-2.32-2.5-2.5 1.42-.18 2.32-1.08 2.5-2.5Z"
+          fill="currentColor"
+        />
+      </svg>
+    );
+  }
+
+  return (
+    <svg className="h-5 w-5" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <circle cx="5" cy="5" r="2" stroke="currentColor" />
+      <circle cx="15" cy="5" r="2" stroke="currentColor" />
+      <circle cx="10" cy="15" r="2" stroke="currentColor" />
+      <path d="m6.75 6 2.1 6.9M13.25 6l-2.1 6.9M7 5h6" stroke="currentColor" />
+    </svg>
+  );
+}
+
+function MemoryIllustration() {
+  const nodes = [
+    { x: 54, y: 52, dot: true },
+    { x: 115, y: 42, dot: true },
+    { x: 163, y: 76, dot: true },
+    { x: 220, y: -18, dot: false },
+    { x: 277, y: 56, dot: true },
+    { x: 358, y: 72, dot: true },
+    { x: 458, y: 116, dot: false },
+    { x: 374, y: 175, dot: true },
+    { x: 458, y: 265, dot: false },
+    { x: 347, y: 286, dot: true },
+    { x: 274, y: 264, dot: true },
+    { x: 236, y: 316, dot: true },
+    { x: 184, y: 279, dot: true },
+    { x: 118, y: 304, dot: true },
+    { x: -18, y: 285, dot: false },
+    { x: 62, y: 238, dot: true },
+    { x: 28, y: 175, dot: true },
+    { x: -18, y: 94, dot: false },
+    { x: 102, y: 104, dot: true },
+  ];
+
+  return (
+    <div className="relative z-10 h-full w-full text-fg" aria-hidden="true">
+      <svg
+        className="h-full w-full"
+        viewBox="0 0 440 350"
+        fill="none"
+        preserveAspectRatio="xMidYMid slice"
+        aria-hidden="true"
+      >
+        <defs>
+          <filter id="memory-pulse-streak" x="-80%" y="-200%" width="260%" height="500%">
+            <feGaussianBlur stdDeviation=".8 .35" />
+          </filter>
+        </defs>
+
+        {nodes.map((node, index) => (
+          <g key={`${node.x}-${node.y}`}>
+            <line
+              x1="220"
+              y1="175"
+              x2={node.x}
+              y2={node.y}
+              stroke="currentColor"
+              strokeOpacity=".14"
+              strokeWidth="1"
+            />
+            <ellipse
+              className="memory-spoke-pulse"
+              cx="0"
+              cy="0"
+              rx="3"
+              ry="1.2"
+              fill="currentColor"
+              opacity="0"
+              filter="url(#memory-pulse-streak)"
+              transform={`rotate(${(Math.atan2(175 - node.y, 220 - node.x) * 180) / Math.PI})`}
+            >
+              <animateMotion
+                path={`M ${node.x} ${node.y} L 220 175`}
+                dur={`${5.6 + (index % 4) * 0.7}s`}
+                begin={`${((index * 7) % nodes.length) * 0.31}s`}
+                repeatCount="indefinite"
+                keyPoints="0;1;1"
+                keyTimes="0;.44;1"
+                calcMode="linear"
+              />
+              <animate
+                attributeName="opacity"
+                values="0;.5;.26;0;0"
+                keyTimes="0;.06;.34;.44;1"
+                dur={`${5.6 + (index % 4) * 0.7}s`}
+                begin={`${((index * 7) % nodes.length) * 0.31}s`}
+                repeatCount="indefinite"
+              />
+            </ellipse>
+            {node.dot && (
+              <>
+                <circle
+                  className="memory-terminal-glow"
+                  cx={node.x}
+                  cy={node.y}
+                  r="7"
+                  fill="currentColor"
+                  style={{
+                    animationDelay: `${index * -0.43}s`,
+                    animationDuration: `${3.8 + (index % 5) * 0.55}s`,
+                  }}
+                />
+                <circle cx={node.x} cy={node.y} r="3" fill="currentColor" />
+              </>
+            )}
+          </g>
+        ))}
+
+        <circle cx="220" cy="175" r="4" fill="currentColor" />
+      </svg>
+    </div>
+  );
+}
+
+function PullRequestIllustration() {
+  return (
+    <div className="relative z-10 w-[90%] max-w-[410px] translate-x-[7%] rounded-xl border border-border-strong bg-bg/85 text-fg shadow-[0_26px_70px_rgba(0,0,0,0.42)] backdrop-blur">
+      <div className="flex items-start gap-3 border-b border-border px-4 py-4">
+        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-[3px] border-success">
+          <span className="h-2.5 w-2.5 rounded-full bg-bg" />
+        </span>
+        <div className="min-w-0">
+          <div className="truncate text-[13px] font-semibold">All checks have passed</div>
+          <div className="mt-0.5 text-[11px] text-muted">2 successful checks</div>
+        </div>
+      </div>
+
+      <div className="space-y-3 bg-surface/70 px-4 py-4 text-[11px]">
+        <div className="font-medium text-muted">2 successful checks</div>
+        <div className="flex items-center gap-2">
+          <span
+            className="pr-check-appear text-[17px] leading-none text-success"
+            style={{ animationDelay: "0ms" }}
+          >
+            ✓
+          </span>
+          <span className="flex h-5 w-5 items-center justify-center rounded bg-fg text-bg">
+            <GitHubIcon />
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[12px]">CI / Typecheck &amp; build</span>
+          <span className="text-muted">Passed</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span
+            className="pr-check-appear text-[17px] leading-none text-success"
+            style={{ animationDelay: "220ms" }}
+          >
+            ✓
+          </span>
+          <span className="flex h-5 w-5 items-center justify-center rounded border border-border-strong bg-surface-2">
+            <img
+              src="/superlog-pictogram-dark.svg"
+              alt=""
+              aria-hidden="true"
+              className="h-3 w-3 invert"
+            />
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[12px]">Superlog / PR review</span>
+          <span className="font-medium text-success">Approved</span>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 border-t border-border px-4 py-4">
+        <span
+          className="pr-check-appear flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-success text-[18px] font-semibold text-bg"
+          style={{ animationDelay: "440ms" }}
+        >
+          ✓
+        </span>
+        <div className="min-w-0">
+          <div className="truncate text-[13px] font-semibold">Ready to merge</div>
+          <div className="text-[11px] text-muted">No conflicts with base branch</div>
         </div>
       </div>
     </div>
