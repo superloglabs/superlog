@@ -1,7 +1,8 @@
 import { usePostHog } from "posthog-js/react";
 import { useEffect, useRef, useState } from "react";
 import { AuthForm } from "./AuthForm.tsx";
-import { Btn, Chip, Label, Tile, Wordmark } from "./design/ui.tsx";
+import { Arrow, Btn, Chip, Label, Tile, Wordmark } from "./design/ui.tsx";
+import { FluidSignalField } from "./FluidSignalField.tsx";
 import { formatStarCount } from "./githubStars.ts";
 import { INSTALL_PROMPT } from "./installPrompt.ts";
 import { LANDING_DOCS_URL, LANDING_GITHUB_REPO_URL } from "./landingLinks.ts";
@@ -31,7 +32,7 @@ export function Landing({ initialAuthMode }: { initialAuthMode?: AuthMode } = {}
       <TopNav onSignIn={openSignIn} onSignUp={openSignUp} />
 
       <main className="relative">
-        <Hero />
+        <Hero onSignUp={openSignUp} />
         <ClientLogos />
 
         <div className="mx-auto w-full max-w-[1400px] px-0 pb-24 md:px-8 xl:px-12">
@@ -132,19 +133,25 @@ export function TopNav({
       <div className="mx-auto w-full max-w-[1400px] px-4 md:px-8 xl:px-12">
         <nav className="grid grid-cols-[1fr_auto_1fr] items-center py-5">
           <div className="flex items-center justify-self-start">
-            <a href="/" aria-label="Superlog home" className="inline-flex items-center">
+            <a
+              href="/"
+              aria-label="Superlog home"
+              className="landing-nav-unblur inline-flex items-center"
+              style={{ animationDelay: "20ms" }}
+            >
               <Wordmark />
             </a>
           </div>
 
           <div className="hidden items-center gap-6 justify-self-center lg:flex">
-            {NAV_LINKS.map((link) => (
+            {NAV_LINKS.map((link, index) => (
               <a
                 key={link.href}
                 href={link.href}
                 target={link.external ? "_blank" : undefined}
                 rel={link.external ? "noreferrer" : undefined}
-                className="text-[12px] font-medium text-muted transition-colors hover:text-fg"
+                className="landing-nav-unblur text-[12px] font-medium text-muted transition-colors hover:text-fg"
+                style={{ animationDelay: `${80 + index * 55}ms` }}
               >
                 {link.label}
               </a>
@@ -161,19 +168,25 @@ export function TopNav({
                   ? `Superlog on GitHub, ${stars.toLocaleString()} stars`
                   : "Superlog on GitHub"
               }
-              className="hidden items-center gap-1.5 text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline-flex"
+              className="landing-nav-unblur hidden items-center gap-1.5 text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline-flex"
+              style={{ animationDelay: "430ms" }}
             >
               <GitHubIcon />
-              <span className="tabular-nums">
-                {stars != null ? formatStarCount(stars) : "GitHub"}
-              </span>
+              <span className="tabular-nums">{stars != null ? formatStarCount(stars) : "GitHub"}</span>
             </a>
             <Btn variant="ghost" size="sm" onClick={onSignIn}>
-              Sign in
+              <span className="landing-nav-unblur" style={{ animationDelay: "485ms" }}>
+                Sign in
+              </span>
             </Btn>
-            <Btn variant="primary" size="sm" onClick={onSignUp}>
-              Get started
-            </Btn>
+            <span
+              className="landing-nav-unblur inline-flex"
+              style={{ animationDelay: "540ms" }}
+            >
+              <Btn variant="primary" size="sm" onClick={onSignUp}>
+                Get started
+              </Btn>
+            </span>
           </div>
         </nav>
       </div>
@@ -193,43 +206,51 @@ function GitHubIcon() {
 // Hero
 // ---------------------------------------------------------------------------
 
-function Hero() {
+function Hero({ onSignUp }: { onSignUp: () => void }) {
   return (
-    <section className="relative px-0 pb-8 pt-20 md:px-8 md:pt-24 xl:px-12">
-      <div className="mx-auto max-w-[1400px]">
-        <div className="px-4 text-center md:px-0">
-          <div className="mb-10 inline-flex items-center gap-2 text-[11px] font-medium text-muted md:text-[12px]">
+    <section className="relative overflow-hidden bg-bg px-4 md:px-8 xl:px-12">
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute left-1/2 top-0 h-full w-[min(2800px,190vw)] -translate-x-1/2 overflow-hidden [mask-image:linear-gradient(to_right,transparent,black_5%,black_95%,transparent)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_5%,black_95%,transparent)]">
+          <FluidSignalField />
+        </div>
+        <div className="landing-fluid-hero-overlay absolute inset-0" />
+      </div>
+
+      <div className="relative mx-auto grid min-h-[calc(100svh-64px)] max-w-[1400px] items-center gap-10 pb-8 pt-12 md:pt-16 lg:grid-cols-[minmax(0,560px)_minmax(0,1fr)] lg:gap-[72px] lg:pb-10 lg:pt-24">
+        <div className="flex flex-col items-center text-center lg:items-start lg:text-left">
+          <div
+            className="landing-hero-unblur mb-10 inline-flex items-center gap-2 text-[11px] font-medium text-muted md:text-[12px]"
+            style={{ animationDelay: "180ms" }}
+          >
             <img src="/yc-logo-square.svg" alt="" aria-hidden="true" className="h-4 w-4" />
             <span>Backed by Y Combinator</span>
           </div>
           <h1
-            className="mx-auto max-w-4xl text-balance text-[2.4375rem] leading-[0.98] tracking-tight text-fg md:text-[4.3125rem] lg:text-[57px]"
-            style={{ fontWeight: 450 }}
+            className="landing-hero-unblur max-w-[410px] text-balance text-[2.4375rem] leading-[0.98] tracking-[-0.035em] text-fg md:text-[57px] md:leading-[56px]"
+            style={{ fontWeight: 450, animationDelay: "260ms" }}
           >
             Observability that fixes your bugs
           </h1>
-          <p className="mx-auto mt-4 max-w-2xl text-[13.5px] leading-relaxed text-muted md:text-[18px]">
+          <p
+            className="landing-hero-unblur mt-5 max-w-lg text-[13.5px] leading-relaxed text-muted md:text-[18px]"
+            style={{ animationDelay: "340ms" }}
+          >
             Install in one prompt, get PRs in Slack
           </p>
+          <div
+            className="landing-hero-unblur mt-8 flex flex-col items-center gap-3 sm:flex-row lg:items-start"
+            style={{ animationDelay: "420ms" }}
+          >
+            <Btn variant="primary" size="lg" onClick={onSignUp}>
+              Get started
+              <Arrow />
+            </Btn>
+            <HeroInstallCommand />
+          </div>
         </div>
 
-        <div className="relative mx-auto mt-14 rounded-none md:rounded-lg">
-          <div className="absolute inset-0 overflow-hidden rounded-none md:rounded-lg">
-            <img
-              src="/hero-rocket.webp"
-              srcSet="/hero-rocket-768.webp 768w, /hero-rocket.webp 1586w"
-              sizes="(max-width: 768px) 100vw, 1400px"
-              alt=""
-              aria-hidden="true"
-              width={1586}
-              height={992}
-              fetchPriority="high"
-              decoding="async"
-              className="absolute inset-0 h-full w-full object-cover object-top"
-            />
-            <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(8,9,11,0.72),rgba(8,9,11,0.08)_64%),linear-gradient(90deg,rgba(8,9,11,0.54),rgba(8,9,11,0.06)_56%,rgba(8,9,11,0.42))]" />
-          </div>
-          <CodingAgentWindow />
+        <div className="flex w-full items-center justify-center lg:justify-end">
+          <HeroSlackMessage />
         </div>
       </div>
     </section>
@@ -306,13 +327,14 @@ function ClientLogos() {
   );
 }
 
-function CodingAgentWindow() {
+function HeroInstallCommand() {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const command = "npx skills add superloglabs/skills --all";
 
   async function copy() {
     try {
-      await navigator.clipboard.writeText(INSTALL_PROMPT);
+      await navigator.clipboard.writeText(command);
     } catch {
       return;
     }
@@ -322,129 +344,199 @@ function CodingAgentWindow() {
   }
 
   return (
-    <div className="relative flex min-h-[520px] flex-col items-center justify-center gap-4 p-5 md:min-h-[620px] md:gap-5 md:p-8">
-      <div className="mx-auto w-full overflow-hidden rounded-2xl border border-white/10 bg-[#050608] shadow-[0_28px_100px_rgba(0,0,0,0.65)] lg:max-w-[75%]">
-        <div className="flex items-center gap-2 bg-[#050608] px-4 py-3">
-          <span className="h-2.5 w-2.5 rounded-full bg-danger" />
-          <span className="h-2.5 w-2.5 rounded-full bg-warning" />
-          <span className="h-2.5 w-2.5 rounded-full bg-success" />
-          <span className="ml-3 font-mono text-[10px] uppercase tracking-[0.2em] text-subtle">
-            coding agent
-          </span>
-        </div>
-        <div className="grid gap-4 p-4 font-mono text-[12px] leading-relaxed md:p-5 md:text-[13px]">
-          <div className="bg-[#050608] p-4">
-            <div className="mb-2 text-subtle">prompt</div>
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0 break-words text-fg">
-                <span className="mr-1 text-subtle" aria-hidden="true">
-                  &gt;
+    <button
+      type="button"
+      onClick={copy}
+      aria-label={copied ? "Install command copied" : "Copy install command"}
+      className="inline-flex h-10 max-w-full items-center gap-3 rounded-md border border-border bg-surface-2 px-4 font-mono text-[12px] text-fg transition-colors hover:border-border-strong hover:bg-surface-3 md:text-[14px]"
+    >
+      <span className="text-muted" aria-hidden="true">
+        $
+      </span>
+      <code className="truncate">{command}</code>
+      {copied ? (
+        <svg
+          className="h-3.5 w-3.5 shrink-0 text-success"
+          viewBox="0 0 16 16"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path
+            d="m3 8.5 3 3 7-7"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      ) : (
+        <svg
+          className="h-3.5 w-3.5 shrink-0 text-muted"
+          viewBox="0 0 16 16"
+          fill="none"
+          aria-hidden="true"
+        >
+          <rect x="5.25" y="5.25" width="7.5" height="7.5" rx="1.25" stroke="currentColor" />
+          <path
+            d="M10.5 5.25V4.5A1.25 1.25 0 0 0 9.25 3.25H4.5A1.25 1.25 0 0 0 3.25 4.5v4.75A1.25 1.25 0 0 0 4.5 10.5h.75"
+            stroke="currentColor"
+          />
+        </svg>
+      )}
+    </button>
+  );
+}
+
+const HERO_SLACK_MESSAGES = [
+  {
+    id: "review",
+    emoji: "⌛",
+    status: "Waiting on PR review",
+    title: "Onboarding advance jobs stuck up to 24h after retry exhaustion",
+    time: "10:01 AM",
+    body: (
+      <>
+        The pg-boss queue alert fired because a <SlackCode>growth.onboarding.advance</SlackCode> job
+        from July 25 08:00 was revived by the daily reconciliation on July 26 08:00, appearing 24h
+        old in the <SlackCode>oldest_pending_age_ms</SlackCode> metric and spiking the cross-queue
+        average to ~976K ms. The underlying defect is that the only recovery mechanism is the
+        once-daily <SlackCode>growth.onboarding.scan</SlackCode> cron at 8 AM UTC, so exhausted jobs
+        can be delayed by up to ~24 hours before onboarding resumes.
+      </>
+    ),
+  },
+  {
+    id: "ready",
+    emoji: "🔀",
+    status: "PR ready to merge",
+    title: "Prevent duplicate Stripe charges after worker lock timeouts",
+    time: "10:07 AM",
+    body: (
+      <>
+        Superlog traced duplicate charges to <SlackCode>billing.webhook.process</SlackCode> retrying
+        after <SlackCode>lock_timeout_ms</SlackCode> while the first attempt was still committing.
+        The PR records <SlackCode>stripe_event_id</SlackCode> before dispatch, adds an idempotency
+        guard at the application boundary, and includes a concurrency regression test. Production
+        replay now shows one charge per event.
+      </>
+    ),
+  },
+  {
+    id: "resolved",
+    emoji: "✅",
+    status: "Problem resolved",
+    title: "Checkout recovered after Stripe credential validation fix",
+    time: "10:14 AM",
+    body: (
+      <>
+        Deploy <SlackCode>api-2026.07.28.3</SlackCode> added startup validation for{" "}
+        <SlackCode>STRIPE_SECRET_KEY</SlackCode>, replaced the generic HTTP 400 with an actionable
+        configuration error, and added a health check for <SlackCode>checkout-api</SlackCode>. Error
+        rate returned to baseline within three minutes, and no failed payments remain in the current
+        window.
+      </>
+    ),
+  },
+] as const;
+
+function SlackCode({ children }: { children: string }) {
+  return (
+    <code className="whitespace-nowrap rounded-[4px] border border-[#d9d9d9] bg-[#f7f7f7] px-[5px] py-px font-mono text-[11px] not-italic leading-4 text-[#e01e5a]">
+      {children}
+    </code>
+  );
+}
+
+function HeroSlackMessage() {
+  const [activeMessageIndex, setActiveMessageIndex] = useState(0);
+  const message = HERO_SLACK_MESSAGES[activeMessageIndex] ?? HERO_SLACK_MESSAGES[0];
+  const secondaryAction =
+    "inline-flex shrink-0 items-center gap-1 rounded-[4px] border border-black/30 bg-white px-[7px] py-[5px] text-[12px] font-bold leading-[17px] text-[#1d1c1d]";
+
+  return (
+    <div className="landing-slack-card w-full max-w-[660px]">
+      <div className="landing-slack-float relative w-full">
+        <div
+          aria-hidden="true"
+          className="landing-slack-card-back landing-slack-card-back-two absolute inset-0 rounded-lg"
+        />
+        <div
+          aria-hidden="true"
+          className="landing-slack-card-back landing-slack-card-back-one absolute inset-0 rounded-lg"
+        />
+
+        <div
+          className="landing-slack-shuffle-card relative z-10 overflow-hidden rounded-lg border border-black/10 bg-white text-[#1d1c1d] shadow-[0_28px_90px_rgba(0,0,0,0.42)]"
+          onAnimationIteration={() =>
+            setActiveMessageIndex((index) => (index + 1) % HERO_SLACK_MESSAGES.length)
+          }
+        >
+          <div className="flex min-h-[269px] items-start gap-3.5 px-4 py-6 sm:px-5 lg:px-[26px]">
+            <div className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-[10px] border border-black/[0.08] bg-white">
+              <img
+                src="/superlog-pictogram-dark.svg"
+                alt=""
+                aria-hidden="true"
+                className="h-[18px] w-[18px]"
+              />
+            </div>
+
+            <div className="flex min-w-0 flex-1 self-stretch flex-col">
+              <div className="flex flex-wrap items-center gap-[9px] pb-2.5">
+                <span className="text-[15px] font-bold leading-5">Superlog</span>
+                <span className="rounded-sm bg-[#eeeeee] px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-[14px] tracking-[0.04em] text-[#454245]">
+                  app
                 </span>
-                {INSTALL_PROMPT}
-                <span className="ml-1 inline-block h-4 w-2 translate-y-0.5 animate-pulse bg-accent" />
+                <span className="text-[12px] leading-4 text-[#616061]">{message.time}</span>
               </div>
-              <button
-                type="button"
-                onClick={copy}
-                className="shrink-0 rounded-md bg-accent px-3 py-1.5 font-sans text-[11px] font-semibold uppercase tracking-[0.12em] text-accent-ink transition-[filter] hover:brightness-110"
-              >
-                {copied ? "Copied" : "Copy"}
-              </button>
+
+              <div className="pb-2.5">
+                <div className="flex items-center gap-[9px]">
+                  <span
+                    aria-hidden="true"
+                    className="w-4 shrink-0 font-['Apple_Color_Emoji'] text-[16px] leading-[18px]"
+                  >
+                    {message.emoji}
+                  </span>
+                  <span className="text-[16px] font-bold leading-[22px]">{message.status}</span>
+                </div>
+                <h2 className="mt-[5px] text-[14px] font-semibold leading-[21px]">
+                  {message.title}
+                </h2>
+              </div>
+
+              <p className="pb-3.5 text-[11.5px] italic leading-[18px] tracking-[-0.005em] text-[#2a282a]">
+                {message.body}
+              </p>
+
+              <div className="mt-auto flex flex-wrap items-center gap-1.5">
+                <span className={secondaryAction}>Open in Superlog</span>
+                <span className={secondaryAction}>View PR</span>
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 rounded-[4px] bg-[#007a5a] px-[7px] py-[5px] text-[12px] font-bold leading-[17px] text-white"
+                >
+                  <span aria-hidden="true" className="font-['Apple_Color_Emoji'] text-[14px]">
+                    🔀
+                  </span>
+                  Merge PR
+                </span>
+                <span className={secondaryAction}>
+                  <span aria-hidden="true" className="font-['Apple_Color_Emoji'] text-[14px]">
+                    ✅
+                  </span>
+                  Problem resolved
+                </span>
+                <span className={secondaryAction}>
+                  <span aria-hidden="true" className="font-['Apple_Color_Emoji'] text-[14px]">
+                    🔕
+                  </span>
+                  Not an issue
+                </span>
+              </div>
             </div>
           </div>
         </div>
       </div>
-      <OnboardingAgenda />
-    </div>
-  );
-}
-
-function OnboardingAgenda() {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const steps = [
-    "Map every app, service, and edge function in your repo",
-    "Install native OpenTelemetry — traces, logs, metrics — per language",
-    "Open superlog.sh in a browser to finish signup in parallel",
-    "Add spans, counters, and structured logs around critical operations",
-    "Verify the app still runs and OTLP reaches /v1/traces, /logs, /metrics",
-  ];
-
-  useEffect(() => {
-    if (!open) return;
-    function onDocClick(e: MouseEvent) {
-      if (!containerRef.current) return;
-      if (e.target instanceof Node && containerRef.current.contains(e.target)) return;
-      setOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("mousedown", onDocClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDocClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  function toggle() {
-    setOpen((prev) => !prev);
-  }
-
-  return (
-    <div ref={containerRef} className="relative">
-      <button
-        type="button"
-        onClick={toggle}
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-bg/70 px-4 py-2 text-[12px] font-medium text-fg shadow-[0_12px_30px_rgba(0,0,0,0.32)] backdrop-blur-md transition-colors hover:border-white/30 hover:bg-bg/85 md:text-[13px]"
-      >
-        <span
-          aria-hidden="true"
-          className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-white/30 text-[10px] font-semibold text-subtle"
-        >
-          ?
-        </span>
-        <span>What will the agent do?</span>
-        <span
-          aria-hidden="true"
-          className={`text-subtle transition-transform ${open ? "rotate-180" : ""}`}
-        >
-          ▾
-        </span>
-      </button>
-
-      {open && (
-        <div
-          role="dialog"
-          aria-label="What the agent will do"
-          className="absolute left-1/2 top-[calc(100%+10px)] z-30 w-[min(92vw,520px)] -translate-x-1/2 rounded-2xl border border-white/15 bg-bg/95 p-5 text-left shadow-[0_28px_80px_rgba(0,0,0,0.55)] backdrop-blur-md md:p-6"
-        >
-          <span
-            aria-hidden="true"
-            className="absolute -top-1.5 left-1/2 h-3 w-3 -translate-x-1/2 rotate-45 border-l border-t border-white/15 bg-bg/95"
-          />
-          <div className="mb-3 font-mono text-[10px] uppercase tracking-[0.18em] text-subtle">
-            via superloglabs/skills
-          </div>
-          <ol className="grid gap-2 text-[13px] leading-relaxed text-fg md:text-[14px]">
-            {steps.map((step, i) => (
-              <li key={step} className="flex gap-3">
-                <span className="w-5 shrink-0 font-mono text-subtle" aria-hidden="true">
-                  {String(i + 1).padStart(2, "0")}
-                </span>
-                <span className="min-w-0 break-words">{step}</span>
-              </li>
-            ))}
-          </ol>
-          <p className="mt-4 text-[12px] leading-relaxed text-muted md:text-[13px]">
-            Public ingest token is inlined in the bootstrap — no env vars, no .env edits. Existing
-            vendors (Sentry, Datadog, etc.) stay in place.
-          </p>
-        </div>
-      )}
     </div>
   );
 }

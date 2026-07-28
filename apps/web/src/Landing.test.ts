@@ -67,7 +67,7 @@ test("landing renders the client-logo marquee between the hero and the first con
   const source = await readFile(new URL("./Landing.tsx", import.meta.url), "utf8");
   // The strip must sit just after the hero image and before the first text
   // section (id="install"), which is exactly where the design calls for it.
-  assert.match(source, /<Hero \/>[\s\S]*<ClientLogos \/>[\s\S]*id="install"/);
+  assert.match(source, /<Hero(?:\s[^>]*)? \/>[\s\S]*<ClientLogos \/>[\s\S]*id="install"/);
 });
 
 test("client-logo marquee is a masked, animated, duplicated track", async () => {
