@@ -141,7 +141,7 @@ function deliveryCheck(kind: AwsDeliveryKind, facts: AwsDiagnosticFacts): AwsDia
         recordsDelivered: delivery.recordsDelivered,
         minimumSuccessfulRecords: delivery.minimumSuccessfulRecords,
         recentErrorCount: errors.length,
-        latestErrorCode: errors.at(0)?.code ?? null,
+        latestErrorCode: errors.at(-1)?.code ?? null,
       },
     };
   }

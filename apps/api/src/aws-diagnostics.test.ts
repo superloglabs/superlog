@@ -165,15 +165,30 @@ test("flags a failed Firehose delivery attempt even when the stream is active", 
       },
     ],
     logSubscriptionPolicyCount: 0,
-    deliveryErrors: [],
+    deliveryErrors: [
+      {
+        kind: "metrics",
+        code: "HttpEndpoint.ResponseCode",
+        occurredAt: "2026-07-28T10:00:00.000Z",
+      },
+      {
+        kind: "metrics",
+        code: "HttpEndpoint.DestinationException",
+        occurredAt: "2026-07-28T10:05:00.000Z",
+      },
+    ],
     permissionGaps: [],
   });
 
   assert.equal(result.status, "error");
   assert.equal(result.checks.find((check) => check.key === "metrics")?.status, "fail");
+  assert.equal(
+    result.checks.find((check) => check.key === "metrics")?.evidence.latestErrorCode,
+    "HttpEndpoint.DestinationException",
+  );
   assert.match(
     result.checks.find((check) => check.key === "metrics")?.summary ?? "",
-    /failed delivery attempt/i,
+    /2 recent delivery errors/i,
   );
 });
 
