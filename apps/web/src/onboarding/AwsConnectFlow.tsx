@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 import {
+  type CloudDiagnosticRun,
   type StackComponent,
   useCloudConnections,
+  useCloudDiagnostics,
   useCloudResources,
   useCloudStackHealth,
   useCreateCloudConnection,
+  useRunCloudDiagnostics,
   useSyncCloudConnection,
   useVerifyCloudConnection,
 } from "../api.ts";
@@ -92,6 +95,7 @@ export function AwsConnectFlow({
   const create = useCreateCloudConnection(projectId);
   const verify = useVerifyCloudConnection(projectId);
   const sync = useSyncCloudConnection(projectId);
+  const runDiagnostics = useRunCloudDiagnostics(projectId);
   const resources = useCloudResources(projectId);
 
   const connection = activeConnection(connections.data);
@@ -99,6 +103,11 @@ export function AwsConnectFlow({
   // connection's CloudWatch streams actually deliver — distinct from any
   // pre-existing project telemetry.
   const stackHealth = useCloudStackHealth(
+    projectId,
+    connection?.id,
+    connection?.status === "connected",
+  );
+  const diagnostics = useCloudDiagnostics(
     projectId,
     connection?.id,
     connection?.status === "connected",
@@ -174,6 +183,11 @@ export function AwsConnectFlow({
           resourceCount={resources.data?.length ?? 0}
           onRescan={() => sync.mutate(connection.id)}
           rescanning={sync.isPending}
+          diagnostic={diagnostics.data?.[0] ?? null}
+          diagnosticsLoading={diagnostics.isLoading}
+          onRunDiagnostics={() => runDiagnostics.mutate(connection.id)}
+          diagnosticsRunning={runDiagnostics.isPending}
+          diagnosticsError={runDiagnostics.error ? String(runDiagnostics.error) : null}
         />
       )}
 
@@ -381,6 +395,11 @@ function ConnectedPanel({
   resourceCount,
   onRescan,
   rescanning,
+  diagnostic,
+  diagnosticsLoading,
+  onRunDiagnostics,
+  diagnosticsRunning,
+  diagnosticsError,
 }: {
   components: StackComponent[];
   streamFlowing: boolean;
@@ -389,6 +408,11 @@ function ConnectedPanel({
   resourceCount: number;
   onRescan: () => void;
   rescanning: boolean;
+  diagnostic: CloudDiagnosticRun | null;
+  diagnosticsLoading: boolean;
+  onRunDiagnostics: () => void;
+  diagnosticsRunning: boolean;
+  diagnosticsError: string | null;
 }) {
   return (
     <div className="flex flex-col gap-4">
@@ -426,6 +450,14 @@ function ConnectedPanel({
         )}
       </div>
 
+      <DiagnosticPanel
+        run={diagnostic}
+        loading={diagnosticsLoading}
+        onRun={onRunDiagnostics}
+        running={diagnosticsRunning}
+        error={diagnosticsError}
+      />
+
       {streamFlowing ? (
         <div className="flex items-center gap-2.5 rounded-[10px] border border-[rgba(65,209,149,0.35)] bg-[rgba(65,209,149,0.06)] px-4 py-3">
           <span className="text-success">
@@ -445,6 +477,99 @@ function ConnectedPanel({
           <div className="flex-1 text-[12.5px] text-muted">
             Waiting for your first events from AWS…
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const DIAGNOSTIC_DOT: Record<"pass" | "warning" | "fail", string> = {
+  pass: "bg-success",
+  warning: "bg-warning",
+  fail: "bg-danger",
+};
+
+function DiagnosticPanel({
+  run,
+  loading,
+  onRun,
+  running,
+  error,
+}: {
+  run: CloudDiagnosticRun | null;
+  loading: boolean;
+  onRun: () => void;
+  running: boolean;
+  error: string | null;
+}) {
+  return (
+    <div className={`overflow-hidden rounded-[14px] border bg-surface ${SOFT_LINE}`}>
+      <div
+        className={`flex items-center justify-between gap-3 border-b px-[18px] py-[11px] ${SOFT_LINE}`}
+      >
+        <div className="min-w-0">
+          <div className="text-[12.5px] font-medium text-fg">AWS diagnostics</div>
+          <div className="mt-0.5 text-[11.5px] text-muted">
+            Read-only checks of the stack and telemetry delivery path.
+          </div>
+        </div>
+        <Btn
+          variant="secondary"
+          size="sm"
+          onClick={onRun}
+          loading={running}
+          className="!h-8 shrink-0 !rounded-[8px]"
+        >
+          {running ? "Checking…" : "Run diagnostics"}
+        </Btn>
+      </div>
+
+      {loading ? (
+        <div className="px-[18px] py-[14px] text-[12.5px] text-muted">
+          Loading the latest diagnostic…
+        </div>
+      ) : run ? (
+        <>
+          <div className={`border-b px-[18px] py-[12px] ${SOFT_LINE}`}>
+            <div className="flex items-center gap-2">
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  run.status === "healthy"
+                    ? "bg-success"
+                    : run.status === "warning"
+                      ? "bg-warning"
+                      : "bg-danger"
+                }`}
+              />
+              <span className="text-[12.5px] font-medium text-fg">{run.summary}</span>
+            </div>
+            <div className="mt-1 pl-4 text-[11px] text-muted">
+              Last run {new Date(run.createdAt).toLocaleString()}
+            </div>
+          </div>
+          <div className="divide-y divide-[rgba(255,255,255,0.07)]">
+            {run.checks.map((check) => (
+              <div key={check.key} className="flex items-start gap-3 px-[18px] py-[11px]">
+                <span
+                  className={`mt-[5px] h-2 w-2 shrink-0 rounded-full ${DIAGNOSTIC_DOT[check.status]}`}
+                />
+                <span className="min-w-0">
+                  <span className="block text-[12.5px] font-medium text-fg">{check.label}</span>
+                  <span className="block text-[11.5px] leading-5 text-muted">{check.summary}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="px-[18px] py-[14px] text-[12.5px] text-muted">
+          No diagnostic has been run for this connection yet.
+        </div>
+      )}
+
+      {error && (
+        <div className={`border-t px-[18px] py-[10px] text-[11.5px] text-danger ${SOFT_LINE}`}>
+          {error}
         </div>
       )}
     </div>

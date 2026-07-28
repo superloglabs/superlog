@@ -1394,6 +1394,27 @@ export type StackComponent = {
 };
 export type CloudStackHealth = { components: StackComponent[] };
 
+export type CloudDiagnosticStatus = "healthy" | "warning" | "error";
+export type CloudDiagnosticCheck = {
+  key: "role" | "stack" | "metrics" | "logs";
+  label: string;
+  status: "pass" | "warning" | "fail";
+  summary: string;
+  evidence: Record<string, string | number | boolean | null>;
+};
+export type CloudDiagnosticRun = {
+  id: string;
+  connectionId: string;
+  projectId: string;
+  requestedByUserId: string | null;
+  region: string;
+  status: CloudDiagnosticStatus;
+  summary: string;
+  checks: CloudDiagnosticCheck[];
+  reason: string | null;
+  createdAt: string;
+};
+
 // Reconciliation health for a connection's stack (connection / metrics / logs).
 // Polls so the live "last received" + working/quiet signals stay fresh.
 export function useCloudStackHealth(
@@ -1410,6 +1431,42 @@ export function useCloudStackHealth(
       ),
     enabled: !!projectId && !!connectionId && enabled,
     refetchInterval: 15000,
+  });
+}
+
+export function useCloudDiagnostics(
+  projectId: string | undefined,
+  connectionId: string | undefined,
+  enabled: boolean,
+) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["cloud-diagnostics", projectId, connectionId],
+    queryFn: () =>
+      fetcher<CloudDiagnosticRun[]>(
+        `/api/projects/${projectId}/cloud-connections/${connectionId}/diagnostics`,
+      ),
+    enabled: !!projectId && !!connectionId && enabled,
+  });
+}
+
+export function useRunCloudDiagnostics(projectId: string) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (connectionId: string) =>
+      fetcher<CloudDiagnosticRun>(
+        `/api/projects/${projectId}/cloud-connections/${connectionId}/diagnostics`,
+        {
+          method: "POST",
+          body: JSON.stringify({ reason: "Customer initiated from AWS setup" }),
+        },
+      ),
+    onSuccess: (run) =>
+      qc.setQueryData<CloudDiagnosticRun[]>(
+        ["cloud-diagnostics", projectId, run.connectionId],
+        (current) => [run, ...(current ?? []).filter((item) => item.id !== run.id)],
+      ),
   });
 }
 

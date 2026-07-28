@@ -139,6 +139,33 @@ Resources:
                 Action:
                   - "cloudwatch:ListMetrics"
                 Resource: "*"
+              # Read only the integration's control-plane state and Firehose
+              # delivery health. These permissions power explicit, audited
+              # diagnostics; they do not grant access to application log data.
+              - Sid: TelemetryDiagnosticsCatalog
+                Effect: Allow
+                Action:
+                  - "firehose:ListDeliveryStreams"
+                  - "cloudwatch:ListMetricStreams"
+                  - "cloudwatch:GetMetricData"
+                  - "logs:DescribeAccountPolicies"
+                Resource: "*"
+              - Sid: TelemetryDiagnosticsStacks
+                Effect: Allow
+                Action:
+                  - "cloudformation:DescribeStacks"
+                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/superlog-*/*"
+              - Sid: TelemetryDiagnosticsDeliveryStreams
+                Effect: Allow
+                Action:
+                  - "firehose:DescribeDeliveryStream"
+                Resource: !Sub "arn:${AWS::Partition}:firehose:${AWS::Region}:${AWS::AccountId}:deliverystream/superlog-*"
+              - Sid: TelemetryDiagnosticsDeliveryErrors
+                Effect: Allow
+                Action:
+                  - "logs:DescribeLogStreams"
+                  - "logs:GetLogEvents"
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/superlog-*:*"
               - Sid: ConfigRead
                 Effect: Allow
                 Action:

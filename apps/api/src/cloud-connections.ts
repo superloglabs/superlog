@@ -10,6 +10,13 @@ import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
+import { createAwsDiagnosticProbe } from "./aws-diagnostics-aws.js";
+import { createAwsDiagnosticRecorder, listAwsDiagnosticRuns } from "./aws-diagnostics-store.js";
+import {
+  type AwsDiagnosticProbe,
+  type AwsDiagnosticRecorder,
+  runAwsDiagnostics,
+} from "./aws-diagnostics.js";
 import {
   type StsVerifier,
   awsConnectScrapeRoleName,
@@ -109,6 +116,7 @@ export function cloudConnectConfigFromEnv(
 // launch URL's hostname, so reject anything that could redirect the link.
 const createSchema = z.object({ region: z.string().regex(/^[a-z0-9-]{1,32}$/) });
 const verifySchema = z.object({ scrapeRoleArn: z.string().min(1) });
+const diagnosticSchema = z.object({ reason: z.string().trim().max(500).optional() });
 const callbackSchema = z.object({
   connectionId: z.string().uuid(),
   externalId: z.string().min(1),
@@ -201,12 +209,16 @@ export function mountCloudConnectionsAuthed(
     config?: CloudConnectConfig | null;
     resourceLister?: ResourceLister;
     configFetcher?: ConfigFetcher;
+    diagnosticProbe?: AwsDiagnosticProbe;
+    diagnosticRecorder?: AwsDiagnosticRecorder;
   } = {},
 ): void {
   const sts = deps.sts ?? createStsVerifier();
   const config = deps.config !== undefined ? deps.config : cloudConnectConfigFromEnv();
   const resourceLister = deps.resourceLister ?? createResourceLister();
   const configFetcher = deps.configFetcher ?? createConfigFetcher();
+  const diagnosticProbe = deps.diagnosticProbe ?? createAwsDiagnosticProbe();
+  const diagnosticRecorder = deps.diagnosticRecorder ?? createAwsDiagnosticRecorder();
 
   const requireAccess = async (c: Context<{ Variables: Vars }>, projectId: string) => {
     const project = await db.query.projects.findFirst({
@@ -564,6 +576,64 @@ export function mountCloudConnectionsAuthed(
         now: new Date(),
       }),
     );
+  });
+
+  // Explicit, audited troubleshooting run. This assumes the same customer role
+  // with a short-lived, further-restricted session policy and persists only
+  // structured connection health — never credentials or raw CloudWatch log lines.
+  app.post("/api/projects/:projectId/cloud-connections/:id/diagnostics", async (c) => {
+    const projectId = c.req.param("projectId");
+    const id = c.req.param("id");
+    const { user } = await requireManagerAccess(c, projectId);
+    const parsed = diagnosticSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) throw new HTTPException(400, { message: "invalid body" });
+
+    const row = await db.query.cloudConnections.findFirst({
+      where: and(
+        eq(schema.cloudConnections.id, id),
+        eq(schema.cloudConnections.projectId, projectId),
+        isNull(schema.cloudConnections.revokedAt),
+      ),
+    });
+    if (!row) throw new HTTPException(404, { message: "connection not found" });
+    if (row.status !== "connected" || !row.scrapeRoleArn) {
+      throw new HTTPException(409, { message: "connection is not verified" });
+    }
+
+    const externalId = decryptIntegrationSecret({
+      ciphertext: row.externalIdCiphertext,
+      nonce: row.externalIdNonce,
+      keyVersion: row.externalIdKeyVersion,
+    });
+    const run = await runAwsDiagnostics(
+      {
+        connectionId: row.id,
+        projectId: row.projectId,
+        region: row.region,
+        roleArn: row.scrapeRoleArn,
+        externalId,
+        expectedAccountId: row.accountId,
+        requestedByUserId: user.id,
+        reason: parsed.data.reason || null,
+      },
+      { probe: diagnosticProbe, recorder: diagnosticRecorder },
+    );
+    return c.json(run);
+  });
+
+  app.get("/api/projects/:projectId/cloud-connections/:id/diagnostics", async (c) => {
+    const projectId = c.req.param("projectId");
+    const id = c.req.param("id");
+    await requireAccess(c, projectId);
+    const row = await db.query.cloudConnections.findFirst({
+      where: and(
+        eq(schema.cloudConnections.id, id),
+        eq(schema.cloudConnections.projectId, projectId),
+        isNull(schema.cloudConnections.revokedAt),
+      ),
+    });
+    if (!row) throw new HTTPException(404, { message: "connection not found" });
+    return c.json(await listAwsDiagnosticRuns(projectId, id));
   });
 
   // Zero-paste callback: the stack's in-stack Lambda (behind a CloudFormation

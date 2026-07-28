@@ -2835,6 +2835,14 @@ export const feedback = pgTable(
  * the role ARN names; `failed` if the role can't be assumed.
  */
 export type CloudConnectionStatus = "pending" | "connected" | "account_mismatch" | "failed";
+export type CloudConnectionDiagnosticStatus = "healthy" | "warning" | "error";
+export type CloudConnectionDiagnosticCheck = {
+  key: "role" | "stack" | "metrics" | "logs";
+  label: string;
+  status: "pass" | "warning" | "fail";
+  summary: string;
+  evidence: Record<string, string | number | boolean | null>;
+};
 
 export const cloudConnections = pgTable(
   "cloud_connections",
@@ -2954,6 +2962,40 @@ export const cloudStreamKeys = pgTable(
 );
 
 export type CloudStreamKey = typeof cloudStreamKeys.$inferSelect;
+
+export const cloudConnectionDiagnosticRuns = pgTable(
+  "cloud_connection_diagnostic_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    connectionId: uuid("connection_id")
+      .notNull()
+      .references(() => cloudConnections.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    requestedByUserId: uuid("requested_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    region: text("region").notNull(),
+    status: text("status").$type<CloudConnectionDiagnosticStatus>().notNull(),
+    summary: text("summary").notNull(),
+    checks: jsonb("checks").$type<CloudConnectionDiagnosticCheck[]>().notNull(),
+    reason: text("reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    connectionCreatedIdx: index("cloud_connection_diagnostic_runs_connection_created_idx").on(
+      t.connectionId,
+      t.createdAt,
+    ),
+    projectCreatedIdx: index("cloud_connection_diagnostic_runs_project_created_idx").on(
+      t.projectId,
+      t.createdAt,
+    ),
+  }),
+);
+
+export type CloudConnectionDiagnosticRun = typeof cloudConnectionDiagnosticRuns.$inferSelect;
 
 export type GcpAuthorizationStatus = "pending" | "ready" | "consumed" | "failed";
 

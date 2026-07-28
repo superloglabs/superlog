@@ -15,7 +15,7 @@ function connectionResourceSuffix(connectionId: string): string {
   return (compact || "default").slice(0, 7);
 }
 
-function streamResourcePrefix(kind: "metrics" | "logs", connectionId: string): string {
+export function streamResourcePrefix(kind: "metrics" | "logs", connectionId: string): string {
   return `superlog-${kind}-${connectionResourceSuffix(connectionId)}`;
 }
 
