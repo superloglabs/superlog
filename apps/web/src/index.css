@@ -261,6 +261,103 @@ body {
     );
 }
 
+@keyframes context-pill-cycle {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+@keyframes context-pill-cycle-reverse {
+  from {
+    transform: translate3d(-50%, 0, 0);
+  }
+  to {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.context-pill-track {
+  animation: context-pill-cycle 24s linear infinite;
+  will-change: transform;
+}
+
+.context-pill-track-reverse {
+  animation-name: context-pill-cycle-reverse;
+  animation-duration: 28s;
+}
+
+@keyframes memory-terminal-glow {
+  0%,
+  100% {
+    opacity: 0.03;
+    transform: scale(0.75);
+  }
+  46% {
+    opacity: 0.3;
+    transform: scale(1.35);
+  }
+  72% {
+    opacity: 0.08;
+    transform: scale(0.9);
+  }
+}
+
+.memory-terminal-glow {
+  opacity: 0.03;
+  filter: blur(3px);
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: memory-terminal-glow 4.8s ease-in-out infinite;
+}
+
+@keyframes memory-spoke-pulse {
+  0% {
+    opacity: 0;
+    transform: translate(var(--memory-pulse-x), var(--memory-pulse-y))
+      rotate(var(--memory-pulse-angle));
+  }
+  6% {
+    opacity: 0.5;
+  }
+  34% {
+    opacity: 0.26;
+  }
+  44%,
+  100% {
+    opacity: 0;
+    transform: translate(220px, 175px) rotate(var(--memory-pulse-angle));
+  }
+}
+
+.memory-spoke-pulse {
+  animation: memory-spoke-pulse 5.6s linear infinite;
+}
+
+@keyframes pr-check-appear {
+  0%,
+  8% {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  16%,
+  84% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  92%,
+  100% {
+    opacity: 0;
+    transform: scale(0.78);
+  }
+}
+
+.pr-check-appear {
+  animation: pr-check-appear 4.8s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
 .superlog-code {
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
@@ -883,5 +980,28 @@ body {
   .landing-slack-card-back-one,
   .landing-slack-card-back-two {
     animation: none;
+  }
+
+  .context-pill-track {
+    animation: none;
+    transform: none;
+  }
+
+  .memory-spoke-pulse {
+    animation: none;
+    opacity: 0;
+    transform: none;
+  }
+
+  .memory-terminal-glow {
+    animation: none;
+    opacity: 0.08;
+    transform: none;
+  }
+
+  .pr-check-appear {
+    animation: none;
+    opacity: 1;
+    transform: none;
   }
 }
