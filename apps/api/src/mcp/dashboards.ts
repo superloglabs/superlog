@@ -25,6 +25,7 @@ import {
   updateHomeLayout,
 } from "../dashboards-service.js";
 import { assertProjectAccess } from "./projects.js";
+import { READ_ONLY_TOOL } from "./scope-authorization.js";
 
 const projectIdSchema = z
   .string()
@@ -194,6 +195,7 @@ export function registerDashboardTools(
     {
       title: "List dashboards",
       description: "List dashboards in the active project (or project_id).",
+      annotations: READ_ONLY_TOOL,
       inputSchema: { project_id: projectIdSchema },
     },
     async (input) => text(await listDashboardsForProject(await resolve(input.project_id))),
@@ -204,6 +206,7 @@ export function registerDashboardTools(
     {
       title: "Get dashboard",
       description: "Fetch a dashboard with its widgets.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: { project_id: projectIdSchema, id: z.string().uuid() },
     },
     async (input) => {

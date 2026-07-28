@@ -20,6 +20,7 @@ import {
   listAccessibleProjects,
   setActiveProjectForToken,
 } from "./projects.js";
+import { READ_ONLY_TOOL, enforceMcpToolScopes } from "./scope-authorization.js";
 import {
   type McpTelemetryToolName,
   executeRecoverableTelemetryQuery,
@@ -87,6 +88,7 @@ export type McpSession = {
   activeProjectId: string;
   allowedOrgId?: string;
   telemetryOnly?: boolean;
+  scopes: string[];
 };
 
 // Advisory guidance surfaced to compatible MCP clients in the initialize
@@ -115,6 +117,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
   // Before any registerTool call so every tool below (and in the register*
   // modules) emits a per-invocation analytics event.
   instrumentMcpToolAnalytics(server, session);
+  enforceMcpToolScopes(server, session.scopes);
 
   const assertTokenScope = async (projectId: string): Promise<void> => {
     if (!session.allowedOrgId) return;
@@ -174,6 +177,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
       title: "Query logs",
       description:
         "Search OpenTelemetry logs. Targets the session's active project unless project_id is given. Error rows include flattened exception_type, exception_message, and exception_stacktrace fields when present.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: {
         project_id: projectIdSchema,
         range: timeRangeSchema,
@@ -218,6 +222,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
       title: "Query traces",
       description:
         "Search OpenTelemetry spans. Targets the session's active project unless project_id is given. Spans with exception events include flattened exception_type, exception_message, and exception_stacktrace fields when present.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: {
         project_id: projectIdSchema,
         range: timeRangeSchema,
@@ -263,6 +268,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
       title: "Query metrics",
       description:
         "Fetch recent metric points across gauge, sum, explicit-histogram, exponential-histogram, and summary tables. Targets the session's active project unless project_id is given. Each point includes its data-point `attributes` (the per-series dimensions like route/status/tenant), `resource_attrs`, start time, and aggregation temporality where applicable. Gauge/sum points carry a scalar `value`; histogram/summary points carry `count` and `sum` (plus `min`/`max` for histograms) instead, since they have no scalar value.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: {
         project_id: projectIdSchema,
         metric_name: z.string().optional(),
@@ -297,6 +303,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
       title: "List services",
       description:
         "List distinct service.name values emitting telemetry in the given window.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: {
         project_id: projectIdSchema,
         range: timeRangeSchema,
@@ -320,6 +327,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
       title: "List projects",
       description:
         "List every project the authenticated user can access, across all of their orgs. The active project is marked.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: {},
     },
     async () => {
@@ -340,6 +348,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
       title: "Get active project",
       description:
         "Return the project that tools default to when project_id is omitted.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: {},
     },
     async () => {

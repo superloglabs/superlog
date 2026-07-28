@@ -6,6 +6,7 @@ import { z } from "zod";
 import { getIncidentDetail } from "../incidents/detail.js";
 import { searchIncidents } from "../incidents/search.js";
 import { assertProjectAccess } from "./projects.js";
+import { READ_ONLY_TOOL } from "./scope-authorization.js";
 
 const projectIdSchema = z
   .string()
@@ -51,6 +52,7 @@ export function registerIncidentTools(
         "Fetch one incident by its id — the uuid at the end of a superlog.sh/app/org/<org>/project/<project>/incidents/<id> link — and everything needed to explain it. " +
         "No project_id is required; the project is resolved from the incident. Returns: the incident summary with the agent's findings (root_cause_text, agent_summary, estimated_impact_text) and its project_id; every linked issue with a stored telemetry `sample` (trace_id, span_id, stacktrace, span/log/resource attributes); and a pointer to the latest investigation run. " +
         "To pull live telemetry, take a sample's trace_id and call query_traces, or filter query_logs/query_traces by the issue's service + exception type — passing the returned project_id.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: {
         incident_id: z.string().uuid().describe("Incident id (the uuid from the incident URL)."),
       },
@@ -73,6 +75,7 @@ export function registerIncidentTools(
         "Filter by status, severity, service, a free-text substring over title/codename, and a last_seen time window. Results are newest-activity-first. " +
         "By default agent-classified noise (status='autoresolved_noise') is hidden; pass status='all' to include it or status='autoresolved_noise' to inspect just the noise pile. " +
         "Use get_incident to drill into a single incident's linked issues and telemetry.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: {
         project_id: projectIdSchema,
         status: z

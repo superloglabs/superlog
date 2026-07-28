@@ -95,6 +95,7 @@ test("tool calls emit mcp_tool_called with user + org context", async () => {
     tokenId: "tok-analytics-1",
     tokenKind: "pat",
     activeProjectId: project.id,
+    scopes: [],
   });
 
   const result = await client.callTool({ name: "list_projects", arguments: {} });
@@ -123,6 +124,7 @@ test("failed tool calls emit mcp_tool_called with success=false and the error", 
     tokenId: "tok-analytics-2",
     tokenKind: "oauth",
     activeProjectId: outsideProject,
+    scopes: [],
   });
 
   const result = await client.callTool({ name: "get_active_project", arguments: {} });
@@ -155,6 +157,7 @@ test("org context is omitted for projects the user is not a member of", async ()
     tokenId: "tok-analytics-3",
     tokenKind: "pat",
     activeProjectId: other.project.id,
+    scopes: [],
   });
 
   const failed = await client.callTool({
@@ -186,6 +189,7 @@ test("isError results carry the error text without a throw", async () => {
     tokenId: "tok-analytics-4",
     tokenKind: "pat",
     activeProjectId: project.id,
+    scopes: [],
   });
   server.registerTool("soft_fail", { inputSchema: {} }, async () => ({
     content: [{ type: "text" as const, text: "budget exceeded" }],

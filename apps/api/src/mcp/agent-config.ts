@@ -35,6 +35,7 @@ import {
 import { parseProjectMcpServerAuthInput } from "../project-mcp-servers.js";
 import { testProjectMcpServerConnection } from "../project-mcp-test.js";
 import { previewIssueFilterMatches } from "./clickhouse.js";
+import { READ_ONLY_TOOL } from "./scope-authorization.js";
 
 const projectIdSchema = z
   .string()
@@ -146,6 +147,7 @@ export function registerAgentConfigTools(
       title: "List agent MCP servers",
       description:
         "List the custom MCP servers available to new investigation and Slack-agent sessions for this project. Credentials are always redacted.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: { project_id: projectIdSchema },
     },
     async (input) => {
@@ -340,6 +342,7 @@ export function registerAgentConfigTools(
       title: "Get issue filter",
       description:
         "Read the project's issue filter: per-kind include/exclude attribute clauses that decide which ERROR events become issues/incidents. Excludes win; a non-empty include list means an event must match at least one clause.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: { project_id: projectIdSchema },
     },
     async (input) => {
@@ -389,6 +392,7 @@ export function registerAgentConfigTools(
       title: "Preview issue filter",
       description:
         "Preview which recent ERROR events (last 24h) would still become issues under a candidate filter, WITHOUT saving. Buckets you pass are merged over the project's current filter (same semantics as update_issue_filter); omit all buckets to preview the current saved filter. Returns sample matching events.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: {
         project_id: projectIdSchema,
         includeLogs: clauseListSchema.optional(),
@@ -428,6 +432,7 @@ export function registerAgentConfigTools(
       title: "Get project context",
       description:
         "Read the project's freeform context — the human-written description of the system (architecture, conventions, key services) that the investigation agent reads on every run.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: { project_id: projectIdSchema },
     },
     async (input) => {
@@ -466,6 +471,7 @@ export function registerAgentConfigTools(
       title: "List agent memories",
       description:
         "List the investigation agent's stored memories for the project — durable learnings (feedback, terminology, infra, project facts) that are injected into future investigations.",
+      annotations: READ_ONLY_TOOL,
       inputSchema: { project_id: projectIdSchema },
     },
     async (input) => {

@@ -13,6 +13,7 @@ import type { Hono } from "hono";
 import { logger } from "../logger.js";
 import { type McpConfig, loadMcpConfig } from "./config.js";
 import { mountOauthDecision, mountOauthEndpoints, mountOauthMetadata } from "./oauth.js";
+import { resolveMcpOauthScope } from "./scope-authorization.js";
 import { createMcpServerForSession } from "./server.js";
 
 const log = logger.child({ scope: "mcp-bearer" });
@@ -66,6 +67,7 @@ export function mountMcpPublic<T extends Hono<any, any, any>>(app: T, ch: ClickH
       activeProjectId: tokenCtx.projectId,
       allowedOrgId: tokenCtx.allowedOrgId,
       telemetryOnly: tokenCtx.telemetryOnly,
+      scopes: tokenCtx.scope?.split(/\s+/).filter(Boolean) ?? [],
     });
     // handleRequest returns immediately with a Response wrapping a ReadableStream
     // (Content-Type: text/event-stream). The server writes JSON-RPC responses
@@ -116,13 +118,15 @@ async function resolveToken(
   if (stored !== cfg.resource && stored !== cfg.apiBaseUrl) {
     return { reason: `resource mismatch (stored=${row.resource})` };
   }
+  const resolvedScope = resolveMcpOauthScope(row.scope);
+  if ("error" in resolvedScope) return { reason: resolvedScope.error };
   return {
     tokenId: row.id,
     tokenKind: "oauth",
     projectId: row.projectId,
     userId: row.userId,
     clientId: row.clientId,
-    scope: row.scope,
+    scope: resolvedScope.scope,
     resource: row.resource,
     allowedOrgId: parseOrgScope(row.scope),
     telemetryOnly: hasScopePart(row.scope, "superlog:telemetry"),
