@@ -577,23 +577,22 @@ function ErrorImportSection() {
 
       <div
         className="relative mt-16 min-h-[640px] overflow-hidden sm:min-h-[572px] md:mt-[72px]"
-        aria-hidden="true"
       >
-        <div className="error-import-grid error-import-grid-fade absolute inset-0" />
+        <div aria-hidden="true" className="error-import-grid error-import-grid-fade absolute inset-0" />
 
-        <div className="error-import-line error-import-line-from-source error-import-line-top absolute left-[calc(20%+16px)] top-[20%] h-[30%] w-[calc(30%-16px)] rounded-tr-[32px] border-r-[1.5px] border-t-[1.5px] sm:left-[calc(16%+16px)] sm:w-[calc(34%-16px)] md:left-[16%] md:w-[34%] lg:left-[15%] lg:w-[35%]" />
-        <div className="error-import-line error-import-line-from-source error-import-line-middle absolute left-[calc(20%+16px)] top-1/2 w-[calc(30%-16px)] border-t-[1.5px] sm:left-[calc(16%+16px)] sm:w-[calc(34%-16px)] md:left-[16%] md:w-[34%] lg:left-[15%] lg:w-[35%]" />
-        <div className="error-import-line error-import-line-from-source error-import-line-bottom absolute left-[calc(20%+16px)] top-1/2 h-[30%] w-[calc(30%-16px)] rounded-br-[32px] border-b-[1.5px] border-r-[1.5px] sm:left-[calc(16%+16px)] sm:w-[calc(34%-16px)] md:left-[16%] md:w-[34%] lg:left-[15%] lg:w-[35%]" />
-        <div className="error-import-line error-import-line-to-destination absolute left-1/2 top-1/2 w-[27%] border-t-[1.5px] sm:w-[30%] lg:w-[29%]" />
-        <span className="error-import-particle error-import-particle-top" />
-        <span className="error-import-particle error-import-particle-middle" />
-        <span className="error-import-particle error-import-particle-bottom" />
+        <div aria-hidden="true" className="error-import-line error-import-line-from-source error-import-line-top absolute left-[calc(20%+16px)] top-[20%] h-[30%] w-[calc(30%-16px)] rounded-tr-[32px] border-r-[1.5px] border-t-[1.5px] sm:left-[calc(16%+16px)] sm:w-[calc(34%-16px)] md:left-[16%] md:w-[34%] lg:left-[15%] lg:w-[35%]" />
+        <div aria-hidden="true" className="error-import-line error-import-line-from-source error-import-line-middle absolute left-[calc(20%+16px)] top-1/2 w-[calc(30%-16px)] border-t-[1.5px] sm:left-[calc(16%+16px)] sm:w-[calc(34%-16px)] md:left-[16%] md:w-[34%] lg:left-[15%] lg:w-[35%]" />
+        <div aria-hidden="true" className="error-import-line error-import-line-from-source error-import-line-bottom absolute left-[calc(20%+16px)] top-1/2 h-[30%] w-[calc(30%-16px)] rounded-br-[32px] border-b-[1.5px] border-r-[1.5px] sm:left-[calc(16%+16px)] sm:w-[calc(34%-16px)] md:left-[16%] md:w-[34%] lg:left-[15%] lg:w-[35%]" />
+        <div aria-hidden="true" className="error-import-line error-import-line-to-destination absolute left-1/2 top-1/2 w-[27%] border-t-[1.5px] sm:w-[30%] lg:w-[29%]" />
+        <span aria-hidden="true" className="error-import-particle error-import-particle-top" />
+        <span aria-hidden="true" className="error-import-particle error-import-particle-middle" />
+        <span aria-hidden="true" className="error-import-particle error-import-particle-bottom" />
 
         <ProviderGroup
           className="top-[20%] -translate-y-1/2"
           name="Observability platforms"
           detail="Import errors and debugging MCPs from Sentry or Datadog"
-          copyClassName="sm:max-w-[68%]"
+          copyClassName="lg:max-w-[68%]"
         >
           <div className="flex items-center gap-1.5">
             <ProviderMark label="Datadog" className="!bg-white text-[#632ca6]">
@@ -690,7 +689,7 @@ function ProviderGroup({
     <div
       className={`absolute left-4 w-[40%] rounded-lg border border-border-strong bg-bg/95 p-4 sm:w-[32%] md:left-0 md:p-5 lg:w-[30%] ${className}`}
     >
-      <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
+      <div className="flex flex-col items-start gap-3 lg:flex-row lg:items-center lg:justify-between lg:gap-2">
         <div className={`min-w-0 ${copyClassName}`}>
           <div className="text-[14px] font-semibold leading-tight text-fg md:text-[17px]">{name}</div>
           <div className="mt-1 text-[10px] leading-[15px] text-muted md:text-[13px] md:leading-[18px]">
