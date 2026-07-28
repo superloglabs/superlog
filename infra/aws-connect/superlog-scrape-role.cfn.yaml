@@ -87,13 +87,8 @@ Resources:
                   - "cloudwatch:ListMetricStreams"
                   - "cloudwatch:GetMetricData"
                   - "logs:DescribeAccountPolicies"
-                  - "cloudformation:ListStacks"
-                Resource: "*"
-              - Sid: TelemetryDiagnosticsStacks
-                Effect: Allow
-                Action:
                   - "cloudformation:DescribeStacks"
-                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/*/*"
+                Resource: "*"
               - Sid: TelemetryDiagnosticsDeliveryStreams
                 Effect: Allow
                 Action:

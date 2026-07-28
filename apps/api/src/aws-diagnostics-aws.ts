@@ -1,8 +1,4 @@
-import {
-  CloudFormationClient,
-  DescribeStacksCommand,
-  ListStacksCommand,
-} from "@aws-sdk/client-cloudformation";
+import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
 import {
   CloudWatchClient,
   GetMetricDataCommand,
@@ -82,14 +78,9 @@ function diagnosticSessionPolicy(target: AwsDiagnosticTarget): string {
           "cloudwatch:ListMetricStreams",
           "cloudwatch:GetMetricData",
           "logs:DescribeAccountPolicies",
-          "cloudformation:ListStacks",
+          "cloudformation:DescribeStacks",
         ],
         Resource: "*",
-      },
-      {
-        Effect: "Allow",
-        Action: "cloudformation:DescribeStacks",
-        Resource: `arn:${partition}:cloudformation:${target.region}:${accountId}:stack/*/*`,
       },
       {
         Effect: "Allow",
@@ -176,17 +167,30 @@ async function inspectStacks(
   connectionId: string,
   permissionGaps: string[],
 ): Promise<AwsDiagnosticFacts["stacks"]> {
-  const candidateNames: string[] = [];
+  const stacks: AwsDiagnosticFacts["stacks"] = [];
   try {
     let nextToken: string | undefined;
     do {
-      const output = (await client.send(new ListStacksCommand({ NextToken: nextToken }))) as {
-        StackSummaries?: Array<{ StackName?: string; StackStatus?: string }>;
+      const output = (await client.send(new DescribeStacksCommand({ NextToken: nextToken }))) as {
+        Stacks?: Array<{
+          StackName?: string;
+          StackStatus?: string;
+          Parameters?: Array<{ ParameterKey?: string; ParameterValue?: string }>;
+        }>;
         NextToken?: string;
       };
-      for (const summary of output.StackSummaries ?? []) {
-        if (summary.StackName && summary.StackStatus !== "DELETE_COMPLETE") {
-          candidateNames.push(summary.StackName);
+      for (const stack of output.Stacks ?? []) {
+        const belongsToConnection = stack.Parameters?.some(
+          (parameter) =>
+            parameter.ParameterKey === "ConnectionId" && parameter.ParameterValue === connectionId,
+        );
+        if (
+          belongsToConnection &&
+          stack.StackName &&
+          stack.StackStatus &&
+          stack.StackStatus !== "DELETE_COMPLETE"
+        ) {
+          stacks.push({ name: stack.StackName, status: stack.StackStatus });
         }
       }
       nextToken = output.NextToken;
@@ -199,33 +203,6 @@ async function inspectStacks(
     throw new AwsDiagnosticProbeError(errorCode(error));
   }
 
-  const stacks: AwsDiagnosticFacts["stacks"] = [];
-  for (const stackName of [...new Set(candidateNames)]) {
-    try {
-      const output = (await client.send(new DescribeStacksCommand({ StackName: stackName }))) as {
-        Stacks?: Array<{
-          StackName?: string;
-          StackStatus?: string;
-          Parameters?: Array<{ ParameterKey?: string; ParameterValue?: string }>;
-        }>;
-      };
-      const stack = output.Stacks?.at(0);
-      const belongsToConnection = stack?.Parameters?.some(
-        (parameter) =>
-          parameter.ParameterKey === "ConnectionId" && parameter.ParameterValue === connectionId,
-      );
-      if (belongsToConnection && stack?.StackName && stack.StackStatus) {
-        stacks.push({ name: stack.StackName, status: stack.StackStatus });
-      }
-    } catch (error) {
-      if (isMissing(error)) continue;
-      if (isDenied(error)) {
-        permissionGaps.push("stack");
-        return [];
-      }
-      throw new AwsDiagnosticProbeError(errorCode(error));
-    }
-  }
   return stacks;
 }
 

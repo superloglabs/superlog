@@ -14,6 +14,7 @@ const client = (respond: (commandName: string, command: object) => unknown) => (
 
 test("the AWS probe returns structured delivery facts without retaining raw error logs", async () => {
   const assumeRoleInputs: Array<{ DurationSeconds?: number; Policy?: string }> = [];
+  const cloudFormationCommands: string[] = [];
   const factory: AwsDiagnosticClientFactory = {
     sts: () =>
       client((command, value) => {
@@ -33,28 +34,37 @@ test("the AWS probe returns structured delivery facts without retaining raw erro
       }),
     cloudFormation: () =>
       client((command, value) => {
-        if (command === "ListStacksCommand") {
-          return {
-            StackSummaries: [
-              { StackName: "production-observability", StackStatus: "CREATE_COMPLETE" },
-              { StackName: "superlog-metrics-renamed", StackStatus: "UPDATE_COMPLETE" },
-              { StackName: "other-product", StackStatus: "CREATE_COMPLETE" },
-            ],
-          };
-        }
-        const stackName = (value as { input: { StackName?: string } }).input.StackName;
+        cloudFormationCommands.push(command);
+        assert.equal((value as { input: { StackName?: string } }).input.StackName, undefined);
         return {
           Stacks: [
             {
-              StackName: stackName,
-              StackStatus: stackName?.includes("metrics") ? "UPDATE_COMPLETE" : "CREATE_COMPLETE",
+              StackName: "production-observability",
+              StackStatus: "CREATE_COMPLETE",
               Parameters: [
                 {
                   ParameterKey: "ConnectionId",
-                  ParameterValue:
-                    stackName === "other-product"
-                      ? "another-connection"
-                      : "abcdef12-3456-7890-abcd-ef1234567890",
+                  ParameterValue: "abcdef12-3456-7890-abcd-ef1234567890",
+                },
+              ],
+            },
+            {
+              StackName: "superlog-metrics-renamed",
+              StackStatus: "UPDATE_COMPLETE",
+              Parameters: [
+                {
+                  ParameterKey: "ConnectionId",
+                  ParameterValue: "abcdef12-3456-7890-abcd-ef1234567890",
+                },
+              ],
+            },
+            {
+              StackName: "other-product",
+              StackStatus: "CREATE_COMPLETE",
+              Parameters: [
+                {
+                  ParameterKey: "ConnectionId",
+                  ParameterValue: "another-connection",
                 },
               ],
             },
@@ -160,8 +170,18 @@ test("the AWS probe returns structured delivery facts without retaining raw erro
   assert.equal(assumeRoleInputs[0]?.DurationSeconds, 900);
   assert.ok((assumeRoleInputs[0]?.Policy?.length ?? Number.POSITIVE_INFINITY) <= 2048);
   assert.doesNotMatch(assumeRoleInputs[0]?.Policy ?? "", /GetObject|GetSecretValue|Decrypt/);
-  assert.match(assumeRoleInputs[0]?.Policy ?? "", /:stack\/\*\/\*/);
-  assert.doesNotMatch(assumeRoleInputs[0]?.Policy ?? "", /:stack\/superlog-\*/);
+  assert.deepEqual(cloudFormationCommands, ["DescribeStacksCommand"]);
+  const sessionPolicy = JSON.parse(assumeRoleInputs[0]?.Policy ?? "{}") as {
+    Statement?: Array<{ Action?: string | string[]; Resource?: string }>;
+  };
+  assert.ok(
+    sessionPolicy.Statement?.some(
+      (statement) =>
+        (Array.isArray(statement.Action)
+          ? statement.Action.includes("cloudformation:DescribeStacks")
+          : statement.Action === "cloudformation:DescribeStacks") && statement.Resource === "*",
+    ),
+  );
 });
 
 test("a downstream AWS failure retains the successfully assumed role identity", async () => {
