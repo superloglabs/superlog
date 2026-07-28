@@ -15,10 +15,7 @@ test("landing top nav wires the Docs link to the docs URL in a new tab", async (
   const source = await readFile(new URL("./Landing.tsx", import.meta.url), "utf8");
 
   // Docs is a data-driven nav link marked external so it opens in a new tab.
-  assert.match(
-    source,
-    /\{\s*href:\s*LANDING_DOCS_URL,\s*label:\s*"Docs",\s*external:\s*true\s*\}/,
-  );
+  assert.match(source, /\{\s*href:\s*LANDING_DOCS_URL,\s*label:\s*"Docs",\s*external:\s*true\s*\}/);
   // External nav links render target="_blank" rel="noreferrer".
   assert.match(source, /target=\{link\.external \? "_blank" : undefined\}/);
   assert.match(source, /rel=\{link\.external \? "noreferrer" : undefined\}/);
@@ -63,11 +60,17 @@ test("landing footer links to the terms of service page", async () => {
   assert.match(marketingSource, /<Route path="\/tos" element=\{<TermsOfService \/>\} \/>/);
 });
 
-test("landing renders the client-logo marquee between the hero and the first content section", async () => {
+test("landing renders the client-logo marquee inside the hero before the first content section", async () => {
   const source = await readFile(new URL("./Landing.tsx", import.meta.url), "utf8");
-  // The strip must sit just after the hero image and before the first text
-  // section (id="install"), which is exactly where the design calls for it.
-  assert.match(source, /<Hero(?:\s[^>]*)? \/>[\s\S]*<ClientLogos \/>[\s\S]*id="install"/);
+  const heroSource = source.slice(
+    source.indexOf("function Hero("),
+    source.indexOf("function ClientLogos("),
+  );
+
+  // The strip closes the hero itself so both pieces share one compact first
+  // viewport, while the first text section still follows the hero.
+  assert.match(heroSource, /<ClientLogos \/>[\s\S]*<\/section>/);
+  assert.match(source, /<Hero(?:\s[^>]*)? \/>[\s\S]*?<Section[\s\S]*?id="install"/);
 });
 
 test("client-logo marquee is a masked, animated, duplicated track", async () => {

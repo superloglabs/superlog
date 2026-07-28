@@ -142,7 +142,7 @@ test("crawlers receive a sitemap of public pages and no product URLs", async () 
   const robots = await readFile(new URL("robots.txt", distUrl), "utf8");
 
   assert.match(sitemap, /<loc>https:\/\/superlog\.sh<\/loc>/);
-  assert.match(sitemap, /<loc>https:\/\/superlog\.sh<\/loc><lastmod>2026-07-22<\/lastmod>/);
+  assert.match(sitemap, /<loc>https:\/\/superlog\.sh<\/loc><lastmod>2026-07-28<\/lastmod>/);
   assert.match(sitemap, /<loc>https:\/\/superlog\.sh\/pricing<\/loc>/);
   assert.match(sitemap, /<loc>https:\/\/superlog\.sh\/blog\//);
   assert.doesNotMatch(sitemap, /\/app(?:\/|<)/);
