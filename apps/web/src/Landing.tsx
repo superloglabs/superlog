@@ -505,7 +505,7 @@ function HeroSlackMessage() {
                 </h2>
               </div>
 
-              <p className="pb-3.5 text-[11.5px] italic leading-[18px] tracking-[-0.005em] text-[#2a282a]">
+              <p key={message.id} className="pb-3.5 text-[11.5px] italic leading-[18px] tracking-[-0.005em] text-[#2a282a]">
                 {message.body}
               </p>
 
