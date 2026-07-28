@@ -131,14 +131,16 @@ export function reportBrowserException(
   });
 }
 
-window.addEventListener("error", (event) => {
-  reportBrowserException(event.error ?? event.message, "window.error", {
-    "code.file": event.filename,
-    "code.line.number": event.lineno,
-    "code.column.number": event.colno,
+if (typeof window !== "undefined") {
+  window.addEventListener("error", (event) => {
+    reportBrowserException(event.error ?? event.message, "window.error", {
+      "code.file": event.filename,
+      "code.line.number": event.lineno,
+      "code.column.number": event.colno,
+    });
   });
-});
 
-window.addEventListener("unhandledrejection", (event) => {
-  reportBrowserException(event.reason, "window.unhandledrejection");
-});
+  window.addEventListener("unhandledrejection", (event) => {
+    reportBrowserException(event.reason, "window.unhandledrejection");
+  });
+}
