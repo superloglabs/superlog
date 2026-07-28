@@ -168,12 +168,11 @@ export function TopNav({
                   ? `Superlog on GitHub, ${stars.toLocaleString()} stars`
                   : "Superlog on GitHub"
               }
-              className="hidden items-center gap-1.5 text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline-flex"
+              className="landing-nav-unblur hidden items-center gap-1.5 text-[12px] font-medium text-muted transition-colors hover:text-fg md:inline-flex"
+              style={{ animationDelay: "430ms" }}
             >
               <GitHubIcon />
-              <span className="landing-nav-unblur tabular-nums" style={{ animationDelay: "430ms" }}>
-                {stars != null ? formatStarCount(stars) : "GitHub"}
-              </span>
+              <span className="tabular-nums">{stars != null ? formatStarCount(stars) : "GitHub"}</span>
             </a>
             <Btn variant="ghost" size="sm" onClick={onSignIn}>
               <span className="landing-nav-unblur" style={{ animationDelay: "485ms" }}>
