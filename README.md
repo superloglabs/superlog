@@ -1,4 +1,4 @@
-[![MCP Toplist](https://mcptoplist.com/badge/sh.superlog%2Fsuperlog.svg)](https://mcptoplist.com/server/sh.superlog%2Fsuperlog)
+
 
 
 <a href="https://superlog.sh">
@@ -12,6 +12,7 @@
 
 [![Last Commit](https://img.shields.io/github/last-commit/superloglabs/superlog?labelColor=333333&color=666666)](https://github.com/superloglabs/superlog/commits/main)
 [![Commit Activity](https://img.shields.io/github/commit-activity/m/superloglabs/superlog?labelColor=333333&color=666666)](https://github.com/superloglabs/superlog/graphs/commit-activity)
+[![MCP Toplist](https://mcptoplist.com/badge/sh.superlog%2Fsuperlog.svg)](https://mcptoplist.com/server/sh.superlog%2Fsuperlog)
 [![Apache 2.0 License](https://img.shields.io/badge/License-Apache_2.0-555555.svg?labelColor=333333&color=666666)](./LICENSE.md)
 <br>
 [![Discord](https://img.shields.io/discord/1511214206123380867?logo=discord&logoColor=white&label=Discord&color=5865F2)](https://discord.gg/wJ56aRh8hx)
