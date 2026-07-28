@@ -60,7 +60,7 @@ test("landing footer links to the terms of service page", async () => {
   assert.match(marketingSource, /<Route path="\/tos" element=\{<TermsOfService \/>\} \/>/);
 });
 
-test("landing renders the client-logo marquee inside the hero before the first content section", async () => {
+test("landing renders the client-logo marquee inside the hero before integrations and context", async () => {
   const source = await readFile(new URL("./Landing.tsx", import.meta.url), "utf8");
   const heroSource = source.slice(
     source.indexOf("function Hero("),
@@ -68,9 +68,12 @@ test("landing renders the client-logo marquee inside the hero before the first c
   );
 
   // The strip closes the hero itself so both pieces share one compact first
-  // viewport, while the first text section still follows the hero.
+  // viewport, while integrations and agent context still follow the hero.
   assert.match(heroSource, /<ClientLogos \/>[\s\S]*<\/section>/);
-  assert.match(source, /<Hero(?:\s[^>]*)? \/>[\s\S]*?<Section[\s\S]*?id="install"/);
+  assert.match(
+    source,
+    /<Hero(?:\s[^>]*)? \/>[\s\S]*?<ErrorImportSection \/>[\s\S]*?<AgentContextSection \/>/,
+  );
 });
 
 test("client-logo marquee is a masked, animated, duplicated track", async () => {
