@@ -973,7 +973,7 @@ function ContextSourcesIllustration() {
   ];
 
   return (
-    <div className="relative z-10 grid w-full gap-3 overflow-hidden">
+    <div className="relative z-10 grid w-full gap-3 overflow-hidden" aria-hidden="true">
       {rows.map((row, rowIndex) => (
         <div
           key={row.map((source) => source.label).join("-")}
