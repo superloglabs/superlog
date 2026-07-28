@@ -352,7 +352,7 @@ function FounderCallCard() {
   const [dismissed, setDismissed] = useState(false);
   if (dismissed || !isHostedOfferingHost()) return null;
   return (
-    <div className="pointer-events-none fixed bottom-6 right-6 z-50 hidden w-[320px] sm:block">
+    <div className="pointer-events-none fixed bottom-6 right-6 z-50 hidden w-[360px] sm:block">
       <style>{`
         @keyframes founder-call-in {
           0% { opacity: 0; transform: translateY(16px) scale(0.98); }
@@ -386,15 +386,15 @@ function FounderCallCard() {
         <img
           src="/founders-call.webp"
           alt="Superlog founders on the phone"
-          className="pointer-events-none absolute -bottom-3 -right-4 z-10 w-[150px] max-w-none select-none drop-shadow-[0_10px_22px_rgba(0,0,0,0.5)]"
+          className="pointer-events-none absolute -bottom-3 -right-4 z-10 w-[172px] max-w-none select-none drop-shadow-[0_10px_22px_rgba(0,0,0,0.5)]"
         />
-        <div className="px-[18px] py-[16px] pr-[116px]">
+        <div className="px-[18px] py-[16px] pr-[124px]">
           <p className="m-0 text-[14px] font-semibold leading-[1.25] tracking-[-0.01em] text-fg">
             Talk to the founders
           </p>
           <p className="m-0 mt-1.5 text-[13px] leading-[1.55] text-muted">
-            Tell us about your use case and we'll set you up with a{" "}
-            <span className="font-semibold text-accent">free month of Pro</span>.
+            Tell us about your use case and we'll set you up with{" "}
+            <span className="font-semibold text-accent">150 free incidents investigated</span>.
           </p>
           <Btn
             variant="primary"
