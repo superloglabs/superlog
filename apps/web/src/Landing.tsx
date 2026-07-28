@@ -334,7 +334,7 @@ function HeroInstallCommand() {
 
   async function copy() {
     try {
-      await navigator.clipboard.writeText(INSTALL_PROMPT);
+      await navigator.clipboard.writeText(command);
     } catch {
       return;
     }
