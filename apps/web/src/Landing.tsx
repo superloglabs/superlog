@@ -930,14 +930,23 @@ const PIXEL_NUMBER_STYLE: React.CSSProperties = {
   WebkitFontSmoothing: "none",
 };
 
+const ACCEPTANCE_RATE = 90;
+
 function AcceptanceStat() {
-  const [count, setCount] = useState(0);
+  // Seed at the real value so the prerendered / no-JS HTML and the initial
+  // hydration render both show 90% (no crawler mis-statement, no hydration
+  // mismatch). The 0 -> 90 count-up is a client-only visual layer.
+  const [count, setCount] = useState(ACCEPTANCE_RATE);
   const ref = useRef<HTMLDivElement>(null);
   const started = useRef(false);
 
   useEffect(() => {
+    // Respect reduced-motion: skip the counter and leave the value at 90.
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+
     const node = ref.current;
     if (!node) return;
+    setCount(0);
     const observer = new IntersectionObserver(
       (entries) => {
         const entry = entries[0];
@@ -948,7 +957,7 @@ function AcceptanceStat() {
         const step = (now: number) => {
           const t = Math.min(1, (now - start) / duration);
           const eased = 1 - (1 - t) ** 3; // ease-out cubic
-          setCount(Math.round(eased * 90));
+          setCount(Math.round(eased * ACCEPTANCE_RATE));
           if (t < 1) requestAnimationFrame(step);
         };
         requestAnimationFrame(step);
