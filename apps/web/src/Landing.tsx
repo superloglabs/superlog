@@ -633,7 +633,9 @@ function ErrorImportSection() {
         />
 
         <div className="absolute right-[5%] top-1/2 flex w-[36%] -translate-y-1/2 items-center justify-center rounded-lg border border-fg/65 bg-bg/95 px-4 py-7 sm:right-[6%] sm:w-[28%] md:px-5 lg:right-[8%] lg:w-[26%]">
-          <Wordmark />
+          <span className="flex max-w-full items-center [&>img]:h-auto [&>img]:max-h-6 [&>img]:max-w-full">
+            <Wordmark />
+          </span>
         </div>
 
         <div className="absolute right-[5%] top-[calc(50%+58px)] w-[36%] sm:right-[6%] sm:w-[28%] lg:right-[8%] lg:w-[26%]">
