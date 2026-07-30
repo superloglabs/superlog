@@ -318,6 +318,12 @@ export type AgentRunnerBackend = {
   // Optional: interrupt the session's open turn so a queued message becomes
   // deliverable. Only meaningful for runtimes that report "wedged_turn".
   interrupt?(sessionId: string): Promise<void>;
+  // Optional: atomically interrupt an open turn AND deliver a follow-up
+  // message in one provider call. Preferred over the two-step interrupt +
+  // resume when available — a single request eliminates the gap between
+  // interrupt acceptance and message delivery that can cause the retry to
+  // see the session still in the pending-events state.
+  interruptAndResume?(sessionId: string, message: string): Promise<void>;
   dispatchIntegrationToolCalls(input: {
     sessionId: string;
     orgId: string;

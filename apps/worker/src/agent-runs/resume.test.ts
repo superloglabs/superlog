@@ -533,3 +533,59 @@ test("a repair whose retry fails again reports the retry error without a third a
   });
   assert.deepEqual(calls, ["attempt:1", "interrupt", "attempt:2"]);
 });
+
+test("repairAttempt is used instead of interruptOpenTurn+attempt when provided", async () => {
+  const calls: string[] = [];
+  let attempts = 0;
+
+  const delivery = await deliverResumeRepairingWedgedTurn({
+    async attempt() {
+      attempts += 1;
+      calls.push(`attempt:${attempts}`);
+      throw new Error("waiting on responses to events [sevt_1]");
+    },
+    classifyError() {
+      return "wedged_turn";
+    },
+    async interruptOpenTurn() {
+      calls.push("interrupt"); // must NOT be called when repairAttempt is provided
+    },
+    async repairAttempt() {
+      calls.push("repairAttempt");
+      return "resumed";
+    },
+  });
+
+  assert.deepEqual(delivery, { kind: "delivered", outcome: "resumed", repaired: true });
+  // repairAttempt replaces the two-step interruptOpenTurn+attempt
+  assert.deepEqual(calls, ["attempt:1", "repairAttempt"]);
+  assert.equal(attempts, 1);
+});
+
+test("a failing repairAttempt reports its error with repairAttempted=true", async () => {
+  const calls: string[] = [];
+  const repairErr = new Error("410 session gone during repair");
+
+  const delivery = await deliverResumeRepairingWedgedTurn({
+    async attempt() {
+      calls.push("attempt");
+      throw new Error("waiting on responses to events [sevt_1]");
+    },
+    classifyError(err) {
+      return err === repairErr ? "session_gone" : "wedged_turn";
+    },
+    interruptOpenTurn: null,
+    async repairAttempt() {
+      calls.push("repairAttempt");
+      throw repairErr;
+    },
+  });
+
+  assert.deepEqual(delivery, {
+    kind: "failed",
+    err: repairErr,
+    errorKind: "session_gone",
+    repairAttempted: true,
+  });
+  assert.deepEqual(calls, ["attempt", "repairAttempt"]);
+});
