@@ -12,6 +12,23 @@ import { PgBoss } from "pg-boss";
 import { type JobDeps, type LoadedJob, loadJobs } from "../jobs.js";
 import { logger } from "../logger.js";
 
+// pg-connection-string v2 treats 'require', 'prefer', and 'verify-ca' as
+// aliases for 'verify-full', but emits a process warning about the change and
+// will adopt weaker libpq semantics in v3 / pg v9. Normalize to 'verify-full'
+// before pg-boss parses the connection string so the intent is unambiguous.
+function toVerifyFullSsl(connectionString: string): string {
+  try {
+    const url = new URL(connectionString);
+    const sslmode = url.searchParams.get("sslmode");
+    if (sslmode === "require" || sslmode === "prefer" || sslmode === "verify-ca") {
+      url.searchParams.set("sslmode", "verify-full");
+    }
+    return url.toString();
+  } catch {
+    return connectionString;
+  }
+}
+
 // The slice of the pg-boss API the runner uses. Declared as an interface so
 // registerJobs can be tested with a fake, no database required.
 export interface JobBoss {
@@ -77,7 +94,7 @@ export async function startJobRunner(deps: JobDeps): Promise<PgBoss | null> {
   const jobs = await loadJobs(deps);
 
   const boss = new PgBoss({
-    connectionString,
+    connectionString: toVerifyFullSsl(connectionString),
     schema: process.env.PGBOSS_SCHEMA || "pgboss",
     // The DML-only prod role can't run DDL; the migrate task installs the schema
     // and the render forces this false. Local/self-host roles can CREATE, so it

@@ -42,11 +42,28 @@ export function createUserCreatedPublisher(deps: PublisherDeps): (user: User) =>
   };
 }
 
+// pg-connection-string v2 treats 'require', 'prefer', and 'verify-ca' as
+// aliases for 'verify-full', but emits a process warning about the change and
+// will adopt weaker libpq semantics in v3 / pg v9. Normalize to 'verify-full'
+// before pg-boss parses the connection string so the intent is unambiguous.
+function toVerifyFullSsl(connectionString: string): string {
+  try {
+    const url = new URL(connectionString);
+    const sslmode = url.searchParams.get("sslmode");
+    if (sslmode === "require" || sslmode === "prefer" || sslmode === "verify-ca") {
+      url.searchParams.set("sslmode", "verify-full");
+    }
+    return url.toString();
+  } catch {
+    return connectionString;
+  }
+}
+
 async function startQueue(): Promise<PgBoss> {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) throw new Error("DATABASE_URL is not set");
   const boss = new PgBoss({
-    connectionString,
+    connectionString: toVerifyFullSsl(connectionString),
     schema: process.env.PGBOSS_SCHEMA || "pgboss",
     migrate: process.env.PGBOSS_MIGRATE !== "false",
     supervise: false,
