@@ -127,6 +127,11 @@ function makeRepo(opts: {
     },
     async linkIssueToIncident(input) {
       opts.calls.push(`linkIssueToIncident:${input.issue.id}->${input.incident.id}`);
+      if (input.grouping) {
+        opts.calls.push(
+          `linkIssueGrouping:${input.issue.id}:${input.grouping.state}:${input.grouping.source ?? ""}:${input.grouping.reason ?? ""}`,
+        );
+      }
       return opts.linkOutcomes?.shift() ?? "linked";
     },
     async updateIssueGrouping(issueId, input) {
@@ -619,7 +624,7 @@ test("intake: heuristic match links to existing incident as 'grouped'", async ()
   assert.equal(result.createdIncident, false);
   assert.equal(result.linkedIssue, true);
   assert.equal(result.incident.id, "inc-match");
-  assert.ok(calls.some((c) => c.startsWith("updateIssueGrouping:iss-new:grouped:heuristic")));
+  assert.ok(calls.some((c) => c.startsWith("linkIssueGrouping:iss-new:grouped:heuristic")));
 });
 
 function makeEpisode(overrides: Partial<schema.AlertEpisode> = {}): schema.AlertEpisode {
@@ -984,7 +989,7 @@ test("intake: LLM 'join' verdict links to the chosen incident", async () => {
       "updateIssueGrouping(undecided-only):iss-new:pending:llm:Waiting for LLM grouping.",
     ),
   );
-  assert.ok(calls.some((c) => c.startsWith("updateIssueGrouping:iss-new:grouped:llm")));
+  assert.ok(calls.some((c) => c.startsWith("linkIssueGrouping:iss-new:grouped:llm")));
 });
 
 test("intake: normal grouping can join a resolved historical incident", async () => {
@@ -1184,7 +1189,7 @@ test("intake: LLM 'join' verdict with unknown id falls back to standalone (and o
   assert.equal(result.createdIncident, true);
   assert.ok(
     calls.some((c) =>
-      c.startsWith("updateIssueGrouping:iss-new:standalone:llm:LLM selected an unknown incident."),
+      c.startsWith("linkIssueGrouping:iss-new:standalone:llm:LLM selected an unknown incident."),
     ),
   );
 });

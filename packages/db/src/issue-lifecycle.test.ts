@@ -1517,6 +1517,11 @@ test("joining an Issue to a resolved Incident reopens the same Incident", async 
     const joined = await lifecycle.joinIssueToIncident({
       incidentId: incident.id,
       issue: laterIssue,
+      grouping: {
+        state: "standalone",
+        source: "llm",
+        reason: "No existing Incident matched.",
+      },
     });
 
     assert.equal(joined, "linked");
@@ -1534,6 +1539,12 @@ test("joining an Issue to a resolved Incident reopens the same Incident", async 
       links.map((link) => link.incidentId),
       [incident.id],
     );
+    const persistedIssue = one(
+      await db.select().from(schema.issues).where(eq(schema.issues.id, laterIssue.id)),
+    );
+    assert.equal(persistedIssue.groupingState, "standalone");
+    assert.equal(persistedIssue.groupingSource, "llm");
+    assert.equal(persistedIssue.groupingReason, "No existing Incident matched.");
   } finally {
     await client.close();
   }

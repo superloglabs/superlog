@@ -63,6 +63,11 @@ export type IntakeRepository = {
   linkIssueToIncident(opts: {
     incident: schema.Incident;
     issue: schema.Issue;
+    grouping?: {
+      state: "grouped" | "standalone";
+      source: IssueGroupingSource;
+      reason: string | null;
+    };
   }): Promise<LinkIssueToIncidentOutcome>;
   updateIssueGrouping(
     issueId: string,
@@ -188,8 +193,13 @@ async function joinIssueToIncident(
   repo: IntakeRepository,
   incident: schema.Incident,
   issue: schema.Issue,
+  grouping?: {
+    state: "grouped" | "standalone";
+    source: IssueGroupingSource;
+    reason: string | null;
+  },
 ): Promise<boolean> {
-  const outcome = await repo.linkIssueToIncident({ incident, issue });
+  const outcome = await repo.linkIssueToIncident({ incident, issue, grouping });
   if (outcome === "incident_closed") throw new IncidentClosedDuringLink(incident.id);
   return outcome === "linked";
 }
@@ -510,8 +520,12 @@ async function ensureIncidentForIssueAttempt(
       createdIncident = true;
     }
 
-    const linkedIssue = await joinIssueToIncident(deps.repo, incident, issue);
-    await markIssueGrouping(issue.id, grouping, deps.repo);
+    const linkedIssue = await joinIssueToIncident(
+      deps.repo,
+      incident,
+      issue,
+      groupingVerdictUpdate(grouping),
+    );
     const freshIncident = (await deps.repo.findIncident(incident.id)) ?? incident;
     return {
       incident: freshIncident,
@@ -737,6 +751,25 @@ async function markIssueGrouping(
     reason: grouping.standaloneReason,
     onlyIfPending,
   });
+}
+
+function groupingVerdictUpdate(grouping: Grouping): {
+  state: "grouped" | "standalone";
+  source: IssueGroupingSource;
+  reason: string | null;
+} {
+  if (grouping.match) {
+    return {
+      state: "grouped",
+      source: grouping.match.source,
+      reason: grouping.match.reason,
+    };
+  }
+  return {
+    state: "standalone",
+    source: grouping.standaloneSource,
+    reason: grouping.standaloneReason,
+  };
 }
 
 async function throwIfGroupingFailed(

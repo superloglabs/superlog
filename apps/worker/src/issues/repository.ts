@@ -294,9 +294,15 @@ export async function findLatestIncidentForAlert(
 export async function linkIssueToIncident(opts: {
   incident: schema.Incident;
   issue: schema.Issue;
+  grouping?: {
+    state: "grouped" | "standalone";
+    source: schema.Issue["groupingSource"];
+    reason: string | null;
+  };
 }): Promise<LinkIssueToOpenIncidentResult> {
   return incidentLifecycle.joinIssueToIncident({
     incidentId: opts.incident.id,
     issue: opts.issue,
+    grouping: opts.grouping,
   });
 }

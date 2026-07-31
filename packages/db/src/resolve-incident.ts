@@ -665,6 +665,11 @@ export function createIncidentLifecycle(database: DB = db) {
     async joinIssueToIncident(opts: {
       incidentId: string;
       issue: Pick<schema.Issue, "id" | "lastSeen" | "service" | "title">;
+      grouping?: {
+        state: "grouped" | "standalone";
+        source: schema.Issue["groupingSource"];
+        reason: string | null;
+      };
     }): Promise<LinkIssueToOpenIncidentResult> {
       const now = new Date();
       const result = await repository.transaction(async (tx) => {
@@ -727,6 +732,14 @@ export function createIncidentLifecycle(database: DB = db) {
           opts.issue,
           now,
         );
+        if (opts.grouping) {
+          await repository.updateIssueInTx(tx, opts.issue.id, {
+            groupingState: opts.grouping.state,
+            groupingSource: opts.grouping.source,
+            groupingReason: opts.grouping.reason,
+            groupingAttemptedAt: now,
+          });
+        }
         return {
           outcome: linked ? ("linked" as const) : ("already_linked" as const),
           previousStatus,
