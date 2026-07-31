@@ -912,10 +912,8 @@ export const incidents = pgTable(
       onDelete: "set null",
     }),
     mergedAt: timestamp("merged_at", { withTimezone: true }),
-    // Recurrence chain: when a resolved issue recurs (or an escalation trigger
-    // fires), we open a NEW incident rather than reopening the old one, and
-    // point it at its predecessor here. Agent runs on the new incident get the
-    // predecessors' findings injected as context.
+    // Episode chain retained for alert breaches and historical recurrence rows.
+    // Error-issue recurrences now reopen their canonical incident instead.
     previousIncidentId: uuid("previous_incident_id").references((): AnyPgColumn => incidents.id, {
       onDelete: "set null",
     }),

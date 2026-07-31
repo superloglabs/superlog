@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { schema } from "@superlog/db";
+import { IssueGroupingFailedError } from "./incidents/errors.js";
 import {
   ISSUE_TRANSITION_QUEUE,
   type TransitionQueueBoss,
@@ -53,12 +54,15 @@ test("dispatcher enqueues the transition instead of running it inline", async ()
   assert.equal(fb.sent[0]?.name, ISSUE_TRANSITION_QUEUE);
   const sentData = fb.sent[0]?.data as { enqueuedAtMs?: number };
   assert.equal(typeof sentData.enqueuedAtMs, "number");
-  assert.deepEqual({ ...sentData, enqueuedAtMs: undefined }, {
-    issueId: "issue-1",
-    projectId: "project-1",
-    transition: "new",
-    enqueuedAtMs: undefined,
-  });
+  assert.deepEqual(
+    { ...sentData, enqueuedAtMs: undefined },
+    {
+      issueId: "issue-1",
+      projectId: "project-1",
+      transition: "new",
+      enqueuedAtMs: undefined,
+    },
+  );
   // Rapid duplicate dispatches of the same (issue, transition) must dedupe
   // while a matching job is still queued.
   assert.deepEqual(fb.sent[0]?.options, { singletonKey: "issue-1:new" });
@@ -168,6 +172,23 @@ test("one failing transition does not abort the rest of the batch or throw", asy
   assert.deepEqual(handled, ["issue-2"]);
 });
 
+test("a grouping failure rejects the job so pg-boss retries it", async () => {
+  const fb = fakeBoss();
+  await registerIssueTransitionWorker(fb.boss, {
+    handle: async () => {
+      throw new IssueGroupingFailedError("LLM grouping failed: upstream unavailable");
+    },
+    loadIssue: async (id) => issueOf(id, "project-1"),
+  });
+
+  const worker = fb.workers.get(ISSUE_TRANSITION_QUEUE);
+  assert.ok(worker);
+  await assert.rejects(
+    worker([{ id: "j1", data: { issueId: "issue-1", projectId: "project-1", transition: "new" } }]),
+    /LLM grouping failed: upstream unavailable/,
+  );
+});
+
 test("observation escalations dispatch through the queue too", async () => {
   const fb = fakeBoss();
   const dispatch = createIssueTransitionDispatcher({
@@ -179,12 +200,15 @@ test("observation escalations dispatch through the queue too", async () => {
 
   const escData = fb.sent[0]?.data as { enqueuedAtMs?: number };
   assert.equal(typeof escData.enqueuedAtMs, "number");
-  assert.deepEqual({ ...escData, enqueuedAtMs: undefined }, {
-    issueId: "issue-1",
-    projectId: "project-1",
-    transition: "escalated",
-    enqueuedAtMs: undefined,
-  });
+  assert.deepEqual(
+    { ...escData, enqueuedAtMs: undefined },
+    {
+      issueId: "issue-1",
+      projectId: "project-1",
+      transition: "escalated",
+      enqueuedAtMs: undefined,
+    },
+  );
 
   const handled: string[] = [];
   await registerIssueTransitionWorker(fb.boss, {
@@ -224,7 +248,9 @@ test("worker serializes same-project transitions and parallelizes across project
   const fb = fakeBoss();
   const events: string[] = [];
   let releaseFirst: () => void = () => {};
-  const firstGate = new Promise<void>((resolve) => (releaseFirst = resolve));
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
   let calls = 0;
   await registerIssueTransitionWorker(fb.boss, {
     handle: async (issue) => {
@@ -239,9 +265,15 @@ test("worker serializes same-project transitions and parallelizes across project
   const worker = fb.workers.get(ISSUE_TRANSITION_QUEUE);
   assert.ok(worker);
   // Simulate three concurrent consumers: two proj-A jobs, one proj-B job.
-  const j1 = worker([{ id: "j1", data: { issueId: "a-1", projectId: "proj-A", transition: "new" } }]);
-  const j2 = worker([{ id: "j2", data: { issueId: "a-2", projectId: "proj-A", transition: "new" } }]);
-  const j3 = worker([{ id: "j3", data: { issueId: "b-1", projectId: "proj-B", transition: "new" } }]);
+  const j1 = worker([
+    { id: "j1", data: { issueId: "a-1", projectId: "proj-A", transition: "new" } },
+  ]);
+  const j2 = worker([
+    { id: "j2", data: { issueId: "a-2", projectId: "proj-A", transition: "new" } },
+  ]);
+  const j3 = worker([
+    { id: "j3", data: { issueId: "b-1", projectId: "proj-B", transition: "new" } },
+  ]);
   await j3; // proj-B completes while proj-A's first job is still held
   assert.ok(events.includes("end:b-1"), "different project must not wait");
   assert.ok(!events.includes("start:a-2"), "second proj-A job must wait for the first");

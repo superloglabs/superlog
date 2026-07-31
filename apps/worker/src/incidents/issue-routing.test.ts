@@ -5,26 +5,12 @@ import {
   decideIssueArrivalRouting,
 } from "./issue-routing.js";
 
-const base = {
-  createdIncident: false,
-  suppressed: false,
-  latestRunIsTerminal: true,
-};
-
-test("steers when a new signature joins an already-investigated open incident", () => {
-  assert.equal(decideIssueArrivalRouting(base), "steer");
+test("takes no agent action when grouping reuses an existing incident", () => {
+  assert.equal(decideIssueArrivalRouting({ shouldInvestigate: false }), "none");
 });
 
-test("investigates a brand-new incident (nothing to steer)", () => {
-  assert.equal(decideIssueArrivalRouting({ ...base, createdIncident: true }), "investigate");
-});
-
-test("investigates when there is no terminal run yet (none/active/dormant)", () => {
-  assert.equal(decideIssueArrivalRouting({ ...base, latestRunIsTerminal: false }), "investigate");
-});
-
-test("does not steer while suppressed by a fixed_in_current_code cooldown", () => {
-  assert.equal(decideIssueArrivalRouting({ ...base, suppressed: true }), "investigate");
+test("investigates only when intake opened a genuinely new incident", () => {
+  assert.equal(decideIssueArrivalRouting({ shouldInvestigate: true }), "investigate");
 });
 
 test("a locked Incident must still be open before an investigation is queued", () => {

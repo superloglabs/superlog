@@ -61,6 +61,7 @@ function makeRepo(opts: {
   existingLink?: { issueId: string; incidentId: string } | undefined;
   incidentById?: Map<string, schema.Incident>;
   openCandidates?: { withService: schema.Incident[]; withoutService: schema.Incident[] };
+  historicalCandidates?: { withService: schema.Incident[]; withoutService: schema.Incident[] };
   project?: schema.Project;
   linkOutcomes?: Array<"linked" | "already_linked" | "incident_closed">;
   alertEpisode?: schema.AlertEpisode;
@@ -99,11 +100,12 @@ function makeRepo(opts: {
     async reopenIssue(issueId) {
       opts.calls.push(`reopenIssue:${issueId}`);
     },
-    async findOpenIncidentCandidates(_issue, queryOpts) {
-      opts.calls.push(`findOpenIncidentCandidates:${queryOpts.filterService}`);
+    async findIncidentCandidates(_issue, queryOpts) {
+      opts.calls.push(`findIncidentCandidates:${queryOpts.filterService}`);
+      const candidates = opts.historicalCandidates ?? opts.openCandidates;
       return queryOpts.filterService
-        ? (opts.openCandidates?.withService ?? [])
-        : (opts.openCandidates?.withoutService ?? []);
+        ? (candidates?.withService ?? [])
+        : (candidates?.withoutService ?? []);
     },
     async loadLinkedIncidentIssues(incidents) {
       opts.calls.push(`loadLinkedIncidentIssues:${incidents.length}`);
@@ -226,7 +228,7 @@ test("intake: preferred open incident is validated and joined before grouping", 
       "updateIssueGrouping:iss-new:grouped:llm:The scheduled scan found the same metric anomaly.",
     ),
   );
-  assert.ok(!calls.some((call) => call.startsWith("findOpenIncidentCandidates:")));
+  assert.ok(!calls.some((call) => call.startsWith("findIncidentCandidates:")));
   assert.ok(!calls.some((call) => call.startsWith("createOpen:")));
 });
 
@@ -249,12 +251,12 @@ test("intake: stale preferred incident falls through to normal grouping", async 
 
   assert.equal(result.createdIncident, true);
   assert.equal(result.incident.id, "inc-new");
-  assert.ok(calls.some((call) => call.startsWith("findOpenIncidentCandidates:")));
+  assert.ok(calls.some((call) => call.startsWith("findIncidentCandidates:")));
   assert.ok(calls.some((call) => call.startsWith("createOpen:")));
   assert.ok(!calls.includes("linkIssueToIncident:iss-new->inc-closed"));
 });
 
-test("intake: recurred issue opens a new incident chained to its previous one", async () => {
+test("intake: recurred issue reopens its previous incident without a successor", async () => {
   const calls: string[] = [];
   const previous = makeIncident({ id: "inc-prev", status: "resolved" });
   const repo = makeRepo({
@@ -268,21 +270,21 @@ test("intake: recurred issue opens a new incident chained to its previous one", 
     "recurred",
     makeDeps({ repo, lifecycle, calls }),
   );
-  assert.equal(result.createdIncident, true);
-  assert.equal(result.recurrenceIncident, true);
-  assert.equal(result.incident.id, "inc-recurrence");
-  assert.equal(result.incident.previousIncidentId, "inc-prev");
-  assert.ok(calls.includes("openRecurrence:inc-prev<-iss-new:resolved_issue_recurred"));
+  assert.equal(result.createdIncident, false);
+  assert.equal(result.recurrenceIncident, false);
+  assert.equal(result.incident.id, "inc-prev");
+  assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-prev"));
+  assert.ok(!calls.some((call) => call.startsWith("openRecurrence:")));
   assert.ok(
     calls.some((c) =>
       c.startsWith(
-        "updateIssueGrouping:iss-new:standalone:heuristic:No open incidents in this project.",
+        "updateIssueGrouping:iss-new:grouped:heuristic:Reopened the Issue's previous incident.",
       ),
     ),
   );
 });
 
-test("intake: recurred issue goes through grouping and joins an existing incident", async () => {
+test("intake: a known Issue recurrence reopens its own Incident before grouping siblings", async () => {
   const calls: string[] = [];
   const previous = makeIncident({ id: "inc-prev", status: "resolved" });
   const candidate = makeIncident({ id: "inc-current", title: "Recall credits exhausted" });
@@ -335,14 +337,14 @@ test("intake: recurred issue goes through grouping and joins an existing inciden
 
   assert.equal(result.createdIncident, false);
   assert.equal(result.recurrenceIncident, false);
-  assert.equal(result.incident.id, "inc-current");
-  assert.ok(calls.includes("analyzeGrouping"));
-  assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-current"));
+  assert.equal(result.incident.id, "inc-prev");
+  assert.ok(!calls.includes("analyzeGrouping"));
+  assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-prev"));
   assert.ok(calls.includes("reopenIssue:iss-new"));
   assert.ok(!calls.some((call) => call.startsWith("openRecurrence:")));
 });
 
-test("intake: recurred same-trace sibling joins the incident instead of opening a recurrence", async () => {
+test("intake: a known Issue recurrence keeps its Incident identity despite a same-trace sibling", async () => {
   // Same request, resolved yesterday, recurring now: the span exception's
   // incident is (re)opened by a racing transition; this log symptom shares the
   // trace and must join it, not chain its own recurrence to its own predecessor.
@@ -359,8 +361,8 @@ test("intake: recurred same-trace sibling joins the incident instead of opening 
   });
   const repo: IntakeRepository = {
     ...base,
-    async findOpenIncidentCandidates(_issue, queryOpts) {
-      calls.push(`findOpenIncidentCandidates:${queryOpts.filterService}`);
+    async findIncidentCandidates(_issue, queryOpts) {
+      calls.push(`findIncidentCandidates:${queryOpts.filterService}`);
       return queryOpts.filterService ? [] : [sibling];
     },
     async loadLinkedIncidentIssues(incidents) {
@@ -398,9 +400,9 @@ test("intake: recurred same-trace sibling joins the incident instead of opening 
 
   assert.equal(result.createdIncident, false);
   assert.equal(result.recurrenceIncident, false);
-  assert.equal(result.incident.id, "inc-sibling");
+  assert.equal(result.incident.id, "inc-prev");
   assert.ok(calls.includes("serializeCreate:recurrence:inc-prev,trace:trace-1"));
-  assert.ok(calls.includes("linkIssueToIncident:iss-log->inc-sibling"));
+  assert.ok(calls.includes("linkIssueToIncident:iss-log->inc-prev"));
   assert.ok(!calls.some((c) => c.startsWith("openRecurrence")));
 });
 
@@ -436,7 +438,7 @@ test("intake: recurred no-trace issue re-lands on a recurrence a racer opened in
   assert.ok(!calls.some((c) => c.startsWith("openRecurrence")));
 });
 
-test("intake: no-trace recurrences from the same predecessor converge on one incident", async () => {
+test("intake: a no-trace recurrence reopens its predecessor instead of using a successor", async () => {
   const calls: string[] = [];
   const previous = makeIncident({ id: "inc-prev", status: "resolved" });
   const siblingRecurrence = makeIncident({
@@ -481,8 +483,8 @@ test("intake: no-trace recurrences from the same predecessor converge on one inc
 
   assert.equal(result.createdIncident, false);
   assert.equal(result.recurrenceIncident, false);
-  assert.equal(result.incident.id, "inc-sibling-recurrence");
-  assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-sibling-recurrence"));
+  assert.equal(result.incident.id, "inc-prev");
+  assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-prev"));
   assert.ok(!calls.some((call) => call.startsWith("openRecurrence:")));
 });
 
@@ -768,7 +770,7 @@ test("intake: serialized create re-checks the link and re-lands on a racer's inc
   assert.ok(
     calls.some((c) =>
       c.startsWith(
-        "updateIssueGrouping(pending-only):iss-new:standalone:heuristic:No open incidents",
+        "updateIssueGrouping(pending-only):iss-new:standalone:heuristic:No incident candidates",
       ),
     ),
   );
@@ -911,6 +913,51 @@ test("intake: LLM 'join' verdict links to the chosen incident", async () => {
     ),
   );
   assert.ok(calls.some((c) => c.startsWith("updateIssueGrouping:iss-new:grouped:llm")));
+});
+
+test("intake: normal grouping can join a resolved historical incident", async () => {
+  const calls: string[] = [];
+  const resolved = makeIncident({ id: "inc-resolved", status: "resolved" });
+  const repo = makeRepo({
+    calls,
+    historicalCandidates: { withService: [resolved], withoutService: [resolved] },
+    incidentById: new Map([[resolved.id, resolved]]),
+    project: { id: "proj-1", orgId: "org-1", name: "Production" } as schema.Project,
+  });
+  repo.loadLinkedIncidentIssues = async () => [
+    {
+      incidentId: resolved.id,
+      issueId: "iss-historical",
+      service: "api",
+      title: "ECONNREFUSED to db",
+      exceptionType: "ECONNREFUSED",
+      message: "conn refused",
+      topFrame: "db.query",
+      normalizedFrames: ["db.query"],
+      lastSample: null,
+      lastSeen: NOW,
+    },
+  ];
+
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue(),
+    "new",
+    makeDeps({
+      repo,
+      lifecycle: makeLifecycle({ calls }),
+      calls,
+      analyzeGrouping: async () => ({
+        decision: "join",
+        incidentId: resolved.id,
+        evidence: "The historical issue has the same database connection failure.",
+      }),
+    }),
+  );
+
+  assert.equal(result.createdIncident, false);
+  assert.equal(result.incident.id, resolved.id);
+  assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-resolved"));
+  assert.ok(!calls.some((call) => call.startsWith("createOpen:")));
 });
 
 test("intake replay: oversized related bundler errors reuse one incident", async () => {
@@ -1093,17 +1140,20 @@ test("intake: LLM error logs an error and marks issue 'failed'", async () => {
       lastSeen: incident.lastSeen,
     }));
   const lifecycle = makeLifecycle({ calls, createdIncident: newInc });
-  await ensureIncidentForIssueWorkflow(
-    makeIssue(),
-    "new",
-    makeDeps({
-      repo,
-      lifecycle,
-      calls,
-      async analyzeGrouping() {
-        throw new Error("anthropic 500");
-      },
-    }),
+  await assert.rejects(
+    ensureIncidentForIssueWorkflow(
+      makeIssue(),
+      "new",
+      makeDeps({
+        repo,
+        lifecycle,
+        calls,
+        async analyzeGrouping() {
+          throw new Error("anthropic 500");
+        },
+      }),
+    ),
+    /LLM grouping failed: anthropic 500/,
   );
   assert.ok(calls.includes("logger.error:llm grouping failed"));
   assert.ok(
@@ -1111,6 +1161,7 @@ test("intake: LLM error logs an error and marks issue 'failed'", async () => {
       c.startsWith("updateIssueGrouping:iss-new:failed:llm:LLM grouping failed: anthropic 500"),
     ),
   );
+  assert.ok(!calls.some((call) => call.startsWith("createOpen:")));
 });
 
 test("intake: mechanical grouping failure (budget) logs an error and marks issue 'failed'", async () => {
@@ -1136,21 +1187,24 @@ test("intake: mechanical grouping failure (budget) logs an error and marks issue
       lastSeen: incident.lastSeen,
     }));
   const lifecycle = makeLifecycle({ calls, createdIncident: newInc });
-  await ensureIncidentForIssueWorkflow(
-    makeIssue(),
-    "new",
-    makeDeps({
-      repo,
-      lifecycle,
-      calls,
-      async analyzeGrouping() {
-        return {
-          decision: "standalone",
-          evidence: "Grouping agent exhausted its tool-use budget without a valid decision.",
-          mechanicalFailure: "budget_exhausted",
-        };
-      },
-    }),
+  await assert.rejects(
+    ensureIncidentForIssueWorkflow(
+      makeIssue(),
+      "new",
+      makeDeps({
+        repo,
+        lifecycle,
+        calls,
+        async analyzeGrouping() {
+          return {
+            decision: "standalone",
+            evidence: "Grouping agent exhausted its tool-use budget without a valid decision.",
+            mechanicalFailure: "budget_exhausted",
+          };
+        },
+      }),
+    ),
+    /LLM grouping budget_exhausted/,
   );
   assert.ok(calls.includes("logger.error:issue grouping mechanical failure: budget_exhausted"));
   assert.ok(
@@ -1158,6 +1212,7 @@ test("intake: mechanical grouping failure (budget) logs an error and marks issue
       c.startsWith("updateIssueGrouping:iss-new:failed:llm:LLM grouping budget_exhausted"),
     ),
   );
+  assert.ok(!calls.some((call) => call.startsWith("createOpen:")));
 });
 
 test("intake: joins a same-trace incident that appears during the serialize lock", async () => {
@@ -1178,8 +1233,8 @@ test("intake: joins a same-trace incident that appears during the serialize lock
   const base = makeRepo({ calls });
   const repo: IntakeRepository = {
     ...base,
-    async findOpenIncidentCandidates(_issue, queryOpts) {
-      calls.push(`findOpenIncidentCandidates:${queryOpts.filterService}`);
+    async findIncidentCandidates(_issue, queryOpts) {
+      calls.push(`findIncidentCandidates:${queryOpts.filterService}`);
       if (queryOpts.filterService) return [];
       crossServiceReads += 1;
       return crossServiceReads >= 3 ? [racer] : [];

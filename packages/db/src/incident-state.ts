@@ -74,9 +74,9 @@ export function buildAgentRunIncidentPatch(opts: {
   // resolves the incident plainly (resolveIncident with the noise reason as
   // the reason code) and applies the verdict's action to the linked issues —
   // silence or observe. The noise columns stay as the record of the verdict.
-  // Recurrence of a resolved issue opens a NEW incident (chained via
-  // previous_incident_id) rather than reopening this one, so nothing here
-  // needs a reopen-on-regression carve-out anymore.
+  // Silenced noise does not emit an issue-transition job, so it remains
+  // suppressed even though normal resolved Issue recurrences reopen their
+  // canonical Incident.
   const noiseReason =
     result.state === "complete" && opts.incident.status === "open"
       ? (result.noiseClassification?.reason ?? null)

@@ -73,14 +73,14 @@ export async function updateIssueGrouping(
     );
 }
 
-export async function findOpenIncidentCandidates(
+export async function findIncidentCandidates(
   issue: schema.Issue,
   opts: { filterService: boolean },
 ): Promise<schema.Incident[]> {
   return db.query.incidents.findMany({
     where: and(
       eq(schema.incidents.projectId, issue.projectId),
-      eq(schema.incidents.status, "open"),
+      inArray(schema.incidents.status, ["open", "resolved"]),
       opts.filterService && issue.service
         ? or(eq(schema.incidents.service, issue.service), isNull(schema.incidents.service))
         : undefined,
@@ -244,7 +244,7 @@ export async function linkIssueToIncident(opts: {
   incident: schema.Incident;
   issue: schema.Issue;
 }): Promise<LinkIssueToOpenIncidentResult> {
-  return incidentLifecycle.linkIssueToOpenIncident({
+  return incidentLifecycle.joinIssueToIncident({
     incidentId: opts.incident.id,
     issue: opts.issue,
   });

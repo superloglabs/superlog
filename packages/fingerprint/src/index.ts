@@ -147,9 +147,21 @@ export function normalizeMessage(body: string): string {
   s = s.replace(/"(?:[^"\\]|\\.)*"/g, "<str>");
   s = s.replace(/'(?:[^'\\]|\\.)*'/g, "<str>");
   s = s.replace(/\b[0-9a-f]{20,}\b/gi, "<hex>");
+  s = normalizeNumericMeasurements(s);
   s = s.replace(/\b\d+\b/g, "<n>");
   s = s.replace(/\s+/g, " ").trim().toLowerCase();
   return s;
+}
+
+// A word boundary does not exist between the digits and unit in values such
+// as `1015ms`, so the generic number replacement below cannot see them. These
+// are occurrence measurements, not error identity; keeping them in a
+// stackless-log fingerprint turns every latency sample into a new Issue.
+function normalizeNumericMeasurements(message: string): string {
+  return message.replace(
+    /\b\d+(?:\.\d+)?\s?(?:nanoseconds?|microseconds?|milliseconds?|seconds?|minutes?|hours?|days?|bytes?|ns|µs|us|ms|kb|mb|gb|tb|s|m|h|d|b|%)(?![a-z])/gi,
+    "<n>",
+  );
 }
 
 // Psycopg errors often arrive inside SQLAlchemy tracebacks or application log

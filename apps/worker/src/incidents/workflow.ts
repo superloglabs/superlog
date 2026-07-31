@@ -1,18 +1,7 @@
-import {
-  type DB,
-  db,
-  enqueueIncidentCreated,
-  recordInboundInteraction,
-  schema,
-} from "@superlog/db";
+import { type DB, db, enqueueIncidentCreated, schema } from "@superlog/db";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { getProjectAutomation } from "../agent-run-context.js";
-import {
-  ACTIVE_STATES as AGENT_RUN_ACTIVE_STATES,
-  createAgentRunLifecycle,
-  isActiveState as isActiveAgentRunState,
-} from "../agent-run.js";
-import { TERMINAL_STATES as AGENT_RUN_TERMINAL_STATES } from "../agent-runs/domain.js";
+import { ACTIVE_STATES as AGENT_RUN_ACTIVE_STATES, createAgentRunLifecycle } from "../agent-run.js";
 import { dispatchAgentRunJob } from "../agent-runs/enqueue.js";
 import { investigationGate } from "../billing/investigation-gate.js";
 import { usageNotifier } from "../billing/usage-notifier-infra.js";
@@ -208,39 +197,6 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
   return result;
 }
 
-// Steer the incident's existing investigation with a newly-arrived error
-// signature. Routes through the same shared continuation path as human channels
-// (Slack/PR comments): resume the durable session, or cold-start a context-
-// carrying follow-up when the session is gone. Returns false when nothing was
-// actioned (no resumable run, follow-ups disabled, or the follow-up budget is
-// spent) so the caller can fall back to the normal investigate path.
-async function steerInvestigationWithNewSignature(
-  incident: schema.Incident,
-  issue: schema.Issue,
-  transition: IssueTransition,
-): Promise<boolean> {
-  const label =
-    transition === "new" ? "New" : transition === "escalated" ? "Escalated" : "Recurred";
-  const result = await recordInboundInteraction(db, {
-    incidentId: incident.id,
-    interaction: {
-      channel: "issue_joined",
-      author: null,
-      text: `${label} error signature joined this incident (issue id: ${issue.id}): ${issue.title}. If your existing analysis or open PR already covers this, no new change is needed; if it reveals a code path your fix misses, update that PR in a new turn. Include this Issue in resolve_incident.issueOutcomes when resolving.`,
-      occurredAt: new Date().toISOString(),
-    },
-    dedupeKey: `issue_joined:${issue.id}:${transition}`,
-  });
-  if (result.outcome === "skipped") return false;
-  if (result.outcome === "accepted") {
-    await postIncidentThreadMessage(
-      incident.id,
-      `:repeat: ${label} signal *${issue.title}* folded into this investigation.`,
-    );
-  }
-  return true;
-}
-
 export async function handleIssueTransition(
   issue: schema.Issue,
   transition: IssueTransition,
@@ -255,7 +211,7 @@ export async function handleIssueTransitionWithResult(
   preference?: IssueIntakePreference,
 ): Promise<EnsureIncidentForIssueResult> {
   const intakeResult = await ensureIncidentForIssue(issue, transition, preference);
-  const { incident, createdIncident, linkedIssue, recurrenceIncident } = intakeResult;
+  const { incident, createdIncident, shouldInvestigate, recurrenceIncident } = intakeResult;
   // Emit the webhook as soon as we know the incident was created, before the
   // (fallible) Slack root post. `createdIncident` is only true on the tick that
   // actually inserts the incident; if a later step in this handler throws and
@@ -294,28 +250,8 @@ export async function handleIssueTransitionWithResult(
     }
   }
 
-  // If this incident has already been investigated, a new error signature should
-  // steer that investigation rather than launch a fresh one (which is what
-  // produced duplicate PRs for one root cause). Falls through to the normal
-  // investigate path when there's nothing resumable to steer.
-  const latestRun = await db.query.agentRuns.findFirst({
-    where: eq(schema.agentRuns.incidentId, incident.id),
-    orderBy: [desc(schema.agentRuns.createdAt)],
-    columns: { state: true },
-  });
-  const routing = decideIssueArrivalRouting({
-    createdIncident,
-    suppressed: isAutoAgentRunSuppressed(incident, new Date()),
-    latestRunIsTerminal: latestRun
-      ? (AGENT_RUN_TERMINAL_STATES as readonly string[]).includes(latestRun.state)
-      : false,
-  });
-  if (
-    routing === "steer" &&
-    (await steerInvestigationWithNewSignature(incident, issue, transition))
-  ) {
-    return intakeResult;
-  }
+  const routing = decideIssueArrivalRouting({ shouldInvestigate });
+  if (routing === "none") return intakeResult;
 
   const { agentRun, queueStatus, paygPromotionAvailable } = await queueAgentRunIfNeeded(incident);
   if (queueStatus === "queued") {
@@ -327,22 +263,6 @@ export async function handleIssueTransitionWithResult(
         manageBillingUrl: buildAppUrl(WEB_ORIGIN, "/settings?scope=org&section=billing"),
         promotionAvailable: paygPromotionAvailable !== false,
       }),
-    );
-  }
-  if (agentRun && linkedIssue && !createdIncident && isActiveAgentRunState(agentRun.state)) {
-    const appended = await agentRunLifecycle.appendContextChangeEvent({
-      incidentId: incident.id,
-      agentRunId: agentRun.id,
-      // Include the issue id: this summary is steered verbatim into the running
-      // agent, and resolve_incident.issueOutcomes keys on it. Without the id the
-      // agent cannot supply a complete atomic resolution.
-      summary: `${transition === "new" ? "New" : "Regressed"} issue joined the incident (issue id: ${issue.id}): ${issue.title}`,
-      dedupeKey: `issue:${issue.id}:joined`,
-    });
-    if (!appended) return intakeResult;
-    await postIncidentThreadMessage(
-      incident.id,
-      `:information_source: ${transition === "new" ? "New" : "Regressed"} issue joined the incident: *${issue.title}*`,
     );
   }
   return intakeResult;

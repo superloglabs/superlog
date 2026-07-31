@@ -2,7 +2,7 @@ import type * as schema from "./schema.js";
 
 // Issue lifecycle state machine. Issues carry the durable verdict about an
 // error signature (silence it, watch it, it's fixed); incidents are the
-// per-episode work item. Ingest consults `decideOccurrenceAction` on every
+// root-cause work item. Ingest consults `decideOccurrenceAction` on every
 // fresh occurrence of a known fingerprint, so these transitions are the whole
 // contract between the noise model and the pipeline.
 
@@ -25,8 +25,8 @@ export type IssueOccurrenceAction =
   // (event_count/last_seen still move — reporting and trigger evaluation
   // depend on it) but never touch incidents.
   | { kind: "suppress"; status: "silenced" | "under_observation" }
-  // `resolved` issues that recur re-open and start a NEW incident chained to
-  // the predecessor via incidents.previous_incident_id.
+  // `resolved` issues that recur re-open their existing incident. Intake uses
+  // the durable issue→incident link as the canonical identity.
   | { kind: "recur" };
 
 export function decideOccurrenceAction(status: schema.IssueStatus | string): IssueOccurrenceAction {

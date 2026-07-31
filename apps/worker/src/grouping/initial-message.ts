@@ -1,7 +1,7 @@
 import {
-  environmentForResourceAttrs,
   type GroupingCandidateIncident,
   type GroupingNewIssue,
+  environmentForResourceAttrs,
 } from "./domain.js";
 
 // One compact line per candidate so the model sees the WHOLE candidate set
@@ -37,9 +37,7 @@ export function buildInitialUserMessage(input: {
   const environments = Array.from(
     new Set(
       input.candidates
-        .map((candidate) =>
-          environmentForResourceAttrs(candidate.representative?.resourceAttrs),
-        )
+        .map((candidate) => environmentForResourceAttrs(candidate.representative?.resourceAttrs))
         .filter((env): env is string => !!env),
     ),
   ).sort();
@@ -49,7 +47,7 @@ export function buildInitialUserMessage(input: {
     "New issue to classify:",
     JSON.stringify(input.newIssue, null, 2),
     "",
-    `Open incident candidates (${input.candidates.length} total, services: ${services.join(", ") || "-"}, environments: ${environments.join(", ") || "-"}), one per line:`,
+    `Incident candidates (${input.candidates.length} total, including open and resolved history; services: ${services.join(", ") || "-"}, environments: ${environments.join(", ") || "-"}), one per line:`,
     ...input.candidates.map(candidateIndexLine),
     "",
     "Inspect any plausible join target with inspect_incident before deciding; search_incidents/list_incident_titles remain available for narrowing.",
