@@ -172,7 +172,7 @@ ash/slack-private-channels
 - **一个 Bug 对应一个 issue。** 将多个问题放在一起会拖慢排查。
 - **对于 Bug：** 提供最小复现、预期与实际结果、环境信息（`pnpm dev:portless:status` 输出）以及相关日志行。
 - **对于功能请求：** 先说明使用场景，再提出方案。范围越小，处理越快。
-- **对于使用问题：** 请在 [Discord](https://discord.gg/wJ56aRh8hx) 的 `#support` 提问，不要创建 issue。issue 仅用于 Bug 和功能请求。
+- **对于使用问题：** 请在 [Discord](https://discord.gg/wJ56aRh8xh) 的 `#support` 提问，不要创建 issue。issue 仅用于 Bug 和功能请求。
 - **对于安全问题：** 请参阅 [SECURITY.md](SECURITY.md)，不要提交公开 issue。
 
 ### Issue 标签
@@ -210,7 +210,7 @@ ash/slack-private-channels
 
 ## 提交之后
 
-- **首次回复：** 通常在几小时内，很多时候当天就会收到。如果 2 个工作日内没有回应，请在 [Discord](https://discord.gg/wJ56aRh8hx) 的 `#general` 频道提醒维护者。
+- **首次回复：** 通常在几小时内，很多时候当天就会收到。如果 2 个工作日内没有回应，请在 [Discord](https://discord.gg/wJ56aRh8xh) 的 `#general` 频道提醒维护者。
 - **Review：** 通常会采用“请求修改”的方式（“处理这 3 个小问题后即可合并”）。后续修改通常会在 24 小时内得到反馈。
 - **合并：** 根据项目的 GitHub 设置执行 squash 或 rebase。
 - **发布：** 改动会分批发布——并不是每个 PR 都会立即对用户可见。
@@ -223,7 +223,7 @@ ash/slack-private-channels
 
 ## 获取帮助
 
-- [Discord](https://discord.gg/wJ56aRh8hx) —— `#general` 用于一般交流，`#support` 用于安装和配置问题
+- [Discord](https://discord.gg/wJ56aRh8xh) —— `#general` 用于一般交流，`#support` 用于安装和配置问题
 - GitHub issues 用于 Bug 和功能请求
 - 创建 issue 时，请附上 `pnpm dev:portless:status` 的输出和最小复现
 
