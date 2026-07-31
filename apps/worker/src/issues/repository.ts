@@ -76,18 +76,25 @@ export async function updateIssueGrouping(
 export async function findIncidentCandidates(
   issue: schema.Issue,
   opts: { filterService: boolean },
+  database: DB = db,
 ): Promise<schema.Incident[]> {
-  return db.query.incidents.findMany({
-    where: and(
-      eq(schema.incidents.projectId, issue.projectId),
-      inArray(schema.incidents.status, ["open", "resolved"]),
-      opts.filterService && issue.service
-        ? or(eq(schema.incidents.service, issue.service), isNull(schema.incidents.service))
-        : undefined,
-    ),
-    orderBy: [desc(schema.incidents.lastSeen)],
-    limit: INCIDENT_GROUPING_CANDIDATE_LIMIT,
-  });
+  const candidatesForStatus = (status: "open" | "resolved") =>
+    database.query.incidents.findMany({
+      where: and(
+        eq(schema.incidents.projectId, issue.projectId),
+        eq(schema.incidents.status, status),
+        opts.filterService && issue.service
+          ? or(eq(schema.incidents.service, issue.service), isNull(schema.incidents.service))
+          : undefined,
+      ),
+      orderBy: [desc(schema.incidents.lastSeen)],
+      limit: INCIDENT_GROUPING_CANDIDATE_LIMIT,
+    });
+  const [open, resolved] = await Promise.all([
+    candidatesForStatus("open"),
+    candidatesForStatus("resolved"),
+  ]);
+  return [...open, ...resolved];
 }
 
 export async function loadLinkedIncidentIssues(
