@@ -224,7 +224,7 @@ export async function registerIssueTransitionWorker(
           } catch (err) {
             failureCounter.add(1, { transition: data.transition });
             if (err instanceof IssueGroupingFailedError) {
-              logger.warn(
+              logger.error(
                 {
                   scope: "issue-transitions",
                   issueId: data.issueId,
