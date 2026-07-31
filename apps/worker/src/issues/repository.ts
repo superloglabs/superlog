@@ -183,6 +183,24 @@ export async function findIncident(incidentId: string): Promise<schema.Incident 
   });
 }
 
+export async function findIssueGroupingState(
+  issueId: string,
+): Promise<schema.Issue["groupingState"] | undefined> {
+  const issue = await db.query.issues.findFirst({
+    where: eq(schema.issues.id, issueId),
+    columns: { groupingState: true },
+  });
+  return issue?.groupingState;
+}
+
+export async function hasAgentRunForIncident(incidentId: string): Promise<boolean> {
+  const run = await db.query.agentRuns.findFirst({
+    where: eq(schema.agentRuns.incidentId, incidentId),
+    columns: { id: true },
+  });
+  return run !== undefined;
+}
+
 // A resolved incident can have several issue fingerprints recur at once. They
 // all belong to one successor investigation, so intake reuses the newest open
 // successor instead of opening one recurrence per fingerprint.

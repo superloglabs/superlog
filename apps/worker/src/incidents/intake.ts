@@ -38,6 +38,8 @@ export type IntakeRepository = {
   // driven over its life, so the latest link is its current incident.
   findLatestIncidentIssueLink(issueId: string): Promise<schema.IncidentIssue | undefined>;
   findIncident(incidentId: string): Promise<schema.Incident | undefined>;
+  findIssueGroupingState(issueId: string): Promise<schema.Issue["groupingState"] | undefined>;
+  hasAgentRunForIncident(incidentId: string): Promise<boolean>;
   findOpenRecurrenceForIncident(previousIncidentId: string): Promise<schema.Incident | undefined>;
   reopenIssue(issueId: string): Promise<void>;
   touchIncidentLastSeen(incidentId: string, lastSeen: Date): Promise<void>;
@@ -192,6 +194,17 @@ async function joinIssueToIncident(
   return outcome === "linked";
 }
 
+async function shouldRecoverInitialInvestigation(
+  repo: IntakeRepository,
+  issueId: string,
+  incident: schema.Incident,
+): Promise<boolean> {
+  if (incident.status !== "open") return false;
+  const groupingState = await repo.findIssueGroupingState(issueId);
+  if (groupingState !== "standalone") return false;
+  return !(await repo.hasAgentRunForIncident(incident.id));
+}
+
 async function ensureIncidentForIssueAttempt(
   issue: schema.Issue,
   transition: IssueIntakeTransition,
@@ -220,7 +233,7 @@ async function ensureIncidentForIssueAttempt(
           incident: previous,
           createdIncident: false,
           linkedIssue: false,
-          shouldInvestigate: false,
+          shouldInvestigate: await shouldRecoverInitialInvestigation(deps.repo, issue.id, previous),
           recurrenceIncident: false,
         };
       }
@@ -272,7 +285,11 @@ async function ensureIncidentForIssueAttempt(
               incident: landed,
               createdIncident: false,
               linkedIssue: false,
-              shouldInvestigate: false,
+              shouldInvestigate: await shouldRecoverInitialInvestigation(
+                deps.repo,
+                issue.id,
+                landed,
+              ),
               recurrenceIncident: false,
             };
           }
@@ -353,7 +370,11 @@ async function ensureIncidentForIssueAttempt(
         incident: freshIncident,
         createdIncident: false,
         linkedIssue: false,
-        shouldInvestigate: false,
+        shouldInvestigate: await shouldRecoverInitialInvestigation(
+          deps.repo,
+          issue.id,
+          freshIncident,
+        ),
         recurrenceIncident: false,
       };
     }
@@ -432,7 +453,7 @@ async function ensureIncidentForIssueAttempt(
           incident: existing,
           createdIncident: false,
           linkedIssue: false,
-          shouldInvestigate: false,
+          shouldInvestigate: await shouldRecoverInitialInvestigation(deps.repo, issue.id, existing),
           recurrenceIncident: false,
         };
       }

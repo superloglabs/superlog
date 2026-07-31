@@ -27,7 +27,7 @@ export async function runIssueGroupingRecoverySweep(
         {
           scope: "incident-grouping-recovery",
           issue_id: issue.id,
-          err: err instanceof Error ? err.message : String(err),
+          err,
         },
         "failed to recover ungrouped issue",
       );

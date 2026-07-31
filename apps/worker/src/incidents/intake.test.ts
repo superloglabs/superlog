@@ -67,6 +67,8 @@ function makeRepo(opts: {
   alertEpisode?: schema.AlertEpisode;
   openIncidentForAlert?: schema.Incident;
   latestIncidentForAlert?: schema.Incident;
+  durableGroupingState?: schema.Issue["groupingState"];
+  incidentHasAgentRun?: boolean;
 }): IntakeRepository {
   const incidentById = opts.incidentById ?? new Map<string, schema.Incident>();
   return {
@@ -92,6 +94,14 @@ function makeRepo(opts: {
     async findIncident(incidentId) {
       opts.calls.push(`findIncident:${incidentId}`);
       return incidentById.get(incidentId);
+    },
+    async findIssueGroupingState(issueId) {
+      opts.calls.push(`findIssueGroupingState:${issueId}`);
+      return opts.durableGroupingState ?? "grouped";
+    },
+    async hasAgentRunForIncident(incidentId) {
+      opts.calls.push(`hasAgentRunForIncident:${incidentId}`);
+      return opts.incidentHasAgentRun ?? false;
     },
     async findOpenRecurrenceForIncident(previousIncidentId) {
       opts.calls.push(`findOpenRecurrenceForIncident:${previousIncidentId}`);
@@ -201,6 +211,67 @@ test("intake: existing link touches the open incident and returns it unchanged",
   assert.equal(result.recurrenceIncident, false);
   assert.equal(result.incident.id, "inc-old");
   assert.ok(calls.includes("touchIncidentLastSeen:inc-old"));
+});
+
+test("intake replay: a standalone incident with no run still requests its initial investigation", async () => {
+  const calls: string[] = [];
+  const existing = makeIncident({ id: "inc-created-before-crash" });
+  const repo = makeRepo({
+    calls,
+    existingLink: { issueId: "iss-new", incidentId: existing.id },
+    incidentById: new Map([[existing.id, existing]]),
+    durableGroupingState: "standalone",
+    incidentHasAgentRun: false,
+  });
+
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue(),
+    "new",
+    makeDeps({ repo, lifecycle: makeLifecycle({ calls }), calls }),
+  );
+
+  assert.equal(result.createdIncident, false);
+  assert.equal(result.shouldInvestigate, true);
+});
+
+test("intake replay: a grouped historical incident never requests a first investigation", async () => {
+  const calls: string[] = [];
+  const existing = makeIncident({ id: "inc-historical" });
+  const repo = makeRepo({
+    calls,
+    existingLink: { issueId: "iss-new", incidentId: existing.id },
+    incidentById: new Map([[existing.id, existing]]),
+    durableGroupingState: "grouped",
+    incidentHasAgentRun: false,
+  });
+
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue(),
+    "new",
+    makeDeps({ repo, lifecycle: makeLifecycle({ calls }), calls }),
+  );
+
+  assert.equal(result.shouldInvestigate, false);
+});
+
+test("intake replay: a standalone incident with an existing run does not queue another", async () => {
+  const calls: string[] = [];
+  const existing = makeIncident({ id: "inc-already-started" });
+  const repo = makeRepo({
+    calls,
+    existingLink: { issueId: "iss-new", incidentId: existing.id },
+    incidentById: new Map([[existing.id, existing]]),
+    durableGroupingState: "standalone",
+    incidentHasAgentRun: true,
+  });
+
+  const result = await ensureIncidentForIssueWorkflow(
+    makeIssue(),
+    "new",
+    makeDeps({ repo, lifecycle: makeLifecycle({ calls }), calls }),
+  );
+
+  assert.equal(result.shouldInvestigate, false);
 });
 
 test("intake: preferred open incident is validated and joined before grouping", async () => {
