@@ -11,7 +11,11 @@ import { type DB, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import { type PgliteDatabase, drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
-import { findIncidentCandidates, updateIssueGrouping } from "./repository.js";
+import {
+  findIncidentCandidates,
+  findStaleUngroupedIssues,
+  updateIssueGrouping,
+} from "./repository.js";
 
 // Real-Postgres (pglite, in-process) coverage for the updateIssueGrouping
 // guards. The onlyIfUndecided guard is the one that keeps a losing
@@ -161,4 +165,52 @@ test("resolved history cannot evict an open Incident from grouping candidates", 
 
   assert.ok(candidates.some((candidate) => candidate.id === openIncident.id));
   assert.equal(candidates.filter((candidate) => candidate.status === "resolved").length, 200);
+});
+
+test("grouping recovery finds only stale unlinked retryable issues", async () => {
+  const staleAt = new Date("2020-01-01T00:00:00.000Z");
+  const cutoff = new Date("2020-01-02T00:00:00.000Z");
+  const staleFailed = await makeIssue({
+    groupingState: "failed",
+    groupingAttemptedAt: staleAt,
+  });
+  const stalePending = await makeIssue({
+    groupingState: "pending",
+    groupingAttemptedAt: staleAt,
+  });
+  await makeIssue({
+    groupingState: "failed",
+    groupingAttemptedAt: new Date("2020-01-03T00:00:00.000Z"),
+  });
+  await makeIssue({ groupingState: "grouped", groupingAttemptedAt: staleAt });
+  const linkedFailed = await makeIssue({
+    groupingState: "failed",
+    groupingAttemptedAt: staleAt,
+  });
+  const [incident] = await db
+    .insert(schema.incidents)
+    .values({
+      projectId,
+      title: "already linked",
+      codename: `already-linked-${Math.random()}`,
+      status: "open",
+      firstSeen: staleAt,
+      lastSeen: staleAt,
+    })
+    .returning();
+  assert.ok(incident);
+  await db.insert(schema.incidentIssues).values({
+    incidentId: incident.id,
+    issueId: linkedFailed.id,
+  });
+
+  const candidates = await findStaleUngroupedIssues(
+    { attemptedBefore: cutoff, limit: 100 },
+    db as unknown as DB,
+  );
+
+  assert.deepEqual(
+    new Set(candidates.map((candidate) => candidate.id)),
+    new Set([staleFailed.id, stalePending.id]),
+  );
 });

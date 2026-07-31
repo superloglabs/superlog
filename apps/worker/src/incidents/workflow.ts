@@ -21,6 +21,7 @@ import { logger } from "../logger.js";
 import {
   canQueueInvestigationForLockedIncident,
   decideIssueArrivalRouting,
+  shouldAppendIssueToActiveInvestigation,
 } from "./issue-routing.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
@@ -197,6 +198,43 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
   return result;
 }
 
+async function appendIssueToActiveInvestigation(
+  incident: schema.Incident,
+  issue: schema.Issue,
+  linkedIssue: boolean,
+): Promise<void> {
+  if (!linkedIssue) return;
+  const activeRun = await db.query.agentRuns.findFirst({
+    where: and(
+      eq(schema.agentRuns.incidentId, incident.id),
+      inArray(schema.agentRuns.state, [...AGENT_RUN_ACTIVE_STATES]),
+    ),
+    orderBy: [desc(schema.agentRuns.createdAt)],
+  });
+  if (
+    !shouldAppendIssueToActiveInvestigation({
+      linkedIssue,
+      hasActiveRun: activeRun !== undefined,
+    }) ||
+    !activeRun
+  ) {
+    return;
+  }
+
+  const appended = await agentRunLifecycle.appendContextChangeEvent({
+    incidentId: incident.id,
+    agentRunId: activeRun.id,
+    summary: `New issue joined this Incident during the active investigation: ${issue.title} (${issue.id}).`,
+    dedupeKey: `incident_context_changed:issue:${issue.id}`,
+  });
+  if (appended) {
+    await postIncidentThreadMessage(
+      incident.id,
+      `:link: A newly grouped issue was added to the active investigation: *${issue.title}*.`,
+    );
+  }
+}
+
 export async function handleIssueTransition(
   issue: schema.Issue,
   transition: IssueTransition,
@@ -211,7 +249,8 @@ export async function handleIssueTransitionWithResult(
   preference?: IssueIntakePreference,
 ): Promise<EnsureIncidentForIssueResult> {
   const intakeResult = await ensureIncidentForIssue(issue, transition, preference);
-  const { incident, createdIncident, shouldInvestigate, recurrenceIncident } = intakeResult;
+  const { incident, createdIncident, shouldInvestigate, recurrenceIncident, linkedIssue } =
+    intakeResult;
   // Emit the webhook as soon as we know the incident was created, before the
   // (fallible) Slack root post. `createdIncident` is only true on the tick that
   // actually inserts the incident; if a later step in this handler throws and
@@ -251,7 +290,10 @@ export async function handleIssueTransitionWithResult(
   }
 
   const routing = decideIssueArrivalRouting({ shouldInvestigate });
-  if (routing === "none") return intakeResult;
+  if (routing === "none") {
+    await appendIssueToActiveInvestigation(incident, issue, linkedIssue);
+    return intakeResult;
+  }
 
   const { agentRun, queueStatus, paygPromotionAvailable } = await queueAgentRunIfNeeded(incident);
   if (queueStatus === "queued") {

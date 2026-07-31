@@ -12,6 +12,13 @@ export function decideIssueArrivalRouting(input: IssueArrivalRoutingInput): Issu
   return input.shouldInvestigate ? "investigate" : "none";
 }
 
+export function shouldAppendIssueToActiveInvestigation(input: {
+  linkedIssue: boolean;
+  hasActiveRun: boolean;
+}): boolean {
+  return input.linkedIssue && input.hasActiveRun;
+}
+
 // The application service checks this only after acquiring the Incident row
 // lock. Resolution and investigation queueing therefore have one serialized
 // decision point: whichever transaction wins determines whether work starts.

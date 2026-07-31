@@ -6,7 +6,7 @@ import {
   db,
   schema,
 } from "@superlog/db";
-import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, notExists, or, sql } from "drizzle-orm";
 import type { IssueGroupingSource, IssueGroupingState, LinkedIncidentIssue } from "./domain.js";
 
 const INCIDENT_GROUPING_CANDIDATE_LIMIT = parsePositiveInt(
@@ -95,6 +95,32 @@ export async function findIncidentCandidates(
     candidatesForStatus("resolved"),
   ]);
   return [...open, ...resolved];
+}
+
+export async function findStaleUngroupedIssues(
+  opts: { attemptedBefore: Date; limit: number },
+  database: DB = db,
+): Promise<schema.Issue[]> {
+  return database
+    .select()
+    .from(schema.issues)
+    .where(
+      and(
+        inArray(schema.issues.groupingState, ["pending", "failed"]),
+        or(
+          isNull(schema.issues.groupingAttemptedAt),
+          lte(schema.issues.groupingAttemptedAt, opts.attemptedBefore),
+        ),
+        notExists(
+          database
+            .select({ id: schema.incidentIssues.id })
+            .from(schema.incidentIssues)
+            .where(eq(schema.incidentIssues.issueId, schema.issues.id)),
+        ),
+      ),
+    )
+    .orderBy(asc(schema.issues.groupingAttemptedAt), asc(schema.issues.createdAt))
+    .limit(opts.limit);
 }
 
 export async function loadLinkedIncidentIssues(
