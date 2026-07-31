@@ -196,6 +196,7 @@ test("intake: existing link touches the open incident and returns it unchanged",
     makeDeps({ repo, lifecycle, calls }),
   );
   assert.equal(result.createdIncident, false);
+  assert.equal(result.shouldInvestigate, false);
   assert.equal(result.linkedIssue, false);
   assert.equal(result.recurrenceIncident, false);
   assert.equal(result.incident.id, "inc-old");

@@ -353,7 +353,7 @@ async function ensureIncidentForIssueAttempt(
         incident: freshIncident,
         createdIncident: false,
         linkedIssue: false,
-        shouldInvestigate: transition === "new",
+        shouldInvestigate: false,
         recurrenceIncident: false,
       };
     }
@@ -432,7 +432,7 @@ async function ensureIncidentForIssueAttempt(
           incident: existing,
           createdIncident: false,
           linkedIssue: false,
-          shouldInvestigate: true,
+          shouldInvestigate: false,
           recurrenceIncident: false,
         };
       }
