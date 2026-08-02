@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import { Hono } from "hono";
 import { listOpenSentryIssues, listSentryProjects, sentryProjectIsAccessible } from "./client.js";
 import { signSentryState } from "./oauth.js";
 
@@ -7,9 +8,97 @@ process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
 const {
   completeSentryInstallation,
   exchangeSentryInstallationGrant,
+  mountSentryInstallationPublic,
   parseSentryInstallationCallback,
   startSentryOpenIssueImport,
 } = await import("./installation.js");
+
+test("routes a Responder callback with every incoming query parameter preserved", async () => {
+  const previousDestination = process.env.SENTRY_OAUTH_FORWARD_CALLBACK_URL;
+  const destination = "https://responder.example.test/api/integrations/sentry/callback";
+  process.env.SENTRY_OAUTH_FORWARD_CALLBACK_URL = destination;
+  try {
+    const encodedDestination = Buffer.from(destination, "utf8").toString("base64url");
+    const state = `responder-v1.${encodedDestination}.one-time-nonce`;
+    const rawQuery = `state=${state}&code=grant%2Bcode&installationId=installation-1&orgSlug=acme&extra=one&extra=two`;
+    const app = new Hono();
+    mountSentryInstallationPublic(app, {
+      authorizations: {} as never,
+      listProjects: async () => assert.fail("Responder callback must not enter Superlog OAuth"),
+      importOpenIssues: async () => assert.fail("Responder callback must not import issues"),
+      getActiveCredential: async () => null,
+    });
+
+    const response = await app.request(`/sentry/oauth/callback?${rawQuery}`);
+
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.get("location"), `${destination}?${rawQuery}`);
+  } finally {
+    if (previousDestination === undefined) {
+      Reflect.deleteProperty(process.env, "SENTRY_OAUTH_FORWARD_CALLBACK_URL");
+    } else process.env.SENTRY_OAUTH_FORWARD_CALLBACK_URL = previousDestination;
+  }
+});
+
+test("continues through the Superlog callback flow for an ordinary state", async () => {
+  const keys = [
+    "SENTRY_APP_SLUG",
+    "SENTRY_CLIENT_ID",
+    "SENTRY_CLIENT_SECRET",
+    "STATE_SIGNING_SECRET",
+  ] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    const app = new Hono();
+    mountSentryInstallationPublic(app, {
+      authorizations: {} as never,
+      listProjects: async () => [],
+      importOpenIssues: async () => 0,
+      getActiveCredential: async () => null,
+    });
+
+    const response = await app.request(
+      "/sentry/oauth/callback?state=ordinary-superlog-state&code=code&installationId=install",
+    );
+
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: "sentry not configured" });
+  } finally {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("rejects an invalid Responder state before entering the Superlog callback flow", async () => {
+  const previousDestination = process.env.SENTRY_OAUTH_FORWARD_CALLBACK_URL;
+  process.env.SENTRY_OAUTH_FORWARD_CALLBACK_URL =
+    "https://responder.example.test/api/integrations/sentry/callback";
+  try {
+    const app = new Hono();
+    mountSentryInstallationPublic(app, {
+      authorizations: {} as never,
+      listProjects: async () =>
+        assert.fail("invalid Responder state must not enter Superlog OAuth"),
+      importOpenIssues: async () => assert.fail("invalid Responder state must not import issues"),
+      getActiveCredential: async () => null,
+    });
+
+    const response = await app.request(
+      "/sentry/oauth/callback?state=responder-v1.invalid!.nonce&code=code&installationId=install",
+    );
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "invalid callback" });
+  } finally {
+    if (previousDestination === undefined) {
+      Reflect.deleteProperty(process.env, "SENTRY_OAUTH_FORWARD_CALLBACK_URL");
+    } else process.env.SENTRY_OAUTH_FORWARD_CALLBACK_URL = previousDestination;
+  }
+});
 
 test("accepts the documented Sentry App callback without an organization slug", () => {
   const state = signSentryState(

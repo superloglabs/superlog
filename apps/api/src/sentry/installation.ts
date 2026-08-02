@@ -11,6 +11,7 @@ import {
 } from "./authorization-session.js";
 import { type SentryInstallationToken, requestSentryInstallationToken } from "./authorization.js";
 import type { SentryProject } from "./client.js";
+import { routeSentryOAuthCallback } from "./oauth-routing.js";
 import {
   type SentryOAuthState,
   buildSentryAuthorizeUrl,
@@ -53,15 +54,23 @@ function config() {
     clientSecret: process.env.SENTRY_CLIENT_SECRET,
     appSlug: process.env.SENTRY_APP_SLUG,
     stateSecret: process.env.STATE_SIGNING_SECRET,
+    forwardCallbackUrl: process.env.SENTRY_OAUTH_FORWARD_CALLBACK_URL,
     webOrigin: process.env.WEB_ORIGIN ?? "http://localhost:5173",
   };
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
 export function mountSentryInstallationPublic(app: Hono<any>, deps: SentryInstallationDeps): void {
-  const { clientId, clientSecret, appSlug, stateSecret, webOrigin } = config();
+  const { clientId, clientSecret, appSlug, stateSecret, forwardCallbackUrl, webOrigin } = config();
 
   app.get("/sentry/oauth/callback", async (c) => {
+    const route = routeSentryOAuthCallback({
+      state: c.req.query("state"),
+      requestUrl: c.req.url,
+      allowedDestination: forwardCallbackUrl,
+    });
+    if (route.kind === "redirect") return c.redirect(route.location, 302);
+    if (route.kind === "invalid") return c.json({ error: "invalid callback" }, 400);
     if (!clientId || !clientSecret || !appSlug || !stateSecret) {
       return c.json({ error: "sentry not configured" }, 503);
     }

@@ -6,7 +6,8 @@
 # branch migrations don't pollute main's pg ledger. ClickHouse + collector
 # stay shared — data isolation there happens at project_id, not db.
 #
-# Run from a worktree root, e.g.:
+# Run from a worktree root, including when this repo is checked out as a
+# submodule inside a superproject worktree, e.g.:
 #   ./scripts/worktree-env.sh
 #
 # Main repo (no worktree): writes nothing and exits 0 — the default ports are
@@ -22,15 +23,26 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-case "$REPO_ROOT" in
-  */.claude/worktrees/*) ;;
-  *)
-    echo "not in a worktree — nothing to do (main repo uses default ports)"
-    exit 0
-    ;;
-esac
+# Detect linked worktrees from Git metadata instead of assuming a particular
+# tool's directory layout. When checked out as a submodule, ports and database
+# identity belong to the superproject worktree rather than the submodule clone.
+SUPERPROJECT="$(git -C "$REPO_ROOT" rev-parse --show-superproject-working-tree 2>/dev/null || true)"
+if [[ -n "$SUPERPROJECT" ]]; then
+  IDENTITY_ROOT="$SUPERPROJECT"
+else
+  IDENTITY_ROOT="$REPO_ROOT"
+fi
+IDENTITY_GIT_COMMON_DIR="$(git -C "$IDENTITY_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [[ -z "$IDENTITY_GIT_COMMON_DIR" ]]; then
+  echo "not inside a git repo at $IDENTITY_ROOT — bailing." >&2
+  exit 1
+fi
+if [[ "$IDENTITY_GIT_COMMON_DIR" == "$IDENTITY_ROOT/.git" ]]; then
+  echo "not in a worktree — nothing to do (main repo uses default ports)"
+  exit 0
+fi
 
-WT_NAME="$(basename "$REPO_ROOT")"
+WT_NAME="$(basename "$IDENTITY_ROOT")"
 
 # Slug for use in postgres database names (alnum + underscore only).
 WT_SLUG="$(printf '%s' "$WT_NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"

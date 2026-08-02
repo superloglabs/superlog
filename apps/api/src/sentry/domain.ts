@@ -22,7 +22,7 @@ export type SentryIssueEvent = {
 };
 
 export function hasValidSentrySignature(args: {
-  rawBody: string;
+  rawBody: string | Uint8Array;
   signature: string;
   clientSecret: string;
 }): boolean {
