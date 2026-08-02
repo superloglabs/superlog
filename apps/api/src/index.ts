@@ -163,6 +163,7 @@ import { importOpenSentryIssues, receiveSentryIssueEvent } from "./sentry/applic
 import { startSentryAuthorizationCleanup } from "./sentry/authorization-cleanup.js";
 import { DrizzleSentryAuthorizationRepository } from "./sentry/authorization-repository.js";
 import { listOpenSentryIssues, listSentryProjects } from "./sentry/client.js";
+import { createSentryWebhookForwarder } from "./sentry/forwarder.js";
 import { mountSentryPublic } from "./sentry/http.js";
 import {
   type SentryInstallationDeps,
@@ -390,6 +391,9 @@ const sentryInstallationDeps: SentryInstallationDeps = {
 mountSentryInstallationPublic(app, sentryInstallationDeps);
 mountSentryPublic(app, {
   clientSecret: process.env.SENTRY_CLIENT_SECRET,
+  forwardWebhook: createSentryWebhookForwarder({
+    destinationUrl: process.env.SENTRY_WEBHOOK_FORWARD_URL,
+  }),
   receiveIssueEvent: (event) => receiveSentryIssueEvent(sentryWebhookInbox, event),
   revokeInstallation: (installationId) => sentryWebhookInbox.revokeInstallation(installationId),
 });

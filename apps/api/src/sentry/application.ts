@@ -1,6 +1,15 @@
 import crypto from "node:crypto";
 import type { SentryIssue, SentryIssueEvent } from "./domain.js";
 
+export const SENTRY_WEBHOOK_FORWARDED_HEADER = "x-superlog-sentry-webhook-forwarded";
+
+export type SentryWebhookDelivery = {
+  rawBody: Uint8Array;
+  headers: Record<string, string>;
+};
+
+export type SentryWebhookForwarder = (delivery: SentryWebhookDelivery) => Promise<void>;
+
 export type StoredSentryIssueDelivery = SentryIssueEvent & {
   dedupeKey: string;
   rawPayload: Record<string, unknown>;
