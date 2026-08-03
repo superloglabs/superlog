@@ -1260,15 +1260,15 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .marquee-track {
+    animation: none;
+    transform: none;
+  }
+
   .responder-announcement-beam::before,
   .responder-announcement-beam::after,
   .responder-announcement-beam [data-beam-bloom] {
     animation: none !important;
-  }
-
-  .marquee-track {
-    animation: none;
-    transform: none;
   }
 
   .landing-nav-unblur,
