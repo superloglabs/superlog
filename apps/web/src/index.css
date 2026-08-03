@@ -1260,6 +1260,12 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .responder-announcement-beam::before,
+  .responder-announcement-beam::after,
+  .responder-announcement-beam [data-beam-bloom] {
+    animation: none !important;
+  }
+
   .marquee-track {
     animation: none;
     transform: none;

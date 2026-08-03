@@ -1,3 +1,4 @@
+import { BorderBeam } from "border-beam";
 import { usePostHog } from "posthog-js/react";
 import { useEffect, useRef, useState } from "react";
 import { AuthForm } from "./AuthForm.tsx";
@@ -106,13 +107,14 @@ function CopyPromptCard({ prompt }: { prompt: string }) {
 // Nav — three columns: brand left · links center · auth actions right.
 // The center column is `hidden lg:flex`. Below lg the `1fr auto 1fr` grid
 // collapses to brand-left / actions-right and stays balanced. We wait for lg
-// (not md) because at the ~704px md content width the six links plus the
+// (not md) because at the ~704px md content width the seven links plus the
 // wordmark and action group overflow, and grid can't keep the two 1fr side
 // tracks equal once the right track's min-content exceeds half the free space
 // — the center would drift and the links could butt against the buttons.
 // ---------------------------------------------------------------------------
 
 const NAV_LINKS: { href: string; label: string; external?: boolean }[] = [
+  { href: "https://responder.superlog.sh", label: "Responder", external: true },
   { href: LANDING_DOCS_URL, label: "Docs", external: true },
   { href: "/blog", label: "Blog" },
   { href: "/changelog", label: "Changelog" },
@@ -144,7 +146,7 @@ export function TopNav({
             </a>
           </div>
 
-          <div className="hidden items-center gap-6 justify-self-center lg:flex">
+          <div className="hidden items-center gap-5 justify-self-center lg:flex">
             {NAV_LINKS.map((link, index) => (
               <a
                 key={link.href}
@@ -218,28 +220,49 @@ function Hero({ onSignUp }: { onSignUp: () => void }) {
 
       <div className="relative mx-auto grid w-full max-w-[1400px] flex-1 items-center gap-8 px-4 py-8 md:px-8 md:py-10 lg:grid-cols-[minmax(0,560px)_minmax(0,1fr)] lg:gap-12 xl:px-12">
         <div className="flex flex-col items-center text-center lg:items-start lg:text-left">
+          <BorderBeam
+            size="sm"
+            colorVariant="colorful"
+            theme="dark"
+            strength={0.82}
+            duration={2.6}
+            className="responder-announcement-beam landing-hero-unblur mb-5 inline-flex max-w-full"
+            style={{ animationDelay: "140ms" }}
+          >
+            <a
+              href="https://responder.superlog.sh"
+              target="_blank"
+              rel="noreferrer"
+              className="group inline-flex items-center gap-2 rounded-full border border-white/10 bg-surface/90 px-3.5 py-2 text-[11px] font-medium text-muted shadow-[0_8px_32px_rgba(0,0,0,0.3)] backdrop-blur transition-colors hover:text-fg md:text-[12px]"
+            >
+              <span>Introducing Responder, a bug-fixing agent for Datadog and Sentry</span>
+              <span className="shrink-0 transition-transform group-hover:translate-x-0.5">
+                <Arrow />
+              </span>
+            </a>
+          </BorderBeam>
           <div
-            className="landing-hero-unblur mb-5 inline-flex items-center gap-2 text-[11px] font-medium text-muted md:text-[12px]"
-            style={{ animationDelay: "180ms" }}
+            className="landing-hero-unblur mb-4 inline-flex items-center gap-2 text-[11px] font-medium text-muted md:text-[12px]"
+            style={{ animationDelay: "220ms" }}
           >
             <img src="/yc-logo-square.svg" alt="" aria-hidden="true" className="h-4 w-4" />
             <span>Backed by Y Combinator</span>
           </div>
           <h1
             className="landing-hero-unblur max-w-[410px] text-balance text-[2.4375rem] leading-[0.98] tracking-[-0.035em] text-fg md:text-[57px] md:leading-[56px]"
-            style={{ fontWeight: 450, animationDelay: "260ms" }}
+            style={{ fontWeight: 450, animationDelay: "300ms" }}
           >
             Fix bugs on autopilot
           </h1>
           <p
             className="landing-hero-unblur mt-4 max-w-lg text-[13.5px] leading-relaxed text-muted md:text-[18px]"
-            style={{ animationDelay: "340ms" }}
+            style={{ animationDelay: "380ms" }}
           >
             Connect your app and get PRs with fixes in Slack
           </p>
           <div
             className="landing-hero-unblur mt-6 flex flex-col items-center gap-3 sm:flex-row lg:items-start"
-            style={{ animationDelay: "420ms" }}
+            style={{ animationDelay: "460ms" }}
           >
             <Btn variant="primary" size="lg" onClick={onSignUp}>
               Get started
