@@ -1265,6 +1265,12 @@ body {
     transform: none;
   }
 
+  .responder-announcement-beam::before,
+  .responder-announcement-beam::after,
+  .responder-announcement-beam [data-beam-bloom] {
+    animation: none !important;
+  }
+
   .landing-nav-unblur,
   .landing-hero-unblur,
   .landing-slack-card,
