@@ -2660,6 +2660,23 @@ function SentryCard({ projectId }: { projectId: string | undefined }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const authorizationId = searchParams.get("sentryAuthorization");
   const choosingProject = searchParams.get("sentry") === "choose-project" && !!authorizationId;
+  const [outcomeError, setOutcomeError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const outcome = searchParams.get("sentry");
+    if (!outcome || outcome === "choose-project" || outcome === "installed") return;
+    if (outcome === "denied") setOutcomeError("Sentry authorization was cancelled.");
+    if (outcome === "error") setOutcomeError("Sentry connection failed. Please try reconnecting.");
+    if (outcome === "no-projects") {
+      setOutcomeError(
+        "Your Sentry organization has no accessible projects. Grant the Superlog app access to at least one project in Sentry, then reconnect.",
+      );
+    }
+    const next = new URLSearchParams(searchParams);
+    next.delete("sentry");
+    next.delete("sentryAuthorization");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const installed = sentryInstall !== null;
   const needsReauth = sentryInstall?.needsReauth === true;
@@ -2731,6 +2748,9 @@ function SentryCard({ projectId }: { projectId: string | undefined }) {
           </Btn>
         )}
       </div>
+      {outcomeError && (
+        <p className="text-[12.5px] text-danger">{outcomeError}</p>
+      )}
     </div>
   );
 }
