@@ -280,8 +280,15 @@ export function mountVercelPublic(
       // receive telemetry, which would unlock onboarding as "connected" with
       // nothing flowing). Surface as an error so the flow can reset rather than
       // spin in the waiting state.
-      log.error({ err: e, project_id: decoded.projectId }, "vercel provisioning failed");
       const outcome = e instanceof VercelProvisioningError ? e.outcome : "error";
+      // drains_unavailable is a known Vercel plan restriction — per-signal WARN
+      // logs already capture the API message; escalating to ERROR creates
+      // incidents for a condition operators cannot act on.
+      if (outcome === "drains_unavailable") {
+        log.warn({ err: e, project_id: decoded.projectId }, "vercel provisioning failed");
+      } else {
+        log.error({ err: e, project_id: decoded.projectId }, "vercel provisioning failed");
+      }
       return c.redirect(`${webOrigin}${connectResultPath(outcome)}`, 302);
     }
 
