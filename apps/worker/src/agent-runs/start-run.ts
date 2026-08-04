@@ -25,6 +25,17 @@ import {
 } from "./status.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
+
+// Provider internal server errors (status 500, type api_error) are transient:
+// the session could not be created, but nothing was persisted on the provider
+// side. Let the sweep retry rather than permanently failing the run.
+function isRetryableStartError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const status = (error as { status?: unknown }).status;
+  if (status !== 500) return false;
+  const body = (error as { error?: { type?: unknown } }).error;
+  return body?.type === "api_error";
+}
 const agentRunLifecycle = createAgentRunLifecycle(db);
 
 export async function startQueuedAgentRun(ctx: AgentRunContext): Promise<void> {
@@ -36,6 +47,7 @@ export async function startQueuedAgentRun(ctx: AgentRunContext): Promise<void> {
     createRepositoryReadTokenForRepositories,
     isRepositorySelectionError: isGithubRepositorySelectionError,
     isRetryableRepositoryError: isRetryableGithubRequestError,
+    isRetryableStartError,
     listRepositoryInstructionFiles,
     buildIssueSummaries: (ctx) =>
       Promise.all(ctx.issueRows.map((issue) => buildIssueSummaryWithTrace(ctx.project.id, issue))),

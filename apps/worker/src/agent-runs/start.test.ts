@@ -557,6 +557,69 @@ test("startQueuedAgentRunWorkflow fails cleanly when async backend selection rej
   ]);
 });
 
+test("startQueuedAgentRunWorkflow leaves a retryable session-start error active for the next sweep", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+  const transientError = Object.assign(
+    new Error('500 {"type":"error","error":{"type":"api_error","message":"An internal server error occurred"}}'),
+    { status: 500, error: { type: "api_error" } },
+  );
+
+  await startQueuedAgentRunWorkflow(
+    ctx,
+    makeDeps(calls, {
+      async getRunnerBackend(runtime) {
+        calls.push("getRunnerBackend");
+        const runner = makeDeps([]).getRunnerBackend(runtime) as AgentRunnerBackend;
+        return {
+          ...runner,
+          async start() {
+            calls.push("runner.start");
+            throw transientError;
+          },
+        };
+      },
+      isRetryableStartError: (err) => err === transientError,
+    }),
+  );
+
+  assert.ok(calls.includes("runner.start"));
+  assert.equal(
+    calls.some((call) => call.startsWith("fail:")),
+    false,
+  );
+  assert.equal(ctx.agentRun.state, "repo_discovery");
+});
+
+test("startQueuedAgentRunWorkflow permanently fails on non-retryable session-start errors", async () => {
+  const calls: string[] = [];
+  const ctx = makeContext();
+  const permanentError = Object.assign(new Error("something is fundamentally wrong"), {
+    status: 400,
+  });
+
+  await startQueuedAgentRunWorkflow(
+    ctx,
+    makeDeps(calls, {
+      async getRunnerBackend(runtime) {
+        calls.push("getRunnerBackend");
+        const runner = makeDeps([]).getRunnerBackend(runtime) as AgentRunnerBackend;
+        return {
+          ...runner,
+          async start() {
+            calls.push("runner.start");
+            throw permanentError;
+          },
+        };
+      },
+      isRetryableStartError: () => false,
+    }),
+  );
+
+  assert.ok(calls.includes("runner.start"));
+  assert.ok(calls.some((call) => call.startsWith("fail:start_failed:")));
+});
+
 function makeDeps(
   calls: string[],
   overrides: Partial<StartQueuedAgentRunDeps> = {},
@@ -637,6 +700,9 @@ function makeDeps(
     isRepositorySelectionError: isGithubRepositorySelectionError,
     isRetryableRepositoryError(error) {
       return error instanceof GithubRequestError && error.retryable;
+    },
+    isRetryableStartError() {
+      return false;
     },
     async listRepositoryInstructionFiles() {
       return [];

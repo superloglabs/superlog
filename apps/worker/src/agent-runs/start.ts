@@ -35,6 +35,7 @@ export type StartQueuedAgentRunDeps = {
   ): Promise<string>;
   isRepositorySelectionError(error: unknown): boolean;
   isRetryableRepositoryError(error: unknown): boolean;
+  isRetryableStartError(error: unknown): boolean;
   listRepositoryInstructionFiles(
     installationToken: string,
     repoFullName: string,
@@ -167,6 +168,17 @@ export async function startQueuedAgentRunWorkflow(
     logStarted(ctx, runner, session.sessionId, repoCandidates.length);
     await deps.notifyStarted(ctx, repoCandidates.length);
   } catch (err) {
+    if (deps.isRetryableStartError(err)) {
+      logger.warn(
+        {
+          agent_run_id: ctx.agentRun.id,
+          incident_id: ctx.incident.id,
+          err,
+        },
+        "session start temporarily unavailable; will retry on the next sweep",
+      );
+      return;
+    }
     await deps.fail(ctx, "start_failed", "Investigation failed to start.", { err });
   }
 }
