@@ -26,6 +26,9 @@ import { signGcpState, verifyGcpState } from "./state.js";
 
 type Vars = { userId: string; orgId: string | null };
 
+const GCP_SETUP_FAILED_MESSAGE =
+  "Google Cloud setup failed. Please try again or contact support.";
+
 export type GcpConnectConfig = GcpApplicationConfig & {
   clientId: string;
   clientSecret: string;
@@ -133,7 +136,7 @@ function toPublic(connection: GcpConnectionRecord | null) {
     metricsBudgetMonth: connection.metricsBudgetMonth,
     metricsSeriesRead: connection.metricsSeriesRead,
     metricsMonthlySeriesLimit: monthlySeriesLimit(),
-    lastError: connection.lastError,
+    lastError: connection.lastError ? GCP_SETUP_FAILED_MESSAGE : null,
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,
   };
@@ -208,10 +211,7 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
       if (error instanceof GcpAuthorizationError) {
         return c.json({ error: error.message }, authorizationErrorStatus(error));
       }
-      return c.json(
-        { error: error instanceof Error ? error.message : "GCP provisioning failed" },
-        502,
-      );
+      return c.json({ error: GCP_SETUP_FAILED_MESSAGE }, 502);
     }
   });
 }

@@ -279,6 +279,75 @@ test("a project owner discovers Google projects before choosing one to connect",
   assert.equal(connected.refreshToken, undefined);
 });
 
+test("failed Google Cloud provisioning hides provider details from customer responses", async () => {
+  const { org, user, project } = await seedProject();
+  const providerError =
+    "POST pubsub.googleapis.com/v1/projects/integration/topics/connection:setIamPolicy: " +
+    "One or more users named in the policy do not belong to a permitted customer.";
+  const gateway: GcpGateway = {
+    authorizationUrl({ state }) {
+      return `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(state)}`;
+    },
+    async exchangeCode() {
+      return { accessToken: "temporary-user-token" };
+    },
+    async listProjects() {
+      return [
+        {
+          projectId: "acme-production",
+          projectNumber: "123456789012",
+          displayName: "Acme production",
+        },
+      ];
+    },
+    async provision() {
+      throw new Error(providerError);
+    },
+    async deprovision() {},
+  };
+  const app = new Hono<{
+    Variables: { userId: string; orgId: string | null };
+  }>();
+  app.use("/api/*", async (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  mountGcpPublic(app, { config, gateway });
+  mountGcpAuthed(app, { config, gateway });
+
+  const start = await app.request(`/api/projects/${project.id}/gcp/install-url`, {
+    method: "POST",
+  });
+  const { url } = (await start.json()) as { url: string };
+  const state = new URL(url).searchParams.get("state");
+  assert.ok(state);
+  const callback = await app.request(
+    `/gcp/oauth/callback?code=oauth-code&state=${encodeURIComponent(state)}`,
+  );
+  const authorizationId = new URL(callback.headers.get("location") ?? "").searchParams.get(
+    "authorization",
+  );
+  assert.ok(authorizationId);
+
+  const connect = await app.request(`/api/gcp/authorizations/${authorizationId}/connect`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ gcpProjectId: "acme-production" }),
+  });
+
+  assert.equal(connect.status, 502);
+  assert.deepEqual(await connect.json(), {
+    error: "Google Cloud setup failed. Please try again or contact support.",
+  });
+  const status = await app.request(`/api/projects/${project.id}/gcp/connection`);
+  assert.equal(status.status, 200);
+  assert.equal(
+    ((await status.json()) as { lastError: string | null }).lastError,
+    "Google Cloud setup failed. Please try again or contact support.",
+  );
+});
+
 test("denying Google consent marks the pending connection failed", async () => {
   const { org, user, project } = await seedProject();
   const gateway: GcpGateway = {
