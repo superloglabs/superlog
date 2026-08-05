@@ -281,6 +281,7 @@ test("a project owner discovers Google projects before choosing one to connect",
 
 test("failed Google Cloud provisioning hides provider details from customer responses", async () => {
   const { org, user, project } = await seedProject();
+  const loggedErrors: Array<{ fields: Record<string, unknown>; message: string }> = [];
   const providerError =
     "POST pubsub.googleapis.com/v1/projects/integration/topics/connection:setIamPolicy: " +
     "One or more users named in the policy do not belong to a permitted customer.";
@@ -314,7 +315,15 @@ test("failed Google Cloud provisioning hides provider details from customer resp
     await next();
   });
   mountGcpPublic(app, { config, gateway });
-  mountGcpAuthed(app, { config, gateway });
+  mountGcpAuthed(app, {
+    config,
+    gateway,
+    log: {
+      error(fields, message) {
+        loggedErrors.push({ fields, message });
+      },
+    },
+  });
 
   const start = await app.request(`/api/projects/${project.id}/gcp/install-url`, {
     method: "POST",
@@ -346,6 +355,11 @@ test("failed Google Cloud provisioning hides provider details from customer resp
     ((await status.json()) as { lastError: string | null }).lastError,
     "Google Cloud setup failed. Please try again or contact support.",
   );
+  assert.equal(loggedErrors.length, 1);
+  assert.equal(loggedErrors[0]?.message, "Google Cloud provisioning failed");
+  assert.equal(loggedErrors[0]?.fields.authorizationId, authorizationId);
+  assert.equal(loggedErrors[0]?.fields.gcpProjectId, "acme-production");
+  assert.equal((loggedErrors[0]?.fields.err as Error | undefined)?.message, providerError);
 });
 
 test("denying Google consent marks the pending connection failed", async () => {

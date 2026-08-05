@@ -5,6 +5,7 @@ import { HTTPException } from "hono/http-exception";
 import { requireProjectManagerContext } from "../org-authorization-http.js";
 import { hasProjectManagerAccess } from "../org-authorization.js";
 import { resolveActiveOrgContext } from "../org-context.js";
+import { logger } from "../logger.js";
 import type { GcpApplicationConfig } from "./application.js";
 import {
   completeGcpAuthorization,
@@ -28,6 +29,11 @@ type Vars = { userId: string; orgId: string | null };
 
 const GCP_SETUP_FAILED_MESSAGE =
   "Google Cloud setup failed. Please try again or contact support.";
+const gcpLog = logger.child({ scope: "gcp" });
+
+type GcpConnectLog = {
+  error(fields: Record<string, unknown>, message: string): void;
+};
 
 export type GcpConnectConfig = GcpApplicationConfig & {
   clientId: string;
@@ -41,6 +47,7 @@ type Dependencies = {
   gateway?: GcpGateway;
   repository?: GcpConnectionRepository;
   authorizationRepository?: GcpAuthorizationRepository;
+  log?: GcpConnectLog;
 };
 
 export function gcpConfigFromEnv(env: NodeJS.ProcessEnv = process.env): GcpConnectConfig | null {
@@ -83,6 +90,7 @@ function dependencies(input: Dependencies): {
   gateway: GcpGateway | null;
   repository: GcpConnectionRepository;
   authorizationRepository: GcpAuthorizationRepository;
+  log: GcpConnectLog;
 } {
   const config = input.config !== undefined ? input.config : gcpConfigFromEnv();
   return {
@@ -91,6 +99,7 @@ function dependencies(input: Dependencies): {
     repository: input.repository ?? new DrizzleGcpConnectionRepository(),
     authorizationRepository:
       input.authorizationRepository ?? new DrizzleGcpAuthorizationRepository(),
+    log: input.log ?? gcpLog,
   };
 }
 
@@ -143,7 +152,7 @@ function toPublic(connection: GcpConnectionRecord | null) {
 }
 
 export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependencies = {}): void {
-  const { config, gateway, repository, authorizationRepository } = dependencies(input);
+  const { config, gateway, repository, authorizationRepository, log } = dependencies(input);
   const stateSecret = process.env.STATE_SIGNING_SECRET;
 
   app.get("/api/projects/:projectId/gcp/connection", async (c) => {
@@ -189,10 +198,11 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
   app.post("/api/gcp/authorizations/:authorizationId/connect", async (c) => {
     if (!config || !gateway) return c.json({ error: "GCP connect not configured" }, 503);
     if (!c.var.userId) return c.json({ error: "unauthenticated" }, 401);
+    const authorizationId = c.req.param("authorizationId");
     const body = (await c.req.json().catch(() => ({}))) as { gcpProjectId?: unknown };
     try {
       const session = await getGcpAuthorizationSelection({
-        authorizationId: c.req.param("authorizationId"),
+        authorizationId,
         userId: c.var.userId,
         repository: authorizationRepository,
       });
@@ -211,6 +221,14 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
       if (error instanceof GcpAuthorizationError) {
         return c.json({ error: error.message }, authorizationErrorStatus(error));
       }
+      log.error(
+        {
+          err: error,
+          authorizationId,
+          gcpProjectId: body.gcpProjectId,
+        },
+        "Google Cloud provisioning failed",
+      );
       return c.json({ error: GCP_SETUP_FAILED_MESSAGE }, 502);
     }
   });
