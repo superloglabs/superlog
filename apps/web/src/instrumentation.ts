@@ -133,6 +133,13 @@ export function reportBrowserException(
 
 if (typeof window !== "undefined") {
   window.addEventListener("error", (event) => {
+    // Browser extensions and browser-native bridges (e.g. Firefox reader mode,
+    // MetaMask) inject short probe scripts that execute as "global code" at
+    // line 1 of the page URL — not inside any application JS bundle. When those
+    // probes throw, window.onerror fires with filename === the page href and
+    // lineno === 1. These are not application errors; skip them.
+    if (event.lineno === 1 && event.filename === window.location.href) return;
+
     reportBrowserException(event.error ?? event.message, "window.error", {
       "code.file": event.filename,
       "code.line.number": event.lineno,
