@@ -5,6 +5,7 @@ import {
   type AutoMergeMethod,
   type AutoMergePolicy,
   type CloudConnection,
+  type CloudDiagnosticCheck,
   EMPTY_ISSUE_FILTER_CONFIG,
   type Integration,
   type IssueFilterClause,
@@ -19,6 +20,7 @@ import {
   type WebhookEndpoint,
   useAgentSettings,
   useCloudConnections,
+  useCloudDiagnostics,
   useCloudStackHealth,
   useCloudflareInstallation,
   useCloudflareWorkers,
@@ -67,6 +69,7 @@ import {
   useRevokeOrgGithubInstallation,
   useRevokeOrgRepoFromProject,
   useRotateWebhookSecret,
+  useRunCloudDiagnostics,
   useRunProjectDigestNow,
   useSaveAgentSettings,
   useSaveIntegration,
@@ -114,7 +117,6 @@ import {
 } from "./api";
 import { AWS_REGIONS } from "./awsRegions.ts";
 import { Dropdown, type DropdownOption } from "./design/Dropdown.tsx";
-import { SentryProjectPicker } from "./sentry/SentryProjectPicker.tsx";
 import {
   Btn,
   Chip,
@@ -147,12 +149,13 @@ import {
 } from "./onboarding/icons.tsx";
 import { renderErrorMessage } from "./onboarding/renderConnectModel.ts";
 import { VERCEL_PLAN_REQUIREMENT } from "./onboarding/vercelConnectModel.ts";
+import { SentryProjectPicker } from "./sentry/SentryProjectPicker.tsx";
 import { AgentMcpServersCard } from "./settings/AgentMcpServersCard.tsx";
 import { AgentMemoriesCard } from "./settings/AgentMemoriesCard.tsx";
 import { BillingCard } from "./settings/BillingCard.tsx";
 import { CreateOrgCard } from "./settings/CreateOrgCard.tsx";
-import { IntegrationConfigDialog } from "./settings/IntegrationConfigDialog.tsx";
 import { InactiveIncidentResolutionCard } from "./settings/InactiveIncidentResolutionCard.tsx";
+import { IntegrationConfigDialog } from "./settings/IntegrationConfigDialog.tsx";
 import { OrgDangerCard } from "./settings/OrgDangerCard.tsx";
 import { OrgGeneralCard } from "./settings/OrgGeneralCard.tsx";
 import { OrgMembersCard } from "./settings/OrgMembersCard.tsx";
@@ -3280,9 +3283,12 @@ function AwsStackHealthPanel({
 }) {
   const health = useCloudStackHealth(projectId, connectionId, true);
   const setup = useSetupCloudStream(projectId ?? "");
+  const diagnostics = useCloudDiagnostics(projectId, connectionId, true);
+  const runDiagnostics = useRunCloudDiagnostics(projectId ?? "");
 
   const components = health.data?.components ?? [];
   const working = components.filter((c) => c.state === "working").length;
+  const latestDiagnostic = diagnostics.data?.[0];
 
   // Streams carry a last-received time we append; the connection row doesn't.
   const detailLine = (c: StackComponent) =>
@@ -3339,6 +3345,62 @@ function AwsStackHealthPanel({
         );
       })}
 
+      <div className="space-y-2 border-t border-subtle/40 pt-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-[12px] font-medium">AWS diagnostics</div>
+            <div className="text-[11px] text-subtle">
+              Audited, read-only checks of this stack and its delivery path.
+            </div>
+          </div>
+          <Btn
+            size="sm"
+            variant="ghost"
+            loading={runDiagnostics.isPending}
+            onClick={() => runDiagnostics.mutate(connectionId)}
+          >
+            Run diagnostics
+          </Btn>
+        </div>
+
+        {latestDiagnostic ? (
+          <div className="space-y-2">
+            <div className="text-[12px] text-muted">
+              <span
+                className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${
+                  latestDiagnostic.status === "healthy"
+                    ? "bg-success"
+                    : latestDiagnostic.status === "warning"
+                      ? "bg-warning"
+                      : "bg-danger"
+                }`}
+              />
+              {latestDiagnostic.summary} · {formatRelative(latestDiagnostic.createdAt)}
+            </div>
+            {latestDiagnostic.checks.map((check) => (
+              <div key={check.key} className="flex items-start gap-2 text-[12px]">
+                <span
+                  className={`mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full ${AWS_DIAGNOSTIC_DOT[check.status]}`}
+                />
+                <span>
+                  <span className="font-medium text-fg">{check.label}</span>
+                  <span className="text-muted"> · {check.summary}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : diagnostics.isLoading ? (
+          <div className="text-[12px] text-muted">Loading the latest diagnostic…</div>
+        ) : (
+          <div className="text-[12px] text-muted">
+            No diagnostic has been run for this connection yet.
+          </div>
+        )}
+        {runDiagnostics.error && (
+          <div className="text-[12px] text-danger">{String(runDiagnostics.error)}</div>
+        )}
+      </div>
+
       <p className="text-[11px] text-subtle">
         Streaming runs in your AWS account (CloudWatch → Firehose); costs are billed to you.
         “Re-launch” re-opens the same CloudFormation stack — safe to re-run — to repair it, change
@@ -3347,6 +3409,12 @@ function AwsStackHealthPanel({
     </div>
   );
 }
+
+const AWS_DIAGNOSTIC_DOT: Record<CloudDiagnosticCheck["status"], string> = {
+  pass: "bg-success",
+  warning: "bg-warning",
+  fail: "bg-danger",
+};
 
 // ---------------------------------------------------------------------------
 // Agent flowchart

@@ -102,6 +102,7 @@ function appWith(
   sts: StsVerifier,
   config: CloudConnectConfig,
   resourceLister?: ResourceLister,
+  diagnosticProbe?: unknown,
 ) {
   const app = new Hono<{ Variables: { userId: string; orgId: string | null } }>();
   app.use("*", (c, next) => {
@@ -110,18 +111,100 @@ function appWith(
     return next();
   });
   // No-op config fetcher so tests never reach real AWS Cloud Control.
-  mountCloudConnectionsAuthed(app, {
+  const deps = {
     sts,
     config,
     resourceLister,
+    diagnosticProbe,
     configFetcher: {
       async get() {
         return null;
       },
     },
-  });
+  };
+  mountCloudConnectionsAuthed(app, deps as Parameters<typeof mountCloudConnectionsAuthed>[1]);
   return app;
 }
+
+test("a manager can run and retrieve an audited AWS diagnostic", async () => {
+  const { org, user, project } = await seedProject();
+  const accountId = "210987654321";
+  const app = appWith(user.id, org.id, okSts(accountId), CONFIG, undefined, {
+    async inspect() {
+      return {
+        expectedAccountId: accountId,
+        identityAccountId: accountId,
+        stacks: [{ name: "superlog-connect", status: "CREATE_COMPLETE" }],
+        metricStream: { name: "superlog-metrics-abc1234", state: "running" },
+        deliveryStreams: [
+          {
+            kind: "metrics",
+            name: "superlog-metrics-abc1234",
+            status: "ACTIVE",
+            recordsDelivered: 12,
+            minimumSuccessfulRecords: 12,
+          },
+          {
+            kind: "logs",
+            name: "superlog-logs-abc1234",
+            status: "ACTIVE",
+            recordsDelivered: 3,
+            minimumSuccessfulRecords: 3,
+          },
+        ],
+        logSubscriptionPolicyCount: 1,
+        deliveryErrors: [],
+        permissionGaps: [],
+      };
+    },
+  });
+
+  const created = await asConn(
+    await app.request(`/api/projects/${project.id}/cloud-connections`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ region: "us-east-1" }),
+    }),
+  );
+  await app.request(`/api/projects/${project.id}/cloud-connections/${created.id}/verify`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      scrapeRoleArn: `arn:aws:iam::${accountId}:role/SuperlogScrape`,
+    }),
+  });
+
+  const run = await app.request(
+    `/api/projects/${project.id}/cloud-connections/${created.id}/diagnostics`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "Customer requested help" }),
+    },
+  );
+
+  assert.equal(run.status, 200);
+  const body = (await run.json()) as {
+    id: string;
+    status: string;
+    reason: string;
+    requestedByUserId: string;
+  };
+  assert.equal(body.status, "healthy");
+  assert.equal(body.reason, "Customer requested help");
+  assert.equal(body.requestedByUserId, user.id);
+
+  const history = await app.request(
+    `/api/projects/${project.id}/cloud-connections/${created.id}/diagnostics`,
+  );
+  assert.equal(history.status, 200);
+  const historyBody = (await history.json()) as Array<{ id: string; status: string }>;
+  assert.deepEqual(
+    historyBody.map((entry) => entry.id),
+    [body.id],
+  );
+  assert.equal(historyBody[0]?.status, "healthy");
+});
 
 function appFor(userId: string, orgId: string, sts: StsVerifier, resourceLister?: ResourceLister) {
   return appWith(userId, orgId, sts, CONFIG, resourceLister);

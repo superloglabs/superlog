@@ -77,6 +77,29 @@ Resources:
                 Action:
                   - "cloudwatch:ListMetrics"
                 Resource: "*"
+              # Read only the integration's control-plane state and Firehose
+              # delivery health. These permissions power explicit, audited
+              # diagnostics; they do not grant access to application log data.
+              - Sid: TelemetryDiagnosticsCatalog
+                Effect: Allow
+                Action:
+                  - "firehose:ListDeliveryStreams"
+                  - "cloudwatch:ListMetricStreams"
+                  - "cloudwatch:GetMetricData"
+                  - "logs:DescribeAccountPolicies"
+                  - "cloudformation:DescribeStacks"
+                Resource: "*"
+              - Sid: TelemetryDiagnosticsDeliveryStreams
+                Effect: Allow
+                Action:
+                  - "firehose:DescribeDeliveryStream"
+                Resource: !Sub "arn:${AWS::Partition}:firehose:${AWS::Region}:${AWS::AccountId}:deliverystream/superlog-*"
+              - Sid: TelemetryDiagnosticsDeliveryErrors
+                Effect: Allow
+                Action:
+                  - "logs:DescribeLogStreams"
+                  - "logs:GetLogEvents"
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/superlog-*:*"
               # Resource configuration via the Cloud Control API. Cloud Control
               # invokes the underlying read APIs, so we grant the curated set of
               # describe/get-config actions for the resource types we enrich.
