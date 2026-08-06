@@ -6,7 +6,11 @@ import { logger } from "../logger.js";
 import { requireProjectManagerContext } from "../org-authorization-http.js";
 import { hasProjectManagerAccess } from "../org-authorization.js";
 import { resolveActiveOrgContext } from "../org-context.js";
-import { type GcpApplicationConfig, updateGcpLogExclusions } from "./application.js";
+import {
+  type GcpApplicationConfig,
+  GcpLogExclusionError,
+  updateGcpLogExclusions,
+} from "./application.js";
 import {
   completeGcpAuthorization,
   connectGcpAuthorization,
@@ -174,8 +178,14 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
         ),
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Invalid GCP log exclusions";
-      return c.json({ error: message }, message === "Connected GCP project not found" ? 404 : 400);
+      if (error instanceof GcpLogExclusionError) {
+        return c.json({ error: error.message }, error.code === "not_found" ? 404 : 400);
+      }
+      log.error(
+        { err: error, projectId: context.projectId },
+        "Failed to update GCP log exclusions",
+      );
+      return c.json({ error: "Failed to update GCP log exclusions" }, 500);
     }
   });
 

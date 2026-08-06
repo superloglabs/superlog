@@ -5,6 +5,7 @@ import {
   authenticateGcpPubSubPush,
   gcpPubSubLogToOtlp,
   resolveGcpPubSubPushAudience,
+  transformGcpPubSubLog,
 } from "./gcp-pubsub.js";
 import { otlpLogsToRows } from "./otlp-clickhouse.js";
 
@@ -145,5 +146,9 @@ test("an excluded GCP log name is acknowledged without producing telemetry", () 
   assert.notEqual(
     gcpPubSubLogToOtlp(Buffer.from(JSON.stringify(push)), "acme-production", []),
     null,
+  );
+  assert.deepEqual(
+    transformGcpPubSubLog(Buffer.from(JSON.stringify(push)), "acme-production", [logName]),
+    { outcome: "excluded", logName },
   );
 });

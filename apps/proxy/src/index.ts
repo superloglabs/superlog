@@ -32,8 +32,8 @@ import {
   type GcpIdTokenVerifier,
   acknowledgeGcpPubSubDelivery,
   authenticateGcpPubSubPush,
-  gcpPubSubLogToOtlp,
   resolveGcpPubSubPushAudience,
+  transformGcpPubSubLog,
 } from "./gcp-pubsub.js";
 import { mountGcpMetricsPullRoute } from "./gcp-pull-routes.js";
 import { configureHttpServerTimeouts } from "./http-server.js";
@@ -522,14 +522,31 @@ app.post("/gcp/pubsub/:connectionId", async (c) => {
     source: "gcp",
     trustedProjectId: connection.projectId,
     bodyTransform: (body) => {
-      const transformed = gcpPubSubLogToOtlp(
+      const transformed = transformGcpPubSubLog(
         body,
         connection.gcpProjectId,
         connection.excludedLogNames,
       );
-      return transformed
-        ? { body: Buffer.from(JSON.stringify(transformed)), contentType: "application/json" }
-        : null;
+      if (transformed.outcome === "excluded") {
+        logger.info(
+          {
+            connectionId: connection.id,
+            gcpProjectId: connection.gcpProjectId,
+            logName: transformed.logName,
+            reason: "excluded",
+          },
+          "GCP log entry filtered by exclusion policy",
+        );
+        proxyOperationalRecorder.recordGcpLogDrop({
+          projectId: connection.projectId,
+          reason: "excluded",
+        });
+        return null;
+      }
+      return {
+        body: Buffer.from(JSON.stringify(transformed.payload)),
+        contentType: "application/json",
+      };
     },
   });
   if (response.ok && response.headers.get("x-superlog-ingest-drop") !== "body_filtered") {

@@ -729,6 +729,50 @@ test("a project manager can update GCP log exclusions through the connection API
   assert.deepEqual(persisted?.excludedLogNames, [logName]);
 });
 
+test("an unexpected GCP log-exclusion persistence failure is logged and returned as a 500", async () => {
+  const { org, user, project } = await seedProject();
+  await db.insert(schema.gcpConnections).values({
+    projectId: project.id,
+    gcpProjectId: "acme-production",
+    readerServiceAccountEmail: config.readerServiceAccountEmail,
+    createdBy: user.id,
+    status: "connected",
+  });
+  const repository = new DrizzleGcpConnectionRepository();
+  repository.updateExcludedLogNames = async () => {
+    throw new Error("database unavailable");
+  };
+  const errors: Array<{ fields: Record<string, unknown>; message: string }> = [];
+  const app = new Hono<{
+    Variables: { userId: string; orgId: string | null };
+  }>();
+  app.use("/api/*", async (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  mountGcpAuthed(app, {
+    config,
+    repository,
+    log: { error: (fields, message) => errors.push({ fields, message }) },
+  });
+
+  const response = await app.request(`/api/projects/${project.id}/gcp/log-exclusions`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      excludedLogNames: ["projects/acme-production/logs/run.googleapis.com%2Fstderr"],
+    }),
+  });
+
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), { error: "Failed to update GCP log exclusions" });
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.message, "Failed to update GCP log exclusions");
+  assert.equal(errors[0]?.fields.projectId, project.id);
+  assert.match(String(errors[0]?.fields.err), /database unavailable/);
+});
+
 test("starting the same GCP project twice reuses one active connection", async () => {
   const { user, project } = await seedProject();
   const repository = new DrizzleGcpConnectionRepository();

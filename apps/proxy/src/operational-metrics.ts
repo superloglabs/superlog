@@ -17,6 +17,7 @@ type ProxyOperationalInstruments = {
   queueMessages?: CounterLike;
   queueDeliveryDurationMs?: HistogramLike;
   queueMessageAgeMs?: HistogramLike;
+  gcpLogDrops?: CounterLike;
 };
 
 export type IngestRequestMetricInput = {
@@ -54,7 +55,12 @@ function statusClass(statusCode: number): string {
   return `${Math.floor(statusCode / 100)}xx`;
 }
 
-function tenantAttrs(input: { path: string; projectId: string; orgId?: string | null; orgName?: string | null }) {
+function tenantAttrs(input: {
+  path: string;
+  projectId: string;
+  orgId?: string | null;
+  orgName?: string | null;
+}) {
   const attrs: MetricAttributes = {
     "otlp.signal": signalFromPath(input.path),
     "tenant.project.id": input.projectId,
@@ -93,6 +99,13 @@ export function createProxyOperationalRecorder(instruments: ProxyOperationalInst
       instruments.queueDeliveryDurationMs?.record(input.durationMs, attrs);
       if (input.ageMs !== undefined) instruments.queueMessageAgeMs?.record(input.ageMs, attrs);
     },
+
+    recordGcpLogDrop(input: { projectId: string; reason: "excluded" }): void {
+      instruments.gcpLogDrops?.add(1, {
+        "tenant.project.id": input.projectId,
+        "gcp.log.drop_reason": input.reason,
+      });
+    },
   };
 }
 
@@ -118,5 +131,8 @@ export const proxyOperationalRecorder = createProxyOperationalRecorder({
   queueMessageAgeMs: meter.createHistogram("superlog.proxy.queue.message.age_ms", {
     description: "Queued ingest payload age when delivery is attempted.",
     unit: "ms",
+  }),
+  gcpLogDrops: meter.createCounter("superlog.proxy.gcp.logs.dropped", {
+    description: "GCP log entries dropped before ingest by reason.",
   }),
 });
