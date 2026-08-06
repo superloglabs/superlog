@@ -782,6 +782,8 @@ async function forward(
           contentEncoding = transformed.contentEncoding;
           requestBytes = prebufferedBody.byteLength;
         } catch (err) {
+          span.recordException(err as Error);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
           const handled = handleIngestBodyError(err, c, span, path, projectId);
           if (handled) {
             responseStatus = handled.status;
