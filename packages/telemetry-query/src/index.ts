@@ -1838,7 +1838,9 @@ export async function metricSeries(
     groupParams.groupKey = groupBy.slice("attr:".length);
   } else if (groupBy) {
     groupExpr = "ResourceAttributes[{groupKey:String}]";
-    groupParams.groupKey = groupBy;
+    groupParams.groupKey = groupBy.startsWith("resource.")
+      ? groupBy.slice("resource.".length)
+      : groupBy;
   }
 
   const perTable = await Promise.all(
