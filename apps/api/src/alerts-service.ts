@@ -76,6 +76,12 @@ export function validateAlertInput(input: AlertInput): void {
   if (input.source !== "logs" && input.filter?.logAttrs?.length) {
     throw new HTTPException(400, { message: "logAttrs can only be used when source = logs" });
   }
+  if (input.source !== "logs" && input.groupBy?.startsWith("log.")) {
+    throw new HTTPException(400, { message: "log groupBy can only be used when source = logs" });
+  }
+  if (input.source !== "traces" && input.groupBy?.startsWith("span.")) {
+    throw new HTTPException(400, { message: "span groupBy can only be used when source = traces" });
+  }
 }
 
 export function alertInputToFilter(input: AlertInput): schema.AlertFilter {

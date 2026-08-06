@@ -121,6 +121,12 @@ function AlertEditInner({
     if (source !== "metric" && aggregation !== "count") setAggregation("count");
   }, [source, aggregation]);
 
+  // Scoped event attributes only exist on their matching telemetry source.
+  useEffect(() => {
+    if (source !== "logs" && groupBy.startsWith("log.")) setGroupBy("");
+    if (source !== "traces" && groupBy.startsWith("span.")) setGroupBy("");
+  }, [source, groupBy]);
+
   // Reset groupMode if groupBy is cleared
   useEffect(() => {
     if (!groupBy && groupMode === "per_group") setGroupMode("single");

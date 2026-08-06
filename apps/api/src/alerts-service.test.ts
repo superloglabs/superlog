@@ -100,6 +100,17 @@ test("validateAlertInput rejects log attributes for non-log alerts", () => {
   );
 });
 
+test("validateAlertInput rejects group attributes incompatible with the source", () => {
+  expectBadRequest(
+    () => validateAlertInput(baseInput({ source: "traces", groupBy: "log.http.status_code" })),
+    "log groupBy can only be used when source = logs",
+  );
+  expectBadRequest(
+    () => validateAlertInput(baseInput({ source: "logs", groupBy: "span.http.route" })),
+    "span groupBy can only be used when source = traces",
+  );
+});
+
 test("alertInputToFilter keeps only the filter fields", () => {
   const filter = alertInputToFilter(
     baseInput({
