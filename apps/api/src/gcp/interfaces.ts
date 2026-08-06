@@ -36,6 +36,7 @@ const gcpLog = logger.child({ scope: "gcp" });
 
 type GcpConnectLog = {
   error(fields: Record<string, unknown>, message: string): void;
+  info(fields: Record<string, unknown>, message: string): void;
 };
 
 export type GcpConnectConfig = GcpApplicationConfig & {
@@ -174,16 +175,21 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
     const context = await requireProjectManager(c, c.req.param("projectId"));
     const body = (await c.req.json().catch(() => ({}))) as { excludedLogNames?: unknown };
     try {
-      return c.json(
-        toPublic(
-          await updateGcpLogExclusions({
-            projectId: context.projectId,
-            excludedLogNames: body.excludedLogNames,
-            repository,
-          }),
-          true,
-        ),
+      const connection = await updateGcpLogExclusions({
+        projectId: context.projectId,
+        excludedLogNames: body.excludedLogNames,
+        repository,
+      });
+      log.info(
+        {
+          projectId: context.projectId,
+          userId: context.userId,
+          gcpConnectionId: connection.id,
+          excludedLogNames: connection.excludedLogNames,
+        },
+        "GCP log exclusions updated",
       );
+      return c.json(toPublic(connection, true));
     } catch (error) {
       if (error instanceof GcpLogExclusionError) {
         return c.json({ error: error.message }, error.code === "not_found" ? 404 : 400);

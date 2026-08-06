@@ -322,6 +322,7 @@ test("failed Google Cloud provisioning hides provider details from customer resp
       error(fields, message) {
         loggedErrors.push({ fields, message });
       },
+      info() {},
     },
   });
 
@@ -713,7 +714,14 @@ test("a project manager can update GCP log exclusions through the connection API
     c.set("orgId", org.id);
     await next();
   });
-  mountGcpAuthed(app, { config });
+  const auditEvents: Array<{ fields: Record<string, unknown>; message: string }> = [];
+  mountGcpAuthed(app, {
+    config,
+    log: {
+      error() {},
+      info: (fields, message) => auditEvents.push({ fields, message }),
+    },
+  });
 
   const logName = "projects/acme-production/logs/run.googleapis.com%2Fstderr";
   const response = await app.request(`/api/projects/${project.id}/gcp/log-exclusions`, {
@@ -723,9 +731,24 @@ test("a project manager can update GCP log exclusions through the connection API
   });
 
   assert.equal(response.status, 200);
-  const body = (await response.json()) as { excludedLogNames: string[]; canManage: boolean };
+  const body = (await response.json()) as {
+    id: string;
+    excludedLogNames: string[];
+    canManage: boolean;
+  };
   assert.deepEqual(body.excludedLogNames, [logName]);
   assert.equal(body.canManage, true);
+  assert.deepEqual(auditEvents, [
+    {
+      fields: {
+        projectId: project.id,
+        userId: user.id,
+        gcpConnectionId: body.id,
+        excludedLogNames: [logName],
+      },
+      message: "GCP log exclusions updated",
+    },
+  ]);
   const persisted = await new DrizzleGcpConnectionRepository().findCurrent(project.id);
   assert.deepEqual(persisted?.excludedLogNames, [logName]);
 });
@@ -790,7 +813,7 @@ test("an unexpected GCP log-exclusion persistence failure is logged and returned
   mountGcpAuthed(app, {
     config,
     repository,
-    log: { error: (fields, message) => errors.push({ fields, message }) },
+    log: { error: (fields, message) => errors.push({ fields, message }), info() {} },
   });
 
   const response = await app.request(`/api/projects/${project.id}/gcp/log-exclusions`, {
