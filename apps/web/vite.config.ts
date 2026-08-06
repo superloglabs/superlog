@@ -3,6 +3,20 @@ import path from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv } from "vite";
 
+const DEFAULT_ALLOWED_HOSTS = [
+  ".localhost",
+  ".ngrok-free.app",
+  ".ngrok.app",
+  ".trycloudflare.com",
+];
+
+export function viteAllowedHosts(
+  env: Partial<Record<"SUPERLOG_PORTLESS_WEB_HOST", string>>,
+): string[] {
+  const portlessHost = env.SUPERLOG_PORTLESS_WEB_HOST?.trim();
+  return portlessHost ? [...DEFAULT_ALLOWED_HOSTS, portlessHost] : [...DEFAULT_ALLOWED_HOSTS];
+}
+
 export default defineConfig(({ mode }) => {
   const env = { ...loadEnv(mode, process.cwd(), ""), ...process.env };
 
@@ -46,7 +60,7 @@ export default defineConfig(({ mode }) => {
       port: Number(env.PORT ?? env.WEB_PORT ?? 5173),
       strictPort: true,
       watch: inWorktree ? { usePolling: true, interval: 150 } : undefined,
-      allowedHosts: [".localhost", ".ngrok-free.app", ".ngrok.app", ".trycloudflare.com"],
+      allowedHosts: viteAllowedHosts(env),
     },
   };
 });

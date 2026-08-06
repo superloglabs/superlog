@@ -217,6 +217,7 @@ write_env_file() {
     printf 'SLACK_OAUTH_REDIRECT_URL=%s/slack/oauth/callback\n' "$API_URL"
     printf 'LINEAR_OAUTH_REDIRECT_URL=%s/linear/oauth/callback\n' "$API_URL"
     printf 'SUPERLOG_PORTLESS_WEB_NAME=%s\n' "$WEB_ROUTE"
+    printf 'SUPERLOG_PORTLESS_WEB_HOST=%s.%s\n' "$WEB_ROUTE" "$URL_TLD"
     printf 'SUPERLOG_PORTLESS_API_NAME=%s\n' "$API_ROUTE"
     printf 'SUPERLOG_PORTLESS_PROXY_NAME=%s\n' "$PROXY_ROUTE"
     printf 'SUPERLOG_PORTLESS_WEB_URL=%s\n' "$WEB_URL"
