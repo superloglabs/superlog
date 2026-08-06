@@ -79,3 +79,23 @@ test("live alert evaluation groups logs by a per-record attribute", async () => 
   assert.match(capture.query ?? "", /LogAttributes\[\{aalert_groupKey:String\}\]/);
   assert.equal(capture.params?.aalert_groupKey, "gcp.http_request.status");
 });
+
+test("live alert evaluation does not reinterpret an incompatible scoped group as a resource", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+  const ch = {
+    async query(input: { query: string; query_params?: Record<string, unknown> }) {
+      capture.query = input.query;
+      capture.params = input.query_params;
+      return { json: async () => [{ group_key: "", v: "3" }] };
+    },
+  } as unknown as ClickHouseClient;
+  const repo = createAlertMetricsRepository(ch);
+
+  await repo.aggregateCount(
+    makeAlert({ source: "traces", groupBy: "log.gcp.http_request.status" }),
+    { since: "2026-08-06T10:00:00.000Z", until: "2026-08-06T10:15:00.000Z" },
+  );
+
+  assert.match(capture.query ?? "", /'' AS group_key/);
+  assert.equal(capture.params?.aalert_groupKey, undefined);
+});

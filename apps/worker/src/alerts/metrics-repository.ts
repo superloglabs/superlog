@@ -49,6 +49,9 @@ function groupExprFor(
       params: { aalert_groupKey: groupBy.slice("span.".length) },
     };
   }
+  if (groupBy.startsWith("log.") || groupBy.startsWith("span.")) {
+    return { expr: "''", params: {} };
+  }
   if (groupBy.startsWith("attr:")) {
     return {
       expr:

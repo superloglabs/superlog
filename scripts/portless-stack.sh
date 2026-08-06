@@ -211,6 +211,7 @@ write_env_file() {
     printf 'GATEWAY_PUBLIC_URL=%s\n' "$API_URL"
     printf 'API_BASE_URL=%s\n' "$API_URL"
     printf 'VITE_API_URL=%s\n' "$API_URL"
+    printf 'VITE_PORTLESS_TLD=%s\n' "$URL_TLD"
     # Better Auth's baseURL has to match the actual origin serving /api/auth/*
     # or state cookies get scoped to the wrong host. Without this, the worktree
     # falls back to apps/api/.env's localhost:4100 and every OAuth attempt

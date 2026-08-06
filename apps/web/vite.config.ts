@@ -46,7 +46,13 @@ export default defineConfig(({ mode }) => {
       port: Number(env.PORT ?? env.WEB_PORT ?? 5173),
       strictPort: true,
       watch: inWorktree ? { usePolling: true, interval: 150 } : undefined,
-      allowedHosts: [".localhost", ".ngrok-free.app", ".ngrok.app", ".trycloudflare.com"],
+      allowedHosts: [
+        ".localhost",
+        ...(env.VITE_PORTLESS_TLD ? [`.${env.VITE_PORTLESS_TLD}`] : []),
+        ".ngrok-free.app",
+        ".ngrok.app",
+        ".trycloudflare.com",
+      ],
     },
   };
 });
