@@ -31,6 +31,11 @@ if ! grep -Fqx "web:        https://$STACK_NAME.superlog.local" <<< "$output"; t
   printf '%s\n' "$output" >&2
   exit 1
 fi
+if ! grep -Fqx "SUPERLOG_PORTLESS_WEB_HOST=$STACK_NAME.superlog.local" \
+  "$REPO_ROOT/tmp/portless-stacks/$STACK_NAME/env"; then
+  echo "expected the generated web host to be available to Vite" >&2
+  exit 1
+fi
 rm "$TMP_HOME/.portless/proxy.tld"
 
 mkdir -p "$TMP_HOME/.portless"
