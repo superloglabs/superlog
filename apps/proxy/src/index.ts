@@ -528,7 +528,7 @@ app.post("/gcp/pubsub/:connectionId", async (c) => {
         connection.excludedLogNames,
       );
       if (transformed.outcome === "excluded") {
-        logger.info(
+        logger.debug(
           {
             connectionId: connection.id,
             gcpProjectId: connection.gcpProjectId,
