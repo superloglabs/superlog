@@ -736,9 +736,11 @@ test("a project manager can update GCP log exclusions through the connection API
     id: string;
     excludedLogNames: string[];
     canManage: boolean;
+    maxLogExclusions: number;
   };
   assert.deepEqual(body.excludedLogNames, [logName]);
   assert.equal(body.canManage, true);
+  assert.equal(body.maxLogExclusions, 200);
   assert.deepEqual(auditEvents, [
     {
       fields: {

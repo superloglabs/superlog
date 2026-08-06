@@ -14,7 +14,7 @@ export type GcpApplicationConfig = {
   pushEndpoint: string;
 };
 
-const MAX_GCP_LOG_EXCLUSIONS = 200;
+export const MAX_GCP_LOG_EXCLUSIONS = 200;
 
 export class GcpLogExclusionError extends Error {
   constructor(

@@ -1135,6 +1135,7 @@ export type GcpConnection =
       createdAt: string;
       updatedAt: string;
       canManage: boolean;
+      maxLogExclusions: number;
     };
 
 export function useGcpConnection(projectId: string | undefined) {

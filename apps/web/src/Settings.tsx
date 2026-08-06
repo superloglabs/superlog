@@ -132,7 +132,12 @@ import {
   SkeletonBlock,
   Tile,
 } from "./design/ui";
-import { gcpConnectAction, gcpLogGroupLabel, mergeGcpLogNames } from "./gcp-settings-model.ts";
+import {
+  canToggleGcpLogGroup,
+  gcpConnectAction,
+  gcpLogGroupLabel,
+  mergeGcpLogNames,
+} from "./gcp-settings-model.ts";
 import { McpInstallPanel } from "./onboarding/McpInstallDialog.tsx";
 import { useDemoExploration } from "./onboarding/demoExploration.tsx";
 import {
@@ -3173,6 +3178,7 @@ function GcpLogGroupFilter({
     : logNames;
   const dirty = JSON.stringify(draft) !== persistedKey;
   const enabledCount = logNames.filter((name) => !draft.includes(name)).length;
+  const exclusionLimitReached = draft.length >= connection.maxLogExclusions;
 
   return (
     <div className="rounded-md border border-border bg-surface-2/50">
@@ -3215,18 +3221,27 @@ function GcpLogGroupFilter({
         ) : (
           visibleLogNames.map((logName) => {
             const enabled = !draft.includes(logName);
+            const canToggle = canToggleGcpLogGroup(
+              enabled,
+              draft.length,
+              connection.maxLogExclusions,
+            );
             return (
               <label
                 key={logName}
                 className={`flex items-center gap-2 rounded-sm px-2 py-1.5 text-[11.5px] text-muted ${
                   canManage ? "cursor-pointer hover:bg-surface-2 hover:text-fg" : "cursor-default"
                 }`}
-                title={logName}
+                title={
+                  canToggle
+                    ? logName
+                    : `Enable another group before excluding this one (limit: ${connection.maxLogExclusions}).`
+                }
               >
                 <input
                   type="checkbox"
                   checked={enabled}
-                  disabled={!canManage || save.isPending}
+                  disabled={!canManage || !canToggle || save.isPending}
                   onChange={() =>
                     setDraft((current) =>
                       (enabled
@@ -3250,6 +3265,12 @@ function GcpLogGroupFilter({
         {!canManage && (
           <span className="mr-auto text-[11.5px] text-muted">
             Project managers can change this policy.
+          </span>
+        )}
+        {canManage && exclusionLimitReached && (
+          <span className="mr-auto text-[11.5px] text-warning">
+            Exclusion limit reached ({connection.maxLogExclusions}). Enable a group before disabling
+            another.
           </span>
         )}
         {save.isError && (

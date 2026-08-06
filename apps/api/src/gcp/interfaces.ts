@@ -9,6 +9,7 @@ import { resolveActiveOrgContext } from "../org-context.js";
 import {
   type GcpApplicationConfig,
   GcpLogExclusionError,
+  MAX_GCP_LOG_EXCLUSIONS,
   updateGcpLogExclusions,
 } from "./application.js";
 import {
@@ -154,6 +155,7 @@ function toPublic(connection: GcpConnectionRecord | null, canManage: boolean) {
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,
     canManage,
+    maxLogExclusions: MAX_GCP_LOG_EXCLUSIONS,
   };
 }
 

@@ -27,3 +27,11 @@ export function mergeGcpLogNames(
     gcpLogGroupLabel(a).localeCompare(gcpLogGroupLabel(b)),
   );
 }
+
+export function canToggleGcpLogGroup(
+  currentlyEnabled: boolean,
+  excludedCount: number,
+  maxLogExclusions: number,
+): boolean {
+  return !currentlyEnabled || excludedCount < maxLogExclusions;
+}
