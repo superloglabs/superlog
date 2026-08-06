@@ -3,6 +3,7 @@
 // own client deadline so they cannot extend or block the core worker tick.
 import { type ClickHouseClient, createClient } from "@clickhouse/client";
 import { type UsageMeterTicker, createUsageMeterTicker } from "../billing/usage-meter-ticker.js";
+import { getClickhouseConfig } from "../infra/clickhouse/config.js";
 import type { JobDefinition } from "../jobs.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -45,10 +46,7 @@ export function createUsageMeterJob(
       return async () => {
         const signal = AbortSignal.timeout(jobTimeoutMs);
         const clickhouse = createClickHouse({
-          url: env.CLICKHOUSE_URL ?? "http://localhost:8123",
-          username: env.CLICKHOUSE_USER ?? "default",
-          password: env.CLICKHOUSE_PASSWORD ?? "",
-          database: env.CLICKHOUSE_DB ?? "superlog",
+          ...getClickhouseConfig(env),
           request_timeout: positiveNumber(
             env.BILLING_CLICKHOUSE_REQUEST_TIMEOUT_MS,
             DEFAULT_REQUEST_TIMEOUT_MS,
