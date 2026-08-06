@@ -14,6 +14,45 @@ export type GcpApplicationConfig = {
   pushEndpoint: string;
 };
 
+const MAX_GCP_LOG_EXCLUSIONS = 200;
+
+export async function updateGcpLogExclusions(input: {
+  projectId: string;
+  excludedLogNames: unknown;
+  repository: GcpConnectionRepository;
+}): Promise<GcpConnectionRecord> {
+  const connection = await input.repository.findCurrent(input.projectId);
+  if (!connection || connection.status !== "connected" || connection.revokedAt) {
+    throw new Error("Connected GCP project not found");
+  }
+  if (!Array.isArray(input.excludedLogNames)) {
+    throw new Error("excludedLogNames must be an array");
+  }
+  if (input.excludedLogNames.length > MAX_GCP_LOG_EXCLUSIONS) {
+    throw new Error(`At most ${MAX_GCP_LOG_EXCLUSIONS} GCP log names can be excluded`);
+  }
+
+  const prefix = `projects/${connection.gcpProjectId}/logs/`;
+  const excludedLogNames = Array.from(
+    new Set(
+      input.excludedLogNames.map((value) => {
+        if (typeof value !== "string") throw new Error("Every excluded log name must be a string");
+        const logName = value.trim();
+        if (
+          !logName.startsWith(prefix) ||
+          logName.length === prefix.length ||
+          logName.length > 512
+        ) {
+          throw new Error("Excluded log names must belong to the connected GCP project");
+        }
+        return logName;
+      }),
+    ),
+  ).sort();
+
+  return input.repository.updateExcludedLogNames(connection.id, excludedLogNames);
+}
+
 export async function completeGcpConnect(input: {
   connectionId: string;
   code?: string;

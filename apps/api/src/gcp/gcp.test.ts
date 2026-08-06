@@ -696,6 +696,39 @@ test("a stale callback failure cannot demote an already connected row", async ()
   assert.equal(current?.lastError, null);
 });
 
+test("a project manager can update GCP log exclusions through the connection API", async () => {
+  const { org, user, project } = await seedProject();
+  await db.insert(schema.gcpConnections).values({
+    projectId: project.id,
+    gcpProjectId: "acme-production",
+    readerServiceAccountEmail: config.readerServiceAccountEmail,
+    createdBy: user.id,
+    status: "connected",
+  });
+  const app = new Hono<{
+    Variables: { userId: string; orgId: string | null };
+  }>();
+  app.use("/api/*", async (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  mountGcpAuthed(app, { config });
+
+  const logName = "projects/acme-production/logs/run.googleapis.com%2Fstderr";
+  const response = await app.request(`/api/projects/${project.id}/gcp/log-exclusions`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ excludedLogNames: [logName] }),
+  });
+
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { excludedLogNames: string[] };
+  assert.deepEqual(body.excludedLogNames, [logName]);
+  const persisted = await new DrizzleGcpConnectionRepository().findCurrent(project.id);
+  assert.deepEqual(persisted?.excludedLogNames, [logName]);
+});
+
 test("starting the same GCP project twice reuses one active connection", async () => {
   const { user, project } = await seedProject();
   const repository = new DrizzleGcpConnectionRepository();

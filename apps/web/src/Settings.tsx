@@ -32,6 +32,7 @@ import {
   useDeleteOrgProject,
   useDeleteSlackRoute,
   useDeleteWebhook,
+  useExploreAttributeValues,
   useGcpConnection,
   useGithubBranches,
   useGithubInstallation,
@@ -74,6 +75,7 @@ import {
   useSaveProjectDigest,
   useSentryInstallation,
   useSetCloudflareAutoWire,
+  useSetGcpLogExclusions,
   useSetIngestFilters,
   useSetSlackRoute,
   useSetupCloudStream,
@@ -130,7 +132,7 @@ import {
   SkeletonBlock,
   Tile,
 } from "./design/ui";
-import { gcpConnectAction } from "./gcp-settings-model.ts";
+import { gcpConnectAction, gcpLogGroupLabel, mergeGcpLogNames } from "./gcp-settings-model.ts";
 import { McpInstallPanel } from "./onboarding/McpInstallDialog.tsx";
 import { useDemoExploration } from "./onboarding/demoExploration.tsx";
 import {
@@ -3095,6 +3097,9 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
             </Chip>
           )}
         </div>
+        {row?.status === "connected" && (
+          <GcpLogGroupFilter projectId={projectId} connection={row} />
+        )}
         {row?.lastError && <p className="text-[12.5px] text-danger">{row.lastError}</p>}
         {!configured && (
           <p className="text-[12.5px] text-muted">
@@ -3118,6 +3123,152 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
         {start.error && <p className="text-[12.5px] text-danger">{String(start.error)}</p>}
       </div>
     </Tile>
+  );
+}
+
+function GcpLogGroupFilter({
+  projectId,
+  connection,
+}: {
+  projectId: string | undefined;
+  connection: Extract<NonNullable<ReturnType<typeof useGcpConnection>["data"]>, { status: string }>;
+}) {
+  const range = useMemo(() => {
+    const until = new Date();
+    return {
+      since: new Date(until.getTime() - 30 * 24 * 60 * 60 * 1_000).toISOString(),
+      until: until.toISOString(),
+    };
+  }, []);
+  const discovered = useExploreAttributeValues(projectId, "log.gcp.log_name", range, "logs");
+  const save = useSetGcpLogExclusions(projectId);
+  const persistedKey = JSON.stringify(connection.excludedLogNames);
+  const persistedExcludedLogNames = useMemo(
+    () => JSON.parse(persistedKey) as string[],
+    [persistedKey],
+  );
+  const [draft, setDraft] = useState<string[]>(connection.excludedLogNames);
+  const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    setDraft(persistedExcludedLogNames);
+  }, [persistedExcludedLogNames]);
+
+  const logNames = useMemo(
+    () =>
+      mergeGcpLogNames(
+        (discovered.data ?? [])
+          .map((row) => row.value)
+          .filter((name) => name.startsWith(`projects/${connection.gcpProjectId}/logs/`)),
+        persistedExcludedLogNames,
+      ),
+    [connection.gcpProjectId, discovered.data, persistedExcludedLogNames],
+  );
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleLogNames = normalizedQuery
+    ? logNames.filter((name) => gcpLogGroupLabel(name).toLowerCase().includes(normalizedQuery))
+    : logNames;
+  const dirty = JSON.stringify(draft) !== persistedKey;
+  const enabledCount = logNames.filter((name) => !draft.includes(name)).length;
+
+  return (
+    <div className="rounded-md border border-border bg-surface-2/50">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-3 py-2.5">
+        <div>
+          <p className="text-[12.5px] font-medium text-fg">Log groups</p>
+          <p className="mt-0.5 text-[11.5px] leading-4 text-muted">
+            Choose which discovered Cloud Logging groups are stored. New groups are enabled by
+            default.
+          </p>
+        </div>
+        {logNames.length > 0 && (
+          <span className="font-sans text-[10.5px] tabular-nums text-subtle">
+            {enabledCount} of {logNames.length} enabled
+          </span>
+        )}
+      </div>
+
+      {logNames.length > 5 && (
+        <div className="border-b border-border p-2">
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search log groups…"
+            aria-label="Search GCP log groups"
+            className="h-7"
+          />
+        </div>
+      )}
+
+      <div className="max-h-52 overflow-y-auto p-1.5">
+        {discovered.isLoading && logNames.length === 0 ? (
+          <p className="px-2 py-3 text-[11.5px] text-muted">Discovering recent log groups…</p>
+        ) : visibleLogNames.length === 0 ? (
+          <p className="px-2 py-3 text-[11.5px] text-muted">
+            {normalizedQuery
+              ? "No matching log groups."
+              : "Log groups will appear here after GCP logs arrive."}
+          </p>
+        ) : (
+          visibleLogNames.map((logName) => {
+            const enabled = !draft.includes(logName);
+            return (
+              <label
+                key={logName}
+                className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-[11.5px] text-muted hover:bg-surface-2 hover:text-fg"
+                title={logName}
+              >
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  disabled={save.isPending}
+                  onChange={() =>
+                    setDraft((current) =>
+                      (enabled
+                        ? [...current, logName]
+                        : current.filter((name) => name !== logName)
+                      ).sort(),
+                    )
+                  }
+                  className="h-3.5 w-3.5 accent-[var(--accent)]"
+                />
+                <span className="min-w-0 flex-1 truncate font-sans">
+                  {gcpLogGroupLabel(logName)}
+                </span>
+              </label>
+            );
+          })
+        )}
+      </div>
+
+      <div className="flex items-center justify-end gap-2 border-t border-border px-3 py-2">
+        {save.isError && (
+          <span className="mr-auto text-[11.5px] text-danger">Couldn’t save log filters.</span>
+        )}
+        {save.isSuccess && !dirty && (
+          <span className="mr-auto text-[11.5px] text-success">Filters saved</span>
+        )}
+        {dirty && (
+          <Btn
+            size="sm"
+            variant="ghost"
+            disabled={save.isPending}
+            onClick={() => setDraft(persistedExcludedLogNames)}
+          >
+            Discard
+          </Btn>
+        )}
+        <Btn
+          size="sm"
+          variant="secondary"
+          loading={save.isPending}
+          disabled={!dirty || save.isPending}
+          onClick={() => save.mutate(draft)}
+        >
+          Save filters
+        </Btn>
+      </div>
+    </div>
   );
 }
 

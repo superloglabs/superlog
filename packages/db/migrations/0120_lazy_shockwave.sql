@@ -1,0 +1,1 @@
+ALTER TABLE "gcp_connections" ADD COLUMN "excluded_log_names" text[] DEFAULT '{}'::text[] NOT NULL;

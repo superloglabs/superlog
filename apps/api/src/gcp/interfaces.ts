@@ -2,11 +2,11 @@ import { db, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { logger } from "../logger.js";
 import { requireProjectManagerContext } from "../org-authorization-http.js";
 import { hasProjectManagerAccess } from "../org-authorization.js";
 import { resolveActiveOrgContext } from "../org-context.js";
-import { logger } from "../logger.js";
-import type { GcpApplicationConfig } from "./application.js";
+import { type GcpApplicationConfig, updateGcpLogExclusions } from "./application.js";
 import {
   completeGcpAuthorization,
   connectGcpAuthorization,
@@ -27,8 +27,7 @@ import { signGcpState, verifyGcpState } from "./state.js";
 
 type Vars = { userId: string; orgId: string | null };
 
-const GCP_SETUP_FAILED_MESSAGE =
-  "Google Cloud setup failed. Please try again or contact support.";
+const GCP_SETUP_FAILED_MESSAGE = "Google Cloud setup failed. Please try again or contact support.";
 const gcpLog = logger.child({ scope: "gcp" });
 
 type GcpConnectLog = {
@@ -142,6 +141,7 @@ function toPublic(connection: GcpConnectionRecord | null) {
     lastVerifiedAt: connection.lastVerifiedAt,
     lastLogReceivedAt: connection.lastLogReceivedAt,
     lastMetricsReceivedAt: connection.lastMetricsReceivedAt,
+    excludedLogNames: connection.excludedLogNames,
     metricsBudgetMonth: connection.metricsBudgetMonth,
     metricsSeriesRead: connection.metricsSeriesRead,
     metricsMonthlySeriesLimit: monthlySeriesLimit(),
@@ -158,6 +158,25 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
   app.get("/api/projects/:projectId/gcp/connection", async (c) => {
     const context = await requireProjectAccess(c, c.req.param("projectId"));
     return c.json(toPublic(await repository.findCurrent(context.projectId)));
+  });
+
+  app.patch("/api/projects/:projectId/gcp/log-exclusions", async (c) => {
+    const context = await requireProjectManager(c, c.req.param("projectId"));
+    const body = (await c.req.json().catch(() => ({}))) as { excludedLogNames?: unknown };
+    try {
+      return c.json(
+        toPublic(
+          await updateGcpLogExclusions({
+            projectId: context.projectId,
+            excludedLogNames: body.excludedLogNames,
+            repository,
+          }),
+        ),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid GCP log exclusions";
+      return c.json({ error: message }, message === "Connected GCP project not found" ? 404 : 400);
+    }
   });
 
   app.post("/api/projects/:projectId/gcp/install-url", async (c) => {

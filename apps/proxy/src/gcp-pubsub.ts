@@ -97,7 +97,17 @@ const SEVERITY_NUMBER: Record<string, number> = {
   EMERGENCY: 22,
 };
 
-export function gcpPubSubLogToOtlp(body: Buffer, expectedGcpProjectId: string): GcpOtlpLogsExport {
+export function gcpPubSubLogToOtlp(body: Buffer, expectedGcpProjectId: string): GcpOtlpLogsExport;
+export function gcpPubSubLogToOtlp(
+  body: Buffer,
+  expectedGcpProjectId: string,
+  excludedLogNames: readonly string[],
+): GcpOtlpLogsExport | null;
+export function gcpPubSubLogToOtlp(
+  body: Buffer,
+  expectedGcpProjectId: string,
+  excludedLogNames: readonly string[] = [],
+): GcpOtlpLogsExport | null {
   const push = parseObject(
     JSON.parse(body.toString("utf8")),
     "invalid Pub/Sub push envelope",
@@ -111,6 +121,7 @@ export function gcpPubSubLogToOtlp(body: Buffer, expectedGcpProjectId: string): 
   if (entryProjectId !== expectedGcpProjectId) {
     throw new Error("Cloud Logging entry does not belong to connected project");
   }
+  if (typeof entry.logName === "string" && excludedLogNames.includes(entry.logName)) return null;
 
   const resource = objectOrEmpty(entry.resource);
   const resourceType = stringOrEmpty(resource.type);
