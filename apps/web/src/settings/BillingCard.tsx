@@ -65,6 +65,14 @@ function formatUsd(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
+function formatResetDate(timestamp: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: new Date(timestamp).getFullYear() === new Date().getFullYear() ? undefined : "numeric",
+  }).format(new Date(timestamp));
+}
+
 // Metered rates + plan base fees / per-credit overage (mirror pricing.ts). Used
 // to estimate the current bill from this period's usage. Free is never billed
 // (hard caps), so its bill is always $0.
@@ -170,6 +178,17 @@ export function BillingCard() {
       return null;
     }
   };
+  const balances = {
+    investigations: balanceOf("investigations"),
+    spans: balanceOf("spans"),
+    logs: balanceOf("logs"),
+    metric_points: balanceOf("metric_points"),
+  };
+  const quotaResetAt =
+    Object.values(balances)
+      .map((balance) => balance?.nextResetAt)
+      .filter((timestamp): timestamp is number => timestamp != null)
+      .sort((a, b) => a - b)[0] ?? activeSub?.currentPeriodEnd ?? null;
 
   // True when any hard-capped signal (Free tier) is exhausted — ingest/usage is
   // paused, so we surface the upgrade CTA. signalAtHardCap guards against
@@ -294,18 +313,29 @@ export function BillingCard() {
 
       {/* Usage this period — one card with all meters + the running bill */}
       <div className="rounded-lg border border-border bg-surface/30 p-4">
-        <div className="mb-3 text-[11px] tracking-wide text-subtle">This period</div>
+        <div className="mb-3 flex items-baseline justify-between gap-3 text-[11px] tracking-wide text-subtle">
+          <span>This period</span>
+          {quotaResetAt && (
+            <time
+              dateTime={new Date(quotaResetAt).toISOString()}
+              title={new Date(quotaResetAt).toLocaleString()}
+              className="normal-case tracking-normal"
+            >
+              Quotas reset {formatResetDate(quotaResetAt)}
+            </time>
+          )}
+        </div>
         <div className="grid gap-2">
           <UsageMeter
             label="Investigation credits"
-            balance={balanceOf("investigations")}
+            balance={balances.investigations}
             format={(n) => n.toLocaleString()}
           />
-          <UsageMeter label="Spans" balance={balanceOf("spans")} format={formatCount} />
-          <UsageMeter label="Logs" balance={balanceOf("logs")} format={formatCount} />
+          <UsageMeter label="Spans" balance={balances.spans} format={formatCount} />
+          <UsageMeter label="Logs" balance={balances.logs} format={formatCount} />
           <UsageMeter
             label="Metric points"
-            balance={balanceOf("metric_points")}
+            balance={balances.metric_points}
             format={formatCount}
           />
         </div>

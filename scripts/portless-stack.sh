@@ -17,7 +17,7 @@ Starts an isolated local stack:
   - separate Docker Compose project and volumes
   - separate host ports for Postgres, ClickHouse, and the collector
   - Drizzle migrations against that stack's Postgres
-  - api, web, and intake proxy behind portless named routes
+  - api, web, and intake proxy behind the active portless routes
 USAGE
 }
 
@@ -138,11 +138,11 @@ else
   PROXY_ROUTE="intake.$STACK_NAME.superlog"
 fi
 
-# Detect the portless proxy endpoint. Portless persists the port and TLS mode
-# separately (`proxy.port` + optional `proxy.tls`), so URL generation must read
-# both. Embedding the port and matching scheme is required so every process —
-# including node fetch in seed scripts — reaches the same proxy that the CLI
-# starts.
+# Detect the portless proxy endpoint. Portless persists the port, TLS mode, and
+# active TLD separately, so URL generation must read all three. The TLD can be
+# `.local` when a shared proxy is in LAN mode, or a user-selected custom value.
+# Matching the running proxy is required so every process — including node fetch
+# in seed scripts — reaches the routes that the CLI actually registers.
 PORTLESS_PORT_FILE="$HOME/.portless/proxy.port"
 PORTLESS_TLS_FILE="$HOME/.portless/proxy.tls"
 PORTLESS_TLD_FILE="$HOME/.portless/proxy.tld"
@@ -152,6 +152,9 @@ URL_SCHEME="https"
 URL_TLD="localhost"
 if [[ -s "$PORTLESS_PORT_FILE" ]]; then
   PROXY_PORT_VAL="$(tr -d '[:space:]' < "$PORTLESS_PORT_FILE")"
+fi
+if [[ -s "$PORTLESS_TLD_FILE" ]]; then
+  URL_TLD="$(tr -d '[:space:]' < "$PORTLESS_TLD_FILE")"
 fi
 # Preserve portless' native no-marker behavior: privileged installs bind 443.
 # Non-privileged setup can opt into a shared port explicitly; writing the marker
@@ -269,9 +272,7 @@ print_summary() {
 
 ensure_portless_routes_healthy() {
   # ~/.portless/routes.json is a shared JSON array that the portless proxy
-  # uses to dispatch the generated <name>.superlog.<tld> host to a local port.
-  # The persisted proxy.tld controls that suffix (`localhost` by default,
-  # `local` in LAN mode). Two failure
+  # uses to dispatch <name>.superlog.<tld> to a local port. Two failure
   # modes we've seen:
   #
   #   (a) `routes.json` is zero-bytes, missing, or non-array JSON. portless'
