@@ -196,6 +196,12 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
       return c.json(toPublic(connection, true));
     } catch (error) {
       if (error instanceof GcpLogExclusionError) {
+        if (error.code === "not_found") {
+          log.info(
+            { projectId: context.projectId, userId: context.userId },
+            "GCP log exclusions update skipped: connected project not found",
+          );
+        }
         return c.json({ error: error.message }, error.code === "not_found" ? 404 : 400);
       }
       log.error(

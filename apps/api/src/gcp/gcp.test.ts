@@ -797,6 +797,40 @@ test("a project member sees the GCP log policy as read-only", async () => {
   assert.equal(body.canManage, false);
 });
 
+test("a missing connected GCP project is audited when an exclusion update returns 404", async () => {
+  const { org, user, project } = await seedProject();
+  const auditEvents: Array<{ fields: Record<string, unknown>; message: string }> = [];
+  const app = new Hono<{
+    Variables: { userId: string; orgId: string | null };
+  }>();
+  app.use("/api/*", async (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  mountGcpAuthed(app, {
+    config,
+    log: {
+      error() {},
+      info: (fields, message) => auditEvents.push({ fields, message }),
+    },
+  });
+
+  const response = await app.request(`/api/projects/${project.id}/gcp/log-exclusions`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ excludedLogNames: [] }),
+  });
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(auditEvents, [
+    {
+      fields: { projectId: project.id, userId: user.id },
+      message: "GCP log exclusions update skipped: connected project not found",
+    },
+  ]);
+});
+
 test("an unexpected GCP log-exclusion persistence failure is logged and returned as a 500", async () => {
   const { org, user, project } = await seedProject();
   await db.insert(schema.gcpConnections).values({
