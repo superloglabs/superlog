@@ -108,14 +108,16 @@ export function mountNotionPublic(app: Hono<any>): void {
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
 export function mountNotionAuthed(app: Hono<any>): void {
   const { clientId, clientSecret, redirectUrl, stateSecret } = config();
+  const configurable = !!(clientId && clientSecret && stateSecret);
 
   app.get("/api/notion/installation", async (c) => {
     const ctx = await resolveUserOrg(c);
-    if (!ctx) return c.json({ installed: false });
+    if (!ctx) return c.json({ installed: false, configurable });
     const row = await findCurrentInstallation(ctx.projectId);
-    if (!row) return c.json({ installed: false });
+    if (!row) return c.json({ installed: false, configurable });
     return c.json({
       installed: true,
+      configurable,
       workspaceId: row.workspaceId,
       workspaceName: row.workspaceName,
       workspaceIcon: row.workspaceIcon,
