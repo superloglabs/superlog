@@ -218,7 +218,8 @@ test("stampIssueFingerprintsFailOpen forwards the original body when stamping th
     logger,
   );
 
-  assert.equal(result, body);
+  assert.equal(result.body, body);
+  assert.equal(result.authoritative, false);
   assert.equal(logger.calls.some((c) => c.level === "warn"), true);
 });
 
@@ -250,8 +251,9 @@ test("stampIssueFingerprintsFailOpen returns the stamped body and logs on succes
     logger,
   );
 
-  const stamped = JSON.parse(result.toString("utf8"));
+  const stamped = JSON.parse(result.body.toString("utf8"));
   const attrs = stamped.resourceLogs[0].scopeLogs[0].logRecords[0].attributes;
+  assert.equal(result.authoritative, true);
   assert.ok(attrs.find((a: { key: string }) => a.key === "superlog.issue_fingerprint"));
   assert.equal(logger.calls.some((c) => c.level === "info"), true);
 });
