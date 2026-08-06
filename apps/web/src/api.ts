@@ -3572,6 +3572,7 @@ export function useExploreAttributeValues(
   key: string | undefined,
   range: ExploreRange,
   source?: ExploreAttributeSource,
+  valuePrefix?: string,
 ) {
   const fetcher = useFetcher();
   return useQuery({
@@ -3583,6 +3584,7 @@ export function useExploreAttributeValues(
       range.since,
       range.until,
       source ?? "",
+      valuePrefix ?? "",
     ],
     queryFn: () => {
       if (!projectId || !key) return Promise.resolve([]);
@@ -3591,7 +3593,7 @@ export function useExploreAttributeValues(
           key,
         )}&since=${encodeURIComponent(range.since)}&until=${encodeURIComponent(range.until)}${
           source ? `&source=${source}` : ""
-        }`,
+        }${valuePrefix ? `&valuePrefix=${encodeURIComponent(valuePrefix)}` : ""}`,
       );
     },
     enabled: !!projectId && !!key,

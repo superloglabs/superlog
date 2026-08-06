@@ -3148,7 +3148,14 @@ function GcpLogGroupFilter({
       until: until.toISOString(),
     };
   }, []);
-  const discovered = useExploreAttributeValues(projectId, "log.gcp.log_name", range, "logs");
+  const logNamePrefix = `projects/${connection.gcpProjectId}/logs/`;
+  const discovered = useExploreAttributeValues(
+    projectId,
+    "log.gcp.log_name",
+    range,
+    "logs",
+    logNamePrefix,
+  );
   const save = useSetGcpLogExclusions(projectId);
   const persistedKey = JSON.stringify(connection.excludedLogNames);
   const persistedExcludedLogNames = useMemo(
@@ -3167,10 +3174,10 @@ function GcpLogGroupFilter({
       mergeGcpLogNames(
         (discovered.data ?? [])
           .map((row) => row.value)
-          .filter((name) => name.startsWith(`projects/${connection.gcpProjectId}/logs/`)),
+          .filter((name) => name.startsWith(logNamePrefix)),
         persistedExcludedLogNames,
       ),
-    [connection.gcpProjectId, discovered.data, persistedExcludedLogNames],
+    [discovered.data, logNamePrefix, persistedExcludedLogNames],
   );
   const normalizedQuery = query.trim().toLowerCase();
   const visibleLogNames = normalizedQuery
