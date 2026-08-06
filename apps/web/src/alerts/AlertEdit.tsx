@@ -102,6 +102,7 @@ function AlertEditInner({
         storedGroupBy !== "service.name" &&
         !storedGroupBy.startsWith("resource.") &&
         !storedGroupBy.startsWith("log.") &&
+        !storedGroupBy.startsWith("span.") &&
         !storedGroupBy.startsWith("attr:")
         ? `resource.${storedGroupBy}`
         : storedGroupBy,
