@@ -133,8 +133,8 @@ function monthlySeriesLimit(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 100_000_000;
 }
 
-function toPublic(connection: GcpConnectionRecord | null) {
-  if (!connection) return { connected: false as const };
+function toPublic(connection: GcpConnectionRecord | null, canManage: boolean) {
+  if (!connection) return { connected: false as const, canManage };
   return {
     connected: connection.status === "connected",
     id: connection.id,
@@ -152,6 +152,7 @@ function toPublic(connection: GcpConnectionRecord | null) {
     lastError: connection.lastError ? GCP_SETUP_FAILED_MESSAGE : null,
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,
+    canManage,
   };
 }
 
@@ -161,7 +162,12 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
 
   app.get("/api/projects/:projectId/gcp/connection", async (c) => {
     const context = await requireProjectAccess(c, c.req.param("projectId"));
-    return c.json(toPublic(await repository.findCurrent(context.projectId)));
+    const canManage = await hasProjectManagerAccess({
+      userId: context.userId,
+      preferredOrgId: c.var.orgId,
+      projectId: context.projectId,
+    });
+    return c.json(toPublic(await repository.findCurrent(context.projectId), canManage));
   });
 
   app.patch("/api/projects/:projectId/gcp/log-exclusions", async (c) => {
@@ -175,6 +181,7 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
             excludedLogNames: body.excludedLogNames,
             repository,
           }),
+          true,
         ),
       );
     } catch (error) {

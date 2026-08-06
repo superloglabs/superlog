@@ -723,10 +723,46 @@ test("a project manager can update GCP log exclusions through the connection API
   });
 
   assert.equal(response.status, 200);
-  const body = (await response.json()) as { excludedLogNames: string[] };
+  const body = (await response.json()) as { excludedLogNames: string[]; canManage: boolean };
   assert.deepEqual(body.excludedLogNames, [logName]);
+  assert.equal(body.canManage, true);
   const persisted = await new DrizzleGcpConnectionRepository().findCurrent(project.id);
   assert.deepEqual(persisted?.excludedLogNames, [logName]);
+});
+
+test("a project member sees the GCP log policy as read-only", async () => {
+  const { org, user: owner, project } = await seedProject();
+  const tag = `gcp-member-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const [member] = await db
+    .insert(schema.users)
+    .values({ email: `${tag}@example.com` })
+    .returning();
+  assert.ok(member);
+  userIds.push(member.id);
+  await db.insert(schema.orgMembers).values({ orgId: org.id, userId: member.id, role: "member" });
+  await db.insert(schema.gcpConnections).values({
+    projectId: project.id,
+    gcpProjectId: "acme-production",
+    readerServiceAccountEmail: config.readerServiceAccountEmail,
+    createdBy: owner.id,
+    status: "connected",
+  });
+  const app = new Hono<{
+    Variables: { userId: string; orgId: string | null };
+  }>();
+  app.use("/api/*", async (c, next) => {
+    c.set("userId", member.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  mountGcpAuthed(app, { config });
+
+  const response = await app.request(`/api/projects/${project.id}/gcp/connection`);
+
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { connected: boolean; canManage: boolean };
+  assert.equal(body.connected, true);
+  assert.equal(body.canManage, false);
 });
 
 test("an unexpected GCP log-exclusion persistence failure is logged and returned as a 500", async () => {

@@ -3066,6 +3066,7 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
       : null;
   const configured = capabilities.data?.gcpConnect ?? true;
   const connectAction = gcpConnectAction(row?.status ?? null);
+  const canManage = connection.data?.canManage ?? false;
 
   return (
     <Tile label="Google Cloud">
@@ -3098,7 +3099,7 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
           )}
         </div>
         {row?.status === "connected" && (
-          <GcpLogGroupFilter projectId={projectId} connection={row} />
+          <GcpLogGroupFilter projectId={projectId} connection={row} canManage={canManage} />
         )}
         {row?.lastError && <p className="text-[12.5px] text-danger">{row.lastError}</p>}
         {!configured && (
@@ -3111,7 +3112,7 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
             size="sm"
             variant="primary"
             loading={start.isPending}
-            disabled={!projectId || !configured || start.isPending}
+            disabled={!projectId || !configured || !canManage || start.isPending}
             onClick={async () => {
               const { url } = await start.mutateAsync();
               window.location.href = url;
@@ -3129,9 +3130,11 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
 function GcpLogGroupFilter({
   projectId,
   connection,
+  canManage,
 }: {
   projectId: string | undefined;
   connection: Extract<NonNullable<ReturnType<typeof useGcpConnection>["data"]>, { status: string }>;
+  canManage: boolean;
 }) {
   const range = useMemo(() => {
     const until = new Date();
@@ -3215,13 +3218,15 @@ function GcpLogGroupFilter({
             return (
               <label
                 key={logName}
-                className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-[11.5px] text-muted hover:bg-surface-2 hover:text-fg"
+                className={`flex items-center gap-2 rounded-sm px-2 py-1.5 text-[11.5px] text-muted ${
+                  canManage ? "cursor-pointer hover:bg-surface-2 hover:text-fg" : "cursor-default"
+                }`}
                 title={logName}
               >
                 <input
                   type="checkbox"
                   checked={enabled}
-                  disabled={save.isPending}
+                  disabled={!canManage || save.isPending}
                   onChange={() =>
                     setDraft((current) =>
                       (enabled
@@ -3242,13 +3247,18 @@ function GcpLogGroupFilter({
       </div>
 
       <div className="flex items-center justify-end gap-2 border-t border-border px-3 py-2">
+        {!canManage && (
+          <span className="mr-auto text-[11.5px] text-muted">
+            Project managers can change this policy.
+          </span>
+        )}
         {save.isError && (
           <span className="mr-auto text-[11.5px] text-danger">Couldn’t save log filters.</span>
         )}
         {save.isSuccess && !dirty && (
           <span className="mr-auto text-[11.5px] text-success">Filters saved</span>
         )}
-        {dirty && (
+        {canManage && dirty && (
           <Btn
             size="sm"
             variant="ghost"
@@ -3258,15 +3268,17 @@ function GcpLogGroupFilter({
             Discard
           </Btn>
         )}
-        <Btn
-          size="sm"
-          variant="secondary"
-          loading={save.isPending}
-          disabled={!dirty || save.isPending}
-          onClick={() => save.mutate(draft)}
-        >
-          Save filters
-        </Btn>
+        {canManage && (
+          <Btn
+            size="sm"
+            variant="secondary"
+            loading={save.isPending}
+            disabled={!dirty || save.isPending}
+            onClick={() => save.mutate(draft)}
+          >
+            Save filters
+          </Btn>
+        )}
       </div>
     </div>
   );

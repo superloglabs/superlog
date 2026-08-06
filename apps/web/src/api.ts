@@ -1116,7 +1116,7 @@ export function useUninstallRailway(projectId: string | undefined) {
 }
 
 export type GcpConnection =
-  | { connected: false }
+  | { connected: false; canManage: boolean }
   | {
       connected: boolean;
       id: string;
@@ -1134,6 +1134,7 @@ export type GcpConnection =
       lastError: string | null;
       createdAt: string;
       updatedAt: string;
+      canManage: boolean;
     };
 
 export function useGcpConnection(projectId: string | undefined) {
