@@ -24,6 +24,16 @@ if [[ -e "$TMP_HOME/.portless/proxy.port" ]]; then
 fi
 
 mkdir -p "$TMP_HOME/.portless"
+printf 'local\n' > "$TMP_HOME/.portless/proxy.tld"
+output="$(HOME="$TMP_HOME" "$REPO_ROOT/scripts/portless-stack.sh" env --name "$STACK_NAME")"
+if ! grep -Fqx "web:        https://$STACK_NAME.superlog.local" <<< "$output"; then
+  echo "expected a persisted proxy TLD to be reflected in generated URLs" >&2
+  printf '%s\n' "$output" >&2
+  exit 1
+fi
+rm "$TMP_HOME/.portless/proxy.tld"
+
+mkdir -p "$TMP_HOME/.portless"
 printf '443\n' > "$TMP_HOME/.portless/proxy.port"
 output="$(HOME="$TMP_HOME" "$REPO_ROOT/scripts/portless-stack.sh" env --name "$STACK_NAME")"
 if ! grep -Fqx "web:        http://$STACK_NAME.superlog.localhost:443" <<< "$output"; then
