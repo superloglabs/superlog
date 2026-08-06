@@ -173,7 +173,11 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
 
   app.patch("/api/projects/:projectId/gcp/log-exclusions", async (c) => {
     const context = await requireProjectManager(c, c.req.param("projectId"));
-    const body = (await c.req.json().catch(() => ({}))) as { excludedLogNames?: unknown };
+    const parsedBody: unknown = await c.req.json().catch(() => ({}));
+    const body =
+      parsedBody && typeof parsedBody === "object" && !Array.isArray(parsedBody)
+        ? (parsedBody as { excludedLogNames?: unknown })
+        : {};
     try {
       const connection = await updateGcpLogExclusions({
         projectId: context.projectId,

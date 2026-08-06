@@ -715,10 +715,11 @@ test("a project manager can update GCP log exclusions through the connection API
     await next();
   });
   const auditEvents: Array<{ fields: Record<string, unknown>; message: string }> = [];
+  const unexpectedErrors: Array<{ fields: Record<string, unknown>; message: string }> = [];
   mountGcpAuthed(app, {
     config,
     log: {
-      error() {},
+      error: (fields, message) => unexpectedErrors.push({ fields, message }),
       info: (fields, message) => auditEvents.push({ fields, message }),
     },
   });
@@ -749,6 +750,14 @@ test("a project manager can update GCP log exclusions through the connection API
       message: "GCP log exclusions updated",
     },
   ]);
+  const invalidResponse = await app.request(`/api/projects/${project.id}/gcp/log-exclusions`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: "null",
+  });
+  assert.equal(invalidResponse.status, 400);
+  assert.deepEqual(await invalidResponse.json(), { error: "excludedLogNames must be an array" });
+  assert.deepEqual(unexpectedErrors, []);
   const persisted = await new DrizzleGcpConnectionRepository().findCurrent(project.id);
   assert.deepEqual(persisted?.excludedLogNames, [logName]);
 });
