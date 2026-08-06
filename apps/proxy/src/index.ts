@@ -769,6 +769,7 @@ async function forward(
           if (!transformed) {
             responseStatus = 200;
             span.setAttribute("ingest.dropped", "body_filtered");
+            span.setAttribute("ingest.operation", "gcp_log_excluded");
             span.setStatus({ code: SpanStatusCode.OK });
             return new Response(new Uint8Array(0), {
               status: 200,
