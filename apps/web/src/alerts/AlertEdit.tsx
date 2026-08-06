@@ -97,8 +97,7 @@ function AlertEditInner({
     setLogAttrs(a.filter.logAttrs ?? []);
     const storedGroupBy = a.groupBy ?? "";
     setGroupBy(
-      a.source === "logs" &&
-        storedGroupBy &&
+      storedGroupBy &&
         storedGroupBy !== "service" &&
         storedGroupBy !== "service.name" &&
         !storedGroupBy.startsWith("resource.") &&
@@ -133,7 +132,11 @@ function AlertEditInner({
   }, [groupBy, groupMode]);
 
   const range = useMemo(defaultRange, []);
-  const keys = useExploreAttributeKeys(projectId, range, source === "logs" ? "logs" : undefined);
+  const keys = useExploreAttributeKeys(
+    projectId,
+    range,
+    source === "metric" ? "metrics" : source,
+  );
   const visibleAttrs = useMemo(
     () =>
       source === "logs"
