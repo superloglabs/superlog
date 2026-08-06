@@ -87,6 +87,19 @@ test("validateAlertInput requires groupBy when groupMode = per_group", () => {
   );
 });
 
+test("validateAlertInput rejects log attributes for non-log alerts", () => {
+  expectBadRequest(
+    () =>
+      validateAlertInput(
+        baseInput({
+          source: "traces",
+          filter: { logAttrs: [{ key: "gcp.http_request.status", value: "422" }] },
+        }),
+      ),
+    "logAttrs can only be used when source = logs",
+  );
+});
+
 test("alertInputToFilter keeps only the filter fields", () => {
   const filter = alertInputToFilter(
     baseInput({
@@ -94,6 +107,7 @@ test("alertInputToFilter keeps only the filter fields", () => {
       groupMode: "per_group",
       filter: {
         resourceAttrs: [{ key: "deployment.environment", value: "prod" }],
+        logAttrs: [{ key: "gcp.http_request.status", value: "422" }],
         service: "checkout",
         severity: "ERROR",
         spanName: "POST /pay",
@@ -105,6 +119,7 @@ test("alertInputToFilter keeps only the filter fields", () => {
 
   assert.deepEqual(filter, {
     resourceAttrs: [{ key: "deployment.environment", value: "prod" }],
+    logAttrs: [{ key: "gcp.http_request.status", value: "422" }],
     service: "checkout",
     severity: "ERROR",
     spanName: "POST /pay",
@@ -117,6 +132,7 @@ test("alertInputToFilter returns undefined fields when no filter is provided", (
   const filter = alertInputToFilter(baseInput());
   assert.deepEqual(filter, {
     resourceAttrs: undefined,
+    logAttrs: undefined,
     service: undefined,
     severity: undefined,
     spanName: undefined,
@@ -222,6 +238,7 @@ test("alertRecordToInput maps a metric alert row to the preview input shape", ()
   // Round-trips through the filter extractor the series builder uses.
   assert.deepEqual(alertInputToFilter(input), {
     resourceAttrs: [{ key: "env", value: "prod" }],
+    logAttrs: undefined,
     service: "worker",
     severity: undefined,
     spanName: undefined,

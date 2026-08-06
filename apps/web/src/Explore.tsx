@@ -1305,6 +1305,7 @@ export function AddFilter({
   existing,
   hasSeverity,
   hasStatus,
+  hideFacets,
   onPick,
   onClose,
 }: {
@@ -1314,6 +1315,7 @@ export function AddFilter({
   existing: ResourceAttr[];
   hasSeverity?: boolean;
   hasStatus?: boolean;
+  hideFacets?: boolean;
   onPick: (f: AddedFilter) => void;
   onClose: () => void;
 }) {
@@ -1489,7 +1491,7 @@ export function AddFilter({
   }
 
   const facetRows: FacetRow[] = [];
-  if (source === "logs") {
+  if (source === "logs" && !hideFacets) {
     facetRows.push({
       kind: "severity",
       label: "severity",
@@ -1497,7 +1499,7 @@ export function AddFilter({
       disabled: !!hasSeverity,
     });
   }
-  if (source === "traces") {
+  if (source === "traces" && !hideFacets) {
     facetRows.push({
       kind: "status",
       label: "status",

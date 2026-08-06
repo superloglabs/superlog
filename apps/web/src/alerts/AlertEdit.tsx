@@ -75,7 +75,8 @@ function AlertEditInner({
   const [enabled, setEnabled] = useState(true);
   const [source, setSource] = useState<AlertSource>("logs");
   const [metricName, setMetricName] = useState("");
-  const [attrs, setAttrs] = useState<ResourceAttr[]>([]);
+  const [resourceAttrs, setResourceAttrs] = useState<ResourceAttr[]>([]);
+  const [logAttrs, setLogAttrs] = useState<ResourceAttr[]>([]);
   const [filterOpen, setFilterOpen] = useState(false);
   const [groupBy, setGroupBy] = useState("");
   const [groupMode, setGroupMode] = useState<AlertGroupMode>("single");
@@ -92,8 +93,20 @@ function AlertEditInner({
     setEnabled(a.enabled);
     setSource(a.source);
     setMetricName(a.metricName ?? "");
-    setAttrs(a.filter.resourceAttrs ?? []);
-    setGroupBy(a.groupBy ?? "");
+    setResourceAttrs(a.filter.resourceAttrs ?? []);
+    setLogAttrs(a.filter.logAttrs ?? []);
+    const storedGroupBy = a.groupBy ?? "";
+    setGroupBy(
+      a.source === "logs" &&
+        storedGroupBy &&
+        storedGroupBy !== "service" &&
+        storedGroupBy !== "service.name" &&
+        !storedGroupBy.startsWith("resource.") &&
+        !storedGroupBy.startsWith("log.") &&
+        !storedGroupBy.startsWith("attr:")
+        ? `resource.${storedGroupBy}`
+        : storedGroupBy,
+    );
     setGroupMode(a.groupMode);
     setAggregation(a.aggregation);
     setComparator(a.comparator);
@@ -114,7 +127,17 @@ function AlertEditInner({
   }, [groupBy, groupMode]);
 
   const range = useMemo(defaultRange, []);
-  const keys = useExploreAttributeKeys(projectId, range);
+  const keys = useExploreAttributeKeys(projectId, range, source === "logs" ? "logs" : undefined);
+  const visibleAttrs = useMemo(
+    () =>
+      source === "logs"
+        ? [
+            ...resourceAttrs.map((attr) => ({ ...attr, key: `resource.${attr.key}` })),
+            ...logAttrs.map((attr) => ({ ...attr, key: `log.${attr.key}` })),
+          ]
+        : resourceAttrs,
+    [source, resourceAttrs, logAttrs],
+  );
 
   const create = useCreateAlert(projectId);
   const update = useUpdateAlert(projectId, alertId ?? "");
@@ -127,7 +150,10 @@ function AlertEditInner({
       enabled,
       source,
       metricName: source === "metric" ? metricName : null,
-      filter: { resourceAttrs: attrs.length ? attrs : undefined },
+      filter: {
+        resourceAttrs: resourceAttrs.length ? resourceAttrs : undefined,
+        logAttrs: source === "logs" && logAttrs.length ? logAttrs : undefined,
+      },
       groupBy: groupBy || null,
       groupMode,
       aggregation,
@@ -141,7 +167,8 @@ function AlertEditInner({
       enabled,
       source,
       metricName,
-      attrs,
+      resourceAttrs,
+      logAttrs,
       groupBy,
       groupMode,
       aggregation,
@@ -178,7 +205,8 @@ function AlertEditInner({
       JSON.stringify({
         source,
         metricName: source === "metric" ? metricName : null,
-        attrs,
+        resourceAttrs,
+        logAttrs: source === "logs" ? logAttrs : undefined,
         groupBy,
         groupMode,
         aggregation,
@@ -186,7 +214,18 @@ function AlertEditInner({
         threshold,
         windowMinutes,
       }),
-    [source, metricName, attrs, groupBy, groupMode, aggregation, comparator, threshold, windowMinutes],
+    [
+      source,
+      metricName,
+      resourceAttrs,
+      logAttrs,
+      groupBy,
+      groupMode,
+      aggregation,
+      comparator,
+      threshold,
+      windowMinutes,
+    ],
   );
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-run is keyed by previewKey; body/mutations are read fresh.
@@ -263,7 +302,11 @@ function AlertEditInner({
           ) : previewSeries.data || preview.data ? (
             <div className="flex flex-col gap-4">
               {preview.data && (
-                <PreviewResult result={preview.data} threshold={threshold} comparator={comparator} />
+                <PreviewResult
+                  result={preview.data}
+                  threshold={threshold}
+                  comparator={comparator}
+                />
               )}
               {previewSeries.data && <AlertPreviewChart series={previewSeries.data} />}
             </div>
@@ -291,10 +334,25 @@ function AlertEditInner({
 
         <SettingsRow title="Filters" description="Narrow down the data this rule looks at">
           <div className="flex flex-wrap items-center gap-2">
-            {attrs.map((a, i) => (
+            {visibleAttrs.map((a, i) => (
               <button
+                type="button"
                 key={`${a.key}=${a.value}-${i}`}
-                onClick={() => setAttrs(attrs.filter((_, j) => j !== i))}
+                onClick={() => {
+                  if (source === "logs" && a.key.startsWith("log.")) {
+                    const key = a.key.slice("log.".length);
+                    setLogAttrs(
+                      logAttrs.filter((attr) => attr.key !== key || attr.value !== a.value),
+                    );
+                  } else {
+                    const key = a.key.startsWith("resource.")
+                      ? a.key.slice("resource.".length)
+                      : a.key;
+                    setResourceAttrs(
+                      resourceAttrs.filter((attr) => attr.key !== key || attr.value !== a.value),
+                    );
+                  }
+                }}
               >
                 <Chip tone="accent">
                   <span className="opacity-70">{a.key}</span>
@@ -312,10 +370,29 @@ function AlertEditInner({
                 <AddFilter
                   projectId={projectId}
                   range={range}
-                  existing={attrs}
+                  source={source === "logs" ? "logs" : undefined}
+                  hideFacets
+                  existing={visibleAttrs}
                   onClose={() => setFilterOpen(false)}
                   onPick={(f) => {
-                    if (f.kind === "attr") setAttrs([...attrs, { key: f.key, value: f.value }]);
+                    if (f.kind === "attr") {
+                      if (source === "logs" && f.key.startsWith("log.")) {
+                        setLogAttrs([
+                          ...logAttrs,
+                          { key: f.key.slice("log.".length), value: f.value },
+                        ]);
+                      } else {
+                        setResourceAttrs([
+                          ...resourceAttrs,
+                          {
+                            key: f.key.startsWith("resource.")
+                              ? f.key.slice("resource.".length)
+                              : f.key,
+                            value: f.value,
+                          },
+                        ]);
+                      }
+                    }
                     setFilterOpen(false);
                   }}
                 />
@@ -634,8 +711,8 @@ function PreviewResult({
           label={result.breaches > 0 ? "Firing" : "OK"}
         />
         <span className="text-[12px] text-muted">
-          value{" "}
-          <span className="tabular-nums text-fg">{result.value.toFixed(2)}</span> {op} {threshold}
+          value <span className="tabular-nums text-fg">{result.value.toFixed(2)}</span> {op}{" "}
+          {threshold}
         </span>
       </div>
     );
@@ -651,7 +728,10 @@ function PreviewResult({
         )}
         {result.groups.map((g) => (
           <div key={g.key} className="flex items-center gap-3 px-3 py-2">
-            <StatusDot tone={g.breaching ? "danger" : "success"} label={g.breaching ? "Firing" : "OK"} />
+            <StatusDot
+              tone={g.breaching ? "danger" : "success"}
+              label={g.breaching ? "Firing" : "OK"}
+            />
             <span className="flex-1 truncate text-[12.5px] text-fg">{g.key || "(empty)"}</span>
             <span className="tabular-nums text-[12.5px] text-muted">{g.value.toFixed(2)}</span>
           </div>

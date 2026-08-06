@@ -56,7 +56,9 @@ const alertInputShape = {
     .max(200)
     .nullable()
     .optional()
-    .describe("Resource attribute to group by, e.g. 'service.name'"),
+    .describe(
+      "Attribute to group by, e.g. 'service.name', 'resource.deployment.environment', or 'log.gcp.http_request.status'",
+    ),
   group_mode: alertGroupModeSchema
     .optional()
     .describe("'single' rolls up everything; 'per_group' fires per distinct group_by value"),

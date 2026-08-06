@@ -17,7 +17,7 @@ Starts an isolated local stack:
   - separate Docker Compose project and volumes
   - separate host ports for Postgres, ClickHouse, and the collector
   - Drizzle migrations against that stack's Postgres
-  - api, web, and intake proxy behind portless .localhost routes
+  - api, web, and intake proxy behind portless named routes
 USAGE
 }
 
@@ -145,9 +145,11 @@ fi
 # starts.
 PORTLESS_PORT_FILE="$HOME/.portless/proxy.port"
 PORTLESS_TLS_FILE="$HOME/.portless/proxy.tls"
+PORTLESS_TLD_FILE="$HOME/.portless/proxy.tld"
 PORT_SUFFIX=""
 PROXY_PORT_VAL=""
 URL_SCHEME="https"
+URL_TLD="localhost"
 if [[ -s "$PORTLESS_PORT_FILE" ]]; then
   PROXY_PORT_VAL="$(tr -d '[:space:]' < "$PORTLESS_PORT_FILE")"
 fi
@@ -171,10 +173,17 @@ fi
 if [[ "$PROXY_PORT_VAL" =~ ^[0-9]+$ ]] && [[ ! -f "$PORTLESS_TLS_FILE" ]]; then
   URL_SCHEME="http"
 fi
+if [[ -s "$PORTLESS_TLD_FILE" ]]; then
+  URL_TLD="$(tr -d '[:space:]' < "$PORTLESS_TLD_FILE")"
+  if [[ ! "$URL_TLD" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]; then
+    echo "invalid portless proxy TLD in $PORTLESS_TLD_FILE: $URL_TLD" >&2
+    exit 1
+  fi
+fi
 
-WEB_URL="$URL_SCHEME://$WEB_ROUTE.localhost$PORT_SUFFIX"
-API_URL="$URL_SCHEME://$API_ROUTE.localhost$PORT_SUFFIX"
-PROXY_URL="$URL_SCHEME://$PROXY_ROUTE.localhost$PORT_SUFFIX"
+WEB_URL="$URL_SCHEME://$WEB_ROUTE.$URL_TLD$PORT_SUFFIX"
+API_URL="$URL_SCHEME://$API_ROUTE.$URL_TLD$PORT_SUFFIX"
+PROXY_URL="$URL_SCHEME://$PROXY_ROUTE.$URL_TLD$PORT_SUFFIX"
 
 write_env_file() {
   mkdir -p "$STACK_DIR" "$LOG_DIR"
@@ -259,12 +268,14 @@ print_summary() {
 
 ensure_portless_routes_healthy() {
   # ~/.portless/routes.json is a shared JSON array that the portless proxy
-  # uses to dispatch <name>.superlog.localhost to a local port. Two failure
+  # uses to dispatch the generated <name>.superlog.<tld> host to a local port.
+  # The persisted proxy.tld controls that suffix (`localhost` by default,
+  # `local` in LAN mode). Two failure
   # modes we've seen:
   #
   #   (a) `routes.json` is zero-bytes, missing, or non-array JSON. portless'
   #       loadRoutes() then treats the table as empty and the user gets the
-  #       "No app registered for <name>.superlog.localhost" landing page.
+  #       "No app registered for <name>.superlog.<tld>" landing page.
   #       Symptom shows up even when `overmind ps` says services are running.
   #
   #   (b) `routes.lock/` (a directory — portless uses mkdir-as-mutex) is
@@ -330,9 +341,9 @@ routes_registered() {
     }
     if (required.size > 0) process.exit(1);
   ' "$routes_file" \
-    "${WEB_ROUTE}.localhost" \
-    "${API_ROUTE}.localhost" \
-    "${PROXY_ROUTE}.localhost"
+    "${WEB_ROUTE}.${URL_TLD}" \
+    "${API_ROUTE}.${URL_TLD}" \
+    "${PROXY_ROUTE}.${URL_TLD}"
 }
 
 start_stack() {
