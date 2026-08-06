@@ -874,6 +874,7 @@ test("an unexpected GCP log-exclusion persistence failure is logged and returned
   assert.equal(errors.length, 1);
   assert.equal(errors[0]?.message, "Failed to update GCP log exclusions");
   assert.equal(errors[0]?.fields.projectId, project.id);
+  assert.equal(errors[0]?.fields.userId, user.id);
   assert.match(String(errors[0]?.fields.err), /database unavailable/);
 });
 

@@ -207,7 +207,7 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
         return c.json({ error: error.message }, error.code === "not_found" ? 404 : 400);
       }
       log.error(
-        { err: error, projectId: context.projectId },
+        { err: error, projectId: context.projectId, userId: context.userId },
         "Failed to update GCP log exclusions",
       );
       return c.json({ error: "Failed to update GCP log exclusions" }, 500);
