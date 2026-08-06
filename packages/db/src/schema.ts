@@ -2646,6 +2646,7 @@ export type AlertGroupMode = "per_group" | "single";
 
 export type AlertFilter = {
   resourceAttrs?: { key: string; value: string }[];
+  logAttrs?: { key: string; value: string }[];
   service?: string;
   severity?: string;
   spanName?: string;

@@ -27,6 +27,11 @@ const resourceAttrSchema = z.object({
 
 export const alertFilterSchema = z.object({
   resourceAttrs: z.array(resourceAttrSchema).max(50).optional(),
+  logAttrs: z
+    .array(resourceAttrSchema)
+    .max(50)
+    .optional()
+    .describe("Equality filters on per-log-record attributes; valid only for logs alerts"),
   service: z.string().max(200).optional(),
   severity: z.string().max(50).optional(),
   spanName: z.string().max(200).optional(),
@@ -68,11 +73,21 @@ export function validateAlertInput(input: AlertInput): void {
   if (input.groupMode === "per_group" && !input.groupBy) {
     throw new HTTPException(400, { message: "groupBy required when groupMode = per_group" });
   }
+  if (input.source !== "logs" && input.filter?.logAttrs?.length) {
+    throw new HTTPException(400, { message: "logAttrs can only be used when source = logs" });
+  }
+  if (input.source !== "logs" && input.groupBy?.startsWith("log.")) {
+    throw new HTTPException(400, { message: "log groupBy can only be used when source = logs" });
+  }
+  if (input.source !== "traces" && input.groupBy?.startsWith("span.")) {
+    throw new HTTPException(400, { message: "span groupBy can only be used when source = traces" });
+  }
 }
 
 export function alertInputToFilter(input: AlertInput): schema.AlertFilter {
   return {
     resourceAttrs: input.filter?.resourceAttrs,
+    logAttrs: input.filter?.logAttrs,
     service: input.filter?.service,
     severity: input.filter?.severity,
     spanName: input.filter?.spanName,
@@ -142,6 +157,7 @@ export async function evaluateAlertQuery(
         range,
         service: alert.filter.service,
         resourceAttrs,
+        logAttrs: alert.filter.logAttrs,
         severity: alert.filter.severity,
         spanName: alert.filter.spanName,
         statusCode: alert.filter.statusCode,
@@ -481,6 +497,7 @@ export async function previewAlertSeries(
         range,
         service: filter.service,
         resourceAttrs: filter.resourceAttrs,
+        logAttrs: filter.logAttrs,
         severity: filter.severity,
         spanName: filter.spanName,
         statusCode: filter.statusCode,

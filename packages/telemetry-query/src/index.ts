@@ -1838,7 +1838,9 @@ export async function metricSeries(
     groupParams.groupKey = groupBy.slice("attr:".length);
   } else if (groupBy) {
     groupExpr = "ResourceAttributes[{groupKey:String}]";
-    groupParams.groupKey = groupBy;
+    groupParams.groupKey = groupBy.startsWith("resource.")
+      ? groupBy.slice("resource.".length)
+      : groupBy;
   }
 
   const perTable = await Promise.all(
@@ -2060,6 +2062,7 @@ export type SeriesFilter = {
   range?: TimeRange;
   service?: string;
   resourceAttrs?: ResourceAttrFilter[];
+  logAttrs?: ResourceAttrFilter[];
   search?: string;
   severity?: string;
   spanName?: string;
@@ -2178,6 +2181,7 @@ function foldServiceAttrFilter(filter: SeriesFilter): SeriesFilter | null {
 function rollupEligible(filter: SeriesFilter, groupBy: string | undefined, step: Step): boolean {
   if (step.unit === "SECOND") return false; // rollup resolution is one minute
   if (filter.resourceAttrs?.length) return false;
+  if (filter.logAttrs?.length) return false;
   if (filter.search) return false;
   if (filter.spanName) return false;
   if (filter.minDurationMs) return false;
@@ -2263,7 +2267,7 @@ export async function countSeries(
   const attr = attrConds(split.resource);
   const eventAttr =
     source === "logs"
-      ? attrConds(split.log, "LogAttributes", "event_attr")
+      ? attrConds([...split.log, ...(filter.logAttrs ?? [])], "LogAttributes", "event_attr")
       : attrConds(split.span, "SpanAttributes", "event_attr");
   const field = fieldConds(split.field, source === "logs" ? "logs" : "traces");
   const table = source === "logs" ? "otel_logs" : "otel_traces";

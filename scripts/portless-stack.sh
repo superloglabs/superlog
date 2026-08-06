@@ -176,6 +176,13 @@ fi
 if [[ "$PROXY_PORT_VAL" =~ ^[0-9]+$ ]] && [[ ! -f "$PORTLESS_TLS_FILE" ]]; then
   URL_SCHEME="http"
 fi
+if [[ -s "$PORTLESS_TLD_FILE" ]]; then
+  URL_TLD="$(tr -d '[:space:]' < "$PORTLESS_TLD_FILE")"
+  if [[ ! "$URL_TLD" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]; then
+    echo "invalid portless proxy TLD in $PORTLESS_TLD_FILE: $URL_TLD" >&2
+    exit 1
+  fi
+fi
 
 WEB_URL="$URL_SCHEME://$WEB_ROUTE.$URL_TLD$PORT_SUFFIX"
 API_URL="$URL_SCHEME://$API_ROUTE.$URL_TLD$PORT_SUFFIX"
@@ -207,6 +214,7 @@ write_env_file() {
     printf 'GATEWAY_PUBLIC_URL=%s\n' "$API_URL"
     printf 'API_BASE_URL=%s\n' "$API_URL"
     printf 'VITE_API_URL=%s\n' "$API_URL"
+    printf 'VITE_PORTLESS_TLD=%s\n' "$URL_TLD"
     # Better Auth's baseURL has to match the actual origin serving /api/auth/*
     # or state cookies get scoped to the wrong host. Without this, the worktree
     # falls back to apps/api/.env's localhost:4100 and every OAuth attempt

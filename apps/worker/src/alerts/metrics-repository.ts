@@ -5,7 +5,11 @@ import type { EvaluationRange } from "./domain.js";
 
 export type AlertMetricsRepository = ReturnType<typeof createAlertMetricsRepository>;
 
-function attrConds(attrs: { key: string; value: string }[] | undefined): {
+function attrConds(
+  attrs: { key: string; value: string }[] | undefined,
+  column = "ResourceAttributes",
+  prefix = "aalert",
+): {
   conds: string[];
   params: Record<string, string>;
 } {
@@ -13,16 +17,19 @@ function attrConds(attrs: { key: string; value: string }[] | undefined): {
   const params: Record<string, string> = {};
   if (!attrs) return { conds, params };
   attrs.forEach((a, i) => {
-    const k = `aalert_k_${i}`;
-    const v = `aalert_v_${i}`;
-    conds.push(`ResourceAttributes[{${k}:String}] = {${v}:String}`);
+    const k = `${prefix}_k_${i}`;
+    const v = `${prefix}_v_${i}`;
+    conds.push(`${column}[{${k}:String}] = {${v}:String}`);
     params[k] = a.key;
     params[v] = a.value;
   });
   return { conds, params };
 }
 
-function groupExprFor(groupBy: string | null | undefined): {
+function groupExprFor(
+  groupBy: string | null | undefined,
+  source: schema.AlertSource,
+): {
   expr: string;
   params: Record<string, string>;
 } {
@@ -30,9 +37,34 @@ function groupExprFor(groupBy: string | null | undefined): {
   if (groupBy === "service.name" || groupBy === "service") {
     return { expr: "ServiceName", params: {} };
   }
+  if (groupBy.startsWith("log.") && source === "logs") {
+    return {
+      expr: "LogAttributes[{aalert_groupKey:String}]",
+      params: { aalert_groupKey: groupBy.slice("log.".length) },
+    };
+  }
+  if (groupBy.startsWith("span.") && source === "traces") {
+    return {
+      expr: "SpanAttributes[{aalert_groupKey:String}]",
+      params: { aalert_groupKey: groupBy.slice("span.".length) },
+    };
+  }
+  if (groupBy.startsWith("log.") || groupBy.startsWith("span.")) {
+    return { expr: "''", params: {} };
+  }
+  if (groupBy.startsWith("attr:")) {
+    return {
+      expr:
+        source === "logs"
+          ? "LogAttributes[{aalert_groupKey:String}]"
+          : "SpanAttributes[{aalert_groupKey:String}]",
+      params: { aalert_groupKey: groupBy.slice("attr:".length) },
+    };
+  }
+  const resourceKey = groupBy.startsWith("resource.") ? groupBy.slice("resource.".length) : groupBy;
   return {
     expr: "ResourceAttributes[{aalert_groupKey:String}]",
-    params: { aalert_groupKey: groupBy },
+    params: { aalert_groupKey: resourceKey },
   };
 }
 
@@ -43,12 +75,14 @@ export function createAlertMetricsRepository(ch: ClickHouseClient) {
   ): Promise<Map<string, number>> {
     const table = alert.source === "logs" ? "otel_logs" : "otel_traces";
     const attr = attrConds(alert.filter.resourceAttrs);
-    const group = groupExprFor(alert.groupBy);
+    const logAttr = attrConds(alert.filter.logAttrs, "LogAttributes", "aalert_log");
+    const group = groupExprFor(alert.groupBy, alert.source);
     const conds: string[] = [
       "ResourceAttributes['superlog.project_id'] = {projectId:String}",
       "Timestamp >= parseDateTime64BestEffortOrZero({since:String})",
       "Timestamp <= parseDateTime64BestEffortOrZero({until:String})",
       ...attr.conds,
+      ...(alert.source === "logs" ? logAttr.conds : []),
     ];
     if (alert.filter.service) conds.push("ServiceName = {service:String}");
     if (alert.source === "logs") {
@@ -78,6 +112,7 @@ export function createAlertMetricsRepository(ch: ClickHouseClient) {
         statusCode: alert.filter.statusCode ?? "",
         minDurationNs: Math.round((alert.filter.minDurationMs ?? 0) * 1_000_000),
         ...attr.params,
+        ...(alert.source === "logs" ? logAttr.params : {}),
         ...group.params,
       },
       format: "JSONEachRow",
