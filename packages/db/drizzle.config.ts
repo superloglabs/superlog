@@ -13,10 +13,16 @@ import { defineConfig } from "drizzle-kit";
 // itself, so historically only manual reruns hit this.
 function findRepoRoot(start: string): string {
   let dir = start;
-  while (dir !== "/") {
+
+  while (true) {
     if (existsSync(join(dir, "pnpm-workspace.yaml"))) return dir;
-    dir = dirname(dir);
+
+    const parent = dirname(dir);
+    if (parent === dir) break;
+
+    dir = parent;
   }
+
   return start;
 }
 
