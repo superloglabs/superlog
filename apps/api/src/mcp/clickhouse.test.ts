@@ -141,7 +141,7 @@ test("listAttributeKeys caps the rows scanned per source so high-volume projects
   assert.equal(limitMatches.length, 2);
 });
 
-test("listAttributeValues resolves prefixed span attributes", async () => {
+test("listAttributeValues resolves prefixed span attributes and filters values before limiting", async () => {
   const capture: { query?: string; params?: Record<string, unknown> } = {};
 
   await listAttributeValues(
@@ -151,10 +151,14 @@ test("listAttributeValues resolves prefixed span attributes", async () => {
     { since: "now() - INTERVAL 1 HOUR", until: "now()" },
     200,
     "traces",
+    "projects/acme-production/logs/",
   );
 
   assert.match(capture.query ?? "", /SpanAttributes\[\{key:String\}\]/);
+  assert.match(capture.query ?? "", /WHERE v != ''\s+AND startsWith\(v, \{valuePrefix:String\}\)/);
+  assert.ok((capture.query ?? "").indexOf("startsWith(v") < (capture.query ?? "").indexOf("LIMIT"));
   assert.equal(capture.params?.key, "session.id");
+  assert.equal(capture.params?.valuePrefix, "projects/acme-production/logs/");
 });
 
 test("queryTraces filters by prefixed span attributes", async () => {

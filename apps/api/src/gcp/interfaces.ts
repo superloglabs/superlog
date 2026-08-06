@@ -2,11 +2,16 @@ import { db, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { logger } from "../logger.js";
 import { requireProjectManagerContext } from "../org-authorization-http.js";
 import { hasProjectManagerAccess } from "../org-authorization.js";
 import { resolveActiveOrgContext } from "../org-context.js";
-import { logger } from "../logger.js";
-import type { GcpApplicationConfig } from "./application.js";
+import {
+  type GcpApplicationConfig,
+  GcpLogExclusionError,
+  MAX_GCP_LOG_EXCLUSIONS,
+  updateGcpLogExclusions,
+} from "./application.js";
 import {
   completeGcpAuthorization,
   connectGcpAuthorization,
@@ -27,12 +32,12 @@ import { signGcpState, verifyGcpState } from "./state.js";
 
 type Vars = { userId: string; orgId: string | null };
 
-const GCP_SETUP_FAILED_MESSAGE =
-  "Google Cloud setup failed. Please try again or contact support.";
+const GCP_SETUP_FAILED_MESSAGE = "Google Cloud setup failed. Please try again or contact support.";
 const gcpLog = logger.child({ scope: "gcp" });
 
 type GcpConnectLog = {
   error(fields: Record<string, unknown>, message: string): void;
+  info(fields: Record<string, unknown>, message: string): void;
 };
 
 export type GcpConnectConfig = GcpApplicationConfig & {
@@ -130,8 +135,8 @@ function monthlySeriesLimit(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 100_000_000;
 }
 
-function toPublic(connection: GcpConnectionRecord | null) {
-  if (!connection) return { connected: false as const };
+function toPublic(connection: GcpConnectionRecord | null, canManage: boolean) {
+  if (!connection) return { connected: false as const, canManage };
   return {
     connected: connection.status === "connected",
     id: connection.id,
@@ -142,12 +147,15 @@ function toPublic(connection: GcpConnectionRecord | null) {
     lastVerifiedAt: connection.lastVerifiedAt,
     lastLogReceivedAt: connection.lastLogReceivedAt,
     lastMetricsReceivedAt: connection.lastMetricsReceivedAt,
+    excludedLogNames: connection.excludedLogNames,
     metricsBudgetMonth: connection.metricsBudgetMonth,
     metricsSeriesRead: connection.metricsSeriesRead,
     metricsMonthlySeriesLimit: monthlySeriesLimit(),
     lastError: connection.lastError ? GCP_SETUP_FAILED_MESSAGE : null,
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,
+    canManage,
+    maxLogExclusions: MAX_GCP_LOG_EXCLUSIONS,
   };
 }
 
@@ -157,7 +165,53 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
 
   app.get("/api/projects/:projectId/gcp/connection", async (c) => {
     const context = await requireProjectAccess(c, c.req.param("projectId"));
-    return c.json(toPublic(await repository.findCurrent(context.projectId)));
+    const canManage = await hasProjectManagerAccess({
+      userId: context.userId,
+      preferredOrgId: c.var.orgId,
+      projectId: context.projectId,
+    });
+    return c.json(toPublic(await repository.findCurrent(context.projectId), canManage));
+  });
+
+  app.patch("/api/projects/:projectId/gcp/log-exclusions", async (c) => {
+    const context = await requireProjectManager(c, c.req.param("projectId"));
+    const parsedBody: unknown = await c.req.json().catch(() => ({}));
+    const body =
+      parsedBody && typeof parsedBody === "object" && !Array.isArray(parsedBody)
+        ? (parsedBody as { excludedLogNames?: unknown })
+        : {};
+    try {
+      const connection = await updateGcpLogExclusions({
+        projectId: context.projectId,
+        excludedLogNames: body.excludedLogNames,
+        repository,
+      });
+      log.info(
+        {
+          projectId: context.projectId,
+          userId: context.userId,
+          gcpConnectionId: connection.id,
+          excludedLogNames: connection.excludedLogNames,
+        },
+        "GCP log exclusions updated",
+      );
+      return c.json(toPublic(connection, true));
+    } catch (error) {
+      if (error instanceof GcpLogExclusionError) {
+        if (error.code === "not_found") {
+          log.info(
+            { projectId: context.projectId, userId: context.userId },
+            "GCP log exclusions update skipped: connected project not found",
+          );
+        }
+        return c.json({ error: error.message }, error.code === "not_found" ? 404 : 400);
+      }
+      log.error(
+        { err: error, projectId: context.projectId, userId: context.userId },
+        "Failed to update GCP log exclusions",
+      );
+      return c.json({ error: "Failed to update GCP log exclusions" }, 500);
+    }
   });
 
   app.post("/api/projects/:projectId/gcp/install-url", async (c) => {

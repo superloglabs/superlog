@@ -322,6 +322,7 @@ test("failed Google Cloud provisioning hides provider details from customer resp
       error(fields, message) {
         loggedErrors.push({ fields, message });
       },
+      info() {},
     },
   });
 
@@ -694,6 +695,187 @@ test("a stale callback failure cannot demote an already connected row", async ()
   const current = await repository.findById(connection.id);
   assert.equal(current?.status, "connected");
   assert.equal(current?.lastError, null);
+});
+
+test("a project manager can update GCP log exclusions through the connection API", async () => {
+  const { org, user, project } = await seedProject();
+  await db.insert(schema.gcpConnections).values({
+    projectId: project.id,
+    gcpProjectId: "acme-production",
+    readerServiceAccountEmail: config.readerServiceAccountEmail,
+    createdBy: user.id,
+    status: "connected",
+  });
+  const app = new Hono<{
+    Variables: { userId: string; orgId: string | null };
+  }>();
+  app.use("/api/*", async (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  const auditEvents: Array<{ fields: Record<string, unknown>; message: string }> = [];
+  const unexpectedErrors: Array<{ fields: Record<string, unknown>; message: string }> = [];
+  mountGcpAuthed(app, {
+    config,
+    log: {
+      error: (fields, message) => unexpectedErrors.push({ fields, message }),
+      info: (fields, message) => auditEvents.push({ fields, message }),
+    },
+  });
+
+  const logName = "projects/acme-production/logs/run.googleapis.com%2Fstderr";
+  const response = await app.request(`/api/projects/${project.id}/gcp/log-exclusions`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ excludedLogNames: [logName] }),
+  });
+
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    id: string;
+    excludedLogNames: string[];
+    canManage: boolean;
+    maxLogExclusions: number;
+  };
+  assert.deepEqual(body.excludedLogNames, [logName]);
+  assert.equal(body.canManage, true);
+  assert.equal(body.maxLogExclusions, 200);
+  assert.deepEqual(auditEvents, [
+    {
+      fields: {
+        projectId: project.id,
+        userId: user.id,
+        gcpConnectionId: body.id,
+        excludedLogNames: [logName],
+      },
+      message: "GCP log exclusions updated",
+    },
+  ]);
+  const invalidResponse = await app.request(`/api/projects/${project.id}/gcp/log-exclusions`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: "null",
+  });
+  assert.equal(invalidResponse.status, 400);
+  assert.deepEqual(await invalidResponse.json(), { error: "excludedLogNames must be an array" });
+  assert.deepEqual(unexpectedErrors, []);
+  const persisted = await new DrizzleGcpConnectionRepository().findCurrent(project.id);
+  assert.deepEqual(persisted?.excludedLogNames, [logName]);
+});
+
+test("a project member sees the GCP log policy as read-only", async () => {
+  const { org, user: owner, project } = await seedProject();
+  const tag = `gcp-member-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const [member] = await db
+    .insert(schema.users)
+    .values({ email: `${tag}@example.com` })
+    .returning();
+  assert.ok(member);
+  userIds.push(member.id);
+  await db.insert(schema.orgMembers).values({ orgId: org.id, userId: member.id, role: "member" });
+  await db.insert(schema.gcpConnections).values({
+    projectId: project.id,
+    gcpProjectId: "acme-production",
+    readerServiceAccountEmail: config.readerServiceAccountEmail,
+    createdBy: owner.id,
+    status: "connected",
+  });
+  const app = new Hono<{
+    Variables: { userId: string; orgId: string | null };
+  }>();
+  app.use("/api/*", async (c, next) => {
+    c.set("userId", member.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  mountGcpAuthed(app, { config });
+
+  const response = await app.request(`/api/projects/${project.id}/gcp/connection`);
+
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { connected: boolean; canManage: boolean };
+  assert.equal(body.connected, true);
+  assert.equal(body.canManage, false);
+});
+
+test("a missing connected GCP project is audited when an exclusion update returns 404", async () => {
+  const { org, user, project } = await seedProject();
+  const auditEvents: Array<{ fields: Record<string, unknown>; message: string }> = [];
+  const app = new Hono<{
+    Variables: { userId: string; orgId: string | null };
+  }>();
+  app.use("/api/*", async (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  mountGcpAuthed(app, {
+    config,
+    log: {
+      error() {},
+      info: (fields, message) => auditEvents.push({ fields, message }),
+    },
+  });
+
+  const response = await app.request(`/api/projects/${project.id}/gcp/log-exclusions`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ excludedLogNames: [] }),
+  });
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(auditEvents, [
+    {
+      fields: { projectId: project.id, userId: user.id },
+      message: "GCP log exclusions update skipped: connected project not found",
+    },
+  ]);
+});
+
+test("an unexpected GCP log-exclusion persistence failure is logged and returned as a 500", async () => {
+  const { org, user, project } = await seedProject();
+  await db.insert(schema.gcpConnections).values({
+    projectId: project.id,
+    gcpProjectId: "acme-production",
+    readerServiceAccountEmail: config.readerServiceAccountEmail,
+    createdBy: user.id,
+    status: "connected",
+  });
+  const repository = new DrizzleGcpConnectionRepository();
+  repository.updateExcludedLogNames = async () => {
+    throw new Error("database unavailable");
+  };
+  const errors: Array<{ fields: Record<string, unknown>; message: string }> = [];
+  const app = new Hono<{
+    Variables: { userId: string; orgId: string | null };
+  }>();
+  app.use("/api/*", async (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  mountGcpAuthed(app, {
+    config,
+    repository,
+    log: { error: (fields, message) => errors.push({ fields, message }), info() {} },
+  });
+
+  const response = await app.request(`/api/projects/${project.id}/gcp/log-exclusions`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      excludedLogNames: ["projects/acme-production/logs/run.googleapis.com%2Fstderr"],
+    }),
+  });
+
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), { error: "Failed to update GCP log exclusions" });
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.message, "Failed to update GCP log exclusions");
+  assert.equal(errors[0]?.fields.projectId, project.id);
+  assert.equal(errors[0]?.fields.userId, user.id);
+  assert.match(String(errors[0]?.fields.err), /database unavailable/);
 });
 
 test("starting the same GCP project twice reuses one active connection", async () => {

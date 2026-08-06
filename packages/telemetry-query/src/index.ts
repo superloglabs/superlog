@@ -912,6 +912,7 @@ export async function listAttributeValues(
   range?: TimeRange,
   limit = 200,
   source?: SeriesSource | "metrics",
+  valuePrefix?: string,
 ): Promise<{ value: string; count: number }[]> {
   const { sinceSql, untilSql, sinceExpr, untilExpr } = resolveRange(range);
   const parsed = parseAttributeKey(key);
@@ -963,13 +964,21 @@ export async function listAttributeValues(
       ${subqueries.join("\n      UNION ALL\n")}
     )
     WHERE v != ''
+      ${valuePrefix ? "AND startsWith(v, {valuePrefix:String})" : ""}
     GROUP BY v
     ORDER BY c DESC
     LIMIT {limit:UInt32}
   `;
   const r = await ch.query({
     query,
-    query_params: { projectId, key: keyParam, since: sinceSql, until: untilSql, limit },
+    query_params: {
+      projectId,
+      key: keyParam,
+      since: sinceSql,
+      until: untilSql,
+      limit,
+      ...(valuePrefix ? { valuePrefix } : {}),
+    },
     format: "JSONEachRow",
   });
   const rows = (await r.json()) as { v: string; c: string | number }[];

@@ -1079,6 +1079,10 @@ app.get("/api/projects/:projectId/explore/attribute-values", async (c) => {
   const projectId = await requireProjectAccess(c, c.req.param("projectId"));
   const key = c.req.query("key");
   if (!key) throw new HTTPException(400, { message: "key is required" });
+  const valuePrefix = c.req.query("valuePrefix")?.trim() || undefined;
+  if (valuePrefix && valuePrefix.length > 512) {
+    throw new HTTPException(400, { message: "valuePrefix is too long" });
+  }
   const { since, until } = parseRangeQuery(c);
   const rows = await listAttributeValues(
     ch,
@@ -1087,6 +1091,7 @@ app.get("/api/projects/:projectId/explore/attribute-values", async (c) => {
     { since, until },
     200,
     parseExploreAttributeSource(c),
+    valuePrefix,
   );
   return c.json(rows);
 });

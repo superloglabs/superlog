@@ -5,6 +5,7 @@ import {
   authenticateGcpPubSubPush,
   gcpPubSubLogToOtlp,
   resolveGcpPubSubPushAudience,
+  transformGcpPubSubLog,
 } from "./gcp-pubsub.js";
 import { otlpLogsToRows } from "./otlp-clickhouse.js";
 
@@ -119,5 +120,35 @@ test("a Cloud Logging Pub/Sub push becomes a tenant-safe OTLP log", () => {
   assert.throws(
     () => gcpPubSubLogToOtlp(Buffer.from(JSON.stringify(push)), "another-project"),
     /does not belong to connected project/,
+  );
+});
+
+test("an excluded GCP log name is acknowledged without producing telemetry", () => {
+  const logName = "projects/acme-production/logs/run.googleapis.com%2Fstderr";
+  const push = {
+    message: {
+      messageId: "pubsub-message-2",
+      data: Buffer.from(
+        JSON.stringify({
+          logName,
+          resource: { labels: { project_id: "acme-production" } },
+          textPayload: "routine health check",
+        }),
+      ).toString("base64"),
+    },
+    subscription: "projects/superlog-observability/subscriptions/superlog-connection",
+  };
+
+  assert.equal(
+    gcpPubSubLogToOtlp(Buffer.from(JSON.stringify(push)), "acme-production", [logName]),
+    null,
+  );
+  assert.notEqual(
+    gcpPubSubLogToOtlp(Buffer.from(JSON.stringify(push)), "acme-production", []),
+    null,
+  );
+  assert.deepEqual(
+    transformGcpPubSubLog(Buffer.from(JSON.stringify(push)), "acme-production", [logName]),
+    { outcome: "excluded", logName },
   );
 });

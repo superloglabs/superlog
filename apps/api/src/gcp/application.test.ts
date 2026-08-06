@@ -1,6 +1,10 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { type GcpApplicationConfig, completeGcpConnect } from "./application.js";
+import {
+  type GcpApplicationConfig,
+  completeGcpConnect,
+  updateGcpLogExclusions,
+} from "./application.js";
 import type {
   GcpConnectionRecord,
   GcpConnectionRepository,
@@ -27,6 +31,7 @@ const connection: GcpConnectionRecord = {
   subscriptionName: null,
   logSinkName: null,
   logSinkWriterIdentity: null,
+  excludedLogNames: [],
   monitoringViewerGrantCreated: false,
   readerServiceAccountEmail: config.readerServiceAccountEmail,
   lastVerifiedAt: null,
@@ -40,6 +45,36 @@ const connection: GcpConnectionRecord = {
   createdAt: new Date("2026-07-14T00:00:00Z"),
   updatedAt: new Date("2026-07-14T00:00:00Z"),
 };
+
+test("a manager can exclude exact log names from a connected GCP project", async () => {
+  let saved: string[] | null = null;
+  const connected = { ...connection, status: "connected" as const };
+  const repository = {
+    async findCurrent() {
+      return connected;
+    },
+    async updateExcludedLogNames(_id: string, excludedLogNames: string[]) {
+      saved = excludedLogNames;
+      return { ...connected, excludedLogNames };
+    },
+  } as unknown as GcpConnectionRepository;
+
+  const updated = await updateGcpLogExclusions({
+    projectId: connection.projectId,
+    excludedLogNames: [
+      " projects/acme-production/logs/run.googleapis.com%2Fstderr ",
+      "projects/acme-production/logs/run.googleapis.com%2Fstderr",
+      "projects/acme-production/logs/cloudaudit.googleapis.com%2Factivity",
+    ],
+    repository,
+  });
+
+  assert.deepEqual(saved, [
+    "projects/acme-production/logs/cloudaudit.googleapis.com%2Factivity",
+    "projects/acme-production/logs/run.googleapis.com%2Fstderr",
+  ]);
+  assert.deepEqual(updated.excludedLogNames, saved);
+});
 
 const provisioned: ProvisionedGcpConnection = {
   gcpProjectNumber: "123456789012",

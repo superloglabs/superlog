@@ -3024,6 +3024,9 @@ export const gcpConnections = pgTable(
     // Customer-owned route and the Google-managed identity that publishes it.
     logSinkName: text("log_sink_name"),
     logSinkWriterIdentity: text("log_sink_writer_identity"),
+    // Exact Cloud Logging logName values intentionally dropped at intake.
+    // Empty by default so existing connections continue accepting every log.
+    excludedLogNames: text("excluded_log_names").array().notNull().default(sql`'{}'::text[]`),
     // Ownership provenance: only remove the monitoring grant on replacement
     // when this connection originally created it.
     monitoringViewerGrantCreated: boolean("monitoring_viewer_grant_created")

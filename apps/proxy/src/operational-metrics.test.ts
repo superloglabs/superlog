@@ -51,7 +51,9 @@ test("createProxyOperationalRecorder records queue delivery failures with bounde
 
   const recorder = createProxyOperationalRecorder({
     queueMessages: { add: (value, attrs) => messages.push({ value, attrs: attrs ?? {} }) },
-    queueDeliveryDurationMs: { record: (value, attrs) => durations.push({ value, attrs: attrs ?? {} }) },
+    queueDeliveryDurationMs: {
+      record: (value, attrs) => durations.push({ value, attrs: attrs ?? {} }),
+    },
     queueMessageAgeMs: { record: (value, attrs) => ages.push({ value, attrs: attrs ?? {} }) },
   });
 
@@ -108,6 +110,25 @@ test("recordIngestRequest can emit without org enrichment", () => {
         "http.response.status_class": "5xx",
         "ingest.queue.storage": "direct",
         "ingest.lane": "buffer",
+      },
+    },
+  ]);
+});
+
+test("recordGcpLogDrop counts excluded entries without high-cardinality log-name attributes", () => {
+  const drops: Array<{ value: number; attrs: Record<string, unknown> }> = [];
+  const recorder = createProxyOperationalRecorder({
+    gcpLogDrops: { add: (value, attrs) => drops.push({ value, attrs: attrs ?? {} }) },
+  });
+
+  recorder.recordGcpLogDrop({ projectId: "project_123", reason: "excluded" });
+
+  assert.deepEqual(drops, [
+    {
+      value: 1,
+      attrs: {
+        "tenant.project.id": "project_123",
+        "gcp.log.drop_reason": "excluded",
       },
     },
   ]);

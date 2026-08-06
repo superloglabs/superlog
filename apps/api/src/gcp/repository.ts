@@ -195,4 +195,23 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
       .set({ status: "failed", lastError: error.slice(0, 2_000), updatedAt: new Date() })
       .where(and(eq(schema.gcpConnections.id, id), ne(schema.gcpConnections.status, "connected")));
   }
+
+  async updateExcludedLogNames(
+    id: string,
+    excludedLogNames: string[],
+  ): Promise<GcpConnectionRecord> {
+    const [row] = await db
+      .update(schema.gcpConnections)
+      .set({ excludedLogNames, updatedAt: new Date() })
+      .where(
+        and(
+          eq(schema.gcpConnections.id, id),
+          eq(schema.gcpConnections.status, "connected"),
+          isNull(schema.gcpConnections.revokedAt),
+        ),
+      )
+      .returning();
+    if (!row) throw new Error("Connected GCP project not found");
+    return toDomain(row);
+  }
 }

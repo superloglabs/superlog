@@ -1116,7 +1116,7 @@ export function useUninstallRailway(projectId: string | undefined) {
 }
 
 export type GcpConnection =
-  | { connected: false }
+  | { connected: false; canManage: boolean }
   | {
       connected: boolean;
       id: string;
@@ -1127,12 +1127,15 @@ export type GcpConnection =
       lastVerifiedAt: string | null;
       lastLogReceivedAt: string | null;
       lastMetricsReceivedAt: string | null;
+      excludedLogNames: string[];
       metricsBudgetMonth: string | null;
       metricsSeriesRead: number;
       metricsMonthlySeriesLimit: number;
       lastError: string | null;
       createdAt: string;
       updatedAt: string;
+      canManage: boolean;
+      maxLogExclusions: number;
     };
 
 export function useGcpConnection(projectId: string | undefined) {
@@ -1142,6 +1145,21 @@ export function useGcpConnection(projectId: string | undefined) {
     queryFn: () => fetcher<GcpConnection>(`/api/projects/${projectId}/gcp/connection`),
     enabled: !!projectId,
     refetchInterval: 15_000,
+  });
+}
+
+export function useSetGcpLogExclusions(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (excludedLogNames: string[]) =>
+      fetcher<GcpConnection>(`/api/projects/${projectId}/gcp/log-exclusions`, {
+        method: "PATCH",
+        body: JSON.stringify({ excludedLogNames }),
+      }),
+    onSuccess: (connection) => {
+      queryClient.setQueryData(["gcp-connection", projectId], connection);
+    },
   });
 }
 
@@ -3554,6 +3572,7 @@ export function useExploreAttributeValues(
   key: string | undefined,
   range: ExploreRange,
   source?: ExploreAttributeSource,
+  valuePrefix?: string,
 ) {
   const fetcher = useFetcher();
   return useQuery({
@@ -3565,6 +3584,7 @@ export function useExploreAttributeValues(
       range.since,
       range.until,
       source ?? "",
+      valuePrefix ?? "",
     ],
     queryFn: () => {
       if (!projectId || !key) return Promise.resolve([]);
@@ -3573,7 +3593,7 @@ export function useExploreAttributeValues(
           key,
         )}&since=${encodeURIComponent(range.since)}&until=${encodeURIComponent(range.until)}${
           source ? `&source=${source}` : ""
-        }`,
+        }${valuePrefix ? `&valuePrefix=${encodeURIComponent(valuePrefix)}` : ""}`,
       );
     },
     enabled: !!projectId && !!key,

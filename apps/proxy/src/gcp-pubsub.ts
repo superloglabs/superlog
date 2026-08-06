@@ -97,7 +97,15 @@ const SEVERITY_NUMBER: Record<string, number> = {
   EMERGENCY: 22,
 };
 
-export function gcpPubSubLogToOtlp(body: Buffer, expectedGcpProjectId: string): GcpOtlpLogsExport {
+export type GcpPubSubLogTransform =
+  | { outcome: "accepted"; payload: GcpOtlpLogsExport }
+  | { outcome: "excluded"; logName: string };
+
+export function transformGcpPubSubLog(
+  body: Buffer,
+  expectedGcpProjectId: string,
+  excludedLogNames: readonly string[] = [],
+): GcpPubSubLogTransform {
   const push = parseObject(
     JSON.parse(body.toString("utf8")),
     "invalid Pub/Sub push envelope",
@@ -110,6 +118,9 @@ export function gcpPubSubLogToOtlp(body: Buffer, expectedGcpProjectId: string): 
   const entryProjectId = projectIdOf(entry);
   if (entryProjectId !== expectedGcpProjectId) {
     throw new Error("Cloud Logging entry does not belong to connected project");
+  }
+  if (typeof entry.logName === "string" && excludedLogNames.includes(entry.logName)) {
+    return { outcome: "excluded", logName: entry.logName };
   }
 
   const resource = objectOrEmpty(entry.resource);
@@ -128,51 +139,69 @@ export function gcpPubSubLogToOtlp(body: Buffer, expectedGcpProjectId: string): 
   const severityText = stringOrEmpty(entry.severity).toUpperCase();
 
   return {
-    resourceLogs: [
-      {
-        resource: {
-          attributes: [
-            kv("service.name", serviceName),
-            kv("telemetry.source", "gcp"),
-            kv("cloud.provider", "gcp"),
-            kv("cloud.account.id", expectedGcpProjectId),
-            kv("gcp.project.id", expectedGcpProjectId),
-            kv("gcp.resource.type", resourceType),
-            ...Object.entries(resourceLabels).map(([key, value]) =>
-              kv(`gcp.resource.label.${key}`, value),
-            ),
-          ].filter(isKv),
-        },
-        scopeLogs: [
-          {
-            scope: { name: "gcp.cloud_logging" },
-            logRecords: [
-              {
-                timeUnixNano: timestampToNanos(entry.timestamp),
-                observedTimeUnixNano: timestampToNanos(
-                  entry.receiveTimestamp ?? push.message.publishTime,
-                ),
-                severityText,
-                severityNumber: SEVERITY_NUMBER[severityText] ?? 0,
-                traceId: trailingHex(entry.trace, 32),
-                spanId: exactHex(entry.spanId, 16),
-                flags: entry.traceSampled === true ? 1 : 0,
-                body: { stringValue: logBody(entry) },
-                attributes: [
-                  kv("gcp.insert_id", entry.insertId),
-                  kv("gcp.log_name", entry.logName),
-                  kv("gcp.pubsub.message_id", push.message.messageId),
-                  kv("gcp.pubsub.subscription", push.subscription),
-                  ...prefixedAttributes("gcp.label", entry.labels),
-                  ...prefixedAttributes("gcp.http_request", entry.httpRequest),
-                ].filter(isKv),
-              },
-            ],
+    outcome: "accepted",
+    payload: {
+      resourceLogs: [
+        {
+          resource: {
+            attributes: [
+              kv("service.name", serviceName),
+              kv("telemetry.source", "gcp"),
+              kv("cloud.provider", "gcp"),
+              kv("cloud.account.id", expectedGcpProjectId),
+              kv("gcp.project.id", expectedGcpProjectId),
+              kv("gcp.resource.type", resourceType),
+              ...Object.entries(resourceLabels).map(([key, value]) =>
+                kv(`gcp.resource.label.${key}`, value),
+              ),
+            ].filter(isKv),
           },
-        ],
-      },
-    ],
+          scopeLogs: [
+            {
+              scope: { name: "gcp.cloud_logging" },
+              logRecords: [
+                {
+                  timeUnixNano: timestampToNanos(entry.timestamp),
+                  observedTimeUnixNano: timestampToNanos(
+                    entry.receiveTimestamp ?? push.message.publishTime,
+                  ),
+                  severityText,
+                  severityNumber: SEVERITY_NUMBER[severityText] ?? 0,
+                  traceId: trailingHex(entry.trace, 32),
+                  spanId: exactHex(entry.spanId, 16),
+                  flags: entry.traceSampled === true ? 1 : 0,
+                  body: { stringValue: logBody(entry) },
+                  attributes: [
+                    kv("gcp.insert_id", entry.insertId),
+                    kv("gcp.log_name", entry.logName),
+                    kv("gcp.pubsub.message_id", push.message.messageId),
+                    kv("gcp.pubsub.subscription", push.subscription),
+                    ...prefixedAttributes("gcp.label", entry.labels),
+                    ...prefixedAttributes("gcp.http_request", entry.httpRequest),
+                  ].filter(isKv),
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
   };
+}
+
+export function gcpPubSubLogToOtlp(body: Buffer, expectedGcpProjectId: string): GcpOtlpLogsExport;
+export function gcpPubSubLogToOtlp(
+  body: Buffer,
+  expectedGcpProjectId: string,
+  excludedLogNames: readonly string[],
+): GcpOtlpLogsExport | null;
+export function gcpPubSubLogToOtlp(
+  body: Buffer,
+  expectedGcpProjectId: string,
+  excludedLogNames: readonly string[] = [],
+): GcpOtlpLogsExport | null {
+  const transformed = transformGcpPubSubLog(body, expectedGcpProjectId, excludedLogNames);
+  return transformed.outcome === "accepted" ? transformed.payload : null;
 }
 
 function parseObject(value: unknown, message: string): Record<string, unknown> {

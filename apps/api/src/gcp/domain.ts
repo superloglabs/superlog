@@ -10,6 +10,7 @@ export type GcpConnectionRecord = {
   subscriptionName: string | null;
   logSinkName: string | null;
   logSinkWriterIdentity: string | null;
+  excludedLogNames: string[];
   monitoringViewerGrantCreated: boolean;
   readerServiceAccountEmail: string;
   lastVerifiedAt: Date | null;
@@ -130,6 +131,7 @@ export interface GcpConnectionRepository {
     supersededConnectionId: string | null,
   ): Promise<GcpConnectionRecord>;
   markFailed(id: string, error: string): Promise<void>;
+  updateExcludedLogNames(id: string, excludedLogNames: string[]): Promise<GcpConnectionRecord>;
 }
 
 export interface GcpAuthorizationRepository {

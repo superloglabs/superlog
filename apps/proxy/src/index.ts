@@ -32,8 +32,8 @@ import {
   type GcpIdTokenVerifier,
   acknowledgeGcpPubSubDelivery,
   authenticateGcpPubSubPush,
-  gcpPubSubLogToOtlp,
   resolveGcpPubSubPushAudience,
+  transformGcpPubSubLog,
 } from "./gcp-pubsub.js";
 import { mountGcpMetricsPullRoute } from "./gcp-pull-routes.js";
 import { configureHttpServerTimeouts } from "./http-server.js";
@@ -521,12 +521,35 @@ app.post("/gcp/pubsub/:connectionId", async (c) => {
   const response = await forward(c, "/v1/logs", "resourceLogs", {
     source: "gcp",
     trustedProjectId: connection.projectId,
-    bodyTransform: (body) => ({
-      body: Buffer.from(JSON.stringify(gcpPubSubLogToOtlp(body, connection.gcpProjectId))),
-      contentType: "application/json",
-    }),
+    bodyTransform: (body) => {
+      const transformed = transformGcpPubSubLog(
+        body,
+        connection.gcpProjectId,
+        connection.excludedLogNames,
+      );
+      if (transformed.outcome === "excluded") {
+        logger.debug(
+          {
+            connectionId: connection.id,
+            gcpProjectId: connection.gcpProjectId,
+            logName: transformed.logName,
+            reason: "excluded",
+          },
+          "GCP log entry filtered by exclusion policy",
+        );
+        proxyOperationalRecorder.recordGcpLogDrop({
+          projectId: connection.projectId,
+          reason: "excluded",
+        });
+        return null;
+      }
+      return {
+        body: Buffer.from(JSON.stringify(transformed.payload)),
+        contentType: "application/json",
+      };
+    },
   });
-  if (response.ok) {
+  if (response.ok && response.headers.get("x-superlog-ingest-drop") !== "body_filtered") {
     void db
       .update(schema.gcpConnections)
       .set({ lastLogReceivedAt: new Date(), updatedAt: new Date() })
@@ -640,7 +663,7 @@ type ForwardOptions = {
     body: Buffer,
     contentType: string,
     contentEncoding?: string,
-  ) => { body: Buffer; contentType: string; contentEncoding?: string };
+  ) => { body: Buffer; contentType: string; contentEncoding?: string } | null;
 };
 
 async function forward(
@@ -743,11 +766,26 @@ async function forward(
         try {
           const original = await collectStreamWithCap(bodyStream, MAX_BODY_BYTES);
           const transformed = opts.bodyTransform(original, contentType, contentEncoding);
+          if (!transformed) {
+            responseStatus = 200;
+            span.setAttribute("ingest.dropped", "body_filtered");
+            span.setAttribute("ingest.operation", "gcp_log_excluded");
+            span.setStatus({ code: SpanStatusCode.OK });
+            return new Response(new Uint8Array(0), {
+              status: 200,
+              headers: {
+                "content-type": "application/x-protobuf",
+                "x-superlog-ingest-drop": "body_filtered",
+              },
+            });
+          }
           prebufferedBody = transformed.body;
           contentType = transformed.contentType;
           contentEncoding = transformed.contentEncoding;
           requestBytes = prebufferedBody.byteLength;
         } catch (err) {
+          span.recordException(err as Error);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
           const handled = handleIngestBodyError(err, c, span, path, projectId);
           if (handled) {
             responseStatus = handled.status;
