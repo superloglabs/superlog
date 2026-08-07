@@ -134,8 +134,12 @@ function GcpProjectPicker({ authorizationId }: { authorizationId: string }) {
           loading={connect.isPending}
           disabled={!selectedProjectId || connect.isPending}
           onClick={async () => {
-            await connect.mutateAsync(selectedProjectId);
-            window.location.assign("/connect/gcp?gcp=connected");
+            try {
+              await connect.mutateAsync(selectedProjectId);
+              window.location.assign("/connect/gcp?gcp=connected");
+            } catch {
+              // connect.error surfaces via the error banner above.
+            }
           }}
         >
           Connect project
