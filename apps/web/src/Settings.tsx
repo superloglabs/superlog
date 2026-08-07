@@ -135,6 +135,7 @@ import {
 import {
   canToggleGcpLogGroup,
   gcpConnectAction,
+  gcpLogDiscoveryRange,
   gcpLogGroupLabel,
   mergeGcpLogNames,
 } from "./gcp-settings-model.ts";
@@ -3141,13 +3142,7 @@ function GcpLogGroupFilter({
   connection: Extract<NonNullable<ReturnType<typeof useGcpConnection>["data"]>, { status: string }>;
   canManage: boolean;
 }) {
-  const range = useMemo(() => {
-    const until = new Date();
-    return {
-      since: new Date(until.getTime() - 30 * 24 * 60 * 60 * 1_000).toISOString(),
-      until: until.toISOString(),
-    };
-  }, []);
+  const range = useMemo(() => gcpLogDiscoveryRange(new Date()), []);
   const logNamePrefix = `projects/${connection.gcpProjectId}/logs/`;
   const discovered = useExploreAttributeValues(
     projectId,
@@ -3217,14 +3212,21 @@ function GcpLogGroupFilter({
       )}
 
       <div className="max-h-52 overflow-y-auto p-1.5">
+        {discovered.isError && (
+          <p className="px-2 py-3 text-[11.5px] text-danger">
+            Couldn’t load recent log groups. Close and reopen this integration to retry.
+          </p>
+        )}
         {discovered.isLoading && logNames.length === 0 ? (
           <p className="px-2 py-3 text-[11.5px] text-muted">Discovering recent log groups…</p>
         ) : visibleLogNames.length === 0 ? (
-          <p className="px-2 py-3 text-[11.5px] text-muted">
-            {normalizedQuery
-              ? "No matching log groups."
-              : "Log groups will appear here after GCP logs arrive."}
-          </p>
+          !discovered.isError && (
+            <p className="px-2 py-3 text-[11.5px] text-muted">
+              {normalizedQuery
+                ? "No matching log groups."
+                : "Log groups will appear here after GCP logs arrive."}
+            </p>
+          )
         ) : (
           visibleLogNames.map((logName) => {
             const enabled = !draft.includes(logName);
