@@ -27,6 +27,7 @@ export type GroupingLLMClient = {
     model: string;
     system: string;
     tools: Anthropic.Messages.Tool[];
+    toolChoice: Anthropic.Messages.ToolChoice;
     messages: Anthropic.Messages.MessageParam[];
     maxTokens: number;
     temperature: number;
@@ -144,6 +145,7 @@ export async function runGroupingAgent(
       model: deps.model,
       system: GROUPING_SYSTEM_PROMPT,
       tools: GROUPING_TOOLS,
+      toolChoice: { type: "any" },
       messages: conversation,
       maxTokens: 700,
       temperature: 0,
@@ -366,6 +368,7 @@ export function asGroupingLLMClient(client: Pick<Anthropic, "messages">): Groupi
         temperature: input.temperature,
         system: input.system,
         tools: input.tools,
+        tool_choice: input.toolChoice,
         messages: input.messages,
       });
     },
