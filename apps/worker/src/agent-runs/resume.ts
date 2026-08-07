@@ -182,21 +182,33 @@ export type ResumeDeliveryResult =
 // whole investigation context. When the backend can classify that state and
 // interrupt the open turn, do so and retry the delivery in place. Transient
 // errors are rethrown untouched so the caller's next-tick retry applies.
+//
+// `repairAttempt` — when the backend supports it — sends the interrupt and the
+// follow-up message as a single batched provider call, eliminating the window
+// between separate interrupt and retry calls where the session might still be
+// processing the interrupt. Falls back to the two-step `interruptOpenTurn` +
+// `attempt` if `repairAttempt` is not provided.
 export async function deliverResumeRepairingWedgedTurn(opts: {
   attempt(): Promise<"resumed" | "superseded">;
   classifyError(err: unknown): SessionDeliveryErrorKind;
   interruptOpenTurn: (() => Promise<void>) | null;
+  repairAttempt?: (() => Promise<"resumed" | "superseded">) | null;
 }): Promise<ResumeDeliveryResult> {
   try {
     return { kind: "delivered", outcome: await opts.attempt(), repaired: false };
   } catch (err) {
     if (isTransientError(err)) throw err;
     const errorKind = opts.classifyError(err);
-    if (errorKind !== "wedged_turn" || !opts.interruptOpenTurn) {
+    const canRepair =
+      errorKind === "wedged_turn" && (opts.repairAttempt ?? opts.interruptOpenTurn);
+    if (!canRepair) {
       return { kind: "failed", err, errorKind, repairAttempted: false };
     }
     try {
-      await opts.interruptOpenTurn();
+      if (opts.repairAttempt) {
+        return { kind: "delivered", outcome: await opts.repairAttempt(), repaired: true };
+      }
+      await opts.interruptOpenTurn!();
       return { kind: "delivered", outcome: await opts.attempt(), repaired: true };
     } catch (retryErr) {
       if (isTransientError(retryErr)) throw retryErr;
@@ -303,23 +315,40 @@ export async function resumeAgentRunFromHumanInput(ctx: AgentRunContext): Promis
   try {
     const runner = await getAgentRunnerBackend(ctx.agentRun.runtime);
     const interrupt = runner.interrupt?.bind(runner);
+    const interruptAndResume = runner.interruptAndResume?.bind(runner);
+    const resumeRunningOpts = {
+      id: ctx.agentRun.id,
+      currentState: ctx.agentRun.state,
+      currentResumeCount: ctx.agentRun.resumeCount,
+      continuation: isContinuation,
+    };
     delivery = await deliverResumeRepairingWedgedTurn({
       attempt: () =>
         resumeDurableAgentRun({
           sessionId,
           inputs: resumeInputs,
           runner,
-          transitionToRunning: () =>
-            agentRunLifecycle.resumeRunning({
-              id: ctx.agentRun.id,
-              currentState: ctx.agentRun.state,
-              currentResumeCount: ctx.agentRun.resumeCount,
-              continuation: isContinuation,
-            }),
+          transitionToRunning: () => agentRunLifecycle.resumeRunning(resumeRunningOpts),
           markProcessed,
         }),
       classifyError: (err) => runner.classifyDeliveryError?.(err) ?? "unknown",
       interruptOpenTurn: interrupt ? () => interrupt(sessionId) : null,
+      // Preferred over two-step interrupt + resume: atomically interrupt the
+      // open turn and deliver the message in one provider call to avoid the
+      // race between separate API requests.
+      repairAttempt: interruptAndResume
+        ? () =>
+            resumeDurableAgentRun({
+              sessionId,
+              inputs: resumeInputs,
+              runner: {
+                resume: (sid, msg) => interruptAndResume(sid, msg),
+                steer: runner.steer.bind(runner),
+              },
+              transitionToRunning: () => agentRunLifecycle.resumeRunning(resumeRunningOpts),
+              markProcessed,
+            })
+        : null,
     });
   } catch (err) {
     if (isTransientError(err)) {
