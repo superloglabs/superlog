@@ -379,7 +379,6 @@ export function FluidSignalField({
       resize();
       restart();
     });
-    resizeObserver.observe(targetCanvas);
 
     const intersectionObserver = new IntersectionObserver(
       ([entry]) => {
@@ -388,7 +387,16 @@ export function FluidSignalField({
       },
       { rootMargin: "120px" },
     );
-    intersectionObserver.observe(targetCanvas);
+
+    // Guard against environments where the constructors return broken stubs
+    // (e.g. aggressive privacy extensions) — the animation still plays, it
+    // just won't react to resize or visibility changes.
+    try {
+      resizeObserver.observe(targetCanvas);
+      intersectionObserver.observe(targetCanvas);
+    } catch {
+      // Resize and intersection tracking unavailable; proceed without them.
+    }
 
     function onMotionPreferenceChange(event: MediaQueryListEvent) {
       reducedMotion = event.matches;
