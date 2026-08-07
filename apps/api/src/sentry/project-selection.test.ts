@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { planSentryProjectSelection } from "./project-selection.js";
+import { SentryNoProjectsError, planSentryProjectSelection } from "./project-selection.js";
 
 test("installs the only accessible Sentry project without another user step", () => {
   assert.deepEqual(
@@ -18,5 +18,5 @@ test("asks the user to choose when the selected Sentry organization has several 
 });
 
 test("rejects a Sentry organization with no accessible projects", () => {
-  assert.throws(() => planSentryProjectSelection([]), /no accessible projects/i);
+  assert.throws(() => planSentryProjectSelection([]), SentryNoProjectsError);
 });

@@ -18,7 +18,7 @@ import {
   signSentryState,
   verifySentryState,
 } from "./oauth.js";
-import { planSentryProjectSelection } from "./project-selection.js";
+import { SentryNoProjectsError, planSentryProjectSelection } from "./project-selection.js";
 
 const log = logger.child({ scope: "sentry" });
 const SENTRY_API_ORIGIN = "https://sentry.io";
@@ -194,6 +194,19 @@ export function mountSentryInstallationPublic(app: Hono<any>, deps: SentryInstal
         302,
       );
     } catch (error) {
+      if (error instanceof SentryNoProjectsError) {
+        log.warn({ err: error }, "sentry oauth callback: no accessible projects");
+        return c.redirect(
+          sentryOAuthRedirect(
+            webOrigin,
+            callback.state.returnTo,
+            "no-projects",
+            undefined,
+            callback.state.projectId,
+          ),
+          302,
+        );
+      }
       log.error({ err: error }, "sentry oauth callback failed");
       return c.redirect(
         sentryOAuthRedirect(
@@ -358,7 +371,7 @@ export function startSentryOpenIssueImport(
 export function sentryOAuthRedirect(
   webOrigin: string,
   returnTo: SentryOAuthState["returnTo"],
-  outcome: "installed" | "choose-project" | "denied" | "error",
+  outcome: "installed" | "choose-project" | "denied" | "error" | "no-projects",
   authorizationId?: string,
   projectId?: string,
 ): string {

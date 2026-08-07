@@ -38,6 +38,11 @@ export function SentryConnectFlow({
     if (outcome === "error") {
       setOutcomeError("Sentry connected incompletely. Reconnect to retry the issue import.");
     }
+    if (outcome === "no-projects") {
+      setOutcomeError(
+        "Your Sentry organization has no accessible projects. Grant the Superlog app access to at least one project in Sentry, then reconnect.",
+      );
+    }
     const next = new URLSearchParams(searchParams);
     next.delete("sentry");
     next.delete("sentryAuthorization");
