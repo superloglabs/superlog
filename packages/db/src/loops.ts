@@ -1,5 +1,6 @@
 import { and, eq, gt, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db } from "./client.js";
+import { type LoopsLifecycle, deriveLifecycle } from "./loops-lifecycle.js";
 import * as schema from "./schema.js";
 
 const DEFAULT_LOOPS_API_BASE = "https://app.loops.so/api/v1";
@@ -34,16 +35,11 @@ export type LoopsWelcomeFlowInput = {
   appUrl?: string;
 };
 
-export type LoopsLifecycle = {
-  telemetrySet: boolean;
-  telemetrySetAt: string | null;
-  githubAdded: boolean;
-  githubAddedAt: string | null;
-  slackAdded: boolean;
-  slackAddedAt: string | null;
-  mcpInstalled: boolean;
-  mcpInstalledAt: string | null;
-};
+// LoopsLifecycle + deriveLifecycle live in the client-free loops-lifecycle
+// module so the pure mapping stays unit-testable; re-exported here to keep this
+// module's public surface unchanged.
+export { deriveLifecycle };
+export type { LoopsLifecycle };
 
 export type LoopsWelcomeEventPayload = {
   email: string;
@@ -185,62 +181,82 @@ export async function fetchLoopsLifecycleForUserProject(params: {
   projectId: string;
 }): Promise<LoopsLifecycle> {
   const now = new Date();
-  const [telemetryRows, githubRows, slackRows, mcpRows] = await Promise.all([
-    db
-      .select({ at: sql<Date | null>`max(${schema.apiKeys.lastUsedAt})` })
-      .from(schema.apiKeys)
-      .where(
-        and(
-          eq(schema.apiKeys.projectId, params.projectId),
-          isNull(schema.apiKeys.revokedAt),
-          isNotNull(schema.apiKeys.lastUsedAt),
-        ),
-      ),
-    db
-      .select({ at: sql<Date | null>`min(${schema.githubInstallations.createdAt})` })
-      .from(schema.githubInstallations)
-      .innerJoin(schema.projects, eq(schema.projects.id, schema.githubInstallations.projectId))
-      .where(
-        and(eq(schema.projects.orgId, params.orgId), isNull(schema.githubInstallations.revokedAt)),
-      ),
-    db
-      .select({ at: sql<Date | null>`min(${schema.slackInstallations.createdAt})` })
-      .from(schema.slackInstallations)
-      .innerJoin(schema.projects, eq(schema.projects.id, schema.slackInstallations.projectId))
-      .where(
-        and(eq(schema.projects.orgId, params.orgId), isNull(schema.slackInstallations.revokedAt)),
-      ),
-    db
-      .select({ at: sql<Date | null>`min(${schema.mcpOauthTokens.createdAt})` })
-      .from(schema.mcpOauthTokens)
-      .where(
-        and(
-          eq(schema.mcpOauthTokens.userId, params.userId),
-          eq(schema.mcpOauthTokens.projectId, params.projectId),
-          isNull(schema.mcpOauthTokens.revokedAt),
-          or(
-            isNull(schema.mcpOauthTokens.refreshExpiresAt),
-            gt(schema.mcpOauthTokens.refreshExpiresAt, now),
+  const [telemetryRows, githubRows, slackRows, mcpRows, fixStartedRows, fixMergedRows] =
+    await Promise.all([
+      db
+        .select({ at: sql<Date | null>`max(${schema.apiKeys.lastUsedAt})` })
+        .from(schema.apiKeys)
+        .where(
+          and(
+            eq(schema.apiKeys.projectId, params.projectId),
+            isNull(schema.apiKeys.revokedAt),
+            isNotNull(schema.apiKeys.lastUsedAt),
           ),
         ),
-      ),
-  ]);
+      db
+        .select({ at: sql<Date | null>`min(${schema.githubInstallations.createdAt})` })
+        .from(schema.githubInstallations)
+        .innerJoin(schema.projects, eq(schema.projects.id, schema.githubInstallations.projectId))
+        .where(
+          and(
+            eq(schema.projects.orgId, params.orgId),
+            isNull(schema.githubInstallations.revokedAt),
+          ),
+        ),
+      db
+        .select({ at: sql<Date | null>`min(${schema.slackInstallations.createdAt})` })
+        .from(schema.slackInstallations)
+        .innerJoin(schema.projects, eq(schema.projects.id, schema.slackInstallations.projectId))
+        .where(
+          and(eq(schema.projects.orgId, params.orgId), isNull(schema.slackInstallations.revokedAt)),
+        ),
+      db
+        .select({ at: sql<Date | null>`min(${schema.mcpOauthTokens.createdAt})` })
+        .from(schema.mcpOauthTokens)
+        .where(
+          and(
+            eq(schema.mcpOauthTokens.userId, params.userId),
+            eq(schema.mcpOauthTokens.projectId, params.projectId),
+            isNull(schema.mcpOauthTokens.revokedAt),
+            or(
+              isNull(schema.mcpOauthTokens.refreshExpiresAt),
+              gt(schema.mcpOauthTokens.refreshExpiresAt, now),
+            ),
+          ),
+        ),
+      // First agent fix (a PR the agent opened) for this org, and the first such
+      // PR that merged. Scoped to the org through the PR's incident, matching the
+      // github/slack signals above. min() ignores nulls, so mergedAt stays null
+      // until a fix actually merges.
+      db
+        .select({ at: sql<Date | null>`min(${schema.agentPullRequests.createdAt})` })
+        .from(schema.agentPullRequests)
+        .innerJoin(schema.incidents, eq(schema.incidents.id, schema.agentPullRequests.incidentId))
+        .innerJoin(schema.projects, eq(schema.projects.id, schema.incidents.projectId))
+        .where(eq(schema.projects.orgId, params.orgId)),
+      db
+        .select({ at: sql<Date | null>`min(${schema.agentPullRequests.mergedAt})` })
+        .from(schema.agentPullRequests)
+        .innerJoin(schema.incidents, eq(schema.incidents.id, schema.agentPullRequests.incidentId))
+        .innerJoin(schema.projects, eq(schema.projects.id, schema.incidents.projectId))
+        .where(eq(schema.projects.orgId, params.orgId)),
+    ]);
 
   const telemetrySetAt = iso(telemetryRows[0]?.at);
   const githubAddedAt = iso(githubRows[0]?.at);
   const slackAddedAt = iso(slackRows[0]?.at);
   const mcpInstalledAt = iso(mcpRows[0]?.at);
+  const fixStartedAt = iso(fixStartedRows[0]?.at);
+  const fixMergedAt = iso(fixMergedRows[0]?.at);
 
-  return {
-    telemetrySet: telemetrySetAt !== null,
+  return deriveLifecycle({
     telemetrySetAt,
-    githubAdded: githubAddedAt !== null,
     githubAddedAt,
-    slackAdded: slackAddedAt !== null,
     slackAddedAt,
-    mcpInstalled: mcpInstalledAt !== null,
     mcpInstalledAt,
-  };
+    fixStartedAt,
+    fixMergedAt,
+  });
 }
 
 export async function upsertLoopsContact(
