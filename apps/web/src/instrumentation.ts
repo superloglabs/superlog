@@ -68,7 +68,15 @@ if (!endpoint) {
     registerInstrumentations({
       instrumentations: [
         new DocumentLoadInstrumentation(),
-        new UserInteractionInstrumentation(),
+        // Pass enabled:false so InstrumentationBase skips calling enable() inside
+        // the constructor, before ES2022 class-field initializers (including
+        // _spansData = new WeakMap()) have run. registerInstrumentations() then
+        // calls enable() after construction is complete, so the zone-patch
+        // closure captures plugin._spansData as the WeakMap rather than
+        // undefined. Without this guard the BatchSpanProcessor's batch-export
+        // setTimeout, scheduled while inside a ZoneContextManager span context
+        // during _collectPerformance, trips a TypeError in _shouldCountTask.
+        new UserInteractionInstrumentation({ enabled: false }),
         new FetchInstrumentation({
           // Only propagate traceparent to first-party hosts. Third parties
           // Some third-party hosts reject traceparent in their CORS allowlist and
