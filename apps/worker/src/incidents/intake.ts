@@ -1,5 +1,6 @@
 // Incident intake use case: given a new (or re-seen) Issue, decide whether
-// it joins an existing open incident or opens a new one.
+// it joins an existing incident or opens a new one. A grouping match may
+// reopen a resolved historical incident; only standalone issues create one.
 //
 // The decision is layered:
 //   1. Heuristic match (cheap, deterministic, runs on every issue). For
@@ -25,6 +26,7 @@ import {
   groupingIssueInput,
   issueSample,
 } from "../issues/domain.js";
+import { IssueGroupingFailedError } from "./errors.js";
 
 export type IntakeLogger = {
   warn(obj: Record<string, unknown>, msg?: string): void;
@@ -36,6 +38,8 @@ export type IntakeRepository = {
   // driven over its life, so the latest link is its current incident.
   findLatestIncidentIssueLink(issueId: string): Promise<schema.IncidentIssue | undefined>;
   findIncident(incidentId: string): Promise<schema.Incident | undefined>;
+  findIssueGroupingState(issueId: string): Promise<schema.Issue["groupingState"] | undefined>;
+  hasAgentRunForIncident(incidentId: string): Promise<boolean>;
   findOpenRecurrenceForIncident(previousIncidentId: string): Promise<schema.Incident | undefined>;
   reopenIssue(issueId: string): Promise<void>;
   touchIncidentLastSeen(incidentId: string, lastSeen: Date): Promise<void>;
@@ -50,7 +54,7 @@ export type IntakeRepository = {
     alertId: string,
     groupKey: string,
   ): Promise<schema.Incident | undefined>;
-  findOpenIncidentCandidates(
+  findIncidentCandidates(
     issue: schema.Issue,
     opts: { filterService: boolean },
   ): Promise<schema.Incident[]>;
@@ -59,6 +63,11 @@ export type IntakeRepository = {
   linkIssueToIncident(opts: {
     incident: schema.Incident;
     issue: schema.Issue;
+    grouping?: {
+      state: "grouped" | "standalone";
+      source: IssueGroupingSource;
+      reason: string | null;
+    };
   }): Promise<LinkIssueToIncidentOutcome>;
   updateIssueGrouping(
     issueId: string,
@@ -126,6 +135,9 @@ export type EnsureIncidentForIssueResult = {
   incident: schema.Incident;
   createdIncident: boolean;
   linkedIssue: boolean;
+  // Only a genuinely standalone Incident starts agent work. Grouping into an
+  // existing open or resolved Incident is complete once the Issue is linked.
+  shouldInvestigate: boolean;
   // The incident was opened because a resolved issue recurred (chained to its
   // predecessor via previous_incident_id).
   recurrenceIncident: boolean;
@@ -177,14 +189,30 @@ export async function ensureIncidentForIssueWorkflow(
   }
 }
 
-async function linkIssueToOpenIncident(
+async function joinIssueToIncident(
   repo: IntakeRepository,
   incident: schema.Incident,
   issue: schema.Issue,
+  grouping?: {
+    state: "grouped" | "standalone";
+    source: IssueGroupingSource;
+    reason: string | null;
+  },
 ): Promise<boolean> {
-  const outcome = await repo.linkIssueToIncident({ incident, issue });
+  const outcome = await repo.linkIssueToIncident({ incident, issue, grouping });
   if (outcome === "incident_closed") throw new IncidentClosedDuringLink(incident.id);
   return outcome === "linked";
+}
+
+async function shouldRecoverInitialInvestigation(
+  repo: IntakeRepository,
+  issueId: string,
+  incident: schema.Incident,
+): Promise<boolean> {
+  if (incident.status !== "open") return false;
+  const groupingState = await repo.findIssueGroupingState(issueId);
+  if (groupingState !== "standalone") return false;
+  return !(await repo.hasAgentRunForIncident(incident.id));
 }
 
 async function ensureIncidentForIssueAttempt(
@@ -215,14 +243,38 @@ async function ensureIncidentForIssueAttempt(
           incident: previous,
           createdIncident: false,
           linkedIssue: false,
+          shouldInvestigate: await shouldRecoverInitialInvestigation(deps.repo, issue.id, previous),
           recurrenceIncident: false,
         };
       }
-      // A recurrence opens a NEW incident chained to its predecessor — but if a
-      // related issue already has an open incident, run the same grouping
-      // pipeline as a first occurrence and join that incident instead. The
-      // potentially slow LLM call stays outside the serialized section.
+      if (previous.status === "resolved") {
+        const recurrenceKeys = [
+          `recurrence:${previous.id}`,
+          ...(traceId ? [`trace:${traceId}`] : []),
+        ];
+        return serialize(recurrenceKeys, async () => {
+          const linkedIssue = await joinIssueToIncident(deps.repo, previous, issue);
+          await deps.repo.reopenIssue(issue.id);
+          await deps.repo.updateIssueGrouping(issue.id, {
+            state: "grouped",
+            source: "heuristic",
+            reason: "Reopened the Issue's previous incident.",
+          });
+          const fresh = (await deps.repo.findIncident(previous.id)) ?? previous;
+          return {
+            incident: fresh,
+            createdIncident: false,
+            linkedIssue,
+            shouldInvestigate: false,
+            recurrenceIncident: false,
+          };
+        });
+      }
+      // Legacy closed states that are not directly reopenable still use the
+      // grouping pipeline before falling back to a chained incident epoch.
+      // The potentially slow LLM call stays outside the serialized section.
       let grouping = await findMatchingIncident(issue, deps);
+      await throwIfGroupingFailed(issue.id, grouping, deps.repo);
       let matched = grouping.match?.incident ?? null;
       const recurrenceKeys = [
         `recurrence:${previous.id}`,
@@ -243,6 +295,11 @@ async function ensureIncidentForIssueAttempt(
               incident: landed,
               createdIncident: false,
               linkedIssue: false,
+              shouldInvestigate: await shouldRecoverInitialInvestigation(
+                deps.repo,
+                issue.id,
+                landed,
+              ),
               recurrenceIncident: false,
             };
           }
@@ -282,7 +339,7 @@ async function ensureIncidentForIssueAttempt(
           }
         }
         if (matched) {
-          const linkedIssue = await linkIssueToOpenIncident(deps.repo, matched, issue);
+          const linkedIssue = await joinIssueToIncident(deps.repo, matched, issue);
           await deps.repo.reopenIssue(issue.id);
           await markIssueGrouping(issue.id, grouping, deps.repo);
           const fresh = (await deps.repo.findIncident(matched.id)) ?? matched;
@@ -290,6 +347,7 @@ async function ensureIncidentForIssueAttempt(
             incident: fresh,
             createdIncident: false,
             linkedIssue,
+            shouldInvestigate: false,
             recurrenceIncident: false,
           };
         }
@@ -300,7 +358,13 @@ async function ensureIncidentForIssueAttempt(
           environment: environmentFromResourceAttrs(issue.lastSample?.resourceAttrs),
         });
         await markIssueGrouping(issue.id, grouping, deps.repo);
-        return { incident, createdIncident: true, linkedIssue: true, recurrenceIncident: true };
+        return {
+          incident,
+          createdIncident: true,
+          linkedIssue: true,
+          shouldInvestigate: true,
+          recurrenceIncident: true,
+        };
       });
     }
   }
@@ -316,6 +380,11 @@ async function ensureIncidentForIssueAttempt(
         incident: freshIncident,
         createdIncident: false,
         linkedIssue: false,
+        shouldInvestigate: await shouldRecoverInitialInvestigation(
+          deps.repo,
+          issue.id,
+          freshIncident,
+        ),
         recurrenceIncident: false,
       };
     }
@@ -324,7 +393,7 @@ async function ensureIncidentForIssueAttempt(
   if (preference) {
     const preferred = await deps.repo.findIncident(preference.preferredOpenIncidentId);
     if (preferred && preferred.projectId === issue.projectId && preferred.status === "open") {
-      const linkedIssue = await linkIssueToOpenIncident(deps.repo, preferred, issue);
+      const linkedIssue = await joinIssueToIncident(deps.repo, preferred, issue);
       await deps.repo.updateIssueGrouping(issue.id, {
         state: "grouped",
         source: "llm",
@@ -335,6 +404,7 @@ async function ensureIncidentForIssueAttempt(
         incident: freshIncident,
         createdIncident: false,
         linkedIssue,
+        shouldInvestigate: false,
         recurrenceIncident: false,
       };
     }
@@ -347,7 +417,7 @@ async function ensureIncidentForIssueAttempt(
   const alertContext = issue.kind === "alert" ? await loadAlertIncidentContext(issue, deps) : null;
   if (alertContext?.openIncident) {
     const open = alertContext.openIncident;
-    const linkedIssue = await linkIssueToOpenIncident(deps.repo, open, issue);
+    const linkedIssue = await joinIssueToIncident(deps.repo, open, issue);
     await deps.repo.updateIssueGrouping(issue.id, {
       state: "grouped",
       source: "heuristic",
@@ -358,11 +428,13 @@ async function ensureIncidentForIssueAttempt(
       incident: freshIncident,
       createdIncident: false,
       linkedIssue,
+      shouldInvestigate: false,
       recurrenceIncident: false,
     };
   }
 
   let grouping = await findMatchingIncident(issue, deps);
+  await throwIfGroupingFailed(issue.id, grouping, deps.repo);
   let matched = grouping.match?.incident ?? null;
 
   // The tail below is the workflow's one read-then-create section: everything
@@ -391,6 +463,7 @@ async function ensureIncidentForIssueAttempt(
           incident: existing,
           createdIncident: false,
           linkedIssue: false,
+          shouldInvestigate: await shouldRecoverInitialInvestigation(deps.repo, issue.id, existing),
           recurrenceIncident: false,
         };
       }
@@ -428,6 +501,7 @@ async function ensureIncidentForIssueAttempt(
         incident: recurrence,
         createdIncident: true,
         linkedIssue: true,
+        shouldInvestigate: true,
         recurrenceIncident: true,
       };
     }
@@ -446,10 +520,20 @@ async function ensureIncidentForIssueAttempt(
       createdIncident = true;
     }
 
-    const linkedIssue = await linkIssueToOpenIncident(deps.repo, incident, issue);
-    await markIssueGrouping(issue.id, grouping, deps.repo);
+    const linkedIssue = await joinIssueToIncident(
+      deps.repo,
+      incident,
+      issue,
+      groupingVerdictUpdate(grouping),
+    );
     const freshIncident = (await deps.repo.findIncident(incident.id)) ?? incident;
-    return { incident: freshIncident, createdIncident, linkedIssue, recurrenceIncident: false };
+    return {
+      incident: freshIncident,
+      createdIncident,
+      linkedIssue,
+      shouldInvestigate: createdIncident,
+      recurrenceIncident: false,
+    };
   });
 }
 
@@ -512,7 +596,7 @@ async function findHeuristicMatchingIncident(
   issue: schema.Issue,
   deps: IntakeDeps,
 ): Promise<IncidentMatch | null> {
-  const candidates = await deps.repo.findOpenIncidentCandidates(issue, { filterService: true });
+  const candidates = await deps.repo.findIncidentCandidates(issue, { filterService: true });
   if (candidates.length === 0) return null;
   const linked = await deps.repo.loadLinkedIncidentIssues(candidates);
   return findHeuristicIncidentMatch(issue, candidates, linked);
@@ -526,19 +610,19 @@ async function findSameTraceMatchingIncident(
   // so no-trace intakes (e.g. alert episodes) don't do them here only for the
   // LLM path to immediately repeat them.
   if (!issueSample(issue)?.traceId) return null;
-  const candidates = await deps.repo.findOpenIncidentCandidates(issue, { filterService: false });
+  const candidates = await deps.repo.findIncidentCandidates(issue, { filterService: false });
   if (candidates.length === 0) return null;
   const linked = await deps.repo.loadLinkedIncidentIssues(candidates);
   return findSameTraceIncidentMatch(issue, candidates, linked);
 }
 
 async function findLlmMatchingIncident(issue: schema.Issue, deps: IntakeDeps): Promise<Grouping> {
-  const candidates = await deps.repo.findOpenIncidentCandidates(issue, { filterService: false });
+  const candidates = await deps.repo.findIncidentCandidates(issue, { filterService: false });
   if (candidates.length === 0) {
     return {
       match: null,
       standaloneSource: "heuristic",
-      standaloneReason: "No open incidents in this project.",
+      standaloneReason: "No incident candidates in this project.",
       failedReason: null,
     };
   }
@@ -667,4 +751,33 @@ async function markIssueGrouping(
     reason: grouping.standaloneReason,
     onlyIfPending,
   });
+}
+
+function groupingVerdictUpdate(grouping: Grouping): {
+  state: "grouped" | "standalone";
+  source: IssueGroupingSource;
+  reason: string | null;
+} {
+  if (grouping.match) {
+    return {
+      state: "grouped",
+      source: grouping.match.source,
+      reason: grouping.match.reason,
+    };
+  }
+  return {
+    state: "standalone",
+    source: grouping.standaloneSource,
+    reason: grouping.standaloneReason,
+  };
+}
+
+async function throwIfGroupingFailed(
+  issueId: string,
+  grouping: Grouping,
+  repo: IntakeRepository,
+): Promise<void> {
+  if (!grouping.failedReason) return;
+  await markIssueGrouping(issueId, grouping, repo);
+  throw new IssueGroupingFailedError(grouping.failedReason);
 }

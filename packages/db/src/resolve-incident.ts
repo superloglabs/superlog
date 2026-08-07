@@ -61,7 +61,7 @@ async function emitIncidentReopened(
 // What happens to the incident's issues when the incident resolves. Every
 // resolve carries one of these; the default is "resolve" (the "Problem
 // resolved" semantics — the underlying error signature is considered fixed and
-// will open a fresh incident if it recurs).
+// will reopen the incident if it recurs).
 export type ResolveIssueOutcome =
   | { kind: "resolve" }
   // "Not an issue": the signature is noise; suppress future occurrences.
@@ -658,6 +658,102 @@ export function createIncidentLifecycle(database: DB = db) {
       });
     },
 
+    // Grouping is allowed to select a resolved historical Incident. Joining
+    // that aggregate reopens it in the same transaction as the Issue link so
+    // a concurrent resolution/grouping race cannot create a detached Issue or
+    // a second Incident for the same root cause.
+    async joinIssueToIncident(opts: {
+      incidentId: string;
+      issue: Pick<schema.Issue, "id" | "lastSeen" | "service" | "title">;
+      grouping?: {
+        state: "grouped" | "standalone";
+        source: schema.Issue["groupingSource"];
+        reason: string | null;
+      };
+    }): Promise<LinkIssueToOpenIncidentResult> {
+      const now = new Date();
+      const result = await repository.transaction(async (tx) => {
+        const incident = (await repository.lockIncidentsInTx(tx, [opts.incidentId]))[0];
+        if (!incident || (incident.status !== "open" && incident.status !== "resolved")) {
+          return { outcome: "incident_closed" as const, previousStatus: null };
+        }
+
+        const previousStatus = incident.status === "resolved" ? incident.status : null;
+        if (previousStatus) {
+          await repository.updateIncidentInTx(
+            tx,
+            incident.id,
+            {
+              ...buildManualReopenPatch(),
+              lastSeen:
+                opts.issue.lastSeen.getTime() > incident.lastSeen.getTime()
+                  ? opts.issue.lastSeen
+                  : incident.lastSeen,
+            },
+            now,
+          );
+          await repository.updateIssueInTx(tx, opts.issue.id, buildIssueReopenPatch());
+          await tx
+            .update(schema.incidentEvents)
+            .set({ processedAt: now })
+            .where(
+              and(
+                eq(schema.incidentEvents.incidentId, incident.id),
+                eq(schema.incidentEvents.kind, AGENT_PULL_REQUEST_BATCH_RESERVATION_KIND),
+                isNull(schema.incidentEvents.processedAt),
+              ),
+            );
+          await repository.insertEventInTx(tx, {
+            incidentId: incident.id,
+            kind: "incident_reopened",
+            summary: `Incident reopened when a matching Issue arrived: ${opts.issue.title}`,
+            detail: {
+              reason: "issue_regressed",
+              issueId: opts.issue.id,
+              issueTitle: opts.issue.title,
+              previousIncidentStatus: previousStatus,
+            },
+            dedupeKey: `incident_reopened:issue_regressed:${incident.id}:${opts.issue.id}:${now.getTime()}`,
+            processedAt: now,
+          });
+          await repository.insertEventInTx(tx, {
+            incidentId: incident.id,
+            kind: "issue_reopened",
+            summary: `Issue back to open: ${opts.issue.title}`,
+            detail: { issueId: opts.issue.id, origin: "issue_regressed" },
+            dedupeKey: `issue_reopened:${opts.issue.id}:${now.getTime()}`,
+            processedAt: now,
+          });
+        }
+
+        const linked = await repository.linkIssueInTx(
+          tx,
+          { ...incident, status: "open" },
+          opts.issue,
+          now,
+        );
+        if (opts.grouping) {
+          await repository.updateIssueInTx(tx, opts.issue.id, {
+            groupingState: opts.grouping.state,
+            groupingSource: opts.grouping.source,
+            groupingReason: opts.grouping.reason,
+            groupingAttemptedAt: now,
+          });
+        }
+        return {
+          outcome: linked ? ("linked" as const) : ("already_linked" as const),
+          previousStatus,
+        };
+      });
+      if (result.previousStatus) {
+        await emitIncidentReopened(database, opts.incidentId, {
+          reason: "issue_regressed",
+          previousStatus: result.previousStatus,
+        });
+      }
+      return result.outcome;
+    },
+
     resolve,
 
     async resolveIfAllIssuesQuiet(
@@ -742,8 +838,8 @@ export function createIncidentLifecycle(database: DB = db) {
           const input = opts.buildInput(pullRequests, epoch);
           // A close without a merged sibling is the human declining the fix
           // while the underlying errors may still be firing. Cascading
-          // `resolve` there re-arms recurrence, which re-investigates and
-          // re-delivers a PR the human just closed — so this path defaults
+          // `resolve` there re-arms recurrence and would reopen work the human
+          // just closed — so this path defaults
           // the issue cascade to `silence` (recurrences suppressed) and the
           // notification surface offers an explicit un-silence action.
           if (input.kind === "agent_pr_closed" && !input.issueOutcome && !input.issueOutcomes) {
@@ -845,13 +941,9 @@ export function createIncidentLifecycle(database: DB = db) {
       return { updated: true, noiseResolved };
     },
 
-    // A resolved issue recurred, an under-observation issue's escalation
-    // trigger fired, or an alert whose previous incident is closed breached
-    // again: open a NEW incident chained to the predecessor, put the issue
-    // back to `open`, and append a fresh incident_issues link (the issue's
-    // link history is how "current incident" is derived). The old incident
-    // keeps its findings and stays closed — its timeline records where the
-    // story continued.
+    // Alert episodes whose previous incident is closed may still open a new
+    // incident epoch. Error Issue recurrences use joinIssueToIncident instead,
+    // which reopens their canonical Incident without starting agent work.
     async openRecurrence(opts: {
       previousIncident: schema.Incident;
       issue: schema.Issue;

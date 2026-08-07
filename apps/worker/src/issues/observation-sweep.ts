@@ -6,7 +6,7 @@
 //   rate  — per-minute average of the event_count delta since the previous
 //           sweep evaluation, checked only once a full rate window elapsed.
 // A fired trigger escalates through the same intake path as a resolved-issue
-// recurrence: new incident chained to the predecessor, issue back to `open`.
+// recurrence: the issue and its canonical incident return to `open`.
 import { OBSERVATION_RATE_WINDOW_MINUTES, escalationTriggerFired, type schema } from "@superlog/db";
 
 export type ObservationSweepLogger = {

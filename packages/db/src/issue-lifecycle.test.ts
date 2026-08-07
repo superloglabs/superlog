@@ -1249,7 +1249,9 @@ test("hasCurrentSilencedIssues follows the issue's current incident link", async
     // The issue recurs into a NEW incident which later silences it. The old
     // incident's historical link must not resurface the silenced state (its
     // un-silence button could no longer touch the issue).
-    const reloaded = one(await db.select().from(schema.issues).where(eq(schema.issues.id, issue.id)));
+    const reloaded = one(
+      await db.select().from(schema.issues).where(eq(schema.issues.id, issue.id)),
+    );
     const successor = await lifecycle.openRecurrence({
       previousIncident: incident,
       issue: reloaded,
@@ -1478,6 +1480,71 @@ test("an Issue cannot be linked after Incident resolution wins the lifecycle loc
       where: eq(schema.incidentIssues.issueId, lateIssue.id),
     });
     assert.deepEqual(links, []);
+  } finally {
+    await client.close();
+  }
+});
+
+test("joining an Issue to a resolved Incident reopens the same Incident", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { incident } = await seedIncidentWithIssue(db, project.id, {
+      fingerprint: "fp-original",
+    });
+    const lifecycle = createIncidentLifecycle(db);
+    await lifecycle.resolve({
+      incidentId: incident.id,
+      kind: "dashboard_manual",
+      reasonCode: "problem_resolved",
+      reasonText: null,
+    });
+    const laterIssue = one(
+      await db
+        .insert(schema.issues)
+        .values({
+          projectId: project.id,
+          fingerprint: "fp-later-symptom",
+          kind: "log",
+          exceptionType: "Error",
+          title: "same root cause, later symptom",
+          firstSeen: new Date("2026-08-01T12:00:00.000Z"),
+          lastSeen: new Date("2026-08-01T12:00:00.000Z"),
+        })
+        .returning(),
+    );
+
+    const joined = await lifecycle.joinIssueToIncident({
+      incidentId: incident.id,
+      issue: laterIssue,
+      grouping: {
+        state: "standalone",
+        source: "llm",
+        reason: "No existing Incident matched.",
+      },
+    });
+
+    assert.equal(joined, "linked");
+    const reopened = one(
+      await db.select().from(schema.incidents).where(eq(schema.incidents.id, incident.id)),
+    );
+    assert.equal(reopened.status, "open");
+    assert.equal(reopened.resolvedAt, null);
+    assert.equal(reopened.issueCount, 2);
+    assert.equal(reopened.lastSeen.toISOString(), "2026-08-01T12:00:00.000Z");
+    const links = await db.query.incidentIssues.findMany({
+      where: eq(schema.incidentIssues.issueId, laterIssue.id),
+    });
+    assert.deepEqual(
+      links.map((link) => link.incidentId),
+      [incident.id],
+    );
+    const persistedIssue = one(
+      await db.select().from(schema.issues).where(eq(schema.issues.id, laterIssue.id)),
+    );
+    assert.equal(persistedIssue.groupingState, "standalone");
+    assert.equal(persistedIssue.groupingSource, "llm");
+    assert.equal(persistedIssue.groupingReason, "No existing Incident matched.");
   } finally {
     await client.close();
   }

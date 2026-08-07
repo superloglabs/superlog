@@ -6,7 +6,7 @@ import {
   db,
   schema,
 } from "@superlog/db";
-import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, notExists, or, sql } from "drizzle-orm";
 import type { IssueGroupingSource, IssueGroupingState, LinkedIncidentIssue } from "./domain.js";
 
 const INCIDENT_GROUPING_CANDIDATE_LIMIT = parsePositiveInt(
@@ -73,21 +73,54 @@ export async function updateIssueGrouping(
     );
 }
 
-export async function findOpenIncidentCandidates(
+export async function findIncidentCandidates(
   issue: schema.Issue,
   opts: { filterService: boolean },
+  database: DB = db,
 ): Promise<schema.Incident[]> {
-  return db.query.incidents.findMany({
-    where: and(
-      eq(schema.incidents.projectId, issue.projectId),
-      eq(schema.incidents.status, "open"),
-      opts.filterService && issue.service
-        ? or(eq(schema.incidents.service, issue.service), isNull(schema.incidents.service))
-        : undefined,
-    ),
-    orderBy: [desc(schema.incidents.lastSeen)],
-    limit: INCIDENT_GROUPING_CANDIDATE_LIMIT,
-  });
+  const candidatesForStatus = (status: "open" | "resolved") =>
+    database.query.incidents.findMany({
+      where: and(
+        eq(schema.incidents.projectId, issue.projectId),
+        eq(schema.incidents.status, status),
+        opts.filterService && issue.service
+          ? or(eq(schema.incidents.service, issue.service), isNull(schema.incidents.service))
+          : undefined,
+      ),
+      orderBy: [desc(schema.incidents.lastSeen)],
+      limit: INCIDENT_GROUPING_CANDIDATE_LIMIT,
+    });
+  const [open, resolved] = await Promise.all([
+    candidatesForStatus("open"),
+    candidatesForStatus("resolved"),
+  ]);
+  return [...open, ...resolved];
+}
+
+export async function findStaleUngroupedIssues(
+  opts: { attemptedBefore: Date; limit: number },
+  database: DB = db,
+): Promise<schema.Issue[]> {
+  return database
+    .select()
+    .from(schema.issues)
+    .where(
+      and(
+        inArray(schema.issues.groupingState, ["pending", "failed"]),
+        or(
+          isNull(schema.issues.groupingAttemptedAt),
+          lte(schema.issues.groupingAttemptedAt, opts.attemptedBefore),
+        ),
+        notExists(
+          database
+            .select({ id: schema.incidentIssues.id })
+            .from(schema.incidentIssues)
+            .where(eq(schema.incidentIssues.issueId, schema.issues.id)),
+        ),
+      ),
+    )
+    .orderBy(asc(schema.issues.groupingAttemptedAt), asc(schema.issues.createdAt))
+    .limit(opts.limit);
 }
 
 export async function loadLinkedIncidentIssues(
@@ -148,6 +181,24 @@ export async function findIncident(incidentId: string): Promise<schema.Incident 
   return db.query.incidents.findFirst({
     where: eq(schema.incidents.id, incidentId),
   });
+}
+
+export async function findIssueGroupingState(
+  issueId: string,
+): Promise<schema.Issue["groupingState"] | undefined> {
+  const issue = await db.query.issues.findFirst({
+    where: eq(schema.issues.id, issueId),
+    columns: { groupingState: true },
+  });
+  return issue?.groupingState;
+}
+
+export async function hasAgentRunForIncident(incidentId: string): Promise<boolean> {
+  const run = await db.query.agentRuns.findFirst({
+    where: eq(schema.agentRuns.incidentId, incidentId),
+    columns: { id: true },
+  });
+  return run !== undefined;
 }
 
 // A resolved incident can have several issue fingerprints recur at once. They
@@ -243,9 +294,15 @@ export async function findLatestIncidentForAlert(
 export async function linkIssueToIncident(opts: {
   incident: schema.Incident;
   issue: schema.Issue;
+  grouping?: {
+    state: "grouped" | "standalone";
+    source: schema.Issue["groupingSource"];
+    reason: string | null;
+  };
 }): Promise<LinkIssueToOpenIncidentResult> {
-  return incidentLifecycle.linkIssueToOpenIncident({
+  return incidentLifecycle.joinIssueToIncident({
     incidentId: opts.incident.id,
     issue: opts.issue,
+    grouping: opts.grouping,
   });
 }

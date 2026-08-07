@@ -13,12 +13,12 @@
 // database speed. A queue worker (registered at boot alongside the cron job
 // runner) reloads the issue and runs the original handler.
 //
-// Delivery semantics are unchanged from the old inline path: side effects are
-// at-most-once. The inline path logged-and-skipped a throwing handler; the
-// queue worker does the same per job instead of relying on pg-boss retries,
-// because the handler is not written to be safely re-runnable in all cases.
+// Most side-effect failures remain at-most-once because the whole handler is
+// not safely replayable. Grouping failures are the exception: they happen
+// before incident creation, so the worker rethrows those for pg-boss to retry.
 import { metrics } from "@opentelemetry/api";
 import type { schema } from "@superlog/db";
+import { IssueGroupingFailedError } from "./incidents/errors.js";
 import type { IssueTransition } from "./incidents/workflow.js";
 import { logger as defaultLogger } from "./logger.js";
 
@@ -32,7 +32,8 @@ const queueLagHistogram = meter.createHistogram("superlog.issue_transitions.queu
   unit: "ms",
 });
 const durationHistogram = meter.createHistogram("superlog.issue_transitions.duration_ms", {
-  description: "Wall-clock duration of issue-transition side effects (incident intake, grouping, notifications).",
+  description:
+    "Wall-clock duration of issue-transition side effects (incident intake, grouping, notifications).",
   unit: "ms",
 });
 const failureCounter = meter.createCounter("superlog.issue_transitions.failures", {
@@ -176,9 +177,9 @@ function createKeyedMutex(): <T>(key: string, fn: () => Promise<T>) => Promise<T
 }
 
 // Register the queue and its worker. Each consumer processes one job at a
-// time; a job's failure is logged and swallowed (at-most-once, matching the
-// previous inline behavior) so one poisoned transition can't wedge or re-run
-// the rest. Same-project jobs additionally serialize behind each other.
+// time. General side-effect failures are logged and swallowed; a grouping
+// failure rejects the job so pg-boss retries the still-uncommitted intake.
+// Same-project jobs additionally serialize behind each other.
 export async function registerIssueTransitionWorker(
   boss: Pick<TransitionQueueBoss, "createQueue" | "work">,
   opts: {
@@ -222,6 +223,19 @@ export async function registerIssueTransitionWorker(
             await perProject(data.projectId, () => opts.handle(issue, data.transition));
           } catch (err) {
             failureCounter.add(1, { transition: data.transition });
+            if (err instanceof IssueGroupingFailedError) {
+              logger.error(
+                {
+                  scope: "issue-transitions",
+                  issueId: data.issueId,
+                  transition: data.transition,
+                  projectId: data.projectId,
+                  err: err.message,
+                },
+                "issue grouping failed; retrying transition",
+              );
+              throw err;
+            }
             logger.error(
               {
                 scope: "issue-transitions",

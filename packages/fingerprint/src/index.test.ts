@@ -222,6 +222,17 @@ test("fingerprintLog groups equivalent Vercel runtime request envelopes", () => 
   assert.equal(first.hash, second.hash);
 });
 
+test("fingerprintLog groups stackless errors whose measurements differ", () => {
+  const timeout = (operation: "match" | "put", elapsedMs: number, loopLagMaxMs: number) =>
+    fingerprintLog({
+      ...VERCEL_LOG,
+      body: `[UpstashCache] ${operation} failed (${operation === "match" ? "serving uncached" : "skipping cache"}) [elapsed=${elapsedMs}ms budget=1000ms loopLagMax=${loopLagMaxMs}ms]: [DOMException [TimeoutError]: The operation was aborted due to timeout]`,
+    });
+
+  assert.equal(timeout("match", 1_015, 226).hash, timeout("match", 43_689, 18_309).hash);
+  assert.notEqual(timeout("match", 1_015, 226).hash, timeout("put", 1_015, 226).hash);
+});
+
 test("fingerprintLog separates Vercel runtime request envelopes by status", () => {
   const unavailable = fingerprintLog({
     ...VERCEL_LOG,
