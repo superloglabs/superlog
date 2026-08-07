@@ -2611,6 +2611,9 @@ function NotionCard() {
   const notionInstall = install.data?.installed === true ? install.data : null;
   const installed = notionInstall !== null;
   const needsReauth = notionInstall?.needsReauth === true;
+  // configurable defaults to true when the server hasn't returned the field yet
+  // (query still loading or older API version); false only when explicitly set.
+  const configurable = install.data?.configurable !== false;
 
   return (
     <div className="space-y-3">
@@ -2632,11 +2635,17 @@ function NotionCard() {
           </Chip>
         )}
       </div>
+      {!configurable && (
+        <p className="text-[13px] text-muted">
+          Notion is not available on this plan or deployment. Contact support to enable it.
+        </p>
+      )}
       <div className="flex items-center gap-2">
         <Btn
           size="sm"
           variant={installed ? "secondary" : "primary"}
           loading={start.isPending}
+          disabled={!configurable}
           onClick={async () => {
             const { url } = await start.mutateAsync();
             window.location.href = url;

@@ -1602,9 +1602,10 @@ export function useUninstallLinear() {
 }
 
 export type NotionInstallation =
-  | { installed: false }
+  | { installed: false; configurable?: boolean }
   | {
       installed: true;
+      configurable?: boolean;
       workspaceId: string;
       workspaceName: string | null;
       workspaceIcon: string | null;
