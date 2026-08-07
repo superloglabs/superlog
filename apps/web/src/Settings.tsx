@@ -3212,18 +3212,21 @@ function GcpLogGroupFilter({
       )}
 
       <div className="max-h-52 overflow-y-auto p-1.5">
-        {discovered.isLoading && logNames.length === 0 ? (
-          <p className="px-2 py-3 text-[11.5px] text-muted">Discovering recent log groups…</p>
-        ) : discovered.isError && logNames.length === 0 ? (
+        {discovered.isError && (
           <p className="px-2 py-3 text-[11.5px] text-danger">
             Couldn’t load recent log groups. Close and reopen this integration to retry.
           </p>
+        )}
+        {discovered.isLoading && logNames.length === 0 ? (
+          <p className="px-2 py-3 text-[11.5px] text-muted">Discovering recent log groups…</p>
         ) : visibleLogNames.length === 0 ? (
-          <p className="px-2 py-3 text-[11.5px] text-muted">
-            {normalizedQuery
-              ? "No matching log groups."
-              : "Log groups will appear here after GCP logs arrive."}
-          </p>
+          !discovered.isError && (
+            <p className="px-2 py-3 text-[11.5px] text-muted">
+              {normalizedQuery
+                ? "No matching log groups."
+                : "Log groups will appear here after GCP logs arrive."}
+            </p>
+          )
         ) : (
           visibleLogNames.map((logName) => {
             const enabled = !draft.includes(logName);
