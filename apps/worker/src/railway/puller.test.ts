@@ -248,6 +248,94 @@ test("refreshes an expiring token and persists the rotated refresh token first",
   assert.equal(at(calls.tokens, 0).refreshToken, "rt-new");
 });
 
+test("continues with current token and logs WARN when refresh returns a transient error but token is still valid", async () => {
+  const { store, calls } = fakeStore([
+    installation({ tokenExpiresAt: new Date(NOW.getTime() + 30 * 1000) }),
+  ]);
+  const forwarded: Forwarded = [];
+  const logged: Array<{ level: string; msg: string }> = [];
+  const log = {
+    info() {},
+    warn(_f: Record<string, unknown>, msg: string) {
+      logged.push({ level: "warn", msg });
+    },
+    error(_f: Record<string, unknown>, msg: string) {
+      logged.push({ level: "error", msg });
+    },
+  };
+  const stats = await runRailwayPullOnce({
+    store,
+    config: CONFIG,
+    intakeBaseUrl: "https://intake.test",
+    log,
+    now: () => NOW,
+    fetchImpl: fakeFetch({
+      logs: [LOG_LINE],
+      forwarded,
+      refreshResponse: { error: "server_error" },
+    }),
+    metricsIntervalSeconds: 999999,
+    metricsPollState: new Map([["inst-1:env-1:svc-1", Math.floor(NOW.getTime() / 1000)]]),
+  });
+
+  // Logs must still be forwarded using the existing (not-yet-expired) token.
+  assert.equal(stats.logsForwarded, 1);
+  assert.equal(forwarded.length, 1);
+  assert.equal(calls.tokens.length, 0, "should not save tokens on failed refresh");
+  // Must log WARN, not ERROR.
+  assert.equal(
+    logged.filter((l) => l.level === "error").length,
+    0,
+    "transient refresh failure must not emit ERROR log",
+  );
+  assert.equal(
+    logged.filter((l) => l.level === "warn" && l.msg.includes("token refresh failed")).length,
+    1,
+  );
+});
+
+test("logs WARN and skips when token refresh fails and token is already expired", async () => {
+  const { store } = fakeStore([
+    installation({ tokenExpiresAt: new Date(NOW.getTime() - 1000) }),
+  ]);
+  const forwarded: Forwarded = [];
+  const logged: Array<{ level: string; msg: string }> = [];
+  const log = {
+    info() {},
+    warn(_f: Record<string, unknown>, msg: string) {
+      logged.push({ level: "warn", msg });
+    },
+    error(_f: Record<string, unknown>, msg: string) {
+      logged.push({ level: "error", msg });
+    },
+  };
+  const stats = await runRailwayPullOnce({
+    store,
+    config: CONFIG,
+    intakeBaseUrl: "https://intake.test",
+    log,
+    now: () => NOW,
+    fetchImpl: fakeFetch({
+      logs: [LOG_LINE],
+      forwarded,
+      refreshResponse: { error: "server_error" },
+    }),
+    metricsIntervalSeconds: 999999,
+  });
+
+  assert.equal(stats.logsForwarded, 0);
+  assert.equal(forwarded.length, 0);
+  assert.equal(
+    logged.filter((l) => l.level === "error").length,
+    0,
+    "must not emit ERROR even for expired-token skip",
+  );
+  assert.equal(
+    logged.filter((l) => l.level === "warn" && l.msg.includes("token refresh failed")).length,
+    1,
+  );
+});
+
 test("skips an installation whose token expired with no refresh token", async () => {
   const { store, calls } = fakeStore([
     installation({ refreshToken: null, tokenExpiresAt: new Date(NOW.getTime() - 1000) }),

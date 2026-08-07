@@ -146,22 +146,31 @@ export async function runRailwayPullOnce(deps: RailwayPullerDeps): Promise<Railw
       });
       if (!refreshed.ok) {
         stats.errors += 1;
-        deps.log.error(
+        // The token still has up to TOKEN_REFRESH_MARGIN_MS of validity. When
+        // Railway returns a transient error (e.g. server_error), fall through
+        // and use the existing token so this pass is not lost. Only skip when
+        // the token is already past its expiry and would be rejected by Railway.
+        const tokenExpired = expiresAt !== null && expiresAt <= now().getTime();
+        deps.log.warn(
           { installation_id: installation.id, error: refreshed.error },
-          "railway token refresh failed",
+          tokenExpired
+            ? "railway token refresh failed and token expired — skipping"
+            : "railway token refresh failed; continuing with current token",
         );
-        return;
+        if (tokenExpired) return;
+        // Fall through: accessToken remains installation.accessToken (still valid).
+      } else {
+        accessToken = refreshed.accessToken;
+        // Rotating refresh tokens: persist the replacement before doing anything
+        // else — losing it would strand the installation at access-token expiry.
+        await deps.store.saveTokens(installation.id, {
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken ?? installation.refreshToken,
+          tokenExpiresAt: refreshed.expiresInSeconds
+            ? new Date(now().getTime() + refreshed.expiresInSeconds * 1000)
+            : null,
+        });
       }
-      accessToken = refreshed.accessToken;
-      // Rotating refresh tokens: persist the replacement before doing anything
-      // else — losing it would strand the installation at access-token expiry.
-      await deps.store.saveTokens(installation.id, {
-        accessToken: refreshed.accessToken,
-        refreshToken: refreshed.refreshToken ?? installation.refreshToken,
-        tokenExpiresAt: refreshed.expiresInSeconds
-          ? new Date(now().getTime() + refreshed.expiresInSeconds * 1000)
-          : null,
-      });
     }
 
     // --- Grant snapshot ---------------------------------------------------
