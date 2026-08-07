@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import type { ClickHouseClient } from "@clickhouse/client";
 import {
   db,
@@ -602,8 +603,11 @@ async function requireUserFromSession(
 }
 
 function humanCode(): string {
+  // Use a CSPRNG: the user_code is the sole secret an approver checks, so a
+  // predictable PRNG (Math.random) would let an attacker guess in-flight codes
+  // and approve a victim's pending device. randomInt is unbiased over the range.
   const alphabet = "ABCDEFGHJKMNPQRSTVWXYZ23456789";
-  const pick = () => alphabet[Math.floor(Math.random() * alphabet.length)];
+  const pick = () => alphabet[randomInt(alphabet.length)];
   return `${pick()}${pick()}${pick()}${pick()}-${pick()}${pick()}${pick()}${pick()}`;
 }
 
