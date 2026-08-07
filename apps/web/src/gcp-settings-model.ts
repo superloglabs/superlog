@@ -1,5 +1,7 @@
 type GcpConnectionStatus = "pending" | "provisioning" | "connected" | "failed" | null;
 
+const GCP_LOG_DISCOVERY_WINDOW_MS = 24 * 60 * 60 * 1_000;
+
 export function gcpConnectAction(status: GcpConnectionStatus) {
   return status === "connected"
     ? {
@@ -17,6 +19,13 @@ export function gcpLogGroupLabel(logName: string): string {
   } catch {
     return encoded;
   }
+}
+
+export function gcpLogDiscoveryRange(until: Date): { since: string; until: string } {
+  return {
+    since: new Date(until.getTime() - GCP_LOG_DISCOVERY_WINDOW_MS).toISOString(),
+    until: until.toISOString(),
+  };
 }
 
 export function mergeGcpLogNames(

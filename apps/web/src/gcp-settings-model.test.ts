@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   canToggleGcpLogGroup,
   gcpConnectAction,
+  gcpLogDiscoveryRange,
   gcpLogGroupLabel,
   mergeGcpLogNames,
 } from "./gcp-settings-model.js";
@@ -37,6 +38,13 @@ test("saved GCP exclusions stay editable when they are outside the discovery win
       "projects/acme-production/logs/run.googleapis.com%2Fstdout",
     ],
   );
+});
+
+test("GCP log group discovery stays within the latest day", () => {
+  assert.deepEqual(gcpLogDiscoveryRange(new Date("2026-08-07T12:00:00.000Z")), {
+    since: "2026-08-06T12:00:00.000Z",
+    until: "2026-08-07T12:00:00.000Z",
+  });
 });
 
 test("the exclusion cap blocks another disable but still allows re-enabling a group", () => {
