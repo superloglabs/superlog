@@ -8,6 +8,7 @@ import { registerAgentConfigTools } from "./agent-config.js";
 import { registerAlertTools } from "./alerts.js";
 import { instrumentMcpToolAnalytics } from "./analytics.js";
 import {
+  TimeRangeValidationError,
   listServices,
   queryLogs,
   queryMetrics,
@@ -138,38 +139,58 @@ export function createMcpServerForSession(session: McpSession): McpServer {
     return id;
   };
 
-  const executeTelemetryQuery = <T>(
+  const executeTelemetryQuery = async <T>(
     tool: McpTelemetryToolName,
     input: Record<string, unknown>,
     projectId: string,
     query: () => Promise<T>,
-  ) =>
-    executeRecoverableTelemetryQuery(
-      tool,
-      { ...input, project_id: projectId },
-      query,
-      (error, recovery) => {
-        const suggestedRange = recovery.suggested_input.range as
-          | { since?: unknown; until?: unknown }
-          | undefined;
-        logger.info(
-          {
-            err: error,
-            tool,
-            projectId,
-            retrySince: suggestedRange?.since,
-            retryUntil: suggestedRange?.until,
-          },
-          "MCP telemetry query timed out; returning narrower retry guidance",
-        );
-      },
-      (error) => {
-        logger.error(
+  ) => {
+    try {
+      return await executeRecoverableTelemetryQuery(
+        tool,
+        { ...input, project_id: projectId },
+        query,
+        (error, recovery) => {
+          const suggestedRange = recovery.suggested_input.range as
+            | { since?: unknown; until?: unknown }
+            | undefined;
+          logger.info(
+            {
+              err: error,
+              tool,
+              projectId,
+              retrySince: suggestedRange?.since,
+              retryUntil: suggestedRange?.until,
+            },
+            "MCP telemetry query timed out; returning narrower retry guidance",
+          );
+        },
+        (error) => {
+          logger.error(
+            { err: error, tool, projectId },
+            "MCP telemetry query failed permanently",
+          );
+        },
+      );
+    } catch (error) {
+      if (error instanceof TimeRangeValidationError) {
+        logger.warn(
           { err: error, tool, projectId },
-          "MCP telemetry query failed permanently",
+          "MCP telemetry query rejected: invalid time range",
         );
-      },
-    );
+        return {
+          _mcpError: true as const,
+          content: [
+            {
+              type: "text" as const,
+              text: `${error.message}. Use an ISO-8601 timestamp (e.g. "2026-01-01T00:00:00Z") or a ClickHouse relative expression (e.g. "now() - INTERVAL 1 HOUR").`,
+            },
+          ],
+        };
+      }
+      throw error;
+    }
+  };
 
   server.registerTool(
     "query_logs",
@@ -212,6 +233,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
             limit: input.limit,
           }),
       );
+      if ("_mcpError" in result) return { content: result.content, isError: true };
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     },
   );
@@ -258,6 +280,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
             limit: input.limit,
           }),
       );
+      if ("_mcpError" in result) return { content: result.content, isError: true };
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     },
   );
@@ -293,6 +316,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
             limit: input.limit,
           }),
       );
+      if ("_mcpError" in result) return { content: result.content, isError: true };
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     },
   );
@@ -317,6 +341,7 @@ export function createMcpServerForSession(session: McpSession): McpServer {
         projectId,
         () => listServices(session.ch, projectId, input.range),
       );
+      if ("_mcpError" in result) return { content: result.content, isError: true };
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     },
   );
