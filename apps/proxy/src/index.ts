@@ -74,6 +74,13 @@ const FIREHOSE_METRICS_COLLECTOR_URL =
   process.env.FIREHOSE_METRICS_COLLECTOR_URL ?? "http://localhost:4433";
 const FIREHOSE_LOGS_COLLECTOR_URL =
   process.env.FIREHOSE_LOGS_COLLECTOR_URL ?? "http://localhost:4434";
+// AWS Firehose waits up to 60 s for an HTTP endpoint response before retrying.
+// Keep the proxy's collector timeout well inside that window so the proxy
+// returns a retriable 500 to Firehose promptly rather than waiting for
+// undici's internal headersTimeout (300 s default).
+const FIREHOSE_COLLECTOR_TIMEOUT_MS = Number(
+  process.env.FIREHOSE_COLLECTOR_TIMEOUT_MS ?? "30000",
+);
 const PORT = Number(process.env.PORT ?? 4000);
 const ingestQueueConfig = getIngestQueueConfig(process.env);
 // When INGEST_CLICKHOUSE_DIRECT=true, the consumer writes logs/traces straight to
@@ -1078,6 +1085,7 @@ async function forwardFirehose(
                 method: "POST",
                 headers: upstreamHeaders,
                 body: bodyBuffer,
+                signal: AbortSignal.timeout(FIREHOSE_COLLECTOR_TIMEOUT_MS),
               });
               postSpan.setAttribute("http.response.status_code", r.status);
               if (r.status !== 200) {
