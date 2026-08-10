@@ -3,7 +3,11 @@ import { test } from "node:test";
 
 import { stampIssueFingerprints } from "./ingest-fingerprints.js";
 import { otlpLogsToRows } from "./otlp-clickhouse.js";
-import { parseVercelLogDrainBody, vercelLogsToOtlp } from "./vercel-log-drain.js";
+import {
+  acknowledgeVercelDrainDelivery,
+  parseVercelLogDrainBody,
+  vercelLogsToOtlp,
+} from "./vercel-log-drain.js";
 
 const vercelLogs = [
   {
@@ -32,6 +36,21 @@ const vercelLogs = [
     },
   },
 ];
+
+test("Vercel receives a successful acknowledgement when telemetry is over quota", () => {
+  const response = acknowledgeVercelDrainDelivery(
+    new Response("telemetry quota exceeded", { status: 402 }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-superlog-ingest-drop"), "quota_exceeded");
+});
+
+test("Vercel still receives retryable delivery failures", () => {
+  const response = new Response("collector unavailable", { status: 503 });
+
+  assert.equal(acknowledgeVercelDrainDelivery(response), response);
+});
 
 test("parseVercelLogDrainBody accepts JSON arrays", () => {
   assert.deepEqual(

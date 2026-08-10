@@ -8,6 +8,14 @@ type OtlpAnyValue = {
 
 type OtlpKeyValue = { key: string; value: OtlpAnyValue };
 
+export function acknowledgeVercelDrainDelivery(response: Response): Response {
+  if (response.status !== 402) return response;
+  return new Response(null, {
+    status: 200,
+    headers: { "x-superlog-ingest-drop": "quota_exceeded" },
+  });
+}
+
 type VercelLogRecord = Record<string, unknown> & {
   timestamp?: unknown;
   level?: unknown;

@@ -56,7 +56,11 @@ import { Semaphore } from "./semaphore.js";
 // tracing.ts, so the OTel flush can't race the ingest drain and exit early.
 import { shutdownTelemetry } from "./telemetry-shutdown.js";
 import { lookupOrgForProject, recordIngestRequest } from "./tenant-metrics.js";
-import { parseVercelLogDrainBody, vercelLogsToOtlp } from "./vercel-log-drain.js";
+import {
+  acknowledgeVercelDrainDelivery,
+  parseVercelLogDrainBody,
+  vercelLogsToOtlp,
+} from "./vercel-log-drain.js";
 
 const tracer = trace.getTracer("@superlog/proxy");
 
@@ -412,19 +416,23 @@ app.post("/v1/traces", (c) => forward(c, "/v1/traces", "resourceSpans"));
 app.post("/v1/logs", (c) => forward(c, "/v1/logs", "resourceLogs"));
 app.post("/v1/metrics", (c) => forward(c, "/v1/metrics", "resourceMetrics"));
 
-app.post("/vercel/drains/traces", (c) =>
-  forward(c, "/v1/traces", "resourceSpans", { source: "vercel" }),
+app.post("/vercel/drains/traces", async (c) =>
+  acknowledgeVercelDrainDelivery(
+    await forward(c, "/v1/traces", "resourceSpans", { source: "vercel" }),
+  ),
 );
-app.post("/vercel/drains/logs", (c) =>
-  forward(c, "/v1/logs", "resourceLogs", {
-    source: "vercel",
-    bodyTransform: (body, contentType) => ({
-      body: Buffer.from(
-        JSON.stringify(vercelLogsToOtlp(parseVercelLogDrainBody(body, contentType))),
-      ),
-      contentType: "application/json",
+app.post("/vercel/drains/logs", async (c) =>
+  acknowledgeVercelDrainDelivery(
+    await forward(c, "/v1/logs", "resourceLogs", {
+      source: "vercel",
+      bodyTransform: (body, contentType) => ({
+        body: Buffer.from(
+          JSON.stringify(vercelLogsToOtlp(parseVercelLogDrainBody(body, contentType))),
+        ),
+        contentType: "application/json",
+      }),
     }),
-  }),
+  ),
 );
 
 // Railway puller ingest: the worker-side puller reads logs/metrics from
