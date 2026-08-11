@@ -672,9 +672,10 @@ test("preflight reconstructs a recorded entry before policy or provider checks",
   });
 });
 
-test("preflight recognizes a pushed delivery branch before reading or applying the patch", async () => {
+test("preflight derives changed files for a pushed delivery before skipping patch validation", async () => {
   let downloaded = false;
   let validated = false;
+  const proposal = { ...proposedPullRequest, changedFiles: undefined };
   const prepared = await preflightProposedPullRequest(
     {
       prPolicy: "always",
@@ -682,7 +683,7 @@ test("preflight recognizes a pushed delivery branch before reading or applying t
       incident: { id: "incident-1" },
       agentRun: { id: "run-1" },
     } as unknown as AgentRunContext,
-    proposedPullRequest,
+    proposal,
     "session-1",
     deliveryIdentity,
     {
@@ -703,7 +704,10 @@ test("preflight recognizes a pushed delivery branch before reading or applying t
       }),
       downloadPatch: async () => {
         downloaded = true;
-        return { patch: "diff", fileId: "file-1" };
+        return {
+          patch: "diff --git a/src/retries.ts b/src/retries.ts\n",
+          fileId: "file-1",
+        };
       },
       validatePatch: async () => {
         validated = true;
@@ -712,7 +716,8 @@ test("preflight recognizes a pushed delivery branch before reading or applying t
   );
 
   assert.deepEqual(prepared, { ok: true, prepared: { kind: "github_recovery" } });
-  assert.equal(downloaded, false);
+  assert.equal(downloaded, true);
+  assert.deepEqual(proposal.changedFiles, ["src/retries.ts"]);
   assert.equal(validated, false);
 });
 

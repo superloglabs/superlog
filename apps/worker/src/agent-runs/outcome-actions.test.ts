@@ -624,10 +624,12 @@ test("PR delivery identity is stable and scoped to run, tool use, and repository
 test("propose_pr passes the same delivery identity through preflight and delivery", async () => {
   const proposal = proposals[0];
   assert.ok(proposal);
+  const mutableProposal = { ...proposal, changedFiles: undefined };
   const identities: unknown[] = [];
   const execute = createOutcomeActionExecutor(receiptContext, "session-1", noReceiptLock, {
-    async preflightProposedPullRequest(_ctx, _proposal, _sessionId, identity) {
+    async preflightProposedPullRequest(_ctx, preparedProposal, _sessionId, identity) {
       identities.push(identity);
+      preparedProposal.changedFiles = ["src/retries.ts"];
       return { ok: true, prepared: { kind: "patch", patch: "diff --git a/a b/a" } };
     },
     async deliverProposedPullRequest(_ctx, _proposal, _sessionId, _findings, _prepared, identity) {
@@ -648,7 +650,7 @@ test("propose_pr passes the same delivery identity through preflight and deliver
   const result = await execute({
     toolUseId: "proposal-tool-1",
     name: "propose_pr",
-    input: { pullRequests: [proposal] },
+    input: { pullRequests: [mutableProposal] },
     hasFindings: true,
     findings: { summary: "API retries fail after a provider timeout." },
   });

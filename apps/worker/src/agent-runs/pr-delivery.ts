@@ -7,8 +7,9 @@ import {
   normalizePrBaseBranch,
   reconcileAgentPullRequestProviderObservation,
   schema,
+  withDatabaseAdvisoryLocks,
 } from "@superlog/db";
-import { and, desc, eq, gte, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lte, ne, or } from "drizzle-orm";
 import { type AgentRunFindings, assembleAgentRunResult } from "../agent-outcome-tools.js";
 import {
   type AgentRunContext,
@@ -1390,12 +1391,7 @@ async function withPullRequestOverlapLocks<T>(
   keys: readonly string[],
   task: () => Promise<T>,
 ): Promise<T> {
-  return db.transaction(async (tx) => {
-    for (const key of [...new Set(keys)].sort()) {
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
-    }
-    return task();
-  });
+  return withDatabaseAdvisoryLocks(keys, task);
 }
 
 const pullRequestOverlapGuardDependencies: PullRequestOverlapGuardDependencies = {
@@ -1408,10 +1404,24 @@ export async function guardProposedPullRequestOverlap<T>(
   task: () => Promise<T>,
   dependencies: PullRequestOverlapGuardDependencies = pullRequestOverlapGuardDependencies,
 ): Promise<{ ok: true; value: T } | { ok: false; overlap: OverlappingOpenPullRequest }> {
-  const lockKeys = normalizedChangedFiles(input.changedFiles).map(
+  const normalizedFiles = normalizedChangedFiles(input.changedFiles);
+  const lockKeys = normalizedFiles.map(
     (file) => `agent-pr-overlap:${input.projectId}:${input.repoFullName}:${file}`,
   );
-  if (lockKeys.length === 0) return { ok: true, value: await task() };
+  if (lockKeys.length === 0) {
+    if (input.changedFiles.length > 0) {
+      logger.error(
+        {
+          scope: "agent_run.pr_delivery.overlap_guard_skipped",
+          current_incident_id: input.currentIncidentId,
+          repo_full_name: input.repoFullName,
+          raw_file_count: input.changedFiles.length,
+        },
+        "overlap guard skipped: changed files present but none survived normalization",
+      );
+    }
+    return { ok: true, value: await task() };
+  }
   return dependencies.exclusive(lockKeys, async () => {
     const overlap = await dependencies.findOverlap(input);
     if (overlap) return { ok: false, overlap };
@@ -1523,6 +1533,7 @@ export async function preflightProposedPullRequest(
     };
   }
 
+  let recoveredOnGithub = false;
   if (deliveryIdentity) {
     try {
       const recovered = await dependencies.findGithubDelivery({
@@ -1533,7 +1544,7 @@ export async function preflightProposedPullRequest(
         baseBranch: (resolvePullRequestBaseBranch(ctx, pr) ?? pr.baseBranch.trim()) || "main",
         deliveryId: deliveryIdentity.deliveryId,
       });
-      if (recovered) return { ok: true, prepared: { kind: "github_recovery" } };
+      recoveredOnGithub = recovered !== null;
     } catch (err) {
       return {
         ok: false,
@@ -1563,6 +1574,7 @@ export async function preflightProposedPullRequest(
     ...changedFilesFromUnifiedDiff(patch),
   ]);
   pr.changedFiles = changedFiles;
+  if (recoveredOnGithub) return { ok: true, prepared: { kind: "github_recovery" } };
   const overlap = await dependencies.findOverlappingOpenPullRequest({
     projectId: ctx.project.id,
     currentIncidentId: ctx.incident.id,
