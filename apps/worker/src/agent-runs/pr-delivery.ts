@@ -1187,11 +1187,90 @@ function normalizedChangedFiles(files: unknown): string[] {
 
 export function changedFilesFromUnifiedDiff(patch: string): string[] {
   const files: string[] = [];
-  for (const match of patch.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)) {
-    const target = match[2]?.trim();
-    if (target) files.push(target);
+  for (const line of patch.match(/^diff --git .+$/gm) ?? []) {
+    const paths = parseGitDiffHeaderPaths(line);
+    if (!paths) continue;
+    const [source, target] = paths;
+    if (source.startsWith("a/")) files.push(source.slice(2));
+    if (target.startsWith("b/")) files.push(target.slice(2));
   }
   return normalizedChangedFiles(files);
+}
+
+function parseGitDiffHeaderPaths(line: string): [string, string] | null {
+  const prefix = "diff --git ";
+  if (!line.startsWith(prefix)) return null;
+  const tokens: string[] = [];
+  let offset = prefix.length;
+  while (tokens.length < 2) {
+    while (line[offset] === " ") offset += 1;
+    if (offset >= line.length) return null;
+    const start = offset;
+    if (line[offset] === '"') {
+      offset += 1;
+      let escaped = false;
+      while (offset < line.length) {
+        const character = line[offset];
+        offset += 1;
+        if (escaped) {
+          escaped = false;
+        } else if (character === "\\") {
+          escaped = true;
+        } else if (character === '"') {
+          break;
+        }
+      }
+      if (line[offset - 1] !== '"') return null;
+    } else {
+      while (offset < line.length && line[offset] !== " ") offset += 1;
+    }
+    const decoded = decodeGitPathToken(line.slice(start, offset));
+    if (decoded === null) return null;
+    tokens.push(decoded);
+  }
+  return tokens as [string, string];
+}
+
+function decodeGitPathToken(token: string): string | null {
+  if (!token.startsWith('"')) return token;
+  if (!token.endsWith('"')) return null;
+  const bytes: number[] = [];
+  const encoder = new TextEncoder();
+  const escapes: Record<string, number> = {
+    a: 0x07,
+    b: 0x08,
+    f: 0x0c,
+    n: 0x0a,
+    r: 0x0d,
+    t: 0x09,
+    v: 0x0b,
+    "\\": 0x5c,
+    '"': 0x22,
+  };
+  for (let index = 1; index < token.length - 1; index += 1) {
+    const character = token[index];
+    if (character !== "\\") {
+      const codePoint = token.codePointAt(index);
+      if (codePoint === undefined) return null;
+      bytes.push(...encoder.encode(String.fromCodePoint(codePoint)));
+      if (codePoint > 0xffff) index += 1;
+      continue;
+    }
+    const escaped = token[index + 1];
+    if (escaped === undefined) return null;
+    if (/[0-7]/.test(escaped)) {
+      const octal = token.slice(index + 1, index + 4);
+      if (!/^[0-7]{3}$/.test(octal)) return null;
+      bytes.push(Number.parseInt(octal, 8));
+      index += 3;
+      continue;
+    }
+    const byte = escapes[escaped];
+    if (byte === undefined) return null;
+    bytes.push(byte);
+    index += 1;
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
 function changedFilesFromAgentRunResult(
@@ -1279,12 +1358,21 @@ async function findOverlappingOpenPullRequest(
 
   const proposedFiles = new Set(input.changedFiles);
   for (const row of rows) {
-    const existingFiles = normalizedChangedFiles([
-      ...(row.changedFiles ?? []),
-      ...(row.changedFiles?.length
-        ? []
-        : changedFilesFromAgentRunResult(row.result, input.repoFullName, row.agentRunId)),
-    ]);
+    const fallbackFiles = row.changedFiles?.length
+      ? []
+      : changedFilesFromAgentRunResult(row.result, input.repoFullName, row.agentRunId);
+    if (!row.changedFiles?.length && fallbackFiles.length > 0) {
+      logger.info(
+        {
+          scope: "agent_run.pr_delivery.overlap_legacy_fallback",
+          agent_run_id: row.agentRunId,
+          repo_full_name: input.repoFullName,
+          derived_file_count: fallbackFiles.length,
+        },
+        "derived changed files from a legacy agent run result during overlap detection",
+      );
+    }
+    const existingFiles = normalizedChangedFiles([...(row.changedFiles ?? []), ...fallbackFiles]);
     const overlappingFiles = existingFiles.filter((file) => proposedFiles.has(file));
     if (overlappingFiles.length > 0) return { ...row, overlappingFiles };
   }

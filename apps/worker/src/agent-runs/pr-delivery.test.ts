@@ -40,6 +40,20 @@ test("changed-file evidence preserves real top-level a and b directories", () =>
   );
 });
 
+test("changed-file evidence decodes Git-quoted paths", () => {
+  assert.deepEqual(
+    changedFilesFromUnifiedDiff('diff --git "a/caf\\303\\251.ts" "b/caf\\303\\251.ts"'),
+    ["café.ts"],
+  );
+});
+
+test("changed-file evidence includes both sides of a rename", () => {
+  assert.deepEqual(changedFilesFromUnifiedDiff("diff --git a/src/old.ts b/src/new.ts"), [
+    "src/new.ts",
+    "src/old.ts",
+  ]);
+});
+
 test("overlap guard serializes shared files and lets only the first delivery proceed", async () => {
   let queue = Promise.resolve();
   let existing: {
