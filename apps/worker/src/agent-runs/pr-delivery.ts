@@ -1291,10 +1291,11 @@ function decodeGitPathToken(token: string): string | null {
   return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
-function changedFilesFromAgentRunResult(
+export function changedFilesFromAgentRunResult(
   result: unknown,
   repoFullName: string,
   agentRunId: string,
+  currentIncidentId: string,
 ): string[] {
   if (!result || typeof result !== "object") return [];
   const record = result as Record<string, unknown>;
@@ -1311,6 +1312,7 @@ function changedFilesFromAgentRunResult(
     logger.error(
       {
         scope: "agent_run.pr_delivery.changed_files",
+        current_incident_id: currentIncidentId,
         agent_run_id: agentRunId,
         repo_full_name: repoFullName,
       },
@@ -1320,7 +1322,10 @@ function changedFilesFromAgentRunResult(
   return normalizedChangedFiles(
     matching.flatMap((proposal) => {
       const pr = proposal as Record<string, unknown>;
-      return Array.isArray(pr.changedFiles) ? pr.changedFiles : [];
+      return [
+        ...(Array.isArray(pr.changedFiles) ? pr.changedFiles : []),
+        ...(typeof pr.patch === "string" ? changedFilesFromUnifiedDiff(pr.patch) : []),
+      ];
     }),
   );
 }
@@ -1378,11 +1383,17 @@ async function findOverlappingOpenPullRequest(
   for (const row of rows) {
     const fallbackFiles = row.changedFiles?.length
       ? []
-      : changedFilesFromAgentRunResult(row.result, input.repoFullName, row.agentRunId);
+      : changedFilesFromAgentRunResult(
+          row.result,
+          input.repoFullName,
+          row.agentRunId,
+          input.currentIncidentId,
+        );
     if (!row.changedFiles?.length && fallbackFiles.length > 0) {
       logger.info(
         {
           scope: "agent_run.pr_delivery.overlap_legacy_fallback",
+          current_incident_id: input.currentIncidentId,
           agent_run_id: row.agentRunId,
           repo_full_name: input.repoFullName,
           derived_file_count: fallbackFiles.length,

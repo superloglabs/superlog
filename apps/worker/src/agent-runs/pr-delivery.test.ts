@@ -5,6 +5,7 @@ import type { schema } from "@superlog/db";
 import type { AgentRunContext } from "../agent-run-context.js";
 import {
   PullRequestDeliveryRecoveryPendingError,
+  changedFilesFromAgentRunResult,
   changedFilesFromUnifiedDiff,
   compensatePullRequestDelivery,
   deliverProposedPullRequest,
@@ -72,6 +73,23 @@ test("changed-file evidence preserves ambiguous spaced paths across a rename", (
       ].join("\n"),
     ),
     ["foo b/new name.ts", "foo b/old name.ts"],
+  );
+});
+
+test("legacy run results derive changed files from their persisted patch", () => {
+  assert.deepEqual(
+    changedFilesFromAgentRunResult(
+      {
+        pr: {
+          selectedRepoFullName: "acme/api",
+          patch: "diff --git a/src/retries.ts b/src/retries.ts\n",
+        },
+      },
+      "acme/api",
+      "run-1",
+      "incident-2",
+    ),
+    ["src/retries.ts"],
   );
 });
 
