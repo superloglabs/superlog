@@ -1436,6 +1436,15 @@ export async function guardProposedPullRequestOverlap<T>(
         },
         "overlap guard skipped: changed files present but none survived normalization",
       );
+    } else {
+      logger.info(
+        {
+          scope: "agent_run.pr_delivery.overlap_guard_no_files",
+          current_incident_id: input.currentIncidentId,
+          repo_full_name: input.repoFullName,
+        },
+        "overlap guard skipped: no changed files provided",
+      );
     }
     return { ok: true, value: await task() };
   }
