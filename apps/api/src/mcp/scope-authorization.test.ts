@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { ClickHouseClient } from "@clickhouse/client";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { resolveMcpOauthScope } from "./scope-authorization.js";
+import { resolveMcpOauthScope, resolveStoredMcpOauthScope } from "./scope-authorization.js";
 import { createMcpServerForSession } from "./server.js";
 
 const fakeCh = {} as ClickHouseClient;
@@ -32,6 +32,10 @@ const session = {
 
 test("OAuth defaults to read and write access when the client omits scopes", () => {
   assert.deepEqual(resolveMcpOauthScope(null), { scope: "mcp:read mcp:write" });
+});
+
+test("legacy OAuth tokens stored without a scope remain read-only", () => {
+  assert.deepEqual(resolveStoredMcpOauthScope(null), { scope: "mcp:read" });
 });
 
 test("OAuth accepts read and write scopes", () => {

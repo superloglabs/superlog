@@ -35,6 +35,12 @@ export function resolveMcpOauthScope(
   };
 }
 
+export function resolveStoredMcpOauthScope(
+  storedScope: string | null,
+): ReturnType<typeof resolveMcpOauthScope> {
+  return resolveMcpOauthScope(storedScope ?? MCP_READ_SCOPE);
+}
+
 export function hasMcpWriteAccess(scopes: readonly string[]): boolean {
   return (
     scopes.length === 0 || (scopes.includes(MCP_READ_SCOPE) && scopes.includes(MCP_WRITE_SCOPE))

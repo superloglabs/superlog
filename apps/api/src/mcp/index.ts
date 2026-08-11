@@ -13,7 +13,7 @@ import type { Hono } from "hono";
 import { logger } from "../logger.js";
 import { type McpConfig, loadMcpConfig } from "./config.js";
 import { mountOauthDecision, mountOauthEndpoints, mountOauthMetadata } from "./oauth.js";
-import { resolveMcpOauthScope } from "./scope-authorization.js";
+import { resolveStoredMcpOauthScope } from "./scope-authorization.js";
 import { createMcpServerForSession } from "./server.js";
 
 const log = logger.child({ scope: "mcp-bearer" });
@@ -118,7 +118,7 @@ async function resolveToken(
   if (stored !== cfg.resource && stored !== cfg.apiBaseUrl) {
     return { reason: `resource mismatch (stored=${row.resource})` };
   }
-  const resolvedScope = resolveMcpOauthScope(row.scope);
+  const resolvedScope = resolveStoredMcpOauthScope(row.scope);
   if ("error" in resolvedScope) return { reason: resolvedScope.error };
   return {
     tokenId: row.id,
