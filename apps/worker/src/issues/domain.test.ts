@@ -171,9 +171,9 @@ test("groupingIssueInput and buildGroupingCandidate keep LLM input shape explici
   // stack traces and code locations.
   assert.equal(candidate.issues?.length, 1);
   assert.equal(candidate.issues?.[0]?.id, "iss-linked");
-  assert.equal(candidate.issues?.[0]?.firstSeen, "2026-07-17T10:00:00.000Z");
+  assert.equal("firstSeen" in (candidate.issues?.[0] ?? {}), false);
   assert.equal(candidate.issues?.[0]?.lastSeen, "2026-07-17T10:05:00.000Z");
-  assert.equal(candidate.issues?.[0]?.eventCount, 2);
+  assert.equal("eventCount" in (candidate.issues?.[0] ?? {}), false);
 });
 
 test("groupingIssueInput compacts an oversized generated-code frame without losing diagnostics", () => {

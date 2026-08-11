@@ -225,9 +225,7 @@ export function buildGroupingCandidate(
       logAttrs: sampleLogAttrs(row.lastSample),
       stacktrace: sampleStacktrace(row.lastSample),
       resourceAttrs: sampleResourceAttrs(row.lastSample),
-      firstSeen: (row.firstSeen ?? row.lastSeen).toISOString(),
       lastSeen: row.lastSeen.toISOString(),
-      eventCount: row.eventCount ?? 1,
     })),
   };
 }

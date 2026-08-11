@@ -10,7 +10,7 @@ import {
   schema,
   withDatabaseAdvisoryLocks,
 } from "@superlog/db";
-import { and, desc, eq, gte, isNull, lte, ne, or } from "drizzle-orm";
+import { and, desc, eq, gte, lte, ne } from "drizzle-orm";
 import { type AgentRunFindings, assembleAgentRunResult } from "../agent-outcome-tools.js";
 import {
   type AgentRunContext,
@@ -77,7 +77,11 @@ const pullRequestOverlapGuardCounter = pullRequestDeliveryMeter.createCounter(
   },
 );
 
-type PullRequestOverlapGuardMetricReason = "overlap" | "no_changed_files" | "bypass";
+type PullRequestOverlapGuardMetricReason =
+  | "overlap"
+  | "no_changed_files"
+  | "normalization_dropped"
+  | "bypass";
 type PullRequestOverlapGuardCounter = {
   add(value: number, attributes: { reason: PullRequestOverlapGuardMetricReason }): void;
 };
@@ -368,7 +372,6 @@ export async function completeWithPullRequest(
           projectId: ctx.project.id,
           currentIncidentId: ctx.incident.id,
           currentIncidentFirstSeen: ctx.incident.firstSeen,
-          currentIncidentService: ctx.incident.service,
           repoFullName: pr.selectedRepoFullName,
           baseBranch: existingPr.baseBranch,
           changedFiles: pr.changedFiles ?? [],
@@ -541,7 +544,6 @@ export async function completeWithPullRequest(
       projectId: ctx.project.id,
       currentIncidentId: ctx.incident.id,
       currentIncidentFirstSeen: ctx.incident.firstSeen,
-      currentIncidentService: ctx.incident.service,
       repoFullName: pr.selectedRepoFullName,
       baseBranch: targetBaseBranch,
       changedFiles: pr.changedFiles ?? [],
@@ -1369,6 +1371,10 @@ export function changedFilesFromAgentRunResult(
         agent_run_id: agentRunId,
         repo_full_name: repoFullName,
         canonical_branch_name: canonicalBranchName,
+        candidate_branch_names: repositoryMatches.map((proposal) => {
+          const candidate = proposal as Record<string, unknown>;
+          return typeof candidate.branchName === "string" ? candidate.branchName : null;
+        }),
       },
       "agent run PR metadata did not match the canonical pull request coordinates",
     );
@@ -1389,7 +1395,6 @@ async function findOverlappingOpenPullRequest(
     projectId: string;
     currentIncidentId: string;
     currentIncidentFirstSeen: Date;
-    currentIncidentService: string | null;
     repoFullName: string;
     baseBranch: string;
     changedFiles: string[];
@@ -1423,12 +1428,6 @@ async function findOverlappingOpenPullRequest(
           schema.incidents.firstSeen,
           new Date(input.currentIncidentFirstSeen.getTime() + groupingWindowMs),
         ),
-        input.currentIncidentService
-          ? or(
-              eq(schema.incidents.service, input.currentIncidentService),
-              isNull(schema.incidents.service),
-            )
-          : undefined,
         eq(schema.agentPullRequests.repoFullName, input.repoFullName),
         eq(schema.agentPullRequests.baseBranch, input.baseBranch),
         eq(schema.agentPullRequests.state, "open"),
@@ -1509,7 +1508,7 @@ export async function guardProposedPullRequestOverlap<T>(
   );
   if (lockKeys.length === 0) {
     if (input.changedFiles.length > 0) {
-      recordPullRequestOverlapGuardMetric("no_changed_files");
+      recordPullRequestOverlapGuardMetric("normalization_dropped");
       logger.error(
         {
           scope: "agent_run.pr_delivery.overlap_guard_skipped",
@@ -1739,7 +1738,6 @@ export async function preflightProposedPullRequest(
     projectId: ctx.project.id,
     currentIncidentId: ctx.incident.id,
     currentIncidentFirstSeen: ctx.incident.firstSeen,
-    currentIncidentService: ctx.incident.service,
     repoFullName: pr.repoFullName,
     baseBranch: targetBaseBranch,
     changedFiles,
@@ -1898,7 +1896,6 @@ export async function deliverProposedPullRequest(
         projectId: ctx.project.id,
         currentIncidentId: ctx.incident.id,
         currentIncidentFirstSeen: ctx.incident.firstSeen,
-        currentIncidentService: ctx.incident.service,
         repoFullName: pr.repoFullName,
         baseBranch: existingPr.baseBranch,
         changedFiles,
@@ -2046,18 +2043,10 @@ export async function deliverProposedPullRequest(
     projectId: ctx.project.id,
     currentIncidentId: ctx.incident.id,
     currentIncidentFirstSeen: ctx.incident.firstSeen,
-    currentIncidentService: ctx.incident.service,
     repoFullName: pr.repoFullName,
     baseBranch: targetBaseBranch,
     changedFiles,
   };
-  const guarded =
-    prepared?.kind === "github_recovery"
-      ? {
-          ok: true as const,
-          value: await openAndReconcile(),
-        }
-      : await dependencies.guardOverlap(overlapInput, openAndReconcile);
   if (prepared?.kind === "github_recovery") {
     logger.info(
       {
@@ -2066,9 +2055,16 @@ export async function deliverProposedPullRequest(
         repo_full_name: pr.repoFullName,
         base_branch: overlapInput.baseBranch,
       },
-      "processed provider pull request recovery without repeating the pre-mutation overlap check",
+      "processing provider pull request recovery without repeating the pre-mutation overlap check",
     );
   }
+  const guarded =
+    prepared?.kind === "github_recovery"
+      ? {
+          ok: true as const,
+          value: await openAndReconcile(),
+        }
+      : await dependencies.guardOverlap(overlapInput, openAndReconcile);
   if (!guarded.ok) return blockedByOverlappingPullRequest(ctx, guarded.overlap);
   if (guarded.value.kind === "open_failed") return { ok: false, error: guarded.value.error };
   const { opened, reconciled } = guarded.value;

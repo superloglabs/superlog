@@ -30,11 +30,13 @@ test("overlap guard metrics use bounded reason attributes", () => {
 
   recordPullRequestOverlapGuardMetric("overlap", counter);
   recordPullRequestOverlapGuardMetric("no_changed_files", counter);
+  recordPullRequestOverlapGuardMetric("normalization_dropped", counter);
   recordPullRequestOverlapGuardMetric("bypass", counter);
 
   assert.deepEqual(observations, [
     { value: 1, attributes: { reason: "overlap" } },
     { value: 1, attributes: { reason: "no_changed_files" } },
+    { value: 1, attributes: { reason: "normalization_dropped" } },
     { value: 1, attributes: { reason: "bypass" } },
   ]);
 });
@@ -156,7 +158,6 @@ test("overlap guard serializes shared files and lets only the first delivery pro
     projectId: "project-1",
     currentIncidentId: "incident-2",
     currentIncidentFirstSeen: new Date("2026-08-11T14:02:03.000Z"),
-    currentIncidentService: "api",
     repoFullName: "acme/api",
     baseBranch: "main",
     changedFiles: ["a/config.ts"],

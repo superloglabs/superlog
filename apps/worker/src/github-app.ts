@@ -1142,6 +1142,17 @@ export async function findGithubPullRequestDeliveryChangedFiles(opts: {
       );
       files.push(...pageFiles);
       if (pageFiles.length < 100) break;
+      if (page === 30) {
+        logger.error(
+          {
+            scope: "github.pr_delivery.changed_files_page_cap",
+            repo_full_name: opts.repoFullName,
+            pr_number: opts.recovered.pullRequest.prNumber,
+            page_cap: 30,
+          },
+          "hit page cap fetching pull request changed files; overlap check may be incomplete",
+        );
+      }
     }
   } else {
     files = [];
@@ -1153,6 +1164,17 @@ export async function findGithubPullRequestDeliveryChangedFiles(opts: {
       const pageFiles = commit.files ?? [];
       files.push(...pageFiles);
       if (pageFiles.length < 100) break;
+      if (page === 30) {
+        logger.error(
+          {
+            scope: "github.pr_delivery.changed_files_page_cap",
+            repo_full_name: opts.repoFullName,
+            head_sha: opts.recovered.headSha,
+            page_cap: 30,
+          },
+          "hit page cap fetching commit changed files; overlap check may be incomplete",
+        );
+      }
     }
   }
   return [
