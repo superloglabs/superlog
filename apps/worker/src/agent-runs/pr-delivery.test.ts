@@ -112,6 +112,7 @@ test("legacy run results derive changed files from their persisted patch", () =>
       "acme/api",
       "run-1",
       "incident-2",
+      "run-current",
       "superlog/fix-retries",
     ),
     ["src/retries.ts"],
@@ -138,6 +139,7 @@ test("legacy run results match fallback patches to the canonical PR branch", () 
       "acme/api",
       "run-1",
       "incident-2",
+      "run-current",
       "ash/fix-timeouts",
     ),
     ["src/timeouts.ts"],
@@ -157,6 +159,7 @@ test("overlap guard serializes shared files and lets only the first delivery pro
   const input = {
     projectId: "project-1",
     currentIncidentId: "incident-2",
+    currentAgentRunId: "run-2",
     currentIncidentFirstSeen: new Date("2026-08-11T14:02:03.000Z"),
     repoFullName: "acme/api",
     baseBranch: "main",

@@ -380,6 +380,7 @@ export async function completeWithPullRequest(
         {
           projectId: ctx.project.id,
           currentIncidentId: ctx.incident.id,
+          currentAgentRunId: ctx.agentRun.id,
           currentIncidentFirstSeen: ctx.incident.firstSeen,
           repoFullName: pr.selectedRepoFullName,
           baseBranch: existingPr.baseBranch,
@@ -553,6 +554,7 @@ export async function completeWithPullRequest(
     {
       projectId: ctx.project.id,
       currentIncidentId: ctx.incident.id,
+      currentAgentRunId: ctx.agentRun.id,
       currentIncidentFirstSeen: ctx.incident.firstSeen,
       repoFullName: pr.selectedRepoFullName,
       baseBranch: targetBaseBranch,
@@ -1345,8 +1347,9 @@ function decodeGitPathToken(token: string): string | null {
 export function changedFilesFromAgentRunResult(
   result: unknown,
   repoFullName: string,
-  agentRunId: string,
+  candidateAgentRunId: string,
   currentIncidentId: string,
+  currentAgentRunId: string,
   canonicalBranchName: string,
 ): string[] {
   if (!result || typeof result !== "object") return [];
@@ -1382,7 +1385,8 @@ export function changedFilesFromAgentRunResult(
       {
         scope: "agent_run.pr_delivery.changed_files",
         current_incident_id: currentIncidentId,
-        agent_run_id: agentRunId,
+        current_agent_run_id: currentAgentRunId,
+        candidate_agent_run_id: candidateAgentRunId,
         repo_full_name: repoFullName,
         canonical_branch_name: canonicalBranchName,
         candidate_branch_names: repositoryMatches.map((proposal) => {
@@ -1408,6 +1412,7 @@ async function findOverlappingOpenPullRequest(
   input: {
     projectId: string;
     currentIncidentId: string;
+    currentAgentRunId: string;
     currentIncidentFirstSeen: Date;
     repoFullName: string;
     baseBranch: string;
@@ -1462,6 +1467,7 @@ async function findOverlappingOpenPullRequest(
           input.repoFullName,
           row.agentRunId,
           input.currentIncidentId,
+          input.currentAgentRunId,
           row.branchName,
         );
     if (!row.changedFiles?.length && fallbackFiles.length === 0) {
@@ -1769,6 +1775,7 @@ export async function preflightProposedPullRequest(
   const overlap = await dependencies.findOverlappingOpenPullRequest({
     projectId: ctx.project.id,
     currentIncidentId: ctx.incident.id,
+    currentAgentRunId: ctx.agentRun.id,
     currentIncidentFirstSeen: ctx.incident.firstSeen,
     repoFullName: pr.repoFullName,
     baseBranch: targetBaseBranch,
@@ -1928,6 +1935,7 @@ export async function deliverProposedPullRequest(
       {
         projectId: ctx.project.id,
         currentIncidentId: ctx.incident.id,
+        currentAgentRunId: ctx.agentRun.id,
         currentIncidentFirstSeen: ctx.incident.firstSeen,
         repoFullName: pr.repoFullName,
         baseBranch: existingPr.baseBranch,
@@ -2076,6 +2084,7 @@ export async function deliverProposedPullRequest(
   const overlapInput: PullRequestOverlapInput = {
     projectId: ctx.project.id,
     currentIncidentId: ctx.incident.id,
+    currentAgentRunId: ctx.agentRun.id,
     currentIncidentFirstSeen: ctx.incident.firstSeen,
     repoFullName: pr.repoFullName,
     baseBranch: targetBaseBranch,
