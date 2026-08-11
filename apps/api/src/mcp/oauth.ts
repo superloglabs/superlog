@@ -14,7 +14,7 @@ import { HTTPException } from "hono/http-exception";
 import { logger } from "../logger.js";
 import { resolveActiveOrgContext } from "../org-context.js";
 import type { McpConfig } from "./config.js";
-import { resolveMcpOauthScope } from "./scope-authorization.js";
+import { MCP_SUPPORTED_SCOPES, resolveMcpOauthScope } from "./scope-authorization.js";
 
 const log = logger.child({ scope: "mcp-oauth" });
 
@@ -72,7 +72,7 @@ export function mountOauthMetadata(app: Hono, cfg: McpConfig) {
       resource: cfg.resource,
       authorization_servers: [cfg.apiBaseUrl],
       bearer_methods_supported: ["header"],
-      scopes_supported: ["mcp:read"],
+      scopes_supported: MCP_SUPPORTED_SCOPES,
     }),
   );
 
@@ -86,7 +86,7 @@ export function mountOauthMetadata(app: Hono, cfg: McpConfig) {
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none"],
-      scopes_supported: ["mcp:read"],
+      scopes_supported: MCP_SUPPORTED_SCOPES,
     }),
   );
 }

@@ -30,10 +30,25 @@ const session = {
   activeProjectId: "00000000-0000-4000-8000-000000000002",
 };
 
-test("OAuth defaults to mcp:read and rejects unsupported scopes", () => {
-  assert.deepEqual(resolveMcpOauthScope(null), { scope: "mcp:read" });
-  assert.deepEqual(resolveMcpOauthScope("  mcp:read   mcp:write  "), {
-    error: "unsupported MCP scope: mcp:write",
+test("OAuth defaults to read and write access when the client omits scopes", () => {
+  assert.deepEqual(resolveMcpOauthScope(null), { scope: "mcp:read mcp:write" });
+});
+
+test("OAuth accepts read and write scopes", () => {
+  assert.deepEqual(resolveMcpOauthScope("  mcp:write   mcp:read  "), {
+    scope: "mcp:read mcp:write",
+  });
+});
+
+test("OAuth write access requires read access", () => {
+  assert.deepEqual(resolveMcpOauthScope("mcp:write"), {
+    error: "mcp:write requires mcp:read",
+  });
+});
+
+test("OAuth rejects unsupported scopes", () => {
+  assert.deepEqual(resolveMcpOauthScope("mcp:read profile"), {
+    error: "unsupported MCP scope: profile",
   });
 });
 
@@ -65,6 +80,16 @@ test("mcp:read sessions expose reads but not writes or deletes", async () => {
   ]);
 });
 
+test("mcp:read sessions do not instruct clients to call unavailable write tools", async () => {
+  const client = await connectedClient({ ...session, scopes: ["mcp:read"] });
+  const instructions = client.getInstructions() ?? "";
+
+  assert.match(instructions, /read-only/i);
+  assert.doesNotMatch(instructions, /create_agent_memory/);
+  assert.doesNotMatch(instructions, /set_project_context/);
+  assert.doesNotMatch(instructions, /update_issue_filter/);
+});
+
 test("mcp:read sessions reject direct calls to mutation tools", async () => {
   const client = await connectedClient({ ...session, scopes: ["mcp:read"] });
 
@@ -77,6 +102,25 @@ test("mcp:read sessions reject direct calls to mutation tools", async () => {
 
   assert.equal(result.isError, true);
   assert.match(JSON.stringify(result.content), /not found/i);
+});
+
+test("mcp:write sessions expose project authoring tools", async () => {
+  const client = await connectedClient({
+    ...session,
+    scopes: ["mcp:read", "mcp:write"],
+  });
+  const tools = await client.listTools();
+  const names = tools.tools.map((tool) => tool.name);
+
+  assert.ok(names.includes("create_agent_memory"));
+  assert.ok(names.includes("set_project_context"));
+  assert.ok(names.includes("update_issue_filter"));
+  assert.ok(names.includes("create_alert"));
+
+  const instructions = client.getInstructions() ?? "";
+  for (const name of ["create_agent_memory", "set_project_context", "update_issue_filter"]) {
+    assert.match(instructions, new RegExp(name));
+  }
 });
 
 test("unscoped personal tokens retain full MCP tool access", async () => {
