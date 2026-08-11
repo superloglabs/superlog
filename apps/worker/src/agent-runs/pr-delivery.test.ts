@@ -15,8 +15,26 @@ import {
   pullRequestDeliveryIdentityForLegacyCompletion,
   reconcileGithubPullRequestMutation,
   reconcilePullRequestDeliveryAbortClose,
+  recordPullRequestOverlapGuardMetric,
   resolvePullRequestBaseBranch,
 } from "./pr-delivery.js";
+
+test("overlap guard metrics use bounded reason attributes", () => {
+  const observations: Array<{ value: number; attributes?: Record<string, string> }> = [];
+  const counter = {
+    add(value: number, attributes?: Record<string, string>) {
+      observations.push({ value, attributes });
+    },
+  };
+
+  recordPullRequestOverlapGuardMetric("overlap", counter);
+  recordPullRequestOverlapGuardMetric("no_changed_files", counter);
+
+  assert.deepEqual(observations, [
+    { value: 1, attributes: { reason: "overlap" } },
+    { value: 1, attributes: { reason: "no_changed_files" } },
+  ]);
+});
 
 test("unified diff paths provide changed-file evidence when an agent omits metadata", () => {
   assert.deepEqual(

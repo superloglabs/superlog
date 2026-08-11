@@ -1,3 +1,4 @@
+import { metrics } from "@opentelemetry/api";
 import {
   type AgentPullRequestProviderObservation,
   type AgentRunResult,
@@ -66,6 +67,26 @@ const DEFAULT_COMMIT_AUTHOR = {
 };
 const agentRunLifecycle = createAgentRunLifecycle(db);
 const incidentLifecycle = createIncidentLifecycle(db);
+const pullRequestDeliveryMeter = metrics.getMeter("@superlog/worker/pr-delivery");
+const pullRequestOverlapGuardCounter = pullRequestDeliveryMeter.createCounter(
+  "superlog.agent_pr_delivery.guard",
+  {
+    description: "Pull request deliveries blocked or bypassed by changed-file overlap handling.",
+    unit: "1",
+  },
+);
+
+type PullRequestOverlapGuardMetricReason = "overlap" | "no_changed_files";
+type PullRequestOverlapGuardCounter = {
+  add(value: number, attributes: { reason: PullRequestOverlapGuardMetricReason }): void;
+};
+
+export function recordPullRequestOverlapGuardMetric(
+  reason: PullRequestOverlapGuardMetricReason,
+  counter: PullRequestOverlapGuardCounter = pullRequestOverlapGuardCounter,
+): void {
+  counter.add(1, { reason });
+}
 
 type PullRequestPublicationDependencies = {
   canPublish(input: {
@@ -1417,6 +1438,7 @@ async function findOverlappingOpenPullRequest(
         {
           scope: "agent_run.pr_delivery.overlap_no_files",
           current_incident_id: input.currentIncidentId,
+          candidate_incident_id: row.incidentId,
           agent_run_id: row.agentRunId,
           repo_full_name: input.repoFullName,
         },
@@ -1428,6 +1450,7 @@ async function findOverlappingOpenPullRequest(
         {
           scope: "agent_run.pr_delivery.overlap_legacy_fallback",
           current_incident_id: input.currentIncidentId,
+          candidate_incident_id: row.incidentId,
           agent_run_id: row.agentRunId,
           repo_full_name: input.repoFullName,
           derived_file_count: fallbackFiles.length,
@@ -1471,6 +1494,7 @@ export async function guardProposedPullRequestOverlap<T>(
     (file) => `agent-pr-overlap:${input.projectId}:${input.repoFullName}:${file}`,
   );
   if (lockKeys.length === 0) {
+    recordPullRequestOverlapGuardMetric("no_changed_files");
     if (input.changedFiles.length > 0) {
       logger.error(
         {
@@ -1504,6 +1528,7 @@ function blockedByOverlappingPullRequest(
   ctx: AgentRunContext,
   overlap: OverlappingOpenPullRequest,
 ): { ok: false; error: string } {
+  recordPullRequestOverlapGuardMetric("overlap");
   logger.error(
     {
       scope: "agent_run.pr_delivery.overlap",
