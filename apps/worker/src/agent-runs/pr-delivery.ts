@@ -83,7 +83,8 @@ type PullRequestOverlapGuardMetricReason =
   | "normalization_dropped"
   | "no_overlap"
   | "query_error"
-  | "candidate_no_changed_files";
+  | "candidate_no_changed_files"
+  | "recovery_bypass";
 type PullRequestOverlapGuardMetricOutcome = "blocked" | "allowed" | "skipped";
 type PullRequestOverlapGuardCounter = {
   add(
@@ -1591,8 +1592,8 @@ export async function guardProposedPullRequestOverlap<T>(
       throw err;
     }
     if (overlap) return { ok: false, overlap };
-    const value = await task();
     recordPullRequestOverlapGuardMetric("no_overlap");
+    const value = await task();
     return { ok: true, value };
   });
 }
@@ -2114,6 +2115,7 @@ export async function deliverProposedPullRequest(
     changedFiles,
   };
   if (prepared?.kind === "github_recovery") {
+    recordPullRequestOverlapGuardMetric("recovery_bypass");
     logger.info(
       {
         scope: "agent_run.pr_delivery.overlap_recovery",
