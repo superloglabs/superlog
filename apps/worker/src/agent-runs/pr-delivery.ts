@@ -86,7 +86,8 @@ type PullRequestOverlapGuardMetricReason =
   | "candidate_no_changed_files"
   | "recovery_bypass"
   | "claim_error"
-  | "release_error";
+  | "release_error"
+  | "claim_retained";
 type PullRequestOverlapGuardMetricOutcome = "blocked" | "allowed" | "skipped";
 type PullRequestOverlapGuardCounter = {
   add(
@@ -1550,9 +1551,20 @@ async function findOverlappingOpenPullRequest(
     )
     .orderBy(desc(schema.agentPullRequestOverlapClaims.createdAt));
   for (const claim of claims) {
-    const overlappingFiles = normalizedChangedFiles(claim.changedFiles).filter((file) =>
-      proposedFiles.has(file),
-    );
+    const claimFiles = normalizedChangedFiles(claim.changedFiles);
+    if (claimFiles.length === 0) {
+      recordPullRequestOverlapGuardMetric("candidate_no_changed_files");
+      logger.info(
+        {
+          scope: "agent_run.pr_delivery.overlap_claim_no_files",
+          current_incident_id: input.currentIncidentId,
+          candidate_incident_id: claim.incidentId,
+          repo_full_name: input.repoFullName,
+        },
+        "overlap claim skipped: no changed files recorded on pending claim",
+      );
+    }
+    const overlappingFiles = claimFiles.filter((file) => proposedFiles.has(file));
     if (overlappingFiles.length > 0) {
       return {
         incidentId: claim.incidentId,
@@ -1627,6 +1639,21 @@ const pullRequestOverlapGuardDependencies: PullRequestOverlapGuardDependencies =
   releaseClaim: releasePullRequestOverlapClaim,
 };
 
+function pullRequestOverlapClaimCanRelease(value: unknown): boolean {
+  if (!value || typeof value !== "object") return true;
+  const result = value as {
+    kind?: unknown;
+    reconciled?: { ok?: unknown; deliveryStatus?: unknown };
+  };
+  if (result.kind === "open_failed" || result.kind === "push_failed") return false;
+  if (result.kind !== "delivered" && result.kind !== "updated") return true;
+  if (result.reconciled?.ok === true) return true;
+  return (
+    result.reconciled?.ok === false &&
+    result.reconciled.deliveryStatus !== "manual_reconciliation_required"
+  );
+}
+
 export async function guardProposedPullRequestOverlap<T>(
   input: PullRequestOverlapInput,
   task: () => Promise<T>,
@@ -1697,6 +1724,18 @@ export async function guardProposedPullRequestOverlap<T>(
       throw err;
     }
     const value = await task();
+    if (!pullRequestOverlapClaimCanRelease(value)) {
+      recordPullRequestOverlapGuardMetric("claim_retained");
+      logger.warn(
+        {
+          scope: "agent_run.pr_delivery.overlap_claim_retained",
+          current_incident_id: input.currentIncidentId,
+          repo_full_name: input.repoFullName,
+        },
+        "retaining pull request overlap claim while provider reconciliation remains unresolved",
+      );
+      return { ok: true, value };
+    }
     try {
       await dependencies.releaseClaim(input);
     } catch (err) {

@@ -37,6 +37,7 @@ test("overlap guard metrics use bounded reason attributes", () => {
   recordPullRequestOverlapGuardMetric("recovery_bypass", counter);
   recordPullRequestOverlapGuardMetric("claim_error", counter);
   recordPullRequestOverlapGuardMetric("release_error", counter);
+  recordPullRequestOverlapGuardMetric("claim_retained", counter);
 
   assert.deepEqual(observations, [
     { value: 1, attributes: { reason: "overlap", outcome: "blocked" } },
@@ -48,6 +49,7 @@ test("overlap guard metrics use bounded reason attributes", () => {
     { value: 1, attributes: { reason: "recovery_bypass", outcome: "skipped" } },
     { value: 1, attributes: { reason: "claim_error", outcome: "skipped" } },
     { value: 1, attributes: { reason: "release_error", outcome: "skipped" } },
+    { value: 1, attributes: { reason: "claim_retained", outcome: "skipped" } },
   ]);
 });
 
@@ -325,6 +327,40 @@ test("overlap guard retains its durable claim when delivery exits ambiguously", 
       },
     ),
   );
+  assert.equal(released, false);
+});
+
+test("overlap guard retains its durable claim when reconciliation needs manual repair", async () => {
+  let released = false;
+  const guarded = await guardProposedPullRequestOverlap(
+    {
+      projectId: "project-1",
+      currentIncidentId: "incident-2",
+      currentAgentRunId: "run-2",
+      currentIncidentFirstSeen: new Date("2026-08-11T14:02:03.000Z"),
+      repoFullName: "acme/api",
+      baseBranch: "main",
+      fallbackBaseBranch: null,
+      changedFiles: ["src/retries.ts"],
+    },
+    async () => ({
+      kind: "delivered" as const,
+      reconciled: {
+        ok: false as const,
+        deliveryStatus: "manual_reconciliation_required" as const,
+      },
+    }),
+    {
+      exclusive: async (_keys, task) => task(),
+      findOverlap: async () => null,
+      claimOverlap: async () => {},
+      releaseClaim: async () => {
+        released = true;
+      },
+    },
+  );
+
+  assert.equal(guarded.ok, true);
   assert.equal(released, false);
 });
 
