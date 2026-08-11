@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { metrics } from "@opentelemetry/api";
 import { logger } from "./logger.js";
 
 type GithubPermission = "read" | "write";
@@ -51,6 +52,26 @@ type GithubInstallationReposResponse = {
 const GITHUB_API = "https://api.github.com";
 const GIT_PUSH_MAX_ATTEMPTS = 3;
 const GIT_PUSH_RETRY_DELAYS_MS = [1_000, 3_000] as const;
+const githubPullRequestDeliveryMeter = metrics.getMeter("@superlog/worker/github-pr-delivery");
+const githubChangedFilesPageCapCounter = githubPullRequestDeliveryMeter.createCounter(
+  "superlog.github.pr_delivery.changed_files_page_cap",
+  {
+    description: "Provider changed-file lookups truncated at the configured page cap.",
+    unit: "1",
+  },
+);
+
+type GithubChangedFilesPageCapSource = "pull_request" | "commit";
+type GithubChangedFilesPageCapCounter = {
+  add(value: number, attributes: { source: GithubChangedFilesPageCapSource }): void;
+};
+
+export function recordGithubChangedFilesPageCapMetric(
+  source: GithubChangedFilesPageCapSource,
+  counter: GithubChangedFilesPageCapCounter = githubChangedFilesPageCapCounter,
+): void {
+  counter.add(1, { source });
+}
 
 export class GithubRequestError extends Error {
   readonly retryable: boolean;
@@ -1170,6 +1191,7 @@ export async function findGithubPullRequestDeliveryChangedFiles(opts: {
       files.push(...pageFiles);
       if (page === 30) {
         if (pageFiles.length === 100) {
+          recordGithubChangedFilesPageCapMetric("pull_request");
           logger.error(
             {
               scope: "github.pr_delivery.changed_files_page_cap",
@@ -1195,6 +1217,7 @@ export async function findGithubPullRequestDeliveryChangedFiles(opts: {
       files.push(...pageFiles);
       if (page === 30) {
         if (pageFiles.length === 100) {
+          recordGithubChangedFilesPageCapMetric("commit");
           logger.error(
             {
               scope: "github.pr_delivery.changed_files_page_cap",
@@ -1316,12 +1339,13 @@ export async function validateAgentPatchApplicability(opts: {
   patch: string;
   baseBranch?: string | null;
   existingBranch?: string | null;
-}): Promise<void> {
+}): Promise<string> {
   const repo = await getGithubRepoInfo(opts.installationId, opts.repoFullName, opts.repositoryId);
   const workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-pr-preflight-"));
   const token = await createGithubWriteToken(opts.installationId, opts.repositoryId);
   const gitAuthEnv = githubGitAuthEnv(token);
   const repoDir = path.join(workdir, "repo");
+  let resolvedBaseBranch = opts.baseBranch?.trim() || repo.default_branch;
   try {
     if (opts.existingBranch) {
       await ensureGitOk(
@@ -1336,7 +1360,7 @@ export async function validateAgentPatchApplicability(opts: {
         { env: gitAuthEnv, suppressOutputOnError: true },
       );
     } else {
-      await cloneRepositoryAtBaseBranch({
+      resolvedBaseBranch = await cloneRepositoryAtBaseBranch({
         repoFullName: opts.repoFullName,
         repoDir,
         preferredBaseBranch: opts.baseBranch?.trim() || repo.default_branch,
@@ -1349,6 +1373,7 @@ export async function validateAgentPatchApplicability(opts: {
     await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv });
     const status = await ensureGitOk(["status", "--porcelain"], { cwd: repoDir });
     if (!status.stdout.trim()) throw new Error("patch produced no working tree changes");
+    return resolvedBaseBranch;
   } finally {
     await rm(workdir, { recursive: true, force: true }).catch(() => {});
   }

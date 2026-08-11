@@ -24,10 +24,28 @@ import {
   loadGithubPullRequestProviderObservationWithToken,
   openedAgentPullRequest,
   parseGithubRetryDelayMs,
+  recordGithubChangedFilesPageCapMetric,
   recoverPullRequestDelivery,
   redactGitSecrets,
   reopenGithubPullRequestWithToken,
 } from "./github-app.js";
+
+test("changed-file page-cap metrics use bounded attributes", () => {
+  const observations: Array<{ value: number; attributes?: Record<string, string> }> = [];
+  const counter = {
+    add(value: number, attributes?: Record<string, string>) {
+      observations.push({ value, attributes });
+    },
+  };
+
+  recordGithubChangedFilesPageCapMetric("pull_request", counter);
+  recordGithubChangedFilesPageCapMetric("commit", counter);
+
+  assert.deepEqual(observations, [
+    { value: 1, attributes: { source: "pull_request" } },
+    { value: 1, attributes: { source: "commit" } },
+  ]);
+});
 
 test("GitHub HTTP retry policy distinguishes transient provider failures", () => {
   assert.equal(

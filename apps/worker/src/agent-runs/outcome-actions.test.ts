@@ -630,7 +630,10 @@ test("propose_pr passes the same delivery identity through preflight and deliver
     async preflightProposedPullRequest(_ctx, preparedProposal, _sessionId, identity) {
       identities.push(identity);
       preparedProposal.changedFiles = ["src/retries.ts"];
-      return { ok: true, prepared: { kind: "patch", patch: "diff --git a/a b/a" } };
+      return {
+        ok: true,
+        prepared: { kind: "patch", patch: "diff --git a/a b/a", baseBranch: "main" },
+      };
     },
     async deliverProposedPullRequest(_ctx, _proposal, _sessionId, _findings, _prepared, identity) {
       identities.push(identity);
@@ -675,7 +678,10 @@ test("multi-repository propose_pr reserves the full batch before delivery and fi
     },
     async preflightProposedPullRequest(_ctx, proposal) {
       calls.push(`preflight:${proposal.repoFullName}`);
-      return { ok: true, prepared: { kind: "patch", patch: "diff --git a/a b/a" } };
+      return {
+        ok: true,
+        prepared: { kind: "patch", patch: "diff --git a/a b/a", baseBranch: "main" },
+      };
     },
     async deliverProposedPullRequest(_ctx, proposal) {
       calls.push(`deliver:${proposal.repoFullName}`);
@@ -846,7 +852,10 @@ test("a post-delivery batch finalization failure defers the acknowledgement", as
     },
     async preflightProposedPullRequest(_ctx, proposal) {
       calls.push(`preflight:${proposal.repoFullName}`);
-      return { ok: true, prepared: { kind: "patch" as const, patch: "diff" } };
+      return {
+        ok: true,
+        prepared: { kind: "patch" as const, patch: "diff", baseBranch: "main" },
+      };
     },
     async deliverProposedPullRequest(_ctx, proposal) {
       calls.push(`deliver:${proposal.repoFullName}`);
@@ -903,7 +912,10 @@ test("a pending delivery recovery keeps the same delivery identity unacknowledge
       return 0;
     },
     async preflightProposedPullRequest() {
-      return { ok: true, prepared: { kind: "patch" as const, patch: "diff" } };
+      return {
+        ok: true,
+        prepared: { kind: "patch" as const, patch: "diff", baseBranch: "main" },
+      };
     },
     async deliverProposedPullRequest(_ctx, _proposal, _sessionId, _findings, _prepared, identity) {
       assert.ok(identity);
@@ -988,7 +1000,10 @@ test("a single-repository retry repeats batch finalization after a transient fai
       return 0;
     },
     async preflightProposedPullRequest() {
-      return { ok: true, prepared: { kind: "patch" as const, patch: "diff" } };
+      return {
+        ok: true,
+        prepared: { kind: "patch" as const, patch: "diff", baseBranch: "main" },
+      };
     },
     async deliverProposedPullRequest() {
       return {
@@ -1025,7 +1040,10 @@ test("a failed single-repository delivery cannot resolve from older merged PRs",
       return 0;
     },
     async preflightProposedPullRequest() {
-      return { ok: true, prepared: { kind: "patch" as const, patch: "diff" } };
+      return {
+        ok: true,
+        prepared: { kind: "patch" as const, patch: "diff", baseBranch: "main" },
+      };
     },
     async deliverProposedPullRequest() {
       return { ok: false, error: "GitHub rejected the patch" };

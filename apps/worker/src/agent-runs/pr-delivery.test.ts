@@ -32,12 +32,14 @@ test("overlap guard metrics use bounded reason attributes", () => {
   recordPullRequestOverlapGuardMetric("no_changed_files", counter);
   recordPullRequestOverlapGuardMetric("normalization_dropped", counter);
   recordPullRequestOverlapGuardMetric("no_overlap", counter);
+  recordPullRequestOverlapGuardMetric("query_error", counter);
 
   assert.deepEqual(observations, [
     { value: 1, attributes: { reason: "overlap", outcome: "blocked" } },
     { value: 1, attributes: { reason: "no_changed_files", outcome: "skipped" } },
     { value: 1, attributes: { reason: "normalization_dropped", outcome: "skipped" } },
     { value: 1, attributes: { reason: "no_overlap", outcome: "allowed" } },
+    { value: 1, attributes: { reason: "query_error", outcome: "skipped" } },
   ]);
 });
 
@@ -697,8 +699,10 @@ test("preflight blocks a patch when another incident already has an open PR touc
           overlappingFiles: ["src/retries.ts"],
         };
       },
+      findCurrentOpenPullRequest: async () => undefined,
       validatePatch: async () => {
         validated = true;
+        return "release";
       },
     },
   );
@@ -709,9 +713,9 @@ test("preflight blocks a patch when another incident already has an open PR touc
   assert.match(prepared.error, /src\/retries\.ts/);
   assert.deepEqual(overlapInput?.changedFiles, ["src/retries.ts"]);
   assert.equal(overlapInput?.baseBranch, "release");
-  assert.equal(overlapInput?.fallbackBaseBranch, "main");
+  assert.equal(overlapInput?.fallbackBaseBranch, null);
   assert.equal(overlapInput?.currentIncidentFirstSeen.toISOString(), "2026-08-11T14:02:03.000Z");
-  assert.equal(validated, false);
+  assert.equal(validated, true);
 });
 
 test("preflight persists diff-derived paths on the proposal for the durable run result", async () => {
@@ -751,7 +755,7 @@ test("preflight persists diff-derived paths on the proposal for the durable run 
       }),
       findOverlappingOpenPullRequest: async () => null,
       findCurrentOpenPullRequest: async () => undefined,
-      validatePatch: async () => {},
+      validatePatch: async () => "main",
     },
   );
 
@@ -822,6 +826,7 @@ test("preflight recovers a pushed delivery without requiring the session patch",
       },
       validatePatch: async () => {
         validated = true;
+        return "main";
       },
     },
   );

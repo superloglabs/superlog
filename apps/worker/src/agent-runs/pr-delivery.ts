@@ -81,7 +81,8 @@ type PullRequestOverlapGuardMetricReason =
   | "overlap"
   | "no_changed_files"
   | "normalization_dropped"
-  | "no_overlap";
+  | "no_overlap"
+  | "query_error";
 type PullRequestOverlapGuardMetricOutcome = "blocked" | "allowed" | "skipped";
 type PullRequestOverlapGuardCounter = {
   add(
@@ -550,6 +551,23 @@ export async function completeWithPullRequest(
     // No open PR to land on (closed meanwhile, or the prior run never opened
     // one) — fall through to the normal open-a-new-PR path.
   }
+  let deliveryBaseBranch: string;
+  try {
+    deliveryBaseBranch = await validateAgentPatchApplicability({
+      installationId: repoMeta.installation.installationId,
+      repositoryId: repoMeta.id,
+      repoFullName: pr.selectedRepoFullName,
+      patch,
+      baseBranch: targetBaseBranch,
+      existingBranch: null,
+    });
+  } catch (err) {
+    await failAgentRun(ctx, "pr_open_failed", summarizePrOpenFailure(err), {
+      existingResult: resultWithPatch,
+      err,
+    });
+    return false;
+  }
   const guarded = await guardProposedPullRequestOverlap(
     {
       projectId: ctx.project.id,
@@ -557,9 +575,8 @@ export async function completeWithPullRequest(
       currentAgentRunId: ctx.agentRun.id,
       currentIncidentFirstSeen: ctx.incident.firstSeen,
       repoFullName: pr.selectedRepoFullName,
-      baseBranch: targetBaseBranch,
-      fallbackBaseBranch:
-        targetBaseBranch === repoMeta.defaultBranch ? null : repoMeta.defaultBranch,
+      baseBranch: deliveryBaseBranch,
+      fallbackBaseBranch: null,
       changedFiles: pr.changedFiles ?? [],
     },
     async () => {
@@ -571,7 +588,7 @@ export async function completeWithPullRequest(
           repoFullName: pr.selectedRepoFullName,
           patch,
           branchName,
-          baseBranch: targetBaseBranch,
+          baseBranch: deliveryBaseBranch,
           title: prTitle,
           body: prBody,
           commitAuthor:
@@ -1216,7 +1233,7 @@ async function compensateGithubPullRequestMutation(opts: {
 }
 
 export type PreparedProposedPullRequest =
-  | { kind: "patch"; patch: string }
+  | { kind: "patch"; patch: string; baseBranch: string }
   | { kind: "recorded"; delivery: RecordedPullRequestDelivery }
   | { kind: "github_recovery" };
 
@@ -1560,6 +1577,7 @@ export async function guardProposedPullRequestOverlap<T>(
     try {
       overlap = await dependencies.findOverlap(input);
     } catch (err) {
+      recordPullRequestOverlapGuardMetric("query_error");
       logger.error(
         {
           err,
@@ -1612,7 +1630,7 @@ type ProposedPullRequestPreflightDependencies = {
     incidentId: string;
     repoFullName: string;
     branchName: string;
-  }): Promise<{ branchName: string } | undefined>;
+  }): Promise<{ branchName: string; baseBranch: string } | undefined>;
 };
 
 const proposedPullRequestPreflightDependencies: ProposedPullRequestPreflightDependencies = {
@@ -1632,7 +1650,7 @@ const proposedPullRequestPreflightDependencies: ProposedPullRequestPreflightDepe
         eq(schema.agentPullRequests.state, "open"),
       ),
       orderBy: [desc(schema.agentPullRequests.createdAt)],
-      columns: { branchName: true },
+      columns: { branchName: true, baseBranch: true },
     }),
 };
 
@@ -1772,25 +1790,14 @@ export async function preflightProposedPullRequest(
       "preflight overlap check skipped: no changed files derived from proposal or patch",
     );
   }
-  const overlap = await dependencies.findOverlappingOpenPullRequest({
-    projectId: ctx.project.id,
-    currentIncidentId: ctx.incident.id,
-    currentAgentRunId: ctx.agentRun.id,
-    currentIncidentFirstSeen: ctx.incident.firstSeen,
-    repoFullName: pr.repoFullName,
-    baseBranch: targetBaseBranch,
-    fallbackBaseBranch: targetBaseBranch === repoMeta.defaultBranch ? null : repoMeta.defaultBranch,
-    changedFiles,
-  });
-  if (overlap) return blockedByOverlappingPullRequest(ctx, overlap);
-
   const existingPr = await dependencies.findCurrentOpenPullRequest({
     incidentId: ctx.incident.id,
     repoFullName: pr.repoFullName,
     branchName: pr.branchName,
   });
+  let validatedBaseBranch: string;
   try {
-    await dependencies.validatePatch({
+    validatedBaseBranch = await dependencies.validatePatch({
       installationId: repoMeta.installation.installationId,
       repositoryId: repoMeta.id,
       repoFullName: pr.repoFullName,
@@ -1801,7 +1808,20 @@ export async function preflightProposedPullRequest(
   } catch (err) {
     return { ok: false, error: summarizePrOpenFailure(err) };
   }
-  return { ok: true, prepared: { kind: "patch", patch } };
+  const deliveryBaseBranch = existingPr?.baseBranch ?? validatedBaseBranch;
+  const overlap = await dependencies.findOverlappingOpenPullRequest({
+    projectId: ctx.project.id,
+    currentIncidentId: ctx.incident.id,
+    currentAgentRunId: ctx.agentRun.id,
+    currentIncidentFirstSeen: ctx.incident.firstSeen,
+    repoFullName: pr.repoFullName,
+    baseBranch: deliveryBaseBranch,
+    fallbackBaseBranch: null,
+    changedFiles,
+  });
+  if (overlap) return blockedByOverlappingPullRequest(ctx, overlap);
+
+  return { ok: true, prepared: { kind: "patch", patch, baseBranch: deliveryBaseBranch } };
 }
 
 // Apply the agent's patch and open (or update) a PR before the terminal ack.
@@ -1876,6 +1896,7 @@ export async function deliverProposedPullRequest(
     };
   }
   const targetBaseBranch = resolvePullRequestTargetBaseBranch(ctx, pr, repoMeta.defaultBranch);
+  const deliveryBaseBranch = prepared?.kind === "patch" ? prepared.baseBranch : targetBaseBranch;
 
   let patch = prepared?.kind === "patch" ? prepared.patch : null;
   if (!patch && prepared?.kind !== "github_recovery") {
@@ -2028,7 +2049,7 @@ export async function deliverProposedPullRequest(
         repoFullName: pr.repoFullName,
         patch,
         branchName: pr.branchName,
-        baseBranch: targetBaseBranch,
+        baseBranch: deliveryBaseBranch,
         title: prTitle,
         body: prBody,
         commitAuthor,
@@ -2087,8 +2108,8 @@ export async function deliverProposedPullRequest(
     currentAgentRunId: ctx.agentRun.id,
     currentIncidentFirstSeen: ctx.incident.firstSeen,
     repoFullName: pr.repoFullName,
-    baseBranch: targetBaseBranch,
-    fallbackBaseBranch: targetBaseBranch === repoMeta.defaultBranch ? null : repoMeta.defaultBranch,
+    baseBranch: deliveryBaseBranch,
+    fallbackBaseBranch: null,
     changedFiles,
   };
   if (prepared?.kind === "github_recovery") {
