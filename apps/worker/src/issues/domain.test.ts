@@ -38,7 +38,7 @@ test("findSameTraceIncidentMatch joins the incident sharing the issue's trace id
     ...makeIssue(["svc/log.ts"]),
     exceptionType: "ERROR",
     lastSample: { traceId: "trace-xyz", spanId: "span-1" },
-  } as schema.Issue;
+  } as unknown as schema.Issue;
   const candidates = [makeIncident("inc-1"), makeIncident("inc-2")];
   const linked: LinkedIncidentIssue[] = [
     {
@@ -69,12 +69,32 @@ test("findSameTraceIncidentMatch returns null when the issue has no trace id", (
 test("groupingIssueInput and buildGroupingCandidate keep LLM input shape explicit", () => {
   const issue = {
     ...makeIssue(["svc/a.ts"]),
-    lastSample: { traceId: "trace-1", spanId: "span-1", stacktrace: "stack" },
-  } as schema.Issue;
+    eventCount: 2,
+    lastSample: {
+      traceId: "trace-1",
+      spanId: "span-1",
+      stacktrace: "stack",
+      resourceAttrs: {
+        "deployment.environment.name": "prod",
+        "service.version": "v1.2.3",
+        "vcs.repository.url.full": "https://github.com/acme/api",
+      },
+    },
+  } as unknown as schema.Issue;
   const candidate = buildGroupingCandidate(makeIncident("inc-1"), [
     {
       ...makeLinkedIssue("inc-1", ["svc/a.ts"]),
-      lastSample: { traceId: "trace-2", spanId: "span-2" } as LinkedIncidentIssue["lastSample"],
+      firstSeen: new Date("2026-07-17T10:00:00.000Z"),
+      lastSeen: new Date("2026-07-17T10:05:00.000Z"),
+      eventCount: 2,
+      lastSample: {
+        traceId: "trace-2",
+        spanId: "span-2",
+        resourceAttrs: {
+          "deployment.environment.name": "prod",
+          "service.version": "v1.2.3",
+        },
+      } as unknown as LinkedIncidentIssue["lastSample"],
     },
   ]);
 
@@ -86,19 +106,34 @@ test("groupingIssueInput and buildGroupingCandidate keep LLM input shape explici
     message: "boom",
     topFrame: "svc/a.ts",
     normalizedFrames: ["svc/a.ts"],
+    firstSeen: "2026-07-17T10:00:00.000Z",
+    lastSeen: "2026-07-17T10:05:00.000Z",
+    eventCount: 2,
     observedAt: "2026-07-17T10:05:00.000Z",
     stacktrace: "stack",
     traceId: "trace-1",
     spanId: "span-1",
     logAttrs: null,
+    resourceAttrs: {
+      "deployment.environment.name": "prod",
+      "service.version": "v1.2.3",
+      "vcs.repository.url.full": "https://github.com/acme/api",
+    },
   });
   assert.ok(candidate?.representative);
   assert.equal(candidate.representative.traceId, "trace-2");
   assert.deepEqual(candidate.representative.normalizedFrames, ["svc/a.ts"]);
+  assert.deepEqual(candidate.representative.resourceAttrs, {
+    "deployment.environment.name": "prod",
+    "service.version": "v1.2.3",
+  });
   // Linked issues now travel with the candidate so inspect_incident can show
   // stack traces and code locations.
   assert.equal(candidate.issues?.length, 1);
   assert.equal(candidate.issues?.[0]?.id, "iss-linked");
+  assert.equal(candidate.issues?.[0]?.firstSeen, "2026-07-17T10:00:00.000Z");
+  assert.equal(candidate.issues?.[0]?.lastSeen, "2026-07-17T10:05:00.000Z");
+  assert.equal(candidate.issues?.[0]?.eventCount, 2);
 });
 
 test("groupingIssueInput compacts an oversized generated-code frame without losing diagnostics", () => {
@@ -171,6 +206,8 @@ function makeLinkedIssue(incidentId: string, normalizedFrames: string[]): Linked
     topFrame: normalizedFrames[0] ?? null,
     normalizedFrames,
     lastSample: null,
+    firstSeen: new Date(0),
     lastSeen: new Date(1),
+    eventCount: 1,
   };
 }

@@ -15,7 +15,9 @@ export type LinkedIncidentIssue = {
   topFrame: string | null;
   normalizedFrames: string[];
   lastSample: IssueSample | null;
+  firstSeen?: Date;
   lastSeen: Date;
+  eventCount?: number;
 };
 
 export type IncidentMatch = {
@@ -66,11 +68,15 @@ export function groupingIssueInput(issue: schema.Issue): GroupingNewIssue {
     message: compactDiagnosticText(issue.message),
     topFrame: issue.topFrame,
     normalizedFrames: issue.normalizedFrames ?? [],
+    firstSeen: issue.firstSeen.toISOString(),
+    lastSeen: issue.lastSeen.toISOString(),
+    eventCount: issue.eventCount,
     observedAt: issue.lastSeen.toISOString(),
     stacktrace: sampleStacktrace(sample),
     traceId: sample?.traceId ?? null,
     spanId: sample?.spanId ?? null,
     logAttrs: sampleLogAttrs(sample),
+    resourceAttrs: sample?.resourceAttrs ?? null,
   };
 }
 
@@ -159,6 +165,7 @@ export function buildGroupingCandidate(
       normalizedFrames: representative.normalizedFrames ?? [],
       traceId: representative.lastSample?.traceId ?? null,
       spanId: representative.lastSample?.spanId ?? null,
+      resourceAttrs: representative.lastSample?.resourceAttrs ?? null,
     },
     // Full per-issue context (stack traces, code locations) so the agent can
     // compare root causes instead of message wording. Surfaced by
@@ -175,7 +182,10 @@ export function buildGroupingCandidate(
       spanId: row.lastSample?.spanId ?? null,
       logAttrs: sampleLogAttrs(row.lastSample),
       stacktrace: sampleStacktrace(row.lastSample),
+      resourceAttrs: row.lastSample?.resourceAttrs ?? null,
+      firstSeen: (row.firstSeen ?? row.lastSeen).toISOString(),
       lastSeen: row.lastSeen.toISOString(),
+      eventCount: row.eventCount ?? 1,
     })),
   };
 }

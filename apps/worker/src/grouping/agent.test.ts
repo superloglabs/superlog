@@ -8,6 +8,7 @@ import {
   type GroupingNewIssue,
   compactDiagnosticText,
 } from "./domain.js";
+import { GROUPING_SYSTEM_PROMPT } from "./tools.js";
 
 function makeMessage(blocks: Anthropic.Messages.ContentBlock[]): Anthropic.Messages.Message {
   return {
@@ -70,11 +71,20 @@ const NEW_ISSUE: GroupingNewIssue = {
   message: "conn refused",
   topFrame: "db.query",
   normalizedFrames: ["db.query"],
+  firstSeen: "2026-07-17T10:00:00.000Z",
+  lastSeen: "2026-07-17T10:05:00.000Z",
+  eventCount: 2,
   observedAt: "2026-07-17T10:05:00.000Z",
   stacktrace: null,
   traceId: null,
   spanId: null,
 };
+
+test("grouping prompt treats ordered error-path symptoms and matching repeat cadence as causal evidence", () => {
+  assert.match(GROUPING_SYSTEM_PROMPT, /callee.*caller.*error handler/i);
+  assert.match(GROUPING_SYSTEM_PROMPT, /matching.*first.*last.*event count/i);
+  assert.match(GROUPING_SYSTEM_PROMPT, /alert.*population.*already.*incident/i);
+});
 
 function makeDeps(
   responses: Array<Anthropic.Messages.ContentBlock[]>,
@@ -446,11 +456,7 @@ test("runGroupingAgent: a retained inspection remains valid while later results 
       }
       if (turn <= 10) {
         return makeMessage([
-          toolUse(
-            "inspect_incident",
-            { incident_id: recentTarget.id },
-            `inspect-recent-${turn}`,
-          ),
+          toolUse("inspect_incident", { incident_id: recentTarget.id }, `inspect-recent-${turn}`),
         ]);
       }
       if (turn === 11) {
@@ -624,9 +630,11 @@ test("runGroupingAgent: inspection burst uses only the remaining conversation he
       turn += 1;
       if (turn === 1) {
         return makeMessage(
-          candidates.slice(0, 8).map((candidate, index) =>
-            toolUse("inspect_incident", { incident_id: candidate.id }, `inspect-${index}`),
-          ),
+          candidates
+            .slice(0, 8)
+            .map((candidate, index) =>
+              toolUse("inspect_incident", { incident_id: candidate.id }, `inspect-${index}`),
+            ),
         );
       }
       return makeMessage([
@@ -650,8 +658,10 @@ test("runGroupingAgent: inspection burst uses only the remaining conversation he
   );
 
   assert.equal(requestChars.length, 2);
-  const [initialRequestChars = Number.POSITIVE_INFINITY, inspectionRequestChars = Number.POSITIVE_INFINITY] =
-    requestChars;
+  const [
+    initialRequestChars = Number.POSITIVE_INFINITY,
+    inspectionRequestChars = Number.POSITIVE_INFINITY,
+  ] = requestChars;
   assert.ok(initialRequestChars < 550_000, `initial request was ${initialRequestChars}`);
   assert.ok(inspectionRequestChars < 550_000, `inspection request was ${inspectionRequestChars}`);
 });

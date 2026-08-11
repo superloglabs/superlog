@@ -5,6 +5,7 @@ import type { schema } from "@superlog/db";
 import type { AgentRunContext } from "../agent-run-context.js";
 import {
   PullRequestDeliveryRecoveryPendingError,
+  changedFilesFromUnifiedDiff,
   compensatePullRequestDelivery,
   deliverProposedPullRequest,
   preflightProposedPullRequest,
@@ -14,6 +15,18 @@ import {
   reconcilePullRequestDeliveryAbortClose,
   resolvePullRequestBaseBranch,
 } from "./pr-delivery.js";
+
+test("unified diff paths provide changed-file evidence when an agent omits metadata", () => {
+  assert.deepEqual(
+    changedFilesFromUnifiedDiff(
+      [
+        "diff --git a/src/retries.ts b/src/retries.ts",
+        "diff --git a/src/worker.ts b/src/worker.ts",
+      ].join("\n"),
+    ),
+    ["src/retries.ts", "src/worker.ts"],
+  );
+});
 
 test("a stale run cannot publish pull request status", async () => {
   const calls: string[] = [];
@@ -447,7 +460,64 @@ const proposedPullRequest = {
   branchName: "ash/fix-api",
   baseBranch: "main",
   patchFilePath: "/mnt/session/outputs/api.patch",
+  changedFiles: ["src/retries.ts"],
 };
+
+test("preflight blocks a patch when another incident already has an open PR touching the same file", async () => {
+  let validated = false;
+  let overlapInput: { changedFiles: string[]; currentIncidentFirstSeen: Date } | undefined;
+  const prepared = await preflightProposedPullRequest(
+    {
+      prPolicy: "always",
+      githubInstalls: [{ installation: { installationId: 99 } }],
+      project: { id: "project-1" },
+      incident: {
+        id: "incident-2",
+        firstSeen: new Date("2026-08-11T14:02:03.000Z"),
+        service: "api",
+      },
+      agentRun: { id: "run-2" },
+      prBaseBranch: null,
+    } as unknown as AgentRunContext,
+    proposedPullRequest,
+    "session-2",
+    undefined,
+    {
+      listRepositories: async () => [
+        {
+          id: 123,
+          fullName: "acme/api",
+          private: false,
+          installation: { installationId: 99 } as never,
+        },
+      ],
+      downloadPatch: async () => ({
+        patch: "diff --git a/src/retries.ts b/src/retries.ts\n",
+        fileId: "file-2",
+      }),
+      findOverlappingOpenPullRequest: async (input) => {
+        overlapInput = input;
+        return {
+          incidentId: "incident-1",
+          url: "https://github.com/acme/api/pull/41",
+          prNumber: 41,
+          overlappingFiles: ["src/retries.ts"],
+        };
+      },
+      validatePatch: async () => {
+        validated = true;
+      },
+    },
+  );
+
+  assert.equal(prepared.ok, false);
+  if (prepared.ok) return;
+  assert.match(prepared.error, /pull\/41/);
+  assert.match(prepared.error, /src\/retries\.ts/);
+  assert.deepEqual(overlapInput?.changedFiles, ["src/retries.ts"]);
+  assert.equal(overlapInput?.currentIncidentFirstSeen.toISOString(), "2026-08-11T14:02:03.000Z");
+  assert.equal(validated, false);
+});
 
 test("preflight reconstructs a recorded entry before policy or provider checks", async () => {
   const prepared = await preflightProposedPullRequest(

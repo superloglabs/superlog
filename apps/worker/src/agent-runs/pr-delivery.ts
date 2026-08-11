@@ -7,7 +7,7 @@ import {
   reconcileAgentPullRequestProviderObservation,
   schema,
 } from "@superlog/db";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lte, ne, or } from "drizzle-orm";
 import { type AgentRunFindings, assembleAgentRunResult } from "../agent-outcome-tools.js";
 import {
   type AgentRunContext,
@@ -1113,12 +1113,113 @@ export type PreparedProposedPullRequest =
   | { kind: "recorded"; delivery: RecordedPullRequestDelivery }
   | { kind: "github_recovery" };
 
+export type OverlappingOpenPullRequest = {
+  incidentId: string;
+  url: string;
+  prNumber: number;
+  overlappingFiles: string[];
+};
+
+function normalizedChangedFiles(files: unknown): string[] {
+  if (!Array.isArray(files)) return [];
+  return [
+    ...new Set(
+      files
+        .filter((file): file is string => typeof file === "string")
+        .map((file) => file.trim().replace(/^(?:a|b)\//, ""))
+        .filter(Boolean),
+    ),
+  ].sort();
+}
+
+export function changedFilesFromUnifiedDiff(patch: string): string[] {
+  const files: string[] = [];
+  for (const match of patch.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)) {
+    const target = match[2]?.trim();
+    if (target) files.push(target);
+  }
+  return normalizedChangedFiles(files);
+}
+
+function changedFilesFromAgentRunResult(result: unknown, repoFullName: string): string[] {
+  if (!result || typeof result !== "object") return [];
+  const record = result as Record<string, unknown>;
+  const proposals = [
+    ...(record.pr && typeof record.pr === "object" ? [record.pr] : []),
+    ...(Array.isArray(record.prs) ? record.prs : []),
+  ];
+  return normalizedChangedFiles(
+    proposals.flatMap((proposal) => {
+      if (!proposal || typeof proposal !== "object") return [];
+      const pr = proposal as Record<string, unknown>;
+      const selectedRepo = pr.selectedRepoFullName ?? pr.repoFullName;
+      if (selectedRepo !== repoFullName) return [];
+      return Array.isArray(pr.changedFiles) ? pr.changedFiles : [];
+    }),
+  );
+}
+
+async function findOverlappingOpenPullRequest(input: {
+  projectId: string;
+  currentIncidentId: string;
+  currentIncidentFirstSeen: Date;
+  currentIncidentService: string | null;
+  repoFullName: string;
+  changedFiles: string[];
+}): Promise<OverlappingOpenPullRequest | null> {
+  if (input.changedFiles.length === 0) return null;
+  const groupingWindowMs = 15 * 60 * 1000;
+  const rows = await db
+    .select({
+      incidentId: schema.agentPullRequests.incidentId,
+      url: schema.agentPullRequests.url,
+      prNumber: schema.agentPullRequests.prNumber,
+      result: schema.agentRuns.result,
+    })
+    .from(schema.agentPullRequests)
+    .innerJoin(schema.agentRuns, eq(schema.agentRuns.id, schema.agentPullRequests.agentRunId))
+    .innerJoin(schema.incidents, eq(schema.incidents.id, schema.agentPullRequests.incidentId))
+    .where(
+      and(
+        eq(schema.incidents.projectId, input.projectId),
+        ne(schema.agentPullRequests.incidentId, input.currentIncidentId),
+        gte(
+          schema.incidents.firstSeen,
+          new Date(input.currentIncidentFirstSeen.getTime() - groupingWindowMs),
+        ),
+        lte(
+          schema.incidents.firstSeen,
+          new Date(input.currentIncidentFirstSeen.getTime() + groupingWindowMs),
+        ),
+        input.currentIncidentService
+          ? or(
+              eq(schema.incidents.service, input.currentIncidentService),
+              isNull(schema.incidents.service),
+            )
+          : undefined,
+        eq(schema.agentPullRequests.repoFullName, input.repoFullName),
+        eq(schema.agentPullRequests.state, "open"),
+      ),
+    )
+    .orderBy(desc(schema.agentPullRequests.createdAt));
+
+  const proposedFiles = new Set(input.changedFiles);
+  for (const row of rows) {
+    const overlappingFiles = changedFilesFromAgentRunResult(row.result, input.repoFullName).filter(
+      (file) => proposedFiles.has(file),
+    );
+    if (overlappingFiles.length > 0) return { ...row, overlappingFiles };
+  }
+  return null;
+}
+
 type ProposedPullRequestPreflightDependencies = {
   findRecordedDelivery: typeof findRecordedPullRequestDelivery;
   listRepositories: typeof listAccessibleGithubRepositories;
   findGithubDelivery: typeof findGithubPullRequestDelivery;
   downloadPatch: typeof downloadAgentPatchFile;
   validatePatch: typeof validateAgentPatchApplicability;
+  findOverlappingOpenPullRequest: typeof findOverlappingOpenPullRequest;
 };
 
 const proposedPullRequestPreflightDependencies: ProposedPullRequestPreflightDependencies = {
@@ -1127,6 +1228,7 @@ const proposedPullRequestPreflightDependencies: ProposedPullRequestPreflightDepe
   findGithubDelivery: findGithubPullRequestDelivery,
   downloadPatch: downloadAgentPatchFile,
   validatePatch: validateAgentPatchApplicability,
+  findOverlappingOpenPullRequest,
 };
 
 export async function preflightProposedPullRequest(
@@ -1136,6 +1238,7 @@ export async function preflightProposedPullRequest(
     branchName: string;
     baseBranch: string;
     patchFilePath: string;
+    changedFiles?: string[];
   },
   sessionId: string,
   deliveryIdentity?: PullRequestDeliveryIdentity,
@@ -1210,6 +1313,25 @@ export async function preflightProposedPullRequest(
     return {
       ok: false,
       error: `Failed to read ${pr.patchFilePath} (${err instanceof Error ? err.message : String(err)}).`,
+    };
+  }
+
+  const changedFiles = normalizedChangedFiles([
+    ...(pr.changedFiles ?? []),
+    ...changedFilesFromUnifiedDiff(patch),
+  ]);
+  const overlap = await dependencies.findOverlappingOpenPullRequest({
+    projectId: ctx.project.id,
+    currentIncidentId: ctx.incident.id,
+    currentIncidentFirstSeen: ctx.incident.firstSeen,
+    currentIncidentService: ctx.incident.service,
+    repoFullName: pr.repoFullName,
+    changedFiles,
+  });
+  if (overlap) {
+    return {
+      ok: false,
+      error: `Another open incident already has PR ${overlap.url} touching ${overlap.overlappingFiles.join(", ")}. Do not retry this proposal or open a competing PR; treat that PR as the existing remediation and report any additional findings there.`,
     };
   }
 

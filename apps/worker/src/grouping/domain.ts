@@ -53,7 +53,9 @@ export type GroupingCandidateIssue = {
   resourceAttrs?: ResourceAttrs;
   logAttrs?: Record<string, string> | null;
   stacktrace?: string | null;
+  firstSeen?: string;
   lastSeen: string;
+  eventCount?: number;
 };
 
 export type GroupingCandidateInvestigation = {
@@ -93,6 +95,10 @@ export type GroupingNewIssue = {
   message: string | null;
   topFrame: string | null;
   normalizedFrames: string[];
+  firstSeen: string;
+  lastSeen: string;
+  eventCount: number;
+  /** Backward-compatible alias for lastSeen used by older benchmark callers. */
   observedAt: string;
   stacktrace: string | null;
   traceId: string | null;
@@ -104,7 +110,11 @@ export type GroupingNewIssue = {
 
 export type GroupingVerdict =
   | { decision: "join"; incidentId: string; evidence: string }
-  | { decision: "standalone"; evidence: string | null; mechanicalFailure?: GroupingMechanicalFailure };
+  | {
+      decision: "standalone";
+      evidence: string | null;
+      mechanicalFailure?: GroupingMechanicalFailure;
+    };
 
 // A mechanical failure means the agent never reached a real verdict (loop
 // budget ran out, or the model replied with unparseable text). Callers must
@@ -283,9 +293,7 @@ function interpretVerdictPayload(
   }
   if (obj.decision !== "standalone") return null;
   const evidence =
-    typeof obj.evidence === "string" && obj.evidence.trim().length > 0
-      ? obj.evidence.trim()
-      : null;
+    typeof obj.evidence === "string" && obj.evidence.trim().length > 0 ? obj.evidence.trim() : null;
   return { decision: "standalone", evidence };
 }
 
@@ -299,9 +307,7 @@ export function parseDecisionToolInput(
   if (!input || typeof input !== "object") return null;
   const obj = input as Record<string, unknown>;
   const evidence =
-    typeof obj.evidence === "string" && obj.evidence.trim().length > 0
-      ? obj.evidence.trim()
-      : null;
+    typeof obj.evidence === "string" && obj.evidence.trim().length > 0 ? obj.evidence.trim() : null;
   if (obj.decision === "join") {
     const incidentId = typeof obj.incidentId === "string" ? obj.incidentId : "";
     if (
