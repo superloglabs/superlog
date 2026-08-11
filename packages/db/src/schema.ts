@@ -1455,6 +1455,7 @@ export const agentPullRequests = pgTable(
     branchName: text("branch_name").notNull(),
     baseBranch: text("base_branch").notNull(),
     headSha: text("head_sha"),
+    changedFiles: text("changed_files").array(),
     state: text("state").$type<AgentPrState>().notNull().default("open"),
     title: text("title"),
     mergedAt: timestamp("merged_at", { withTimezone: true }),

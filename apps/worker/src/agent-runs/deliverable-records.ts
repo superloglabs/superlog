@@ -355,6 +355,7 @@ export async function recordOpenedAgentPullRequest(
     branchName: string;
     baseBranch: string;
     headSha: string;
+    changedFiles?: string[];
     title: string;
     authorLogin: string | null;
     authorGithubId: number | null;
@@ -398,6 +399,7 @@ export async function recordOpenedAgentPullRequest(
         branchName: opts.branchName,
         baseBranch: opts.baseBranch,
         headSha: opts.headSha,
+        changedFiles: opts.changedFiles ?? null,
         state: opts.state,
         title: opts.title,
         mergedAt: opts.mergedAt,

@@ -241,6 +241,18 @@ test("recording an opened PR locks the incident before writing the canonical rec
   ]);
 });
 
+test("recording an opened PR makes its normalized changed files durable", async () => {
+  const { database, insertedPullRequest } = recordingPullRequestDb({ incidentStatus: "open" });
+
+  const result = await recordOpenedAgentPullRequest(
+    { ...openedPullRequest, changedFiles: ["src/retries.ts"] },
+    { database, recordCreatedMetric: async () => {} },
+  );
+
+  assert.equal(result.kind, "deliver");
+  assert.deepEqual(insertedPullRequest()?.changedFiles, ["src/retries.ts"]);
+});
+
 test("an opened PR and its per-entry delivery receipt commit under the same incident lock", async () => {
   const { database, calls } = recordingPullRequestDb({ incidentStatus: "open" });
 

@@ -1,0 +1,1 @@
+ALTER TABLE "agent_pull_requests" ADD COLUMN "changed_files" text[];

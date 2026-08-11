@@ -8,6 +8,7 @@ import {
   changedFilesFromUnifiedDiff,
   compensatePullRequestDelivery,
   deliverProposedPullRequest,
+  guardProposedPullRequestOverlap,
   preflightProposedPullRequest,
   publishPullRequestUpdateIfCurrent,
   pullRequestDeliveryIdentityForLegacyCompletion,
@@ -26,6 +27,75 @@ test("unified diff paths provide changed-file evidence when an agent omits metad
     ),
     ["src/retries.ts", "src/worker.ts"],
   );
+});
+
+test("changed-file evidence preserves real top-level a and b directories", () => {
+  assert.deepEqual(
+    changedFilesFromUnifiedDiff(
+      ["diff --git a/a/config.ts b/a/config.ts", "diff --git a/b/config.ts b/b/config.ts"].join(
+        "\n",
+      ),
+    ),
+    ["a/config.ts", "b/config.ts"],
+  );
+});
+
+test("overlap guard serializes shared files and lets only the first delivery proceed", async () => {
+  let queue = Promise.resolve();
+  let existing: {
+    incidentId: string;
+    url: string;
+    prNumber: number;
+    overlappingFiles: string[];
+  } | null = null;
+  let deliveries = 0;
+  const lockKeys: string[][] = [];
+  const input = {
+    projectId: "project-1",
+    currentIncidentId: "incident-2",
+    currentIncidentFirstSeen: new Date("2026-08-11T14:02:03.000Z"),
+    currentIncidentService: "api",
+    repoFullName: "acme/api",
+    changedFiles: ["a/config.ts"],
+  };
+  const attempt = () =>
+    guardProposedPullRequestOverlap(
+      input,
+      async () => {
+        deliveries += 1;
+        existing = {
+          incidentId: "incident-1",
+          url: "https://github.com/acme/api/pull/41",
+          prNumber: 41,
+          overlappingFiles: ["a/config.ts"],
+        };
+        return deliveries;
+      },
+      {
+        exclusive: async <T>(keys: readonly string[], task: () => Promise<T>) => {
+          lockKeys.push([...keys]);
+          const previous = queue;
+          let release = () => {};
+          queue = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          await previous;
+          try {
+            return await task();
+          } finally {
+            release();
+          }
+        },
+        findOverlap: async () => existing,
+      },
+    );
+
+  const results = await Promise.all([attempt(), attempt()]);
+
+  assert.equal(deliveries, 1);
+  assert.equal(results.filter((result) => result.ok).length, 1);
+  assert.equal(results.filter((result) => !result.ok).length, 1);
+  assert.deepEqual(lockKeys[0], ["agent-pr-overlap:project-1:acme/api:a/config.ts"]);
 });
 
 test("a stale run cannot publish pull request status", async () => {
@@ -517,6 +587,50 @@ test("preflight blocks a patch when another incident already has an open PR touc
   assert.deepEqual(overlapInput?.changedFiles, ["src/retries.ts"]);
   assert.equal(overlapInput?.currentIncidentFirstSeen.toISOString(), "2026-08-11T14:02:03.000Z");
   assert.equal(validated, false);
+});
+
+test("preflight persists diff-derived paths on the proposal for the durable run result", async () => {
+  const proposal = {
+    ...proposedPullRequest,
+    changedFiles: undefined,
+  };
+  const prepared = await preflightProposedPullRequest(
+    {
+      prPolicy: "always",
+      githubInstalls: [{ installation: { installationId: 99 } }],
+      project: { id: "project-1" },
+      incident: {
+        id: "incident-2",
+        firstSeen: new Date("2026-08-11T14:02:03.000Z"),
+        service: "api",
+      },
+      agentRun: { id: "run-2" },
+      prBaseBranch: null,
+    } as unknown as AgentRunContext,
+    proposal,
+    "session-2",
+    undefined,
+    {
+      listRepositories: async () => [
+        {
+          id: 123,
+          fullName: "acme/api",
+          private: false,
+          installation: { installationId: 99 } as never,
+        },
+      ],
+      downloadPatch: async () => ({
+        patch: "diff --git a/a/config.ts b/a/config.ts\n",
+        fileId: "file-2",
+      }),
+      findOverlappingOpenPullRequest: async () => null,
+      findCurrentOpenPullRequest: async () => undefined,
+      validatePatch: async () => {},
+    },
+  );
+
+  assert.equal(prepared.ok, true);
+  assert.deepEqual(proposal.changedFiles, ["a/config.ts"]);
 });
 
 test("preflight reconstructs a recorded entry before policy or provider checks", async () => {

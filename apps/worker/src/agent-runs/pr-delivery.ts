@@ -1,13 +1,14 @@
 import {
   type AgentPullRequestProviderObservation,
   type AgentRunResult,
+  type DB,
   createIncidentLifecycle,
   db,
   normalizePrBaseBranch,
   reconcileAgentPullRequestProviderObservation,
   schema,
 } from "@superlog/db";
-import { and, desc, eq, gte, isNull, lte, ne, or } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { type AgentRunFindings, assembleAgentRunResult } from "../agent-outcome-tools.js";
 import {
   type AgentRunContext,
@@ -525,6 +526,7 @@ export async function completeWithPullRequest(
         branchName: opened.branchName,
         baseBranch: opened.baseBranch,
         headSha: opened.headSha,
+        changedFiles: pr.changedFiles,
         title: prTitle,
         authorLogin: opened.authorLogin,
         authorGithubId: opened.authorGithubId,
@@ -1126,7 +1128,7 @@ function normalizedChangedFiles(files: unknown): string[] {
     ...new Set(
       files
         .filter((file): file is string => typeof file === "string")
-        .map((file) => file.trim().replace(/^(?:a|b)\//, ""))
+        .map((file) => file.trim())
         .filter(Boolean),
     ),
   ].sort();
@@ -1159,21 +1161,25 @@ function changedFilesFromAgentRunResult(result: unknown, repoFullName: string): 
   );
 }
 
-async function findOverlappingOpenPullRequest(input: {
-  projectId: string;
-  currentIncidentId: string;
-  currentIncidentFirstSeen: Date;
-  currentIncidentService: string | null;
-  repoFullName: string;
-  changedFiles: string[];
-}): Promise<OverlappingOpenPullRequest | null> {
+async function findOverlappingOpenPullRequest(
+  input: {
+    projectId: string;
+    currentIncidentId: string;
+    currentIncidentFirstSeen: Date;
+    currentIncidentService: string | null;
+    repoFullName: string;
+    changedFiles: string[];
+  },
+  database: Pick<DB, "select"> = db,
+): Promise<OverlappingOpenPullRequest | null> {
   if (input.changedFiles.length === 0) return null;
   const groupingWindowMs = 15 * 60 * 1000;
-  const rows = await db
+  const rows = await database
     .select({
       incidentId: schema.agentPullRequests.incidentId,
       url: schema.agentPullRequests.url,
       prNumber: schema.agentPullRequests.prNumber,
+      changedFiles: schema.agentPullRequests.changedFiles,
       result: schema.agentRuns.result,
     })
     .from(schema.agentPullRequests)
@@ -1205,12 +1211,74 @@ async function findOverlappingOpenPullRequest(input: {
 
   const proposedFiles = new Set(input.changedFiles);
   for (const row of rows) {
-    const overlappingFiles = changedFilesFromAgentRunResult(row.result, input.repoFullName).filter(
-      (file) => proposedFiles.has(file),
-    );
+    const existingFiles = normalizedChangedFiles([
+      ...(row.changedFiles ?? []),
+      ...changedFilesFromAgentRunResult(row.result, input.repoFullName),
+    ]);
+    const overlappingFiles = existingFiles.filter((file) => proposedFiles.has(file));
     if (overlappingFiles.length > 0) return { ...row, overlappingFiles };
   }
   return null;
+}
+
+export type PullRequestOverlapInput = Parameters<typeof findOverlappingOpenPullRequest>[0];
+
+export type PullRequestOverlapGuardDependencies = {
+  exclusive<T>(keys: readonly string[], task: () => Promise<T>): Promise<T>;
+  findOverlap(input: PullRequestOverlapInput): Promise<OverlappingOpenPullRequest | null>;
+};
+
+async function withPullRequestOverlapLocks<T>(
+  keys: readonly string[],
+  task: () => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    for (const key of [...new Set(keys)].sort()) {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+    }
+    return task();
+  });
+}
+
+const pullRequestOverlapGuardDependencies: PullRequestOverlapGuardDependencies = {
+  exclusive: withPullRequestOverlapLocks,
+  findOverlap: findOverlappingOpenPullRequest,
+};
+
+export async function guardProposedPullRequestOverlap<T>(
+  input: PullRequestOverlapInput,
+  task: () => Promise<T>,
+  dependencies: PullRequestOverlapGuardDependencies = pullRequestOverlapGuardDependencies,
+): Promise<{ ok: true; value: T } | { ok: false; overlap: OverlappingOpenPullRequest }> {
+  const lockKeys = normalizedChangedFiles(input.changedFiles).map(
+    (file) => `agent-pr-overlap:${input.projectId}:${input.repoFullName}:${file}`,
+  );
+  if (lockKeys.length === 0) return { ok: true, value: await task() };
+  return dependencies.exclusive(lockKeys, async () => {
+    const overlap = await dependencies.findOverlap(input);
+    if (overlap) return { ok: false, overlap };
+    return { ok: true, value: await task() };
+  });
+}
+
+function blockedByOverlappingPullRequest(
+  ctx: AgentRunContext,
+  overlap: OverlappingOpenPullRequest,
+): { ok: false; error: string } {
+  logger.error(
+    {
+      scope: "agent_run.pr_delivery.overlap",
+      current_incident_id: ctx.incident.id,
+      overlapping_incident_id: overlap.incidentId,
+      overlapping_pr_url: overlap.url,
+      overlapping_files: overlap.overlappingFiles,
+    },
+    "preflight blocked: nearby incident already has an open PR touching the same files",
+  );
+  return {
+    ok: false,
+    error: `Another open incident already has PR ${overlap.url} touching ${overlap.overlappingFiles.join(", ")}. Do not retry this proposal or open a competing PR; treat that PR as the existing remediation and report any additional findings there.`,
+  };
 }
 
 type ProposedPullRequestPreflightDependencies = {
@@ -1220,6 +1288,11 @@ type ProposedPullRequestPreflightDependencies = {
   downloadPatch: typeof downloadAgentPatchFile;
   validatePatch: typeof validateAgentPatchApplicability;
   findOverlappingOpenPullRequest: typeof findOverlappingOpenPullRequest;
+  findCurrentOpenPullRequest(input: {
+    incidentId: string;
+    repoFullName: string;
+    branchName: string;
+  }): Promise<{ branchName: string } | undefined>;
 };
 
 const proposedPullRequestPreflightDependencies: ProposedPullRequestPreflightDependencies = {
@@ -1229,6 +1302,17 @@ const proposedPullRequestPreflightDependencies: ProposedPullRequestPreflightDepe
   downloadPatch: downloadAgentPatchFile,
   validatePatch: validateAgentPatchApplicability,
   findOverlappingOpenPullRequest,
+  findCurrentOpenPullRequest: (input) =>
+    db.query.agentPullRequests.findFirst({
+      where: and(
+        eq(schema.agentPullRequests.incidentId, input.incidentId),
+        eq(schema.agentPullRequests.repoFullName, input.repoFullName),
+        eq(schema.agentPullRequests.branchName, input.branchName),
+        eq(schema.agentPullRequests.state, "open"),
+      ),
+      orderBy: [desc(schema.agentPullRequests.createdAt)],
+      columns: { branchName: true },
+    }),
 };
 
 export async function preflightProposedPullRequest(
@@ -1320,6 +1404,7 @@ export async function preflightProposedPullRequest(
     ...(pr.changedFiles ?? []),
     ...changedFilesFromUnifiedDiff(patch),
   ]);
+  pr.changedFiles = changedFiles;
   const overlap = await dependencies.findOverlappingOpenPullRequest({
     projectId: ctx.project.id,
     currentIncidentId: ctx.incident.id,
@@ -1328,21 +1413,12 @@ export async function preflightProposedPullRequest(
     repoFullName: pr.repoFullName,
     changedFiles,
   });
-  if (overlap) {
-    return {
-      ok: false,
-      error: `Another open incident already has PR ${overlap.url} touching ${overlap.overlappingFiles.join(", ")}. Do not retry this proposal or open a competing PR; treat that PR as the existing remediation and report any additional findings there.`,
-    };
-  }
+  if (overlap) return blockedByOverlappingPullRequest(ctx, overlap);
 
-  const existingPr = await db.query.agentPullRequests.findFirst({
-    where: and(
-      eq(schema.agentPullRequests.incidentId, ctx.incident.id),
-      eq(schema.agentPullRequests.repoFullName, pr.repoFullName),
-      eq(schema.agentPullRequests.branchName, pr.branchName),
-      eq(schema.agentPullRequests.state, "open"),
-    ),
-    orderBy: [desc(schema.agentPullRequests.createdAt)],
+  const existingPr = await dependencies.findCurrentOpenPullRequest({
+    incidentId: ctx.incident.id,
+    repoFullName: pr.repoFullName,
+    branchName: pr.branchName,
   });
   try {
     await dependencies.validatePatch({
@@ -1368,11 +1444,13 @@ export async function preflightProposedPullRequest(
 export type ProposedPullRequestDeliveryDependencies = {
   listRepositories(ctx: AgentRunContext): Promise<InstalledGithubRepo[]>;
   pushPatchToExistingPr: typeof pushPatchToExistingAgentPr;
+  guardOverlap: typeof guardProposedPullRequestOverlap;
 };
 
 const proposedPullRequestDeliveryDependencies: ProposedPullRequestDeliveryDependencies = {
   listRepositories: listAccessibleGithubRepositories,
   pushPatchToExistingPr: pushPatchToExistingAgentPr,
+  guardOverlap: guardProposedPullRequestOverlap,
 };
 
 export async function deliverProposedPullRequest(
@@ -1384,6 +1462,7 @@ export async function deliverProposedPullRequest(
     branchName: string;
     baseBranch: string;
     patchFilePath: string;
+    changedFiles?: string[];
   },
   sessionId: string,
   findings: AgentRunFindings | null,
@@ -1445,6 +1524,11 @@ export async function deliverProposedPullRequest(
     }
   }
   patch ??= "";
+  const changedFiles = normalizedChangedFiles([
+    ...(pr.changedFiles ?? []),
+    ...changedFilesFromUnifiedDiff(patch),
+  ]);
+  pr.changedFiles = changedFiles;
 
   const commitAuthor =
     repoMeta.installation.commitAuthorName && repoMeta.installation.commitAuthorEmail
@@ -1544,65 +1628,81 @@ export async function deliverProposedPullRequest(
     };
   }
 
-  let opened: Awaited<ReturnType<typeof openAgentRunPullRequest>>;
-  try {
-    opened = await openAgentRunPullRequest({
-      installationId: repoMeta.installation.installationId,
-      repositoryId: repoMeta.id,
+  const guarded = await dependencies.guardOverlap(
+    {
+      projectId: ctx.project.id,
+      currentIncidentId: ctx.incident.id,
+      currentIncidentFirstSeen: ctx.incident.firstSeen,
+      currentIncidentService: ctx.incident.service,
       repoFullName: pr.repoFullName,
-      patch,
-      branchName: pr.branchName,
-      baseBranch: resolvePullRequestBaseBranch(ctx, pr),
-      title: prTitle,
-      body: prBody,
-      commitAuthor,
-      ...(deliveryIdentity ? { deliveryId: deliveryIdentity.deliveryId } : {}),
-    });
-  } catch (err) {
-    return { ok: false, error: summarizePrOpenFailure(err) };
-  }
-
-  // The agent_pull_requests row is what the awaiting_events park, the PR
-  // webhooks, and same-branch follow-up pushes key on — an unrecorded PR is
-  // invisible to all of them, so recording must succeed before the tool can
-  // report success.
-  const reconciled = await reconcileGithubPullRequestMutation({
-    incidentId: ctx.incident.id,
-    agentRunId: ctx.agentRun.id,
-    ...(deliveryIdentity ? { deliveryIdentity } : {}),
-    pullRequest: {
-      repoFullName: pr.repoFullName,
-      branchName: opened.branchName,
-      prUrl: opened.prUrl,
-      prNumber: opened.prNumber,
-      prNodeId: opened.prNodeId,
+      changedFiles,
     },
-    installationId: repoMeta.installation.installationId,
-    fallbackInstallationIds: ctx.githubInstalls.map(
-      ({ installation }) => installation.installationId,
-    ),
-    canonicalRecordRequiredOnFailure: false,
-    reconcile: () =>
-      recordOpenedAgentPullRequest({
+    async () => {
+      let opened: Awaited<ReturnType<typeof openAgentRunPullRequest>>;
+      try {
+        opened = await openAgentRunPullRequest({
+          installationId: repoMeta.installation.installationId,
+          repositoryId: repoMeta.id,
+          repoFullName: pr.repoFullName,
+          patch,
+          branchName: pr.branchName,
+          baseBranch: resolvePullRequestBaseBranch(ctx, pr),
+          title: prTitle,
+          body: prBody,
+          commitAuthor,
+          ...(deliveryIdentity ? { deliveryId: deliveryIdentity.deliveryId } : {}),
+        });
+      } catch (err) {
+        return { kind: "open_failed" as const, error: summarizePrOpenFailure(err) };
+      }
+
+      // Keep the overlap locks until the provider mutation is durable. A
+      // concurrent proposal touching any of the same files waits, then sees
+      // this row instead of opening a competing PR.
+      const reconciled = await reconcileGithubPullRequestMutation({
         incidentId: ctx.incident.id,
         agentRunId: ctx.agentRun.id,
-        installationRowId: repoMeta.installation.id,
-        repoFullName: pr.repoFullName,
-        prNumber: opened.prNumber,
-        prNodeId: opened.prNodeId,
-        url: opened.prUrl,
-        branchName: opened.branchName,
-        baseBranch: opened.baseBranch,
-        headSha: opened.headSha,
-        title: prTitle,
-        authorLogin: opened.authorLogin,
-        authorGithubId: opened.authorGithubId,
-        authorAvatarUrl: opened.authorAvatarUrl,
-        state: opened.state,
-        mergedAt: opened.mergedAt,
         ...(deliveryIdentity ? { deliveryIdentity } : {}),
-      }),
-  });
+        pullRequest: {
+          repoFullName: pr.repoFullName,
+          branchName: opened.branchName,
+          prUrl: opened.prUrl,
+          prNumber: opened.prNumber,
+          prNodeId: opened.prNodeId,
+        },
+        installationId: repoMeta.installation.installationId,
+        fallbackInstallationIds: ctx.githubInstalls.map(
+          ({ installation }) => installation.installationId,
+        ),
+        canonicalRecordRequiredOnFailure: false,
+        reconcile: () =>
+          recordOpenedAgentPullRequest({
+            incidentId: ctx.incident.id,
+            agentRunId: ctx.agentRun.id,
+            installationRowId: repoMeta.installation.id,
+            repoFullName: pr.repoFullName,
+            prNumber: opened.prNumber,
+            prNodeId: opened.prNodeId,
+            url: opened.prUrl,
+            branchName: opened.branchName,
+            baseBranch: opened.baseBranch,
+            headSha: opened.headSha,
+            changedFiles,
+            title: prTitle,
+            authorLogin: opened.authorLogin,
+            authorGithubId: opened.authorGithubId,
+            authorAvatarUrl: opened.authorAvatarUrl,
+            state: opened.state,
+            mergedAt: opened.mergedAt,
+            ...(deliveryIdentity ? { deliveryIdentity } : {}),
+          }),
+      });
+      return { kind: "delivered" as const, opened, reconciled };
+    },
+  );
+  if (!guarded.ok) return blockedByOverlappingPullRequest(ctx, guarded.overlap);
+  if (guarded.value.kind === "open_failed") return { ok: false, error: guarded.value.error };
+  const { opened, reconciled } = guarded.value;
   if (!reconciled.ok) {
     logger.error(
       {
