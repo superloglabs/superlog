@@ -743,7 +743,7 @@ test("preflight reconstructs a recorded entry before policy or provider checks",
   });
 });
 
-test("preflight derives changed files for a pushed delivery before skipping patch validation", async () => {
+test("preflight recovers a pushed delivery without requiring the session patch", async () => {
   let downloaded = false;
   let validated = false;
   const proposal = { ...proposedPullRequest, changedFiles: undefined };
@@ -775,10 +775,7 @@ test("preflight derives changed files for a pushed delivery before skipping patc
       }),
       downloadPatch: async () => {
         downloaded = true;
-        return {
-          patch: "diff --git a/src/retries.ts b/src/retries.ts\n",
-          fileId: "file-1",
-        };
+        throw new Error("session patch expired");
       },
       validatePatch: async () => {
         validated = true;
@@ -787,8 +784,8 @@ test("preflight derives changed files for a pushed delivery before skipping patc
   );
 
   assert.deepEqual(prepared, { ok: true, prepared: { kind: "github_recovery" } });
-  assert.equal(downloaded, true);
-  assert.deepEqual(proposal.changedFiles, ["src/retries.ts"]);
+  assert.equal(downloaded, false);
+  assert.deepEqual(proposal.changedFiles, []);
   assert.equal(validated, false);
 });
 

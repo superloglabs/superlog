@@ -1605,7 +1605,6 @@ export async function preflightProposedPullRequest(
     };
   }
 
-  let recoveredOnGithub = false;
   if (deliveryIdentity) {
     try {
       const recovered = await dependencies.findGithubDelivery({
@@ -1616,7 +1615,10 @@ export async function preflightProposedPullRequest(
         baseBranch: (resolvePullRequestBaseBranch(ctx, pr) ?? pr.baseBranch.trim()) || "main",
         deliveryId: deliveryIdentity.deliveryId,
       });
-      recoveredOnGithub = recovered !== null;
+      if (recovered) {
+        pr.changedFiles = normalizedChangedFiles(pr.changedFiles ?? []);
+        return { ok: true, prepared: { kind: "github_recovery" } };
+      }
     } catch (err) {
       return {
         ok: false,
@@ -1646,7 +1648,16 @@ export async function preflightProposedPullRequest(
     ...changedFilesFromUnifiedDiff(patch),
   ]);
   pr.changedFiles = changedFiles;
-  if (recoveredOnGithub) return { ok: true, prepared: { kind: "github_recovery" } };
+  if (changedFiles.length === 0) {
+    logger.info(
+      {
+        scope: "agent_run.pr_delivery.preflight_overlap_skipped",
+        current_incident_id: ctx.incident.id,
+        repo_full_name: pr.repoFullName,
+      },
+      "preflight overlap check skipped: no changed files derived from proposal or patch",
+    );
+  }
   const overlap = await dependencies.findOverlappingOpenPullRequest({
     projectId: ctx.project.id,
     currentIncidentId: ctx.incident.id,
