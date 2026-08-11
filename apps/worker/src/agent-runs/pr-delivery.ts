@@ -77,11 +77,7 @@ const pullRequestOverlapGuardCounter = pullRequestDeliveryMeter.createCounter(
   },
 );
 
-type PullRequestOverlapGuardMetricReason =
-  | "overlap"
-  | "no_changed_files"
-  | "normalization_dropped"
-  | "bypass";
+type PullRequestOverlapGuardMetricReason = "overlap" | "no_changed_files" | "normalization_dropped";
 type PullRequestOverlapGuardCounter = {
   add(value: number, attributes: { reason: PullRequestOverlapGuardMetricReason }): void;
 };
@@ -1529,9 +1525,7 @@ export async function guardProposedPullRequestOverlap<T>(
         "overlap guard skipped: no changed files provided",
       );
     }
-    const value = await task();
-    recordPullRequestOverlapGuardMetric("bypass");
-    return { ok: true, value };
+    return { ok: true, value: await task() };
   }
   return dependencies.exclusive(lockKeys, async () => {
     const overlap = await dependencies.findOverlap(input);

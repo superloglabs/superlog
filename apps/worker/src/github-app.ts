@@ -537,6 +537,30 @@ export async function createGithubWriteToken(
   });
 }
 
+export function githubPullRequestDeliveryReadTokenScope(
+  installationId: number,
+  repositoryId?: number,
+): {
+  installationId: number;
+  repositoryIds?: number[];
+  permissions: Record<string, GithubPermission>;
+} {
+  return {
+    installationId,
+    repositoryIds: repositoryId ? [repositoryId] : undefined,
+    permissions: { contents: "read", pull_requests: "read" },
+  };
+}
+
+async function createGithubPullRequestDeliveryReadToken(
+  installationId: number,
+  repositoryId?: number,
+): Promise<string> {
+  return createInstallationToken(
+    githubPullRequestDeliveryReadTokenScope(installationId, repositoryId),
+  );
+}
+
 // Narrow token for automated PR review: read source/diffs, publish inline
 // review comments, and read reactions on those comments. Exported through the
 // worker's GitHub boundary so background review jobs never handle app JWTs.
@@ -1131,7 +1155,10 @@ export async function findGithubPullRequestDeliveryChangedFiles(opts: {
   repoFullName: string;
   recovered: RecoveredPullRequestDelivery;
 }): Promise<string[]> {
-  const token = await createGithubReadToken(opts.installationId, opts.repositoryId);
+  const token = await createGithubPullRequestDeliveryReadToken(
+    opts.installationId,
+    opts.repositoryId,
+  );
   let files: GithubChangedFile[];
   if (opts.recovered.kind === "pull_request") {
     files = [];
@@ -1141,18 +1168,21 @@ export async function findGithubPullRequestDeliveryChangedFiles(opts: {
         { bearerToken: token },
       );
       files.push(...pageFiles);
-      if (pageFiles.length < 100) break;
       if (page === 30) {
-        logger.error(
-          {
-            scope: "github.pr_delivery.changed_files_page_cap",
-            repo_full_name: opts.repoFullName,
-            pr_number: opts.recovered.pullRequest.prNumber,
-            page_cap: 30,
-          },
-          "hit page cap fetching pull request changed files; overlap check may be incomplete",
-        );
+        if (pageFiles.length === 100) {
+          logger.error(
+            {
+              scope: "github.pr_delivery.changed_files_page_cap",
+              repo_full_name: opts.repoFullName,
+              pr_number: opts.recovered.pullRequest.prNumber,
+              page_cap: 30,
+            },
+            "hit page cap fetching pull request changed files; overlap check may be incomplete",
+          );
+        }
+        break;
       }
+      if (pageFiles.length < 100) break;
     }
   } else {
     files = [];
@@ -1163,18 +1193,21 @@ export async function findGithubPullRequestDeliveryChangedFiles(opts: {
       );
       const pageFiles = commit.files ?? [];
       files.push(...pageFiles);
-      if (pageFiles.length < 100) break;
       if (page === 30) {
-        logger.error(
-          {
-            scope: "github.pr_delivery.changed_files_page_cap",
-            repo_full_name: opts.repoFullName,
-            head_sha: opts.recovered.headSha,
-            page_cap: 30,
-          },
-          "hit page cap fetching commit changed files; overlap check may be incomplete",
-        );
+        if (pageFiles.length === 100) {
+          logger.error(
+            {
+              scope: "github.pr_delivery.changed_files_page_cap",
+              repo_full_name: opts.repoFullName,
+              head_sha: opts.recovered.headSha,
+              page_cap: 30,
+            },
+            "hit page cap fetching commit changed files; overlap check may be incomplete",
+          );
+        }
+        break;
       }
+      if (pageFiles.length < 100) break;
     }
   }
   return [

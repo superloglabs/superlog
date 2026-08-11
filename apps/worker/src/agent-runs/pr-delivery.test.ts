@@ -31,13 +31,11 @@ test("overlap guard metrics use bounded reason attributes", () => {
   recordPullRequestOverlapGuardMetric("overlap", counter);
   recordPullRequestOverlapGuardMetric("no_changed_files", counter);
   recordPullRequestOverlapGuardMetric("normalization_dropped", counter);
-  recordPullRequestOverlapGuardMetric("bypass", counter);
 
   assert.deepEqual(observations, [
     { value: 1, attributes: { reason: "overlap" } },
     { value: 1, attributes: { reason: "no_changed_files" } },
     { value: 1, attributes: { reason: "normalization_dropped" } },
-    { value: 1, attributes: { reason: "bypass" } },
   ]);
 });
 

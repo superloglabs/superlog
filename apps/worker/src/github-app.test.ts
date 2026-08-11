@@ -15,6 +15,7 @@ import {
   commitMessageHasPullRequestDelivery,
   findPullRequestDeliveryCommit,
   formatRetryBranchName,
+  githubPullRequestDeliveryReadTokenScope,
   githubPullRequestReviewTokenScope,
   isGitPushBranchCollision,
   isMissingRemoteBranchFailure,
@@ -104,6 +105,14 @@ test("PR review tokens are restricted to the queued repository", () => {
     installationId: 123,
     repositoryIds: [456],
     permissions: { contents: "read", pull_requests: "write" },
+  });
+});
+
+test("PR delivery recovery tokens can read contents and pull request files", () => {
+  assert.deepEqual(githubPullRequestDeliveryReadTokenScope(123, 456), {
+    installationId: 123,
+    repositoryIds: [456],
+    permissions: { contents: "read", pull_requests: "read" },
   });
 });
 
