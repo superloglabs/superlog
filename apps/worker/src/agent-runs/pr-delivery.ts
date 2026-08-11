@@ -77,7 +77,7 @@ const pullRequestOverlapGuardCounter = pullRequestDeliveryMeter.createCounter(
   },
 );
 
-type PullRequestOverlapGuardMetricReason = "overlap" | "no_changed_files";
+type PullRequestOverlapGuardMetricReason = "overlap" | "no_changed_files" | "bypass";
 type PullRequestOverlapGuardCounter = {
   add(value: number, attributes: { reason: PullRequestOverlapGuardMetricReason }): void;
 };
@@ -1530,7 +1530,9 @@ export async function guardProposedPullRequestOverlap<T>(
         "overlap guard skipped: no changed files provided",
       );
     }
-    return { ok: true, value: await task() };
+    const value = await task();
+    recordPullRequestOverlapGuardMetric("bypass");
+    return { ok: true, value };
   }
   return dependencies.exclusive(lockKeys, async () => {
     const overlap = await dependencies.findOverlap(input);
@@ -1649,8 +1651,9 @@ export async function preflightProposedPullRequest(
   const targetBaseBranch = resolvePullRequestTargetBaseBranch(ctx, pr, repoMeta.defaultBranch);
 
   if (deliveryIdentity) {
+    let recovered: Awaited<ReturnType<typeof findGithubPullRequestDelivery>>;
     try {
-      const recovered = await dependencies.findGithubDelivery({
+      recovered = await dependencies.findGithubDelivery({
         installationId: repoMeta.installation.installationId,
         repositoryId: repoMeta.id,
         repoFullName: pr.repoFullName,
@@ -1658,7 +1661,23 @@ export async function preflightProposedPullRequest(
         baseBranch: targetBaseBranch,
         deliveryId: deliveryIdentity.deliveryId,
       });
-      if (recovered) {
+    } catch (err) {
+      logger.error(
+        {
+          err,
+          scope: "agent_run.pr_delivery.recovery_lookup_error",
+          incident_id: ctx.incident.id,
+          repo_full_name: pr.repoFullName,
+        },
+        "failed to look up provider pull request delivery",
+      );
+      return {
+        ok: false,
+        error: `Cannot recover a prior PR delivery (${err instanceof Error ? err.message : String(err)}). Try again.`,
+      };
+    }
+    if (recovered) {
+      try {
         const recoveredFiles = await dependencies.findGithubDeliveryChangedFiles({
           installationId: repoMeta.installation.installationId,
           repositoryId: repoMeta.id,
@@ -1667,12 +1686,21 @@ export async function preflightProposedPullRequest(
         });
         pr.changedFiles = normalizedChangedFiles([...(pr.changedFiles ?? []), ...recoveredFiles]);
         return { ok: true, prepared: { kind: "github_recovery" } };
+      } catch (err) {
+        logger.error(
+          {
+            err,
+            scope: "agent_run.pr_delivery.recovery_changed_files_error",
+            incident_id: ctx.incident.id,
+            repo_full_name: pr.repoFullName,
+          },
+          "failed to load changed files while recovering provider pull request delivery",
+        );
+        return {
+          ok: false,
+          error: `Cannot recover a prior PR delivery (${err instanceof Error ? err.message : String(err)}). Try again.`,
+        };
       }
-    } catch (err) {
-      return {
-        ok: false,
-        error: `Cannot recover a prior PR delivery (${err instanceof Error ? err.message : String(err)}). Try again.`,
-      };
     }
   }
 

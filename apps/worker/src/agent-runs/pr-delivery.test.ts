@@ -30,10 +30,12 @@ test("overlap guard metrics use bounded reason attributes", () => {
 
   recordPullRequestOverlapGuardMetric("overlap", counter);
   recordPullRequestOverlapGuardMetric("no_changed_files", counter);
+  recordPullRequestOverlapGuardMetric("bypass", counter);
 
   assert.deepEqual(observations, [
     { value: 1, attributes: { reason: "overlap" } },
     { value: 1, attributes: { reason: "no_changed_files" } },
+    { value: 1, attributes: { reason: "bypass" } },
   ]);
 });
 
@@ -817,6 +819,50 @@ test("preflight recovers a pushed delivery without requiring the session patch",
   assert.equal(downloaded, false);
   assert.deepEqual(proposal.changedFiles, ["src/retries.ts"]);
   assert.equal(validated, false);
+});
+
+test("preflight returns a structured retry when recovered changed files cannot be loaded", async () => {
+  const prepared = await preflightProposedPullRequest(
+    {
+      prPolicy: "always",
+      githubInstalls: [{ installation: { installationId: 99 } }],
+      incident: { id: "incident-1" },
+      agentRun: { id: "run-1" },
+      prBaseBranch: null,
+    } as unknown as AgentRunContext,
+    { ...proposedPullRequest, changedFiles: undefined },
+    "session-1",
+    deliveryIdentity,
+    {
+      findRecordedDelivery: async () => null,
+      listRepositories: async () => [
+        {
+          id: 123,
+          fullName: "acme/api",
+          private: false,
+          defaultBranch: "main",
+          installation: { installationId: 99 } as never,
+        },
+      ],
+      findGithubDelivery: async () => ({
+        kind: "branch",
+        branchName: "ash/fix-api-retry-d4e5f607",
+        headSha: "abc123",
+        baseBranch: "main",
+      }),
+      findGithubDeliveryChangedFiles: async () => {
+        throw new Error("provider files unavailable");
+      },
+      downloadPatch: async () => {
+        throw new Error("patch download must not run");
+      },
+    },
+  );
+
+  assert.deepEqual(prepared, {
+    ok: false,
+    error: "Cannot recover a prior PR delivery (provider files unavailable). Try again.",
+  });
 });
 
 test("delivery returns a recorded entry without repeating provider side effects", async () => {
