@@ -31,11 +31,13 @@ test("overlap guard metrics use bounded reason attributes", () => {
   recordPullRequestOverlapGuardMetric("overlap", counter);
   recordPullRequestOverlapGuardMetric("no_changed_files", counter);
   recordPullRequestOverlapGuardMetric("normalization_dropped", counter);
+  recordPullRequestOverlapGuardMetric("no_overlap", counter);
 
   assert.deepEqual(observations, [
-    { value: 1, attributes: { reason: "overlap" } },
-    { value: 1, attributes: { reason: "no_changed_files" } },
-    { value: 1, attributes: { reason: "normalization_dropped" } },
+    { value: 1, attributes: { reason: "overlap", outcome: "blocked" } },
+    { value: 1, attributes: { reason: "no_changed_files", outcome: "skipped" } },
+    { value: 1, attributes: { reason: "normalization_dropped", outcome: "skipped" } },
+    { value: 1, attributes: { reason: "no_overlap", outcome: "allowed" } },
   ]);
 });
 
@@ -136,7 +138,7 @@ test("legacy run results match fallback patches to the canonical PR branch", () 
       "acme/api",
       "run-1",
       "incident-2",
-      "superlog/fix-timeouts",
+      "ash/fix-timeouts",
     ),
     ["src/timeouts.ts"],
   );
@@ -158,6 +160,7 @@ test("overlap guard serializes shared files and lets only the first delivery pro
     currentIncidentFirstSeen: new Date("2026-08-11T14:02:03.000Z"),
     repoFullName: "acme/api",
     baseBranch: "main",
+    fallbackBaseBranch: null,
     changedFiles: ["a/config.ts"],
   };
   const attempt = () =>
@@ -645,7 +648,12 @@ const proposedPullRequest = {
 test("preflight blocks a patch when another incident already has an open PR touching the same file", async () => {
   let validated = false;
   let overlapInput:
-    | { changedFiles: string[]; currentIncidentFirstSeen: Date; baseBranch: string }
+    | {
+        changedFiles: string[];
+        currentIncidentFirstSeen: Date;
+        baseBranch: string;
+        fallbackBaseBranch: string | null;
+      }
     | undefined;
   const prepared = await preflightProposedPullRequest(
     {
@@ -658,7 +666,7 @@ test("preflight blocks a patch when another incident already has an open PR touc
         service: "api",
       },
       agentRun: { id: "run-2" },
-      prBaseBranch: null,
+      prBaseBranch: "release",
     } as unknown as AgentRunContext,
     proposedPullRequest,
     "session-2",
@@ -697,7 +705,8 @@ test("preflight blocks a patch when another incident already has an open PR touc
   assert.match(prepared.error, /pull\/41/);
   assert.match(prepared.error, /src\/retries\.ts/);
   assert.deepEqual(overlapInput?.changedFiles, ["src/retries.ts"]);
-  assert.equal(overlapInput?.baseBranch, "main");
+  assert.equal(overlapInput?.baseBranch, "release");
+  assert.equal(overlapInput?.fallbackBaseBranch, "main");
   assert.equal(overlapInput?.currentIncidentFirstSeen.toISOString(), "2026-08-11T14:02:03.000Z");
   assert.equal(validated, false);
 });

@@ -10,7 +10,7 @@ import {
   schema,
   withDatabaseAdvisoryLocks,
 } from "@superlog/db";
-import { and, desc, eq, gte, lte, ne } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, ne } from "drizzle-orm";
 import { type AgentRunFindings, assembleAgentRunResult } from "../agent-outcome-tools.js";
 import {
   type AgentRunContext,
@@ -77,16 +77,29 @@ const pullRequestOverlapGuardCounter = pullRequestDeliveryMeter.createCounter(
   },
 );
 
-type PullRequestOverlapGuardMetricReason = "overlap" | "no_changed_files" | "normalization_dropped";
+type PullRequestOverlapGuardMetricReason =
+  | "overlap"
+  | "no_changed_files"
+  | "normalization_dropped"
+  | "no_overlap";
+type PullRequestOverlapGuardMetricOutcome = "blocked" | "allowed" | "skipped";
 type PullRequestOverlapGuardCounter = {
-  add(value: number, attributes: { reason: PullRequestOverlapGuardMetricReason }): void;
+  add(
+    value: number,
+    attributes: {
+      reason: PullRequestOverlapGuardMetricReason;
+      outcome: PullRequestOverlapGuardMetricOutcome;
+    },
+  ): void;
 };
 
 export function recordPullRequestOverlapGuardMetric(
   reason: PullRequestOverlapGuardMetricReason,
   counter: PullRequestOverlapGuardCounter = pullRequestOverlapGuardCounter,
 ): void {
-  counter.add(1, { reason });
+  const outcome =
+    reason === "overlap" ? "blocked" : reason === "no_overlap" ? "allowed" : "skipped";
+  counter.add(1, { reason, outcome });
 }
 
 type PullRequestPublicationDependencies = {
@@ -370,6 +383,7 @@ export async function completeWithPullRequest(
           currentIncidentFirstSeen: ctx.incident.firstSeen,
           repoFullName: pr.selectedRepoFullName,
           baseBranch: existingPr.baseBranch,
+          fallbackBaseBranch: null,
           changedFiles: pr.changedFiles ?? [],
         },
         async () => {
@@ -542,6 +556,8 @@ export async function completeWithPullRequest(
       currentIncidentFirstSeen: ctx.incident.firstSeen,
       repoFullName: pr.selectedRepoFullName,
       baseBranch: targetBaseBranch,
+      fallbackBaseBranch:
+        targetBaseBranch === repoMeta.defaultBranch ? null : repoMeta.defaultBranch,
       changedFiles: pr.changedFiles ?? [],
     },
     async () => {
@@ -1344,14 +1360,16 @@ export function changedFilesFromAgentRunResult(
     const pr = proposal as Record<string, unknown>;
     return (pr.selectedRepoFullName ?? pr.repoFullName) === repoFullName;
   });
+  const normalizeBranchName = (branchName: string): string =>
+    branchName.startsWith("superlog/")
+      ? branchName
+      : `superlog/${branchName.replace(/^[^/]+\//, "")}`;
+  const normalizedCanonicalBranchName = normalizeBranchName(canonicalBranchName);
   const branchMatches = repositoryMatches.filter((proposal) => {
     const pr = proposal as Record<string, unknown>;
     if (typeof pr.branchName !== "string" || !pr.branchName.trim()) return false;
     const branchName = pr.branchName.trim();
-    const normalized = branchName.startsWith("superlog/")
-      ? branchName
-      : `superlog/${branchName.replace(/^[^/]+\//, "")}`;
-    return normalized === canonicalBranchName;
+    return normalizeBranchName(branchName) === normalizedCanonicalBranchName;
   });
   const matching =
     branchMatches.length > 0
@@ -1393,12 +1411,16 @@ async function findOverlappingOpenPullRequest(
     currentIncidentFirstSeen: Date;
     repoFullName: string;
     baseBranch: string;
+    fallbackBaseBranch: string | null;
     changedFiles: string[];
   },
   database: Pick<DB, "select"> = db,
 ): Promise<OverlappingOpenPullRequest | null> {
   if (input.changedFiles.length === 0) return null;
   const groupingWindowMs = 15 * 60 * 1000;
+  const baseBranches = [input.baseBranch, input.fallbackBaseBranch].filter(
+    (branch, index, all): branch is string => Boolean(branch) && all.indexOf(branch) === index,
+  );
   const rows = await database
     .select({
       incidentId: schema.agentPullRequests.incidentId,
@@ -1425,7 +1447,7 @@ async function findOverlappingOpenPullRequest(
           new Date(input.currentIncidentFirstSeen.getTime() + groupingWindowMs),
         ),
         eq(schema.agentPullRequests.repoFullName, input.repoFullName),
-        eq(schema.agentPullRequests.baseBranch, input.baseBranch),
+        inArray(schema.agentPullRequests.baseBranch, baseBranches),
         eq(schema.agentPullRequests.state, "open"),
       ),
     )
@@ -1530,6 +1552,7 @@ export async function guardProposedPullRequestOverlap<T>(
   return dependencies.exclusive(lockKeys, async () => {
     const overlap = await dependencies.findOverlap(input);
     if (overlap) return { ok: false, overlap };
+    recordPullRequestOverlapGuardMetric("no_overlap");
     return { ok: true, value: await task() };
   });
 }
@@ -1734,6 +1757,7 @@ export async function preflightProposedPullRequest(
     currentIncidentFirstSeen: ctx.incident.firstSeen,
     repoFullName: pr.repoFullName,
     baseBranch: targetBaseBranch,
+    fallbackBaseBranch: targetBaseBranch === repoMeta.defaultBranch ? null : repoMeta.defaultBranch,
     changedFiles,
   });
   if (overlap) return blockedByOverlappingPullRequest(ctx, overlap);
@@ -1892,6 +1916,7 @@ export async function deliverProposedPullRequest(
         currentIncidentFirstSeen: ctx.incident.firstSeen,
         repoFullName: pr.repoFullName,
         baseBranch: existingPr.baseBranch,
+        fallbackBaseBranch: null,
         changedFiles,
       },
       async () => {
@@ -2039,6 +2064,7 @@ export async function deliverProposedPullRequest(
     currentIncidentFirstSeen: ctx.incident.firstSeen,
     repoFullName: pr.repoFullName,
     baseBranch: targetBaseBranch,
+    fallbackBaseBranch: targetBaseBranch === repoMeta.defaultBranch ? null : repoMeta.defaultBranch,
     changedFiles,
   };
   if (prepared?.kind === "github_recovery") {
