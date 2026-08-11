@@ -82,14 +82,42 @@ test("legacy run results derive changed files from their persisted patch", () =>
       {
         pr: {
           selectedRepoFullName: "acme/api",
+          branchName: "fix-retries",
           patch: "diff --git a/src/retries.ts b/src/retries.ts\n",
         },
       },
       "acme/api",
       "run-1",
       "incident-2",
+      "superlog/fix-retries",
     ),
     ["src/retries.ts"],
+  );
+});
+
+test("legacy run results match fallback patches to the canonical PR branch", () => {
+  assert.deepEqual(
+    changedFilesFromAgentRunResult(
+      {
+        prs: [
+          {
+            repoFullName: "acme/api",
+            branchName: "fix-retries",
+            patch: "diff --git a/src/retries.ts b/src/retries.ts\n",
+          },
+          {
+            repoFullName: "acme/api",
+            branchName: "fix-timeouts",
+            patch: "diff --git a/src/timeouts.ts b/src/timeouts.ts\n",
+          },
+        ],
+      },
+      "acme/api",
+      "run-1",
+      "incident-2",
+      "superlog/fix-timeouts",
+    ),
+    ["src/timeouts.ts"],
   );
 });
 

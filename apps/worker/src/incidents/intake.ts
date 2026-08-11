@@ -222,7 +222,9 @@ async function ensureIncidentForIssueAttempt(
       // related issue already has an open incident, run the same grouping
       // pipeline as a first occurrence and join that incident instead. The
       // potentially slow LLM call stays outside the serialized section.
-      let grouping = await findMatchingIncident(issue, deps);
+      let grouping = await findMatchingIncident(issue, deps, {
+        includeLifetimeOccurrenceEvidence: false,
+      });
       let matched = grouping.match?.incident ?? null;
       const recurrenceKeys = [
         `recurrence:${previous.id}`,
@@ -490,7 +492,11 @@ async function followMergeChain(
   return current;
 }
 
-async function findMatchingIncident(issue: schema.Issue, deps: IntakeDeps): Promise<Grouping> {
+async function findMatchingIncident(
+  issue: schema.Issue,
+  deps: IntakeDeps,
+  opts: { includeLifetimeOccurrenceEvidence?: boolean } = {},
+): Promise<Grouping> {
   const heuristic = await findHeuristicMatchingIncident(issue, deps);
   if (heuristic) {
     return { match: heuristic, standaloneSource: null, standaloneReason: null, failedReason: null };
@@ -505,7 +511,7 @@ async function findMatchingIncident(issue: schema.Issue, deps: IntakeDeps): Prom
   }
   // Alert-episode issues go through LLM grouping like errors do: a breach can
   // be another manifestation of an incident opened by errors (or vice versa).
-  return findLlmMatchingIncident(issue, deps);
+  return findLlmMatchingIncident(issue, deps, opts);
 }
 
 async function findHeuristicMatchingIncident(
@@ -532,7 +538,11 @@ async function findSameTraceMatchingIncident(
   return findSameTraceIncidentMatch(issue, candidates, linked);
 }
 
-async function findLlmMatchingIncident(issue: schema.Issue, deps: IntakeDeps): Promise<Grouping> {
+async function findLlmMatchingIncident(
+  issue: schema.Issue,
+  deps: IntakeDeps,
+  opts: { includeLifetimeOccurrenceEvidence?: boolean } = {},
+): Promise<Grouping> {
   const candidates = await deps.repo.findOpenIncidentCandidates(issue, { filterService: false });
   if (candidates.length === 0) {
     return {
@@ -575,7 +585,7 @@ async function findLlmMatchingIncident(issue: schema.Issue, deps: IntakeDeps): P
       projectName: project?.name ?? issue.projectId,
       orgId: project?.orgId ?? "",
       projectId: issue.projectId,
-      newIssue: groupingIssueInput(issue),
+      newIssue: groupingIssueInput(issue, opts),
       candidates: groupingCandidates,
     });
     if (verdict.decision === "join") {

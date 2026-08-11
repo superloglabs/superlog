@@ -1298,6 +1298,7 @@ export function changedFilesFromAgentRunResult(
   repoFullName: string,
   agentRunId: string,
   currentIncidentId: string,
+  canonicalBranchName: string,
 ): string[] {
   if (!result || typeof result !== "object") return [];
   const record = result as Record<string, unknown>;
@@ -1305,11 +1306,26 @@ export function changedFilesFromAgentRunResult(
     ...(record.pr && typeof record.pr === "object" ? [record.pr] : []),
     ...(Array.isArray(record.prs) ? record.prs : []),
   ];
-  const matching = proposals.filter((proposal) => {
+  const repositoryMatches = proposals.filter((proposal) => {
     if (!proposal || typeof proposal !== "object") return false;
     const pr = proposal as Record<string, unknown>;
     return (pr.selectedRepoFullName ?? pr.repoFullName) === repoFullName;
   });
+  const branchMatches = repositoryMatches.filter((proposal) => {
+    const pr = proposal as Record<string, unknown>;
+    if (typeof pr.branchName !== "string" || !pr.branchName.trim()) return false;
+    const branchName = pr.branchName.trim();
+    const normalized = branchName.startsWith("superlog/")
+      ? branchName
+      : `superlog/${branchName.replace(/^[^/]+\//, "")}`;
+    return normalized === canonicalBranchName;
+  });
+  const matching =
+    branchMatches.length > 0
+      ? branchMatches
+      : repositoryMatches.length === 1
+        ? repositoryMatches
+        : [];
   if (proposals.length > 0 && matching.length === 0) {
     logger.error(
       {
@@ -1317,8 +1333,9 @@ export function changedFilesFromAgentRunResult(
         current_incident_id: currentIncidentId,
         agent_run_id: agentRunId,
         repo_full_name: repoFullName,
+        canonical_branch_name: canonicalBranchName,
       },
-      "agent run PR metadata did not match the canonical pull request repository",
+      "agent run PR metadata did not match the canonical pull request coordinates",
     );
   }
   return normalizedChangedFiles(
@@ -1354,6 +1371,7 @@ async function findOverlappingOpenPullRequest(
       changedFiles: schema.agentPullRequests.changedFiles,
       agentRunId: schema.agentRuns.id,
       result: schema.agentRuns.result,
+      branchName: schema.agentPullRequests.branchName,
     })
     .from(schema.agentPullRequests)
     .innerJoin(schema.agentRuns, eq(schema.agentRuns.id, schema.agentPullRequests.agentRunId))
@@ -1392,6 +1410,7 @@ async function findOverlappingOpenPullRequest(
           input.repoFullName,
           row.agentRunId,
           input.currentIncidentId,
+          row.branchName,
         );
     if (!row.changedFiles?.length && fallbackFiles.length === 0) {
       logger.info(

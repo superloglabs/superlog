@@ -96,8 +96,12 @@ export function sampleResourceAttrs(sample: IssueSample | null): Record<string, 
   return Object.keys(out).length ? out : null;
 }
 
-export function groupingIssueInput(issue: schema.Issue): GroupingNewIssue {
+export function groupingIssueInput(
+  issue: schema.Issue,
+  opts: { includeLifetimeOccurrenceEvidence?: boolean } = {},
+): GroupingNewIssue {
   const sample = issueSample(issue);
+  const includeLifetimeOccurrenceEvidence = opts.includeLifetimeOccurrenceEvidence !== false;
   return {
     id: issue.id,
     title: issue.title,
@@ -106,9 +110,9 @@ export function groupingIssueInput(issue: schema.Issue): GroupingNewIssue {
     message: compactDiagnosticText(issue.message),
     topFrame: issue.topFrame,
     normalizedFrames: issue.normalizedFrames ?? [],
-    firstSeen: issue.firstSeen.toISOString(),
+    ...(includeLifetimeOccurrenceEvidence ? { firstSeen: issue.firstSeen.toISOString() } : {}),
     lastSeen: issue.lastSeen.toISOString(),
-    eventCount: issue.eventCount,
+    ...(includeLifetimeOccurrenceEvidence ? { eventCount: issue.eventCount } : {}),
     observedAt: issue.lastSeen.toISOString(),
     stacktrace: sampleStacktrace(sample),
     traceId: sample?.traceId ?? null,

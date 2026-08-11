@@ -95,9 +95,9 @@ export type GroupingNewIssue = {
   message: string | null;
   topFrame: string | null;
   normalizedFrames: string[];
-  firstSeen: string;
+  firstSeen?: string;
   lastSeen: string;
-  eventCount: number;
+  eventCount?: number;
   /** Backward-compatible alias for lastSeen used by older benchmark callers. */
   observedAt: string;
   stacktrace: string | null;

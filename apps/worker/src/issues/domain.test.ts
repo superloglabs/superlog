@@ -96,6 +96,16 @@ test("sampleResourceAttrs keeps distinct long attribute keys distinct", () => {
   assert.ok(Object.keys(compacted ?? {}).every((key) => key.length <= 120));
 });
 
+test("groupingIssueInput omits lifetime occurrence evidence for a recurrence", () => {
+  const input = groupingIssueInput(makeIssue(["svc/a.ts"]), {
+    includeLifetimeOccurrenceEvidence: false,
+  });
+
+  assert.equal("firstSeen" in input, false);
+  assert.equal("eventCount" in input, false);
+  assert.equal(input.lastSeen, "2026-07-17T10:05:00.000Z");
+});
+
 test("groupingIssueInput and buildGroupingCandidate keep LLM input shape explicit", () => {
   const issue = {
     ...makeIssue(["svc/a.ts"]),
