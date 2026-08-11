@@ -1550,10 +1550,25 @@ export async function guardProposedPullRequestOverlap<T>(
     return { ok: true, value: await task() };
   }
   return dependencies.exclusive(lockKeys, async () => {
-    const overlap = await dependencies.findOverlap(input);
+    let overlap: OverlappingOpenPullRequest | null;
+    try {
+      overlap = await dependencies.findOverlap(input);
+    } catch (err) {
+      logger.error(
+        {
+          err,
+          scope: "agent_run.pr_delivery.overlap_query_error",
+          current_incident_id: input.currentIncidentId,
+          repo_full_name: input.repoFullName,
+        },
+        "pull request overlap query failed",
+      );
+      throw err;
+    }
     if (overlap) return { ok: false, overlap };
+    const value = await task();
     recordPullRequestOverlapGuardMetric("no_overlap");
-    return { ok: true, value: await task() };
+    return { ok: true, value };
   });
 }
 
