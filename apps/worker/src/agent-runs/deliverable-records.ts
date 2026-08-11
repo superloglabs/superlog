@@ -429,6 +429,18 @@ export async function recordOpenedAgentPullRequest(
       deliveredState: opts.state,
     });
 
+    if (decision.kind === "deliver" && row) {
+      await tx
+        .delete(schema.agentPullRequestOverlapClaims)
+        .where(
+          and(
+            eq(schema.agentPullRequestOverlapClaims.agentRunId, opts.agentRunId),
+            eq(schema.agentPullRequestOverlapClaims.repoFullName, opts.repoFullName),
+            eq(schema.agentPullRequestOverlapClaims.baseBranch, opts.baseBranch),
+          ),
+        );
+    }
+
     if (inserted[0] && row) {
       await tx
         .insert(schema.agentPrEvents)

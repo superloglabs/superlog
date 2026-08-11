@@ -1241,9 +1241,10 @@ export type PreparedProposedPullRequest =
 
 export type OverlappingOpenPullRequest = {
   incidentId: string;
-  url: string;
-  prNumber: number;
+  url: string | null;
+  prNumber: number | null;
   overlappingFiles: string[];
+  pendingClaim: boolean;
 };
 
 function normalizedChangedFiles(files: unknown): string[] {
@@ -1516,7 +1517,49 @@ async function findOverlappingOpenPullRequest(
     }
     const existingFiles = normalizedChangedFiles([...(row.changedFiles ?? []), ...fallbackFiles]);
     const overlappingFiles = existingFiles.filter((file) => proposedFiles.has(file));
-    if (overlappingFiles.length > 0) return { ...row, overlappingFiles };
+    if (overlappingFiles.length > 0) return { ...row, overlappingFiles, pendingClaim: false };
+  }
+
+  const claims = await database
+    .select({
+      incidentId: schema.agentPullRequestOverlapClaims.incidentId,
+      changedFiles: schema.agentPullRequestOverlapClaims.changedFiles,
+    })
+    .from(schema.agentPullRequestOverlapClaims)
+    .innerJoin(
+      schema.incidents,
+      eq(schema.incidents.id, schema.agentPullRequestOverlapClaims.incidentId),
+    )
+    .where(
+      and(
+        eq(schema.agentPullRequestOverlapClaims.projectId, input.projectId),
+        ne(schema.agentPullRequestOverlapClaims.incidentId, input.currentIncidentId),
+        gte(
+          schema.incidents.firstSeen,
+          new Date(input.currentIncidentFirstSeen.getTime() - groupingWindowMs),
+        ),
+        lte(
+          schema.incidents.firstSeen,
+          new Date(input.currentIncidentFirstSeen.getTime() + groupingWindowMs),
+        ),
+        eq(schema.agentPullRequestOverlapClaims.repoFullName, input.repoFullName),
+        inArray(schema.agentPullRequestOverlapClaims.baseBranch, baseBranches),
+      ),
+    )
+    .orderBy(desc(schema.agentPullRequestOverlapClaims.createdAt));
+  for (const claim of claims) {
+    const overlappingFiles = normalizedChangedFiles(claim.changedFiles).filter((file) =>
+      proposedFiles.has(file),
+    );
+    if (overlappingFiles.length > 0) {
+      return {
+        incidentId: claim.incidentId,
+        url: null,
+        prNumber: null,
+        overlappingFiles,
+        pendingClaim: true,
+      };
+    }
   }
   return null;
 }
@@ -1526,6 +1569,8 @@ export type PullRequestOverlapInput = Parameters<typeof findOverlappingOpenPullR
 export type PullRequestOverlapGuardDependencies = {
   exclusive<T>(keys: readonly string[], task: () => Promise<T>): Promise<T>;
   findOverlap(input: PullRequestOverlapInput): Promise<OverlappingOpenPullRequest | null>;
+  claimOverlap(input: PullRequestOverlapInput): Promise<void>;
+  releaseClaim(input: PullRequestOverlapInput): Promise<void>;
 };
 
 async function withPullRequestOverlapLocks<T>(
@@ -1535,9 +1580,49 @@ async function withPullRequestOverlapLocks<T>(
   return withDatabaseAdvisoryLocks(keys, task);
 }
 
+async function claimPullRequestOverlap(input: PullRequestOverlapInput): Promise<void> {
+  await db
+    .insert(schema.agentPullRequestOverlapClaims)
+    .values({
+      projectId: input.projectId,
+      incidentId: input.currentIncidentId,
+      agentRunId: input.currentAgentRunId,
+      repoFullName: input.repoFullName,
+      baseBranch: input.baseBranch,
+      changedFiles: normalizedChangedFiles(input.changedFiles),
+    })
+    .onConflictDoUpdate({
+      target: [
+        schema.agentPullRequestOverlapClaims.agentRunId,
+        schema.agentPullRequestOverlapClaims.repoFullName,
+        schema.agentPullRequestOverlapClaims.baseBranch,
+      ],
+      set: {
+        projectId: input.projectId,
+        incidentId: input.currentIncidentId,
+        changedFiles: normalizedChangedFiles(input.changedFiles),
+        updatedAt: new Date(),
+      },
+    });
+}
+
+async function releasePullRequestOverlapClaim(input: PullRequestOverlapInput): Promise<void> {
+  await db
+    .delete(schema.agentPullRequestOverlapClaims)
+    .where(
+      and(
+        eq(schema.agentPullRequestOverlapClaims.agentRunId, input.currentAgentRunId),
+        eq(schema.agentPullRequestOverlapClaims.repoFullName, input.repoFullName),
+        eq(schema.agentPullRequestOverlapClaims.baseBranch, input.baseBranch),
+      ),
+    );
+}
+
 const pullRequestOverlapGuardDependencies: PullRequestOverlapGuardDependencies = {
   exclusive: withPullRequestOverlapLocks,
   findOverlap: findOverlappingOpenPullRequest,
+  claimOverlap: claimPullRequestOverlap,
+  releaseClaim: releasePullRequestOverlapClaim,
 };
 
 export async function guardProposedPullRequestOverlap<T>(
@@ -1558,6 +1643,7 @@ export async function guardProposedPullRequestOverlap<T>(
           current_incident_id: input.currentIncidentId,
           repo_full_name: input.repoFullName,
           raw_file_count: input.changedFiles.length,
+          guard_skipped: true,
         },
         "overlap guard skipped: changed files present but none survived normalization",
       );
@@ -1593,7 +1679,9 @@ export async function guardProposedPullRequestOverlap<T>(
     }
     if (overlap) return { ok: false, overlap };
     recordPullRequestOverlapGuardMetric("no_overlap");
+    await dependencies.claimOverlap(input);
     const value = await task();
+    await dependencies.releaseClaim(input);
     return { ok: true, value };
   });
 }
@@ -1610,13 +1698,16 @@ function blockedByOverlappingPullRequest(
       overlapping_incident_id: overlap.incidentId,
       overlapping_pr_url: overlap.url,
       overlapping_pr_number: overlap.prNumber,
+      overlapping_pending_claim: overlap.pendingClaim,
       overlapping_files: overlap.overlappingFiles,
     },
-    "preflight blocked: nearby incident already has an open PR touching the same files",
+    "preflight blocked: nearby incident already owns a pull request delivery touching the same files",
   );
   return {
     ok: false,
-    error: `Another open incident already has PR ${overlap.url} touching ${overlap.overlappingFiles.join(", ")}. Do not retry this proposal or open a competing PR; treat that PR as the existing remediation and report any additional findings there.`,
+    error: overlap.pendingClaim
+      ? `Another open incident already has a pending pull request delivery touching ${overlap.overlappingFiles.join(", ")}. Do not retry this proposal or open a competing PR; wait for that delivery to reconcile and report any additional findings on the existing incident.`
+      : `Another open incident already has PR ${overlap.url} touching ${overlap.overlappingFiles.join(", ")}. Do not retry this proposal or open a competing PR; treat that PR as the existing remediation and report any additional findings there.`,
   };
 }
 
@@ -2126,13 +2217,16 @@ export async function deliverProposedPullRequest(
       "processing provider pull request recovery without repeating the pre-mutation overlap check",
     );
   }
-  const guarded =
-    prepared?.kind === "github_recovery"
-      ? {
-          ok: true as const,
-          value: await openAndReconcile(),
-        }
-      : await dependencies.guardOverlap(overlapInput, openAndReconcile);
+  let guarded:
+    | { ok: true; value: Awaited<ReturnType<typeof openAndReconcile>> }
+    | { ok: false; overlap: OverlappingOpenPullRequest };
+  if (prepared?.kind === "github_recovery") {
+    const value = await openAndReconcile();
+    await releasePullRequestOverlapClaim(overlapInput);
+    guarded = { ok: true, value };
+  } else {
+    guarded = await dependencies.guardOverlap(overlapInput, openAndReconcile);
+  }
   if (!guarded.ok) return blockedByOverlappingPullRequest(ctx, guarded.overlap);
   if (guarded.value.kind === "open_failed") return { ok: false, error: guarded.value.error };
   const { opened, reconciled } = guarded.value;

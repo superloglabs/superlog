@@ -159,6 +159,7 @@ test("overlap guard serializes shared files and lets only the first delivery pro
     url: string;
     prNumber: number;
     overlappingFiles: string[];
+    pendingClaim: boolean;
   } | null = null;
   let deliveries = 0;
   const lockKeys: string[][] = [];
@@ -182,6 +183,7 @@ test("overlap guard serializes shared files and lets only the first delivery pro
           url: "https://github.com/acme/api/pull/41",
           prNumber: 41,
           overlappingFiles: ["a/config.ts"],
+          pendingClaim: false,
         };
         return deliveries;
       },
@@ -201,6 +203,8 @@ test("overlap guard serializes shared files and lets only the first delivery pro
           }
         },
         findOverlap: async () => existing,
+        claimOverlap: async () => {},
+        releaseClaim: async () => {},
       },
     );
 
@@ -236,6 +240,8 @@ test("overlap guard preserves leading and trailing whitespace in Git paths", asy
         observedFiles = input.changedFiles;
         return null;
       },
+      claimOverlap: async () => {},
+      releaseClaim: async () => {},
     },
   );
 
@@ -245,6 +251,77 @@ test("overlap guard preserves leading and trailing whitespace in Git paths", asy
   ]);
   assert.deepEqual(observedFiles, [" config.ts ", "   "]);
   assert.deepEqual(guarded, { ok: true, value: "delivered" });
+});
+
+test("overlap guard persists a claim before mutation and clears it after reconciliation", async () => {
+  const events: string[] = [];
+  const input = {
+    projectId: "project-1",
+    currentIncidentId: "incident-2",
+    currentAgentRunId: "run-2",
+    currentIncidentFirstSeen: new Date("2026-08-11T14:02:03.000Z"),
+    repoFullName: "acme/api",
+    baseBranch: "main",
+    fallbackBaseBranch: null,
+    changedFiles: ["src/retries.ts"],
+  };
+
+  const guarded = await guardProposedPullRequestOverlap(
+    input,
+    async () => {
+      events.push("provider.mutate");
+      events.push("canonical.record");
+      return "delivered";
+    },
+    {
+      exclusive: async (_keys, task) => task(),
+      findOverlap: async () => null,
+      claimOverlap: async () => {
+        events.push("claim.persist");
+      },
+      releaseClaim: async () => {
+        events.push("claim.release");
+      },
+    },
+  );
+
+  assert.deepEqual(events, [
+    "claim.persist",
+    "provider.mutate",
+    "canonical.record",
+    "claim.release",
+  ]);
+  assert.deepEqual(guarded, { ok: true, value: "delivered" });
+});
+
+test("overlap guard retains its durable claim when delivery exits ambiguously", async () => {
+  let released = false;
+  await assert.rejects(() =>
+    guardProposedPullRequestOverlap(
+      {
+        projectId: "project-1",
+        currentIncidentId: "incident-2",
+        currentAgentRunId: "run-2",
+        currentIncidentFirstSeen: new Date("2026-08-11T14:02:03.000Z"),
+        repoFullName: "acme/api",
+        baseBranch: "main",
+        fallbackBaseBranch: null,
+        changedFiles: ["src/retries.ts"],
+      },
+      async () => {
+        throw new PullRequestDeliveryRecoveryPendingError("provider outcome unknown");
+      },
+      {
+        exclusive: async (_keys, task) => task(),
+        findOverlap: async () => null,
+        claimOverlap: async () => {},
+        releaseClaim: async () => {
+          released = true;
+        },
+      },
+    ),
+  );
+  assert.equal(released, false);
 });
 
 test("a stale run cannot publish pull request status", async () => {
@@ -736,6 +813,7 @@ test("preflight blocks a patch when another incident already has an open PR touc
           url: "https://github.com/acme/api/pull/41",
           prNumber: 41,
           overlappingFiles: ["src/retries.ts"],
+          pendingClaim: false,
         };
       },
       findCurrentOpenPullRequest: async () => undefined,

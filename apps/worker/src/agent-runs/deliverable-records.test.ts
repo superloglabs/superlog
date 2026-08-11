@@ -128,6 +128,12 @@ function recordingPullRequestDb(opts: {
         },
       };
     },
+    delete(table: unknown) {
+      assert.equal(table, schema.agentPullRequestOverlapClaims);
+      return {
+        async where() {},
+      };
+    },
     query: {
       incidentEvents: {
         async findFirst() {
