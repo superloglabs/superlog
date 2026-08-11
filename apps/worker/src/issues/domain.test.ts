@@ -82,6 +82,20 @@ test("sampleResourceAttrs prioritizes grouping keys and bounds untrusted telemet
   assert.ok(JSON.stringify(compacted).length < 10_000);
 });
 
+test("sampleResourceAttrs keeps distinct long attribute keys distinct", () => {
+  const sharedPrefix = "custom.attribute.".repeat(10);
+  const compacted = sampleResourceAttrs({
+    resourceAttrs: {
+      [`${sharedPrefix}primary`]: "one",
+      [`${sharedPrefix}replica`]: "two",
+    },
+  } as never);
+
+  assert.equal(Object.keys(compacted ?? {}).length, 2);
+  assert.deepEqual(new Set(Object.values(compacted ?? {})), new Set(["one", "two"]));
+  assert.ok(Object.keys(compacted ?? {}).every((key) => key.length <= 120));
+});
+
 test("groupingIssueInput and buildGroupingCandidate keep LLM input shape explicit", () => {
   const issue = {
     ...makeIssue(["svc/a.ts"]),

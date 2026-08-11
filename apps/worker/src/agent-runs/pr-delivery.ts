@@ -1195,12 +1195,29 @@ export function changedFilesFromUnifiedDiff(patch: string): string[] {
     if (source.startsWith("a/")) files.push(source.slice(2));
     if (target.startsWith("b/")) files.push(target.slice(2));
   }
+  for (const match of patch.matchAll(/^(?:rename|copy) (?:from|to) (.+)$/gm)) {
+    const path = match[1] ? decodeGitPathToken(match[1]) : null;
+    if (path) files.push(path);
+  }
   return normalizedChangedFiles(files);
 }
 
 function parseGitDiffHeaderPaths(line: string): [string, string] | null {
   const prefix = "diff --git ";
   if (!line.startsWith(prefix)) return null;
+  if (line[prefix.length] !== '"') {
+    const candidates: [string, string][] = [];
+    let boundary = line.indexOf(" b/", prefix.length);
+    while (boundary !== -1) {
+      candidates.push([line.slice(prefix.length, boundary), line.slice(boundary + 1)]);
+      boundary = line.indexOf(" b/", boundary + 1);
+    }
+    const matching = candidates.filter(
+      ([source, target]) => source.startsWith("a/") && source.slice(2) === target.slice(2),
+    );
+    if (matching.length === 1) return matching[0] ?? null;
+    return candidates.length === 1 ? (candidates[0] ?? null) : null;
+  }
   const tokens: string[] = [];
   let offset = prefix.length;
   while (tokens.length < 2) {

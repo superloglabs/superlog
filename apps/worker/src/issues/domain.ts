@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { IssueSample, schema } from "@superlog/db";
 import type { GroupingCandidateIncident, GroupingNewIssue } from "../grouping.js";
 import { compactDiagnosticText } from "../grouping/domain.js";
@@ -68,7 +69,14 @@ const GROUPING_RESOURCE_ATTR_KEYS = [
   "vcs.repository.url.full",
 ] as const;
 const GROUPING_RESOURCE_ATTR_COUNT_CAP = 20;
+const GROUPING_RESOURCE_ATTR_KEY_CAP = 120;
 const GROUPING_RESOURCE_ATTR_VALUE_CAP = 300;
+
+function compactResourceAttrKey(key: string): string {
+  if (key.length <= GROUPING_RESOURCE_ATTR_KEY_CAP) return key;
+  const digest = createHash("sha256").update(key).digest("hex").slice(0, 12);
+  return `${key.slice(0, GROUPING_RESOURCE_ATTR_KEY_CAP - digest.length - 1)}~${digest}`;
+}
 
 export function sampleResourceAttrs(sample: IssueSample | null): Record<string, string> | null {
   const attrs = sample?.resourceAttrs;
@@ -83,7 +91,7 @@ export function sampleResourceAttrs(sample: IssueSample | null): Record<string, 
   });
   const out: Record<string, string> = {};
   for (const [key, value] of entries.slice(0, GROUPING_RESOURCE_ATTR_COUNT_CAP)) {
-    out[key.slice(0, 120)] = String(value).slice(0, GROUPING_RESOURCE_ATTR_VALUE_CAP);
+    out[compactResourceAttrKey(key)] = String(value).slice(0, GROUPING_RESOURCE_ATTR_VALUE_CAP);
   }
   return Object.keys(out).length ? out : null;
 }

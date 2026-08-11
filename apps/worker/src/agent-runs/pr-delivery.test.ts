@@ -54,6 +54,27 @@ test("changed-file evidence includes both sides of a rename", () => {
   ]);
 });
 
+test("changed-file evidence preserves unquoted filenames containing spaces", () => {
+  assert.deepEqual(
+    changedFilesFromUnifiedDiff("diff --git a/src/retry policy.ts b/src/retry policy.ts"),
+    ["src/retry policy.ts"],
+  );
+});
+
+test("changed-file evidence preserves ambiguous spaced paths across a rename", () => {
+  assert.deepEqual(
+    changedFilesFromUnifiedDiff(
+      [
+        "diff --git a/foo b/old name.ts b/foo b/new name.ts",
+        "similarity index 100%",
+        "rename from foo b/old name.ts",
+        "rename to foo b/new name.ts",
+      ].join("\n"),
+    ),
+    ["foo b/new name.ts", "foo b/old name.ts"],
+  );
+});
+
 test("overlap guard serializes shared files and lets only the first delivery proceed", async () => {
   let queue = Promise.resolve();
   let existing: {
