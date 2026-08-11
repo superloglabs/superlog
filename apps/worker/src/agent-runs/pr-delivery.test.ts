@@ -208,6 +208,41 @@ test("overlap guard serializes shared files and lets only the first delivery pro
   assert.deepEqual(lockKeys[0], ["agent-pr-overlap:project-1:acme/api:a/config.ts"]);
 });
 
+test("overlap guard preserves leading and trailing whitespace in Git paths", async () => {
+  let observedLockKeys: readonly string[] = [];
+  let observedFiles: string[] = [];
+  const guarded = await guardProposedPullRequestOverlap(
+    {
+      projectId: "project-1",
+      currentIncidentId: "incident-2",
+      currentAgentRunId: "run-2",
+      currentIncidentFirstSeen: new Date("2026-08-11T14:02:03.000Z"),
+      repoFullName: "acme/api",
+      baseBranch: "main",
+      fallbackBaseBranch: null,
+      changedFiles: [" config.ts ", "   "],
+    },
+    async () => "delivered",
+    {
+      exclusive: async (keys, task) => {
+        observedLockKeys = keys;
+        return task();
+      },
+      findOverlap: async (input) => {
+        observedFiles = input.changedFiles;
+        return null;
+      },
+    },
+  );
+
+  assert.deepEqual(observedLockKeys, [
+    "agent-pr-overlap:project-1:acme/api:   ",
+    "agent-pr-overlap:project-1:acme/api: config.ts ",
+  ]);
+  assert.deepEqual(observedFiles, [" config.ts ", "   "]);
+  assert.deepEqual(guarded, { ok: true, value: "delivered" });
+});
+
 test("a stale run cannot publish pull request status", async () => {
   const calls: string[] = [];
   const published = await publishPullRequestUpdateIfCurrent(

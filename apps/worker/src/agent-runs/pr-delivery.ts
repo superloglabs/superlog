@@ -1250,8 +1250,7 @@ function normalizedChangedFiles(files: unknown): string[] {
     ...new Set(
       files
         .filter((file): file is string => typeof file === "string")
-        .map((file) => file.trim())
-        .filter(Boolean),
+        .filter((file) => file.length > 0),
     ),
   ].sort();
 }
