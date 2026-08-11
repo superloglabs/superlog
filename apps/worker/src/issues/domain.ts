@@ -58,6 +58,36 @@ export function sampleLogAttrs(sample: IssueSample | null): Record<string, strin
   return Object.keys(out).length ? out : null;
 }
 
+const GROUPING_RESOURCE_ATTR_KEYS = [
+  "deployment.environment",
+  "deployment.environment.name",
+  "environment",
+  "service.name",
+  "service.namespace",
+  "service.version",
+  "vcs.repository.url.full",
+] as const;
+const GROUPING_RESOURCE_ATTR_COUNT_CAP = 20;
+const GROUPING_RESOURCE_ATTR_VALUE_CAP = 300;
+
+export function sampleResourceAttrs(sample: IssueSample | null): Record<string, string> | null {
+  const attrs = sample?.resourceAttrs;
+  if (!attrs) return null;
+  const priority = new Map<string, number>(
+    GROUPING_RESOURCE_ATTR_KEYS.map((key, index) => [key, index]),
+  );
+  const entries = Object.entries(attrs).sort(([left], [right]) => {
+    const leftPriority = priority.get(left) ?? GROUPING_RESOURCE_ATTR_KEYS.length;
+    const rightPriority = priority.get(right) ?? GROUPING_RESOURCE_ATTR_KEYS.length;
+    return leftPriority - rightPriority || left.localeCompare(right);
+  });
+  const out: Record<string, string> = {};
+  for (const [key, value] of entries.slice(0, GROUPING_RESOURCE_ATTR_COUNT_CAP)) {
+    out[key.slice(0, 120)] = String(value).slice(0, GROUPING_RESOURCE_ATTR_VALUE_CAP);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 export function groupingIssueInput(issue: schema.Issue): GroupingNewIssue {
   const sample = issueSample(issue);
   return {
@@ -76,7 +106,7 @@ export function groupingIssueInput(issue: schema.Issue): GroupingNewIssue {
     traceId: sample?.traceId ?? null,
     spanId: sample?.spanId ?? null,
     logAttrs: sampleLogAttrs(sample),
-    resourceAttrs: sample?.resourceAttrs ?? null,
+    resourceAttrs: sampleResourceAttrs(sample),
   };
 }
 
@@ -165,7 +195,7 @@ export function buildGroupingCandidate(
       normalizedFrames: representative.normalizedFrames ?? [],
       traceId: representative.lastSample?.traceId ?? null,
       spanId: representative.lastSample?.spanId ?? null,
-      resourceAttrs: representative.lastSample?.resourceAttrs ?? null,
+      resourceAttrs: sampleResourceAttrs(representative.lastSample),
     },
     // Full per-issue context (stack traces, code locations) so the agent can
     // compare root causes instead of message wording. Surfaced by
@@ -182,7 +212,7 @@ export function buildGroupingCandidate(
       spanId: row.lastSample?.spanId ?? null,
       logAttrs: sampleLogAttrs(row.lastSample),
       stacktrace: sampleStacktrace(row.lastSample),
-      resourceAttrs: row.lastSample?.resourceAttrs ?? null,
+      resourceAttrs: sampleResourceAttrs(row.lastSample),
       firstSeen: (row.firstSeen ?? row.lastSeen).toISOString(),
       lastSeen: row.lastSeen.toISOString(),
       eventCount: row.eventCount ?? 1,

@@ -9,6 +9,7 @@ import {
   findSameTraceIncidentMatch,
   groupingIssueInput,
   overlapCount,
+  sampleResourceAttrs,
 } from "./domain.js";
 
 test("overlapCount compares only the top five normalized frames", () => {
@@ -64,6 +65,21 @@ test("findSameTraceIncidentMatch returns null when the issue has no trace id", (
   const linked: LinkedIncidentIssue[] = [makeLinkedIssue("inc-1", ["svc/a.ts"])];
 
   assert.equal(findSameTraceIncidentMatch(issue, candidates, linked), null);
+});
+
+test("sampleResourceAttrs prioritizes grouping keys and bounds untrusted telemetry", () => {
+  const resourceAttrs = Object.fromEntries(
+    Array.from({ length: 100 }, (_, index) => [`custom.attribute.${index}`, "x".repeat(1_000)]),
+  );
+  resourceAttrs["deployment.environment.name"] = "production";
+  resourceAttrs["service.version"] = "v1.2.3";
+
+  const compacted = sampleResourceAttrs({ resourceAttrs } as never);
+
+  assert.equal(compacted?.["deployment.environment.name"], "production");
+  assert.equal(compacted?.["service.version"], "v1.2.3");
+  assert.ok(Object.keys(compacted ?? {}).length <= 20);
+  assert.ok(JSON.stringify(compacted).length < 10_000);
 });
 
 test("groupingIssueInput and buildGroupingCandidate keep LLM input shape explicit", () => {

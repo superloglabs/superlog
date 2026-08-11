@@ -31,14 +31,17 @@ function recordingPullRequestDb(opts: {
   pullRequestVisibleAfterIncidentLock?: boolean;
   recordedDeliveryVisibleAfterIncidentLock?: boolean;
   recordedDeliveryDetail?: Record<string, unknown>;
+  existingChangedFiles?: string[];
 }): {
   database: DB;
   calls: RecordedCall[];
   insertedPullRequest: () => Record<string, unknown> | null;
+  updatedPullRequest: () => Record<string, unknown> | null;
 } {
   const calls: RecordedCall[] = [];
   let incidentLocked = false;
   let insertedPullRequestValues: Record<string, unknown> | null = null;
+  let updatedPullRequestValues: Record<string, unknown> | null = null;
   const database = {
     select() {
       return {
@@ -104,6 +107,7 @@ function recordingPullRequestDb(opts: {
       assert.equal(table, schema.agentPullRequests);
       return {
         set(values: Record<string, unknown>) {
+          updatedPullRequestValues = values;
           return {
             where() {
               return {
@@ -144,6 +148,7 @@ function recordingPullRequestDb(opts: {
             id: "pr-record-1",
             incidentId: "incident-1",
             state: opts.canonicalState ?? "open",
+            changedFiles: opts.existingChangedFiles ?? null,
           };
         },
       },
@@ -159,6 +164,7 @@ function recordingPullRequestDb(opts: {
     database,
     calls,
     insertedPullRequest: () => insertedPullRequestValues,
+    updatedPullRequest: () => updatedPullRequestValues,
   };
 }
 
@@ -520,6 +526,28 @@ test("an existing PR update atomically records the exact delivery entry", async 
     "delivery_receipt.insert",
     "transaction.end",
   ]);
+});
+
+test("an existing PR update unions newly touched files into the canonical record", async () => {
+  const { database, updatedPullRequest } = recordingPullRequestDb({
+    incidentStatus: "open",
+    existingChangedFiles: ["src/a.ts"],
+  });
+
+  const result = await recordUpdatedAgentPullRequest(
+    {
+      incidentId: "incident-1",
+      agentPullRequestId: "pr-record-1",
+      repoFullName: "acme/api",
+      prNumber: 42,
+      headSha: "def456",
+      changedFiles: ["src/b.ts", "src/a.ts"],
+    },
+    { database },
+  );
+
+  assert.equal(result.kind, "deliver");
+  assert.deepEqual(updatedPullRequest()?.changedFiles, ["src/a.ts", "src/b.ts"]);
 });
 
 test("marking an aborted delivery closes its canonical record and records the transition", async () => {

@@ -264,6 +264,10 @@ export async function completeWithPullRequest(
     );
     return false;
   }
+  pr.changedFiles = normalizedChangedFiles([
+    ...(pr.changedFiles ?? []),
+    ...changedFilesFromUnifiedDiff(patch),
+  ]);
 
   const prTitle = buildPrTitle({ ctx, result, pr });
   const prBody = buildPrBody({
@@ -323,63 +327,88 @@ export async function completeWithPullRequest(
       orderBy: [desc(schema.agentPullRequests.createdAt)],
     });
     if (existingPr) {
-      let pushed: { headSha: string };
-      try {
-        pushed = await pushPatchToExistingAgentPr({
-          installationId: repoMeta.installation.installationId,
-          repositoryId: repoMeta.id,
+      const guardedUpdate = await guardProposedPullRequestOverlap(
+        {
+          projectId: ctx.project.id,
+          currentIncidentId: ctx.incident.id,
+          currentIncidentFirstSeen: ctx.incident.firstSeen,
+          currentIncidentService: ctx.incident.service,
           repoFullName: pr.selectedRepoFullName,
-          patch,
-          branchName: existingPr.branchName,
-          prNumber: existingPr.prNumber,
-          commitTitle: prTitle,
-          commentBody: buildFollowUpPrComment(ctx, result),
-          commitAuthor:
-            repoMeta.installation.commitAuthorName && repoMeta.installation.commitAuthorEmail
-              ? {
-                  name: repoMeta.installation.commitAuthorName,
-                  email: repoMeta.installation.commitAuthorEmail,
-                }
-              : DEFAULT_COMMIT_AUTHOR,
-          deliveryId: deliveryIdentity.deliveryId,
-        });
-      } catch (err) {
-        await failAgentRun(ctx, "pr_open_failed", summarizePrOpenFailure(err), {
+          changedFiles: pr.changedFiles ?? [],
+        },
+        async () => {
+          let pushed: { headSha: string };
+          try {
+            pushed = await pushPatchToExistingAgentPr({
+              installationId: repoMeta.installation.installationId,
+              repositoryId: repoMeta.id,
+              repoFullName: pr.selectedRepoFullName,
+              patch,
+              branchName: existingPr.branchName,
+              prNumber: existingPr.prNumber,
+              commitTitle: prTitle,
+              commentBody: buildFollowUpPrComment(ctx, result),
+              commitAuthor:
+                repoMeta.installation.commitAuthorName && repoMeta.installation.commitAuthorEmail
+                  ? {
+                      name: repoMeta.installation.commitAuthorName,
+                      email: repoMeta.installation.commitAuthorEmail,
+                    }
+                  : DEFAULT_COMMIT_AUTHOR,
+              deliveryId: deliveryIdentity.deliveryId,
+            });
+          } catch (err) {
+            return { kind: "push_failed" as const, error: summarizePrOpenFailure(err), err };
+          }
+
+          const reconciled = await reconcileGithubPullRequestMutation({
+            incidentId: ctx.incident.id,
+            agentRunId: ctx.agentRun.id,
+            deliveryIdentity,
+            pullRequest: {
+              repoFullName: existingPr.repoFullName,
+              branchName: existingPr.branchName,
+              prUrl: existingPr.url,
+              prNumber: existingPr.prNumber,
+              prNodeId: existingPr.prNodeId,
+            },
+            installationId: repoMeta.installation.installationId,
+            fallbackInstallationIds: ctx.githubInstalls.map(
+              ({ installation }) => installation.installationId,
+            ),
+            canonicalRecordRequiredOnFailure: true,
+            reconcile: () =>
+              recordUpdatedAgentPullRequest({
+                incidentId: ctx.incident.id,
+                agentRunId: ctx.agentRun.id,
+                agentPullRequestId: existingPr.id,
+                repoFullName: existingPr.repoFullName,
+                prNumber: existingPr.prNumber,
+                headSha: pushed.headSha,
+                changedFiles: pr.changedFiles,
+                url: existingPr.url,
+                branchName: existingPr.branchName,
+                deliveryIdentity,
+              }),
+          });
+          return { kind: "updated" as const, reconciled };
+        },
+      );
+      if (!guardedUpdate.ok) {
+        const blocked = blockedByOverlappingPullRequest(ctx, guardedUpdate.overlap);
+        await failAgentRun(ctx, "pr_open_failed", blocked.error, {
           existingResult: resultWithPatch,
-          err,
         });
         return false;
       }
-
-      const reconciled = await reconcileGithubPullRequestMutation({
-        incidentId: ctx.incident.id,
-        agentRunId: ctx.agentRun.id,
-        deliveryIdentity,
-        pullRequest: {
-          repoFullName: existingPr.repoFullName,
-          branchName: existingPr.branchName,
-          prUrl: existingPr.url,
-          prNumber: existingPr.prNumber,
-          prNodeId: existingPr.prNodeId,
-        },
-        installationId: repoMeta.installation.installationId,
-        fallbackInstallationIds: ctx.githubInstalls.map(
-          ({ installation }) => installation.installationId,
-        ),
-        canonicalRecordRequiredOnFailure: true,
-        reconcile: () =>
-          recordUpdatedAgentPullRequest({
-            incidentId: ctx.incident.id,
-            agentRunId: ctx.agentRun.id,
-            agentPullRequestId: existingPr.id,
-            repoFullName: existingPr.repoFullName,
-            prNumber: existingPr.prNumber,
-            headSha: pushed.headSha,
-            url: existingPr.url,
-            branchName: existingPr.branchName,
-            deliveryIdentity,
-          }),
-      });
+      if (guardedUpdate.value.kind === "push_failed") {
+        await failAgentRun(ctx, "pr_open_failed", guardedUpdate.value.error, {
+          existingResult: resultWithPatch,
+          err: guardedUpdate.value.err,
+        });
+        return false;
+      }
+      const { reconciled } = guardedUpdate.value;
       if (!reconciled.ok) {
         await failAgentRun(ctx, "pr_open_failed", reconciled.error, {
           existingResult: resultWithPatch,
@@ -470,72 +499,94 @@ export async function completeWithPullRequest(
     // No open PR to land on (closed meanwhile, or the prior run never opened
     // one) — fall through to the normal open-a-new-PR path.
   }
-  let opened: Awaited<ReturnType<typeof openAgentRunPullRequest>>;
-  try {
-    opened = await openAgentRunPullRequest({
-      installationId: repoMeta.installation.installationId,
-      repositoryId: repoMeta.id,
+  const guarded = await guardProposedPullRequestOverlap(
+    {
+      projectId: ctx.project.id,
+      currentIncidentId: ctx.incident.id,
+      currentIncidentFirstSeen: ctx.incident.firstSeen,
+      currentIncidentService: ctx.incident.service,
       repoFullName: pr.selectedRepoFullName,
-      patch,
-      branchName,
-      baseBranch: resolvePullRequestBaseBranch(ctx, pr),
-      title: prTitle,
-      body: prBody,
-      commitAuthor:
-        repoMeta.installation.commitAuthorName && repoMeta.installation.commitAuthorEmail
-          ? {
-              name: repoMeta.installation.commitAuthorName,
-              email: repoMeta.installation.commitAuthorEmail,
-            }
-          : DEFAULT_COMMIT_AUTHOR,
-      deliveryId: deliveryIdentity.deliveryId,
-    });
-  } catch (err) {
-    await failAgentRun(ctx, "pr_open_failed", summarizePrOpenFailure(err), {
+      changedFiles: pr.changedFiles ?? [],
+    },
+    async () => {
+      let opened: Awaited<ReturnType<typeof openAgentRunPullRequest>>;
+      try {
+        opened = await openAgentRunPullRequest({
+          installationId: repoMeta.installation.installationId,
+          repositoryId: repoMeta.id,
+          repoFullName: pr.selectedRepoFullName,
+          patch,
+          branchName,
+          baseBranch: resolvePullRequestBaseBranch(ctx, pr),
+          title: prTitle,
+          body: prBody,
+          commitAuthor:
+            repoMeta.installation.commitAuthorName && repoMeta.installation.commitAuthorEmail
+              ? {
+                  name: repoMeta.installation.commitAuthorName,
+                  email: repoMeta.installation.commitAuthorEmail,
+                }
+              : DEFAULT_COMMIT_AUTHOR,
+          deliveryId: deliveryIdentity.deliveryId,
+        });
+      } catch (err) {
+        return { kind: "open_failed" as const, error: summarizePrOpenFailure(err), err };
+      }
+
+      const reconciled = await reconcileGithubPullRequestMutation({
+        incidentId: ctx.incident.id,
+        agentRunId: ctx.agentRun.id,
+        deliveryIdentity,
+        pullRequest: {
+          repoFullName: pr.selectedRepoFullName,
+          branchName: opened.branchName,
+          prUrl: opened.prUrl,
+          prNumber: opened.prNumber,
+          prNodeId: opened.prNodeId,
+        },
+        installationId: repoMeta.installation.installationId,
+        fallbackInstallationIds: ctx.githubInstalls.map(
+          ({ installation }) => installation.installationId,
+        ),
+        canonicalRecordRequiredOnFailure: false,
+        reconcile: () =>
+          recordOpenedAgentPullRequest({
+            incidentId: ctx.incident.id,
+            agentRunId: ctx.agentRun.id,
+            installationRowId: repoMeta.installation.id,
+            repoFullName: pr.selectedRepoFullName,
+            prNumber: opened.prNumber,
+            prNodeId: opened.prNodeId,
+            url: opened.prUrl,
+            branchName: opened.branchName,
+            baseBranch: opened.baseBranch,
+            headSha: opened.headSha,
+            changedFiles: pr.changedFiles,
+            title: prTitle,
+            authorLogin: opened.authorLogin,
+            authorGithubId: opened.authorGithubId,
+            authorAvatarUrl: opened.authorAvatarUrl,
+            state: opened.state,
+            mergedAt: opened.mergedAt,
+            deliveryIdentity,
+          }),
+      });
+      return { kind: "delivered" as const, opened, reconciled };
+    },
+  );
+  if (!guarded.ok) {
+    const blocked = blockedByOverlappingPullRequest(ctx, guarded.overlap);
+    await failAgentRun(ctx, "pr_open_failed", blocked.error, { existingResult: resultWithPatch });
+    return false;
+  }
+  if (guarded.value.kind === "open_failed") {
+    await failAgentRun(ctx, "pr_open_failed", guarded.value.error, {
       existingResult: resultWithPatch,
-      err,
+      err: guarded.value.err,
     });
     return false;
   }
-
-  const reconciled = await reconcileGithubPullRequestMutation({
-    incidentId: ctx.incident.id,
-    agentRunId: ctx.agentRun.id,
-    deliveryIdentity,
-    pullRequest: {
-      repoFullName: pr.selectedRepoFullName,
-      branchName: opened.branchName,
-      prUrl: opened.prUrl,
-      prNumber: opened.prNumber,
-      prNodeId: opened.prNodeId,
-    },
-    installationId: repoMeta.installation.installationId,
-    fallbackInstallationIds: ctx.githubInstalls.map(
-      ({ installation }) => installation.installationId,
-    ),
-    canonicalRecordRequiredOnFailure: false,
-    reconcile: () =>
-      recordOpenedAgentPullRequest({
-        incidentId: ctx.incident.id,
-        agentRunId: ctx.agentRun.id,
-        installationRowId: repoMeta.installation.id,
-        repoFullName: pr.selectedRepoFullName,
-        prNumber: opened.prNumber,
-        prNodeId: opened.prNodeId,
-        url: opened.prUrl,
-        branchName: opened.branchName,
-        baseBranch: opened.baseBranch,
-        headSha: opened.headSha,
-        changedFiles: pr.changedFiles,
-        title: prTitle,
-        authorLogin: opened.authorLogin,
-        authorGithubId: opened.authorGithubId,
-        authorAvatarUrl: opened.authorAvatarUrl,
-        state: opened.state,
-        mergedAt: opened.mergedAt,
-        deliveryIdentity,
-      }),
-  });
+  const { opened, reconciled } = guarded.value;
   if (!reconciled.ok) {
     await failAgentRun(ctx, "pr_open_failed", reconciled.error, {
       existingResult: resultWithPatch,
@@ -1143,19 +1194,35 @@ export function changedFilesFromUnifiedDiff(patch: string): string[] {
   return normalizedChangedFiles(files);
 }
 
-function changedFilesFromAgentRunResult(result: unknown, repoFullName: string): string[] {
+function changedFilesFromAgentRunResult(
+  result: unknown,
+  repoFullName: string,
+  agentRunId: string,
+): string[] {
   if (!result || typeof result !== "object") return [];
   const record = result as Record<string, unknown>;
   const proposals = [
     ...(record.pr && typeof record.pr === "object" ? [record.pr] : []),
     ...(Array.isArray(record.prs) ? record.prs : []),
   ];
+  const matching = proposals.filter((proposal) => {
+    if (!proposal || typeof proposal !== "object") return false;
+    const pr = proposal as Record<string, unknown>;
+    return (pr.selectedRepoFullName ?? pr.repoFullName) === repoFullName;
+  });
+  if (proposals.length > 0 && matching.length === 0) {
+    logger.info(
+      {
+        scope: "agent_run.pr_delivery.changed_files",
+        agent_run_id: agentRunId,
+        repo_full_name: repoFullName,
+      },
+      "agent run PR metadata did not match the canonical pull request repository",
+    );
+  }
   return normalizedChangedFiles(
-    proposals.flatMap((proposal) => {
-      if (!proposal || typeof proposal !== "object") return [];
+    matching.flatMap((proposal) => {
       const pr = proposal as Record<string, unknown>;
-      const selectedRepo = pr.selectedRepoFullName ?? pr.repoFullName;
-      if (selectedRepo !== repoFullName) return [];
       return Array.isArray(pr.changedFiles) ? pr.changedFiles : [];
     }),
   );
@@ -1180,6 +1247,7 @@ async function findOverlappingOpenPullRequest(
       url: schema.agentPullRequests.url,
       prNumber: schema.agentPullRequests.prNumber,
       changedFiles: schema.agentPullRequests.changedFiles,
+      agentRunId: schema.agentRuns.id,
       result: schema.agentRuns.result,
     })
     .from(schema.agentPullRequests)
@@ -1213,7 +1281,9 @@ async function findOverlappingOpenPullRequest(
   for (const row of rows) {
     const existingFiles = normalizedChangedFiles([
       ...(row.changedFiles ?? []),
-      ...changedFilesFromAgentRunResult(row.result, input.repoFullName),
+      ...(row.changedFiles?.length
+        ? []
+        : changedFilesFromAgentRunResult(row.result, input.repoFullName, row.agentRunId)),
     ]);
     const overlappingFiles = existingFiles.filter((file) => proposedFiles.has(file));
     if (overlappingFiles.length > 0) return { ...row, overlappingFiles };
@@ -1561,52 +1631,71 @@ export async function deliverProposedPullRequest(
     orderBy: [desc(schema.agentPullRequests.createdAt)],
   });
   if (existingPr) {
-    let pushed: { headSha: string };
-    try {
-      pushed = await dependencies.pushPatchToExistingPr({
-        installationId: repoMeta.installation.installationId,
-        repositoryId: repoMeta.id,
+    const guardedUpdate = await dependencies.guardOverlap(
+      {
+        projectId: ctx.project.id,
+        currentIncidentId: ctx.incident.id,
+        currentIncidentFirstSeen: ctx.incident.firstSeen,
+        currentIncidentService: ctx.incident.service,
         repoFullName: pr.repoFullName,
-        patch,
-        branchName: existingPr.branchName,
-        prNumber: existingPr.prNumber,
-        commitTitle: prTitle,
-        commentBody: pr.body,
-        commitAuthor,
-        ...(deliveryIdentity ? { deliveryId: deliveryIdentity.deliveryId } : {}),
-      });
-    } catch (err) {
-      return { ok: false, error: summarizePrOpenFailure(err) };
-    }
-    const reconciled = await reconcileGithubPullRequestMutation({
-      incidentId: ctx.incident.id,
-      agentRunId: ctx.agentRun.id,
-      ...(deliveryIdentity ? { deliveryIdentity } : {}),
-      pullRequest: {
-        repoFullName: existingPr.repoFullName,
-        branchName: existingPr.branchName,
-        prUrl: existingPr.url,
-        prNumber: existingPr.prNumber,
-        prNodeId: existingPr.prNodeId,
+        changedFiles,
       },
-      installationId: repoMeta.installation.installationId,
-      fallbackInstallationIds: ctx.githubInstalls.map(
-        ({ installation }) => installation.installationId,
-      ),
-      canonicalRecordRequiredOnFailure: true,
-      reconcile: () =>
-        recordUpdatedAgentPullRequest({
+      async () => {
+        let pushed: { headSha: string };
+        try {
+          pushed = await dependencies.pushPatchToExistingPr({
+            installationId: repoMeta.installation.installationId,
+            repositoryId: repoMeta.id,
+            repoFullName: pr.repoFullName,
+            patch,
+            branchName: existingPr.branchName,
+            prNumber: existingPr.prNumber,
+            commitTitle: prTitle,
+            commentBody: pr.body,
+            commitAuthor,
+            ...(deliveryIdentity ? { deliveryId: deliveryIdentity.deliveryId } : {}),
+          });
+        } catch (err) {
+          return { kind: "push_failed" as const, error: summarizePrOpenFailure(err) };
+        }
+        const reconciled = await reconcileGithubPullRequestMutation({
           incidentId: ctx.incident.id,
           agentRunId: ctx.agentRun.id,
-          agentPullRequestId: existingPr.id,
-          repoFullName: existingPr.repoFullName,
-          prNumber: existingPr.prNumber,
-          headSha: pushed.headSha,
-          url: existingPr.url,
-          branchName: existingPr.branchName,
           ...(deliveryIdentity ? { deliveryIdentity } : {}),
-        }),
-    });
+          pullRequest: {
+            repoFullName: existingPr.repoFullName,
+            branchName: existingPr.branchName,
+            prUrl: existingPr.url,
+            prNumber: existingPr.prNumber,
+            prNodeId: existingPr.prNodeId,
+          },
+          installationId: repoMeta.installation.installationId,
+          fallbackInstallationIds: ctx.githubInstalls.map(
+            ({ installation }) => installation.installationId,
+          ),
+          canonicalRecordRequiredOnFailure: true,
+          reconcile: () =>
+            recordUpdatedAgentPullRequest({
+              incidentId: ctx.incident.id,
+              agentRunId: ctx.agentRun.id,
+              agentPullRequestId: existingPr.id,
+              repoFullName: existingPr.repoFullName,
+              prNumber: existingPr.prNumber,
+              headSha: pushed.headSha,
+              changedFiles,
+              url: existingPr.url,
+              branchName: existingPr.branchName,
+              ...(deliveryIdentity ? { deliveryIdentity } : {}),
+            }),
+        });
+        return { kind: "updated" as const, reconciled };
+      },
+    );
+    if (!guardedUpdate.ok) return blockedByOverlappingPullRequest(ctx, guardedUpdate.overlap);
+    if (guardedUpdate.value.kind === "push_failed") {
+      return { ok: false, error: guardedUpdate.value.error };
+    }
+    const { reconciled } = guardedUpdate.value;
     if (!reconciled.ok) return reconciled;
     if (!deliveryIdentity || reconciled.deliveryReceipt?.newlyRecorded !== false) {
       await publishPullRequestUpdateIfCurrent(ctx, "running", async () => {
