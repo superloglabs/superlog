@@ -1308,7 +1308,7 @@ function changedFilesFromAgentRunResult(
     return (pr.selectedRepoFullName ?? pr.repoFullName) === repoFullName;
   });
   if (proposals.length > 0 && matching.length === 0) {
-    logger.info(
+    logger.error(
       {
         scope: "agent_run.pr_delivery.changed_files",
         agent_run_id: agentRunId,
