@@ -109,6 +109,7 @@ test("overlap guard serializes shared files and lets only the first delivery pro
     currentIncidentFirstSeen: new Date("2026-08-11T14:02:03.000Z"),
     currentIncidentService: "api",
     repoFullName: "acme/api",
+    baseBranch: "main",
     changedFiles: ["a/config.ts"],
   };
   const attempt = () =>
@@ -588,7 +589,9 @@ const proposedPullRequest = {
 
 test("preflight blocks a patch when another incident already has an open PR touching the same file", async () => {
   let validated = false;
-  let overlapInput: { changedFiles: string[]; currentIncidentFirstSeen: Date } | undefined;
+  let overlapInput:
+    | { changedFiles: string[]; currentIncidentFirstSeen: Date; baseBranch: string }
+    | undefined;
   const prepared = await preflightProposedPullRequest(
     {
       prPolicy: "always",
@@ -638,6 +641,7 @@ test("preflight blocks a patch when another incident already has an open PR touc
   assert.match(prepared.error, /pull\/41/);
   assert.match(prepared.error, /src\/retries\.ts/);
   assert.deepEqual(overlapInput?.changedFiles, ["src/retries.ts"]);
+  assert.equal(overlapInput?.baseBranch, "main");
   assert.equal(overlapInput?.currentIncidentFirstSeen.toISOString(), "2026-08-11T14:02:03.000Z");
   assert.equal(validated, false);
 });
