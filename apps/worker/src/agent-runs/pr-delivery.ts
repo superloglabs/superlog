@@ -82,7 +82,8 @@ type PullRequestOverlapGuardMetricReason =
   | "no_changed_files"
   | "normalization_dropped"
   | "no_overlap"
-  | "query_error";
+  | "query_error"
+  | "candidate_no_changed_files";
 type PullRequestOverlapGuardMetricOutcome = "blocked" | "allowed" | "skipped";
 type PullRequestOverlapGuardCounter = {
   add(
@@ -1487,6 +1488,7 @@ async function findOverlappingOpenPullRequest(
           row.branchName,
         );
     if (!row.changedFiles?.length && fallbackFiles.length === 0) {
+      recordPullRequestOverlapGuardMetric("candidate_no_changed_files");
       logger.info(
         {
           scope: "agent_run.pr_delivery.overlap_no_files",
