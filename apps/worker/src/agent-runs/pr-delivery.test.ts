@@ -17,6 +17,7 @@ import {
   reconcilePullRequestDeliveryAbortClose,
   recordPullRequestOverlapGuardMetric,
   resolvePullRequestBaseBranch,
+  resolvePullRequestTargetBaseBranch,
 } from "./pr-delivery.js";
 
 test("overlap guard metrics use bounded reason attributes", () => {
@@ -298,6 +299,13 @@ test("resolvePullRequestBaseBranch lets GitHub use the repository default when b
   const pr = { baseBranch: "" } as schema.AgentRunPr;
 
   assert.equal(resolvePullRequestBaseBranch(ctx, pr), null);
+});
+
+test("resolvePullRequestTargetBaseBranch resolves blank configuration to the repository default", () => {
+  assert.equal(
+    resolvePullRequestTargetBaseBranch({ prBaseBranch: null }, { baseBranch: "" }, "trunk"),
+    "trunk",
+  );
 });
 
 const deliveredPullRequest = {
@@ -660,6 +668,7 @@ test("preflight blocks a patch when another incident already has an open PR touc
           id: 123,
           fullName: "acme/api",
           private: false,
+          defaultBranch: "main",
           installation: { installationId: 99 } as never,
         },
       ],
@@ -719,6 +728,7 @@ test("preflight persists diff-derived paths on the proposal for the durable run 
           id: 123,
           fullName: "acme/api",
           private: false,
+          defaultBranch: "main",
           installation: { installationId: 99 } as never,
         },
       ],
@@ -782,6 +792,7 @@ test("preflight recovers a pushed delivery without requiring the session patch",
           id: 123,
           fullName: "acme/api",
           private: false,
+          defaultBranch: "main",
           installation: { installationId: 99 } as never,
         },
       ],
@@ -791,6 +802,7 @@ test("preflight recovers a pushed delivery without requiring the session patch",
         headSha: "abc123",
         baseBranch: "main",
       }),
+      findGithubDeliveryChangedFiles: async () => ["src/retries.ts"],
       downloadPatch: async () => {
         downloaded = true;
         throw new Error("session patch expired");
@@ -803,7 +815,7 @@ test("preflight recovers a pushed delivery without requiring the session patch",
 
   assert.deepEqual(prepared, { ok: true, prepared: { kind: "github_recovery" } });
   assert.equal(downloaded, false);
-  assert.deepEqual(proposal.changedFiles, []);
+  assert.deepEqual(proposal.changedFiles, ["src/retries.ts"]);
   assert.equal(validated, false);
 });
 

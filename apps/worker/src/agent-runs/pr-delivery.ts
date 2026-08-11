@@ -21,6 +21,7 @@ import { createAgentRunLifecycle } from "../agent-run.js";
 import {
   closeAgentPullRequestOnGithub,
   findGithubPullRequestDelivery,
+  findGithubPullRequestDeliveryChangedFiles,
   mergeAgentPullRequest,
   pushPatchToExistingAgentPr,
   validateAgentPatchApplicability,
@@ -181,6 +182,18 @@ export function resolvePullRequestBaseBranch(
   return normalizePrBaseBranch(ctx.prBaseBranch) ?? normalizePrBaseBranch(pr.baseBranch);
 }
 
+export function resolvePullRequestTargetBaseBranch(
+  ctx: Pick<AgentRunContext, "prBaseBranch">,
+  pr: Pick<schema.AgentRunPr, "baseBranch">,
+  repositoryDefaultBranch: string,
+): string {
+  return (
+    resolvePullRequestBaseBranch(ctx, pr) ??
+    normalizePrBaseBranch(repositoryDefaultBranch) ??
+    "main"
+  );
+}
+
 export function pullRequestDeliveryIdentityForLegacyCompletion(args: {
   agentRunId: string;
   repoFullName: string;
@@ -246,6 +259,7 @@ export async function completeWithPullRequest(
     );
     return false;
   }
+  const targetBaseBranch = resolvePullRequestTargetBaseBranch(ctx, pr, repoMeta.defaultBranch);
   const proposedBranch = pr.branchName?.trim();
   const branchName = proposedBranch
     ? proposedBranch.startsWith("superlog/")
@@ -529,7 +543,7 @@ export async function completeWithPullRequest(
       currentIncidentFirstSeen: ctx.incident.firstSeen,
       currentIncidentService: ctx.incident.service,
       repoFullName: pr.selectedRepoFullName,
-      baseBranch: resolvePullRequestBaseBranch(ctx, pr) ?? pr.baseBranch,
+      baseBranch: targetBaseBranch,
       changedFiles: pr.changedFiles ?? [],
     },
     async () => {
@@ -541,7 +555,7 @@ export async function completeWithPullRequest(
           repoFullName: pr.selectedRepoFullName,
           patch,
           branchName,
-          baseBranch: resolvePullRequestBaseBranch(ctx, pr),
+          baseBranch: targetBaseBranch,
           title: prTitle,
           body: prBody,
           commitAuthor:
@@ -1494,8 +1508,8 @@ export async function guardProposedPullRequestOverlap<T>(
     (file) => `agent-pr-overlap:${input.projectId}:${input.repoFullName}:${file}`,
   );
   if (lockKeys.length === 0) {
-    recordPullRequestOverlapGuardMetric("no_changed_files");
     if (input.changedFiles.length > 0) {
+      recordPullRequestOverlapGuardMetric("no_changed_files");
       logger.error(
         {
           scope: "agent_run.pr_delivery.overlap_guard_skipped",
@@ -1506,6 +1520,7 @@ export async function guardProposedPullRequestOverlap<T>(
         "overlap guard skipped: changed files present but none survived normalization",
       );
     } else {
+      recordPullRequestOverlapGuardMetric("no_changed_files");
       logger.info(
         {
           scope: "agent_run.pr_delivery.overlap_guard_no_files",
@@ -1550,6 +1565,7 @@ type ProposedPullRequestPreflightDependencies = {
   findRecordedDelivery: typeof findRecordedPullRequestDelivery;
   listRepositories: typeof listAccessibleGithubRepositories;
   findGithubDelivery: typeof findGithubPullRequestDelivery;
+  findGithubDeliveryChangedFiles: typeof findGithubPullRequestDeliveryChangedFiles;
   downloadPatch: typeof downloadAgentPatchFile;
   validatePatch: typeof validateAgentPatchApplicability;
   findOverlappingOpenPullRequest: typeof findOverlappingOpenPullRequest;
@@ -1564,6 +1580,7 @@ const proposedPullRequestPreflightDependencies: ProposedPullRequestPreflightDepe
   findRecordedDelivery: findRecordedPullRequestDelivery,
   listRepositories: listAccessibleGithubRepositories,
   findGithubDelivery: findGithubPullRequestDelivery,
+  findGithubDeliveryChangedFiles: findGithubPullRequestDeliveryChangedFiles,
   downloadPatch: downloadAgentPatchFile,
   validatePatch: validateAgentPatchApplicability,
   findOverlappingOpenPullRequest,
@@ -1629,6 +1646,7 @@ export async function preflightProposedPullRequest(
       error: `Cannot open a PR: GitHub does not grant access to ${pr.repoFullName}.`,
     };
   }
+  const targetBaseBranch = resolvePullRequestTargetBaseBranch(ctx, pr, repoMeta.defaultBranch);
 
   if (deliveryIdentity) {
     try {
@@ -1637,11 +1655,17 @@ export async function preflightProposedPullRequest(
         repositoryId: repoMeta.id,
         repoFullName: pr.repoFullName,
         requestedBranch: pr.branchName,
-        baseBranch: (resolvePullRequestBaseBranch(ctx, pr) ?? pr.baseBranch.trim()) || "main",
+        baseBranch: targetBaseBranch,
         deliveryId: deliveryIdentity.deliveryId,
       });
       if (recovered) {
-        pr.changedFiles = normalizedChangedFiles(pr.changedFiles ?? []);
+        const recoveredFiles = await dependencies.findGithubDeliveryChangedFiles({
+          installationId: repoMeta.installation.installationId,
+          repositoryId: repoMeta.id,
+          repoFullName: pr.repoFullName,
+          recovered,
+        });
+        pr.changedFiles = normalizedChangedFiles([...(pr.changedFiles ?? []), ...recoveredFiles]);
         return { ok: true, prepared: { kind: "github_recovery" } };
       }
     } catch (err) {
@@ -1689,7 +1713,7 @@ export async function preflightProposedPullRequest(
     currentIncidentFirstSeen: ctx.incident.firstSeen,
     currentIncidentService: ctx.incident.service,
     repoFullName: pr.repoFullName,
-    baseBranch: resolvePullRequestBaseBranch(ctx, pr) ?? pr.baseBranch,
+    baseBranch: targetBaseBranch,
     changedFiles,
   });
   if (overlap) return blockedByOverlappingPullRequest(ctx, overlap);
@@ -1705,7 +1729,7 @@ export async function preflightProposedPullRequest(
       repositoryId: repoMeta.id,
       repoFullName: pr.repoFullName,
       patch,
-      baseBranch: resolvePullRequestBaseBranch(ctx, pr),
+      baseBranch: targetBaseBranch,
       existingBranch: existingPr?.branchName ?? null,
     });
   } catch (err) {
@@ -1785,6 +1809,7 @@ export async function deliverProposedPullRequest(
       error: `Cannot open a PR: GitHub does not grant access to ${pr.repoFullName}. Use one of the mounted repositories.`,
     };
   }
+  const targetBaseBranch = resolvePullRequestTargetBaseBranch(ctx, pr, repoMeta.defaultBranch);
 
   let patch = prepared?.kind === "patch" ? prepared.patch : null;
   if (!patch && prepared?.kind !== "github_recovery") {
@@ -1936,7 +1961,7 @@ export async function deliverProposedPullRequest(
         repoFullName: pr.repoFullName,
         patch,
         branchName: pr.branchName,
-        baseBranch: resolvePullRequestBaseBranch(ctx, pr),
+        baseBranch: targetBaseBranch,
         title: prTitle,
         body: prBody,
         commitAuthor,
@@ -1995,7 +2020,7 @@ export async function deliverProposedPullRequest(
     currentIncidentFirstSeen: ctx.incident.firstSeen,
     currentIncidentService: ctx.incident.service,
     repoFullName: pr.repoFullName,
-    baseBranch: resolvePullRequestBaseBranch(ctx, pr) ?? pr.baseBranch,
+    baseBranch: targetBaseBranch,
     changedFiles,
   };
   const guarded =

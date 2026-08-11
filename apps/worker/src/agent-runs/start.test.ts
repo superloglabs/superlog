@@ -725,6 +725,7 @@ function makeRepo(label: string, id: number): InstalledGithubRepo {
     id,
     fullName: `org/${label}`,
     private: true,
+    defaultBranch: "main",
     installation: {
       installationId: 123,
     } as schema.GithubInstallation,

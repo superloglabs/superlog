@@ -36,10 +36,16 @@ export type GithubInstallationRepo = {
   id: number;
   fullName: string;
   private: boolean;
+  defaultBranch: string;
 };
 
 type GithubInstallationReposResponse = {
-  repositories: Array<{ id: number; full_name: string; private: boolean }>;
+  repositories: Array<{
+    id: number;
+    full_name: string;
+    private: boolean;
+    default_branch: string;
+  }>;
 };
 
 const GITHUB_API = "https://api.github.com";
@@ -613,6 +619,7 @@ export async function listGithubInstallationRepositories(
         id: repo.id,
         fullName: repo.full_name,
         private: repo.private,
+        defaultBranch: repo.default_branch,
       })),
     );
     if (data.repositories.length < 100) break;
@@ -1111,6 +1118,48 @@ export async function findGithubPullRequestDelivery(opts: {
     deliveryId: opts.deliveryId,
     token,
   });
+}
+
+type GithubChangedFile = {
+  filename: string;
+  previous_filename?: string;
+};
+
+export async function findGithubPullRequestDeliveryChangedFiles(opts: {
+  installationId: number;
+  repositoryId?: number;
+  repoFullName: string;
+  recovered: RecoveredPullRequestDelivery;
+}): Promise<string[]> {
+  const token = await createGithubReadToken(opts.installationId, opts.repositoryId);
+  let files: GithubChangedFile[];
+  if (opts.recovered.kind === "pull_request") {
+    files = [];
+    for (let page = 1; page <= 30; page += 1) {
+      const pageFiles = await githubRequest<GithubChangedFile[]>(
+        `/repos/${opts.repoFullName}/pulls/${opts.recovered.pullRequest.prNumber}/files?per_page=100&page=${page}`,
+        { bearerToken: token },
+      );
+      files.push(...pageFiles);
+      if (pageFiles.length < 100) break;
+    }
+  } else {
+    files = [];
+    for (let page = 1; page <= 30; page += 1) {
+      const commit = await githubRequest<{ files?: GithubChangedFile[] }>(
+        `/repos/${opts.repoFullName}/commits/${opts.recovered.headSha}?per_page=100&page=${page}`,
+        { bearerToken: token },
+      );
+      const pageFiles = commit.files ?? [];
+      files.push(...pageFiles);
+      if (pageFiles.length < 100) break;
+    }
+  }
+  return [
+    ...new Set(
+      files.flatMap((file) => [file.filename, file.previous_filename]).filter(Boolean) as string[],
+    ),
+  ].sort();
 }
 
 export type OpenedAgentPullRequest = {

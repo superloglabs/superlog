@@ -23,6 +23,7 @@ export type InstalledGithubRepo = {
   id: number;
   fullName: string;
   private: boolean;
+  defaultBranch: string;
   installation: schema.GithubInstallation;
 };
 

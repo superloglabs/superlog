@@ -265,7 +265,7 @@ test("repository lookup preserves a partial failure when successful installs hav
       {
         listInstallationRepositories: async (installationId) => {
           if (installationId === 101) {
-            return [{ id: 42, fullName: "acme/disabled", private: true }];
+            return [{ id: 42, fullName: "acme/disabled", private: true, defaultBranch: "main" }];
           }
           throw githubUnavailable;
         },
