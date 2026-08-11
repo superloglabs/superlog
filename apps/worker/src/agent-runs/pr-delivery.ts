@@ -84,7 +84,9 @@ type PullRequestOverlapGuardMetricReason =
   | "no_overlap"
   | "query_error"
   | "candidate_no_changed_files"
-  | "recovery_bypass";
+  | "recovery_bypass"
+  | "claim_error"
+  | "release_error";
 type PullRequestOverlapGuardMetricOutcome = "blocked" | "allowed" | "skipped";
 type PullRequestOverlapGuardCounter = {
   add(
@@ -1679,9 +1681,37 @@ export async function guardProposedPullRequestOverlap<T>(
     }
     if (overlap) return { ok: false, overlap };
     recordPullRequestOverlapGuardMetric("no_overlap");
-    await dependencies.claimOverlap(input);
+    try {
+      await dependencies.claimOverlap(input);
+    } catch (err) {
+      recordPullRequestOverlapGuardMetric("claim_error");
+      logger.error(
+        {
+          err,
+          scope: "agent_run.pr_delivery.overlap_claim_error",
+          current_incident_id: input.currentIncidentId,
+          repo_full_name: input.repoFullName,
+        },
+        "failed to persist pull request overlap claim; delivery remains blocked",
+      );
+      throw err;
+    }
     const value = await task();
-    await dependencies.releaseClaim(input);
+    try {
+      await dependencies.releaseClaim(input);
+    } catch (err) {
+      recordPullRequestOverlapGuardMetric("release_error");
+      logger.error(
+        {
+          err,
+          scope: "agent_run.pr_delivery.overlap_release_error",
+          current_incident_id: input.currentIncidentId,
+          repo_full_name: input.repoFullName,
+        },
+        "failed to release pull request overlap claim; stale claim may block future deliveries",
+      );
+      throw err;
+    }
     return { ok: true, value };
   });
 }
@@ -2222,7 +2252,21 @@ export async function deliverProposedPullRequest(
     | { ok: false; overlap: OverlappingOpenPullRequest };
   if (prepared?.kind === "github_recovery") {
     const value = await openAndReconcile();
-    await releasePullRequestOverlapClaim(overlapInput);
+    try {
+      await releasePullRequestOverlapClaim(overlapInput);
+    } catch (err) {
+      recordPullRequestOverlapGuardMetric("release_error");
+      logger.error(
+        {
+          err,
+          scope: "agent_run.pr_delivery.overlap_release_error",
+          current_incident_id: overlapInput.currentIncidentId,
+          repo_full_name: overlapInput.repoFullName,
+        },
+        "failed to release recovered pull request overlap claim; stale claim may block future deliveries",
+      );
+      throw err;
+    }
     guarded = { ok: true, value };
   } else {
     guarded = await dependencies.guardOverlap(overlapInput, openAndReconcile);

@@ -35,6 +35,8 @@ test("overlap guard metrics use bounded reason attributes", () => {
   recordPullRequestOverlapGuardMetric("query_error", counter);
   recordPullRequestOverlapGuardMetric("candidate_no_changed_files", counter);
   recordPullRequestOverlapGuardMetric("recovery_bypass", counter);
+  recordPullRequestOverlapGuardMetric("claim_error", counter);
+  recordPullRequestOverlapGuardMetric("release_error", counter);
 
   assert.deepEqual(observations, [
     { value: 1, attributes: { reason: "overlap", outcome: "blocked" } },
@@ -44,6 +46,8 @@ test("overlap guard metrics use bounded reason attributes", () => {
     { value: 1, attributes: { reason: "query_error", outcome: "skipped" } },
     { value: 1, attributes: { reason: "candidate_no_changed_files", outcome: "skipped" } },
     { value: 1, attributes: { reason: "recovery_bypass", outcome: "skipped" } },
+    { value: 1, attributes: { reason: "claim_error", outcome: "skipped" } },
+    { value: 1, attributes: { reason: "release_error", outcome: "skipped" } },
   ]);
 });
 
