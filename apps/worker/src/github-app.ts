@@ -810,6 +810,14 @@ class GitCommandError extends Error {
   }
 }
 
+export class PullRequestProviderMutationNotStartedError extends Error {
+  override readonly name = "PullRequestProviderMutationNotStartedError";
+
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+}
+
 function gitFailureDetail(result: GitResult): string {
   return redactGitSecrets((result.stderr || result.stdout || "").trim());
 }
@@ -1391,10 +1399,17 @@ export async function applyPatchAndOpenPr(opts: {
   commitAuthor?: { name: string; email: string } | null;
   deliveryId?: string;
 }): Promise<OpenedAgentPullRequest> {
-  const repo = await getGithubRepoInfo(opts.installationId, opts.repoFullName, opts.repositoryId);
+  let repo: GithubRepoInfo;
+  let workdir: string;
+  let writeToken: string;
+  try {
+    repo = await getGithubRepoInfo(opts.installationId, opts.repoFullName, opts.repositoryId);
+    workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-pr-"));
+    writeToken = await createGithubWriteToken(opts.installationId, opts.repositoryId);
+  } catch (err) {
+    throw new PullRequestProviderMutationNotStartedError(err);
+  }
   const preferredBaseBranch = opts.baseBranch?.trim() || repo.default_branch;
-  const workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-pr-"));
-  const writeToken = await createGithubWriteToken(opts.installationId, opts.repositoryId);
   const gitAuthEnv = githubGitAuthEnv(writeToken);
   const repoDir = path.join(workdir, "repo");
   const recover = () =>
@@ -1436,41 +1451,46 @@ export async function applyPatchAndOpenPr(opts: {
       }
     }
 
-    const baseBranch = await cloneRepositoryAtBaseBranch({
-      repoFullName: opts.repoFullName,
-      repoDir,
-      preferredBaseBranch,
-      defaultBranch: repo.default_branch,
-      env: gitAuthEnv,
-    });
-    await ensureGitOk(["checkout", "-b", opts.branchName], { cwd: repoDir });
-    const gitIdentity = resolveGitIdentity(opts.commitAuthor);
-    await ensureGitOk(["config", "user.name", gitIdentity.name], { cwd: repoDir });
-    await ensureGitOk(["config", "user.email", gitIdentity.email], { cwd: repoDir });
+    let baseBranch: string;
+    try {
+      baseBranch = await cloneRepositoryAtBaseBranch({
+        repoFullName: opts.repoFullName,
+        repoDir,
+        preferredBaseBranch,
+        defaultBranch: repo.default_branch,
+        env: gitAuthEnv,
+      });
+      await ensureGitOk(["checkout", "-b", opts.branchName], { cwd: repoDir });
+      const gitIdentity = resolveGitIdentity(opts.commitAuthor);
+      await ensureGitOk(["config", "user.name", gitIdentity.name], { cwd: repoDir });
+      await ensureGitOk(["config", "user.email", gitIdentity.email], { cwd: repoDir });
 
-    // Written OUTSIDE the repo checkout: an untracked patch file inside
-    // repoDir would make `git status --porcelain` non-empty even when the
-    // patch changed nothing, defeating the no-op detection below.
-    const patchPath = path.join(workdir, "superlog.patch");
-    const patchBody = normalizeAgentPatch(opts.patch);
-    await writeFile(patchPath, patchBody, "utf8");
-    await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv });
+      // Written OUTSIDE the repo checkout: an untracked patch file inside
+      // repoDir would make `git status --porcelain` non-empty even when the
+      // patch changed nothing, defeating the no-op detection below.
+      const patchPath = path.join(workdir, "superlog.patch");
+      const patchBody = normalizeAgentPatch(opts.patch);
+      await writeFile(patchPath, patchBody, "utf8");
+      await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv });
 
-    // The agent validates its own patch inside its session sandbox (running
-    // the project's build/tests/repro as it sees fit) and reports the outcome
-    // in `pr.validationSummary`. The worker no longer installs dependencies or
-    // executes agent-authored commands here — doing so ran untrusted code (repo
-    // lifecycle scripts + LLM-authored shell) on the worker with its full
-    // environment. We just apply the patch, commit, push, and open the PR.
-    const status = await ensureGitOk(["status", "--porcelain"], { cwd: repoDir });
-    if (!status.stdout.trim()) {
-      throw new Error("patch produced no working tree changes");
+      // The agent validates its own patch inside its session sandbox (running
+      // the project's build/tests/repro as it sees fit) and reports the outcome
+      // in `pr.validationSummary`. The worker no longer installs dependencies or
+      // executes agent-authored commands here — doing so ran untrusted code (repo
+      // lifecycle scripts + LLM-authored shell) on the worker with its full
+      // environment. We just apply the patch, commit, push, and open the PR.
+      const status = await ensureGitOk(["status", "--porcelain"], { cwd: repoDir });
+      if (!status.stdout.trim()) {
+        throw new Error("patch produced no working tree changes");
+      }
+
+      const commitMessage = opts.deliveryId
+        ? buildPullRequestDeliveryCommitMessage(opts.title, opts.deliveryId, baseBranch)
+        : opts.title;
+      await ensureGitOk(["commit", "--no-verify", "-m", commitMessage], { cwd: repoDir });
+    } catch (err) {
+      throw new PullRequestProviderMutationNotStartedError(err);
     }
-
-    const commitMessage = opts.deliveryId
-      ? buildPullRequestDeliveryCommitMessage(opts.title, opts.deliveryId, baseBranch)
-      : opts.title;
-    await ensureGitOk(["commit", "--no-verify", "-m", commitMessage], { cwd: repoDir });
 
     let headBranch: string;
     try {
@@ -1543,8 +1563,14 @@ export async function pushPatchToExistingAgentPr(opts: {
   commitAuthor?: { name: string; email: string } | null;
   deliveryId?: string;
 }): Promise<{ headSha: string; recoveredDelivery?: boolean }> {
-  const workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-pr-update-"));
-  const writeToken = await createGithubWriteToken(opts.installationId, opts.repositoryId);
+  let workdir: string;
+  let writeToken: string;
+  try {
+    workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-pr-update-"));
+    writeToken = await createGithubWriteToken(opts.installationId, opts.repositoryId);
+  } catch (err) {
+    throw new PullRequestProviderMutationNotStartedError(err);
+  }
   const gitAuthEnv = githubGitAuthEnv(writeToken);
   const repoDir = path.join(workdir, "repo");
   const recoverDeliveredHead = async (ref: string): Promise<string | null> => {
@@ -1564,43 +1590,47 @@ export async function pushPatchToExistingAgentPr(opts: {
   };
 
   try {
-    await ensureGitOk(
-      [
-        "clone",
-        // Blobless partial clone — see cloneRepositoryAtBaseBranch: lets the
-        // `--3way` apply below fetch the agent's pre-image blobs on demand so a
-        // follow-up patch still lands if the PR branch moved.
-        "--filter=blob:none",
-        "--branch",
-        opts.branchName,
-        `https://github.com/${opts.repoFullName}.git`,
-        repoDir,
-      ],
-      { env: gitAuthEnv, suppressOutputOnError: true },
-    );
-    if (opts.deliveryId) {
-      const recoveredHeadSha = await recoverDeliveredHead("HEAD");
-      if (recoveredHeadSha) return { headSha: recoveredHeadSha, recoveredDelivery: true };
-    }
-    const gitIdentity = resolveGitIdentity(opts.commitAuthor);
-    await ensureGitOk(["config", "user.name", gitIdentity.name], { cwd: repoDir });
-    await ensureGitOk(["config", "user.email", gitIdentity.email], { cwd: repoDir });
+    try {
+      await ensureGitOk(
+        [
+          "clone",
+          // Blobless partial clone — see cloneRepositoryAtBaseBranch: lets the
+          // `--3way` apply below fetch the agent's pre-image blobs on demand so a
+          // follow-up patch still lands if the PR branch moved.
+          "--filter=blob:none",
+          "--branch",
+          opts.branchName,
+          `https://github.com/${opts.repoFullName}.git`,
+          repoDir,
+        ],
+        { env: gitAuthEnv, suppressOutputOnError: true },
+      );
+      if (opts.deliveryId) {
+        const recoveredHeadSha = await recoverDeliveredHead("HEAD");
+        if (recoveredHeadSha) return { headSha: recoveredHeadSha, recoveredDelivery: true };
+      }
+      const gitIdentity = resolveGitIdentity(opts.commitAuthor);
+      await ensureGitOk(["config", "user.name", gitIdentity.name], { cwd: repoDir });
+      await ensureGitOk(["config", "user.email", gitIdentity.email], { cwd: repoDir });
 
-    // Written OUTSIDE the repo checkout: an untracked patch file inside
-    // repoDir would make `git status --porcelain` non-empty even when the
-    // patch changed nothing, defeating the no-op detection below.
-    const patchPath = path.join(workdir, "superlog.patch");
-    const patchBody = normalizeAgentPatch(opts.patch);
-    await writeFile(patchPath, patchBody, "utf8");
-    await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv });
-    const status = await ensureGitOk(["status", "--porcelain"], { cwd: repoDir });
-    if (!status.stdout.trim()) {
-      throw new Error("patch produced no working tree changes");
+      // Written OUTSIDE the repo checkout: an untracked patch file inside
+      // repoDir would make `git status --porcelain` non-empty even when the
+      // patch changed nothing, defeating the no-op detection below.
+      const patchPath = path.join(workdir, "superlog.patch");
+      const patchBody = normalizeAgentPatch(opts.patch);
+      await writeFile(patchPath, patchBody, "utf8");
+      await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv });
+      const status = await ensureGitOk(["status", "--porcelain"], { cwd: repoDir });
+      if (!status.stdout.trim()) {
+        throw new Error("patch produced no working tree changes");
+      }
+      const commitMessage = opts.deliveryId
+        ? buildPullRequestDeliveryCommitMessage(opts.commitTitle, opts.deliveryId)
+        : opts.commitTitle;
+      await ensureGitOk(["commit", "--no-verify", "-m", commitMessage], { cwd: repoDir });
+    } catch (err) {
+      throw new PullRequestProviderMutationNotStartedError(err);
     }
-    const commitMessage = opts.deliveryId
-      ? buildPullRequestDeliveryCommitMessage(opts.commitTitle, opts.deliveryId)
-      : opts.commitTitle;
-    await ensureGitOk(["commit", "--no-verify", "-m", commitMessage], { cwd: repoDir });
     try {
       await ensureGitPushOk(["push", "origin", `HEAD:refs/heads/${opts.branchName}`], {
         cwd: repoDir,

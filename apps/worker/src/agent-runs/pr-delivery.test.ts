@@ -364,6 +364,38 @@ test("overlap guard retains its durable claim when reconciliation needs manual r
   assert.equal(released, false);
 });
 
+test("overlap guard releases its claim when delivery proves mutation never started", async () => {
+  let released = false;
+  const guarded = await guardProposedPullRequestOverlap(
+    {
+      projectId: "project-1",
+      currentIncidentId: "incident-2",
+      currentAgentRunId: "run-2",
+      currentIncidentFirstSeen: new Date("2026-08-11T14:02:03.000Z"),
+      repoFullName: "acme/api",
+      baseBranch: "main",
+      fallbackBaseBranch: null,
+      changedFiles: ["src/retries.ts"],
+    },
+    async () => ({
+      kind: "open_failed" as const,
+      providerMutationStarted: false as const,
+      error: "local patch application failed",
+    }),
+    {
+      exclusive: async (_keys, task) => task(),
+      findOverlap: async () => null,
+      claimOverlap: async () => {},
+      releaseClaim: async () => {
+        released = true;
+      },
+    },
+  );
+
+  assert.equal(guarded.ok, true);
+  assert.equal(released, true);
+});
+
 test("a stale run cannot publish pull request status", async () => {
   const calls: string[] = [];
   const published = await publishPullRequestUpdateIfCurrent(

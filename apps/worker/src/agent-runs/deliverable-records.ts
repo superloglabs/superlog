@@ -525,6 +525,7 @@ export async function recordUpdatedAgentPullRequest(
     changedFiles?: string[];
     url?: string;
     branchName?: string;
+    baseBranch?: string;
     deliveryIdentity?: PullRequestDeliveryIdentity;
   },
   deps: Pick<PullRequestRecordDependencies, "database" | "now"> = {},
@@ -612,6 +613,17 @@ export async function recordUpdatedAgentPullRequest(
         },
         now,
       });
+    }
+    if (decision.kind === "deliver" && opts.agentRunId && opts.baseBranch) {
+      await tx
+        .delete(schema.agentPullRequestOverlapClaims)
+        .where(
+          and(
+            eq(schema.agentPullRequestOverlapClaims.agentRunId, opts.agentRunId),
+            eq(schema.agentPullRequestOverlapClaims.repoFullName, opts.repoFullName),
+            eq(schema.agentPullRequestOverlapClaims.baseBranch, opts.baseBranch),
+          ),
+        );
     }
     return {
       ...decision,

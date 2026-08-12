@@ -19,6 +19,7 @@ import {
 } from "../agent-run-context.js";
 import { createAgentRunLifecycle } from "../agent-run.js";
 import {
+  PullRequestProviderMutationNotStartedError,
   closeAgentPullRequestOnGithub,
   findGithubPullRequestDelivery,
   findGithubPullRequestDeliveryChangedFiles,
@@ -415,7 +416,11 @@ export async function completeWithPullRequest(
               deliveryId: deliveryIdentity.deliveryId,
             });
           } catch (err) {
-            return { kind: "push_failed" as const, error: summarizePrOpenFailure(err), err };
+            return {
+              kind: "push_failed" as const,
+              error: summarizePrOpenFailure(err),
+              err,
+            };
           }
 
           const reconciled = await reconcileGithubPullRequestMutation({
@@ -445,6 +450,7 @@ export async function completeWithPullRequest(
                 changedFiles: pr.changedFiles,
                 url: existingPr.url,
                 branchName: existingPr.branchName,
+                baseBranch: existingPr.baseBranch,
                 deliveryIdentity,
               }),
           });
@@ -606,7 +612,11 @@ export async function completeWithPullRequest(
           deliveryId: deliveryIdentity.deliveryId,
         });
       } catch (err) {
-        return { kind: "open_failed" as const, error: summarizePrOpenFailure(err), err };
+        return {
+          kind: "open_failed" as const,
+          error: summarizePrOpenFailure(err),
+          err,
+        };
       }
 
       const reconciled = await reconcileGithubPullRequestMutation({
@@ -1643,15 +1653,52 @@ function pullRequestOverlapClaimCanRelease(value: unknown): boolean {
   if (!value || typeof value !== "object") return true;
   const result = value as {
     kind?: unknown;
+    providerMutationStarted?: unknown;
     reconciled?: { ok?: unknown; deliveryStatus?: unknown };
   };
-  if (result.kind === "open_failed" || result.kind === "push_failed") return false;
+  if (result.kind === "open_failed" || result.kind === "push_failed") {
+    return result.providerMutationStarted === false;
+  }
   if (result.kind !== "delivered" && result.kind !== "updated") return true;
   if (result.reconciled?.ok === true) return true;
   return (
     result.reconciled?.ok === false &&
     result.reconciled.deliveryStatus !== "manual_reconciliation_required"
   );
+}
+
+async function finalizePullRequestOverlapClaim<T>(
+  input: PullRequestOverlapInput,
+  value: T,
+  releaseClaim: (input: PullRequestOverlapInput) => Promise<void>,
+): Promise<void> {
+  if (!pullRequestOverlapClaimCanRelease(value)) {
+    recordPullRequestOverlapGuardMetric("claim_retained");
+    logger.warn(
+      {
+        scope: "agent_run.pr_delivery.overlap_claim_retained",
+        current_incident_id: input.currentIncidentId,
+        repo_full_name: input.repoFullName,
+      },
+      "retaining pull request overlap claim while provider reconciliation remains unresolved",
+    );
+    return;
+  }
+  try {
+    await releaseClaim(input);
+  } catch (err) {
+    recordPullRequestOverlapGuardMetric("release_error");
+    logger.error(
+      {
+        err,
+        scope: "agent_run.pr_delivery.overlap_release_error",
+        current_incident_id: input.currentIncidentId,
+        repo_full_name: input.repoFullName,
+      },
+      "failed to release pull request overlap claim; stale claim may block future deliveries",
+    );
+    throw err;
+  }
 }
 
 export async function guardProposedPullRequestOverlap<T>(
@@ -1724,33 +1771,7 @@ export async function guardProposedPullRequestOverlap<T>(
       throw err;
     }
     const value = await task();
-    if (!pullRequestOverlapClaimCanRelease(value)) {
-      recordPullRequestOverlapGuardMetric("claim_retained");
-      logger.warn(
-        {
-          scope: "agent_run.pr_delivery.overlap_claim_retained",
-          current_incident_id: input.currentIncidentId,
-          repo_full_name: input.repoFullName,
-        },
-        "retaining pull request overlap claim while provider reconciliation remains unresolved",
-      );
-      return { ok: true, value };
-    }
-    try {
-      await dependencies.releaseClaim(input);
-    } catch (err) {
-      recordPullRequestOverlapGuardMetric("release_error");
-      logger.error(
-        {
-          err,
-          scope: "agent_run.pr_delivery.overlap_release_error",
-          current_incident_id: input.currentIncidentId,
-          repo_full_name: input.repoFullName,
-        },
-        "failed to release pull request overlap claim; stale claim may block future deliveries",
-      );
-      throw err;
-    }
+    await finalizePullRequestOverlapClaim(input, value, dependencies.releaseClaim);
     return { ok: true, value };
   });
 }
@@ -2141,7 +2162,14 @@ export async function deliverProposedPullRequest(
             ...(deliveryIdentity ? { deliveryId: deliveryIdentity.deliveryId } : {}),
           });
         } catch (err) {
-          return { kind: "push_failed" as const, error: summarizePrOpenFailure(err) };
+          return {
+            kind: "push_failed" as const,
+            providerMutationStarted: !(
+              prepared?.kind === "patch" &&
+              err instanceof PullRequestProviderMutationNotStartedError
+            ),
+            error: summarizePrOpenFailure(err),
+          };
         }
         const reconciled = await reconcileGithubPullRequestMutation({
           incidentId: ctx.incident.id,
@@ -2170,6 +2198,7 @@ export async function deliverProposedPullRequest(
               changedFiles,
               url: existingPr.url,
               branchName: existingPr.branchName,
+              baseBranch: existingPr.baseBranch,
               ...(deliveryIdentity ? { deliveryIdentity } : {}),
             }),
         });
@@ -2218,7 +2247,13 @@ export async function deliverProposedPullRequest(
         ...(deliveryIdentity ? { deliveryId: deliveryIdentity.deliveryId } : {}),
       });
     } catch (err) {
-      return { kind: "open_failed" as const, error: summarizePrOpenFailure(err) };
+      return {
+        kind: "open_failed" as const,
+        providerMutationStarted: !(
+          prepared?.kind === "patch" && err instanceof PullRequestProviderMutationNotStartedError
+        ),
+        error: summarizePrOpenFailure(err),
+      };
     }
 
     // Keep the overlap locks until the provider mutation is durable. A
@@ -2291,21 +2326,7 @@ export async function deliverProposedPullRequest(
     | { ok: false; overlap: OverlappingOpenPullRequest };
   if (prepared?.kind === "github_recovery") {
     const value = await openAndReconcile();
-    try {
-      await releasePullRequestOverlapClaim(overlapInput);
-    } catch (err) {
-      recordPullRequestOverlapGuardMetric("release_error");
-      logger.error(
-        {
-          err,
-          scope: "agent_run.pr_delivery.overlap_release_error",
-          current_incident_id: overlapInput.currentIncidentId,
-          repo_full_name: overlapInput.repoFullName,
-        },
-        "failed to release recovered pull request overlap claim; stale claim may block future deliveries",
-      );
-      throw err;
-    }
+    await finalizePullRequestOverlapClaim(overlapInput, value, releasePullRequestOverlapClaim);
     guarded = { ok: true, value };
   } else {
     guarded = await dependencies.guardOverlap(overlapInput, openAndReconcile);

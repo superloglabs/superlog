@@ -18,6 +18,7 @@ type RecordedCall =
   | "pull_request.lookup"
   | "pull_request.insert"
   | "pull_request.update"
+  | "overlap_claim.delete"
   | "pull_request.close"
   | "pull_request_event.insert"
   | "delivery_receipt.lookup"
@@ -131,7 +132,9 @@ function recordingPullRequestDb(opts: {
     delete(table: unknown) {
       assert.equal(table, schema.agentPullRequestOverlapClaims);
       return {
-        async where() {},
+        async where() {
+          calls.push("overlap_claim.delete");
+        },
       };
     },
     query: {
@@ -297,6 +300,7 @@ test("an opened PR and its per-entry delivery receipt commit under the same inci
     "transaction.begin",
     "incident.lock",
     "pull_request.insert",
+    "overlap_claim.delete",
     "pull_request_event.insert",
     "delivery_receipt.insert",
     "transaction.end",
@@ -512,6 +516,7 @@ test("an existing PR update atomically records the exact delivery entry", async 
       prNumber: 42,
       url: "https://github.com/acme/api/pull/42",
       branchName: "ash/fix-api",
+      baseBranch: "main",
       headSha: "def456",
       deliveryIdentity: {
         deliveryId: "d4e5f60718293a4b",
@@ -530,6 +535,7 @@ test("an existing PR update atomically records the exact delivery entry", async 
     "incident.lock",
     "pull_request.update",
     "delivery_receipt.insert",
+    "overlap_claim.delete",
     "transaction.end",
   ]);
 });
