@@ -47,12 +47,14 @@ test("OAuth accepts read and write scopes", () => {
 test("OAuth write access requires read access", () => {
   assert.deepEqual(resolveMcpOauthScope("mcp:write"), {
     error: "mcp:write requires mcp:read",
+    reason: "write_requires_read",
   });
 });
 
 test("OAuth rejects unsupported scopes", () => {
   assert.deepEqual(resolveMcpOauthScope("mcp:read profile"), {
     error: "unsupported MCP scope: profile",
+    reason: "unsupported_scope",
   });
 });
 

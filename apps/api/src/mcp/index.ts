@@ -119,7 +119,18 @@ async function resolveToken(
     return { reason: `resource mismatch (stored=${row.resource})` };
   }
   const resolvedScope = resolveStoredMcpOauthScope(row.scope);
-  if ("error" in resolvedScope) return { reason: resolvedScope.error };
+  if ("error" in resolvedScope) {
+    log.info(
+      {
+        tokenId: row.id,
+        storedScope: row.scope,
+        reason: resolvedScope.reason,
+        error: resolvedScope.error,
+      },
+      "MCP token rejected: scope resolution failed",
+    );
+    return { reason: resolvedScope.error };
+  }
   return {
     tokenId: row.id,
     tokenKind: "oauth",

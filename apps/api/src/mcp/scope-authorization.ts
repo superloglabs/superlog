@@ -15,19 +15,28 @@ export const MCP_WRITE_SCOPE = "mcp:write";
 export const MCP_SUPPORTED_SCOPES = [MCP_READ_SCOPE, MCP_WRITE_SCOPE] as const;
 export const MCP_DEFAULT_SCOPE = MCP_SUPPORTED_SCOPES.join(" ");
 
-export function resolveMcpOauthScope(
-  requestedScope: string | null,
-): { scope: string } | { error: string } {
+type McpScopeResolution =
+  | { scope: string }
+  | {
+      error: string;
+      reason: "unsupported_scope" | "write_requires_read";
+    };
+
+export function resolveMcpOauthScope(requestedScope: string | null): McpScopeResolution {
   const requested = requestedScope?.split(/\s+/).filter(Boolean) ?? [];
   const supported = new Set<string>(MCP_SUPPORTED_SCOPES);
   const unsupported = [...new Set(requested.filter((scope) => !supported.has(scope)))];
   if (unsupported.length > 0) {
     return {
       error: `unsupported MCP scope${unsupported.length === 1 ? "" : "s"}: ${unsupported.join(", ")}`,
+      reason: "unsupported_scope",
     };
   }
   if (requested.includes(MCP_WRITE_SCOPE) && !requested.includes(MCP_READ_SCOPE)) {
-    return { error: `${MCP_WRITE_SCOPE} requires ${MCP_READ_SCOPE}` };
+    return {
+      error: `${MCP_WRITE_SCOPE} requires ${MCP_READ_SCOPE}`,
+      reason: "write_requires_read",
+    };
   }
   if (requested.length === 0) return { scope: MCP_DEFAULT_SCOPE };
   return {

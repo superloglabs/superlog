@@ -420,6 +420,14 @@ async function validateAuthorizeParams(
   }
   const resolvedScope = resolveMcpOauthScope(params.scope);
   if ("error" in resolvedScope) {
+    log.info(
+      {
+        requestedScope: params.scope,
+        reason: resolvedScope.reason,
+        error: resolvedScope.error,
+      },
+      "MCP authorization rejected: scope resolution failed",
+    );
     return { code: "invalid_scope", description: resolvedScope.error };
   }
   params.scope = resolvedScope.scope;
