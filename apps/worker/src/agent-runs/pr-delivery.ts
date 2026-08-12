@@ -418,6 +418,9 @@ export async function completeWithPullRequest(
           } catch (err) {
             return {
               kind: "push_failed" as const,
+              providerMutationStarted: !(
+                err instanceof PullRequestProviderMutationNotStartedError && err.safeToReleaseClaim
+              ),
               error: summarizePrOpenFailure(err),
               err,
             };
@@ -614,6 +617,9 @@ export async function completeWithPullRequest(
       } catch (err) {
         return {
           kind: "open_failed" as const,
+          providerMutationStarted: !(
+            err instanceof PullRequestProviderMutationNotStartedError && err.safeToReleaseClaim
+          ),
           error: summarizePrOpenFailure(err),
           err,
         };
@@ -2165,8 +2171,7 @@ export async function deliverProposedPullRequest(
           return {
             kind: "push_failed" as const,
             providerMutationStarted: !(
-              prepared?.kind === "patch" &&
-              err instanceof PullRequestProviderMutationNotStartedError
+              err instanceof PullRequestProviderMutationNotStartedError && err.safeToReleaseClaim
             ),
             error: summarizePrOpenFailure(err),
           };
@@ -2250,7 +2255,7 @@ export async function deliverProposedPullRequest(
       return {
         kind: "open_failed" as const,
         providerMutationStarted: !(
-          prepared?.kind === "patch" && err instanceof PullRequestProviderMutationNotStartedError
+          err instanceof PullRequestProviderMutationNotStartedError && err.safeToReleaseClaim
         ),
         error: summarizePrOpenFailure(err),
       };

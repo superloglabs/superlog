@@ -812,9 +812,11 @@ class GitCommandError extends Error {
 
 export class PullRequestProviderMutationNotStartedError extends Error {
   override readonly name = "PullRequestProviderMutationNotStartedError";
+  readonly safeToReleaseClaim: boolean;
 
-  constructor(cause: unknown) {
+  constructor(cause: unknown, safeToReleaseClaim: boolean) {
     super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.safeToReleaseClaim = safeToReleaseClaim;
   }
 }
 
@@ -1407,7 +1409,7 @@ export async function applyPatchAndOpenPr(opts: {
     workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-pr-"));
     writeToken = await createGithubWriteToken(opts.installationId, opts.repositoryId);
   } catch (err) {
-    throw new PullRequestProviderMutationNotStartedError(err);
+    throw new PullRequestProviderMutationNotStartedError(err, false);
   }
   const preferredBaseBranch = opts.baseBranch?.trim() || repo.default_branch;
   const gitAuthEnv = githubGitAuthEnv(writeToken);
@@ -1489,7 +1491,7 @@ export async function applyPatchAndOpenPr(opts: {
         : opts.title;
       await ensureGitOk(["commit", "--no-verify", "-m", commitMessage], { cwd: repoDir });
     } catch (err) {
-      throw new PullRequestProviderMutationNotStartedError(err);
+      throw new PullRequestProviderMutationNotStartedError(err, true);
     }
 
     let headBranch: string;
@@ -1569,7 +1571,7 @@ export async function pushPatchToExistingAgentPr(opts: {
     workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-pr-update-"));
     writeToken = await createGithubWriteToken(opts.installationId, opts.repositoryId);
   } catch (err) {
-    throw new PullRequestProviderMutationNotStartedError(err);
+    throw new PullRequestProviderMutationNotStartedError(err, false);
   }
   const gitAuthEnv = githubGitAuthEnv(writeToken);
   const repoDir = path.join(workdir, "repo");
@@ -1605,10 +1607,14 @@ export async function pushPatchToExistingAgentPr(opts: {
         ],
         { env: gitAuthEnv, suppressOutputOnError: true },
       );
-      if (opts.deliveryId) {
-        const recoveredHeadSha = await recoverDeliveredHead("HEAD");
-        if (recoveredHeadSha) return { headSha: recoveredHeadSha, recoveredDelivery: true };
-      }
+    } catch (err) {
+      throw new PullRequestProviderMutationNotStartedError(err, false);
+    }
+    if (opts.deliveryId) {
+      const recoveredHeadSha = await recoverDeliveredHead("HEAD");
+      if (recoveredHeadSha) return { headSha: recoveredHeadSha, recoveredDelivery: true };
+    }
+    try {
       const gitIdentity = resolveGitIdentity(opts.commitAuthor);
       await ensureGitOk(["config", "user.name", gitIdentity.name], { cwd: repoDir });
       await ensureGitOk(["config", "user.email", gitIdentity.email], { cwd: repoDir });
@@ -1629,7 +1635,7 @@ export async function pushPatchToExistingAgentPr(opts: {
         : opts.commitTitle;
       await ensureGitOk(["commit", "--no-verify", "-m", commitMessage], { cwd: repoDir });
     } catch (err) {
-      throw new PullRequestProviderMutationNotStartedError(err);
+      throw new PullRequestProviderMutationNotStartedError(err, true);
     }
     try {
       await ensureGitPushOk(["push", "origin", `HEAD:refs/heads/${opts.branchName}`], {
