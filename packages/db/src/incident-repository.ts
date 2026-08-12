@@ -86,6 +86,10 @@ export function createIncidentRepository(database: DB) {
         .values({ incidentId: incident.id, issueId: issue.id })
         .onConflictDoNothing()
         .returning({ id: schema.incidentIssues.id });
+      await tx
+        .update(schema.alertEpisodes)
+        .set({ incidentId: incident.id, updatedAt })
+        .where(eq(schema.alertEpisodes.issueId, issue.id));
       if (!inserted[0]) return false;
 
       await tx

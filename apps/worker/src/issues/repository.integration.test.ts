@@ -11,7 +11,7 @@ import { type DB, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import { type PgliteDatabase, drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
-import { updateIssueGrouping } from "./repository.js";
+import { findOpenIncidentForAlert, updateIssueGrouping } from "./repository.js";
 
 // Real-Postgres (pglite, in-process) coverage for the updateIssueGrouping
 // guards. The onlyIfUndecided guard is the one that keeps a losing
@@ -124,4 +124,55 @@ test("onlyIfUndecided re-marks a retryable 'failed' issue (the grouping sweep ca
     db as unknown as DB,
   );
   assert.equal((await groupingOf(issue.id)).state, "pending");
+});
+
+test("same-alert lookup follows the issue link when queued intake has not stamped the episode", async () => {
+  const [user] = await db
+    .insert(schema.users)
+    .values({ email: "queued-alert-owner@example.com", name: "Alert owner" })
+    .returning();
+  assert.ok(user);
+  const [alert] = await db
+    .insert(schema.alerts)
+    .values({
+      projectId,
+      name: "Slow requests",
+      source: "traces",
+      aggregation: "count",
+      comparator: "gt",
+      threshold: 0,
+      createdBy: user.id,
+    })
+    .returning();
+  assert.ok(alert);
+  const issue = await makeIssue();
+  const [incident] = await db
+    .insert(schema.incidents)
+    .values({
+      projectId,
+      title: issue.title,
+      codename: "queued-alert-incident",
+      status: "open",
+      firstSeen: issue.firstSeen,
+      lastSeen: issue.lastSeen,
+    })
+    .returning();
+  assert.ok(incident);
+  await db.insert(schema.incidentIssues).values({ incidentId: incident.id, issueId: issue.id });
+  await db.insert(schema.alertEpisodes).values({
+    alertId: alert.id,
+    projectId,
+    groupKey: "",
+    startedAt: issue.firstSeen,
+    openObservedValue: 2,
+    peakObservedValue: 2,
+    lastObservedValue: 2,
+    lastFiringAt: issue.lastSeen,
+    issueId: issue.id,
+    incidentId: null,
+  });
+
+  const found = await findOpenIncidentForAlert(alert.id, "", db as unknown as DB);
+
+  assert.equal(found?.id, incident.id);
 });

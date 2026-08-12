@@ -92,18 +92,6 @@ export function createAlertRepository(db: DB) {
       });
     },
 
-    // Resolve the incident an alert issue is currently linked to (if any), so a
-    // freshly-opened episode can point straight at it. An issue keeps one link
-    // per incident it has driven; the newest link is its current incident.
-    async findIncidentIdForIssue(issueId: string): Promise<string | null> {
-      const link = await db.query.incidentIssues.findFirst({
-        where: eq(schema.incidentIssues.issueId, issueId),
-        orderBy: [desc(schema.incidentIssues.createdAt)],
-        columns: { incidentId: true },
-      });
-      return link?.incidentId ?? null;
-    },
-
     // Open (or continue) the episode for an alert+group. The partial-unique
     // index over open rows is the dedup arbiter: there is never more than one
     // open row per (alert, group), so a single activation can't fragment into
@@ -213,13 +201,6 @@ export function createAlertRepository(db: DB) {
         .set({ issueId: issue.id, updatedAt: new Date() })
         .where(eq(schema.alertEpisodes.id, input.episodeId));
       return { issue, inserted: raw?.xmax === "0" };
-    },
-
-    async setEpisodeIncident(episodeId: string, incidentId: string): Promise<void> {
-      await db
-        .update(schema.alertEpisodes)
-        .set({ incidentId, updatedAt: new Date() })
-        .where(eq(schema.alertEpisodes.id, episodeId));
     },
 
     // Advance an open episode on a still-firing tick: update the latest value,

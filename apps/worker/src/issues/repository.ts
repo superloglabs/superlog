@@ -199,17 +199,24 @@ export async function withIssueIntakeLock<T>(
 }
 
 // Newest incident driven by an episode of the same alert+group, optionally
-// restricted to open incidents. Single query shape so the open-join and
-// latest-predecessor lookups can't drift apart.
+// restricted to open incidents. Follow the episode Issue's authoritative
+// incident link rather than the episode's denormalized incident_id: queued
+// intake creates that link after the alert evaluation has already returned.
+// Single query shape keeps the open-join and latest-predecessor lookups aligned.
 async function findNewestIncidentForAlert(
   alertId: string,
   groupKey: string,
   opts: { openOnly: boolean },
+  database: DB = db,
 ): Promise<schema.Incident | undefined> {
-  const rows = await db
+  const rows = await database
     .select({ incident: schema.incidents })
     .from(schema.alertEpisodes)
-    .innerJoin(schema.incidents, eq(schema.incidents.id, schema.alertEpisodes.incidentId))
+    .innerJoin(
+      schema.incidentIssues,
+      eq(schema.incidentIssues.issueId, schema.alertEpisodes.issueId),
+    )
+    .innerJoin(schema.incidents, eq(schema.incidents.id, schema.incidentIssues.incidentId))
     .where(
       and(
         eq(schema.alertEpisodes.alertId, alertId),
@@ -217,7 +224,7 @@ async function findNewestIncidentForAlert(
         opts.openOnly ? eq(schema.incidents.status, "open") : undefined,
       ),
     )
-    .orderBy(desc(schema.alertEpisodes.startedAt))
+    .orderBy(desc(schema.alertEpisodes.startedAt), desc(schema.incidentIssues.createdAt))
     .limit(1);
   return rows[0]?.incident;
 }
@@ -227,8 +234,9 @@ async function findNewestIncidentForAlert(
 export async function findOpenIncidentForAlert(
   alertId: string,
   groupKey: string,
+  database: DB = db,
 ): Promise<schema.Incident | undefined> {
-  return findNewestIncidentForAlert(alertId, groupKey, { openOnly: true });
+  return findNewestIncidentForAlert(alertId, groupKey, { openOnly: true }, database);
 }
 
 // Newest incident (any status) driven by an episode of the same alert+group —
@@ -236,8 +244,9 @@ export async function findOpenIncidentForAlert(
 export async function findLatestIncidentForAlert(
   alertId: string,
   groupKey: string,
+  database: DB = db,
 ): Promise<schema.Incident | undefined> {
-  return findNewestIncidentForAlert(alertId, groupKey, { openOnly: false });
+  return findNewestIncidentForAlert(alertId, groupKey, { openOnly: false }, database);
 }
 
 export async function linkIssueToIncident(opts: {

@@ -48,7 +48,6 @@ function makeRepoFake(opts: {
   capturedUpserts?: EpisodeIssueUpsertInput[];
   capturedTouches?: EpisodeTouchInput[];
   dueAlerts?: schema.Alert[];
-  incidentIdForIssue?: string | null;
 }): AlertRepository {
   return {
     async listDueAlerts() {
@@ -74,18 +73,11 @@ function makeRepoFake(opts: {
         inserted: opts.upsertInserted ?? true,
       };
     },
-    async setEpisodeIncident(episodeId, incidentId) {
-      opts.calls.push(`setEpisodeIncident:${episodeId}:${incidentId}`);
-    },
     async recordFiring(record) {
       opts.calls.push(
         `recordFiring:${record.groupKey || "*"}:${record.state}:${record.issueId ?? "null"}`,
       );
       opts.capturedFirings?.push(record);
-    },
-    async findIncidentIdForIssue(issueId) {
-      opts.calls.push(`findIncidentIdForIssue:${issueId}`);
-      return opts.incidentIdForIssue ?? null;
     },
     async touchOpenEpisode(input) {
       opts.calls.push(`touchOpenEpisode:${input.groupKey || "*"}`);
@@ -150,7 +142,6 @@ test("evaluateAlertWorkflow: first-time firing opens the episode first, then rai
     "openOrContinueEpisode:*",
     "upsertEpisodeIssue:ep-1",
     "handleIssueTransition:issue-1:new",
-    "findIncidentIdForIssue:issue-1",
     "recordFiring:*:firing:issue-1",
     "markEvaluated:alert-1",
   ]);
@@ -158,17 +149,6 @@ test("evaluateAlertWorkflow: first-time firing opens the episode first, then rai
   assert.equal(opens[0]?.observedValue, 20);
   assert.equal(upserts[0]?.episodeId, "ep-1");
   assert.equal(upserts[0]?.title, "Errors > 10 (observed=20)");
-});
-
-test("evaluateAlertWorkflow: new firing points the episode at the issue's incident", async () => {
-  const calls: string[] = [];
-  const repo = makeRepoFake({ calls, incidentIdForIssue: "inc-1" });
-  const deps = makeDeps({ calls, repo });
-
-  await evaluateAlertWorkflow(makeAlert(), deps);
-
-  assert.ok(calls.includes("findIncidentIdForIssue:issue-1"));
-  assert.ok(calls.includes("setEpisodeIncident:ep-1:inc-1"));
 });
 
 test("evaluateAlertWorkflow: retried tick notifies again even when the issue upsert folded", async () => {
