@@ -118,8 +118,8 @@ async function processEvaluation(
 
 // The breach (episode) is the trigger entity: open it first — the partial
 // unique index over open rows makes that the dedup arbiter — then raise its
-// 1:1 issue and hand it to incident intake. Finally point the episode at the
-// incident the issue landed on.
+// 1:1 issue and hand it to incident intake. Intake may run asynchronously;
+// the incident lifecycle stamps the episode when it commits the Issue link.
 async function openEpisodeAndNotify(
   alert: schema.Alert,
   evalResult: EvaluationResult,
@@ -149,10 +149,6 @@ async function openEpisodeAndNotify(
   // per-issue advisory lock around the read-then-create section — see
   // incident-intake.ts), so both racers land on one incident.
   await deps.handleIssueTransition(upsert.issue, "new");
-  const incidentId = await deps.repo.findIncidentIdForIssue(upsert.issue.id);
-  if (incidentId) {
-    await deps.repo.setEpisodeIncident(episodeId, incidentId);
-  }
   return upsert.issue.id;
 }
 

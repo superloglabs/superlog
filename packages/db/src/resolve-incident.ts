@@ -872,14 +872,11 @@ export function createIncidentLifecycle(database: DB = db) {
         await repository.updateIncidentInTx(
           tx,
           incident.id,
-          { previousIncidentId: opts.previousIncident.id, issueCount: 1 },
+          { previousIncidentId: opts.previousIncident.id },
           now,
         );
         await repository.updateIssueInTx(tx, opts.issue.id, buildIssueReopenPatch());
-        await tx
-          .insert(schema.incidentIssues)
-          .values({ incidentId: incident.id, issueId: opts.issue.id })
-          .onConflictDoNothing();
+        await repository.linkIssueInTx(tx, incident, opts.issue, now);
 
         await repository.insertEventInTx(tx, {
           incidentId: incident.id,

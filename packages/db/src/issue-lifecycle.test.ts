@@ -90,6 +90,61 @@ async function seedIncidentWithIssue(
   return { issue, incident };
 }
 
+async function seedAlertEpisodeIssue(db: DB, projectId: string) {
+  const user = one(
+    await db
+      .insert(schema.users)
+      .values({ email: "alert-owner@example.com", name: "Alert owner" })
+      .returning(),
+  );
+  const alert = one(
+    await db
+      .insert(schema.alerts)
+      .values({
+        projectId,
+        name: "Slow requests",
+        source: "traces",
+        aggregation: "count",
+        comparator: "gt",
+        threshold: 0,
+        createdBy: user.id,
+      })
+      .returning(),
+  );
+  const now = new Date("2026-08-08T08:03:03.623Z");
+  const issue = one(
+    await db
+      .insert(schema.issues)
+      .values({
+        projectId,
+        fingerprint: "alert-episode:test-episode",
+        kind: "alert",
+        exceptionType: "AlertFired",
+        title: "Slow requests > 0 (observed=2)",
+        firstSeen: now,
+        lastSeen: now,
+      })
+      .returning(),
+  );
+  const episode = one(
+    await db
+      .insert(schema.alertEpisodes)
+      .values({
+        alertId: alert.id,
+        projectId,
+        groupKey: "",
+        startedAt: now,
+        openObservedValue: 2,
+        peakObservedValue: 2,
+        lastObservedValue: 2,
+        lastFiringAt: now,
+        issueId: issue.id,
+      })
+      .returning(),
+  );
+  return { episode, issue, now };
+}
+
 async function eventKinds(db: DB, incidentId: string): Promise<string[]> {
   const rows = await db.query.incidentEvents.findMany({
     where: eq(schema.incidentEvents.incidentId, incidentId),
@@ -1249,7 +1304,9 @@ test("hasCurrentSilencedIssues follows the issue's current incident link", async
     // The issue recurs into a NEW incident which later silences it. The old
     // incident's historical link must not resurface the silenced state (its
     // un-silence button could no longer touch the issue).
-    const reloaded = one(await db.select().from(schema.issues).where(eq(schema.issues.id, issue.id)));
+    const reloaded = one(
+      await db.select().from(schema.issues).where(eq(schema.issues.id, issue.id)),
+    );
     const successor = await lifecycle.openRecurrence({
       previousIncident: incident,
       issue: reloaded,
@@ -1478,6 +1535,74 @@ test("an Issue cannot be linked after Incident resolution wins the lifecycle loc
       where: eq(schema.incidentIssues.issueId, lateIssue.id),
     });
     assert.deepEqual(links, []);
+  } finally {
+    await client.close();
+  }
+});
+
+test("linking an alert issue records the incident on its episode after asynchronous intake", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { episode, issue, now } = await seedAlertEpisodeIssue(db, project.id);
+    const incident = one(
+      await db
+        .insert(schema.incidents)
+        .values({
+          projectId: project.id,
+          title: issue.title,
+          codename: "slow-requests",
+          status: "open",
+          firstSeen: now,
+          lastSeen: now,
+        })
+        .returning(),
+    );
+
+    const linked = await createIncidentLifecycle(db).linkIssueToOpenIncident({
+      incidentId: incident.id,
+      issue,
+    });
+
+    assert.equal(linked, "linked");
+    const episodeAfter = one(
+      await db.select().from(schema.alertEpisodes).where(eq(schema.alertEpisodes.id, episode.id)),
+    );
+    assert.equal(episodeAfter.incidentId, incident.id);
+  } finally {
+    await client.close();
+  }
+});
+
+test("opening an alert recurrence records the successor incident on its episode", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const { episode, issue, now } = await seedAlertEpisodeIssue(db, project.id);
+    const previousIncident = one(
+      await db
+        .insert(schema.incidents)
+        .values({
+          projectId: project.id,
+          title: "Earlier slow requests",
+          codename: "earlier-slow-requests",
+          status: "resolved",
+          firstSeen: new Date(now.getTime() - 60_000),
+          lastSeen: new Date(now.getTime() - 30_000),
+        })
+        .returning(),
+    );
+
+    const recurrence = await createIncidentLifecycle(db).openRecurrence({
+      previousIncident,
+      issue,
+      origin: "alert_breached_again",
+    });
+
+    const episodeAfter = one(
+      await db.select().from(schema.alertEpisodes).where(eq(schema.alertEpisodes.id, episode.id)),
+    );
+    assert.equal(episodeAfter.incidentId, recurrence.id);
   } finally {
     await client.close();
   }
