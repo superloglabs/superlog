@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { IssueSample, schema } from "@superlog/db";
 import type { GroupingCandidateIncident, GroupingNewIssue } from "../grouping.js";
 import { compactDiagnosticText } from "../grouping/domain.js";
@@ -15,7 +16,9 @@ export type LinkedIncidentIssue = {
   topFrame: string | null;
   normalizedFrames: string[];
   lastSample: IssueSample | null;
+  firstSeen?: Date;
   lastSeen: Date;
+  eventCount?: number;
 };
 
 export type IncidentMatch = {
@@ -56,8 +59,49 @@ export function sampleLogAttrs(sample: IssueSample | null): Record<string, strin
   return Object.keys(out).length ? out : null;
 }
 
-export function groupingIssueInput(issue: schema.Issue): GroupingNewIssue {
+const GROUPING_RESOURCE_ATTR_KEYS = [
+  "deployment.environment",
+  "deployment.environment.name",
+  "environment",
+  "service.name",
+  "service.namespace",
+  "service.version",
+  "vcs.repository.url.full",
+] as const;
+const GROUPING_RESOURCE_ATTR_COUNT_CAP = 20;
+const GROUPING_RESOURCE_ATTR_KEY_CAP = 120;
+const GROUPING_RESOURCE_ATTR_VALUE_CAP = 300;
+
+function compactResourceAttrKey(key: string): string {
+  if (key.length <= GROUPING_RESOURCE_ATTR_KEY_CAP) return key;
+  const digest = createHash("sha256").update(key).digest("hex").slice(0, 12);
+  return `${key.slice(0, GROUPING_RESOURCE_ATTR_KEY_CAP - digest.length - 1)}~${digest}`;
+}
+
+export function sampleResourceAttrs(sample: IssueSample | null): Record<string, string> | null {
+  const attrs = sample?.resourceAttrs;
+  if (!attrs) return null;
+  const priority = new Map<string, number>(
+    GROUPING_RESOURCE_ATTR_KEYS.map((key, index) => [key, index]),
+  );
+  const entries = Object.entries(attrs).sort(([left], [right]) => {
+    const leftPriority = priority.get(left) ?? GROUPING_RESOURCE_ATTR_KEYS.length;
+    const rightPriority = priority.get(right) ?? GROUPING_RESOURCE_ATTR_KEYS.length;
+    return leftPriority - rightPriority || left.localeCompare(right);
+  });
+  const out: Record<string, string> = {};
+  for (const [key, value] of entries.slice(0, GROUPING_RESOURCE_ATTR_COUNT_CAP)) {
+    out[compactResourceAttrKey(key)] = String(value).slice(0, GROUPING_RESOURCE_ATTR_VALUE_CAP);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+export function groupingIssueInput(
+  issue: schema.Issue,
+  opts: { includeLifetimeOccurrenceEvidence?: boolean } = {},
+): GroupingNewIssue {
   const sample = issueSample(issue);
+  const includeLifetimeOccurrenceEvidence = opts.includeLifetimeOccurrenceEvidence !== false;
   return {
     id: issue.id,
     title: issue.title,
@@ -66,11 +110,15 @@ export function groupingIssueInput(issue: schema.Issue): GroupingNewIssue {
     message: compactDiagnosticText(issue.message),
     topFrame: issue.topFrame,
     normalizedFrames: issue.normalizedFrames ?? [],
+    ...(includeLifetimeOccurrenceEvidence ? { firstSeen: issue.firstSeen.toISOString() } : {}),
+    lastSeen: issue.lastSeen.toISOString(),
+    ...(includeLifetimeOccurrenceEvidence ? { eventCount: issue.eventCount } : {}),
     observedAt: issue.lastSeen.toISOString(),
     stacktrace: sampleStacktrace(sample),
     traceId: sample?.traceId ?? null,
     spanId: sample?.spanId ?? null,
     logAttrs: sampleLogAttrs(sample),
+    resourceAttrs: sampleResourceAttrs(sample),
   };
 }
 
@@ -159,23 +207,37 @@ export function buildGroupingCandidate(
       normalizedFrames: representative.normalizedFrames ?? [],
       traceId: representative.lastSample?.traceId ?? null,
       spanId: representative.lastSample?.spanId ?? null,
+      resourceAttrs: sampleResourceAttrs(representative.lastSample),
     },
     // Full per-issue context (stack traces, code locations) so the agent can
     // compare root causes instead of message wording. Surfaced by
     // inspect_incident; the index line only uses the first entry.
-    issues: rows.slice(0, GROUPING_CANDIDATE_ISSUE_LIMIT).map((row) => ({
-      id: row.issueId,
-      title: row.title,
-      service: row.service,
-      exceptionType: row.exceptionType,
-      message: row.message,
-      topFrame: row.topFrame,
-      normalizedFrames: row.normalizedFrames ?? [],
-      traceId: row.lastSample?.traceId ?? null,
-      spanId: row.lastSample?.spanId ?? null,
-      logAttrs: sampleLogAttrs(row.lastSample),
-      stacktrace: sampleStacktrace(row.lastSample),
-      lastSeen: row.lastSeen.toISOString(),
-    })),
+    issues: rows.slice(0, GROUPING_CANDIDATE_ISSUE_LIMIT).map((row) => {
+      // Issue counters are lifetime totals. They are valid evidence for this
+      // incident only when the issue itself began in this incident's window;
+      // recurrent issues otherwise include occurrences from older incidents.
+      const occurrenceEvidenceIsIncidentScoped =
+        row.firstSeen !== undefined &&
+        row.eventCount !== undefined &&
+        row.firstSeen.getTime() >= incident.firstSeen.getTime();
+      return {
+        id: row.issueId,
+        title: row.title,
+        service: row.service,
+        exceptionType: row.exceptionType,
+        message: row.message,
+        topFrame: row.topFrame,
+        normalizedFrames: row.normalizedFrames ?? [],
+        traceId: row.lastSample?.traceId ?? null,
+        spanId: row.lastSample?.spanId ?? null,
+        logAttrs: sampleLogAttrs(row.lastSample),
+        stacktrace: sampleStacktrace(row.lastSample),
+        resourceAttrs: sampleResourceAttrs(row.lastSample),
+        ...(occurrenceEvidenceIsIncidentScoped
+          ? { firstSeen: row.firstSeen?.toISOString(), eventCount: row.eventCount }
+          : {}),
+        lastSeen: row.lastSeen.toISOString(),
+      };
+    }),
   };
 }

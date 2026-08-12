@@ -9,6 +9,7 @@ import {
   findSameTraceIncidentMatch,
   groupingIssueInput,
   overlapCount,
+  sampleResourceAttrs,
 } from "./domain.js";
 
 test("overlapCount compares only the top five normalized frames", () => {
@@ -38,7 +39,7 @@ test("findSameTraceIncidentMatch joins the incident sharing the issue's trace id
     ...makeIssue(["svc/log.ts"]),
     exceptionType: "ERROR",
     lastSample: { traceId: "trace-xyz", spanId: "span-1" },
-  } as schema.Issue;
+  } as unknown as schema.Issue;
   const candidates = [makeIncident("inc-1"), makeIncident("inc-2")];
   const linked: LinkedIncidentIssue[] = [
     {
@@ -66,15 +67,74 @@ test("findSameTraceIncidentMatch returns null when the issue has no trace id", (
   assert.equal(findSameTraceIncidentMatch(issue, candidates, linked), null);
 });
 
+test("sampleResourceAttrs prioritizes grouping keys and bounds untrusted telemetry", () => {
+  const resourceAttrs = Object.fromEntries(
+    Array.from({ length: 100 }, (_, index) => [`custom.attribute.${index}`, "x".repeat(1_000)]),
+  );
+  resourceAttrs["deployment.environment.name"] = "production";
+  resourceAttrs["service.version"] = "v1.2.3";
+
+  const compacted = sampleResourceAttrs({ resourceAttrs } as never);
+
+  assert.equal(compacted?.["deployment.environment.name"], "production");
+  assert.equal(compacted?.["service.version"], "v1.2.3");
+  assert.ok(Object.keys(compacted ?? {}).length <= 20);
+  assert.ok(JSON.stringify(compacted).length < 10_000);
+});
+
+test("sampleResourceAttrs keeps distinct long attribute keys distinct", () => {
+  const sharedPrefix = "custom.attribute.".repeat(10);
+  const compacted = sampleResourceAttrs({
+    resourceAttrs: {
+      [`${sharedPrefix}primary`]: "one",
+      [`${sharedPrefix}replica`]: "two",
+    },
+  } as never);
+
+  assert.equal(Object.keys(compacted ?? {}).length, 2);
+  assert.deepEqual(new Set(Object.values(compacted ?? {})), new Set(["one", "two"]));
+  assert.ok(Object.keys(compacted ?? {}).every((key) => key.length <= 120));
+});
+
+test("groupingIssueInput omits lifetime occurrence evidence for a recurrence", () => {
+  const input = groupingIssueInput(makeIssue(["svc/a.ts"]), {
+    includeLifetimeOccurrenceEvidence: false,
+  });
+
+  assert.equal("firstSeen" in input, false);
+  assert.equal("eventCount" in input, false);
+  assert.equal(input.lastSeen, "2026-07-17T10:05:00.000Z");
+});
+
 test("groupingIssueInput and buildGroupingCandidate keep LLM input shape explicit", () => {
   const issue = {
     ...makeIssue(["svc/a.ts"]),
-    lastSample: { traceId: "trace-1", spanId: "span-1", stacktrace: "stack" },
-  } as schema.Issue;
+    eventCount: 2,
+    lastSample: {
+      traceId: "trace-1",
+      spanId: "span-1",
+      stacktrace: "stack",
+      resourceAttrs: {
+        "deployment.environment.name": "prod",
+        "service.version": "v1.2.3",
+        "vcs.repository.url.full": "https://github.com/acme/api",
+      },
+    },
+  } as unknown as schema.Issue;
   const candidate = buildGroupingCandidate(makeIncident("inc-1"), [
     {
       ...makeLinkedIssue("inc-1", ["svc/a.ts"]),
-      lastSample: { traceId: "trace-2", spanId: "span-2" } as LinkedIncidentIssue["lastSample"],
+      firstSeen: new Date("2026-07-17T10:00:00.000Z"),
+      lastSeen: new Date("2026-07-17T10:05:00.000Z"),
+      eventCount: 2,
+      lastSample: {
+        traceId: "trace-2",
+        spanId: "span-2",
+        resourceAttrs: {
+          "deployment.environment.name": "prod",
+          "service.version": "v1.2.3",
+        },
+      } as unknown as LinkedIncidentIssue["lastSample"],
     },
   ]);
 
@@ -86,19 +146,54 @@ test("groupingIssueInput and buildGroupingCandidate keep LLM input shape explici
     message: "boom",
     topFrame: "svc/a.ts",
     normalizedFrames: ["svc/a.ts"],
+    firstSeen: "2026-07-17T10:00:00.000Z",
+    lastSeen: "2026-07-17T10:05:00.000Z",
+    eventCount: 2,
     observedAt: "2026-07-17T10:05:00.000Z",
     stacktrace: "stack",
     traceId: "trace-1",
     spanId: "span-1",
     logAttrs: null,
+    resourceAttrs: {
+      "deployment.environment.name": "prod",
+      "service.version": "v1.2.3",
+      "vcs.repository.url.full": "https://github.com/acme/api",
+    },
   });
   assert.ok(candidate?.representative);
   assert.equal(candidate.representative.traceId, "trace-2");
   assert.deepEqual(candidate.representative.normalizedFrames, ["svc/a.ts"]);
+  assert.deepEqual(candidate.representative.resourceAttrs, {
+    "deployment.environment.name": "prod",
+    "service.version": "v1.2.3",
+  });
   // Linked issues now travel with the candidate so inspect_incident can show
   // stack traces and code locations.
   assert.equal(candidate.issues?.length, 1);
   assert.equal(candidate.issues?.[0]?.id, "iss-linked");
+  assert.equal(candidate.issues?.[0]?.firstSeen, "2026-07-17T10:00:00.000Z");
+  assert.equal(candidate.issues?.[0]?.lastSeen, "2026-07-17T10:05:00.000Z");
+  assert.equal(candidate.issues?.[0]?.eventCount, 2);
+});
+
+test("buildGroupingCandidate omits lifetime counts that predate a recurrence window", () => {
+  const candidate = buildGroupingCandidate(
+    {
+      ...makeIncident("inc-recurrence"),
+      firstSeen: new Date("2026-07-18T10:00:00.000Z"),
+    },
+    [
+      {
+        ...makeLinkedIssue("inc-recurrence", ["svc/a.ts"]),
+        firstSeen: new Date("2026-07-17T10:00:00.000Z"),
+        lastSeen: new Date("2026-07-18T10:05:00.000Z"),
+        eventCount: 99,
+      },
+    ],
+  );
+
+  assert.equal("firstSeen" in (candidate?.issues?.[0] ?? {}), false);
+  assert.equal("eventCount" in (candidate?.issues?.[0] ?? {}), false);
 });
 
 test("groupingIssueInput compacts an oversized generated-code frame without losing diagnostics", () => {
@@ -171,6 +266,8 @@ function makeLinkedIssue(incidentId: string, normalizedFrames: string[]): Linked
     topFrame: normalizedFrames[0] ?? null,
     normalizedFrames,
     lastSample: null,
+    firstSeen: new Date(0),
     lastSeen: new Date(1),
+    eventCount: 1,
   };
 }

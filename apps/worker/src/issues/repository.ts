@@ -105,7 +105,9 @@ export async function loadLinkedIncidentIssues(
       topFrame: schema.issues.topFrame,
       normalizedFrames: schema.issues.normalizedFrames,
       lastSample: schema.issues.lastSample,
+      firstSeen: schema.issues.firstSeen,
       lastSeen: schema.issues.lastSeen,
+      eventCount: schema.issues.eventCount,
     })
     .from(schema.incidentIssues)
     .innerJoin(schema.issues, eq(schema.issues.id, schema.incidentIssues.issueId))

@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { metrics } from "@opentelemetry/api";
 import { logger } from "./logger.js";
 
 type GithubPermission = "read" | "write";
@@ -36,15 +37,41 @@ export type GithubInstallationRepo = {
   id: number;
   fullName: string;
   private: boolean;
+  defaultBranch: string;
 };
 
 type GithubInstallationReposResponse = {
-  repositories: Array<{ id: number; full_name: string; private: boolean }>;
+  repositories: Array<{
+    id: number;
+    full_name: string;
+    private: boolean;
+    default_branch: string;
+  }>;
 };
 
 const GITHUB_API = "https://api.github.com";
 const GIT_PUSH_MAX_ATTEMPTS = 3;
 const GIT_PUSH_RETRY_DELAYS_MS = [1_000, 3_000] as const;
+const githubPullRequestDeliveryMeter = metrics.getMeter("@superlog/worker/github-pr-delivery");
+const githubChangedFilesPageCapCounter = githubPullRequestDeliveryMeter.createCounter(
+  "superlog.github.pr_delivery.changed_files_page_cap",
+  {
+    description: "Provider changed-file lookups truncated at the configured page cap.",
+    unit: "1",
+  },
+);
+
+type GithubChangedFilesPageCapSource = "pull_request" | "commit";
+type GithubChangedFilesPageCapCounter = {
+  add(value: number, attributes: { source: GithubChangedFilesPageCapSource }): void;
+};
+
+export function recordGithubChangedFilesPageCapMetric(
+  source: GithubChangedFilesPageCapSource,
+  counter: GithubChangedFilesPageCapCounter = githubChangedFilesPageCapCounter,
+): void {
+  counter.add(1, { source });
+}
 
 export class GithubRequestError extends Error {
   readonly retryable: boolean;
@@ -531,6 +558,30 @@ export async function createGithubWriteToken(
   });
 }
 
+export function githubPullRequestDeliveryReadTokenScope(
+  installationId: number,
+  repositoryId?: number,
+): {
+  installationId: number;
+  repositoryIds?: number[];
+  permissions: Record<string, GithubPermission>;
+} {
+  return {
+    installationId,
+    repositoryIds: repositoryId ? [repositoryId] : undefined,
+    permissions: { contents: "read", pull_requests: "read" },
+  };
+}
+
+async function createGithubPullRequestDeliveryReadToken(
+  installationId: number,
+  repositoryId?: number,
+): Promise<string> {
+  return createInstallationToken(
+    githubPullRequestDeliveryReadTokenScope(installationId, repositoryId),
+  );
+}
+
 // Narrow token for automated PR review: read source/diffs, publish inline
 // review comments, and read reactions on those comments. Exported through the
 // worker's GitHub boundary so background review jobs never handle app JWTs.
@@ -613,6 +664,7 @@ export async function listGithubInstallationRepositories(
         id: repo.id,
         fullName: repo.full_name,
         private: repo.private,
+        defaultBranch: repo.default_branch,
       })),
     );
     if (data.repositories.length < 100) break;
@@ -755,6 +807,16 @@ class GitCommandError extends Error {
     this.command = command;
     this.exitCode = result.code;
     this.publicDetail = detail;
+  }
+}
+
+export class PullRequestProviderMutationNotStartedError extends Error {
+  override readonly name = "PullRequestProviderMutationNotStartedError";
+  readonly safeToReleaseClaim: boolean;
+
+  constructor(cause: unknown, safeToReleaseClaim: boolean) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.safeToReleaseClaim = safeToReleaseClaim;
   }
 }
 
@@ -1113,6 +1175,81 @@ export async function findGithubPullRequestDelivery(opts: {
   });
 }
 
+type GithubChangedFile = {
+  filename: string;
+  previous_filename?: string;
+};
+
+export async function findGithubPullRequestDeliveryChangedFiles(opts: {
+  installationId: number;
+  repositoryId?: number;
+  repoFullName: string;
+  recovered: RecoveredPullRequestDelivery;
+}): Promise<string[]> {
+  const token = await createGithubPullRequestDeliveryReadToken(
+    opts.installationId,
+    opts.repositoryId,
+  );
+  let files: GithubChangedFile[];
+  if (opts.recovered.kind === "pull_request") {
+    files = [];
+    for (let page = 1; page <= 30; page += 1) {
+      const pageFiles = await githubRequest<GithubChangedFile[]>(
+        `/repos/${opts.repoFullName}/pulls/${opts.recovered.pullRequest.prNumber}/files?per_page=100&page=${page}`,
+        { bearerToken: token },
+      );
+      files.push(...pageFiles);
+      if (page === 30) {
+        if (pageFiles.length === 100) {
+          recordGithubChangedFilesPageCapMetric("pull_request");
+          logger.error(
+            {
+              scope: "github.pr_delivery.changed_files_page_cap",
+              repo_full_name: opts.repoFullName,
+              pr_number: opts.recovered.pullRequest.prNumber,
+              page_cap: 30,
+            },
+            "hit page cap fetching pull request changed files; overlap check may be incomplete",
+          );
+        }
+        break;
+      }
+      if (pageFiles.length < 100) break;
+    }
+  } else {
+    files = [];
+    for (let page = 1; page <= 30; page += 1) {
+      const commit = await githubRequest<{ files?: GithubChangedFile[] }>(
+        `/repos/${opts.repoFullName}/commits/${opts.recovered.headSha}?per_page=100&page=${page}`,
+        { bearerToken: token },
+      );
+      const pageFiles = commit.files ?? [];
+      files.push(...pageFiles);
+      if (page === 30) {
+        if (pageFiles.length === 100) {
+          recordGithubChangedFilesPageCapMetric("commit");
+          logger.error(
+            {
+              scope: "github.pr_delivery.changed_files_page_cap",
+              repo_full_name: opts.repoFullName,
+              head_sha: opts.recovered.headSha,
+              page_cap: 30,
+            },
+            "hit page cap fetching commit changed files; overlap check may be incomplete",
+          );
+        }
+        break;
+      }
+      if (pageFiles.length < 100) break;
+    }
+  }
+  return [
+    ...new Set(
+      files.flatMap((file) => [file.filename, file.previous_filename]).filter(Boolean) as string[],
+    ),
+  ].sort();
+}
+
 export type OpenedAgentPullRequest = {
   prUrl: string;
   prNumber: number;
@@ -1212,12 +1349,13 @@ export async function validateAgentPatchApplicability(opts: {
   patch: string;
   baseBranch?: string | null;
   existingBranch?: string | null;
-}): Promise<void> {
+}): Promise<string> {
   const repo = await getGithubRepoInfo(opts.installationId, opts.repoFullName, opts.repositoryId);
   const workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-pr-preflight-"));
   const token = await createGithubWriteToken(opts.installationId, opts.repositoryId);
   const gitAuthEnv = githubGitAuthEnv(token);
   const repoDir = path.join(workdir, "repo");
+  let resolvedBaseBranch = opts.baseBranch?.trim() || repo.default_branch;
   try {
     if (opts.existingBranch) {
       await ensureGitOk(
@@ -1232,7 +1370,7 @@ export async function validateAgentPatchApplicability(opts: {
         { env: gitAuthEnv, suppressOutputOnError: true },
       );
     } else {
-      await cloneRepositoryAtBaseBranch({
+      resolvedBaseBranch = await cloneRepositoryAtBaseBranch({
         repoFullName: opts.repoFullName,
         repoDir,
         preferredBaseBranch: opts.baseBranch?.trim() || repo.default_branch,
@@ -1245,6 +1383,7 @@ export async function validateAgentPatchApplicability(opts: {
     await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv });
     const status = await ensureGitOk(["status", "--porcelain"], { cwd: repoDir });
     if (!status.stdout.trim()) throw new Error("patch produced no working tree changes");
+    return resolvedBaseBranch;
   } finally {
     await rm(workdir, { recursive: true, force: true }).catch(() => {});
   }
@@ -1262,10 +1401,17 @@ export async function applyPatchAndOpenPr(opts: {
   commitAuthor?: { name: string; email: string } | null;
   deliveryId?: string;
 }): Promise<OpenedAgentPullRequest> {
-  const repo = await getGithubRepoInfo(opts.installationId, opts.repoFullName, opts.repositoryId);
+  let repo: GithubRepoInfo;
+  let workdir: string;
+  let writeToken: string;
+  try {
+    repo = await getGithubRepoInfo(opts.installationId, opts.repoFullName, opts.repositoryId);
+    workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-pr-"));
+    writeToken = await createGithubWriteToken(opts.installationId, opts.repositoryId);
+  } catch (err) {
+    throw new PullRequestProviderMutationNotStartedError(err, false);
+  }
   const preferredBaseBranch = opts.baseBranch?.trim() || repo.default_branch;
-  const workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-pr-"));
-  const writeToken = await createGithubWriteToken(opts.installationId, opts.repositoryId);
   const gitAuthEnv = githubGitAuthEnv(writeToken);
   const repoDir = path.join(workdir, "repo");
   const recover = () =>
@@ -1307,41 +1453,46 @@ export async function applyPatchAndOpenPr(opts: {
       }
     }
 
-    const baseBranch = await cloneRepositoryAtBaseBranch({
-      repoFullName: opts.repoFullName,
-      repoDir,
-      preferredBaseBranch,
-      defaultBranch: repo.default_branch,
-      env: gitAuthEnv,
-    });
-    await ensureGitOk(["checkout", "-b", opts.branchName], { cwd: repoDir });
-    const gitIdentity = resolveGitIdentity(opts.commitAuthor);
-    await ensureGitOk(["config", "user.name", gitIdentity.name], { cwd: repoDir });
-    await ensureGitOk(["config", "user.email", gitIdentity.email], { cwd: repoDir });
+    let baseBranch: string;
+    try {
+      baseBranch = await cloneRepositoryAtBaseBranch({
+        repoFullName: opts.repoFullName,
+        repoDir,
+        preferredBaseBranch,
+        defaultBranch: repo.default_branch,
+        env: gitAuthEnv,
+      });
+      await ensureGitOk(["checkout", "-b", opts.branchName], { cwd: repoDir });
+      const gitIdentity = resolveGitIdentity(opts.commitAuthor);
+      await ensureGitOk(["config", "user.name", gitIdentity.name], { cwd: repoDir });
+      await ensureGitOk(["config", "user.email", gitIdentity.email], { cwd: repoDir });
 
-    // Written OUTSIDE the repo checkout: an untracked patch file inside
-    // repoDir would make `git status --porcelain` non-empty even when the
-    // patch changed nothing, defeating the no-op detection below.
-    const patchPath = path.join(workdir, "superlog.patch");
-    const patchBody = normalizeAgentPatch(opts.patch);
-    await writeFile(patchPath, patchBody, "utf8");
-    await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv });
+      // Written OUTSIDE the repo checkout: an untracked patch file inside
+      // repoDir would make `git status --porcelain` non-empty even when the
+      // patch changed nothing, defeating the no-op detection below.
+      const patchPath = path.join(workdir, "superlog.patch");
+      const patchBody = normalizeAgentPatch(opts.patch);
+      await writeFile(patchPath, patchBody, "utf8");
+      await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv });
 
-    // The agent validates its own patch inside its session sandbox (running
-    // the project's build/tests/repro as it sees fit) and reports the outcome
-    // in `pr.validationSummary`. The worker no longer installs dependencies or
-    // executes agent-authored commands here — doing so ran untrusted code (repo
-    // lifecycle scripts + LLM-authored shell) on the worker with its full
-    // environment. We just apply the patch, commit, push, and open the PR.
-    const status = await ensureGitOk(["status", "--porcelain"], { cwd: repoDir });
-    if (!status.stdout.trim()) {
-      throw new Error("patch produced no working tree changes");
+      // The agent validates its own patch inside its session sandbox (running
+      // the project's build/tests/repro as it sees fit) and reports the outcome
+      // in `pr.validationSummary`. The worker no longer installs dependencies or
+      // executes agent-authored commands here — doing so ran untrusted code (repo
+      // lifecycle scripts + LLM-authored shell) on the worker with its full
+      // environment. We just apply the patch, commit, push, and open the PR.
+      const status = await ensureGitOk(["status", "--porcelain"], { cwd: repoDir });
+      if (!status.stdout.trim()) {
+        throw new Error("patch produced no working tree changes");
+      }
+
+      const commitMessage = opts.deliveryId
+        ? buildPullRequestDeliveryCommitMessage(opts.title, opts.deliveryId, baseBranch)
+        : opts.title;
+      await ensureGitOk(["commit", "--no-verify", "-m", commitMessage], { cwd: repoDir });
+    } catch (err) {
+      throw new PullRequestProviderMutationNotStartedError(err, true);
     }
-
-    const commitMessage = opts.deliveryId
-      ? buildPullRequestDeliveryCommitMessage(opts.title, opts.deliveryId, baseBranch)
-      : opts.title;
-    await ensureGitOk(["commit", "--no-verify", "-m", commitMessage], { cwd: repoDir });
 
     let headBranch: string;
     try {
@@ -1414,8 +1565,14 @@ export async function pushPatchToExistingAgentPr(opts: {
   commitAuthor?: { name: string; email: string } | null;
   deliveryId?: string;
 }): Promise<{ headSha: string; recoveredDelivery?: boolean }> {
-  const workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-pr-update-"));
-  const writeToken = await createGithubWriteToken(opts.installationId, opts.repositoryId);
+  let workdir: string;
+  let writeToken: string;
+  try {
+    workdir = await mkdtemp(path.join(os.tmpdir(), "superlog-pr-update-"));
+    writeToken = await createGithubWriteToken(opts.installationId, opts.repositoryId);
+  } catch (err) {
+    throw new PullRequestProviderMutationNotStartedError(err, false);
+  }
   const gitAuthEnv = githubGitAuthEnv(writeToken);
   const repoDir = path.join(workdir, "repo");
   const recoverDeliveredHead = async (ref: string): Promise<string | null> => {
@@ -1435,43 +1592,51 @@ export async function pushPatchToExistingAgentPr(opts: {
   };
 
   try {
-    await ensureGitOk(
-      [
-        "clone",
-        // Blobless partial clone — see cloneRepositoryAtBaseBranch: lets the
-        // `--3way` apply below fetch the agent's pre-image blobs on demand so a
-        // follow-up patch still lands if the PR branch moved.
-        "--filter=blob:none",
-        "--branch",
-        opts.branchName,
-        `https://github.com/${opts.repoFullName}.git`,
-        repoDir,
-      ],
-      { env: gitAuthEnv, suppressOutputOnError: true },
-    );
+    try {
+      await ensureGitOk(
+        [
+          "clone",
+          // Blobless partial clone — see cloneRepositoryAtBaseBranch: lets the
+          // `--3way` apply below fetch the agent's pre-image blobs on demand so a
+          // follow-up patch still lands if the PR branch moved.
+          "--filter=blob:none",
+          "--branch",
+          opts.branchName,
+          `https://github.com/${opts.repoFullName}.git`,
+          repoDir,
+        ],
+        { env: gitAuthEnv, suppressOutputOnError: true },
+      );
+    } catch (err) {
+      throw new PullRequestProviderMutationNotStartedError(err, false);
+    }
     if (opts.deliveryId) {
       const recoveredHeadSha = await recoverDeliveredHead("HEAD");
       if (recoveredHeadSha) return { headSha: recoveredHeadSha, recoveredDelivery: true };
     }
-    const gitIdentity = resolveGitIdentity(opts.commitAuthor);
-    await ensureGitOk(["config", "user.name", gitIdentity.name], { cwd: repoDir });
-    await ensureGitOk(["config", "user.email", gitIdentity.email], { cwd: repoDir });
+    try {
+      const gitIdentity = resolveGitIdentity(opts.commitAuthor);
+      await ensureGitOk(["config", "user.name", gitIdentity.name], { cwd: repoDir });
+      await ensureGitOk(["config", "user.email", gitIdentity.email], { cwd: repoDir });
 
-    // Written OUTSIDE the repo checkout: an untracked patch file inside
-    // repoDir would make `git status --porcelain` non-empty even when the
-    // patch changed nothing, defeating the no-op detection below.
-    const patchPath = path.join(workdir, "superlog.patch");
-    const patchBody = normalizeAgentPatch(opts.patch);
-    await writeFile(patchPath, patchBody, "utf8");
-    await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv });
-    const status = await ensureGitOk(["status", "--porcelain"], { cwd: repoDir });
-    if (!status.stdout.trim()) {
-      throw new Error("patch produced no working tree changes");
+      // Written OUTSIDE the repo checkout: an untracked patch file inside
+      // repoDir would make `git status --porcelain` non-empty even when the
+      // patch changed nothing, defeating the no-op detection below.
+      const patchPath = path.join(workdir, "superlog.patch");
+      const patchBody = normalizeAgentPatch(opts.patch);
+      await writeFile(patchPath, patchBody, "utf8");
+      await applyAgentPatch({ repoDir, patchPath, env: gitAuthEnv });
+      const status = await ensureGitOk(["status", "--porcelain"], { cwd: repoDir });
+      if (!status.stdout.trim()) {
+        throw new Error("patch produced no working tree changes");
+      }
+      const commitMessage = opts.deliveryId
+        ? buildPullRequestDeliveryCommitMessage(opts.commitTitle, opts.deliveryId)
+        : opts.commitTitle;
+      await ensureGitOk(["commit", "--no-verify", "-m", commitMessage], { cwd: repoDir });
+    } catch (err) {
+      throw new PullRequestProviderMutationNotStartedError(err, true);
     }
-    const commitMessage = opts.deliveryId
-      ? buildPullRequestDeliveryCommitMessage(opts.commitTitle, opts.deliveryId)
-      : opts.commitTitle;
-    await ensureGitOk(["commit", "--no-verify", "-m", commitMessage], { cwd: repoDir });
     try {
       await ensureGitPushOk(["push", "origin", `HEAD:refs/heads/${opts.branchName}`], {
         cwd: repoDir,

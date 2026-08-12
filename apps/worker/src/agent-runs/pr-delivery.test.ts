@@ -5,15 +5,413 @@ import type { schema } from "@superlog/db";
 import type { AgentRunContext } from "../agent-run-context.js";
 import {
   PullRequestDeliveryRecoveryPendingError,
+  changedFilesFromAgentRunResult,
+  changedFilesFromUnifiedDiff,
   compensatePullRequestDelivery,
   deliverProposedPullRequest,
+  guardProposedPullRequestOverlap,
+  overlappingFilesForPullRequestClaim,
   preflightProposedPullRequest,
   publishPullRequestUpdateIfCurrent,
   pullRequestDeliveryIdentityForLegacyCompletion,
   reconcileGithubPullRequestMutation,
   reconcilePullRequestDeliveryAbortClose,
+  recordPullRequestOverlapGuardMetric,
   resolvePullRequestBaseBranch,
+  resolvePullRequestTargetBaseBranch,
 } from "./pr-delivery.js";
+
+test("overlap guard metrics use bounded reason attributes", () => {
+  const observations: Array<{ value: number; attributes?: Record<string, string> }> = [];
+  const counter = {
+    add(value: number, attributes?: Record<string, string>) {
+      observations.push({ value, attributes });
+    },
+  };
+
+  recordPullRequestOverlapGuardMetric("overlap", counter);
+  recordPullRequestOverlapGuardMetric("no_changed_files", counter);
+  recordPullRequestOverlapGuardMetric("normalization_dropped", counter);
+  recordPullRequestOverlapGuardMetric("no_overlap", counter);
+  recordPullRequestOverlapGuardMetric("query_error", counter);
+  recordPullRequestOverlapGuardMetric("candidate_no_changed_files", counter);
+  recordPullRequestOverlapGuardMetric("recovery_bypass", counter);
+  recordPullRequestOverlapGuardMetric("claim_error", counter);
+  recordPullRequestOverlapGuardMetric("release_error", counter);
+  recordPullRequestOverlapGuardMetric("claim_retained", counter);
+
+  assert.deepEqual(observations, [
+    { value: 1, attributes: { reason: "overlap", outcome: "blocked" } },
+    { value: 1, attributes: { reason: "no_changed_files", outcome: "skipped" } },
+    { value: 1, attributes: { reason: "normalization_dropped", outcome: "skipped" } },
+    { value: 1, attributes: { reason: "no_overlap", outcome: "allowed" } },
+    { value: 1, attributes: { reason: "query_error", outcome: "skipped" } },
+    { value: 1, attributes: { reason: "candidate_no_changed_files", outcome: "skipped" } },
+    { value: 1, attributes: { reason: "recovery_bypass", outcome: "skipped" } },
+    { value: 1, attributes: { reason: "claim_error", outcome: "skipped" } },
+    { value: 1, attributes: { reason: "release_error", outcome: "skipped" } },
+    { value: 1, attributes: { reason: "claim_retained", outcome: "skipped" } },
+  ]);
+});
+
+test("unified diff paths provide changed-file evidence when an agent omits metadata", () => {
+  assert.deepEqual(
+    changedFilesFromUnifiedDiff(
+      [
+        "diff --git a/src/retries.ts b/src/retries.ts",
+        "diff --git a/src/worker.ts b/src/worker.ts",
+      ].join("\n"),
+    ),
+    ["src/retries.ts", "src/worker.ts"],
+  );
+});
+
+test("changed-file evidence preserves real top-level a and b directories", () => {
+  assert.deepEqual(
+    changedFilesFromUnifiedDiff(
+      ["diff --git a/a/config.ts b/a/config.ts", "diff --git a/b/config.ts b/b/config.ts"].join(
+        "\n",
+      ),
+    ),
+    ["a/config.ts", "b/config.ts"],
+  );
+});
+
+test("a retained claim blocks later attempts from the same incident but not its own recovery", () => {
+  const claim = {
+    agentRunId: "run-original",
+    changedFiles: ["src/retries.ts", "src/cache.ts"],
+  };
+
+  assert.deepEqual(
+    overlappingFilesForPullRequestClaim(claim, "run-later", new Set(["src/retries.ts"])),
+    ["src/retries.ts"],
+  );
+  assert.deepEqual(
+    overlappingFilesForPullRequestClaim(claim, "run-original", new Set(["src/retries.ts"])),
+    [],
+  );
+});
+
+test("changed-file evidence decodes Git-quoted paths", () => {
+  assert.deepEqual(
+    changedFilesFromUnifiedDiff('diff --git "a/caf\\303\\251.ts" "b/caf\\303\\251.ts"'),
+    ["café.ts"],
+  );
+});
+
+test("changed-file evidence includes both sides of a rename", () => {
+  assert.deepEqual(changedFilesFromUnifiedDiff("diff --git a/src/old.ts b/src/new.ts"), [
+    "src/new.ts",
+    "src/old.ts",
+  ]);
+});
+
+test("changed-file evidence preserves unquoted filenames containing spaces", () => {
+  assert.deepEqual(
+    changedFilesFromUnifiedDiff("diff --git a/src/retry policy.ts b/src/retry policy.ts"),
+    ["src/retry policy.ts"],
+  );
+});
+
+test("changed-file evidence preserves ambiguous spaced paths across a rename", () => {
+  assert.deepEqual(
+    changedFilesFromUnifiedDiff(
+      [
+        "diff --git a/foo b/old name.ts b/foo b/new name.ts",
+        "similarity index 100%",
+        "rename from foo b/old name.ts",
+        "rename to foo b/new name.ts",
+      ].join("\n"),
+    ),
+    ["foo b/new name.ts", "foo b/old name.ts"],
+  );
+});
+
+test("legacy run results derive changed files from their persisted patch", () => {
+  assert.deepEqual(
+    changedFilesFromAgentRunResult(
+      {
+        pr: {
+          selectedRepoFullName: "acme/api",
+          branchName: "fix-retries",
+          patch: "diff --git a/src/retries.ts b/src/retries.ts\n",
+        },
+      },
+      "acme/api",
+      "run-1",
+      "incident-2",
+      "run-current",
+      "superlog/fix-retries",
+    ),
+    ["src/retries.ts"],
+  );
+});
+
+test("legacy run results match fallback patches to the canonical PR branch", () => {
+  assert.deepEqual(
+    changedFilesFromAgentRunResult(
+      {
+        prs: [
+          {
+            repoFullName: "acme/api",
+            branchName: "fix-retries",
+            patch: "diff --git a/src/retries.ts b/src/retries.ts\n",
+          },
+          {
+            repoFullName: "acme/api",
+            branchName: "fix-timeouts",
+            patch: "diff --git a/src/timeouts.ts b/src/timeouts.ts\n",
+          },
+        ],
+      },
+      "acme/api",
+      "run-1",
+      "incident-2",
+      "run-current",
+      "ash/fix-timeouts",
+    ),
+    ["src/timeouts.ts"],
+  );
+});
+
+test("overlap guard serializes shared files and lets only the first delivery proceed", async () => {
+  let queue = Promise.resolve();
+  let existing: {
+    incidentId: string;
+    url: string;
+    prNumber: number;
+    overlappingFiles: string[];
+    pendingClaim: boolean;
+  } | null = null;
+  let deliveries = 0;
+  const lockKeys: string[][] = [];
+  const input = {
+    projectId: "project-1",
+    currentIncidentId: "incident-2",
+    currentAgentRunId: "run-2",
+    currentIncidentFirstSeen: new Date("2026-08-11T14:02:03.000Z"),
+    repoFullName: "acme/api",
+    baseBranch: "main",
+    fallbackBaseBranch: null,
+    changedFiles: ["a/config.ts"],
+  };
+  const attempt = () =>
+    guardProposedPullRequestOverlap(
+      input,
+      async () => {
+        deliveries += 1;
+        existing = {
+          incidentId: "incident-1",
+          url: "https://github.com/acme/api/pull/41",
+          prNumber: 41,
+          overlappingFiles: ["a/config.ts"],
+          pendingClaim: false,
+        };
+        return deliveries;
+      },
+      {
+        exclusive: async <T>(keys: readonly string[], task: () => Promise<T>) => {
+          lockKeys.push([...keys]);
+          const previous = queue;
+          let release = () => {};
+          queue = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          await previous;
+          try {
+            return await task();
+          } finally {
+            release();
+          }
+        },
+        findOverlap: async () => existing,
+        claimOverlap: async () => {},
+        releaseClaim: async () => {},
+      },
+    );
+
+  const results = await Promise.all([attempt(), attempt()]);
+
+  assert.equal(deliveries, 1);
+  assert.equal(results.filter((result) => result.ok).length, 1);
+  assert.equal(results.filter((result) => !result.ok).length, 1);
+  assert.deepEqual(lockKeys[0], ["agent-pr-overlap:project-1:acme/api:a/config.ts"]);
+});
+
+test("overlap guard preserves leading and trailing whitespace in Git paths", async () => {
+  let observedLockKeys: readonly string[] = [];
+  let observedFiles: string[] = [];
+  const guarded = await guardProposedPullRequestOverlap(
+    {
+      projectId: "project-1",
+      currentIncidentId: "incident-2",
+      currentAgentRunId: "run-2",
+      currentIncidentFirstSeen: new Date("2026-08-11T14:02:03.000Z"),
+      repoFullName: "acme/api",
+      baseBranch: "main",
+      fallbackBaseBranch: null,
+      changedFiles: [" config.ts ", "   "],
+    },
+    async () => "delivered",
+    {
+      exclusive: async (keys, task) => {
+        observedLockKeys = keys;
+        return task();
+      },
+      findOverlap: async (input) => {
+        observedFiles = input.changedFiles;
+        return null;
+      },
+      claimOverlap: async () => {},
+      releaseClaim: async () => {},
+    },
+  );
+
+  assert.deepEqual(observedLockKeys, [
+    "agent-pr-overlap:project-1:acme/api:   ",
+    "agent-pr-overlap:project-1:acme/api: config.ts ",
+  ]);
+  assert.deepEqual(observedFiles, [" config.ts ", "   "]);
+  assert.deepEqual(guarded, { ok: true, value: "delivered" });
+});
+
+test("overlap guard persists a claim before mutation and clears it after reconciliation", async () => {
+  const events: string[] = [];
+  const input = {
+    projectId: "project-1",
+    currentIncidentId: "incident-2",
+    currentAgentRunId: "run-2",
+    currentIncidentFirstSeen: new Date("2026-08-11T14:02:03.000Z"),
+    repoFullName: "acme/api",
+    baseBranch: "main",
+    fallbackBaseBranch: null,
+    changedFiles: ["src/retries.ts"],
+  };
+
+  const guarded = await guardProposedPullRequestOverlap(
+    input,
+    async () => {
+      events.push("provider.mutate");
+      events.push("canonical.record");
+      return "delivered";
+    },
+    {
+      exclusive: async (_keys, task) => task(),
+      findOverlap: async () => null,
+      claimOverlap: async () => {
+        events.push("claim.persist");
+      },
+      releaseClaim: async () => {
+        events.push("claim.release");
+      },
+    },
+  );
+
+  assert.deepEqual(events, [
+    "claim.persist",
+    "provider.mutate",
+    "canonical.record",
+    "claim.release",
+  ]);
+  assert.deepEqual(guarded, { ok: true, value: "delivered" });
+});
+
+test("overlap guard retains its durable claim when delivery exits ambiguously", async () => {
+  let released = false;
+  await assert.rejects(() =>
+    guardProposedPullRequestOverlap(
+      {
+        projectId: "project-1",
+        currentIncidentId: "incident-2",
+        currentAgentRunId: "run-2",
+        currentIncidentFirstSeen: new Date("2026-08-11T14:02:03.000Z"),
+        repoFullName: "acme/api",
+        baseBranch: "main",
+        fallbackBaseBranch: null,
+        changedFiles: ["src/retries.ts"],
+      },
+      async () => {
+        throw new PullRequestDeliveryRecoveryPendingError("provider outcome unknown");
+      },
+      {
+        exclusive: async (_keys, task) => task(),
+        findOverlap: async () => null,
+        claimOverlap: async () => {},
+        releaseClaim: async () => {
+          released = true;
+        },
+      },
+    ),
+  );
+  assert.equal(released, false);
+});
+
+test("overlap guard retains its durable claim when reconciliation needs manual repair", async () => {
+  let released = false;
+  const guarded = await guardProposedPullRequestOverlap(
+    {
+      projectId: "project-1",
+      currentIncidentId: "incident-2",
+      currentAgentRunId: "run-2",
+      currentIncidentFirstSeen: new Date("2026-08-11T14:02:03.000Z"),
+      repoFullName: "acme/api",
+      baseBranch: "main",
+      fallbackBaseBranch: null,
+      changedFiles: ["src/retries.ts"],
+    },
+    async () => ({
+      kind: "delivered" as const,
+      reconciled: {
+        ok: false as const,
+        deliveryStatus: "manual_reconciliation_required" as const,
+      },
+    }),
+    {
+      exclusive: async (_keys, task) => task(),
+      findOverlap: async () => null,
+      claimOverlap: async () => {},
+      releaseClaim: async () => {
+        released = true;
+      },
+    },
+  );
+
+  assert.equal(guarded.ok, true);
+  assert.equal(released, false);
+});
+
+test("overlap guard releases its claim when delivery proves mutation never started", async () => {
+  let released = false;
+  const guarded = await guardProposedPullRequestOverlap(
+    {
+      projectId: "project-1",
+      currentIncidentId: "incident-2",
+      currentAgentRunId: "run-2",
+      currentIncidentFirstSeen: new Date("2026-08-11T14:02:03.000Z"),
+      repoFullName: "acme/api",
+      baseBranch: "main",
+      fallbackBaseBranch: null,
+      changedFiles: ["src/retries.ts"],
+    },
+    async () => ({
+      kind: "open_failed" as const,
+      providerMutationStarted: false as const,
+      error: "local patch application failed",
+    }),
+    {
+      exclusive: async (_keys, task) => task(),
+      findOverlap: async () => null,
+      claimOverlap: async () => {},
+      releaseClaim: async () => {
+        released = true;
+      },
+    },
+  );
+
+  assert.equal(guarded.ok, true);
+  assert.equal(released, true);
+});
 
 test("a stale run cannot publish pull request status", async () => {
   const calls: string[] = [];
@@ -115,6 +513,13 @@ test("resolvePullRequestBaseBranch lets GitHub use the repository default when b
   const pr = { baseBranch: "" } as schema.AgentRunPr;
 
   assert.equal(resolvePullRequestBaseBranch(ctx, pr), null);
+});
+
+test("resolvePullRequestTargetBaseBranch resolves blank configuration to the repository default", () => {
+  assert.equal(
+    resolvePullRequestTargetBaseBranch({ prBaseBranch: null }, { baseBranch: "" }, "trunk"),
+    "trunk",
+  );
 });
 
 const deliveredPullRequest = {
@@ -447,7 +852,122 @@ const proposedPullRequest = {
   branchName: "ash/fix-api",
   baseBranch: "main",
   patchFilePath: "/mnt/session/outputs/api.patch",
+  changedFiles: ["src/retries.ts"],
 };
+
+test("preflight blocks a patch when another incident already has an open PR touching the same file", async () => {
+  let validated = false;
+  let overlapInput:
+    | {
+        changedFiles: string[];
+        currentIncidentFirstSeen: Date;
+        baseBranch: string;
+        fallbackBaseBranch: string | null;
+      }
+    | undefined;
+  const prepared = await preflightProposedPullRequest(
+    {
+      prPolicy: "always",
+      githubInstalls: [{ installation: { installationId: 99 } }],
+      project: { id: "project-1" },
+      incident: {
+        id: "incident-2",
+        firstSeen: new Date("2026-08-11T14:02:03.000Z"),
+        service: "api",
+      },
+      agentRun: { id: "run-2" },
+      prBaseBranch: "release",
+    } as unknown as AgentRunContext,
+    proposedPullRequest,
+    "session-2",
+    undefined,
+    {
+      listRepositories: async () => [
+        {
+          id: 123,
+          fullName: "acme/api",
+          private: false,
+          defaultBranch: "main",
+          installation: { installationId: 99 } as never,
+        },
+      ],
+      downloadPatch: async () => ({
+        patch: "diff --git a/src/retries.ts b/src/retries.ts\n",
+        fileId: "file-2",
+      }),
+      findOverlappingOpenPullRequest: async (input) => {
+        overlapInput = input;
+        return {
+          incidentId: "incident-1",
+          url: "https://github.com/acme/api/pull/41",
+          prNumber: 41,
+          overlappingFiles: ["src/retries.ts"],
+          pendingClaim: false,
+        };
+      },
+      findCurrentOpenPullRequest: async () => undefined,
+      validatePatch: async () => {
+        validated = true;
+        return "release";
+      },
+    },
+  );
+
+  assert.equal(prepared.ok, false);
+  if (prepared.ok) return;
+  assert.match(prepared.error, /pull\/41/);
+  assert.match(prepared.error, /src\/retries\.ts/);
+  assert.deepEqual(overlapInput?.changedFiles, ["src/retries.ts"]);
+  assert.equal(overlapInput?.baseBranch, "release");
+  assert.equal(overlapInput?.fallbackBaseBranch, null);
+  assert.equal(overlapInput?.currentIncidentFirstSeen.toISOString(), "2026-08-11T14:02:03.000Z");
+  assert.equal(validated, true);
+});
+
+test("preflight persists diff-derived paths on the proposal for the durable run result", async () => {
+  const proposal = {
+    ...proposedPullRequest,
+    changedFiles: undefined,
+  };
+  const prepared = await preflightProposedPullRequest(
+    {
+      prPolicy: "always",
+      githubInstalls: [{ installation: { installationId: 99 } }],
+      project: { id: "project-1" },
+      incident: {
+        id: "incident-2",
+        firstSeen: new Date("2026-08-11T14:02:03.000Z"),
+        service: "api",
+      },
+      agentRun: { id: "run-2" },
+      prBaseBranch: null,
+    } as unknown as AgentRunContext,
+    proposal,
+    "session-2",
+    undefined,
+    {
+      listRepositories: async () => [
+        {
+          id: 123,
+          fullName: "acme/api",
+          private: false,
+          defaultBranch: "main",
+          installation: { installationId: 99 } as never,
+        },
+      ],
+      downloadPatch: async () => ({
+        patch: "diff --git a/a/config.ts b/a/config.ts\n",
+        fileId: "file-2",
+      }),
+      findOverlappingOpenPullRequest: async () => null,
+      findCurrentOpenPullRequest: async () => undefined,
+      validatePatch: async () => "main",
+    },
+  );
+
+  assert.equal(prepared.ok, true);
+  assert.deepEqual(proposal.changedFiles, ["a/config.ts"]);
+});
 
 test("preflight reconstructs a recorded entry before policy or provider checks", async () => {
   const prepared = await preflightProposedPullRequest(
@@ -474,9 +994,10 @@ test("preflight reconstructs a recorded entry before policy or provider checks",
   });
 });
 
-test("preflight recognizes a pushed delivery branch before reading or applying the patch", async () => {
+test("preflight recovers a pushed delivery without requiring the session patch", async () => {
   let downloaded = false;
   let validated = false;
+  const proposal = { ...proposedPullRequest, changedFiles: undefined };
   const prepared = await preflightProposedPullRequest(
     {
       prPolicy: "always",
@@ -484,7 +1005,7 @@ test("preflight recognizes a pushed delivery branch before reading or applying t
       incident: { id: "incident-1" },
       agentRun: { id: "run-1" },
     } as unknown as AgentRunContext,
-    proposedPullRequest,
+    proposal,
     "session-1",
     deliveryIdentity,
     {
@@ -494,6 +1015,7 @@ test("preflight recognizes a pushed delivery branch before reading or applying t
           id: 123,
           fullName: "acme/api",
           private: false,
+          defaultBranch: "main",
           installation: { installationId: 99 } as never,
         },
       ],
@@ -503,19 +1025,66 @@ test("preflight recognizes a pushed delivery branch before reading or applying t
         headSha: "abc123",
         baseBranch: "main",
       }),
+      findGithubDeliveryChangedFiles: async () => ["src/retries.ts"],
       downloadPatch: async () => {
         downloaded = true;
-        return { patch: "diff", fileId: "file-1" };
+        throw new Error("session patch expired");
       },
       validatePatch: async () => {
         validated = true;
+        return "main";
       },
     },
   );
 
   assert.deepEqual(prepared, { ok: true, prepared: { kind: "github_recovery" } });
   assert.equal(downloaded, false);
+  assert.deepEqual(proposal.changedFiles, ["src/retries.ts"]);
   assert.equal(validated, false);
+});
+
+test("preflight returns a structured retry when recovered changed files cannot be loaded", async () => {
+  const prepared = await preflightProposedPullRequest(
+    {
+      prPolicy: "always",
+      githubInstalls: [{ installation: { installationId: 99 } }],
+      incident: { id: "incident-1" },
+      agentRun: { id: "run-1" },
+      prBaseBranch: null,
+    } as unknown as AgentRunContext,
+    { ...proposedPullRequest, changedFiles: undefined },
+    "session-1",
+    deliveryIdentity,
+    {
+      findRecordedDelivery: async () => null,
+      listRepositories: async () => [
+        {
+          id: 123,
+          fullName: "acme/api",
+          private: false,
+          defaultBranch: "main",
+          installation: { installationId: 99 } as never,
+        },
+      ],
+      findGithubDelivery: async () => ({
+        kind: "branch",
+        branchName: "ash/fix-api-retry-d4e5f607",
+        headSha: "abc123",
+        baseBranch: "main",
+      }),
+      findGithubDeliveryChangedFiles: async () => {
+        throw new Error("provider files unavailable");
+      },
+      downloadPatch: async () => {
+        throw new Error("patch download must not run");
+      },
+    },
+  );
+
+  assert.deepEqual(prepared, {
+    ok: false,
+    error: "Cannot recover a prior PR delivery (provider files unavailable). Try again.",
+  });
 });
 
 test("delivery returns a recorded entry without repeating provider side effects", async () => {

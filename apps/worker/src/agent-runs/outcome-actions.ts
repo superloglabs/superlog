@@ -414,13 +414,20 @@ async function executeValidatedCall(
         }
       }
 
+      const deliveryIdentities = new Map(
+        payload.pullRequests.map((proposal) => [
+          proposal,
+          pullRequestDeliveryIdentityForOutcomeAction(ctx.agentRun.id, toolUseId, proposal),
+        ]),
+      );
+      const deliveryIdentityFor = (proposal: PullRequestProposal) => {
+        const identity = deliveryIdentities.get(proposal);
+        if (!identity) throw new Error("PR delivery identity was not prepared");
+        return identity;
+      };
       const deliveries = payload.pullRequests.map((proposal) => ({
         repoFullName: proposal.repoFullName,
-        deliveryId: pullRequestDeliveryIdentityForOutcomeAction(
-          ctx.agentRun.id,
-          toolUseId,
-          proposal,
-        ).deliveryId,
+        deliveryId: deliveryIdentityFor(proposal).deliveryId,
       }));
       let batch: ProposedPullRequestBatchResult;
       try {
@@ -430,7 +437,7 @@ async function executeValidatedCall(
               ctx,
               proposal,
               sessionId,
-              pullRequestDeliveryIdentityForOutcomeAction(ctx.agentRun.id, toolUseId, proposal),
+              deliveryIdentityFor(proposal),
             ),
           deliver: (proposal, prepared) =>
             dependencies.deliverProposedPullRequest(
@@ -439,7 +446,7 @@ async function executeValidatedCall(
               sessionId,
               findings,
               prepared,
-              pullRequestDeliveryIdentityForOutcomeAction(ctx.agentRun.id, toolUseId, proposal),
+              deliveryIdentityFor(proposal),
             ),
           beforeDelivery: async (prepared) => {
             if (payload.pullRequests.length < 2) return { ok: true };

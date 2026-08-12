@@ -18,6 +18,7 @@ type RecordedCall =
   | "pull_request.lookup"
   | "pull_request.insert"
   | "pull_request.update"
+  | "overlap_claim.delete"
   | "pull_request.close"
   | "pull_request_event.insert"
   | "delivery_receipt.lookup"
@@ -31,14 +32,17 @@ function recordingPullRequestDb(opts: {
   pullRequestVisibleAfterIncidentLock?: boolean;
   recordedDeliveryVisibleAfterIncidentLock?: boolean;
   recordedDeliveryDetail?: Record<string, unknown>;
+  existingChangedFiles?: string[];
 }): {
   database: DB;
   calls: RecordedCall[];
   insertedPullRequest: () => Record<string, unknown> | null;
+  updatedPullRequest: () => Record<string, unknown> | null;
 } {
   const calls: RecordedCall[] = [];
   let incidentLocked = false;
   let insertedPullRequestValues: Record<string, unknown> | null = null;
+  let updatedPullRequestValues: Record<string, unknown> | null = null;
   const database = {
     select() {
       return {
@@ -104,6 +108,7 @@ function recordingPullRequestDb(opts: {
       assert.equal(table, schema.agentPullRequests);
       return {
         set(values: Record<string, unknown>) {
+          updatedPullRequestValues = values;
           return {
             where() {
               return {
@@ -121,6 +126,14 @@ function recordingPullRequestDb(opts: {
               };
             },
           };
+        },
+      };
+    },
+    delete(table: unknown) {
+      assert.equal(table, schema.agentPullRequestOverlapClaims);
+      return {
+        async where() {
+          calls.push("overlap_claim.delete");
         },
       };
     },
@@ -144,6 +157,7 @@ function recordingPullRequestDb(opts: {
             id: "pr-record-1",
             incidentId: "incident-1",
             state: opts.canonicalState ?? "open",
+            changedFiles: opts.existingChangedFiles ?? null,
           };
         },
       },
@@ -159,6 +173,7 @@ function recordingPullRequestDb(opts: {
     database,
     calls,
     insertedPullRequest: () => insertedPullRequestValues,
+    updatedPullRequest: () => updatedPullRequestValues,
   };
 }
 
@@ -241,6 +256,18 @@ test("recording an opened PR locks the incident before writing the canonical rec
   ]);
 });
 
+test("recording an opened PR makes its normalized changed files durable", async () => {
+  const { database, insertedPullRequest } = recordingPullRequestDb({ incidentStatus: "open" });
+
+  const result = await recordOpenedAgentPullRequest(
+    { ...openedPullRequest, changedFiles: ["src/retries.ts"] },
+    { database, recordCreatedMetric: async () => {} },
+  );
+
+  assert.equal(result.kind, "deliver");
+  assert.deepEqual(insertedPullRequest()?.changedFiles, ["src/retries.ts"]);
+});
+
 test("an opened PR and its per-entry delivery receipt commit under the same incident lock", async () => {
   const { database, calls } = recordingPullRequestDb({ incidentStatus: "open" });
 
@@ -273,6 +300,7 @@ test("an opened PR and its per-entry delivery receipt commit under the same inci
     "transaction.begin",
     "incident.lock",
     "pull_request.insert",
+    "overlap_claim.delete",
     "pull_request_event.insert",
     "delivery_receipt.insert",
     "transaction.end",
@@ -488,6 +516,7 @@ test("an existing PR update atomically records the exact delivery entry", async 
       prNumber: 42,
       url: "https://github.com/acme/api/pull/42",
       branchName: "ash/fix-api",
+      baseBranch: "main",
       headSha: "def456",
       deliveryIdentity: {
         deliveryId: "d4e5f60718293a4b",
@@ -506,8 +535,31 @@ test("an existing PR update atomically records the exact delivery entry", async 
     "incident.lock",
     "pull_request.update",
     "delivery_receipt.insert",
+    "overlap_claim.delete",
     "transaction.end",
   ]);
+});
+
+test("an existing PR update unions newly touched files into the canonical record", async () => {
+  const { database, updatedPullRequest } = recordingPullRequestDb({
+    incidentStatus: "open",
+    existingChangedFiles: ["src/a.ts"],
+  });
+
+  const result = await recordUpdatedAgentPullRequest(
+    {
+      incidentId: "incident-1",
+      agentPullRequestId: "pr-record-1",
+      repoFullName: "acme/api",
+      prNumber: 42,
+      headSha: "def456",
+      changedFiles: ["src/b.ts", "src/a.ts"],
+    },
+    { database },
+  );
+
+  assert.equal(result.kind, "deliver");
+  assert.deepEqual(updatedPullRequest()?.changedFiles, ["src/a.ts", "src/b.ts"]);
 });
 
 test("marking an aborted delivery closes its canonical record and records the transition", async () => {

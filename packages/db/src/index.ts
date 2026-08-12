@@ -1,4 +1,4 @@
-export { closeDb, db } from "./client.js";
+export { closeDb, db, withDatabaseAdvisoryLocks } from "./client.js";
 export type { DB } from "./client.js";
 export {
   AGENT_RUN_PROVIDERS,

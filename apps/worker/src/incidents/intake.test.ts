@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { schema } from "@superlog/db";
 import { type GroupingLLMClient, runGroupingAgent } from "../grouping/agent.js";
+import type { groupingIssueInput } from "../issues/domain.js";
 import {
   type IntakeDeps,
   type IntakeLifecycle,
@@ -284,6 +285,7 @@ test("intake: recurred issue opens a new incident chained to its previous one", 
 
 test("intake: recurred issue goes through grouping and joins an existing incident", async () => {
   const calls: string[] = [];
+  let recurrenceInput: ReturnType<typeof groupingIssueInput> | undefined;
   const previous = makeIncident({ id: "inc-prev", status: "resolved" });
   const candidate = makeIncident({ id: "inc-current", title: "Recall credits exhausted" });
   const repo = makeRepo({
@@ -322,8 +324,9 @@ test("intake: recurred issue goes through grouping and joins an existing inciden
       repo,
       lifecycle: makeLifecycle({ calls }),
       calls,
-      analyzeGrouping: async () => {
+      analyzeGrouping: async (input) => {
         calls.push("analyzeGrouping");
+        recurrenceInput = input.newIssue;
         return {
           decision: "join",
           incidentId: "inc-current",
@@ -340,6 +343,8 @@ test("intake: recurred issue goes through grouping and joins an existing inciden
   assert.ok(calls.includes("linkIssueToIncident:iss-new->inc-current"));
   assert.ok(calls.includes("reopenIssue:iss-new"));
   assert.ok(!calls.some((call) => call.startsWith("openRecurrence:")));
+  assert.equal("firstSeen" in (recurrenceInput ?? {}), false);
+  assert.equal("eventCount" in (recurrenceInput ?? {}), false);
 });
 
 test("intake: recurred same-trace sibling joins the incident instead of opening a recurrence", async () => {

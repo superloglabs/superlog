@@ -355,6 +355,7 @@ export async function recordOpenedAgentPullRequest(
     branchName: string;
     baseBranch: string;
     headSha: string;
+    changedFiles?: string[];
     title: string;
     authorLogin: string | null;
     authorGithubId: number | null;
@@ -398,6 +399,7 @@ export async function recordOpenedAgentPullRequest(
         branchName: opts.branchName,
         baseBranch: opts.baseBranch,
         headSha: opts.headSha,
+        changedFiles: opts.changedFiles ?? null,
         state: opts.state,
         title: opts.title,
         mergedAt: opts.mergedAt,
@@ -426,6 +428,18 @@ export async function recordOpenedAgentPullRequest(
       canonicalState,
       deliveredState: opts.state,
     });
+
+    if (decision.kind === "deliver" && row) {
+      await tx
+        .delete(schema.agentPullRequestOverlapClaims)
+        .where(
+          and(
+            eq(schema.agentPullRequestOverlapClaims.agentRunId, opts.agentRunId),
+            eq(schema.agentPullRequestOverlapClaims.repoFullName, opts.repoFullName),
+            eq(schema.agentPullRequestOverlapClaims.baseBranch, opts.baseBranch),
+          ),
+        );
+    }
 
     if (inserted[0] && row) {
       await tx
@@ -508,8 +522,10 @@ export async function recordUpdatedAgentPullRequest(
     repoFullName: string;
     prNumber: number;
     headSha: string;
+    changedFiles?: string[];
     url?: string;
     branchName?: string;
+    baseBranch?: string;
     deliveryIdentity?: PullRequestDeliveryIdentity;
   },
   deps: Pick<PullRequestRecordDependencies, "database" | "now"> = {},
@@ -531,9 +547,23 @@ export async function recordUpdatedAgentPullRequest(
       return { ...decision, agentPullRequestId: null, newlyInserted: false };
     }
 
+    let changedFiles: string[] | undefined;
+    if (opts.changedFiles?.length) {
+      const current = await tx.query.agentPullRequests.findFirst({
+        where: and(
+          eq(schema.agentPullRequests.id, opts.agentPullRequestId),
+          eq(schema.agentPullRequests.incidentId, opts.incidentId),
+          eq(schema.agentPullRequests.repoFullName, opts.repoFullName),
+          eq(schema.agentPullRequests.prNumber, opts.prNumber),
+        ),
+        columns: { changedFiles: true },
+      });
+      changedFiles = [...new Set([...(current?.changedFiles ?? []), ...opts.changedFiles])].sort();
+    }
+
     const updated = await tx
       .update(schema.agentPullRequests)
-      .set({ headSha: opts.headSha, lastSyncedAt: now, updatedAt: now })
+      .set({ headSha: opts.headSha, changedFiles, lastSyncedAt: now, updatedAt: now })
       .where(
         and(
           eq(schema.agentPullRequests.id, opts.agentPullRequestId),
@@ -583,6 +613,17 @@ export async function recordUpdatedAgentPullRequest(
         },
         now,
       });
+    }
+    if (decision.kind === "deliver" && opts.agentRunId && opts.baseBranch) {
+      await tx
+        .delete(schema.agentPullRequestOverlapClaims)
+        .where(
+          and(
+            eq(schema.agentPullRequestOverlapClaims.agentRunId, opts.agentRunId),
+            eq(schema.agentPullRequestOverlapClaims.repoFullName, opts.repoFullName),
+            eq(schema.agentPullRequestOverlapClaims.baseBranch, opts.baseBranch),
+          ),
+        );
     }
     return {
       ...decision,

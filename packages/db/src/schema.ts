@@ -1455,6 +1455,7 @@ export const agentPullRequests = pgTable(
     branchName: text("branch_name").notNull(),
     baseBranch: text("base_branch").notNull(),
     headSha: text("head_sha"),
+    changedFiles: text("changed_files").array(),
     state: text("state").$type<AgentPrState>().notNull().default("open"),
     title: text("title"),
     mergedAt: timestamp("merged_at", { withTimezone: true }),
@@ -1480,6 +1481,44 @@ export const agentPullRequests = pgTable(
     incidentIdx: index("agent_pull_requests_incident_idx").on(t.incidentId, t.createdAt),
     agentRunIdx: index("agent_pull_requests_agent_run_idx").on(t.agentRunId),
     repoPrUniq: uniqueIndex("agent_pull_requests_repo_pr_idx").on(t.repoFullName, t.prNumber),
+  }),
+);
+
+// Durable changed-file ownership established before a provider mutation. A
+// worker crash can release advisory locks before the resulting pull request is
+// recorded, so sibling incidents also consult these claims. Successful
+// reconciliation deletes the claim once the canonical PR row is durable.
+export const agentPullRequestOverlapClaims = pgTable(
+  "agent_pull_request_overlap_claims",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    incidentId: uuid("incident_id")
+      .notNull()
+      .references(() => incidents.id, { onDelete: "cascade" }),
+    agentRunId: uuid("agent_run_id")
+      .notNull()
+      .references(() => agentRuns.id, { onDelete: "cascade" }),
+    repoFullName: text("repo_full_name").notNull(),
+    baseBranch: text("base_branch").notNull(),
+    changedFiles: text("changed_files").array().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    deliveryUniq: uniqueIndex("agent_pr_overlap_claims_delivery_idx").on(
+      t.agentRunId,
+      t.repoFullName,
+      t.baseBranch,
+    ),
+    overlapIdx: index("agent_pr_overlap_claims_lookup_idx").on(
+      t.projectId,
+      t.repoFullName,
+      t.baseBranch,
+      t.createdAt,
+    ),
   }),
 );
 
