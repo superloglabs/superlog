@@ -16,6 +16,7 @@ import { resolveActiveOrgContext } from "../org-context.js";
 import type { McpConfig } from "./config.js";
 import {
   MCP_SUPPORTED_SCOPES,
+  mcpRefreshScopeRejectionLogLevel,
   resolveMcpOauthScope,
   resolveRefreshMcpOauthScope,
 } from "./scope-authorization.js";
@@ -335,7 +336,7 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
 
   const resolvedScope = resolveRefreshMcpOauthScope(requestedScope, row.scope);
   if ("error" in resolvedScope) {
-    log.info(
+    log[mcpRefreshScopeRejectionLogLevel(resolvedScope.reason)](
       {
         tokenId: row.id,
         requestedScope,
@@ -350,6 +351,10 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
 
   const claimedRotation = await claimMcpOauthRefreshTokenRotation(row.id);
   if (!claimedRotation) {
+    log.error(
+      { tokenId: row.id, userId: row.userId, clientId: row.clientId },
+      "MCP refresh token already claimed: possible replay or concurrent rotation",
+    );
     return oauthError(c, 400, "invalid_grant", "refresh token already used");
   }
 

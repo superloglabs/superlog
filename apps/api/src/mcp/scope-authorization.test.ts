@@ -7,6 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   createBoundedTokenObservationTracker,
   isLegacyStoredMcpOauthScope,
+  mcpRefreshScopeRejectionLogLevel,
   resolveMcpOauthScope,
   resolveRefreshMcpOauthScope,
   resolveStoredMcpOauthScope,
@@ -96,6 +97,12 @@ test("refresh requests cannot expand the existing grant", () => {
     error: "requested refresh scope exceeds the original grant: mcp:write",
     reason: "scope_escalation",
   });
+});
+
+test("refresh scope escalation is error-level while malformed requests remain info-level", () => {
+  assert.equal(mcpRefreshScopeRejectionLogLevel("scope_escalation"), "error");
+  assert.equal(mcpRefreshScopeRejectionLogLevel("unsupported_scope"), "info");
+  assert.equal(mcpRefreshScopeRejectionLogLevel("write_requires_read"), "info");
 });
 
 test("refresh requests preserve the existing grant when scope is omitted", () => {

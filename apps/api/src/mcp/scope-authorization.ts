@@ -22,6 +22,14 @@ type McpScopeResolution =
       reason: "scope_escalation" | "unsupported_scope" | "write_requires_read";
     };
 
+type McpScopeRejectionReason = Extract<McpScopeResolution, { error: string }>["reason"];
+
+export function mcpRefreshScopeRejectionLogLevel(
+  reason: McpScopeRejectionReason,
+): "error" | "info" {
+  return reason === "scope_escalation" ? "error" : "info";
+}
+
 export function resolveMcpOauthScope(requestedScope: string | null): McpScopeResolution {
   const requested = requestedScope?.split(/\s+/).filter(Boolean) ?? [];
   const supported = new Set<string>(MCP_SUPPORTED_SCOPES);
