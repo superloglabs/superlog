@@ -20,7 +20,11 @@ import {
   listAccessibleProjects,
   setActiveProjectForToken,
 } from "./projects.js";
-import { READ_ONLY_TOOL, enforceMcpToolScopes } from "./scope-authorization.js";
+import {
+  READ_ONLY_TOOL,
+  enforceMcpToolScopes,
+  hasMcpWriteAccess,
+} from "./scope-authorization.js";
 import {
   type McpTelemetryToolName,
   executeRecoverableTelemetryQuery,
@@ -105,13 +109,24 @@ const SERVER_INSTRUCTIONS = [
   "Tune the issue filter to control noise. When the user describes recurring noise or wants investigations scoped to certain services/routes, use get_issue_filter / preview_issue_filter / update_issue_filter — excludes drop matching events, non-empty includes restrict to matching events. Always preview before saving.",
 ].join("\n");
 
+const READ_ONLY_SERVER_INSTRUCTIONS = [
+  "Superlog is an observability + investigation platform. This connection is read-only.",
+  "Query logs, traces, metrics, incidents, alerts, dashboards, project context, agent memories, and the current issue filter to investigate the active project.",
+].join("\n\n");
+
 export function createMcpServerForSession(session: McpSession): McpServer {
   // Telemetry-only sessions don't get the agent-config / alert / dashboard /
   // incident tools, so the guidance below (which is all about them) would
   // advertise tools that aren't registered. Omit instructions in that case.
   const server = new McpServer(
     { name: "superlog", version: "0.1.0" },
-    session.telemetryOnly ? undefined : { instructions: SERVER_INSTRUCTIONS },
+    session.telemetryOnly
+      ? undefined
+      : {
+          instructions: hasMcpWriteAccess(session.scopes)
+            ? SERVER_INSTRUCTIONS
+            : READ_ONLY_SERVER_INSTRUCTIONS,
+        },
   );
 
   // Before any registerTool call so every tool below (and in the register*

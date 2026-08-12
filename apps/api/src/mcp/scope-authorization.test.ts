@@ -4,7 +4,14 @@ import { test } from "node:test";
 import type { ClickHouseClient } from "@clickhouse/client";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { resolveMcpOauthScope } from "./scope-authorization.js";
+import {
+  createBoundedTokenObservationTracker,
+  isLegacyStoredMcpOauthScope,
+  mcpRefreshScopeRejectionLogLevel,
+  resolveMcpOauthScope,
+  resolveRefreshMcpOauthScope,
+  resolveStoredMcpOauthScope,
+} from "./scope-authorization.js";
 import { createMcpServerForSession } from "./server.js";
 
 const fakeCh = {} as ClickHouseClient;
@@ -30,10 +37,77 @@ const session = {
   activeProjectId: "00000000-0000-4000-8000-000000000002",
 };
 
-test("OAuth defaults to mcp:read and rejects unsupported scopes", () => {
-  assert.deepEqual(resolveMcpOauthScope(null), { scope: "mcp:read" });
-  assert.deepEqual(resolveMcpOauthScope("  mcp:read   mcp:write  "), {
-    error: "unsupported MCP scope: mcp:write",
+test("OAuth defaults to read and write access when the client omits scopes", () => {
+  assert.deepEqual(resolveMcpOauthScope(null), { scope: "mcp:read mcp:write" });
+});
+
+test("legacy OAuth tokens stored without a scope remain read-only", () => {
+  assert.deepEqual(resolveStoredMcpOauthScope(null), { scope: "mcp:read" });
+});
+
+test("legacy OAuth tokens stored with a blank scope remain read-only", () => {
+  assert.deepEqual(resolveStoredMcpOauthScope("   "), { scope: "mcp:read" });
+});
+
+test("legacy stored OAuth scopes are classified for observability", () => {
+  assert.equal(isLegacyStoredMcpOauthScope(null), true);
+  assert.equal(isLegacyStoredMcpOauthScope(""), true);
+  assert.equal(isLegacyStoredMcpOauthScope("   "), true);
+  assert.equal(isLegacyStoredMcpOauthScope("mcp:read"), false);
+});
+
+test("legacy token observations emit once per token with bounded memory", () => {
+  const shouldObserve = createBoundedTokenObservationTracker(2);
+
+  assert.equal(shouldObserve("token-a"), true);
+  assert.equal(shouldObserve("token-a"), false);
+  assert.equal(shouldObserve("token-b"), true);
+  assert.equal(shouldObserve("token-c"), true);
+  assert.equal(shouldObserve("token-a"), true);
+});
+
+test("OAuth accepts read and write scopes", () => {
+  assert.deepEqual(resolveMcpOauthScope("  mcp:write   mcp:read  "), {
+    scope: "mcp:read mcp:write",
+  });
+});
+
+test("OAuth write access requires read access", () => {
+  assert.deepEqual(resolveMcpOauthScope("mcp:write"), {
+    error: "mcp:write requires mcp:read",
+    reason: "write_requires_read",
+  });
+});
+
+test("OAuth rejects unsupported scopes", () => {
+  assert.deepEqual(resolveMcpOauthScope("mcp:read profile"), {
+    error: "unsupported MCP scope: profile",
+    reason: "unsupported_scope",
+  });
+});
+
+test("refresh requests can narrow an existing read/write grant", () => {
+  assert.deepEqual(resolveRefreshMcpOauthScope("mcp:read", "mcp:read mcp:write"), {
+    scope: "mcp:read",
+  });
+});
+
+test("refresh requests cannot expand the existing grant", () => {
+  assert.deepEqual(resolveRefreshMcpOauthScope("mcp:read mcp:write", "mcp:read"), {
+    error: "requested refresh scope exceeds the original grant: mcp:write",
+    reason: "scope_escalation",
+  });
+});
+
+test("refresh scope escalation is error-level while malformed requests remain info-level", () => {
+  assert.equal(mcpRefreshScopeRejectionLogLevel("scope_escalation"), "error");
+  assert.equal(mcpRefreshScopeRejectionLogLevel("unsupported_scope"), "info");
+  assert.equal(mcpRefreshScopeRejectionLogLevel("write_requires_read"), "info");
+});
+
+test("refresh requests preserve the existing grant when scope is omitted", () => {
+  assert.deepEqual(resolveRefreshMcpOauthScope(null, "mcp:read mcp:write"), {
+    scope: "mcp:read mcp:write",
   });
 });
 
@@ -65,6 +139,16 @@ test("mcp:read sessions expose reads but not writes or deletes", async () => {
   ]);
 });
 
+test("mcp:read sessions do not instruct clients to call unavailable write tools", async () => {
+  const client = await connectedClient({ ...session, scopes: ["mcp:read"] });
+  const instructions = client.getInstructions() ?? "";
+
+  assert.match(instructions, /read-only/i);
+  assert.doesNotMatch(instructions, /create_agent_memory/);
+  assert.doesNotMatch(instructions, /set_project_context/);
+  assert.doesNotMatch(instructions, /update_issue_filter/);
+});
+
 test("mcp:read sessions reject direct calls to mutation tools", async () => {
   const client = await connectedClient({ ...session, scopes: ["mcp:read"] });
 
@@ -77,6 +161,25 @@ test("mcp:read sessions reject direct calls to mutation tools", async () => {
 
   assert.equal(result.isError, true);
   assert.match(JSON.stringify(result.content), /not found/i);
+});
+
+test("mcp:write sessions expose project authoring tools", async () => {
+  const client = await connectedClient({
+    ...session,
+    scopes: ["mcp:read", "mcp:write"],
+  });
+  const tools = await client.listTools();
+  const names = tools.tools.map((tool) => tool.name);
+
+  assert.ok(names.includes("create_agent_memory"));
+  assert.ok(names.includes("set_project_context"));
+  assert.ok(names.includes("update_issue_filter"));
+  assert.ok(names.includes("create_alert"));
+
+  const instructions = client.getInstructions() ?? "";
+  for (const name of ["create_agent_memory", "set_project_context", "update_issue_filter"]) {
+    assert.match(instructions, new RegExp(name));
+  }
 });
 
 test("unscoped personal tokens retain full MCP tool access", async () => {

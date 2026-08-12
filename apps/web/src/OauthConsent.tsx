@@ -67,10 +67,15 @@ type MeResponse = {
 type ClientInfo = { id: string; name: string };
 
 function ConsentCard({ params }: { params: AuthorizeParams }) {
+  const requestedScopes = params.scope?.split(/\s+/).filter(Boolean) ?? [];
+  const grantsWriteAccess = requestedScopes.length === 0 || requestedScopes.includes("mcp:write");
   const [me, setMe] = useState<MeResponse | null>(null);
   const [client, setClient] = useState<ClientInfo | null>(null);
   const [state, setState] = useState<
-    { kind: "loading" } | { kind: "ready" } | { kind: "working" } | { kind: "error"; message: string }
+    | { kind: "loading" }
+    | { kind: "ready" }
+    | { kind: "working" }
+    | { kind: "error"; message: string }
   >({ kind: "loading" });
 
   useEffect(() => {
@@ -165,9 +170,12 @@ function ConsentCard({ params }: { params: AuthorizeParams }) {
             will access
           </span>
           <div className="text-[13px] text-fg">
-            Read logs, traces, and metrics for project{" "}
-            <span className="font-medium">{me?.project.name}</span> in org{" "}
-            <span className="font-medium">{me?.org.name}</span>.
+            Read logs, traces, metrics, and saved investigation data across projects you can access,
+            starting with project <span className="font-medium">{me?.project.name}</span> in org{" "}
+            <span className="font-medium">{me?.org.name}</span>
+            {grantsWriteAccess
+              ? ", create or change alerts, dashboards, investigation settings, and agent memories in any project you can access, and manage external MCP integrations and their credentials."
+              : ". This client requested read-only access."}
           </div>
         </div>
 

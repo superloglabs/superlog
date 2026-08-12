@@ -7,14 +7,19 @@ import {
   schema,
   syncLoopsContactForUserProject,
 } from "@superlog/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { logger } from "../logger.js";
 import { resolveActiveOrgContext } from "../org-context.js";
 import type { McpConfig } from "./config.js";
-import { resolveMcpOauthScope } from "./scope-authorization.js";
+import {
+  MCP_SUPPORTED_SCOPES,
+  mcpRefreshScopeRejectionLogLevel,
+  resolveMcpOauthScope,
+  resolveRefreshMcpOauthScope,
+} from "./scope-authorization.js";
 
 const log = logger.child({ scope: "mcp-oauth" });
 
@@ -72,7 +77,7 @@ export function mountOauthMetadata(app: Hono, cfg: McpConfig) {
       resource: cfg.resource,
       authorization_servers: [cfg.apiBaseUrl],
       bearer_methods_supported: ["header"],
-      scopes_supported: ["mcp:read"],
+      scopes_supported: MCP_SUPPORTED_SCOPES,
     }),
   );
 
@@ -86,7 +91,7 @@ export function mountOauthMetadata(app: Hono, cfg: McpConfig) {
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none"],
-      scopes_supported: ["mcp:read"],
+      scopes_supported: MCP_SUPPORTED_SCOPES,
     }),
   );
 }
@@ -305,6 +310,7 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
   const refreshToken = stringField(form, "refresh_token");
   const clientId = stringField(form, "client_id");
   const resource = stringField(form, "resource");
+  const requestedScope = stringField(form, "scope") || null;
   if (!refreshToken || !clientId) {
     return oauthError(c, 400, "invalid_request", "missing refresh_token or client_id");
   }
@@ -328,34 +334,120 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
     return oauthError(c, 400, "invalid_grant", "refresh token expired");
   }
 
-  await db
-    .update(schema.mcpOauthTokens)
-    .set({ revokedAt: new Date() })
-    .where(eq(schema.mcpOauthTokens.id, row.id));
+  const resolvedScope = resolveRefreshMcpOauthScope(requestedScope, row.scope);
+  if ("error" in resolvedScope) {
+    log[mcpRefreshScopeRejectionLogLevel(resolvedScope.reason)](
+      {
+        tokenId: row.id,
+        requestedScope,
+        storedScope: row.scope,
+        reason: resolvedScope.reason,
+        error: resolvedScope.error,
+      },
+      "MCP refresh rejected: scope resolution failed",
+    );
+    return oauthError(c, 400, "invalid_scope", resolvedScope.error);
+  }
 
-  const tokens = await issueTokens({
-    clientId: row.clientId,
-    userId: row.userId,
-    projectId: row.projectId,
-    resource: row.resource,
-    scope: row.scope,
-  });
+  let tokens: Awaited<ReturnType<typeof rotateMcpOauthRefreshToken>>;
+  try {
+    tokens = await rotateMcpOauthRefreshToken({
+      tokenId: row.id,
+      clientId: row.clientId,
+      userId: row.userId,
+      projectId: row.projectId,
+      resource: row.resource,
+      scope: resolvedScope.scope,
+    });
+  } catch (error) {
+    log.error(
+      {
+        tokenId: row.id,
+        userId: row.userId,
+        requestedScope,
+        resolvedScope: resolvedScope.scope,
+        error,
+      },
+      "MCP refresh token rotation transaction failed",
+    );
+    throw error;
+  }
+  if (!tokens) {
+    log.error(
+      { tokenId: row.id, userId: row.userId, clientId: row.clientId },
+      "MCP refresh token already claimed: possible replay or concurrent rotation",
+    );
+    return oauthError(c, 400, "invalid_grant", "refresh token already used");
+  }
+  syncMcpInstall(row.userId, row.projectId);
+  log.info(
+    {
+      tokenId: row.id,
+      userId: row.userId,
+      storedScope: row.scope,
+      requestedScope,
+      resolvedScope: resolvedScope.scope,
+    },
+    "MCP refresh token rotated",
+  );
   return c.json(tokens);
 }
 
-async function issueTokens(params: {
+type McpTokenPair = {
+  access: ReturnType<typeof generateMcpAccessToken>;
+  refresh: ReturnType<typeof generateMcpRefreshToken>;
+};
+
+type McpTokenIssueParams = {
   clientId: string;
   userId: string;
   projectId: string;
   resource: string;
   scope: string | null;
-}): Promise<{
+};
+
+type McpTokenResponse = {
   access_token: string;
   refresh_token: string;
   token_type: "Bearer";
   expires_in: number;
   scope?: string;
-}> {
+};
+
+export async function rotateMcpOauthRefreshToken(
+  params: McpTokenIssueParams & { tokenId: string },
+  generateTokens: () => McpTokenPair = () => ({
+    access: generateMcpAccessToken(),
+    refresh: generateMcpRefreshToken(),
+  }),
+): Promise<McpTokenResponse | null> {
+  return db.transaction(async (tx) => {
+    const [claimed] = await tx
+      .update(schema.mcpOauthTokens)
+      .set({ revokedAt: new Date() })
+      .where(
+        and(eq(schema.mcpOauthTokens.id, params.tokenId), isNull(schema.mcpOauthTokens.revokedAt)),
+      )
+      .returning({ id: schema.mcpOauthTokens.id });
+    if (!claimed) return null;
+
+    const { access, refresh } = generateTokens();
+    await tx.insert(schema.mcpOauthTokens).values({
+      accessHash: access.hash,
+      refreshHash: refresh.hash,
+      clientId: params.clientId,
+      userId: params.userId,
+      projectId: params.projectId,
+      resource: params.resource,
+      scope: params.scope,
+      accessExpiresAt: new Date(Date.now() + ACCESS_TTL_SECONDS * 1000),
+      refreshExpiresAt: new Date(Date.now() + REFRESH_TTL_SECONDS * 1000),
+    });
+    return tokenResponse(access, refresh, params.scope);
+  });
+}
+
+async function issueTokens(params: McpTokenIssueParams): Promise<McpTokenResponse> {
   const access = generateMcpAccessToken();
   const refresh = generateMcpRefreshToken();
   await db.insert(schema.mcpOauthTokens).values({
@@ -369,18 +461,30 @@ async function issueTokens(params: {
     accessExpiresAt: new Date(Date.now() + ACCESS_TTL_SECONDS * 1000),
     refreshExpiresAt: new Date(Date.now() + REFRESH_TTL_SECONDS * 1000),
   });
+  syncMcpInstall(params.userId, params.projectId);
+  return tokenResponse(access, refresh, params.scope);
+}
+
+function syncMcpInstall(userId: string, projectId: string): void {
   void syncLoopsContactForUserProject({
-    userId: params.userId,
-    projectId: params.projectId,
+    userId,
+    projectId,
   }).catch((err) =>
-    log.warn({ err, user_id: params.userId }, "loops contact sync failed after mcp install"),
+    log.warn({ err, user_id: userId }, "loops contact sync failed after mcp install"),
   );
+}
+
+function tokenResponse(
+  access: ReturnType<typeof generateMcpAccessToken>,
+  refresh: ReturnType<typeof generateMcpRefreshToken>,
+  scope: string | null,
+): McpTokenResponse {
   return {
     access_token: access.plaintext,
     refresh_token: refresh.plaintext,
     token_type: "Bearer",
     expires_in: ACCESS_TTL_SECONDS,
-    ...(params.scope ? { scope: params.scope } : {}),
+    ...(scope ? { scope } : {}),
   };
 }
 
@@ -420,6 +524,14 @@ async function validateAuthorizeParams(
   }
   const resolvedScope = resolveMcpOauthScope(params.scope);
   if ("error" in resolvedScope) {
+    log.info(
+      {
+        requestedScope: params.scope,
+        reason: resolvedScope.reason,
+        error: resolvedScope.error,
+      },
+      "MCP authorization rejected: scope resolution failed",
+    );
     return { code: "invalid_scope", description: resolvedScope.error };
   }
   params.scope = resolvedScope.scope;

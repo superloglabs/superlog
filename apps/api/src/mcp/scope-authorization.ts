@@ -10,29 +10,110 @@ export const READ_ONLY_TOOL = {
   readOnlyHint: true,
 } as const;
 
-const MCP_READ_SCOPE = "mcp:read";
+export const MCP_READ_SCOPE = "mcp:read";
+export const MCP_WRITE_SCOPE = "mcp:write";
+export const MCP_SUPPORTED_SCOPES = [MCP_READ_SCOPE, MCP_WRITE_SCOPE] as const;
+export const MCP_DEFAULT_SCOPE = MCP_SUPPORTED_SCOPES.join(" ");
 
-export function resolveMcpOauthScope(
-  requestedScope: string | null,
-): { scope: typeof MCP_READ_SCOPE } | { error: string } {
+type McpScopeResolution =
+  | { scope: string }
+  | {
+      error: string;
+      reason: "scope_escalation" | "unsupported_scope" | "write_requires_read";
+    };
+
+type McpScopeRejectionReason = Extract<McpScopeResolution, { error: string }>["reason"];
+
+export function mcpRefreshScopeRejectionLogLevel(
+  reason: McpScopeRejectionReason,
+): "error" | "info" {
+  return reason === "scope_escalation" ? "error" : "info";
+}
+
+export function resolveMcpOauthScope(requestedScope: string | null): McpScopeResolution {
   const requested = requestedScope?.split(/\s+/).filter(Boolean) ?? [];
-  const unsupported = [...new Set(requested.filter((scope) => scope !== MCP_READ_SCOPE))];
+  const supported = new Set<string>(MCP_SUPPORTED_SCOPES);
+  const unsupported = [...new Set(requested.filter((scope) => !supported.has(scope)))];
   if (unsupported.length > 0) {
     return {
       error: `unsupported MCP scope${unsupported.length === 1 ? "" : "s"}: ${unsupported.join(", ")}`,
+      reason: "unsupported_scope",
     };
   }
-  return { scope: MCP_READ_SCOPE };
+  if (requested.includes(MCP_WRITE_SCOPE) && !requested.includes(MCP_READ_SCOPE)) {
+    return {
+      error: `${MCP_WRITE_SCOPE} requires ${MCP_READ_SCOPE}`,
+      reason: "write_requires_read",
+    };
+  }
+  if (requested.length === 0) return { scope: MCP_DEFAULT_SCOPE };
+  return {
+    scope: MCP_SUPPORTED_SCOPES.filter((scope) => requested.includes(scope)).join(" "),
+  };
+}
+
+export function resolveStoredMcpOauthScope(
+  storedScope: string | null,
+): ReturnType<typeof resolveMcpOauthScope> {
+  return resolveMcpOauthScope(
+    isLegacyStoredMcpOauthScope(storedScope) ? MCP_READ_SCOPE : storedScope,
+  );
+}
+
+export function isLegacyStoredMcpOauthScope(storedScope: string | null): boolean {
+  return !storedScope?.trim();
+}
+
+export function createBoundedTokenObservationTracker(limit = 10_000) {
+  const observed = new Set<string>();
+  return (tokenId: string): boolean => {
+    if (observed.has(tokenId)) return false;
+    observed.add(tokenId);
+    if (observed.size > limit) {
+      const oldest = observed.values().next().value;
+      if (oldest !== undefined) observed.delete(oldest);
+    }
+    return true;
+  };
+}
+
+export function resolveRefreshMcpOauthScope(
+  requestedScope: string | null,
+  storedScope: string | null,
+): McpScopeResolution {
+  const current = resolveStoredMcpOauthScope(storedScope);
+  if ("error" in current || !requestedScope?.trim()) return current;
+
+  const requested = resolveMcpOauthScope(requestedScope);
+  if ("error" in requested) return requested;
+
+  const currentScopes = new Set(current.scope.split(/\s+/));
+  const expandedScopes = requested.scope.split(/\s+/).filter((scope) => !currentScopes.has(scope));
+  if (expandedScopes.length > 0) {
+    return {
+      error: `requested refresh scope exceeds the original grant: ${expandedScopes.join(", ")}`,
+      reason: "scope_escalation",
+    };
+  }
+  return requested;
+}
+
+export function hasMcpWriteAccess(scopes: readonly string[]): boolean {
+  return (
+    scopes.length === 0 || (scopes.includes(MCP_READ_SCOPE) && scopes.includes(MCP_WRITE_SCOPE))
+  );
 }
 
 /**
- * Restrict an `mcp:read` session to tools explicitly classified as read-only.
+ * Restrict scoped sessions without the complete read/write grant to tools
+ * explicitly classified as read-only. Empty scopes are legacy personal tokens
+ * and intentionally retain full access.
  *
  * The default is intentionally deny: a newly added tool is unavailable to
  * read-scoped tokens until its registration opts in with READ_ONLY_TOOL.
  */
 export function enforceMcpToolScopes(server: McpServer, scopes: readonly string[]): void {
-  if (!scopes.includes(MCP_READ_SCOPE)) return;
+  if (hasMcpWriteAccess(scopes)) return;
 
   const original = (server.registerTool as AnyRegisterTool).bind(server);
   (server as unknown as { registerTool: AnyRegisterTool }).registerTool = (

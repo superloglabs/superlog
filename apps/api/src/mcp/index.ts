@@ -13,10 +13,15 @@ import type { Hono } from "hono";
 import { logger } from "../logger.js";
 import { type McpConfig, loadMcpConfig } from "./config.js";
 import { mountOauthDecision, mountOauthEndpoints, mountOauthMetadata } from "./oauth.js";
-import { resolveMcpOauthScope } from "./scope-authorization.js";
+import {
+  createBoundedTokenObservationTracker,
+  isLegacyStoredMcpOauthScope,
+  resolveStoredMcpOauthScope,
+} from "./scope-authorization.js";
 import { createMcpServerForSession } from "./server.js";
 
 const log = logger.child({ scope: "mcp-bearer" });
+const shouldLogLegacyScopeFallback = createBoundedTokenObservationTracker();
 
 type TokenContext = {
   tokenId: string;
@@ -118,8 +123,34 @@ async function resolveToken(
   if (stored !== cfg.resource && stored !== cfg.apiBaseUrl) {
     return { reason: `resource mismatch (stored=${row.resource})` };
   }
-  const resolvedScope = resolveMcpOauthScope(row.scope);
-  if ("error" in resolvedScope) return { reason: resolvedScope.error };
+  const resolvedScope = resolveStoredMcpOauthScope(row.scope);
+  if (
+    isLegacyStoredMcpOauthScope(row.scope) &&
+    "scope" in resolvedScope &&
+    shouldLogLegacyScopeFallback(row.id)
+  ) {
+    log.info(
+      {
+        tokenId: row.id,
+        storedScope: row.scope,
+        resolvedScope: resolvedScope.scope,
+        reason: "legacy_scope_default",
+      },
+      "MCP legacy token scope normalized to read-only",
+    );
+  }
+  if ("error" in resolvedScope) {
+    log.info(
+      {
+        tokenId: row.id,
+        storedScope: row.scope,
+        reason: resolvedScope.reason,
+        error: resolvedScope.error,
+      },
+      "MCP token rejected: scope resolution failed",
+    );
+    return { reason: resolvedScope.error };
+  }
   return {
     tokenId: row.id,
     tokenKind: "oauth",
