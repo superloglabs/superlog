@@ -358,13 +358,22 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
     return oauthError(c, 400, "invalid_grant", "refresh token already used");
   }
 
-  const tokens = await issueTokens({
-    clientId: row.clientId,
-    userId: row.userId,
-    projectId: row.projectId,
-    resource: row.resource,
-    scope: resolvedScope.scope,
-  });
+  let tokens: Awaited<ReturnType<typeof issueTokens>>;
+  try {
+    tokens = await issueTokens({
+      clientId: row.clientId,
+      userId: row.userId,
+      projectId: row.projectId,
+      resource: row.resource,
+      scope: resolvedScope.scope,
+    });
+  } catch (error) {
+    log.error(
+      { tokenId: row.id, userId: row.userId, error },
+      "MCP refresh token rotation claimed but replacement issuance failed",
+    );
+    throw error;
+  }
   log.info(
     {
       tokenId: row.id,
