@@ -14,7 +14,11 @@ import { HTTPException } from "hono/http-exception";
 import { logger } from "../logger.js";
 import { resolveActiveOrgContext } from "../org-context.js";
 import type { McpConfig } from "./config.js";
-import { MCP_SUPPORTED_SCOPES, resolveMcpOauthScope } from "./scope-authorization.js";
+import {
+  MCP_SUPPORTED_SCOPES,
+  resolveMcpOauthScope,
+  resolveRefreshMcpOauthScope,
+} from "./scope-authorization.js";
 
 const log = logger.child({ scope: "mcp-oauth" });
 
@@ -305,6 +309,7 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
   const refreshToken = stringField(form, "refresh_token");
   const clientId = stringField(form, "client_id");
   const resource = stringField(form, "resource");
+  const requestedScope = stringField(form, "scope") || null;
   if (!refreshToken || !clientId) {
     return oauthError(c, 400, "invalid_request", "missing refresh_token or client_id");
   }
@@ -328,6 +333,21 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
     return oauthError(c, 400, "invalid_grant", "refresh token expired");
   }
 
+  const resolvedScope = resolveRefreshMcpOauthScope(requestedScope, row.scope);
+  if ("error" in resolvedScope) {
+    log.info(
+      {
+        tokenId: row.id,
+        requestedScope,
+        storedScope: row.scope,
+        reason: resolvedScope.reason,
+        error: resolvedScope.error,
+      },
+      "MCP refresh rejected: scope resolution failed",
+    );
+    return oauthError(c, 400, "invalid_scope", resolvedScope.error);
+  }
+
   await db
     .update(schema.mcpOauthTokens)
     .set({ revokedAt: new Date() })
@@ -338,7 +358,7 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
     userId: row.userId,
     projectId: row.projectId,
     resource: row.resource,
-    scope: row.scope,
+    scope: resolvedScope.scope,
   });
   return c.json(tokens);
 }

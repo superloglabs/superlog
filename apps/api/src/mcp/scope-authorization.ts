@@ -19,7 +19,7 @@ type McpScopeResolution =
   | { scope: string }
   | {
       error: string;
-      reason: "unsupported_scope" | "write_requires_read";
+      reason: "scope_escalation" | "unsupported_scope" | "write_requires_read";
     };
 
 export function resolveMcpOauthScope(requestedScope: string | null): McpScopeResolution {
@@ -48,6 +48,27 @@ export function resolveStoredMcpOauthScope(
   storedScope: string | null,
 ): ReturnType<typeof resolveMcpOauthScope> {
   return resolveMcpOauthScope(storedScope?.trim() ? storedScope : MCP_READ_SCOPE);
+}
+
+export function resolveRefreshMcpOauthScope(
+  requestedScope: string | null,
+  storedScope: string | null,
+): McpScopeResolution {
+  const current = resolveStoredMcpOauthScope(storedScope);
+  if ("error" in current || !requestedScope?.trim()) return current;
+
+  const requested = resolveMcpOauthScope(requestedScope);
+  if ("error" in requested) return requested;
+
+  const currentScopes = new Set(current.scope.split(/\s+/));
+  const expandedScopes = requested.scope.split(/\s+/).filter((scope) => !currentScopes.has(scope));
+  if (expandedScopes.length > 0) {
+    return {
+      error: `requested refresh scope exceeds the original grant: ${expandedScopes.join(", ")}`,
+      reason: "scope_escalation",
+    };
+  }
+  return requested;
 }
 
 export function hasMcpWriteAccess(scopes: readonly string[]): boolean {

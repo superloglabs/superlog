@@ -4,7 +4,11 @@ import { test } from "node:test";
 import type { ClickHouseClient } from "@clickhouse/client";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { resolveMcpOauthScope, resolveStoredMcpOauthScope } from "./scope-authorization.js";
+import {
+  resolveMcpOauthScope,
+  resolveRefreshMcpOauthScope,
+  resolveStoredMcpOauthScope,
+} from "./scope-authorization.js";
 import { createMcpServerForSession } from "./server.js";
 
 const fakeCh = {} as ClickHouseClient;
@@ -59,6 +63,25 @@ test("OAuth rejects unsupported scopes", () => {
   assert.deepEqual(resolveMcpOauthScope("mcp:read profile"), {
     error: "unsupported MCP scope: profile",
     reason: "unsupported_scope",
+  });
+});
+
+test("refresh requests can narrow an existing read/write grant", () => {
+  assert.deepEqual(resolveRefreshMcpOauthScope("mcp:read", "mcp:read mcp:write"), {
+    scope: "mcp:read",
+  });
+});
+
+test("refresh requests cannot expand the existing grant", () => {
+  assert.deepEqual(resolveRefreshMcpOauthScope("mcp:read mcp:write", "mcp:read"), {
+    error: "requested refresh scope exceeds the original grant: mcp:write",
+    reason: "scope_escalation",
+  });
+});
+
+test("refresh requests preserve the existing grant when scope is omitted", () => {
+  assert.deepEqual(resolveRefreshMcpOauthScope(null, "mcp:read mcp:write"), {
+    scope: "mcp:read mcp:write",
   });
 });
 
