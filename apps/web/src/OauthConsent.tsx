@@ -72,7 +72,10 @@ function ConsentCard({ params }: { params: AuthorizeParams }) {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [client, setClient] = useState<ClientInfo | null>(null);
   const [state, setState] = useState<
-    { kind: "loading" } | { kind: "ready" } | { kind: "working" } | { kind: "error"; message: string }
+    | { kind: "loading" }
+    | { kind: "ready" }
+    | { kind: "working" }
+    | { kind: "error"; message: string }
   >({ kind: "loading" });
 
   useEffect(() => {
@@ -167,11 +170,11 @@ function ConsentCard({ params }: { params: AuthorizeParams }) {
             will access
           </span>
           <div className="text-[13px] text-fg">
-            Read logs, traces, metrics, and saved investigation data for project{" "}
-            <span className="font-medium">{me?.project.name}</span> in org{" "}
+            Read logs, traces, metrics, and saved investigation data across projects you can access,
+            starting with project <span className="font-medium">{me?.project.name}</span> in org{" "}
             <span className="font-medium">{me?.org.name}</span>
             {grantsWriteAccess
-              ? ", and create or change alerts, dashboards, investigation settings, and agent memories."
+              ? ", and create or change alerts, dashboards, investigation settings, and agent memories in any project you can access."
               : ". This client requested read-only access."}
           </div>
         </div>

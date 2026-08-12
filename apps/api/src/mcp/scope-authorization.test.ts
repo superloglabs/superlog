@@ -5,6 +5,7 @@ import type { ClickHouseClient } from "@clickhouse/client";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
+  isLegacyStoredMcpOauthScope,
   resolveMcpOauthScope,
   resolveRefreshMcpOauthScope,
   resolveStoredMcpOauthScope,
@@ -44,6 +45,13 @@ test("legacy OAuth tokens stored without a scope remain read-only", () => {
 
 test("legacy OAuth tokens stored with a blank scope remain read-only", () => {
   assert.deepEqual(resolveStoredMcpOauthScope("   "), { scope: "mcp:read" });
+});
+
+test("legacy stored OAuth scopes are classified for observability", () => {
+  assert.equal(isLegacyStoredMcpOauthScope(null), true);
+  assert.equal(isLegacyStoredMcpOauthScope(""), true);
+  assert.equal(isLegacyStoredMcpOauthScope("   "), true);
+  assert.equal(isLegacyStoredMcpOauthScope("mcp:read"), false);
 });
 
 test("OAuth accepts read and write scopes", () => {

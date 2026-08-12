@@ -47,7 +47,13 @@ export function resolveMcpOauthScope(requestedScope: string | null): McpScopeRes
 export function resolveStoredMcpOauthScope(
   storedScope: string | null,
 ): ReturnType<typeof resolveMcpOauthScope> {
-  return resolveMcpOauthScope(storedScope?.trim() ? storedScope : MCP_READ_SCOPE);
+  return resolveMcpOauthScope(
+    isLegacyStoredMcpOauthScope(storedScope) ? MCP_READ_SCOPE : storedScope,
+  );
+}
+
+export function isLegacyStoredMcpOauthScope(storedScope: string | null): boolean {
+  return !storedScope?.trim();
 }
 
 export function resolveRefreshMcpOauthScope(
