@@ -349,18 +349,10 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
     return oauthError(c, 400, "invalid_scope", resolvedScope.error);
   }
 
-  const claimedRotation = await claimMcpOauthRefreshTokenRotation(row.id);
-  if (!claimedRotation) {
-    log.error(
-      { tokenId: row.id, userId: row.userId, clientId: row.clientId },
-      "MCP refresh token already claimed: possible replay or concurrent rotation",
-    );
-    return oauthError(c, 400, "invalid_grant", "refresh token already used");
-  }
-
-  let tokens: Awaited<ReturnType<typeof issueTokens>>;
+  let tokens: Awaited<ReturnType<typeof rotateMcpOauthRefreshToken>>;
   try {
-    tokens = await issueTokens({
+    tokens = await rotateMcpOauthRefreshToken({
+      tokenId: row.id,
       clientId: row.clientId,
       userId: row.userId,
       projectId: row.projectId,
@@ -369,11 +361,25 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
     });
   } catch (error) {
     log.error(
-      { tokenId: row.id, userId: row.userId, error },
-      "MCP refresh token rotation claimed but replacement issuance failed",
+      {
+        tokenId: row.id,
+        userId: row.userId,
+        requestedScope,
+        resolvedScope: resolvedScope.scope,
+        error,
+      },
+      "MCP refresh token rotation transaction failed",
     );
     throw error;
   }
+  if (!tokens) {
+    log.error(
+      { tokenId: row.id, userId: row.userId, clientId: row.clientId },
+      "MCP refresh token already claimed: possible replay or concurrent rotation",
+    );
+    return oauthError(c, 400, "invalid_grant", "refresh token already used");
+  }
+  syncMcpInstall(row.userId, row.projectId);
   log.info(
     {
       tokenId: row.id,
@@ -387,33 +393,61 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
   return c.json(tokens);
 }
 
-export async function claimMcpOauthRefreshTokenRotation(tokenId: string): Promise<boolean> {
-  try {
-    const [claimed] = await db
-      .update(schema.mcpOauthTokens)
-      .set({ revokedAt: new Date() })
-      .where(and(eq(schema.mcpOauthTokens.id, tokenId), isNull(schema.mcpOauthTokens.revokedAt)))
-      .returning({ id: schema.mcpOauthTokens.id });
-    return claimed !== undefined;
-  } catch (error) {
-    log.error({ tokenId, error }, "MCP refresh token rotation claim failed");
-    throw error;
-  }
-}
+type McpTokenPair = {
+  access: ReturnType<typeof generateMcpAccessToken>;
+  refresh: ReturnType<typeof generateMcpRefreshToken>;
+};
 
-async function issueTokens(params: {
+type McpTokenIssueParams = {
   clientId: string;
   userId: string;
   projectId: string;
   resource: string;
   scope: string | null;
-}): Promise<{
+};
+
+type McpTokenResponse = {
   access_token: string;
   refresh_token: string;
   token_type: "Bearer";
   expires_in: number;
   scope?: string;
-}> {
+};
+
+export async function rotateMcpOauthRefreshToken(
+  params: McpTokenIssueParams & { tokenId: string },
+  generateTokens: () => McpTokenPair = () => ({
+    access: generateMcpAccessToken(),
+    refresh: generateMcpRefreshToken(),
+  }),
+): Promise<McpTokenResponse | null> {
+  return db.transaction(async (tx) => {
+    const [claimed] = await tx
+      .update(schema.mcpOauthTokens)
+      .set({ revokedAt: new Date() })
+      .where(
+        and(eq(schema.mcpOauthTokens.id, params.tokenId), isNull(schema.mcpOauthTokens.revokedAt)),
+      )
+      .returning({ id: schema.mcpOauthTokens.id });
+    if (!claimed) return null;
+
+    const { access, refresh } = generateTokens();
+    await tx.insert(schema.mcpOauthTokens).values({
+      accessHash: access.hash,
+      refreshHash: refresh.hash,
+      clientId: params.clientId,
+      userId: params.userId,
+      projectId: params.projectId,
+      resource: params.resource,
+      scope: params.scope,
+      accessExpiresAt: new Date(Date.now() + ACCESS_TTL_SECONDS * 1000),
+      refreshExpiresAt: new Date(Date.now() + REFRESH_TTL_SECONDS * 1000),
+    });
+    return tokenResponse(access, refresh, params.scope);
+  });
+}
+
+async function issueTokens(params: McpTokenIssueParams): Promise<McpTokenResponse> {
   const access = generateMcpAccessToken();
   const refresh = generateMcpRefreshToken();
   await db.insert(schema.mcpOauthTokens).values({
@@ -427,18 +461,30 @@ async function issueTokens(params: {
     accessExpiresAt: new Date(Date.now() + ACCESS_TTL_SECONDS * 1000),
     refreshExpiresAt: new Date(Date.now() + REFRESH_TTL_SECONDS * 1000),
   });
+  syncMcpInstall(params.userId, params.projectId);
+  return tokenResponse(access, refresh, params.scope);
+}
+
+function syncMcpInstall(userId: string, projectId: string): void {
   void syncLoopsContactForUserProject({
-    userId: params.userId,
-    projectId: params.projectId,
+    userId,
+    projectId,
   }).catch((err) =>
-    log.warn({ err, user_id: params.userId }, "loops contact sync failed after mcp install"),
+    log.warn({ err, user_id: userId }, "loops contact sync failed after mcp install"),
   );
+}
+
+function tokenResponse(
+  access: ReturnType<typeof generateMcpAccessToken>,
+  refresh: ReturnType<typeof generateMcpRefreshToken>,
+  scope: string | null,
+): McpTokenResponse {
   return {
     access_token: access.plaintext,
     refresh_token: refresh.plaintext,
     token_type: "Bearer",
     expires_in: ACCESS_TTL_SECONDS,
-    ...(params.scope ? { scope: params.scope } : {}),
+    ...(scope ? { scope } : {}),
   };
 }
 

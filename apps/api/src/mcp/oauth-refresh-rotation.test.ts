@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { closeDb, db, runMigrations, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
-import { claimMcpOauthRefreshTokenRotation } from "./oauth.js";
+import { rotateMcpOauthRefreshToken } from "./oauth.js";
 
 const orgIds: string[] = [];
 const userIds: string[] = [];
@@ -29,7 +29,7 @@ after(async () => {
   }
 });
 
-test("only one concurrent refresh can claim a token for rotation", async () => {
+async function seedRefreshToken() {
   const tag = `mcp-refresh-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
   const [user] = await db
     .insert(schema.users)
@@ -72,10 +72,43 @@ test("only one concurrent refresh can claim a token for rotation", async () => {
     .returning();
   if (!token) throw new Error("seed OAuth token failed");
 
-  const claims = await Promise.all([
-    claimMcpOauthRefreshTokenRotation(token.id),
-    claimMcpOauthRefreshTokenRotation(token.id),
+  return {
+    token,
+    params: {
+      tokenId: token.id,
+      clientId: client.id,
+      userId: user.id,
+      projectId: project.id,
+      resource: token.resource,
+      scope: token.scope,
+    },
+  };
+}
+
+test("only one concurrent refresh can claim and replace a token", async () => {
+  const { params } = await seedRefreshToken();
+  const rotations = await Promise.all([
+    rotateMcpOauthRefreshToken(params),
+    rotateMcpOauthRefreshToken(params),
   ]);
 
-  assert.deepEqual(claims.sort(), [false, true]);
+  assert.equal(rotations.filter(Boolean).length, 1);
+});
+
+test("failed replacement issuance rolls back the refresh-token claim", async () => {
+  const { token, params } = await seedRefreshToken();
+
+  await assert.rejects(
+    rotateMcpOauthRefreshToken(params, () => ({
+      access: { plaintext: "duplicate-access", hash: token.accessHash, prefix: "duplicate" },
+      refresh: { plaintext: "new-refresh", hash: `${token.refreshHash}-new`, prefix: "new" },
+    })),
+  );
+
+  const afterFailure = await db.query.mcpOauthTokens.findFirst({
+    where: eq(schema.mcpOauthTokens.id, token.id),
+  });
+  assert.equal(afterFailure?.revokedAt, null);
+
+  assert.ok(await rotateMcpOauthRefreshToken(params));
 });
