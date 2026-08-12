@@ -38,6 +38,10 @@ test("legacy OAuth tokens stored without a scope remain read-only", () => {
   assert.deepEqual(resolveStoredMcpOauthScope(null), { scope: "mcp:read" });
 });
 
+test("legacy OAuth tokens stored with a blank scope remain read-only", () => {
+  assert.deepEqual(resolveStoredMcpOauthScope("   "), { scope: "mcp:read" });
+});
+
 test("OAuth accepts read and write scopes", () => {
   assert.deepEqual(resolveMcpOauthScope("  mcp:write   mcp:read  "), {
     scope: "mcp:read mcp:write",

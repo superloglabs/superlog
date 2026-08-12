@@ -47,7 +47,7 @@ export function resolveMcpOauthScope(requestedScope: string | null): McpScopeRes
 export function resolveStoredMcpOauthScope(
   storedScope: string | null,
 ): ReturnType<typeof resolveMcpOauthScope> {
-  return resolveMcpOauthScope(storedScope ?? MCP_READ_SCOPE);
+  return resolveMcpOauthScope(storedScope?.trim() ? storedScope : MCP_READ_SCOPE);
 }
 
 export function hasMcpWriteAccess(scopes: readonly string[]): boolean {
