@@ -10,6 +10,7 @@ import {
   compensatePullRequestDelivery,
   deliverProposedPullRequest,
   guardProposedPullRequestOverlap,
+  overlappingFilesForPullRequestClaim,
   preflightProposedPullRequest,
   publishPullRequestUpdateIfCurrent,
   pullRequestDeliveryIdentityForLegacyCompletion,
@@ -73,6 +74,22 @@ test("changed-file evidence preserves real top-level a and b directories", () =>
       ),
     ),
     ["a/config.ts", "b/config.ts"],
+  );
+});
+
+test("a retained claim blocks later attempts from the same incident but not its own recovery", () => {
+  const claim = {
+    agentRunId: "run-original",
+    changedFiles: ["src/retries.ts", "src/cache.ts"],
+  };
+
+  assert.deepEqual(
+    overlappingFilesForPullRequestClaim(claim, "run-later", new Set(["src/retries.ts"])),
+    ["src/retries.ts"],
+  );
+  assert.deepEqual(
+    overlappingFilesForPullRequestClaim(claim, "run-original", new Set(["src/retries.ts"])),
+    [],
   );
 });
 

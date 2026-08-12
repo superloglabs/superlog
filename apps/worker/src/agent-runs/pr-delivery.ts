@@ -1542,6 +1542,7 @@ async function findOverlappingOpenPullRequest(
   const claims = await database
     .select({
       incidentId: schema.agentPullRequestOverlapClaims.incidentId,
+      agentRunId: schema.agentPullRequestOverlapClaims.agentRunId,
       changedFiles: schema.agentPullRequestOverlapClaims.changedFiles,
     })
     .from(schema.agentPullRequestOverlapClaims)
@@ -1552,7 +1553,6 @@ async function findOverlappingOpenPullRequest(
     .where(
       and(
         eq(schema.agentPullRequestOverlapClaims.projectId, input.projectId),
-        ne(schema.agentPullRequestOverlapClaims.incidentId, input.currentIncidentId),
         gte(
           schema.incidents.firstSeen,
           new Date(input.currentIncidentFirstSeen.getTime() - groupingWindowMs),
@@ -1580,7 +1580,11 @@ async function findOverlappingOpenPullRequest(
         "overlap claim skipped: no changed files recorded on pending claim",
       );
     }
-    const overlappingFiles = claimFiles.filter((file) => proposedFiles.has(file));
+    const overlappingFiles = overlappingFilesForPullRequestClaim(
+      claim,
+      input.currentAgentRunId,
+      proposedFiles,
+    );
     if (overlappingFiles.length > 0) {
       return {
         incidentId: claim.incidentId,
@@ -1592,6 +1596,15 @@ async function findOverlappingOpenPullRequest(
     }
   }
   return null;
+}
+
+export function overlappingFilesForPullRequestClaim(
+  claim: { agentRunId: string; changedFiles: unknown },
+  currentAgentRunId: string,
+  proposedFiles: ReadonlySet<string>,
+): string[] {
+  if (claim.agentRunId === currentAgentRunId) return [];
+  return normalizedChangedFiles(claim.changedFiles).filter((file) => proposedFiles.has(file));
 }
 
 export type PullRequestOverlapInput = Parameters<typeof findOverlappingOpenPullRequest>[0];
@@ -1680,7 +1693,7 @@ async function finalizePullRequestOverlapClaim<T>(
 ): Promise<void> {
   if (!pullRequestOverlapClaimCanRelease(value)) {
     recordPullRequestOverlapGuardMetric("claim_retained");
-    logger.warn(
+    logger.info(
       {
         scope: "agent_run.pr_delivery.overlap_claim_retained",
         current_incident_id: input.currentIncidentId,
@@ -1760,7 +1773,6 @@ export async function guardProposedPullRequestOverlap<T>(
       throw err;
     }
     if (overlap) return { ok: false, overlap };
-    recordPullRequestOverlapGuardMetric("no_overlap");
     try {
       await dependencies.claimOverlap(input);
     } catch (err) {
@@ -1776,6 +1788,7 @@ export async function guardProposedPullRequestOverlap<T>(
       );
       throw err;
     }
+    recordPullRequestOverlapGuardMetric("no_overlap");
     const value = await task();
     await finalizePullRequestOverlapClaim(input, value, dependencies.releaseClaim);
     return { ok: true, value };

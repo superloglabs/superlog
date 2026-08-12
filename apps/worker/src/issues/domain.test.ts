@@ -171,9 +171,29 @@ test("groupingIssueInput and buildGroupingCandidate keep LLM input shape explici
   // stack traces and code locations.
   assert.equal(candidate.issues?.length, 1);
   assert.equal(candidate.issues?.[0]?.id, "iss-linked");
-  assert.equal("firstSeen" in (candidate.issues?.[0] ?? {}), false);
+  assert.equal(candidate.issues?.[0]?.firstSeen, "2026-07-17T10:00:00.000Z");
   assert.equal(candidate.issues?.[0]?.lastSeen, "2026-07-17T10:05:00.000Z");
-  assert.equal("eventCount" in (candidate.issues?.[0] ?? {}), false);
+  assert.equal(candidate.issues?.[0]?.eventCount, 2);
+});
+
+test("buildGroupingCandidate omits lifetime counts that predate a recurrence window", () => {
+  const candidate = buildGroupingCandidate(
+    {
+      ...makeIncident("inc-recurrence"),
+      firstSeen: new Date("2026-07-18T10:00:00.000Z"),
+    },
+    [
+      {
+        ...makeLinkedIssue("inc-recurrence", ["svc/a.ts"]),
+        firstSeen: new Date("2026-07-17T10:00:00.000Z"),
+        lastSeen: new Date("2026-07-18T10:05:00.000Z"),
+        eventCount: 99,
+      },
+    ],
+  );
+
+  assert.equal("firstSeen" in (candidate?.issues?.[0] ?? {}), false);
+  assert.equal("eventCount" in (candidate?.issues?.[0] ?? {}), false);
 });
 
 test("groupingIssueInput compacts an oversized generated-code frame without losing diagnostics", () => {

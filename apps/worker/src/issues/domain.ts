@@ -212,20 +212,32 @@ export function buildGroupingCandidate(
     // Full per-issue context (stack traces, code locations) so the agent can
     // compare root causes instead of message wording. Surfaced by
     // inspect_incident; the index line only uses the first entry.
-    issues: rows.slice(0, GROUPING_CANDIDATE_ISSUE_LIMIT).map((row) => ({
-      id: row.issueId,
-      title: row.title,
-      service: row.service,
-      exceptionType: row.exceptionType,
-      message: row.message,
-      topFrame: row.topFrame,
-      normalizedFrames: row.normalizedFrames ?? [],
-      traceId: row.lastSample?.traceId ?? null,
-      spanId: row.lastSample?.spanId ?? null,
-      logAttrs: sampleLogAttrs(row.lastSample),
-      stacktrace: sampleStacktrace(row.lastSample),
-      resourceAttrs: sampleResourceAttrs(row.lastSample),
-      lastSeen: row.lastSeen.toISOString(),
-    })),
+    issues: rows.slice(0, GROUPING_CANDIDATE_ISSUE_LIMIT).map((row) => {
+      // Issue counters are lifetime totals. They are valid evidence for this
+      // incident only when the issue itself began in this incident's window;
+      // recurrent issues otherwise include occurrences from older incidents.
+      const occurrenceEvidenceIsIncidentScoped =
+        row.firstSeen !== undefined &&
+        row.eventCount !== undefined &&
+        row.firstSeen.getTime() >= incident.firstSeen.getTime();
+      return {
+        id: row.issueId,
+        title: row.title,
+        service: row.service,
+        exceptionType: row.exceptionType,
+        message: row.message,
+        topFrame: row.topFrame,
+        normalizedFrames: row.normalizedFrames ?? [],
+        traceId: row.lastSample?.traceId ?? null,
+        spanId: row.lastSample?.spanId ?? null,
+        logAttrs: sampleLogAttrs(row.lastSample),
+        stacktrace: sampleStacktrace(row.lastSample),
+        resourceAttrs: sampleResourceAttrs(row.lastSample),
+        ...(occurrenceEvidenceIsIncidentScoped
+          ? { firstSeen: row.firstSeen?.toISOString(), eventCount: row.eventCount }
+          : {}),
+        lastSeen: row.lastSeen.toISOString(),
+      };
+    }),
   };
 }
