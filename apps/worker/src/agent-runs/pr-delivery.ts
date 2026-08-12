@@ -1712,7 +1712,9 @@ async function finalizePullRequestOverlapClaim<T>(
         err,
         scope: "agent_run.pr_delivery.overlap_release_error",
         current_incident_id: input.currentIncidentId,
+        current_agent_run_id: input.currentAgentRunId,
         repo_full_name: input.repoFullName,
+        base_branch: input.baseBranch,
       },
       "failed to release pull request overlap claim; stale claim may block future deliveries",
     );
@@ -1748,6 +1750,7 @@ export async function guardProposedPullRequestOverlap<T>(
         {
           scope: "agent_run.pr_delivery.overlap_guard_no_files",
           current_incident_id: input.currentIncidentId,
+          current_agent_run_id: input.currentAgentRunId,
           repo_full_name: input.repoFullName,
         },
         "overlap guard skipped: no changed files provided",
