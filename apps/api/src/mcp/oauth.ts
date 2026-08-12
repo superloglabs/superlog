@@ -379,12 +379,17 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
 }
 
 export async function claimMcpOauthRefreshTokenRotation(tokenId: string): Promise<boolean> {
-  const [claimed] = await db
-    .update(schema.mcpOauthTokens)
-    .set({ revokedAt: new Date() })
-    .where(and(eq(schema.mcpOauthTokens.id, tokenId), isNull(schema.mcpOauthTokens.revokedAt)))
-    .returning({ id: schema.mcpOauthTokens.id });
-  return claimed !== undefined;
+  try {
+    const [claimed] = await db
+      .update(schema.mcpOauthTokens)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(schema.mcpOauthTokens.id, tokenId), isNull(schema.mcpOauthTokens.revokedAt)))
+      .returning({ id: schema.mcpOauthTokens.id });
+    return claimed !== undefined;
+  } catch (error) {
+    log.error({ tokenId, error }, "MCP refresh token rotation claim failed");
+    throw error;
+  }
 }
 
 async function issueTokens(params: {
