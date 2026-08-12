@@ -360,6 +360,16 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
     resource: row.resource,
     scope: resolvedScope.scope,
   });
+  log.info(
+    {
+      tokenId: row.id,
+      userId: row.userId,
+      storedScope: row.scope,
+      requestedScope,
+      resolvedScope: resolvedScope.scope,
+    },
+    "MCP refresh token rotated",
+  );
   return c.json(tokens);
 }
 

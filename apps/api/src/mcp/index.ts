@@ -13,10 +13,15 @@ import type { Hono } from "hono";
 import { logger } from "../logger.js";
 import { type McpConfig, loadMcpConfig } from "./config.js";
 import { mountOauthDecision, mountOauthEndpoints, mountOauthMetadata } from "./oauth.js";
-import { isLegacyStoredMcpOauthScope, resolveStoredMcpOauthScope } from "./scope-authorization.js";
+import {
+  createBoundedTokenObservationTracker,
+  isLegacyStoredMcpOauthScope,
+  resolveStoredMcpOauthScope,
+} from "./scope-authorization.js";
 import { createMcpServerForSession } from "./server.js";
 
 const log = logger.child({ scope: "mcp-bearer" });
+const shouldLogLegacyScopeFallback = createBoundedTokenObservationTracker();
 
 type TokenContext = {
   tokenId: string;
@@ -119,7 +124,11 @@ async function resolveToken(
     return { reason: `resource mismatch (stored=${row.resource})` };
   }
   const resolvedScope = resolveStoredMcpOauthScope(row.scope);
-  if (isLegacyStoredMcpOauthScope(row.scope) && "scope" in resolvedScope) {
+  if (
+    isLegacyStoredMcpOauthScope(row.scope) &&
+    "scope" in resolvedScope &&
+    shouldLogLegacyScopeFallback(row.id)
+  ) {
     log.info(
       {
         tokenId: row.id,

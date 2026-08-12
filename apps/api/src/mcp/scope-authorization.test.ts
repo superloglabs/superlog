@@ -5,6 +5,7 @@ import type { ClickHouseClient } from "@clickhouse/client";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
+  createBoundedTokenObservationTracker,
   isLegacyStoredMcpOauthScope,
   resolveMcpOauthScope,
   resolveRefreshMcpOauthScope,
@@ -52,6 +53,16 @@ test("legacy stored OAuth scopes are classified for observability", () => {
   assert.equal(isLegacyStoredMcpOauthScope(""), true);
   assert.equal(isLegacyStoredMcpOauthScope("   "), true);
   assert.equal(isLegacyStoredMcpOauthScope("mcp:read"), false);
+});
+
+test("legacy token observations emit once per token with bounded memory", () => {
+  const shouldObserve = createBoundedTokenObservationTracker(2);
+
+  assert.equal(shouldObserve("token-a"), true);
+  assert.equal(shouldObserve("token-a"), false);
+  assert.equal(shouldObserve("token-b"), true);
+  assert.equal(shouldObserve("token-c"), true);
+  assert.equal(shouldObserve("token-a"), true);
 });
 
 test("OAuth accepts read and write scopes", () => {

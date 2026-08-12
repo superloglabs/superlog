@@ -56,6 +56,19 @@ export function isLegacyStoredMcpOauthScope(storedScope: string | null): boolean
   return !storedScope?.trim();
 }
 
+export function createBoundedTokenObservationTracker(limit = 10_000) {
+  const observed = new Set<string>();
+  return (tokenId: string): boolean => {
+    if (observed.has(tokenId)) return false;
+    observed.add(tokenId);
+    if (observed.size > limit) {
+      const oldest = observed.values().next().value;
+      if (oldest !== undefined) observed.delete(oldest);
+    }
+    return true;
+  };
+}
+
 export function resolveRefreshMcpOauthScope(
   requestedScope: string | null,
   storedScope: string | null,
