@@ -174,7 +174,7 @@ function ConsentCard({ params }: { params: AuthorizeParams }) {
             starting with project <span className="font-medium">{me?.project.name}</span> in org{" "}
             <span className="font-medium">{me?.org.name}</span>
             {grantsWriteAccess
-              ? ", and create or change alerts, dashboards, investigation settings, and agent memories in any project you can access."
+              ? ", create or change alerts, dashboards, investigation settings, and agent memories in any project you can access, and manage external MCP integrations and their credentials."
               : ". This client requested read-only access."}
           </div>
         </div>

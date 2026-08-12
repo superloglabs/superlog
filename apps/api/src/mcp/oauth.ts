@@ -7,7 +7,7 @@ import {
   schema,
   syncLoopsContactForUserProject,
 } from "@superlog/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -348,10 +348,10 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
     return oauthError(c, 400, "invalid_scope", resolvedScope.error);
   }
 
-  await db
-    .update(schema.mcpOauthTokens)
-    .set({ revokedAt: new Date() })
-    .where(eq(schema.mcpOauthTokens.id, row.id));
+  const claimedRotation = await claimMcpOauthRefreshTokenRotation(row.id);
+  if (!claimedRotation) {
+    return oauthError(c, 400, "invalid_grant", "refresh token already used");
+  }
 
   const tokens = await issueTokens({
     clientId: row.clientId,
@@ -361,6 +361,15 @@ async function handleRefreshGrant(c: Context, cfg: McpConfig, form: Record<strin
     scope: resolvedScope.scope,
   });
   return c.json(tokens);
+}
+
+export async function claimMcpOauthRefreshTokenRotation(tokenId: string): Promise<boolean> {
+  const [claimed] = await db
+    .update(schema.mcpOauthTokens)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(schema.mcpOauthTokens.id, tokenId), isNull(schema.mcpOauthTokens.revokedAt)))
+    .returning({ id: schema.mcpOauthTokens.id });
+  return claimed !== undefined;
 }
 
 async function issueTokens(params: {
