@@ -11,14 +11,16 @@ export const INCIDENT_POLL_INTERVAL_MS = 3000;
 // These are the states where the worker is still ticking the run, so new events
 // can still land. `awaiting_human` is included on purpose: a reply arriving on
 // another channel (e.g. Slack) flips it back to `resuming`, and we want the page
-// to catch that without a manual refresh. Terminal (`complete`/`failed`) and
-// dormant (`blocked_no_github`) states are omitted — they won't produce more
-// events until an external event requeues them, so we let the poll stop.
+// to catch that without a manual refresh. `awaiting_events` is also active: PR
+// events can resume the durable run and append status or transcript updates.
+// Terminal (`complete`/`failed`) and dormant (`blocked_no_github`) states are
+// omitted — they won't produce more events until explicitly requeued.
 const ACTIVE_AGENT_RUN_STATES: ReadonlySet<string> = new Set([
   "queued",
   "repo_discovery",
   "running",
   "awaiting_human",
+  "awaiting_events",
   "resuming",
   "pr_retry_queued",
 ]);
