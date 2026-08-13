@@ -5,6 +5,7 @@ import { type ExploreRange, type ResourceAttr, useExploreAttributeKeys, useMe } 
 import { CountChart } from "../dashboards/widgets/CountChart.tsx";
 import { Dropdown } from "../design/Dropdown.tsx";
 import { Btn, Chip, Input, PillToggle, Tile } from "../design/ui.tsx";
+import { useDemoExploration } from "../onboarding/demoExploration.tsx";
 import { type ProjectRouteSlugs, buildProjectPath } from "../project-route.ts";
 import { SettingsCard, SettingsCardFooter, SettingsRow } from "../settings/rows.tsx";
 import {
@@ -69,6 +70,7 @@ function AlertEditInner({
 }) {
   const navigate = useNavigate();
   const editing = !!alertId;
+  const { exploring: demoExploring } = useDemoExploration();
   const existing = useAlert(projectId, alertId);
 
   const [name, setName] = useState("untitled alert");
@@ -159,15 +161,19 @@ function AlertEditInner({
     Number.isFinite(threshold);
 
   const submit = async () => {
-    if (!valid) return;
-    if (editing && alertId) {
-      await update.mutateAsync(body);
-    } else {
-      const created = await create.mutateAsync(body);
-      navigate(buildProjectPath(slugs, `/alerts/${created.id}`), { replace: true });
-      return;
+    if (!valid || demoExploring) return;
+    try {
+      if (editing && alertId) {
+        await update.mutateAsync(body);
+      } else {
+        const created = await create.mutateAsync(body);
+        navigate(buildProjectPath(slugs, `/alerts/${created.id}`), { replace: true });
+        return;
+      }
+      navigate(buildProjectPath(slugs, "/alerts"));
+    } catch {
+      // Errors are surfaced via create.error / update.error
     }
-    navigate(buildProjectPath(slugs, "/alerts"));
   };
 
   // Keep the preview in sync with the rule as you edit it. Debounced so typing
@@ -434,11 +440,19 @@ function AlertEditInner({
         />
 
         <SettingsCardFooter>
-          {!valid && (
+          {demoExploring ? (
+            <span className="mr-auto text-[12px] text-muted">
+              You're exploring demo data — connect your app to create alerts.
+            </span>
+          ) : (create.error || update.error) ? (
+            <span className="mr-auto text-[12px] text-danger">
+              {String(create.error ?? update.error)}
+            </span>
+          ) : !valid ? (
             <span className="mr-auto text-[12px] text-muted">
               Fill in the required fields to continue
             </span>
-          )}
+          ) : null}
           <Btn
             variant="ghost"
             size="sm"
@@ -449,7 +463,7 @@ function AlertEditInner({
           <Btn
             size="sm"
             onClick={submit}
-            disabled={!valid}
+            disabled={!valid || demoExploring}
             loading={create.isPending || update.isPending}
           >
             {editing ? "Save" : "Create"}
