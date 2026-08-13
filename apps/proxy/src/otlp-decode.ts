@@ -78,6 +78,7 @@ export type DecodeInput = {
   contentType: string;
   contentEncoding?: string;
   body: Buffer;
+  authoritative: boolean;
 };
 
 // Decode an OTLP ingest payload into ClickHouse rows. Returns null for signals we
@@ -96,13 +97,13 @@ export function decodeOtlpToRows(input: DecodeInput): DecodedRows | null {
     const payload = json
       ? JSON.parse(body.toString("utf8"))
       : decodeProto(ExportLogsServiceRequest, body);
-    return { table: "otel_logs", rows: otlpLogsToRows(payload, input.projectId) };
+    return { table: "otel_logs", rows: otlpLogsToRows(payload, input.projectId, input.authoritative) };
   }
 
   const payload = json
     ? JSON.parse(body.toString("utf8"))
     : decodeProto(ExportTraceServiceRequest, body);
-  return { table: "otel_traces", rows: otlpTracesToRows(payload, input.projectId) };
+  return { table: "otel_traces", rows: otlpTracesToRows(payload, input.projectId, input.authoritative) };
 }
 
 // Decode an OTLP metrics export request (JSON or protobuf, possibly
