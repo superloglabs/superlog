@@ -19,6 +19,7 @@ const ACTIVE_AGENT_RUN_STATES: ReadonlySet<string> = new Set([
   "repo_discovery",
   "running",
   "awaiting_human",
+  "awaiting_events",
   "resuming",
   "pr_retry_queued",
 ]);
