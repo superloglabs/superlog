@@ -6,7 +6,7 @@ settings:
 
 overrides:
   '@grpc/proto-loader>protobufjs': 7.6.5
-  '@modelcontextprotocol/sdk>hono': 4.12.30
+  '@modelcontextprotocol/sdk>hono': 4.12.34
   '@opentelemetry/otlp-transformer>protobufjs': 8.7.1
   '@opentelemetry/core@<2.8.0': 2.9.0
   '@esbuild-kit/core-utils>esbuild': 0.25.0
@@ -98,10 +98,10 @@ importers:
         version: 1.18.3
       '@hono/node-server':
         specifier: ^1.13.7
-        version: 1.19.14(hono@4.12.30)
+        version: 1.19.14(hono@4.13.1)
       '@hono/standard-validator':
         specifier: ^0.2.2
-        version: 0.2.2(@standard-schema/spec@1.1.0)(hono@4.12.30)
+        version: 0.2.2(@standard-schema/spec@1.1.0)(hono@4.13.1)
       '@jridgewell/trace-mapping':
         specifier: ^0.3.31
         version: 0.3.31
@@ -143,7 +143,7 @@ importers:
         version: 1.40.0
       '@scalar/hono-api-reference':
         specifier: ^0.10.19
-        version: 0.10.19(hono@4.12.30)
+        version: 0.10.19(hono@4.13.1)
       '@superlog/billing':
         specifier: workspace:*
         version: link:../../packages/billing
@@ -176,10 +176,10 @@ importers:
         version: link:../../packages/telemetry-query
       autumn-js:
         specifier: ^1.2.27
-        version: 1.2.27(better-auth@1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(better-call@1.3.7(zod@4.4.3))(express@5.2.1)(hono@4.12.30)(next@15.5.20(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 1.2.27(better-auth@1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(better-call@1.3.7(zod@4.4.3))(express@5.2.1)(hono@4.13.1)(next@15.5.20(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       better-auth:
         specifier: ^1.6.13
-        version: 1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        version: 1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
@@ -190,11 +190,11 @@ importers:
         specifier: ^10.9.0
         version: 10.9.0
       hono:
-        specifier: ^4.12.25
-        version: 4.12.30
+        specifier: ^4.12.34
+        version: 4.13.1
       hono-openapi:
         specifier: ^1.3.0
-        version: 1.3.0(@hono/standard-validator@0.2.2(@standard-schema/spec@1.1.0)(hono@4.12.30))(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3))(@standard-schema/spec@1.1.0)(openapi-types@12.1.3)(zod@4.4.3))(@types/json-schema@7.0.15)(hono@4.12.30)(openapi-types@12.1.3)
+        version: 1.3.0(@hono/standard-validator@0.2.2(@standard-schema/spec@1.1.0)(hono@4.13.1))(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3))(@standard-schema/spec@1.1.0)(openapi-types@12.1.3)(zod@4.4.3))(@types/json-schema@7.0.15)(hono@4.13.1)(openapi-types@12.1.3)
       nanoid:
         specifier: ^5.0.9
         version: 5.1.9
@@ -237,7 +237,7 @@ importers:
         version: 1.18.3
       '@hono/node-server':
         specifier: ^1.13.7
-        version: 1.19.14(hono@4.12.30)
+        version: 1.19.14(hono@4.13.1)
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
@@ -296,8 +296,8 @@ importers:
         specifier: ^10.9.0
         version: 10.9.0
       hono:
-        specifier: ^4.12.25
-        version: 4.12.30
+        specifier: ^4.12.34
+        version: 4.13.1
       pino:
         specifier: ^10.3.1
         version: 10.3.1
@@ -419,10 +419,10 @@ importers:
         version: 2.1.0(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       autumn-js:
         specifier: ^1.2.27
-        version: 1.2.27(better-auth@1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(better-call@1.3.7(zod@4.4.3))(express@5.2.1)(hono@4.12.30)(next@15.5.20(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 1.2.27(better-auth@1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(better-call@1.3.7(zod@4.4.3))(express@5.2.1)(hono@4.13.1)(next@15.5.20(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       better-auth:
         specifier: ^1.6.13
-        version: 1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        version: 1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       border-beam:
         specifier: ^1.3.0
         version: 1.3.0(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -579,7 +579,7 @@ importers:
         version: link:../../packages/topology
       autumn-js:
         specifier: ^1.2.27
-        version: 1.2.27(better-auth@1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(better-call@1.3.7(zod@4.4.3))(express@5.2.1)(hono@4.12.30)(next@15.5.20(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 1.2.27(better-auth@1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(better-call@1.3.7(zod@4.4.3))(express@5.2.1)(hono@4.13.1)(next@15.5.20(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
@@ -640,7 +640,7 @@ importers:
     dependencies:
       better-auth:
         specifier: ^1.6.13
-        version: 1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        version: 1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9)
@@ -1259,6 +1259,7 @@ packages:
 
   '@clickhouse/client-common@1.18.3':
     resolution: {integrity: sha512-3axzO3zvrsGT5PzDenxgWscltYCNRDbhaHWUgdsmcM9OnW/VnZn9EarOcZogr9P82Z0mQh+Jd2x+p2K4TFD2fA==}
+    deprecated: 'Deprecated: import from @clickhouse/client or @clickhouse/client-web instead.'
 
   '@clickhouse/client@1.18.3':
     resolution: {integrity: sha512-340ngdYktL8PLUBK2QKSwe0o02tYfZSz1mSn1uXCEU8TxHvwh9pnQxElf9YHumDGj5gX/IdgxPsJTGMs82Hgug==}
@@ -1275,11 +1276,11 @@ packages:
 
   '@esbuild-kit/core-utils@3.3.2':
     resolution: {integrity: sha512-sPRAnw9CdSsRmEtnsl2WXWdyquogVpB3yZ3dgwJfe8zrOzTsV7cJvmwrKVa+0ma5BoiGJ+BoqkMvawbayKUsqQ==}
-    deprecated: 'Merged into tsx: https://tsx.is'
+    deprecated: 'Merged into tsx: https://tsx.hirok.io'
 
   '@esbuild-kit/esm-loader@2.6.5':
     resolution: {integrity: sha512-FxEMIkJKnodyA1OaCUoEvbYRkoZlLZ4d/eXFu9Fh8CbBBgP5EmZxrfTRyN0qpXZ4vOvqnE5YdRdcrmUUXuU+dA==}
-    deprecated: 'Merged into tsx: https://tsx.is'
+    deprecated: 'Merged into tsx: https://tsx.hirok.io'
 
   '@esbuild/aix-ppc64@0.25.0':
     resolution: {integrity: sha512-O7vun9Sf8DFjH2UtqK8Ku3LkquL9SZL8OLY1T5NZkA34+wG3OQF7cl4Ql8vdNzM6fzBbYfLaiRLIOZ+2FOCgBQ==}
@@ -2757,12 +2758,15 @@ packages:
 
   '@oslojs/asn1@1.0.0':
     resolution: {integrity: sha512-zw/wn0sj0j0QKbIXfIlnEcTviaCzYOY3V5rAyjR6YtOByFtJiT574+8p9Wlach0lZH9fddD4yb9laEAIl4vXQA==}
+    deprecated: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
 
   '@oslojs/binary@1.0.0':
     resolution: {integrity: sha512-9RCU6OwXU6p67H4NODbuxv2S3eenuQ4/WFLrsq+K/k682xrznH5EVWA7N4VFk9VYVcbFtKqur5YQQZc0ySGhsQ==}
+    deprecated: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
 
   '@oslojs/crypto@1.0.1':
     resolution: {integrity: sha512-7n08G8nWjAr/Yu3vu9zzrd0L9XnrJfpMioQcvCMxBIiF5orECHe5/3J0jmXRVvgfqMm/+4oxlQ+Sq39COYLcNQ==}
+    deprecated: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
 
   '@oslojs/encoding@0.4.1':
     resolution: {integrity: sha512-hkjo6MuIK/kQR5CrGNdAPZhS01ZCXuWDRJ187zh6qqF2+yMHZpD9fAYpX8q2bOO6Ryhl3XpCT6kUX76N8hhm4Q==}
@@ -2772,6 +2776,7 @@ packages:
 
   '@oslojs/jwt@0.2.0':
     resolution: {integrity: sha512-bLE7BtHrURedCn4Mco3ma9L4Y1GR2SMBuIvjWr7rmQ4/W/4Jy70TIAgZ+0nIlk0xHz1vNP8x8DCns45Sb2XRbg==}
+    deprecated: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
 
   '@phosphor-icons/react@2.1.10':
     resolution: {integrity: sha512-vt8Tvq8GLjheAZZYa+YG/pW7HDbov8El/MANW8pOAz4eGxrwhnbfrQZq0Cp4q8zBEu8NIhHdnr+r8thnfRSNYA==}
@@ -3538,6 +3543,7 @@ packages:
 
   arctic@3.7.0:
     resolution: {integrity: sha512-ZMQ+f6VazDgUJOd+qNV+H7GohNSYal1mVjm5kEaZfE2Ifb7Ss70w+Q7xpJC87qZDkMZIXYf0pTIYZA0OPasSbw==}
+    deprecated: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
 
   arg@5.0.2:
     resolution: {integrity: sha512-PYjyFOLKQ9y57JvQ6QLo8dAgNqswh8M1RMJYdQduT6xbWSgK36P/Z/v+p888pM69jMMfS8Xd8F6I1kQ/I9HUGg==}
@@ -4479,8 +4485,12 @@ packages:
       hono:
         optional: true
 
-  hono@4.12.30:
-    resolution: {integrity: sha512-emn+JoJjrN9YTpRDS5it/UI2SO9BAE37T6I3d963RxcZ81G9A4pr2SZTEiiaiKbzx+NKRg5BZ89fCL7gCJCUog==}
+  hono@4.12.34:
+    resolution: {integrity: sha512-GqXJqY/xJkJmuloTrnV1ZEXG3fqte+VjkUqoRNZXcrUidiUOP4fMSIHHY4tsqZBK++kVyWmt/AAfSUuy57/eSA==}
+    engines: {node: '>=16.9.0'}
+
+  hono@4.13.1:
+    resolution: {integrity: sha512-kdJoFVv2xmayw6cY09H7AbMJMt8Jn5jdlEdXsP7AGBdF2DIptVlKlOLKXP41yPip4/a3yQPv9gVcJYI8YY04dw==}
     engines: {node: '>=16.9.0'}
 
   html-url-attributes@3.0.1:
@@ -7202,14 +7212,18 @@ snapshots:
       protobufjs: 7.6.5
       yargs: 17.7.2
 
-  '@hono/node-server@1.19.14(hono@4.12.30)':
+  '@hono/node-server@1.19.14(hono@4.12.34)':
     dependencies:
-      hono: 4.12.30
+      hono: 4.12.34
 
-  '@hono/standard-validator@0.2.2(@standard-schema/spec@1.1.0)(hono@4.12.30)':
+  '@hono/node-server@1.19.14(hono@4.13.1)':
+    dependencies:
+      hono: 4.13.1
+
+  '@hono/standard-validator@0.2.2(@standard-schema/spec@1.1.0)(hono@4.13.1)':
     dependencies:
       '@standard-schema/spec': 1.1.0
-      hono: 4.12.30
+      hono: 4.13.1
 
   '@hugeicons/core-free-icons@4.1.4': {}
 
@@ -7468,7 +7482,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.29.0(zod@4.4.3)':
     dependencies:
-      '@hono/node-server': 1.19.14(hono@4.12.30)
+      '@hono/node-server': 1.19.14(hono@4.12.34)
       ajv: 8.18.0
       ajv-formats: 3.0.1(ajv@8.18.0)
       content-type: 1.0.5
@@ -7478,7 +7492,7 @@ snapshots:
       eventsource-parser: 3.0.8
       express: 5.2.1
       express-rate-limit: 8.4.0(express@5.2.1)
-      hono: 4.12.30
+      hono: 4.12.34
       jose: 6.2.2
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
@@ -8592,10 +8606,10 @@ snapshots:
 
   '@scalar/helpers@0.8.0': {}
 
-  '@scalar/hono-api-reference@0.10.19(hono@4.12.30)':
+  '@scalar/hono-api-reference@0.10.19(hono@4.13.1)':
     dependencies:
       '@scalar/client-side-rendering': 0.1.12
-      hono: 4.12.30
+      hono: 4.13.1
 
   '@scalar/schemas@0.3.2':
     dependencies:
@@ -9117,16 +9131,16 @@ snapshots:
       postcss: 8.5.10
       postcss-value-parser: 4.2.0
 
-  autumn-js@1.2.27(better-auth@1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(better-call@1.3.7(zod@4.4.3))(express@5.2.1)(hono@4.12.30)(next@15.5.20(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5):
+  autumn-js@1.2.27(better-auth@1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(better-call@1.3.7(zod@4.4.3))(express@5.2.1)(hono@4.13.1)(next@15.5.20(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5):
     dependencies:
       query-string: 9.4.0
       rou3: 0.6.3
       zod: 4.4.3
     optionalDependencies:
-      better-auth: 1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      better-auth: 1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       better-call: 1.3.7(zod@4.4.3)
       express: 5.2.1
-      hono: 4.12.30
+      hono: 4.13.1
       next: 15.5.20(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       react: 19.2.5
 
@@ -9146,7 +9160,7 @@ snapshots:
 
   baseline-browser-mapping@2.10.21: {}
 
-  better-auth@1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5):
+  better-auth@1.6.23(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))(next@15.5.20(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(pg@8.21.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5):
     dependencies:
       '@better-auth/core': 1.6.23(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.3.7(zod@4.4.3))(jose@6.2.2)(kysely@0.28.17)(nanostores@1.3.0)
       '@better-auth/drizzle-adapter': 1.6.23(@better-auth/core@1.6.23(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@opentelemetry/api@1.9.1)(better-call@1.3.7(zod@4.4.3))(jose@6.2.2)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(drizzle-orm@0.45.2(@electric-sql/pglite@0.2.17)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.28.17)(pg@8.21.0)(postgres@3.4.9))
@@ -9971,17 +9985,19 @@ snapshots:
 
   highlight.js@11.11.1: {}
 
-  hono-openapi@1.3.0(@hono/standard-validator@0.2.2(@standard-schema/spec@1.1.0)(hono@4.12.30))(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3))(@standard-schema/spec@1.1.0)(openapi-types@12.1.3)(zod@4.4.3))(@types/json-schema@7.0.15)(hono@4.12.30)(openapi-types@12.1.3):
+  hono-openapi@1.3.0(@hono/standard-validator@0.2.2(@standard-schema/spec@1.1.0)(hono@4.13.1))(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3))(@standard-schema/spec@1.1.0)(openapi-types@12.1.3)(zod@4.4.3))(@types/json-schema@7.0.15)(hono@4.13.1)(openapi-types@12.1.3):
     dependencies:
       '@standard-community/standard-json': 0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)
       '@standard-community/standard-openapi': 0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3))(@standard-schema/spec@1.1.0)(openapi-types@12.1.3)(zod@4.4.3)
       '@types/json-schema': 7.0.15
       openapi-types: 12.1.3
     optionalDependencies:
-      '@hono/standard-validator': 0.2.2(@standard-schema/spec@1.1.0)(hono@4.12.30)
-      hono: 4.12.30
+      '@hono/standard-validator': 0.2.2(@standard-schema/spec@1.1.0)(hono@4.13.1)
+      hono: 4.13.1
 
-  hono@4.12.30: {}
+  hono@4.12.34: {}
+
+  hono@4.13.1: {}
 
   html-url-attributes@3.0.1: {}
 
