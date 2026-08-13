@@ -93,8 +93,10 @@ export function stampIssueFingerprints(input: StampInput): StampedIngestPayload 
 function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
   const payload = JSON.parse(body.toString("utf8")) as {
     resourceSpans?: Array<{
+      resource?: { attributes?: OtlpKeyValue[] };
       scopeSpans?: Array<{
         spans?: Array<{
+          attributes?: OtlpKeyValue[];
           events?: Array<{
             name?: string;
             attributes?: OtlpKeyValue[];
@@ -105,10 +107,26 @@ function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
   };
 
   let stampedCount = 0;
+  let sanitizedCount = 0;
   for (const resourceSpan of payload.resourceSpans ?? []) {
+    if (resourceSpan.resource?.attributes) {
+      const before = resourceSpan.resource.attributes.length;
+      resourceSpan.resource.attributes = sanitizeSuperlog(resourceSpan.resource.attributes);
+      sanitizedCount += before - resourceSpan.resource.attributes.length;
+    }
     for (const scopeSpan of resourceSpan.scopeSpans ?? []) {
       for (const span of scopeSpan.spans ?? []) {
+        if (span.attributes) {
+          const before = span.attributes.length;
+          span.attributes = sanitizeSuperlog(span.attributes);
+          sanitizedCount += before - span.attributes.length;
+        }
         for (const event of span.events ?? []) {
+          if (event.attributes) {
+            const before = event.attributes.length;
+            event.attributes = sanitizeSuperlog(event.attributes);
+            sanitizedCount += before - event.attributes.length;
+          }
           if (event.name !== "exception") continue;
           const attrs = event.attributes ?? [];
           const fp = fingerprint({
@@ -123,15 +141,17 @@ function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
     }
   }
 
-  if (stampedCount === 0) return { body, stampedCount };
+  if (stampedCount === 0 && sanitizedCount === 0) return { body, stampedCount };
   return { body: Buffer.from(JSON.stringify(payload)), stampedCount };
 }
 
 function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
   const payload = ExportTraceServiceRequest.decode(body) as {
     resourceSpans?: Array<{
+      resource?: { attributes?: OtlpKeyValue[] };
       scopeSpans?: Array<{
         spans?: Array<{
+          attributes?: OtlpKeyValue[];
           events?: Array<{
             name?: string;
             attributes?: OtlpKeyValue[];
@@ -142,10 +162,26 @@ function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
   };
 
   let stampedCount = 0;
+  let sanitizedCount = 0;
   for (const resourceSpan of payload.resourceSpans ?? []) {
+    if (resourceSpan.resource?.attributes) {
+      const before = resourceSpan.resource.attributes.length;
+      resourceSpan.resource.attributes = sanitizeSuperlog(resourceSpan.resource.attributes);
+      sanitizedCount += before - resourceSpan.resource.attributes.length;
+    }
     for (const scopeSpan of resourceSpan.scopeSpans ?? []) {
       for (const span of scopeSpan.spans ?? []) {
+        if (span.attributes) {
+          const before = span.attributes.length;
+          span.attributes = sanitizeSuperlog(span.attributes);
+          sanitizedCount += before - span.attributes.length;
+        }
         for (const event of span.events ?? []) {
+          if (event.attributes) {
+            const before = event.attributes.length;
+            event.attributes = sanitizeSuperlog(event.attributes);
+            sanitizedCount += before - event.attributes.length;
+          }
           if (event.name !== "exception") continue;
           const attrs = event.attributes ?? [];
           const fp = fingerprint({
@@ -160,7 +196,7 @@ function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
     }
   }
 
-  if (stampedCount === 0) return { body, stampedCount };
+  if (stampedCount === 0 && sanitizedCount === 0) return { body, stampedCount };
   return { body: Buffer.from(ExportTraceServiceRequest.encode(payload).finish()), stampedCount };
 }
 
@@ -180,11 +216,22 @@ function stampJsonLogFingerprints(body: Buffer): StampedIngestPayload {
   };
 
   let stampedCount = 0;
+  let sanitizedCount = 0;
   for (const resourceLog of payload.resourceLogs ?? []) {
+    if (resourceLog.resource?.attributes) {
+      const before = resourceLog.resource.attributes.length;
+      resourceLog.resource.attributes = sanitizeSuperlog(resourceLog.resource.attributes);
+      sanitizedCount += before - resourceLog.resource.attributes.length;
+    }
     const service =
       stringAttribute(resourceLog.resource?.attributes ?? [], "service.name") || "unknown";
     for (const scopeLog of resourceLog.scopeLogs ?? []) {
       for (const logRecord of scopeLog.logRecords ?? []) {
+        if (logRecord.attributes) {
+          const before = logRecord.attributes.length;
+          logRecord.attributes = sanitizeSuperlog(logRecord.attributes);
+          sanitizedCount += before - logRecord.attributes.length;
+        }
         const attrs = logRecord.attributes ?? [];
         if (!isErrorLog(logRecord.severityNumber, logRecord.severityText, attrs)) continue;
         const fp = fingerprintLog({
@@ -200,7 +247,7 @@ function stampJsonLogFingerprints(body: Buffer): StampedIngestPayload {
     }
   }
 
-  if (stampedCount === 0) return { body, stampedCount };
+  if (stampedCount === 0 && sanitizedCount === 0) return { body, stampedCount };
   return { body: Buffer.from(JSON.stringify(payload)), stampedCount };
 }
 
@@ -235,6 +282,18 @@ function setStringAttribute(attrs: OtlpKeyValue[], key: string, value: string): 
   const next = attrs.filter((attr) => attr.key !== key);
   next.push({ key, value: { stringValue: value } });
   return next;
+}
+
+function sanitizeSuperlog(attrs: OtlpKeyValue[]): OtlpKeyValue[] {
+  let hasSuperlog = false;
+  for (let i = 0; i < attrs.length; i++) {
+    if (attrs[i].key?.startsWith("superlog.")) {
+      hasSuperlog = true;
+      break;
+    }
+  }
+  if (!hasSuperlog) return attrs;
+  return attrs.filter((attr) => !(attr.key || "").startsWith("superlog."));
 }
 
 function stringAttribute(attrs: OtlpKeyValue[], key: string): string | null {
