@@ -1083,6 +1083,15 @@ function isGithubNotFound(err: unknown): boolean {
   return err instanceof Error && /github GET .* failed: 404(?:\s|$)/.test(err.message);
 }
 
+export function isGithubResourceNotAccessible(err: unknown): boolean {
+  return (
+    err instanceof GithubRequestError &&
+    err.status === 403 &&
+    !err.retryable &&
+    /Resource not accessible by integration/i.test(err.message)
+  );
+}
+
 function githubPullRequestDeliveryLookup(opts: {
   repoFullName: string;
   fallbackBaseBranch: string;
@@ -1096,10 +1105,19 @@ function githubPullRequestDeliveryLookup(opts: {
         head: `${owner}:${branchName}`,
         per_page: "100",
       });
-      const pullRequests = await githubRequest<GithubPullRequest[]>(
-        `/repos/${opts.repoFullName}/pulls?${query.toString()}`,
-        { bearerToken: opts.token },
-      );
+      let pullRequests: GithubPullRequest[];
+      try {
+        pullRequests = await githubRequest<GithubPullRequest[]>(
+          `/repos/${opts.repoFullName}/pulls?${query.toString()}`,
+          { bearerToken: opts.token },
+        );
+      } catch (err) {
+        // The GitHub App installation lacks pull_requests: read permission on this
+        // repo. Treat as "no PRs found" so recovery falls through to fresh delivery
+        // rather than hard-failing the entire preflight.
+        if (isGithubResourceNotAccessible(err)) return [];
+        throw err;
+      }
       return pullRequests.map((pr) =>
         githubPullRequestDelivery(pr, {
           branchName,
