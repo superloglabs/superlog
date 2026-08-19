@@ -266,6 +266,75 @@ test("skips an installation whose token expired with no refresh token", async ()
   assert.equal(calls.cursors.length, 0);
 });
 
+test("transient token refresh failure with unexpired token continues using stored token", async () => {
+  // Token is within the 5-minute margin but not yet expired.
+  const nearExpiry = new Date(NOW.getTime() + 2 * 60 * 1000);
+  const { store, calls } = fakeStore([
+    installation({ tokenExpiresAt: nearExpiry, logCursor: { "env-1": "2026-07-07T14:59:00Z" } }),
+  ]);
+  const forwarded: Forwarded = [];
+  const logged: Array<{ level: string; fields: Record<string, unknown>; msg: string }> = [];
+  const stats = await runRailwayPullOnce({
+    store,
+    config: CONFIG,
+    intakeBaseUrl: "https://intake.test",
+    log: {
+      info(fields, msg) {
+        logged.push({ level: "info", fields, msg });
+      },
+      warn(fields, msg) {
+        logged.push({ level: "warn", fields, msg });
+      },
+      error(fields, msg) {
+        logged.push({ level: "error", fields, msg });
+      },
+    },
+    now: () => NOW,
+    fetchImpl: fakeFetch({
+      logs: [LOG_LINE],
+      forwarded,
+      refreshResponse: { error: "invalid_response" },
+    }),
+    metricsIntervalSeconds: 999999,
+    metricsPollState: new Map([["inst-1:env-1:svc-1", Math.floor(NOW.getTime() / 1000)]]),
+  });
+  // Should still forward logs using the stored access token.
+  assert.equal(stats.logsForwarded, 1, "logs should be forwarded with stored token");
+  // Should not have saved a new token (refresh failed).
+  assert.equal(calls.tokens.length, 0, "tokens must not be saved on failed refresh");
+  // Should log a warning, not an error.
+  const errors = logged.filter((l) => l.level === "error");
+  assert.equal(errors.length, 0, "no ERROR logs expected for transient failure with valid token");
+  const warnings = logged.filter((l) => l.msg.includes("retrying next pass"));
+  assert.ok(warnings.length > 0, "expected a WARN about retrying with stored token");
+});
+
+test("token refresh failure with truly expired token skips the installation", async () => {
+  // Token is already past expiry.
+  const alreadyExpired = new Date(NOW.getTime() - 1000);
+  const { store } = fakeStore([
+    installation({ tokenExpiresAt: alreadyExpired, logCursor: { "env-1": "2026-07-07T14:59:00Z" } }),
+  ]);
+  const forwarded: Forwarded = [];
+  const stats = await runRailwayPullOnce({
+    store,
+    config: CONFIG,
+    intakeBaseUrl: "https://intake.test",
+    log: LOGGER,
+    now: () => NOW,
+    fetchImpl: fakeFetch({
+      logs: [LOG_LINE],
+      forwarded,
+      refreshResponse: { error: "server_error" },
+    }),
+    metricsIntervalSeconds: 999999,
+    metricsPollState: new Map([["inst-1:env-1:svc-1", Math.floor(NOW.getTime() / 1000)]]),
+  });
+  assert.equal(stats.logsForwarded, 0, "no logs should be forwarded with expired token");
+  assert.equal(forwarded.length, 0, "no intake requests should be made");
+  assert.ok(stats.errors >= 1, "error count should be incremented");
+});
+
 test("polls metrics on the interval, forwards gauges, and advances the sample cursor", async () => {
   const { store, calls } = fakeStore([
     installation({ logCursor: { "env-1": "2026-07-07T15:00:00Z" } }),
