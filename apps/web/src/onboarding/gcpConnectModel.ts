@@ -10,7 +10,13 @@
 // connection endpoint; the milestone that unlocks "Continue" is `connected`.
 // Telemetry arrival is surfaced as a bonus but never blocks.
 
-export type GcpStatus = "pending" | "provisioning" | "connected" | "failed";
+export type GcpStatus =
+  | "pending"
+  | "provisioning"
+  | "connected"
+  | "disconnecting"
+  | "disconnect_failed"
+  | "failed";
 
 export type GcpPhase = "start" | "connecting" | "connected" | "failed";
 
@@ -24,7 +30,7 @@ export type GcpPhase = "start" | "connecting" | "connected" | "failed";
  */
 export function gcpPhase(input: { status: GcpStatus | null; launched: boolean }): GcpPhase {
   if (input.status === "connected") return "connected";
-  if (input.status === "failed") return "failed";
+  if (input.status === "failed" || input.status === "disconnect_failed") return "failed";
   if (input.launched || input.status === "pending" || input.status === "provisioning") {
     return "connecting";
   }

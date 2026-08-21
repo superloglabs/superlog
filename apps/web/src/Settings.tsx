@@ -3097,8 +3097,17 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
               {row.gcpProjectId}
             </Chip>
           ) : row ? (
-            <Chip tone={row.status === "failed" ? "danger" : "muted"} dot>
-              {row.status === "failed" ? "Setup failed" : "Setup in progress"}
+            <Chip
+              tone={
+                row.status === "failed" || row.status === "disconnect_failed" ? "danger" : "muted"
+              }
+              dot
+            >
+              {row.status === "failed"
+                ? "Setup failed"
+                : row.status === "disconnect_failed"
+                  ? "Disconnect needs retry"
+                  : "Setup in progress"}
             </Chip>
           ) : (
             <Chip tone="muted" dot>
@@ -3116,7 +3125,7 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
           </p>
         )}
         <div className="flex justify-end gap-2">
-          {row?.status === "connected" && canManage && (
+          {(row?.status === "connected" || row?.status === "disconnect_failed") && canManage && (
             <Btn
               size="sm"
               variant="danger"
@@ -3127,21 +3136,23 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
                 window.location.href = url;
               }}
             >
-              Disconnect
+              {row.status === "disconnect_failed" ? "Retry disconnect" : "Disconnect"}
             </Btn>
           )}
-          <Btn
-            size="sm"
-            variant="primary"
-            loading={start.isPending}
-            disabled={!projectId || !configured || !canManage || start.isPending}
-            onClick={async () => {
-              const { url } = await start.mutateAsync();
-              window.location.href = url;
-            }}
-          >
-            {connectAction.buttonLabel}
-          </Btn>
+          {row?.status !== "disconnect_failed" && (
+            <Btn
+              size="sm"
+              variant="primary"
+              loading={start.isPending}
+              disabled={!projectId || !configured || !canManage || start.isPending}
+              onClick={async () => {
+                const { url } = await start.mutateAsync();
+                window.location.href = url;
+              }}
+            >
+              {connectAction.buttonLabel}
+            </Btn>
+          )}
         </div>
         {disconnect.error && (
           <p className="text-[12.5px] text-danger">{String(disconnect.error)}</p>

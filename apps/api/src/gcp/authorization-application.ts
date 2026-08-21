@@ -159,7 +159,7 @@ export async function disconnectGcpAuthorization(input: {
   if (
     !connection ||
     connection.projectId !== session.projectId ||
-    (connection.status !== "connected" && connection.status !== "failed") ||
+    (connection.status !== "connected" && connection.status !== "disconnect_failed") ||
     connection.revokedAt
   ) {
     throw new Error("Connected GCP project not found");
@@ -188,7 +188,7 @@ export async function disconnectGcpAuthorization(input: {
       throw error;
     }
     if (latest?.revokedAt) return latest;
-    if (!latest || (latest.status !== "connected" && latest.status !== "failed")) {
+    if (!latest || (latest.status !== "connected" && latest.status !== "disconnect_failed")) {
       throw error;
     }
     try {

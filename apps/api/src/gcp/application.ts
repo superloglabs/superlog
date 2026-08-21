@@ -83,8 +83,8 @@ export async function completeGcpConnect(input: {
   const connection = await input.repository.findById(input.connectionId);
   if (!connection || connection.revokedAt) throw new Error("GCP connection not found");
   if (connection.status === "connected") return connection;
-  if (connection.status === "disconnecting") {
-    throw new Error("GCP disconnect is in progress");
+  if (connection.status === "disconnecting" || connection.status === "disconnect_failed") {
+    throw new Error("GCP disconnect is in progress or requires recovery");
   }
   const current = await input.repository.findCurrent(connection.projectId);
   const superseded =
@@ -175,7 +175,9 @@ export async function disconnectGcpConnection(input: {
     ? await input.repository.findById(input.expectedConnectionId)
     : await input.repository.findCurrent(input.projectId);
   const isRetryableFailure = Boolean(
-    input.expectedConnectionId && connection?.status === "failed" && !connection.revokedAt,
+    input.expectedConnectionId &&
+      connection?.status === "disconnect_failed" &&
+      !connection.revokedAt,
   );
   if (
     !connection ||
@@ -251,7 +253,7 @@ export async function disconnectGcpConnection(input: {
       try {
         const restored = await input.repository.releaseDisconnect(
           connection.id,
-          connection.status === "failed" ? "failed" : "connected",
+          connection.status === "disconnect_failed" ? "disconnect_failed" : "connected",
         );
         if (!restored) {
           if (restoredProvisioning) {

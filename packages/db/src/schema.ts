@@ -3050,6 +3050,7 @@ export type GcpConnectionStatus =
   | "provisioning"
   | "connected"
   | "disconnecting"
+  | "disconnect_failed"
   | "failed";
 
 export const gcpConnections = pgTable(

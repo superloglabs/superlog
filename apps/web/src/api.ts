@@ -1123,7 +1123,13 @@ export type GcpConnection =
       projectId: string;
       gcpProjectId: string;
       gcpProjectNumber: string | null;
-      status: "pending" | "provisioning" | "connected" | "failed";
+      status:
+        | "pending"
+        | "provisioning"
+        | "connected"
+        | "disconnecting"
+        | "disconnect_failed"
+        | "failed";
       lastVerifiedAt: string | null;
       lastLogReceivedAt: string | null;
       lastMetricsReceivedAt: string | null;

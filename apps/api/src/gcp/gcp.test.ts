@@ -700,7 +700,7 @@ test("a failed disconnect recovery can be claimed for another cleanup attempt", 
       gcpProjectId: "acme-retry-disconnect",
       readerServiceAccountEmail: config.readerServiceAccountEmail,
       createdBy: user.id,
-      status: "failed",
+      status: "disconnect_failed",
       lastError: "partial cleanup failure; connection restore failed",
     })
     .returning();
@@ -709,10 +709,10 @@ test("a failed disconnect recovery can be claimed for another cleanup attempt", 
   const claimed = await new DrizzleGcpConnectionRepository().claimDisconnect(connection.id);
 
   assert.equal(claimed.status, "disconnecting");
-  await new DrizzleGcpConnectionRepository().releaseDisconnect(connection.id, "failed");
+  await new DrizzleGcpConnectionRepository().releaseDisconnect(connection.id, "disconnect_failed");
   assert.equal(
     (await new DrizzleGcpConnectionRepository().findById(connection.id))?.status,
-    "failed",
+    "disconnect_failed",
   );
 });
 
@@ -830,7 +830,7 @@ test("a replacement cannot complete while another connection requires recovery",
         gcpProjectId: "acme-recovering",
         readerServiceAccountEmail: config.readerServiceAccountEmail,
         createdBy: user.id,
-        status: "failed",
+        status: "disconnect_failed",
         lastError: "partial cleanup failure; connection restore failed",
       },
       {
@@ -861,11 +861,54 @@ test("a replacement cannot complete while another connection requires recovery",
 
   assert.equal(
     (await new DrizzleGcpConnectionRepository().findById(recovering.id))?.status,
-    "failed",
+    "disconnect_failed",
   );
   assert.equal(
     (await new DrizzleGcpConnectionRepository().findById(candidate.id))?.status,
     "pending",
+  );
+});
+
+test("a replacement can complete after an ordinary setup failure", async () => {
+  const { user, project } = await seedProject();
+  const [failedSetup, candidate] = await db
+    .insert(schema.gcpConnections)
+    .values([
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-failed-setup",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+        status: "failed",
+        lastError: "Google Cloud provisioning failed",
+      },
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-replacement",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+      },
+    ])
+    .returning();
+  assert.ok(failedSetup && candidate);
+
+  const connected = await new DrizzleGcpConnectionRepository().markConnected(
+    candidate.id,
+    {
+      gcpProjectNumber: "123456789012",
+      topicName: `superlog-${candidate.id}`,
+      subscriptionName: `superlog-${candidate.id}`,
+      logSinkName: `superlog-${candidate.id}`,
+      logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+      monitoringViewerGrantCreated: true,
+    },
+    null,
+  );
+
+  assert.equal(connected.status, "connected");
+  assert.equal(
+    (await new DrizzleGcpConnectionRepository().findById(failedSetup.id))?.status,
+    "failed",
   );
 });
 
@@ -1084,6 +1127,37 @@ test("a failed reconnect does not hide an older working GCP connection", async (
 
   assert.equal(current?.id, connected.id);
   assert.equal(current?.status, "connected");
+});
+
+test("an ordinary setup failure does not hide a disconnect recovery", async () => {
+  const { user, project } = await seedProject();
+  const [recovering] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: project.id,
+      gcpProjectId: "acme-production",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: user.id,
+      status: "disconnect_failed",
+      lastError: "partial cleanup failure; connection restore failed",
+      createdAt: new Date("2026-07-13T00:00:00Z"),
+    })
+    .returning();
+  await db.insert(schema.gcpConnections).values({
+    projectId: project.id,
+    gcpProjectId: "acme-staging",
+    readerServiceAccountEmail: config.readerServiceAccountEmail,
+    createdBy: user.id,
+    status: "failed",
+    lastError: "Google Cloud provisioning failed",
+    createdAt: new Date("2026-07-14T00:00:00Z"),
+  });
+  assert.ok(recovering);
+
+  const current = await new DrizzleGcpConnectionRepository().findCurrent(project.id);
+
+  assert.equal(current?.id, recovering.id);
+  assert.equal(current?.status, "disconnect_failed");
 });
 
 test("a stale callback failure cannot demote an already connected row", async () => {

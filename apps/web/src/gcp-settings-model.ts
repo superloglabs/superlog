@@ -3,6 +3,7 @@ type GcpConnectionStatus =
   | "provisioning"
   | "connected"
   | "disconnecting"
+  | "disconnect_failed"
   | "failed"
   | null;
 

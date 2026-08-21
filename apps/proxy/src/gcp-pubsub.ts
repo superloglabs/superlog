@@ -29,7 +29,11 @@ type PubSubPush = {
   subscription?: unknown;
 };
 
-export const GCP_PUBSUB_INGESTIBLE_STATUSES = ["connected", "disconnecting", "failed"] as const;
+export const GCP_PUBSUB_INGESTIBLE_STATUSES = [
+  "connected",
+  "disconnecting",
+  "disconnect_failed",
+] as const;
 
 export type GcpIdTokenVerifier = {
   verify(input: { idToken: string; audience: string }): Promise<{

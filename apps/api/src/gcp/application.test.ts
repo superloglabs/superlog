@@ -430,7 +430,7 @@ test("a failed disconnect recovery row can retry cleanup", async () => {
   const failed: GcpConnectionRecord = {
     ...connection,
     ...provisioned,
-    status: "failed",
+    status: "disconnect_failed",
     lastError: "partial cleanup failure; connection restore failed",
   };
   const events: string[] = [];
@@ -608,24 +608,8 @@ test("replaying a completed OAuth callback leaves the connected connection uncha
   assert.equal(exchangeCalls, 0);
 });
 
-test("an OAuth callback cannot reclaim a connection while disconnect is in progress", async () => {
+test("an OAuth callback cannot reclaim a connection during disconnect or recovery", async () => {
   let provisioningCalls = 0;
-  const disconnecting = {
-    ...connection,
-    ...provisioned,
-    status: "disconnecting" as const,
-  };
-  const repository = {
-    async findById() {
-      return disconnecting;
-    },
-    async findCurrent() {
-      return disconnecting;
-    },
-    async markProvisioning() {
-      provisioningCalls += 1;
-    },
-  } as unknown as GcpConnectionRepository;
   const gateway = {
     async provision() {
       provisioningCalls += 1;
@@ -633,16 +617,31 @@ test("an OAuth callback cannot reclaim a connection while disconnect is in progr
     },
   } as unknown as GcpGateway;
 
-  await assert.rejects(
-    completeGcpConnect({
-      connectionId: disconnecting.id,
-      userAccessToken: "temporary-user-token",
-      repository,
-      gateway,
-      config,
-    }),
-    /disconnect is in progress/,
-  );
+  for (const status of ["disconnecting", "disconnect_failed"] as const) {
+    const disconnecting = { ...connection, ...provisioned, status };
+    const repository = {
+      async findById() {
+        return disconnecting;
+      },
+      async findCurrent() {
+        return disconnecting;
+      },
+      async markProvisioning() {
+        provisioningCalls += 1;
+      },
+    } as unknown as GcpConnectionRepository;
+
+    await assert.rejects(
+      completeGcpConnect({
+        connectionId: disconnecting.id,
+        userAccessToken: "temporary-user-token",
+        repository,
+        gateway,
+        config,
+      }),
+      /disconnect is in progress or requires recovery/,
+    );
+  }
 
   assert.equal(provisioningCalls, 0);
 });

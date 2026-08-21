@@ -3,6 +3,7 @@ export type GcpConnectionStatus =
   | "provisioning"
   | "connected"
   | "disconnecting"
+  | "disconnect_failed"
   | "failed";
 
 export type GcpConnectionRecord = {
@@ -136,7 +137,10 @@ export interface GcpConnectionRepository {
   ): Promise<GcpConnectionRecord>;
   markFailed(id: string, error: string): Promise<void>;
   claimDisconnect(id: string): Promise<GcpConnectionRecord>;
-  releaseDisconnect(id: string, previousStatus: "connected" | "failed"): Promise<boolean>;
+  releaseDisconnect(
+    id: string,
+    previousStatus: "connected" | "disconnect_failed",
+  ): Promise<boolean>;
   failDisconnect(id: string, error: string): Promise<void>;
   revoke(id: string): Promise<GcpConnectionRecord>;
   updateExcludedLogNames(id: string, excludedLogNames: string[]): Promise<GcpConnectionRecord>;

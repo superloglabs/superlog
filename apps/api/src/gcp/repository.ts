@@ -49,6 +49,7 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
       ),
       orderBy: [
         desc(sql`${schema.gcpConnections.status} = 'connected'`),
+        desc(sql`${schema.gcpConnections.status} IN ('disconnecting', 'disconnect_failed')`),
         desc(schema.gcpConnections.createdAt),
       ],
     });
@@ -108,7 +109,11 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
       .where(
         and(
           eq(schema.gcpConnections.id, id),
-          notInArray(schema.gcpConnections.status, ["connected", "disconnecting"]),
+          notInArray(schema.gcpConnections.status, [
+            "connected",
+            "disconnecting",
+            "disconnect_failed",
+          ]),
         ),
       );
   }
@@ -160,14 +165,18 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
           and(
             eq(schema.gcpConnections.projectId, candidate.projectId),
             ne(schema.gcpConnections.id, id),
-            inArray(schema.gcpConnections.status, ["connected", "disconnecting", "failed"]),
+            inArray(schema.gcpConnections.status, [
+              "connected",
+              "disconnecting",
+              "disconnect_failed",
+            ]),
             isNull(schema.gcpConnections.revokedAt),
           ),
         );
       if (active.some((connection) => connection.status === "disconnecting")) {
         throw new Error("another GCP connection is disconnecting");
       }
-      if (active.some((connection) => connection.status === "failed")) {
+      if (active.some((connection) => connection.status === "disconnect_failed")) {
         throw new Error("another GCP connection requires recovery");
       }
       if (active.some((connection) => connection.id !== supersededConnectionId)) {
@@ -221,7 +230,11 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
       .where(
         and(
           eq(schema.gcpConnections.id, id),
-          notInArray(schema.gcpConnections.status, ["connected", "disconnecting"]),
+          notInArray(schema.gcpConnections.status, [
+            "connected",
+            "disconnecting",
+            "disconnect_failed",
+          ]),
         ),
       );
   }
@@ -233,7 +246,7 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
       .where(
         and(
           eq(schema.gcpConnections.id, id),
-          inArray(schema.gcpConnections.status, ["connected", "failed"]),
+          inArray(schema.gcpConnections.status, ["connected", "disconnect_failed"]),
           isNull(schema.gcpConnections.revokedAt),
         ),
       )
@@ -242,7 +255,10 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
     return toDomain(row);
   }
 
-  async releaseDisconnect(id: string, previousStatus: "connected" | "failed"): Promise<boolean> {
+  async releaseDisconnect(
+    id: string,
+    previousStatus: "connected" | "disconnect_failed",
+  ): Promise<boolean> {
     return db.transaction(async (tx) => {
       const [connection] = await tx
         .select({
@@ -325,7 +341,11 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
   async failDisconnect(id: string, error: string): Promise<void> {
     await db
       .update(schema.gcpConnections)
-      .set({ status: "failed", lastError: error.slice(0, 2_000), updatedAt: new Date() })
+      .set({
+        status: "disconnect_failed",
+        lastError: error.slice(0, 2_000),
+        updatedAt: new Date(),
+      })
       .where(
         and(
           eq(schema.gcpConnections.id, id),

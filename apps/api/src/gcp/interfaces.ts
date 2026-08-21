@@ -152,7 +152,11 @@ function toPublic(connection: GcpConnectionRecord | null, canManage: boolean) {
     metricsBudgetMonth: connection.metricsBudgetMonth,
     metricsSeriesRead: connection.metricsSeriesRead,
     metricsMonthlySeriesLimit: monthlySeriesLimit(),
-    lastError: connection.lastError ? GCP_SETUP_FAILED_MESSAGE : null,
+    lastError: connection.lastError
+      ? connection.status === "disconnect_failed"
+        ? "Google Cloud disconnect needs to be retried."
+        : GCP_SETUP_FAILED_MESSAGE
+      : null,
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,
     canManage,
@@ -233,7 +237,11 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
       return c.json({ error: "GCP connect not configured" }, 503);
     const context = await requireProjectManager(c, c.req.param("projectId"));
     const connection = await repository.findCurrent(context.projectId);
-    if (!connection || connection.status !== "connected" || connection.revokedAt) {
+    if (
+      !connection ||
+      (connection.status !== "connected" && connection.status !== "disconnect_failed") ||
+      connection.revokedAt
+    ) {
       return c.json({ error: "Connected GCP project not found" }, 404);
     }
     const result = await startGcpAuthorization({
