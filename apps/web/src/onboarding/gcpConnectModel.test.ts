@@ -25,10 +25,15 @@ test("gcpPhase surfaces 'failed' regardless of launch state", () => {
   assert.equal(gcpPhase({ status: "failed", launched: false }), "failed");
 });
 
+test("gcpPhase keeps disconnect recovery out of the generic reconnect flow", () => {
+  assert.equal(gcpPhase({ status: "disconnect_failed", launched: false }), "disconnect_recovery");
+});
+
 test("canContinueGcp only unlocks on 'connected'", () => {
   assert.equal(canContinueGcp("start"), false);
   assert.equal(canContinueGcp("connecting"), false);
   assert.equal(canContinueGcp("failed"), false);
+  assert.equal(canContinueGcp("disconnect_recovery"), false);
   assert.equal(canContinueGcp("connected"), true);
 });
 
