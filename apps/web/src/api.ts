@@ -1123,7 +1123,13 @@ export type GcpConnection =
       projectId: string;
       gcpProjectId: string;
       gcpProjectNumber: string | null;
-      status: "pending" | "provisioning" | "connected" | "failed";
+      status:
+        | "pending"
+        | "provisioning"
+        | "connected"
+        | "disconnecting"
+        | "disconnect_failed"
+        | "failed";
       lastVerifiedAt: string | null;
       lastLogReceivedAt: string | null;
       lastMetricsReceivedAt: string | null;
@@ -1173,6 +1179,16 @@ export function useStartGcpConnect(projectId: string | undefined) {
   });
 }
 
+export function useStartGcpDisconnect(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: () =>
+      fetcher<{ url: string }>(`/api/projects/${projectId}/gcp/disconnect-url`, {
+        method: "POST",
+      }),
+  });
+}
+
 export type GcpProjectOption = {
   projectId: string;
   projectNumber: string;
@@ -1203,6 +1219,25 @@ export function useConnectGcpAuthorization(authorizationId: string | null) {
       fetcher<{ connected: true }>(`/api/gcp/authorizations/${authorizationId}/connect`, {
         method: "POST",
         body: JSON.stringify({ gcpProjectId }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["gcp-connection"] });
+      qc.removeQueries({ queryKey: ["gcp-authorization", authorizationId] });
+    },
+  });
+}
+
+export function useDisconnectGcpAuthorization(
+  authorizationId: string | null,
+  authorizationState: string,
+) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      fetcher<{ disconnected: true }>(`/api/gcp/authorizations/${authorizationId}/disconnect`, {
+        method: "POST",
+        body: JSON.stringify({ authorizationState }),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["gcp-connection"] });

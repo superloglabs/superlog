@@ -83,6 +83,9 @@ export async function completeGcpConnect(input: {
   const connection = await input.repository.findById(input.connectionId);
   if (!connection || connection.revokedAt) throw new Error("GCP connection not found");
   if (connection.status === "connected") return connection;
+  if (connection.status === "disconnecting" || connection.status === "disconnect_failed") {
+    throw new Error("GCP disconnect is in progress or requires recovery");
+  }
   const current = await input.repository.findCurrent(connection.projectId);
   const superseded =
     current?.status === "connected" && current.id !== connection.id ? current : null;
@@ -160,17 +163,142 @@ export async function completeGcpConnect(input: {
   }
 }
 
+export async function disconnectGcpConnection(input: {
+  projectId: string;
+  expectedConnectionId?: string;
+  userAccessToken: string;
+  repository: GcpConnectionRepository;
+  gateway: GcpGateway;
+  config: GcpApplicationConfig;
+}): Promise<GcpConnectionRecord> {
+  const connection = input.expectedConnectionId
+    ? await input.repository.findById(input.expectedConnectionId)
+    : await input.repository.findCurrent(input.projectId);
+  const isRetryableFailure = Boolean(
+    input.expectedConnectionId &&
+      connection?.status === "disconnect_failed" &&
+      !connection.revokedAt,
+  );
+  if (
+    !connection ||
+    (connection.status !== "connected" && !isRetryableFailure) ||
+    connection.revokedAt
+  ) {
+    throw new Error("Connected GCP project not found");
+  }
+  if (connection.projectId !== input.projectId) {
+    throw new Error("Connected GCP project not found");
+  }
+  if (input.expectedConnectionId && connection.id !== input.expectedConnectionId) {
+    throw new Error("Connected GCP project changed during authorization");
+  }
+  const persistedProvisioning = persistedProvisioningResult(connection);
+  await input.repository.claimDisconnect(connection.id);
+  let cleanupAttempted = false;
+  try {
+    const provisioned = await cleanupProvisioningResult(
+      connection,
+      persistedProvisioning,
+      input.repository,
+    );
+    cleanupAttempted = true;
+    await input.gateway.deprovision({
+      connectionId: connection.id,
+      gcpProjectId: connection.gcpProjectId,
+      userAccessToken: input.userAccessToken,
+      integrationProjectId: input.config.integrationProjectId,
+      readerServiceAccountEmail: connection.readerServiceAccountEmail,
+      provisioned,
+    });
+    return await input.repository.revoke(connection.id);
+  } catch (error) {
+    let restoreConnection = true;
+    try {
+      const latest = await input.repository.findById(connection.id);
+      restoreConnection = latest?.status === "disconnecting" && !latest.revokedAt;
+    } catch {
+      // If persistence is unavailable, prefer restoring the resources for the
+      // connection that the database most likely still considers active.
+    }
+    if (restoreConnection) {
+      let restoredProvisioning: ProvisionedGcpConnection | null = null;
+      if (cleanupAttempted) {
+        try {
+          restoredProvisioning = await input.gateway.provision(
+            provisioningInput(
+              connection,
+              input.userAccessToken,
+              input.config,
+              connection.gcpProjectNumber ?? undefined,
+            ),
+          );
+        } catch (restoreError) {
+          const originalMessage = error instanceof Error ? error.message : "GCP disconnect failed";
+          const restoreMessage =
+            restoreError instanceof Error ? restoreError.message : "unknown restore error";
+          const failureMessage = `${originalMessage}; connection restore failed: ${restoreMessage}`;
+          try {
+            await input.repository.failDisconnect(connection.id, failureMessage);
+          } catch (persistError) {
+            const persistMessage =
+              persistError instanceof Error ? persistError.message : "unknown persistence error";
+            throw new Error(
+              `${failureMessage}; disconnect failure state persistence failed: ${persistMessage}`,
+              { cause: error },
+            );
+          }
+          throw new Error(failureMessage, { cause: error });
+        }
+      }
+      try {
+        const restored = await input.repository.releaseDisconnect(
+          connection.id,
+          connection.status === "disconnect_failed" ? "disconnect_failed" : "connected",
+        );
+        if (!restored) {
+          if (restoredProvisioning) {
+            await input.gateway.deprovision({
+              connectionId: connection.id,
+              gcpProjectId: connection.gcpProjectId,
+              userAccessToken: input.userAccessToken,
+              integrationProjectId: input.config.integrationProjectId,
+              readerServiceAccountEmail: connection.readerServiceAccountEmail,
+              provisioned: restoredProvisioning,
+            });
+          }
+          throw new Error("connection recovery was superseded");
+        }
+      } catch (releaseError) {
+        const originalMessage = error instanceof Error ? error.message : "GCP disconnect failed";
+        const releaseMessage =
+          releaseError instanceof Error ? releaseError.message : "unknown release error";
+        const failureMessage = `${originalMessage}; disconnect claim release failed: ${releaseMessage}`;
+        try {
+          await input.repository.failDisconnect(connection.id, failureMessage);
+        } catch (persistError) {
+          const persistMessage =
+            persistError instanceof Error ? persistError.message : "unknown persistence error";
+          throw new Error(
+            `${failureMessage}; disconnect recovery state persistence failed: ${persistMessage}`,
+            { cause: error },
+          );
+        }
+        throw new Error(failureMessage, { cause: error });
+      }
+    }
+    throw error;
+  }
+}
+
 async function cleanupProvisioningResult(
   connection: GcpConnectionRecord,
   provisioned: ProvisionedGcpConnection,
   repository: GcpConnectionRepository,
 ): Promise<ProvisionedGcpConnection> {
-  if (!provisioned.monitoringViewerGrantCreated) return provisioned;
   const removeGrant = await repository.prepareMonitoringGrantRemoval({
     connectionId: connection.id,
     gcpProjectId: connection.gcpProjectId,
     readerServiceAccountEmail: connection.readerServiceAccountEmail,
-    grantCreated: provisioned.monitoringViewerGrantCreated,
   });
   return { ...provisioned, monitoringViewerGrantCreated: removeGrant };
 }

@@ -1,4 +1,10 @@
-export type GcpConnectionStatus = "pending" | "provisioning" | "connected" | "failed";
+export type GcpConnectionStatus =
+  | "pending"
+  | "provisioning"
+  | "connected"
+  | "disconnecting"
+  | "disconnect_failed"
+  | "failed";
 
 export type GcpConnectionRecord = {
   id: string;
@@ -121,7 +127,6 @@ export interface GcpConnectionRepository {
     connectionId: string;
     gcpProjectId: string;
     readerServiceAccountEmail: string;
-    grantCreated: boolean;
   }): Promise<boolean>;
   markProvisioning(id: string): Promise<void>;
   ensureIngestKey(id: string, projectId: string): Promise<void>;
@@ -131,6 +136,13 @@ export interface GcpConnectionRepository {
     supersededConnectionId: string | null,
   ): Promise<GcpConnectionRecord>;
   markFailed(id: string, error: string): Promise<void>;
+  claimDisconnect(id: string): Promise<GcpConnectionRecord>;
+  releaseDisconnect(
+    id: string,
+    previousStatus: "connected" | "disconnect_failed",
+  ): Promise<boolean>;
+  failDisconnect(id: string, error: string): Promise<void>;
+  revoke(id: string): Promise<GcpConnectionRecord>;
   updateExcludedLogNames(id: string, excludedLogNames: string[]): Promise<GcpConnectionRecord>;
 }
 
@@ -156,6 +168,7 @@ export interface GcpAuthorizationRepository {
     gcpProjectId: string;
     now: Date;
   }): Promise<GcpAuthorizationClaim>;
+  restoreClaim(input: { id: string; accessToken: string; expiresAt: Date }): Promise<void>;
 }
 
 export function parseGcpProjectId(value: unknown): string {

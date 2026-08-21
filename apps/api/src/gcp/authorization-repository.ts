@@ -189,4 +189,34 @@ export class DrizzleGcpAuthorizationRepository implements GcpAuthorizationReposi
     if ("error" in result) throw result.error;
     return result.claim;
   }
+
+  async restoreClaim(input: {
+    id: string;
+    accessToken: string;
+    expiresAt: Date;
+  }): Promise<void> {
+    const encrypted = encryptIntegrationSecret(input.accessToken);
+    const [restored] = await db
+      .update(schema.gcpAuthorizationSessions)
+      .set({
+        status: "ready",
+        accessTokenCiphertext: encrypted.ciphertext,
+        accessTokenNonce: encrypted.nonce,
+        accessTokenKeyVersion: encrypted.keyVersion,
+        expiresAt: input.expiresAt,
+        consumedAt: null,
+        lastError: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(schema.gcpAuthorizationSessions.id, input.id),
+          eq(schema.gcpAuthorizationSessions.status, "consumed"),
+        ),
+      )
+      .returning({ id: schema.gcpAuthorizationSessions.id });
+    if (!restored) {
+      throw new GcpAuthorizationError("unavailable", "GCP authorization is unavailable");
+    }
+  }
 }

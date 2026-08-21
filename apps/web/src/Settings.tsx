@@ -84,6 +84,7 @@ import {
   useSlackRoute,
   useStartCloudflareInstall,
   useStartGcpConnect,
+  useStartGcpDisconnect,
   useStartGithubAccessLogin,
   useStartGithubAuthorLogin,
   useStartGithubInstall,
@@ -3065,6 +3066,7 @@ function IngestSourcesCard({ projectId }: { projectId: string | undefined }) {
 function GcpCard({ projectId }: { projectId: string | undefined }) {
   const connection = useGcpConnection(projectId);
   const start = useStartGcpConnect(projectId);
+  const disconnect = useStartGcpDisconnect(projectId);
   const capabilities = useSystemCapabilities();
   const row =
     connection.data?.connected !== undefined && "status" in connection.data
@@ -3095,8 +3097,17 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
               {row.gcpProjectId}
             </Chip>
           ) : row ? (
-            <Chip tone={row.status === "failed" ? "danger" : "muted"} dot>
-              {row.status === "failed" ? "Setup failed" : "Setup in progress"}
+            <Chip
+              tone={
+                row.status === "failed" || row.status === "disconnect_failed" ? "danger" : "muted"
+              }
+              dot
+            >
+              {row.status === "failed"
+                ? "Setup failed"
+                : row.status === "disconnect_failed"
+                  ? "Disconnect needs retry"
+                  : "Setup in progress"}
             </Chip>
           ) : (
             <Chip tone="muted" dot>
@@ -3113,20 +3124,39 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
             GCP connect is not configured on this deployment.
           </p>
         )}
-        <div className="flex justify-end">
-          <Btn
-            size="sm"
-            variant="primary"
-            loading={start.isPending}
-            disabled={!projectId || !configured || !canManage || start.isPending}
-            onClick={async () => {
-              const { url } = await start.mutateAsync();
-              window.location.href = url;
-            }}
-          >
-            {connectAction.buttonLabel}
-          </Btn>
+        <div className="flex justify-end gap-2">
+          {(row?.status === "connected" || row?.status === "disconnect_failed") && canManage && (
+            <Btn
+              size="sm"
+              variant="danger"
+              loading={disconnect.isPending}
+              disabled={!projectId || !configured || disconnect.isPending}
+              onClick={async () => {
+                const { url } = await disconnect.mutateAsync();
+                window.location.href = url;
+              }}
+            >
+              {row.status === "disconnect_failed" ? "Retry disconnect" : "Disconnect"}
+            </Btn>
+          )}
+          {row?.status !== "disconnect_failed" && (
+            <Btn
+              size="sm"
+              variant="primary"
+              loading={start.isPending}
+              disabled={!projectId || !configured || !canManage || start.isPending}
+              onClick={async () => {
+                const { url } = await start.mutateAsync();
+                window.location.href = url;
+              }}
+            >
+              {connectAction.buttonLabel}
+            </Btn>
+          )}
         </div>
+        {disconnect.error && (
+          <p className="text-[12.5px] text-danger">{String(disconnect.error)}</p>
+        )}
         {start.error && <p className="text-[12.5px] text-danger">{String(start.error)}</p>}
       </div>
     </Tile>

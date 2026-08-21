@@ -11,7 +11,7 @@ import {
   syncLoopsContactsForProject,
 } from "@superlog/db";
 import { db } from "@superlog/db";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { OAuth2Client } from "google-auth-library";
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -29,6 +29,7 @@ import {
   parseAccountIdFromFirehoseArn,
 } from "./firehose.js";
 import {
+  GCP_PUBSUB_INGESTIBLE_STATUSES,
   type GcpIdTokenVerifier,
   acknowledgeGcpPubSubDelivery,
   authenticateGcpPubSubPush,
@@ -518,7 +519,7 @@ app.post("/gcp/pubsub/:connectionId", async (c) => {
   const connection = await db.query.gcpConnections.findFirst({
     where: and(
       eq(schema.gcpConnections.id, c.req.param("connectionId")),
-      eq(schema.gcpConnections.status, "connected"),
+      inArray(schema.gcpConnections.status, [...GCP_PUBSUB_INGESTIBLE_STATUSES]),
       isNull(schema.gcpConnections.revokedAt),
     ),
   });

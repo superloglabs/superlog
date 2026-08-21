@@ -10,9 +10,15 @@
 // connection endpoint; the milestone that unlocks "Continue" is `connected`.
 // Telemetry arrival is surfaced as a bonus but never blocks.
 
-export type GcpStatus = "pending" | "provisioning" | "connected" | "failed";
+export type GcpStatus =
+  | "pending"
+  | "provisioning"
+  | "connected"
+  | "disconnecting"
+  | "disconnect_failed"
+  | "failed";
 
-export type GcpPhase = "start" | "connecting" | "connected" | "failed";
+export type GcpPhase = "start" | "connecting" | "connected" | "disconnect_recovery" | "failed";
 
 /**
  * Resolve the flow phase from the polled connection status and whether the user
@@ -24,6 +30,7 @@ export type GcpPhase = "start" | "connecting" | "connected" | "failed";
  */
 export function gcpPhase(input: { status: GcpStatus | null; launched: boolean }): GcpPhase {
   if (input.status === "connected") return "connected";
+  if (input.status === "disconnect_failed") return "disconnect_recovery";
   if (input.status === "failed") return "failed";
   if (input.launched || input.status === "pending" || input.status === "provisioning") {
     return "connecting";
@@ -45,6 +52,8 @@ export function gcpStatusText(phase: GcpPhase, eventsArrived: boolean): string {
       return "Waiting for you to authorize Google Cloud and pick a project in the other tab…";
     case "failed":
       return "The connection didn't finish. Reconnect to try again.";
+    case "disconnect_recovery":
+      return "The previous disconnect needs another authorization to finish safely.";
     default:
       return eventsArrived
         ? "Connected — telemetry from Google Cloud is arriving."

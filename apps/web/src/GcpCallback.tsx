@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { useConnectGcpAuthorization, useGcpAuthorizationSelection } from "./api.ts";
+import {
+  useConnectGcpAuthorization,
+  useDisconnectGcpAuthorization,
+  useGcpAuthorizationSelection,
+} from "./api.ts";
 import { Dropdown } from "./design/Dropdown.tsx";
 import { Btn, Wordmark } from "./design/ui.tsx";
 import { gcpCallbackView } from "./gcpCallbackModel.ts";
@@ -11,12 +15,71 @@ export function GcpCallback() {
   const authorizationId = params.get("authorization");
   if (outcome === "select") {
     return authorizationId ? (
-      <GcpProjectPicker authorizationId={authorizationId} />
+      params.get("action") === "disconnect" ? (
+        params.get("authorization_state") ? (
+          <GcpDisconnect
+            authorizationId={authorizationId}
+            authorizationState={params.get("authorization_state") ?? ""}
+          />
+        ) : (
+          <GcpCallbackMessage outcome="error" />
+        )
+      ) : (
+        <GcpProjectPicker authorizationId={authorizationId} />
+      )
     ) : (
       <GcpCallbackMessage outcome="error" />
     );
   }
   return <GcpCallbackMessage outcome={outcome} />;
+}
+
+function GcpDisconnect({
+  authorizationId,
+  authorizationState,
+}: {
+  authorizationId: string;
+  authorizationState: string;
+}) {
+  const selection = useGcpAuthorizationSelection(authorizationId);
+  const disconnect = useDisconnectGcpAuthorization(authorizationId, authorizationState);
+
+  if (selection.isError) return <GcpCallbackMessage outcome="error" />;
+
+  return (
+    <PageFrame>
+      <h1 className="mb-2 text-[22px] font-semibold tracking-[-0.015em]">
+        Disconnect Google Cloud
+      </h1>
+      <p className="mb-7 text-[13px] leading-[1.55] text-muted">
+        This removes the Cloud Logging sink, delivery resources, and metric access created by
+        Superlog. Telemetry already stored in Superlog is kept.
+      </p>
+      <div className="rounded-[10px] border border-[rgba(240,98,98,0.35)] bg-[rgba(240,98,98,0.06)] px-4 py-3 text-[13px] leading-[1.55] text-fg">
+        New logs and metrics from the connected Google Cloud project will stop arriving.
+      </div>
+      {disconnect.error && (
+        <p className="mt-3 text-[12.5px] text-danger">{String(disconnect.error)}</p>
+      )}
+      <div className="mt-9 flex items-center justify-between border-t border-[rgba(255,255,255,0.07)] pt-5">
+        <Btn size="md" onClick={() => window.location.assign("/app/settings")}>
+          Cancel
+        </Btn>
+        <Btn
+          variant="danger"
+          size="md"
+          loading={selection.isPending || disconnect.isPending}
+          disabled={selection.isPending || disconnect.isPending}
+          onClick={async () => {
+            await disconnect.mutateAsync();
+            window.location.assign("/connect/gcp?gcp=disconnected");
+          }}
+        >
+          Disconnect project
+        </Btn>
+      </div>
+    </PageFrame>
+  );
 }
 
 function PageFrame({ children }: { children: React.ReactNode }) {

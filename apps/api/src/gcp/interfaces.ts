@@ -15,6 +15,7 @@ import {
 import {
   completeGcpAuthorization,
   connectGcpAuthorization,
+  disconnectGcpAuthorization,
   getGcpAuthorizationSelection,
   startGcpAuthorization,
 } from "./authorization-application.js";
@@ -25,7 +26,7 @@ import type {
   GcpConnectionRepository,
   GcpGateway,
 } from "./domain.js";
-import { GcpAuthorizationError } from "./domain.js";
+import { GCP_AUTHORIZATION_TTL_MS, GcpAuthorizationError } from "./domain.js";
 import { GoogleGcpGateway } from "./google-gateway.js";
 import { DrizzleGcpConnectionRepository } from "./repository.js";
 import { signGcpState, verifyGcpState } from "./state.js";
@@ -151,7 +152,11 @@ function toPublic(connection: GcpConnectionRecord | null, canManage: boolean) {
     metricsBudgetMonth: connection.metricsBudgetMonth,
     metricsSeriesRead: connection.metricsSeriesRead,
     metricsMonthlySeriesLimit: monthlySeriesLimit(),
-    lastError: connection.lastError ? GCP_SETUP_FAILED_MESSAGE : null,
+    lastError: connection.lastError
+      ? connection.status === "disconnect_failed"
+        ? "Google Cloud disconnect needs to be retried."
+        : GCP_SETUP_FAILED_MESSAGE
+      : null,
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,
     canManage,
@@ -227,6 +232,31 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
     return c.json({ url: result.url });
   });
 
+  app.post("/api/projects/:projectId/gcp/disconnect-url", async (c) => {
+    if (!config || !gateway || !stateSecret)
+      return c.json({ error: "GCP connect not configured" }, 503);
+    const context = await requireProjectManager(c, c.req.param("projectId"));
+    const connection = await repository.findCurrent(context.projectId);
+    if (
+      !connection ||
+      (connection.status !== "connected" && connection.status !== "disconnect_failed") ||
+      connection.revokedAt
+    ) {
+      return c.json({ error: "Connected GCP project not found" }, 404);
+    }
+    const result = await startGcpAuthorization({
+      ...context,
+      repository: authorizationRepository,
+      gateway,
+      signState: (authorizationId) =>
+        signGcpState(authorizationId, stateSecret, Date.now(), {
+          action: "disconnect",
+          connectionId: connection.id,
+        }),
+    });
+    return c.json({ url: result.url });
+  });
+
   app.get("/api/gcp/authorizations/:authorizationId", async (c) => {
     if (!c.var.userId) return c.json({ error: "unauthenticated" }, 401);
     try {
@@ -286,6 +316,67 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
       return c.json({ error: GCP_SETUP_FAILED_MESSAGE }, 502);
     }
   });
+
+  app.post("/api/gcp/authorizations/:authorizationId/disconnect", async (c) => {
+    if (!config || !gateway || !stateSecret)
+      return c.json({ error: "GCP connect not configured" }, 503);
+    if (!c.var.userId) return c.json({ error: "unauthenticated" }, 401);
+    const authorizationId = c.req.param("authorizationId");
+    const parsedBody: unknown = await c.req.json().catch(() => ({}));
+    const authorizationState =
+      parsedBody && typeof parsedBody === "object" && !Array.isArray(parsedBody)
+        ? (parsedBody as { authorizationState?: unknown }).authorizationState
+        : undefined;
+    const disconnectIntent =
+      typeof authorizationState === "string"
+        ? verifyGcpState(authorizationState, stateSecret)
+        : null;
+    if (
+      !disconnectIntent ||
+      disconnectIntent.action !== "disconnect" ||
+      disconnectIntent.authorizationId !== authorizationId ||
+      !disconnectIntent.connectionId
+    ) {
+      return c.json({ error: "Invalid Google Cloud disconnect authorization" }, 400);
+    }
+    try {
+      const session = await getGcpAuthorizationSelection({
+        authorizationId,
+        userId: c.var.userId,
+        repository: authorizationRepository,
+      });
+      const context = await requireProjectManager(c, session.projectId);
+      const connection = await disconnectGcpAuthorization({
+        authorizationId: session.id,
+        userId: c.var.userId,
+        expectedConnectionId: disconnectIntent.connectionId,
+        retryExpiresAt: new Date(disconnectIntent.issuedAt + GCP_AUTHORIZATION_TTL_MS),
+        authorizationRepository,
+        connectionRepository: repository,
+        gateway,
+        config,
+      });
+      log.info(
+        {
+          projectId: context.projectId,
+          userId: context.userId,
+          gcpConnectionId: connection.id,
+          gcpProjectId: connection.gcpProjectId,
+        },
+        "Google Cloud connection disconnected",
+      );
+      return c.json({ disconnected: true as const });
+    } catch (error) {
+      if (error instanceof GcpAuthorizationError) {
+        return c.json({ error: error.message }, authorizationErrorStatus(error));
+      }
+      log.error(
+        { err: error, authorizationId, userId: c.var.userId },
+        "Google Cloud disconnection failed",
+      );
+      return c.json({ error: "Google Cloud disconnect failed. Please try again." }, 502);
+    }
+  });
 }
 
 export function mountGcpPublic(app: Hono<{ Variables: Vars }>, input: Dependencies = {}): void {
@@ -295,10 +386,18 @@ export function mountGcpPublic(app: Hono<{ Variables: Vars }>, input: Dependenci
   app.get("/gcp/oauth/callback", async (c) => {
     if (!config || !gateway || !stateSecret)
       return c.json({ error: "GCP connect not configured" }, 503);
-    const outcomeUrl = (outcome: "select" | "denied" | "error", authorizationId?: string) => {
+    const outcomeUrl = (
+      outcome: "select" | "denied" | "error",
+      authorizationId?: string,
+      authorizationState?: string,
+    ) => {
       const url = new URL("/connect/gcp", config.webOrigin);
       url.searchParams.set("gcp", outcome);
       if (authorizationId) url.searchParams.set("authorization", authorizationId);
+      if (authorizationState) {
+        url.searchParams.set("action", "disconnect");
+        url.searchParams.set("authorization_state", authorizationState);
+      }
       return url.toString();
     };
     if (c.req.query("error")) {
@@ -312,7 +411,8 @@ export function mountGcpPublic(app: Hono<{ Variables: Vars }>, input: Dependenci
       return c.redirect(outcomeUrl("denied"), 302);
     }
     const code = c.req.query("code");
-    const state = verifyGcpState(c.req.query("state") ?? "", stateSecret);
+    const stateParam = c.req.query("state") ?? "";
+    const state = verifyGcpState(stateParam, stateSecret);
     if (!code || !state) return c.redirect(outcomeUrl("error"), 302);
     const authorization = await authorizationRepository.findById(state.authorizationId);
     if (
@@ -326,13 +426,22 @@ export function mountGcpPublic(app: Hono<{ Variables: Vars }>, input: Dependenci
       return c.redirect(outcomeUrl("error"), 302);
     }
     try {
-      await completeGcpAuthorization({
+      const completed = await completeGcpAuthorization({
         authorizationId: state.authorizationId,
         code,
         repository: authorizationRepository,
         gateway,
       });
-      return c.redirect(outcomeUrl("select", state.authorizationId), 302);
+      const refreshedDisconnectState =
+        state.action === "disconnect" && state.connectionId
+          ? signGcpState(
+              state.authorizationId,
+              stateSecret,
+              completed.expiresAt.getTime() - GCP_AUTHORIZATION_TTL_MS,
+              { action: "disconnect", connectionId: state.connectionId },
+            )
+          : undefined;
+      return c.redirect(outcomeUrl("select", state.authorizationId, refreshedDisconnectState), 302);
     } catch {
       return c.redirect(outcomeUrl("error"), 302);
     }

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useGcpConnection, useStartGcpConnect } from "../api.ts";
+import { useGcpConnection, useStartGcpConnect, useStartGcpDisconnect } from "../api.ts";
 import { Btn } from "../design/ui.tsx";
 import { type GcpPhase, canContinueGcp, gcpPhase, gcpStatusText } from "./gcpConnectModel.ts";
 import { CheckIcon, ExternalLinkIcon, SpinnerIcon } from "./icons.tsx";
@@ -53,6 +53,7 @@ export function GcpConnectFlow({
 
   const connection = useGcpConnection(projectId);
   const start = useStartGcpConnect(projectId);
+  const disconnect = useStartGcpDisconnect(projectId);
 
   const row = connection.data && "status" in connection.data ? connection.data : null;
   const phase = gcpPhase({ status: row?.status ?? null, launched });
@@ -66,6 +67,16 @@ export function GcpConnectFlow({
       openConsent(url);
     } catch {
       // The mutation error surfaces via start.error below.
+    }
+  };
+
+  const retryDisconnect = async () => {
+    if (disconnect.isPending) return;
+    try {
+      const { url } = await disconnect.mutateAsync();
+      window.location.href = url;
+    } catch {
+      // The mutation error surfaces in the recovery panel below.
     }
   };
 
@@ -102,6 +113,16 @@ export function GcpConnectFlow({
         />
       )}
 
+      {phase === "disconnect_recovery" && (
+        <DisconnectRecoveryPanel
+          lastError={row?.lastError ?? null}
+          onRetry={retryDisconnect}
+          retrying={disconnect.isPending}
+          error={disconnect.error ? String(disconnect.error) : null}
+          canManage={row?.canManage ?? false}
+        />
+      )}
+
       {phase === "connected" && row && (
         <ConnectedPanel gcpProjectId={row.gcpProjectId} eventsArrived={eventsArrived} />
       )}
@@ -134,12 +155,67 @@ function headerForPhase(phase: GcpPhase): { title: string; sub: string } {
         title: "Connection didn't finish",
         sub: "Something went wrong provisioning the connection. Reconnect to try again.",
       };
+    case "disconnect_recovery":
+      return {
+        title: "Finish disconnecting Google Cloud",
+        sub: "Cleanup was interrupted before it could finish. Reauthorize Google Cloud to retry safely.",
+      };
     default:
       return {
         title: "You're connected",
         sub: "We're routing Cloud Logging and reading bounded Cloud Monitoring metrics. First events typically appear within a minute.",
       };
   }
+}
+
+function DisconnectRecoveryPanel({
+  lastError,
+  onRetry,
+  retrying,
+  error,
+  canManage,
+}: {
+  lastError: string | null;
+  onRetry: () => void;
+  retrying: boolean;
+  error: string | null;
+  canManage: boolean;
+}) {
+  return (
+    <div className={`overflow-hidden rounded-[14px] border bg-surface ${SOFT_LINE}`}>
+      <div className={`border-b px-[22px] py-[18px] ${SOFT_LINE}`}>
+        <p className="m-0 text-[13px] leading-[1.55] text-danger">
+          {lastError ?? "Google Cloud cleanup needs to be retried."}
+        </p>
+      </div>
+      <div className="flex items-center justify-between gap-3 px-[22px] py-[16px]">
+        <span className="text-[12.5px] text-muted">
+          Logs remain protected while cleanup is waiting.
+        </span>
+        {canManage ? (
+          <Btn
+            variant="primary"
+            size="md"
+            onClick={onRetry}
+            loading={retrying}
+            className="!h-[36px] !rounded-[8px] !px-[14px] !text-[13px]"
+          >
+            {retrying ? "Preparing…" : "Retry disconnect"}
+            {!retrying && <ExternalLinkIcon size={13} />}
+          </Btn>
+        ) : (
+          <span className="text-[12.5px] font-medium text-fg">
+            Ask a project manager to retry the disconnect.
+          </span>
+        )}
+      </div>
+      {error && (
+        <div className={`border-t px-[22px] py-[12px] ${SOFT_LINE}`}>
+          <p className="m-0 text-[12.5px] text-danger">{error}</p>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function StartPanel({

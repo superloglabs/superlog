@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   type GcpApplicationConfig,
   completeGcpConnect,
+  disconnectGcpConnection,
   updateGcpLogExclusions,
 } from "./application.js";
 import type {
@@ -10,6 +11,7 @@ import type {
   GcpConnectionRepository,
   GcpDeprovisioningInput,
   GcpGateway,
+  GcpProvisioningInput,
   ProvisionedGcpConnection,
 } from "./domain.js";
 
@@ -84,6 +86,449 @@ const provisioned: ProvisionedGcpConnection = {
   logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
   monitoringViewerGrantCreated: true,
 };
+
+test("disconnecting a connected GCP project removes its cloud resources before revoking it", async () => {
+  const events: string[] = [];
+  const connected: GcpConnectionRecord = {
+    ...connection,
+    ...provisioned,
+    status: "connected",
+  };
+  const repository = {
+    async findCurrent(projectId: string) {
+      assert.equal(projectId, connected.projectId);
+      return connected;
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
+    async claimDisconnect(id: string) {
+      assert.equal(id, connected.id);
+      events.push("claim-disconnect");
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async revoke(id: string) {
+      assert.equal(id, connected.id);
+      events.push("revoke-connection");
+      return { ...connected, revokedAt: new Date("2026-08-21T12:00:00.000Z") };
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async deprovision(input: GcpDeprovisioningInput) {
+      assert.deepEqual(input, {
+        connectionId: connected.id,
+        gcpProjectId: connected.gcpProjectId,
+        userAccessToken: "temporary-user-token",
+        integrationProjectId: config.integrationProjectId,
+        readerServiceAccountEmail: connected.readerServiceAccountEmail,
+        provisioned,
+      });
+      events.push("deprovision-connection");
+    },
+  } as unknown as GcpGateway;
+
+  const result = await disconnectGcpConnection({
+    projectId: connected.projectId,
+    userAccessToken: "temporary-user-token",
+    repository,
+    gateway,
+    config,
+  });
+
+  assert.ok(result.revokedAt);
+  assert.deepEqual(events, ["claim-disconnect", "deprovision-connection", "revoke-connection"]);
+});
+
+test("a failed disconnect revocation restores the connected GCP resources", async () => {
+  const events: string[] = [];
+  const connected: GcpConnectionRecord = {
+    ...connection,
+    ...provisioned,
+    status: "connected",
+  };
+  const repository = {
+    async findCurrent() {
+      return connected;
+    },
+    async findById() {
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
+    async claimDisconnect() {
+      events.push("claim-disconnect");
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async revoke() {
+      events.push("revoke-connection");
+      throw new Error("database unavailable");
+    },
+    async releaseDisconnect() {
+      events.push("release-disconnect");
+      return true;
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async deprovision() {
+      events.push("deprovision-connection");
+    },
+    async provision(input: GcpProvisioningInput) {
+      assert.equal(input.connectionId, connected.id);
+      assert.equal(input.userAccessToken, "temporary-user-token");
+      events.push("restore-connection");
+      return provisioned;
+    },
+  } as unknown as GcpGateway;
+
+  await assert.rejects(
+    disconnectGcpConnection({
+      projectId: connected.projectId,
+      userAccessToken: "temporary-user-token",
+      repository,
+      gateway,
+      config,
+    }),
+    /database unavailable/,
+  );
+
+  assert.deepEqual(events, [
+    "claim-disconnect",
+    "deprovision-connection",
+    "revoke-connection",
+    "restore-connection",
+    "release-disconnect",
+  ]);
+});
+
+test("a partially failed cloud cleanup restores the connected GCP resources", async () => {
+  const events: string[] = [];
+  const connected: GcpConnectionRecord = {
+    ...connection,
+    ...provisioned,
+    status: "connected",
+  };
+  const repository = {
+    async findCurrent() {
+      return connected;
+    },
+    async findById() {
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
+    async claimDisconnect() {
+      events.push("claim-disconnect");
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async revoke() {
+      events.push("revoke-connection");
+      return { ...connected, revokedAt: new Date() };
+    },
+    async releaseDisconnect() {
+      events.push("release-disconnect");
+      return true;
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async deprovision() {
+      events.push("deprovision-connection");
+      throw new Error("partial cleanup failure");
+    },
+    async provision(input: GcpProvisioningInput) {
+      assert.equal(input.connectionId, connected.id);
+      events.push("restore-connection");
+      return provisioned;
+    },
+  } as unknown as GcpGateway;
+
+  await assert.rejects(
+    disconnectGcpConnection({
+      projectId: connected.projectId,
+      userAccessToken: "temporary-user-token",
+      repository,
+      gateway,
+      config,
+    }),
+    /partial cleanup failure/,
+  );
+
+  assert.deepEqual(events, [
+    "claim-disconnect",
+    "deprovision-connection",
+    "restore-connection",
+    "release-disconnect",
+  ]);
+});
+
+test("an overlapping disconnect cannot clean up a connection claimed by another request", async () => {
+  const events: string[] = [];
+  const connected: GcpConnectionRecord = {
+    ...connection,
+    ...provisioned,
+    status: "connected",
+  };
+  const repository = {
+    async findCurrent() {
+      return connected;
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
+    async claimDisconnect() {
+      events.push("claim-disconnect");
+      throw new Error("GCP disconnect is already in progress");
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async deprovision() {
+      events.push("deprovision-connection");
+    },
+    async provision() {
+      events.push("restore-connection");
+      return provisioned;
+    },
+  } as unknown as GcpGateway;
+
+  await assert.rejects(
+    disconnectGcpConnection({
+      projectId: connected.projectId,
+      userAccessToken: "temporary-user-token",
+      repository,
+      gateway,
+      config,
+    }),
+    /already in progress/,
+  );
+
+  assert.deepEqual(events, ["claim-disconnect"]);
+});
+
+test("a failed disconnect restoration persists a retryable connection state", async () => {
+  const events: string[] = [];
+  const connected: GcpConnectionRecord = {
+    ...connection,
+    ...provisioned,
+    status: "connected",
+  };
+  const repository = {
+    async findCurrent() {
+      return connected;
+    },
+    async findById() {
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async claimDisconnect() {
+      events.push("claim-disconnect");
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
+    async failDisconnect(_id: string, error: string) {
+      assert.match(error, /connection restore failed: restore unavailable/);
+      events.push("fail-disconnect");
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async deprovision() {
+      events.push("deprovision-connection");
+      throw new Error("partial cleanup failure");
+    },
+    async provision() {
+      events.push("restore-connection");
+      throw new Error("restore unavailable");
+    },
+  } as unknown as GcpGateway;
+
+  await assert.rejects(
+    disconnectGcpConnection({
+      projectId: connected.projectId,
+      userAccessToken: "temporary-user-token",
+      repository,
+      gateway,
+      config,
+    }),
+    /connection restore failed: restore unavailable/,
+  );
+
+  assert.deepEqual(events, [
+    "claim-disconnect",
+    "deprovision-connection",
+    "restore-connection",
+    "fail-disconnect",
+  ]);
+});
+
+test("a superseded disconnect recovery removes the restored cloud resources", async () => {
+  const events: string[] = [];
+  const connected: GcpConnectionRecord = {
+    ...connection,
+    ...provisioned,
+    status: "connected",
+  };
+  let deprovisionCalls = 0;
+  const repository = {
+    async findCurrent() {
+      return connected;
+    },
+    async findById() {
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
+    async claimDisconnect() {
+      events.push("claim-disconnect");
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async revoke() {
+      events.push("revoke-connection");
+      throw new Error("database unavailable");
+    },
+    async releaseDisconnect() {
+      events.push("release-disconnect");
+      return false;
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async deprovision() {
+      deprovisionCalls += 1;
+      events.push(
+        deprovisionCalls === 1 ? "deprovision-connection" : "discard-restored-connection",
+      );
+    },
+    async provision() {
+      events.push("restore-connection");
+      return provisioned;
+    },
+  } as unknown as GcpGateway;
+
+  await assert.rejects(
+    disconnectGcpConnection({
+      projectId: connected.projectId,
+      userAccessToken: "temporary-user-token",
+      repository,
+      gateway,
+      config,
+    }),
+    /connection recovery was superseded/,
+  );
+
+  assert.deepEqual(events, [
+    "claim-disconnect",
+    "deprovision-connection",
+    "revoke-connection",
+    "restore-connection",
+    "release-disconnect",
+    "discard-restored-connection",
+  ]);
+});
+
+test("a failed disconnect recovery row can retry cleanup", async () => {
+  const failed: GcpConnectionRecord = {
+    ...connection,
+    ...provisioned,
+    status: "disconnect_failed",
+    lastError: "partial cleanup failure; connection restore failed",
+  };
+  const events: string[] = [];
+  const repository = {
+    async findById() {
+      return failed;
+    },
+    async claimDisconnect() {
+      events.push("claim-disconnect");
+      return { ...failed, status: "disconnecting" as const };
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
+    async revoke() {
+      events.push("revoke-connection");
+      return { ...failed, status: "disconnecting" as const, revokedAt: new Date() };
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async deprovision() {
+      events.push("deprovision-connection");
+    },
+  } as unknown as GcpGateway;
+
+  const result = await disconnectGcpConnection({
+    projectId: failed.projectId,
+    expectedConnectionId: failed.id,
+    userAccessToken: "temporary-user-token",
+    repository,
+    gateway,
+    config,
+  });
+
+  assert.ok(result.revokedAt);
+  assert.deepEqual(events, ["claim-disconnect", "deprovision-connection", "revoke-connection"]);
+});
+
+test("a failed disconnect claim release becomes retryable", async () => {
+  const connected: GcpConnectionRecord = {
+    ...connection,
+    ...provisioned,
+    status: "connected",
+  };
+  const events: string[] = [];
+  const repository = {
+    async findCurrent() {
+      return connected;
+    },
+    async findById() {
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async claimDisconnect() {
+      events.push("claim-disconnect");
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
+    async releaseDisconnect() {
+      events.push("release-disconnect");
+      throw new Error("database unavailable");
+    },
+    async failDisconnect(_id: string, error: string) {
+      assert.match(error, /disconnect claim release failed: database unavailable/);
+      events.push("fail-disconnect");
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async deprovision() {
+      events.push("deprovision-connection");
+      throw new Error("partial cleanup failure");
+    },
+    async provision() {
+      events.push("restore-connection");
+      return provisioned;
+    },
+  } as unknown as GcpGateway;
+
+  await assert.rejects(
+    disconnectGcpConnection({
+      projectId: connected.projectId,
+      userAccessToken: "temporary-user-token",
+      repository,
+      gateway,
+      config,
+    }),
+    /disconnect claim release failed: database unavailable/,
+  );
+
+  assert.deepEqual(events, [
+    "claim-disconnect",
+    "deprovision-connection",
+    "restore-connection",
+    "release-disconnect",
+    "fail-disconnect",
+  ]);
+});
 
 test("a local persistence failure removes newly provisioned Google resources", async () => {
   const cleanupCalls: unknown[] = [];
@@ -161,6 +606,44 @@ test("replaying a completed OAuth callback leaves the connected connection uncha
   assert.equal(result, connected);
   assert.equal(provisioningCalls, 0);
   assert.equal(exchangeCalls, 0);
+});
+
+test("an OAuth callback cannot reclaim a connection during disconnect or recovery", async () => {
+  let provisioningCalls = 0;
+  const gateway = {
+    async provision() {
+      provisioningCalls += 1;
+      return provisioned;
+    },
+  } as unknown as GcpGateway;
+
+  for (const status of ["disconnecting", "disconnect_failed"] as const) {
+    const disconnecting = { ...connection, ...provisioned, status };
+    const repository = {
+      async findById() {
+        return disconnecting;
+      },
+      async findCurrent() {
+        return disconnecting;
+      },
+      async markProvisioning() {
+        provisioningCalls += 1;
+      },
+    } as unknown as GcpConnectionRepository;
+
+    await assert.rejects(
+      completeGcpConnect({
+        connectionId: disconnecting.id,
+        userAccessToken: "temporary-user-token",
+        repository,
+        gateway,
+        config,
+      }),
+      /disconnect is in progress or requires recovery/,
+    );
+  }
+
+  assert.equal(provisioningCalls, 0);
 });
 
 test("replacing a connected GCP project removes its cloud resources before superseding it", async () => {
@@ -263,13 +746,11 @@ test("replacement preserves a monitoring grant shared by another active connecti
     async prepareMonitoringGrantRemoval(input: {
       connectionId: string;
       gcpProjectId: string;
-      grantCreated: boolean;
     }) {
       assert.deepEqual(input, {
         connectionId: oldConnection.id,
         gcpProjectId: oldConnection.gcpProjectId,
         readerServiceAccountEmail: oldConnection.readerServiceAccountEmail,
-        grantCreated: true,
       });
       return false;
     },

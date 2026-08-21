@@ -6,7 +6,8 @@ import { closeDb, db, runMigrations, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { projectHasIngested } from "../demo.js";
-import type { GcpGateway } from "./domain.js";
+import { DrizzleGcpAuthorizationRepository } from "./authorization-repository.js";
+import { GCP_AUTHORIZATION_TTL_MS, type GcpGateway } from "./domain.js";
 import {
   type GcpConnectConfig,
   gcpConfigFromEnv,
@@ -14,6 +15,7 @@ import {
   mountGcpPublic,
 } from "./interfaces.js";
 import { DrizzleGcpConnectionRepository } from "./repository.js";
+import { signGcpState, verifyGcpState } from "./state.js";
 
 process.env.STATE_SIGNING_SECRET ||= "gcp-test-state-secret";
 process.env.AGENT_SECRETS_KEY ||= randomBytes(32).toString("base64");
@@ -179,6 +181,17 @@ test("a project owner discovers Google projects before choosing one to connect",
   assert.ok(authorizationId);
   assert.equal(calls.length, 0);
 
+  const invalidDisconnect = await app.request(
+    `/api/gcp/authorizations/${authorizationId}/disconnect`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ authorizationState: authorizationUrl.searchParams.get("state") }),
+    },
+  );
+  assert.equal(invalidDisconnect.status, 400);
+  assert.equal(calls.length, 0);
+
   const projects = await app.request(`/api/gcp/authorizations/${authorizationId}`);
   assert.equal(projects.status, 200);
   const readyAuthorization = await db.query.gcpAuthorizationSessions.findFirst({
@@ -277,6 +290,115 @@ test("a project owner discovers Google projects before choosing one to connect",
   assert.equal(connected.status, "connected");
   assert.equal(connected.accessToken, undefined);
   assert.equal(connected.refreshToken, undefined);
+});
+
+test("a project owner reauthorizes with Google before disconnecting the current project", async () => {
+  const { org, user, project } = await seedProject();
+  const [connection] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: project.id,
+      gcpProjectId: "acme-production",
+      gcpProjectNumber: "123456789012",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: user.id,
+      status: "connected",
+      topicName: "superlog-disconnect",
+      subscriptionName: "superlog-disconnect",
+      logSinkName: "superlog-disconnect",
+      logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+      monitoringViewerGrantCreated: true,
+    })
+    .returning();
+  assert.ok(connection);
+  let deprovisionedConnectionId: string | null = null;
+  const gateway: GcpGateway = {
+    authorizationUrl({ state }) {
+      return `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(state)}`;
+    },
+    async exchangeCode() {
+      return { accessToken: "temporary-user-token" };
+    },
+    async listProjects() {
+      return [
+        {
+          projectId: connection.gcpProjectId,
+          projectNumber: connection.gcpProjectNumber ?? "",
+          displayName: "Acme production",
+        },
+      ];
+    },
+    async provision() {
+      throw new Error("restore should not be needed");
+    },
+    async deprovision(input) {
+      deprovisionedConnectionId = input.connectionId;
+    },
+  };
+  const app = new Hono<{ Variables: { userId: string; orgId: string | null } }>();
+  app.use("/api/*", async (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  mountGcpAuthed(app, { config, gateway });
+  mountGcpPublic(app, { config, gateway });
+
+  const start = await app.request(`/api/projects/${project.id}/gcp/disconnect-url`, {
+    method: "POST",
+  });
+  assert.equal(start.status, 200);
+  const { url } = (await start.json()) as { url: string };
+  const state = new URL(url).searchParams.get("state");
+  assert.ok(state);
+  const stateSecret = process.env.STATE_SIGNING_SECRET;
+  assert.ok(stateSecret);
+  const disconnectIntent = verifyGcpState(state, stateSecret);
+  assert.ok(disconnectIntent?.connectionId);
+  const nearlyExpiredState = signGcpState(
+    disconnectIntent.authorizationId,
+    stateSecret,
+    Date.now() - GCP_AUTHORIZATION_TTL_MS + 1_000,
+    { action: "disconnect", connectionId: disconnectIntent.connectionId },
+  );
+
+  const callback = await app.request(
+    `/gcp/oauth/callback?code=oauth-code&state=${encodeURIComponent(nearlyExpiredState)}`,
+  );
+  assert.equal(callback.status, 302);
+  const selectionUrl = new URL(callback.headers.get("location") ?? "");
+  assert.equal(selectionUrl.searchParams.get("action"), "disconnect");
+  const authorizationId = selectionUrl.searchParams.get("authorization");
+  const authorizationState = selectionUrl.searchParams.get("authorization_state");
+  assert.ok(authorizationId);
+  assert.ok(authorizationState);
+  const readyAuthorization = await db.query.gcpAuthorizationSessions.findFirst({
+    where: eq(schema.gcpAuthorizationSessions.id, authorizationId),
+  });
+  assert.ok(readyAuthorization);
+  const refreshedIntent = verifyGcpState(
+    authorizationState,
+    stateSecret,
+    readyAuthorization.expiresAt.getTime() - 1,
+  );
+  assert.equal(
+    refreshedIntent?.issuedAt,
+    readyAuthorization.expiresAt.getTime() - GCP_AUTHORIZATION_TTL_MS,
+  );
+
+  const disconnect = await app.request(`/api/gcp/authorizations/${authorizationId}/disconnect`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ authorizationState }),
+  });
+
+  assert.equal(disconnect.status, 200);
+  assert.deepEqual(await disconnect.json(), { disconnected: true });
+  assert.equal(deprovisionedConnectionId, connection.id);
+  const revoked = await db.query.gcpConnections.findFirst({
+    where: eq(schema.gcpConnections.id, connection.id),
+  });
+  assert.ok(revoked?.revokedAt);
 });
 
 test("failed Google Cloud provisioning hides provider details from customer responses", async () => {
@@ -506,6 +628,94 @@ test("superseding a GCP connection revokes its ingest key", async () => {
   assert.ok(revokedKey?.revokedAt);
 });
 
+test("revoking a GCP connection also revokes its ingest key", async () => {
+  const { user, project } = await seedProject();
+  const [ingestKey] = await db
+    .insert(schema.apiKeys)
+    .values({
+      projectId: project.id,
+      name: "GCP metrics puller",
+      keyPrefix: "sl_public_disconnect",
+      keyHash: `gcp-disconnect-${crypto.randomUUID()}`,
+    })
+    .returning();
+  assert.ok(ingestKey);
+  const [connection] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: project.id,
+      gcpProjectId: "acme-disconnect",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: user.id,
+      status: "connected",
+      apiKeyId: ingestKey.id,
+    })
+    .returning();
+  assert.ok(connection);
+
+  const repository = new DrizzleGcpConnectionRepository();
+  await repository.claimDisconnect(connection.id);
+  const revoked = await repository.revoke(connection.id);
+
+  assert.ok(revoked.revokedAt);
+  const revokedKey = await db.query.apiKeys.findFirst({
+    where: eq(schema.apiKeys.id, ingestKey.id),
+  });
+  assert.ok(revokedKey?.revokedAt);
+});
+
+test("only one request can claim a connected GCP project for disconnect", async () => {
+  const { user, project } = await seedProject();
+  const [connection] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: project.id,
+      gcpProjectId: "acme-concurrent-disconnect",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: user.id,
+      status: "connected",
+    })
+    .returning();
+  assert.ok(connection);
+  const repository = new DrizzleGcpConnectionRepository();
+
+  const attempts = await Promise.allSettled([
+    repository.claimDisconnect(connection.id),
+    repository.claimDisconnect(connection.id),
+  ]);
+
+  assert.equal(attempts.filter((attempt) => attempt.status === "fulfilled").length, 1);
+  assert.equal(attempts.filter((attempt) => attempt.status === "rejected").length, 1);
+  assert.equal((await repository.findById(connection.id))?.status, "disconnecting");
+  await repository.releaseDisconnect(connection.id, "connected");
+  assert.equal((await repository.findById(connection.id))?.status, "connected");
+});
+
+test("a failed disconnect recovery can be claimed for another cleanup attempt", async () => {
+  const { user, project } = await seedProject();
+  const [connection] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: project.id,
+      gcpProjectId: "acme-retry-disconnect",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: user.id,
+      status: "disconnect_failed",
+      lastError: "partial cleanup failure; connection restore failed",
+    })
+    .returning();
+  assert.ok(connection);
+
+  const claimed = await new DrizzleGcpConnectionRepository().claimDisconnect(connection.id);
+
+  assert.equal(claimed.status, "disconnecting");
+  await new DrizzleGcpConnectionRepository().releaseDisconnect(connection.id, "disconnect_failed");
+  assert.equal(
+    (await new DrizzleGcpConnectionRepository().findById(connection.id))?.status,
+    "disconnect_failed",
+  );
+});
+
 test("connecting after an overlapping callback cannot create a second active connection", async () => {
   const { user, project } = await seedProject();
   const inserted = await db
@@ -562,6 +772,201 @@ test("connecting after an overlapping callback cannot create a second active con
   assert.equal(rows.find((row) => row.id === candidate.id)?.status, "pending");
 });
 
+test("a replacement cannot complete while the current connection is disconnecting", async () => {
+  const { user, project } = await seedProject();
+  const [current, candidate] = await db
+    .insert(schema.gcpConnections)
+    .values([
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-current",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+        status: "disconnecting",
+      },
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-replacement",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+      },
+    ])
+    .returning();
+  assert.ok(current && candidate);
+
+  await assert.rejects(
+    new DrizzleGcpConnectionRepository().markConnected(
+      candidate.id,
+      {
+        gcpProjectNumber: "123456789012",
+        topicName: `superlog-${candidate.id}`,
+        subscriptionName: `superlog-${candidate.id}`,
+        logSinkName: `superlog-${candidate.id}`,
+        logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+        monitoringViewerGrantCreated: true,
+      },
+      current.id,
+    ),
+    /another GCP connection is disconnecting/,
+  );
+
+  assert.equal(
+    (await new DrizzleGcpConnectionRepository().findById(current.id))?.status,
+    "disconnecting",
+  );
+  assert.equal(
+    (await new DrizzleGcpConnectionRepository().findById(candidate.id))?.status,
+    "pending",
+  );
+});
+
+test("a replacement cannot complete while another connection requires recovery", async () => {
+  const { user, project } = await seedProject();
+  const [recovering, candidate] = await db
+    .insert(schema.gcpConnections)
+    .values([
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-recovering",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+        status: "disconnect_failed",
+        lastError: "partial cleanup failure; connection restore failed",
+      },
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-replacement",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+      },
+    ])
+    .returning();
+  assert.ok(recovering && candidate);
+
+  await assert.rejects(
+    new DrizzleGcpConnectionRepository().markConnected(
+      candidate.id,
+      {
+        gcpProjectNumber: "123456789012",
+        topicName: `superlog-${candidate.id}`,
+        subscriptionName: `superlog-${candidate.id}`,
+        logSinkName: `superlog-${candidate.id}`,
+        logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+        monitoringViewerGrantCreated: true,
+      },
+      null,
+    ),
+    /another GCP connection requires recovery/,
+  );
+
+  assert.equal(
+    (await new DrizzleGcpConnectionRepository().findById(recovering.id))?.status,
+    "disconnect_failed",
+  );
+  assert.equal(
+    (await new DrizzleGcpConnectionRepository().findById(candidate.id))?.status,
+    "pending",
+  );
+});
+
+test("a replacement can complete after an ordinary setup failure", async () => {
+  const { user, project } = await seedProject();
+  const [failedSetup, candidate] = await db
+    .insert(schema.gcpConnections)
+    .values([
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-failed-setup",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+        status: "failed",
+        lastError: "Google Cloud provisioning failed",
+      },
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-replacement",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+      },
+    ])
+    .returning();
+  assert.ok(failedSetup && candidate);
+
+  const connected = await new DrizzleGcpConnectionRepository().markConnected(
+    candidate.id,
+    {
+      gcpProjectNumber: "123456789012",
+      topicName: `superlog-${candidate.id}`,
+      subscriptionName: `superlog-${candidate.id}`,
+      logSinkName: `superlog-${candidate.id}`,
+      logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+      monitoringViewerGrantCreated: true,
+    },
+    null,
+  );
+
+  assert.equal(connected.status, "connected");
+  assert.equal(
+    (await new DrizzleGcpConnectionRepository().findById(failedSetup.id))?.status,
+    "failed",
+  );
+});
+
+test("releasing a disconnect claim cannot restore a second active connection", async () => {
+  const { user, project } = await seedProject();
+  const [ingestKey] = await db
+    .insert(schema.apiKeys)
+    .values({
+      projectId: project.id,
+      name: "GCP metrics puller",
+      keyPrefix: "sl_public_recovery",
+      keyHash: `gcp-recovery-${crypto.randomUUID()}`,
+    })
+    .returning();
+  assert.ok(ingestKey);
+  const [disconnecting, replacement] = await db
+    .insert(schema.gcpConnections)
+    .values([
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-disconnecting",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+        status: "disconnecting",
+        apiKeyId: ingestKey.id,
+      },
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-connected-replacement",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+        status: "connected",
+      },
+    ])
+    .returning();
+  assert.ok(disconnecting && replacement);
+  const repository = new DrizzleGcpConnectionRepository();
+
+  assert.equal(await repository.releaseDisconnect(disconnecting.id, "connected"), false);
+
+  const rows = await db.query.gcpConnections.findMany({
+    where: eq(schema.gcpConnections.projectId, project.id),
+  });
+  assert.equal(rows.find((row) => row.id === disconnecting.id)?.status, "failed");
+  assert.match(
+    rows.find((row) => row.id === disconnecting.id)?.lastError ?? "",
+    /replacement completed during disconnect recovery/,
+  );
+  assert.equal(rows.find((row) => row.id === replacement.id)?.status, "connected");
+  assert.ok(
+    (
+      await db.query.apiKeys.findFirst({
+        where: eq(schema.apiKeys.id, ingestKey.id),
+      })
+    )?.revokedAt,
+  );
+});
+
 test("preserving a shared monitoring grant transfers cleanup ownership", async () => {
   const first = await seedProject();
   const second = await seedProject();
@@ -589,11 +994,13 @@ test("preserving a shared monitoring grant transfers cleanup ownership", async (
     .returning();
   assert.ok(owner && remaining);
 
-  const shouldRemove = await new DrizzleGcpConnectionRepository().prepareMonitoringGrantRemoval({
+  const repository = new DrizzleGcpConnectionRepository();
+  await repository.claimDisconnect(owner.id);
+
+  const shouldRemove = await repository.prepareMonitoringGrantRemoval({
     connectionId: owner.id,
     gcpProjectId: owner.gcpProjectId,
     readerServiceAccountEmail: owner.readerServiceAccountEmail,
-    grantCreated: true,
   });
 
   assert.equal(shouldRemove, false);
@@ -601,6 +1008,55 @@ test("preserving a shared monitoring grant transfers cleanup ownership", async (
     where: eq(schema.gcpConnections.id, remaining.id),
   });
   assert.equal(transferred?.monitoringViewerGrantCreated, true);
+
+  await repository.revoke(owner.id);
+  await repository.claimDisconnect(remaining.id);
+  const shouldRemoveAfterStaleSnapshot = await repository.prepareMonitoringGrantRemoval({
+    connectionId: remaining.id,
+    gcpProjectId: remaining.gcpProjectId,
+    readerServiceAccountEmail: remaining.readerServiceAccountEmail,
+  });
+  assert.equal(shouldRemoveAfterStaleSnapshot, true);
+});
+
+test("a consumed Google authorization can be restored and claimed again", async () => {
+  const { user, project } = await seedProject();
+  const repository = new DrizzleGcpAuthorizationRepository();
+  const now = new Date("2026-08-21T12:00:00.000Z");
+  const session = await repository.create({
+    projectId: project.id,
+    userId: user.id,
+    expiresAt: new Date(now.getTime() + GCP_AUTHORIZATION_TTL_MS),
+  });
+  await repository.markReady({
+    id: session.id,
+    accessToken: "temporary-user-token",
+    projects: [
+      {
+        projectId: "acme-production",
+        projectNumber: "123456789012",
+        displayName: "Acme production",
+      },
+    ],
+    expiresAt: new Date(now.getTime() + GCP_AUTHORIZATION_TTL_MS),
+  });
+  const claimInput = {
+    id: session.id,
+    projectId: project.id,
+    userId: user.id,
+    gcpProjectId: "acme-production",
+    now,
+  };
+  await repository.claim(claimInput);
+
+  await repository.restoreClaim({
+    id: session.id,
+    accessToken: "temporary-user-token",
+    expiresAt: new Date(now.getTime() + GCP_AUTHORIZATION_TTL_MS),
+  });
+
+  assert.equal((await repository.findById(session.id))?.status, "ready");
+  assert.equal((await repository.claim(claimInput)).accessToken, "temporary-user-token");
 });
 
 test("a monitoring grant is not transferred to a different reader principal", async () => {
@@ -634,7 +1090,6 @@ test("a monitoring grant is not transferred to a different reader principal", as
     connectionId: owner.id,
     gcpProjectId: owner.gcpProjectId,
     readerServiceAccountEmail: owner.readerServiceAccountEmail,
-    grantCreated: true,
   });
 
   assert.equal(shouldRemove, true);
@@ -674,6 +1129,37 @@ test("a failed reconnect does not hide an older working GCP connection", async (
   assert.equal(current?.status, "connected");
 });
 
+test("an ordinary setup failure does not hide a disconnect recovery", async () => {
+  const { user, project } = await seedProject();
+  const [recovering] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: project.id,
+      gcpProjectId: "acme-production",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: user.id,
+      status: "disconnect_failed",
+      lastError: "partial cleanup failure; connection restore failed",
+      createdAt: new Date("2026-07-13T00:00:00Z"),
+    })
+    .returning();
+  await db.insert(schema.gcpConnections).values({
+    projectId: project.id,
+    gcpProjectId: "acme-staging",
+    readerServiceAccountEmail: config.readerServiceAccountEmail,
+    createdBy: user.id,
+    status: "failed",
+    lastError: "Google Cloud provisioning failed",
+    createdAt: new Date("2026-07-14T00:00:00Z"),
+  });
+  assert.ok(recovering);
+
+  const current = await new DrizzleGcpConnectionRepository().findCurrent(project.id);
+
+  assert.equal(current?.id, recovering.id);
+  assert.equal(current?.status, "disconnect_failed");
+});
+
 test("a stale callback failure cannot demote an already connected row", async () => {
   const { user, project } = await seedProject();
   const [connection] = await db
@@ -694,6 +1180,29 @@ test("a stale callback failure cannot demote an already connected row", async ()
 
   const current = await repository.findById(connection.id);
   assert.equal(current?.status, "connected");
+  assert.equal(current?.lastError, null);
+});
+
+test("a stale callback cannot overwrite an active disconnect claim", async () => {
+  const { user, project } = await seedProject();
+  const [connection] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: project.id,
+      gcpProjectId: "acme-production",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: user.id,
+      status: "disconnecting",
+    })
+    .returning();
+  assert.ok(connection);
+  const repository = new DrizzleGcpConnectionRepository();
+
+  await repository.markProvisioning(connection.id);
+  await repository.markFailed(connection.id, "late OAuth callback failed");
+
+  const current = await repository.findById(connection.id);
+  assert.equal(current?.status, "disconnecting");
   assert.equal(current?.lastError, null);
 });
 

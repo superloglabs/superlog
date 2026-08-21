@@ -1,4 +1,8 @@
-import { type GcpApplicationConfig, completeGcpConnect } from "./application.js";
+import {
+  type GcpApplicationConfig,
+  completeGcpConnect,
+  disconnectGcpConnection,
+} from "./application.js";
 import type {
   GcpAuthorizationRepository,
   GcpAuthorizationSessionRecord,
@@ -131,4 +135,80 @@ export async function connectGcpAuthorization(input: {
     gateway: input.gateway,
     config: input.config,
   });
+}
+
+export async function disconnectGcpAuthorization(input: {
+  authorizationId: string;
+  userId: string;
+  expectedConnectionId: string;
+  retryExpiresAt?: Date;
+  authorizationRepository: GcpAuthorizationRepository;
+  connectionRepository: GcpConnectionRepository;
+  gateway: GcpGateway;
+  config: GcpApplicationConfig;
+  now?: Date;
+}): Promise<GcpConnectionRecord> {
+  const now = input.now ?? new Date();
+  const session = await getGcpAuthorizationSelection({
+    authorizationId: input.authorizationId,
+    userId: input.userId,
+    repository: input.authorizationRepository,
+    now,
+  });
+  const connection = await input.connectionRepository.findById(input.expectedConnectionId);
+  if (
+    !connection ||
+    connection.projectId !== session.projectId ||
+    (connection.status !== "connected" && connection.status !== "disconnect_failed") ||
+    connection.revokedAt
+  ) {
+    throw new Error("Connected GCP project not found");
+  }
+  const claim = await input.authorizationRepository.claim({
+    id: session.id,
+    projectId: session.projectId,
+    userId: session.userId,
+    gcpProjectId: connection.gcpProjectId,
+    now,
+  });
+  try {
+    return await disconnectGcpConnection({
+      projectId: session.projectId,
+      expectedConnectionId: connection.id,
+      userAccessToken: claim.accessToken,
+      repository: input.connectionRepository,
+      gateway: input.gateway,
+      config: input.config,
+    });
+  } catch (error) {
+    let latest: GcpConnectionRecord | null;
+    try {
+      latest = await input.connectionRepository.findById(connection.id);
+    } catch {
+      throw error;
+    }
+    if (latest?.revokedAt) return latest;
+    if (!latest || (latest.status !== "connected" && latest.status !== "disconnect_failed")) {
+      throw error;
+    }
+    try {
+      await input.authorizationRepository.restoreClaim({
+        id: session.id,
+        accessToken: claim.accessToken,
+        expiresAt: new Date(
+          Math.min(
+            session.expiresAt.getTime(),
+            input.retryExpiresAt?.getTime() ?? session.expiresAt.getTime(),
+          ),
+        ),
+      });
+    } catch (restoreError) {
+      const message =
+        restoreError instanceof Error ? restoreError.message : "unknown authorization error";
+      throw new Error(`GCP disconnect failed; authorization recovery failed: ${message}`, {
+        cause: error,
+      });
+    }
+    throw error;
+  }
 }

@@ -89,6 +89,29 @@ async function deleteResource(
   }
 }
 
+async function updateSubscription(
+  fetchImpl: typeof fetch,
+  url: string,
+  path: string,
+  accessToken: string,
+  subscription: Record<string, unknown>,
+  quotaProject: string,
+): Promise<void> {
+  await requestJson(
+    fetchImpl,
+    url,
+    accessToken,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        subscription: { name: path, ...subscription },
+        updateMask: "pushConfig,ackDeadlineSeconds,retryPolicy",
+      }),
+    },
+    quotaProject,
+  );
+}
+
 type IamPolicy = {
   bindings?: Array<{
     role: string;
@@ -330,6 +353,9 @@ export class GoogleGcpGateway implements GcpGateway {
       }
 
       const subscriptionUrl = `https://pubsub.googleapis.com/v1/${subscriptionPath}`;
+      const recoverySubscriptionName = `${resourceSlug}-recovery`;
+      const recoverySubscriptionPath = `projects/${input.integrationProjectId}/subscriptions/${recoverySubscriptionName}`;
+      const recoverySubscriptionUrl = `https://pubsub.googleapis.com/v1/${recoverySubscriptionPath}`;
       const subscription = {
         topic: topicPath,
         ackDeadlineSeconds: 30,
@@ -349,30 +375,154 @@ export class GoogleGcpGateway implements GcpGateway {
         subscription,
         input.integrationProjectId,
       );
+      let activeSubscriptionName = resourceSlug;
       if (!subscriptionCreated) {
-        const updateMask = "pushConfig,ackDeadlineSeconds,retryPolicy";
-        await requestJson(
+        const existingSubscription = await requestJson<{ topic?: string }>(
           this.fetchImpl,
           subscriptionUrl,
           serviceToken,
-          {
-            method: "PATCH",
-            body: JSON.stringify({
-              subscription: {
-                name: subscriptionPath,
-                ...subscription,
-              },
-              updateMask,
-            }),
-          },
+          {},
           input.integrationProjectId,
         );
+        if (existingSubscription.topic !== topicPath) {
+          const recoveryCreated = await ensureResource(
+            this.fetchImpl,
+            recoverySubscriptionUrl,
+            serviceToken,
+            subscription,
+            input.integrationProjectId,
+          );
+          if (!recoveryCreated) {
+            const existingRecovery = await requestJson<{ topic?: string }>(
+              this.fetchImpl,
+              recoverySubscriptionUrl,
+              serviceToken,
+              {},
+              input.integrationProjectId,
+            );
+            if (existingRecovery.topic !== topicPath) {
+              await deleteResource(
+                this.fetchImpl,
+                recoverySubscriptionUrl,
+                serviceToken,
+                input.integrationProjectId,
+              );
+              await requestJson(
+                this.fetchImpl,
+                recoverySubscriptionUrl,
+                serviceToken,
+                { method: "PUT", body: JSON.stringify(subscription) },
+                input.integrationProjectId,
+              );
+            } else {
+              await updateSubscription(
+                this.fetchImpl,
+                recoverySubscriptionUrl,
+                recoverySubscriptionPath,
+                serviceToken,
+                subscription,
+                input.integrationProjectId,
+              );
+            }
+          }
+          let canonicalRemoved = false;
+          try {
+            await deleteResource(
+              this.fetchImpl,
+              subscriptionUrl,
+              serviceToken,
+              input.integrationProjectId,
+            );
+            canonicalRemoved = true;
+          } catch {
+            activeSubscriptionName = recoverySubscriptionName;
+          }
+          if (canonicalRemoved) {
+            let canonicalCreated = false;
+            try {
+              await requestJson(
+                this.fetchImpl,
+                subscriptionUrl,
+                serviceToken,
+                { method: "PUT", body: JSON.stringify(subscription) },
+                input.integrationProjectId,
+              );
+              canonicalCreated = true;
+            } catch {
+              activeSubscriptionName = recoverySubscriptionName;
+            }
+            if (canonicalCreated) {
+              try {
+                await deleteResource(
+                  this.fetchImpl,
+                  recoverySubscriptionUrl,
+                  serviceToken,
+                  input.integrationProjectId,
+                );
+              } catch (recoveryCleanupError) {
+                try {
+                  await deleteResource(
+                    this.fetchImpl,
+                    subscriptionUrl,
+                    serviceToken,
+                    input.integrationProjectId,
+                  );
+                  activeSubscriptionName = recoverySubscriptionName;
+                } catch (canonicalCleanupError) {
+                  throw new AggregateError(
+                    [recoveryCleanupError, canonicalCleanupError],
+                    "GCP subscription cleanup failed",
+                  );
+                }
+              }
+            }
+          }
+        } else {
+          await updateSubscription(
+            this.fetchImpl,
+            subscriptionUrl,
+            subscriptionPath,
+            serviceToken,
+            subscription,
+            input.integrationProjectId,
+          );
+          await deleteResource(
+            this.fetchImpl,
+            recoverySubscriptionUrl,
+            serviceToken,
+            input.integrationProjectId,
+          );
+        }
+      } else {
+        try {
+          await deleteResource(
+            this.fetchImpl,
+            recoverySubscriptionUrl,
+            serviceToken,
+            input.integrationProjectId,
+          );
+        } catch (recoveryCleanupError) {
+          try {
+            await deleteResource(
+              this.fetchImpl,
+              subscriptionUrl,
+              serviceToken,
+              input.integrationProjectId,
+            );
+          } catch (canonicalCleanupError) {
+            throw new AggregateError(
+              [recoveryCleanupError, canonicalCleanupError],
+              "GCP subscription cleanup failed",
+            );
+          }
+          throw recoveryCleanupError;
+        }
       }
 
       return {
         gcpProjectNumber,
         topicName: resourceSlug,
-        subscriptionName: resourceSlug,
+        subscriptionName: activeSubscriptionName,
         logSinkName: sink.name,
         logSinkWriterIdentity: sink.writerIdentity,
         monitoringViewerGrantCreated: projectPolicyChanged,
@@ -447,14 +597,22 @@ export class GoogleGcpGateway implements GcpGateway {
       `https://logging.googleapis.com/v2/projects/${encodeURIComponent(input.gcpProjectId)}/sinks/${input.provisioned.logSinkName}`,
       input.userAccessToken,
     );
+    const subscriptionNames = new Set([
+      input.provisioned.subscriptionName,
+      resourceSlug,
+      `${resourceSlug}-recovery`,
+    ]);
     const actions: Array<() => Promise<void>> = [
-      () =>
-        deleteResource(
-          this.fetchImpl,
-          `https://pubsub.googleapis.com/v1/projects/${input.integrationProjectId}/subscriptions/${resourceSlug}`,
-          serviceToken,
-          input.integrationProjectId,
-        ),
+      ...Array.from(
+        subscriptionNames,
+        (subscriptionName) => () =>
+          deleteResource(
+            this.fetchImpl,
+            `https://pubsub.googleapis.com/v1/projects/${input.integrationProjectId}/subscriptions/${encodeURIComponent(subscriptionName)}`,
+            serviceToken,
+            input.integrationProjectId,
+          ),
+      ),
       () =>
         deleteResource(
           this.fetchImpl,
