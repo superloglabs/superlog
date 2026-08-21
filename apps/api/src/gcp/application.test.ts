@@ -145,6 +145,9 @@ test("a failed disconnect revocation restores the connected GCP resources", asyn
     async findCurrent() {
       return connected;
     },
+    async findById() {
+      return connected;
+    },
     async prepareMonitoringGrantRemoval() {
       return true;
     },
@@ -177,6 +180,101 @@ test("a failed disconnect revocation restores the connected GCP resources", asyn
   );
 
   assert.deepEqual(events, ["deprovision-connection", "revoke-connection", "restore-connection"]);
+});
+
+test("a partially failed cloud cleanup restores the connected GCP resources", async () => {
+  const events: string[] = [];
+  const connected: GcpConnectionRecord = {
+    ...connection,
+    ...provisioned,
+    status: "connected",
+  };
+  const repository = {
+    async findCurrent() {
+      return connected;
+    },
+    async findById() {
+      return connected;
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
+    async revoke() {
+      events.push("revoke-connection");
+      return { ...connected, revokedAt: new Date() };
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async deprovision() {
+      events.push("deprovision-connection");
+      throw new Error("partial cleanup failure");
+    },
+    async provision(input: GcpProvisioningInput) {
+      assert.equal(input.connectionId, connected.id);
+      events.push("restore-connection");
+      return provisioned;
+    },
+  } as unknown as GcpGateway;
+
+  await assert.rejects(
+    disconnectGcpConnection({
+      projectId: connected.projectId,
+      userAccessToken: "temporary-user-token",
+      repository,
+      gateway,
+      config,
+    }),
+    /partial cleanup failure/,
+  );
+
+  assert.deepEqual(events, ["deprovision-connection", "restore-connection"]);
+});
+
+test("an overlapping disconnect does not restore an already revoked connection", async () => {
+  const events: string[] = [];
+  const connected: GcpConnectionRecord = {
+    ...connection,
+    ...provisioned,
+    status: "connected",
+  };
+  const revoked = { ...connected, revokedAt: new Date("2026-08-21T12:00:00.000Z") };
+  const repository = {
+    async findCurrent() {
+      return connected;
+    },
+    async findById() {
+      return revoked;
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
+    async revoke() {
+      events.push("revoke-connection");
+      throw new Error("Connected GCP project not found");
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async deprovision() {
+      events.push("deprovision-connection");
+    },
+    async provision() {
+      events.push("restore-connection");
+      return provisioned;
+    },
+  } as unknown as GcpGateway;
+
+  await assert.rejects(
+    disconnectGcpConnection({
+      projectId: connected.projectId,
+      userAccessToken: "temporary-user-token",
+      repository,
+      gateway,
+      config,
+    }),
+    /Connected GCP project not found/,
+  );
+
+  assert.deepEqual(events, ["deprovision-connection", "revoke-connection"]);
 });
 
 test("a local persistence failure removes newly provisioned Google resources", async () => {

@@ -180,33 +180,43 @@ export async function disconnectGcpConnection(input: {
     persistedProvisioningResult(connection),
     input.repository,
   );
-  await input.gateway.deprovision({
-    connectionId: connection.id,
-    gcpProjectId: connection.gcpProjectId,
-    userAccessToken: input.userAccessToken,
-    integrationProjectId: input.config.integrationProjectId,
-    readerServiceAccountEmail: connection.readerServiceAccountEmail,
-    provisioned,
-  });
   try {
+    await input.gateway.deprovision({
+      connectionId: connection.id,
+      gcpProjectId: connection.gcpProjectId,
+      userAccessToken: input.userAccessToken,
+      integrationProjectId: input.config.integrationProjectId,
+      readerServiceAccountEmail: connection.readerServiceAccountEmail,
+      provisioned,
+    });
     return await input.repository.revoke(connection.id);
   } catch (error) {
+    let restoreConnection = true;
     try {
-      await input.gateway.provision(
-        provisioningInput(
-          connection,
-          input.userAccessToken,
-          input.config,
-          connection.gcpProjectNumber ?? undefined,
-        ),
-      );
-    } catch (restoreError) {
-      const originalMessage = error instanceof Error ? error.message : "GCP disconnect failed";
-      const restoreMessage =
-        restoreError instanceof Error ? restoreError.message : "unknown restore error";
-      throw new Error(`${originalMessage}; connection restore failed: ${restoreMessage}`, {
-        cause: error,
-      });
+      const latest = await input.repository.findById(connection.id);
+      restoreConnection = latest?.status === "connected" && !latest.revokedAt;
+    } catch {
+      // If persistence is unavailable, prefer restoring the resources for the
+      // connection that the database most likely still considers active.
+    }
+    if (restoreConnection) {
+      try {
+        await input.gateway.provision(
+          provisioningInput(
+            connection,
+            input.userAccessToken,
+            input.config,
+            connection.gcpProjectNumber ?? undefined,
+          ),
+        );
+      } catch (restoreError) {
+        const originalMessage = error instanceof Error ? error.message : "GCP disconnect failed";
+        const restoreMessage =
+          restoreError instanceof Error ? restoreError.message : "unknown restore error";
+        throw new Error(`${originalMessage}; connection restore failed: ${restoreMessage}`, {
+          cause: error,
+        });
+      }
     }
     throw error;
   }
