@@ -141,6 +141,7 @@ export async function disconnectGcpAuthorization(input: {
   authorizationId: string;
   userId: string;
   expectedConnectionId: string;
+  retryExpiresAt?: Date;
   authorizationRepository: GcpAuthorizationRepository;
   connectionRepository: GcpConnectionRepository;
   gateway: GcpGateway;
@@ -158,7 +159,7 @@ export async function disconnectGcpAuthorization(input: {
   if (
     !connection ||
     connection.projectId !== session.projectId ||
-    connection.status !== "connected" ||
+    (connection.status !== "connected" && connection.status !== "failed") ||
     connection.revokedAt
   ) {
     throw new Error("Connected GCP project not found");
@@ -180,11 +181,26 @@ export async function disconnectGcpAuthorization(input: {
       config: input.config,
     });
   } catch (error) {
+    let latest: GcpConnectionRecord | null;
+    try {
+      latest = await input.connectionRepository.findById(connection.id);
+    } catch {
+      throw error;
+    }
+    if (latest?.revokedAt) return latest;
+    if (!latest || (latest.status !== "connected" && latest.status !== "failed")) {
+      throw error;
+    }
     try {
       await input.authorizationRepository.restoreClaim({
         id: session.id,
         accessToken: claim.accessToken,
-        expiresAt: new Date(now.getTime() + GCP_AUTHORIZATION_TTL_MS),
+        expiresAt: new Date(
+          Math.min(
+            session.expiresAt.getTime(),
+            input.retryExpiresAt?.getTime() ?? session.expiresAt.getTime(),
+          ),
+        ),
       });
     } catch (restoreError) {
       const message =

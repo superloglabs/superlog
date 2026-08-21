@@ -242,6 +242,7 @@ test("a disconnect authorization cannot target a replacement connection", async 
 
 test("a failed disconnect restores its Google authorization for retry", async () => {
   const now = new Date("2026-08-21T12:00:00.000Z");
+  const retryExpiresAt = new Date("2026-08-21T12:03:00.000Z");
   const session: GcpAuthorizationSessionRecord = {
     id: "authorization-id",
     projectId: "project-id",
@@ -299,27 +300,26 @@ test("a failed disconnect restores its Google authorization for retry", async ()
     },
     async restoreClaim(input: { accessToken: string; expiresAt: Date }) {
       assert.equal(input.accessToken, "temporary-user-token");
-      assert.equal(input.expiresAt.getTime(), now.getTime() + GCP_AUTHORIZATION_TTL_MS);
+      assert.equal(input.expiresAt.getTime(), retryExpiresAt.getTime());
       events.push("restore-authorization");
     },
   } as unknown as GcpAuthorizationRepository;
-  let connectionReads = 0;
+  let connectionStatus: GcpConnectionRecord["status"] = "connected";
   const connectionRepository = {
     async findById() {
-      connectionReads += 1;
-      return connectionReads <= 2
-        ? connection
-        : { ...connection, status: "disconnecting" as const };
+      return { ...connection, status: connectionStatus };
     },
     async claimDisconnect() {
       events.push("claim-disconnect");
-      return { ...connection, status: "disconnecting" as const };
+      connectionStatus = "disconnecting";
+      return { ...connection, status: connectionStatus };
     },
     async prepareMonitoringGrantRemoval() {
       return true;
     },
     async releaseDisconnect() {
       events.push("release-disconnect");
+      connectionStatus = "connected";
       return true;
     },
   } as unknown as GcpConnectionRepository;
@@ -346,6 +346,7 @@ test("a failed disconnect restores its Google authorization for retry", async ()
       authorizationId: session.id,
       userId: session.userId,
       expectedConnectionId: connection.id,
+      retryExpiresAt,
       authorizationRepository,
       connectionRepository,
       gateway,
@@ -369,4 +370,106 @@ test("a failed disconnect restores its Google authorization for retry", async ()
     "release-disconnect",
     "restore-authorization",
   ]);
+});
+
+test("a disconnect whose revoke committed is returned as terminal success", async () => {
+  const now = new Date("2026-08-21T12:00:00.000Z");
+  const session: GcpAuthorizationSessionRecord = {
+    id: "authorization-id",
+    projectId: "project-id",
+    userId: "user-id",
+    status: "ready",
+    projects: [
+      {
+        projectId: "acme-production",
+        projectNumber: "123456789012",
+        displayName: "Acme production",
+      },
+    ],
+    expiresAt: new Date("2026-08-21T12:10:00.000Z"),
+    consumedAt: null,
+    lastError: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const connection = {
+    id: "connection-id",
+    projectId: session.projectId,
+    gcpProjectId: "acme-production",
+    gcpProjectNumber: "123456789012",
+    status: "connected" as const,
+    topicName: "superlog-connection-id",
+    subscriptionName: "superlog-connection-id",
+    logSinkName: "superlog-connection-id",
+    logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+    excludedLogNames: [],
+    monitoringViewerGrantCreated: true,
+    readerServiceAccountEmail: "reader@example.iam.gserviceaccount.com",
+    lastVerifiedAt: now,
+    lastLogReceivedAt: null,
+    lastMetricsReceivedAt: null,
+    metricsBudgetMonth: null,
+    metricsSeriesRead: 0,
+    lastError: null,
+    createdBy: session.userId,
+    revokedAt: null,
+    createdAt: now,
+    updatedAt: now,
+  } satisfies GcpConnectionRecord;
+  let latest = connection as GcpConnectionRecord;
+  let restoreClaimCalls = 0;
+  const authorizationRepository = {
+    async findById() {
+      return session;
+    },
+    async claim() {
+      return {
+        session: { ...session, status: "consumed" as const, consumedAt: now },
+        project: session.projects[0],
+        accessToken: "temporary-user-token",
+      };
+    },
+    async restoreClaim() {
+      restoreClaimCalls += 1;
+    },
+  } as unknown as GcpAuthorizationRepository;
+  const connectionRepository = {
+    async findById() {
+      return latest;
+    },
+    async claimDisconnect() {
+      latest = { ...connection, status: "disconnecting" };
+      return latest;
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
+    async revoke() {
+      latest = { ...latest, revokedAt: now };
+      throw new Error("database response lost after commit");
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async deprovision() {},
+  } as unknown as GcpGateway;
+
+  const result = await disconnectGcpAuthorization({
+    authorizationId: session.id,
+    userId: session.userId,
+    expectedConnectionId: connection.id,
+    authorizationRepository,
+    connectionRepository,
+    gateway,
+    config: {
+      integrationProjectId: "superlog-observability",
+      readerServiceAccountEmail: connection.readerServiceAccountEmail,
+      pushServiceAccountEmail: "push@example.iam.gserviceaccount.com",
+      pushAudience: "https://intake.example.com/gcp/pubsub",
+      pushEndpoint: "https://intake.example.com/gcp/pubsub",
+    },
+    now,
+  });
+
+  assert.ok(result.revokedAt);
+  assert.equal(restoreClaimCalls, 0);
 });

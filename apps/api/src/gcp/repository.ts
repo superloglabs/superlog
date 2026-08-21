@@ -230,7 +230,7 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
       .where(
         and(
           eq(schema.gcpConnections.id, id),
-          eq(schema.gcpConnections.status, "connected"),
+          inArray(schema.gcpConnections.status, ["connected", "failed"]),
           isNull(schema.gcpConnections.revokedAt),
         ),
       )

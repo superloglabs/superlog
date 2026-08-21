@@ -174,7 +174,14 @@ export async function disconnectGcpConnection(input: {
   const connection = input.expectedConnectionId
     ? await input.repository.findById(input.expectedConnectionId)
     : await input.repository.findCurrent(input.projectId);
-  if (!connection || connection.status !== "connected" || connection.revokedAt) {
+  const isRetryableFailure = Boolean(
+    input.expectedConnectionId && connection?.status === "failed" && !connection.revokedAt,
+  );
+  if (
+    !connection ||
+    (connection.status !== "connected" && !isRetryableFailure) ||
+    connection.revokedAt
+  ) {
     throw new Error("Connected GCP project not found");
   }
   if (connection.projectId !== input.projectId) {

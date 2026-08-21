@@ -426,6 +426,49 @@ test("a superseded disconnect recovery removes the restored cloud resources", as
   ]);
 });
 
+test("a failed disconnect recovery row can retry cleanup", async () => {
+  const failed: GcpConnectionRecord = {
+    ...connection,
+    ...provisioned,
+    status: "failed",
+    lastError: "partial cleanup failure; connection restore failed",
+  };
+  const events: string[] = [];
+  const repository = {
+    async findById() {
+      return failed;
+    },
+    async claimDisconnect() {
+      events.push("claim-disconnect");
+      return { ...failed, status: "disconnecting" as const };
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
+    async revoke() {
+      events.push("revoke-connection");
+      return { ...failed, status: "disconnecting" as const, revokedAt: new Date() };
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async deprovision() {
+      events.push("deprovision-connection");
+    },
+  } as unknown as GcpGateway;
+
+  const result = await disconnectGcpConnection({
+    projectId: failed.projectId,
+    expectedConnectionId: failed.id,
+    userAccessToken: "temporary-user-token",
+    repository,
+    gateway,
+    config,
+  });
+
+  assert.ok(result.revokedAt);
+  assert.deepEqual(events, ["claim-disconnect", "deprovision-connection", "revoke-connection"]);
+});
+
 test("a local persistence failure removes newly provisioned Google resources", async () => {
   const cleanupCalls: unknown[] = [];
   const repository = {

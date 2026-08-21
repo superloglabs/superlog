@@ -691,6 +691,26 @@ test("only one request can claim a connected GCP project for disconnect", async 
   assert.equal((await repository.findById(connection.id))?.status, "connected");
 });
 
+test("a failed disconnect recovery can be claimed for another cleanup attempt", async () => {
+  const { user, project } = await seedProject();
+  const [connection] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: project.id,
+      gcpProjectId: "acme-retry-disconnect",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: user.id,
+      status: "failed",
+      lastError: "partial cleanup failure; connection restore failed",
+    })
+    .returning();
+  assert.ok(connection);
+
+  const claimed = await new DrizzleGcpConnectionRepository().claimDisconnect(connection.id);
+
+  assert.equal(claimed.status, "disconnecting");
+});
+
 test("connecting after an overlapping callback cannot create a second active connection", async () => {
   const { user, project } = await seedProject();
   const inserted = await db

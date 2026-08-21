@@ -342,6 +342,7 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
         authorizationId: session.id,
         userId: c.var.userId,
         expectedConnectionId: disconnectIntent.connectionId,
+        retryExpiresAt: new Date(disconnectIntent.issuedAt + GCP_AUTHORIZATION_TTL_MS),
         authorizationRepository,
         connectionRepository: repository,
         gateway,
