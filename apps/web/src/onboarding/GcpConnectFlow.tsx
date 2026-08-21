@@ -119,6 +119,7 @@ export function GcpConnectFlow({
           onRetry={retryDisconnect}
           retrying={disconnect.isPending}
           error={disconnect.error ? String(disconnect.error) : null}
+          canManage={row?.canManage ?? false}
         />
       )}
 
@@ -172,11 +173,13 @@ function DisconnectRecoveryPanel({
   onRetry,
   retrying,
   error,
+  canManage,
 }: {
   lastError: string | null;
   onRetry: () => void;
   retrying: boolean;
   error: string | null;
+  canManage: boolean;
 }) {
   return (
     <div className={`overflow-hidden rounded-[14px] border bg-surface ${SOFT_LINE}`}>
@@ -189,16 +192,22 @@ function DisconnectRecoveryPanel({
         <span className="text-[12.5px] text-muted">
           Logs remain protected while cleanup is waiting.
         </span>
-        <Btn
-          variant="primary"
-          size="md"
-          onClick={onRetry}
-          loading={retrying}
-          className="!h-[36px] !rounded-[8px] !px-[14px] !text-[13px]"
-        >
-          {retrying ? "Preparing…" : "Retry disconnect"}
-          {!retrying && <ExternalLinkIcon size={13} />}
-        </Btn>
+        {canManage ? (
+          <Btn
+            variant="primary"
+            size="md"
+            onClick={onRetry}
+            loading={retrying}
+            className="!h-[36px] !rounded-[8px] !px-[14px] !text-[13px]"
+          >
+            {retrying ? "Preparing…" : "Retry disconnect"}
+            {!retrying && <ExternalLinkIcon size={13} />}
+          </Btn>
+        ) : (
+          <span className="text-[12.5px] font-medium text-fg">
+            Ask a project manager to retry the disconnect.
+          </span>
+        )}
       </div>
       {error && (
         <div className={`border-t px-[22px] py-[12px] ${SOFT_LINE}`}>
