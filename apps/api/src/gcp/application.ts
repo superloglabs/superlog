@@ -249,7 +249,10 @@ export async function disconnectGcpConnection(input: {
         }
       }
       try {
-        const restored = await input.repository.releaseDisconnect(connection.id);
+        const restored = await input.repository.releaseDisconnect(
+          connection.id,
+          connection.status === "failed" ? "failed" : "connected",
+        );
         if (!restored) {
           if (restoredProvisioning) {
             await input.gateway.deprovision({
@@ -267,9 +270,18 @@ export async function disconnectGcpConnection(input: {
         const originalMessage = error instanceof Error ? error.message : "GCP disconnect failed";
         const releaseMessage =
           releaseError instanceof Error ? releaseError.message : "unknown release error";
-        throw new Error(`${originalMessage}; disconnect claim release failed: ${releaseMessage}`, {
-          cause: error,
-        });
+        const failureMessage = `${originalMessage}; disconnect claim release failed: ${releaseMessage}`;
+        try {
+          await input.repository.failDisconnect(connection.id, failureMessage);
+        } catch (persistError) {
+          const persistMessage =
+            persistError instanceof Error ? persistError.message : "unknown persistence error";
+          throw new Error(
+            `${failureMessage}; disconnect recovery state persistence failed: ${persistMessage}`,
+            { cause: error },
+          );
+        }
+        throw new Error(failureMessage, { cause: error });
       }
     }
     throw error;

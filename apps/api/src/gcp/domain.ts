@@ -136,7 +136,7 @@ export interface GcpConnectionRepository {
   ): Promise<GcpConnectionRecord>;
   markFailed(id: string, error: string): Promise<void>;
   claimDisconnect(id: string): Promise<GcpConnectionRecord>;
-  releaseDisconnect(id: string): Promise<boolean>;
+  releaseDisconnect(id: string, previousStatus: "connected" | "failed"): Promise<boolean>;
   failDisconnect(id: string, error: string): Promise<void>;
   revoke(id: string): Promise<GcpConnectionRecord>;
   updateExcludedLogNames(id: string, excludedLogNames: string[]): Promise<GcpConnectionRecord>;

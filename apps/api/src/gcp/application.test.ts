@@ -469,6 +469,67 @@ test("a failed disconnect recovery row can retry cleanup", async () => {
   assert.deepEqual(events, ["claim-disconnect", "deprovision-connection", "revoke-connection"]);
 });
 
+test("a failed disconnect claim release becomes retryable", async () => {
+  const connected: GcpConnectionRecord = {
+    ...connection,
+    ...provisioned,
+    status: "connected",
+  };
+  const events: string[] = [];
+  const repository = {
+    async findCurrent() {
+      return connected;
+    },
+    async findById() {
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async claimDisconnect() {
+      events.push("claim-disconnect");
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
+    async releaseDisconnect() {
+      events.push("release-disconnect");
+      throw new Error("database unavailable");
+    },
+    async failDisconnect(_id: string, error: string) {
+      assert.match(error, /disconnect claim release failed: database unavailable/);
+      events.push("fail-disconnect");
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async deprovision() {
+      events.push("deprovision-connection");
+      throw new Error("partial cleanup failure");
+    },
+    async provision() {
+      events.push("restore-connection");
+      return provisioned;
+    },
+  } as unknown as GcpGateway;
+
+  await assert.rejects(
+    disconnectGcpConnection({
+      projectId: connected.projectId,
+      userAccessToken: "temporary-user-token",
+      repository,
+      gateway,
+      config,
+    }),
+    /disconnect claim release failed: database unavailable/,
+  );
+
+  assert.deepEqual(events, [
+    "claim-disconnect",
+    "deprovision-connection",
+    "restore-connection",
+    "release-disconnect",
+    "fail-disconnect",
+  ]);
+});
+
 test("a local persistence failure removes newly provisioned Google resources", async () => {
   const cleanupCalls: unknown[] = [];
   const repository = {

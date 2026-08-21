@@ -687,7 +687,7 @@ test("only one request can claim a connected GCP project for disconnect", async 
   assert.equal(attempts.filter((attempt) => attempt.status === "fulfilled").length, 1);
   assert.equal(attempts.filter((attempt) => attempt.status === "rejected").length, 1);
   assert.equal((await repository.findById(connection.id))?.status, "disconnecting");
-  await repository.releaseDisconnect(connection.id);
+  await repository.releaseDisconnect(connection.id, "connected");
   assert.equal((await repository.findById(connection.id))?.status, "connected");
 });
 
@@ -709,6 +709,11 @@ test("a failed disconnect recovery can be claimed for another cleanup attempt", 
   const claimed = await new DrizzleGcpConnectionRepository().claimDisconnect(connection.id);
 
   assert.equal(claimed.status, "disconnecting");
+  await new DrizzleGcpConnectionRepository().releaseDisconnect(connection.id, "failed");
+  assert.equal(
+    (await new DrizzleGcpConnectionRepository().findById(connection.id))?.status,
+    "failed",
+  );
 });
 
 test("connecting after an overlapping callback cannot create a second active connection", async () => {
@@ -850,7 +855,7 @@ test("releasing a disconnect claim cannot restore a second active connection", a
   assert.ok(disconnecting && replacement);
   const repository = new DrizzleGcpConnectionRepository();
 
-  assert.equal(await repository.releaseDisconnect(disconnecting.id), false);
+  assert.equal(await repository.releaseDisconnect(disconnecting.id, "connected"), false);
 
   const rows = await db.query.gcpConnections.findMany({
     where: eq(schema.gcpConnections.projectId, project.id),

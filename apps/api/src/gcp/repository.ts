@@ -239,7 +239,7 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
     return toDomain(row);
   }
 
-  async releaseDisconnect(id: string): Promise<boolean> {
+  async releaseDisconnect(id: string, previousStatus: "connected" | "failed"): Promise<boolean> {
     return db.transaction(async (tx) => {
       const [connection] = await tx
         .select({
@@ -302,7 +302,11 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
       }
       const [restored] = await tx
         .update(schema.gcpConnections)
-        .set({ status: "connected", lastError: null, updatedAt: new Date() })
+        .set({
+          status: previousStatus,
+          ...(previousStatus === "connected" ? { lastError: null } : {}),
+          updatedAt: new Date(),
+        })
         .where(
           and(
             eq(schema.gcpConnections.id, id),
