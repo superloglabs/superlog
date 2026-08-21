@@ -772,6 +772,16 @@ test("a replacement cannot complete while the current connection is disconnectin
 
 test("releasing a disconnect claim cannot restore a second active connection", async () => {
   const { user, project } = await seedProject();
+  const [ingestKey] = await db
+    .insert(schema.apiKeys)
+    .values({
+      projectId: project.id,
+      name: "GCP metrics puller",
+      keyPrefix: "sl_public_recovery",
+      keyHash: `gcp-recovery-${crypto.randomUUID()}`,
+    })
+    .returning();
+  assert.ok(ingestKey);
   const [disconnecting, replacement] = await db
     .insert(schema.gcpConnections)
     .values([
@@ -781,6 +791,7 @@ test("releasing a disconnect claim cannot restore a second active connection", a
         readerServiceAccountEmail: config.readerServiceAccountEmail,
         createdBy: user.id,
         status: "disconnecting",
+        apiKeyId: ingestKey.id,
       },
       {
         projectId: project.id,
@@ -805,6 +816,13 @@ test("releasing a disconnect claim cannot restore a second active connection", a
     /replacement completed during disconnect recovery/,
   );
   assert.equal(rows.find((row) => row.id === replacement.id)?.status, "connected");
+  assert.ok(
+    (
+      await db.query.apiKeys.findFirst({
+        where: eq(schema.apiKeys.id, ingestKey.id),
+      })
+    )?.revokedAt,
+  );
 });
 
 test("preserving a shared monitoring grant transfers cleanup ownership", async () => {

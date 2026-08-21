@@ -212,9 +212,10 @@ export async function disconnectGcpConnection(input: {
       // connection that the database most likely still considers active.
     }
     if (restoreConnection) {
+      let restoredProvisioning: ProvisionedGcpConnection | null = null;
       if (cleanupAttempted) {
         try {
-          await input.gateway.provision(
+          restoredProvisioning = await input.gateway.provision(
             provisioningInput(
               connection,
               input.userAccessToken,
@@ -242,7 +243,19 @@ export async function disconnectGcpConnection(input: {
       }
       try {
         const restored = await input.repository.releaseDisconnect(connection.id);
-        if (!restored) throw new Error("connection recovery was superseded");
+        if (!restored) {
+          if (restoredProvisioning) {
+            await input.gateway.deprovision({
+              connectionId: connection.id,
+              gcpProjectId: connection.gcpProjectId,
+              userAccessToken: input.userAccessToken,
+              integrationProjectId: input.config.integrationProjectId,
+              readerServiceAccountEmail: connection.readerServiceAccountEmail,
+              provisioned: restoredProvisioning,
+            });
+          }
+          throw new Error("connection recovery was superseded");
+        }
       } catch (releaseError) {
         const originalMessage = error instanceof Error ? error.message : "GCP disconnect failed";
         const releaseMessage =

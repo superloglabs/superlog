@@ -361,6 +361,71 @@ test("a failed disconnect restoration persists a retryable connection state", as
   ]);
 });
 
+test("a superseded disconnect recovery removes the restored cloud resources", async () => {
+  const events: string[] = [];
+  const connected: GcpConnectionRecord = {
+    ...connection,
+    ...provisioned,
+    status: "connected",
+  };
+  let deprovisionCalls = 0;
+  const repository = {
+    async findCurrent() {
+      return connected;
+    },
+    async findById() {
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
+    async claimDisconnect() {
+      events.push("claim-disconnect");
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async revoke() {
+      events.push("revoke-connection");
+      throw new Error("database unavailable");
+    },
+    async releaseDisconnect() {
+      events.push("release-disconnect");
+      return false;
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async deprovision() {
+      deprovisionCalls += 1;
+      events.push(
+        deprovisionCalls === 1 ? "deprovision-connection" : "discard-restored-connection",
+      );
+    },
+    async provision() {
+      events.push("restore-connection");
+      return provisioned;
+    },
+  } as unknown as GcpGateway;
+
+  await assert.rejects(
+    disconnectGcpConnection({
+      projectId: connected.projectId,
+      userAccessToken: "temporary-user-token",
+      repository,
+      gateway,
+      config,
+    }),
+    /connection recovery was superseded/,
+  );
+
+  assert.deepEqual(events, [
+    "claim-disconnect",
+    "deprovision-connection",
+    "revoke-connection",
+    "restore-connection",
+    "release-disconnect",
+    "discard-restored-connection",
+  ]);
+});
+
 test("a local persistence failure removes newly provisioned Google resources", async () => {
   const cleanupCalls: unknown[] = [];
   const repository = {

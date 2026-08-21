@@ -232,6 +232,7 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
           projectId: schema.gcpConnections.projectId,
           status: schema.gcpConnections.status,
           revokedAt: schema.gcpConnections.revokedAt,
+          apiKeyId: schema.gcpConnections.apiKeyId,
         })
         .from(schema.gcpConnections)
         .where(eq(schema.gcpConnections.id, id))
@@ -260,12 +261,13 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
         )
         .limit(1);
       if (replacement) {
+        const failedAt = new Date();
         await tx
           .update(schema.gcpConnections)
           .set({
             status: "failed",
             lastError: "replacement completed during disconnect recovery",
-            updatedAt: new Date(),
+            updatedAt: failedAt,
           })
           .where(
             and(
@@ -274,6 +276,14 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
               isNull(schema.gcpConnections.revokedAt),
             ),
           );
+        if (connection.apiKeyId) {
+          await tx
+            .update(schema.apiKeys)
+            .set({ revokedAt: failedAt })
+            .where(
+              and(eq(schema.apiKeys.id, connection.apiKeyId), isNull(schema.apiKeys.revokedAt)),
+            );
+        }
         return false;
       }
       const [restored] = await tx
