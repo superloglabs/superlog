@@ -27,7 +27,7 @@ test("the Pub/Sub verifier defaults its audience to the configured push endpoint
 });
 
 test("Pub/Sub delivery remains ingestible while disconnect is provisional", () => {
-  assert.deepEqual(GCP_PUBSUB_INGESTIBLE_STATUSES, ["connected", "disconnecting"]);
+  assert.deepEqual(GCP_PUBSUB_INGESTIBLE_STATUSES, ["connected", "disconnecting", "failed"]);
 });
 
 test("Pub/Sub acknowledges permanent ingest rejects but preserves retryable failures", () => {
