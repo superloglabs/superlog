@@ -1173,6 +1173,16 @@ export function useStartGcpConnect(projectId: string | undefined) {
   });
 }
 
+export function useStartGcpDisconnect(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: () =>
+      fetcher<{ url: string }>(`/api/projects/${projectId}/gcp/disconnect-url`, {
+        method: "POST",
+      }),
+  });
+}
+
 export type GcpProjectOption = {
   projectId: string;
   projectNumber: string;
@@ -1203,6 +1213,21 @@ export function useConnectGcpAuthorization(authorizationId: string | null) {
       fetcher<{ connected: true }>(`/api/gcp/authorizations/${authorizationId}/connect`, {
         method: "POST",
         body: JSON.stringify({ gcpProjectId }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["gcp-connection"] });
+      qc.removeQueries({ queryKey: ["gcp-authorization", authorizationId] });
+    },
+  });
+}
+
+export function useDisconnectGcpAuthorization(authorizationId: string | null) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      fetcher<{ disconnected: true }>(`/api/gcp/authorizations/${authorizationId}/disconnect`, {
+        method: "POST",
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["gcp-connection"] });

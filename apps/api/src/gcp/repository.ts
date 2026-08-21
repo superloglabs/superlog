@@ -196,6 +196,31 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
       .where(and(eq(schema.gcpConnections.id, id), ne(schema.gcpConnections.status, "connected")));
   }
 
+  async revoke(id: string): Promise<GcpConnectionRecord> {
+    return db.transaction(async (tx) => {
+      const revokedAt = new Date();
+      const [row] = await tx
+        .update(schema.gcpConnections)
+        .set({ revokedAt, updatedAt: revokedAt })
+        .where(
+          and(
+            eq(schema.gcpConnections.id, id),
+            eq(schema.gcpConnections.status, "connected"),
+            isNull(schema.gcpConnections.revokedAt),
+          ),
+        )
+        .returning();
+      if (!row) throw new Error("Connected GCP project not found");
+      if (row.apiKeyId) {
+        await tx
+          .update(schema.apiKeys)
+          .set({ revokedAt })
+          .where(and(eq(schema.apiKeys.id, row.apiKeyId), isNull(schema.apiKeys.revokedAt)));
+      }
+      return toDomain(row);
+    });
+  }
+
   async updateExcludedLogNames(
     id: string,
     excludedLogNames: string[],

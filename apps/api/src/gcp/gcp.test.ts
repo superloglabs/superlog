@@ -279,6 +279,88 @@ test("a project owner discovers Google projects before choosing one to connect",
   assert.equal(connected.refreshToken, undefined);
 });
 
+test("a project owner reauthorizes with Google before disconnecting the current project", async () => {
+  const { org, user, project } = await seedProject();
+  const [connection] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: project.id,
+      gcpProjectId: "acme-production",
+      gcpProjectNumber: "123456789012",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: user.id,
+      status: "connected",
+      topicName: "superlog-disconnect",
+      subscriptionName: "superlog-disconnect",
+      logSinkName: "superlog-disconnect",
+      logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+      monitoringViewerGrantCreated: true,
+    })
+    .returning();
+  assert.ok(connection);
+  let deprovisionedConnectionId: string | null = null;
+  const gateway: GcpGateway = {
+    authorizationUrl({ state }) {
+      return `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(state)}`;
+    },
+    async exchangeCode() {
+      return { accessToken: "temporary-user-token" };
+    },
+    async listProjects() {
+      return [
+        {
+          projectId: connection.gcpProjectId,
+          projectNumber: connection.gcpProjectNumber ?? "",
+          displayName: "Acme production",
+        },
+      ];
+    },
+    async provision() {
+      throw new Error("restore should not be needed");
+    },
+    async deprovision(input) {
+      deprovisionedConnectionId = input.connectionId;
+    },
+  };
+  const app = new Hono<{ Variables: { userId: string; orgId: string | null } }>();
+  app.use("/api/*", async (c, next) => {
+    c.set("userId", user.id);
+    c.set("orgId", org.id);
+    await next();
+  });
+  mountGcpAuthed(app, { config, gateway });
+  mountGcpPublic(app, { config, gateway });
+
+  const start = await app.request(`/api/projects/${project.id}/gcp/disconnect-url`, {
+    method: "POST",
+  });
+  assert.equal(start.status, 200);
+  const { url } = (await start.json()) as { url: string };
+  const state = new URL(url).searchParams.get("state");
+  assert.ok(state);
+
+  const callback = await app.request(
+    `/gcp/oauth/callback?code=oauth-code&state=${encodeURIComponent(state)}`,
+  );
+  assert.equal(callback.status, 302);
+  const selectionUrl = new URL(callback.headers.get("location") ?? "");
+  assert.equal(selectionUrl.searchParams.get("action"), "disconnect");
+  const authorizationId = selectionUrl.searchParams.get("authorization");
+  assert.ok(authorizationId);
+
+  const disconnect = await app.request(`/api/gcp/authorizations/${authorizationId}/disconnect`, {
+    method: "POST",
+  });
+
+  assert.equal(disconnect.status, 200);
+  assert.deepEqual(await disconnect.json(), { disconnected: true });
+  assert.equal(deprovisionedConnectionId, connection.id);
+  const revoked = await db.query.gcpConnections.findFirst({
+    where: eq(schema.gcpConnections.id, connection.id),
+  });
+  assert.ok(revoked?.revokedAt);
+});
+
 test("failed Google Cloud provisioning hides provider details from customer responses", async () => {
   const { org, user, project } = await seedProject();
   const loggedErrors: Array<{ fields: Record<string, unknown>; message: string }> = [];
@@ -500,6 +582,40 @@ test("superseding a GCP connection revokes its ingest key", async () => {
     old.id,
   );
 
+  const revokedKey = await db.query.apiKeys.findFirst({
+    where: eq(schema.apiKeys.id, ingestKey.id),
+  });
+  assert.ok(revokedKey?.revokedAt);
+});
+
+test("revoking a GCP connection also revokes its ingest key", async () => {
+  const { user, project } = await seedProject();
+  const [ingestKey] = await db
+    .insert(schema.apiKeys)
+    .values({
+      projectId: project.id,
+      name: "GCP metrics puller",
+      keyPrefix: "sl_public_disconnect",
+      keyHash: `gcp-disconnect-${crypto.randomUUID()}`,
+    })
+    .returning();
+  assert.ok(ingestKey);
+  const [connection] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: project.id,
+      gcpProjectId: "acme-disconnect",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: user.id,
+      status: "connected",
+      apiKeyId: ingestKey.id,
+    })
+    .returning();
+  assert.ok(connection);
+
+  const revoked = await new DrizzleGcpConnectionRepository().revoke(connection.id);
+
+  assert.ok(revoked.revokedAt);
   const revokedKey = await db.query.apiKeys.findFirst({
     where: eq(schema.apiKeys.id, ingestKey.id),
   });

@@ -1,4 +1,8 @@
-import { type GcpApplicationConfig, completeGcpConnect } from "./application.js";
+import {
+  type GcpApplicationConfig,
+  completeGcpConnect,
+  disconnectGcpConnection,
+} from "./application.js";
 import type {
   GcpAuthorizationRepository,
   GcpAuthorizationSessionRecord,
@@ -127,6 +131,43 @@ export async function connectGcpAuthorization(input: {
     connectionId: connection.id,
     userAccessToken: claim.accessToken,
     gcpProjectNumber: claim.project.projectNumber,
+    repository: input.connectionRepository,
+    gateway: input.gateway,
+    config: input.config,
+  });
+}
+
+export async function disconnectGcpAuthorization(input: {
+  authorizationId: string;
+  userId: string;
+  authorizationRepository: GcpAuthorizationRepository;
+  connectionRepository: GcpConnectionRepository;
+  gateway: GcpGateway;
+  config: GcpApplicationConfig;
+  now?: Date;
+}): Promise<GcpConnectionRecord> {
+  const now = input.now ?? new Date();
+  const session = await getGcpAuthorizationSelection({
+    authorizationId: input.authorizationId,
+    userId: input.userId,
+    repository: input.authorizationRepository,
+    now,
+  });
+  const connection = await input.connectionRepository.findCurrent(session.projectId);
+  if (!connection || connection.status !== "connected" || connection.revokedAt) {
+    throw new Error("Connected GCP project not found");
+  }
+  const claim = await input.authorizationRepository.claim({
+    id: session.id,
+    projectId: session.projectId,
+    userId: session.userId,
+    gcpProjectId: connection.gcpProjectId,
+    now,
+  });
+  return disconnectGcpConnection({
+    projectId: session.projectId,
+    expectedConnectionId: connection.id,
+    userAccessToken: claim.accessToken,
     repository: input.connectionRepository,
     gateway: input.gateway,
     config: input.config,

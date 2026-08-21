@@ -10,3 +10,14 @@ test("signed Google authorization state expires at the shared authorization life
   assert.ok(verifyGcpState(state, "secret", issuedAt + GCP_AUTHORIZATION_TTL_MS));
   assert.equal(verifyGcpState(state, "secret", issuedAt + GCP_AUTHORIZATION_TTL_MS + 1), null);
 });
+
+test("signed Google authorization state preserves a disconnect action", () => {
+  const issuedAt = Date.parse("2026-08-21T12:00:00.000Z");
+  const state = signGcpState("authorization-id", "secret", issuedAt, "disconnect");
+
+  assert.deepEqual(verifyGcpState(state, "secret", issuedAt), {
+    authorizationId: "authorization-id",
+    issuedAt,
+    action: "disconnect",
+  });
+});

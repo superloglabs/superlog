@@ -160,6 +160,58 @@ export async function completeGcpConnect(input: {
   }
 }
 
+export async function disconnectGcpConnection(input: {
+  projectId: string;
+  expectedConnectionId?: string;
+  userAccessToken: string;
+  repository: GcpConnectionRepository;
+  gateway: GcpGateway;
+  config: GcpApplicationConfig;
+}): Promise<GcpConnectionRecord> {
+  const connection = await input.repository.findCurrent(input.projectId);
+  if (!connection || connection.status !== "connected" || connection.revokedAt) {
+    throw new Error("Connected GCP project not found");
+  }
+  if (input.expectedConnectionId && connection.id !== input.expectedConnectionId) {
+    throw new Error("Connected GCP project changed during authorization");
+  }
+  const provisioned = await cleanupProvisioningResult(
+    connection,
+    persistedProvisioningResult(connection),
+    input.repository,
+  );
+  await input.gateway.deprovision({
+    connectionId: connection.id,
+    gcpProjectId: connection.gcpProjectId,
+    userAccessToken: input.userAccessToken,
+    integrationProjectId: input.config.integrationProjectId,
+    readerServiceAccountEmail: connection.readerServiceAccountEmail,
+    provisioned,
+  });
+  try {
+    return await input.repository.revoke(connection.id);
+  } catch (error) {
+    try {
+      await input.gateway.provision(
+        provisioningInput(
+          connection,
+          input.userAccessToken,
+          input.config,
+          connection.gcpProjectNumber ?? undefined,
+        ),
+      );
+    } catch (restoreError) {
+      const originalMessage = error instanceof Error ? error.message : "GCP disconnect failed";
+      const restoreMessage =
+        restoreError instanceof Error ? restoreError.message : "unknown restore error";
+      throw new Error(`${originalMessage}; connection restore failed: ${restoreMessage}`, {
+        cause: error,
+      });
+    }
+    throw error;
+  }
+}
+
 async function cleanupProvisioningResult(
   connection: GcpConnectionRecord,
   provisioned: ProvisionedGcpConnection,

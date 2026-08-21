@@ -15,6 +15,7 @@ import {
 import {
   completeGcpAuthorization,
   connectGcpAuthorization,
+  disconnectGcpAuthorization,
   getGcpAuthorizationSelection,
   startGcpAuthorization,
 } from "./authorization-application.js";
@@ -227,6 +228,24 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
     return c.json({ url: result.url });
   });
 
+  app.post("/api/projects/:projectId/gcp/disconnect-url", async (c) => {
+    if (!config || !gateway || !stateSecret)
+      return c.json({ error: "GCP connect not configured" }, 503);
+    const context = await requireProjectManager(c, c.req.param("projectId"));
+    const connection = await repository.findCurrent(context.projectId);
+    if (!connection || connection.status !== "connected" || connection.revokedAt) {
+      return c.json({ error: "Connected GCP project not found" }, 404);
+    }
+    const result = await startGcpAuthorization({
+      ...context,
+      repository: authorizationRepository,
+      gateway,
+      signState: (authorizationId) =>
+        signGcpState(authorizationId, stateSecret, Date.now(), "disconnect"),
+    });
+    return c.json({ url: result.url });
+  });
+
   app.get("/api/gcp/authorizations/:authorizationId", async (c) => {
     if (!c.var.userId) return c.json({ error: "unauthenticated" }, 401);
     try {
@@ -286,6 +305,47 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
       return c.json({ error: GCP_SETUP_FAILED_MESSAGE }, 502);
     }
   });
+
+  app.post("/api/gcp/authorizations/:authorizationId/disconnect", async (c) => {
+    if (!config || !gateway) return c.json({ error: "GCP connect not configured" }, 503);
+    if (!c.var.userId) return c.json({ error: "unauthenticated" }, 401);
+    const authorizationId = c.req.param("authorizationId");
+    try {
+      const session = await getGcpAuthorizationSelection({
+        authorizationId,
+        userId: c.var.userId,
+        repository: authorizationRepository,
+      });
+      const context = await requireProjectManager(c, session.projectId);
+      const connection = await disconnectGcpAuthorization({
+        authorizationId: session.id,
+        userId: c.var.userId,
+        authorizationRepository,
+        connectionRepository: repository,
+        gateway,
+        config,
+      });
+      log.info(
+        {
+          projectId: context.projectId,
+          userId: context.userId,
+          gcpConnectionId: connection.id,
+          gcpProjectId: connection.gcpProjectId,
+        },
+        "Google Cloud connection disconnected",
+      );
+      return c.json({ disconnected: true as const });
+    } catch (error) {
+      if (error instanceof GcpAuthorizationError) {
+        return c.json({ error: error.message }, authorizationErrorStatus(error));
+      }
+      log.error(
+        { err: error, authorizationId, userId: c.var.userId },
+        "Google Cloud disconnection failed",
+      );
+      return c.json({ error: "Google Cloud disconnect failed. Please try again." }, 502);
+    }
+  });
 }
 
 export function mountGcpPublic(app: Hono<{ Variables: Vars }>, input: Dependencies = {}): void {
@@ -295,10 +355,15 @@ export function mountGcpPublic(app: Hono<{ Variables: Vars }>, input: Dependenci
   app.get("/gcp/oauth/callback", async (c) => {
     if (!config || !gateway || !stateSecret)
       return c.json({ error: "GCP connect not configured" }, 503);
-    const outcomeUrl = (outcome: "select" | "denied" | "error", authorizationId?: string) => {
+    const outcomeUrl = (
+      outcome: "select" | "denied" | "error",
+      authorizationId?: string,
+      action?: "disconnect",
+    ) => {
       const url = new URL("/connect/gcp", config.webOrigin);
       url.searchParams.set("gcp", outcome);
       if (authorizationId) url.searchParams.set("authorization", authorizationId);
+      if (action) url.searchParams.set("action", action);
       return url.toString();
     };
     if (c.req.query("error")) {
@@ -332,7 +397,7 @@ export function mountGcpPublic(app: Hono<{ Variables: Vars }>, input: Dependenci
         repository: authorizationRepository,
         gateway,
       });
-      return c.redirect(outcomeUrl("select", state.authorizationId), 302);
+      return c.redirect(outcomeUrl("select", state.authorizationId, state.action), 302);
     } catch {
       return c.redirect(outcomeUrl("error"), 302);
     }

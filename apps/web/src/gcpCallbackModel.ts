@@ -25,6 +25,15 @@ export function gcpCallbackView(outcome: string | null | undefined): GcpCallback
       backHref: "/app/settings",
     };
   }
+  if (outcome === "disconnected") {
+    return {
+      tone: "success",
+      title: "Google Cloud disconnected",
+      body: "New logs and metrics have stopped. Telemetry already stored in Superlog was kept.",
+      backLabel: "Back to settings",
+      backHref: "/app/settings",
+    };
+  }
   if (outcome === "denied") {
     return {
       tone: "error",

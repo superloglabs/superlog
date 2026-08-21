@@ -1,10 +1,13 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { startGcpAuthorization } from "./authorization-application.js";
+import type { GcpApplicationConfig } from "./application.js";
+import { disconnectGcpAuthorization, startGcpAuthorization } from "./authorization-application.js";
 import {
   GCP_AUTHORIZATION_TTL_MS,
   type GcpAuthorizationRepository,
   type GcpAuthorizationSessionRecord,
+  type GcpConnectionRecord,
+  type GcpConnectionRepository,
   type GcpGateway,
 } from "./domain.js";
 
@@ -41,4 +44,100 @@ test("a pending Google authorization and its signed state share one lifetime", a
   });
 
   assert.equal(createCalled, true);
+});
+
+test("a ready Google authorization disconnects the project's current GCP connection", async () => {
+  const now = new Date("2026-08-21T12:00:00.000Z");
+  const session: GcpAuthorizationSessionRecord = {
+    id: "authorization-id",
+    projectId: "project-id",
+    userId: "user-id",
+    status: "ready",
+    projects: [
+      {
+        projectId: "acme-production",
+        projectNumber: "123456789012",
+        displayName: "Acme production",
+      },
+    ],
+    expiresAt: new Date("2026-08-21T12:10:00.000Z"),
+    consumedAt: null,
+    lastError: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const connection: GcpConnectionRecord = {
+    id: "connection-id",
+    projectId: session.projectId,
+    gcpProjectId: "acme-production",
+    gcpProjectNumber: "123456789012",
+    status: "connected",
+    topicName: "superlog-connection-id",
+    subscriptionName: "superlog-connection-id",
+    logSinkName: "superlog-connection-id",
+    logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+    excludedLogNames: [],
+    monitoringViewerGrantCreated: true,
+    readerServiceAccountEmail: "reader@example.iam.gserviceaccount.com",
+    lastVerifiedAt: now,
+    lastLogReceivedAt: null,
+    lastMetricsReceivedAt: null,
+    metricsBudgetMonth: null,
+    metricsSeriesRead: 0,
+    lastError: null,
+    createdBy: session.userId,
+    revokedAt: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const authorizationRepository = {
+    async findById() {
+      return session;
+    },
+    async claim(input: { gcpProjectId: string }) {
+      assert.equal(input.gcpProjectId, connection.gcpProjectId);
+      return {
+        session: { ...session, status: "consumed" as const, consumedAt: now },
+        project: session.projects[0],
+        accessToken: "temporary-user-token",
+      };
+    },
+  } as unknown as GcpAuthorizationRepository;
+  const connectionRepository = {
+    async findCurrent() {
+      return connection;
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
+    async revoke() {
+      return { ...connection, revokedAt: now };
+    },
+  } as unknown as GcpConnectionRepository;
+  let deprovisioned = false;
+  const gateway = {
+    async deprovision() {
+      deprovisioned = true;
+    },
+  } as unknown as GcpGateway;
+  const config: GcpApplicationConfig = {
+    integrationProjectId: "superlog-observability",
+    readerServiceAccountEmail: connection.readerServiceAccountEmail,
+    pushServiceAccountEmail: "push@example.iam.gserviceaccount.com",
+    pushAudience: "https://intake.example.com/gcp/pubsub",
+    pushEndpoint: "https://intake.example.com/gcp/pubsub",
+  };
+
+  const result = await disconnectGcpAuthorization({
+    authorizationId: session.id,
+    userId: session.userId,
+    authorizationRepository,
+    connectionRepository,
+    gateway,
+    config,
+    now,
+  });
+
+  assert.ok(result.revokedAt);
+  assert.equal(deprovisioned, true);
 });

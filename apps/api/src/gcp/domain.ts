@@ -131,6 +131,7 @@ export interface GcpConnectionRepository {
     supersededConnectionId: string | null,
   ): Promise<GcpConnectionRecord>;
   markFailed(id: string, error: string): Promise<void>;
+  revoke(id: string): Promise<GcpConnectionRecord>;
   updateExcludedLogNames(id: string, excludedLogNames: string[]): Promise<GcpConnectionRecord>;
 }
 

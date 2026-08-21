@@ -84,6 +84,7 @@ import {
   useSlackRoute,
   useStartCloudflareInstall,
   useStartGcpConnect,
+  useStartGcpDisconnect,
   useStartGithubAccessLogin,
   useStartGithubAuthorLogin,
   useStartGithubInstall,
@@ -3065,6 +3066,7 @@ function IngestSourcesCard({ projectId }: { projectId: string | undefined }) {
 function GcpCard({ projectId }: { projectId: string | undefined }) {
   const connection = useGcpConnection(projectId);
   const start = useStartGcpConnect(projectId);
+  const disconnect = useStartGcpDisconnect(projectId);
   const capabilities = useSystemCapabilities();
   const row =
     connection.data?.connected !== undefined && "status" in connection.data
@@ -3113,7 +3115,21 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
             GCP connect is not configured on this deployment.
           </p>
         )}
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          {row?.status === "connected" && canManage && (
+            <Btn
+              size="sm"
+              variant="danger"
+              loading={disconnect.isPending}
+              disabled={!projectId || !configured || disconnect.isPending}
+              onClick={async () => {
+                const { url } = await disconnect.mutateAsync();
+                window.location.href = url;
+              }}
+            >
+              Disconnect
+            </Btn>
+          )}
           <Btn
             size="sm"
             variant="primary"
@@ -3127,6 +3143,9 @@ function GcpCard({ projectId }: { projectId: string | undefined }) {
             {connectAction.buttonLabel}
           </Btn>
         </div>
+        {disconnect.error && (
+          <p className="text-[12.5px] text-danger">{String(disconnect.error)}</p>
+        )}
         {start.error && <p className="text-[12.5px] text-danger">{String(start.error)}</p>}
       </div>
     </Tile>
