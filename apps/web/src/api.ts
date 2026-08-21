@@ -1221,13 +1221,17 @@ export function useConnectGcpAuthorization(authorizationId: string | null) {
   });
 }
 
-export function useDisconnectGcpAuthorization(authorizationId: string | null) {
+export function useDisconnectGcpAuthorization(
+  authorizationId: string | null,
+  authorizationState: string,
+) {
   const fetcher = useFetcher();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () =>
       fetcher<{ disconnected: true }>(`/api/gcp/authorizations/${authorizationId}/disconnect`, {
         method: "POST",
+        body: JSON.stringify({ authorizationState }),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["gcp-connection"] });

@@ -140,6 +140,7 @@ export async function connectGcpAuthorization(input: {
 export async function disconnectGcpAuthorization(input: {
   authorizationId: string;
   userId: string;
+  expectedConnectionId: string;
   authorizationRepository: GcpAuthorizationRepository;
   connectionRepository: GcpConnectionRepository;
   gateway: GcpGateway;
@@ -153,8 +154,13 @@ export async function disconnectGcpAuthorization(input: {
     repository: input.authorizationRepository,
     now,
   });
-  const connection = await input.connectionRepository.findCurrent(session.projectId);
-  if (!connection || connection.status !== "connected" || connection.revokedAt) {
+  const connection = await input.connectionRepository.findById(input.expectedConnectionId);
+  if (
+    !connection ||
+    connection.projectId !== session.projectId ||
+    connection.status !== "connected" ||
+    connection.revokedAt
+  ) {
     throw new Error("Connected GCP project not found");
   }
   const claim = await input.authorizationRepository.claim({

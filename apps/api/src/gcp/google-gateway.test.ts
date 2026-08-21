@@ -342,8 +342,84 @@ test("provisioning recreates a subscription detached by an earlier topic deletio
   assert.deepEqual(
     requests
       .filter((request) => request.url.pathname.includes("/subscriptions/"))
-      .map((request) => request.method),
-    ["PUT", "GET", "DELETE", "PUT"],
+      .map((request) => ({
+        name: request.url.pathname.split("/").at(-1),
+        method: request.method,
+      })),
+    [
+      { name: "superlog-connection-id", method: "PUT" },
+      { name: "superlog-connection-id", method: "GET" },
+      { name: "superlog-connection-id-recovery", method: "PUT" },
+      { name: "superlog-connection-id", method: "DELETE" },
+      { name: "superlog-connection-id", method: "PUT" },
+      { name: "superlog-connection-id-recovery", method: "DELETE" },
+    ],
+  );
+});
+
+test("a failed canonical replacement keeps the recovery subscription active", async () => {
+  const requests: Array<{ url: URL; method: string }> = [];
+  let canonicalPutCount = 0;
+  const fetchImpl: typeof fetch = async (input, init = {}) => {
+    const url = new URL(
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+    );
+    const method = init.method ?? "GET";
+    const body = init.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+    requests.push({ url, method });
+    if (url.pathname === "/v1/projects/acme-production") {
+      return Response.json({ projectNumber: "123456789012" });
+    }
+    if (url.pathname.endsWith(":getIamPolicy")) {
+      return Response.json({ bindings: [], etag: "etag" });
+    }
+    if (url.pathname.endsWith(":setIamPolicy")) return Response.json(body.policy ?? {});
+    if (url.pathname.endsWith("/sinks")) {
+      return Response.json({
+        name: "superlog-connection-id",
+        writerIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+      });
+    }
+    if (url.pathname.endsWith("/subscriptions/superlog-connection-id") && method === "PUT") {
+      canonicalPutCount += 1;
+      return canonicalPutCount === 1
+        ? Response.json({ error: { message: "already exists" } }, { status: 409 })
+        : Response.json({ error: { message: "replacement failed" } }, { status: 500 });
+    }
+    if (url.pathname.endsWith("/subscriptions/superlog-connection-id") && method === "GET") {
+      return Response.json({ topic: "_deleted-topic_" });
+    }
+    return Response.json({});
+  };
+  const gateway = new GoogleGcpGateway(config, fetchImpl, async () => "service-access-token");
+
+  const provisioned = await gateway.provision({
+    connectionId: "connection-id",
+    gcpProjectId: "acme-production",
+    userAccessToken: "temporary-user-token",
+    integrationProjectId: config.integrationProjectId,
+    readerServiceAccountEmail: config.readerServiceAccountEmail,
+    pushServiceAccountEmail: config.pushServiceAccountEmail,
+    pushAudience: config.pushAudience,
+    pushEndpoint: `${config.pushEndpoint}/connection-id`,
+  });
+
+  assert.equal(provisioned.subscriptionName, "superlog-connection-id-recovery");
+
+  assert.deepEqual(
+    requests
+      .filter((request) => request.url.pathname.includes("/subscriptions/"))
+      .map((request) => ({
+        name: request.url.pathname.split("/").at(-1),
+        method: request.method,
+      })),
+    [
+      { name: "superlog-connection-id", method: "PUT" },
+      { name: "superlog-connection-id", method: "GET" },
+      { name: "superlog-connection-id-recovery", method: "PUT" },
+      { name: "superlog-connection-id", method: "DELETE" },
+      { name: "superlog-connection-id", method: "PUT" },
+    ],
   );
 });
 

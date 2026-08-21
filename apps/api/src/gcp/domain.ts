@@ -1,4 +1,9 @@
-export type GcpConnectionStatus = "pending" | "provisioning" | "connected" | "failed";
+export type GcpConnectionStatus =
+  | "pending"
+  | "provisioning"
+  | "connected"
+  | "disconnecting"
+  | "failed";
 
 export type GcpConnectionRecord = {
   id: string;
@@ -131,6 +136,8 @@ export interface GcpConnectionRepository {
     supersededConnectionId: string | null,
   ): Promise<GcpConnectionRecord>;
   markFailed(id: string, error: string): Promise<void>;
+  claimDisconnect(id: string): Promise<GcpConnectionRecord>;
+  releaseDisconnect(id: string): Promise<void>;
   revoke(id: string): Promise<GcpConnectionRecord>;
   updateExcludedLogNames(id: string, excludedLogNames: string[]): Promise<GcpConnectionRecord>;
 }

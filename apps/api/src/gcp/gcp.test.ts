@@ -179,6 +179,17 @@ test("a project owner discovers Google projects before choosing one to connect",
   assert.ok(authorizationId);
   assert.equal(calls.length, 0);
 
+  const invalidDisconnect = await app.request(
+    `/api/gcp/authorizations/${authorizationId}/disconnect`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ authorizationState: authorizationUrl.searchParams.get("state") }),
+    },
+  );
+  assert.equal(invalidDisconnect.status, 400);
+  assert.equal(calls.length, 0);
+
   const projects = await app.request(`/api/gcp/authorizations/${authorizationId}`);
   assert.equal(projects.status, 200);
   const readyAuthorization = await db.query.gcpAuthorizationSessions.findFirst({
@@ -346,10 +357,14 @@ test("a project owner reauthorizes with Google before disconnecting the current 
   const selectionUrl = new URL(callback.headers.get("location") ?? "");
   assert.equal(selectionUrl.searchParams.get("action"), "disconnect");
   const authorizationId = selectionUrl.searchParams.get("authorization");
+  const authorizationState = selectionUrl.searchParams.get("authorization_state");
   assert.ok(authorizationId);
+  assert.ok(authorizationState);
 
   const disconnect = await app.request(`/api/gcp/authorizations/${authorizationId}/disconnect`, {
     method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ authorizationState }),
   });
 
   assert.equal(disconnect.status, 200);
@@ -613,13 +628,42 @@ test("revoking a GCP connection also revokes its ingest key", async () => {
     .returning();
   assert.ok(connection);
 
-  const revoked = await new DrizzleGcpConnectionRepository().revoke(connection.id);
+  const repository = new DrizzleGcpConnectionRepository();
+  await repository.claimDisconnect(connection.id);
+  const revoked = await repository.revoke(connection.id);
 
   assert.ok(revoked.revokedAt);
   const revokedKey = await db.query.apiKeys.findFirst({
     where: eq(schema.apiKeys.id, ingestKey.id),
   });
   assert.ok(revokedKey?.revokedAt);
+});
+
+test("only one request can claim a connected GCP project for disconnect", async () => {
+  const { user, project } = await seedProject();
+  const [connection] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: project.id,
+      gcpProjectId: "acme-concurrent-disconnect",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: user.id,
+      status: "connected",
+    })
+    .returning();
+  assert.ok(connection);
+  const repository = new DrizzleGcpConnectionRepository();
+
+  const attempts = await Promise.allSettled([
+    repository.claimDisconnect(connection.id),
+    repository.claimDisconnect(connection.id),
+  ]);
+
+  assert.equal(attempts.filter((attempt) => attempt.status === "fulfilled").length, 1);
+  assert.equal(attempts.filter((attempt) => attempt.status === "rejected").length, 1);
+  assert.equal((await repository.findById(connection.id))?.status, "disconnecting");
+  await repository.releaseDisconnect(connection.id);
+  assert.equal((await repository.findById(connection.id))?.status, "connected");
 });
 
 test("connecting after an overlapping callback cannot create a second active connection", async () => {
@@ -810,6 +854,29 @@ test("a stale callback failure cannot demote an already connected row", async ()
 
   const current = await repository.findById(connection.id);
   assert.equal(current?.status, "connected");
+  assert.equal(current?.lastError, null);
+});
+
+test("a stale callback cannot overwrite an active disconnect claim", async () => {
+  const { user, project } = await seedProject();
+  const [connection] = await db
+    .insert(schema.gcpConnections)
+    .values({
+      projectId: project.id,
+      gcpProjectId: "acme-production",
+      readerServiceAccountEmail: config.readerServiceAccountEmail,
+      createdBy: user.id,
+      status: "disconnecting",
+    })
+    .returning();
+  assert.ok(connection);
+  const repository = new DrizzleGcpConnectionRepository();
+
+  await repository.markProvisioning(connection.id);
+  await repository.markFailed(connection.id, "late OAuth callback failed");
+
+  const current = await repository.findById(connection.id);
+  assert.equal(current?.status, "disconnecting");
   assert.equal(current?.lastError, null);
 });
 

@@ -16,7 +16,14 @@ export function GcpCallback() {
   if (outcome === "select") {
     return authorizationId ? (
       params.get("action") === "disconnect" ? (
-        <GcpDisconnect authorizationId={authorizationId} />
+        params.get("authorization_state") ? (
+          <GcpDisconnect
+            authorizationId={authorizationId}
+            authorizationState={params.get("authorization_state") ?? ""}
+          />
+        ) : (
+          <GcpCallbackMessage outcome="error" />
+        )
       ) : (
         <GcpProjectPicker authorizationId={authorizationId} />
       )
@@ -27,9 +34,15 @@ export function GcpCallback() {
   return <GcpCallbackMessage outcome={outcome} />;
 }
 
-function GcpDisconnect({ authorizationId }: { authorizationId: string }) {
+function GcpDisconnect({
+  authorizationId,
+  authorizationState,
+}: {
+  authorizationId: string;
+  authorizationState: string;
+}) {
   const selection = useGcpAuthorizationSelection(authorizationId);
-  const disconnect = useDisconnectGcpAuthorization(authorizationId);
+  const disconnect = useDisconnectGcpAuthorization(authorizationId, authorizationState);
 
   if (selection.isError) return <GcpCallbackMessage outcome="error" />;
 

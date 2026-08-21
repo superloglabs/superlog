@@ -1,4 +1,10 @@
-type GcpConnectionStatus = "pending" | "provisioning" | "connected" | "failed" | null;
+type GcpConnectionStatus =
+  | "pending"
+  | "provisioning"
+  | "connected"
+  | "disconnecting"
+  | "failed"
+  | null;
 
 const GCP_LOG_DISCOVERY_WINDOW_MS = 24 * 60 * 60 * 1_000;
 

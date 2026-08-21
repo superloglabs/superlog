@@ -3045,7 +3045,12 @@ export type GcpAuthorizationSession = typeof gcpAuthorizationSessions.$inferSele
  * resources live in the integration operator's GCP project, so their metered
  * usage is not charged to the customer project.
  */
-export type GcpConnectionStatus = "pending" | "provisioning" | "connected" | "failed";
+export type GcpConnectionStatus =
+  | "pending"
+  | "provisioning"
+  | "connected"
+  | "disconnecting"
+  | "failed";
 
 export const gcpConnections = pgTable(
   "gcp_connections",

@@ -1,22 +1,24 @@
 import crypto from "node:crypto";
 import { GCP_AUTHORIZATION_TTL_MS } from "./domain.js";
 
-export type GcpAuthorizationAction = "disconnect";
+export type GcpAuthorizationIntent = {
+  action: "disconnect";
+  connectionId: string;
+};
 
 type GcpState = {
   authorizationId: string;
   issuedAt: number;
-  action?: GcpAuthorizationAction;
-};
+} & Partial<GcpAuthorizationIntent>;
 
 export function signGcpState(
   authorizationId: string,
   secret: string,
   issuedAt = Date.now(),
-  action?: GcpAuthorizationAction,
+  intent?: GcpAuthorizationIntent,
 ): string {
   const body = Buffer.from(
-    JSON.stringify({ authorizationId, issuedAt, ...(action ? { action } : {}) } satisfies GcpState),
+    JSON.stringify({ authorizationId, issuedAt, ...intent } satisfies GcpState),
     "utf8",
   ).toString("base64url");
   const signature = crypto.createHmac("sha256", secret).update(body).digest("base64url");
@@ -40,12 +42,22 @@ export function verifyGcpState(state: string, secret: string, now = Date.now()):
     if (typeof parsed.authorizationId !== "string" || typeof parsed.issuedAt !== "number") {
       return null;
     }
-    if (parsed.action !== undefined && parsed.action !== "disconnect") return null;
+    const hasIntent = parsed.action !== undefined || parsed.connectionId !== undefined;
+    if (
+      hasIntent &&
+      (parsed.action !== "disconnect" ||
+        typeof parsed.connectionId !== "string" ||
+        parsed.connectionId.length === 0)
+    ) {
+      return null;
+    }
     if (now - parsed.issuedAt > GCP_AUTHORIZATION_TTL_MS) return null;
     return {
       authorizationId: parsed.authorizationId,
       issuedAt: parsed.issuedAt,
-      ...(parsed.action ? { action: parsed.action } : {}),
+      ...(hasIntent
+        ? { action: parsed.action as "disconnect", connectionId: parsed.connectionId as string }
+        : {}),
     };
   } catch {
     return null;

@@ -1,5 +1,5 @@
 import { db, encryptIntegrationSecret, mintApiKey, schema } from "@superlog/db";
-import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type {
   GcpConnectionRecord,
   GcpConnectionRepository,
@@ -91,7 +91,12 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
     await db
       .update(schema.gcpConnections)
       .set({ status: "provisioning", lastError: null, updatedAt: new Date() })
-      .where(and(eq(schema.gcpConnections.id, id), ne(schema.gcpConnections.status, "connected")));
+      .where(
+        and(
+          eq(schema.gcpConnections.id, id),
+          notInArray(schema.gcpConnections.status, ["connected", "disconnecting"]),
+        ),
+      );
   }
 
   async ensureIngestKey(id: string, projectId: string): Promise<void> {
@@ -193,7 +198,41 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
     await db
       .update(schema.gcpConnections)
       .set({ status: "failed", lastError: error.slice(0, 2_000), updatedAt: new Date() })
-      .where(and(eq(schema.gcpConnections.id, id), ne(schema.gcpConnections.status, "connected")));
+      .where(
+        and(
+          eq(schema.gcpConnections.id, id),
+          notInArray(schema.gcpConnections.status, ["connected", "disconnecting"]),
+        ),
+      );
+  }
+
+  async claimDisconnect(id: string): Promise<GcpConnectionRecord> {
+    const [row] = await db
+      .update(schema.gcpConnections)
+      .set({ status: "disconnecting", updatedAt: new Date() })
+      .where(
+        and(
+          eq(schema.gcpConnections.id, id),
+          eq(schema.gcpConnections.status, "connected"),
+          isNull(schema.gcpConnections.revokedAt),
+        ),
+      )
+      .returning();
+    if (!row) throw new Error("GCP disconnect is already in progress or unavailable");
+    return toDomain(row);
+  }
+
+  async releaseDisconnect(id: string): Promise<void> {
+    await db
+      .update(schema.gcpConnections)
+      .set({ status: "connected", updatedAt: new Date() })
+      .where(
+        and(
+          eq(schema.gcpConnections.id, id),
+          eq(schema.gcpConnections.status, "disconnecting"),
+          isNull(schema.gcpConnections.revokedAt),
+        ),
+      );
   }
 
   async revoke(id: string): Promise<GcpConnectionRecord> {
@@ -205,7 +244,7 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
         .where(
           and(
             eq(schema.gcpConnections.id, id),
-            eq(schema.gcpConnections.status, "connected"),
+            eq(schema.gcpConnections.status, "disconnecting"),
             isNull(schema.gcpConnections.revokedAt),
           ),
         )

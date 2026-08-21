@@ -104,8 +104,11 @@ test("a ready Google authorization disconnects the project's current GCP connect
     },
   } as unknown as GcpAuthorizationRepository;
   const connectionRepository = {
-    async findCurrent() {
+    async findById() {
       return connection;
+    },
+    async claimDisconnect() {
+      return { ...connection, status: "disconnecting" as const };
     },
     async prepareMonitoringGrantRemoval() {
       return true;
@@ -131,6 +134,7 @@ test("a ready Google authorization disconnects the project's current GCP connect
   const result = await disconnectGcpAuthorization({
     authorizationId: session.id,
     userId: session.userId,
+    expectedConnectionId: connection.id,
     authorizationRepository,
     connectionRepository,
     gateway,
@@ -140,4 +144,98 @@ test("a ready Google authorization disconnects the project's current GCP connect
 
   assert.ok(result.revokedAt);
   assert.equal(deprovisioned, true);
+});
+
+test("a disconnect authorization cannot target a replacement connection", async () => {
+  const now = new Date("2026-08-21T12:00:00.000Z");
+  const session: GcpAuthorizationSessionRecord = {
+    id: "authorization-id",
+    projectId: "project-id",
+    userId: "user-id",
+    status: "ready",
+    projects: [
+      {
+        projectId: "acme-production",
+        projectNumber: "123456789012",
+        displayName: "Acme production",
+      },
+    ],
+    expiresAt: new Date("2026-08-21T12:10:00.000Z"),
+    consumedAt: null,
+    lastError: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const original = {
+    id: "original-connection-id",
+    projectId: session.projectId,
+    gcpProjectId: "acme-production",
+    gcpProjectNumber: "123456789012",
+    status: "connected" as const,
+    topicName: "superlog-original-connection-id",
+    subscriptionName: "superlog-original-connection-id",
+    logSinkName: "superlog-original-connection-id",
+    logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+    excludedLogNames: [],
+    monitoringViewerGrantCreated: true,
+    readerServiceAccountEmail: "reader@example.iam.gserviceaccount.com",
+    lastVerifiedAt: now,
+    lastLogReceivedAt: null,
+    lastMetricsReceivedAt: null,
+    metricsBudgetMonth: null,
+    metricsSeriesRead: 0,
+    lastError: null,
+    createdBy: session.userId,
+    revokedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  } satisfies GcpConnectionRecord;
+  let claimCalls = 0;
+  let deprovisionCalls = 0;
+  const authorizationRepository = {
+    async findById() {
+      return session;
+    },
+    async claim() {
+      claimCalls += 1;
+      throw new Error("stale authorization must not be claimed");
+    },
+  } as unknown as GcpAuthorizationRepository;
+  const connectionRepository = {
+    async findById(id: string) {
+      assert.equal(id, original.id);
+      return original;
+    },
+    async findCurrent() {
+      throw new Error("the current replacement connection must not be selected");
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async deprovision() {
+      deprovisionCalls += 1;
+    },
+  } as unknown as GcpGateway;
+
+  await assert.rejects(
+    disconnectGcpAuthorization({
+      authorizationId: session.id,
+      userId: session.userId,
+      expectedConnectionId: original.id,
+      authorizationRepository,
+      connectionRepository,
+      gateway,
+      config: {
+        integrationProjectId: "superlog-observability",
+        readerServiceAccountEmail: original.readerServiceAccountEmail,
+        pushServiceAccountEmail: "push@example.iam.gserviceaccount.com",
+        pushAudience: "https://intake.example.com/gcp/pubsub",
+        pushEndpoint: "https://intake.example.com/gcp/pubsub",
+      },
+      now,
+    }),
+    /Connected GCP project not found/,
+  );
+
+  assert.equal(claimCalls, 0);
+  assert.equal(deprovisionCalls, 0);
 });

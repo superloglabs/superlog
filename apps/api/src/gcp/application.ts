@@ -83,6 +83,9 @@ export async function completeGcpConnect(input: {
   const connection = await input.repository.findById(input.connectionId);
   if (!connection || connection.revokedAt) throw new Error("GCP connection not found");
   if (connection.status === "connected") return connection;
+  if (connection.status === "disconnecting") {
+    throw new Error("GCP disconnect is in progress");
+  }
   const current = await input.repository.findCurrent(connection.projectId);
   const superseded =
     current?.status === "connected" && current.id !== connection.id ? current : null;
@@ -168,19 +171,28 @@ export async function disconnectGcpConnection(input: {
   gateway: GcpGateway;
   config: GcpApplicationConfig;
 }): Promise<GcpConnectionRecord> {
-  const connection = await input.repository.findCurrent(input.projectId);
+  const connection = input.expectedConnectionId
+    ? await input.repository.findById(input.expectedConnectionId)
+    : await input.repository.findCurrent(input.projectId);
   if (!connection || connection.status !== "connected" || connection.revokedAt) {
+    throw new Error("Connected GCP project not found");
+  }
+  if (connection.projectId !== input.projectId) {
     throw new Error("Connected GCP project not found");
   }
   if (input.expectedConnectionId && connection.id !== input.expectedConnectionId) {
     throw new Error("Connected GCP project changed during authorization");
   }
-  const provisioned = await cleanupProvisioningResult(
-    connection,
-    persistedProvisioningResult(connection),
-    input.repository,
-  );
+  const persistedProvisioning = persistedProvisioningResult(connection);
+  await input.repository.claimDisconnect(connection.id);
+  let cleanupAttempted = false;
   try {
+    const provisioned = await cleanupProvisioningResult(
+      connection,
+      persistedProvisioning,
+      input.repository,
+    );
+    cleanupAttempted = true;
     await input.gateway.deprovision({
       connectionId: connection.id,
       gcpProjectId: connection.gcpProjectId,
@@ -194,26 +206,38 @@ export async function disconnectGcpConnection(input: {
     let restoreConnection = true;
     try {
       const latest = await input.repository.findById(connection.id);
-      restoreConnection = latest?.status === "connected" && !latest.revokedAt;
+      restoreConnection = latest?.status === "disconnecting" && !latest.revokedAt;
     } catch {
       // If persistence is unavailable, prefer restoring the resources for the
       // connection that the database most likely still considers active.
     }
     if (restoreConnection) {
+      if (cleanupAttempted) {
+        try {
+          await input.gateway.provision(
+            provisioningInput(
+              connection,
+              input.userAccessToken,
+              input.config,
+              connection.gcpProjectNumber ?? undefined,
+            ),
+          );
+        } catch (restoreError) {
+          const originalMessage = error instanceof Error ? error.message : "GCP disconnect failed";
+          const restoreMessage =
+            restoreError instanceof Error ? restoreError.message : "unknown restore error";
+          throw new Error(`${originalMessage}; connection restore failed: ${restoreMessage}`, {
+            cause: error,
+          });
+        }
+      }
       try {
-        await input.gateway.provision(
-          provisioningInput(
-            connection,
-            input.userAccessToken,
-            input.config,
-            connection.gcpProjectNumber ?? undefined,
-          ),
-        );
-      } catch (restoreError) {
+        await input.repository.releaseDisconnect(connection.id);
+      } catch (releaseError) {
         const originalMessage = error instanceof Error ? error.message : "GCP disconnect failed";
-        const restoreMessage =
-          restoreError instanceof Error ? restoreError.message : "unknown restore error";
-        throw new Error(`${originalMessage}; connection restore failed: ${restoreMessage}`, {
+        const releaseMessage =
+          releaseError instanceof Error ? releaseError.message : "unknown release error";
+        throw new Error(`${originalMessage}; disconnect claim release failed: ${releaseMessage}`, {
           cause: error,
         });
       }

@@ -241,7 +241,10 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
       repository: authorizationRepository,
       gateway,
       signState: (authorizationId) =>
-        signGcpState(authorizationId, stateSecret, Date.now(), "disconnect"),
+        signGcpState(authorizationId, stateSecret, Date.now(), {
+          action: "disconnect",
+          connectionId: connection.id,
+        }),
     });
     return c.json({ url: result.url });
   });
@@ -307,9 +310,27 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
   });
 
   app.post("/api/gcp/authorizations/:authorizationId/disconnect", async (c) => {
-    if (!config || !gateway) return c.json({ error: "GCP connect not configured" }, 503);
+    if (!config || !gateway || !stateSecret)
+      return c.json({ error: "GCP connect not configured" }, 503);
     if (!c.var.userId) return c.json({ error: "unauthenticated" }, 401);
     const authorizationId = c.req.param("authorizationId");
+    const parsedBody: unknown = await c.req.json().catch(() => ({}));
+    const authorizationState =
+      parsedBody && typeof parsedBody === "object" && !Array.isArray(parsedBody)
+        ? (parsedBody as { authorizationState?: unknown }).authorizationState
+        : undefined;
+    const disconnectIntent =
+      typeof authorizationState === "string"
+        ? verifyGcpState(authorizationState, stateSecret)
+        : null;
+    if (
+      !disconnectIntent ||
+      disconnectIntent.action !== "disconnect" ||
+      disconnectIntent.authorizationId !== authorizationId ||
+      !disconnectIntent.connectionId
+    ) {
+      return c.json({ error: "Invalid Google Cloud disconnect authorization" }, 400);
+    }
     try {
       const session = await getGcpAuthorizationSelection({
         authorizationId,
@@ -320,6 +341,7 @@ export function mountGcpAuthed(app: Hono<{ Variables: Vars }>, input: Dependenci
       const connection = await disconnectGcpAuthorization({
         authorizationId: session.id,
         userId: c.var.userId,
+        expectedConnectionId: disconnectIntent.connectionId,
         authorizationRepository,
         connectionRepository: repository,
         gateway,
@@ -358,12 +380,15 @@ export function mountGcpPublic(app: Hono<{ Variables: Vars }>, input: Dependenci
     const outcomeUrl = (
       outcome: "select" | "denied" | "error",
       authorizationId?: string,
-      action?: "disconnect",
+      authorizationState?: string,
     ) => {
       const url = new URL("/connect/gcp", config.webOrigin);
       url.searchParams.set("gcp", outcome);
       if (authorizationId) url.searchParams.set("authorization", authorizationId);
-      if (action) url.searchParams.set("action", action);
+      if (authorizationState) {
+        url.searchParams.set("action", "disconnect");
+        url.searchParams.set("authorization_state", authorizationState);
+      }
       return url.toString();
     };
     if (c.req.query("error")) {
@@ -377,7 +402,8 @@ export function mountGcpPublic(app: Hono<{ Variables: Vars }>, input: Dependenci
       return c.redirect(outcomeUrl("denied"), 302);
     }
     const code = c.req.query("code");
-    const state = verifyGcpState(c.req.query("state") ?? "", stateSecret);
+    const stateParam = c.req.query("state") ?? "";
+    const state = verifyGcpState(stateParam, stateSecret);
     if (!code || !state) return c.redirect(outcomeUrl("error"), 302);
     const authorization = await authorizationRepository.findById(state.authorizationId);
     if (
@@ -397,7 +423,14 @@ export function mountGcpPublic(app: Hono<{ Variables: Vars }>, input: Dependenci
         repository: authorizationRepository,
         gateway,
       });
-      return c.redirect(outcomeUrl("select", state.authorizationId, state.action), 302);
+      return c.redirect(
+        outcomeUrl(
+          "select",
+          state.authorizationId,
+          state.action === "disconnect" ? stateParam : undefined,
+        ),
+        302,
+      );
     } catch {
       return c.redirect(outcomeUrl("error"), 302);
     }

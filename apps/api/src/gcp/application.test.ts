@@ -102,6 +102,11 @@ test("disconnecting a connected GCP project removes its cloud resources before r
     async prepareMonitoringGrantRemoval() {
       return true;
     },
+    async claimDisconnect(id: string) {
+      assert.equal(id, connected.id);
+      events.push("claim-disconnect");
+      return { ...connected, status: "disconnecting" as const };
+    },
     async revoke(id: string) {
       assert.equal(id, connected.id);
       events.push("revoke-connection");
@@ -131,7 +136,7 @@ test("disconnecting a connected GCP project removes its cloud resources before r
   });
 
   assert.ok(result.revokedAt);
-  assert.deepEqual(events, ["deprovision-connection", "revoke-connection"]);
+  assert.deepEqual(events, ["claim-disconnect", "deprovision-connection", "revoke-connection"]);
 });
 
 test("a failed disconnect revocation restores the connected GCP resources", async () => {
@@ -146,14 +151,21 @@ test("a failed disconnect revocation restores the connected GCP resources", asyn
       return connected;
     },
     async findById() {
-      return connected;
+      return { ...connected, status: "disconnecting" as const };
     },
     async prepareMonitoringGrantRemoval() {
       return true;
     },
+    async claimDisconnect() {
+      events.push("claim-disconnect");
+      return { ...connected, status: "disconnecting" as const };
+    },
     async revoke() {
       events.push("revoke-connection");
       throw new Error("database unavailable");
+    },
+    async releaseDisconnect() {
+      events.push("release-disconnect");
     },
   } as unknown as GcpConnectionRepository;
   const gateway = {
@@ -179,7 +191,13 @@ test("a failed disconnect revocation restores the connected GCP resources", asyn
     /database unavailable/,
   );
 
-  assert.deepEqual(events, ["deprovision-connection", "revoke-connection", "restore-connection"]);
+  assert.deepEqual(events, [
+    "claim-disconnect",
+    "deprovision-connection",
+    "revoke-connection",
+    "restore-connection",
+    "release-disconnect",
+  ]);
 });
 
 test("a partially failed cloud cleanup restores the connected GCP resources", async () => {
@@ -194,14 +212,21 @@ test("a partially failed cloud cleanup restores the connected GCP resources", as
       return connected;
     },
     async findById() {
-      return connected;
+      return { ...connected, status: "disconnecting" as const };
     },
     async prepareMonitoringGrantRemoval() {
       return true;
     },
+    async claimDisconnect() {
+      events.push("claim-disconnect");
+      return { ...connected, status: "disconnecting" as const };
+    },
     async revoke() {
       events.push("revoke-connection");
       return { ...connected, revokedAt: new Date() };
+    },
+    async releaseDisconnect() {
+      events.push("release-disconnect");
     },
   } as unknown as GcpConnectionRepository;
   const gateway = {
@@ -227,30 +252,31 @@ test("a partially failed cloud cleanup restores the connected GCP resources", as
     /partial cleanup failure/,
   );
 
-  assert.deepEqual(events, ["deprovision-connection", "restore-connection"]);
+  assert.deepEqual(events, [
+    "claim-disconnect",
+    "deprovision-connection",
+    "restore-connection",
+    "release-disconnect",
+  ]);
 });
 
-test("an overlapping disconnect does not restore an already revoked connection", async () => {
+test("an overlapping disconnect cannot clean up a connection claimed by another request", async () => {
   const events: string[] = [];
   const connected: GcpConnectionRecord = {
     ...connection,
     ...provisioned,
     status: "connected",
   };
-  const revoked = { ...connected, revokedAt: new Date("2026-08-21T12:00:00.000Z") };
   const repository = {
     async findCurrent() {
       return connected;
     },
-    async findById() {
-      return revoked;
-    },
     async prepareMonitoringGrantRemoval() {
       return true;
     },
-    async revoke() {
-      events.push("revoke-connection");
-      throw new Error("Connected GCP project not found");
+    async claimDisconnect() {
+      events.push("claim-disconnect");
+      throw new Error("GCP disconnect is already in progress");
     },
   } as unknown as GcpConnectionRepository;
   const gateway = {
@@ -271,10 +297,10 @@ test("an overlapping disconnect does not restore an already revoked connection",
       gateway,
       config,
     }),
-    /Connected GCP project not found/,
+    /already in progress/,
   );
 
-  assert.deepEqual(events, ["deprovision-connection", "revoke-connection"]);
+  assert.deepEqual(events, ["claim-disconnect"]);
 });
 
 test("a local persistence failure removes newly provisioned Google resources", async () => {
@@ -353,6 +379,45 @@ test("replaying a completed OAuth callback leaves the connected connection uncha
   assert.equal(result, connected);
   assert.equal(provisioningCalls, 0);
   assert.equal(exchangeCalls, 0);
+});
+
+test("an OAuth callback cannot reclaim a connection while disconnect is in progress", async () => {
+  let provisioningCalls = 0;
+  const disconnecting = {
+    ...connection,
+    ...provisioned,
+    status: "disconnecting" as const,
+  };
+  const repository = {
+    async findById() {
+      return disconnecting;
+    },
+    async findCurrent() {
+      return disconnecting;
+    },
+    async markProvisioning() {
+      provisioningCalls += 1;
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async provision() {
+      provisioningCalls += 1;
+      return provisioned;
+    },
+  } as unknown as GcpGateway;
+
+  await assert.rejects(
+    completeGcpConnect({
+      connectionId: disconnecting.id,
+      userAccessToken: "temporary-user-token",
+      repository,
+      gateway,
+      config,
+    }),
+    /disconnect is in progress/,
+  );
+
+  assert.equal(provisioningCalls, 0);
 });
 
 test("replacing a connected GCP project removes its cloud resources before superseding it", async () => {
