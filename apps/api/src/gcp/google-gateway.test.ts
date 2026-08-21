@@ -248,6 +248,11 @@ test("provisioning reconciles an existing subscription push configuration", asyn
     if (url.pathname.includes("/subscriptions/") && method === "PUT") {
       return Response.json({ error: { message: "already exists" } }, { status: 409 });
     }
+    if (url.pathname.includes("/subscriptions/") && method === "GET") {
+      return Response.json({
+        topic: "projects/superlog-observability/topics/superlog-connection-id",
+      });
+    }
     return Response.json({});
   };
   const gateway = new GoogleGcpGateway(config, fetchImpl, async () => "service-access-token");
@@ -284,6 +289,62 @@ test("provisioning reconciles an existing subscription push configuration", asyn
       retryPolicy: { minimumBackoff: "10s", maximumBackoff: "600s" },
     },
   });
+});
+
+test("provisioning recreates a subscription detached by an earlier topic deletion", async () => {
+  const requests: Array<{ url: URL; method: string }> = [];
+  let subscriptionPutCount = 0;
+  const fetchImpl: typeof fetch = async (input, init = {}) => {
+    const url = new URL(
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+    );
+    const method = init.method ?? "GET";
+    const body = init.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+    requests.push({ url, method });
+    if (url.pathname === "/v1/projects/acme-production") {
+      return Response.json({ projectNumber: "123456789012" });
+    }
+    if (url.pathname.endsWith(":getIamPolicy")) {
+      return Response.json({ bindings: [], etag: "etag" });
+    }
+    if (url.pathname.endsWith(":setIamPolicy")) return Response.json(body.policy ?? {});
+    if (url.pathname.endsWith("/sinks")) {
+      return Response.json({
+        name: "superlog-connection-id",
+        writerIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+      });
+    }
+    if (url.pathname.includes("/subscriptions/") && method === "PUT") {
+      subscriptionPutCount += 1;
+      if (subscriptionPutCount === 1) {
+        return Response.json({ error: { message: "already exists" } }, { status: 409 });
+      }
+      return Response.json({});
+    }
+    if (url.pathname.includes("/subscriptions/") && method === "GET") {
+      return Response.json({ topic: "_deleted-topic_" });
+    }
+    return Response.json({});
+  };
+  const gateway = new GoogleGcpGateway(config, fetchImpl, async () => "service-access-token");
+
+  await gateway.provision({
+    connectionId: "connection-id",
+    gcpProjectId: "acme-production",
+    userAccessToken: "temporary-user-token",
+    integrationProjectId: config.integrationProjectId,
+    readerServiceAccountEmail: config.readerServiceAccountEmail,
+    pushServiceAccountEmail: config.pushServiceAccountEmail,
+    pushAudience: config.pushAudience,
+    pushEndpoint: `${config.pushEndpoint}/connection-id`,
+  });
+
+  assert.deepEqual(
+    requests
+      .filter((request) => request.url.pathname.includes("/subscriptions/"))
+      .map((request) => request.method),
+    ["PUT", "GET", "DELETE", "PUT"],
+  );
 });
 
 test("deprovisioning preserves a monitoring viewer grant that predates the connection", async () => {

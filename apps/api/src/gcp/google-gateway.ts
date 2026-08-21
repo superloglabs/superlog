@@ -350,23 +350,46 @@ export class GoogleGcpGateway implements GcpGateway {
         input.integrationProjectId,
       );
       if (!subscriptionCreated) {
-        const updateMask = "pushConfig,ackDeadlineSeconds,retryPolicy";
-        await requestJson(
+        const existingSubscription = await requestJson<{ topic?: string }>(
           this.fetchImpl,
           subscriptionUrl,
           serviceToken,
-          {
-            method: "PATCH",
-            body: JSON.stringify({
-              subscription: {
-                name: subscriptionPath,
-                ...subscription,
-              },
-              updateMask,
-            }),
-          },
+          {},
           input.integrationProjectId,
         );
+        if (existingSubscription.topic !== topicPath) {
+          await deleteResource(
+            this.fetchImpl,
+            subscriptionUrl,
+            serviceToken,
+            input.integrationProjectId,
+          );
+          await requestJson(
+            this.fetchImpl,
+            subscriptionUrl,
+            serviceToken,
+            { method: "PUT", body: JSON.stringify(subscription) },
+            input.integrationProjectId,
+          );
+        } else {
+          const updateMask = "pushConfig,ackDeadlineSeconds,retryPolicy";
+          await requestJson(
+            this.fetchImpl,
+            subscriptionUrl,
+            serviceToken,
+            {
+              method: "PATCH",
+              body: JSON.stringify({
+                subscription: {
+                  name: subscriptionPath,
+                  ...subscription,
+                },
+                updateMask,
+              }),
+            },
+            input.integrationProjectId,
+          );
+        }
       }
 
       return {
