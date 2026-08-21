@@ -1,5 +1,5 @@
 import { db, encryptIntegrationSecret, mintApiKey, schema } from "@superlog/db";
-import { and, desc, eq, isNull, ne, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type {
   GcpConnectionRecord,
   GcpConnectionRepository,
@@ -140,16 +140,19 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
         .for("update");
       if (!project) throw new Error("GCP project not found");
       const active = await tx
-        .select({ id: schema.gcpConnections.id })
+        .select({ id: schema.gcpConnections.id, status: schema.gcpConnections.status })
         .from(schema.gcpConnections)
         .where(
           and(
             eq(schema.gcpConnections.projectId, candidate.projectId),
             ne(schema.gcpConnections.id, id),
-            eq(schema.gcpConnections.status, "connected"),
+            inArray(schema.gcpConnections.status, ["connected", "disconnecting"]),
             isNull(schema.gcpConnections.revokedAt),
           ),
         );
+      if (active.some((connection) => connection.status === "disconnecting")) {
+        throw new Error("another GCP connection is disconnecting");
+      }
       if (active.some((connection) => connection.id !== supersededConnectionId)) {
         throw new Error("another GCP connection completed first");
       }
@@ -222,10 +225,76 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
     return toDomain(row);
   }
 
-  async releaseDisconnect(id: string): Promise<void> {
+  async releaseDisconnect(id: string): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      const [connection] = await tx
+        .select({
+          projectId: schema.gcpConnections.projectId,
+          status: schema.gcpConnections.status,
+          revokedAt: schema.gcpConnections.revokedAt,
+        })
+        .from(schema.gcpConnections)
+        .where(eq(schema.gcpConnections.id, id))
+        .limit(1)
+        .for("update");
+      if (!connection || connection.status !== "disconnecting" || connection.revokedAt) {
+        return false;
+      }
+      const [project] = await tx
+        .select({ id: schema.projects.id })
+        .from(schema.projects)
+        .where(eq(schema.projects.id, connection.projectId))
+        .limit(1)
+        .for("update");
+      if (!project) throw new Error("GCP project not found");
+      const [replacement] = await tx
+        .select({ id: schema.gcpConnections.id })
+        .from(schema.gcpConnections)
+        .where(
+          and(
+            eq(schema.gcpConnections.projectId, connection.projectId),
+            ne(schema.gcpConnections.id, id),
+            eq(schema.gcpConnections.status, "connected"),
+            isNull(schema.gcpConnections.revokedAt),
+          ),
+        )
+        .limit(1);
+      if (replacement) {
+        await tx
+          .update(schema.gcpConnections)
+          .set({
+            status: "failed",
+            lastError: "replacement completed during disconnect recovery",
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(schema.gcpConnections.id, id),
+              eq(schema.gcpConnections.status, "disconnecting"),
+              isNull(schema.gcpConnections.revokedAt),
+            ),
+          );
+        return false;
+      }
+      const [restored] = await tx
+        .update(schema.gcpConnections)
+        .set({ status: "connected", lastError: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(schema.gcpConnections.id, id),
+            eq(schema.gcpConnections.status, "disconnecting"),
+            isNull(schema.gcpConnections.revokedAt),
+          ),
+        )
+        .returning({ id: schema.gcpConnections.id });
+      return Boolean(restored);
+    });
+  }
+
+  async failDisconnect(id: string, error: string): Promise<void> {
     await db
       .update(schema.gcpConnections)
-      .set({ status: "connected", updatedAt: new Date() })
+      .set({ status: "failed", lastError: error.slice(0, 2_000), updatedAt: new Date() })
       .where(
         and(
           eq(schema.gcpConnections.id, id),

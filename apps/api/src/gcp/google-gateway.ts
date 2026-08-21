@@ -425,28 +425,57 @@ export class GoogleGcpGateway implements GcpGateway {
               );
             }
           }
-          await deleteResource(
-            this.fetchImpl,
-            subscriptionUrl,
-            serviceToken,
-            input.integrationProjectId,
-          );
+          let canonicalRemoved = false;
           try {
-            await requestJson(
+            await deleteResource(
               this.fetchImpl,
               subscriptionUrl,
               serviceToken,
-              { method: "PUT", body: JSON.stringify(subscription) },
               input.integrationProjectId,
             );
-            await deleteResource(
-              this.fetchImpl,
-              recoverySubscriptionUrl,
-              serviceToken,
-              input.integrationProjectId,
-            );
+            canonicalRemoved = true;
           } catch {
             activeSubscriptionName = recoverySubscriptionName;
+          }
+          if (canonicalRemoved) {
+            let canonicalCreated = false;
+            try {
+              await requestJson(
+                this.fetchImpl,
+                subscriptionUrl,
+                serviceToken,
+                { method: "PUT", body: JSON.stringify(subscription) },
+                input.integrationProjectId,
+              );
+              canonicalCreated = true;
+            } catch {
+              activeSubscriptionName = recoverySubscriptionName;
+            }
+            if (canonicalCreated) {
+              try {
+                await deleteResource(
+                  this.fetchImpl,
+                  recoverySubscriptionUrl,
+                  serviceToken,
+                  input.integrationProjectId,
+                );
+              } catch (recoveryCleanupError) {
+                try {
+                  await deleteResource(
+                    this.fetchImpl,
+                    subscriptionUrl,
+                    serviceToken,
+                    input.integrationProjectId,
+                  );
+                  activeSubscriptionName = recoverySubscriptionName;
+                } catch (canonicalCleanupError) {
+                  throw new AggregateError(
+                    [recoveryCleanupError, canonicalCleanupError],
+                    "GCP subscription cleanup failed",
+                  );
+                }
+              }
+            }
           }
         } else {
           await updateSubscription(

@@ -722,6 +722,91 @@ test("connecting after an overlapping callback cannot create a second active con
   assert.equal(rows.find((row) => row.id === candidate.id)?.status, "pending");
 });
 
+test("a replacement cannot complete while the current connection is disconnecting", async () => {
+  const { user, project } = await seedProject();
+  const [current, candidate] = await db
+    .insert(schema.gcpConnections)
+    .values([
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-current",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+        status: "disconnecting",
+      },
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-replacement",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+      },
+    ])
+    .returning();
+  assert.ok(current && candidate);
+
+  await assert.rejects(
+    new DrizzleGcpConnectionRepository().markConnected(
+      candidate.id,
+      {
+        gcpProjectNumber: "123456789012",
+        topicName: `superlog-${candidate.id}`,
+        subscriptionName: `superlog-${candidate.id}`,
+        logSinkName: `superlog-${candidate.id}`,
+        logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+        monitoringViewerGrantCreated: true,
+      },
+      current.id,
+    ),
+    /another GCP connection is disconnecting/,
+  );
+
+  assert.equal(
+    (await new DrizzleGcpConnectionRepository().findById(current.id))?.status,
+    "disconnecting",
+  );
+  assert.equal(
+    (await new DrizzleGcpConnectionRepository().findById(candidate.id))?.status,
+    "pending",
+  );
+});
+
+test("releasing a disconnect claim cannot restore a second active connection", async () => {
+  const { user, project } = await seedProject();
+  const [disconnecting, replacement] = await db
+    .insert(schema.gcpConnections)
+    .values([
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-disconnecting",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+        status: "disconnecting",
+      },
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-connected-replacement",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+        status: "connected",
+      },
+    ])
+    .returning();
+  assert.ok(disconnecting && replacement);
+  const repository = new DrizzleGcpConnectionRepository();
+
+  assert.equal(await repository.releaseDisconnect(disconnecting.id), false);
+
+  const rows = await db.query.gcpConnections.findMany({
+    where: eq(schema.gcpConnections.projectId, project.id),
+  });
+  assert.equal(rows.find((row) => row.id === disconnecting.id)?.status, "failed");
+  assert.match(
+    rows.find((row) => row.id === disconnecting.id)?.lastError ?? "",
+    /replacement completed during disconnect recovery/,
+  );
+  assert.equal(rows.find((row) => row.id === replacement.id)?.status, "connected");
+});
+
 test("preserving a shared monitoring grant transfers cleanup ownership", async () => {
   const first = await seedProject();
   const second = await seedProject();

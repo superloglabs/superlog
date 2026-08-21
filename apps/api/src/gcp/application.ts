@@ -226,13 +226,23 @@ export async function disconnectGcpConnection(input: {
           const originalMessage = error instanceof Error ? error.message : "GCP disconnect failed";
           const restoreMessage =
             restoreError instanceof Error ? restoreError.message : "unknown restore error";
-          throw new Error(`${originalMessage}; connection restore failed: ${restoreMessage}`, {
-            cause: error,
-          });
+          const failureMessage = `${originalMessage}; connection restore failed: ${restoreMessage}`;
+          try {
+            await input.repository.failDisconnect(connection.id, failureMessage);
+          } catch (persistError) {
+            const persistMessage =
+              persistError instanceof Error ? persistError.message : "unknown persistence error";
+            throw new Error(
+              `${failureMessage}; disconnect failure state persistence failed: ${persistMessage}`,
+              { cause: error },
+            );
+          }
+          throw new Error(failureMessage, { cause: error });
         }
       }
       try {
-        await input.repository.releaseDisconnect(connection.id);
+        const restored = await input.repository.releaseDisconnect(connection.id);
+        if (!restored) throw new Error("connection recovery was superseded");
       } catch (releaseError) {
         const originalMessage = error instanceof Error ? error.message : "GCP disconnect failed";
         const releaseMessage =

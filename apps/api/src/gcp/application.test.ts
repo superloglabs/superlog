@@ -166,6 +166,7 @@ test("a failed disconnect revocation restores the connected GCP resources", asyn
     },
     async releaseDisconnect() {
       events.push("release-disconnect");
+      return true;
     },
   } as unknown as GcpConnectionRepository;
   const gateway = {
@@ -227,6 +228,7 @@ test("a partially failed cloud cleanup restores the connected GCP resources", as
     },
     async releaseDisconnect() {
       events.push("release-disconnect");
+      return true;
     },
   } as unknown as GcpConnectionRepository;
   const gateway = {
@@ -301,6 +303,62 @@ test("an overlapping disconnect cannot clean up a connection claimed by another 
   );
 
   assert.deepEqual(events, ["claim-disconnect"]);
+});
+
+test("a failed disconnect restoration persists a retryable connection state", async () => {
+  const events: string[] = [];
+  const connected: GcpConnectionRecord = {
+    ...connection,
+    ...provisioned,
+    status: "connected",
+  };
+  const repository = {
+    async findCurrent() {
+      return connected;
+    },
+    async findById() {
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async claimDisconnect() {
+      events.push("claim-disconnect");
+      return { ...connected, status: "disconnecting" as const };
+    },
+    async prepareMonitoringGrantRemoval() {
+      return true;
+    },
+    async failDisconnect(_id: string, error: string) {
+      assert.match(error, /connection restore failed: restore unavailable/);
+      events.push("fail-disconnect");
+    },
+  } as unknown as GcpConnectionRepository;
+  const gateway = {
+    async deprovision() {
+      events.push("deprovision-connection");
+      throw new Error("partial cleanup failure");
+    },
+    async provision() {
+      events.push("restore-connection");
+      throw new Error("restore unavailable");
+    },
+  } as unknown as GcpGateway;
+
+  await assert.rejects(
+    disconnectGcpConnection({
+      projectId: connected.projectId,
+      userAccessToken: "temporary-user-token",
+      repository,
+      gateway,
+      config,
+    }),
+    /connection restore failed: restore unavailable/,
+  );
+
+  assert.deepEqual(events, [
+    "claim-disconnect",
+    "deprovision-connection",
+    "restore-connection",
+    "fail-disconnect",
+  ]);
 });
 
 test("a local persistence failure removes newly provisioned Google resources", async () => {
