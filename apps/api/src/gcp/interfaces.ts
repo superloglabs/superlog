@@ -26,7 +26,7 @@ import type {
   GcpConnectionRepository,
   GcpGateway,
 } from "./domain.js";
-import { GcpAuthorizationError } from "./domain.js";
+import { GCP_AUTHORIZATION_TTL_MS, GcpAuthorizationError } from "./domain.js";
 import { GoogleGcpGateway } from "./google-gateway.js";
 import { DrizzleGcpConnectionRepository } from "./repository.js";
 import { signGcpState, verifyGcpState } from "./state.js";
@@ -417,20 +417,22 @@ export function mountGcpPublic(app: Hono<{ Variables: Vars }>, input: Dependenci
       return c.redirect(outcomeUrl("error"), 302);
     }
     try {
-      await completeGcpAuthorization({
+      const completed = await completeGcpAuthorization({
         authorizationId: state.authorizationId,
         code,
         repository: authorizationRepository,
         gateway,
       });
-      return c.redirect(
-        outcomeUrl(
-          "select",
-          state.authorizationId,
-          state.action === "disconnect" ? stateParam : undefined,
-        ),
-        302,
-      );
+      const refreshedDisconnectState =
+        state.action === "disconnect" && state.connectionId
+          ? signGcpState(
+              state.authorizationId,
+              stateSecret,
+              completed.expiresAt.getTime() - GCP_AUTHORIZATION_TTL_MS,
+              { action: "disconnect", connectionId: state.connectionId },
+            )
+          : undefined;
+      return c.redirect(outcomeUrl("select", state.authorizationId, refreshedDisconnectState), 302);
     } catch {
       return c.redirect(outcomeUrl("error"), 302);
     }

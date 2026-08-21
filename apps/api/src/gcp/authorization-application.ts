@@ -170,12 +170,29 @@ export async function disconnectGcpAuthorization(input: {
     gcpProjectId: connection.gcpProjectId,
     now,
   });
-  return disconnectGcpConnection({
-    projectId: session.projectId,
-    expectedConnectionId: connection.id,
-    userAccessToken: claim.accessToken,
-    repository: input.connectionRepository,
-    gateway: input.gateway,
-    config: input.config,
-  });
+  try {
+    return await disconnectGcpConnection({
+      projectId: session.projectId,
+      expectedConnectionId: connection.id,
+      userAccessToken: claim.accessToken,
+      repository: input.connectionRepository,
+      gateway: input.gateway,
+      config: input.config,
+    });
+  } catch (error) {
+    try {
+      await input.authorizationRepository.restoreClaim({
+        id: session.id,
+        accessToken: claim.accessToken,
+        expiresAt: new Date(now.getTime() + GCP_AUTHORIZATION_TTL_MS),
+      });
+    } catch (restoreError) {
+      const message =
+        restoreError instanceof Error ? restoreError.message : "unknown authorization error";
+      throw new Error(`GCP disconnect failed; authorization recovery failed: ${message}`, {
+        cause: error,
+      });
+    }
+    throw error;
+  }
 }

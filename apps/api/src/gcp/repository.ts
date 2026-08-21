@@ -59,10 +59,24 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
     connectionId: string;
     gcpProjectId: string;
     readerServiceAccountEmail: string;
-    grantCreated: boolean;
   }): Promise<boolean> {
-    if (!input.grantCreated) return false;
     return db.transaction(async (tx) => {
+      const [connection] = await tx
+        .select({
+          monitoringViewerGrantCreated: schema.gcpConnections.monitoringViewerGrantCreated,
+        })
+        .from(schema.gcpConnections)
+        .where(
+          and(
+            eq(schema.gcpConnections.id, input.connectionId),
+            eq(schema.gcpConnections.gcpProjectId, input.gcpProjectId),
+            eq(schema.gcpConnections.readerServiceAccountEmail, input.readerServiceAccountEmail),
+            isNull(schema.gcpConnections.revokedAt),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (!connection?.monitoringViewerGrantCreated) return false;
       const [remaining] = await tx
         .select({ id: schema.gcpConnections.id })
         .from(schema.gcpConnections)

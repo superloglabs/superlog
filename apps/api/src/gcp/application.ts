@@ -274,12 +274,10 @@ async function cleanupProvisioningResult(
   provisioned: ProvisionedGcpConnection,
   repository: GcpConnectionRepository,
 ): Promise<ProvisionedGcpConnection> {
-  if (!provisioned.monitoringViewerGrantCreated) return provisioned;
   const removeGrant = await repository.prepareMonitoringGrantRemoval({
     connectionId: connection.id,
     gcpProjectId: connection.gcpProjectId,
     readerServiceAccountEmail: connection.readerServiceAccountEmail,
-    grantCreated: provisioned.monitoringViewerGrantCreated,
   });
   return { ...provisioned, monitoringViewerGrantCreated: removeGrant };
 }

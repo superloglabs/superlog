@@ -6,7 +6,8 @@ import { closeDb, db, runMigrations, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { projectHasIngested } from "../demo.js";
-import type { GcpGateway } from "./domain.js";
+import { DrizzleGcpAuthorizationRepository } from "./authorization-repository.js";
+import { GCP_AUTHORIZATION_TTL_MS, type GcpGateway } from "./domain.js";
 import {
   type GcpConnectConfig,
   gcpConfigFromEnv,
@@ -14,6 +15,7 @@ import {
   mountGcpPublic,
 } from "./interfaces.js";
 import { DrizzleGcpConnectionRepository } from "./repository.js";
+import { signGcpState, verifyGcpState } from "./state.js";
 
 process.env.STATE_SIGNING_SECRET ||= "gcp-test-state-secret";
 process.env.AGENT_SECRETS_KEY ||= randomBytes(32).toString("base64");
@@ -349,9 +351,19 @@ test("a project owner reauthorizes with Google before disconnecting the current 
   const { url } = (await start.json()) as { url: string };
   const state = new URL(url).searchParams.get("state");
   assert.ok(state);
+  const stateSecret = process.env.STATE_SIGNING_SECRET;
+  assert.ok(stateSecret);
+  const disconnectIntent = verifyGcpState(state, stateSecret);
+  assert.ok(disconnectIntent?.connectionId);
+  const nearlyExpiredState = signGcpState(
+    disconnectIntent.authorizationId,
+    stateSecret,
+    Date.now() - GCP_AUTHORIZATION_TTL_MS + 1_000,
+    { action: "disconnect", connectionId: disconnectIntent.connectionId },
+  );
 
   const callback = await app.request(
-    `/gcp/oauth/callback?code=oauth-code&state=${encodeURIComponent(state)}`,
+    `/gcp/oauth/callback?code=oauth-code&state=${encodeURIComponent(nearlyExpiredState)}`,
   );
   assert.equal(callback.status, 302);
   const selectionUrl = new URL(callback.headers.get("location") ?? "");
@@ -360,6 +372,19 @@ test("a project owner reauthorizes with Google before disconnecting the current 
   const authorizationState = selectionUrl.searchParams.get("authorization_state");
   assert.ok(authorizationId);
   assert.ok(authorizationState);
+  const readyAuthorization = await db.query.gcpAuthorizationSessions.findFirst({
+    where: eq(schema.gcpAuthorizationSessions.id, authorizationId),
+  });
+  assert.ok(readyAuthorization);
+  const refreshedIntent = verifyGcpState(
+    authorizationState,
+    stateSecret,
+    readyAuthorization.expiresAt.getTime() - 1,
+  );
+  assert.equal(
+    refreshedIntent?.issuedAt,
+    readyAuthorization.expiresAt.getTime() - GCP_AUTHORIZATION_TTL_MS,
+  );
 
   const disconnect = await app.request(`/api/gcp/authorizations/${authorizationId}/disconnect`, {
     method: "POST",
@@ -852,11 +877,13 @@ test("preserving a shared monitoring grant transfers cleanup ownership", async (
     .returning();
   assert.ok(owner && remaining);
 
-  const shouldRemove = await new DrizzleGcpConnectionRepository().prepareMonitoringGrantRemoval({
+  const repository = new DrizzleGcpConnectionRepository();
+  await repository.claimDisconnect(owner.id);
+
+  const shouldRemove = await repository.prepareMonitoringGrantRemoval({
     connectionId: owner.id,
     gcpProjectId: owner.gcpProjectId,
     readerServiceAccountEmail: owner.readerServiceAccountEmail,
-    grantCreated: true,
   });
 
   assert.equal(shouldRemove, false);
@@ -864,6 +891,55 @@ test("preserving a shared monitoring grant transfers cleanup ownership", async (
     where: eq(schema.gcpConnections.id, remaining.id),
   });
   assert.equal(transferred?.monitoringViewerGrantCreated, true);
+
+  await repository.revoke(owner.id);
+  await repository.claimDisconnect(remaining.id);
+  const shouldRemoveAfterStaleSnapshot = await repository.prepareMonitoringGrantRemoval({
+    connectionId: remaining.id,
+    gcpProjectId: remaining.gcpProjectId,
+    readerServiceAccountEmail: remaining.readerServiceAccountEmail,
+  });
+  assert.equal(shouldRemoveAfterStaleSnapshot, true);
+});
+
+test("a consumed Google authorization can be restored and claimed again", async () => {
+  const { user, project } = await seedProject();
+  const repository = new DrizzleGcpAuthorizationRepository();
+  const now = new Date("2026-08-21T12:00:00.000Z");
+  const session = await repository.create({
+    projectId: project.id,
+    userId: user.id,
+    expiresAt: new Date(now.getTime() + GCP_AUTHORIZATION_TTL_MS),
+  });
+  await repository.markReady({
+    id: session.id,
+    accessToken: "temporary-user-token",
+    projects: [
+      {
+        projectId: "acme-production",
+        projectNumber: "123456789012",
+        displayName: "Acme production",
+      },
+    ],
+    expiresAt: new Date(now.getTime() + GCP_AUTHORIZATION_TTL_MS),
+  });
+  const claimInput = {
+    id: session.id,
+    projectId: project.id,
+    userId: user.id,
+    gcpProjectId: "acme-production",
+    now,
+  };
+  await repository.claim(claimInput);
+
+  await repository.restoreClaim({
+    id: session.id,
+    accessToken: "temporary-user-token",
+    expiresAt: new Date(now.getTime() + GCP_AUTHORIZATION_TTL_MS),
+  });
+
+  assert.equal((await repository.findById(session.id))?.status, "ready");
+  assert.equal((await repository.claim(claimInput)).accessToken, "temporary-user-token");
 });
 
 test("a monitoring grant is not transferred to a different reader principal", async () => {
@@ -897,7 +973,6 @@ test("a monitoring grant is not transferred to a different reader principal", as
     connectionId: owner.id,
     gcpProjectId: owner.gcpProjectId,
     readerServiceAccountEmail: owner.readerServiceAccountEmail,
-    grantCreated: true,
   });
 
   assert.equal(shouldRemove, true);

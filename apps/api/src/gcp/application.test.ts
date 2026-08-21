@@ -643,13 +643,11 @@ test("replacement preserves a monitoring grant shared by another active connecti
     async prepareMonitoringGrantRemoval(input: {
       connectionId: string;
       gcpProjectId: string;
-      grantCreated: boolean;
     }) {
       assert.deepEqual(input, {
         connectionId: oldConnection.id,
         gcpProjectId: oldConnection.gcpProjectId,
         readerServiceAccountEmail: oldConnection.readerServiceAccountEmail,
-        grantCreated: true,
       });
       return false;
     },

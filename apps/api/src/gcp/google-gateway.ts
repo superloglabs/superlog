@@ -494,12 +494,29 @@ export class GoogleGcpGateway implements GcpGateway {
           );
         }
       } else {
-        await deleteResource(
-          this.fetchImpl,
-          recoverySubscriptionUrl,
-          serviceToken,
-          input.integrationProjectId,
-        );
+        try {
+          await deleteResource(
+            this.fetchImpl,
+            recoverySubscriptionUrl,
+            serviceToken,
+            input.integrationProjectId,
+          );
+        } catch (recoveryCleanupError) {
+          try {
+            await deleteResource(
+              this.fetchImpl,
+              subscriptionUrl,
+              serviceToken,
+              input.integrationProjectId,
+            );
+          } catch (canonicalCleanupError) {
+            throw new AggregateError(
+              [recoveryCleanupError, canonicalCleanupError],
+              "GCP subscription cleanup failed",
+            );
+          }
+          throw recoveryCleanupError;
+        }
       }
 
       return {

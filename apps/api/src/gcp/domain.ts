@@ -126,7 +126,6 @@ export interface GcpConnectionRepository {
     connectionId: string;
     gcpProjectId: string;
     readerServiceAccountEmail: string;
-    grantCreated: boolean;
   }): Promise<boolean>;
   markProvisioning(id: string): Promise<void>;
   ensureIngestKey(id: string, projectId: string): Promise<void>;
@@ -165,6 +164,7 @@ export interface GcpAuthorizationRepository {
     gcpProjectId: string;
     now: Date;
   }): Promise<GcpAuthorizationClaim>;
+  restoreClaim(input: { id: string; accessToken: string; expiresAt: Date }): Promise<void>;
 }
 
 export function parseGcpProjectId(value: unknown): string {
