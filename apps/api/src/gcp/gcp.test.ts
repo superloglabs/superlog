@@ -820,6 +820,55 @@ test("a replacement cannot complete while the current connection is disconnectin
   );
 });
 
+test("a replacement cannot complete while another connection requires recovery", async () => {
+  const { user, project } = await seedProject();
+  const [recovering, candidate] = await db
+    .insert(schema.gcpConnections)
+    .values([
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-recovering",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+        status: "failed",
+        lastError: "partial cleanup failure; connection restore failed",
+      },
+      {
+        projectId: project.id,
+        gcpProjectId: "acme-replacement",
+        readerServiceAccountEmail: config.readerServiceAccountEmail,
+        createdBy: user.id,
+      },
+    ])
+    .returning();
+  assert.ok(recovering && candidate);
+
+  await assert.rejects(
+    new DrizzleGcpConnectionRepository().markConnected(
+      candidate.id,
+      {
+        gcpProjectNumber: "123456789012",
+        topicName: `superlog-${candidate.id}`,
+        subscriptionName: `superlog-${candidate.id}`,
+        logSinkName: `superlog-${candidate.id}`,
+        logSinkWriterIdentity: "serviceAccount:cloud-logs@system.gserviceaccount.com",
+        monitoringViewerGrantCreated: true,
+      },
+      null,
+    ),
+    /another GCP connection requires recovery/,
+  );
+
+  assert.equal(
+    (await new DrizzleGcpConnectionRepository().findById(recovering.id))?.status,
+    "failed",
+  );
+  assert.equal(
+    (await new DrizzleGcpConnectionRepository().findById(candidate.id))?.status,
+    "pending",
+  );
+});
+
 test("releasing a disconnect claim cannot restore a second active connection", async () => {
   const { user, project } = await seedProject();
   const [ingestKey] = await db

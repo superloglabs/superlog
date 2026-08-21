@@ -160,12 +160,15 @@ export class DrizzleGcpConnectionRepository implements GcpConnectionRepository {
           and(
             eq(schema.gcpConnections.projectId, candidate.projectId),
             ne(schema.gcpConnections.id, id),
-            inArray(schema.gcpConnections.status, ["connected", "disconnecting"]),
+            inArray(schema.gcpConnections.status, ["connected", "disconnecting", "failed"]),
             isNull(schema.gcpConnections.revokedAt),
           ),
         );
       if (active.some((connection) => connection.status === "disconnecting")) {
         throw new Error("another GCP connection is disconnecting");
+      }
+      if (active.some((connection) => connection.status === "failed")) {
+        throw new Error("another GCP connection requires recovery");
       }
       if (active.some((connection) => connection.id !== supersededConnectionId)) {
         throw new Error("another GCP connection completed first");
