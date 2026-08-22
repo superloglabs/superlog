@@ -17,6 +17,7 @@ import {
   formatRetryBranchName,
   githubPullRequestDeliveryReadTokenScope,
   githubPullRequestReviewTokenScope,
+  isGithubResourceNotAccessible,
   isGitPushBranchCollision,
   isMissingRemoteBranchFailure,
   isRetryableGitPushFailure,
@@ -532,6 +533,31 @@ test("an occupied deterministic fallback without the delivery marker is not adop
   });
 
   assert.equal(recovered, null);
+});
+
+test("isGithubResourceNotAccessible identifies permission-denied 403 errors", () => {
+  const notAccessible = new GithubRequestError(
+    'github GET /repos/acme/api/pulls?state=all&head=acme%3Aash%2Ffix-api&per_page=100 failed: 403 {"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest/pulls/pulls#list-pull-requests","status":"403"}',
+    { retryable: false, status: 403 },
+  );
+  assert.equal(isGithubResourceNotAccessible(notAccessible), true);
+
+  // Secondary-rate-limit 403 is retryable — must not be mistaken for a permission error.
+  const rateLimit = new GithubRequestError(
+    "github GET /repos/acme/api/pulls failed: 403 secondary rate limit",
+    { retryable: true, status: 403 },
+  );
+  assert.equal(isGithubResourceNotAccessible(rateLimit), false);
+
+  // 404 Not Found is not a permission error.
+  const notFound = new GithubRequestError("github GET /repos/acme/api/pulls failed: 404 Not Found", {
+    retryable: false,
+    status: 404,
+  });
+  assert.equal(isGithubResourceNotAccessible(notFound), false);
+
+  // Non-GithubRequestError should return false.
+  assert.equal(isGithubResourceNotAccessible(new Error("Resource not accessible by integration")), false);
 });
 
 test("isMissingRemoteBranchFailure detects clone failures for deleted base branches", () => {
