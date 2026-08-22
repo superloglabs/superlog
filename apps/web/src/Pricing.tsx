@@ -42,12 +42,17 @@ const included = [
 ];
 
 export function Pricing() {
-  const [authMode, setAuthMode] = useState<AuthMode>(() => {
-    if (typeof window === "undefined") return null;
+  const [authMode, setAuthMode] = useState<AuthMode>(null);
+
+  // Read window.location.hash only after hydration. A server/client branch in
+  // the useState initializer would cause a hydration mismatch because the
+  // pre-rendered HTML always has authMode=null, but the client could produce a
+  // different initial value (e.g. "sign-in" for OAuth redirect URLs with a
+  // #sso-callback or #verify hash).
+  useEffect(() => {
     const h = window.location.hash;
-    if (h.includes("sso-callback") || h.includes("verify")) return "sign-in";
-    return null;
-  });
+    if (h.includes("sso-callback") || h.includes("verify")) setAuthMode("sign-in");
+  }, []);
 
   const posthog = usePostHog();
   const openSignIn = () => {
@@ -309,7 +314,7 @@ function PaygEstimator({ onSignUp }: { onSignUp: () => void }) {
               anchors={TELEMETRY_ANCHORS}
               value={spans}
               lineUsd={spansUsd}
-              formatValue={(n) => n.toLocaleString()}
+              formatValue={(n) => n.toLocaleString("en-US")}
               formatTick={formatCount}
               onChange={setSpans}
             />
@@ -318,7 +323,7 @@ function PaygEstimator({ onSignUp }: { onSignUp: () => void }) {
               anchors={TELEMETRY_ANCHORS}
               value={logs}
               lineUsd={logsUsd}
-              formatValue={(n) => n.toLocaleString()}
+              formatValue={(n) => n.toLocaleString("en-US")}
               formatTick={formatCount}
               onChange={setLogs}
             />
@@ -327,7 +332,7 @@ function PaygEstimator({ onSignUp }: { onSignUp: () => void }) {
               anchors={TELEMETRY_ANCHORS}
               value={metrics}
               lineUsd={metricsUsd}
-              formatValue={(n) => n.toLocaleString()}
+              formatValue={(n) => n.toLocaleString("en-US")}
               formatTick={formatCount}
               onChange={setMetrics}
             />
