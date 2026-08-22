@@ -5180,16 +5180,26 @@ function ApiKeysCard({ projectId }: { projectId: string | undefined }) {
             loading={create.isPending}
             onClick={async () => {
               if (!projectId) return;
-              const created = await create.mutateAsync(name.trim() || "new key");
-              if (created.plaintext) {
-                setReveal({ id: created.id, plaintext: created.plaintext });
+              try {
+                const created = await create.mutateAsync(name.trim() || "new key");
+                if (created.plaintext) {
+                  setReveal({ id: created.id, plaintext: created.plaintext });
+                }
+                setName("");
+              } catch {
+                // surfaced via create.isError below
               }
-              setName("");
             }}
           >
             Create key
           </Btn>
         </div>
+
+        {create.isError && (
+          <p className="text-[12px] text-danger">
+            {create.error instanceof Error ? create.error.message : "Failed to create key."}
+          </p>
+        )}
 
         {reveal && (
           <div className="rounded-sm border border-accent/40 bg-accent-soft/30 p-3">
@@ -5482,14 +5492,24 @@ function OrgApiKeysCard() {
             disabled={mint.isPending}
             loading={mint.isPending}
             onClick={async () => {
-              const res = await mint.mutateAsync(name.trim() || "management key");
-              setReveal({ id: res.key.id, plaintext: res.key.plaintext });
-              setName("");
+              try {
+                const res = await mint.mutateAsync(name.trim() || "management key");
+                setReveal({ id: res.key.id, plaintext: res.key.plaintext });
+                setName("");
+              } catch {
+                // surfaced via mint.isError below
+              }
             }}
           >
             Create key
           </Btn>
         </div>
+
+        {mint.isError && (
+          <p className="text-[12px] text-danger">
+            {mint.error instanceof Error ? mint.error.message : "Failed to create key."}
+          </p>
+        )}
 
         {reveal && (
           <div className="rounded-sm border border-accent/40 bg-accent-soft/30 p-3">
