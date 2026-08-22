@@ -83,6 +83,10 @@ export async function analyzeIssueGroupingWithClient(
 export async function analyzeIssueGrouping(input: GroupingInput): Promise<GroupingVerdict> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY is required for grouping");
-  const client = new Anthropic({ apiKey });
+  // Disable the SDK's built-in retry so the asGroupingLLMClient wrapper owns
+  // the full retry budget (2 retries, exponential backoff). Without this the
+  // SDK silently retries internally and a persistent APIConnectionError results
+  // in 9 HTTP attempts (3 SDK × 3 wrapper) instead of the intended 3.
+  const client = new Anthropic({ apiKey, maxRetries: 0 });
   return analyzeIssueGroupingWithClient(client, input);
 }

@@ -1,7 +1,8 @@
 // Grouping LLM tool-use loop. The dispatcher and parsers live in
 // candidate-search.ts / domain.ts; this file is just the orchestration.
 
-import type Anthropic from "@anthropic-ai/sdk";
+import Anthropic from "@anthropic-ai/sdk";
+import { setTimeout as sleep } from "node:timers/promises";
 import {
   inspectCandidateResult,
   listIncidentFacets,
@@ -356,18 +357,38 @@ function dispatchDecide(
   };
 }
 
+const SEND_MAX_CONNECTION_RETRIES = 2;
+const SEND_CONNECTION_RETRY_BASE_MS = 500;
+
 // Adapter from the real Anthropic SDK to our injectable client shape.
-export function asGroupingLLMClient(client: Pick<Anthropic, "messages">): GroupingLLMClient {
+// Retries transient APIConnectionError (network/TCP failures) with exponential
+// backoff before propagating, so a brief connectivity hiccup does not
+// immediately cause LLM grouping to fail and create spurious standalone incidents.
+export function asGroupingLLMClient(
+  client: Pick<Anthropic, "messages">,
+  opts?: { retryDelayMs?: number },
+): GroupingLLMClient {
+  const baseDelayMs = opts?.retryDelayMs ?? SEND_CONNECTION_RETRY_BASE_MS;
   return {
     async send(input) {
-      return client.messages.create({
-        model: input.model,
-        max_tokens: input.maxTokens,
-        temperature: input.temperature,
-        system: input.system,
-        tools: input.tools,
-        messages: input.messages,
-      });
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await client.messages.create({
+            model: input.model,
+            max_tokens: input.maxTokens,
+            temperature: input.temperature,
+            system: input.system,
+            tools: input.tools,
+            messages: input.messages,
+          });
+        } catch (err) {
+          if (attempt < SEND_MAX_CONNECTION_RETRIES && err instanceof Anthropic.APIConnectionError) {
+            await sleep(baseDelayMs * 2 ** attempt);
+            continue;
+          }
+          throw err;
+        }
+      }
     },
   };
 }
