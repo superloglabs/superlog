@@ -146,22 +146,32 @@ export async function runRailwayPullOnce(deps: RailwayPullerDeps): Promise<Railw
       });
       if (!refreshed.ok) {
         stats.errors += 1;
-        deps.log.error(
+        // The current accessToken is still valid for up to TOKEN_REFRESH_MARGIN_MS.
+        // Log a warning and continue using it unless it has actually expired.
+        const nowMs = now().getTime();
+        if (expiresAt !== null && expiresAt <= nowMs) {
+          deps.log.error(
+            { installation_id: installation.id, error: refreshed.error },
+            "railway token refresh failed and token is expired — skipping installation",
+          );
+          return;
+        }
+        deps.log.warn(
           { installation_id: installation.id, error: refreshed.error },
-          "railway token refresh failed",
+          "railway token refresh failed; retrying next pass with stored token",
         );
-        return;
+      } else {
+        accessToken = refreshed.accessToken;
+        // Rotating refresh tokens: persist the replacement before doing anything
+        // else — losing it would strand the installation at access-token expiry.
+        await deps.store.saveTokens(installation.id, {
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken ?? installation.refreshToken,
+          tokenExpiresAt: refreshed.expiresInSeconds
+            ? new Date(now().getTime() + refreshed.expiresInSeconds * 1000)
+            : null,
+        });
       }
-      accessToken = refreshed.accessToken;
-      // Rotating refresh tokens: persist the replacement before doing anything
-      // else — losing it would strand the installation at access-token expiry.
-      await deps.store.saveTokens(installation.id, {
-        accessToken: refreshed.accessToken,
-        refreshToken: refreshed.refreshToken ?? installation.refreshToken,
-        tokenExpiresAt: refreshed.expiresInSeconds
-          ? new Date(now().getTime() + refreshed.expiresInSeconds * 1000)
-          : null,
-      });
     }
 
     // --- Grant snapshot ---------------------------------------------------
