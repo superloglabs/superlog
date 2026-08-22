@@ -13,6 +13,7 @@ export const communityRunnerBackend: AgentRunnerBackend = {
     const snapshot: AgentRunnerSnapshot = {
       sessionId,
       status: "terminated",
+      stopReason: null,
       activeSeconds: 0,
       events: [
         {
