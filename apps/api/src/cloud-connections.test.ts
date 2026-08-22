@@ -653,6 +653,67 @@ test("verify surfaces a denied assume-role as failed (200, not 500)", async () =
   assert.ok(typeof body.lastError === "string" && body.lastError.length > 0);
 });
 
+test("verify rejects a CloudFormation stack ARN with 400 (not a role ARN)", async () => {
+  const { org, user, project } = await seedProject();
+  // STS must never be called when the ARN is invalid format.
+  const sts: StsVerifier = {
+    async verifyAssumeRole() {
+      throw new Error("STS should not have been called");
+    },
+  };
+  const app = appFor(user.id, org.id, sts);
+
+  const created = await asConn(
+    await app.request(`/api/projects/${project.id}/cloud-connections`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ region: "us-west-2" }),
+    }),
+  );
+
+  // Full CloudFormation stack ARN — what users commonly paste by mistake.
+  const cfStackArn =
+    "arn:aws:cloudformation:us-west-2:440841891526:stack/superlog-connect/e81bd8c0-9c28-11f1-87e3-06857ca6ccb1";
+  const res = await app.request(
+    `/api/projects/${project.id}/cloud-connections/${created.id}/verify`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scrapeRoleArn: cfStackArn }),
+    },
+  );
+  assert.equal(res.status, 400);
+});
+
+test("verify rejects a truncated CloudFormation ARN with 400", async () => {
+  const { org, user, project } = await seedProject();
+  const sts: StsVerifier = {
+    async verifyAssumeRole() {
+      throw new Error("STS should not have been called");
+    },
+  };
+  const app = appFor(user.id, org.id, sts);
+
+  const created = await asConn(
+    await app.request(`/api/projects/${project.id}/cloud-connections`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ region: "us-west-2" }),
+    }),
+  );
+
+  // Truncated CloudFormation ARN (missing resource suffix) — the other error seen in prod.
+  const res = await app.request(
+    `/api/projects/${project.id}/cloud-connections/${created.id}/verify`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scrapeRoleArn: "arn:aws:cloudformation:us-west-2:440841891526" }),
+    },
+  );
+  assert.equal(res.status, 400);
+});
+
 test("a user cannot create a connection on another org's project", async () => {
   const a = await seedProject();
   const b = await seedProject();

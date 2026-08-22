@@ -108,11 +108,18 @@ export function cloudConnectConfigFromEnv(
 // Region is lowercase letters/digits/hyphens only — it's interpolated into the
 // launch URL's hostname, so reject anything that could redirect the link.
 const createSchema = z.object({ region: z.string().regex(/^[a-z0-9-]{1,32}$/) });
-const verifySchema = z.object({ scrapeRoleArn: z.string().min(1) });
+// IAM role ARN format: arn:aws[partition-suffix]:iam::<12-digit-account>:role/<name>
+// Reject non-IAM ARNs (e.g. CloudFormation stack ARNs) before calling STS.
+const IAM_ROLE_ARN_RE = /^arn:aws[a-z-]*:iam::\d{12}:role\/.+$/;
+const verifySchema = z.object({
+  scrapeRoleArn: z
+    .string()
+    .regex(IAM_ROLE_ARN_RE, "scrapeRoleArn must be a valid IAM role ARN"),
+});
 const callbackSchema = z.object({
   connectionId: z.string().uuid(),
   externalId: z.string().min(1),
-  roleArn: z.string().min(1),
+  roleArn: z.string().regex(IAM_ROLE_ARN_RE, "roleArn must be a valid IAM role ARN"),
 });
 
 /** Constant-time string compare (avoids leaking the external id via timing). */
