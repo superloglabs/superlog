@@ -28,7 +28,7 @@
     "test:recurring-steps": "tsx --test src/worker/recurring-steps.test.ts",
     "test:worker-tick": "tsx --test src/worker/tick.test.ts",
     "test:telemetry-ingest": "tsx --test src/telemetry/ingest.test.ts",
-    "test:agent-run-start": "tsx --test src/agent-runs/start.test.ts",
+    "test:agent-run-start": "tsx --test src/agent-runs/start.test.ts src/agent-runs/prompt-context.test.ts",
     "test:agent-run-status": "tsx --test src/agent-runs/status.test.ts",
     "test:agent-run-sync": "tsx --test src/agent-runs/sync.test.ts",
     "test:agent-run-merge": "tsx --test src/agent-runs/merge.test.ts",

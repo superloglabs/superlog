@@ -5,6 +5,8 @@ import { fetchTraceContext } from "../infra/clickhouse/trace-context.js";
 import { findAlertEpisodeForIssue } from "../issues/repository.js";
 
 const STACKTRACE_PREVIEW_CHARS = 4_000;
+const MAX_TRACE_ENRICHED_ISSUES = 50;
+const TRACE_ENRICHMENT_CONCURRENCY = 8;
 
 function buildIssueSummary(issue: schema.Issue) {
   const sample = (issue.lastSample ?? null) as schema.IssueSample | null;
@@ -51,6 +53,30 @@ export async function buildIssueSummaryWithTrace(
       : (issue.lastSeen ?? null);
   const traceContext = await fetchTraceContext(projectId, traceId, spanId ?? null, hintTs);
   return { ...base, traceContext };
+}
+
+export async function buildAgentRunIssueSummaries(
+  projectId: string,
+  issues: schema.Issue[],
+  deps: {
+    buildWithTrace?: typeof buildIssueSummaryWithTrace;
+  } = {},
+): Promise<Array<ReturnType<typeof buildIssueSummary>>> {
+  const buildWithTrace = deps.buildWithTrace ?? buildIssueSummaryWithTrace;
+  const traceIssueIds = new Set(
+    issues
+      .filter((issue) => issue.kind !== "alert" && traceIdForIssue(issue) !== null)
+      .sort((left, right) => right.lastSeen.getTime() - left.lastSeen.getTime())
+      .slice(0, MAX_TRACE_ENRICHED_ISSUES)
+      .map((issue) => issue.id),
+  );
+
+  return mapWithConcurrency(issues, TRACE_ENRICHMENT_CONCURRENCY, (issue) => {
+    if (issue.kind === "alert" || traceIssueIds.has(issue.id)) {
+      return buildWithTrace(projectId, issue);
+    }
+    return buildIssueSummary(issue);
+  });
 }
 
 async function loadAlertEpisodeContext(issueId: string): Promise<AgentRunnerAlertEpisode | null> {
@@ -102,4 +128,29 @@ function sessionIdForSample(sample: schema.IssueSample | null): string | null {
     sample?.resourceAttrs?.["session.id"] ??
     null
   );
+}
+
+function traceIdForIssue(issue: schema.Issue): string | null {
+  const sample = (issue.lastSample ?? null) as schema.IssueSample | null;
+  return sample?.traceId ?? null;
+}
+
+async function mapWithConcurrency<T, R>(
+  values: T[],
+  concurrency: number,
+  map: (value: T) => R | Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await map(values[index] as T);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, () => worker()));
+  return results;
 }
