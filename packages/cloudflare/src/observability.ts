@@ -4,9 +4,9 @@
 // Creating an account-level telemetry destination is not enough: a Worker only
 // exports to a destination when its OWN `observability` config enables the
 // signal and lists the destination by name. So wiring reads each Worker's
-// settings and merges our destination slugs in. That per-Worker link is set once
-// at connect, so a Worker created/recreated/renamed later comes up unwired —
-// which is what the reconcile job re-applies on a schedule.
+// settings and merges our destination slugs in. Users can set that per-Worker
+// link manually or opt into account-wide auto-wire, whose reconcile job also
+// catches Workers created, recreated, or renamed later.
 //
 // This lived in apps/api/src/cloudflare-service.ts until the worker needed it
 // too; it's here (mirroring @superlog/railway owning its client) so both share
@@ -299,7 +299,7 @@ export async function updateScriptObservability(input: {
 
 // ---------------------------------------------------------------------------
 // Reconcile — the idempotent "wire every Worker in the account" pass, shared by
-// connect / wire-all (api) and the periodic reconcile (worker).
+// wire-all (api) and the periodic reconcile (worker).
 // ---------------------------------------------------------------------------
 
 export type WiringLogger = {
@@ -378,4 +378,68 @@ export async function reconcileWorkerWiring(input: {
     "cloudflare: wired worker observability to destinations",
   );
   return { scripts: scripts.length, wired, listOk: true };
+}
+
+/**
+ * Remove our destinations from every current Worker in an account. Like the
+ * wiring reconcile, this is idempotent and isolates per-Worker failures. It
+ * leaves observability, signal settings, and destinations owned by anyone else
+ * untouched.
+ */
+export async function reconcileWorkerUnwiring(input: {
+  accountId: string;
+  accessToken: string;
+  slugs: WorkerDestinationSlugs;
+  fetchImpl?: FetchImpl;
+  log?: WiringLogger;
+}): Promise<{ scripts: number; unwired: number; listOk: boolean }> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const slugs = { traces: input.slugs.traces, logs: input.slugs.logs };
+  if (!slugs.traces && !slugs.logs) return { scripts: 0, unwired: 0, listOk: true };
+  let scripts: string[];
+  try {
+    scripts = await listScriptsStrict(input.accountId, input.accessToken, fetchImpl);
+  } catch (e) {
+    input.log?.warn(
+      { err: e instanceof Error ? e.message : String(e), account_id: input.accountId },
+      "cloudflare: list worker scripts failed",
+    );
+    return { scripts: 0, unwired: 0, listOk: false };
+  }
+  let unwired = 0;
+  for (const script of scripts) {
+    try {
+      const current = await getScriptObservability({
+        accountId: input.accountId,
+        script,
+        accessToken: input.accessToken,
+        fetchImpl,
+      });
+      const next = unwireObservabilityDestinations(current, slugs);
+      if (!next) continue;
+      const res = await updateScriptObservability({
+        accountId: input.accountId,
+        script,
+        observability: next,
+        accessToken: input.accessToken,
+        fetchImpl,
+      });
+      if (res.ok) unwired += 1;
+      else
+        input.log?.warn(
+          { script, error: res.error },
+          "cloudflare: failed to unwire worker observability",
+        );
+    } catch (e) {
+      input.log?.warn(
+        { err: e instanceof Error ? e.message : String(e), script },
+        "cloudflare: failed to unwire worker observability",
+      );
+    }
+  }
+  input.log?.info(
+    { account_id: input.accountId, scripts: scripts.length, unwired },
+    "cloudflare: unwired worker observability from destinations",
+  );
+  return { scripts: scripts.length, unwired, listOk: true };
 }

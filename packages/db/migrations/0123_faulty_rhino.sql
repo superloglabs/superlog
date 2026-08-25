@@ -1,0 +1,1 @@
+ALTER TABLE "cloudflare_installations" ALTER COLUMN "auto_wire" SET DEFAULT false;

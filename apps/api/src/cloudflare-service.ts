@@ -212,6 +212,7 @@ export {
   listScriptsStrict,
   parseScriptsResponse,
   parseTokenResponse,
+  reconcileWorkerUnwiring,
   reconcileWorkerWiring,
   refreshAccessToken,
   unwireObservabilityDestinations,

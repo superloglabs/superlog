@@ -26,6 +26,7 @@ import {
 import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { cloudflareWorkerWiringMode } from "./cloudflare-installation-policy.js";
 import {
   CLOUDFLARE_SIGNALS,
   type CloudflareConnectConfig,
@@ -39,6 +40,7 @@ import {
   isWorkerWired,
   listAccounts,
   listScriptsStrict,
+  reconcileWorkerUnwiring,
   reconcileWorkerWiring,
   refreshAccessToken,
   revokeToken,
@@ -332,8 +334,8 @@ async function teardownInstallation(
 }
 
 /**
- * Wire the account's Workers to our destinations — the idempotent pass run at
- * connect and by the "Wire all" button. Delegates to the shared
+ * Wire the account's Workers to our destinations — the idempotent pass run by
+ * the "Wire all" button and durable auto-wire. Delegates to the shared
  * reconcileWorkerWiring (same code the worker's periodic reconcile uses), mapping
  * our stored destination slugs into the traces/logs shape it expects.
  */
@@ -344,6 +346,22 @@ async function wireAccountWorkers(input: {
   fetchImpl: typeof fetch;
 }): Promise<{ scripts: number; wired: number; listOk: boolean }> {
   return reconcileWorkerWiring({
+    accountId: input.accountId,
+    accessToken: input.accessToken,
+    slugs: { traces: input.destinations.traces, logs: input.destinations.logs },
+    fetchImpl: input.fetchImpl,
+    log,
+  });
+}
+
+/** Remove our destinations from every Worker in the account (one-shot). */
+async function unwireAccountWorkers(input: {
+  accountId: string;
+  accessToken: string;
+  destinations: Record<string, string>;
+  fetchImpl: typeof fetch;
+}): Promise<{ scripts: number; unwired: number; listOk: boolean }> {
+  return reconcileWorkerUnwiring({
     accountId: input.accountId,
     accessToken: input.accessToken,
     slugs: { traces: input.destinations.traces, logs: input.destinations.logs },
@@ -476,6 +494,7 @@ async function provisionInstallation(input: {
   // account switch must get a fresh key so the superseded account's key can be
   // revoked independently (otherwise both accounts share one live key).
   const sameAccount = existing?.accountId === input.account.id ? existing : null;
+  const wiringMode = cloudflareWorkerWiringMode(sameAccount?.autoWire ?? null);
   const { ingestKey, apiKeyId, minted } = await ensureIngestKey(input.projectId, sameAccount);
 
   // Undo everything this run created that isn't safely persisted to an install
@@ -591,6 +610,7 @@ async function provisionInstallation(input: {
         ingestKeyNonce: ingestCipher.nonce,
         ingestKeyKeyVersion: ingestCipher.keyVersion,
         destinations: persistedDestinations,
+        autoWire: wiringMode.autoWire,
         installedByUserId: input.userId,
       })
       .onConflictDoUpdate({
@@ -613,6 +633,7 @@ async function provisionInstallation(input: {
           ingestKeyNonce: ingestCipher.nonce,
           ingestKeyKeyVersion: ingestCipher.keyVersion,
           destinations: persistedDestinations,
+          autoWire: wiringMode.autoWire,
           installedByUserId: input.userId,
           revokedAt: null,
           updatedAt: now,
@@ -658,17 +679,17 @@ async function provisionInstallation(input: {
       await teardownInstallation(row, { config: input.config, fetchImpl: input.fetchImpl });
     }
 
-    // Wire the account's Workers to the destinations — without this the
-    // destinations exist but no Worker exports to them, so no telemetry ever
-    // flows (the connect looks done but the project stays empty). Use the merged
-    // set so Workers are wired to slugs we retained from a prior connect too, not
-    // just the ones created this run.
-    await wireAccountWorkers({
-      accountId: input.account.id,
-      accessToken: input.token.accessToken,
-      destinations: persistedDestinations,
-      fetchImpl: input.fetchImpl,
-    });
+    // New connections wait for the user to select Workers. A reconnect only
+    // reapplies account-wide wiring when that installation already had auto-wire
+    // enabled, preserving the user's prior choice in either direction.
+    if (wiringMode.wireAfterConnect) {
+      await wireAccountWorkers({
+        accountId: input.account.id,
+        accessToken: input.token.accessToken,
+        destinations: persistedDestinations,
+        fetchImpl: input.fetchImpl,
+      });
+    }
   } catch (e) {
     log.warn(
       { err: e, project_id: input.projectId },
@@ -796,6 +817,31 @@ export function mountCloudflareAuthed(
     }
     const { listOk: _listOk, ...counts } = result;
     return c.json({ ok: true, ...counts });
+  });
+
+  // Turn off background auto-wire and remove our destinations from every
+  // current Worker. Disabling first prevents the periodic reconcile from racing
+  // the explicit bulk-unwire request or reconnecting everything later.
+  app.post("/api/projects/:projectId/cloudflare/workers/unwire-all", async (c) => {
+    const ctx = await requireProjectManager(c, c.req.param("projectId"));
+    const row = await findInstallation(ctx.projectId);
+    if (!row) return c.json({ error: "not connected" }, 404);
+    await db
+      .update(schema.cloudflareInstallations)
+      .set({ autoWire: false, updatedAt: new Date() })
+      .where(eq(schema.cloudflareInstallations.id, row.id));
+    const accessToken = await accessTokenFor(row);
+    const result = await unwireAccountWorkers({
+      accountId: row.accountId,
+      accessToken,
+      destinations: row.destinations ?? {},
+      fetchImpl,
+    });
+    if (!result.listOk) {
+      return c.json({ error: "could not list workers" }, 502);
+    }
+    const { listOk: _listOk, ...counts } = result;
+    return c.json({ ok: true, autoWire: false, ...counts });
   });
 
   // Toggle auto-wire. When on, the worker's periodic reconcile keeps every

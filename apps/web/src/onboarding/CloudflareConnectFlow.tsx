@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useCloudflareInstallation, useStartCloudflareInstall } from "../api.ts";
+import { CloudflareWorkers } from "../cloudflare/CloudflareWorkers.tsx";
 import { Btn } from "../design/ui.tsx";
 import {
   type CloudflarePhase,
@@ -113,9 +114,11 @@ export function CloudflareConnectFlow({
 
       {phase === "connected" && install.data?.installed && (
         <ConnectedPanel
+          projectId={projectId}
           accountName={install.data.accountName}
           accountId={install.data.accountId}
           destinations={install.data.destinations}
+          autoWire={install.data.autoWire}
           eventsArrived={eventsArrived}
         />
       )}
@@ -136,7 +139,7 @@ function headerForPhase(phase: CloudflarePhase): { title: string; sub: string } 
     case "start":
       return {
         title: "Connect Cloudflare",
-        sub: "Authorize Cloudflare once. We set up Workers Observability telemetry destinations that stream your Workers traces, logs, and metrics into Superlog — no agent, no code changes.",
+        sub: "Authorize Cloudflare once. We set up Workers Observability destinations, then you choose which Workers stream traces and logs into Superlog — no agent, no code changes.",
       };
     case "connecting":
       return {
@@ -146,7 +149,7 @@ function headerForPhase(phase: CloudflarePhase): { title: string; sub: string } 
     default:
       return {
         title: "You're connected",
-        sub: "Workers Observability destinations are set up. Telemetry will appear as your Workers run — discovery keeps working in the background.",
+        sub: "Workers Observability destinations are ready. Choose only the Workers that belong in this project.",
       };
   }
 }
@@ -232,14 +235,18 @@ function ConnectingPanel({
 }
 
 function ConnectedPanel({
+  projectId,
   accountName,
   accountId,
   destinations,
+  autoWire,
   eventsArrived,
 }: {
+  projectId: string;
   accountName: string | null;
   accountId: string;
   destinations: Record<string, string>;
+  autoWire: boolean;
   eventsArrived: boolean;
 }) {
   const signals = Object.keys(destinations);
@@ -274,6 +281,8 @@ function ConnectedPanel({
         </div>
       </div>
 
+      <CloudflareWorkers projectId={projectId} accountId={accountId} autoWire={autoWire} />
+
       {eventsArrived ? (
         <div className="flex items-center gap-2.5 rounded-[10px] border border-[rgba(65,209,149,0.35)] bg-[rgba(65,209,149,0.06)] px-4 py-3">
           <span className="text-success">
@@ -291,7 +300,7 @@ function ConnectedPanel({
             <SpinnerIcon size={14} />
           </span>
           <div className="flex-1 text-[12.5px] text-muted">
-            Destinations are live. First events will appear as your Workers run.
+            Wire at least one Worker. Its first events will appear here as it runs.
           </div>
         </div>
       )}

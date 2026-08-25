@@ -68,7 +68,7 @@ export const CONNECT_SECTIONS: ConnectSection[] = [
         id: "cloudflare",
         title: "Cloudflare",
         description:
-          "Authorize Cloudflare once and we set up Workers Observability destinations that stream your Workers traces, logs, and metrics in. No agent, no code.",
+          "Authorize Cloudflare once, then choose which Workers stream traces and logs in. No agent, no code.",
         icon: "cloudflare",
         action: "cloudflare",
       },

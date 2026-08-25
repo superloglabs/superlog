@@ -1,6 +1,11 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { listScripts, listScriptsStrict, reconcileWorkerWiring } from "./observability.js";
+import {
+  listScripts,
+  listScriptsStrict,
+  reconcileWorkerUnwiring,
+  reconcileWorkerWiring,
+} from "./observability.js";
 
 // A fetch stub that answers the three Workers endpoints reconcile touches:
 //   GET  …/workers/scripts?per_page&page       → the (paginated) script list
@@ -124,6 +129,38 @@ test("reconcileWorkerWiring reports listOk:false when the scripts list fails", a
   });
 
   assert.deepEqual(res, { scripts: 0, wired: 0, listOk: false });
+});
+
+test("reconcileWorkerUnwiring removes only this project's destinations", async () => {
+  const { fetchImpl, patched } = fakeCloudflare({
+    scripts: ["wired-here", "wired-elsewhere", "fresh"],
+    settings: {
+      "wired-here": {
+        enabled: true,
+        traces: { enabled: true, destinations: ["trc-slug", "other-traces"] },
+        logs: { enabled: true, destinations: ["log-slug", "other-logs"] },
+      },
+      "wired-elsewhere": {
+        enabled: true,
+        traces: { enabled: true, destinations: ["other-traces"] },
+        logs: { enabled: true, destinations: ["other-logs"] },
+      },
+      fresh: undefined,
+    },
+  });
+
+  const res = await reconcileWorkerUnwiring({
+    accountId: "acc",
+    accessToken: "tok",
+    slugs: SLUGS,
+    fetchImpl,
+  });
+
+  assert.deepEqual(res, { scripts: 3, unwired: 1, listOk: true });
+  assert.deepEqual(
+    patched.map((p) => p.script),
+    ["wired-here"],
+  );
 });
 
 // A paged /workers/scripts fake: `pages` is the list of id-arrays per page,

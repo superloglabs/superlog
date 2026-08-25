@@ -999,6 +999,22 @@ export function useWireAllCloudflareWorkers(projectId: string | undefined) {
   });
 }
 
+export function useUnwireAllCloudflareWorkers(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      fetcher<{ ok: true; autoWire: false; scripts: number; unwired: number }>(
+        `/api/projects/${projectId}/cloudflare/workers/unwire-all`,
+        { method: "POST" },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cloudflare-installation", projectId] });
+      qc.invalidateQueries({ queryKey: ["cloudflare-workers", projectId] });
+    },
+  });
+}
+
 // Toggle auto-wire. Enabling also runs an immediate wire pass server-side, so
 // refresh both the installation (autoWire flag) and the workers list on success.
 export function useSetCloudflareAutoWire(projectId: string | undefined) {
