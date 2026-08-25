@@ -926,7 +926,8 @@ export function mountCloudflareAuthed(
 
   // Wire / unwire one worker. Both read the worker's current observability,
   // apply the additive (wire) or subtractive (unwire) transform, and PATCH only
-  // when it actually changes.
+  // when it actually changes. The shared installation lock keeps each complete
+  // read/modify/PATCH sequence ordered with bulk and scheduled operations.
   app.post("/api/projects/:projectId/cloudflare/workers/:script/wire", async (c) => {
     const ctx = await requireProjectManager(c, c.req.param("projectId"));
     const script = c.req.param("script");
@@ -938,24 +939,26 @@ export function mountCloudflareAuthed(
     }
     const accessToken = await accessTokenFor(row);
     try {
-      const obs = await getScriptObservability({
-        accountId: row.accountId,
-        script,
-        accessToken,
-        fetchImpl,
-      });
-      const next = wireObservabilityDestinations(obs, slugs);
-      if (next) {
-        const res = await updateScriptObservability({
+      return await withWorkerWiringLock(row.id, async () => {
+        const obs = await getScriptObservability({
           accountId: row.accountId,
           script,
-          observability: next,
           accessToken,
           fetchImpl,
         });
-        if (!res.ok) return c.json({ error: res.error ?? "wire failed" }, 502);
-      }
-      return c.json({ ok: true, wired: true });
+        const next = wireObservabilityDestinations(obs, slugs);
+        if (next) {
+          const res = await updateScriptObservability({
+            accountId: row.accountId,
+            script,
+            observability: next,
+            accessToken,
+            fetchImpl,
+          });
+          if (!res.ok) return c.json({ error: res.error ?? "wire failed" }, 502);
+        }
+        return c.json({ ok: true, wired: true });
+      });
     } catch (e) {
       log.warn({ err: e, script }, "cloudflare: wire worker failed");
       return c.json({ error: "wire failed" }, 502);
@@ -970,24 +973,26 @@ export function mountCloudflareAuthed(
     const slugs = slugsForRow(row);
     const accessToken = await accessTokenFor(row);
     try {
-      const obs = await getScriptObservability({
-        accountId: row.accountId,
-        script,
-        accessToken,
-        fetchImpl,
-      });
-      const next = unwireObservabilityDestinations(obs, slugs);
-      if (next) {
-        const res = await updateScriptObservability({
+      return await withWorkerWiringLock(row.id, async () => {
+        const obs = await getScriptObservability({
           accountId: row.accountId,
           script,
-          observability: next,
           accessToken,
           fetchImpl,
         });
-        if (!res.ok) return c.json({ error: res.error ?? "unwire failed" }, 502);
-      }
-      return c.json({ ok: true, wired: false });
+        const next = unwireObservabilityDestinations(obs, slugs);
+        if (next) {
+          const res = await updateScriptObservability({
+            accountId: row.accountId,
+            script,
+            observability: next,
+            accessToken,
+            fetchImpl,
+          });
+          if (!res.ok) return c.json({ error: res.error ?? "unwire failed" }, 502);
+        }
+        return c.json({ ok: true, wired: false });
+      });
     } catch (e) {
       log.warn({ err: e, script }, "cloudflare: unwire worker failed");
       return c.json({ error: "unwire failed" }, 502);
