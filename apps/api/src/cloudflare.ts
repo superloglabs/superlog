@@ -26,7 +26,10 @@ import {
 import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { cloudflareWorkerWiringMode } from "./cloudflare-installation-policy.js";
+import {
+  cloudflareWorkerDestinationRemovalSlugs,
+  cloudflareWorkerWiringMode,
+} from "./cloudflare-installation-policy.js";
 import {
   CLOUDFLARE_SIGNALS,
   CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE,
@@ -422,7 +425,7 @@ async function unwireAccountWorkers(input: {
   return reconcileWorkerUnwiring({
     accountId: input.accountId,
     accessToken: input.accessToken,
-    slugs: { traces: input.destinations.traces, logs: input.destinations.logs },
+    slugs: cloudflareWorkerDestinationRemovalSlugs(input.destinations),
     fetchImpl: input.fetchImpl,
     log,
   });

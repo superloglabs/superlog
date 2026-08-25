@@ -203,6 +203,7 @@ export {
   CLOUDFLARE_API_BASE,
   CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE,
   type CloudflareTokenResult,
+  type WorkerDestinationRemovalSlugs,
   type WorkerDestinationSlugs,
   type WorkerDestinationReplacements,
   type WorkerObservability,

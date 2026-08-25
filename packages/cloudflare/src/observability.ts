@@ -27,6 +27,10 @@ export const CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE = "cloudflare_worker_wiring
 
 /** Our destination slugs for a Worker, per signal (metrics isn't a Worker signal). */
 export type WorkerDestinationSlugs = { traces?: string; logs?: string };
+export type WorkerDestinationRemovalSlugs = {
+  traces?: string | readonly string[];
+  logs?: string | readonly string[];
+};
 export type WorkerDestinationReplacements = {
   traces?: { from: string; to: string };
   logs?: { from: string; to: string };
@@ -118,18 +122,26 @@ export function wireObservabilityDestinations(
  */
 export function unwireObservabilityDestinations(
   current: WorkerObservability | null | undefined,
-  slugs: WorkerDestinationSlugs,
+  slugs: WorkerDestinationRemovalSlugs,
 ): WorkerObservability | null {
   if (!current) return null;
   const next: WorkerObservability = { ...current };
   let changed = false;
   for (const signal of WORKER_OBSERVABILITY_SIGNALS) {
-    const slug = slugs[signal];
-    if (!slug) continue;
+    const configured = slugs[signal];
+    const signalSlugs = new Set(
+      (Array.isArray(configured) ? configured : [configured]).filter(
+        (slug): slug is string => typeof slug === "string" && slug.length > 0,
+      ),
+    );
+    if (signalSlugs.size === 0) continue;
     const existing = next[signal];
     if (!existing || !Array.isArray(existing.destinations)) continue;
-    if (!existing.destinations.includes(slug)) continue;
-    next[signal] = { ...existing, destinations: existing.destinations.filter((d) => d !== slug) };
+    if (!existing.destinations.some((slug) => signalSlugs.has(slug))) continue;
+    next[signal] = {
+      ...existing,
+      destinations: existing.destinations.filter((slug) => !signalSlugs.has(slug)),
+    };
     changed = true;
   }
   return changed ? next : null;
@@ -431,7 +443,7 @@ export async function reconcileWorkerWiring(input: {
 export async function reconcileWorkerUnwiring(input: {
   accountId: string;
   accessToken: string;
-  slugs: WorkerDestinationSlugs;
+  slugs: WorkerDestinationRemovalSlugs;
   fetchImpl?: FetchImpl;
   log?: WiringLogger;
 }): Promise<{ scripts: number; unwired: number; failed: number; listOk: boolean }> {
