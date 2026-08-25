@@ -40,6 +40,8 @@ export type CloudflareReconcilerStore = {
    * remaining install too).
    */
   freshAccessToken(installationId: string): Promise<string | null>;
+  /** Run an action only if auto-wire is still enabled after taking its operation lock. */
+  withAutoWireLock<T>(installationId: string, action: () => Promise<T>): Promise<T | null>;
 };
 
 /** The wiring pass — injected so tests don't hit Cloudflare (prod: reconcileWorkerWiring). */
@@ -117,20 +119,28 @@ export async function runCloudflareReconcileOnce(
       continue;
     }
 
+    let outcome:
+      | { kind: "reconciled"; wired: number }
+      | { kind: "reconcile_error"; error: unknown }
+      | null;
     try {
-      const { wired } = await deps.reconcile({
-        accountId: inst.accountId,
-        accessToken,
-        slugs: inst.slugs,
-        fetchImpl,
-        log: deps.log,
+      outcome = await deps.store.withAutoWireLock(inst.id, async () => {
+        try {
+          const { wired } = await deps.reconcile({
+            accountId: inst.accountId,
+            accessToken,
+            slugs: inst.slugs,
+            fetchImpl,
+            log: deps.log,
+          });
+          return { kind: "reconciled" as const, wired };
+        } catch (error) {
+          return { kind: "reconcile_error" as const, error };
+        }
       });
-      stats.reconciled += 1;
-      stats.workersWired += wired;
     } catch (err) {
-      // reconcileWorkerWiring is per-Worker isolated and shouldn't throw, but a
-      // stray failure for one install must not sink the whole pass — the CF-side
-      // wiring rotated nothing, so isolating it is safe.
+      // A lock / DB failure affects the safety boundary for every remaining
+      // install, so let pg-boss retry the whole job.
       stats.errors += 1;
       deps.log.error(
         {
@@ -138,9 +148,33 @@ export async function runCloudflareReconcileOnce(
           account_id: inst.accountId,
           err: err instanceof Error ? err.message : String(err),
         },
+        "cloudflare reconcile: operation lock failed; aborting pass",
+      );
+      throw err;
+    }
+
+    // The install was disabled after the initial list but before its operation
+    // lock. This is the normal bulk-unwire race: skip without touching Workers.
+    if (!outcome) {
+      stats.skipped += 1;
+      continue;
+    }
+    if (outcome.kind === "reconcile_error") {
+      // reconcileWorkerWiring is per-Worker isolated and shouldn't throw, but a
+      // stray Cloudflare failure for one install must not sink the whole pass.
+      stats.errors += 1;
+      deps.log.error(
+        {
+          installation_id: inst.id,
+          account_id: inst.accountId,
+          err: outcome.error instanceof Error ? outcome.error.message : String(outcome.error),
+        },
         "cloudflare reconcile: wiring pass failed for install; skipping",
       );
+      continue;
     }
+    stats.reconciled += 1;
+    stats.workersWired += outcome.wired;
   }
 
   return stats;

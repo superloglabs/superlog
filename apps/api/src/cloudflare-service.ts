@@ -201,6 +201,7 @@ export { signState, verifyState } from "./oauth-state.js";
 // imports keep working.
 export {
   CLOUDFLARE_API_BASE,
+  CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE,
   type CloudflareTokenResult,
   type WorkerDestinationSlugs,
   type WorkerObservability,

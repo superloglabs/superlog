@@ -29,6 +29,7 @@ import { HTTPException } from "hono/http-exception";
 import { cloudflareWorkerWiringMode } from "./cloudflare-installation-policy.js";
 import {
   CLOUDFLARE_SIGNALS,
+  CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE,
   type CloudflareConnectConfig,
   buildAuthorizeUrl,
   buildDestinationPayload,
@@ -826,16 +827,24 @@ export function mountCloudflareAuthed(
     const ctx = await requireProjectManager(c, c.req.param("projectId"));
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ error: "not connected" }, 404);
-    await db
-      .update(schema.cloudflareInstallations)
-      .set({ autoWire: false, updatedAt: new Date() })
-      .where(eq(schema.cloudflareInstallations.id, row.id));
     const accessToken = await accessTokenFor(row);
-    const result = await unwireAccountWorkers({
-      accountId: row.accountId,
-      accessToken,
-      destinations: row.destinations ?? {},
-      fetchImpl,
+    const result = await db.transaction(async (tx) => {
+      // Hold the same operation lock as the hourly reconciler across both the
+      // preference update and Cloudflare PATCHes. A reconcile already in flight
+      // finishes first; one arriving later observes autoWire=false and skips.
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE}), hashtext(${row.id}))`,
+      );
+      await tx
+        .update(schema.cloudflareInstallations)
+        .set({ autoWire: false, updatedAt: new Date() })
+        .where(eq(schema.cloudflareInstallations.id, row.id));
+      return unwireAccountWorkers({
+        accountId: row.accountId,
+        accessToken,
+        destinations: row.destinations ?? {},
+        fetchImpl,
+      });
     });
     if (!result.listOk) {
       return c.json({ error: "could not list workers" }, 502);

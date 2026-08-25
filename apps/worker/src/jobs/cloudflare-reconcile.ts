@@ -11,12 +11,13 @@
 
 import {
   type CloudflareClientCredentials,
+  CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE,
   cloudflareClientFromEnv,
   reconcileWorkerWiring,
   refreshAccessToken,
 } from "@superlog/cloudflare";
 import { decryptIntegrationSecret, encryptIntegrationSecret, schema } from "@superlog/db";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { lockInstallation } from "../cloudflare/lock.js";
 import {
   type CloudflareReconcileInstallation,
@@ -173,6 +174,27 @@ function createStore(
             ),
           );
         return refreshed.accessToken;
+      });
+    },
+
+    async withAutoWireLock(installationId, action) {
+      return db.transaction(async (tx) => {
+        // Serialize the scheduled wiring pass with interactive bulk unwiring.
+        // Keep the transaction open across the Cloudflare calls so whichever
+        // operation gets the lock second determines the final remote state.
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE}), hashtext(${installationId}))`,
+        );
+        const cur = await tx.query.cloudflareInstallations.findFirst({
+          where: and(
+            eq(schema.cloudflareInstallations.id, installationId),
+            eq(schema.cloudflareInstallations.autoWire, true),
+            isNull(schema.cloudflareInstallations.revokedAt),
+          ),
+          columns: { id: true },
+        });
+        if (!cur) return null;
+        return action();
       });
     },
   };
