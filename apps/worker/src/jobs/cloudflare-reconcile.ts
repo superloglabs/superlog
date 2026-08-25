@@ -191,10 +191,17 @@ function createStore(
             eq(schema.cloudflareInstallations.autoWire, true),
             isNull(schema.cloudflareInstallations.revokedAt),
           ),
-          columns: { id: true },
+          columns: { id: true, accountId: true, destinations: true },
         });
         if (!cur) return null;
-        return action();
+        return action({
+          id: cur.id,
+          accountId: cur.accountId,
+          slugs: {
+            traces: cur.destinations?.traces,
+            logs: cur.destinations?.logs,
+          },
+        });
       });
     },
   };

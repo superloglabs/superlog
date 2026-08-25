@@ -43,7 +43,7 @@ export type CloudflareReconcilerStore = {
   /** Run an action only if auto-wire is still enabled after taking the account lock. */
   withAutoWireLock<T>(
     installation: Pick<CloudflareReconcileInstallation, "id" | "accountId">,
-    action: () => Promise<T>,
+    action: (current: CloudflareReconcileInstallation) => Promise<T>,
   ): Promise<T | null>;
 };
 
@@ -127,12 +127,12 @@ export async function runCloudflareReconcileOnce(
       | { kind: "reconcile_error"; error: unknown }
       | null;
     try {
-      outcome = await deps.store.withAutoWireLock(inst, async () => {
+      outcome = await deps.store.withAutoWireLock(inst, async (current) => {
         try {
           const { wired } = await deps.reconcile({
-            accountId: inst.accountId,
+            accountId: current.accountId,
             accessToken,
-            slugs: inst.slugs,
+            slugs: current.slugs,
             fetchImpl,
             log: deps.log,
           });

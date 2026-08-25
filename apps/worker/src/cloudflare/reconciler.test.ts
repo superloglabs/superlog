@@ -24,6 +24,7 @@ function makeStore(
   tokens: Record<string, string | null | Error>,
   autoWire: Record<string, boolean> = {},
   lockedAccounts: string[] = [],
+  currentInstalls: CloudflareReconcileInstallation[] = installs,
 ): CloudflareReconcilerStore {
   return {
     async listAutoWireInstallations() {
@@ -36,7 +37,8 @@ function makeStore(
     },
     async withAutoWireLock(installation, action) {
       lockedAccounts.push(installation.accountId);
-      return autoWire[installation.id] === false ? null : action();
+      const current = currentInstalls.find((candidate) => candidate.id === installation.id);
+      return autoWire[installation.id] === false || !current ? null : action(current);
     },
   };
 }
@@ -107,6 +109,24 @@ test("reconcile rechecks auto-wire under the operation lock before wiring", asyn
   assert.equal(stats.reconciled, 0);
   assert.equal(stats.skipped, 1);
   assert.deepEqual(lockedAccounts, ["acc-disabled-after-list"]);
+});
+
+test("reconcile uses destination slugs reloaded under the account lock", async () => {
+  const listed = installation("changed");
+  listed.slugs = { traces: "old-traces", logs: "old-logs" };
+  const current = { ...listed, slugs: { traces: "new-traces", logs: "new-logs" } };
+  let received: CloudflareReconcileInstallation["slugs"] | null = null;
+
+  await runCloudflareReconcileOnce({
+    store: makeStore([listed], { changed: "tok" }, {}, [], [current]),
+    reconcile: async ({ slugs }) => {
+      received = slugs;
+      return { scripts: 1, wired: 1, listOk: true };
+    },
+    log: noopLog,
+  });
+
+  assert.deepEqual(received, current.slugs);
 });
 
 test("a wiring failure for one install is isolated, not fatal", async () => {
