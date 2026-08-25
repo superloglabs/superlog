@@ -4,6 +4,7 @@ export type McpTelemetryToolName =
   | "query_logs"
   | "query_traces"
   | "query_metrics"
+  | "get_trace"
   | "list_services";
 
 export type TelemetryRetryRequired = {
