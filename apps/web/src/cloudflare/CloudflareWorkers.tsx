@@ -31,7 +31,6 @@ export function CloudflareWorkers({
   const [busy, setBusy] = useState<string | null>(null);
 
   const list = workers.data?.workers ?? [];
-  const anyWired = list.some((worker) => worker.hasWiring);
   const anyUnwired = list.some((worker) => !worker.wired);
   // Disable every wiring control during a change so overlapping Cloudflare
   // settings PATCHes cannot race to a nondeterministic final state.
@@ -77,7 +76,7 @@ export function CloudflareWorkers({
                 size="sm"
                 variant="secondary"
                 loading={unwireAll.isPending}
-                disabled={!anyWired || anyWiringPending}
+                disabled={anyWiringPending}
                 onClick={() => unwireAll.mutate()}
               >
                 Unwire all

@@ -31,6 +31,7 @@ import {
   CLOUDFLARE_SIGNALS,
   CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE,
   type CloudflareConnectConfig,
+  type WorkerDestinationReplacements,
   buildAuthorizeUrl,
   buildDestinationPayload,
   cloudflareConfigFromEnv,
@@ -45,6 +46,7 @@ import {
   reconcileWorkerUnwiring,
   reconcileWorkerWiring,
   refreshAccessToken,
+  replaceObservabilityDestinations,
   revokeToken,
   signState,
   staleDestinationSlugs,
@@ -387,6 +389,58 @@ async function unwireAccountWorkers(input: {
   });
 }
 
+/** Migrate recreated destination slugs without selecting any additional Workers. */
+async function replaceAccountWorkerDestinations(input: {
+  accountId: string;
+  accessToken: string;
+  replacements: WorkerDestinationReplacements;
+  fetchImpl: typeof fetch;
+}): Promise<{ scripts: number; replaced: number; failed: number; listOk: boolean }> {
+  if (!input.replacements.traces && !input.replacements.logs) {
+    return { scripts: 0, replaced: 0, failed: 0, listOk: true };
+  }
+  let scripts: string[];
+  try {
+    scripts = await listScriptsStrict(input.accountId, input.accessToken, input.fetchImpl);
+  } catch (e) {
+    log.warn({ err: e }, "cloudflare: list workers for destination migration failed");
+    return { scripts: 0, replaced: 0, failed: 0, listOk: false };
+  }
+  let replaced = 0;
+  let failed = 0;
+  for (const script of scripts) {
+    try {
+      const current = await getScriptObservability({
+        accountId: input.accountId,
+        script,
+        accessToken: input.accessToken,
+        fetchImpl: input.fetchImpl,
+      });
+      const next = replaceObservabilityDestinations(current, input.replacements);
+      if (!next) continue;
+      const result = await updateScriptObservability({
+        accountId: input.accountId,
+        script,
+        observability: next,
+        accessToken: input.accessToken,
+        fetchImpl: input.fetchImpl,
+      });
+      if (result.ok) replaced += 1;
+      else {
+        failed += 1;
+        log.warn(
+          { script, error: result.error },
+          "cloudflare: destination migration update failed",
+        );
+      }
+    } catch (e) {
+      failed += 1;
+      log.warn({ err: e, script }, "cloudflare: destination migration read failed");
+    }
+  }
+  return { scripts: scripts.length, replaced, failed, listOk: true };
+}
+
 /** Our destination slugs for a row, in the shape the wire/unwire helpers take. */
 function slugsForRow(row: CloudflareInstallationRow): { traces?: string; logs?: string } {
   return { traces: row.destinations?.traces, logs: row.destinations?.logs };
@@ -669,21 +723,6 @@ async function provisionInstallation(input: {
   // cleanup is best-effort housekeeping: a failure here must NOT turn an
   // already-persisted connect into an error redirect, so we log and swallow.
   try {
-    // Same-account reconnect: delete the prior destinations we just replaced.
-    // `staleDestinationSlugs` only targets prior slugs for signals that actually
-    // got a replacement this run (a signal whose recreate failed keeps its old
-    // destination, which we merged back into the row above) and never a slug
-    // that reconnect updated in place.
-    if (sameAccount?.destinations) {
-      const staleSlugs = staleDestinationSlugs(sameAccount.destinations, destinations);
-      await deleteRemoteDestinations({
-        accountId: input.account.id,
-        accessToken: input.token.accessToken,
-        destinations: staleSlugs,
-        fetchImpl: input.fetchImpl,
-      });
-    }
-
     // Enforce a single active Cloudflare account per project: fully tear down any
     // other active install rows for this project that point at a different
     // account (delete their remote destinations, revoke their OAuth token +
@@ -708,15 +747,51 @@ async function provisionInstallation(input: {
         const current = await tx.query.cloudflareInstallations.findFirst({
           where: eq(schema.cloudflareInstallations.id, sameAccount.id),
         });
-        // Unwire all may have disabled auto-wire while reconnect was
-        // provisioning destinations. Honor the preference that won the lock.
-        if (!current?.autoWire) return;
-        await wireAccountWorkers({
+        if (!current) return;
+
+        // A destination that Cloudflare recreated has a new slug. Migrate only
+        // Workers that referenced the prior slug, preserving manual selection.
+        const staleSlugs = staleDestinationSlugs(sameAccount.destinations ?? {}, destinations);
+        const replacements: WorkerDestinationReplacements = {};
+        for (const signal of ["traces", "logs"] as const) {
+          const from = staleSlugs[signal];
+          const to = destinations[signal];
+          if (from && to && from !== to) replacements[signal] = { from, to };
+        }
+        const migration = await replaceAccountWorkerDestinations({
           accountId: current.accountId,
           accessToken: input.token.accessToken,
-          destinations: current.destinations ?? {},
+          replacements,
           fetchImpl: input.fetchImpl,
         });
+
+        // Unwire all may have disabled auto-wire while reconnect was
+        // provisioning destinations. Honor the preference that won the lock.
+        if (current.autoWire) {
+          await wireAccountWorkers({
+            accountId: current.accountId,
+            accessToken: input.token.accessToken,
+            destinations: current.destinations ?? {},
+            fetchImpl: input.fetchImpl,
+          });
+        }
+
+        // Retire old destinations only after every readable Worker reference
+        // moved successfully. On a transient failure, leaving the old remote
+        // destination alive prevents manually selected Workers from going dark.
+        if (migration.listOk && migration.failed === 0) {
+          await deleteRemoteDestinations({
+            accountId: current.accountId,
+            accessToken: input.token.accessToken,
+            destinations: staleSlugs,
+            fetchImpl: input.fetchImpl,
+          });
+        } else {
+          log.warn(
+            { account_id: current.accountId, ...migration },
+            "cloudflare: kept prior destinations after incomplete Worker migration",
+          );
+        }
       });
     }
   } catch (e) {

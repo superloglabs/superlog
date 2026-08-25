@@ -27,6 +27,10 @@ export const CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE = "cloudflare_worker_wiring
 
 /** Our destination slugs for a Worker, per signal (metrics isn't a Worker signal). */
 export type WorkerDestinationSlugs = { traces?: string; logs?: string };
+export type WorkerDestinationReplacements = {
+  traces?: { from: string; to: string };
+  logs?: { from: string; to: string };
+};
 
 export type WorkerObservabilitySignal = {
   enabled?: boolean;
@@ -126,6 +130,30 @@ export function unwireObservabilityDestinations(
     if (!existing || !Array.isArray(existing.destinations)) continue;
     if (!existing.destinations.includes(slug)) continue;
     next[signal] = { ...existing, destinations: existing.destinations.filter((d) => d !== slug) };
+    changed = true;
+  }
+  return changed ? next : null;
+}
+
+/**
+ * Replace destination slugs only on Workers that already reference the old
+ * slug. This migrates manual selections without opting unrelated Workers in.
+ */
+export function replaceObservabilityDestinations(
+  current: WorkerObservability | null | undefined,
+  replacements: WorkerDestinationReplacements,
+): WorkerObservability | null {
+  if (!current) return null;
+  const next: WorkerObservability = { ...current };
+  let changed = false;
+  for (const signal of WORKER_OBSERVABILITY_SIGNALS) {
+    const replacement = replacements[signal];
+    const existing = next[signal];
+    if (!replacement || !existing || !Array.isArray(existing.destinations)) continue;
+    if (!existing.destinations.includes(replacement.from)) continue;
+    const destinations = existing.destinations.filter((slug) => slug !== replacement.from);
+    if (!destinations.includes(replacement.to)) destinations.push(replacement.to);
+    next[signal] = { ...existing, destinations };
     changed = true;
   }
   return changed ? next : null;

@@ -6,6 +6,7 @@ import {
   listScriptsStrict,
   reconcileWorkerUnwiring,
   reconcileWorkerWiring,
+  replaceObservabilityDestinations,
 } from "./observability.js";
 
 // A fetch stub that answers the three Workers endpoints reconcile touches:
@@ -73,6 +74,34 @@ test("hasWorkerWiring detects partial wiring without matching unrelated destinat
       SLUGS,
     ),
     false,
+  );
+});
+
+test("replaceObservabilityDestinations migrates only existing project destinations", () => {
+  assert.deepEqual(
+    replaceObservabilityDestinations(
+      {
+        enabled: true,
+        traces: { enabled: true, destinations: ["old-traces", "other-traces"] },
+        logs: { enabled: true, destinations: ["other-logs"] },
+      },
+      {
+        traces: { from: "old-traces", to: "new-traces" },
+        logs: { from: "old-logs", to: "new-logs" },
+      },
+    ),
+    {
+      enabled: true,
+      traces: { enabled: true, destinations: ["other-traces", "new-traces"] },
+      logs: { enabled: true, destinations: ["other-logs"] },
+    },
+  );
+  assert.equal(
+    replaceObservabilityDestinations(
+      { enabled: true, traces: { enabled: true, destinations: ["other-traces"] } },
+      { traces: { from: "old-traces", to: "new-traces" } },
+    ),
+    null,
   );
 });
 
