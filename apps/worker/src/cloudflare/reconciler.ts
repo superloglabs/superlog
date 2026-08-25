@@ -57,7 +57,7 @@ export type WorkerWiringFn = (input: {
     info(f: Record<string, unknown>, m: string): void;
     warn(f: Record<string, unknown>, m: string): void;
   };
-}) => Promise<{ scripts: number; wired: number; listOk: boolean }>;
+}) => Promise<{ scripts: number; wired: number; failed?: number; listOk: boolean }>;
 
 type ReconcilerLogger = {
   info(fields: Record<string, unknown>, msg: string): void;

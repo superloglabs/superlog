@@ -186,7 +186,7 @@ export function isWorkerWired(
 /** Whether any of this project's destinations are present on the Worker. */
 export function hasWorkerWiring(
   current: WorkerObservability | null | undefined,
-  slugs: WorkerDestinationSlugs,
+  slugs: WorkerDestinationRemovalSlugs,
 ): boolean {
   return unwireObservabilityDestinations(current, slugs) !== null;
 }
@@ -380,10 +380,12 @@ export async function reconcileWorkerWiring(input: {
   slugs: WorkerDestinationSlugs;
   fetchImpl?: FetchImpl;
   log?: WiringLogger;
-}): Promise<{ scripts: number; wired: number; listOk: boolean }> {
+}): Promise<{ scripts: number; wired: number; failed: number; listOk: boolean }> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const slugs = { traces: input.slugs.traces, logs: input.slugs.logs };
-  if (!slugs.traces && !slugs.logs) return { scripts: 0, wired: 0, listOk: true };
+  if (!slugs.traces && !slugs.logs) {
+    return { scripts: 0, wired: 0, failed: 0, listOk: true };
+  }
   let scripts: string[];
   try {
     scripts = await listScriptsStrict(input.accountId, input.accessToken, fetchImpl);
@@ -394,9 +396,10 @@ export async function reconcileWorkerWiring(input: {
       { err: e instanceof Error ? e.message : String(e), account_id: input.accountId },
       "cloudflare: list worker scripts failed",
     );
-    return { scripts: 0, wired: 0, listOk: false };
+    return { scripts: 0, wired: 0, failed: 0, listOk: false };
   }
   let wired = 0;
+  let failed = 0;
   for (const script of scripts) {
     try {
       const current = await getScriptObservability({
@@ -415,12 +418,15 @@ export async function reconcileWorkerWiring(input: {
         fetchImpl,
       });
       if (res.ok) wired += 1;
-      else
+      else {
+        failed += 1;
         input.log?.warn(
           { script, error: res.error },
           "cloudflare: failed to wire worker observability",
         );
+      }
     } catch (e) {
+      failed += 1;
       input.log?.warn(
         { err: e instanceof Error ? e.message : String(e), script },
         "cloudflare: failed to wire worker observability",
@@ -428,10 +434,10 @@ export async function reconcileWorkerWiring(input: {
     }
   }
   input.log?.info(
-    { account_id: input.accountId, scripts: scripts.length, wired },
+    { account_id: input.accountId, scripts: scripts.length, wired, failed },
     "cloudflare: wired worker observability to destinations",
   );
-  return { scripts: scripts.length, wired, listOk: true };
+  return { scripts: scripts.length, wired, failed, listOk: true };
 }
 
 /**

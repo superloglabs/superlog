@@ -174,6 +174,7 @@ test("reconcileWorkerWiring is per-worker isolated and never throws on failures"
 
   assert.equal(res.scripts, 3);
   assert.equal(res.wired, 1); // only "ok" succeeded; the other two failed but didn't throw
+  assert.equal(res.failed, 2);
   assert.ok(patched.some((p) => p.script === "ok"));
 });
 
@@ -191,7 +192,7 @@ test("reconcileWorkerWiring is a no-op when no destination slugs exist", async (
     fetchImpl,
   });
 
-  assert.deepEqual(res, { scripts: 0, wired: 0, listOk: true });
+  assert.deepEqual(res, { scripts: 0, wired: 0, failed: 0, listOk: true });
   assert.equal(called, false); // short-circuits before hitting Cloudflare
 });
 
@@ -211,7 +212,7 @@ test("reconcileWorkerWiring reports listOk:false when the scripts list fails", a
     fetchImpl,
   });
 
-  assert.deepEqual(res, { scripts: 0, wired: 0, listOk: false });
+  assert.deepEqual(res, { scripts: 0, wired: 0, failed: 0, listOk: false });
 });
 
 test("reconcileWorkerUnwiring removes only this project's destinations", async () => {

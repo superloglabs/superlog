@@ -405,7 +405,7 @@ async function wireAccountWorkers(input: {
   accessToken: string;
   destinations: Record<string, string>;
   fetchImpl: typeof fetch;
-}): Promise<{ scripts: number; wired: number; listOk: boolean }> {
+}): Promise<{ scripts: number; wired: number; failed: number; listOk: boolean }> {
   return reconcileWorkerWiring({
     accountId: input.accountId,
     accessToken: input.accessToken,
@@ -949,7 +949,8 @@ export function mountCloudflareAuthed(
     const ctx = await requireProjectAccess(c, c.req.param("projectId"));
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ error: "not connected" }, 404);
-    const slugs = slugsForRow(row);
+    const activeSlugs = slugsForRow(row);
+    const removalSlugs = cloudflareWorkerDestinationRemovalSlugs(row.destinations);
     const accessToken = await accessTokenFor(row);
     // Strict list: a failed scripts read surfaces as an error the card shows as
     // "reconnect", not an empty account (the tolerant listScripts would hide it).
@@ -971,8 +972,8 @@ export function mountCloudflareAuthed(
           });
           return {
             name: script,
-            hasWiring: hasWorkerWiring(obs, slugs),
-            wired: isWorkerWired(obs, slugs),
+            hasWiring: hasWorkerWiring(obs, removalSlugs),
+            wired: isWorkerWired(obs, activeSlugs),
             observabilityEnabled: obs?.enabled === true,
           };
         } catch (e) {
@@ -1009,6 +1010,10 @@ export function mountCloudflareAuthed(
     // the account — surface it instead of reporting a misleading success.
     if (!result.listOk) {
       return c.json({ error: "could not list workers" }, 502);
+    }
+    if (result.failed > 0) {
+      const { listOk: _listOk, ...counts } = result;
+      return c.json({ error: "could not wire all workers", ...counts }, 502);
     }
     const { listOk: _listOk, ...counts } = result;
     return c.json({ ok: true, ...counts });
@@ -1156,7 +1161,7 @@ export function mountCloudflareAuthed(
           where: eq(schema.cloudflareInstallations.id, row.id),
         });
         if (!current) throw new HTTPException(404, { message: "not connected" });
-        const slugs = slugsForRow(current);
+        const slugs = cloudflareWorkerDestinationRemovalSlugs(current.destinations);
         const obs = await getScriptObservability({
           accountId: current.accountId,
           script,
