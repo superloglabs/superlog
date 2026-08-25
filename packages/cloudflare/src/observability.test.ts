@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
+  hasWorkerWiring,
   listScripts,
   listScriptsStrict,
   reconcileWorkerUnwiring,
@@ -49,6 +50,31 @@ function json(body: unknown, status = 200): Response {
 }
 
 const SLUGS = { traces: "trc-slug", logs: "log-slug" };
+
+test("hasWorkerWiring detects partial wiring without matching unrelated destinations", () => {
+  assert.equal(
+    hasWorkerWiring(
+      {
+        enabled: true,
+        traces: { enabled: true, destinations: ["trc-slug"] },
+        logs: { enabled: true, destinations: ["other-logs"] },
+      },
+      SLUGS,
+    ),
+    true,
+  );
+  assert.equal(
+    hasWorkerWiring(
+      {
+        enabled: true,
+        traces: { enabled: true, destinations: ["other-traces"] },
+        logs: { enabled: true, destinations: ["other-logs"] },
+      },
+      SLUGS,
+    ),
+    false,
+  );
+});
 
 test("reconcileWorkerWiring wires only the drifted workers", async () => {
   // one already fully wired, one unwired, one brand-new (no observability).

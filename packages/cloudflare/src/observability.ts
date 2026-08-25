@@ -142,6 +142,14 @@ export function isWorkerWired(
   return wireObservabilityDestinations(current, slugs) === null;
 }
 
+/** Whether any of this project's destinations are present on the Worker. */
+export function hasWorkerWiring(
+  current: WorkerObservability | null | undefined,
+  slugs: WorkerDestinationSlugs,
+): boolean {
+  return unwireObservabilityDestinations(current, slugs) !== null;
+}
+
 // ---------------------------------------------------------------------------
 // HTTP wrappers (injectable fetch)
 // ---------------------------------------------------------------------------

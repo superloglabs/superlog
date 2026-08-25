@@ -31,7 +31,7 @@ export function CloudflareWorkers({
   const [busy, setBusy] = useState<string | null>(null);
 
   const list = workers.data?.workers ?? [];
-  const anyWired = list.some((worker) => worker.wired);
+  const anyWired = list.some((worker) => worker.hasWiring);
   const anyUnwired = list.some((worker) => !worker.wired);
   // Disable every wiring control during a change so overlapping Cloudflare
   // settings PATCHes cannot race to a nondeterministic final state.
@@ -100,23 +100,30 @@ export function CloudflareWorkers({
                 <li key={worker.name} className="flex items-center justify-between gap-3 px-3 py-2">
                   <span className="min-w-0 truncate text-[13px]">{worker.name}</span>
                   <div className="flex flex-shrink-0 items-center gap-2">
-                    <Chip tone={worker.wired ? "success" : "muted"} dot>
-                      {worker.wired ? "Streaming" : "Not wired"}
+                    <Chip
+                      tone={worker.wired ? "success" : worker.hasWiring ? "warning" : "muted"}
+                      dot
+                    >
+                      {worker.wired
+                        ? "Streaming"
+                        : worker.hasWiring
+                          ? "Partially wired"
+                          : "Not wired"}
                     </Chip>
                     {!autoWire && (
                       <Btn
                         size="sm"
-                        variant={worker.wired ? "secondary" : "primary"}
+                        variant={worker.hasWiring ? "secondary" : "primary"}
                         loading={pending}
                         disabled={anyWiringPending}
                         onClick={() => {
                           setBusy(worker.name);
-                          (worker.wired ? unwire : wire).mutate(worker.name, {
+                          (worker.hasWiring ? unwire : wire).mutate(worker.name, {
                             onSettled: () => setBusy(null),
                           });
                         }}
                       >
-                        {worker.wired ? "Unwire" : "Wire"}
+                        {worker.hasWiring ? "Unwire" : "Wire"}
                       </Btn>
                     )}
                   </div>

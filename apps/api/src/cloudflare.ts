@@ -38,6 +38,7 @@ import {
   ensureDestination,
   exchangeCodeForToken,
   getScriptObservability,
+  hasWorkerWiring,
   isWorkerWired,
   listAccounts,
   listScriptsStrict,
@@ -807,6 +808,7 @@ export function mountCloudflareAuthed(
           });
           return {
             name: script,
+            hasWiring: hasWorkerWiring(obs, slugs),
             wired: isWorkerWired(obs, slugs),
             observabilityEnabled: obs?.enabled === true,
           };
@@ -814,7 +816,7 @@ export function mountCloudflareAuthed(
           // A single unreadable worker shouldn't blank the list — show it as
           // unwired so the user can still try to wire it.
           log.warn({ err: e, script }, "cloudflare: worker observability read failed");
-          return { name: script, wired: false, observabilityEnabled: false };
+          return { name: script, hasWiring: false, wired: false, observabilityEnabled: false };
         }
       }),
     );

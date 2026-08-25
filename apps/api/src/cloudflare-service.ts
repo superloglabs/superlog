@@ -208,6 +208,7 @@ export {
   type WorkerObservabilitySignal,
   exchangeCodeForToken,
   getScriptObservability,
+  hasWorkerWiring,
   isWorkerWired,
   listScripts,
   listScriptsStrict,
