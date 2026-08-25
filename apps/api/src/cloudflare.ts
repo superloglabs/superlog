@@ -63,6 +63,7 @@ const log = logger.child({ scope: "cloudflare" });
 type Vars = { userId: string; orgId: string | null };
 
 type CloudflareInstallationRow = typeof schema.cloudflareInstallations.$inferSelect;
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /** Public shape — never leaks token ciphertext. */
 function toPublic(row: CloudflareInstallationRow) {
@@ -282,6 +283,20 @@ async function freshAccessToken(
 }
 
 /**
+ * Serialize account-wide Worker wiring changes for one installation. Every
+ * bulk wiring pass uses this operation lock, including the periodic reconciler,
+ * so the action that acquires it last deterministically wins.
+ */
+async function withWorkerWiringLock<T>(installationId: string, action: (tx: Tx) => Promise<T>) {
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE}), hashtext(${installationId}))`,
+    );
+    return action(tx);
+  });
+}
+
+/**
  * Fully tear down one installation row: delete its remote destinations, revoke
  * its delegated OAuth token, revoke the ingest key its destinations authenticate
  * with, and soft-revoke the row. Each remote step is best-effort (the grant may
@@ -361,7 +376,7 @@ async function unwireAccountWorkers(input: {
   accessToken: string;
   destinations: Record<string, string>;
   fetchImpl: typeof fetch;
-}): Promise<{ scripts: number; unwired: number; listOk: boolean }> {
+}): Promise<{ scripts: number; unwired: number; failed: number; listOk: boolean }> {
   return reconcileWorkerUnwiring({
     accountId: input.accountId,
     accessToken: input.accessToken,
@@ -683,12 +698,20 @@ async function provisionInstallation(input: {
     // New connections wait for the user to select Workers. A reconnect only
     // reapplies account-wide wiring when that installation already had auto-wire
     // enabled, preserving the user's prior choice in either direction.
-    if (wiringMode.wireAfterConnect) {
-      await wireAccountWorkers({
-        accountId: input.account.id,
-        accessToken: input.token.accessToken,
-        destinations: persistedDestinations,
-        fetchImpl: input.fetchImpl,
+    if (wiringMode.wireAfterConnect && sameAccount) {
+      await withWorkerWiringLock(sameAccount.id, async (tx) => {
+        const current = await tx.query.cloudflareInstallations.findFirst({
+          where: eq(schema.cloudflareInstallations.id, sameAccount.id),
+        });
+        // Unwire all may have disabled auto-wire while reconnect was
+        // provisioning destinations. Honor the preference that won the lock.
+        if (!current?.autoWire) return;
+        await wireAccountWorkers({
+          accountId: current.accountId,
+          accessToken: input.token.accessToken,
+          destinations: current.destinations ?? {},
+          fetchImpl: input.fetchImpl,
+        });
       });
     }
   } catch (e) {
@@ -805,12 +828,14 @@ export function mountCloudflareAuthed(
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ error: "not connected" }, 404);
     const accessToken = await accessTokenFor(row);
-    const result = await wireAccountWorkers({
-      accountId: row.accountId,
-      accessToken,
-      destinations: row.destinations ?? {},
-      fetchImpl,
-    });
+    const result = await withWorkerWiringLock(row.id, () =>
+      wireAccountWorkers({
+        accountId: row.accountId,
+        accessToken,
+        destinations: row.destinations ?? {},
+        fetchImpl,
+      }),
+    );
     // A failed scripts list here means we wired nothing because we couldn't see
     // the account — surface it instead of reporting a misleading success.
     if (!result.listOk) {
@@ -828,13 +853,9 @@ export function mountCloudflareAuthed(
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ error: "not connected" }, 404);
     const accessToken = await accessTokenFor(row);
-    const result = await db.transaction(async (tx) => {
-      // Hold the same operation lock as the hourly reconciler across both the
-      // preference update and Cloudflare PATCHes. A reconcile already in flight
-      // finishes first; one arriving later observes autoWire=false and skips.
-      await tx.execute(
-        sql`select pg_advisory_xact_lock(hashtext(${CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE}), hashtext(${row.id}))`,
-      );
+    const result = await withWorkerWiringLock(row.id, async (tx) => {
+      // A reconcile already in flight finishes first; one arriving later
+      // observes autoWire=false and skips.
       await tx
         .update(schema.cloudflareInstallations)
         .set({ autoWire: false, updatedAt: new Date() })
@@ -848,6 +869,10 @@ export function mountCloudflareAuthed(
     });
     if (!result.listOk) {
       return c.json({ error: "could not list workers" }, 502);
+    }
+    if (result.failed > 0) {
+      const { listOk: _listOk, ...counts } = result;
+      return c.json({ error: "could not unwire all workers", autoWire: false, ...counts }, 502);
     }
     const { listOk: _listOk, ...counts } = result;
     return c.json({ ok: true, autoWire: false, ...counts });
@@ -866,25 +891,34 @@ export function mountCloudflareAuthed(
     if (typeof autoWire !== "boolean") {
       return c.json({ error: "autoWire must be a boolean" }, 400);
     }
-    await db
-      .update(schema.cloudflareInstallations)
-      .set({ autoWire, updatedAt: new Date() })
-      .where(eq(schema.cloudflareInstallations.id, row.id));
+    let accessToken: string | null = null;
     if (autoWire) {
-      // Best-effort immediate wire so turning it on takes effect now; the
-      // scheduled reconcile is what keeps it wired going forward.
       try {
-        const accessToken = await accessTokenFor(row);
-        await wireAccountWorkers({
-          accountId: row.accountId,
-          accessToken,
-          destinations: row.destinations ?? {},
-          fetchImpl,
-        });
+        accessToken = await accessTokenFor(row);
       } catch (e) {
-        log.warn({ err: e }, "cloudflare: immediate wire on auto-wire enable failed");
+        log.warn({ err: e }, "cloudflare: access token unavailable for immediate auto-wire");
       }
     }
+    await withWorkerWiringLock(row.id, async (tx) => {
+      await tx
+        .update(schema.cloudflareInstallations)
+        .set({ autoWire, updatedAt: new Date() })
+        .where(eq(schema.cloudflareInstallations.id, row.id));
+      if (autoWire && accessToken) {
+        // Best-effort immediate wire so turning it on takes effect now; the
+        // scheduled reconcile is what keeps it wired going forward.
+        try {
+          await wireAccountWorkers({
+            accountId: row.accountId,
+            accessToken,
+            destinations: row.destinations ?? {},
+            fetchImpl,
+          });
+        } catch (e) {
+          log.warn({ err: e }, "cloudflare: immediate wire on auto-wire enable failed");
+        }
+      }
+    });
     return c.json({ ok: true, autoWire });
   });
 

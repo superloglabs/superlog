@@ -156,11 +156,34 @@ test("reconcileWorkerUnwiring removes only this project's destinations", async (
     fetchImpl,
   });
 
-  assert.deepEqual(res, { scripts: 3, unwired: 1, listOk: true });
+  assert.deepEqual(res, { scripts: 3, unwired: 1, failed: 0, listOk: true });
   assert.deepEqual(
     patched.map((p) => p.script),
     ["wired-here"],
   );
+});
+
+test("reconcileWorkerUnwiring reports Workers it could not fully unwire", async () => {
+  const wired = {
+    enabled: true,
+    traces: { enabled: true, destinations: ["trc-slug"] },
+    logs: { enabled: true, destinations: ["log-slug"] },
+  };
+  const { fetchImpl } = fakeCloudflare({
+    scripts: ["ok", "read-fails", "patch-fails"],
+    settings: { ok: wired, "patch-fails": wired },
+    readFails: new Set(["read-fails"]),
+    patchFails: new Set(["patch-fails"]),
+  });
+
+  const res = await reconcileWorkerUnwiring({
+    accountId: "acc",
+    accessToken: "tok",
+    slugs: SLUGS,
+    fetchImpl,
+  });
+
+  assert.deepEqual(res, { scripts: 3, unwired: 1, failed: 2, listOk: true });
 });
 
 // A paged /workers/scripts fake: `pages` is the list of id-arrays per page,

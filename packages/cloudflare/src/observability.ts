@@ -397,10 +397,12 @@ export async function reconcileWorkerUnwiring(input: {
   slugs: WorkerDestinationSlugs;
   fetchImpl?: FetchImpl;
   log?: WiringLogger;
-}): Promise<{ scripts: number; unwired: number; listOk: boolean }> {
+}): Promise<{ scripts: number; unwired: number; failed: number; listOk: boolean }> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const slugs = { traces: input.slugs.traces, logs: input.slugs.logs };
-  if (!slugs.traces && !slugs.logs) return { scripts: 0, unwired: 0, listOk: true };
+  if (!slugs.traces && !slugs.logs) {
+    return { scripts: 0, unwired: 0, failed: 0, listOk: true };
+  }
   let scripts: string[];
   try {
     scripts = await listScriptsStrict(input.accountId, input.accessToken, fetchImpl);
@@ -409,9 +411,10 @@ export async function reconcileWorkerUnwiring(input: {
       { err: e instanceof Error ? e.message : String(e), account_id: input.accountId },
       "cloudflare: list worker scripts failed",
     );
-    return { scripts: 0, unwired: 0, listOk: false };
+    return { scripts: 0, unwired: 0, failed: 0, listOk: false };
   }
   let unwired = 0;
+  let failed = 0;
   for (const script of scripts) {
     try {
       const current = await getScriptObservability({
@@ -430,12 +433,15 @@ export async function reconcileWorkerUnwiring(input: {
         fetchImpl,
       });
       if (res.ok) unwired += 1;
-      else
+      else {
+        failed += 1;
         input.log?.warn(
           { script, error: res.error },
           "cloudflare: failed to unwire worker observability",
         );
+      }
     } catch (e) {
+      failed += 1;
       input.log?.warn(
         { err: e instanceof Error ? e.message : String(e), script },
         "cloudflare: failed to unwire worker observability",
@@ -443,8 +449,8 @@ export async function reconcileWorkerUnwiring(input: {
     }
   }
   input.log?.info(
-    { account_id: input.accountId, scripts: scripts.length, unwired },
+    { account_id: input.accountId, scripts: scripts.length, unwired, failed },
     "cloudflare: unwired worker observability from destinations",
   );
-  return { scripts: scripts.length, unwired, listOk: true };
+  return { scripts: scripts.length, unwired, failed, listOk: true };
 }
