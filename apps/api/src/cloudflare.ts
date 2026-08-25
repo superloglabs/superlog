@@ -650,7 +650,11 @@ async function provisionInstallation(input: {
           ingestKeyNonce: ingestCipher.nonce,
           ingestKeyKeyVersion: ingestCipher.keyVersion,
           destinations: persistedDestinations,
-          autoWire: wiringMode.autoWire,
+          // An active same-account reconnect must not overwrite a preference
+          // changed after we loaded sameAccount. Assigning the column to itself
+          // makes Postgres preserve the value current at conflict-update time.
+          // A revoked/old row is a new connection and resets to the safe default.
+          autoWire: sameAccount ? sql`${schema.cloudflareInstallations.autoWire}` : false,
           installedByUserId: input.userId,
           revokedAt: null,
           updatedAt: now,
@@ -696,10 +700,10 @@ async function provisionInstallation(input: {
       await teardownInstallation(row, { config: input.config, fetchImpl: input.fetchImpl });
     }
 
-    // New connections wait for the user to select Workers. A reconnect only
-    // reapplies account-wide wiring when that installation already had auto-wire
-    // enabled, preserving the user's prior choice in either direction.
-    if (wiringMode.wireAfterConnect && sameAccount) {
+    // New connections wait for the user to select Workers. A reconnect rechecks
+    // the current preference under the account lock before deciding whether to
+    // wire, so a concurrent user toggle wins over the pre-provisioning snapshot.
+    if (sameAccount) {
       await withWorkerWiringLock(input.account.id, async (tx) => {
         const current = await tx.query.cloudflareInstallations.findFirst({
           where: eq(schema.cloudflareInstallations.id, sameAccount.id),
