@@ -284,14 +284,14 @@ async function freshAccessToken(
 }
 
 /**
- * Serialize account-wide Worker wiring changes for one installation. Every
- * bulk wiring pass uses this operation lock, including the periodic reconciler,
- * so the action that acquires it last deterministically wins.
+ * Serialize Worker settings changes for one Cloudflare account. The same
+ * account can be connected to multiple projects, and every settings update
+ * writes the full observability block, so all installations must share a lock.
  */
-async function withWorkerWiringLock<T>(installationId: string, action: (tx: Tx) => Promise<T>) {
+async function withWorkerWiringLock<T>(accountId: string, action: (tx: Tx) => Promise<T>) {
   return db.transaction(async (tx) => {
     await tx.execute(
-      sql`select pg_advisory_xact_lock(hashtext(${CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE}), hashtext(${installationId}))`,
+      sql`select pg_advisory_xact_lock(hashtext(${CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE}), hashtext(${accountId}))`,
     );
     return action(tx);
   });
@@ -700,7 +700,7 @@ async function provisionInstallation(input: {
     // reapplies account-wide wiring when that installation already had auto-wire
     // enabled, preserving the user's prior choice in either direction.
     if (wiringMode.wireAfterConnect && sameAccount) {
-      await withWorkerWiringLock(sameAccount.id, async (tx) => {
+      await withWorkerWiringLock(input.account.id, async (tx) => {
         const current = await tx.query.cloudflareInstallations.findFirst({
           where: eq(schema.cloudflareInstallations.id, sameAccount.id),
         });
@@ -830,7 +830,7 @@ export function mountCloudflareAuthed(
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ error: "not connected" }, 404);
     const accessToken = await accessTokenFor(row);
-    const result = await withWorkerWiringLock(row.id, () =>
+    const result = await withWorkerWiringLock(row.accountId, () =>
       wireAccountWorkers({
         accountId: row.accountId,
         accessToken,
@@ -855,7 +855,7 @@ export function mountCloudflareAuthed(
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ error: "not connected" }, 404);
     const accessToken = await accessTokenFor(row);
-    const result = await withWorkerWiringLock(row.id, async (tx) => {
+    const result = await withWorkerWiringLock(row.accountId, async (tx) => {
       // A reconcile already in flight finishes first; one arriving later
       // observes autoWire=false and skips.
       await tx
@@ -901,7 +901,7 @@ export function mountCloudflareAuthed(
         log.warn({ err: e }, "cloudflare: access token unavailable for immediate auto-wire");
       }
     }
-    await withWorkerWiringLock(row.id, async (tx) => {
+    await withWorkerWiringLock(row.accountId, async (tx) => {
       await tx
         .update(schema.cloudflareInstallations)
         .set({ autoWire, updatedAt: new Date() })
@@ -939,7 +939,7 @@ export function mountCloudflareAuthed(
     }
     const accessToken = await accessTokenFor(row);
     try {
-      return await withWorkerWiringLock(row.id, async () => {
+      return await withWorkerWiringLock(row.accountId, async () => {
         const obs = await getScriptObservability({
           accountId: row.accountId,
           script,
@@ -973,7 +973,7 @@ export function mountCloudflareAuthed(
     const slugs = slugsForRow(row);
     const accessToken = await accessTokenFor(row);
     try {
-      return await withWorkerWiringLock(row.id, async () => {
+      return await withWorkerWiringLock(row.accountId, async () => {
         const obs = await getScriptObservability({
           accountId: row.accountId,
           script,

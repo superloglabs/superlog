@@ -10,8 +10,8 @@
 // client is configured — without it there's nothing to refresh a token with.
 
 import {
-  type CloudflareClientCredentials,
   CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE,
+  type CloudflareClientCredentials,
   cloudflareClientFromEnv,
   reconcileWorkerWiring,
   refreshAccessToken,
@@ -177,17 +177,17 @@ function createStore(
       });
     },
 
-    async withAutoWireLock(installationId, action) {
+    async withAutoWireLock(installation, action) {
       return db.transaction(async (tx) => {
-        // Serialize the scheduled wiring pass with interactive bulk unwiring.
-        // Keep the transaction open across the Cloudflare calls so whichever
-        // operation gets the lock second determines the final remote state.
+        // Serialize every full-settings PATCH for this Cloudflare account,
+        // including installations owned by other projects. Keep the transaction
+        // open across remote calls so the last operation wins deterministically.
         await tx.execute(
-          sql`select pg_advisory_xact_lock(hashtext(${CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE}), hashtext(${installationId}))`,
+          sql`select pg_advisory_xact_lock(hashtext(${CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE}), hashtext(${installation.accountId}))`,
         );
         const cur = await tx.query.cloudflareInstallations.findFirst({
           where: and(
-            eq(schema.cloudflareInstallations.id, installationId),
+            eq(schema.cloudflareInstallations.id, installation.id),
             eq(schema.cloudflareInstallations.autoWire, true),
             isNull(schema.cloudflareInstallations.revokedAt),
           ),

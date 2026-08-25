@@ -20,8 +20,9 @@ import type { FetchImpl } from "./oauth.js";
 export const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 
 // Shared Postgres advisory-lock namespace for operations that change which
-// Workers stream to an installation. API and worker callers use this exact key
-// so an interactive bulk unwire cannot overlap a scheduled auto-wire pass.
+// Workers stream from a Cloudflare account. API and worker callers use this
+// exact key plus the account id so full-settings PATCHes across projects cannot
+// overlap and clobber each other's destinations.
 export const CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE = "cloudflare_worker_wiring";
 
 /** Our destination slugs for a Worker, per signal (metrics isn't a Worker signal). */

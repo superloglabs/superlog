@@ -40,8 +40,11 @@ export type CloudflareReconcilerStore = {
    * remaining install too).
    */
   freshAccessToken(installationId: string): Promise<string | null>;
-  /** Run an action only if auto-wire is still enabled after taking its operation lock. */
-  withAutoWireLock<T>(installationId: string, action: () => Promise<T>): Promise<T | null>;
+  /** Run an action only if auto-wire is still enabled after taking the account lock. */
+  withAutoWireLock<T>(
+    installation: Pick<CloudflareReconcileInstallation, "id" | "accountId">,
+    action: () => Promise<T>,
+  ): Promise<T | null>;
 };
 
 /** The wiring pass — injected so tests don't hit Cloudflare (prod: reconcileWorkerWiring). */
@@ -124,7 +127,7 @@ export async function runCloudflareReconcileOnce(
       | { kind: "reconcile_error"; error: unknown }
       | null;
     try {
-      outcome = await deps.store.withAutoWireLock(inst.id, async () => {
+      outcome = await deps.store.withAutoWireLock(inst, async () => {
         try {
           const { wired } = await deps.reconcile({
             accountId: inst.accountId,

@@ -23,6 +23,7 @@ function makeStore(
   installs: CloudflareReconcileInstallation[],
   tokens: Record<string, string | null | Error>,
   autoWire: Record<string, boolean> = {},
+  lockedAccounts: string[] = [],
 ): CloudflareReconcilerStore {
   return {
     async listAutoWireInstallations() {
@@ -33,8 +34,9 @@ function makeStore(
       if (t instanceof Error) throw t;
       return t ?? null;
     },
-    async withAutoWireLock(id, action) {
-      return autoWire[id] === false ? null : action();
+    async withAutoWireLock(installation, action) {
+      lockedAccounts.push(installation.accountId);
+      return autoWire[installation.id] === false ? null : action();
     },
   };
 }
@@ -83,6 +85,7 @@ test("reconcile skips installs with no usable grant, without touching Cloudflare
 
 test("reconcile rechecks auto-wire under the operation lock before wiring", async () => {
   const installs = [installation("disabled-after-list")];
+  const lockedAccounts: string[] = [];
   let reconciled = 0;
   const reconcile: WorkerWiringFn = async () => {
     reconciled += 1;
@@ -90,7 +93,12 @@ test("reconcile rechecks auto-wire under the operation lock before wiring", asyn
   };
 
   const stats = await runCloudflareReconcileOnce({
-    store: makeStore(installs, { "disabled-after-list": "tok" }, { "disabled-after-list": false }),
+    store: makeStore(
+      installs,
+      { "disabled-after-list": "tok" },
+      { "disabled-after-list": false },
+      lockedAccounts,
+    ),
     reconcile,
     log: noopLog,
   });
@@ -98,6 +106,7 @@ test("reconcile rechecks auto-wire under the operation lock before wiring", asyn
   assert.equal(reconciled, 0);
   assert.equal(stats.reconciled, 0);
   assert.equal(stats.skipped, 1);
+  assert.deepEqual(lockedAccounts, ["acc-disabled-after-list"]);
 });
 
 test("a wiring failure for one install is isolated, not fatal", async () => {
