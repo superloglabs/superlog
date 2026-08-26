@@ -998,7 +998,7 @@ export function useWireAllCloudflareWorkers(projectId: string | undefined) {
         `/api/projects/${projectId}/cloudflare/workers/wire-all`,
         { method: "POST" },
       ),
-    onSuccess: () => {
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ["cloudflare-workers", projectId] });
     },
   });
