@@ -12,6 +12,7 @@
 import {
   CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE,
   type CloudflareClientCredentials,
+  type WorkerDestinationReplacements,
   cloudflareClientFromEnv,
   reconcileWorkerWiring,
   refreshAccessToken,
@@ -34,6 +35,22 @@ const log = logger.child({ scope: "cloudflare-reconcile" });
 // with the token, so it must stay valid for the whole pass.
 const ACCESS_TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
+function pendingDestinationReplacements(
+  destinations: Record<string, string> | null | undefined,
+): WorkerDestinationReplacements[] {
+  const replacements: WorkerDestinationReplacements[] = [];
+  for (const signal of ["traces", "logs"] as const) {
+    const to = destinations?.[signal];
+    if (!to) continue;
+    const prefix = `__previous_${signal}_`;
+    for (const [key, from] of Object.entries(destinations ?? {})) {
+      if (!key.startsWith(prefix) || !from || from === to) continue;
+      replacements.push({ [signal]: { from, to } });
+    }
+  }
+  return replacements;
+}
+
 function createStore(
   db: JobDeps["db"],
   config: CloudflareClientCredentials,
@@ -52,6 +69,7 @@ function createStore(
         id: row.id,
         accountId: row.accountId,
         slugs: { traces: row.destinations?.traces, logs: row.destinations?.logs },
+        replacements: pendingDestinationReplacements(row.destinations),
       }));
     },
 
@@ -201,6 +219,7 @@ function createStore(
             traces: cur.destinations?.traces,
             logs: cur.destinations?.logs,
           },
+          replacements: pendingDestinationReplacements(cur.destinations),
         });
       });
     },

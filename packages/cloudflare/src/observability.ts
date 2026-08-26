@@ -378,12 +378,14 @@ export async function reconcileWorkerWiring(input: {
   accountId: string;
   accessToken: string;
   slugs: WorkerDestinationSlugs;
+  replacements?: readonly WorkerDestinationReplacements[];
   fetchImpl?: FetchImpl;
   log?: WiringLogger;
 }): Promise<{ scripts: number; wired: number; failed: number; listOk: boolean }> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const slugs = { traces: input.slugs.traces, logs: input.slugs.logs };
-  if (!slugs.traces && !slugs.logs) {
+  const replacements = input.replacements ?? [];
+  if (!slugs.traces && !slugs.logs && replacements.length === 0) {
     return { scripts: 0, wired: 0, failed: 0, listOk: true };
   }
   let scripts: string[];
@@ -408,8 +410,20 @@ export async function reconcileWorkerWiring(input: {
         accessToken: input.accessToken,
         fetchImpl,
       });
-      const next = wireObservabilityDestinations(current, slugs);
-      if (!next) continue; // already wired
+      let next = current;
+      let changed = false;
+      for (const replacement of replacements) {
+        const replaced = replaceObservabilityDestinations(next, replacement);
+        if (!replaced) continue;
+        next = replaced;
+        changed = true;
+      }
+      const wiredNext = wireObservabilityDestinations(next, slugs);
+      if (wiredNext) {
+        next = wiredNext;
+        changed = true;
+      }
+      if (!changed || !next) continue;
       const res = await updateScriptObservability({
         accountId: input.accountId,
         script,

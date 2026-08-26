@@ -21,7 +21,7 @@ function fakeCloudflare(input: {
   patchFails?: Set<string>;
   readFails?: Set<string>;
 }) {
-  const patched: { script: string }[] = [];
+  const patched: { script: string; observability: unknown }[] = [];
   const fetchImpl = (async (url: unknown, init?: RequestInit) => {
     const u = String(url);
     const method = init?.method ?? "GET";
@@ -33,7 +33,11 @@ function fakeCloudflare(input: {
     if (m) {
       const script = decodeURIComponent(m[1] ?? "");
       if (method === "PATCH") {
-        patched.push({ script });
+        const settingsPart = (init?.body as FormData).get("settings");
+        const settings = JSON.parse(await (settingsPart as Blob).text()) as {
+          observability: unknown;
+        };
+        patched.push({ script, observability: settings.observability });
         if (input.patchFails?.has(script)) {
           return json({ success: false, errors: [{ message: "nope" }] }, 400);
         }
@@ -155,6 +159,34 @@ test("reconcileWorkerWiring wires only the drifted workers", async () => {
   assert.equal(res.scripts, 3);
   assert.equal(res.wired, 2); // drifted + fresh; already-wired skipped (no PATCH)
   assert.deepEqual(patched.map((p) => p.script).sort(), ["drifted", "fresh"]);
+});
+
+test("reconcileWorkerWiring replaces retained slugs before additive wiring", async () => {
+  const { fetchImpl, patched } = fakeCloudflare({
+    scripts: ["selected"],
+    settings: {
+      selected: {
+        enabled: true,
+        traces: { enabled: true, destinations: ["previous-traces", "other-traces"] },
+        logs: { enabled: true, destinations: ["log-slug"] },
+      },
+    },
+  });
+
+  const result = await reconcileWorkerWiring({
+    accountId: "acc",
+    accessToken: "tok",
+    slugs: SLUGS,
+    replacements: [{ traces: { from: "previous-traces", to: "trc-slug" } }],
+    fetchImpl,
+  });
+
+  assert.deepEqual(result, { scripts: 1, wired: 1, failed: 0, listOk: true });
+  assert.deepEqual(patched[0]?.observability, {
+    enabled: true,
+    traces: { enabled: true, destinations: ["other-traces", "trc-slug"] },
+    logs: { enabled: true, destinations: ["log-slug"] },
+  });
 });
 
 test("reconcileWorkerWiring is per-worker isolated and never throws on failures", async () => {

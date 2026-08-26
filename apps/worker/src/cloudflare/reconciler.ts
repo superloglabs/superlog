@@ -16,13 +16,14 @@
 // IO is behind a narrow store port + injectable fetch/reconcile so the logic is
 // unit-testable without Postgres or a live Cloudflare account.
 
-import type { WorkerDestinationSlugs } from "@superlog/cloudflare";
+import type { WorkerDestinationReplacements, WorkerDestinationSlugs } from "@superlog/cloudflare";
 
 /** One installation to reconcile: the account + the destination slugs to wire. */
 export type CloudflareReconcileInstallation = {
   id: string;
   accountId: string;
   slugs: WorkerDestinationSlugs;
+  replacements?: readonly WorkerDestinationReplacements[];
 };
 
 export type CloudflareReconcilerStore = {
@@ -52,6 +53,7 @@ export type WorkerWiringFn = (input: {
   accountId: string;
   accessToken: string;
   slugs: WorkerDestinationSlugs;
+  replacements?: readonly WorkerDestinationReplacements[];
   fetchImpl?: typeof fetch;
   log?: {
     info(f: Record<string, unknown>, m: string): void;
@@ -133,6 +135,7 @@ export async function runCloudflareReconcileOnce(
             accountId: current.accountId,
             accessToken,
             slugs: current.slugs,
+            replacements: current.replacements,
             fetchImpl,
             log: deps.log,
           });

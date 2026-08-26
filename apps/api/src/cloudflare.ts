@@ -27,6 +27,7 @@ import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import {
+  cloudflarePendingWorkerDestinationReplacements,
   cloudflareWorkerDestinationRemovalSlugs,
   cloudflareWorkerWiringMode,
 } from "./cloudflare-installation-policy.js";
@@ -410,6 +411,7 @@ async function wireAccountWorkers(input: {
     accountId: input.accountId,
     accessToken: input.accessToken,
     slugs: { traces: input.destinations.traces, logs: input.destinations.logs },
+    replacements: cloudflarePendingWorkerDestinationReplacements(input.destinations),
     fetchImpl: input.fetchImpl,
     log,
   });
@@ -836,7 +838,7 @@ async function provisionInstallation(input: {
           await wireAccountWorkers({
             accountId: current.accountId,
             accessToken: input.token.accessToken,
-            destinations: withoutPendingDestinations(current.destinations),
+            destinations: withPendingDestinations(current.destinations, pending),
             fetchImpl: input.fetchImpl,
           });
         }

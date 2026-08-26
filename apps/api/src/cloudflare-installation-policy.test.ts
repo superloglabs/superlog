@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
+  cloudflarePendingWorkerDestinationReplacements,
   cloudflareWorkerDestinationRemovalSlugs,
   cloudflareWorkerWiringMode,
 } from "./cloudflare-installation-policy.js";
@@ -37,5 +38,22 @@ test("bulk unwiring includes active and pending destination slugs", () => {
       traces: ["active-traces", "previous-traces-a", "previous-traces-b"],
       logs: ["active-logs", "previous-logs"],
     },
+  );
+});
+
+test("wiring retries retained destination replacements before adding active slugs", () => {
+  assert.deepEqual(
+    cloudflarePendingWorkerDestinationReplacements({
+      traces: "active-traces",
+      logs: "active-logs",
+      __previous_traces_0: "previous-traces-a",
+      __previous_traces_1: "previous-traces-b",
+      __previous_logs_0: "previous-logs",
+    }),
+    [
+      { traces: { from: "previous-traces-a", to: "active-traces" } },
+      { traces: { from: "previous-traces-b", to: "active-traces" } },
+      { logs: { from: "previous-logs", to: "active-logs" } },
+    ],
   );
 });

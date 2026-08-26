@@ -114,19 +114,26 @@ test("reconcile rechecks auto-wire under the operation lock before wiring", asyn
 test("reconcile uses destination slugs reloaded under the account lock", async () => {
   const listed = installation("changed");
   listed.slugs = { traces: "old-traces", logs: "old-logs" };
-  const current = { ...listed, slugs: { traces: "new-traces", logs: "new-logs" } };
+  const current = {
+    ...listed,
+    slugs: { traces: "new-traces", logs: "new-logs" },
+    replacements: [{ traces: { from: "old-traces", to: "new-traces" } }],
+  };
   let received: CloudflareReconcileInstallation["slugs"] | null = null;
+  let replacements: CloudflareReconcileInstallation["replacements"] = [];
 
   await runCloudflareReconcileOnce({
     store: makeStore([listed], { changed: "tok" }, {}, [], [current]),
-    reconcile: async ({ slugs }) => {
+    reconcile: async ({ slugs, replacements: currentReplacements }) => {
       received = slugs;
+      replacements = currentReplacements;
       return { scripts: 1, wired: 1, listOk: true };
     },
     log: noopLog,
   });
 
   assert.deepEqual(received, current.slugs);
+  assert.deepEqual(replacements, current.replacements);
 });
 
 test("a wiring failure for one install is isolated, not fatal", async () => {
