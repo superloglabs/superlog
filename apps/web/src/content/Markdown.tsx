@@ -1,5 +1,4 @@
 import ReactMarkdown, { type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
 
 // Renders a subset of GitHub-flavoured markdown with the app's design tokens.
 // Used by the public changelog and roadmap pages, which draw their content from
@@ -47,7 +46,7 @@ const COMPONENTS: Components = {
 export function Markdown({ text, inline = false }: { text: string; inline?: boolean }) {
   return (
     <div className={inline ? "" : "space-y-4 text-[15px] md:text-[16px]"}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={COMPONENTS}>
+      <ReactMarkdown components={COMPONENTS}>
         {text}
       </ReactMarkdown>
     </div>
