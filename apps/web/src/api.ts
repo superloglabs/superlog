@@ -939,7 +939,12 @@ export function useUninstallCloudflare(projectId: string | undefined) {
   });
 }
 
-export type CloudflareWorker = { name: string; wired: boolean; observabilityEnabled: boolean };
+export type CloudflareWorker = {
+  name: string;
+  hasWiring: boolean;
+  wired: boolean;
+  observabilityEnabled: boolean;
+};
 
 // The account's Worker scripts and whether each currently exports to us. Only
 // fetched when connected (pass `enabled`), since it hits the Cloudflare API.
@@ -993,7 +998,23 @@ export function useWireAllCloudflareWorkers(projectId: string | undefined) {
         `/api/projects/${projectId}/cloudflare/workers/wire-all`,
         { method: "POST" },
       ),
-    onSuccess: () => {
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["cloudflare-workers", projectId] });
+    },
+  });
+}
+
+export function useUnwireAllCloudflareWorkers(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      fetcher<{ ok: true; autoWire: false; scripts: number; unwired: number }>(
+        `/api/projects/${projectId}/cloudflare/workers/unwire-all`,
+        { method: "POST" },
+      ),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["cloudflare-installation", projectId] });
       qc.invalidateQueries({ queryKey: ["cloudflare-workers", projectId] });
     },
   });

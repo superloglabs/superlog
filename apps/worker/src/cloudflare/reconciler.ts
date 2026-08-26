@@ -16,13 +16,14 @@
 // IO is behind a narrow store port + injectable fetch/reconcile so the logic is
 // unit-testable without Postgres or a live Cloudflare account.
 
-import type { WorkerDestinationSlugs } from "@superlog/cloudflare";
+import type { WorkerDestinationReplacements, WorkerDestinationSlugs } from "@superlog/cloudflare";
 
 /** One installation to reconcile: the account + the destination slugs to wire. */
 export type CloudflareReconcileInstallation = {
   id: string;
   accountId: string;
   slugs: WorkerDestinationSlugs;
+  replacements?: readonly WorkerDestinationReplacements[];
 };
 
 export type CloudflareReconcilerStore = {
@@ -40,6 +41,11 @@ export type CloudflareReconcilerStore = {
    * remaining install too).
    */
   freshAccessToken(installationId: string): Promise<string | null>;
+  /** Run an action only if auto-wire is still enabled after taking the account lock. */
+  withAutoWireLock<T>(
+    installation: Pick<CloudflareReconcileInstallation, "id" | "accountId">,
+    action: (current: CloudflareReconcileInstallation) => Promise<T>,
+  ): Promise<T | null>;
 };
 
 /** The wiring pass — injected so tests don't hit Cloudflare (prod: reconcileWorkerWiring). */
@@ -47,12 +53,13 @@ export type WorkerWiringFn = (input: {
   accountId: string;
   accessToken: string;
   slugs: WorkerDestinationSlugs;
+  replacements?: readonly WorkerDestinationReplacements[];
   fetchImpl?: typeof fetch;
   log?: {
     info(f: Record<string, unknown>, m: string): void;
     warn(f: Record<string, unknown>, m: string): void;
   };
-}) => Promise<{ scripts: number; wired: number; listOk: boolean }>;
+}) => Promise<{ scripts: number; wired: number; failed?: number; listOk: boolean }>;
 
 type ReconcilerLogger = {
   info(fields: Record<string, unknown>, msg: string): void;
@@ -117,20 +124,29 @@ export async function runCloudflareReconcileOnce(
       continue;
     }
 
+    let outcome:
+      | { kind: "reconciled"; wired: number }
+      | { kind: "reconcile_error"; error: unknown }
+      | null;
     try {
-      const { wired } = await deps.reconcile({
-        accountId: inst.accountId,
-        accessToken,
-        slugs: inst.slugs,
-        fetchImpl,
-        log: deps.log,
+      outcome = await deps.store.withAutoWireLock(inst, async (current) => {
+        try {
+          const { wired } = await deps.reconcile({
+            accountId: current.accountId,
+            accessToken,
+            slugs: current.slugs,
+            replacements: current.replacements,
+            fetchImpl,
+            log: deps.log,
+          });
+          return { kind: "reconciled" as const, wired };
+        } catch (error) {
+          return { kind: "reconcile_error" as const, error };
+        }
       });
-      stats.reconciled += 1;
-      stats.workersWired += wired;
     } catch (err) {
-      // reconcileWorkerWiring is per-Worker isolated and shouldn't throw, but a
-      // stray failure for one install must not sink the whole pass — the CF-side
-      // wiring rotated nothing, so isolating it is safe.
+      // A lock / DB failure affects the safety boundary for every remaining
+      // install, so let pg-boss retry the whole job.
       stats.errors += 1;
       deps.log.error(
         {
@@ -138,9 +154,33 @@ export async function runCloudflareReconcileOnce(
           account_id: inst.accountId,
           err: err instanceof Error ? err.message : String(err),
         },
+        "cloudflare reconcile: operation lock failed; aborting pass",
+      );
+      throw err;
+    }
+
+    // The install was disabled after the initial list but before its operation
+    // lock. This is the normal bulk-unwire race: skip without touching Workers.
+    if (!outcome) {
+      stats.skipped += 1;
+      continue;
+    }
+    if (outcome.kind === "reconcile_error") {
+      // reconcileWorkerWiring is per-Worker isolated and shouldn't throw, but a
+      // stray Cloudflare failure for one install must not sink the whole pass.
+      stats.errors += 1;
+      deps.log.error(
+        {
+          installation_id: inst.id,
+          account_id: inst.accountId,
+          err: outcome.error instanceof Error ? outcome.error.message : String(outcome.error),
+        },
         "cloudflare reconcile: wiring pass failed for install; skipping",
       );
+      continue;
     }
+    stats.reconciled += 1;
+    stats.workersWired += outcome.wired;
   }
 
   return stats;

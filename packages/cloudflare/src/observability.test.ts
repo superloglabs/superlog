@@ -1,6 +1,14 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { listScripts, listScriptsStrict, reconcileWorkerWiring } from "./observability.js";
+import {
+  hasWorkerWiring,
+  listScripts,
+  listScriptsStrict,
+  reconcileWorkerUnwiring,
+  reconcileWorkerWiring,
+  replaceObservabilityDestinations,
+  unwireObservabilityDestinations,
+} from "./observability.js";
 
 // A fetch stub that answers the three Workers endpoints reconcile touches:
 //   GET  …/workers/scripts?per_page&page       → the (paginated) script list
@@ -13,7 +21,7 @@ function fakeCloudflare(input: {
   patchFails?: Set<string>;
   readFails?: Set<string>;
 }) {
-  const patched: { script: string }[] = [];
+  const patched: { script: string; observability: unknown }[] = [];
   const fetchImpl = (async (url: unknown, init?: RequestInit) => {
     const u = String(url);
     const method = init?.method ?? "GET";
@@ -25,7 +33,11 @@ function fakeCloudflare(input: {
     if (m) {
       const script = decodeURIComponent(m[1] ?? "");
       if (method === "PATCH") {
-        patched.push({ script });
+        const settingsPart = (init?.body as FormData).get("settings");
+        const settings = JSON.parse(await (settingsPart as Blob).text()) as {
+          observability: unknown;
+        };
+        patched.push({ script, observability: settings.observability });
         if (input.patchFails?.has(script)) {
           return json({ success: false, errors: [{ message: "nope" }] }, 400);
         }
@@ -44,6 +56,86 @@ function json(body: unknown, status = 200): Response {
 }
 
 const SLUGS = { traces: "trc-slug", logs: "log-slug" };
+
+test("hasWorkerWiring detects partial wiring without matching unrelated destinations", () => {
+  assert.equal(
+    hasWorkerWiring(
+      {
+        enabled: true,
+        traces: { enabled: true, destinations: ["trc-slug"] },
+        logs: { enabled: true, destinations: ["other-logs"] },
+      },
+      SLUGS,
+    ),
+    true,
+  );
+  assert.equal(
+    hasWorkerWiring(
+      {
+        enabled: true,
+        traces: { enabled: true, destinations: ["other-traces"] },
+        logs: { enabled: true, destinations: ["other-logs"] },
+      },
+      SLUGS,
+    ),
+    false,
+  );
+});
+
+test("unwireObservabilityDestinations removes active and pending project slugs", () => {
+  assert.deepEqual(
+    unwireObservabilityDestinations(
+      {
+        enabled: true,
+        traces: {
+          enabled: true,
+          destinations: ["active-traces", "previous-traces", "other-traces"],
+        },
+        logs: {
+          enabled: true,
+          destinations: ["active-logs", "previous-logs", "other-logs"],
+        },
+      },
+      {
+        traces: ["active-traces", "previous-traces"],
+        logs: ["active-logs", "previous-logs"],
+      },
+    ),
+    {
+      enabled: true,
+      traces: { enabled: true, destinations: ["other-traces"] },
+      logs: { enabled: true, destinations: ["other-logs"] },
+    },
+  );
+});
+
+test("replaceObservabilityDestinations migrates only existing project destinations", () => {
+  assert.deepEqual(
+    replaceObservabilityDestinations(
+      {
+        enabled: true,
+        traces: { enabled: true, destinations: ["old-traces", "other-traces"] },
+        logs: { enabled: true, destinations: ["other-logs"] },
+      },
+      {
+        traces: { from: "old-traces", to: "new-traces" },
+        logs: { from: "old-logs", to: "new-logs" },
+      },
+    ),
+    {
+      enabled: true,
+      traces: { enabled: true, destinations: ["other-traces", "new-traces"] },
+      logs: { enabled: true, destinations: ["other-logs"] },
+    },
+  );
+  assert.equal(
+    replaceObservabilityDestinations(
+      { enabled: true, traces: { enabled: true, destinations: ["other-traces"] } },
+      { traces: { from: "old-traces", to: "new-traces" } },
+    ),
+    null,
+  );
+});
 
 test("reconcileWorkerWiring wires only the drifted workers", async () => {
   // one already fully wired, one unwired, one brand-new (no observability).
@@ -69,6 +161,34 @@ test("reconcileWorkerWiring wires only the drifted workers", async () => {
   assert.deepEqual(patched.map((p) => p.script).sort(), ["drifted", "fresh"]);
 });
 
+test("reconcileWorkerWiring replaces retained slugs before additive wiring", async () => {
+  const { fetchImpl, patched } = fakeCloudflare({
+    scripts: ["selected"],
+    settings: {
+      selected: {
+        enabled: true,
+        traces: { enabled: true, destinations: ["previous-traces", "other-traces"] },
+        logs: { enabled: true, destinations: ["log-slug"] },
+      },
+    },
+  });
+
+  const result = await reconcileWorkerWiring({
+    accountId: "acc",
+    accessToken: "tok",
+    slugs: SLUGS,
+    replacements: [{ traces: { from: "previous-traces", to: "trc-slug" } }],
+    fetchImpl,
+  });
+
+  assert.deepEqual(result, { scripts: 1, wired: 1, failed: 0, listOk: true });
+  assert.deepEqual(patched[0]?.observability, {
+    enabled: true,
+    traces: { enabled: true, destinations: ["other-traces", "trc-slug"] },
+    logs: { enabled: true, destinations: ["log-slug"] },
+  });
+});
+
 test("reconcileWorkerWiring is per-worker isolated and never throws on failures", async () => {
   const { fetchImpl, patched } = fakeCloudflare({
     scripts: ["ok", "read-fails", "patch-fails"],
@@ -86,6 +206,7 @@ test("reconcileWorkerWiring is per-worker isolated and never throws on failures"
 
   assert.equal(res.scripts, 3);
   assert.equal(res.wired, 1); // only "ok" succeeded; the other two failed but didn't throw
+  assert.equal(res.failed, 2);
   assert.ok(patched.some((p) => p.script === "ok"));
 });
 
@@ -103,7 +224,7 @@ test("reconcileWorkerWiring is a no-op when no destination slugs exist", async (
     fetchImpl,
   });
 
-  assert.deepEqual(res, { scripts: 0, wired: 0, listOk: true });
+  assert.deepEqual(res, { scripts: 0, wired: 0, failed: 0, listOk: true });
   assert.equal(called, false); // short-circuits before hitting Cloudflare
 });
 
@@ -123,7 +244,62 @@ test("reconcileWorkerWiring reports listOk:false when the scripts list fails", a
     fetchImpl,
   });
 
-  assert.deepEqual(res, { scripts: 0, wired: 0, listOk: false });
+  assert.deepEqual(res, { scripts: 0, wired: 0, failed: 0, listOk: false });
+});
+
+test("reconcileWorkerUnwiring removes only this project's destinations", async () => {
+  const { fetchImpl, patched } = fakeCloudflare({
+    scripts: ["wired-here", "wired-elsewhere", "fresh"],
+    settings: {
+      "wired-here": {
+        enabled: true,
+        traces: { enabled: true, destinations: ["trc-slug", "other-traces"] },
+        logs: { enabled: true, destinations: ["log-slug", "other-logs"] },
+      },
+      "wired-elsewhere": {
+        enabled: true,
+        traces: { enabled: true, destinations: ["other-traces"] },
+        logs: { enabled: true, destinations: ["other-logs"] },
+      },
+      fresh: undefined,
+    },
+  });
+
+  const res = await reconcileWorkerUnwiring({
+    accountId: "acc",
+    accessToken: "tok",
+    slugs: SLUGS,
+    fetchImpl,
+  });
+
+  assert.deepEqual(res, { scripts: 3, unwired: 1, failed: 0, listOk: true });
+  assert.deepEqual(
+    patched.map((p) => p.script),
+    ["wired-here"],
+  );
+});
+
+test("reconcileWorkerUnwiring reports Workers it could not fully unwire", async () => {
+  const wired = {
+    enabled: true,
+    traces: { enabled: true, destinations: ["trc-slug"] },
+    logs: { enabled: true, destinations: ["log-slug"] },
+  };
+  const { fetchImpl } = fakeCloudflare({
+    scripts: ["ok", "read-fails", "patch-fails"],
+    settings: { ok: wired, "patch-fails": wired },
+    readFails: new Set(["read-fails"]),
+    patchFails: new Set(["patch-fails"]),
+  });
+
+  const res = await reconcileWorkerUnwiring({
+    accountId: "acc",
+    accessToken: "tok",
+    slugs: SLUGS,
+    fetchImpl,
+  });
+
+  assert.deepEqual(res, { scripts: 3, unwired: 1, failed: 2, listOk: true });
 });
 
 // A paged /workers/scripts fake: `pages` is the list of id-arrays per page,

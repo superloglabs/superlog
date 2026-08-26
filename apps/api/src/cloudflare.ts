@@ -27,8 +27,15 @@ import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import {
+  cloudflarePendingWorkerDestinationReplacements,
+  cloudflareWorkerDestinationRemovalSlugs,
+  cloudflareWorkerWiringMode,
+} from "./cloudflare-installation-policy.js";
+import {
   CLOUDFLARE_SIGNALS,
+  CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE,
   type CloudflareConnectConfig,
+  type WorkerDestinationReplacements,
   buildAuthorizeUrl,
   buildDestinationPayload,
   cloudflareConfigFromEnv,
@@ -36,14 +43,16 @@ import {
   ensureDestination,
   exchangeCodeForToken,
   getScriptObservability,
+  hasWorkerWiring,
   isWorkerWired,
   listAccounts,
   listScriptsStrict,
+  reconcileWorkerUnwiring,
   reconcileWorkerWiring,
   refreshAccessToken,
+  replaceObservabilityDestinations,
   revokeToken,
   signState,
-  staleDestinationSlugs,
   unwireObservabilityDestinations,
   updateScriptObservability,
   verifyState,
@@ -60,6 +69,47 @@ const log = logger.child({ scope: "cloudflare" });
 type Vars = { userId: string; orgId: string | null };
 
 type CloudflareInstallationRow = typeof schema.cloudflareInstallations.$inferSelect;
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type CloudflareSignal = (typeof CLOUDFLARE_SIGNALS)[number];
+
+const PENDING_DESTINATION_PREFIX = "__previous_";
+
+function pendingDestinationPrefix(signal: CloudflareSignal): string {
+  return `${PENDING_DESTINATION_PREFIX}${signal}_`;
+}
+
+function pendingDestinationSlugs(
+  destinations: Record<string, string> | null | undefined,
+  signal: CloudflareSignal,
+): string[] {
+  const prefix = pendingDestinationPrefix(signal);
+  return Object.entries(destinations ?? {})
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([, slug]) => slug);
+}
+
+function withoutPendingDestinations(
+  destinations: Record<string, string> | null | undefined,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(destinations ?? {}).filter(
+      ([key]) => !key.startsWith(PENDING_DESTINATION_PREFIX),
+    ),
+  );
+}
+
+function withPendingDestinations(
+  destinations: Record<string, string> | null | undefined,
+  pending: Partial<Record<CloudflareSignal, string[]>>,
+): Record<string, string> {
+  const next = withoutPendingDestinations(destinations);
+  for (const signal of CLOUDFLARE_SIGNALS) {
+    for (const [index, slug] of (pending[signal] ?? []).entries()) {
+      next[`${pendingDestinationPrefix(signal)}${index}`] = slug;
+    }
+  }
+  return next;
+}
 
 /** Public shape — never leaks token ciphertext. */
 function toPublic(row: CloudflareInstallationRow) {
@@ -68,7 +118,7 @@ function toPublic(row: CloudflareInstallationRow) {
     accountId: row.accountId,
     accountName: row.accountName,
     scope: row.scope,
-    destinations: row.destinations ?? {},
+    destinations: withoutPendingDestinations(row.destinations),
     autoWire: row.autoWire,
     installedAt: row.createdAt,
   };
@@ -279,6 +329,20 @@ async function freshAccessToken(
 }
 
 /**
+ * Serialize Worker settings changes for one Cloudflare account. The same
+ * account can be connected to multiple projects, and every settings update
+ * writes the full observability block, so all installations must share a lock.
+ */
+async function withWorkerWiringLock<T>(accountId: string, action: (tx: Tx) => Promise<T>) {
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE}), hashtext(${accountId}))`,
+    );
+    return action(tx);
+  });
+}
+
+/**
  * Fully tear down one installation row: delete its remote destinations, revoke
  * its delegated OAuth token, revoke the ingest key its destinations authenticate
  * with, and soft-revoke the row. Each remote step is best-effort (the grant may
@@ -332,8 +396,8 @@ async function teardownInstallation(
 }
 
 /**
- * Wire the account's Workers to our destinations — the idempotent pass run at
- * connect and by the "Wire all" button. Delegates to the shared
+ * Wire the account's Workers to our destinations — the idempotent pass run by
+ * the "Wire all" button and durable auto-wire. Delegates to the shared
  * reconcileWorkerWiring (same code the worker's periodic reconcile uses), mapping
  * our stored destination slugs into the traces/logs shape it expects.
  */
@@ -342,14 +406,83 @@ async function wireAccountWorkers(input: {
   accessToken: string;
   destinations: Record<string, string>;
   fetchImpl: typeof fetch;
-}): Promise<{ scripts: number; wired: number; listOk: boolean }> {
+}): Promise<{ scripts: number; wired: number; failed: number; listOk: boolean }> {
   return reconcileWorkerWiring({
     accountId: input.accountId,
     accessToken: input.accessToken,
     slugs: { traces: input.destinations.traces, logs: input.destinations.logs },
+    replacements: cloudflarePendingWorkerDestinationReplacements(input.destinations),
     fetchImpl: input.fetchImpl,
     log,
   });
+}
+
+/** Remove our destinations from every Worker in the account (one-shot). */
+async function unwireAccountWorkers(input: {
+  accountId: string;
+  accessToken: string;
+  destinations: Record<string, string>;
+  fetchImpl: typeof fetch;
+}): Promise<{ scripts: number; unwired: number; failed: number; listOk: boolean }> {
+  return reconcileWorkerUnwiring({
+    accountId: input.accountId,
+    accessToken: input.accessToken,
+    slugs: cloudflareWorkerDestinationRemovalSlugs(input.destinations),
+    fetchImpl: input.fetchImpl,
+    log,
+  });
+}
+
+/** Migrate recreated destination slugs without selecting any additional Workers. */
+async function replaceAccountWorkerDestinations(input: {
+  accountId: string;
+  accessToken: string;
+  replacements: WorkerDestinationReplacements;
+  fetchImpl: typeof fetch;
+}): Promise<{ scripts: number; replaced: number; failed: number; listOk: boolean }> {
+  if (!input.replacements.traces && !input.replacements.logs) {
+    return { scripts: 0, replaced: 0, failed: 0, listOk: true };
+  }
+  let scripts: string[];
+  try {
+    scripts = await listScriptsStrict(input.accountId, input.accessToken, input.fetchImpl);
+  } catch (e) {
+    log.warn({ err: e }, "cloudflare: list workers for destination migration failed");
+    return { scripts: 0, replaced: 0, failed: 0, listOk: false };
+  }
+  let replaced = 0;
+  let failed = 0;
+  for (const script of scripts) {
+    try {
+      const current = await getScriptObservability({
+        accountId: input.accountId,
+        script,
+        accessToken: input.accessToken,
+        fetchImpl: input.fetchImpl,
+      });
+      const next = replaceObservabilityDestinations(current, input.replacements);
+      if (!next) continue;
+      const result = await updateScriptObservability({
+        accountId: input.accountId,
+        script,
+        observability: next,
+        accessToken: input.accessToken,
+        fetchImpl: input.fetchImpl,
+      });
+      if (result.ok) replaced += 1;
+      else {
+        failed += 1;
+        log.warn(
+          { script, error: result.error },
+          "cloudflare: destination migration update failed",
+        );
+      }
+    } catch (e) {
+      failed += 1;
+      log.warn({ err: e, script }, "cloudflare: destination migration read failed");
+    }
+  }
+  return { scripts: scripts.length, replaced, failed, listOk: true };
 }
 
 /** Our destination slugs for a row, in the shape the wire/unwire helpers take. */
@@ -476,6 +609,7 @@ async function provisionInstallation(input: {
   // account switch must get a fresh key so the superseded account's key can be
   // revoked independently (otherwise both accounts share one live key).
   const sameAccount = existing?.accountId === input.account.id ? existing : null;
+  const wiringMode = cloudflareWorkerWiringMode(sameAccount?.autoWire ?? null);
   const { ingestKey, apiKeyId, minted } = await ensureIngestKey(input.projectId, sameAccount);
 
   // Undo everything this run created that isn't safely persisted to an install
@@ -591,6 +725,7 @@ async function provisionInstallation(input: {
         ingestKeyNonce: ingestCipher.nonce,
         ingestKeyKeyVersion: ingestCipher.keyVersion,
         destinations: persistedDestinations,
+        autoWire: wiringMode.autoWire,
         installedByUserId: input.userId,
       })
       .onConflictDoUpdate({
@@ -613,6 +748,11 @@ async function provisionInstallation(input: {
           ingestKeyNonce: ingestCipher.nonce,
           ingestKeyKeyVersion: ingestCipher.keyVersion,
           destinations: persistedDestinations,
+          // An active same-account reconnect must not overwrite a preference
+          // changed after we loaded sameAccount. Assigning the column to itself
+          // makes Postgres preserve the value current at conflict-update time.
+          // A revoked/old row is a new connection and resets to the safe default.
+          autoWire: sameAccount ? sql`${schema.cloudflareInstallations.autoWire}` : false,
           installedByUserId: input.userId,
           revokedAt: null,
           updatedAt: now,
@@ -627,21 +767,6 @@ async function provisionInstallation(input: {
   // cleanup is best-effort housekeeping: a failure here must NOT turn an
   // already-persisted connect into an error redirect, so we log and swallow.
   try {
-    // Same-account reconnect: delete the prior destinations we just replaced.
-    // `staleDestinationSlugs` only targets prior slugs for signals that actually
-    // got a replacement this run (a signal whose recreate failed keeps its old
-    // destination, which we merged back into the row above) and never a slug
-    // that reconnect updated in place.
-    if (sameAccount?.destinations) {
-      const staleSlugs = staleDestinationSlugs(sameAccount.destinations, destinations);
-      await deleteRemoteDestinations({
-        accountId: input.account.id,
-        accessToken: input.token.accessToken,
-        destinations: staleSlugs,
-        fetchImpl: input.fetchImpl,
-      });
-    }
-
     // Enforce a single active Cloudflare account per project: fully tear down any
     // other active install rows for this project that point at a different
     // account (delete their remote destinations, revoke their OAuth token +
@@ -658,17 +783,103 @@ async function provisionInstallation(input: {
       await teardownInstallation(row, { config: input.config, fetchImpl: input.fetchImpl });
     }
 
-    // Wire the account's Workers to the destinations — without this the
-    // destinations exist but no Worker exports to them, so no telemetry ever
-    // flows (the connect looks done but the project stays empty). Use the merged
-    // set so Workers are wired to slugs we retained from a prior connect too, not
-    // just the ones created this run.
-    await wireAccountWorkers({
-      accountId: input.account.id,
-      accessToken: input.token.accessToken,
-      destinations: persistedDestinations,
-      fetchImpl: input.fetchImpl,
-    });
+    // New connections wait for the user to select Workers. A reconnect rechecks
+    // the current preference under the account lock before deciding whether to
+    // wire, so a concurrent user toggle wins over the pre-provisioning snapshot.
+    if (sameAccount) {
+      await withWorkerWiringLock(input.account.id, async (tx) => {
+        const current = await tx.query.cloudflareInstallations.findFirst({
+          where: eq(schema.cloudflareInstallations.id, sameAccount.id),
+        });
+        if (!current) return;
+
+        // A destination that Cloudflare recreated has a new slug. Migrate only
+        // Workers that referenced prior slugs, including retries persisted by a
+        // previous incomplete reconnect, preserving manual selection.
+        const pending: Partial<Record<CloudflareSignal, string[]>> = {};
+        for (const signal of CLOUDFLARE_SIGNALS) {
+          const to = current.destinations?.[signal];
+          if (!to) continue;
+          const candidates = new Set(pendingDestinationSlugs(current.destinations, signal));
+          const previous = sameAccount.destinations?.[signal];
+          const replacementCreated = destinations[signal];
+          if (previous && replacementCreated && previous !== replacementCreated) {
+            candidates.add(previous);
+          }
+          candidates.delete(to);
+          pending[signal] = [...candidates];
+        }
+
+        const migration = { scripts: 0, replaced: 0, failed: 0, listOk: true };
+        migrationLoop: for (const signal of CLOUDFLARE_SIGNALS) {
+          const to = current.destinations?.[signal];
+          if (!to) continue;
+          for (const from of pending[signal] ?? []) {
+            const replacements: WorkerDestinationReplacements = {
+              [signal]: { from, to },
+            };
+            const result = await replaceAccountWorkerDestinations({
+              accountId: current.accountId,
+              accessToken: input.token.accessToken,
+              replacements,
+              fetchImpl: input.fetchImpl,
+            });
+            migration.scripts = Math.max(migration.scripts, result.scripts);
+            migration.replaced += result.replaced;
+            migration.failed += result.failed;
+            migration.listOk = migration.listOk && result.listOk;
+            if (!result.listOk) break migrationLoop;
+          }
+        }
+
+        // Unwire all may have disabled auto-wire while reconnect was
+        // provisioning destinations. Honor the preference that won the lock.
+        if (current.autoWire) {
+          await wireAccountWorkers({
+            accountId: current.accountId,
+            accessToken: input.token.accessToken,
+            destinations: withPendingDestinations(current.destinations, pending),
+            fetchImpl: input.fetchImpl,
+          });
+        }
+
+        const staleSlugs = Object.fromEntries(
+          CLOUDFLARE_SIGNALS.flatMap((signal) =>
+            (pending[signal] ?? []).map((slug, index) => [`${signal}_${index}`, slug]),
+          ),
+        );
+        // Retire old destinations and clear retry state only after every Worker
+        // reference moved successfully. Otherwise persist the old slugs so a
+        // later reconnect can retry the exact remaining migration.
+        if (migration.listOk && migration.failed === 0) {
+          await tx
+            .update(schema.cloudflareInstallations)
+            .set({
+              destinations: withoutPendingDestinations(current.destinations),
+              updatedAt: new Date(),
+            })
+            .where(eq(schema.cloudflareInstallations.id, current.id));
+          await deleteRemoteDestinations({
+            accountId: current.accountId,
+            accessToken: input.token.accessToken,
+            destinations: staleSlugs,
+            fetchImpl: input.fetchImpl,
+          });
+        } else {
+          await tx
+            .update(schema.cloudflareInstallations)
+            .set({
+              destinations: withPendingDestinations(current.destinations, pending),
+              updatedAt: new Date(),
+            })
+            .where(eq(schema.cloudflareInstallations.id, current.id));
+          log.warn(
+            { account_id: current.accountId, ...migration },
+            "cloudflare: kept prior destinations after incomplete Worker migration",
+          );
+        }
+      });
+    }
   } catch (e) {
     log.warn(
       { err: e, project_id: input.projectId },
@@ -740,7 +951,8 @@ export function mountCloudflareAuthed(
     const ctx = await requireProjectAccess(c, c.req.param("projectId"));
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ error: "not connected" }, 404);
-    const slugs = slugsForRow(row);
+    const activeSlugs = slugsForRow(row);
+    const removalSlugs = cloudflareWorkerDestinationRemovalSlugs(row.destinations);
     const accessToken = await accessTokenFor(row);
     // Strict list: a failed scripts read surfaces as an error the card shows as
     // "reconnect", not an empty account (the tolerant listScripts would hide it).
@@ -762,14 +974,15 @@ export function mountCloudflareAuthed(
           });
           return {
             name: script,
-            wired: isWorkerWired(obs, slugs),
+            hasWiring: hasWorkerWiring(obs, removalSlugs),
+            wired: isWorkerWired(obs, activeSlugs),
             observabilityEnabled: obs?.enabled === true,
           };
         } catch (e) {
           // A single unreadable worker shouldn't blank the list — show it as
           // unwired so the user can still try to wire it.
           log.warn({ err: e, script }, "cloudflare: worker observability read failed");
-          return { name: script, wired: false, observabilityEnabled: false };
+          return { name: script, hasWiring: false, wired: false, observabilityEnabled: false };
         }
       }),
     );
@@ -783,19 +996,66 @@ export function mountCloudflareAuthed(
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ error: "not connected" }, 404);
     const accessToken = await accessTokenFor(row);
-    const result = await wireAccountWorkers({
-      accountId: row.accountId,
-      accessToken,
-      destinations: row.destinations ?? {},
-      fetchImpl,
+    const result = await withWorkerWiringLock(row.accountId, async (tx) => {
+      const current = await tx.query.cloudflareInstallations.findFirst({
+        where: eq(schema.cloudflareInstallations.id, row.id),
+      });
+      if (!current) throw new HTTPException(404, { message: "not connected" });
+      return wireAccountWorkers({
+        accountId: current.accountId,
+        accessToken,
+        destinations: current.destinations ?? {},
+        fetchImpl,
+      });
     });
     // A failed scripts list here means we wired nothing because we couldn't see
     // the account — surface it instead of reporting a misleading success.
     if (!result.listOk) {
       return c.json({ error: "could not list workers" }, 502);
     }
+    if (result.failed > 0) {
+      const { listOk: _listOk, ...counts } = result;
+      return c.json({ error: "could not wire all workers", ...counts }, 502);
+    }
     const { listOk: _listOk, ...counts } = result;
     return c.json({ ok: true, ...counts });
+  });
+
+  // Turn off background auto-wire and remove our destinations from every
+  // current Worker. Disabling first prevents the periodic reconcile from racing
+  // the explicit bulk-unwire request or reconnecting everything later.
+  app.post("/api/projects/:projectId/cloudflare/workers/unwire-all", async (c) => {
+    const ctx = await requireProjectManager(c, c.req.param("projectId"));
+    const row = await findInstallation(ctx.projectId);
+    if (!row) return c.json({ error: "not connected" }, 404);
+    const accessToken = await accessTokenFor(row);
+    const result = await withWorkerWiringLock(row.accountId, async (tx) => {
+      const current = await tx.query.cloudflareInstallations.findFirst({
+        where: eq(schema.cloudflareInstallations.id, row.id),
+      });
+      if (!current) throw new HTTPException(404, { message: "not connected" });
+      // A reconcile already in flight finishes first; one arriving later
+      // observes autoWire=false and skips.
+      await tx
+        .update(schema.cloudflareInstallations)
+        .set({ autoWire: false, updatedAt: new Date() })
+        .where(eq(schema.cloudflareInstallations.id, row.id));
+      return unwireAccountWorkers({
+        accountId: current.accountId,
+        accessToken,
+        destinations: current.destinations ?? {},
+        fetchImpl,
+      });
+    });
+    if (!result.listOk) {
+      return c.json({ error: "could not list workers" }, 502);
+    }
+    if (result.failed > 0) {
+      const { listOk: _listOk, ...counts } = result;
+      return c.json({ error: "could not unwire all workers", autoWire: false, ...counts }, 502);
+    }
+    const { listOk: _listOk, ...counts } = result;
+    return c.json({ ok: true, autoWire: false, ...counts });
   });
 
   // Toggle auto-wire. When on, the worker's periodic reconcile keeps every
@@ -811,60 +1071,80 @@ export function mountCloudflareAuthed(
     if (typeof autoWire !== "boolean") {
       return c.json({ error: "autoWire must be a boolean" }, 400);
     }
-    await db
-      .update(schema.cloudflareInstallations)
-      .set({ autoWire, updatedAt: new Date() })
-      .where(eq(schema.cloudflareInstallations.id, row.id));
+    let accessToken: string | null = null;
     if (autoWire) {
-      // Best-effort immediate wire so turning it on takes effect now; the
-      // scheduled reconcile is what keeps it wired going forward.
       try {
-        const accessToken = await accessTokenFor(row);
-        await wireAccountWorkers({
-          accountId: row.accountId,
-          accessToken,
-          destinations: row.destinations ?? {},
-          fetchImpl,
-        });
+        accessToken = await accessTokenFor(row);
       } catch (e) {
-        log.warn({ err: e }, "cloudflare: immediate wire on auto-wire enable failed");
+        log.warn({ err: e }, "cloudflare: access token unavailable for immediate auto-wire");
       }
     }
+    await withWorkerWiringLock(row.accountId, async (tx) => {
+      await tx
+        .update(schema.cloudflareInstallations)
+        .set({ autoWire, updatedAt: new Date() })
+        .where(eq(schema.cloudflareInstallations.id, row.id));
+      if (autoWire && accessToken) {
+        const current = await tx.query.cloudflareInstallations.findFirst({
+          where: eq(schema.cloudflareInstallations.id, row.id),
+        });
+        if (!current) throw new HTTPException(404, { message: "not connected" });
+        // Best-effort immediate wire so turning it on takes effect now; the
+        // scheduled reconcile is what keeps it wired going forward.
+        try {
+          await wireAccountWorkers({
+            accountId: current.accountId,
+            accessToken,
+            destinations: current.destinations ?? {},
+            fetchImpl,
+          });
+        } catch (e) {
+          log.warn({ err: e }, "cloudflare: immediate wire on auto-wire enable failed");
+        }
+      }
+    });
     return c.json({ ok: true, autoWire });
   });
 
   // Wire / unwire one worker. Both read the worker's current observability,
   // apply the additive (wire) or subtractive (unwire) transform, and PATCH only
-  // when it actually changes.
+  // when it actually changes. The shared installation lock keeps each complete
+  // read/modify/PATCH sequence ordered with bulk and scheduled operations.
   app.post("/api/projects/:projectId/cloudflare/workers/:script/wire", async (c) => {
     const ctx = await requireProjectManager(c, c.req.param("projectId"));
     const script = c.req.param("script");
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ error: "not connected" }, 404);
-    const slugs = slugsForRow(row);
-    if (!slugs.traces && !slugs.logs) {
-      return c.json({ error: "no destinations provisioned" }, 400);
-    }
     const accessToken = await accessTokenFor(row);
     try {
-      const obs = await getScriptObservability({
-        accountId: row.accountId,
-        script,
-        accessToken,
-        fetchImpl,
-      });
-      const next = wireObservabilityDestinations(obs, slugs);
-      if (next) {
-        const res = await updateScriptObservability({
-          accountId: row.accountId,
+      return await withWorkerWiringLock(row.accountId, async (tx) => {
+        const current = await tx.query.cloudflareInstallations.findFirst({
+          where: eq(schema.cloudflareInstallations.id, row.id),
+        });
+        if (!current) throw new HTTPException(404, { message: "not connected" });
+        const slugs = slugsForRow(current);
+        if (!slugs.traces && !slugs.logs) {
+          return c.json({ error: "no destinations provisioned" }, 400);
+        }
+        const obs = await getScriptObservability({
+          accountId: current.accountId,
           script,
-          observability: next,
           accessToken,
           fetchImpl,
         });
-        if (!res.ok) return c.json({ error: res.error ?? "wire failed" }, 502);
-      }
-      return c.json({ ok: true, wired: true });
+        const next = wireObservabilityDestinations(obs, slugs);
+        if (next) {
+          const res = await updateScriptObservability({
+            accountId: current.accountId,
+            script,
+            observability: next,
+            accessToken,
+            fetchImpl,
+          });
+          if (!res.ok) return c.json({ error: res.error ?? "wire failed" }, 502);
+        }
+        return c.json({ ok: true, wired: true });
+      });
     } catch (e) {
       log.warn({ err: e, script }, "cloudflare: wire worker failed");
       return c.json({ error: "wire failed" }, 502);
@@ -876,27 +1156,33 @@ export function mountCloudflareAuthed(
     const script = c.req.param("script");
     const row = await findInstallation(ctx.projectId);
     if (!row) return c.json({ error: "not connected" }, 404);
-    const slugs = slugsForRow(row);
     const accessToken = await accessTokenFor(row);
     try {
-      const obs = await getScriptObservability({
-        accountId: row.accountId,
-        script,
-        accessToken,
-        fetchImpl,
-      });
-      const next = unwireObservabilityDestinations(obs, slugs);
-      if (next) {
-        const res = await updateScriptObservability({
-          accountId: row.accountId,
+      return await withWorkerWiringLock(row.accountId, async (tx) => {
+        const current = await tx.query.cloudflareInstallations.findFirst({
+          where: eq(schema.cloudflareInstallations.id, row.id),
+        });
+        if (!current) throw new HTTPException(404, { message: "not connected" });
+        const slugs = cloudflareWorkerDestinationRemovalSlugs(current.destinations);
+        const obs = await getScriptObservability({
+          accountId: current.accountId,
           script,
-          observability: next,
           accessToken,
           fetchImpl,
         });
-        if (!res.ok) return c.json({ error: res.error ?? "unwire failed" }, 502);
-      }
-      return c.json({ ok: true, wired: false });
+        const next = unwireObservabilityDestinations(obs, slugs);
+        if (next) {
+          const res = await updateScriptObservability({
+            accountId: current.accountId,
+            script,
+            observability: next,
+            accessToken,
+            fetchImpl,
+          });
+          if (!res.ok) return c.json({ error: res.error ?? "unwire failed" }, 502);
+        }
+        return c.json({ ok: true, wired: false });
+      });
     } catch (e) {
       log.warn({ err: e, script }, "cloudflare: unwire worker failed");
       return c.json({ error: "unwire failed" }, 502);

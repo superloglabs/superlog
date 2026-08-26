@@ -10,13 +10,15 @@
 // client is configured — without it there's nothing to refresh a token with.
 
 import {
+  CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE,
   type CloudflareClientCredentials,
+  type WorkerDestinationReplacements,
   cloudflareClientFromEnv,
   reconcileWorkerWiring,
   refreshAccessToken,
 } from "@superlog/cloudflare";
 import { decryptIntegrationSecret, encryptIntegrationSecret, schema } from "@superlog/db";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { lockInstallation } from "../cloudflare/lock.js";
 import {
   type CloudflareReconcileInstallation,
@@ -32,6 +34,22 @@ const log = logger.child({ scope: "cloudflare-reconcile" });
 // the keep-alive's 60s because a reconcile then makes a burst of Cloudflare calls
 // with the token, so it must stay valid for the whole pass.
 const ACCESS_TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+
+function pendingDestinationReplacements(
+  destinations: Record<string, string> | null | undefined,
+): WorkerDestinationReplacements[] {
+  const replacements: WorkerDestinationReplacements[] = [];
+  for (const signal of ["traces", "logs"] as const) {
+    const to = destinations?.[signal];
+    if (!to) continue;
+    const prefix = `__previous_${signal}_`;
+    for (const [key, from] of Object.entries(destinations ?? {})) {
+      if (!key.startsWith(prefix) || !from || from === to) continue;
+      replacements.push({ [signal]: { from, to } });
+    }
+  }
+  return replacements;
+}
 
 function createStore(
   db: JobDeps["db"],
@@ -51,6 +69,7 @@ function createStore(
         id: row.id,
         accountId: row.accountId,
         slugs: { traces: row.destinations?.traces, logs: row.destinations?.logs },
+        replacements: pendingDestinationReplacements(row.destinations),
       }));
     },
 
@@ -173,6 +192,35 @@ function createStore(
             ),
           );
         return refreshed.accessToken;
+      });
+    },
+
+    async withAutoWireLock(installation, action) {
+      return db.transaction(async (tx) => {
+        // Serialize every full-settings PATCH for this Cloudflare account,
+        // including installations owned by other projects. Keep the transaction
+        // open across remote calls so the last operation wins deterministically.
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE}), hashtext(${installation.accountId}))`,
+        );
+        const cur = await tx.query.cloudflareInstallations.findFirst({
+          where: and(
+            eq(schema.cloudflareInstallations.id, installation.id),
+            eq(schema.cloudflareInstallations.autoWire, true),
+            isNull(schema.cloudflareInstallations.revokedAt),
+          ),
+          columns: { id: true, accountId: true, destinations: true },
+        });
+        if (!cur) return null;
+        return action({
+          id: cur.id,
+          accountId: cur.accountId,
+          slugs: {
+            traces: cur.destinations?.traces,
+            logs: cur.destinations?.logs,
+          },
+          replacements: pendingDestinationReplacements(cur.destinations),
+        });
       });
     },
   };

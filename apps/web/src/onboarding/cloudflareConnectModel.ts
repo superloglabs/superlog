@@ -64,6 +64,6 @@ export function cloudflareStatusText(phase: CloudflarePhase, eventsArrived: bool
     default:
       return eventsArrived
         ? "Connected — telemetry from Cloudflare is arriving."
-        : "Connected — destinations are set up. First events will appear as your Workers run.";
+        : "Connected — destinations are set up. Choose which Workers should stream telemetry.";
   }
 }

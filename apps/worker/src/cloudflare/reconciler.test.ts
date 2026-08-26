@@ -22,6 +22,9 @@ function installation(id: string): CloudflareReconcileInstallation {
 function makeStore(
   installs: CloudflareReconcileInstallation[],
   tokens: Record<string, string | null | Error>,
+  autoWire: Record<string, boolean> = {},
+  lockedAccounts: string[] = [],
+  currentInstalls: CloudflareReconcileInstallation[] = installs,
 ): CloudflareReconcilerStore {
   return {
     async listAutoWireInstallations() {
@@ -31,6 +34,11 @@ function makeStore(
       const t = tokens[id];
       if (t instanceof Error) throw t;
       return t ?? null;
+    },
+    async withAutoWireLock(installation, action) {
+      lockedAccounts.push(installation.accountId);
+      const current = currentInstalls.find((candidate) => candidate.id === installation.id);
+      return autoWire[installation.id] === false || !current ? null : action(current);
     },
   };
 }
@@ -75,6 +83,57 @@ test("reconcile skips installs with no usable grant, without touching Cloudflare
   assert.equal(stats.reconciled, 1);
   assert.equal(stats.skipped, 1);
   assert.equal(stats.errors, 0);
+});
+
+test("reconcile rechecks auto-wire under the operation lock before wiring", async () => {
+  const installs = [installation("disabled-after-list")];
+  const lockedAccounts: string[] = [];
+  let reconciled = 0;
+  const reconcile: WorkerWiringFn = async () => {
+    reconciled += 1;
+    return { scripts: 1, wired: 1, listOk: true };
+  };
+
+  const stats = await runCloudflareReconcileOnce({
+    store: makeStore(
+      installs,
+      { "disabled-after-list": "tok" },
+      { "disabled-after-list": false },
+      lockedAccounts,
+    ),
+    reconcile,
+    log: noopLog,
+  });
+
+  assert.equal(reconciled, 0);
+  assert.equal(stats.reconciled, 0);
+  assert.equal(stats.skipped, 1);
+  assert.deepEqual(lockedAccounts, ["acc-disabled-after-list"]);
+});
+
+test("reconcile uses destination slugs reloaded under the account lock", async () => {
+  const listed = installation("changed");
+  listed.slugs = { traces: "old-traces", logs: "old-logs" };
+  const current = {
+    ...listed,
+    slugs: { traces: "new-traces", logs: "new-logs" },
+    replacements: [{ traces: { from: "old-traces", to: "new-traces" } }],
+  };
+  let received: CloudflareReconcileInstallation["slugs"] | null = null;
+  let replacements: CloudflareReconcileInstallation["replacements"] = [];
+
+  await runCloudflareReconcileOnce({
+    store: makeStore([listed], { changed: "tok" }, {}, [], [current]),
+    reconcile: async ({ slugs, replacements: currentReplacements }) => {
+      received = slugs;
+      replacements = currentReplacements;
+      return { scripts: 1, wired: 1, listOk: true };
+    },
+    log: noopLog,
+  });
+
+  assert.deepEqual(received, current.slugs);
+  assert.deepEqual(replacements, current.replacements);
 });
 
 test("a wiring failure for one install is isolated, not fatal", async () => {

@@ -4,9 +4,9 @@
 // Creating an account-level telemetry destination is not enough: a Worker only
 // exports to a destination when its OWN `observability` config enables the
 // signal and lists the destination by name. So wiring reads each Worker's
-// settings and merges our destination slugs in. That per-Worker link is set once
-// at connect, so a Worker created/recreated/renamed later comes up unwired —
-// which is what the reconcile job re-applies on a schedule.
+// settings and merges our destination slugs in. Users can set that per-Worker
+// link manually or opt into account-wide auto-wire, whose reconcile job also
+// catches Workers created, recreated, or renamed later.
 //
 // This lived in apps/api/src/cloudflare-service.ts until the worker needed it
 // too; it's here (mirroring @superlog/railway owning its client) so both share
@@ -19,8 +19,22 @@ import type { FetchImpl } from "./oauth.js";
 
 export const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 
+// Shared Postgres advisory-lock namespace for operations that change which
+// Workers stream from a Cloudflare account. API and worker callers use this
+// exact key plus the account id so full-settings PATCHes across projects cannot
+// overlap and clobber each other's destinations.
+export const CLOUDFLARE_WORKER_WIRING_LOCK_NAMESPACE = "cloudflare_worker_wiring";
+
 /** Our destination slugs for a Worker, per signal (metrics isn't a Worker signal). */
 export type WorkerDestinationSlugs = { traces?: string; logs?: string };
+export type WorkerDestinationRemovalSlugs = {
+  traces?: string | readonly string[];
+  logs?: string | readonly string[];
+};
+export type WorkerDestinationReplacements = {
+  traces?: { from: string; to: string };
+  logs?: { from: string; to: string };
+};
 
 export type WorkerObservabilitySignal = {
   enabled?: boolean;
@@ -108,18 +122,50 @@ export function wireObservabilityDestinations(
  */
 export function unwireObservabilityDestinations(
   current: WorkerObservability | null | undefined,
-  slugs: WorkerDestinationSlugs,
+  slugs: WorkerDestinationRemovalSlugs,
 ): WorkerObservability | null {
   if (!current) return null;
   const next: WorkerObservability = { ...current };
   let changed = false;
   for (const signal of WORKER_OBSERVABILITY_SIGNALS) {
-    const slug = slugs[signal];
-    if (!slug) continue;
+    const configured = slugs[signal];
+    const signalSlugs = new Set(
+      (Array.isArray(configured) ? configured : [configured]).filter(
+        (slug): slug is string => typeof slug === "string" && slug.length > 0,
+      ),
+    );
+    if (signalSlugs.size === 0) continue;
     const existing = next[signal];
     if (!existing || !Array.isArray(existing.destinations)) continue;
-    if (!existing.destinations.includes(slug)) continue;
-    next[signal] = { ...existing, destinations: existing.destinations.filter((d) => d !== slug) };
+    if (!existing.destinations.some((slug) => signalSlugs.has(slug))) continue;
+    next[signal] = {
+      ...existing,
+      destinations: existing.destinations.filter((slug) => !signalSlugs.has(slug)),
+    };
+    changed = true;
+  }
+  return changed ? next : null;
+}
+
+/**
+ * Replace destination slugs only on Workers that already reference the old
+ * slug. This migrates manual selections without opting unrelated Workers in.
+ */
+export function replaceObservabilityDestinations(
+  current: WorkerObservability | null | undefined,
+  replacements: WorkerDestinationReplacements,
+): WorkerObservability | null {
+  if (!current) return null;
+  const next: WorkerObservability = { ...current };
+  let changed = false;
+  for (const signal of WORKER_OBSERVABILITY_SIGNALS) {
+    const replacement = replacements[signal];
+    const existing = next[signal];
+    if (!replacement || !existing || !Array.isArray(existing.destinations)) continue;
+    if (!existing.destinations.includes(replacement.from)) continue;
+    const destinations = existing.destinations.filter((slug) => slug !== replacement.from);
+    if (!destinations.includes(replacement.to)) destinations.push(replacement.to);
+    next[signal] = { ...existing, destinations };
     changed = true;
   }
   return changed ? next : null;
@@ -135,6 +181,14 @@ export function isWorkerWired(
   slugs: WorkerDestinationSlugs,
 ): boolean {
   return wireObservabilityDestinations(current, slugs) === null;
+}
+
+/** Whether any of this project's destinations are present on the Worker. */
+export function hasWorkerWiring(
+  current: WorkerObservability | null | undefined,
+  slugs: WorkerDestinationRemovalSlugs,
+): boolean {
+  return unwireObservabilityDestinations(current, slugs) !== null;
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +353,7 @@ export async function updateScriptObservability(input: {
 
 // ---------------------------------------------------------------------------
 // Reconcile — the idempotent "wire every Worker in the account" pass, shared by
-// connect / wire-all (api) and the periodic reconcile (worker).
+// wire-all (api) and the periodic reconcile (worker).
 // ---------------------------------------------------------------------------
 
 export type WiringLogger = {
@@ -324,12 +378,16 @@ export async function reconcileWorkerWiring(input: {
   accountId: string;
   accessToken: string;
   slugs: WorkerDestinationSlugs;
+  replacements?: readonly WorkerDestinationReplacements[];
   fetchImpl?: FetchImpl;
   log?: WiringLogger;
-}): Promise<{ scripts: number; wired: number; listOk: boolean }> {
+}): Promise<{ scripts: number; wired: number; failed: number; listOk: boolean }> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const slugs = { traces: input.slugs.traces, logs: input.slugs.logs };
-  if (!slugs.traces && !slugs.logs) return { scripts: 0, wired: 0, listOk: true };
+  const replacements = input.replacements ?? [];
+  if (!slugs.traces && !slugs.logs && replacements.length === 0) {
+    return { scripts: 0, wired: 0, failed: 0, listOk: true };
+  }
   let scripts: string[];
   try {
     scripts = await listScriptsStrict(input.accountId, input.accessToken, fetchImpl);
@@ -340,9 +398,10 @@ export async function reconcileWorkerWiring(input: {
       { err: e instanceof Error ? e.message : String(e), account_id: input.accountId },
       "cloudflare: list worker scripts failed",
     );
-    return { scripts: 0, wired: 0, listOk: false };
+    return { scripts: 0, wired: 0, failed: 0, listOk: false };
   }
   let wired = 0;
+  let failed = 0;
   for (const script of scripts) {
     try {
       const current = await getScriptObservability({
@@ -351,8 +410,20 @@ export async function reconcileWorkerWiring(input: {
         accessToken: input.accessToken,
         fetchImpl,
       });
-      const next = wireObservabilityDestinations(current, slugs);
-      if (!next) continue; // already wired
+      let next = current;
+      let changed = false;
+      for (const replacement of replacements) {
+        const replaced = replaceObservabilityDestinations(next, replacement);
+        if (!replaced) continue;
+        next = replaced;
+        changed = true;
+      }
+      const wiredNext = wireObservabilityDestinations(next, slugs);
+      if (wiredNext) {
+        next = wiredNext;
+        changed = true;
+      }
+      if (!changed || !next) continue;
       const res = await updateScriptObservability({
         accountId: input.accountId,
         script,
@@ -361,12 +432,15 @@ export async function reconcileWorkerWiring(input: {
         fetchImpl,
       });
       if (res.ok) wired += 1;
-      else
+      else {
+        failed += 1;
         input.log?.warn(
           { script, error: res.error },
           "cloudflare: failed to wire worker observability",
         );
+      }
     } catch (e) {
+      failed += 1;
       input.log?.warn(
         { err: e instanceof Error ? e.message : String(e), script },
         "cloudflare: failed to wire worker observability",
@@ -374,8 +448,78 @@ export async function reconcileWorkerWiring(input: {
     }
   }
   input.log?.info(
-    { account_id: input.accountId, scripts: scripts.length, wired },
+    { account_id: input.accountId, scripts: scripts.length, wired, failed },
     "cloudflare: wired worker observability to destinations",
   );
-  return { scripts: scripts.length, wired, listOk: true };
+  return { scripts: scripts.length, wired, failed, listOk: true };
+}
+
+/**
+ * Remove our destinations from every current Worker in an account. Like the
+ * wiring reconcile, this is idempotent and isolates per-Worker failures. It
+ * leaves observability, signal settings, and destinations owned by anyone else
+ * untouched.
+ */
+export async function reconcileWorkerUnwiring(input: {
+  accountId: string;
+  accessToken: string;
+  slugs: WorkerDestinationRemovalSlugs;
+  fetchImpl?: FetchImpl;
+  log?: WiringLogger;
+}): Promise<{ scripts: number; unwired: number; failed: number; listOk: boolean }> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const slugs = { traces: input.slugs.traces, logs: input.slugs.logs };
+  if (!slugs.traces && !slugs.logs) {
+    return { scripts: 0, unwired: 0, failed: 0, listOk: true };
+  }
+  let scripts: string[];
+  try {
+    scripts = await listScriptsStrict(input.accountId, input.accessToken, fetchImpl);
+  } catch (e) {
+    input.log?.warn(
+      { err: e instanceof Error ? e.message : String(e), account_id: input.accountId },
+      "cloudflare: list worker scripts failed",
+    );
+    return { scripts: 0, unwired: 0, failed: 0, listOk: false };
+  }
+  let unwired = 0;
+  let failed = 0;
+  for (const script of scripts) {
+    try {
+      const current = await getScriptObservability({
+        accountId: input.accountId,
+        script,
+        accessToken: input.accessToken,
+        fetchImpl,
+      });
+      const next = unwireObservabilityDestinations(current, slugs);
+      if (!next) continue;
+      const res = await updateScriptObservability({
+        accountId: input.accountId,
+        script,
+        observability: next,
+        accessToken: input.accessToken,
+        fetchImpl,
+      });
+      if (res.ok) unwired += 1;
+      else {
+        failed += 1;
+        input.log?.warn(
+          { script, error: res.error },
+          "cloudflare: failed to unwire worker observability",
+        );
+      }
+    } catch (e) {
+      failed += 1;
+      input.log?.warn(
+        { err: e instanceof Error ? e.message : String(e), script },
+        "cloudflare: failed to unwire worker observability",
+      );
+    }
+  }
+  input.log?.info(
+    { account_id: input.accountId, scripts: scripts.length, unwired, failed },
+    "cloudflare: unwired worker observability from destinations",
+  );
+  return { scripts: scripts.length, unwired, failed, listOk: true };
 }
