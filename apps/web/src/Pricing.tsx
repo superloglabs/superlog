@@ -309,7 +309,7 @@ function PaygEstimator({ onSignUp }: { onSignUp: () => void }) {
               anchors={TELEMETRY_ANCHORS}
               value={spans}
               lineUsd={spansUsd}
-              formatValue={(n) => n.toLocaleString()}
+              formatValue={(n) => n.toLocaleString("en-US")}
               formatTick={formatCount}
               onChange={setSpans}
             />
@@ -318,7 +318,7 @@ function PaygEstimator({ onSignUp }: { onSignUp: () => void }) {
               anchors={TELEMETRY_ANCHORS}
               value={logs}
               lineUsd={logsUsd}
-              formatValue={(n) => n.toLocaleString()}
+              formatValue={(n) => n.toLocaleString("en-US")}
               formatTick={formatCount}
               onChange={setLogs}
             />
@@ -327,7 +327,7 @@ function PaygEstimator({ onSignUp }: { onSignUp: () => void }) {
               anchors={TELEMETRY_ANCHORS}
               value={metrics}
               lineUsd={metricsUsd}
-              formatValue={(n) => n.toLocaleString()}
+              formatValue={(n) => n.toLocaleString("en-US")}
               formatTick={formatCount}
               onChange={setMetrics}
             />
