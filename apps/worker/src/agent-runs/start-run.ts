@@ -16,7 +16,7 @@ import {
   updateIncidentMainMessage,
 } from "../infra/slack/incident-messages.js";
 import { logger } from "../logger.js";
-import { buildIssueSummaryWithTrace } from "./prompt-context.js";
+import { buildAgentRunIssueSummaries } from "./prompt-context.js";
 import { startQueuedAgentRunWorkflow } from "./start.js";
 import {
   failAgentRun,
@@ -37,8 +37,7 @@ export async function startQueuedAgentRun(ctx: AgentRunContext): Promise<void> {
     isRepositorySelectionError: isGithubRepositorySelectionError,
     isRetryableRepositoryError: isRetryableGithubRequestError,
     listRepositoryInstructionFiles,
-    buildIssueSummaries: (ctx) =>
-      Promise.all(ctx.issueRows.map((issue) => buildIssueSummaryWithTrace(ctx.project.id, issue))),
+    buildIssueSummaries: (ctx) => buildAgentRunIssueSummaries(ctx.project.id, ctx.issueRows),
     fail: failAgentRun,
     blockForGithub: moveAgentRunToBlockedNoGithub,
     pauseForRepositorySelection: moveAgentRunToAwaitingHuman,
