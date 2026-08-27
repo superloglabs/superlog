@@ -11,6 +11,7 @@ export const INGEST_SOURCE_SIGNALS = {
   vercel: ["traces", "logs"],
   railway: ["logs", "metrics"],
   render: ["logs", "metrics"],
+  supabase: ["metrics"],
 } as const;
 
 export type IngestSource = keyof typeof INGEST_SOURCE_SIGNALS;
@@ -23,6 +24,7 @@ export type IngestFilterState = {
   vercel: { traces: boolean; logs: boolean };
   railway: { logs: boolean; metrics: boolean };
   render: { logs: boolean; metrics: boolean };
+  supabase: { metrics: boolean };
 };
 
 /** Stable key for a (source, signal) pair — matches the proxy's filter key. */
@@ -53,6 +55,7 @@ export function deriveIngestFilterState(disabled: Set<string>): IngestFilterStat
     vercel: { traces: on("vercel", "traces"), logs: on("vercel", "logs") },
     railway: { logs: on("railway", "logs"), metrics: on("railway", "metrics") },
     render: { logs: on("render", "logs"), metrics: on("render", "metrics") },
+    supabase: { metrics: on("supabase", "metrics") },
   };
 }
 
@@ -69,6 +72,7 @@ export const ingestFilterStateSchema = z
     vercel: z.object({ traces: z.boolean(), logs: z.boolean() }).strict(),
     railway: z.object({ logs: z.boolean(), metrics: z.boolean() }).strict(),
     render: z.object({ logs: z.boolean(), metrics: z.boolean() }).strict(),
+    supabase: z.object({ metrics: z.boolean() }).strict().default({ metrics: true }),
   })
   .strict();
 

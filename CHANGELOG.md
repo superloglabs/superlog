@@ -4,6 +4,20 @@ Notable changes to Superlog. Add new entries at the top. Each entry is a
 `## YYYY-MM-DD — Title` heading; an optional `Tags:` line right under the
 heading becomes the entry's labels.
 
+## 2026-08-27 — Supabase query performance
+
+Tags: Feature, Integrations
+
+Connect multiple hosted Supabase accounts and projects to see Postgres query
+performance alongside the rest of your application telemetry.
+
+- Map each Supabase project to its own environment, including production,
+  staging, and development projects split across accounts.
+- Superlog collects `pg_stat_statements` metrics through Supabase's read-only
+  Management API, without storing database passwords or connection strings.
+- Copy a project-scoped, read-only Supabase MCP URL when an investigation needs
+  deeper database context.
+
 ## 2026-07-16 — Smarter custom MCP setup
 
 Tags: Improvement, MCP

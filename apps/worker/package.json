@@ -81,6 +81,7 @@
     "@superlog/otel": "workspace:*",
     "@superlog/railway": "workspace:*",
     "@superlog/render": "workspace:*",
+    "@superlog/supabase": "workspace:*",
     "@superlog/telemetry-query": "workspace:*",
     "@superlog/topology": "workspace:*",
     "autumn-js": "^1.2.27",

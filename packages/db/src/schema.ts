@@ -3113,6 +3113,87 @@ export const gcpConnections = pgTable(
 
 export type GcpConnection = typeof gcpConnections.$inferSelect;
 
+// A Supabase OAuth grant belongs to one Supabase user inside a Superlog org.
+// The grant is intentionally separate from project connections: one user can
+// authorize once, then map any number of hosted Supabase projects into any
+// number of Superlog projects/environments. Tokens are Management API tokens,
+// never Postgres credentials, and are limited to projects:read + database:read.
+export const supabaseOauthGrants = pgTable(
+  "supabase_oauth_grants",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    supabaseUserId: text("supabase_user_id").notNull(),
+    primaryEmail: text("primary_email").notNull(),
+    username: text("username").notNull(),
+    accessTokenCiphertext: bytea("access_token_ciphertext").notNull(),
+    accessTokenNonce: bytea("access_token_nonce").notNull(),
+    accessTokenKeyVersion: integer("access_token_key_version").notNull().default(1),
+    refreshTokenCiphertext: bytea("refresh_token_ciphertext"),
+    refreshTokenNonce: bytea("refresh_token_nonce"),
+    refreshTokenKeyVersion: integer("refresh_token_key_version"),
+    tokenExpiresAt: timestamp("token_expires_at", { withTimezone: true }),
+    scope: text("scope").notNull(),
+    installedByUserId: uuid("installed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    orgUserUniq: uniqueIndex("supabase_oauth_grants_org_user_idx").on(t.orgId, t.supabaseUserId),
+    orgIdx: index("supabase_oauth_grants_org_idx").on(t.orgId),
+  }),
+);
+
+export type SupabaseOauthGrant = typeof supabaseOauthGrants.$inferSelect;
+
+// One hosted Supabase project mapped into a Superlog project/environment.
+// Multiple rows per Superlog project are expected (production, staging, etc.),
+// and rows may point at grants for different Supabase accounts.
+export const supabaseConnections = pgTable(
+  "supabase_connections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    grantId: uuid("grant_id")
+      .notNull()
+      .references(() => supabaseOauthGrants.id, { onDelete: "cascade" }),
+    supabaseProjectRef: text("supabase_project_ref").notNull(),
+    supabaseProjectName: text("supabase_project_name").notNull(),
+    supabaseOrganizationSlug: text("supabase_organization_slug").notNull(),
+    region: text("region").notNull(),
+    environment: text("environment").notNull(),
+    apiKeyId: uuid("api_key_id").references(() => apiKeys.id, { onDelete: "set null" }),
+    ingestKeyCiphertext: bytea("ingest_key_ciphertext"),
+    ingestKeyNonce: bytea("ingest_key_nonce"),
+    ingestKeyKeyVersion: integer("ingest_key_key_version"),
+    lastPolledAt: timestamp("last_polled_at", { withTimezone: true }),
+    lastMetricsReceivedAt: timestamp("last_metrics_received_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    projectRefUniq: uniqueIndex("supabase_connections_project_ref_idx").on(
+      t.projectId,
+      t.supabaseProjectRef,
+    ),
+    grantIdx: index("supabase_connections_grant_idx").on(t.grantId),
+  }),
+);
+
+export type SupabaseConnection = typeof supabaseConnections.$inferSelect;
+
 // A connected Cloudflare account via self-managed OAuth (GA 2026-06). One row per
 // (project, Cloudflare account). Access/refresh tokens are encrypted at rest with
 // the same AES-256-GCM scheme as the AWS-connect external ID. On connect we use
@@ -3413,7 +3494,7 @@ export const projectIngestFilters = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     source: text("source")
-      .$type<"otlp" | "aws" | "gcp" | "vercel" | "railway" | "render">()
+      .$type<"otlp" | "aws" | "gcp" | "vercel" | "railway" | "render" | "supabase">()
       .notNull(),
     signal: text("signal").$type<"traces" | "logs" | "metrics">().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),

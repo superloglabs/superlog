@@ -24,6 +24,7 @@ test("allIngestFilterPairs covers every supported source and signal", () => {
     "railway:metrics",
     "render:logs",
     "render:metrics",
+    "supabase:metrics",
     "vercel:logs",
     "vercel:traces",
   ]);
@@ -37,6 +38,7 @@ test("empty disabled set → everything enabled", () => {
     vercel: { traces: true, logs: true },
     railway: { logs: true, metrics: true },
     render: { logs: true, metrics: true },
+    supabase: { metrics: true },
   });
 });
 
@@ -97,7 +99,7 @@ test("state schema rejects unknown source/signal keys", () => {
   );
 });
 
-test("state schema defaults GCP filters on for clients built before GCP support", () => {
+test("state schema defaults newer integration filters on for older clients", () => {
   const parsed = ingestFilterStateSchema.parse({
     otlp: { traces: true, logs: true, metrics: true },
     aws: { logs: true, metrics: true },
@@ -107,4 +109,5 @@ test("state schema defaults GCP filters on for clients built before GCP support"
   });
 
   assert.deepEqual(parsed.gcp, { logs: true, metrics: true });
+  assert.deepEqual(parsed.supabase, { metrics: true });
 });
