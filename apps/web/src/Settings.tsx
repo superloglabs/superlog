@@ -2991,7 +2991,9 @@ function SupabaseCard({ projectId }: { projectId: string | undefined }) {
   const removeGrant = useRemoveSupabaseGrant(projectId);
   const callbackGrantId = params.get("supabase_grant");
   const [activeGrantId, setActiveGrantId] = useState<string | null>(callbackGrantId);
-  const projects = useSupabaseProjects(projectId, activeGrantId);
+  const state = integration.data;
+  const canManage = state?.canManage ?? false;
+  const projects = useSupabaseProjects(projectId, canManage ? activeGrantId : null);
   const [drafts, setDrafts] = useState<Record<string, { selected: boolean; environment: string }>>(
     {},
   );
@@ -3022,7 +3024,6 @@ function SupabaseCard({ projectId }: { projectId: string | undefined }) {
     );
   }, [projects.data, integration.data?.connections]);
 
-  const state = integration.data;
   const selected = Object.entries(drafts).flatMap(([projectRef, draft]) =>
     draft.selected && draft.environment.trim()
       ? [{ projectRef, environment: draft.environment.trim() }]
@@ -3041,6 +3042,13 @@ function SupabaseCard({ projectId }: { projectId: string | undefined }) {
       {!state?.configured && !integration.isLoading && (
         <p className="text-[12.5px] text-muted">
           Supabase OAuth is not configured on this deployment.
+        </p>
+      )}
+
+      {state && !state.canManage && (
+        <p className="text-[12.5px] text-muted">
+          This integration is read-only for project members. Ask an organization admin to change
+          connected accounts or projects.
         </p>
       )}
 
@@ -3069,6 +3077,7 @@ function SupabaseCard({ projectId }: { projectId: string | undefined }) {
               size="sm"
               variant="danger"
               loading={removeConnection.isPending}
+              disabled={!canManage}
               onClick={() => removeConnection.mutate(connection.id)}
             >
               Remove
@@ -3100,6 +3109,7 @@ function SupabaseCard({ projectId }: { projectId: string | undefined }) {
               <Btn
                 size="sm"
                 variant="secondary"
+                disabled={!canManage}
                 onClick={() => setActiveGrantId(activeGrantId === grant.id ? null : grant.id)}
               >
                 {activeGrantId === grant.id ? "Cancel" : "Add projects"}
@@ -3108,6 +3118,7 @@ function SupabaseCard({ projectId }: { projectId: string | undefined }) {
                 size="sm"
                 variant="danger"
                 loading={removeGrant.isPending}
+                disabled={!canManage}
                 onClick={() => removeGrant.mutate(grant.id)}
               >
                 Remove account
@@ -3134,6 +3145,7 @@ function SupabaseCard({ projectId }: { projectId: string | undefined }) {
                     <input
                       type="checkbox"
                       checked={draft.selected}
+                      disabled={!canManage}
                       onChange={(event) =>
                         setDrafts((current) => ({
                           ...current,
@@ -3151,7 +3163,7 @@ function SupabaseCard({ projectId }: { projectId: string | undefined }) {
                     </span>
                     <Input
                       value={draft.environment}
-                      disabled={!draft.selected}
+                      disabled={!canManage || !draft.selected}
                       aria-label={`Environment for ${supabaseProject.name}`}
                       placeholder="environment"
                       onChange={(event) =>
@@ -3172,7 +3184,7 @@ function SupabaseCard({ projectId }: { projectId: string | undefined }) {
                   size="sm"
                   variant="primary"
                   loading={connect.isPending}
-                  disabled={selected.length === 0 || connect.isPending}
+                  disabled={!canManage || selected.length === 0 || connect.isPending}
                   onClick={() => {
                     if (!activeGrantId) return;
                     connect.mutate(
@@ -3195,7 +3207,7 @@ function SupabaseCard({ projectId }: { projectId: string | undefined }) {
           size="sm"
           variant="primary"
           loading={startInstall.isPending}
-          disabled={!projectId || !state?.configured || startInstall.isPending}
+          disabled={!projectId || !state?.configured || !canManage || startInstall.isPending}
           onClick={async () => {
             const { url } = await startInstall.mutateAsync();
             window.location.href = url;

@@ -12,6 +12,9 @@ test("the query-metrics read uses only schema-qualified pg_stat_statements objec
   assert.match(SUPABASE_QUERY_METRICS_SQL, /extensions\.pg_stat_statements_info/);
   assert.match(SUPABASE_QUERY_METRICS_SQL, /pg_catalog\.pg_database/);
   assert.match(SUPABASE_QUERY_METRICS_SQL, /pg_catalog\.pg_roles/);
+  assert.match(SUPABASE_QUERY_METRICS_SQL, /row_number\(\).*mean_exec_time/is);
+  assert.match(SUPABASE_QUERY_METRICS_SQL, /total_exec_rank\s*<=\s*50/i);
+  assert.match(SUPABASE_QUERY_METRICS_SQL, /mean_exec_rank\s*<=\s*50/i);
   assert.match(SUPABASE_QUERY_METRICS_SQL, /limit 100/i);
 });
 

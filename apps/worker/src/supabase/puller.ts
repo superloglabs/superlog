@@ -1,4 +1,12 @@
 export const SUPABASE_QUERY_METRICS_SQL = `
+with ranked_statements as (
+  select
+    statements.*,
+    row_number() over (order by statements.total_exec_time desc) as total_exec_rank,
+    row_number() over (order by statements.mean_exec_time desc) as mean_exec_rank
+  from extensions.pg_stat_statements as statements
+  where statements.toplevel = true
+)
 select
   statements.queryid::text as queryid,
   statements.query,
@@ -14,12 +22,12 @@ select
   databases.datname,
   roles.rolname,
   info.stats_reset
-from extensions.pg_stat_statements as statements
+from ranked_statements as statements
 inner join pg_catalog.pg_database as databases on databases.oid = statements.dbid
 inner join pg_catalog.pg_roles as roles on roles.oid = statements.userid
 cross join extensions.pg_stat_statements_info as info
-where statements.toplevel = true
-order by statements.total_exec_time desc
+where statements.total_exec_rank <= 50 or statements.mean_exec_rank <= 50
+order by least(statements.total_exec_rank, statements.mean_exec_rank)
 limit 100`.trim();
 
 export type SupabaseQueryMetricsRow = {
