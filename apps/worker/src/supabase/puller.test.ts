@@ -64,11 +64,19 @@ test("pg_stat_statements rows become cumulative OTLP query metrics with environm
   );
   const metrics = resource.scopeMetrics[0]?.metrics ?? [];
   const calls = metrics.find((metric) => metric.name === "postgresql.query.calls")?.sum
-    .dataPoints[0] as { asInt?: string } | undefined;
+    .dataPoints[0] as
+    | { asInt?: string; attributes?: Array<{ key: string; value: { stringValue: string } }> }
+    | undefined;
   const executionTime = metrics.find((metric) => metric.name === "postgresql.query.execution.time")
     ?.sum.dataPoints[0] as { asDouble?: number } | undefined;
   assert.equal(calls?.asInt, "5");
   assert.equal(executionTime?.asDouble, 1.5);
+  assert.equal(
+    calls?.attributes?.some(
+      (attribute) => attribute.key === "postgresql.query.mean_execution_time_ms",
+    ),
+    false,
+  );
 });
 
 test("one OAuth grant refresh is shared by all of its connected Supabase projects", async () => {
@@ -131,6 +139,49 @@ test("one OAuth grant refresh is shared by all of its connected Supabase project
     "forward:ingest-connection-2",
     "success:connection-2",
   ]);
+});
+
+test("the pull deadline signal is forwarded to every external request", async () => {
+  const controller = new AbortController();
+  const signals: Array<AbortSignal | undefined> = [];
+  const store: SupabasePullerStore = {
+    async listActiveGrants() {
+      return [
+        {
+          id: "grant-1",
+          accessToken: "access",
+          refreshToken: null,
+          tokenExpiresAt: new Date("2026-08-27T13:00:00.000Z"),
+          connections: [connection("connection-1", "project-one")],
+        },
+      ];
+    },
+    async saveGrantTokens() {},
+    async markConnectionSuccess() {},
+    async markConnectionFailure() {},
+  };
+
+  await runSupabasePullOnce({
+    store,
+    reader: {
+      async refreshAccessToken(_refreshToken, signal) {
+        signals.push(signal);
+        return { accessToken: "access", refreshToken: null, expiresInSeconds: 3600 };
+      },
+      async runReadOnlyQuery(_projectRef, _sql, _accessToken, signal) {
+        signals.push(signal);
+        return [];
+      },
+    },
+    async forward({ signal }) {
+      signals.push(signal);
+      return true;
+    },
+    signal: controller.signal,
+    now: () => new Date("2026-08-27T12:00:00.000Z"),
+  });
+
+  assert.deepEqual(signals, [controller.signal, controller.signal]);
 });
 
 function connection(id: string, projectRef: string) {

@@ -54,6 +54,7 @@ export class SupabaseManagementClient {
   async refreshAccessToken(input: {
     config: SupabaseOAuthConfig;
     refreshToken: string;
+    signal?: AbortSignal;
   }): Promise<SupabaseToken> {
     const token = await this.tokenRequest(
       new URLSearchParams({
@@ -62,6 +63,7 @@ export class SupabaseManagementClient {
         client_secret: input.config.clientSecret,
         refresh_token: input.refreshToken,
       }),
+      input.signal,
     );
     return { ...token, refreshToken: token.refreshToken ?? input.refreshToken };
   }
@@ -113,6 +115,7 @@ export class SupabaseManagementClient {
     projectRef: string;
     query: string;
     parameters?: unknown[];
+    signal?: AbortSignal;
   }): Promise<Array<Record<string, unknown>>> {
     const response = await this.fetchImpl(
       `https://api.supabase.com/v1/projects/${encodeURIComponent(input.projectRef)}/database/query/read-only`,
@@ -126,6 +129,7 @@ export class SupabaseManagementClient {
           query: input.query,
           ...(input.parameters ? { parameters: input.parameters } : {}),
         }),
+        ...(input.signal ? { signal: input.signal } : {}),
       },
     );
     const body = await response.json().catch(() => null);
@@ -140,11 +144,12 @@ export class SupabaseManagementClient {
     return body as Array<Record<string, unknown>>;
   }
 
-  private async tokenRequest(body: URLSearchParams): Promise<SupabaseToken> {
+  private async tokenRequest(body: URLSearchParams, signal?: AbortSignal): Promise<SupabaseToken> {
     const response = await this.fetchImpl("https://api.supabase.com/v1/oauth/token", {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body,
+      ...(signal ? { signal } : {}),
     });
     const json = (await response.json().catch(() => null)) as Record<string, unknown> | null;
     if (!response.ok || !json) {

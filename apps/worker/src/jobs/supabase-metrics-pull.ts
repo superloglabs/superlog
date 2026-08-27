@@ -11,23 +11,29 @@ import {
 } from "../supabase/puller.js";
 
 const log = logger.child({ scope: "supabase-metrics-pull" });
+const DEFAULT_JOB_TIMEOUT_MS = 4 * 60 * 1000;
+const JOB_EXPIRY_GRACE_SECONDS = 60;
 
 type SupabaseJobOptions = {
   env?: NodeJS.ProcessEnv;
   client?: SupabaseManagementClient;
+  jobTimeoutMs?: number;
 };
 
-export function isSupabaseMetricIntakeAcknowledged(status: number): boolean {
-  return (status >= 200 && status < 300) || [400, 402, 413].includes(status);
+export function isSupabaseMetricIntakeDelivered(status: number): boolean {
+  return status >= 200 && status < 300;
 }
 
 export function createSupabaseMetricsPullJob(options: SupabaseJobOptions = {}): JobDefinition {
   const env = options.env ?? process.env;
+  const jobTimeoutMs = options.jobTimeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
   return {
     name: "supabase-metrics-pull",
     schedule: "*/5 * * * *",
     policy: "exclusive",
-    expireInSeconds: 240,
+    // Bound every external request with a whole-job deadline, then leave a
+    // grace period before the durable lease expires so passes cannot overlap.
+    expireInSeconds: Math.ceil(jobTimeoutMs / 1000) + JOB_EXPIRY_GRACE_SECONDS,
     create: (deps) => {
       const config = supabaseConfigFromEnv(env);
       if (!config || !env.AGENT_SECRETS_KEY) {
@@ -39,18 +45,19 @@ export function createSupabaseMetricsPullJob(options: SupabaseJobOptions = {}): 
       const intake = intakeBaseUrl(env);
 
       return async () => {
+        const signal = AbortSignal.timeout(jobTimeoutMs);
         const stats = await runSupabasePullOnce({
           store,
           reader: {
-            refreshAccessToken: (refreshToken) =>
-              client.refreshAccessToken({ config, refreshToken }),
-            async runReadOnlyQuery(projectRef, query, accessToken) {
+            refreshAccessToken: (refreshToken, signal) =>
+              client.refreshAccessToken({ config, refreshToken, signal }),
+            async runReadOnlyQuery(projectRef, query, accessToken, signal) {
               return parseQueryMetricsRows(
-                await client.runReadOnlyQuery({ projectRef, query, accessToken }),
+                await client.runReadOnlyQuery({ projectRef, query, accessToken, signal }),
               );
             },
           },
-          async forward({ payload, ingestKey }) {
+          async forward({ payload, ingestKey, signal }) {
             const response = await fetch(`${intake}/supabase/pull/metrics`, {
               method: "POST",
               headers: {
@@ -58,12 +65,14 @@ export function createSupabaseMetricsPullJob(options: SupabaseJobOptions = {}): 
                 "content-type": "application/json",
               },
               body: JSON.stringify(payload),
+              signal,
             });
             if (!response.ok) {
               log.warn({ status: response.status }, "Supabase metric intake rejected a payload");
             }
-            return isSupabaseMetricIntakeAcknowledged(response.status);
+            return isSupabaseMetricIntakeDelivered(response.status);
           },
+          signal,
         });
         if (stats.connections > 0) log.info(stats, "Supabase metrics pull complete");
       };

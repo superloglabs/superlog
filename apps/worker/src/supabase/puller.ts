@@ -72,7 +72,10 @@ export type SupabasePullerStore = {
 };
 
 export type SupabaseMetricsReader = {
-  refreshAccessToken(refreshToken: string): Promise<{
+  refreshAccessToken(
+    refreshToken: string,
+    signal?: AbortSignal,
+  ): Promise<{
     accessToken: string;
     refreshToken: string | null;
     expiresInSeconds: number;
@@ -81,6 +84,7 @@ export type SupabaseMetricsReader = {
     projectRef: string,
     sql: string,
     accessToken: string,
+    signal?: AbortSignal,
   ): Promise<SupabaseQueryMetricsRow[]>;
 };
 
@@ -90,19 +94,22 @@ export async function runSupabasePullOnce(input: {
   forward(input: {
     payload: ReturnType<typeof pgStatStatementsToOtlp>;
     ingestKey: string;
+    signal?: AbortSignal;
   }): Promise<boolean>;
+  signal?: AbortSignal;
   now?: () => Date;
 }): Promise<{ grants: number; connections: number; statements: number; errors: number }> {
   const now = input.now ?? (() => new Date());
   const stats = { grants: 0, connections: 0, statements: 0, errors: 0 };
 
   for (const grant of await input.store.listActiveGrants()) {
+    input.signal?.throwIfAborted();
     stats.grants += 1;
     let accessToken = grant.accessToken;
     try {
       if (tokenNeedsRefresh(grant.tokenExpiresAt, now())) {
         if (!grant.refreshToken) throw new Error("Supabase OAuth grant needs reconnecting");
-        const refreshed = await input.reader.refreshAccessToken(grant.refreshToken);
+        const refreshed = await input.reader.refreshAccessToken(grant.refreshToken, input.signal);
         accessToken = refreshed.accessToken;
         await input.store.saveGrantTokens(grant.id, {
           accessToken,
@@ -111,6 +118,7 @@ export async function runSupabasePullOnce(input: {
         });
       }
     } catch (error) {
+      input.signal?.throwIfAborted();
       const message = errorMessage(error);
       for (const connection of grant.connections) {
         stats.connections += 1;
@@ -121,6 +129,7 @@ export async function runSupabasePullOnce(input: {
     }
 
     for (const connection of grant.connections) {
+      input.signal?.throwIfAborted();
       stats.connections += 1;
       const polledAt = now();
       try {
@@ -129,15 +138,18 @@ export async function runSupabasePullOnce(input: {
           connection.projectRef,
           SUPABASE_QUERY_METRICS_SQL,
           accessToken,
+          input.signal,
         );
         const delivered = await input.forward({
           payload: pgStatStatementsToOtlp(rows, connection, polledAt),
           ingestKey: connection.ingestKey,
+          signal: input.signal,
         });
         if (!delivered) throw new Error("Supabase metrics intake rejected the payload");
         stats.statements += rows.length;
         await input.store.markConnectionSuccess(connection.id, polledAt, rows.length > 0);
       } catch (error) {
+        input.signal?.throwIfAborted();
         stats.errors += 1;
         await input.store.markConnectionFailure(connection.id, errorMessage(error), polledAt);
       }
@@ -255,7 +267,6 @@ function statementAttributes(row: SupabaseQueryMetricsRow) {
     "db.query.text": row.query,
     "postgresql.query.id": row.queryid,
     "postgresql.role.name": row.rolname,
-    "postgresql.query.mean_execution_time_ms": String(number(row.mean_exec_time)),
   }).map(([key, value]) => ({ key, value: { stringValue: value } }));
 }
 
