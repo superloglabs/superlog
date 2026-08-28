@@ -6,9 +6,9 @@ import type { OtelLogRow, OtelTraceRow } from "./otlp-clickhouse.js";
 // rows, combines concurrent deliveries briefly per table, then INSERTs each batch
 // synchronously with insert_quorum. Every caller waits for the shared insert, so an
 // SQS message is only deleted once its rows are durably committed (the consume loop
-// deletes on success, leaves on throw). Per-table promise chains cap each task at one
-// trace and one log insert at a time instead of turning queue concurrency into a
-// ClickHouse small-part storm.
+// deletes on success, leaves on throw). Each table has at most one active insert; all
+// deliveries received while it runs become one following insert. This keeps concurrent
+// queue work from becoming a chain of tiny ClickHouse inserts.
 //
 // Durability note: quorum is preserved (default 2), and async_insert stays OFF, so a
 // successful insert means the rows are committed to a quorum of replicas before we ack.
@@ -72,15 +72,15 @@ type PendingInsert = {
 type TableBatch = {
   pending: PendingInsert[];
   timer: NodeJS.Timeout | undefined;
-  tail: Promise<void>;
+  running: Promise<void> | undefined;
 };
 
 export class ClickHouseIngestWriter implements IngestRowWriter {
   private readonly client: ClickHouseInsertClient;
   private readonly batchLingerMs: number;
   private readonly batches: Record<IngestTable, TableBatch> = {
-    otel_logs: { pending: [], timer: undefined, tail: Promise.resolve() },
-    otel_traces: { pending: [], timer: undefined, tail: Promise.resolve() },
+    otel_logs: { pending: [], timer: undefined, running: undefined },
+    otel_traces: { pending: [], timer: undefined, running: undefined },
   };
   private closed = false;
 
@@ -121,7 +121,7 @@ export class ClickHouseIngestWriter implements IngestRowWriter {
     return new Promise<void>((resolve, reject) => {
       const batch = this.batches[table];
       batch.pending.push({ rows: rows as IngestRow[], resolve, reject });
-      if (!batch.timer) {
+      if (!batch.running && !batch.timer) {
         batch.timer = setTimeout(() => this.flush(table), this.batchLingerMs);
       }
     });
@@ -131,32 +131,38 @@ export class ClickHouseIngestWriter implements IngestRowWriter {
     const batch = this.batches[table];
     if (batch.timer) clearTimeout(batch.timer);
     batch.timer = undefined;
-    if (batch.pending.length === 0) return;
+    if (batch.running || batch.pending.length === 0) return;
 
     const pending = batch.pending.splice(0);
     const rows = pending.flatMap((item) => item.rows);
-    batch.tail = batch.tail
-      .then(async () => {
-        try {
-          // Resolve every included queue delivery only after the shared insert is
-          // synchronously committed to the configured replica quorum.
-          await this.client.insert({ table, values: rows, format: "JSONEachRow" });
-          for (const item of pending) item.resolve();
-        } catch (error) {
-          for (const item of pending) item.reject(error);
-        }
-      })
-      .catch(() => {
-        // Every insert error is delivered to its pending callers above. Keep the
-        // per-table chain usable so a later SQS redelivery can succeed.
-      });
+    batch.running = (async () => {
+      try {
+        // Resolve every included queue delivery only after the shared insert is
+        // synchronously committed to the configured replica quorum.
+        await this.client.insert({ table, values: rows, format: "JSONEachRow" });
+        for (const item of pending) item.resolve();
+      } catch (error) {
+        for (const item of pending) item.reject(error);
+      }
+    })().finally(() => {
+      batch.running = undefined;
+      if (batch.pending.length > 0) {
+        // Anything received while ClickHouse was busy has already lingered. Drain
+        // all of it as one next insert instead of building a queue of tiny batches.
+        this.flush(table);
+      }
+    });
   }
 
   async close(): Promise<void> {
     this.closed = true;
     this.flush("otel_logs");
     this.flush("otel_traces");
-    await Promise.all(Object.values(this.batches).map((batch) => batch.tail));
+    await Promise.all(
+      Object.values(this.batches).map(async (batch) => {
+        while (batch.running) await batch.running;
+      }),
+    );
     await this.client.close();
   }
 }
