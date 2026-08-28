@@ -82,7 +82,7 @@ const FIREHOSE_LOGS_COLLECTOR_URL =
 const PORT = Number(process.env.PORT ?? 4000);
 const ingestQueueConfig = getIngestQueueConfig(process.env);
 // When INGEST_CLICKHOUSE_DIRECT=true, the consumer writes logs/traces straight to
-// ClickHouse (parallel synchronous quorum inserts, acked on success) instead of
+// ClickHouse (briefly batched synchronous quorum inserts, acked on success) instead of
 // forwarding every message through the collector. Metrics and undecodable bodies
 // still fall through to the collector. Disabled (null) otherwise.
 const ingestClickHouseConfig = getIngestClickHouseConfig(process.env);
