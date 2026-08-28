@@ -60,6 +60,41 @@ test("concurrent trace deliveries share one durable ClickHouse insert", async ()
   await writer.close();
 });
 
+test("deliveries arriving during an insert coalesce into one following insert", async () => {
+  let finishFirstInsert: (() => void) | undefined;
+  const firstInsertFinished = new Promise<void>((resolve) => {
+    finishFirstInsert = resolve;
+  });
+  const inserts: OtelTraceRow[][] = [];
+  const client: ClickHouseInsertClient = {
+    async insert(input) {
+      inserts.push(input.values as OtelTraceRow[]);
+      if (inserts.length === 1) await firstInsertFinished;
+    },
+    async close() {},
+  };
+  const writer = new ClickHouseIngestWriter(config, client);
+
+  const first = writer.insert("otel_traces", [traceRow("trace-1")]);
+  await delay(20);
+  assert.equal(inserts.length, 1);
+
+  const second = writer.insert("otel_traces", [traceRow("trace-2")]);
+  await delay(20);
+  const third = writer.insert("otel_traces", [traceRow("trace-3")]);
+  await delay(20);
+
+  finishFirstInsert?.();
+  await Promise.all([first, second, third]);
+
+  assert.equal(inserts.length, 2);
+  assert.deepEqual(
+    inserts[1]?.map((row) => row.TraceId),
+    ["trace-2", "trace-3"],
+  );
+  await writer.close();
+});
+
 test("a failed shared insert rejects every delivery and a later batch can recover", async () => {
   let attempts = 0;
   const client: ClickHouseInsertClient = {
