@@ -1,6 +1,5 @@
 import "./env.js";
 import "./net.js";
-import { createClient } from "@clickhouse/client";
 import { serve } from "@hono/node-server";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { ensurePaygPromotion } from "@superlog/billing";
@@ -56,6 +55,7 @@ import { mountAnomalyScanner } from "./anomaly-scanner.js";
 import { auth } from "./auth.js";
 import { buildAutomationSettingsConflictUpdate } from "./automation-settings-update.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
+import { createApiClickHouseClient } from "./clickhouse-client.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
 import { mountCloudflareAuthed, mountCloudflarePublic } from "./cloudflare.js";
 import { mountDashboards } from "./dashboards.js";
@@ -189,28 +189,7 @@ const WEB_CORS_ORIGINS = Array.from(
   new Set([WEB_ORIGIN, "http://localhost:5173", "http://127.0.0.1:5173"]),
 );
 
-const ch = createClient({
-  url: process.env.CLICKHOUSE_URL ?? "http://localhost:8123",
-  database: process.env.CLICKHOUSE_DB ?? "superlog",
-  username: process.env.CLICKHOUSE_USER ?? "default",
-  password: process.env.CLICKHOUSE_PASSWORD ?? "",
-  // idle_socket_ttl must stay below CH server's keep_alive_timeout (3s default)
-  // so we recycle before the server closes; request_timeout short-circuits
-  // stale sockets that slipped through instead of hanging forever. 20s gives
-  // heavy filtered/grouped widget queries on high-volume projects room to
-  // finish; cancel_http_readonly_queries_on_client_close below keeps a
-  // timed-out query from living on server-side.
-  request_timeout: 20_000,
-  keep_alive: { enabled: true, idle_socket_ttl: 2_500 },
-  clickhouse_settings: {
-    // When request_timeout (or a caller's abort signal) drops the HTTP
-    // connection, make the server cancel the SELECT instead of letting it
-    // run to completion. Without this, abandoned long scans pile up until
-    // the server hits max_concurrent_queries and rejects everyone
-    // (TOO_MANY_SIMULTANEOUS_QUERIES).
-    cancel_http_readonly_queries_on_client_close: 1,
-  },
-});
+const ch = createApiClickHouseClient();
 
 const tracer = trace.getTracer("@superlog/api");
 const SIGNUP_INTENT_TTL_MS = 30 * 60 * 1000;

@@ -18,6 +18,17 @@ type ParsedAttributeKey = { scope: AttributeScope; key: string };
 
 export type FieldFilterSource = "logs" | "traces";
 
+async function retryOneConnectionReset<T>(read: () => Promise<T>): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    if (!(error instanceof Error) || (error as Error & { code?: string }).code !== "ECONNRESET") {
+      throw error;
+    }
+    return read();
+  }
+}
+
 // Allowlist mapping a `field.<name>` filter key to the ClickHouse column
 // expression it compares against (as a String). Returns null for anything not
 // on the list so an arbitrary `field.*` key can never reach the query — the
@@ -237,24 +248,26 @@ export async function queryLogs(
     ORDER BY Timestamp DESC
     LIMIT {limit:UInt32}
   `;
-  const r = await ch.query({
-    query,
-    query_params: {
-      projectId,
-      since: sinceSql,
-      until: untilSql,
-      service: params.service ?? "",
-      severity: params.severity ?? "",
-      search: params.search ?? "",
-      traceId: params.traceId ?? "",
-      limit: params.limit,
-      ...attr.params,
-      ...logAttr.params,
-      ...field.params,
-    },
-    format: "JSONEachRow",
+  return retryOneConnectionReset(async () => {
+    const r = await ch.query({
+      query,
+      query_params: {
+        projectId,
+        since: sinceSql,
+        until: untilSql,
+        service: params.service ?? "",
+        severity: params.severity ?? "",
+        search: params.search ?? "",
+        traceId: params.traceId ?? "",
+        limit: params.limit,
+        ...attr.params,
+        ...logAttr.params,
+        ...field.params,
+      },
+      format: "JSONEachRow",
+    });
+    return r.json();
   });
-  return r.json();
 }
 
 export async function queryTraces(
@@ -318,24 +331,26 @@ export async function queryTraces(
     ORDER BY Timestamp DESC
     LIMIT {limit:UInt32}
   `;
-  const r = await ch.query({
-    query,
-    query_params: {
-      projectId,
-      since: sinceSql,
-      until: untilSql,
-      service: params.service ?? "",
-      spanName: params.spanName ?? "",
-      statusCode: params.statusCode ?? "",
-      minDurationNs: Math.round((params.minDurationMs ?? 0) * 1_000_000),
-      limit: params.limit,
-      ...attr.params,
-      ...spanAttr.params,
-      ...field.params,
-    },
-    format: "JSONEachRow",
+  return retryOneConnectionReset(async () => {
+    const r = await ch.query({
+      query,
+      query_params: {
+        projectId,
+        since: sinceSql,
+        until: untilSql,
+        service: params.service ?? "",
+        spanName: params.spanName ?? "",
+        statusCode: params.statusCode ?? "",
+        minDurationNs: Math.round((params.minDurationMs ?? 0) * 1_000_000),
+        limit: params.limit,
+        ...attr.params,
+        ...spanAttr.params,
+        ...field.params,
+      },
+      format: "JSONEachRow",
+    });
+    return r.json();
   });
-  return r.json();
 }
 
 type TracesAggregatedParams = {
@@ -394,8 +409,9 @@ async function traceRollupCoversWindow(
   sinceExpr: string,
   sinceSql: string,
 ): Promise<boolean> {
-  const r = await ch.query({
-    query: `
+  const rows = await retryOneConnectionReset(async () => {
+    const r = await ch.query({
+      query: `
       SELECT count() AS c
       FROM (
         SELECT 1
@@ -404,10 +420,11 @@ async function traceRollupCoversWindow(
         LIMIT 1
       )
     `,
-    query_params: { projectId, since: sinceSql },
-    format: "JSONEachRow",
+      query_params: { projectId, since: sinceSql },
+      format: "JSONEachRow",
+    });
+    return (await r.json()) as { c: string | number }[];
   });
-  const rows = (await r.json()) as { c: string | number }[];
   return Number(rows[0]?.c ?? 0) > 0;
 }
 
@@ -467,12 +484,14 @@ async function queryTracesAggregatedFromSummary(
     ORDER BY start_time DESC
     LIMIT {limit:UInt32}
   `;
-  const r = await ch.query({
-    query,
-    query_params: { projectId, since: sinceSql, until: untilSql, limit: params.limit },
-    format: "JSONEachRow",
+  return retryOneConnectionReset(async () => {
+    const r = await ch.query({
+      query,
+      query_params: { projectId, since: sinceSql, until: untilSql, limit: params.limit },
+      format: "JSONEachRow",
+    });
+    return r.json();
   });
-  return r.json();
 }
 
 export async function queryTracesAggregated(
@@ -557,23 +576,25 @@ export async function queryTracesAggregated(
     ORDER BY min(Timestamp) DESC
     LIMIT {limit:UInt32}
   `;
-  const r = await ch.query({
-    query,
-    query_params: {
-      projectId,
-      since: sinceSql,
-      until: untilSql,
-      service: params.service ?? "",
-      spanName: params.spanName ?? "",
-      statusCode: params.statusCode ?? "",
-      limit: params.limit,
-      ...attr.params,
-      ...spanAttr.params,
-      ...field.params,
-    },
-    format: "JSONEachRow",
+  return retryOneConnectionReset(async () => {
+    const r = await ch.query({
+      query,
+      query_params: {
+        projectId,
+        since: sinceSql,
+        until: untilSql,
+        service: params.service ?? "",
+        spanName: params.spanName ?? "",
+        statusCode: params.statusCode ?? "",
+        limit: params.limit,
+        ...attr.params,
+        ...spanAttr.params,
+        ...field.params,
+      },
+      format: "JSONEachRow",
+    });
+    return r.json();
   });
-  return r.json();
 }
 
 export async function getTraceDetail(ch: ClickHouseClient, projectId: string, traceId: string) {
@@ -615,8 +636,10 @@ export async function getTraceDetail(ch: ClickHouseClient, projectId: string, tr
         AND TimestampTime >= ${winStart}
         AND TimestampTime <= ${winEnd}`;
 
-  const spansQ = ch.query({
-    query: `
+  const readSpans = () =>
+    retryOneConnectionReset(async () => {
+      const result = await ch.query({
+        query: `
       SELECT
         toString(Timestamp) AS timestamp,
         toString(toUnixTimestamp64Nano(Timestamp)) AS start_ns,
@@ -642,12 +665,16 @@ export async function getTraceDetail(ch: ClickHouseClient, projectId: string, tr
       ORDER BY Timestamp ASC, SpanId ASC
       LIMIT 5000
     `,
-    query_params: { projectId, traceId },
-    format: "JSONEachRow",
-  });
+        query_params: { projectId, traceId },
+        format: "JSONEachRow",
+      });
+      return result.json();
+    });
 
-  const logsQ = ch.query({
-    query: `
+  const readLogs = () =>
+    retryOneConnectionReset(async () => {
+      const result = await ch.query({
+        query: `
       SELECT
         toString(Timestamp) AS timestamp,
         toString(toUnixTimestamp64Nano(Timestamp)) AS ts_ns,
@@ -667,13 +694,13 @@ export async function getTraceDetail(ch: ClickHouseClient, projectId: string, tr
       ORDER BY Timestamp ASC
       LIMIT 5000
     `,
-    query_params: { projectId, traceId },
-    format: "JSONEachRow",
-  });
+        query_params: { projectId, traceId },
+        format: "JSONEachRow",
+      });
+      return result.json();
+    });
 
-  const [spansR, logsR] = await Promise.all([spansQ, logsQ]);
-  const spans = await spansR.json();
-  const logs = await logsR.json();
+  const [spans, logs] = await Promise.all([readSpans(), readLogs()]);
   return { spans, logs };
 }
 
@@ -732,20 +759,22 @@ export async function queryMetrics(
     `;
 
       try {
-        const r = await ch.query({
-          query,
-          query_params: {
-            projectId,
-            since: sinceSql,
-            until: untilSql,
-            metricName: params.metricName ?? "",
-            service: params.service ?? "",
-            limit: params.limit,
-            ...attr.params,
-          },
-          format: "JSONEachRow",
+        return await retryOneConnectionReset(async () => {
+          const r = await ch.query({
+            query,
+            query_params: {
+              projectId,
+              since: sinceSql,
+              until: untilSql,
+              metricName: params.metricName ?? "",
+              service: params.service ?? "",
+              limit: params.limit,
+              ...attr.params,
+            },
+            format: "JSONEachRow",
+          });
+          return (await r.json()) as Record<string, unknown>[];
         });
-        return (await r.json()) as Record<string, unknown>[];
       } catch (err) {
         // metric tables may not exist if no metrics of this kind have been ingested yet
         if (!isMissingMetricTableError(err)) throw err;
@@ -2147,8 +2176,10 @@ function tableExists(ch: ClickHouseClient, table: string): Promise<boolean> {
   if (cached) return cached;
   const probe = (async () => {
     try {
-      const r = await ch.query({ query: `EXISTS TABLE ${table}`, format: "JSONEachRow" });
-      const rows = (await r.json()) as { result: number | string }[];
+      const rows = await retryOneConnectionReset(async () => {
+        const r = await ch.query({ query: `EXISTS TABLE ${table}`, format: "JSONEachRow" });
+        return (await r.json()) as { result: number | string }[];
+      });
       return Number(rows[0]?.result) === 1;
     } catch {
       return false;
