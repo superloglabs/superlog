@@ -331,24 +331,26 @@ export async function queryTraces(
     ORDER BY Timestamp DESC
     LIMIT {limit:UInt32}
   `;
-  const r = await ch.query({
-    query,
-    query_params: {
-      projectId,
-      since: sinceSql,
-      until: untilSql,
-      service: params.service ?? "",
-      spanName: params.spanName ?? "",
-      statusCode: params.statusCode ?? "",
-      minDurationNs: Math.round((params.minDurationMs ?? 0) * 1_000_000),
-      limit: params.limit,
-      ...attr.params,
-      ...spanAttr.params,
-      ...field.params,
-    },
-    format: "JSONEachRow",
+  return retryOneConnectionReset(async () => {
+    const r = await ch.query({
+      query,
+      query_params: {
+        projectId,
+        since: sinceSql,
+        until: untilSql,
+        service: params.service ?? "",
+        spanName: params.spanName ?? "",
+        statusCode: params.statusCode ?? "",
+        minDurationNs: Math.round((params.minDurationMs ?? 0) * 1_000_000),
+        limit: params.limit,
+        ...attr.params,
+        ...spanAttr.params,
+        ...field.params,
+      },
+      format: "JSONEachRow",
+    });
+    return r.json();
   });
-  return r.json();
 }
 
 type TracesAggregatedParams = {
@@ -407,8 +409,9 @@ async function traceRollupCoversWindow(
   sinceExpr: string,
   sinceSql: string,
 ): Promise<boolean> {
-  const r = await ch.query({
-    query: `
+  const rows = await retryOneConnectionReset(async () => {
+    const r = await ch.query({
+      query: `
       SELECT count() AS c
       FROM (
         SELECT 1
@@ -417,10 +420,11 @@ async function traceRollupCoversWindow(
         LIMIT 1
       )
     `,
-    query_params: { projectId, since: sinceSql },
-    format: "JSONEachRow",
+      query_params: { projectId, since: sinceSql },
+      format: "JSONEachRow",
+    });
+    return (await r.json()) as { c: string | number }[];
   });
-  const rows = (await r.json()) as { c: string | number }[];
   return Number(rows[0]?.c ?? 0) > 0;
 }
 
@@ -480,12 +484,14 @@ async function queryTracesAggregatedFromSummary(
     ORDER BY start_time DESC
     LIMIT {limit:UInt32}
   `;
-  const r = await ch.query({
-    query,
-    query_params: { projectId, since: sinceSql, until: untilSql, limit: params.limit },
-    format: "JSONEachRow",
+  return retryOneConnectionReset(async () => {
+    const r = await ch.query({
+      query,
+      query_params: { projectId, since: sinceSql, until: untilSql, limit: params.limit },
+      format: "JSONEachRow",
+    });
+    return r.json();
   });
-  return r.json();
 }
 
 export async function queryTracesAggregated(
@@ -570,23 +576,25 @@ export async function queryTracesAggregated(
     ORDER BY min(Timestamp) DESC
     LIMIT {limit:UInt32}
   `;
-  const r = await ch.query({
-    query,
-    query_params: {
-      projectId,
-      since: sinceSql,
-      until: untilSql,
-      service: params.service ?? "",
-      spanName: params.spanName ?? "",
-      statusCode: params.statusCode ?? "",
-      limit: params.limit,
-      ...attr.params,
-      ...spanAttr.params,
-      ...field.params,
-    },
-    format: "JSONEachRow",
+  return retryOneConnectionReset(async () => {
+    const r = await ch.query({
+      query,
+      query_params: {
+        projectId,
+        since: sinceSql,
+        until: untilSql,
+        service: params.service ?? "",
+        spanName: params.spanName ?? "",
+        statusCode: params.statusCode ?? "",
+        limit: params.limit,
+        ...attr.params,
+        ...spanAttr.params,
+        ...field.params,
+      },
+      format: "JSONEachRow",
+    });
+    return r.json();
   });
-  return r.json();
 }
 
 export async function getTraceDetail(ch: ClickHouseClient, projectId: string, traceId: string) {
@@ -2168,8 +2176,10 @@ function tableExists(ch: ClickHouseClient, table: string): Promise<boolean> {
   if (cached) return cached;
   const probe = (async () => {
     try {
-      const r = await ch.query({ query: `EXISTS TABLE ${table}`, format: "JSONEachRow" });
-      const rows = (await r.json()) as { result: number | string }[];
+      const rows = await retryOneConnectionReset(async () => {
+        const r = await ch.query({ query: `EXISTS TABLE ${table}`, format: "JSONEachRow" });
+        return (await r.json()) as { result: number | string }[];
+      });
       return Number(rows[0]?.result) === 1;
     } catch {
       return false;
