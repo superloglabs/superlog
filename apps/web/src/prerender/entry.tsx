@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToString } from "react-dom/server";
 import { StaticRouter } from "react-router-dom";
 import { BLOG_POSTS } from "../blogPosts.ts";
@@ -250,7 +251,9 @@ async function prerender() {
   for (const page of pages) {
     const markup = renderToString(
       <StaticRouter location={page.path}>
-        <MarketingApp />
+        <QueryClientProvider client={new QueryClient()}>
+          <MarketingApp />
+        </QueryClientProvider>
       </StaticRouter>,
     );
     const outputPath = outputPathForPage(page.path);
