@@ -1913,8 +1913,12 @@ app.post("/api/projects/:projectId/issues/:issueId/silence", async (c) => {
       span.setAttribute("issue.silence.applied", true);
       return c.json(updated[0]);
     } catch (err) {
-      span.recordException(err as Error);
-      span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+      // 4xx HTTPExceptions are expected client errors (e.g. silencing an
+      // alert-episode issue); mark the span ERROR only for unexpected failures.
+      if (!(err instanceof HTTPException) || err.status >= 500) {
+        span.recordException(err as Error);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+      }
       throw err;
     } finally {
       span.end();
