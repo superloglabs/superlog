@@ -1,6 +1,6 @@
 import "./env.js";
 import { Readable } from "node:stream";
-import { serve } from "@hono/node-server";
+import { createAdaptorServer } from "@hono/node-server";
 import { type Span, SpanStatusCode, metrics, trace } from "@opentelemetry/api";
 import {
   captureServerEvent,
@@ -37,7 +37,7 @@ import {
   transformGcpPubSubLog,
 } from "./gcp-pubsub.js";
 import { mountGcpMetricsPullRoute } from "./gcp-pull-routes.js";
-import { configureHttpServerTimeouts } from "./http-server.js";
+import { configureHttpServerTimeouts, serverBacklog } from "./http-server.js";
 import { stampIssueFingerprintsFailOpen } from "./ingest-fingerprints.js";
 import { createIngestKeyCache, createLastUsedRecorder } from "./ingest-key-auth.js";
 import { IngestQueue, getIngestQueueConfig } from "./ingest-queue.js";
@@ -1141,7 +1141,12 @@ async function forwardFirehose(
   });
 }
 
-const server = serve({ fetch: app.fetch, port: PORT });
+const backlog = serverBacklog();
+const server = createAdaptorServer({ fetch: app.fetch });
+// Pub/Sub and other push integrations can open thousands of connections in a
+// short burst. Queue accepted sockets in the kernel until Node can read them;
+// the platform queue remains the durable backpressure boundary after that.
+server.listen({ port: PORT, backlog });
 // Keep the backend timeout configurable independently from any upstream load
 // balancer. Setting HTTP_KEEP_ALIVE_TIMEOUT_MS=0 leaves idle-connection closure
 // to the upstream, preventing it from reusing a socket while Node closes it.
@@ -1229,6 +1234,7 @@ if (renderSyslogServer) {
 logger.info(
   {
     port: PORT,
+    backlog,
     collector: COLLECTOR_URL,
     ingestQueueEnabled: Boolean(ingestQueue),
     ingestQueueConsumerEnabled: Boolean(ingestQueue && ingestQueueConfig?.consumerEnabled),

@@ -2,7 +2,23 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { Agent, createServer, request } from "node:http";
 import test from "node:test";
-import { configureHttpServerTimeouts } from "./http-server.js";
+import { configureHttpServerTimeouts, serverBacklog } from "./http-server.js";
+
+test("the HTTP listener uses a burst-sized accept backlog by default", () => {
+  assert.equal(serverBacklog({}), 4096);
+  assert.equal(serverBacklog({ HTTP_SERVER_BACKLOG: "8192" }), 8192);
+});
+
+test("an invalid listener backlog is rejected instead of silently disabling backpressure", () => {
+  assert.throws(
+    () => serverBacklog({ HTTP_SERVER_BACKLOG: "0" }),
+    /HTTP_SERVER_BACKLOG must be a positive integer/,
+  );
+  assert.throws(
+    () => serverBacklog({ HTTP_SERVER_BACKLOG: "not-a-number" }),
+    /HTTP_SERVER_BACKLOG must be a positive integer/,
+  );
+});
 
 function getConnectionId(port: number, agent: Agent): Promise<string> {
   return new Promise((resolve, reject) => {
