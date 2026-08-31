@@ -16,7 +16,10 @@ type PublicPage = {
   structuredData?: Record<string, unknown>;
 };
 
-const SITE_ORIGIN = "https://superlog.sh";
+// The legacy product is served from telemetry.superlog.sh after the public
+// marketing/app cutover. Keep this configurable so a rollback build can still
+// be rendered for the former apex without changing application code.
+const SITE_ORIGIN = process.env.SITE_ORIGIN ?? "https://telemetry.superlog.sh";
 const SITE_CONTENT_LAST_MODIFIED = "2026-07-22";
 const HOME_PAGE_LAST_MODIFIED = "2026-07-28";
 const SOCIAL_IMAGE_ALT = "Superlog wordmark over a blue and violet abstract background";

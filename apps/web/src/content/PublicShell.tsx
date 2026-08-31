@@ -7,7 +7,7 @@ import { LANDING_GITHUB_REPO_URL } from "../landingLinks.ts";
 // pages feel part of the marketing surface.
 
 const NAV_LINKS: Array<{ href: string; label: string; external?: boolean }> = [
-  { href: "https://responder.superlog.sh", label: "Responder", external: true },
+  { href: "https://superlog.sh", label: "Superlog", external: true },
   { href: "/blog", label: "Blog" },
   { href: "/changelog", label: "Changelog" },
   { href: "/roadmap", label: "Roadmap" },

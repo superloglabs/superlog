@@ -114,7 +114,7 @@ function CopyPromptCard({ prompt }: { prompt: string }) {
 // ---------------------------------------------------------------------------
 
 const NAV_LINKS: { href: string; label: string; external?: boolean }[] = [
-  { href: "https://responder.superlog.sh", label: "Responder", external: true },
+  { href: "https://superlog.sh", label: "Superlog", external: true },
   { href: LANDING_DOCS_URL, label: "Docs", external: true },
   { href: "/blog", label: "Blog" },
   { href: "/changelog", label: "Changelog" },
