@@ -19,6 +19,7 @@ import {
 } from "./email.js";
 import { readSignupAttributionFromCookieHeader } from "./signup-click-ids.js";
 import { enqueueUserCreated } from "./user-created-publisher.js";
+import { configuredWebOrigins } from "./web-origins.js";
 
 // Better Auth server config. Mounted at /api/auth/* by apps/api/src/index.ts.
 //
@@ -33,6 +34,7 @@ import { enqueueUserCreated } from "./user-created-publisher.js";
 // UUIDs for new rows so foreign keys to our existing uuid columns line up.
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
+const WEB_ORIGINS = configuredWebOrigins();
 const API_ORIGIN = process.env.BETTER_AUTH_URL ?? "http://localhost:4100";
 
 // Derive the parent domain that web and api share so the OAuth state cookie
@@ -149,7 +151,7 @@ async function mirrorLastUsedOrg(userId: string, activeOrgId: string): Promise<v
 export const auth = betterAuth({
   baseURL: API_ORIGIN,
   secret: BETTER_AUTH_SECRET,
-  trustedOrigins: [WEB_ORIGIN],
+  trustedOrigins: WEB_ORIGINS,
   database: drizzleAdapter(db, {
     provider: "pg",
     schema: {

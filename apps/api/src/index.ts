@@ -181,13 +181,12 @@ import { symbolicateIssueSample, symbolicateTelemetrySample } from "./symbolicat
 import { buildSystemCapabilities } from "./system-capabilities.js";
 import { mountTopology } from "./topology.js";
 import { mountVercelAuthed, mountVercelPublic } from "./vercel.js";
+import { configuredWebOrigins } from "./web-origins.js";
 import { mountWebhooks } from "./webhooks.js";
 
 const PORT = Number(process.env.PORT ?? 4100);
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:5173";
-const WEB_CORS_ORIGINS = Array.from(
-  new Set([WEB_ORIGIN, "http://localhost:5173", "http://127.0.0.1:5173"]),
-);
+const WEB_CORS_ORIGINS = configuredWebOrigins();
 
 const ch = createApiClickHouseClient();
 

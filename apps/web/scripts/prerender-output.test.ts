@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 
+const SITE_ORIGIN = process.env.SITE_ORIGIN ?? "https://telemetry.superlog.sh";
+
 const distUrl = new URL("../dist/", import.meta.url);
 const publicUrl = new URL("../public/", import.meta.url);
 
@@ -21,7 +23,12 @@ test("the production homepage contains useful HTML before JavaScript runs", asyn
   assert.match(html, /<meta property="og:type" content="website"/);
   assert.match(html, /<meta property="og:title" content="Superlog \| Fix bugs on autopilot"/);
   assert.match(html, /<meta name="twitter:card" content="summary_large_image"/);
-  assert.match(html, /<meta property="og:image" content="https:\/\/superlog\.sh\/og-image\.png"/);
+  assert.match(
+    html,
+    new RegExp(
+      `<meta property="og:image" content="${SITE_ORIGIN.replaceAll(".", "\\.")}\\/og-image\\.png"`,
+    ),
+  );
   assert.match(html, /<meta property="og:image:type" content="image\/png"/);
   assert.match(html, /<meta property="og:image:width" content="1200"/);
   assert.match(html, /<meta property="og:image:height" content="630"/);
@@ -48,8 +55,8 @@ test("the homepage identifies the website and its publisher as the same organiza
   const organization = data["@graph"].find((entry) => entry["@type"] === "Organization");
   const website = data["@graph"].find((entry) => entry["@type"] === "WebSite");
 
-  assert.equal(organization?.["@id"], "https://superlog.sh/#organization");
-  assert.deepEqual(website?.publisher, { "@id": "https://superlog.sh/#organization" });
+  assert.equal(organization?.["@id"], `${SITE_ORIGIN}/#organization`);
+  assert.deepEqual(website?.publisher, { "@id": `${SITE_ORIGIN}/#organization` });
 });
 
 test("each public route has its own crawlable document and metadata", async () => {
@@ -58,7 +65,10 @@ test("each public route has its own crawlable document and metadata", async () =
   assert.match(html, /<h1[^>]*>Pricing<\/h1>/);
   assert.match(html, /<title>Pricing \| Superlog<\/title>/);
   assert.match(html, /<meta name="description" content="[^"]+"/);
-  assert.match(html, /<link rel="canonical" href="https:\/\/superlog\.sh\/pricing"/);
+  assert.match(
+    html,
+    new RegExp(`<link rel="canonical" href="${SITE_ORIGIN.replaceAll(".", "\\.")}\\/pricing"`),
+  );
 });
 
 test("the blog index and every published post are prerendered", async () => {
@@ -75,7 +85,7 @@ test("the blog index and every published post are prerendered", async () => {
     assert.match(html, /<article|<h1/);
     assert.match(
       html,
-      new RegExp(`<link rel="canonical" href="https://superlog\\.sh/blog/${slug}"`),
+      new RegExp(`<link rel="canonical" href="${SITE_ORIGIN.replaceAll(".", "\\.")}/blog/${slug}"`),
     );
     assert.match(html, /<meta property="og:type" content="article"/);
     assert.match(html, /<meta property="article:modified_time" content="\d{4}-\d{2}-\d{2}"/);
@@ -95,16 +105,16 @@ test("published articles describe their image, author, freshness, and breadcrumb
   const article = data["@graph"].find((entry) => entry["@type"] === "BlogPosting");
   const breadcrumbs = data["@graph"].find((entry) => entry["@type"] === "BreadcrumbList");
 
-  assert.equal(article?.image, "https://superlog.sh/og-image.png");
+  assert.equal(article?.image, `${SITE_ORIGIN}/og-image.png`);
   assert.equal(article?.dateModified, "2026-07-10");
   assert.deepEqual(article?.author, {
     "@type": "Person",
     name: "Arseniy",
-    url: "https://superlog.sh/team",
+    url: `${SITE_ORIGIN}/team`,
   });
   assert.equal(
     (article?.publisher as { logo?: { url?: string } } | undefined)?.logo?.url,
-    "https://superlog.sh/web-app-manifest-512x512.png",
+    `${SITE_ORIGIN}/web-app-manifest-512x512.png`,
   );
   assert.ok(breadcrumbs);
 });
@@ -115,7 +125,10 @@ test("every public content route ships as an indexable static document", async (
   for (const route of routes) {
     const html = await readFile(new URL(`${route}/index.html`, distUrl), "utf8");
     assert.doesNotMatch(html, /<div id="root"><\/div>/);
-    assert.match(html, new RegExp(`<link rel="canonical" href="https://superlog\\.sh/${route}"`));
+    assert.match(
+      html,
+      new RegExp(`<link rel="canonical" href="${SITE_ORIGIN.replaceAll(".", "\\.")}/${route}"`),
+    );
     assert.match(html, /<meta name="description" content="[^"]+"/);
   }
 });
@@ -141,19 +154,31 @@ test("crawlers receive a sitemap of public pages and no product URLs", async () 
   const sitemap = await readFile(new URL("sitemap.xml", distUrl), "utf8");
   const robots = await readFile(new URL("robots.txt", distUrl), "utf8");
 
-  assert.match(sitemap, /<loc>https:\/\/superlog\.sh<\/loc>/);
-  assert.match(sitemap, /<loc>https:\/\/superlog\.sh<\/loc><lastmod>2026-07-28<\/lastmod>/);
-  assert.match(sitemap, /<loc>https:\/\/superlog\.sh\/pricing<\/loc>/);
-  assert.match(sitemap, /<loc>https:\/\/superlog\.sh\/blog\//);
+  assert.match(sitemap, new RegExp(`<loc>${SITE_ORIGIN.replaceAll(".", "\\.")}<\\/loc>`));
+  assert.match(
+    sitemap,
+    new RegExp(`<loc>${SITE_ORIGIN.replaceAll(".", "\\.")}<\\/loc><lastmod>2026-07-28<\\/lastmod>`),
+  );
+  assert.match(sitemap, new RegExp(`<loc>${SITE_ORIGIN.replaceAll(".", "\\.")}\\/pricing<\\/loc>`));
+  assert.match(sitemap, new RegExp(`<loc>${SITE_ORIGIN.replaceAll(".", "\\.")}\\/blog\\/`));
   assert.doesNotMatch(sitemap, /\/app(?:\/|<)/);
-  assert.match(robots, /Sitemap: https:\/\/superlog\.sh\/sitemap\.xml/);
+  assert.match(
+    robots,
+    new RegExp(`Sitemap: ${SITE_ORIGIN.replaceAll(".", "\\.")}\\/sitemap\\.xml`),
+  );
 });
 
 test("AI readers receive a concise index of public pages and full documentation", async () => {
   const llms = await readFile(new URL("llms.txt", distUrl), "utf8");
 
   assert.match(llms, /^# Superlog$/m);
-  assert.match(llms, /\[Pricing\]\(https:\/\/superlog\.sh\/pricing\)/);
+  assert.match(
+    llms,
+    new RegExp(`\\[Pricing\\]\\(${SITE_ORIGIN.replaceAll(".", "\\.")}\\/pricing\\)`),
+  );
   assert.match(llms, /https:\/\/docs\.superlog\.sh\/llms\.txt/);
-  assert.doesNotMatch(llms, /https:\/\/superlog\.sh\/app(?:\/|\s|\))/);
+  assert.doesNotMatch(
+    llms,
+    new RegExp(`${SITE_ORIGIN.replaceAll(".", "\\.")}\\/app(?:\\/|\\s|\\))`),
+  );
 });
