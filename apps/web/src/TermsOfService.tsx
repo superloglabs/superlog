@@ -3,7 +3,6 @@ import { Wordmark } from "./design/ui.tsx";
 
 const COMMON_PAPER_CSA_URL = "https://commonpaper.com/standards/cloud-service-agreement/2.1/";
 const PRICING_URL = "https://superlog.sh/pricing";
-const DPA_URL = "https://superlog.sh/dpa";
 
 export function TermsOfService() {
   return (
@@ -25,7 +24,7 @@ export function TermsOfService() {
       <main className="mx-auto w-full max-w-[980px] px-4 py-14 md:px-8 md:py-20">
         <article className="max-w-[780px]">
           <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-subtle">
-            Last Updated: September 1, 2026
+            Last Updated: June 2, 2026
           </p>
           <h1
             className="mt-5 text-[2.25rem] leading-tight tracking-tight text-fg md:text-[3.75rem]"
@@ -67,9 +66,8 @@ export function TermsOfService() {
                 words have the meanings given in the Cover Page or the Standard Terms.
               </TermRow>
               <TermRow label="Cloud Service">
-                Superlog, an AI-native observability platform that monitors Customer's applications
-                by ingesting logs, errors, and telemetry from connected integrations, and uses AI
-                agents to investigate issues and propose and apply bug fixes.
+                Superlog, an AI-native observability platform that monitors your applications and
+                autonomously investigates and fixes bugs.
               </TermRow>
               <TermRow label="Order Date">The Effective Date</TermRow>
               <TermRow label="Subscription Period">1 month(s)</TermRow>
@@ -87,9 +85,7 @@ export function TermsOfService() {
                 approval.
               </TermRow>
               <TermRow label="Non-Renewal Notice Period">
-                At least 0 days before the end of the current Subscription Period. Customer may
-                cancel at any time, and the cancellation takes effect at the end of the current
-                Subscription Period.
+                At least 30 days before the end of the current Subscription Period.
               </TermRow>
             </Section>
 
@@ -126,16 +122,12 @@ export function TermsOfService() {
                 </div>
               </TermRow>
               <TermRow label="General Cap Amount">
-                The fees paid or payable by Customer to Provider in the 12 month period immediately
+                The fees paid or payable by Customer to provider in the 12 month period immediately
                 before the claim
-              </TermRow>
-              <TermRow label="Attachments">
-                The <ExternalLink href={DPA_URL}>Superlog Data Processing Agreement</ExternalLink>,
-                which is incorporated by reference.
               </TermRow>
               <TermRow label="Notice Address">
                 <div className="space-y-2">
-                  <p>For Provider: legal@superlog.sh</p>
+                  <p>For Provider: nicolo@superlog.sh</p>
                   <p>For Customer: The main email address on Customer's account</p>
                 </div>
               </TermRow>
