@@ -169,6 +169,24 @@ const pages: PublicPage[] = [
     description: "Read the Superlog terms of service.",
     lastModified: SITE_CONTENT_LAST_MODIFIED,
   },
+  {
+    path: "/dpa",
+    title: "Data Processing Agreement | Superlog",
+    description: "Read the Superlog data processing agreement.",
+    lastModified: SITE_CONTENT_LAST_MODIFIED,
+  },
+  {
+    path: "/security",
+    title: "Security Policy | Superlog",
+    description: "How Superlog protects customer data: encryption, access control, and backups.",
+    lastModified: SITE_CONTENT_LAST_MODIFIED,
+  },
+  {
+    path: "/subprocessors",
+    title: "Subprocessors | Superlog",
+    description: "The third-party subprocessors Superlog uses to provide the service.",
+    lastModified: SITE_CONTENT_LAST_MODIFIED,
+  },
 ];
 
 function escapeAttribute(value: string): string {

@@ -1615,6 +1615,12 @@ function Footer() {
               >
                 Privacy Policy
               </a>
+              <a
+                href="/security"
+                className="text-[14px] font-medium text-muted transition-colors hover:text-fg"
+              >
+                Security
+              </a>
             </div>
           </div>
         </div>

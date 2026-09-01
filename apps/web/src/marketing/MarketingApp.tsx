@@ -2,11 +2,14 @@ import { Route, Routes } from "react-router-dom";
 import { Blog } from "../Blog.tsx";
 import { BlogPost } from "../BlogPost.tsx";
 import { Changelog } from "../Changelog.tsx";
+import { DataProcessingAgreement } from "../DataProcessingAgreement.tsx";
 import { Landing } from "../Landing.tsx";
 import { Pricing } from "../Pricing.tsx";
 import { PrivacyPolicy } from "../PrivacyPolicy.tsx";
 import { Roadmap } from "../Roadmap.tsx";
+import { SecurityPolicyPage } from "../SecurityPolicyPage.tsx";
 import { SignupSourceCapture } from "../SignupSourceCapture.tsx";
+import { Subprocessors } from "../Subprocessors.tsx";
 import { Team } from "../Team.tsx";
 import { TermsOfService } from "../TermsOfService.tsx";
 
@@ -24,6 +27,9 @@ export function MarketingApp() {
         <Route path="/team" element={<Team />} />
         <Route path="/privacy" element={<PrivacyPolicy />} />
         <Route path="/tos" element={<TermsOfService />} />
+        <Route path="/dpa" element={<DataProcessingAgreement />} />
+        <Route path="/security" element={<SecurityPolicyPage />} />
+        <Route path="/subprocessors" element={<Subprocessors />} />
       </Routes>
     </>
   );
