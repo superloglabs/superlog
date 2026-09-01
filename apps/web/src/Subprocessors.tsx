@@ -32,7 +32,7 @@ const SUBPROCESSORS = [
   {
     name: "PostHog",
     purpose: "Product analytics",
-    location: "United States",
+    location: "European Union",
   },
 ];
 
