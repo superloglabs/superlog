@@ -239,7 +239,13 @@ export function PrivacyPolicy() {
                 Questions or privacy requests can be sent to{" "}
                 <ExternalLink href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</ExternalLink>.
               </p>
-              <p>Pulsent Labs Inc.</p>
+              <p>
+                Pulsent Labs Inc.
+                <br />
+                1111B S Governors Ave # 88398
+                <br />
+                Dover, Delaware 19904, United States of America
+              </p>
             </Section>
           </div>
         </article>
