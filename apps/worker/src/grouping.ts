@@ -83,6 +83,6 @@ export async function analyzeIssueGroupingWithClient(
 export async function analyzeIssueGrouping(input: GroupingInput): Promise<GroupingVerdict> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY is required for grouping");
-  const client = new Anthropic({ apiKey });
+  const client = new Anthropic({ apiKey, maxRetries: 0 });
   return analyzeIssueGroupingWithClient(client, input);
 }
