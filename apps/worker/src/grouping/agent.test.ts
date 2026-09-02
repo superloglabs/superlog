@@ -1,8 +1,8 @@
 import "../agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type Anthropic from "@anthropic-ai/sdk";
-import { type GroupingLLMClient, runGroupingAgent } from "./agent.js";
+import Anthropic, { APIConnectionError, InternalServerError } from "@anthropic-ai/sdk";
+import { type GroupingLLMClient, asGroupingLLMClient, runGroupingAgent } from "./agent.js";
 import {
   type GroupingCandidateIncident,
   type GroupingNewIssue,
@@ -790,4 +790,156 @@ test("runGroupingAgent: tells the decision model to inspect correlated bursts be
     systemPrompt,
     /Only join when inspected evidence supports that shared explanation; otherwise return standalone\./,
   );
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// asGroupingLLMClient retry behaviour
+// ──────────────────────────────────────────────────────────────────────────
+
+// Use 0ms retry delays so the tests complete instantly.
+const NO_DELAYS: number[] = [0, 0];
+
+function successMessage(): Anthropic.Messages.Message {
+  return {
+    id: "msg",
+    type: "message",
+    role: "assistant",
+    model: "test",
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    usage: {
+      input_tokens: 10,
+      output_tokens: 5,
+      cache_creation_input_tokens: null,
+      cache_read_input_tokens: null,
+      server_tool_use: null,
+      service_tier: null,
+    },
+    content: [],
+    container: null,
+  } as unknown as Anthropic.Messages.Message;
+}
+
+test("asGroupingLLMClient: succeeds on first try without retrying", async () => {
+  let calls = 0;
+  const fakeClient = {
+    messages: {
+      create: async () => {
+        calls++;
+        return successMessage();
+      },
+    },
+  } as unknown as Pick<Anthropic, "messages">;
+
+  await asGroupingLLMClient(fakeClient, NO_DELAYS).send({
+    model: "test",
+    system: "",
+    tools: [],
+    messages: [],
+    maxTokens: 100,
+    temperature: 0,
+  });
+  assert.equal(calls, 1, "should call create exactly once on success");
+});
+
+test("asGroupingLLMClient: retries on APIConnectionError and succeeds", async () => {
+  let calls = 0;
+  const fakeClient = {
+    messages: {
+      create: async () => {
+        calls++;
+        if (calls === 1) throw new APIConnectionError({ message: "ETIMEDOUT" });
+        return successMessage();
+      },
+    },
+  } as unknown as Pick<Anthropic, "messages">;
+
+  const result = await asGroupingLLMClient(fakeClient, NO_DELAYS).send({
+    model: "test",
+    system: "",
+    tools: [],
+    messages: [],
+    maxTokens: 100,
+    temperature: 0,
+  });
+  assert.equal(calls, 2, "should retry once after APIConnectionError");
+  assert.equal(result.type, "message");
+});
+
+test("asGroupingLLMClient: retries on HTTP 529 overloaded_error and succeeds", async () => {
+  let calls = 0;
+  const fakeClient = {
+    messages: {
+      create: async () => {
+        calls++;
+        if (calls === 1) throw new InternalServerError(529, "Overloaded", undefined, new Headers());
+        return successMessage();
+      },
+    },
+  } as unknown as Pick<Anthropic, "messages">;
+
+  const result = await asGroupingLLMClient(fakeClient, NO_DELAYS).send({
+    model: "test",
+    system: "",
+    tools: [],
+    messages: [],
+    maxTokens: 100,
+    temperature: 0,
+  });
+  assert.equal(calls, 2, "should retry once after 529");
+  assert.equal(result.type, "message");
+});
+
+test("asGroupingLLMClient: throws after two retries on persistent transient error", async () => {
+  let calls = 0;
+  const connectionError = new APIConnectionError({ message: "ETIMEDOUT" });
+  const fakeClient = {
+    messages: {
+      create: async () => {
+        calls++;
+        throw connectionError;
+      },
+    },
+  } as unknown as Pick<Anthropic, "messages">;
+
+  await assert.rejects(
+    asGroupingLLMClient(fakeClient, NO_DELAYS).send({
+      model: "test",
+      system: "",
+      tools: [],
+      messages: [],
+      maxTokens: 100,
+      temperature: 0,
+    }),
+    connectionError,
+    "should throw after all retries",
+  );
+  assert.equal(calls, 3, "should attempt 3 times total");
+});
+
+test("asGroupingLLMClient: does not retry on non-transient errors", async () => {
+  let calls = 0;
+  const authError = new Anthropic.AuthenticationError(401, "Invalid API key", undefined, new Headers());
+  const fakeClient = {
+    messages: {
+      create: async () => {
+        calls++;
+        throw authError;
+      },
+    },
+  } as unknown as Pick<Anthropic, "messages">;
+
+  await assert.rejects(
+    asGroupingLLMClient(fakeClient, NO_DELAYS).send({
+      model: "test",
+      system: "",
+      tools: [],
+      messages: [],
+      maxTokens: 100,
+      temperature: 0,
+    }),
+    authError,
+    "should rethrow non-retryable errors immediately",
+  );
+  assert.equal(calls, 1, "should not retry on auth error");
 });

@@ -1,7 +1,7 @@
 // Grouping LLM tool-use loop. The dispatcher and parsers live in
 // candidate-search.ts / domain.ts; this file is just the orchestration.
 
-import type Anthropic from "@anthropic-ai/sdk";
+import Anthropic, { APIConnectionError, InternalServerError } from "@anthropic-ai/sdk";
 import {
   inspectCandidateResult,
   listIncidentFacets,
@@ -356,18 +356,46 @@ function dispatchDecide(
   };
 }
 
+// Retry delays for transient Anthropic errors (ms). Three total attempts:
+// initial try → 1 s wait → retry → 4 s wait → retry → throw.
+const GROUPING_RETRY_DELAYS_MS = [1_000, 4_000];
+
+function isRetryableGroupingError(err: unknown): boolean {
+  // Network-level failures (ETIMEDOUT, ECONNRESET, …).
+  if (err instanceof APIConnectionError) return true;
+  // HTTP 529: Anthropic's "Overloaded" response.
+  if (err instanceof InternalServerError && err.status === 529) return true;
+  return false;
+}
+
 // Adapter from the real Anthropic SDK to our injectable client shape.
-export function asGroupingLLMClient(client: Pick<Anthropic, "messages">): GroupingLLMClient {
+// Retries up to 2 times (3 total) on transient errors with exponential
+// backoff; the caller must set maxRetries: 0 on the Anthropic client so
+// SDK-level retries do not compound with these.
+// `retryDelaysMs` is overridable in tests so the suite does not incur real
+// wait times.
+export function asGroupingLLMClient(
+  client: Pick<Anthropic, "messages">,
+  retryDelaysMs = GROUPING_RETRY_DELAYS_MS,
+): GroupingLLMClient {
   return {
     async send(input) {
-      return client.messages.create({
-        model: input.model,
-        max_tokens: input.maxTokens,
-        temperature: input.temperature,
-        system: input.system,
-        tools: input.tools,
-        messages: input.messages,
-      });
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await client.messages.create({
+            model: input.model,
+            max_tokens: input.maxTokens,
+            temperature: input.temperature,
+            system: input.system,
+            tools: input.tools,
+            messages: input.messages,
+          });
+        } catch (err) {
+          const delayMs = retryDelaysMs[attempt];
+          if (delayMs === undefined || !isRetryableGroupingError(err)) throw err;
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+      }
     },
   };
 }
