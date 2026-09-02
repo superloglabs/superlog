@@ -31,6 +31,7 @@ import { authClient, useSession } from "./auth-client.ts";
 import { isPaygPromotionAvailable, signalAtHardCap } from "./billing.ts";
 import { DashboardView } from "./dashboards/DashboardView.tsx";
 import { DashboardsList } from "./dashboards/DashboardsList.tsx";
+import { TopologyGraphView } from "./topology/TopologyGraphView.tsx";
 import { ProductShell } from "./design/ProductShell.tsx";
 import { ThemeToggle } from "./design/ui.tsx";
 import { McpInstallPill } from "./onboarding/McpInstallPill.tsx";
@@ -230,6 +231,7 @@ function AuthenticatedApp() {
               <Route path={scopedProjectRoutePattern("/alerts")} element={<AlertsList />} />
               <Route path={scopedProjectRoutePattern("/alerts/new")} element={<AlertEdit />} />
               <Route path={scopedProjectRoutePattern("/alerts/:id")} element={<AlertEdit />} />
+              <Route path={scopedProjectRoutePattern("/topology")} element={<TopologyGraphView />} />
               <Route path={scopedProjectRoutePattern("/dashboards")} element={<DashboardsList />} />
               <Route
                 path={scopedProjectRoutePattern("/dashboards/:id")}
@@ -393,7 +395,7 @@ function RouteContainer({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
   const appPath = appPathFromProjectRoute(pathname);
   const detailWorkspace = isDetailWorkspacePath(appPath);
-  const wide = appPath.startsWith("/dashboards/");
+  const wide = appPath.startsWith("/dashboards/") || appPath === "/topology";
   if (detailWorkspace) {
     return <div className="flex min-h-0 flex-1 flex-col">{children}</div>;
   }
