@@ -53,7 +53,7 @@
   "pnpm": {
     "overrides": {
       "@grpc/proto-loader>protobufjs": "7.6.5",
-      "@modelcontextprotocol/sdk>hono": "4.12.30",
+      "@modelcontextprotocol/sdk>hono": "4.12.34",
       "@opentelemetry/otlp-transformer>protobufjs": "8.7.1",
       "@opentelemetry/core@<2.8.0": "2.9.0",
       "@esbuild-kit/core-utils>esbuild": "0.25.0",

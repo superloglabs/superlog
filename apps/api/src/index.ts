@@ -241,6 +241,7 @@ app.use(
   cors({
     origin: "*",
     allowMethods: ["GET", "OPTIONS"],
+    allowHeaders: ["Content-Type", "Authorization"],
   }),
 );
 
