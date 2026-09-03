@@ -347,7 +347,7 @@ function IssuesTab({ projectId, slugs }: { projectId: string; slugs: ProjectRout
           projectId={projectId}
           issue={selected}
           onClose={() => selectIssue(null)}
-          onToggleSilence={() => handleSilenceToggle(selected)}
+          onToggleSilence={selected.kind !== "alert" ? () => handleSilenceToggle(selected) : undefined}
           onViewIncident={(incidentId) => openItem(incidentId, "incidents")}
           onOpenEvent={(t) => setEventTarget(t)}
           silenceUpdating={silence.isPending || unsilence.isPending}
@@ -499,7 +499,7 @@ function IssueDetailPage({
         issue={issue}
         environment={issueEnvironment(issue)}
         onBack={onClose}
-        onToggleSilence={() => toggleSilence.mutate(issue.id)}
+        onToggleSilence={issue.kind !== "alert" ? () => toggleSilence.mutate(issue.id) : undefined}
         silenceUpdating={toggleSilence.isPending}
         onOpenEvidence={latestEvent ? () => setEventTarget(latestEvent) : undefined}
         evidenceLabel={latestEvent?.kind === "trace" ? "Open latest trace" : "Open latest log"}
