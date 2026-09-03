@@ -82,7 +82,7 @@ function makeDeps(overrides: DepsOverrides = {}) {
         calls.push("fail_context_unavailable");
       }),
     hasDetachedSessionTermination: overrides.hasDetachedSessionTermination ?? (async () => false),
-    listActiveRunIds: overrides.listActiveRunIds ?? (async () => []),
+    listSweepRunIds: overrides.listSweepRunIds ?? (async () => ({ progressing: [], parked: [] })),
     handlers: {
       terminateSession: overrides.handlers?.terminateSession ?? handler("terminate_session"),
       reconcileHandoff: overrides.handlers?.reconcileHandoff ?? handler("reconcile_handoff"),
@@ -343,9 +343,14 @@ test("a run with an abandoned in-flight attempt is not advanced concurrently", a
   assert.equal(startCalls, 2, "a settled run must be advanceable again");
 });
 
-test("sweep enqueues one deduped advance job per active run", async () => {
+test("sweep prioritizes progressing runs ahead of parked runs", async () => {
   const fb = fakeBoss();
-  const { deps } = makeDeps({ listActiveRunIds: async () => ["run-1", "run-2"] });
+  const { deps } = makeDeps({
+    listSweepRunIds: async () => ({
+      progressing: ["running-run", "queued-run"],
+      parked: ["awaiting-human-run", "awaiting-events-run"],
+    }),
+  });
   await registerAgentRunQueue(fb.boss, deps);
   const sweep = fb.workers.get(AGENT_RUN_SWEEP_QUEUE);
   assert.ok(sweep);
@@ -355,8 +360,26 @@ test("sweep enqueues one deduped advance job per active run", async () => {
   assert.equal(fb.inserted.length, 1);
   assert.equal(fb.inserted[0]?.name, AGENT_RUN_ADVANCE_QUEUE);
   assert.deepEqual(fb.inserted[0]?.jobs, [
-    { data: { agentRunId: "run-1" }, singletonKey: "run-1" },
-    { data: { agentRunId: "run-2" }, singletonKey: "run-2" },
+    {
+      data: { agentRunId: "running-run" },
+      singletonKey: "running-run",
+      priority: 1,
+    },
+    {
+      data: { agentRunId: "queued-run" },
+      singletonKey: "queued-run",
+      priority: 1,
+    },
+    {
+      data: { agentRunId: "awaiting-human-run" },
+      singletonKey: "awaiting-human-run",
+      priority: 0,
+    },
+    {
+      data: { agentRunId: "awaiting-events-run" },
+      singletonKey: "awaiting-events-run",
+      priority: 0,
+    },
   ]);
 });
 
@@ -369,7 +392,7 @@ test("the job sender enqueues with a per-run singleton key and never throws", as
     {
       name: AGENT_RUN_ADVANCE_QUEUE,
       data: { agentRunId: "run-1" },
-      options: { singletonKey: "run-1" },
+      options: { singletonKey: "run-1", priority: 1 },
     },
   ]);
 

@@ -42,10 +42,10 @@ export async function startAgentRunQueue(boss: AgentRunQueueBoss): Promise<void>
       });
     },
     hasDetachedSessionTermination: hasPendingDetachedAgentRunSession,
-    listActiveRunIds: async () => {
+    listSweepRunIds: async () => {
       const [rows, pendingHandoffs, pendingDetachedSessions] = await Promise.all([
         db
-          .select({ id: schema.agentRuns.id })
+          .select({ id: schema.agentRuns.id, state: schema.agentRuns.state })
           .from(schema.agentRuns)
           .where(
             or(
@@ -60,9 +60,16 @@ export async function startAgentRunQueue(boss: AgentRunQueueBoss): Promise<void>
         listPendingLinearHandoffRunIds(),
         listPendingDetachedAgentRunIds(),
       ]);
-      return [
-        ...new Set([...rows.map((row) => row.id), ...pendingHandoffs, ...pendingDetachedSessions]),
-      ];
+      const progressing = new Set([...pendingHandoffs, ...pendingDetachedSessions]);
+      const parked: string[] = [];
+      for (const row of rows) {
+        if (row.state === "awaiting_human" || row.state === "awaiting_events") {
+          if (!progressing.has(row.id)) parked.push(row.id);
+        } else {
+          progressing.add(row.id);
+        }
+      }
+      return { progressing: [...progressing], parked };
     },
     handlers: {
       terminateSession: async (agentRun) => {
