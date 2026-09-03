@@ -987,7 +987,14 @@ function AcceptanceStat() {
       },
       { threshold: 0.5 },
     );
-    observer.observe(node);
+    // Guard against environments where the constructor returns a broken stub
+    // (e.g. aggressive privacy extensions) — the count-up is best-effort.
+    try {
+      observer.observe(node);
+    } catch {
+      setCount(ACCEPTANCE_RATE);
+      return;
+    }
     return () => observer.disconnect();
   }, []);
 
