@@ -88,6 +88,9 @@ function isExistingPromotionBalance(error: unknown, balanceId: string): boolean 
   return (
     body.includes("balance_already_exists") ||
     body.includes("balance already exists") ||
+    // Autumn returns "balance_id '...' is already in use for this customer" (HTTP 409)
+    // when a balance with the given id was already created for the customer.
+    body.includes("is already in use") ||
     (body.includes("duplicate") && body.includes(balanceId.toLowerCase()))
   );
 }
