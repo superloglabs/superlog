@@ -56,6 +56,7 @@ test("an ordinary member cannot disable telemetry ingestion", async () => {
       vercel: { traces: false, logs: false },
       railway: { logs: false, metrics: false },
       render: { logs: false, metrics: false },
+      supabase: { metrics: false },
     }),
   });
 
@@ -96,6 +97,7 @@ test("defaults to everything enabled (no rows)", async () => {
     vercel: { traces: true, logs: true },
     railway: { logs: true, metrics: true },
     render: { logs: true, metrics: true },
+    supabase: { metrics: true },
   });
 });
 
@@ -110,6 +112,7 @@ test("PUT disables a pair, persists one sparse row, and reflects in GET", async 
     vercel: { traces: true, logs: true },
     railway: { logs: true, metrics: true },
     render: { logs: true, metrics: true },
+    supabase: { metrics: true },
   };
   const res = await app.request(`/api/projects/${project.id}/ingest-filters`, {
     method: "PUT",
@@ -151,6 +154,7 @@ test("PUT is a full replace — re-enabling clears the row", async () => {
     vercel: { traces: true, logs: true },
     railway: { logs: true, metrics: true },
     render: { logs: true, metrics: true },
+    supabase: { metrics: true },
   });
   await put({
     otlp: { traces: true, logs: true, metrics: true },
@@ -159,6 +163,7 @@ test("PUT is a full replace — re-enabling clears the row", async () => {
     vercel: { traces: true, logs: true },
     railway: { logs: true, metrics: true },
     render: { logs: true, metrics: true },
+    supabase: { metrics: true },
   });
   const rows = await db.query.projectIngestFilters.findMany({
     where: eq(schema.projectIngestFilters.projectId, project.id),

@@ -14,8 +14,28 @@ test("system capabilities default to the open-core community edition", () => {
     railwayConnect: false,
     renderConnect: false,
     gcpConnect: false,
+    supabaseConnect: false,
     sentryConnect: false,
   });
+});
+
+test("supabaseConnect requires OAuth, signed state, and encrypted secret storage", () => {
+  assert.equal(
+    buildSystemCapabilities({
+      SUPABASE_CLIENT_ID: "id",
+      SUPABASE_CLIENT_SECRET: "secret",
+    }).supabaseConnect,
+    false,
+  );
+  assert.equal(
+    buildSystemCapabilities({
+      SUPABASE_CLIENT_ID: "id",
+      SUPABASE_CLIENT_SECRET: "secret",
+      STATE_SIGNING_SECRET: "state-secret",
+      AGENT_SECRETS_KEY: "encryption-key",
+    }).supabaseConnect,
+    true,
+  );
 });
 
 test("renderConnect only needs AGENT_SECRETS_KEY (API-key connect, no OAuth client)", () => {
@@ -125,6 +145,7 @@ test("system capabilities expose cloud billing and managed agents when explicitl
       railwayConnect: false,
       renderConnect: false,
       gcpConnect: false,
+      supabaseConnect: false,
       sentryConnect: false,
     },
   );

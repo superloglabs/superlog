@@ -22,6 +22,7 @@ import {
   useCloudStackHealth,
   useCloudflareInstallation,
   useConnectRender,
+  useConnectSupabaseProjects,
   useCreateCloudConnection,
   useCreateKey,
   useCreateMcpToken,
@@ -58,6 +59,8 @@ import {
   useRailwayInstallation,
   useRedeliverWebhook,
   useRemoveIntegration,
+  useRemoveSupabaseConnection,
+  useRemoveSupabaseGrant,
   useRenderInstallation,
   useRenderOwners,
   useResetGithubCommitAuthor,
@@ -90,9 +93,12 @@ import {
   useStartNotionInstall,
   useStartRailwayInstall,
   useStartSentryInstall,
+  useStartSupabaseInstall,
   useStartSlackInstall,
   useStartVercelInstall,
   useSystemCapabilities,
+  useSupabaseIntegration,
+  useSupabaseProjects,
   useTestWebhook,
   useUninstallCloudflare,
   useUninstallLinear,
@@ -1145,6 +1151,7 @@ type ProjectIntegrationId =
   | "railway"
   | "render"
   | "gcp"
+  | "supabase"
   | "aws"
   | "porter";
 
@@ -1165,6 +1172,7 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
   const railway = useRailwayInstallation(projectId);
   const render = useRenderInstallation(projectId);
   const gcp = useGcpConnection(projectId);
+  const supabase = useSupabaseIntegration(projectId);
   const aws = useCloudConnections(projectId);
   const keys = useKeys(projectId);
 
@@ -1173,6 +1181,7 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
 
   useEffect(() => {
     if (searchParams.has("sentry")) setSelectedId("sentry");
+    if (searchParams.has("supabase")) setSelectedId("supabase");
   }, [searchParams]);
 
   const githubAccounts = github.data?.installed ? github.data.installations.length : 0;
@@ -1302,6 +1311,18 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
           : "Connected",
     },
     {
+      id: "supabase",
+      name: "Supabase",
+      description: "Track Postgres query performance across hosted projects and environments.",
+      category: "Database & observability",
+      keywords: ["postgres", "database", "queries", "pg_stat_statements", "metrics"],
+      installed: (supabase.data?.grants.length ?? 0) > 0,
+      statusLabel:
+        supabase.data?.connections.length === 1
+          ? "1 project"
+          : `${supabase.data?.connections.length ?? 0} projects`,
+    },
+    {
       id: "porter",
       name: "Porter",
       description: "Collect Kubernetes logs, metrics, events, and application OTLP signals.",
@@ -1334,6 +1355,7 @@ function IntegrationsBento({ projectId }: { projectId: string | undefined }) {
     railway,
     render,
     gcp,
+    supabase,
     aws,
     keys,
   ].some((query) => query.isLoading);
@@ -1550,6 +1572,8 @@ function IntegrationGlyph({ id }: { id: ProjectIntegrationId }) {
           <GcpIcon size={20} />
         </span>
       );
+    case "supabase":
+      return <span className={`${className} text-[13px] font-semibold`}>SB</span>;
     case "aws":
       return (
         <span className={className}>
@@ -1595,6 +1619,8 @@ function IntegrationConfiguration({
       return <RenderCard projectId={projectId} />;
     case "gcp":
       return <GcpCard projectId={projectId} />;
+    case "supabase":
+      return <SupabaseCard projectId={projectId} />;
     case "aws":
       return <AwsCard projectId={projectId} />;
     case "porter":
@@ -2742,6 +2768,12 @@ const INGEST_SOURCE_DEFINITIONS = [
       { key: "metrics", label: "Metrics" },
     ],
   },
+  {
+    source: "supabase",
+    title: "Supabase",
+    hint: "Postgres query performance metrics from connected hosted Supabase projects.",
+    signals: [{ key: "metrics", label: "Metrics" }],
+  },
 ] as const satisfies ReadonlyArray<IngestSourceDefinition>;
 
 function IngestSourceRow({
@@ -2948,6 +2980,268 @@ function IngestSourcesCard({ projectId }: { projectId: string | undefined }) {
       )}
     </div>
   );
+}
+
+function SupabaseCard({ projectId }: { projectId: string | undefined }) {
+  const [params] = useSearchParams();
+  const integration = useSupabaseIntegration(projectId);
+  const startInstall = useStartSupabaseInstall(projectId);
+  const connect = useConnectSupabaseProjects(projectId);
+  const removeConnection = useRemoveSupabaseConnection(projectId);
+  const removeGrant = useRemoveSupabaseGrant(projectId);
+  const callbackGrantId = params.get("supabase_grant");
+  const [activeGrantId, setActiveGrantId] = useState<string | null>(callbackGrantId);
+  const state = integration.data;
+  const canManage = state?.canManage ?? false;
+  const projects = useSupabaseProjects(projectId, canManage ? activeGrantId : null);
+  const [drafts, setDrafts] = useState<Record<string, { selected: boolean; environment: string }>>(
+    {},
+  );
+
+  useEffect(() => {
+    if (callbackGrantId) setActiveGrantId(callbackGrantId);
+  }, [callbackGrantId]);
+
+  useEffect(() => {
+    if (!projects.data) return;
+    const existing = new Map(
+      (integration.data?.connections ?? []).map((connection) => [
+        connection.projectRef,
+        connection.environment,
+      ]),
+    );
+    setDrafts(
+      Object.fromEntries(
+        projects.data.projects.map((supabaseProject) => [
+          supabaseProject.ref,
+          {
+            selected: existing.has(supabaseProject.ref),
+            environment:
+              existing.get(supabaseProject.ref) ?? inferEnvironment(supabaseProject.name),
+          },
+        ]),
+      ),
+    );
+  }, [projects.data, integration.data?.connections]);
+
+  const selected = Object.entries(drafts).flatMap(([projectRef, draft]) =>
+    draft.selected && draft.environment.trim()
+      ? [{ projectRef, environment: draft.environment.trim() }]
+      : [],
+  );
+
+  return (
+    <div className="space-y-4">
+      <p className="text-[13px] leading-5 text-muted">
+        Connect one or more hosted Supabase accounts, then map any number of projects to this
+        Superlog project with an environment label. Superlog reads <code>pg_stat_statements</code>{" "}
+        through Supabase&apos;s read-only Management API; no database password or connection string
+        is stored.
+      </p>
+
+      {!state?.configured && !integration.isLoading && (
+        <p className="text-[12.5px] text-muted">
+          Supabase OAuth is not configured on this deployment.
+        </p>
+      )}
+
+      {state && !state.canManage && (
+        <p className="text-[12.5px] text-muted">
+          This integration is read-only for project members. Ask an organization admin to change
+          connected accounts or projects.
+        </p>
+      )}
+
+      {(state?.connections ?? []).map((connection) => (
+        <div key={connection.id} className="rounded-lg border border-border bg-surface-2/40 p-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[13px] font-medium text-fg">{connection.projectName}</span>
+                <Chip tone={connection.lastError ? "danger" : "success"} dot>
+                  {connection.environment}
+                </Chip>
+              </div>
+              <p className="mt-1 truncate text-[11.5px] text-muted">
+                {connection.organizationSlug} · {connection.region} · {connection.primaryEmail}
+              </p>
+              <p className="mt-1 text-[11.5px] text-subtle">
+                {connection.lastError
+                  ? connection.lastError
+                  : connection.lastMetricsReceivedAt
+                    ? `Query metrics received ${formatIntegrationTime(connection.lastMetricsReceivedAt)}`
+                    : "Waiting for the first query-metrics poll"}
+              </p>
+            </div>
+            <Btn
+              size="sm"
+              variant="danger"
+              loading={removeConnection.isPending}
+              disabled={!canManage}
+              onClick={() => removeConnection.mutate(connection.id)}
+            >
+              Remove
+            </Btn>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3">
+            <span className="text-[11.5px] text-muted">Optional investigations:</span>
+            <Btn
+              size="sm"
+              variant="secondary"
+              onClick={() =>
+                void navigator.clipboard.writeText(supabaseMcpUrl(connection.projectRef))
+              }
+            >
+              Copy read-only MCP URL
+            </Btn>
+          </div>
+        </div>
+      ))}
+
+      {(state?.grants ?? []).map((grant) => (
+        <div key={grant.id} className="rounded-lg border border-border p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="truncate text-[12.5px] font-medium text-fg">{grant.primaryEmail}</p>
+              <p className="text-[11.5px] text-muted">Supabase account</p>
+            </div>
+            <div className="flex gap-2">
+              <Btn
+                size="sm"
+                variant="secondary"
+                disabled={!canManage}
+                onClick={() => setActiveGrantId(activeGrantId === grant.id ? null : grant.id)}
+              >
+                {activeGrantId === grant.id ? "Cancel" : "Add projects"}
+              </Btn>
+              <Btn
+                size="sm"
+                variant="danger"
+                loading={removeGrant.isPending}
+                disabled={!canManage}
+                onClick={() => removeGrant.mutate(grant.id)}
+              >
+                Remove account
+              </Btn>
+            </div>
+          </div>
+
+          {activeGrantId === grant.id && (
+            <div className="mt-3 space-y-2 border-t border-border pt-3">
+              {projects.isLoading && <p className="text-[12px] text-muted">Loading projects…</p>}
+              {projects.error && (
+                <p className="text-[12px] text-danger">Could not load Supabase projects.</p>
+              )}
+              {(projects.data?.projects ?? []).map((supabaseProject) => {
+                const draft = drafts[supabaseProject.ref] ?? {
+                  selected: false,
+                  environment: "development",
+                };
+                return (
+                  <label
+                    key={supabaseProject.ref}
+                    className="grid cursor-pointer grid-cols-[auto_1fr_minmax(110px,0.55fr)] items-center gap-3 rounded-md bg-surface-2/50 px-3 py-2"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={draft.selected}
+                      disabled={!canManage}
+                      onChange={(event) =>
+                        setDrafts((current) => ({
+                          ...current,
+                          [supabaseProject.ref]: { ...draft, selected: event.target.checked },
+                        }))
+                      }
+                    />
+                    <span className="min-w-0">
+                      <span className="block truncate text-[12.5px] font-medium text-fg">
+                        {supabaseProject.name}
+                      </span>
+                      <span className="block truncate text-[11px] text-muted">
+                        {supabaseProject.organizationSlug} · {supabaseProject.region}
+                      </span>
+                    </span>
+                    <Input
+                      value={draft.environment}
+                      disabled={!canManage || !draft.selected}
+                      aria-label={`Environment for ${supabaseProject.name}`}
+                      placeholder="environment"
+                      onChange={(event) =>
+                        setDrafts((current) => ({
+                          ...current,
+                          [supabaseProject.ref]: {
+                            ...draft,
+                            environment: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                  </label>
+                );
+              })}
+              <div className="flex justify-end pt-1">
+                <Btn
+                  size="sm"
+                  variant="primary"
+                  loading={connect.isPending}
+                  disabled={!canManage || selected.length === 0 || connect.isPending}
+                  onClick={() => {
+                    if (!activeGrantId) return;
+                    connect.mutate(
+                      { grantId: activeGrantId, connections: selected },
+                      { onSuccess: () => setActiveGrantId(null) },
+                    );
+                  }}
+                >
+                  Connect selected projects
+                </Btn>
+              </div>
+              {connect.error && <p className="text-[12px] text-danger">{String(connect.error)}</p>}
+            </div>
+          )}
+        </div>
+      ))}
+
+      <div className="flex justify-end">
+        <Btn
+          size="sm"
+          variant="primary"
+          loading={startInstall.isPending}
+          disabled={!projectId || !state?.configured || !canManage || startInstall.isPending}
+          onClick={async () => {
+            const { url } = await startInstall.mutateAsync();
+            window.location.href = url;
+          }}
+        >
+          Connect another Supabase account
+        </Btn>
+      </div>
+      {startInstall.error && (
+        <p className="text-[12px] text-danger">{String(startInstall.error)}</p>
+      )}
+    </div>
+  );
+}
+
+function inferEnvironment(name: string): string {
+  const normalized = name.toLowerCase();
+  if (/prod(uction)?/.test(normalized)) return "production";
+  if (/stag(e|ing)/.test(normalized)) return "staging";
+  if (/test|qa/.test(normalized)) return "test";
+  return "development";
+}
+
+function formatIntegrationTime(value: string): string {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString() : value;
+}
+
+function supabaseMcpUrl(projectRef: string): string {
+  const url = new URL("https://mcp.supabase.com/mcp");
+  url.searchParams.set("project_ref", projectRef);
+  url.searchParams.set("read_only", "true");
+  url.searchParams.set("features", "database,debugging");
+  return url.toString();
 }
 
 function GcpCard({ projectId }: { projectId: string | undefined }) {

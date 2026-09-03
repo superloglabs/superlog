@@ -84,6 +84,7 @@ export type SystemCapabilities = {
   railwayConnect: boolean;
   renderConnect: boolean;
   gcpConnect: boolean;
+  supabaseConnect: boolean;
   sentryConnect: boolean;
 };
 
@@ -1175,6 +1176,108 @@ export function useGcpConnection(projectId: string | undefined) {
   });
 }
 
+export type SupabaseIntegrationState = {
+  configured: boolean;
+  canManage: boolean;
+  grants: Array<{
+    id: string;
+    primaryEmail: string;
+    username: string;
+    tokenExpiresAt: string | null;
+  }>;
+  connections: Array<{
+    id: string;
+    grantId: string;
+    primaryEmail: string;
+    projectRef: string;
+    projectName: string;
+    organizationSlug: string;
+    region: string;
+    environment: string;
+    lastPolledAt: string | null;
+    lastMetricsReceivedAt: string | null;
+    lastError: string | null;
+  }>;
+};
+
+export type SupabaseProject = {
+  ref: string;
+  name: string;
+  organizationSlug: string;
+  region: string;
+};
+
+export function useSupabaseIntegration(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["supabase-integration", projectId],
+    enabled: !!projectId,
+    queryFn: () => fetcher<SupabaseIntegrationState>(`/api/projects/${projectId}/supabase`),
+  });
+}
+
+export function useStartSupabaseInstall(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  return useMutation({
+    mutationFn: () =>
+      fetcher<{ url: string }>(`/api/projects/${projectId}/supabase/install-url`, {
+        method: "POST",
+      }),
+  });
+}
+
+export function useSupabaseProjects(projectId: string | undefined, grantId: string | null) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["supabase-projects", projectId, grantId],
+    enabled: !!projectId && !!grantId,
+    queryFn: () =>
+      fetcher<{ projects: SupabaseProject[] }>(
+        `/api/projects/${projectId}/supabase/grants/${grantId}/projects`,
+      ),
+  });
+}
+
+export function useConnectSupabaseProjects(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      grantId: string;
+      connections: Array<{ projectRef: string; environment: string }>;
+    }) =>
+      fetcher<{ connections: SupabaseIntegrationState["connections"] }>(
+        `/api/projects/${projectId}/supabase/connections`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["supabase-integration", projectId] }),
+  });
+}
+
+export function useRemoveSupabaseConnection(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (connectionId: string) =>
+      fetcher<{ ok: true }>(`/api/projects/${projectId}/supabase/connections/${connectionId}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["supabase-integration", projectId] }),
+  });
+}
+
+export function useRemoveSupabaseGrant(projectId: string | undefined) {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (grantId: string) =>
+      fetcher<{ ok: true }>(`/api/projects/${projectId}/supabase/grants/${grantId}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["supabase-integration", projectId] }),
+  });
+}
+
 export function useSetGcpLogExclusions(projectId: string | undefined) {
   const fetcher = useFetcher();
   const queryClient = useQueryClient();
@@ -1562,6 +1665,7 @@ export type IngestFilterState = {
   vercel: { traces: boolean; logs: boolean };
   railway: { logs: boolean; metrics: boolean };
   render: { logs: boolean; metrics: boolean };
+  supabase: { metrics: boolean };
 };
 
 export function useIngestFilters(projectId: string | undefined) {

@@ -10,6 +10,7 @@ const filters: IngestFilterState = {
   vercel: { traces: true, logs: true },
   railway: { logs: true, metrics: true },
   render: { logs: true, metrics: true },
+  supabase: { metrics: true },
 };
 
 test("changing one ingest signal preserves every other source and the original state", () => {

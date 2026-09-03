@@ -22,6 +22,8 @@ export type SystemCapabilities = {
   renderConnect: boolean;
   // API-first GCP setup: OAuth plus integration-owned Pub/Sub configuration.
   gcpConnect: boolean;
+  // Hosted Supabase setup: OAuth plus encrypted Management API tokens.
+  supabaseConnect: boolean;
   // Public Sentry App OAuth, issue webhooks, and encrypted installation grants.
   sentryConnect: boolean;
 };
@@ -51,6 +53,8 @@ type CapabilityEnv = Partial<
     | "GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL"
     | "GCP_PUBSUB_PUSH_ENDPOINT"
     | "GCP_PUBSUB_PUSH_AUDIENCE"
+    | "SUPABASE_CLIENT_ID"
+    | "SUPABASE_CLIENT_SECRET"
     | "SENTRY_CLIENT_ID"
     | "SENTRY_CLIENT_SECRET"
     | "SENTRY_APP_SLUG"
@@ -116,6 +120,12 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
     env.STATE_SIGNING_SECRET &&
     env.AGENT_SECRETS_KEY
   );
+  const supabaseConnect = !!(
+    env.SUPABASE_CLIENT_ID &&
+    env.SUPABASE_CLIENT_SECRET &&
+    env.STATE_SIGNING_SECRET &&
+    env.AGENT_SECRETS_KEY
+  );
 
   return {
     edition,
@@ -128,6 +138,7 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
     railwayConnect,
     renderConnect,
     gcpConnect,
+    supabaseConnect,
     sentryConnect,
   };
 }

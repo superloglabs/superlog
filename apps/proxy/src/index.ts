@@ -53,6 +53,7 @@ import { decodeOtlpMetricsPayload } from "./otlp-decode.js";
 import { stampRenderStreamMetrics } from "./render-metrics-stream.js";
 import { createRenderSyslogServer, renderSyslogToOtlp } from "./render-syslog.js";
 import { Semaphore } from "./semaphore.js";
+import { mountSupabaseMetricsPullRoute } from "./supabase-pull-routes.js";
 // Telemetry flush is owned by shutdown() below (the single SIGTERM owner), not by
 // tracing.ts, so the OTel flush can't race the ingest drain and exit early.
 import { shutdownTelemetry } from "./telemetry-shutdown.js";
@@ -411,6 +412,10 @@ app.use("/render/stream/*", validateIngestKey);
 mountGcpMetricsPullRoute(app, {
   validateIngestKey,
   forward: (c) => forward(c, "/v1/metrics", "resourceMetrics", { source: "gcp" }),
+});
+mountSupabaseMetricsPullRoute(app, {
+  validateIngestKey,
+  forward: (c) => forward(c, "/v1/metrics", "resourceMetrics", { source: "supabase" }),
 });
 
 app.post("/v1/traces", (c) => forward(c, "/v1/traces", "resourceSpans"));
