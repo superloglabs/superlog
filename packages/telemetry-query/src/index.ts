@@ -47,8 +47,19 @@ export function fieldColumnExpr(field: string, source: FieldFilterSource): strin
   }
 }
 
+// Thrown for user-supplied time bounds that do not match any accepted format.
+// Catching by name lets callers (e.g. MCP server) distinguish input errors from
+// backend failures without coupling to this package at the type level.
+export class TimeRangeValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TimeRangeValidationError";
+  }
+}
+
+// Accepts now(), now() - INTERVAL <n> <UNIT> where n ≥ 0 (zero offset is valid).
 const RELATIVE_TIME_EXPR_RE =
-  /^now\(\)(?:\s*-\s*INTERVAL\s+(?:[1-9][0-9]*)\s+(?:SECOND|MINUTE|HOUR|DAY|WEEK|MONTH))?$/i;
+  /^now\(\)(?:\s*-\s*INTERVAL\s+(?:\d+)\s+(?:SECOND|MINUTE|HOUR|DAY|WEEK|MONTH))?$/i;
 const ISO_TIME_BOUND_RE =
   /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
 
@@ -56,7 +67,7 @@ function timeBoundExpr(value: string, paramName: "since" | "until"): string {
   const normalized = value.trim().replace(/\s+/g, " ");
   if (RELATIVE_TIME_EXPR_RE.test(normalized)) return normalized;
   if (!ISO_TIME_BOUND_RE.test(normalized) || Number.isNaN(Date.parse(normalized))) {
-    throw new Error(`invalid ${paramName} time bound: ${value}`);
+    throw new TimeRangeValidationError(`invalid ${paramName} time bound: ${value}`);
   }
   return `parseDateTime64BestEffortOrZero({${paramName}:String})`;
 }

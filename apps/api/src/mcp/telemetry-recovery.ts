@@ -14,6 +14,13 @@ export type TelemetryRetryRequired = {
   suggested_input: Record<string, unknown>;
 };
 
+export type TelemetryValidationFailed = {
+  status: "validation_failed";
+  tool: McpTelemetryToolName;
+  message: string;
+  retryable: false;
+};
+
 let telemetryQueryOutcomeCounter: Counter | undefined;
 let telemetryQueryDurationHistogram: Histogram | undefined;
 
@@ -77,9 +84,9 @@ function isRetryableTelemetryTimeout(error: unknown): boolean {
 
 const HOUR_MS = 60 * 60_000;
 const RELATIVE_TIME_RE =
-  /^now\(\)(?:\s*-\s*INTERVAL\s+([1-9][0-9]*)\s+(SECOND|MINUTE|HOUR|DAY|WEEK))?$/i;
+  /^now\(\)(?:\s*-\s*INTERVAL\s+(\d+)\s+(SECOND|MINUTE|HOUR|DAY|WEEK))?$/i;
 const RELATIVE_MONTH_RE =
-  /^now\(\)(?:\s*-\s*INTERVAL\s+([1-9][0-9]*)\s+MONTH)?$/i;
+  /^now\(\)(?:\s*-\s*INTERVAL\s+(\d+)\s+MONTH)?$/i;
 const UNIT_MS = {
   SECOND: 1_000,
   MINUTE: 60_000,
@@ -273,13 +280,24 @@ export async function executeRecoverableTelemetryQuery<T>(
   query: () => Promise<T>,
   onTimeout?: (error: unknown, recovery: TelemetryRetryRequired) => void,
   onPermanentFailure?: (error: unknown) => void,
-): Promise<T | TelemetryRetryRequired> {
+): Promise<T | TelemetryRetryRequired | TelemetryValidationFailed> {
   const startedAt = performance.now();
   try {
     const result = await query();
     recordTelemetryQueryOutcome(tool, "success", performance.now() - startedAt);
     return result;
   } catch (error) {
+    // Input validation errors (bad time bounds, etc.) are not backend failures —
+    // skip the permanent-failure callback and return structured guidance so the
+    // caller can surface the problem to the LLM without an ERROR log.
+    if (error instanceof Error && error.name === "TimeRangeValidationError") {
+      return {
+        status: "validation_failed",
+        tool,
+        message: `Invalid time range: ${error.message}. Use an ISO-8601 timestamp or a ClickHouse expression like 'now() - INTERVAL 1 HOUR'.`,
+        retryable: false,
+      };
+    }
     const recovery = recoverTelemetryTimeout(tool, input, error);
     if (!recovery) {
       recordTelemetryQueryOutcome(
