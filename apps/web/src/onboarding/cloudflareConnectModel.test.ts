@@ -43,6 +43,7 @@ test("parseCloudflareOutcome only accepts the known callback values", () => {
   assert.equal(parseCloudflareOutcome("installed"), "installed");
   assert.equal(parseCloudflareOutcome("denied"), "denied");
   assert.equal(parseCloudflareOutcome("error"), "error");
+  assert.equal(parseCloudflareOutcome("multi-account"), "multi-account");
   assert.equal(parseCloudflareOutcome("bogus"), null);
   assert.equal(parseCloudflareOutcome(null), null);
   assert.equal(parseCloudflareOutcome(undefined), null);
@@ -51,6 +52,7 @@ test("parseCloudflareOutcome only accepts the known callback values", () => {
 test("only failure outcomes produce a user-facing message", () => {
   assert.equal(typeof cloudflareOutcomeMessage("denied"), "string");
   assert.equal(typeof cloudflareOutcomeMessage("error"), "string");
+  assert.equal(typeof cloudflareOutcomeMessage("multi-account"), "string");
   assert.equal(cloudflareOutcomeMessage("installed"), null);
   assert.equal(cloudflareOutcomeMessage(null), null);
 });

@@ -31,14 +31,21 @@ export function canContinueCloudflare(phase: CloudflarePhase): boolean {
   return phase === "connected";
 }
 
-// The OAuth callback redirects back with `?cloudflare=installed|denied|error`.
+// The OAuth callback redirects back with
+// `?cloudflare=installed|denied|error|multi-account`.
 // `installed` is handled by the install poll flipping to "connected"; the other
-// two are terminal failures the flow must surface (and reset out of the waiting
-// state) rather than spin forever.
-export type CloudflareOutcome = "installed" | "denied" | "error" | null;
+// three are terminal failures the flow must surface (and reset out of the
+// waiting state) rather than spin forever.
+export type CloudflareOutcome = "installed" | "denied" | "error" | "multi-account" | null;
 
 export function parseCloudflareOutcome(value: string | null | undefined): CloudflareOutcome {
-  if (value === "installed" || value === "denied" || value === "error") return value;
+  if (
+    value === "installed" ||
+    value === "denied" ||
+    value === "error" ||
+    value === "multi-account"
+  )
+    return value;
   return null;
 }
 
@@ -47,6 +54,8 @@ export function cloudflareOutcomeMessage(outcome: CloudflareOutcome): string | n
   switch (outcome) {
     case "denied":
       return "Cloudflare authorization was declined. Reconnect to try again.";
+    case "multi-account":
+      return "Your Cloudflare token grants access to multiple accounts. Please reconnect and select a single Cloudflare account to continue.";
     case "error":
       return "We couldn't finish connecting Cloudflare. Reconnect to try again.";
     default:

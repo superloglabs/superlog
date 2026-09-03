@@ -556,7 +556,7 @@ export function mountCloudflarePublic(
         "cloudflare connect: token grants multiple accounts; refusing to guess",
       );
       await revokeToken({ config, token: token.accessToken, fetchImpl });
-      return c.redirect(buildAppWebUrl(webOrigin, "?cloudflare=error"), 302);
+      return c.redirect(buildAppWebUrl(webOrigin, "?cloudflare=multi-account"), 302);
     }
 
     try {
