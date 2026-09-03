@@ -42,12 +42,15 @@ const included = [
 ];
 
 export function Pricing() {
-  const [authMode, setAuthMode] = useState<AuthMode>(() => {
-    if (typeof window === "undefined") return null;
+  // Always start with null so the SSR-rendered HTML and the initial hydration
+  // render agree (no <dialog> on first pass). The hash check runs after
+  // hydration, so users arriving at /pricing#sso-callback or #verify still
+  // get the auth modal — just one tick later, which is imperceptible.
+  const [authMode, setAuthMode] = useState<AuthMode>(null);
+  useEffect(() => {
     const h = window.location.hash;
-    if (h.includes("sso-callback") || h.includes("verify")) return "sign-in";
-    return null;
-  });
+    if (h.includes("sso-callback") || h.includes("verify")) setAuthMode("sign-in");
+  }, []);
 
   const posthog = usePostHog();
   const openSignIn = () => {
@@ -309,7 +312,7 @@ function PaygEstimator({ onSignUp }: { onSignUp: () => void }) {
               anchors={TELEMETRY_ANCHORS}
               value={spans}
               lineUsd={spansUsd}
-              formatValue={(n) => n.toLocaleString()}
+              formatValue={(n) => n.toLocaleString("en-US")}
               formatTick={formatCount}
               onChange={setSpans}
             />
@@ -318,7 +321,7 @@ function PaygEstimator({ onSignUp }: { onSignUp: () => void }) {
               anchors={TELEMETRY_ANCHORS}
               value={logs}
               lineUsd={logsUsd}
-              formatValue={(n) => n.toLocaleString()}
+              formatValue={(n) => n.toLocaleString("en-US")}
               formatTick={formatCount}
               onChange={setLogs}
             />
@@ -327,7 +330,7 @@ function PaygEstimator({ onSignUp }: { onSignUp: () => void }) {
               anchors={TELEMETRY_ANCHORS}
               value={metrics}
               lineUsd={metricsUsd}
-              formatValue={(n) => n.toLocaleString()}
+              formatValue={(n) => n.toLocaleString("en-US")}
               formatTick={formatCount}
               onChange={setMetrics}
             />
