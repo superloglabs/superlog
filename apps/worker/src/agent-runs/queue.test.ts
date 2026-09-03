@@ -7,6 +7,7 @@ import {
   type AgentRunQueueBoss,
   type AgentRunQueueDeps,
   createAgentRunJobSender,
+  groupAgentRunSweepIds,
   registerAgentRunQueue,
 } from "./queue.js";
 
@@ -381,6 +382,21 @@ test("sweep prioritizes progressing runs ahead of parked runs", async () => {
       priority: 0,
     },
   ]);
+});
+
+test("pending input promotes a parked run into the progressing lane", () => {
+  assert.deepEqual(
+    groupAgentRunSweepIds([
+      { id: "waiting", state: "awaiting_human", hasPendingInput: false },
+      { id: "reply-ready", state: "awaiting_human", hasPendingInput: true },
+      { id: "review-ready", state: "awaiting_events", hasPendingInput: true },
+      { id: "running", state: "running", hasPendingInput: false },
+    ]),
+    {
+      progressing: ["reply-ready", "review-ready", "running"],
+      parked: ["waiting"],
+    },
+  );
 });
 
 test("the job sender enqueues with a per-run singleton key and never throws", async () => {

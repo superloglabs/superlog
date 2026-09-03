@@ -59,6 +59,35 @@ export type AgentRunSweepIds = {
   parked: string[];
 };
 
+export type AgentRunSweepCandidate = {
+  id: string;
+  state: string;
+  hasPendingInput: boolean;
+};
+
+export function groupAgentRunSweepIds(
+  candidates: AgentRunSweepCandidate[],
+  promotedIds: string[] = [],
+): AgentRunSweepIds {
+  const promoted = new Set(promotedIds);
+  const seen = new Set<string>();
+  const progressing: string[] = [];
+  const parked: string[] = [];
+  for (const candidate of candidates) {
+    seen.add(candidate.id);
+    const isParked = candidate.state === "awaiting_human" || candidate.state === "awaiting_events";
+    if (!isParked || candidate.hasPendingInput || promoted.has(candidate.id)) {
+      progressing.push(candidate.id);
+    } else {
+      parked.push(candidate.id);
+    }
+  }
+  for (const id of promoted) {
+    if (!seen.has(id)) progressing.push(id);
+  }
+  return { progressing, parked };
+}
+
 export type AgentRunQueueBoss = {
   createQueue(name: string, options?: unknown): Promise<unknown>;
   updateQueue(name: string, options?: unknown): Promise<unknown>;
