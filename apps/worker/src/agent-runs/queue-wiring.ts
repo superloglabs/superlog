@@ -73,6 +73,8 @@ export async function startAgentRunQueue(boss: AgentRunQueueBoss): Promise<void>
             id: schema.agentRuns.id,
             state: schema.agentRuns.state,
             hasPendingInput,
+            providerSessionId: schema.agentRuns.providerSessionId,
+            providerSessionStatus: schema.agentRuns.providerSessionStatus,
           })
           .from(schema.agentRuns)
           .where(
@@ -89,7 +91,12 @@ export async function startAgentRunQueue(boss: AgentRunQueueBoss): Promise<void>
         listPendingDetachedAgentRunIds(),
       ]);
       return groupAgentRunSweepIds(
-        rows.map((row) => ({ ...row, hasPendingInput: row.hasPendingInput === true })),
+        rows.map((row) => ({
+          ...row,
+          hasPendingInput: row.hasPendingInput === true,
+          hasPendingOwnedSessionTermination:
+            row.providerSessionStatus === "termination_pending" && row.providerSessionId !== null,
+        })),
         [...pendingHandoffs, ...pendingDetachedSessions],
       );
     },

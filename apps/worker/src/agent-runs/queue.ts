@@ -63,6 +63,7 @@ export type AgentRunSweepCandidate = {
   id: string;
   state: string;
   hasPendingInput: boolean;
+  hasPendingOwnedSessionTermination: boolean;
 };
 
 export function groupAgentRunSweepIds(
@@ -76,7 +77,12 @@ export function groupAgentRunSweepIds(
   for (const candidate of candidates) {
     seen.add(candidate.id);
     const isParked = candidate.state === "awaiting_human" || candidate.state === "awaiting_events";
-    if (!isParked || candidate.hasPendingInput || promoted.has(candidate.id)) {
+    if (
+      !isParked ||
+      candidate.hasPendingInput ||
+      candidate.hasPendingOwnedSessionTermination ||
+      promoted.has(candidate.id)
+    ) {
       progressing.push(candidate.id);
     } else {
       parked.push(candidate.id);

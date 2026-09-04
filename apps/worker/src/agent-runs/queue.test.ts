@@ -399,16 +399,52 @@ test("sweep prioritizes progressing runs ahead of parked runs", async () => {
 test("pending input promotes a parked run into the progressing lane", () => {
   assert.deepEqual(
     groupAgentRunSweepIds([
-      { id: "waiting", state: "awaiting_human", hasPendingInput: false },
-      { id: "reply-ready", state: "awaiting_human", hasPendingInput: true },
-      { id: "review-ready", state: "awaiting_events", hasPendingInput: true },
-      { id: "running", state: "running", hasPendingInput: false },
+      {
+        id: "waiting",
+        state: "awaiting_human",
+        hasPendingInput: false,
+        hasPendingOwnedSessionTermination: false,
+      },
+      {
+        id: "reply-ready",
+        state: "awaiting_human",
+        hasPendingInput: true,
+        hasPendingOwnedSessionTermination: false,
+      },
+      {
+        id: "review-ready",
+        state: "awaiting_events",
+        hasPendingInput: true,
+        hasPendingOwnedSessionTermination: false,
+      },
+      {
+        id: "running",
+        state: "running",
+        hasPendingInput: false,
+        hasPendingOwnedSessionTermination: false,
+      },
     ]),
     {
       progressing: ["reply-ready", "review-ready", "running"],
       parked: ["waiting"],
     },
   );
+});
+
+test("pending owned-session termination promotes a parked run into the progressing lane", () => {
+  const candidates = [
+    {
+      id: "termination-ready",
+      state: "awaiting_events",
+      hasPendingInput: false,
+      hasPendingOwnedSessionTermination: true,
+    },
+  ];
+
+  assert.deepEqual(groupAgentRunSweepIds(candidates), {
+    progressing: ["termination-ready"],
+    parked: [],
+  });
 });
 
 test("the job sender promotes a queued job with a per-run singleton key and never throws", async () => {
