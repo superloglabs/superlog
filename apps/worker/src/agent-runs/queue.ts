@@ -96,8 +96,8 @@ export type AgentRunQueueBoss = {
     options: { batchSize: number; localConcurrency?: number },
     handler: (jobs: Array<{ id: string; data: unknown }>) => Promise<unknown>,
   ): Promise<unknown>;
-  send(name: string, data: object, options?: object): Promise<unknown>;
   insert(name: string, jobs: object[]): Promise<unknown>;
+  upsert(name: string, data: object, options?: object): Promise<unknown>;
   schedule(name: string, cron: string, data?: unknown, options?: unknown): Promise<unknown>;
 };
 
@@ -215,17 +215,24 @@ export async function registerAgentRunQueue(
   await boss.work(AGENT_RUN_SWEEP_QUEUE, { batchSize: 1 }, async () => {
     const ids = await deps.listSweepRunIds();
     if (ids.progressing.length === 0 && ids.parked.length === 0) return;
-    await boss.insert(
-      AGENT_RUN_ADVANCE_QUEUE,
-      [
-        ...ids.progressing.map((id) => ({ id, priority: PROGRESSING_RUN_PRIORITY })),
-        ...ids.parked.map((id) => ({ id, priority: PARKED_RUN_PRIORITY })),
-      ].map(({ id, priority }) => ({
-        data: { agentRunId: id } satisfies AgentRunJobData,
-        singletonKey: id,
-        priority,
-      })),
+    await Promise.all(
+      ids.progressing.map((id) =>
+        boss.upsert(AGENT_RUN_ADVANCE_QUEUE, { agentRunId: id } satisfies AgentRunJobData, {
+          singletonKey: id,
+          priority: PROGRESSING_RUN_PRIORITY,
+        }),
+      ),
     );
+    if (ids.parked.length > 0) {
+      await boss.insert(
+        AGENT_RUN_ADVANCE_QUEUE,
+        ids.parked.map((id) => ({
+          data: { agentRunId: id } satisfies AgentRunJobData,
+          singletonKey: id,
+          priority: PARKED_RUN_PRIORITY,
+        })),
+      );
+    }
   });
   await boss.schedule(AGENT_RUN_SWEEP_QUEUE, SWEEP_SCHEDULE);
 
@@ -327,12 +334,12 @@ async function advanceWithTimeout(
 // failures are logged and swallowed: the sweep re-enqueues within a minute,
 // so an enqueue must never break the caller's transaction commit path.
 export function createAgentRunJobSender(
-  boss: Pick<AgentRunQueueBoss, "send">,
+  boss: Pick<AgentRunQueueBoss, "upsert">,
   logger: LoggerLike = defaultLogger,
 ): (agentRunId: string) => Promise<void> {
   return async (agentRunId) => {
     try {
-      await boss.send(AGENT_RUN_ADVANCE_QUEUE, { agentRunId } satisfies AgentRunJobData, {
+      await boss.upsert(AGENT_RUN_ADVANCE_QUEUE, { agentRunId } satisfies AgentRunJobData, {
         singletonKey: agentRunId,
         priority: PROGRESSING_RUN_PRIORITY,
       });
