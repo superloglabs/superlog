@@ -12,12 +12,13 @@
 //     Jobs in a fetch batch run concurrently, so wall-clock throughput no
 //     longer depends on how many other runs exist.
 //   - `agent-run-sweep` fires every minute and blind-enqueues every run in an
-//     active state; the singleton key collapses duplicates. The sweep is both
-//     the pickup for inbound events recorded outside this process (human
-//     replies land as unprocessed incident_events rows) and the safety net
-//     for lost jobs. Run creation additionally enqueues directly (see
-//     enqueue.ts) so new investigations start in seconds, not at the next
-//     sweep.
+//     active state; the singleton key collapses duplicates. Progressing runs
+//     are higher priority than parked runs so hundreds of sessions awaiting a
+//     human or external event cannot delay live model/tool turns. The sweep is
+//     both the pickup for inbound events recorded outside this process (human
+//     replies land as unprocessed incident_events rows) and the safety net for
+//     lost jobs. Run creation additionally enqueues directly (see enqueue.ts)
+//     so new investigations start in seconds, not at the next sweep.
 //
 // Failure semantics match the old tick: a job's error is logged and swallowed
 // (the handlers are not written to be safely re-runnable, so pg-boss retries
@@ -50,6 +51,48 @@ const MAX_CONCURRENCY = 50;
 // re-enqueues the run.
 const DEFAULT_JOB_TIMEOUT_MS = 90_000;
 const JOB_EXPIRY_GRACE_SECONDS = 30;
+const PROGRESSING_RUN_PRIORITY = 1;
+const PARKED_RUN_PRIORITY = 0;
+
+export type AgentRunSweepIds = {
+  progressing: string[];
+  parked: string[];
+};
+
+export type AgentRunSweepCandidate = {
+  id: string;
+  state: string;
+  hasPendingInput: boolean;
+  hasPendingOwnedSessionTermination: boolean;
+};
+
+export function groupAgentRunSweepIds(
+  candidates: AgentRunSweepCandidate[],
+  promotedIds: string[] = [],
+): AgentRunSweepIds {
+  const promoted = new Set(promotedIds);
+  const seen = new Set<string>();
+  const progressing: string[] = [];
+  const parked: string[] = [];
+  for (const candidate of candidates) {
+    seen.add(candidate.id);
+    const isParked = candidate.state === "awaiting_human" || candidate.state === "awaiting_events";
+    if (
+      !isParked ||
+      candidate.hasPendingInput ||
+      candidate.hasPendingOwnedSessionTermination ||
+      promoted.has(candidate.id)
+    ) {
+      progressing.push(candidate.id);
+    } else {
+      parked.push(candidate.id);
+    }
+  }
+  for (const id of promoted) {
+    if (!seen.has(id)) progressing.push(id);
+  }
+  return { progressing, parked };
+}
 
 export type AgentRunQueueBoss = {
   createQueue(name: string, options?: unknown): Promise<unknown>;
@@ -59,8 +102,8 @@ export type AgentRunQueueBoss = {
     options: { batchSize: number; localConcurrency?: number },
     handler: (jobs: Array<{ id: string; data: unknown }>) => Promise<unknown>,
   ): Promise<unknown>;
-  send(name: string, data: object, options?: object): Promise<unknown>;
   insert(name: string, jobs: object[]): Promise<unknown>;
+  upsert(name: string, data: object, options?: object): Promise<unknown>;
   schedule(name: string, cron: string, data?: unknown, options?: unknown): Promise<unknown>;
 };
 
@@ -73,7 +116,7 @@ export type AgentRunQueueDeps = {
   // progress, so failing it is the only way it leaves the active set.
   failContextUnavailable(run: schema.AgentRun): Promise<void>;
   hasDetachedSessionTermination(agentRunId: string): Promise<boolean>;
-  listActiveRunIds(): Promise<string[]>;
+  listSweepRunIds(): Promise<AgentRunSweepIds>;
   handlers: {
     terminateSession(run: schema.AgentRun): Promise<void>;
     reconcileHandoff(ctx: AgentRunContext): Promise<void>;
@@ -176,12 +219,26 @@ export async function registerAgentRunQueue(
   await boss.createQueue(AGENT_RUN_SWEEP_QUEUE, { policy: "exclusive" });
 
   await boss.work(AGENT_RUN_SWEEP_QUEUE, { batchSize: 1 }, async () => {
-    const ids = await deps.listActiveRunIds();
-    if (ids.length === 0) return;
-    await boss.insert(
-      AGENT_RUN_ADVANCE_QUEUE,
-      ids.map((id) => ({ data: { agentRunId: id } satisfies AgentRunJobData, singletonKey: id })),
+    const ids = await deps.listSweepRunIds();
+    if (ids.progressing.length === 0 && ids.parked.length === 0) return;
+    await Promise.all(
+      ids.progressing.map((id) =>
+        boss.upsert(AGENT_RUN_ADVANCE_QUEUE, { agentRunId: id } satisfies AgentRunJobData, {
+          singletonKey: id,
+          priority: PROGRESSING_RUN_PRIORITY,
+        }),
+      ),
     );
+    if (ids.parked.length > 0) {
+      await boss.insert(
+        AGENT_RUN_ADVANCE_QUEUE,
+        ids.parked.map((id) => ({
+          data: { agentRunId: id } satisfies AgentRunJobData,
+          singletonKey: id,
+          priority: PARKED_RUN_PRIORITY,
+        })),
+      );
+    }
   });
   await boss.schedule(AGENT_RUN_SWEEP_QUEUE, SWEEP_SCHEDULE);
 
@@ -283,13 +340,14 @@ async function advanceWithTimeout(
 // failures are logged and swallowed: the sweep re-enqueues within a minute,
 // so an enqueue must never break the caller's transaction commit path.
 export function createAgentRunJobSender(
-  boss: Pick<AgentRunQueueBoss, "send">,
+  boss: Pick<AgentRunQueueBoss, "upsert">,
   logger: LoggerLike = defaultLogger,
 ): (agentRunId: string) => Promise<void> {
   return async (agentRunId) => {
     try {
-      await boss.send(AGENT_RUN_ADVANCE_QUEUE, { agentRunId } satisfies AgentRunJobData, {
+      await boss.upsert(AGENT_RUN_ADVANCE_QUEUE, { agentRunId } satisfies AgentRunJobData, {
         singletonKey: agentRunId,
+        priority: PROGRESSING_RUN_PRIORITY,
       });
     } catch (err) {
       logger.warn(

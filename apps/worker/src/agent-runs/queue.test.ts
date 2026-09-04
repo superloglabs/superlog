@@ -7,16 +7,17 @@ import {
   type AgentRunQueueBoss,
   type AgentRunQueueDeps,
   createAgentRunJobSender,
+  groupAgentRunSweepIds,
   registerAgentRunQueue,
 } from "./queue.js";
 
-type SentJob = { name: string; data: unknown; options: unknown };
+type UpsertedJob = { name: string; data: unknown; options: unknown };
 type InsertedJob = { name: string; jobs: Array<Record<string, unknown>> };
 type WorkHandler = (jobs: Array<{ id: string; data: unknown }>) => Promise<unknown>;
 type WorkOptions = { batchSize: number; localConcurrency?: number };
 
 function fakeBoss() {
-  const sent: SentJob[] = [];
+  const upserted: UpsertedJob[] = [];
   const inserted: InsertedJob[] = [];
   const queues: Array<{ name: string; options: unknown }> = [];
   const queueUpdates: Array<{ name: string; options: unknown }> = [];
@@ -38,20 +39,30 @@ function fakeBoss() {
       workers.set(name, handler as WorkHandler);
       workOptions.set(name, options as WorkOptions);
     },
-    async send(name, data, options) {
-      sent.push({ name, data, options });
-      return "job-id";
-    },
     async insert(name, jobs) {
       inserted.push({ name, jobs: jobs as Array<Record<string, unknown>> });
       return [];
+    },
+    async upsert(name, data, options) {
+      upserted.push({ name, data, options });
+      return { jobs: [], updated: 0, inserted: 1 };
     },
     async schedule(name, cron) {
       ops.push(`schedule:${name}`);
       schedules.push({ name, cron });
     },
   };
-  return { boss, sent, inserted, queues, queueUpdates, schedules, workers, workOptions, ops };
+  return {
+    boss,
+    upserted,
+    inserted,
+    queues,
+    queueUpdates,
+    schedules,
+    workers,
+    workOptions,
+    ops,
+  };
 }
 
 function runOf(id: string, state: string): schema.AgentRun {
@@ -82,7 +93,7 @@ function makeDeps(overrides: DepsOverrides = {}) {
         calls.push("fail_context_unavailable");
       }),
     hasDetachedSessionTermination: overrides.hasDetachedSessionTermination ?? (async () => false),
-    listActiveRunIds: overrides.listActiveRunIds ?? (async () => []),
+    listSweepRunIds: overrides.listSweepRunIds ?? (async () => ({ progressing: [], parked: [] })),
     handlers: {
       terminateSession: overrides.handlers?.terminateSession ?? handler("terminate_session"),
       reconcileHandoff: overrides.handlers?.reconcileHandoff ?? handler("reconcile_handoff"),
@@ -343,9 +354,14 @@ test("a run with an abandoned in-flight attempt is not advanced concurrently", a
   assert.equal(startCalls, 2, "a settled run must be advanceable again");
 });
 
-test("sweep enqueues one deduped advance job per active run", async () => {
+test("sweep prioritizes progressing runs ahead of parked runs", async () => {
   const fb = fakeBoss();
-  const { deps } = makeDeps({ listActiveRunIds: async () => ["run-1", "run-2"] });
+  const { deps } = makeDeps({
+    listSweepRunIds: async () => ({
+      progressing: ["running-run", "queued-run"],
+      parked: ["awaiting-human-run", "awaiting-events-run"],
+    }),
+  });
   await registerAgentRunQueue(fb.boss, deps);
   const sweep = fb.workers.get(AGENT_RUN_SWEEP_QUEUE);
   assert.ok(sweep);
@@ -354,29 +370,100 @@ test("sweep enqueues one deduped advance job per active run", async () => {
 
   assert.equal(fb.inserted.length, 1);
   assert.equal(fb.inserted[0]?.name, AGENT_RUN_ADVANCE_QUEUE);
+  assert.deepEqual(fb.upserted, [
+    {
+      name: AGENT_RUN_ADVANCE_QUEUE,
+      data: { agentRunId: "running-run" },
+      options: { singletonKey: "running-run", priority: 1 },
+    },
+    {
+      name: AGENT_RUN_ADVANCE_QUEUE,
+      data: { agentRunId: "queued-run" },
+      options: { singletonKey: "queued-run", priority: 1 },
+    },
+  ]);
   assert.deepEqual(fb.inserted[0]?.jobs, [
-    { data: { agentRunId: "run-1" }, singletonKey: "run-1" },
-    { data: { agentRunId: "run-2" }, singletonKey: "run-2" },
+    {
+      data: { agentRunId: "awaiting-human-run" },
+      singletonKey: "awaiting-human-run",
+      priority: 0,
+    },
+    {
+      data: { agentRunId: "awaiting-events-run" },
+      singletonKey: "awaiting-events-run",
+      priority: 0,
+    },
   ]);
 });
 
-test("the job sender enqueues with a per-run singleton key and never throws", async () => {
+test("pending input promotes a parked run into the progressing lane", () => {
+  assert.deepEqual(
+    groupAgentRunSweepIds([
+      {
+        id: "waiting",
+        state: "awaiting_human",
+        hasPendingInput: false,
+        hasPendingOwnedSessionTermination: false,
+      },
+      {
+        id: "reply-ready",
+        state: "awaiting_human",
+        hasPendingInput: true,
+        hasPendingOwnedSessionTermination: false,
+      },
+      {
+        id: "review-ready",
+        state: "awaiting_events",
+        hasPendingInput: true,
+        hasPendingOwnedSessionTermination: false,
+      },
+      {
+        id: "running",
+        state: "running",
+        hasPendingInput: false,
+        hasPendingOwnedSessionTermination: false,
+      },
+    ]),
+    {
+      progressing: ["reply-ready", "review-ready", "running"],
+      parked: ["waiting"],
+    },
+  );
+});
+
+test("pending owned-session termination promotes a parked run into the progressing lane", () => {
+  const candidates = [
+    {
+      id: "termination-ready",
+      state: "awaiting_events",
+      hasPendingInput: false,
+      hasPendingOwnedSessionTermination: true,
+    },
+  ];
+
+  assert.deepEqual(groupAgentRunSweepIds(candidates), {
+    progressing: ["termination-ready"],
+    parked: [],
+  });
+});
+
+test("the job sender promotes a queued job with a per-run singleton key and never throws", async () => {
   const fb = fakeBoss();
   const send = createAgentRunJobSender(fb.boss, { warn: () => {}, error: () => {} });
 
   await send("run-1");
-  assert.deepEqual(fb.sent, [
+  assert.deepEqual(fb.upserted, [
     {
       name: AGENT_RUN_ADVANCE_QUEUE,
       data: { agentRunId: "run-1" },
-      options: { singletonKey: "run-1" },
+      options: { singletonKey: "run-1", priority: 1 },
     },
   ]);
 
   const failing = createAgentRunJobSender(
     {
       ...fb.boss,
-      async send() {
+      async upsert() {
         throw new Error("pg-boss unavailable");
       },
     },

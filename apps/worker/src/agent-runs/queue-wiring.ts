@@ -1,13 +1,18 @@
 // Production wiring for the agent-run queue: binds queue.ts (pure, tested
 // against fakes) to the real database, context loader, and state handlers.
-import { db, schema } from "@superlog/db";
-import { and, asc, eq, inArray, isNotNull, or } from "drizzle-orm";
+import { INBOUND_INTERACTION_EVENT_KINDS, db, schema } from "@superlog/db";
+import { and, asc, eq, exists, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { loadAgentRunContext } from "../agent-run-context.js";
 import { ACTIVE_STATES, createAgentRunLifecycle } from "../agent-run.js";
 import { setAgentRunJobDispatch } from "./enqueue.js";
 import { listPendingLinearHandoffRunIds, reconcilePendingLinearHandoff } from "./linear-handoff.js";
 import { retryQueuedPullRequestDelivery } from "./pr-delivery.js";
-import { type AgentRunQueueBoss, createAgentRunJobSender, registerAgentRunQueue } from "./queue.js";
+import {
+  type AgentRunQueueBoss,
+  createAgentRunJobSender,
+  groupAgentRunSweepIds,
+  registerAgentRunQueue,
+} from "./queue.js";
 import { resumeAgentRunFromHumanInput } from "./resume.js";
 import {
   hasPendingDetachedAgentRunSession,
@@ -42,10 +47,35 @@ export async function startAgentRunQueue(boss: AgentRunQueueBoss): Promise<void>
       });
     },
     hasDetachedSessionTermination: hasPendingDetachedAgentRunSession,
-    listActiveRunIds: async () => {
+    listSweepRunIds: async () => {
+      const hasPendingInput = exists(
+        db
+          .select({ one: sql`1` })
+          .from(schema.incidentEvents)
+          .where(
+            and(
+              eq(schema.incidentEvents.agentRunId, schema.agentRuns.id),
+              isNull(schema.incidentEvents.processedAt),
+              or(
+                inArray(schema.incidentEvents.kind, [...INBOUND_INTERACTION_EVENT_KINDS]),
+                and(
+                  eq(schema.incidentEvents.kind, "incident_context_changed"),
+                  eq(schema.agentRuns.state, "awaiting_events"),
+                  sql`${schema.agentRuns.result}->>'waitReason' = 'external_cause'`,
+                ),
+              ),
+            ),
+          ),
+      );
       const [rows, pendingHandoffs, pendingDetachedSessions] = await Promise.all([
         db
-          .select({ id: schema.agentRuns.id })
+          .select({
+            id: schema.agentRuns.id,
+            state: schema.agentRuns.state,
+            hasPendingInput,
+            providerSessionId: schema.agentRuns.providerSessionId,
+            providerSessionStatus: schema.agentRuns.providerSessionStatus,
+          })
           .from(schema.agentRuns)
           .where(
             or(
@@ -60,9 +90,15 @@ export async function startAgentRunQueue(boss: AgentRunQueueBoss): Promise<void>
         listPendingLinearHandoffRunIds(),
         listPendingDetachedAgentRunIds(),
       ]);
-      return [
-        ...new Set([...rows.map((row) => row.id), ...pendingHandoffs, ...pendingDetachedSessions]),
-      ];
+      return groupAgentRunSweepIds(
+        rows.map((row) => ({
+          ...row,
+          hasPendingInput: row.hasPendingInput === true,
+          hasPendingOwnedSessionTermination:
+            row.providerSessionStatus === "termination_pending" && row.providerSessionId !== null,
+        })),
+        [...pendingHandoffs, ...pendingDetachedSessions],
+      );
     },
     handlers: {
       terminateSession: async (agentRun) => {
