@@ -54,6 +54,11 @@ function input(projectId: string, body: Buffer = Buffer.from(`body-${projectId}`
 class FakeSendSqs {
   batchEntries: Array<Array<{ Id: string; MessageBody: string }>> = [];
   failBodiesContaining: string | null = null;
+  /** When true, failed entries use SenderFault=true (permanent); default is false (transient). */
+  senderFault = false;
+  /** Cap the number of SQS calls that return failures; after this many, matching entries succeed. */
+  maxFailingCalls = Infinity;
+  private failingCallCount = 0;
 
   // biome-ignore lint/suspicious/noExplicitAny: minimal AWS client test double
   async send(cmd: any): Promise<unknown> {
@@ -62,14 +67,16 @@ class FakeSendSqs {
       const entries = cmd.input.Entries as Array<{ Id: string; MessageBody: string }>;
       this.batchEntries.push(entries);
       const marker = this.failBodiesContaining;
-      const failed = marker ? entries.filter((e) => e.MessageBody.includes(marker)) : [];
+      const shouldFail = marker !== null && this.failingCallCount < this.maxFailingCalls;
+      if (shouldFail) this.failingCallCount++;
+      const failed = shouldFail ? entries.filter((e) => e.MessageBody.includes(marker!)) : [];
       return {
         Successful: entries.filter((e) => !failed.includes(e)).map((e) => ({ Id: e.Id })),
         Failed: failed.map((e) => ({
           Id: e.Id,
-          Code: "InternalError",
+          Code: this.senderFault ? "InvalidParameterValue" : "InternalError",
           Message: "simulated entry failure",
-          SenderFault: false,
+          SenderFault: this.senderFault,
         })),
       };
     }
@@ -170,6 +177,28 @@ test("rejects only the entries SQS reports as failed", async () => {
 
   assert.equal(await ok, "inline");
   await assert.rejects(doomed, /simulated entry failure/);
+});
+
+test("retries transient (SenderFault=false) batch-entry failures and resolves when retry succeeds", async () => {
+  const { queue, sqs } = buildQueue();
+  sqs.failBodiesContaining = "p-retry";
+  sqs.maxFailingCalls = 1; // fail once, succeed on retry
+
+  const result = await queue.enqueue(input("p-retry"));
+
+  assert.equal(result, "inline");
+  // Initial call + 1 retry = 2 SQS batch calls
+  assert.equal(sqs.batchEntries.length, 2, "must retry the transient failure once");
+});
+
+test("rejects sender-fault=true (permanent) batch-entry failures without retrying", async () => {
+  const { queue, sqs } = buildQueue();
+  sqs.failBodiesContaining = "p-perm";
+  sqs.senderFault = true;
+
+  await assert.rejects(queue.enqueue(input("p-perm")), /simulated entry failure/);
+
+  assert.equal(sqs.batchEntries.length, 1, "permanent failure must not be retried");
 });
 
 test("cleans up the uploaded S3 object when its batched send fails", async () => {
