@@ -623,31 +623,52 @@ export class IngestQueue {
   }
 
   private async sendBatchChunk(chunk: PendingSend[]): Promise<void> {
-    try {
-      const result = await this.sqs.send(
-        new SendMessageBatchCommand({
-          QueueUrl: this.config.queueUrl,
-          Entries: chunk.map((entry, index) => ({
-            Id: String(index),
-            MessageBody: entry.messageBody,
-          })),
-        }),
-      );
-      const failed = new Map((result.Failed ?? []).map((failure) => [failure.Id, failure]));
-      chunk.forEach((entry, index) => {
-        const failure = failed.get(String(index));
-        if (failure) {
-          entry.reject(
-            new Error(
-              `SQS batch entry failed: ${failure.Code ?? "unknown"}: ${failure.Message ?? "no message"}`,
-            ),
-          );
-        } else {
-          entry.resolve();
-        }
-      });
-    } catch (err) {
-      for (const entry of chunk) entry.reject(err);
+    // SQS SendMessageBatch returns HTTP 200 with per-entry failures in the Failed
+    // array. AWS sets SenderFault=false for transient AWS-side errors (e.g.
+    // InternalError) that the SDK does not automatically retry because the overall
+    // response was successful. Retry those entries with brief backoff before
+    // surfacing the failure to the caller. SenderFault=true entries are permanent
+    // (e.g. InvalidParameterValue) and are rejected immediately.
+    const MAX_ATTEMPTS = 3;
+    let remaining = chunk;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const result = await this.sqs.send(
+          new SendMessageBatchCommand({
+            QueueUrl: this.config.queueUrl,
+            Entries: remaining.map((entry, index) => ({
+              Id: String(index),
+              MessageBody: entry.messageBody,
+            })),
+          }),
+        );
+        const failed = new Map((result.Failed ?? []).map((failure) => [failure.Id, failure]));
+
+        const transient: PendingSend[] = [];
+        remaining.forEach((entry, index) => {
+          const failure = failed.get(String(index));
+          if (!failure) {
+            entry.resolve();
+          } else if (!failure.SenderFault && attempt < MAX_ATTEMPTS) {
+            // Transient AWS-side error — eligible for retry.
+            transient.push(entry);
+          } else {
+            entry.reject(
+              new Error(
+                `SQS batch entry failed: ${failure.Code ?? "unknown"}: ${failure.Message ?? "no message"}`,
+              ),
+            );
+          }
+        });
+
+        if (transient.length === 0) return;
+        remaining = transient;
+        await sleep(50 * attempt);
+      } catch (err) {
+        for (const entry of remaining) entry.reject(err);
+        return;
+      }
     }
   }
 
