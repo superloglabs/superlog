@@ -1391,12 +1391,14 @@ async function requireProjectAccess(
         where: eq(schema.projects.id, projectId),
       });
       if (!project) throw new HTTPException(404, { message: "project not found" });
-      const ctx = await resolveActiveOrgContext({
-        userId: c.var.userId,
-        preferredOrgId: c.var.orgId,
+      const membership = await db.query.orgMembers.findFirst({
+        where: and(
+          eq(schema.orgMembers.userId, c.var.userId),
+          eq(schema.orgMembers.orgId, project.orgId),
+        ),
       });
-      if (project.orgId !== ctx.org.id) throw new HTTPException(403, { message: "forbidden" });
-      span.setAttribute("superlog.org_id", ctx.org.id);
+      if (!membership) throw new HTTPException(403, { message: "forbidden" });
+      span.setAttribute("superlog.org_id", project.orgId);
       // Reuse the demoOverlay middleware's decision when present (it runs on all
       // /api/projects/:projectId/* routes); fall back to computing it directly.
       const readProjectId =
