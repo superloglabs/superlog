@@ -17,7 +17,11 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { createIngestEntitlementGate, signalForPath } from "./billing/ingest-entitlement.js";
-import { EmptyBodyError, PayloadTooLargeError } from "./body-capture.js";
+import {
+  EmptyBodyError,
+  PayloadTooLargeError,
+  assertBodyWithinLimit,
+} from "./body-capture.js";
 import { ClickHouseIngestWriter, getIngestClickHouseConfig } from "./clickhouse-writer.js";
 import { EMPTY_BODY_ERROR_MESSAGE, isDeclaredEmptyBody } from "./empty-body-guard.js";
 import {
@@ -796,6 +800,7 @@ async function forward(
               },
             });
           }
+          assertBodyWithinLimit(transformed.body, MAX_BODY_BYTES);
           prebufferedBody = transformed.body;
           contentType = transformed.contentType;
           contentEncoding = transformed.contentEncoding;

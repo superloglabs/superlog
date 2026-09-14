@@ -58,6 +58,15 @@ export class EmptyBodyError extends Error {
   }
 }
 
+/** Enforce the same hard ceiling after a body transformation. Transforms such
+ * as protobuf-to-JSON can produce more bytes than either their wire input or
+ * bounded decoded representation, so their output must re-enter admission. */
+export function assertBodyWithinLimit(body: Uint8Array, maxBytes: number): void {
+  if (body.byteLength > maxBytes) {
+    throw new PayloadTooLargeError(maxBytes, body.byteLength);
+  }
+}
+
 export async function captureBody(
   source: AsyncIterable<Uint8Array>,
   opts: CaptureOptions,

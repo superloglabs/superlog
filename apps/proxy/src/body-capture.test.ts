@@ -4,6 +4,7 @@ import {
   EmptyBodyError,
   PayloadTooLargeError,
   type SpillSink,
+  assertBodyWithinLimit,
   captureBody,
 } from "./body-capture.js";
 
@@ -103,6 +104,18 @@ test("accepts a body exactly at maxBytes", async () => {
   });
   assert.equal(result.storage, "buffer");
   assert.equal(result.totalBytes, 8);
+});
+
+test("rejects a transformed body that grows beyond maxBytes", () => {
+  assert.throws(
+    () => assertBodyWithinLimit(Buffer.alloc(9), 8),
+    (err: unknown) => {
+      assert.ok(err instanceof PayloadTooLargeError);
+      assert.equal(err.limitBytes, 8);
+      assert.equal(err.observedBytes, 9);
+      return true;
+    },
+  );
 });
 
 test("aborts the sink when finish() fails, so a failed spill leaves nothing dangling", async () => {
