@@ -335,14 +335,12 @@ export async function eraseLegacyPlaintextCredentials(database: DB = defaultDb):
   // Account tokens remain non-null because their framework-native ciphertext
   // intentionally occupies the existing columns. Connector values can only be
   // cleared after every one has a complete encrypted envelope.
-  const connectorPlaintext =
-    report.byStore.linear + report.byStore.notion + report.byStore.slack + report.byStore.webhooks;
   const connectorUnprotected =
     report.unprotectedByStore.linear +
     report.unprotectedByStore.notion +
     report.unprotectedByStore.slack +
     report.unprotectedByStore.webhooks;
-  if (connectorPlaintext > 0 && connectorUnprotected > 0) {
+  if (connectorUnprotected > 0) {
     throw new Error(`refusing to erase ${connectorUnprotected} unprotected credential value(s)`);
   }
 

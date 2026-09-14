@@ -4,6 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { symmetricDecrypt } from "better-auth/crypto";
@@ -103,6 +104,27 @@ test("backfills every recoverable plaintext credential before erasing legacy val
       /until CREDENTIAL_STORAGE_MODE="encrypted-only" is deployed/,
     );
     process.env.CREDENTIAL_STORAGE_MODE = "encrypted-only";
+    await eraseLegacyPlaintextCredentials(db);
+
+    const [brokenSlack] = await db
+      .insert(schema.slackInstallations)
+      .values({
+        projectId: project.id,
+        teamId: "broken-team",
+        botAccessToken: null,
+      })
+      .returning();
+    assert.ok(brokenSlack);
+    await assert.rejects(
+      eraseLegacyPlaintextCredentials(db),
+      /refusing to erase 1 unprotected credential value/,
+    );
+    await db
+      .update(schema.slackInstallations)
+      .set({ revokedAt: new Date() })
+      .where(eq(schema.slackInstallations.id, brokenSlack.id));
+    await backfillCredentialStorage(db);
+
     await eraseLegacyPlaintextCredentials(db);
     assert.equal((await inspectCredentialStorage(db)).plaintextValues, 0);
 
