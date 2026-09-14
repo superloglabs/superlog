@@ -1,5 +1,11 @@
 # Contributing to Superlog
 
+<p align="center">
+  <a href="./CONTRIBUTING.md">English</a>
+  ·
+  <a href="./CONTRIBUTING.zh-CN.md">中文</a>
+</p>
+
 Thanks for contributing. Superlog is built by a small team, and good contributions get reviewed and merged in hours — your help genuinely shapes the product.
 
 > **First time contributing to open source?** Take a look at [firstcontributions/first-contributions](https://github.com/firstcontributions/first-contributions) for a 5-minute walkthrough of the fork → branch → PR flow. The mechanics are the same here.

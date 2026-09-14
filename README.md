@@ -1,6 +1,4 @@
 
-
-
 <a href="https://superlog.sh">
   <img width="1200" height="675" alt="Twitter post - 2" src="https://github.com/user-attachments/assets/c6ac3418-8e2f-4f8b-b25c-d75b3a094036" />
 
@@ -31,6 +29,12 @@
   <a href="https://github.com/superloglabs/otel-helpers">Helpers</a>
   ·
   <a href="https://discord.gg/wJ56aRh8hx">Discord</a>
+</p>
+
+<p align="center">
+  <a href="./README.md">English</a>
+  ·
+  <a href="./README.zh-CN.md">中文</a>
 </p>
 
 ## About
