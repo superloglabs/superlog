@@ -8,6 +8,7 @@ process.env.BETTER_AUTH_SECRET ??= "test-better-auth-secret-with-enough-length";
 process.env.GITHUB_APP_SLUG = "superlog-test";
 process.env.SLACK_CLIENT_ID = "slack-client";
 process.env.SLACK_CLIENT_SECRET = "slack-secret";
+process.env.AGENT_SECRETS_KEY = Buffer.alloc(32, 1).toString("base64");
 process.env.STATE_SIGNING_SECRET = "state-secret";
 process.env.WEB_ORIGIN = "https://app.example.test";
 

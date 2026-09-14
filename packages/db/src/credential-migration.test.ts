@@ -21,8 +21,12 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS = path.resolve(HERE, "../migrations");
 process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
 
-const { backfillCredentialStorage, eraseLegacyPlaintextCredentials, inspectCredentialStorage } =
-  await import("./credential-migration.js");
+const {
+  backfillCredentialStorage,
+  eraseLegacyPlaintextCredentials,
+  inspectCredentialStorage,
+  parseCredentialMigrationOperation,
+} = await import("./credential-migration.js");
 const { findActiveLinearInstallationByWebhookId } = await import("./linear.js");
 
 test("backfills every recoverable plaintext credential before erasing legacy values", async () => {
@@ -105,6 +109,16 @@ test("backfills every recoverable plaintext credential before erasing legacy val
       /until CREDENTIAL_STORAGE_MODE="encrypted-only" is deployed/,
     );
     process.env.CREDENTIAL_STORAGE_MODE = "encrypted-only";
+
+    await db
+      .update(schema.accounts)
+      .set({ accessToken: "late-plaintext-token", updatedAt: new Date() })
+      .where(eq(schema.accounts.id, account.id));
+    await assert.rejects(
+      eraseLegacyPlaintextCredentials(db),
+      /refusing to erase 1 unprotected credential value/,
+    );
+    await backfillCredentialStorage(db);
     await eraseLegacyPlaintextCredentials(db);
 
     const [brokenSlack] = await db
@@ -155,6 +169,20 @@ test("backfills every recoverable plaintext credential before erasing legacy val
     restoreEnv("BETTER_AUTH_SECRET", originalAuthSecret);
     restoreEnv("CREDENTIAL_STORAGE_MODE", originalMode);
   }
+});
+
+test("credential migration operations accept documented names and reject ambiguity", () => {
+  assert.equal(parseCredentialMigrationOperation([]), "inspect");
+  assert.equal(parseCredentialMigrationOperation(["inspect"]), "inspect");
+  assert.equal(parseCredentialMigrationOperation(["backfill"]), "backfill");
+  assert.equal(parseCredentialMigrationOperation(["--backfill"]), "backfill");
+  assert.equal(parseCredentialMigrationOperation(["erase-plaintext"]), "erase-plaintext");
+  assert.equal(parseCredentialMigrationOperation(["--erase-plaintext"]), "erase-plaintext");
+  assert.throws(() => parseCredentialMigrationOperation(["unknown"]), /unknown operation/);
+  assert.throws(
+    () => parseCredentialMigrationOperation(["backfill", "erase-plaintext"]),
+    /exactly one operation/,
+  );
 });
 
 function restoreEnv(name: string, value: string | undefined): void {

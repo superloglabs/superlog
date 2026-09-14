@@ -24,6 +24,19 @@ export type CredentialMigrationReport = {
   unprotectedByStore: Record<"accounts" | "linear" | "notion" | "slack" | "webhooks", number>;
 };
 
+export type CredentialMigrationOperation = "inspect" | "backfill" | "erase-plaintext";
+
+export function parseCredentialMigrationOperation(args: string[]): CredentialMigrationOperation {
+  if (args.length > 1) throw new Error("expected exactly one operation");
+  const operation = args[0] ?? "inspect";
+  if (operation === "inspect") return "inspect";
+  if (operation === "backfill" || operation === "--backfill") return "backfill";
+  if (operation === "erase-plaintext" || operation === "--erase-plaintext") {
+    return "erase-plaintext";
+  }
+  throw new Error(`unknown operation: ${operation}`);
+}
+
 function complete(ciphertext: Buffer | null, nonce: Buffer | null, keyVersion: number | null) {
   return ciphertext !== null && nonce !== null && keyVersion !== null;
 }
@@ -333,15 +346,11 @@ export async function eraseLegacyPlaintextCredentials(database: DB = defaultDb):
   }
   const report = await inspectCredentialStorage(database);
   // Account tokens remain non-null because their framework-native ciphertext
-  // intentionally occupies the existing columns. Connector values can only be
-  // cleared after every one has a complete encrypted envelope.
-  const connectorUnprotected =
-    report.unprotectedByStore.linear +
-    report.unprotectedByStore.notion +
-    report.unprotectedByStore.slack +
-    report.unprotectedByStore.webhooks;
-  if (connectorUnprotected > 0) {
-    throw new Error(`refusing to erase ${connectorUnprotected} unprotected credential value(s)`);
+  // intentionally occupies the existing columns. Refuse connector plaintext
+  // erasure until both those native values and every connector envelope are
+  // protected, including writes that raced the mode rollout.
+  if (report.unprotectedValues > 0) {
+    throw new Error(`refusing to erase ${report.unprotectedValues} unprotected credential value(s)`);
   }
 
   await database.transaction(async (tx) => {
