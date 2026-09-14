@@ -19,6 +19,39 @@ export type StoredCredential = {
   keyVersion: number | null;
 };
 
+type CompleteStoredCredential = StoredCredential & {
+  ciphertext: Buffer;
+  nonce: Buffer;
+  keyVersion: number;
+};
+
+function completeEncryptedCredential(stored: StoredCredential): stored is CompleteStoredCredential {
+  return stored.ciphertext !== null && stored.nonce !== null && stored.keyVersion !== null;
+}
+
+export function storedCredentialNeedsProtection(
+  stored: StoredCredential,
+  required = false,
+): boolean {
+  const hasAnyValue =
+    required ||
+    stored.plaintext !== null ||
+    stored.ciphertext !== null ||
+    stored.nonce !== null ||
+    stored.keyVersion !== null;
+  if (!hasAnyValue) return false;
+  if (!completeEncryptedCredential(stored)) return true;
+  if (stored.plaintext === null) return false;
+  return (
+    stored.plaintext !==
+    decryptIntegrationSecret({
+      ciphertext: stored.ciphertext,
+      nonce: stored.nonce,
+      keyVersion: stored.keyVersion,
+    })
+  );
+}
+
 export function readStoredCredential(stored: StoredCredential): string {
   const encryptedFieldCount = [stored.ciphertext, stored.nonce, stored.keyVersion].filter(
     (value) => value !== null,
@@ -27,11 +60,15 @@ export function readStoredCredential(stored: StoredCredential): string {
     throw new Error("stored credential encryption fields are incomplete");
   }
   if (stored.ciphertext && stored.nonce && stored.keyVersion !== null) {
-    return decryptIntegrationSecret({
+    const decrypted = decryptIntegrationSecret({
       ciphertext: stored.ciphertext,
       nonce: stored.nonce,
       keyVersion: stored.keyVersion,
     });
+    if (stored.plaintext !== null && stored.plaintext !== decrypted) {
+      throw new Error("stored credential plaintext and encrypted copies do not match");
+    }
+    return decrypted;
   }
   if (stored.plaintext !== null) return stored.plaintext;
   throw new Error("stored credential is unavailable");

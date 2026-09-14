@@ -215,3 +215,18 @@ test("markEvaluated: stamps the cursor so the incident drops out of the next pas
     "just-evaluated incident is excluded by the cooldown",
   );
 });
+
+test("findSlackInstallation: treats a removed Slack connection as unavailable", async () => {
+  const [installation] = await db
+    .insert(schema.slackInstallations)
+    .values({
+      projectId,
+      teamId: "removed-team",
+      botAccessToken: null,
+      revokedAt: NOW,
+    })
+    .returning();
+  assert.ok(installation);
+
+  assert.equal(await repo.findSlackInstallation(installation.id), undefined);
+});

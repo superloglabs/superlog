@@ -198,7 +198,10 @@ export function createAutorecoveryRepository(db: DB) {
 
     async findSlackInstallation(id: string): Promise<schema.SlackInstallation | undefined> {
       const row = await db.query.slackInstallations.findFirst({
-        where: eq(schema.slackInstallations.id, id),
+        where: and(
+          eq(schema.slackInstallations.id, id),
+          isNull(schema.slackInstallations.revokedAt),
+        ),
       });
       return row ? hydrateSlackInstallation(row) : undefined;
     },

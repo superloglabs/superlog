@@ -4,10 +4,10 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
+import { symmetricDecrypt } from "better-auth/crypto";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
-import { symmetricDecrypt } from "better-auth/crypto";
 import type { DB } from "./client.js";
 import {
   hydrateLinearInstallation,
@@ -110,6 +110,27 @@ test("backfills every recoverable plaintext credential before erasing legacy val
     );
     process.env.CREDENTIAL_STORAGE_MODE = "encrypted-only";
 
+    const slackBeforeRotation = await db.query.slackInstallations.findFirst();
+    assert.ok(slackBeforeRotation);
+    await db
+      .update(schema.slackInstallations)
+      .set({ botAccessToken: "rotated-by-old-release", installedAt: new Date() })
+      .where(eq(schema.slackInstallations.id, slackBeforeRotation.id));
+    assert.equal((await inspectCredentialStorage(db)).unprotectedValues, 1);
+    await assert.rejects(
+      eraseLegacyPlaintextCredentials(db),
+      /refusing to erase 1 unprotected credential value/,
+    );
+    await backfillCredentialStorage(db);
+    const slackAfterRotation = await db.query.slackInstallations.findFirst({
+      where: eq(schema.slackInstallations.id, slackBeforeRotation.id),
+    });
+    assert.ok(slackAfterRotation);
+    assert.equal(
+      hydrateSlackInstallation(slackAfterRotation).botAccessToken,
+      "rotated-by-old-release",
+    );
+
     await db
       .update(schema.accounts)
       .set({ accessToken: "late-plaintext-token", updatedAt: new Date() })
@@ -146,10 +167,7 @@ test("backfills every recoverable plaintext credential before erasing legacy val
       revokedAt: new Date(),
     });
     await backfillCredentialStorage(db);
-    assert.equal(
-      await findActiveLinearInstallationByWebhookId("revoked-linear-webhook", db),
-      null,
-    );
+    assert.equal(await findActiveLinearInstallationByWebhookId("revoked-linear-webhook", db), null);
 
     await eraseLegacyPlaintextCredentials(db);
     assert.equal((await inspectCredentialStorage(db)).plaintextValues, 0);
@@ -159,7 +177,7 @@ test("backfills every recoverable plaintext credential before erasing legacy val
     const notion = await db.query.notionInstallations.findFirst();
     const webhook = await db.query.webhookEndpoints.findFirst();
     assert.ok(slack && linear && notion && webhook);
-    assert.equal(hydrateSlackInstallation(slack).botAccessToken, "slack-token");
+    assert.equal(hydrateSlackInstallation(slack).botAccessToken, "rotated-by-old-release");
     assert.equal(hydrateLinearInstallation(linear).refreshToken, "linear-refresh");
     assert.equal(hydrateNotionInstallation(notion).accessToken, "notion-access");
     assert.equal(hydrateWebhookEndpoint(webhook).secret, "webhook-secret");

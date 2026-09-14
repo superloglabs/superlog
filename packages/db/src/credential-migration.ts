@@ -2,17 +2,16 @@ import { and, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { isProtectedBetterAuthToken, protectBetterAuthToken } from "./auth-credential-storage.js";
 import { type DB, db as defaultDb } from "./client.js";
 import {
+  type StoredCredential,
   clearedLinearCredentialFields,
   clearedNotionCredentialFields,
   clearedSlackCredentialFields,
   credentialStorageMode,
-  hydrateLinearInstallation,
-  hydrateNotionInstallation,
-  hydrateSlackInstallation,
-  hydrateWebhookEndpoint,
   linearCredentialFields,
   notionCredentialFields,
+  readStoredCredential,
   slackCredentialFields,
+  storedCredentialNeedsProtection,
   webhookCredentialFields,
 } from "./credential-storage.js";
 import * as schema from "./schema.js";
@@ -37,10 +36,6 @@ export function parseCredentialMigrationOperation(args: string[]): CredentialMig
   throw new Error(`unknown operation: ${operation}`);
 }
 
-function complete(ciphertext: Buffer | null, nonce: Buffer | null, keyVersion: number | null) {
-  return ciphertext !== null && nonce !== null && keyVersion !== null;
-}
-
 function unprotected(
   plaintext: string | null,
   ciphertext: Buffer | null,
@@ -48,9 +43,33 @@ function unprotected(
   keyVersion: number | null,
   required: boolean,
 ): boolean {
-  const hasAnyValue =
-    required || plaintext !== null || ciphertext !== null || nonce !== null || keyVersion !== null;
-  return hasAnyValue && !complete(ciphertext, nonce, keyVersion);
+  return storedCredentialNeedsProtection(
+    storedCredential(plaintext, ciphertext, nonce, keyVersion),
+    required,
+  );
+}
+
+function storedCredential(
+  plaintext: string | null,
+  ciphertext: Buffer | null,
+  nonce: Buffer | null,
+  keyVersion: number | null,
+): StoredCredential {
+  return { plaintext, ciphertext, nonce, keyVersion };
+}
+
+function valueForBackfill(stored: StoredCredential, required: true): string;
+function valueForBackfill(stored: StoredCredential, required: false): string | null;
+function valueForBackfill(stored: StoredCredential, required: boolean): string | null {
+  if (stored.plaintext !== null) return stored.plaintext;
+  if (
+    !required &&
+    stored.ciphertext === null &&
+    stored.nonce === null &&
+    stored.keyVersion === null
+  )
+    return null;
+  return readStoredCredential(stored);
 }
 
 export async function inspectCredentialStorage(
@@ -200,27 +219,36 @@ export async function backfillCredentialStorage(database: DB = defaultDb): Promi
         );
       continue;
     }
-    const missingRequired = !complete(
+    const accessToken = storedCredential(
+      row.accessToken,
       row.accessTokenCiphertext,
       row.accessTokenNonce,
       row.accessTokenKeyVersion,
     );
-    const missingRefresh =
-      row.refreshToken !== null &&
-      !complete(row.refreshTokenCiphertext, row.refreshTokenNonce, row.refreshTokenKeyVersion);
-    const missingWebhook =
-      row.webhookSecret !== null &&
-      !complete(row.webhookSecretCiphertext, row.webhookSecretNonce, row.webhookSecretKeyVersion);
+    const refreshToken = storedCredential(
+      row.refreshToken,
+      row.refreshTokenCiphertext,
+      row.refreshTokenNonce,
+      row.refreshTokenKeyVersion,
+    );
+    const webhookSecret = storedCredential(
+      row.webhookSecret,
+      row.webhookSecretCiphertext,
+      row.webhookSecretNonce,
+      row.webhookSecretKeyVersion,
+    );
+    const missingRequired = storedCredentialNeedsProtection(accessToken, true);
+    const missingRefresh = storedCredentialNeedsProtection(refreshToken);
+    const missingWebhook = storedCredentialNeedsProtection(webhookSecret);
     if (!missingRequired && !missingRefresh && !missingWebhook) continue;
-    const credential = hydrateLinearInstallation(row);
     await database
       .update(schema.linearInstallations)
       .set(
         linearCredentialFields(
           {
-            accessToken: credential.accessToken,
-            refreshToken: credential.refreshToken,
-            webhookSecret: credential.webhookSecret,
+            accessToken: valueForBackfill(accessToken, true),
+            refreshToken: valueForBackfill(refreshToken, false),
+            webhookSecret: valueForBackfill(webhookSecret, false),
           },
           "dual-write",
         ),
@@ -248,12 +276,16 @@ export async function backfillCredentialStorage(database: DB = defaultDb): Promi
         );
       continue;
     }
-    if (complete(row.accessTokenCiphertext, row.accessTokenNonce, row.accessTokenKeyVersion))
-      continue;
-    const credential = hydrateNotionInstallation(row);
+    const accessToken = storedCredential(
+      row.accessToken,
+      row.accessTokenCiphertext,
+      row.accessTokenNonce,
+      row.accessTokenKeyVersion,
+    );
+    if (!storedCredentialNeedsProtection(accessToken, true)) continue;
     await database
       .update(schema.notionInstallations)
-      .set(notionCredentialFields(credential.accessToken, "dual-write"))
+      .set(notionCredentialFields(valueForBackfill(accessToken, true), "dual-write"))
       .where(
         and(
           eq(schema.notionInstallations.id, row.id),
@@ -279,14 +311,16 @@ export async function backfillCredentialStorage(database: DB = defaultDb): Promi
         );
       continue;
     }
-    if (
-      complete(row.botAccessTokenCiphertext, row.botAccessTokenNonce, row.botAccessTokenKeyVersion)
-    )
-      continue;
-    const credential = hydrateSlackInstallation(row);
+    const botAccessToken = storedCredential(
+      row.botAccessToken,
+      row.botAccessTokenCiphertext,
+      row.botAccessTokenNonce,
+      row.botAccessTokenKeyVersion,
+    );
+    if (!storedCredentialNeedsProtection(botAccessToken, true)) continue;
     await database
       .update(schema.slackInstallations)
-      .set(slackCredentialFields(credential.botAccessToken, "dual-write"))
+      .set(slackCredentialFields(valueForBackfill(botAccessToken, true), "dual-write"))
       .where(
         and(
           eq(schema.slackInstallations.id, row.id),
@@ -299,11 +333,16 @@ export async function backfillCredentialStorage(database: DB = defaultDb): Promi
   }
 
   for (const row of webhooks) {
-    if (complete(row.secretCiphertext, row.secretNonce, row.secretKeyVersion)) continue;
-    const credential = hydrateWebhookEndpoint(row);
+    const secret = storedCredential(
+      row.secret,
+      row.secretCiphertext,
+      row.secretNonce,
+      row.secretKeyVersion,
+    );
+    if (!storedCredentialNeedsProtection(secret, true)) continue;
     await database
       .update(schema.webhookEndpoints)
-      .set(webhookCredentialFields(credential.secret, "dual-write"))
+      .set(webhookCredentialFields(valueForBackfill(secret, true), "dual-write"))
       .where(
         and(
           eq(schema.webhookEndpoints.id, row.id),
@@ -350,7 +389,9 @@ export async function eraseLegacyPlaintextCredentials(database: DB = defaultDb):
   // erasure until both those native values and every connector envelope are
   // protected, including writes that raced the mode rollout.
   if (report.unprotectedValues > 0) {
-    throw new Error(`refusing to erase ${report.unprotectedValues} unprotected credential value(s)`);
+    throw new Error(
+      `refusing to erase ${report.unprotectedValues} unprotected credential value(s)`,
+    );
   }
 
   await database.transaction(async (tx) => {

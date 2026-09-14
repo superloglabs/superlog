@@ -22,17 +22,32 @@ after(() => {
   else process.env.AGENT_SECRETS_KEY = originalKey;
 });
 
-test("encrypted credentials take precedence while legacy plaintext remains during rollout", () => {
-  const encrypted = encryptIntegrationSecret("encrypted-value");
+test("matching plaintext and encrypted credentials remain readable during rollout", () => {
+  const encrypted = encryptIntegrationSecret("same-value");
 
   assert.equal(
     readStoredCredential({
-      plaintext: "legacy-value",
+      plaintext: "same-value",
       ciphertext: encrypted.ciphertext,
       nonce: encrypted.nonce,
       keyVersion: encrypted.keyVersion,
     }),
-    "encrypted-value",
+    "same-value",
+  );
+});
+
+test("conflicting plaintext and encrypted credentials are rejected", () => {
+  const encrypted = encryptIntegrationSecret("old-value");
+
+  assert.throws(
+    () =>
+      readStoredCredential({
+        plaintext: "new-value",
+        ciphertext: encrypted.ciphertext,
+        nonce: encrypted.nonce,
+        keyVersion: encrypted.keyVersion,
+      }),
+    /do not match/,
   );
 });
 
@@ -78,10 +93,7 @@ test("credential writes require a valid 32-byte encryption key", () => {
     integrationSecretEncryptionConfigured(Buffer.alloc(31, 1).toString("base64")),
     false,
   );
-  assert.equal(
-    integrationSecretEncryptionConfigured(Buffer.alloc(32, 1).toString("base64")),
-    true,
-  );
+  assert.equal(integrationSecretEncryptionConfigured(Buffer.alloc(32, 1).toString("base64")), true);
 });
 
 test("partial ciphertext never silently falls back to plaintext", () => {
