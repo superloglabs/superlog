@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { gzipSync } from "node:zlib";
 import { IngestQueue, type IngestQueueConfig, getIngestQueueConfig } from "./ingest-queue.js";
 
 const noopLogger = { info: () => {}, warn: () => {}, error: () => {} };
@@ -242,6 +243,19 @@ function inlineMessageBody(projectId: string): string {
   });
 }
 
+function compressedInlineMessageBody(projectId: string, body: Buffer): string {
+  return JSON.stringify({
+    version: 1,
+    kind: "otlp",
+    path: "/v1/logs",
+    projectId,
+    contentType: "application/json",
+    contentEncoding: "gzip",
+    receivedAt: new Date().toISOString(),
+    body: { storage: "inline", base64: body.toString("base64") },
+  });
+}
+
 function s3MessageBody(projectId: string, key: string): string {
   return JSON.stringify({
     version: 1,
@@ -310,6 +324,52 @@ test("poison messages are dropped through the same batched delete", async () => 
   });
 
   assert.deepEqual(sqs.deleteBatches, [["r-1", "r-2"]]);
+});
+
+test("consumer drops compressed payloads that expand beyond the ingest limit", async () => {
+  const compressed = gzipSync(
+    Buffer.from(
+      JSON.stringify({
+        resourceLogs: [
+          {
+            scopeLogs: [{ logRecords: [{ body: { stringValue: "x".repeat(10_000) } }] }],
+          },
+        ],
+      }),
+    ),
+  );
+  const sqs = new FakeConsumerSqs([
+    {
+      MessageId: "m-1",
+      ReceiptHandle: "r-1",
+      Body: compressedInlineMessageBody("p-1", compressed),
+    },
+  ]);
+  let inserts = 0;
+  let collectorRequests = 0;
+  const queue = new IngestQueue(buildConfig({ maxBodyBytes: 512 }), noopLogger, undefined, {
+    insert: async () => {
+      inserts += 1;
+    },
+  });
+  (queue as unknown as { sqs: FakeConsumerSqs }).sqs = sqs;
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    collectorRequests += 1;
+    return new Response(new Uint8Array(0), { status: 200 });
+  }) as typeof fetch;
+  try {
+    queue.startConsumer("http://collector.local");
+    await waitFor(() => sqs.deleteBatches.length === 1);
+    await queue.stop();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(sqs.deleteBatches, [["r-1"]]);
+  assert.equal(inserts, 0);
+  assert.equal(collectorRequests, 0);
 });
 
 test("keeps the S3 body when its SQS delete fails so the redelivery can still read it", async () => {
