@@ -29,6 +29,7 @@ export type MaybeActiveOrgContext =
 async function ensureProjectForOrg(orgId: string): Promise<SyncedProject> {
   const existing = await db.query.projects.findFirst({
     where: eq(schema.projects.orgId, orgId),
+    orderBy: (p, { asc }) => asc(p.createdAt),
   });
   if (existing) return existing;
 
@@ -90,6 +91,7 @@ export async function resolveMaybeActiveOrgContext(
 
   const firstMembership = await db.query.orgMembers.findFirst({
     where: eq(schema.orgMembers.userId, options.userId),
+    orderBy: (m, { asc }) => asc(m.createdAt),
   });
 
   if (!firstMembership) return { user, org: null, project: null };
