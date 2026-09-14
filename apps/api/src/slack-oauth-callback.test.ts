@@ -11,6 +11,7 @@ process.env.SLACK_CLIENT_ID = "slack-client";
 process.env.SLACK_CLIENT_SECRET = "slack-secret";
 process.env.STATE_SIGNING_SECRET = "state-secret";
 process.env.WEB_ORIGIN = "https://app.example.test";
+process.env.AGENT_SECRETS_KEY = Buffer.alloc(32, 1).toString("base64");
 
 async function mountCallback(): Promise<Hono> {
   const { mountSlackPublic } = await import("./slack.js");
@@ -42,4 +43,17 @@ test("oauth callback with no code redirects back with ?slack=error", async () =>
   const res = await app.request("/slack/oauth/callback?state=whatever");
   assert.equal(res.status, 302);
   assert.equal(res.headers.get("location"), "https://app.example.test/app?slack=error");
+});
+
+test("oauth callback is disabled before token exchange when credential encryption is unavailable", async () => {
+  const key = process.env.AGENT_SECRETS_KEY;
+  Reflect.deleteProperty(process.env, "AGENT_SECRETS_KEY");
+  try {
+    const app = await mountCallback();
+    const res = await app.request("/slack/oauth/callback?code=abc&state=state");
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), { error: "slack not configured" });
+  } finally {
+    process.env.AGENT_SECRETS_KEY = key;
+  }
 });

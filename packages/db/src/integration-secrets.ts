@@ -11,6 +11,12 @@ export type IntegrationSecretCipher = {
   keyVersion: number;
 };
 
+export function integrationSecretEncryptionConfigured(
+  raw: string | undefined = process.env.AGENT_SECRETS_KEY,
+): boolean {
+  return raw !== undefined && Buffer.from(raw, "base64").length === 32;
+}
+
 function getKey(version: number): Buffer {
   if (version !== CURRENT_KEY_VERSION) {
     throw new Error(`unknown integration secret key version: ${version}`);

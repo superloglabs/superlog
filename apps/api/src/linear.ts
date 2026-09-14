@@ -13,9 +13,11 @@ import {
   enqueueIncidentCreated,
   ensureFreshLinearToken,
   exchangeLinearCode,
+  findActiveLinearInstallationByWebhookId,
   fetchLinearAgentSessionSourceType,
   fetchLinearViewer,
   hydrateLinearInstallation,
+  integrationSecretEncryptionConfigured,
   linearCredentialFields,
   linearTicketAcceptanceUnit,
   recordInboundInteraction,
@@ -69,13 +71,14 @@ export function mountLinearPublic(app: Hono<any>): void {
     process.env.LINEAR_OAUTH_REDIRECT_URL ?? "http://localhost:4100/linear/oauth/callback";
   const stateSecret = process.env.STATE_SIGNING_SECRET;
   const webOrigin = process.env.WEB_ORIGIN ?? "http://localhost:5173";
+  const credentialEncryptionConfigured = integrationSecretEncryptionConfigured();
 
   if (!clientId || !clientSecret) {
     log.warn("LINEAR_CLIENT_ID/SECRET not set — /linear/oauth/callback disabled");
   }
 
   app.get("/linear/oauth/callback", async (c) => {
-    if (!clientId || !clientSecret || !stateSecret) {
+    if (!clientId || !clientSecret || !stateSecret || !credentialEncryptionConfigured) {
       return c.json({ error: "linear not configured" }, 503);
     }
     const err = c.req.query("error");
@@ -171,12 +174,7 @@ export function mountLinearPublic(app: Hono<any>): void {
       rawBody,
       signature: sigHeader,
       appWebhookSecret,
-      findByWebhookId: async (id) => {
-        const row = await db.query.linearInstallations.findFirst({
-          where: eq(schema.linearInstallations.webhookId, id),
-        });
-        return row ? hydrateLinearInstallation(row) : null;
-      },
+      findByWebhookId: (id) => findActiveLinearInstallationByWebhookId(id),
       findByAgentIdentity: async (workspaceId, appUserId) => {
         const row = await db.query.linearInstallations.findFirst({
           where: and(
@@ -844,6 +842,7 @@ export function mountLinearAuthed(app: Hono<any>): void {
   const redirectUrl =
     process.env.LINEAR_OAUTH_REDIRECT_URL ?? "http://localhost:4100/linear/oauth/callback";
   const stateSecret = process.env.STATE_SIGNING_SECRET;
+  const credentialEncryptionConfigured = integrationSecretEncryptionConfigured();
 
   app.get("/api/linear/installation", async (c) => {
     const ctx = await resolveUserOrg(c);
@@ -864,7 +863,7 @@ export function mountLinearAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/linear/install-url", async (c) => {
-    if (!clientId || !stateSecret) {
+    if (!clientId || !stateSecret || !credentialEncryptionConfigured) {
       return c.json({ error: "linear not configured" }, 503);
     }
     const ctx = await resolveUserOrgManager(c);

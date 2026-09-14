@@ -382,10 +382,12 @@ export {
 export {
   encryptIntegrationSecret,
   decryptIntegrationSecret,
+  integrationSecretEncryptionConfigured,
   type IntegrationSecretCipher,
 } from "./integration-secrets.js";
 export {
   exchangeLinearCode,
+  findActiveLinearInstallationByWebhookId,
   refreshLinearAccessToken,
   ensureFreshLinearToken,
   markLinearInstallationNeedsReauth,

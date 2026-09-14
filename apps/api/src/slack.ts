@@ -7,6 +7,7 @@ import {
   dismissResolutionProposal,
   findChatByAnchor,
   hydrateSlackInstallation,
+  integrationSecretEncryptionConfigured,
   loadCurrentIncidentResolutionProof,
   mentionsBot,
   recordInboundChatMessage,
@@ -96,6 +97,7 @@ export function mountSlackPublic(
     process.env.SLACK_OAUTH_REDIRECT_URL ?? "http://localhost:4100/slack/oauth/callback";
   const stateSecret = process.env.STATE_SIGNING_SECRET;
   const webOrigin = process.env.WEB_ORIGIN ?? "http://localhost:5173";
+  const credentialEncryptionConfigured = integrationSecretEncryptionConfigured();
 
   if (!clientId || !clientSecret) {
     log.warn("SLACK_CLIENT_ID/SECRET not set — /slack/oauth/callback disabled");
@@ -105,7 +107,7 @@ export function mountSlackPublic(
   // while the current session and manager role authorize its exact project.
   // The signed state binds that same identity through the OAuth callback.
   app.get("/slack/install", async (c) => {
-    if (!clientId || !stateSecret) {
+    if (!clientId || !stateSecret || !credentialEncryptionConfigured) {
       return c.json({ error: "slack not configured" }, 503);
     }
     const userId = await getAuthenticatedUserId(c.req.raw.headers);
@@ -137,7 +139,7 @@ export function mountSlackPublic(
   });
 
   app.get("/slack/oauth/callback", async (c) => {
-    if (!clientId || !clientSecret || !stateSecret) {
+    if (!clientId || !clientSecret || !stateSecret || !credentialEncryptionConfigured) {
       return c.json({ error: "slack not configured" }, 503);
     }
     const callbackWebOrigin = resolveCallbackWebOrigin(c, webOrigin);
@@ -1289,6 +1291,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
   const redirectUrl =
     process.env.SLACK_OAUTH_REDIRECT_URL ?? "http://localhost:4100/slack/oauth/callback";
   const stateSecret = process.env.STATE_SIGNING_SECRET;
+  const credentialEncryptionConfigured = integrationSecretEncryptionConfigured();
 
   app.get("/api/projects/:projectId/slack/installation", async (c) => {
     const projectId = c.req.param("projectId");
@@ -1303,7 +1306,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/projects/:projectId/slack/install-url", async (c) => {
-    if (!clientId || !stateSecret) {
+    if (!clientId || !stateSecret || !credentialEncryptionConfigured) {
       return c.json({ error: "slack not configured" }, 503);
     }
     const projectId = c.req.param("projectId");
@@ -1377,7 +1380,7 @@ export function mountSlackAuthed(app: Hono<any>): void {
   });
 
   app.post("/api/slack/install-url", async (c) => {
-    if (!clientId || !stateSecret) {
+    if (!clientId || !stateSecret || !credentialEncryptionConfigured) {
       return c.json({ error: "slack not configured" }, 503);
     }
     const callbackRedirectUrl = resolveSlackRedirectUrl(c, redirectUrl);

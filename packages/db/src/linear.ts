@@ -1,6 +1,7 @@
-import { eq, sql } from "drizzle-orm";
-import { db } from "./client.js";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { type DB, db } from "./client.js";
 import { hydrateLinearInstallation, linearCredentialFields } from "./credential-storage.js";
+import { integrationSecretEncryptionConfigured } from "./integration-secrets.js";
 import * as schema from "./schema.js";
 
 const TOKEN_URL = "https://api.linear.app/oauth/token";
@@ -111,6 +112,19 @@ export async function fetchLinearViewer(accessToken: string): Promise<LinearView
 }
 
 export type LinearWebhook = { id: string; secret: string };
+
+export async function findActiveLinearInstallationByWebhookId(
+  webhookId: string,
+  database: DB = db,
+) {
+  const row = await database.query.linearInstallations.findFirst({
+    where: and(
+      eq(schema.linearInstallations.webhookId, webhookId),
+      isNull(schema.linearInstallations.revokedAt),
+    ),
+  });
+  return row ? hydrateLinearInstallation(row) : null;
+}
 
 export async function createLinearWebhook(args: {
   accessToken: string;
@@ -366,6 +380,9 @@ export async function ensureFreshLinearToken(args: {
     }
     if (!row.refreshToken) {
       return { accessToken: row.accessToken, expiresAt: row.accessExpiresAt, rotated: false };
+    }
+    if (!integrationSecretEncryptionConfigured()) {
+      throw new Error("AGENT_SECRETS_KEY is required before refreshing Linear credentials");
     }
 
     const fresh = await refreshLinearAccessToken({

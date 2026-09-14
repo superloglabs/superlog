@@ -6,7 +6,10 @@ import {
   prepareStoredCredential,
   readStoredCredential,
 } from "./credential-storage.js";
-import { encryptIntegrationSecret } from "./integration-secrets.js";
+import {
+  encryptIntegrationSecret,
+  integrationSecretEncryptionConfigured,
+} from "./integration-secrets.js";
 
 const originalKey = process.env.AGENT_SECRETS_KEY;
 
@@ -66,6 +69,19 @@ test("storage mode defaults safely for a rolling deployment and rejects typos", 
   assert.equal(credentialStorageMode(undefined), "dual-write");
   assert.equal(credentialStorageMode("encrypted-only"), "encrypted-only");
   assert.throws(() => credentialStorageMode("encrypted"), /must be/);
+});
+
+test("credential writes require a valid 32-byte encryption key", () => {
+  assert.equal(integrationSecretEncryptionConfigured(""), false);
+  assert.equal(integrationSecretEncryptionConfigured("not-a-key"), false);
+  assert.equal(
+    integrationSecretEncryptionConfigured(Buffer.alloc(31, 1).toString("base64")),
+    false,
+  );
+  assert.equal(
+    integrationSecretEncryptionConfigured(Buffer.alloc(32, 1).toString("base64")),
+    true,
+  );
 });
 
 test("partial ciphertext never silently falls back to plaintext", () => {

@@ -23,6 +23,7 @@ process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
 
 const { backfillCredentialStorage, eraseLegacyPlaintextCredentials, inspectCredentialStorage } =
   await import("./credential-migration.js");
+const { findActiveLinearInstallationByWebhookId } = await import("./linear.js");
 
 test("backfills every recoverable plaintext credential before erasing legacy values", async () => {
   const originalAgentKey = process.env.AGENT_SECRETS_KEY;
@@ -123,7 +124,18 @@ test("backfills every recoverable plaintext credential before erasing legacy val
       .update(schema.slackInstallations)
       .set({ revokedAt: new Date() })
       .where(eq(schema.slackInstallations.id, brokenSlack.id));
+    await db.insert(schema.linearInstallations).values({
+      projectId: project.id,
+      workspaceId: "revoked-linear-workspace",
+      accessToken: null,
+      webhookId: "revoked-linear-webhook",
+      revokedAt: new Date(),
+    });
     await backfillCredentialStorage(db);
+    assert.equal(
+      await findActiveLinearInstallationByWebhookId("revoked-linear-webhook", db),
+      null,
+    );
 
     await eraseLegacyPlaintextCredentials(db);
     assert.equal((await inspectCredentialStorage(db)).plaintextValues, 0);
