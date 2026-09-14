@@ -291,10 +291,12 @@ async function handleCodeGrant(c: Context, cfg: McpConfig, form: Record<string, 
     return oauthError(c, 400, "invalid_grant", "PKCE verification failed");
   }
 
-  await db
+  const [claimed] = await db
     .update(schema.mcpOauthCodes)
     .set({ usedAt: new Date() })
-    .where(eq(schema.mcpOauthCodes.code, code));
+    .where(and(eq(schema.mcpOauthCodes.code, code), isNull(schema.mcpOauthCodes.usedAt)))
+    .returning({ code: schema.mcpOauthCodes.code });
+  if (!claimed) return oauthError(c, 400, "invalid_grant", "code already used");
 
   const tokens = await issueTokens({
     clientId: row.clientId,
