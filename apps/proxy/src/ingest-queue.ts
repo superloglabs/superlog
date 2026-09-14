@@ -816,12 +816,13 @@ export class IngestQueue {
         // allowed to throw — a ClickHouse failure should redeliver, not drop.
         let decoded: DecodedRows | null = null;
         try {
-          decoded = decodeOtlpToRows({
+          decoded = await decodeOtlpToRows({
             path: parsed.path,
             projectId: parsed.projectId,
             contentType: parsed.contentType,
             contentEncoding: parsed.contentEncoding,
             body,
+            maxDecompressedBytes: this.config.maxBodyBytes,
           });
         } catch (decodeErr) {
           this.logger.warn(

@@ -4,8 +4,9 @@ import { gzipSync } from "node:zlib";
 
 import protobuf from "protobufjs";
 
-import { type DecodedRows, decodeOtlpToRows } from "./otlp-decode.js";
+import { PayloadTooLargeError } from "./body-capture.js";
 import type { OtelLogRow } from "./otlp-clickhouse.js";
+import { type DecodedRows, decodeOtlpMetricsPayload, decodeOtlpToRows } from "./otlp-decode.js";
 
 // Narrows the decode result to log rows (or fails the test), satisfying the
 // discriminated-union + no-unchecked-index typings.
@@ -45,8 +46,8 @@ const jsonLogs = JSON.stringify({
   ],
 });
 
-test("decodeOtlpToRows decodes JSON logs to otel_logs rows", () => {
-  const out = decodeOtlpToRows({
+test("decodeOtlpToRows decodes JSON logs to otel_logs rows", async () => {
+  const out = await decodeOtlpToRows({
     path: "/v1/logs",
     projectId: "p1",
     contentType: "application/json",
@@ -54,22 +55,35 @@ test("decodeOtlpToRows decodes JSON logs to otel_logs rows", () => {
   });
   const rows = logRows(out);
   assert.equal(rows.length, 1);
-  assert.equal(rows[0]!.Body, "hi");
-  assert.equal(rows[0]!.ResourceAttributes["superlog.project_id"], "p1");
+  assert.equal(rows[0]?.Body, "hi");
+  assert.equal(rows[0]?.ResourceAttributes["superlog.project_id"], "p1");
 });
 
-test("decodeOtlpToRows gunzips a gzip-encoded body", () => {
-  const out = decodeOtlpToRows({
+test("decodeOtlpToRows gunzips a gzip-encoded body", async () => {
+  const out = await decodeOtlpToRows({
     path: "/v1/logs",
     projectId: "p1",
     contentType: "application/json",
     contentEncoding: "gzip",
     body: gzipSync(Buffer.from(jsonLogs)),
   });
-  assert.equal(logRows(out)[0]!.Body, "hi");
+  assert.equal(logRows(out)[0]?.Body, "hi");
 });
 
-test("decodeOtlpToRows decodes protobuf logs, normalizing int64 time and byte ids", () => {
+test("decodeOtlpMetricsPayload rejects a gzip payload that expands past the ingest limit", async () => {
+  await assert.rejects(
+    () =>
+      decodeOtlpMetricsPayload({
+        contentType: "application/json",
+        contentEncoding: "gzip",
+        body: gzipSync(Buffer.from(jsonLogs)),
+        maxDecompressedBytes: 64,
+      }),
+    PayloadTooLargeError,
+  );
+});
+
+test("decodeOtlpToRows decodes protobuf logs, normalizing int64 time and byte ids", async () => {
   const msg = ExportLogsServiceRequest.create({
     resourceLogs: [
       {
@@ -90,29 +104,39 @@ test("decodeOtlpToRows decodes protobuf logs, normalizing int64 time and byte id
   });
   const body = Buffer.from(ExportLogsServiceRequest.encode(msg).finish());
 
-  const out = decodeOtlpToRows({
+  const out = await decodeOtlpToRows({
     path: "/v1/logs",
     projectId: "p1",
     contentType: "application/x-protobuf",
     body,
   });
   const rows = logRows(out);
-  assert.equal(rows[0]!.Body, "hi");
+  assert.equal(rows[0]?.Body, "hi");
   // int64 nanos survived (longs:String) and byte trace id hex-encoded
-  assert.equal(rows[0]!.Timestamp, "2024-06-10 06:13:20.000000000");
-  assert.equal(rows[0]!.TraceId, "5b8efff798038103d269b633813fc60c");
+  assert.equal(rows[0]?.Timestamp, "2024-06-10 06:13:20.000000000");
+  assert.equal(rows[0]?.TraceId, "5b8efff798038103d269b633813fc60c");
 });
 
-test("decodeOtlpToRows returns null for metrics (falls through to collector)", () => {
+test("decodeOtlpToRows returns null for metrics (falls through to collector)", async () => {
   assert.equal(
-    decodeOtlpToRows({ path: "/v1/metrics", projectId: "p", contentType: "application/json", body: Buffer.from("{}") }),
+    await decodeOtlpToRows({
+      path: "/v1/metrics",
+      projectId: "p",
+      contentType: "application/json",
+      body: Buffer.from("{}"),
+    }),
     null,
   );
 });
 
-test("decodeOtlpToRows returns null for an undecodable content type", () => {
+test("decodeOtlpToRows returns null for an undecodable content type", async () => {
   assert.equal(
-    decodeOtlpToRows({ path: "/v1/logs", projectId: "p", contentType: "text/plain", body: Buffer.from("x") }),
+    await decodeOtlpToRows({
+      path: "/v1/logs",
+      projectId: "p",
+      contentType: "text/plain",
+      body: Buffer.from("x"),
+    }),
     null,
   );
 });

@@ -86,10 +86,10 @@ test("rejects a payload without resourceMetrics", () => {
   assert.throws(() => stampRenderStreamMetrics("nope"));
 });
 
-test("decodes a gzipped protobuf OTLP export and stamps it", () => {
+test("decodes a gzipped protobuf OTLP export and stamps it", async () => {
   const message = ExportMetricsServiceRequest.fromObject(samplePayload());
   const body = gzipSync(Buffer.from(ExportMetricsServiceRequest.encode(message).finish()));
-  const decoded = decodeOtlpMetricsPayload({
+  const decoded = await decodeOtlpMetricsPayload({
     contentType: "application/x-protobuf",
     contentEncoding: "gzip",
     body,
@@ -112,8 +112,8 @@ test("decodes a gzipped protobuf OTLP export and stamps it", () => {
   assert.equal(point?.asDouble, 0.25);
 });
 
-test("decodes a plain JSON export", () => {
-  const decoded = decodeOtlpMetricsPayload({
+test("decodes a plain JSON export", async () => {
+  const decoded = await decodeOtlpMetricsPayload({
     contentType: "application/json",
     body: Buffer.from(JSON.stringify(samplePayload())),
   });

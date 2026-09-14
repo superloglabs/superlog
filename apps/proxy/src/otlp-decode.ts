@@ -1,13 +1,14 @@
 import { createRequire } from "node:module";
-import { gunzipSync, inflateSync } from "node:zlib";
+import { gunzip, inflate } from "node:zlib";
 
 import protobuf from "protobufjs";
 
+import { PayloadTooLargeError } from "./body-capture.js";
 import {
-  otlpLogsToRows,
-  otlpTracesToRows,
   type OtelLogRow,
   type OtelTraceRow,
+  otlpLogsToRows,
+  otlpTracesToRows,
 } from "./otlp-clickhouse.js";
 
 // Traces protobuf: reuse the descriptors that ship with the OTLP transformer (same
@@ -67,6 +68,9 @@ const ExportLogsServiceRequest = protobuf
 // expect: 64-bit fields (intValue, *UnixNano) become decimal strings, enums become
 // numbers, and bytes (traceId/spanId) stay as Buffers so the mappers hex-encode them.
 const PROTO_TO_OBJECT_OPTS = { longs: String, enums: Number, defaults: false };
+// Defense-in-depth for callers that do not have an environment-specific ingest
+// cap. Production entry points pass their configured wire-body limit explicitly.
+const DEFAULT_MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024;
 
 export type DecodedRows =
   | { table: "otel_logs"; rows: OtelLogRow[] }
@@ -78,19 +82,24 @@ export type DecodeInput = {
   contentType: string;
   contentEncoding?: string;
   body: Buffer;
+  maxDecompressedBytes?: number;
 };
 
 // Decode an OTLP ingest payload into ClickHouse rows. Returns null for signals we
 // don't yet write directly (metrics) or content types we can't decode — the caller
 // forwards those to the collector instead, so nothing is ever dropped.
-export function decodeOtlpToRows(input: DecodeInput): DecodedRows | null {
+export async function decodeOtlpToRows(input: DecodeInput): Promise<DecodedRows | null> {
   if (input.path !== "/v1/logs" && input.path !== "/v1/traces") return null;
 
   const json = input.contentType.toLowerCase().includes("json");
   const protobufContent = input.contentType.toLowerCase().includes("protobuf");
   if (!json && !protobufContent) return null;
 
-  const body = decompress(input.body, input.contentEncoding);
+  const body = await decompress(
+    input.body,
+    input.contentEncoding,
+    input.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES,
+  );
 
   if (input.path === "/v1/logs") {
     const payload = json
@@ -110,12 +119,17 @@ export function decodeOtlpToRows(input: DecodeInput): DecodedRows | null {
 // must rewrite a metrics payload before forwarding (e.g. the Render
 // metrics-stream route stamps telemetry.source). Unknown content types are
 // treated as protobuf — that's OTLP/HTTP's default encoding.
-export function decodeOtlpMetricsPayload(input: {
+export async function decodeOtlpMetricsPayload(input: {
   contentType: string;
   contentEncoding?: string;
   body: Buffer;
-}): unknown {
-  const body = decompress(input.body, input.contentEncoding);
+  maxDecompressedBytes?: number;
+}): Promise<unknown> {
+  const body = await decompress(
+    input.body,
+    input.contentEncoding,
+    input.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES,
+  );
   if (input.contentType.toLowerCase().includes("json")) {
     return JSON.parse(body.toString("utf8"));
   }
@@ -129,10 +143,36 @@ function decodeProto(type: any, body: Buffer): unknown {
   return type.toObject(type.decode(body), PROTO_TO_OBJECT_OPTS);
 }
 
-function decompress(body: Buffer, encoding?: string): Buffer {
+async function decompress(
+  body: Buffer,
+  encoding: string | undefined,
+  maxOutputBytes: number,
+): Promise<Buffer> {
   if (!encoding) return body;
   const enc = encoding.toLowerCase();
-  if (enc === "gzip") return gunzipSync(body);
-  if (enc === "deflate") return inflateSync(body);
+  if (enc === "gzip") return decompressWithLimit(gunzip, body, maxOutputBytes);
+  if (enc === "deflate") return decompressWithLimit(inflate, body, maxOutputBytes);
   return body;
+}
+
+type ZlibDecompress = typeof gunzip | typeof inflate;
+
+function decompressWithLimit(
+  operation: ZlibDecompress,
+  body: Buffer,
+  maxOutputBytes: number,
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    operation(body, { maxOutputLength: maxOutputBytes }, (err, output) => {
+      if (!err) {
+        resolve(output);
+        return;
+      }
+      if ((err as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE") {
+        reject(new PayloadTooLargeError(maxOutputBytes, maxOutputBytes + 1));
+        return;
+      }
+      reject(err);
+    });
+  });
 }
