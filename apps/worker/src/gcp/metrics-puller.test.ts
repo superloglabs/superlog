@@ -1,6 +1,50 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { runGcpMetricsPullOnce } from "./metrics-puller.js";
+import { gcpTimeSeriesToOtlp, runGcpMetricsPullOnce } from "./metrics-puller.js";
+
+test("linear histograms preserve the protobuf default offset and explicit offsets", () => {
+  for (const offset of [undefined, 0, -1, 2]) {
+    const payload = gcpTimeSeriesToOtlp(
+      [
+        {
+          metric: { type: "custom.googleapis.com/latency" },
+          metricKind: "DELTA",
+          valueType: "DISTRIBUTION",
+          points: [
+            {
+              interval: { endTime: "2026-07-13T11:49:00Z" },
+              value: {
+                distributionValue: {
+                  count: "4",
+                  mean: 0.5,
+                  bucketOptions: {
+                    linearBuckets: {
+                      numFiniteBuckets: 2,
+                      width: 0.5,
+                      ...(offset === undefined ? {} : { offset }),
+                    },
+                  },
+                  bucketCounts: ["1", "1", "1", "1"],
+                },
+              },
+            },
+          ],
+        },
+      ],
+      "test-project",
+    );
+    const histogram = payload.resourceMetrics[0]?.scopeMetrics[0]?.metrics[0]?.histogram;
+    assert.equal(histogram?.dataPoints.length, 1, `offset=${offset}`);
+    assert.deepEqual(histogram?.dataPoints[0], {
+      count: "4",
+      sum: 2,
+      bucketCounts: ["1", "1", "1", "1"],
+      explicitBounds: [offset ?? 0, (offset ?? 0) + 0.5, (offset ?? 0) + 1],
+      timeUnixNano: "1783943340000000000",
+      attributes: [],
+    });
+  }
+});
 
 test("the metrics puller forwards and checkpoints only through the visibility watermark", async () => {
   const pageSizes: number[] = [];
