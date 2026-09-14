@@ -13,12 +13,19 @@ import type { Hono } from "hono";
 import { nanoid } from "nanoid";
 
 import { auth } from "./auth.js";
+import {
+  DEVICE_TTL_MS,
+  type Device,
+  type DeviceFlow,
+  isDeviceExpired,
+  isDeviceIntegrationExpired,
+  pollDeviceToken,
+} from "./device-flow.js";
 import { logger } from "./logger.js";
 import { resolveActiveOrgContext } from "./org-context.js";
 
 const log = logger.child({ scope: "gateway" });
 
-const DEVICE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_DAYS = 60;
 
 export type Principal = {
@@ -29,43 +36,21 @@ export type Principal = {
   orgName: string;
 };
 
-// "cli" — MCP / `superlog init` style pairing. Goes through a GitHub-install
-// gate in the activate page before releasing the CLI token to the poller.
-// "skill" — agent skill (e.g. superlog-onboard) running in the user's terminal
-// pairing for OTel ingest only. Skips the GitHub gate (the post-signup
-// onboarding wizard handles GH + Slack). The poller only receives an ingest
-// key, never a CLI session token, since the skill never calls /v1/* gateway
-// routes.
-type DeviceFlow = "cli" | "skill";
-
-type Device = {
-  deviceCode: string;
-  userCode: string;
-  flow: DeviceFlow;
-  createdAt: number;
-  // user_linked = sign-in done and account/key rows created. For "cli"
-  // flow we hold here until the GitHub install step finishes; for "skill" we
-  // transition straight to approved.
-  status: "pending" | "user_linked" | "approved" | "expired";
-  session?: {
-    cliToken: string;
-    ingestKey: string;
-    orgId: string;
-    projectId: string;
-    userEmail: string;
-    orgName: string;
-  };
-};
-
 const devicesByDeviceCode = new Map<string, Device>();
 const devicesByUserCode = new Map<string, Device>();
 
-export function getLinkedDevice(userCode: string): { orgId: string; projectId: string } | null {
+export type IntegrationDevice = { userId: string; orgId: string; projectId: string };
+
+export function getLinkedDevice(userCode: string): IntegrationDevice | null {
   const device = devicesByUserCode.get(userCode.toUpperCase());
   if (!device || !device.session) return null;
-  if (isExpired(device)) return null;
+  if (isDeviceExpired(device, Date.now())) return null;
   if (device.status !== "user_linked") return null;
-  return { orgId: device.session.orgId, projectId: device.session.projectId };
+  return {
+    userId: device.session.userId,
+    orgId: device.session.orgId,
+    projectId: device.session.projectId,
+  };
 }
 
 // Used by the post-pair integration redirects (GitHub install, Slack install)
@@ -74,15 +59,17 @@ export function getLinkedDevice(userCode: string): { orgId: string; projectId: s
 // Accepts either user_linked or approved, but only for skill devices, since
 // the cli/MCP flow has its own approval semantics that shouldn't be reused
 // here.
-export function getSkillDeviceForIntegration(
-  userCode: string,
-): { orgId: string; projectId: string } | null {
+export function getSkillDeviceForIntegration(userCode: string): IntegrationDevice | null {
   const device = devicesByUserCode.get(userCode.toUpperCase());
   if (!device || !device.session) return null;
   if (device.flow !== "skill") return null;
-  if (isExpired(device)) return null;
+  if (isDeviceIntegrationExpired(device, Date.now())) return null;
   if (device.status !== "user_linked" && device.status !== "approved") return null;
-  return { orgId: device.session.orgId, projectId: device.session.projectId };
+  return {
+    userId: device.session.userId,
+    orgId: device.session.orgId,
+    projectId: device.session.projectId,
+  };
 }
 
 export function getDeviceFlow(userCode: string): DeviceFlow | null {
@@ -117,11 +104,13 @@ export function mountGateway(app: Hono<any>, ch: ClickHouseClient): void {
 
     const deviceCode = `superlog_dev_${nanoid(24)}`;
     const userCode = humanCode();
+    const createdAt = Date.now();
     const device: Device = {
       deviceCode,
       userCode,
       flow,
-      createdAt: Date.now(),
+      createdAt,
+      expiresAt: createdAt + DEVICE_TTL_MS,
       status: "pending",
     };
     devicesByDeviceCode.set(deviceCode, device);
@@ -153,45 +142,42 @@ export function mountGateway(app: Hono<any>, ch: ClickHouseClient): void {
     if (!body.device_code) return next();
     const device = devicesByDeviceCode.get(body.device_code);
     if (!device) return c.json({ error: "invalid_grant" }, 400);
-    if (isExpired(device)) {
-      device.status = "expired";
+    const now = Date.now();
+    const grant = pollDeviceToken(device, now);
+    if (grant.status === "expired") {
+      if (isDeviceIntegrationExpired(device, now)) device.status = "expired";
       log.warn(
         {
           user_code: device.userCode,
           flow: device.flow,
-          age_ms: Date.now() - device.createdAt,
+          age_ms: now - device.createdAt,
         },
         "device flow token expired (oauth/token)",
       );
       return c.json({ error: "expired_token" }, 410);
     }
-    if (device.status !== "approved" || !device.session) {
+    if (grant.status === "authorization_pending") {
       return c.json({ error: "authorization_pending" }, 428);
     }
     if (device.flow === "skill") {
       // Skill pollers only need the ingest key for OTel exporters; never
       // expose the gateway-scope CLI session token.
-      // Refresh the device's createdAt so the post-pair integration URLs
-      // (`/github/install?user_code=…`, `/slack/install?user_code=…`) the
-      // skill is about to drive don't tip over the 10-min device TTL while
-      // the user clicks through GitHub + Slack OAuth.
-      device.createdAt = Date.now();
       return c.json({
-        ingest_key: device.session.ingestKey,
-        project_id: device.session.projectId,
-        user: device.session.userEmail,
-        org: device.session.orgName,
+        ingest_key: grant.session.ingestKey,
+        project_id: grant.session.projectId,
+        user: grant.session.userEmail,
+        org: grant.session.orgName,
         user_code: device.userCode,
         flow: "skill",
       });
     }
     return c.json({
-      access_token: device.session.cliToken,
+      access_token: grant.session.cliToken,
       token_type: "Bearer",
-      ingest_key: device.session.ingestKey,
-      project_id: device.session.projectId,
-      user: device.session.userEmail,
-      org: device.session.orgName,
+      ingest_key: grant.session.ingestKey,
+      project_id: grant.session.projectId,
+      user: grant.session.userEmail,
+      org: grant.session.orgName,
       gateway_url: publicUrl,
     });
   });
@@ -215,7 +201,7 @@ export function mountGateway(app: Hono<any>, ch: ClickHouseClient): void {
     const userCode = body.user_code?.toUpperCase() ?? "";
     const device = devicesByUserCode.get(userCode);
     if (!device) return c.json({ error: "unknown device code" }, 404);
-    if (isExpired(device)) {
+    if (isDeviceExpired(device, Date.now())) {
       device.status = "expired";
       log.warn(
         {
@@ -261,6 +247,7 @@ export function mountGateway(app: Hono<any>, ch: ClickHouseClient): void {
     device.session = {
       cliToken: cli.plaintext,
       ingestKey: ingest.plaintext,
+      userId: user.id,
       orgId: org.id,
       projectId: project.id,
       userEmail: user.email,
@@ -304,7 +291,7 @@ export function mountGateway(app: Hono<any>, ch: ClickHouseClient): void {
     const userCode = body.user_code?.toUpperCase() ?? "";
     const device = devicesByUserCode.get(userCode);
     if (!device) return c.json({ error: "unknown device code" }, 404);
-    if (isExpired(device)) {
+    if (isDeviceExpired(device, Date.now())) {
       device.status = "expired";
       log.warn(
         {
@@ -526,8 +513,4 @@ function humanCode(): string {
   const alphabet = "ABCDEFGHJKMNPQRSTVWXYZ23456789";
   const pick = () => alphabet[Math.floor(Math.random() * alphabet.length)];
   return `${pick()}${pick()}${pick()}${pick()}-${pick()}${pick()}${pick()}${pick()}`;
-}
-
-function isExpired(d: Device): boolean {
-  return Date.now() - d.createdAt > DEVICE_TTL_MS;
 }

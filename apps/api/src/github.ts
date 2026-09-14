@@ -26,6 +26,7 @@ import {
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
+import { getAuthenticatedUserId as getDefaultAuthenticatedUserId } from "./authenticated-user.js";
 import {
   FEEDBACK_PR_FOOTER_MARKER,
   isFeedbackEligibleCommenter,
@@ -38,16 +39,17 @@ import {
   loadGithubPullRequestProviderObservation,
 } from "./github-pr-provider.js";
 import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolution-side-effects.js";
+import { authorizeIntegrationInstall } from "./integration-install-authorization.js";
 import { logger } from "./logger.js";
 import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
-import { buildAppWebUrl } from "./project-web-route.js";
 import { recordPrClosedMetric, recordPrMergedMetric } from "./pr-metrics.js";
 import {
   enqueueObservabilityReview,
   observabilityReviewCommandFromWebhook,
 } from "./pr-observability-review.js";
+import { buildAppWebUrl } from "./project-web-route.js";
 
 const log = logger.child({ scope: "github" });
 type Vars = { userId: string; orgId: string | null };
@@ -64,13 +66,21 @@ const TRUSTED_PR_REVIEW_BOT_LOGINS = new Set([
   "github-copilot[bot]",
 ]);
 
-type GithubPublicDependencies = {
+type GithubWebhookPort = {
   postAgentPrComment(opts: {
     installationId: number;
     repoFullName: string;
     prNumber: number;
     body: string;
   }): Promise<{ ok: true } | { ok: false; error: string }>;
+};
+
+type GithubPublicDependencies = GithubWebhookPort & {
+  getAuthenticatedUserId(headers: Headers): Promise<string | null>;
+  resolveDevice(
+    userCode: string,
+  ): NonNullable<ReturnType<typeof getSkillDeviceForIntegration>> | null;
+  hasProjectManagerAccess: typeof hasProjectManagerAccess;
 };
 
 export function mountGithubPublic(
@@ -83,6 +93,12 @@ export function mountGithubPublic(
     appSlug,
     postAgentPrComment: dependencies.postAgentPrComment ?? postGithubAgentPrComment,
   };
+  const getAuthenticatedUserId =
+    dependencies.getAuthenticatedUserId ?? getDefaultAuthenticatedUserId;
+  const resolveDevice =
+    dependencies.resolveDevice ??
+    ((userCode: string) => getLinkedDevice(userCode) ?? getSkillDeviceForIntegration(userCode));
+  const canManageProject = dependencies.hasProjectManagerAccess ?? hasProjectManagerAccess;
   const stateSecret = process.env.STATE_SIGNING_SECRET;
   const webhookSecret = process.env.GITHUB_APP_WEBHOOK_SECRET;
   const webOrigin = process.env.WEB_ORIGIN ?? "http://localhost:5173";
@@ -108,18 +124,33 @@ export function mountGithubPublic(
     log.warn("GITHUB_APP_WEBHOOK_SECRET not set — /github/webhook disabled");
   }
 
-  app.get("/github/install", (c) => {
+  app.get("/github/install", async (c) => {
     if (!appSlug || !stateSecret) {
       return c.json({ error: "github app not configured" }, 503);
     }
+    const userId = await getAuthenticatedUserId(c.req.raw.headers);
+    if (!userId) return c.json({ error: "unauthenticated" }, 401);
     const userCode = (c.req.query("user_code") ?? "").toUpperCase();
-    // CLI/MCP flow: device must be in user_linked state. Skill flow drives
-    // GitHub install AFTER pairing (device already approved), so fall back
-    // to the skill-device helper when getLinkedDevice rejects it.
-    const device = getLinkedDevice(userCode) ?? getSkillDeviceForIntegration(userCode);
+    // CLI/MCP devices are user_linked; skill devices may already be approved.
+    // In either case the current browser identity must own the device and
+    // retain manager access to its exact project.
+    const device = resolveDevice(userCode);
     if (!device) return c.json({ error: "unknown or not-ready device code" }, 404);
+    const authorization = await authorizeIntegrationInstall({
+      authenticatedUserId: userId,
+      initiatingUserId: device.userId,
+      preferredOrgId: device.orgId,
+      projectId: device.projectId,
+      canManageProject,
+    });
+    if (authorization !== "authorized") {
+      return c.json({ error: "forbidden" }, 403);
+    }
 
-    const state = signState("cli", userCode, stateSecret);
+    const state = signGithubDeviceState(
+      { projectId: device.projectId, userId, userCode },
+      stateSecret,
+    );
     const url = new URL(`https://github.com/apps/${appSlug}/installations/new`);
     url.searchParams.set("state", state);
     return c.redirect(url.toString(), 302);
@@ -144,7 +175,7 @@ export function mountGithubPublic(
     const marker = setupAction === "update" ? "updated" : "done";
 
     // First try the management-API state shape for platform provisioning.
-    // Falls through to the existing cli/web state shape if not a mgmt state.
+    // Falls through to the user-bound device/web state shape if not a mgmt state.
     const mgmt = verifyMgmtState(state, stateSecret);
     if (mgmt) {
       const callbackWebOrigin = resolveCallbackWebOrigin(c, webOrigin);
@@ -193,29 +224,43 @@ export function mountGithubPublic(
     const decoded = verifyState(state, stateSecret);
     if (!decoded) return c.json({ error: "invalid state" }, 400);
 
+    const callbackWebOrigin = resolveCallbackWebOrigin(c, webOrigin);
     const webState = decoded.kind === "web" ? verifyGithubWebState(state, stateSecret) : null;
-    if (
-      decoded.kind === "web" &&
-      (!webState ||
-        !(await hasProjectManagerAccess({
-          userId: webState.userId,
+    const deviceState =
+      decoded.kind === "device" ? verifyGithubDeviceState(state, stateSecret) : null;
+    const installState = webState ?? deviceState;
+    const authenticatedUserId = await getAuthenticatedUserId(c.req.raw.headers);
+    const authorization = installState
+      ? await authorizeIntegrationInstall({
+          authenticatedUserId,
+          initiatingUserId: installState.userId,
           preferredOrgId: null,
-          projectId: webState.projectId,
-        })))
-    ) {
-      const callbackWebOrigin = resolveCallbackWebOrigin(c, webOrigin);
+          projectId: installState.projectId,
+          canManageProject,
+        })
+      : "forbidden";
+    if (authorization !== "authorized") {
       return c.redirect(buildAppWebUrl(callbackWebOrigin, "?gh=error"), 302);
     }
 
-    // "cli" kind: value is userCode → resolve org+project from device.
-    // "web" kind: state binds project + initiating manager; resolve the org
-    // from that project only after rechecking the manager's current role.
     let orgId: string | null;
     let projectId: string | null;
-    if (decoded.kind === "cli") {
-      const device = getLinkedDevice(decoded.value) ?? getSkillDeviceForIntegration(decoded.value);
-      orgId = device?.orgId ?? null;
-      projectId = device?.projectId ?? null;
+    if (deviceState) {
+      const device = resolveDevice(deviceState.userCode);
+      if (
+        !device ||
+        device.userId !== deviceState.userId ||
+        device.projectId !== deviceState.projectId
+      ) {
+        const flow = getDeviceFlow(deviceState.userCode);
+        const flowQuery = flow === "skill" ? "&flow=skill" : "";
+        return c.redirect(
+          `${callbackWebOrigin}/activate?code=${deviceState.userCode}${flowQuery}&gh=expired`,
+          302,
+        );
+      }
+      orgId = device.orgId;
+      projectId = device.projectId;
     } else {
       const project = await db.query.projects.findFirst({
         where: eq(schema.projects.id, webState?.projectId ?? ""),
@@ -224,11 +269,10 @@ export function mountGithubPublic(
       projectId = project?.id ?? null;
     }
 
-    if (decoded.kind === "cli") {
-      const userCode = decoded.value;
+    if (deviceState) {
+      const userCode = deviceState.userCode;
       const flow = getDeviceFlow(userCode);
       const flowQuery = flow === "skill" ? "&flow=skill" : "";
-      const callbackWebOrigin = resolveCallbackWebOrigin(c, webOrigin);
       if (!orgId || !projectId) {
         return c.redirect(
           `${callbackWebOrigin}/activate?code=${userCode}${flowQuery}&gh=expired`,
@@ -257,8 +301,6 @@ export function mountGithubPublic(
       );
     }
 
-    // decoded.kind === "web" — value resolved to project above.
-    const callbackWebOrigin = resolveCallbackWebOrigin(c, webOrigin);
     if (!Number.isFinite(installationId) || installationId <= 0 || !orgId || !projectId) {
       return c.redirect(buildAppWebUrl(callbackWebOrigin, "?gh=error"), 302);
     }
@@ -453,7 +495,7 @@ type WebhookPayload = {
   commits?: Array<{ id?: string; message?: string; author?: { name?: string; email?: string } }>;
 };
 
-type GithubWebhookDependencies = GithubPublicDependencies & {
+type GithubWebhookDependencies = GithubWebhookPort & {
   appSlug: string | undefined;
 };
 
@@ -2978,7 +3020,43 @@ function verifyAuthorState(state: string, secret: string): AuthorStatePayload | 
   return { orgId, projectId, userId, purpose };
 }
 
-type StateKind = "cli" | "web";
+type StateKind = "device" | "web";
+
+type GithubDeviceStatePayload = { projectId: string; userId: string; userCode: string };
+
+function signGithubDeviceState(payload: GithubDeviceStatePayload, secret: string): string {
+  const value = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  return signState("device", value, secret);
+}
+
+function verifyGithubDeviceState(state: string, secret: string): GithubDeviceStatePayload | null {
+  const decoded = verifyState(state, secret);
+  if (!decoded || decoded.kind !== "device") return null;
+  try {
+    const payload = JSON.parse(Buffer.from(decoded.value, "base64url").toString("utf8")) as {
+      projectId?: unknown;
+      userId?: unknown;
+      userCode?: unknown;
+    };
+    if (
+      typeof payload.projectId !== "string" ||
+      !payload.projectId ||
+      typeof payload.userId !== "string" ||
+      !payload.userId ||
+      typeof payload.userCode !== "string" ||
+      !payload.userCode
+    ) {
+      return null;
+    }
+    return {
+      projectId: payload.projectId,
+      userId: payload.userId,
+      userCode: payload.userCode,
+    };
+  } catch {
+    return null;
+  }
+}
 
 export type GithubWebStatePayload = { projectId: string; userId: string };
 
@@ -3025,7 +3103,7 @@ function verifyState(state: string, secret: string): { kind: StateKind; value: s
   if (provided.length !== expectedBuf.length) return null;
   if (!crypto.timingSafeEqual(provided, expectedBuf)) return null;
   const [kind, value, tsRaw] = payload.split(".");
-  if ((kind !== "cli" && kind !== "web") || !value || !tsRaw) return null;
+  if ((kind !== "device" && kind !== "web") || !value || !tsRaw) return null;
   const ts = Number(tsRaw);
   // Match device code TTL: 10 min window.
   if (!Number.isFinite(ts) || Date.now() - ts > 10 * 60 * 1000) return null;

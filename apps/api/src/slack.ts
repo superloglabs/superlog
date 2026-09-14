@@ -23,17 +23,19 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { getAuthenticatedUserId as getDefaultAuthenticatedUserId } from "./authenticated-user.js";
 import { attachFeedbackDetail, recordFeedback } from "./feedback.js";
 import { resolveFeedbackIncidentId } from "./follow-up-offer.js";
 import { getDeviceFlow, getSkillDeviceForIntegration } from "./gateway.js";
 import { closeAgentPullRequestOnGithub, reopenAgentPullRequestOnGithub } from "./github.js";
 import { runResolvedIncidentSideEffectsForIncident } from "./incidents/resolution-side-effects.js";
+import { authorizeIntegrationInstall } from "./integration-install-authorization.js";
 import { logger } from "./logger.js";
 import { requireProjectManagerContext } from "./org-authorization-http.js";
 import { hasProjectManagerAccess } from "./org-authorization.js";
 import { resolveActiveOrgContext } from "./org-context.js";
-import { buildAppWebUrl } from "./project-web-route.js";
 import { mergeAgentPullRequestAndResolveIncident } from "./pr-merge-service.js";
+import { buildAppWebUrl } from "./project-web-route.js";
 import { classifyIncidentSlackReply } from "./slack-reply-intent.js";
 
 const log = logger.child({ scope: "slack" });
@@ -69,8 +71,21 @@ export function isRevokedSlackAuthError(error: string): boolean {
   );
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
-export function mountSlackPublic(app: Hono<any>): void {
+type SlackPublicDependencies = {
+  getAuthenticatedUserId(headers: Headers): Promise<string | null>;
+  resolveDevice(userCode: string): ReturnType<typeof getSkillDeviceForIntegration>;
+  hasProjectManagerAccess: typeof hasProjectManagerAccess;
+};
+
+export function mountSlackPublic(
+  // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
+  app: Hono<any>,
+  dependencies: Partial<SlackPublicDependencies> = {},
+): void {
+  const getAuthenticatedUserId =
+    dependencies.getAuthenticatedUserId ?? getDefaultAuthenticatedUserId;
+  const resolveDevice = dependencies.resolveDevice ?? getSkillDeviceForIntegration;
+  const canManageProject = dependencies.hasProjectManagerAccess ?? hasProjectManagerAccess;
   const clientId = process.env.SLACK_CLIENT_ID;
   const clientSecret = process.env.SLACK_CLIENT_SECRET;
   const signingSecret = process.env.SLACK_SIGNING_SECRET;
@@ -83,20 +98,31 @@ export function mountSlackPublic(app: Hono<any>): void {
     log.warn("SLACK_CLIENT_ID/SECRET not set — /slack/oauth/callback disabled");
   }
 
-  // Public Slack-install kickoff for the agent skill: skill receives the
-  // user_code from the device flow and opens this URL in the user's browser
-  // post-pairing. We look up the org from the user_code, sign cli-kind state,
-  // and redirect to Slack's OAuth. Mirrors `/github/install?user_code=…`.
-  app.get("/slack/install", (c) => {
+  // Browser kickoff for the agent skill: the code locates the paired device,
+  // while the current session and manager role authorize its exact project.
+  // The signed state binds that same identity through the OAuth callback.
+  app.get("/slack/install", async (c) => {
     if (!clientId || !stateSecret) {
       return c.json({ error: "slack not configured" }, 503);
     }
+    const userId = await getAuthenticatedUserId(c.req.raw.headers);
+    if (!userId) return c.json({ error: "unauthenticated" }, 401);
     const callbackRedirectUrl = resolveSlackRedirectUrl(c, redirectUrl);
     const userCode = (c.req.query("user_code") ?? "").toUpperCase();
-    const device = getSkillDeviceForIntegration(userCode);
+    const device = resolveDevice(userCode);
     if (!device) return c.json({ error: "unknown or not-ready device code" }, 404);
+    const authorization = await authorizeIntegrationInstall({
+      authenticatedUserId: userId,
+      initiatingUserId: device.userId,
+      preferredOrgId: device.orgId,
+      projectId: device.projectId,
+      canManageProject,
+    });
+    if (authorization !== "authorized") {
+      return c.json({ error: "forbidden" }, 403);
+    }
     const state = signState(
-      { orgId: device.orgId, projectId: device.projectId, userId: null, userCode },
+      { orgId: device.orgId, projectId: device.projectId, userId, userCode },
       stateSecret,
     );
     const url = new URL("https://slack.com/oauth/v2/authorize");
@@ -139,14 +165,15 @@ export function mountSlackPublic(app: Hono<any>): void {
     }
     const orgId = decoded.orgId;
     const projectId = decoded.projectId;
-    if (
-      decoded.userId &&
-      !(await hasProjectManagerAccess({
-        userId: decoded.userId,
-        preferredOrgId: decoded.orgId,
-        projectId: decoded.projectId,
-      }))
-    ) {
+    const authenticatedUserId = await getAuthenticatedUserId(c.req.raw.headers);
+    const authorization = await authorizeIntegrationInstall({
+      authenticatedUserId,
+      initiatingUserId: decoded.userId,
+      preferredOrgId: decoded.orgId,
+      projectId: decoded.projectId,
+      canManageProject,
+    });
+    if (authorization !== "authorized") {
       return c.redirect(buildAppWebUrl(callbackWebOrigin, "?slack=error"), 302);
     }
     log.info(
@@ -1953,20 +1980,18 @@ async function resolveUserOrgManager(
   return ctx;
 }
 
-// `userId` is the installer when the install was kicked off from the
-// dashboard's authed flow; for the skill kickoff we don't have a signed-in
-// user at issue time so it can be null. `userCode` is set only for
-// skill-flow installs and is what the callback uses to bounce the user
-// back to /activate on completion.
+// `userId` is the authenticated installer. `userCode` is set only for
+// skill-flow installs and is used to return to /activate after completion;
+// it never authorizes the destination project.
 type StatePayload = {
   orgId: string;
   projectId: string;
-  userId: string | null;
+  userId: string;
   userCode?: string;
 };
 
 function signState(p: StatePayload, secret: string): string {
-  const body = `${p.orgId}.${p.projectId}.${p.userId ?? ""}.${p.userCode ?? ""}.${Date.now()}`;
+  const body = `${p.orgId}.${p.projectId}.${p.userId}.${p.userCode ?? ""}.${Date.now()}`;
   const sig = crypto.createHmac("sha256", secret).update(body).digest("base64url");
   return `${Buffer.from(body, "utf8").toString("base64url")}.${sig}`;
 }
@@ -1994,10 +2019,10 @@ function verifyState(state: string, secret: string): StatePayload | null {
     string,
     string,
   ];
-  if (!orgId || !projectId || !tsRaw) return null;
+  if (!orgId || !projectId || !userId || !tsRaw) return null;
   const ts = Number(tsRaw);
   if (!Number.isFinite(ts) || Date.now() - ts > 10 * 60 * 1000) return null;
-  return { orgId, projectId, userId: userId || null, userCode: userCodeRaw || undefined };
+  return { orgId, projectId, userId, userCode: userCodeRaw || undefined };
 }
 
 function resolveCallbackWebOrigin(c: Context, configuredWebOrigin: string): string {
