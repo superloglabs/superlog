@@ -147,3 +147,62 @@ test("stop() bounds a stalled receive while a producer send is still draining", 
     globalThis.fetch = originalFetch;
   }
 });
+
+test("consumeLoop retries after a transient ReceiveMessage error instead of stopping", async () => {
+  // waitTimeSeconds: 0 → abort timer fires after 0 + SHUTDOWN_RECEIVE_ABORT_SLACK_MS (5 s),
+  // keeping the drain bounded once stop() is called.
+  const queue = new IngestQueue({ ...config, consumerConcurrency: 1, waitTimeSeconds: 0 }, noopLogger);
+
+  let receiveCount = 0;
+  // biome-ignore lint/suspicious/noExplicitAny: minimal test double
+  const fakeSqs = {
+    async send(cmd: any, opts?: { abortSignal?: AbortSignal }): Promise<unknown> {
+      const name = cmd.constructor.name;
+      if (name === "ReceiveMessageCommand") {
+        receiveCount++;
+        if (receiveCount === 1) {
+          // Simulate a transient DNS error identical to the production incident.
+          const err = Object.assign(new Error("getaddrinfo EAI_AGAIN sqs.us-west-2.amazonaws.com"), {
+            code: "EAI_AGAIN",
+            syscall: "getaddrinfo",
+            $metadata: { attempts: 1, totalRetryDelay: 0 },
+          });
+          throw err;
+        }
+        // Second (and later) receives: park until shutdown aborts them so the
+        // test can observe the retry without racing the deletion step.
+        // Use a timer-backed wait (not a raw Promise) so the Node.js event loop
+        // stays alive while stop()'s unreffed abort timer is counting down.
+        return await new Promise((resolve, reject) => {
+          const idleTimer = setTimeout(() => resolve({ Messages: [] }), 60_000);
+          const abort = () => {
+            clearTimeout(idleTimer);
+            const abortErr = new Error("Request aborted");
+            abortErr.name = "AbortError";
+            reject(abortErr);
+          };
+          if (opts?.abortSignal?.aborted) {
+            clearTimeout(idleTimer);
+            return abort();
+          }
+          opts?.abortSignal?.addEventListener("abort", abort, { once: true });
+        });
+      }
+      throw new Error(`unexpected SQS command: ${name}`);
+    },
+  };
+  (queue as unknown as { sqs: typeof fakeSqs }).sqs = fakeSqs;
+
+  queue.startConsumer("http://collector.local");
+
+  // Wait for the first (failing) receive, then wait up to 3 s for the retry.
+  // The consumer backs off for RECEIVE_ERROR_INITIAL_BACKOFF_MS (1 s) before
+  // issuing the second receive.
+  await waitFor(() => receiveCount >= 1, 1_000);
+  await waitFor(() => receiveCount >= 2, 3_000);
+
+  assert.ok(receiveCount >= 2, "consumer must retry after the transient error instead of stopping");
+
+  // stop() with waitTimeSeconds=0 aborts the parked receive after 5 s.
+  await queue.stop();
+});

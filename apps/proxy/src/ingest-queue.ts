@@ -50,6 +50,11 @@ const DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 120;
 const DEFAULT_BATCH_SIZE = 10;
 const DEFAULT_CONSUMER_CONCURRENCY = 4;
 const MAX_COLLECTOR_ERROR_BODY_CHARS = 1_000;
+// Backoff for transient ReceiveMessage errors (DNS blips, brief network loss).
+// Starts at 1 s, doubles each consecutive failure, caps at 30 s.  A successful
+// receive resets the counter so steady-state polling is unaffected.
+const RECEIVE_ERROR_INITIAL_BACKOFF_MS = 1_000;
+const RECEIVE_ERROR_MAX_BACKOFF_MS = 30_000;
 // SQS hard limits on a single SendMessageBatch/DeleteMessageBatch call: at most
 // 10 entries, and (for sends) at most 256 KiB of total payload across entries.
 const SQS_BATCH_MAX_ENTRIES = 10;
@@ -738,6 +743,8 @@ export class IngestQueue {
       "ingest queue consumer started",
     );
 
+    let receiveBackoffMs = RECEIVE_ERROR_INITIAL_BACKOFF_MS;
+
     while (!this.shuttingDown) {
       let result: ReceiveMessageCommandOutput;
       try {
@@ -750,9 +757,24 @@ export class IngestQueue {
           }),
           { abortSignal: this.shutdownController.signal },
         );
+        receiveBackoffMs = RECEIVE_ERROR_INITIAL_BACKOFF_MS;
       } catch (err) {
         if (this.shuttingDown && this.shutdownController.signal.aborted) break;
-        throw err;
+        // Transient network/DNS errors (e.g. EAI_AGAIN) should not kill the
+        // loop permanently.  Log a warning, back off, and retry so the consumer
+        // self-heals once connectivity is restored.
+        this.logger.warn(
+          { err, consumerId, backoffMs: receiveBackoffMs },
+          "transient error receiving from ingest queue; retrying",
+        );
+        try {
+          await sleep(receiveBackoffMs, undefined, { signal: this.shutdownController.signal });
+        } catch {
+          // Aborted during backoff sleep — honour the shutdown signal.
+          break;
+        }
+        receiveBackoffMs = Math.min(receiveBackoffMs * 2, RECEIVE_ERROR_MAX_BACKOFF_MS);
+        continue;
       }
 
       // A batch received just before stop() is still drained: we finish
