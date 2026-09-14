@@ -118,6 +118,24 @@ test("GitHub installation token gate honors a transient failure's retry window",
   assert.equal(requests, 2);
 });
 
+test("GitHub installation token gate does not block on 500 errors without a retry-after header", async () => {
+  let requests = 0;
+  const gate = new GithubInstallationTokenGate();
+  const request = async () => {
+    requests += 1;
+    // GitHub 500 — retryable but carries no retry-after/rate-limit header
+    throw new GithubRequestError(
+      "github POST /app/installations/1/access_tokens failed: 500 ",
+      { retryable: true, status: 500 },
+    );
+  };
+
+  await assert.rejects(() => gate.run(1, request));
+  // A second call immediately after a 500 must reach GitHub — no gate block applied
+  await assert.rejects(() => gate.run(1, request));
+  assert.equal(requests, 2, "both calls must have reached GitHub; gate must not block on 500");
+});
+
 test("PR review tokens are restricted to the queued repository", () => {
   assert.deepEqual(githubPullRequestReviewTokenScope(123, 456), {
     installationId: 123,

@@ -120,8 +120,6 @@ export function isRetryableGithubHttpFailure(
   );
 }
 
-const DEFAULT_GITHUB_RETRY_DELAY_MS = 60_000;
-
 export class GithubInstallationTokenGate {
   private readonly blockedUntil = new Map<number, number>();
   private readonly queueTails = new Map<number, Promise<void>>();
@@ -162,11 +160,10 @@ export class GithubInstallationTokenGate {
       this.blockedUntil.delete(installationId);
       return result;
     } catch (error) {
-      if (isRetryableGithubRequestError(error)) {
-        const retryAfterMs = error.retryAfterMs ?? DEFAULT_GITHUB_RETRY_DELAY_MS;
+      if (isRetryableGithubRequestError(error) && error.retryAfterMs != null) {
         this.blockedUntil.set(
           installationId,
-          Math.max(this.blockedUntil.get(installationId) ?? 0, this.now() + retryAfterMs),
+          Math.max(this.blockedUntil.get(installationId) ?? 0, this.now() + error.retryAfterMs),
         );
       }
       throw error;
