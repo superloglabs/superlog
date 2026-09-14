@@ -89,6 +89,13 @@ test("backfills every recoverable plaintext credential before erasing legacy val
       }),
     ]);
 
+    await client.exec(`
+      UPDATE accounts SET updated_at = '2026-09-14 12:00:00.123456+00';
+      UPDATE linear_installations SET updated_at = '2026-09-14 12:00:00.123456+00';
+      UPDATE notion_installations SET updated_at = '2026-09-14 12:00:00.123456+00';
+      UPDATE webhook_endpoints SET updated_at = '2026-09-14 12:00:00.123456+00';
+    `);
+
     assert.equal((await inspectCredentialStorage(db)).unprotectedValues, 9);
     await backfillCredentialStorage(db);
 

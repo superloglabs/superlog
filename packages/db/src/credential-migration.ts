@@ -72,6 +72,12 @@ function valueForBackfill(stored: StoredCredential, required: boolean): string |
   return readStoredCredential(stored);
 }
 
+function confirmUpdatedRow(rows: { id: string }[], store: string, expectedId: string): void {
+  if (rows.length !== 1 || rows[0]?.id !== expectedId) {
+    throw new Error(`failed to update ${store} credential ${expectedId}`);
+  }
+}
+
 export async function inspectCredentialStorage(
   database: DB = defaultDb,
 ): Promise<CredentialMigrationReport> {
@@ -201,22 +207,23 @@ export async function backfillCredentialStorage(database: DB = defaultDb): Promi
     database.query.webhookEndpoints.findMany(),
     database.query.accounts.findMany({
       where: ne(schema.accounts.providerId, "credential"),
-      columns: { id: true, accessToken: true, refreshToken: true, idToken: true, updatedAt: true },
+      columns: { id: true, accessToken: true, refreshToken: true, idToken: true },
     }),
   ]);
 
   for (const row of linear) {
     if (row.revokedAt) {
-      await database
+      const updated = await database
         .update(schema.linearInstallations)
         .set(clearedLinearCredentialFields)
         .where(
           and(
             eq(schema.linearInstallations.id, row.id),
-            eq(schema.linearInstallations.updatedAt, row.updatedAt),
-            eq(schema.linearInstallations.revokedAt, row.revokedAt),
+            isNotNull(schema.linearInstallations.revokedAt),
           ),
-        );
+        )
+        .returning({ id: schema.linearInstallations.id });
+      confirmUpdatedRow(updated, "Linear", row.id);
       continue;
     }
     const accessToken = storedCredential(
@@ -241,7 +248,7 @@ export async function backfillCredentialStorage(database: DB = defaultDb): Promi
     const missingRefresh = storedCredentialNeedsProtection(refreshToken);
     const missingWebhook = storedCredentialNeedsProtection(webhookSecret);
     if (!missingRequired && !missingRefresh && !missingWebhook) continue;
-    await database
+    const updated = await database
       .update(schema.linearInstallations)
       .set(
         linearCredentialFields(
@@ -256,24 +263,26 @@ export async function backfillCredentialStorage(database: DB = defaultDb): Promi
       .where(
         and(
           eq(schema.linearInstallations.id, row.id),
-          eq(schema.linearInstallations.updatedAt, row.updatedAt),
           isNull(schema.linearInstallations.revokedAt),
         ),
-      );
+      )
+      .returning({ id: schema.linearInstallations.id });
+    confirmUpdatedRow(updated, "Linear", row.id);
   }
 
   for (const row of notion) {
     if (row.revokedAt) {
-      await database
+      const updated = await database
         .update(schema.notionInstallations)
         .set(clearedNotionCredentialFields)
         .where(
           and(
             eq(schema.notionInstallations.id, row.id),
-            eq(schema.notionInstallations.updatedAt, row.updatedAt),
-            eq(schema.notionInstallations.revokedAt, row.revokedAt),
+            isNotNull(schema.notionInstallations.revokedAt),
           ),
-        );
+        )
+        .returning({ id: schema.notionInstallations.id });
+      confirmUpdatedRow(updated, "Notion", row.id);
       continue;
     }
     const accessToken = storedCredential(
@@ -283,32 +292,32 @@ export async function backfillCredentialStorage(database: DB = defaultDb): Promi
       row.accessTokenKeyVersion,
     );
     if (!storedCredentialNeedsProtection(accessToken, true)) continue;
-    await database
+    const updated = await database
       .update(schema.notionInstallations)
       .set(notionCredentialFields(valueForBackfill(accessToken, true), "dual-write"))
       .where(
         and(
           eq(schema.notionInstallations.id, row.id),
-          eq(schema.notionInstallations.updatedAt, row.updatedAt),
           isNull(schema.notionInstallations.revokedAt),
         ),
-      );
+      )
+      .returning({ id: schema.notionInstallations.id });
+    confirmUpdatedRow(updated, "Notion", row.id);
   }
 
   for (const row of slack) {
     if (row.revokedAt) {
-      await database
+      const updated = await database
         .update(schema.slackInstallations)
         .set(clearedSlackCredentialFields)
         .where(
           and(
             eq(schema.slackInstallations.id, row.id),
-            eq(schema.slackInstallations.revokedAt, row.revokedAt),
-            row.installedAt === null
-              ? isNull(schema.slackInstallations.installedAt)
-              : eq(schema.slackInstallations.installedAt, row.installedAt),
+            isNotNull(schema.slackInstallations.revokedAt),
           ),
-        );
+        )
+        .returning({ id: schema.slackInstallations.id });
+      confirmUpdatedRow(updated, "Slack", row.id);
       continue;
     }
     const botAccessToken = storedCredential(
@@ -318,18 +327,14 @@ export async function backfillCredentialStorage(database: DB = defaultDb): Promi
       row.botAccessTokenKeyVersion,
     );
     if (!storedCredentialNeedsProtection(botAccessToken, true)) continue;
-    await database
+    const updated = await database
       .update(schema.slackInstallations)
       .set(slackCredentialFields(valueForBackfill(botAccessToken, true), "dual-write"))
       .where(
-        and(
-          eq(schema.slackInstallations.id, row.id),
-          isNull(schema.slackInstallations.revokedAt),
-          row.installedAt === null
-            ? isNull(schema.slackInstallations.installedAt)
-            : eq(schema.slackInstallations.installedAt, row.installedAt),
-        ),
-      );
+        and(eq(schema.slackInstallations.id, row.id), isNull(schema.slackInstallations.revokedAt)),
+      )
+      .returning({ id: schema.slackInstallations.id });
+    confirmUpdatedRow(updated, "Slack", row.id);
   }
 
   for (const row of webhooks) {
@@ -340,15 +345,12 @@ export async function backfillCredentialStorage(database: DB = defaultDb): Promi
       row.secretKeyVersion,
     );
     if (!storedCredentialNeedsProtection(secret, true)) continue;
-    await database
+    const updated = await database
       .update(schema.webhookEndpoints)
       .set(webhookCredentialFields(valueForBackfill(secret, true), "dual-write"))
-      .where(
-        and(
-          eq(schema.webhookEndpoints.id, row.id),
-          eq(schema.webhookEndpoints.updatedAt, row.updatedAt),
-        ),
-      );
+      .where(eq(schema.webhookEndpoints.id, row.id))
+      .returning({ id: schema.webhookEndpoints.id });
+    confirmUpdatedRow(updated, "webhook", row.id);
   }
 
   const betterAuthSecret = process.env.BETTER_AUTH_SECRET;
@@ -369,10 +371,12 @@ export async function backfillCredentialStorage(database: DB = defaultDb): Promi
         row.idToken === null
       )
         continue;
-      await database
+      const updated = await database
         .update(schema.accounts)
         .set({ accessToken, refreshToken, idToken: null, updatedAt: new Date() })
-        .where(and(eq(schema.accounts.id, row.id), eq(schema.accounts.updatedAt, row.updatedAt)));
+        .where(eq(schema.accounts.id, row.id))
+        .returning({ id: schema.accounts.id });
+      confirmUpdatedRow(updated, "account", row.id);
     }
   }
 }
