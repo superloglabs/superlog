@@ -1,5 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import { db } from "./client.js";
+import { hydrateLinearInstallation, linearCredentialFields } from "./credential-storage.js";
 import * as schema from "./schema.js";
 
 const TOKEN_URL = "https://api.linear.app/oauth/token";
@@ -350,10 +351,11 @@ export async function ensureFreshLinearToken(args: {
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${args.installationId}, 0))`,
     );
 
-    const row = await tx.query.linearInstallations.findFirst({
+    const storedRow = await tx.query.linearInstallations.findFirst({
       where: eq(schema.linearInstallations.id, args.installationId),
     });
-    if (!row) throw new Error(`linear installation ${args.installationId} not found`);
+    if (!storedRow) throw new Error(`linear installation ${args.installationId} not found`);
+    const row = hydrateLinearInstallation(storedRow);
     if (row.revokedAt) throw new Error("linear installation is revoked");
     if (row.reauthRequiredAt) throw new Error("linear installation requires reauthorization");
 
@@ -376,8 +378,11 @@ export async function ensureFreshLinearToken(args: {
     await tx
       .update(schema.linearInstallations)
       .set({
-        accessToken: fresh.access_token,
-        refreshToken: fresh.refresh_token ?? row.refreshToken,
+        ...linearCredentialFields({
+          accessToken: fresh.access_token,
+          refreshToken: fresh.refresh_token ?? row.refreshToken,
+          webhookSecret: row.webhookSecret,
+        }),
         accessExpiresAt: newExpiresAt,
         scope: fresh.scope ?? row.scope,
         updatedAt: new Date(),

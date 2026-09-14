@@ -1,4 +1,9 @@
-import { type DB, adoptLegacyOrgDigestSettings, schema } from "@superlog/db";
+import {
+  type DB,
+  adoptLegacyOrgDigestSettings,
+  hydrateSlackInstallation,
+  schema,
+} from "@superlog/db";
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import type { DigestCandidate, WeeklyDigestSummary } from "./domain.js";
 import type { DigestPolicy } from "./policy.js";
@@ -54,12 +59,13 @@ export function createDigestRepository(db: DB): DigestRepository {
     },
 
     async findActiveSlackInstallation(installationId: string) {
-      return db.query.slackInstallations.findFirst({
+      const row = await db.query.slackInstallations.findFirst({
         where: and(
           eq(schema.slackInstallations.id, installationId),
           isNull(schema.slackInstallations.revokedAt),
         ),
       });
+      return row ? hydrateSlackInstallation(row) : undefined;
     },
 
     async listRunnableProjectSettings() {

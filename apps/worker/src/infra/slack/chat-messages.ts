@@ -3,7 +3,7 @@
 // token is only the fallback for rows whose installation was deleted —
 // mirroring the incident-thread precedence in the API's
 // installationForIncident.
-import { type AgentChat, db, schema } from "@superlog/db";
+import { type AgentChat, db, hydrateSlackInstallation, schema } from "@superlog/db";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { ChatDeliveryUnavailableError } from "../../agent-chats/workflow.js";
 import { type SlackTarget, postSlackMessage } from "./api.js";
@@ -44,7 +44,7 @@ export async function postAgentChatMessage(chat: AgentChat, text: string): Promi
 
 async function resolveChatSlackTarget(chat: AgentChat): Promise<SlackTarget | null> {
   if (!chat.slackTeamId || !chat.slackChannelId) return null;
-  const pinned = chat.slackInstallationId
+  const pinnedRow = chat.slackInstallationId
     ? await db.query.slackInstallations.findFirst({
         where: and(
           eq(schema.slackInstallations.id, chat.slackInstallationId),
@@ -52,18 +52,20 @@ async function resolveChatSlackTarget(chat: AgentChat): Promise<SlackTarget | nu
         ),
       })
     : null;
-  const installation =
-    pinned ??
-    (await db.query.slackInstallations.findFirst({
-      where: and(
-        eq(schema.slackInstallations.teamId, chat.slackTeamId),
-        isNull(schema.slackInstallations.revokedAt),
-      ),
-      orderBy: desc(
-        sql`coalesce(${schema.slackInstallations.installedAt}, ${schema.slackInstallations.createdAt})`,
-      ),
-    }));
-  if (!installation) return null;
+  const fallbackRow = pinnedRow
+    ? null
+    : await db.query.slackInstallations.findFirst({
+        where: and(
+          eq(schema.slackInstallations.teamId, chat.slackTeamId),
+          isNull(schema.slackInstallations.revokedAt),
+        ),
+        orderBy: desc(
+          sql`coalesce(${schema.slackInstallations.installedAt}, ${schema.slackInstallations.createdAt})`,
+        ),
+      });
+  const row = pinnedRow ?? fallbackRow;
+  if (!row) return null;
+  const installation = hydrateSlackInstallation(row);
   return {
     installationId: installation.id,
     // The chat's own channel, NOT the installation's routed incident channel.

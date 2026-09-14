@@ -1,4 +1,4 @@
-import { type DB, schema } from "@superlog/db";
+import { type DB, hydrateSlackInstallation, schema } from "@superlog/db";
 import { and, asc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import type { CandidateIncident, ProposalToolInput } from "./domain.js";
 import type { AutorecoveryPolicy } from "./policy.js";
@@ -197,9 +197,10 @@ export function createAutorecoveryRepository(db: DB) {
     },
 
     async findSlackInstallation(id: string): Promise<schema.SlackInstallation | undefined> {
-      return db.query.slackInstallations.findFirst({
+      const row = await db.query.slackInstallations.findFirst({
         where: eq(schema.slackInstallations.id, id),
       });
+      return row ? hydrateSlackInstallation(row) : undefined;
     },
   };
 }

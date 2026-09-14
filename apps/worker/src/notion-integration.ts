@@ -4,7 +4,13 @@
 // project's notion_installations row and hand it to the same tool builder /
 // executor — so no bespoke tool handlers, just a declarative op list fed a
 // per-project OAuth token instead of an org-secret.
-import { type IntegrationDefinition, type NotionInstallation, db, schema } from "@superlog/db";
+import {
+  type IntegrationDefinition,
+  type NotionInstallation,
+  db,
+  hydrateNotionInstallation,
+  schema,
+} from "@superlog/db";
 import { and, eq, isNull } from "drizzle-orm";
 import type { ResolvedIntegration } from "./integrations.js";
 
@@ -150,5 +156,5 @@ export async function loadActiveNotionInstallation(
       isNull(schema.notionInstallations.reauthRequiredAt),
     ),
   });
-  return row ?? null;
+  return row ? hydrateNotionInstallation(row) : null;
 }

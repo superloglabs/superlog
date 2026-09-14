@@ -1,5 +1,11 @@
-import { db, environmentFromResourceAttrs, schema } from "@superlog/db";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import {
+  db,
+  environmentFromResourceAttrs,
+  hydrateSlackInstallation,
+  readStoredCredential,
+  schema,
+} from "@superlog/db";
+import { and, asc, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { buildIncidentUrl } from "../../incident-route.js";
 import { logger } from "../../logger.js";
 import { isStaleSlackAnchorError } from "../../slack-pinning.js";
@@ -27,32 +33,19 @@ async function incidentUrlForProject(projectId: string, incidentId: string): Pro
 }
 
 async function fetchSlackTarget(projectId: string): Promise<SlackTarget | null> {
-  const rows = await db.execute<{
-    installation_id: string;
-    channel_id: string;
-    bot_access_token: string;
-  }>(sql`
-    SELECT si.id AS installation_id,
-           si.channel_id,
-           si.bot_access_token
-    FROM slack_installations si
-    WHERE si.project_id = ${projectId}
-      AND si.channel_id IS NOT NULL
-      AND si.revoked_at IS NULL
-    LIMIT 1
-  `);
-  const row = (
-    rows as unknown as Array<{
-      installation_id: string;
-      channel_id: string;
-      bot_access_token: string;
-    }>
-  )[0];
-  if (!row) return null;
+  const row = await db.query.slackInstallations.findFirst({
+    where: and(
+      eq(schema.slackInstallations.projectId, projectId),
+      isNotNull(schema.slackInstallations.channelId),
+      isNull(schema.slackInstallations.revokedAt),
+    ),
+  });
+  if (!row?.channelId) return null;
+  const installation = hydrateSlackInstallation(row);
   return {
-    installationId: row.installation_id,
-    channelId: row.channel_id,
-    botToken: row.bot_access_token,
+    installationId: installation.id,
+    channelId: row.channelId,
+    botToken: installation.botAccessToken,
   };
 }
 
@@ -62,46 +55,57 @@ async function fetchSlackTarget(projectId: string): Promise<SlackTarget | null> 
 // channels; we post once per distinct channel. Picks the most recently installed
 // row per channel for its bot token.
 export async function fetchSlackTargetsForOrg(orgId: string): Promise<SlackTarget[]> {
-  const rows = await db.execute<{
-    installation_id: string;
-    channel_id: string;
-    bot_access_token: string;
-  }>(sql`
-    SELECT DISTINCT ON (si.channel_id)
-           si.id AS installation_id,
-           si.channel_id,
-           si.bot_access_token
-    FROM slack_installations si
-    JOIN projects p ON p.id = si.project_id
-    WHERE p.org_id = ${orgId}
-      AND si.channel_id IS NOT NULL
-      AND si.revoked_at IS NULL
-    ORDER BY si.channel_id, coalesce(si.installed_at, si.created_at) DESC, si.id DESC
-  `);
-  return (
-    rows as unknown as Array<{
-      installation_id: string;
-      channel_id: string;
-      bot_access_token: string;
-    }>
-  ).map((row) => ({
-    installationId: row.installation_id,
-    channelId: row.channel_id,
-    botToken: row.bot_access_token,
-  }));
+  const rows = await db
+    .select({
+      id: schema.slackInstallations.id,
+      channelId: schema.slackInstallations.channelId,
+      plaintext: schema.slackInstallations.botAccessToken,
+      ciphertext: schema.slackInstallations.botAccessTokenCiphertext,
+      nonce: schema.slackInstallations.botAccessTokenNonce,
+      keyVersion: schema.slackInstallations.botAccessTokenKeyVersion,
+    })
+    .from(schema.slackInstallations)
+    .innerJoin(schema.projects, eq(schema.projects.id, schema.slackInstallations.projectId))
+    .where(
+      and(
+        eq(schema.projects.orgId, orgId),
+        isNotNull(schema.slackInstallations.channelId),
+        isNull(schema.slackInstallations.revokedAt),
+      ),
+    )
+    .orderBy(
+      asc(schema.slackInstallations.channelId),
+      desc(
+        sql`coalesce(${schema.slackInstallations.installedAt}, ${schema.slackInstallations.createdAt})`,
+      ),
+      desc(schema.slackInstallations.id),
+    );
+  const seen = new Set<string>();
+  return rows.flatMap((row) => {
+    if (!row.channelId || seen.has(row.channelId)) return [];
+    seen.add(row.channelId);
+    return [
+      {
+        installationId: row.id,
+        channelId: row.channelId,
+        botToken: readStoredCredential(row),
+      },
+    ];
+  });
 }
 
 async function fetchSlackTargetForIncident(
   incident: Pick<schema.Incident, "projectId" | "slackChannelId" | "slackInstallationId">,
 ): Promise<SlackTarget | null> {
   if (incident.slackChannelId && incident.slackInstallationId) {
-    const installation = await db.query.slackInstallations.findFirst({
+    const row = await db.query.slackInstallations.findFirst({
       where: and(
         eq(schema.slackInstallations.id, incident.slackInstallationId),
         isNull(schema.slackInstallations.revokedAt),
       ),
     });
-    if (installation) {
+    if (row) {
+      const installation = hydrateSlackInstallation(row);
       return {
         installationId: installation.id,
         channelId: incident.slackChannelId,

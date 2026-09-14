@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { type DB, db as defaultDb, schema } from "@superlog/db";
+import { type DB, db as defaultDb, hydrateWebhookEndpoint, schema } from "@superlog/db";
 import { webhookFetch } from "@superlog/net-guard";
 import { and, asc, desc, eq, lte } from "drizzle-orm";
 import { logger } from "./logger.js";
@@ -152,9 +152,10 @@ export async function tickWebhooks(database: DB = defaultDb): Promise<number> {
   if (due.length === 0) return 0;
 
   const endpointIds = Array.from(new Set(due.map((d) => d.endpointId)));
-  const endpoints = await database.query.webhookEndpoints.findMany({
+  const endpointRows = await database.query.webhookEndpoints.findMany({
     where: (t, { inArray }) => inArray(t.id, endpointIds),
   });
+  const endpoints = endpointRows.map(hydrateWebhookEndpoint);
   const byId = new Map(endpoints.map((e) => [e.id, e]));
 
   for (const delivery of due) {

@@ -6,7 +6,7 @@
 //
 // Lives in its own module because feedback.ts and slack.ts already import
 // from each other's domains; this only depends on @superlog/db.
-import { db, schema } from "@superlog/db";
+import { db, hydrateSlackInstallation, schema } from "@superlog/db";
 import { desc, eq } from "drizzle-orm";
 import { logger } from "./logger.js";
 // User-provided feedback must not be able to inject mentions (<!channel>,
@@ -64,12 +64,13 @@ export async function offerFollowUpForFeedback(feedback: schema.Feedback): Promi
   });
   if (!priorRun || (priorRun.state !== "complete" && priorRun.state !== "failed")) return;
 
-  const installation = incident.slackInstallationId
+  const installationRow = incident.slackInstallationId
     ? await db.query.slackInstallations.findFirst({
         where: eq(schema.slackInstallations.id, incident.slackInstallationId),
       })
     : null;
-  if (!installation?.botAccessToken) return;
+  if (!installationRow) return;
+  const installation = hydrateSlackInstallation(installationRow);
 
   const preview = escapeSlackText(
     feedback.body.length > 280 ? `${feedback.body.slice(0, 277)}…` : feedback.body,

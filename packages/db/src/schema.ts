@@ -1657,7 +1657,12 @@ export const webhookEndpoints = pgTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     url: text("url").notNull(),
     description: text("description"),
-    secret: text("secret").notNull(),
+    // Legacy plaintext retained only for the rolling credential migration.
+    // New code prefers the encrypted fields and the finalize command clears it.
+    secret: text("secret"),
+    secretCiphertext: bytea("secret_ciphertext"),
+    secretNonce: bytea("secret_nonce"),
+    secretKeyVersion: integer("secret_key_version"),
     enabledEvents: jsonb("enabled_events")
       .$type<WebhookEventType[]>()
       .notNull()
@@ -2034,7 +2039,11 @@ export const slackInstallations = pgTable(
     teamId: text("team_id").notNull(),
     teamName: text("team_name"),
     botUserId: text("bot_user_id"),
-    botAccessToken: text("bot_access_token").notNull(),
+    // Legacy plaintext retained only while old and new releases overlap.
+    botAccessToken: text("bot_access_token"),
+    botAccessTokenCiphertext: bytea("bot_access_token_ciphertext"),
+    botAccessTokenNonce: bytea("bot_access_token_nonce"),
+    botAccessTokenKeyVersion: integer("bot_access_token_key_version"),
     scope: text("scope"),
     installedByUserId: uuid("installed_by_user_id").references(() => users.id, {
       onDelete: "set null",
@@ -2229,14 +2238,24 @@ export const linearInstallations = pgTable(
     }),
     actorEmail: text("actor_email"),
     appUserId: text("app_user_id"),
-    accessToken: text("access_token").notNull(),
+    // Legacy plaintext retained only while old and new releases overlap.
+    accessToken: text("access_token"),
+    accessTokenCiphertext: bytea("access_token_ciphertext"),
+    accessTokenNonce: bytea("access_token_nonce"),
+    accessTokenKeyVersion: integer("access_token_key_version"),
     refreshToken: text("refresh_token"),
+    refreshTokenCiphertext: bytea("refresh_token_ciphertext"),
+    refreshTokenNonce: bytea("refresh_token_nonce"),
+    refreshTokenKeyVersion: integer("refresh_token_key_version"),
     accessExpiresAt: timestamp("access_expires_at", { withTimezone: true }),
     scope: text("scope"),
     anthropicVaultId: text("anthropic_vault_id"),
     anthropicCredentialId: text("anthropic_credential_id"),
     webhookId: text("webhook_id"),
     webhookSecret: text("webhook_secret"),
+    webhookSecretCiphertext: bytea("webhook_secret_ciphertext"),
+    webhookSecretNonce: bytea("webhook_secret_nonce"),
+    webhookSecretKeyVersion: integer("webhook_secret_key_version"),
     reauthRequiredAt: timestamp("reauth_required_at", { withTimezone: true }),
     reauthReason: text("reauth_reason"),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
@@ -2306,7 +2325,11 @@ export const notionInstallations = pgTable(
     workspaceId: text("workspace_id").notNull(),
     workspaceName: text("workspace_name"),
     workspaceIcon: text("workspace_icon"),
-    accessToken: text("access_token").notNull(),
+    // Legacy plaintext retained only while old and new releases overlap.
+    accessToken: text("access_token"),
+    accessTokenCiphertext: bytea("access_token_ciphertext"),
+    accessTokenNonce: bytea("access_token_nonce"),
+    accessTokenKeyVersion: integer("access_token_key_version"),
     actorUserId: uuid("actor_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -3495,16 +3518,47 @@ export type McpOauthClient = typeof mcpOauthClients.$inferSelect;
 export type McpOauthCode = typeof mcpOauthCodes.$inferSelect;
 export type McpOauthToken = typeof mcpOauthTokens.$inferSelect;
 export type PersonalAccessToken = typeof personalAccessTokens.$inferSelect;
-export type SlackInstallation = typeof slackInstallations.$inferSelect;
+export type SlackInstallationRow = typeof slackInstallations.$inferSelect;
+export type SlackInstallation = Omit<
+  SlackInstallationRow,
+  "botAccessToken" | "botAccessTokenCiphertext" | "botAccessTokenNonce" | "botAccessTokenKeyVersion"
+> & {
+  botAccessToken: string;
+};
 export type SavedView = typeof savedViews.$inferSelect;
 export type Dashboard = typeof dashboards.$inferSelect;
 export type DashboardWidget = typeof dashboardWidgets.$inferSelect;
 export type GithubInstallation = typeof githubInstallations.$inferSelect;
 export type PrObservabilityReview = typeof prObservabilityReviews.$inferSelect;
 export type ProjectGithubRepo = typeof projectGithubRepos.$inferSelect;
-export type LinearInstallation = typeof linearInstallations.$inferSelect;
+export type LinearInstallationRow = typeof linearInstallations.$inferSelect;
+export type LinearInstallation = Omit<
+  LinearInstallationRow,
+  | "accessToken"
+  | "accessTokenCiphertext"
+  | "accessTokenNonce"
+  | "accessTokenKeyVersion"
+  | "refreshToken"
+  | "refreshTokenCiphertext"
+  | "refreshTokenNonce"
+  | "refreshTokenKeyVersion"
+  | "webhookSecret"
+  | "webhookSecretCiphertext"
+  | "webhookSecretNonce"
+  | "webhookSecretKeyVersion"
+> & {
+  accessToken: string;
+  refreshToken: string | null;
+  webhookSecret: string | null;
+};
 export type LinearAgentSession = typeof linearAgentSessions.$inferSelect;
-export type NotionInstallation = typeof notionInstallations.$inferSelect;
+export type NotionInstallationRow = typeof notionInstallations.$inferSelect;
+export type NotionInstallation = Omit<
+  NotionInstallationRow,
+  "accessToken" | "accessTokenCiphertext" | "accessTokenNonce" | "accessTokenKeyVersion"
+> & {
+  accessToken: string;
+};
 export type OrgAgentSettings = typeof orgAgentSettings.$inferSelect;
 export type AgentMemory = typeof agentMemories.$inferSelect;
 export type NewAgentMemory = typeof agentMemories.$inferInsert;
@@ -3518,7 +3572,11 @@ export type AgentPullRequest = typeof agentPullRequests.$inferSelect;
 export type AgentPrEvent = typeof agentPrEvents.$inferSelect;
 export type AgentLinearTicket = typeof agentLinearTickets.$inferSelect;
 export type AgentLinearTicketEvent = typeof agentLinearTicketEvents.$inferSelect;
-export type WebhookEndpoint = typeof webhookEndpoints.$inferSelect;
+export type WebhookEndpointRow = typeof webhookEndpoints.$inferSelect;
+export type WebhookEndpoint = Omit<
+  WebhookEndpointRow,
+  "secret" | "secretCiphertext" | "secretNonce" | "secretKeyVersion"
+> & { secret: string };
 export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
 export type Feedback = typeof feedback.$inferSelect;
 export type Session = typeof sessions.$inferSelect;

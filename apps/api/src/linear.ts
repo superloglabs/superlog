@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import {
   type ResolveIncidentInput,
   captureAgentPrLifecycleEvent,
+  clearedLinearCredentialFields,
   createIncidentFromLinearSession,
   createIncidentLifecycle,
   createLinearAgentActivity,
@@ -14,6 +15,8 @@ import {
   exchangeLinearCode,
   fetchLinearAgentSessionSourceType,
   fetchLinearViewer,
+  hydrateLinearInstallation,
+  linearCredentialFields,
   linearTicketAcceptanceUnit,
   recordInboundInteraction,
   recordInboundLinearChatMessage,
@@ -168,19 +171,23 @@ export function mountLinearPublic(app: Hono<any>): void {
       rawBody,
       signature: sigHeader,
       appWebhookSecret,
-      findByWebhookId: (id) =>
-        db.query.linearInstallations.findFirst({
+      findByWebhookId: async (id) => {
+        const row = await db.query.linearInstallations.findFirst({
           where: eq(schema.linearInstallations.webhookId, id),
-        }),
-      findByAgentIdentity: (workspaceId, appUserId) =>
-        db.query.linearInstallations.findFirst({
+        });
+        return row ? hydrateLinearInstallation(row) : null;
+      },
+      findByAgentIdentity: async (workspaceId, appUserId) => {
+        const row = await db.query.linearInstallations.findFirst({
           where: and(
             eq(schema.linearInstallations.workspaceId, workspaceId),
             eq(schema.linearInstallations.appUserId, appUserId),
             isNull(schema.linearInstallations.revokedAt),
           ),
           orderBy: [desc(schema.linearInstallations.updatedAt)],
-        }),
+        });
+        return row ? hydrateLinearInstallation(row) : null;
+      },
     });
     if (!auth.ok) {
       log.warn({ webhook_id: webhookId, delivery }, `linear webhook ${auth.reason}`);
@@ -882,7 +889,7 @@ export function mountLinearAuthed(app: Hono<any>): void {
     await revokeLinearToken(row.accessToken);
     await db
       .update(schema.linearInstallations)
-      .set({ revokedAt: new Date(), updatedAt: new Date() })
+      .set({ ...clearedLinearCredentialFields, revokedAt: new Date(), updatedAt: new Date() })
       .where(eq(schema.linearInstallations.id, row.id));
     log.info(
       { org_id: ctx.orgId, workspace_id: row.workspaceId, actor_user_id: ctx.userId },
@@ -893,12 +900,13 @@ export function mountLinearAuthed(app: Hono<any>): void {
 }
 
 async function findCurrentInstallation(projectId: string) {
-  return db.query.linearInstallations.findFirst({
+  const row = await db.query.linearInstallations.findFirst({
     where: and(
       eq(schema.linearInstallations.projectId, projectId),
       isNull(schema.linearInstallations.revokedAt),
     ),
   });
+  return row ? hydrateLinearInstallation(row) : null;
 }
 
 async function upsertInstallation(v: {
@@ -921,7 +929,7 @@ async function upsertInstallation(v: {
   await db.transaction(async (tx) => {
     await tx
       .update(schema.linearInstallations)
-      .set({ revokedAt: new Date(), updatedAt: new Date() })
+      .set({ ...clearedLinearCredentialFields, revokedAt: new Date(), updatedAt: new Date() })
       .where(
         and(
           eq(schema.linearInstallations.projectId, v.projectId),
@@ -936,12 +944,14 @@ async function upsertInstallation(v: {
       workspaceUrlKey: v.workspaceUrlKey,
       actorEmail: v.actorEmail,
       appUserId: v.appUserId,
-      accessToken: v.accessToken,
-      refreshToken: v.refreshToken,
+      ...linearCredentialFields({
+        accessToken: v.accessToken,
+        refreshToken: v.refreshToken,
+        webhookSecret: v.webhookSecret,
+      }),
       accessExpiresAt: v.accessExpiresAt,
       scope: v.scope,
       webhookId: v.webhookId,
-      webhookSecret: v.webhookSecret,
     });
   });
 }

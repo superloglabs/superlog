@@ -153,6 +153,12 @@ async function mirrorLastUsedOrg(userId: string, activeOrgId: string): Promise<v
 export const auth = betterAuth({
   baseURL: API_ORIGIN,
   secret: BETTER_AUTH_SECRET,
+  // Provider access and refresh tokens are recoverable credentials. Better
+  // Auth reads pre-encryption rows during rollout and encrypts every new or
+  // refreshed grant with BETTER_AUTH_SECRET.
+  account: {
+    encryptOAuthTokens: true,
+  },
   trustedOrigins: WEB_ORIGINS,
   database: drizzleAdapter(db, {
     provider: "pg",
@@ -257,6 +263,14 @@ export const auth = betterAuth({
     ...autumnPlugins,
   ],
   databaseHooks: {
+    account: {
+      create: {
+        before: async (account) => ({ data: { ...account, idToken: null } }),
+      },
+      update: {
+        before: async (account) => ({ data: { ...account, idToken: null } }),
+      },
+    },
     user: {
       create: {
         after: async (user, context) => {

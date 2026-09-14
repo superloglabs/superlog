@@ -3,16 +3,11 @@
 // proposals, future digest pings, …). Centralised so we have one place
 // that handles bot-token revocation: if Slack returns `token_revoked` or a
 // peer, we mark the installation revoked in pg so we stop pinging.
-import { db, schema } from "@superlog/db";
+import { clearedSlackCredentialFields, db, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import { logger } from "../../logger.js";
 
-const REVOKE_ERRORS = new Set([
-  "not_authed",
-  "invalid_auth",
-  "token_revoked",
-  "account_inactive",
-]);
+const REVOKE_ERRORS = new Set(["not_authed", "invalid_auth", "token_revoked", "account_inactive"]);
 
 export type SlackTarget = {
   installationId: string;
@@ -26,7 +21,7 @@ export type SlackUpdateMessageResponse = { ok: boolean; error?: string };
 async function markInstallationRevoked(installationId: string): Promise<void> {
   await db
     .update(schema.slackInstallations)
-    .set({ revokedAt: new Date() })
+    .set({ ...clearedSlackCredentialFields, revokedAt: new Date() })
     .where(eq(schema.slackInstallations.id, installationId));
 }
 

@@ -6,6 +6,7 @@ import {
   generateWebhookSecret,
   isWebhookEventType,
   schema,
+  webhookCredentialFields,
 } from "@superlog/db";
 import { WebhookDestinationError, assertPublicWebhookUrl } from "@superlog/net-guard";
 import { and, desc, eq } from "drizzle-orm";
@@ -126,7 +127,13 @@ export function mountWebhooks(app: Hono<any>): void {
     const secret = generateWebhookSecret();
     const [row] = await db
       .insert(schema.webhookEndpoints)
-      .values({ projectId, url, description, secret, ...(enabledEvents ? { enabledEvents } : {}) })
+      .values({
+        projectId,
+        url,
+        description,
+        ...webhookCredentialFields(secret),
+        ...(enabledEvents ? { enabledEvents } : {}),
+      })
       .returning();
     if (!row) throw new HTTPException(500, { message: "failed to create endpoint" });
     return c.json({
@@ -137,7 +144,7 @@ export function mountWebhooks(app: Hono<any>): void {
       disabledAt: row.disabledAt,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
-      secret: row.secret,
+      secret,
     });
   });
 
@@ -187,7 +194,7 @@ export function mountWebhooks(app: Hono<any>): void {
     const secret = generateWebhookSecret();
     const [row] = await db
       .update(schema.webhookEndpoints)
-      .set({ secret, updatedAt: new Date() })
+      .set({ ...webhookCredentialFields(secret), updatedAt: new Date() })
       .where(
         and(eq(schema.webhookEndpoints.id, id), eq(schema.webhookEndpoints.projectId, projectId)),
       )

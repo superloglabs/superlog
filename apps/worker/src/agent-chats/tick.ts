@@ -2,6 +2,7 @@ import { SpanStatusCode, trace } from "@opentelemetry/api";
 import {
   createLinearAgentActivity,
   db,
+  hydrateLinearInstallation,
   listAccessibleGithubInstallsForProject,
   listActiveAgentChats,
   listPendingChatMessages,
@@ -151,13 +152,15 @@ async function postAgentChatReply(chat: schema.AgentChat, text: string): Promise
     where: eq(schema.linearAgentSessions.agentChatId, chat.id),
   });
   if (!session) throw new ChatDeliveryUnavailableError("Linear agent session is missing");
-  const installation = await db.query.linearInstallations.findFirst({
+  const installationRow = await db.query.linearInstallations.findFirst({
     where: and(
       eq(schema.linearInstallations.id, session.installationId),
       isNull(schema.linearInstallations.revokedAt),
     ),
   });
-  if (!installation) throw new ChatDeliveryUnavailableError("Linear installation is unavailable");
+  if (!installationRow)
+    throw new ChatDeliveryUnavailableError("Linear installation is unavailable");
+  const installation = hydrateLinearInstallation(installationRow);
   const activity = await createLinearAgentActivity({
     accessToken: installation.accessToken,
     agentSessionId: session.agentSessionId,

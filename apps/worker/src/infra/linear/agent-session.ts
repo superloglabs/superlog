@@ -1,4 +1,10 @@
-import { createLinearAgentActivity, db, type LinearAgentActivityType, schema } from "@superlog/db";
+import {
+  type LinearAgentActivityType,
+  createLinearAgentActivity,
+  db,
+  hydrateLinearInstallation,
+  schema,
+} from "@superlog/db";
 import { and, eq, isNull } from "drizzle-orm";
 import { logger } from "../../logger.js";
 
@@ -20,12 +26,13 @@ const defaultDeps: LinearIncidentActivityDeps = {
       ),
     });
     if (!session) return null;
-    const installation = await db.query.linearInstallations.findFirst({
+    const row = await db.query.linearInstallations.findFirst({
       where: and(
         eq(schema.linearInstallations.id, session.installationId),
         isNull(schema.linearInstallations.revokedAt),
       ),
     });
+    const installation = row ? hydrateLinearInstallation(row) : null;
     return installation
       ? { accessToken: installation.accessToken, agentSessionId: session.agentSessionId }
       : null;

@@ -2,6 +2,7 @@ import {
   type AccessibleGithubInstall,
   INTERNAL_INCIDENT_EVENT_KIND_SQL_PATTERN,
   db,
+  hydrateLinearInstallation,
   listAccessibleGithubInstallsForProject,
   resolveDefaultAgentRunProvider,
   schema,
@@ -240,14 +241,14 @@ export async function loadAgentRunContext(
         })
       : [];
   const githubInstalls = await listAccessibleGithubInstallsForProject(project.id);
-  const linearInstall =
-    (await db.query.linearInstallations.findFirst({
-      where: and(
-        eq(schema.linearInstallations.projectId, project.id),
-        isNull(schema.linearInstallations.revokedAt),
-        isNull(schema.linearInstallations.reauthRequiredAt),
-      ),
-    })) ?? null;
+  const linearInstallRow = await db.query.linearInstallations.findFirst({
+    where: and(
+      eq(schema.linearInstallations.projectId, project.id),
+      isNull(schema.linearInstallations.revokedAt),
+      isNull(schema.linearInstallations.reauthRequiredAt),
+    ),
+  });
+  const linearInstall = linearInstallRow ? hydrateLinearInstallation(linearInstallRow) : null;
   const orgAgentRow = await db.query.orgAgentSettings.findFirst({
     where: eq(schema.orgAgentSettings.orgId, project.orgId),
   });

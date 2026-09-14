@@ -1,4 +1,13 @@
-import { db, exchangeNotionCode, notionOwnerEmail, revokeNotionToken, schema } from "@superlog/db";
+import {
+  clearedNotionCredentialFields,
+  db,
+  exchangeNotionCode,
+  hydrateNotionInstallation,
+  notionCredentialFields,
+  notionOwnerEmail,
+  revokeNotionToken,
+  schema,
+} from "@superlog/db";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { logger } from "./logger.js";
@@ -154,7 +163,7 @@ export function mountNotionAuthed(app: Hono<any>): void {
     }
     await db
       .update(schema.notionInstallations)
-      .set({ revokedAt: new Date(), updatedAt: new Date() })
+      .set({ ...clearedNotionCredentialFields, revokedAt: new Date(), updatedAt: new Date() })
       .where(eq(schema.notionInstallations.id, row.id));
     log.info(
       { org_id: ctx.orgId, workspace_id: row.workspaceId, actor_user_id: ctx.userId },
@@ -165,12 +174,14 @@ export function mountNotionAuthed(app: Hono<any>): void {
 }
 
 function findCurrentInstallation(projectId: string) {
-  return db.query.notionInstallations.findFirst({
-    where: and(
-      eq(schema.notionInstallations.projectId, projectId),
-      isNull(schema.notionInstallations.revokedAt),
-    ),
-  });
+  return db.query.notionInstallations
+    .findFirst({
+      where: and(
+        eq(schema.notionInstallations.projectId, projectId),
+        isNull(schema.notionInstallations.revokedAt),
+      ),
+    })
+    .then((row) => (row ? hydrateNotionInstallation(row) : null));
 }
 
 async function upsertInstallation(v: {
@@ -188,7 +199,7 @@ async function upsertInstallation(v: {
   await db.transaction(async (tx) => {
     await tx
       .update(schema.notionInstallations)
-      .set({ revokedAt: new Date(), updatedAt: new Date() })
+      .set({ ...clearedNotionCredentialFields, revokedAt: new Date(), updatedAt: new Date() })
       .where(
         and(
           eq(schema.notionInstallations.projectId, v.projectId),
@@ -203,7 +214,7 @@ async function upsertInstallation(v: {
       workspaceName: v.workspaceName,
       workspaceIcon: v.workspaceIcon,
       actorEmail: v.actorEmail,
-      accessToken: v.accessToken,
+      ...notionCredentialFields(v.accessToken),
     });
   });
 }

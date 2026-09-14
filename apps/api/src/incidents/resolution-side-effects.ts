@@ -316,19 +316,20 @@ export async function updateResolvedIncidentSlackRootMessage(input: {
   text: string;
   blocks: unknown[];
 }): Promise<void> {
-  const { db, schema } = await import("@superlog/db");
+  const { db, hydrateSlackInstallation, schema } = await import("@superlog/db");
   const row = await db.query.incidents.findFirst({
     where: eq(schema.incidents.id, input.incident.id),
   });
   if (!row?.slackChannelId || !row.slackThreadTs || !row.slackInstallationId) return;
 
-  const installation = await db.query.slackInstallations.findFirst({
+  const installationRow = await db.query.slackInstallations.findFirst({
     where: and(
       eq(schema.slackInstallations.id, row.slackInstallationId),
       eq(schema.slackInstallations.projectId, row.projectId),
     ),
   });
-  if (!installation?.botAccessToken || installation.revokedAt) return;
+  if (!installationRow || installationRow.revokedAt) return;
+  const installation = hydrateSlackInstallation(installationRow);
 
   try {
     const res = await fetch("https://slack.com/api/chat.update", {

@@ -27,7 +27,7 @@ import { strict as assert } from "node:assert";
 import crypto from "node:crypto";
 import "dotenv/config";
 import { Hono } from "hono";
-import { db, runMigrations, schema } from "@superlog/db";
+import { db, linearCredentialFields, runMigrations, schema } from "@superlog/db";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { mountGithubPublic } from "../src/github.js";
 import { mountLinearPublic } from "../src/linear.js";
@@ -143,9 +143,12 @@ async function seed(): Promise<{
       projectId: project.id,
       workspaceId: LINEAR_WORKSPACE_ID,
       workspaceName: "Acme",
-      accessToken: "fake-token",
+      ...linearCredentialFields({
+        accessToken: "fake-token",
+        refreshToken: null,
+        webhookSecret: LINEAR_WEBHOOK_SECRET,
+      }),
       webhookId: LINEAR_WEBHOOK_ID,
-      webhookSecret: LINEAR_WEBHOOK_SECRET,
     })
     .returning();
   if (!linearInstall) throw new Error("seed linear install failed");
@@ -397,9 +400,7 @@ async function main() {
       });
       assert.ok(ev, "expected incident_resolved timeline event");
       assert.equal(ev.summary, `Incident resolved because PR #${PR_NUMBER} was merged.`);
-      ok(
-        `PR merged: state=${pr?.state}, incident=${incident?.status}, issue=${issue?.status}`,
-      );
+      ok(`PR merged: state=${pr?.state}, incident=${incident?.status}, issue=${issue?.status}`);
     }
 
     step("GitHub webhook: dedup on duplicate delivery");

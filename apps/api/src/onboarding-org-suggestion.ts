@@ -1,18 +1,10 @@
-export function suggestOrgNameFromGoogleIdToken(idToken: string): string | null {
-  const encodedPayload = idToken.split(".")[1];
-  if (!encodedPayload) return null;
+const CONSUMER_EMAIL_DOMAINS = new Set(["gmail.com", "googlemail.com"]);
 
-  try {
-    const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8")) as {
-      hd?: unknown;
-    };
-    if (typeof payload.hd !== "string") return null;
+export function suggestOrgNameFromEmail(email: string): string | null {
+  const [, domain, ...extra] = email.trim().toLowerCase().split("@");
+  if (!domain || extra.length > 0 || CONSUMER_EMAIL_DOMAINS.has(domain)) return null;
 
-    const domainLabel = payload.hd.trim().split(".")[0];
-    if (!domainLabel) return null;
-
-    return domainLabel.charAt(0).toUpperCase() + domainLabel.slice(1);
-  } catch {
-    return null;
-  }
+  const domainLabel = domain.split(".")[0];
+  if (!domainLabel) return null;
+  return domainLabel.charAt(0).toUpperCase() + domainLabel.slice(1);
 }

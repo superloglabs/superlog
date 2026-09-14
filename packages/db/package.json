@@ -18,6 +18,7 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx src/seed.ts",
+    "credentials:migrate": "tsx src/credential-migration-cli.ts",
     "test:migrations": "tsx --test src/migrations.test.ts",
     "test": "tsx --test src/*.test.ts"
   },
