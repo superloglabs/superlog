@@ -18,6 +18,7 @@ import {
   githubPullRequestDeliveryReadTokenScope,
   githubPullRequestReviewTokenScope,
   isGitPushBranchCollision,
+  isGithubResourceNotAccessible,
   isMissingRemoteBranchFailure,
   isRetryableGitPushFailure,
   isRetryableGithubHttpFailure,
@@ -63,6 +64,37 @@ test("GitHub HTTP retry policy distinguishes transient provider failures", () =>
   assert.equal(isRetryableGithubHttpFailure(503, "service unavailable"), true);
   assert.equal(isRetryableGithubHttpFailure(403, '{"message":"Resource not accessible"}'), false);
   assert.equal(isRetryableGithubHttpFailure(404, '{"message":"Not Found"}'), false);
+});
+
+test("isGithubResourceNotAccessible identifies permission-denied 403 errors", () => {
+  assert.equal(
+    isGithubResourceNotAccessible(
+      new GithubRequestError(
+        'github GET /repos/taventech/hedge/pulls?state=all failed: 403 {"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest/pulls/pulls#list-pull-requests","status":"403"}',
+        { retryable: false, status: 403 },
+      ),
+    ),
+    true,
+    "canonical 403 Resource not accessible response",
+  );
+  assert.equal(
+    isGithubResourceNotAccessible(
+      new GithubRequestError("secondary rate limit", { retryable: true, status: 403 }),
+    ),
+    false,
+    "retryable 403 (secondary rate limit) is not a permission-denied error",
+  );
+  assert.equal(
+    isGithubResourceNotAccessible(
+      new GithubRequestError("github GET /repos/foo/bar failed: 404 Not Found", {
+        retryable: false,
+        status: 404,
+      }),
+    ),
+    false,
+    "404 is not a permission-denied error",
+  );
+  assert.equal(isGithubResourceNotAccessible(new Error("Resource not accessible by integration")), false, "plain Error is not a GithubRequestError");
 });
 
 test("GitHub retry delay honors the primary rate-limit reset window", () => {
