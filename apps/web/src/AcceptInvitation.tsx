@@ -49,8 +49,20 @@ export function AcceptInvitation() {
   );
 }
 
+export const PENDING_INVITE_STORAGE_KEY = "superlog.pending_invite_id";
+
 function InvitationAuthentication({ id }: { id: string }) {
   const continuationUrl = `${window.location.origin}/accept-invitation?id=${encodeURIComponent(id)}&join=1`;
+  // Remember the invite across the signup → verify-email detour (new users
+  // must verify before they can accept, which navigates away from this page).
+  // The verify page reads this back into a "Continue to invitation" link.
+  if (typeof window !== "undefined") {
+    try {
+      window.sessionStorage.setItem(PENDING_INVITE_STORAGE_KEY, id);
+    } catch {
+      /* storage unavailable — the inbox link still works */
+    }
+  }
 
   return (
     <CenteredShell>
@@ -100,7 +112,7 @@ function AcceptInvitationInner({
         error: res.error.message,
       });
       setAction("idle");
-      setActionError(res.error.message ?? "Failed to accept invitation.");
+      setActionError(mapInvitationError(res.error.message, "Failed to accept invitation."));
       return;
     }
     const orgId = (res.data as unknown as { invitation: { organizationId: string } }).invitation
@@ -134,7 +146,10 @@ function AcceptInvitationInner({
       if (res.error) {
         setState({
           kind: "error",
-          message: res.error.message ?? "Invitation not found or expired.",
+          message: mapInvitationError(
+            res.error.message,
+            "Invitation not found or expired.",
+          ),
         });
         return;
       }
@@ -247,4 +262,15 @@ function AcceptInvitationInner({
       </div>
     </CenteredShell>
   );
+}
+
+// B-01: inviting requires a verified email, so unverified invitees get a
+// FORBIDDEN from Better Auth. Without this mapping that surfaces as the
+// misleading "Invitation not found" (looks like a bad link) — tell them the
+// actual next step instead.
+function mapInvitationError(message: string | null | undefined, fallback: string): string {
+  if (message && /verif/i.test(message)) {
+    return "Please verify your email first — check your inbox for the verification link, then accept this invite again.";
+  }
+  return message ?? fallback;
 }

@@ -77,6 +77,12 @@ import {
   projectHasIngested,
   resolveEffectiveReadProjectId,
 } from "./demo.js";
+import {
+  isAuthMutationBlockedForUnverified,
+  isEmailVerificationExempt,
+  isGrandfatheredUnverifiedUser,
+  warnIfDefaultGrandfatherCutoff,
+} from "./email-verification-gate.js";
 import { mountFeedbackAuthed, mountFeedbackPublic } from "./feedback.js";
 import { type GatewayVars, mountGateway } from "./gateway.js";
 import { mountGcpAuthed, mountGcpPublic } from "./gcp/interfaces.js";
@@ -221,6 +227,7 @@ logger.info(
   { behindTrustedProxy: AUTH_BEHIND_TRUSTED_PROXY },
   "auth client IP trust mode configured",
 );
+warnIfDefaultGrandfatherCutoff((message) => logger.warn(message));
 const incidentLifecycle = createIncidentLifecycle(db);
 const sourceMapObjectStore = sourceMapObjectStoreFromEnv(process.env);
 
@@ -371,6 +378,20 @@ app.on(["POST", "GET"], "/api/auth/*", async (c) => {
     recordAuthRateLimited("/api/auth/*", DEPLOYMENT_ENVIRONMENT);
     return globalLimitResponse;
   }
+  // B-01 follow-up: this mount bypasses the session email-verification gate,
+  // so deny Better-Auth organization/admin mutations to unverified,
+  // non-grandfathered sessions here. Reads pass through (invitation
+  // get/accept/reject re-gate on verification inside Better-Auth itself);
+  // callers without a session fall through to Better-Auth's own 401.
+  if (isAuthMutationBlockedForUnverified(c.req.path)) {
+    const preSession = await auth.api.getSession({ headers: c.req.raw.headers });
+    if (preSession && preSession.user.emailVerified !== true) {
+      const grandfathered = await isGrandfatheredUnverifiedUser(preSession.user.id);
+      if (!grandfathered) {
+        return c.json({ error: "email_verification_required" }, 403);
+      }
+    }
+  }
   const response = await auth.handler(requestWithAuthClientIp(c.req.raw, clientIp));
   if (response.status === 429) {
     recordAuthRateLimited(c.req.path, DEPLOYMENT_ENVIRONMENT);
@@ -452,6 +473,12 @@ app.use("/api/*", async (c, next) => {
   // admin is acting as another user; surface it on `c.var` so /api/me can
   // expose a boolean without the web client having to inspect raw session.
   c.set("impersonating", typeof session.session.impersonatedBy === "string");
+  if (session.user.emailVerified !== true) {
+    const grandfathered = await isGrandfatheredUnverifiedUser(session.user.id);
+    if (!grandfathered && !isEmailVerificationExempt(c.req.method, path)) {
+      return c.json({ error: "email_verification_required" }, 403);
+    }
+  }
   if (!isAuditableMutation({ method: c.req.method, path })) return next();
   // Audit in a finally so writes that fail by throwing an HTTPException (e.g.
   // invalid input) are attributed too, not just those returning an error body.
@@ -531,6 +558,7 @@ app.get("/api/me", async (c) => {
         name: user.name,
         isStaff: userIsStaff(user.role),
         impersonating: c.var.impersonating === true,
+        emailVerified: user.emailVerified,
       },
       org: null,
       project: null,
@@ -587,6 +615,7 @@ app.get("/api/me", async (c) => {
       name: user.name,
       isStaff: userIsStaff(user.role),
       impersonating: c.var.impersonating === true,
+      emailVerified: user.emailVerified,
     },
     org: { id: org.id, name: org.name, slug: org.slug, githubSetupNeeded },
     project: {
