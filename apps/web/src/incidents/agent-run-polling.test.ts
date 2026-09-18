@@ -25,6 +25,10 @@ test("keeps polling while awaiting a human — a Slack reply elsewhere can resum
   assert.equal(incidentPollIntervalMs("awaiting_human"), INCIDENT_POLL_INTERVAL_MS);
 });
 
+test("keeps polling while awaiting PR events — an external event can resume the run", () => {
+  assert.equal(incidentPollIntervalMs("awaiting_events"), INCIDENT_POLL_INTERVAL_MS);
+});
+
 test("stops polling in terminal states", () => {
   assert.equal(incidentPollIntervalMs("complete"), false);
   assert.equal(incidentPollIntervalMs("failed"), false);
