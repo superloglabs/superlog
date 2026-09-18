@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import {
   areAllIncidentPullRequestsMerged,
@@ -473,6 +474,16 @@ export type CreateOpenIncidentOpts = {
   lastSeen: Date;
 };
 
+type IncidentLifecycleDependencies = {
+  generateCodename: () => string;
+  generateIncidentId: () => string;
+};
+
+const defaultIncidentLifecycleDependencies: IncidentLifecycleDependencies = {
+  generateCodename,
+  generateIncidentId: randomUUID,
+};
+
 // Single source of truth for opening an incident: the Postgres unique index on
 // (project_id, codename) protects against races, so retry a handful of random
 // codenames. Each attempt runs in a savepoint (nested transaction) so a
@@ -480,9 +491,10 @@ export type CreateOpenIncidentOpts = {
 async function allocateOpenIncidentInTx(
   tx: Tx,
   opts: CreateOpenIncidentOpts,
+  dependencies: IncidentLifecycleDependencies,
 ): Promise<schema.Incident> {
   for (let attempt = 0; attempt < 6; attempt++) {
-    const codename = generateCodename();
+    const codename = dependencies.generateCodename();
     try {
       const created = await tx.transaction((sp) =>
         sp
@@ -509,10 +521,35 @@ async function allocateOpenIncidentInTx(
       if ((anyErr?.code ?? anyErr?.cause?.code) !== "23505") throw err;
     }
   }
-  throw new Error("failed to allocate a unique incident codename after 6 attempts");
+  // A mature project can eventually occupy most or all of the finite friendly
+  // adjective/animal namespace. Keep the readable prefix, then tie the
+  // fallback's uniqueness to the incident UUID protected by the primary key.
+  const id = dependencies.generateIncidentId();
+  const codename = `${dependencies.generateCodename()}-${id}`;
+  const created = await tx
+    .insert(schema.incidents)
+    .values({
+      id,
+      projectId: opts.projectId,
+      service: opts.service,
+      environment: opts.environment ?? null,
+      title: opts.title,
+      codename,
+      status: "open",
+      firstSeen: opts.firstSeen,
+      lastSeen: opts.lastSeen,
+      issueCount: 0,
+    })
+    .returning();
+  if (created[0]) return created[0];
+  throw new Error("failed to allocate an incident codename");
 }
 
-export function createIncidentLifecycle(database: DB = db) {
+export function createIncidentLifecycle(
+  database: DB = db,
+  dependencyOverrides: Partial<IncidentLifecycleDependencies> = {},
+) {
+  const dependencies = { ...defaultIncidentLifecycleDependencies, ...dependencyOverrides };
   const repository = createIncidentRepository(database);
   const resolve = async (input: ResolveIncidentInput): Promise<ResolveIncidentResult> => {
     const result = await repository.transaction((tx) => resolveIncidentInTx(tx, input, repository));
@@ -631,14 +668,14 @@ export function createIncidentLifecycle(database: DB = db) {
   return {
     // Open an incident in its own transaction.
     async createOpen(opts: CreateOpenIncidentOpts): Promise<schema.Incident> {
-      return database.transaction((tx) => allocateOpenIncidentInTx(tx, opts));
+      return database.transaction((tx) => allocateOpenIncidentInTx(tx, opts, dependencies));
     },
 
     // Same allocation, but joins a caller's transaction so the incident and
     // whatever else the caller writes (e.g. an initial agent run) commit
     // atomically — no orphan incident on partial failure.
     createOpenInTx(tx: Tx, opts: CreateOpenIncidentOpts): Promise<schema.Incident> {
-      return allocateOpenIncidentInTx(tx, opts);
+      return allocateOpenIncidentInTx(tx, opts, dependencies);
     },
 
     // Linking and resolving both take the Incident row lock before inspecting
@@ -861,14 +898,18 @@ export function createIncidentLifecycle(database: DB = db) {
     }): Promise<schema.Incident> {
       const now = opts.now ?? new Date();
       const created = await repository.transaction(async (tx) => {
-        const incident = await allocateOpenIncidentInTx(tx, {
-          projectId: opts.issue.projectId,
-          service: opts.issue.service ?? opts.previousIncident.service,
-          environment: opts.environment ?? opts.previousIncident.environment,
-          title: opts.issue.title,
-          firstSeen: opts.issue.lastSeen,
-          lastSeen: opts.issue.lastSeen,
-        });
+        const incident = await allocateOpenIncidentInTx(
+          tx,
+          {
+            projectId: opts.issue.projectId,
+            service: opts.issue.service ?? opts.previousIncident.service,
+            environment: opts.environment ?? opts.previousIncident.environment,
+            title: opts.issue.title,
+            firstSeen: opts.issue.lastSeen,
+            lastSeen: opts.issue.lastSeen,
+          },
+          dependencies,
+        );
         await repository.updateIncidentInTx(
           tx,
           incident.id,
