@@ -31,16 +31,16 @@ registerTenantMetrics();
 registerAgentRunHealthMetrics();
 registerQueueHealthMetrics();
 
-const CLICKHOUSE_URL = process.env.CLICKHOUSE_URL ?? "http://localhost:8123";
-const CLICKHOUSE_DB = process.env.CLICKHOUSE_DB ?? "superlog";
+import { CLICKHOUSE_DB, CLICKHOUSE_PASSWORD, CLICKHOUSE_URL, CLICKHOUSE_USER } from "./infra/clickhouse/config.js";
+
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 3000);
 const BATCH_SIZE = Number(process.env.BATCH_SIZE ?? 500);
 const TELEMETRY_DISCOVERY_WINDOW_MS = Number(process.env.TELEMETRY_DISCOVERY_WINDOW_MS);
 
 const ch = createClient({
   url: CLICKHOUSE_URL,
-  username: process.env.CLICKHOUSE_USER ?? "default",
-  password: process.env.CLICKHOUSE_PASSWORD ?? "",
+  username: CLICKHOUSE_USER,
+  password: CLICKHOUSE_PASSWORD,
   database: CLICKHOUSE_DB,
 });
 

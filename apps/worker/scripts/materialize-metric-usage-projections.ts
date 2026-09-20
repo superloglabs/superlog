@@ -16,11 +16,13 @@ import { METRIC_TABLES } from "../src/billing/metric-usage-schema.js";
 type Args = { from: string; to: string; apply: boolean };
 
 const args = parseArgs(process.argv.slice(2));
+import { CLICKHOUSE_DB, CLICKHOUSE_PASSWORD, CLICKHOUSE_URL, CLICKHOUSE_USER } from "../src/infra/clickhouse/config.js";
+
 const clickhouse = createClient({
-  url: process.env.CLICKHOUSE_URL ?? "http://localhost:8123",
-  username: process.env.CLICKHOUSE_USER ?? "default",
-  password: process.env.CLICKHOUSE_PASSWORD ?? "",
-  database: process.env.CLICKHOUSE_DB ?? "superlog",
+  url: CLICKHOUSE_URL,
+  username: CLICKHOUSE_USER,
+  password: CLICKHOUSE_PASSWORD,
+  database: CLICKHOUSE_DB,
   // This is an explicit maintenance command that waits for replicated
   // mutations. The normal worker query deadline remains 30 seconds.
   request_timeout: 6 * 60 * 60 * 1000,
