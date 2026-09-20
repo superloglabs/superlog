@@ -6,19 +6,7 @@ import { TopNav } from "./Landing.tsx";
 
 type AuthMode = "sign-in" | "sign-up" | null;
 
-// Pay-as-you-go unit prices. Source of truth: packages/billing/src/pricing.ts —
-// keep in sync if those change.
-const PAYG = {
-  investigationUsd: 1.5,
-  spansPerMillionUsd: 0.5,
-  logsPerMillionUsd: 0.5,
-  metricPointsPerMillionUsd: 0.15,
-  includedInvestigations: 50,
-  promotionalInvestigations: 100,
-  includedSpans: 1_000_000,
-  includedLogs: 5_000_000,
-  includedMetricPoints: 10_000_000,
-};
+import { PLANS, PAYG_RATES, PAYG_PROMOTION_CREDITS } from "@superlog/billing";
 
 const FREE_INCLUDED = [
   "1M spans",
@@ -276,13 +264,13 @@ function PaygEstimator({ onSignUp }: { onSignUp: () => void }) {
 
   const billableInvestigations = Math.max(
     0,
-    investigations - PAYG.includedInvestigations - PAYG.promotionalInvestigations,
+    investigations - PLANS.payg.includedCredits - PAYG_PROMOTION_CREDITS,
   );
-  const spansUsd = (Math.max(0, spans - PAYG.includedSpans) / 1_000_000) * PAYG.spansPerMillionUsd;
-  const logsUsd = (Math.max(0, logs - PAYG.includedLogs) / 1_000_000) * PAYG.logsPerMillionUsd;
+  const spansUsd = (Math.max(0, spans - (PLANS.payg.includedTelemetry?.spans ?? 0)) / 1_000_000) * PAYG_RATES.spansPerMillionUsd;
+  const logsUsd = (Math.max(0, logs - (PLANS.payg.includedTelemetry?.logs ?? 0)) / 1_000_000) * PAYG_RATES.logsPerMillionUsd;
   const metricsUsd =
-    (Math.max(0, metrics - PAYG.includedMetricPoints) / 1_000_000) * PAYG.metricPointsPerMillionUsd;
-  const investigationUsd = billableInvestigations * PAYG.investigationUsd;
+    (Math.max(0, metrics - (PLANS.payg.includedTelemetry?.metric_points ?? 0)) / 1_000_000) * PAYG_RATES.metricPointsPerMillionUsd;
+  const investigationUsd = billableInvestigations * PAYG_RATES.investigationCreditUsd;
   const total = investigationUsd + spansUsd + logsUsd + metricsUsd;
 
   return (
