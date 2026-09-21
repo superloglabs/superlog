@@ -42,8 +42,11 @@ processors:
       - delete_matching_keys(span.attributes, "^superlog\\..*")
       - delete_matching_keys(resource.attributes, "^superlog\\..*")
     log_statements:
+      - set(log.attributes["__tmp_superlog_issue_fingerprint"], log.attributes["superlog.issue_fingerprint"]) where log.attributes["superlog.issue_fingerprint"] != nil
       - delete_matching_keys(log.attributes, "^superlog\\..*")
       - delete_matching_keys(resource.attributes, "^superlog\\..*")
+      - set(log.attributes["superlog.issue_fingerprint"], log.attributes["__tmp_superlog_issue_fingerprint"]) where log.attributes["__tmp_superlog_issue_fingerprint"] != nil
+      - delete_key(log.attributes, "__tmp_superlog_issue_fingerprint")
     metric_statements:
       - delete_matching_keys(datapoint.attributes, "^superlog\\..*")
       - delete_matching_keys(resource.attributes, "^superlog\\..*")

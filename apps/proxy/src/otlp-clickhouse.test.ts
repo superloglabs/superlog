@@ -85,11 +85,10 @@ test("otlpLogsToRows strips superlog.* from resource attrs and stamps the real p
   // no stray superlog.* keys other than the stamped project id
   const superlogKeys = Object.keys(rows[0]!.ResourceAttributes).filter((k) => k.startsWith("superlog."));
   assert.deepEqual(superlogKeys, ["superlog.project_id"]);
-  // superlog.* is stripped from log record attributes too (matches the collector's
-  // transform/strip_superlog on log.attributes); project id lives only on resource attrs.
-  assert.equal(rows[0]!.LogAttributes["superlog.issue_fingerprint"], undefined);
+  // superlog.issue_fingerprint is preserved for issue-activity rollups
+  assert.equal(rows[0]!.LogAttributes["superlog.issue_fingerprint"], "deadbeef");
   assert.equal(
-    Object.keys(rows[0]!.LogAttributes).some((k) => k.startsWith("superlog.")),
+    Object.keys(rows[0]!.LogAttributes).some((k) => k.startsWith("superlog.") && k !== "superlog.issue_fingerprint"),
     false,
   );
 });
@@ -197,8 +196,8 @@ test("otlpTracesToRows strips superlog.* from resource and span attrs, stamps pr
   assert.equal(r.ResourceAttributes["superlog.project_id"], "proj-xyz");
   assert.equal(r.ResourceAttributes["service.name"], "api");
   assert.equal(r.SpanAttributes["http.method"], "GET");
-  // span-level superlog.* stripped (matches collector transform/strip_superlog)
-  assert.equal(r.SpanAttributes["superlog.issue_fingerprint"], undefined);
+  // span-level superlog.* stripped except for the fingerprint
+  assert.equal(r.SpanAttributes["superlog.issue_fingerprint"], "deadbeef");
 });
 
 test("otlpTracesToRows flattens events and links into parallel arrays", () => {
