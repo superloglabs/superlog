@@ -5,6 +5,10 @@ import {
   recoverTelemetryTimeout,
 } from "./telemetry-recovery.js";
 
+function makeValidationError(message: string): Error {
+  return Object.assign(new Error(message), { name: "TimeRangeValidationError" });
+}
+
 test("a telemetry timeout becomes retry guidance without dropping filters", () => {
   const recovery = recoverTelemetryTimeout(
     "query_logs",
@@ -192,6 +196,24 @@ test("permanent telemetry errors are not converted into retry guidance", () => {
   assert.equal(recoverTelemetryTimeout("query_logs", {}, error), undefined);
 });
 
+test("a compound interval range narrows to its final hour on timeout", () => {
+  const recovery = recoverTelemetryTimeout(
+    "query_logs",
+    {
+      range: {
+        since: "now() - INTERVAL 8 HOUR 30 MINUTE",
+        until: "now()",
+      },
+    },
+    new Error("Timeout error."),
+  );
+
+  assert.deepEqual(recovery?.suggested_input.range, {
+    since: "now() - INTERVAL 1 HOUR",
+    until: "now()",
+  });
+});
+
 test("the MCP boundary returns timeout recovery as a successful value", async () => {
   const observed: unknown[] = [];
   const result = await executeRecoverableTelemetryQuery(
@@ -227,4 +249,41 @@ test("the MCP boundary still rejects permanent backend failures", async () => {
     (cause) => cause === error,
   );
   assert.deepEqual(observed, [error]);
+});
+
+test("a TimeRangeValidationError returns validation_failed without calling onPermanentFailure", async () => {
+  const observed: unknown[] = [];
+  const result = await executeRecoverableTelemetryQuery(
+    "query_logs",
+    { range: { until: "now() - INTERVAL 8 HOUR 30 MINUTE" } },
+    async () => {
+      throw makeValidationError(
+        "invalid until time bound: now() - INTERVAL 8 HOUR 30 MINUTE",
+      );
+    },
+    undefined,
+    (cause) => observed.push(cause),
+  );
+
+  assert.equal(result.status, "validation_failed");
+  assert.equal(result.retryable, false);
+  assert.equal(observed.length, 0);
+});
+
+test("a zero-interval TimeRangeValidationError returns validation_failed", async () => {
+  const observed: unknown[] = [];
+  const result = await executeRecoverableTelemetryQuery(
+    "query_logs",
+    {},
+    async () => {
+      throw makeValidationError(
+        "invalid since time bound: now() - INTERVAL 0 HOUR",
+      );
+    },
+    undefined,
+    (cause) => observed.push(cause),
+  );
+
+  assert.equal(result.status, "validation_failed");
+  assert.equal(observed.length, 0);
 });

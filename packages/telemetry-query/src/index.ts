@@ -48,15 +48,22 @@ export function fieldColumnExpr(field: string, source: FieldFilterSource): strin
 }
 
 const RELATIVE_TIME_EXPR_RE =
-  /^now\(\)(?:\s*-\s*INTERVAL\s+(?:[1-9][0-9]*)\s+(?:SECOND|MINUTE|HOUR|DAY|WEEK|MONTH))?$/i;
+  /^now\(\)(?:\s*-\s*INTERVAL(?:\s+\d+\s+(?:SECOND|MINUTE|HOUR|DAY|WEEK|MONTH))+)?$/i;
 const ISO_TIME_BOUND_RE =
   /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
+
+export class TimeRangeValidationError extends Error {
+  override name = "TimeRangeValidationError";
+  constructor(message: string) {
+    super(message);
+  }
+}
 
 function timeBoundExpr(value: string, paramName: "since" | "until"): string {
   const normalized = value.trim().replace(/\s+/g, " ");
   if (RELATIVE_TIME_EXPR_RE.test(normalized)) return normalized;
   if (!ISO_TIME_BOUND_RE.test(normalized) || Number.isNaN(Date.parse(normalized))) {
-    throw new Error(`invalid ${paramName} time bound: ${value}`);
+    throw new TimeRangeValidationError(`invalid ${paramName} time bound: ${value}`);
   }
   return `parseDateTime64BestEffortOrZero({${paramName}:String})`;
 }

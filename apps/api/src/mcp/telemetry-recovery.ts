@@ -6,6 +6,13 @@ export type McpTelemetryToolName =
   | "query_metrics"
   | "list_services";
 
+export type TelemetryValidationFailed = {
+  status: "validation_failed";
+  tool: McpTelemetryToolName;
+  message: string;
+  retryable: false;
+};
+
 export type TelemetryRetryRequired = {
   status: "retry_required";
   tool: McpTelemetryToolName;
@@ -77,9 +84,9 @@ function isRetryableTelemetryTimeout(error: unknown): boolean {
 
 const HOUR_MS = 60 * 60_000;
 const RELATIVE_TIME_RE =
-  /^now\(\)(?:\s*-\s*INTERVAL\s+([1-9][0-9]*)\s+(SECOND|MINUTE|HOUR|DAY|WEEK))?$/i;
+  /^now\(\)(?:\s*-\s*INTERVAL((?:\s+\d+\s+(?:SECOND|MINUTE|HOUR|DAY|WEEK))+))?$/i;
 const RELATIVE_MONTH_RE =
-  /^now\(\)(?:\s*-\s*INTERVAL\s+([1-9][0-9]*)\s+MONTH)?$/i;
+  /^now\(\)(?:\s*-\s*INTERVAL\s+(\d+)\s+MONTH)?$/i;
 const UNIT_MS = {
   SECOND: 1_000,
   MINUTE: 60_000,
@@ -89,13 +96,21 @@ const UNIT_MS = {
 } as const;
 
 function relativeOffsetMs(value: string): number | undefined {
-  const match = RELATIVE_TIME_RE.exec(value.trim().replace(/\s+/g, " "));
+  const normalized = value.trim().replace(/\s+/g, " ");
+  const match = RELATIVE_TIME_RE.exec(normalized);
   if (!match) return undefined;
-  if (!match[1] || !match[2]) return 0;
-  const amount = Number(match[1]);
-  const unit = match[2].toUpperCase() as keyof typeof UNIT_MS;
-  const offset = amount * UNIT_MS[unit];
-  return Number.isSafeInteger(offset) ? offset : undefined;
+  if (!match[1]) return 0;
+  const pairRe = /(\d+) (SECOND|MINUTE|HOUR|DAY|WEEK)/gi;
+  let total = 0;
+  let found = false;
+  for (const m of match[1].matchAll(pairRe)) {
+    const amount = Number(m[1]);
+    const unit = (m[2] ?? "").toUpperCase() as keyof typeof UNIT_MS;
+    if (!unit) continue;
+    total += amount * UNIT_MS[unit];
+    found = true;
+  }
+  return found && Number.isSafeInteger(total) ? total : undefined;
 }
 
 function relativeTimeFromOffset(offsetMs: number): string {
@@ -273,13 +288,26 @@ export async function executeRecoverableTelemetryQuery<T>(
   query: () => Promise<T>,
   onTimeout?: (error: unknown, recovery: TelemetryRetryRequired) => void,
   onPermanentFailure?: (error: unknown) => void,
-): Promise<T | TelemetryRetryRequired> {
+): Promise<T | TelemetryRetryRequired | TelemetryValidationFailed> {
   const startedAt = performance.now();
   try {
     const result = await query();
     recordTelemetryQueryOutcome(tool, "success", performance.now() - startedAt);
     return result;
   } catch (error) {
+    if (error instanceof Error && error.name === "TimeRangeValidationError") {
+      recordTelemetryQueryOutcome(
+        tool,
+        "permanent_failure",
+        performance.now() - startedAt,
+      );
+      return {
+        status: "validation_failed",
+        tool,
+        message: `Invalid time range: ${error.message}. Use an ISO-8601 timestamp (e.g. '2026-01-01T00:00:00Z') or a ClickHouse relative expression (e.g. 'now() - INTERVAL 1 HOUR').`,
+        retryable: false,
+      };
+    }
     const recovery = recoverTelemetryTimeout(tool, input, error);
     if (!recovery) {
       recordTelemetryQueryOutcome(
