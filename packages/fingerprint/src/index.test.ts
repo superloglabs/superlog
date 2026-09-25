@@ -455,3 +455,90 @@ test("fingerprintLog strips NUL bytes from exception type", () => {
   });
   assert.equal(fp.exceptionType.includes(NUL), false);
 });
+
+// OpenTelemetry's Python logging handler and Java log appenders attach
+// `exception.stacktrace` in their own language's format, which the V8 frame
+// parser does not read. Without frames, a log fingerprint must still keep
+// the service and message, or every error of one type collapses together.
+function pythonTraceback(file: string, fn: string, type: string, message: string): string {
+  return [
+    "Traceback (most recent call last):",
+    `  File "/srv/app/${file}", line 42, in ${fn}`,
+    "    handle(order)",
+    `${type}: ${message}`,
+  ].join("\n");
+}
+
+test("fingerprintLog keeps unrelated Python log exceptions of one type separate", () => {
+  const checkout = fingerprintLog({
+    service: "checkout-api",
+    severity: "ERROR",
+    body: "Failed to charge card for order 1001",
+    exceptionType: "KeyError",
+    stacktrace: pythonTraceback("payments.py", "charge_card", "KeyError", "'card_token'"),
+  });
+  const importer = fingerprintLog({
+    service: "catalog-worker",
+    severity: "ERROR",
+    body: "Could not import product feed",
+    exceptionType: "KeyError",
+    stacktrace: pythonTraceback("importer.py", "import_feed", "KeyError", "'sku'"),
+  });
+
+  assert.notEqual(checkout.hash, importer.hash);
+});
+
+test("fingerprintLog keeps unrelated Java log exceptions of one type separate", () => {
+  const javaStack = (frame: string) =>
+    ["java.lang.IllegalStateException: invalid state", `\tat ${frame}`].join("\n");
+  const billing = fingerprintLog({
+    service: "billing",
+    severity: "ERROR",
+    body: "Invoice sync failed",
+    exceptionType: "java.lang.IllegalStateException",
+    stacktrace: javaStack("com.acme.billing.InvoiceSync.run(InvoiceSync.java:88)"),
+  });
+  const search = fingerprintLog({
+    service: "search",
+    severity: "ERROR",
+    body: "Index rebuild failed",
+    exceptionType: "java.lang.IllegalStateException",
+    stacktrace: javaStack("com.acme.search.Indexer.rebuild(Indexer.java:17)"),
+  });
+
+  assert.notEqual(billing.hash, search.hash);
+});
+
+test("fingerprintLog still groups repeated Python log exceptions by message", () => {
+  const forOrder = (orderId: string) =>
+    fingerprintLog({
+      service: "checkout-api",
+      severity: "ERROR",
+      body: `Failed to charge card for order ${orderId}`,
+      exceptionType: "KeyError",
+      stacktrace: pythonTraceback("payments.py", "charge_card", "KeyError", "'card_token'"),
+    });
+
+  assert.equal(forOrder("1001").hash, forOrder("2002").hash);
+});
+
+test("fingerprintLog keeps frame-based hashes for parseable log stacks", () => {
+  const stacktrace = [
+    "TypeError: Cannot read properties of undefined (reading 'id')",
+    "    at loadUser (/app/src/users.ts:10:5)",
+    "    at handler (/app/src/routes.ts:20:3)",
+  ].join("\n");
+  const logFingerprint = fingerprintLog({
+    service: "api",
+    severity: "ERROR",
+    body: "request failed",
+    exceptionType: "TypeError",
+    stacktrace,
+  });
+
+  assert.equal(logFingerprint.hash, fingerprint({ type: "TypeError", stacktrace }).hash);
+  assert.deepEqual(logFingerprint.normalizedFrames, [
+    "loadUser@app/src/users.ts",
+    "handler@app/src/routes.ts",
+  ]);
+});
