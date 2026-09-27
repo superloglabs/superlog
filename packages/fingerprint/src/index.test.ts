@@ -509,6 +509,26 @@ test("fingerprintLog keeps unrelated Java log exceptions of one type separate", 
   assert.notEqual(billing.hash, search.hash);
 });
 
+test("fingerprintLog separates one service's Python log exceptions by message", () => {
+  const stacktrace = pythonTraceback("payments.py", "charge_card", "KeyError", "'card_token'");
+  const charge = fingerprintLog({
+    service: "checkout-api",
+    severity: "ERROR",
+    body: "Failed to charge card for order 1001",
+    exceptionType: "KeyError",
+    stacktrace,
+  });
+  const refund = fingerprintLog({
+    service: "checkout-api",
+    severity: "ERROR",
+    body: "Failed to refund order 1001",
+    exceptionType: "KeyError",
+    stacktrace,
+  });
+
+  assert.notEqual(charge.hash, refund.hash);
+});
+
 test("fingerprintLog still groups repeated Python log exceptions by message", () => {
   const forOrder = (orderId: string) =>
     fingerprintLog({
