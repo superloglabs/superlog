@@ -1,7 +1,7 @@
 // Production wiring for the agent-run queue: binds queue.ts (pure, tested
 // against fakes) to the real database, context loader, and state handlers.
-import { db, schema } from "@superlog/db";
-import { and, asc, eq, inArray, isNotNull, or } from "drizzle-orm";
+import { INBOUND_INTERACTION_EVENT_KINDS, db, schema } from "@superlog/db";
+import { and, asc, eq, exists, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { loadAgentRunContext } from "../agent-run-context.js";
 import { ACTIVE_STATES, createAgentRunLifecycle } from "../agent-run.js";
 import { setAgentRunJobDispatch } from "./enqueue.js";
@@ -43,16 +43,50 @@ export async function startAgentRunQueue(boss: AgentRunQueueBoss): Promise<void>
     },
     hasDetachedSessionTermination: hasPendingDetachedAgentRunSession,
     listActiveRunIds: async () => {
+      // States that require sweeping on every tick: the provider may produce
+      // output at any time, so these must be re-enqueued regardless of whether
+      // pending input exists.
+      const alwaysActiveStates = ACTIVE_STATES.filter(
+        (s) => s !== "awaiting_human" && s !== "awaiting_events",
+      );
+      // "Parked" states: the run only advances when an external event arrives
+      // (Slack reply, PR lifecycle event). Include them in the sweep only when
+      // there is already an unprocessed event waiting — this prevents the sweep
+      // from flooding the advance queue with no-op jobs for hundreds of idle
+      // parked runs, which was the source of a queue-depth spike when the
+      // active-run population grows beyond the consumer concurrency.
+      const parkedStates = ["awaiting_human", "awaiting_events"] as const;
+      const resumeEventKinds = [
+        ...INBOUND_INTERACTION_EVENT_KINDS,
+        "incident_context_changed",
+      ] as const;
+
       const [rows, pendingHandoffs, pendingDetachedSessions] = await Promise.all([
         db
           .select({ id: schema.agentRuns.id })
           .from(schema.agentRuns)
           .where(
             or(
-              inArray(schema.agentRuns.state, [...ACTIVE_STATES]),
+              inArray(schema.agentRuns.state, [...alwaysActiveStates]),
               and(
                 eq(schema.agentRuns.providerSessionStatus, "termination_pending"),
                 isNotNull(schema.agentRuns.providerSessionId),
+              ),
+              // Parked runs: only sweep when there is pending input to deliver.
+              and(
+                inArray(schema.agentRuns.state, [...parkedStates]),
+                exists(
+                  db
+                    .select({ one: sql`1` })
+                    .from(schema.incidentEvents)
+                    .where(
+                      and(
+                        eq(schema.incidentEvents.agentRunId, schema.agentRuns.id),
+                        inArray(schema.incidentEvents.kind, [...resumeEventKinds]),
+                        isNull(schema.incidentEvents.processedAt),
+                      ),
+                    ),
+                ),
               ),
             ),
           )
