@@ -48,7 +48,8 @@ export const ISSUE_TRANSITION_QUEUE = "issue-transition";
 // grouping call would hold every fetched transition active until queue
 // expiry (the agent-run queue hit exactly this in prod — see
 // agent-runs/queue.ts).
-const WORKER_CONCURRENCY = 5;
+const DEFAULT_CONCURRENCY = 5;
+const MAX_CONCURRENCY = 20;
 
 // Covers every dispatch site: telemetry ingest and alerts send "new" /
 // "recurred"; observation escalations send "escalated".
@@ -179,20 +180,34 @@ function createKeyedMutex(): <T>(key: string, fn: () => Promise<T>) => Promise<T
 // time; a job's failure is logged and swallowed (at-most-once, matching the
 // previous inline behavior) so one poisoned transition can't wedge or re-run
 // the rest. Same-project jobs additionally serialize behind each other.
+//
+// `concurrency` controls how many transitions run concurrently per process.
+// Defaults to DEFAULT_CONCURRENCY (5). Set lower when sustained event-loop
+// utilisation from concurrent LLM grouping calls competes with telemetry
+// ingest latency, or higher when queue lag is the binding constraint. Capped
+// at MAX_CONCURRENCY to prevent unconstrained memory growth from concurrent
+// Anthropic API connections. Matches the pattern in agent-runs/queue.ts.
+function clampConcurrency(value: number | undefined): number {
+  if (value === undefined || !Number.isInteger(value) || value < 1) return DEFAULT_CONCURRENCY;
+  return Math.min(value, MAX_CONCURRENCY);
+}
+
 export async function registerIssueTransitionWorker(
   boss: Pick<TransitionQueueBoss, "createQueue" | "work">,
   opts: {
     handle: DispatchIssueTransition;
     loadIssue: (issueId: string) => Promise<schema.Issue | null | undefined>;
+    concurrency?: number;
     logger?: LoggerLike;
   },
 ): Promise<void> {
   const logger = opts.logger ?? defaultLogger;
+  const concurrency = clampConcurrency(opts.concurrency);
   const perProject = createKeyedMutex();
   await boss.createQueue(ISSUE_TRANSITION_QUEUE);
   await boss.work(
     ISSUE_TRANSITION_QUEUE,
-    { batchSize: 1, localConcurrency: WORKER_CONCURRENCY },
+    { batchSize: 1, localConcurrency: concurrency },
     async (jobs) => {
       await Promise.all(
         jobs.map(async (job) => {
