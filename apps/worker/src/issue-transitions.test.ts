@@ -121,6 +121,34 @@ test("worker registration creates a standard queue and a batch worker", async ()
   });
 });
 
+test("worker registration respects a caller-supplied concurrency", async () => {
+  const fb = fakeBoss();
+  await registerIssueTransitionWorker(fb.boss, {
+    handle: async () => {},
+    loadIssue: async () => null,
+    concurrency: 3,
+  });
+
+  assert.deepEqual(fb.workOptions.get(ISSUE_TRANSITION_QUEUE), {
+    batchSize: 1,
+    localConcurrency: 3,
+  });
+});
+
+test("worker registration clamps concurrency to the maximum", async () => {
+  const fb = fakeBoss();
+  await registerIssueTransitionWorker(fb.boss, {
+    handle: async () => {},
+    loadIssue: async () => null,
+    concurrency: 999,
+  });
+
+  // Should be capped at MAX_CONCURRENCY (20), not the requested 999.
+  const opts = fb.workOptions.get(ISSUE_TRANSITION_QUEUE) as { batchSize: number; localConcurrency: number };
+  assert.ok(opts.localConcurrency <= 20, `concurrency ${opts.localConcurrency} should be at most 20`);
+  assert.ok(opts.localConcurrency > 0, "concurrency must be positive");
+});
+
 test("the queue worker reloads each issue and runs the handler", async () => {
   const fb = fakeBoss();
   const handled: Array<{ issueId: string; transition: string }> = [];

@@ -73,6 +73,10 @@ if (transitionBoss) {
       handle: handleIssueTransition,
       loadIssue: async (issueId) =>
         db.query.issues.findFirst({ where: (issues, { eq }) => eq(issues.id, issueId) }),
+      concurrency: (() => {
+        const v = Number(process.env.ISSUE_TRANSITION_JOB_CONCURRENCY);
+        return Number.isInteger(v) && v > 0 ? v : undefined;
+      })(),
     });
   } catch (err) {
     logger.error(
