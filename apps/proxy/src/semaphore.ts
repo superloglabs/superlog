@@ -14,10 +14,21 @@
  * A permit count of <= 0 disables the limiter (acquire resolves immediately,
  * release is a no-op) — an escape hatch via INGEST_MAX_INFLIGHT_REQUESTS=0.
  */
+
+// Linked-list node for the FIFO waiter queue. A linked list gives O(1) push
+// and shift — `Array.shift()` is O(n) and creates superlinear CPU pressure
+// under burst load when many requests queue on the semaphore simultaneously.
+type WaiterNode = {
+  resolve: () => void;
+  next: WaiterNode | null;
+};
+
 export class Semaphore {
   private readonly limited: boolean;
   private available: number;
-  private readonly waiters: Array<() => void> = [];
+  private head: WaiterNode | null = null;
+  private tail: WaiterNode | null = null;
+  private waitersLength = 0;
 
   constructor(permits: number) {
     this.limited = permits > 0;
@@ -31,18 +42,28 @@ export class Semaphore {
       return Promise.resolve();
     }
     return new Promise<void>((resolve) => {
-      this.waiters.push(resolve);
+      const node: WaiterNode = { resolve, next: null };
+      if (this.tail) {
+        this.tail.next = node;
+      } else {
+        this.head = node;
+      }
+      this.tail = node;
+      this.waitersLength += 1;
     });
   }
 
   release(): void {
     if (!this.limited) return;
-    const next = this.waiters.shift();
-    if (next) {
+    const head = this.head;
+    if (head) {
       // Hand the permit straight to the next waiter without round-tripping
       // through `available`, so a steady stream of releases keeps the queue
       // draining in FIFO order.
-      next();
+      this.head = head.next;
+      if (!this.head) this.tail = null;
+      this.waitersLength -= 1;
+      head.resolve();
       return;
     }
     this.available += 1;
@@ -53,6 +74,6 @@ export class Semaphore {
   }
 
   get queueLength(): number {
-    return this.waiters.length;
+    return this.waitersLength;
   }
 }
