@@ -365,43 +365,107 @@ function accumulateIssue(groups: Map<string, PendingIssue>, candidate: PendingIs
   }
 }
 
+// Bounded concurrent map: runs `map` over every item with at most `concurrency`
+// in-flight at once. Same pattern as agent-runs/prompt-context.ts.
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  map: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await map(items[index] as T);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return results;
+}
+
+// How many upserts to run concurrently. postgres.js defaults to max:10
+// connections shared with the tick's own queries and pg-boss workers.
+// 8 parallel upserts turn N sequential round-trips into ⌈N/8⌉ rounds —
+// a ×8 speedup for large groups — while leaving head-room in the pool.
+const UPSERT_CONCURRENCY = 8;
+
 // Upsert every accumulated group, isolating each one so a single failing group
 // (e.g. a value Postgres rejects) is logged + counted and skipped rather than
-// wedging the cursor for the whole batch.
+// wedging the cursor for the whole batch. Upserts run concurrently (bounded by
+// UPSERT_CONCURRENCY) because each targets a distinct (project_id, fingerprint)
+// key and cannot conflict with another group in the same batch. Transition
+// dispatches follow sequentially: they are sparse (only new/recurred) and each
+// is a fast pg-boss INSERT.
 async function flushIssueGroups(
   database: DB,
   groups: Map<string, PendingIssue>,
   handleIssueTransition: IssueTransitionHandler,
 ): Promise<void> {
-  for (const group of groups.values()) {
-    try {
-      const up = await upsertIssue(database, group);
-      if ((up.transition === "new" || up.transition === "recurred") && up.issue) {
-        logger.info(
+  const entries = [...groups.values()];
+
+  type UpsertOutcome =
+    | { ok: true; group: PendingIssue; transition: Transition; issue: schema.Issue | null }
+    | { ok: false };
+
+  // Phase 1: run all upserts concurrently with a bounded pool.
+  const outcomes = await mapWithConcurrency<PendingIssue, UpsertOutcome>(
+    entries,
+    UPSERT_CONCURRENCY,
+    async (group) => {
+      try {
+        const up = await upsertIssue(database, group);
+        return { ok: true as const, group, transition: up.transition, issue: up.issue };
+      } catch (err) {
+        rowFailures.add(group.eventCount, { "telemetry.kind": group.kind });
+        logger.error(
           {
+            err,
             kind: group.kind,
-            transition: up.transition,
             projectId: group.projectId,
             fingerprint: group.fp.hash,
-            exceptionType: group.fp.exceptionType,
             events: group.eventCount,
           },
-          "issue transition",
+          "issue upsert failed; skipping rows",
         );
-        await handleIssueTransition(up.issue, up.transition);
+        return { ok: false as const };
       }
-    } catch (err) {
-      rowFailures.add(group.eventCount, { "telemetry.kind": group.kind });
-      logger.error(
+    },
+  );
+
+  // Phase 2: dispatch transitions for new/recurred issues. Transition
+  // dispatches are fast pg-boss INSERTs and are sparse relative to the
+  // full upsert set, so sequential execution here is acceptable.
+  for (const outcome of outcomes) {
+    if (!outcome.ok) continue;
+    if ((outcome.transition === "new" || outcome.transition === "recurred") && outcome.issue) {
+      logger.info(
         {
-          err,
-          kind: group.kind,
-          projectId: group.projectId,
-          fingerprint: group.fp.hash,
-          events: group.eventCount,
+          kind: outcome.group.kind,
+          transition: outcome.transition,
+          projectId: outcome.group.projectId,
+          fingerprint: outcome.group.fp.hash,
+          exceptionType: outcome.group.fp.exceptionType,
+          events: outcome.group.eventCount,
         },
-        "issue upsert failed; skipping rows",
+        "issue transition",
       );
+      try {
+        await handleIssueTransition(outcome.issue, outcome.transition);
+      } catch (err) {
+        rowFailures.add(outcome.group.eventCount, { "telemetry.kind": outcome.group.kind });
+        logger.error(
+          {
+            err,
+            kind: outcome.group.kind,
+            projectId: outcome.group.projectId,
+            fingerprint: outcome.group.fp.hash,
+            events: outcome.group.eventCount,
+          },
+          "issue upsert failed; skipping rows",
+        );
+      }
     }
   }
 }
