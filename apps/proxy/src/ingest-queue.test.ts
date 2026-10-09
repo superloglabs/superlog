@@ -32,6 +32,14 @@ test("getIngestQueueConfig reads bounded consumer concurrency", () => {
   assert.equal(config?.consumerConcurrency, 32);
 });
 
+test("getIngestQueueConfig uses 8 concurrent loops by default", () => {
+  const config = getIngestQueueConfig({
+    INGEST_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123/superlog-test-ingest",
+  });
+
+  assert.equal(config?.consumerConcurrency, 8);
+});
+
 test("encodeIngestMessage stores small payloads inline", () => {
   const encoded = encodeIngestMessage(
     baseInput,
