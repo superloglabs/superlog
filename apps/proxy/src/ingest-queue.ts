@@ -48,7 +48,12 @@ const DEFAULT_SQS_MAX_SOCKETS = 64;
 const DEFAULT_WAIT_TIME_SECONDS = 20;
 const DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 120;
 const DEFAULT_BATCH_SIZE = 10;
-const DEFAULT_CONSUMER_CONCURRENCY = 4;
+// Eight concurrent receive loops per process gives the ClickHouseIngestWriter
+// enough concurrent callers to keep its per-table insert pipeline saturated
+// (all eight loops' messages coalesce into one insert per batchLingerMs window)
+// without overwhelming a single ClickHouse node. Deployments that set
+// INGEST_QUEUE_CONSUMER_CONCURRENCY explicitly override this default.
+const DEFAULT_CONSUMER_CONCURRENCY = 8;
 const MAX_COLLECTOR_ERROR_BODY_CHARS = 1_000;
 // SQS hard limits on a single SendMessageBatch/DeleteMessageBatch call: at most
 // 10 entries, and (for sends) at most 256 KiB of total payload across entries.
