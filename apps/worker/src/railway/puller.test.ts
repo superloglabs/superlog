@@ -316,3 +316,56 @@ test("polls metrics on the interval, forwards gauges, and advances the sample cu
       .length,
   );
 });
+
+test("transient token refresh failure with token still valid continues the pass", async () => {
+  // Token expires in 30s (inside the 5-min margin, so a refresh is attempted),
+  // but the stored token has not yet expired. When Railway returns a transient
+  // error the puller must log WARN, not ERROR, and continue with the stored token.
+  const nearExpiry = new Date(NOW.getTime() + 30 * 1000);
+  const { store, calls } = fakeStore([
+    installation({ tokenExpiresAt: nearExpiry, logCursor: { "env-1": "2026-07-07T14:59:00Z" } }),
+  ]);
+  const errors: unknown[] = [];
+  const log = { info() {}, warn() {}, error(...args: unknown[]) { errors.push(args); } };
+  const forwarded: Forwarded = [];
+  const stats = await runRailwayPullOnce({
+    store,
+    config: CONFIG,
+    intakeBaseUrl: "https://intake.test",
+    log,
+    now: () => NOW,
+    fetchImpl: fakeFetch({
+      logs: [LOG_LINE],
+      forwarded,
+      refreshResponse: { error: "server_error" },
+    }),
+    metricsIntervalSeconds: 999999,
+    metricsPollState: new Map([["inst-1:env-1:svc-1", Math.floor(NOW.getTime() / 1000)]]),
+  });
+  assert.equal(errors.length, 0, "must not log ERROR on transient refresh failure");
+  assert.equal(stats.logsForwarded, 1, "must continue and forward logs with the stored token");
+  assert.equal(calls.tokens.length, 0, "must not persist tokens on failed refresh");
+});
+
+test("transient token refresh failure with truly expired token skips the installation", async () => {
+  // Token expired 1s ago — the stored token cannot be used.
+  const expired = new Date(NOW.getTime() - 1000);
+  const { store } = fakeStore([installation({ tokenExpiresAt: expired })]);
+  const forwarded: Forwarded = [];
+  const stats = await runRailwayPullOnce({
+    store,
+    config: CONFIG,
+    intakeBaseUrl: "https://intake.test",
+    log: LOGGER,
+    now: () => NOW,
+    fetchImpl: fakeFetch({
+      logs: [LOG_LINE],
+      forwarded,
+      refreshResponse: { error: "server_error" },
+    }),
+    metricsIntervalSeconds: 999999,
+    metricsPollState: new Map([["inst-1:env-1:svc-1", Math.floor(NOW.getTime() / 1000)]]),
+  });
+  assert.equal(stats.logsForwarded, 0, "must skip when token is truly expired");
+  assert.equal(forwarded.length, 0, "must not forward any logs");
+});
