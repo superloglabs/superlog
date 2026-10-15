@@ -1,0 +1,13 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: Discord Community
+    url: https://discord.gg/wJ56aRh8hx
+
+    about: Ask questions and discuss ideas with the Superlog community
+  - name: Documentation
+    url: https://superlog.sh
+    about: Read the Superlog docs before opening an issue
+  - name: Security Vulnerability
+    url: https://github.com/superloglabs/superlog/blob/main/SECURITY.md
+    about: Please report security issues privately via our security policy
