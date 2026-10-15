@@ -11,6 +11,7 @@ export type AutomationSettingsUpdateValues = {
   prPolicy: string;
   approvalPromptsEnabled: boolean;
   createLinearTicketOnResolve: boolean;
+  linearDefaultTeamId: string | null;
   autoResolveStaleIncidentsEnabled: boolean;
   prBaseBranch: string | null;
   autoMergeFixPrs: string;
@@ -21,6 +22,33 @@ export type AutomationSettingsUpdateValues = {
 const AGENT_POLICIES = new Set(["never", "on_ready_to_pr", "always"]);
 const AUTO_MERGE_POLICIES = new Set(["never", "when_checks_pass", "immediately"]);
 const AUTO_MERGE_METHODS = new Set(["squash", "merge", "rebase"]);
+const MAX_LINEAR_TEAM_ID_LEN = 200;
+
+export class InvalidLinearDefaultTeamError extends Error {}
+
+// undefined keeps the stored team; null or blank clears it so ticket delivery
+// falls back to the workspace's first team.
+export function parseLinearDefaultTeamId(input: unknown, current: string | null): string | null {
+  if (input === undefined) return current;
+  if (input === null) return null;
+  if (typeof input !== "string") {
+    throw new InvalidLinearDefaultTeamError("linearDefaultTeamId must be a string or null");
+  }
+  const teamId = input.trim();
+  if (!teamId) return null;
+  if (teamId.length > MAX_LINEAR_TEAM_ID_LEN) {
+    throw new InvalidLinearDefaultTeamError("linearDefaultTeamId is too long");
+  }
+  return teamId;
+}
+
+export function linearDefaultTeamExists(
+  teamId: string | null,
+  teams: ReadonlyArray<{ id: string }>,
+): boolean {
+  if (!teamId) return true;
+  return teams.some((team) => team.id === teamId);
+}
 
 export function buildAutomationSettingsConflictUpdate<T extends AutomationSettingsUpdateValues>(
   body: Record<string, unknown>,
@@ -61,6 +89,9 @@ export function buildAutomationSettingsConflictUpdate<T extends AutomationSettin
       : {}),
     ...(typeof body.createLinearTicketOnResolve === "boolean"
       ? { createLinearTicketOnResolve: values.createLinearTicketOnResolve }
+      : {}),
+    ...(body.linearDefaultTeamId !== undefined
+      ? { linearDefaultTeamId: values.linearDefaultTeamId }
       : {}),
     ...(typeof body.autoResolveStaleIncidentsEnabled === "boolean"
       ? { autoResolveStaleIncidentsEnabled: values.autoResolveStaleIncidentsEnabled }

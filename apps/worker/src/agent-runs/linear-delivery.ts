@@ -166,10 +166,44 @@ export async function deliverLinearTicketWithDeps(
       };
     }
 
-    let teamId = args.defaultTeamId;
-    if (!teamId) {
-      const teams = await deps.listTeams();
-      teamId = teams[0]?.id ?? null;
+    const description = ticketDescription(
+      {
+        incidentId: args.incidentId,
+        agentRunId: args.agentRunId,
+        incidentTitle: args.incidentTitle,
+        orgSlug: args.orgSlug,
+        projectSlug: args.projectSlug,
+      },
+      result,
+      args.prUrls,
+    );
+    const createUnder = (teamId: string) =>
+      deps.createIssue({ teamId, title: args.incidentTitle, description });
+
+    let issue: LinearIssueRef;
+    if (args.defaultTeamId) {
+      const configuredTeamId = args.defaultTeamId;
+      try {
+        issue = await createUnder(configuredTeamId);
+      } catch (err) {
+        // A configured team that was deleted, or belongs to a workspace the
+        // project has since been reconnected away from, would otherwise fail
+        // every delivery. Fall back to the first team only when the configured
+        // team is confirmed missing; any other failure propagates.
+        if (isRevokedTokenError(err)) throw err;
+        const teams = await deps.listTeams();
+        if (teams.some((team) => team.id === configuredTeamId)) throw err;
+        const fallbackTeamId = teams[0]?.id;
+        if (!fallbackTeamId) throw err;
+        deps.log(
+          "warn",
+          { configured_team_id: configuredTeamId, team_id: fallbackTeamId },
+          "configured linearDefaultTeamId not found in the workspace; using the workspace's first team",
+        );
+        issue = await createUnder(fallbackTeamId);
+      }
+    } else {
+      const teamId = (await deps.listTeams())[0]?.id;
       if (!teamId) {
         deps.log("warn", {}, "linear workspace has no teams; skipping ticket delivery");
         return null;
@@ -179,22 +213,8 @@ export async function deliverLinearTicketWithDeps(
         { team_id: teamId },
         "no linearDefaultTeamId configured; using the workspace's first team",
       );
+      issue = await createUnder(teamId);
     }
-    const issue = await deps.createIssue({
-      teamId,
-      title: args.incidentTitle,
-      description: ticketDescription(
-        {
-          incidentId: args.incidentId,
-          agentRunId: args.agentRunId,
-          incidentTitle: args.incidentTitle,
-          orgSlug: args.orgSlug,
-          projectSlug: args.projectSlug,
-        },
-        result,
-        args.prUrls,
-      ),
-    });
     return { ticketId: issue.id, identifier: issue.identifier, url: issue.url, created: true };
   } catch (err) {
     if (isRevokedTokenError(err)) {

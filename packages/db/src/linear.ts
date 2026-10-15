@@ -212,14 +212,28 @@ async function linearGraphql<T>(
 
 export type LinearTeam = { id: string; key: string; name: string };
 
+const LINEAR_TEAMS_PAGE_SIZE = 250;
+const LINEAR_TEAMS_MAX_PAGES = 20;
+
+// Every team in the workspace, in Linear's default order (the first entry is
+// the ticket-delivery fallback).
 export async function listLinearTeams(accessToken: string): Promise<LinearTeam[]> {
-  const data = await linearGraphql<{ teams: { nodes: LinearTeam[] } }>(
-    accessToken,
-    "query { teams(first: 50) { nodes { id key name } } }",
-    {},
-    "teams query",
-  );
-  return data.teams.nodes;
+  const teams: LinearTeam[] = [];
+  let after: string | null = null;
+  for (let page = 0; page < LINEAR_TEAMS_MAX_PAGES; page++) {
+    const data: {
+      teams: { nodes: LinearTeam[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+    } = await linearGraphql(
+      accessToken,
+      "query($first: Int!, $after: String) { teams(first: $first, after: $after) { nodes { id key name } pageInfo { hasNextPage endCursor } } }",
+      { first: LINEAR_TEAMS_PAGE_SIZE, after },
+      "teams query",
+    );
+    teams.push(...data.teams.nodes);
+    if (!data.teams.pageInfo.hasNextPage || !data.teams.pageInfo.endCursor) break;
+    after = data.teams.pageInfo.endCursor;
+  }
+  return teams;
 }
 
 /**

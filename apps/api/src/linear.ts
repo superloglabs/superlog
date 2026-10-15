@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import {
+  type LinearTeam,
   type ResolveIncidentInput,
   captureAgentPrLifecycleEvent,
   clearedLinearCredentialFields,
@@ -13,13 +14,14 @@ import {
   enqueueIncidentCreated,
   ensureFreshLinearToken,
   exchangeLinearCode,
-  findActiveLinearInstallationByWebhookId,
   fetchLinearAgentSessionSourceType,
   fetchLinearViewer,
+  findActiveLinearInstallationByWebhookId,
   hydrateLinearInstallation,
   integrationSecretEncryptionConfigured,
   linearCredentialFields,
   linearTicketAcceptanceUnit,
+  listLinearTeams,
   recordInboundInteraction,
   recordInboundLinearChatMessage,
   resolveDefaultAgentRunProvider,
@@ -896,6 +898,24 @@ export function mountLinearAuthed(app: Hono<any>): void {
     );
     return c.json({ ok: true });
   });
+}
+
+export type ProjectLinearTeams =
+  | { installed: false }
+  | { installed: true; teams: LinearTeam[]; errored: boolean };
+
+// Teams in the project's connected Linear workspace. Powers the default-team
+// picker in Settings and validates the saved team id.
+export async function listProjectLinearTeams(projectId: string): Promise<ProjectLinearTeams> {
+  const install = await findCurrentInstallation(projectId);
+  if (!install) return { installed: false };
+  try {
+    const teams = await listLinearTeams(await resolveLinearAccessToken(install));
+    return { installed: true, teams, errored: false };
+  } catch (err) {
+    log.warn({ err, project_id: projectId }, "linear teams query failed");
+    return { installed: true, teams: [], errored: true };
+  }
 }
 
 async function findCurrentInstallation(projectId: string) {

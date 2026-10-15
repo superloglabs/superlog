@@ -64,7 +64,12 @@ import { startAuthRateLimitCleanup } from "./auth-rate-limit-cleanup.js";
 import { recordAuthRateLimited } from "./auth-rate-limit-metrics.js";
 import { createDrizzleAuthRateLimitRepository } from "./auth-rate-limit-repository.js";
 import { auth } from "./auth.js";
-import { buildAutomationSettingsConflictUpdate } from "./automation-settings-update.js";
+import {
+  InvalidLinearDefaultTeamError,
+  buildAutomationSettingsConflictUpdate,
+  linearDefaultTeamExists,
+  parseLinearDefaultTeamId,
+} from "./automation-settings-update.js";
 import { shouldRunMigrationsOnBoot } from "./boot-migrations.js";
 import { createApiClickHouseClient } from "./clickhouse-client.js";
 import { mountCloudConnectionsAuthed } from "./cloud-connections.js";
@@ -114,7 +119,7 @@ import {
   buildIssueListItems,
   parseIssueListWindow,
 } from "./issues/list.js";
-import { mountLinearAuthed, mountLinearPublic } from "./linear.js";
+import { listProjectLinearTeams, mountLinearAuthed, mountLinearPublic } from "./linear.js";
 import { logger } from "./logger.js";
 import { mountManagementApi, mountOrgKeyManagementAuthed } from "./management.js";
 import {
@@ -1433,6 +1438,7 @@ async function getProjectAutomation(projectId: string): Promise<{
   prPolicy: schema.PrPolicy;
   approvalPromptsEnabled: boolean;
   createLinearTicketOnResolve: boolean;
+  linearDefaultTeamId: string | null;
   autoResolveStaleIncidentsEnabled: boolean;
   prBaseBranch: string | null;
   autoMergeFixPrs: schema.AutoMergePolicy;
@@ -1455,6 +1461,7 @@ async function getProjectAutomation(projectId: string): Promise<{
     prPolicy: row?.prPolicy ?? "on_ready_to_pr",
     approvalPromptsEnabled: row?.approvalPromptsEnabled ?? true,
     createLinearTicketOnResolve: row?.createLinearTicketOnResolve ?? false,
+    linearDefaultTeamId: row?.linearDefaultTeamId ?? null,
     autoResolveStaleIncidentsEnabled: row?.autoResolveStaleIncidentsEnabled ?? true,
     prBaseBranch: schema.normalizePrBaseBranch(row?.prBaseBranch),
     autoMergeFixPrs: row?.autoMergeFixPrs ?? "never",
@@ -2057,6 +2064,18 @@ app.get("/api/projects/:projectId/github/branches", async (c) => {
   return c.json({ branches: result.branches });
 });
 
+// Teams in the project's connected Linear workspace. Powers the default-team
+// picker for agent-filed tickets in Settings.
+app.get("/api/projects/:projectId/linear/teams", async (c) => {
+  const projectId = c.req.param("projectId");
+  await requireProjectAccess(c, projectId);
+
+  const result = await listProjectLinearTeams(projectId);
+  if (!result.installed) return c.json({ installed: false, teams: [] });
+  if (result.errored) return c.json({ error: "failed to load teams from Linear" }, 502);
+  return c.json({ installed: true, teams: result.teams });
+});
+
 app.patch("/api/projects/:projectId/automation", async (c) => {
   const projectId = c.req.param("projectId");
   await requireProjectManager(c, projectId);
@@ -2075,6 +2094,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     prPolicy?: unknown;
     approvalPromptsEnabled?: unknown;
     createLinearTicketOnResolve?: unknown;
+    linearDefaultTeamId?: unknown;
     autoResolveStaleIncidentsEnabled?: unknown;
     prBaseBranch?: unknown;
     autoMergeFixPrs?: unknown;
@@ -2139,6 +2159,16 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     typeof body.createLinearTicketOnResolve === "boolean"
       ? body.createLinearTicketOnResolve
       : current.createLinearTicketOnResolve;
+  const linearDefaultTeamId = (() => {
+    try {
+      return parseLinearDefaultTeamId(body.linearDefaultTeamId, current.linearDefaultTeamId);
+    } catch (err) {
+      if (err instanceof InvalidLinearDefaultTeamError) {
+        throw new HTTPException(400, { message: err.message });
+      }
+      throw err;
+    }
+  })();
   const autoResolveStaleIncidentsEnabled =
     typeof body.autoResolveStaleIncidentsEnabled === "boolean"
       ? body.autoResolveStaleIncidentsEnabled
@@ -2187,6 +2217,23 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     }
   }
 
+  // Same shape as the branch check: a team that doesn't exist would make ticket
+  // filing fail, so reject it up front, but don't block the save when Linear
+  // can't be reached.
+  if (linearDefaultTeamId && linearDefaultTeamId !== current.linearDefaultTeamId) {
+    const linearTeams = await listProjectLinearTeams(projectId);
+    if (!linearTeams.installed) {
+      throw new HTTPException(400, {
+        message: "Connect Linear to this project before choosing a default team.",
+      });
+    }
+    if (!linearTeams.errored && !linearDefaultTeamExists(linearDefaultTeamId, linearTeams.teams)) {
+      throw new HTTPException(400, {
+        message: `Linear team "${linearDefaultTeamId}" was not found in the connected workspace.`,
+      });
+    }
+  }
+
   const updatedAt = new Date();
   const values = {
     projectId,
@@ -2202,6 +2249,7 @@ app.patch("/api/projects/:projectId/automation", async (c) => {
     prPolicy,
     approvalPromptsEnabled,
     createLinearTicketOnResolve,
+    linearDefaultTeamId,
     autoResolveStaleIncidentsEnabled,
     prBaseBranch,
     autoMergeFixPrs,
