@@ -75,3 +75,41 @@ test("updateLinearAgentSession links the delegated issue to its incident", async
     globalThis.fetch = originalFetch;
   }
 });
+
+test("listLinearTeams follows pagination until the last page", async () => {
+  const { listLinearTeams } = await import("./linear.js");
+  const originalFetch = globalThis.fetch;
+  const cursors: unknown[] = [];
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as { variables: { after: string | null } };
+    cursors.push(body.variables.after);
+    const firstPage = body.variables.after === null;
+    return new Response(
+      JSON.stringify({
+        data: {
+          teams: firstPage
+            ? {
+                nodes: [{ id: "t1", key: "ONE", name: "One" }],
+                pageInfo: { hasNextPage: true, endCursor: "c1" },
+              }
+            : {
+                nodes: [{ id: "t2", key: "TWO", name: "Two" }],
+                pageInfo: { hasNextPage: false, endCursor: "c2" },
+              },
+        },
+      }),
+      { status: 200 },
+    );
+  };
+
+  try {
+    const teams = await listLinearTeams("token");
+    assert.deepEqual(
+      teams.map((t) => t.id),
+      ["t1", "t2"],
+    );
+    assert.deepEqual(cursors, [null, "c1"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

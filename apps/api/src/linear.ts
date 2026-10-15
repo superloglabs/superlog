@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import {
+  type LinearTeam,
   type ResolveIncidentInput,
   captureAgentPrLifecycleEvent,
   clearedLinearCredentialFields,
@@ -13,12 +14,11 @@ import {
   enqueueIncidentCreated,
   ensureFreshLinearToken,
   exchangeLinearCode,
-  findActiveLinearInstallationByWebhookId,
   fetchLinearAgentSessionSourceType,
   fetchLinearViewer,
+  findActiveLinearInstallationByWebhookId,
   hydrateLinearInstallation,
   integrationSecretEncryptionConfigured,
-  type LinearTeam,
   linearCredentialFields,
   linearTicketAcceptanceUnit,
   listLinearTeams,

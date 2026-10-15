@@ -1643,14 +1643,17 @@ export function useLinearInstallation() {
 
 export type LinearTeam = { id: string; key: string; name: string };
 
-// Teams in the project's connected Linear workspace. Used by the default-team
-// picker for agent-filed tickets in Settings.
-export function useLinearTeams(projectId: string | undefined, enabled: boolean) {
+// Teams in the given project's connected Linear workspace. Used by the
+// default-team picker for agent-filed tickets in Settings.
+export function useLinearTeams(projectId: string | undefined) {
   const fetcher = useFetcher();
   return useQuery({
     queryKey: ["linear-teams", projectId],
-    queryFn: () => fetcher<{ teams: LinearTeam[] }>(`/api/projects/${projectId}/linear/teams`),
-    enabled: enabled && !!projectId,
+    queryFn: () =>
+      fetcher<{ installed: boolean; teams: LinearTeam[] }>(
+        `/api/projects/${projectId}/linear/teams`,
+      ),
+    enabled: !!projectId,
   });
 }
 

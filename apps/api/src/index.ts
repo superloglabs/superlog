@@ -2071,9 +2071,9 @@ app.get("/api/projects/:projectId/linear/teams", async (c) => {
   await requireProjectAccess(c, projectId);
 
   const result = await listProjectLinearTeams(projectId);
-  if (!result.installed) return c.json({ error: "linear not connected" }, 404);
+  if (!result.installed) return c.json({ installed: false, teams: [] });
   if (result.errored) return c.json({ error: "failed to load teams from Linear" }, 502);
-  return c.json({ teams: result.teams });
+  return c.json({ installed: true, teams: result.teams });
 });
 
 app.patch("/api/projects/:projectId/automation", async (c) => {

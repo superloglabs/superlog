@@ -101,6 +101,50 @@ test("uses the configured default team without listing teams", async () => {
   assert.equal((deps.calls.createIssue[0] as { teamId: string }).teamId, "team-9");
 });
 
+test("falls back to the workspace's first team when the configured team is gone", async () => {
+  const warnings: string[] = [];
+  const deps = makeDeps({
+    log: (level, _fields, msg) => {
+      if (level === "warn") warnings.push(msg);
+    },
+  });
+  const createIssue = deps.createIssue;
+  deps.createIssue = async (args) => {
+    if (args.teamId === "team-deleted")
+      throw new Error("linear issueCreate failed: team not found");
+    return createIssue(args);
+  };
+  const ticket = await deliverLinearTicketWithDeps(
+    { ...BASE_ARGS, defaultTeamId: "team-deleted" },
+    RESULT,
+    deps,
+  );
+  assert.equal(ticket?.created, true);
+  assert.equal(deps.calls.listTeams.length, 1);
+  assert.deepEqual(
+    deps.calls.createIssue.map((c) => (c as { teamId: string }).teamId),
+    ["team-1"],
+  );
+  assert.equal(warnings.length, 1);
+});
+
+test("does not retry under another team when the configured team still exists", async () => {
+  const attempted: string[] = [];
+  const deps = makeDeps({
+    createIssue: async (args) => {
+      attempted.push(args.teamId);
+      throw new Error("linear issueCreate failed: 500");
+    },
+  });
+  const ticket = await deliverLinearTicketWithDeps(
+    { ...BASE_ARGS, defaultTeamId: "team-1" },
+    RESULT,
+    deps,
+  );
+  assert.equal(ticket, null);
+  assert.deepEqual(attempted, ["team-1"]);
+});
+
 test("reuses the ticket already recorded for the same completed investigation", async () => {
   const deps = makeDeps({
     findKnownTicket: async () => ({

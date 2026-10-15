@@ -3531,7 +3531,7 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
   const linearNeedsReauth = linear.data?.installed === true && linear.data.needsReauth;
   const githubConnected = github.data?.installed === true;
   const branches = useGithubBranches(projectId, githubConnected);
-  const linearTeams = useLinearTeams(projectId, linearConnected);
+  const linearTeams = useLinearTeams(projectId);
 
   const data: AgentSettings = settings.data ?? {
     customInstructions: "",
@@ -3646,6 +3646,7 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
               </p>
               <LinearDefaultTeamField
                 value={data.linearDefaultTeamId}
+                connected={linearTeams.data?.installed ?? true}
                 teams={linearTeams.data?.teams ?? []}
                 loading={linearTeams.isLoading}
                 loadError={linearTeams.isError}
@@ -3760,6 +3761,7 @@ const LINEAR_WORKSPACE_FIRST_TEAM = "";
 
 function LinearDefaultTeamField({
   value,
+  connected,
   teams,
   loading,
   loadError,
@@ -3767,6 +3769,7 @@ function LinearDefaultTeamField({
   onSave,
 }: {
   value: string | null;
+  connected: boolean;
   teams: LinearTeam[];
   loading: boolean;
   loadError: boolean;
@@ -3776,7 +3779,7 @@ function LinearDefaultTeamField({
   const [draft, setDraft] = useState(value ?? LINEAR_WORKSPACE_FIRST_TEAM);
   useEffect(() => setDraft(value ?? LINEAR_WORKSPACE_FIRST_TEAM), [value]);
   const dirty = draft !== (value ?? LINEAR_WORKSPACE_FIRST_TEAM);
-  const pickerDisabled = disabled || loading || loadError;
+  const pickerDisabled = disabled || loading || loadError || !connected;
 
   const options: DropdownOption[] = [
     {
@@ -3830,9 +3833,11 @@ function LinearDefaultTeamField({
         </Btn>
       </div>
       <p className="text-[12px] text-muted">
-        {loadError
-          ? "Couldn't load teams from Linear. Try again, or reconnect Linear."
-          : "The Linear team agent tickets are filed under."}
+        {!connected
+          ? "Linear isn't connected to this project."
+          : loadError
+            ? "Couldn't load teams from Linear. Try again, or reconnect Linear."
+            : "The Linear team agent tickets are filed under."}
       </p>
     </div>
   );
