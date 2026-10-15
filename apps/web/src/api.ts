@@ -1641,6 +1641,19 @@ export function useLinearInstallation() {
   });
 }
 
+export type LinearTeam = { id: string; key: string; name: string };
+
+// Teams in the project's connected Linear workspace. Used by the default-team
+// picker for agent-filed tickets in Settings.
+export function useLinearTeams(projectId: string | undefined, enabled: boolean) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["linear-teams", projectId],
+    queryFn: () => fetcher<{ teams: LinearTeam[] }>(`/api/projects/${projectId}/linear/teams`),
+    enabled: enabled && !!projectId,
+  });
+}
+
 export function useStartLinearInstall() {
   const fetcher = useFetcher();
   return useMutation({
@@ -1959,6 +1972,7 @@ export type AgentSettings = {
   prPolicy: PrPolicy;
   approvalPromptsEnabled: boolean;
   createLinearTicketOnResolve: boolean;
+  linearDefaultTeamId: string | null;
   autoResolveStaleIncidentsEnabled: boolean;
   prBaseBranch: string | null;
   autoMergeFixPrs: AutoMergePolicy;

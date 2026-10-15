@@ -10,6 +10,7 @@ import {
   type IssueFilterClause,
   type IssueFilterConfig,
   type IssueFilterPreviewEvent,
+  type LinearTeam,
   type LinearTicketInstruction,
   type PrPolicy,
   type RenderOwner,
@@ -43,6 +44,7 @@ import {
   useIssueFilterPreview,
   useKeys,
   useLinearInstallation,
+  useLinearTeams,
   useMcpTokens,
   useMe,
   useMintOrgApiKey,
@@ -3529,6 +3531,7 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
   const linearNeedsReauth = linear.data?.installed === true && linear.data.needsReauth;
   const githubConnected = github.data?.installed === true;
   const branches = useGithubBranches(projectId, githubConnected);
+  const linearTeams = useLinearTeams(projectId, linearConnected);
 
   const data: AgentSettings = settings.data ?? {
     customInstructions: "",
@@ -3538,6 +3541,7 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
     prPolicy: "on_ready_to_pr",
     approvalPromptsEnabled: true,
     createLinearTicketOnResolve: false,
+    linearDefaultTeamId: null,
     autoResolveStaleIncidentsEnabled: true,
     prBaseBranch: null,
     autoMergeFixPrs: "never",
@@ -3640,6 +3644,14 @@ function AgentFlowchart({ projectId }: { projectId: string | undefined }) {
                 incident. Paused and failed investigations do not create tickets; resolve-time
                 filing is controlled below.
               </p>
+              <LinearDefaultTeamField
+                value={data.linearDefaultTeamId}
+                teams={linearTeams.data?.teams ?? []}
+                loading={linearTeams.isLoading}
+                loadError={linearTeams.isError}
+                disabled={!downstreamEligible || save.isPending}
+                onSave={(v) => patch({ linearDefaultTeamId: v })}
+              />
               <div className="flex items-start justify-between gap-4 rounded-md border border-border px-3 py-3">
                 <div>
                   <div className="text-[12.5px] font-medium text-foreground">
@@ -3739,6 +3751,90 @@ function InactiveIncidentResolutionSettings({
       disabled={!projectId || settings.isLoading || save.isPending}
       onChange={(enabled) => save.mutate({ autoResolveStaleIncidentsEnabled: enabled })}
     />
+  );
+}
+
+// The empty-string option means "use the workspace's first team" — it maps to
+// a null linearDefaultTeamId on save.
+const LINEAR_WORKSPACE_FIRST_TEAM = "";
+
+function LinearDefaultTeamField({
+  value,
+  teams,
+  loading,
+  loadError,
+  disabled,
+  onSave,
+}: {
+  value: string | null;
+  teams: LinearTeam[];
+  loading: boolean;
+  loadError: boolean;
+  disabled: boolean;
+  onSave: (value: string | null) => void;
+}) {
+  const [draft, setDraft] = useState(value ?? LINEAR_WORKSPACE_FIRST_TEAM);
+  useEffect(() => setDraft(value ?? LINEAR_WORKSPACE_FIRST_TEAM), [value]);
+  const dirty = draft !== (value ?? LINEAR_WORKSPACE_FIRST_TEAM);
+  const pickerDisabled = disabled || loading || loadError;
+
+  const options: DropdownOption[] = [
+    {
+      value: LINEAR_WORKSPACE_FIRST_TEAM,
+      label: "Workspace's first team",
+      searchText: "Workspace's first team",
+    },
+    ...teams.map((team) => ({
+      value: team.id,
+      searchText: `${team.name} ${team.key}`,
+      label: (
+        <span className="flex items-center gap-2">
+          <span className="font-sans">{team.name}</span>
+          <span className="font-mono text-[11px] text-subtle">{team.key}</span>
+        </span>
+      ),
+    })),
+  ];
+  // Keep a saved team visible even if it's no longer in the workspace list.
+  if (value && !teams.some((team) => team.id === value) && !loading && !loadError) {
+    options.push({ value, searchText: value, label: <span className="font-mono">{value}</span> });
+  }
+
+  return (
+    <div className="space-y-2">
+      <FieldLabel>Default team</FieldLabel>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="min-w-[260px] flex-1">
+          <Dropdown
+            value={draft}
+            onChange={setDraft}
+            disabled={pickerDisabled}
+            options={options}
+            placeholder={
+              loading
+                ? "Loading teams…"
+                : loadError
+                  ? "Couldn't load teams"
+                  : "Workspace's first team"
+            }
+            emptyLabel="No teams found"
+          />
+        </div>
+        <Btn
+          size="sm"
+          variant="secondary"
+          disabled={pickerDisabled || !dirty}
+          onClick={() => onSave(draft || null)}
+        >
+          Save
+        </Btn>
+      </div>
+      <p className="text-[12px] text-muted">
+        {loadError
+          ? "Couldn't load teams from Linear. Try again, or reconnect Linear."
+          : "The Linear team agent tickets are filed under."}
+      </p>
+    </div>
   );
 }
 

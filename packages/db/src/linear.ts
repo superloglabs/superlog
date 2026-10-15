@@ -215,7 +215,7 @@ export type LinearTeam = { id: string; key: string; name: string };
 export async function listLinearTeams(accessToken: string): Promise<LinearTeam[]> {
   const data = await linearGraphql<{ teams: { nodes: LinearTeam[] } }>(
     accessToken,
-    "query { teams(first: 50) { nodes { id key name } } }",
+    "query { teams(first: 250) { nodes { id key name } } }",
     {},
     "teams query",
   );
