@@ -1,3 +1,5 @@
+import { isValidIntegrationSecretKeyring } from "@superlog/db/integration-secrets";
+
 export type SuperlogEdition = "community" | "cloud" | "private";
 export type BillingProvider = "none" | "stripe";
 
@@ -68,12 +70,14 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
   // All three OAuth connectors also need AGENT_SECRETS_KEY — provisioning
   // encrypts the granted tokens/ingest keys at rest and throws without it, so
   // advertising the connector would offer a connect that can never complete.
+  // The key is validated (single key or keyring), not just checked for presence.
+  const secretsKeyConfigured = isValidIntegrationSecretKeyring(env.AGENT_SECRETS_KEY);
   const cloudflareConnect = !!(
     env.CLOUDFLARE_CLIENT_ID &&
     env.CLOUDFLARE_CLIENT_SECRET &&
     env.CLOUDFLARE_OTLP_INTAKE_URL &&
     env.STATE_SIGNING_SECRET &&
-    env.AGENT_SECRETS_KEY
+    secretsKeyConfigured
   );
   // Mirrors vercelConfigFromEnv's required-vars check plus the install-url
   // route's STATE_SIGNING_SECRET requirement, same as the Cloudflare gate.
@@ -83,19 +87,19 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
     env.VERCEL_INTEGRATION_SLUG &&
     env.VERCEL_OTLP_INTAKE_URL &&
     env.STATE_SIGNING_SECRET &&
-    env.AGENT_SECRETS_KEY
+    secretsKeyConfigured
   );
   // Mirrors railwayConfigFromEnv's required-vars check plus STATE_SIGNING_SECRET.
   const railwayConnect = !!(
     env.RAILWAY_CLIENT_ID &&
     env.RAILWAY_CLIENT_SECRET &&
     env.STATE_SIGNING_SECRET &&
-    env.AGENT_SECRETS_KEY
+    secretsKeyConfigured
   );
   // Render connect is an API-key paste, not OAuth — no client id/secret and no
   // signed state. Storing the pasted key still needs the at-rest encryption
   // key, so that's the whole gate.
-  const renderConnect = !!env.AGENT_SECRETS_KEY;
+  const renderConnect = secretsKeyConfigured;
   const gcpPushAudience = env.GCP_PUBSUB_PUSH_AUDIENCE ?? env.GCP_PUBSUB_PUSH_ENDPOINT;
   const gcpConnect = !!(
     env.GCP_OAUTH_CLIENT_ID &&
@@ -107,14 +111,14 @@ export function buildSystemCapabilities(env: CapabilityEnv = process.env): Syste
     env.GCP_PUBSUB_PUSH_ENDPOINT &&
     gcpPushAudience &&
     env.STATE_SIGNING_SECRET &&
-    env.AGENT_SECRETS_KEY
+    secretsKeyConfigured
   );
   const sentryConnect = !!(
     env.SENTRY_CLIENT_ID &&
     env.SENTRY_CLIENT_SECRET &&
     env.SENTRY_APP_SLUG &&
     env.STATE_SIGNING_SECRET &&
-    env.AGENT_SECRETS_KEY
+    secretsKeyConfigured
   );
 
   return {

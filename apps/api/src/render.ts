@@ -21,9 +21,11 @@
 // reads scoped to the workspace the user picked.
 
 import {
+  LEGACY_INTEGRATION_SECRET_KEY_VERSION,
   db,
   decryptIntegrationSecret,
   encryptIntegrationSecret,
+  integrationSecretEncryptionConfigured,
   mintApiKey,
   schema,
 } from "@superlog/db";
@@ -143,7 +145,7 @@ async function ensureIngestKey(
       const ingestKey = decryptIntegrationSecret({
         ciphertext: existing.ingestKeyCiphertext,
         nonce: existing.ingestKeyNonce,
-        keyVersion: existing.ingestKeyKeyVersion ?? 1,
+        keyVersion: existing.ingestKeyKeyVersion ?? LEGACY_INTEGRATION_SECRET_KEY_VERSION,
       });
       return { ingestKey, apiKeyId: existing.apiKeyId, minted: false };
     }
@@ -342,7 +344,7 @@ export function mountRenderAuthed(
   // Storing the pasted key requires the at-rest encryption key; without it the
   // connect flow could never complete, so the routes self-disable (and
   // system-capabilities hides the connector tile).
-  const secretsConfigured = () => !!process.env.AGENT_SECRETS_KEY;
+  const secretsConfigured = () => integrationSecretEncryptionConfigured();
 
   app.get("/api/projects/:projectId/render/installation", async (c) => {
     const ctx = await requireProjectAccess(c, c.req.param("projectId"));

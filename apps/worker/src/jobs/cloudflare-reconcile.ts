@@ -17,7 +17,12 @@ import {
   reconcileWorkerWiring,
   refreshAccessToken,
 } from "@superlog/cloudflare";
-import { decryptIntegrationSecret, encryptIntegrationSecret, schema } from "@superlog/db";
+import {
+  LEGACY_INTEGRATION_SECRET_KEY_VERSION,
+  decryptIntegrationSecret,
+  encryptIntegrationSecret,
+  schema,
+} from "@superlog/db";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { lockInstallation } from "../cloudflare/lock.js";
 import {
@@ -129,7 +134,7 @@ function createStore(
             refreshToken = decryptIntegrationSecret({
               ciphertext: cur.refreshTokenCiphertext,
               nonce: cur.refreshTokenNonce,
-              keyVersion: cur.refreshTokenKeyVersion ?? 1,
+              keyVersion: cur.refreshTokenKeyVersion ?? LEGACY_INTEGRATION_SECRET_KEY_VERSION,
             });
           } catch {
             refreshToken = null;

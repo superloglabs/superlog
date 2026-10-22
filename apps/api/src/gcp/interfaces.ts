@@ -1,4 +1,4 @@
-import { db, schema } from "@superlog/db";
+import { db, isValidIntegrationSecretKeyring, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -74,7 +74,7 @@ export function gcpConfigFromEnv(env: NodeJS.ProcessEnv = process.env): GcpConne
     !pushServiceAccountEmail ||
     !pushEndpoint ||
     !pushAudience ||
-    !env.AGENT_SECRETS_KEY
+    !isValidIntegrationSecretKeyring(env.AGENT_SECRETS_KEY)
   ) {
     return null;
   }

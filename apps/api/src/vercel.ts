@@ -17,6 +17,7 @@
 // and Slack connectors' callbacks.
 
 import {
+  LEGACY_INTEGRATION_SECRET_KEY_VERSION,
   db,
   decryptIntegrationSecret,
   encryptIntegrationSecret,
@@ -122,7 +123,7 @@ async function ensureIngestKey(
       const ingestKey = decryptIntegrationSecret({
         ciphertext: existing.ingestKeyCiphertext,
         nonce: existing.ingestKeyNonce,
-        keyVersion: existing.ingestKeyKeyVersion ?? 1,
+        keyVersion: existing.ingestKeyKeyVersion ?? LEGACY_INTEGRATION_SECRET_KEY_VERSION,
       });
       return { ingestKey, apiKeyId: existing.apiKeyId, minted: false };
     }
@@ -317,10 +318,7 @@ async function provisionInstallation(input: {
   // revoked independently (otherwise both installs share one live key).
   const sameConfiguration =
     existing?.configurationId === input.token.installationId ? existing : null;
-  const { ingestKey, apiKeyId, minted } = await ensureIngestKey(
-    input.projectId,
-    sameConfiguration,
-  );
+  const { ingestKey, apiKeyId, minted } = await ensureIngestKey(input.projectId, sameConfiguration);
 
   // Undo everything this run created that isn't safely persisted to an install
   // row: the new remote drains (minus any id the prior same-configuration row
@@ -436,10 +434,7 @@ async function provisionInstallation(input: {
         installedByUserId: input.userId,
       })
       .onConflictDoUpdate({
-        target: [
-          schema.vercelInstallations.projectId,
-          schema.vercelInstallations.configurationId,
-        ],
+        target: [schema.vercelInstallations.projectId, schema.vercelInstallations.configurationId],
         set: {
           teamId: input.token.teamId,
           teamName,

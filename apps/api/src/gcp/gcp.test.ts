@@ -47,7 +47,14 @@ test("GCP config requires the secrets key before starting OAuth", () => {
   } as NodeJS.ProcessEnv;
 
   assert.equal(gcpConfigFromEnv(env), null);
-  assert.ok(gcpConfigFromEnv({ ...env, AGENT_SECRETS_KEY: "encryption-key" }));
+  assert.equal(gcpConfigFromEnv({ ...env, AGENT_SECRETS_KEY: "encryption-key" }), null);
+  assert.ok(gcpConfigFromEnv({ ...env, AGENT_SECRETS_KEY: randomBytes(32).toString("base64") }));
+  assert.ok(
+    gcpConfigFromEnv({
+      ...env,
+      AGENT_SECRETS_KEY: `2:${randomBytes(32).toString("base64")},1:${randomBytes(32).toString("base64")}`,
+    }),
+  );
 });
 
 before(async () => {

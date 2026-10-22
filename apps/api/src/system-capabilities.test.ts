@@ -2,6 +2,8 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { buildSystemCapabilities } from "./system-capabilities.js";
 
+const SECRETS_KEY = Buffer.alloc(32, 7).toString("base64");
+
 test("system capabilities default to the open-core community edition", () => {
   assert.deepEqual(buildSystemCapabilities({}), {
     edition: "community",
@@ -20,7 +22,7 @@ test("system capabilities default to the open-core community edition", () => {
 
 test("renderConnect only needs AGENT_SECRETS_KEY (API-key connect, no OAuth client)", () => {
   assert.equal(buildSystemCapabilities({}).renderConnect, false);
-  assert.equal(buildSystemCapabilities({ AGENT_SECRETS_KEY: "k" }).renderConnect, true);
+  assert.equal(buildSystemCapabilities({ AGENT_SECRETS_KEY: SECRETS_KEY }).renderConnect, true);
 });
 
 test("gcpConnect requires OAuth and integration-owned Pub/Sub configuration", () => {
@@ -39,7 +41,7 @@ test("gcpConnect requires OAuth and integration-owned Pub/Sub configuration", ()
     GCP_PUBSUB_PUSH_ENDPOINT: "https://intake.example.com/gcp/pubsub",
     GCP_PUBSUB_PUSH_AUDIENCE: "https://intake.example.com/gcp/pubsub",
     STATE_SIGNING_SECRET: "state-secret",
-    AGENT_SECRETS_KEY: "encryption-key",
+    AGENT_SECRETS_KEY: SECRETS_KEY,
   };
   assert.equal(buildSystemCapabilities(complete).gcpConnect, true);
   assert.equal(
@@ -73,7 +75,7 @@ test("railwayConnect flips on only when client creds + both platform secrets are
       RAILWAY_CLIENT_ID: "id",
       RAILWAY_CLIENT_SECRET: "secret",
       STATE_SIGNING_SECRET: "s",
-      AGENT_SECRETS_KEY: "k",
+      AGENT_SECRETS_KEY: SECRETS_KEY,
     }).railwayConnect,
     true,
   );
@@ -101,7 +103,7 @@ test("cloudflareConnect flips on only when all connector vars (incl. STATE_SIGNI
       CLOUDFLARE_CLIENT_SECRET: "secret",
       CLOUDFLARE_OTLP_INTAKE_URL: "https://intake.example.com",
       STATE_SIGNING_SECRET: "state-secret",
-      AGENT_SECRETS_KEY: "k",
+      AGENT_SECRETS_KEY: SECRETS_KEY,
     }).cloudflareConnect,
     true,
   );
@@ -145,7 +147,7 @@ test("sentryConnect requires the public Sentry App and platform secrets", () => 
       SENTRY_CLIENT_SECRET: "secret",
       SENTRY_APP_SLUG: "superlog",
       STATE_SIGNING_SECRET: "state-secret",
-      AGENT_SECRETS_KEY: "encryption-key",
+      AGENT_SECRETS_KEY: SECRETS_KEY,
     }).sentryConnect,
     true,
   );
@@ -174,8 +176,40 @@ test("vercelConnect flips on only when all connector vars (incl. STATE_SIGNING_S
       VERCEL_INTEGRATION_SLUG: "superlog",
       VERCEL_OTLP_INTAKE_URL: "https://intake.example.com",
       STATE_SIGNING_SECRET: "state-secret",
-      AGENT_SECRETS_KEY: "k",
+      AGENT_SECRETS_KEY: SECRETS_KEY,
     }).vercelConnect,
     true,
+  );
+});
+
+test("capabilities read the key from the env object they are given, not process.env", () => {
+  const original = process.env.AGENT_SECRETS_KEY;
+  process.env.AGENT_SECRETS_KEY = SECRETS_KEY;
+  try {
+    assert.equal(buildSystemCapabilities({}).renderConnect, false);
+  } finally {
+    if (original === undefined) Reflect.deleteProperty(process.env, "AGENT_SECRETS_KEY");
+    else process.env.AGENT_SECRETS_KEY = original;
+  }
+});
+
+test("connectors accept an AGENT_SECRETS_KEY keyring and stay hidden for a malformed key", () => {
+  const keyring = `2:${Buffer.alloc(32, 2).toString("base64")},1:${SECRETS_KEY}`;
+  assert.equal(buildSystemCapabilities({ AGENT_SECRETS_KEY: keyring }).renderConnect, true);
+  assert.equal(buildSystemCapabilities({ AGENT_SECRETS_KEY: "not-a-key" }).renderConnect, false);
+  assert.equal(
+    buildSystemCapabilities({ AGENT_SECRETS_KEY: `2:${SECRETS_KEY},2:${SECRETS_KEY}` })
+      .renderConnect,
+    false,
+  );
+  assert.equal(
+    buildSystemCapabilities({
+      SENTRY_CLIENT_ID: "id",
+      SENTRY_CLIENT_SECRET: "secret",
+      SENTRY_APP_SLUG: "superlog",
+      STATE_SIGNING_SECRET: "state-secret",
+      AGENT_SECRETS_KEY: "encryption-key",
+    }).sentryConnect,
+    false,
   );
 });

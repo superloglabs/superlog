@@ -21,6 +21,13 @@ test("the GCP metrics job stays disabled without the integration-secrets key", (
   assert.equal(job.create({} as JobDeps), null);
 });
 
+test("the GCP metrics job stays disabled when the integration-secrets key is malformed", () => {
+  process.env.GCP_INTEGRATION_PROJECT_ID = "superlog-observability";
+  process.env.AGENT_SECRETS_KEY = "not-a-key";
+
+  assert.equal(job.create({} as JobDeps), null);
+});
+
 test("metric intake acknowledges permanent rejections but retries transient failures", () => {
   for (const status of [200, 400, 402, 413]) {
     assert.equal(isMetricIntakeAcknowledged(status), true);

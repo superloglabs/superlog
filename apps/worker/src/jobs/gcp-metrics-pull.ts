@@ -1,4 +1,9 @@
-import { decryptIntegrationSecret, schema } from "@superlog/db";
+import {
+  LEGACY_INTEGRATION_SECRET_KEY_VERSION,
+  decryptIntegrationSecret,
+  integrationSecretEncryptionConfigured,
+  schema,
+} from "@superlog/db";
 import { createAwsFederatedGcpClient } from "@superlog/gcp-auth";
 import { and, eq, isNull } from "drizzle-orm";
 import { GoogleAuth } from "google-auth-library";
@@ -55,7 +60,7 @@ function createStore(db: JobDeps["db"]): GcpMetricsPullerStore {
             ingestKey = decryptIntegrationSecret({
               ciphertext: row.ingestKeyCiphertext,
               nonce: row.ingestKeyNonce,
-              keyVersion: row.ingestKeyKeyVersion ?? 1,
+              keyVersion: row.ingestKeyKeyVersion ?? LEGACY_INTEGRATION_SECRET_KEY_VERSION,
             });
           }
         } catch (error) {
@@ -168,8 +173,8 @@ export const job: JobDefinition = {
       log.info({}, "GCP_INTEGRATION_PROJECT_ID not set — GCP metrics pull disabled");
       return null;
     }
-    if (!process.env.AGENT_SECRETS_KEY) {
-      log.info({}, "AGENT_SECRETS_KEY not set — GCP metrics pull disabled");
+    if (!integrationSecretEncryptionConfigured()) {
+      log.info({}, "AGENT_SECRETS_KEY not set or invalid — GCP metrics pull disabled");
       return null;
     }
     const scopes = ["https://www.googleapis.com/auth/cloud-platform"];

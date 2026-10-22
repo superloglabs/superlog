@@ -8,7 +8,8 @@
     ".": "./src/index.ts",
     "./agent-pr-retry-domain": "./src/agent-pr-retry-domain.ts",
     "./schema": "./src/schema.ts",
-    "./keys": "./src/keys.ts"
+    "./keys": "./src/keys.ts",
+    "./integration-secrets": "./src/integration-secrets.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -19,6 +20,7 @@
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx src/seed.ts",
     "credentials:migrate": "tsx src/credential-migration-cli.ts",
+    "credentials:rewrap": "tsx src/integration-secret-rewrap-cli.ts",
     "test:migrations": "tsx --test src/migrations.test.ts",
     "test": "tsx --test src/*.test.ts"
   },

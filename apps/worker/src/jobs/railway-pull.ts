@@ -9,7 +9,12 @@
 // Railway OAuth client is configured — without it tokens can't be refreshed,
 // so pulling would strand within the hour anyway.
 
-import { decryptIntegrationSecret, encryptIntegrationSecret, schema } from "@superlog/db";
+import {
+  LEGACY_INTEGRATION_SECRET_KEY_VERSION,
+  decryptIntegrationSecret,
+  encryptIntegrationSecret,
+  schema,
+} from "@superlog/db";
 import { railwayConfigFromEnv } from "@superlog/railway";
 import { eq, isNull } from "drizzle-orm";
 import type { JobDefinition, JobDeps } from "../jobs.js";
@@ -53,7 +58,7 @@ function createStore(db: JobDeps["db"]): RailwayPullerStore {
                 ? decryptIntegrationSecret({
                     ciphertext: row.refreshTokenCiphertext,
                     nonce: row.refreshTokenNonce,
-                    keyVersion: row.refreshTokenKeyVersion ?? 1,
+                    keyVersion: row.refreshTokenKeyVersion ?? LEGACY_INTEGRATION_SECRET_KEY_VERSION,
                   })
                 : null,
             tokenExpiresAt: row.tokenExpiresAt,
@@ -62,7 +67,7 @@ function createStore(db: JobDeps["db"]): RailwayPullerStore {
                 ? decryptIntegrationSecret({
                     ciphertext: row.ingestKeyCiphertext,
                     nonce: row.ingestKeyNonce,
-                    keyVersion: row.ingestKeyKeyVersion ?? 1,
+                    keyVersion: row.ingestKeyKeyVersion ?? LEGACY_INTEGRATION_SECRET_KEY_VERSION,
                   })
                 : null,
             grantedProjects: row.grantedProjects ?? [],

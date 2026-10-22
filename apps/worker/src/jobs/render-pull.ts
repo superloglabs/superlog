@@ -9,7 +9,12 @@
 // AGENT_SECRETS_KEY is set — without it the stored Render API keys can't be
 // decrypted, so there is nothing the puller could do.
 
-import { decryptIntegrationSecret, schema } from "@superlog/db";
+import {
+  LEGACY_INTEGRATION_SECRET_KEY_VERSION,
+  decryptIntegrationSecret,
+  integrationSecretEncryptionConfigured,
+  schema,
+} from "@superlog/db";
 import { eq, isNull } from "drizzle-orm";
 import type { JobDefinition, JobDeps } from "../jobs.js";
 import { logger } from "../logger.js";
@@ -54,7 +59,7 @@ function createStore(db: JobDeps["db"]): RenderPullerStore {
                 ? decryptIntegrationSecret({
                     ciphertext: row.ingestKeyCiphertext,
                     nonce: row.ingestKeyNonce,
-                    keyVersion: row.ingestKeyKeyVersion ?? 1,
+                    keyVersion: row.ingestKeyKeyVersion ?? LEGACY_INTEGRATION_SECRET_KEY_VERSION,
                   })
                 : null,
             services: row.services ?? [],
@@ -118,8 +123,8 @@ export const job: JobDefinition = {
   name: "render-pull",
   schedule: "* * * * *",
   create: (deps) => {
-    if (!process.env.AGENT_SECRETS_KEY) {
-      log.info({}, "AGENT_SECRETS_KEY not set — render pull job disabled");
+    if (!integrationSecretEncryptionConfigured()) {
+      log.info({}, "AGENT_SECRETS_KEY not set or invalid — render pull job disabled");
       return null;
     }
     const store = createStore(deps.db);

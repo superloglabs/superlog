@@ -383,8 +383,17 @@ export {
   encryptIntegrationSecret,
   decryptIntegrationSecret,
   integrationSecretEncryptionConfigured,
+  currentIntegrationSecretKeyVersion,
+  isValidIntegrationSecretKeyring,
+  parseIntegrationSecretKeyring,
+  LEGACY_INTEGRATION_SECRET_KEY_VERSION,
   type IntegrationSecretCipher,
+  type IntegrationSecretKeyring,
 } from "./integration-secrets.js";
+export {
+  ENCRYPTED_INTEGRATION_SECRET_COLUMNS,
+  type EncryptedSecretColumn,
+} from "./integration-secret-columns.js";
 export {
   exchangeLinearCode,
   findActiveLinearInstallationByWebhookId,

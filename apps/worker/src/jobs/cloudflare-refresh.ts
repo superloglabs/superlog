@@ -9,7 +9,12 @@
 // configured, since without it there's nothing to refresh with.
 
 import { cloudflareClientFromEnv } from "@superlog/cloudflare";
-import { decryptIntegrationSecret, encryptIntegrationSecret, schema } from "@superlog/db";
+import {
+  LEGACY_INTEGRATION_SECRET_KEY_VERSION,
+  decryptIntegrationSecret,
+  encryptIntegrationSecret,
+  schema,
+} from "@superlog/db";
 import { and, eq, isNull } from "drizzle-orm";
 import { lockInstallation } from "../cloudflare/lock.js";
 import {
@@ -65,7 +70,7 @@ function createStore(db: JobDeps["db"]): CloudflareRefresherStore {
               refreshToken = decryptIntegrationSecret({
                 ciphertext: cur.refreshTokenCiphertext,
                 nonce: cur.refreshTokenNonce,
-                keyVersion: cur.refreshTokenKeyVersion ?? 1,
+                keyVersion: cur.refreshTokenKeyVersion ?? LEGACY_INTEGRATION_SECRET_KEY_VERSION,
               });
             } catch (err) {
               // A row whose refresh token can't be decrypted (corrupted

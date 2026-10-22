@@ -17,6 +17,7 @@
 // exactly like the Slack connector's /slack/oauth/callback.
 
 import {
+  LEGACY_INTEGRATION_SECRET_KEY_VERSION,
   db,
   decryptIntegrationSecret,
   encryptIntegrationSecret,
@@ -179,7 +180,7 @@ async function ensureIngestKey(
       const ingestKey = decryptIntegrationSecret({
         ciphertext: existing.ingestKeyCiphertext,
         nonce: existing.ingestKeyNonce,
-        keyVersion: existing.ingestKeyKeyVersion ?? 1,
+        keyVersion: existing.ingestKeyKeyVersion ?? LEGACY_INTEGRATION_SECRET_KEY_VERSION,
       });
       return { ingestKey, apiKeyId: existing.apiKeyId, minted: false };
     }
@@ -235,7 +236,7 @@ function decryptRefreshToken(row: CloudflareInstallationRow): string | null {
     ? decryptIntegrationSecret({
         ciphertext: row.refreshTokenCiphertext,
         nonce: row.refreshTokenNonce,
-        keyVersion: row.refreshTokenKeyVersion ?? 1,
+        keyVersion: row.refreshTokenKeyVersion ?? LEGACY_INTEGRATION_SECRET_KEY_VERSION,
       })
     : null;
 }
