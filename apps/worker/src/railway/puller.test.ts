@@ -266,6 +266,56 @@ test("skips an installation whose token expired with no refresh token", async ()
   assert.equal(calls.cursors.length, 0);
 });
 
+test("aborts the pull run on invalid_client and does not attempt remaining installations", async () => {
+  const expiringSoon = new Date(NOW.getTime() + 30 * 1000);
+  const inst1 = installation({ id: "inst-1", tokenExpiresAt: expiringSoon });
+  const inst2 = installation({ id: "inst-2", tokenExpiresAt: expiringSoon });
+  const { store } = fakeStore([inst1, inst2]);
+  const errors: Array<{ msg: string; fields: Record<string, unknown> }> = [];
+  const log = {
+    info() {},
+    warn() {},
+    error(fields: Record<string, unknown>, msg: string) {
+      errors.push({ msg, fields });
+    },
+  };
+  const tokenCalls: string[] = [];
+  const forwarded: Forwarded = [];
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url);
+    if (u === RAILWAY_OAUTH_TOKEN_URL) {
+      tokenCalls.push(new URLSearchParams(String(init?.body)).get("refresh_token") ?? "?");
+      return new Response(JSON.stringify({ error: "invalid_client" }), { status: 400 });
+    }
+    forwarded.push({ url: u, apiKey: null, payload: {} });
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+
+  const stats = await runRailwayPullOnce({
+    store,
+    config: CONFIG,
+    intakeBaseUrl: "https://intake.test",
+    log,
+    now: () => NOW,
+    fetchImpl,
+  });
+
+  // Circuit-breaker: only one token request should reach Railway (for inst-1).
+  assert.equal(tokenCalls.length, 1, "token endpoint must be hit exactly once");
+  // Both error count and message must indicate the app-level failure.
+  assert.equal(stats.errors, 1);
+  assert.ok(
+    errors.some((e) => e.msg.includes("rotate")),
+    "credential-rotation guidance must appear in error log",
+  );
+  assert.ok(
+    errors.some((e) => e.fields.error === "invalid_client"),
+    "invalid_client must be logged as the error field",
+  );
+  // No intake traffic when credentials are rejected.
+  assert.equal(forwarded.length, 0, "no intake calls when app credentials are rejected");
+});
+
 test("polls metrics on the interval, forwards gauges, and advances the sample cursor", async () => {
   const { store, calls } = fakeStore([
     installation({ logCursor: { "env-1": "2026-07-07T15:00:00Z" } }),
