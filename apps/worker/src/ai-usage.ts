@@ -58,6 +58,12 @@ type MaybePromise<T> = T | Promise<T>;
 export interface AiUsageSink {
   recordTokenUsage(input: RecordTokenUsageInput): MaybePromise<void>;
   recordAgentRunCompletion(input: RecordAgentRunCompletionInput): MaybePromise<void>;
+  /**
+   * Optional. Returns true when the project has exceeded its rolling-window AI
+   * spend cap and new agent runs should be blocked. Callers MUST fail open
+   * (allow the run) when this method is absent or throws.
+   */
+  isProjectSpendCapExceeded?(projectId: string): MaybePromise<boolean>;
 }
 
 const noopSink: AiUsageSink = {
@@ -143,6 +149,25 @@ export async function recordAgentRunCompletion(
       },
       "AI usage sink failed while recording agent run completion",
     );
+  }
+}
+
+// Returns true when the project's rolling-window AI spend has exceeded the
+// configured cap. Fails open (returns false) so a metering failure never blocks
+// an investigation.
+export async function isProjectSpendCapExceeded(projectId: string): Promise<boolean> {
+  try {
+    return (await activeSink.isProjectSpendCapExceeded?.(projectId)) ?? false;
+  } catch (err) {
+    logger.error(
+      {
+        scope: "ai_usage",
+        projectId,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "AI spend cap check failed; allowing run (fail-open)",
+    );
+    return false;
   }
 }
 

@@ -6,6 +6,7 @@ import {
   type RecordAgentRunCompletionInput,
   type RecordTokenUsageInput,
   initAiUsageSink,
+  isProjectSpendCapExceeded,
   recordAgentRunCompletion,
   recordTokenUsage,
   resetAiUsageSink,
@@ -163,4 +164,31 @@ test("sumUsage aggregates across snake_case/camelCase and ignores unknown keys",
     cacheReadTokens: 3,
     cacheCreationTokens: 7,
   });
+});
+
+test("isProjectSpendCapExceeded returns false when no sink implements the check", async () => {
+  // Default no-op sink has no isProjectSpendCapExceeded — must fail open.
+  assert.equal(await isProjectSpendCapExceeded("any-project-id"), false);
+});
+
+test("isProjectSpendCapExceeded delegates to the active sink and returns its result", async () => {
+  setAiUsageSink({
+    recordTokenUsage() {},
+    recordAgentRunCompletion() {},
+    isProjectSpendCapExceeded: (projectId) => projectId === "capped-project",
+  });
+  assert.equal(await isProjectSpendCapExceeded("capped-project"), true);
+  assert.equal(await isProjectSpendCapExceeded("other-project"), false);
+});
+
+test("isProjectSpendCapExceeded fails open when the sink throws", async () => {
+  setAiUsageSink({
+    recordTokenUsage() {},
+    recordAgentRunCompletion() {},
+    isProjectSpendCapExceeded: () => {
+      throw new Error("cap check exploded");
+    },
+  });
+  // Must return false (fail-open) rather than propagating the error.
+  assert.equal(await isProjectSpendCapExceeded("any-project"), false);
 });

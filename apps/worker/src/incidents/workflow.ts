@@ -28,6 +28,7 @@ import {
   postIncidentRootMessage,
   postIncidentThreadMessage,
 } from "../infra/slack/incident-messages.js";
+import { isProjectSpendCapExceeded } from "../ai-usage.js";
 import { logger } from "../logger.js";
 import {
   canQueueInvestigationForLockedIncident,
@@ -44,6 +45,7 @@ export type ReopenedIncidentQueueStatus =
   | "suppressed"
   | "disabled"
   | "no_credits"
+  | "spend_cap_exceeded"
   | "incident_closed";
 
 async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
@@ -69,6 +71,18 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
       "skipping auto-agent run; agent recently resolved as fixed_in_current_code",
     );
     return { agentRun: null, queueStatus: "suppressed" };
+  }
+
+  // Per-project hourly AI spend cap. Checked before queuing a new run so a
+  // project that has already burned through its rolling-window budget can't
+  // keep spawning additional investigations. Fails open — a metering error
+  // never blocks incident response.
+  if (await isProjectSpendCapExceeded(incident.projectId)) {
+    logger.warn(
+      { scope: "agent_run", incidentId: incident.id, projectId: incident.projectId },
+      "skipping auto-agent run; project AI spend cap exceeded for current window",
+    );
+    return { agentRun: null, queueStatus: "spend_cap_exceeded" };
   }
 
   // If an investigation is already active for this incident, skip the credit
