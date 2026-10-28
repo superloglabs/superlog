@@ -26,8 +26,6 @@ export type IngestClickHouseConfig = {
   batchLingerMs: number;
   // Minimum time between the starts of two inserts into the same table (0 = none).
   minInsertIntervalMs: number;
-  // Push rows to materialized views in parallel, so their per-part quorum waits overlap.
-  parallelViewProcessing: boolean;
   // Reuse connections between inserts. Behind a TCP load balancer a reused connection
   // stays on one replica; a connection per insert spreads inserts across replicas.
   keepAlive: boolean;
@@ -59,7 +57,6 @@ export function getIngestClickHouseConfig(env: NodeJS.ProcessEnv): IngestClickHo
     requestTimeoutMs: readPositiveInt(env.INGEST_CLICKHOUSE_REQUEST_TIMEOUT_MS, 30_000),
     batchLingerMs: readPositiveInt(env.INGEST_CLICKHOUSE_BATCH_LINGER_MS, 10),
     minInsertIntervalMs: readNonNegativeInt(env.INGEST_CLICKHOUSE_MIN_INSERT_INTERVAL_MS, 0),
-    parallelViewProcessing: env.INGEST_CLICKHOUSE_PARALLEL_VIEWS === "true",
     keepAlive: env.INGEST_CLICKHOUSE_KEEP_ALIVE !== "false",
   };
 }
@@ -77,12 +74,10 @@ export function clickHouseClientOptions(
     clickhouse_settings: {
       // Mirror the collector's durability: commit to a quorum of replicas before
       // the insert resolves, and keep inserts synchronous (no server-side buffering).
-      // Parallel view processing keeps quorum on every part; it only overlaps the waits.
       insert_quorum: String(config.insertQuorum),
       insert_quorum_timeout: config.insertQuorumTimeoutMs,
       async_insert: 0,
       wait_for_async_insert: 1,
-      ...(config.parallelViewProcessing ? { parallel_view_processing: 1 } : {}),
     },
   };
 }

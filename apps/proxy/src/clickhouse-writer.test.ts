@@ -21,7 +21,6 @@ const config: IngestClickHouseConfig = {
   requestTimeoutMs: 30_000,
   batchLingerMs: 5,
   minInsertIntervalMs: 0,
-  parallelViewProcessing: false,
   keepAlive: true,
 };
 
@@ -205,44 +204,37 @@ test("close flushes rows that are waiting on the minimum interval", async () => 
   assert.equal(inserts.length, 2);
 });
 
-test("config reads insert pacing, parallel views and keep-alive from the environment", () => {
+test("config reads insert pacing and keep-alive from the environment", () => {
   const base = { INGEST_CLICKHOUSE_DIRECT: "true", CLICKHOUSE_URL: "http://clickhouse:8123" };
 
   const defaults = getIngestClickHouseConfig(base);
   assert.equal(defaults?.minInsertIntervalMs, 0);
-  assert.equal(defaults?.parallelViewProcessing, false);
   assert.equal(defaults?.keepAlive, true);
 
   const tuned = getIngestClickHouseConfig({
     ...base,
     INGEST_CLICKHOUSE_MIN_INSERT_INTERVAL_MS: "2000",
-    INGEST_CLICKHOUSE_PARALLEL_VIEWS: "true",
     INGEST_CLICKHOUSE_KEEP_ALIVE: "false",
   });
   assert.equal(tuned?.minInsertIntervalMs, 2000);
-  assert.equal(tuned?.parallelViewProcessing, true);
   assert.equal(tuned?.keepAlive, false);
 });
 
-test("client options keep quorum and apply parallel views and keep-alive", () => {
+test("client options keep quorum and apply keep-alive", () => {
   const defaults = clickHouseClientOptions({
     ...config,
     minInsertIntervalMs: 0,
-    parallelViewProcessing: false,
     keepAlive: true,
   });
   assert.equal(defaults.clickhouse_settings?.insert_quorum, "2");
   assert.equal(defaults.clickhouse_settings?.async_insert, 0);
-  assert.equal(defaults.clickhouse_settings?.parallel_view_processing, undefined);
   assert.equal(defaults.keep_alive?.enabled, true);
 
   const tuned = clickHouseClientOptions({
     ...config,
     minInsertIntervalMs: 0,
-    parallelViewProcessing: true,
     keepAlive: false,
   });
   assert.equal(tuned.clickhouse_settings?.insert_quorum, "2");
-  assert.equal(tuned.clickhouse_settings?.parallel_view_processing, 1);
   assert.equal(tuned.keep_alive?.enabled, false);
 });
