@@ -1,14 +1,22 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createGcpConnectionCache, createLogReceiptRecorder } from "./gcp-pubsub-connection.js";
+import {
+  createGcpConnectionCache,
+  createLogReceiptRecorder,
+  gcpConnectionCacheTtlMs,
+  isIngestibleGcpConnection,
+} from "./gcp-pubsub-connection.js";
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 type Connection = { id: string; projectId: string };
 
+const fixedTtl = (connection: Connection | null) => (connection ? 60_000 : 30_000);
+
 test("repeated pushes for one connection reuse the cached connection", async () => {
   let lookups = 0;
   const cache = createGcpConnectionCache<Connection>({
+    ttlFor: fixedTtl,
     lookup: async (id) => {
       lookups += 1;
       return { id, projectId: "project-1" };
@@ -26,6 +34,7 @@ test("a burst of concurrent pushes shares one connection lookup", async () => {
   let lookups = 0;
   let release: (value: Connection) => void = () => {};
   const cache = createGcpConnectionCache<Connection>({
+    ttlFor: fixedTtl,
     lookup: () => {
       lookups += 1;
       return new Promise<Connection>((resolve) => {
@@ -46,11 +55,11 @@ test("an expired connection is looked up again", async () => {
   let now = 1_000;
   let lookups = 0;
   const cache = createGcpConnectionCache<Connection>({
+    ttlFor: fixedTtl,
     lookup: async (id) => {
       lookups += 1;
       return { id, projectId: `project-${lookups}` };
     },
-    ttlMs: 60_000,
     now: () => now,
   });
 
@@ -64,11 +73,11 @@ test("an unknown or disconnected connection is cached so its pushes stay off the
   let now = 1_000;
   let lookups = 0;
   const cache = createGcpConnectionCache<Connection>({
+    ttlFor: fixedTtl,
     lookup: async () => {
       lookups += 1;
       return null;
     },
-    missingTtlMs: 30_000,
     now: () => now,
   });
 
@@ -81,9 +90,49 @@ test("an unknown or disconnected connection is cached so its pushes stay off the
   assert.equal(lookups, 2);
 });
 
+test("a connection whose TTL is zero is looked up on every push", async () => {
+  let lookups = 0;
+  const cache = createGcpConnectionCache<Connection>({
+    ttlFor: () => 0,
+    lookup: async (id) => {
+      lookups += 1;
+      return { id, projectId: "project-1" };
+    },
+  });
+
+  await cache.resolve("conn-1");
+  await cache.resolve("conn-1");
+  assert.equal(lookups, 2);
+});
+
+test("ingestible connections are cached for the full TTL", () => {
+  for (const status of ["connected", "disconnecting", "disconnect_failed"]) {
+    const row = { status, revokedAt: null };
+    assert.equal(isIngestibleGcpConnection(row), true, status);
+    assert.equal(gcpConnectionCacheTtlMs(row), 60_000, status);
+  }
+});
+
+test("unknown and revoked connections are settled and cached as missing", () => {
+  assert.equal(isIngestibleGcpConnection(null), false);
+  assert.equal(gcpConnectionCacheTtlMs(null), 30_000);
+  const revoked = { status: "connected", revokedAt: new Date(0) };
+  assert.equal(isIngestibleGcpConnection(revoked), false);
+  assert.equal(gcpConnectionCacheTtlMs(revoked), 30_000);
+});
+
+test("connections still being set up are never cached, so pushes after activation are ingested", () => {
+  for (const status of ["pending", "provisioning", "failed"]) {
+    const row = { status, revokedAt: null };
+    assert.equal(isIngestibleGcpConnection(row), false, status);
+    assert.equal(gcpConnectionCacheTtlMs(row), 0, status);
+  }
+});
+
 test("a failed connection lookup is not cached", async () => {
   let lookups = 0;
   const cache = createGcpConnectionCache<Connection>({
+    ttlFor: fixedTtl,
     lookup: async (id) => {
       lookups += 1;
       if (lookups === 1) throw new Error("db down");

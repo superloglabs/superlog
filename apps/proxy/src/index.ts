@@ -11,7 +11,7 @@ import {
   syncLoopsContactsForProject,
 } from "@superlog/db";
 import { db } from "@superlog/db";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { OAuth2Client } from "google-auth-library";
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -32,9 +32,13 @@ import {
   firehoseResponseBody,
   parseAccountIdFromFirehoseArn,
 } from "./firehose.js";
-import { createGcpConnectionCache, createLogReceiptRecorder } from "./gcp-pubsub-connection.js";
 import {
-  GCP_PUBSUB_INGESTIBLE_STATUSES,
+  createGcpConnectionCache,
+  createLogReceiptRecorder,
+  gcpConnectionCacheTtlMs,
+  isIngestibleGcpConnection,
+} from "./gcp-pubsub-connection.js";
+import {
   type GcpIdTokenVerifier,
   acknowledgeGcpPubSubDelivery,
   authenticateGcpPubSubPush,
@@ -513,12 +517,9 @@ app.post("/aws/firehose/logs", (c) => forwardFirehose(c, FIREHOSE_LOGS_COLLECTOR
 const gcpConnectionCache = createGcpConnectionCache({
   lookup: async (connectionId) =>
     (await db.query.gcpConnections.findFirst({
-      where: and(
-        eq(schema.gcpConnections.id, connectionId),
-        inArray(schema.gcpConnections.status, [...GCP_PUBSUB_INGESTIBLE_STATUSES]),
-        isNull(schema.gcpConnections.revokedAt),
-      ),
+      where: eq(schema.gcpConnections.id, connectionId),
     })) ?? null,
+  ttlFor: gcpConnectionCacheTtlMs,
 });
 const gcpLogReceiptRecorder = createLogReceiptRecorder({
   write: async (connectionId, receivedAt) => {
@@ -550,7 +551,7 @@ app.post("/gcp/pubsub/:connectionId", async (c) => {
   }
 
   const connection = await gcpConnectionCache.resolve(c.req.param("connectionId"));
-  if (!connection) {
+  if (!connection || !isIngestibleGcpConnection(connection)) {
     return acknowledgeGcpPubSubDelivery(c.json({ error: "GCP connection not found" }, 404));
   }
 

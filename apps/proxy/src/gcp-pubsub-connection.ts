@@ -5,6 +5,8 @@
 // other proxy query sharing the pool) behind the row lock. Both helpers here
 // keep that per-request work in memory.
 
+import { GCP_PUBSUB_INGESTIBLE_STATUSES } from "./gcp-pubsub.js";
+
 type CacheEntry<T> = {
   connection: T | null;
   expiresAt: number;
@@ -15,22 +17,42 @@ const DEFAULT_MISSING_TTL_MS = 30_000;
 const DEFAULT_MAX_ENTRIES = 10_000;
 const DEFAULT_RECEIPT_INTERVAL_MS = 60_000;
 
+export type GcpConnectionState = { status: string; revokedAt: Date | null };
+
+export function isIngestibleGcpConnection(row: GcpConnectionState | null): boolean {
+  return (
+    row !== null &&
+    row.revokedAt === null &&
+    (GCP_PUBSUB_INGESTIBLE_STATUSES as readonly string[]).includes(row.status)
+  );
+}
+
+/**
+ * How long a lookup result may be served from memory. Ingestible rows are
+ * cached for the full TTL (status changes propagate within it). Unknown and
+ * revoked connections are settled, so they are cached as missing for a shorter
+ * TTL: a disconnected subscription that keeps pushing then stays off the
+ * database. Rows still being set up (pending/provisioning) or failed can become
+ * ingestible at any moment, and the route acks a non-ingestible push as
+ * dropped, so those are never cached.
+ */
+export function gcpConnectionCacheTtlMs(row: GcpConnectionState | null): number {
+  if (row === null || row.revokedAt !== null) return DEFAULT_MISSING_TTL_MS;
+  if (isIngestibleGcpConnection(row)) return DEFAULT_CACHE_TTL_MS;
+  return 0;
+}
+
 /**
  * Cache connection lookups by id and collapse concurrent misses into one query.
- * Unknown/non-ingestible connections are cached too (for a shorter TTL): a
- * disconnected connection whose subscription still pushes would otherwise hit
- * the database on every message. Status changes propagate within one TTL.
+ * `ttlFor` decides per result how long it may be served (0 = do not cache).
  * Lookup errors are not cached.
  */
 export function createGcpConnectionCache<T>(deps: {
   lookup: (connectionId: string) => Promise<T | null>;
-  ttlMs?: number;
-  missingTtlMs?: number;
+  ttlFor: (connection: T | null) => number;
   maxEntries?: number;
   now?: () => number;
 }) {
-  const ttlMs = deps.ttlMs ?? DEFAULT_CACHE_TTL_MS;
-  const missingTtlMs = deps.missingTtlMs ?? DEFAULT_MISSING_TTL_MS;
   const maxEntries = Math.max(1, deps.maxEntries ?? DEFAULT_MAX_ENTRIES);
   const now = deps.now ?? Date.now;
   const cache = new Map<string, CacheEntry<T>>();
@@ -54,10 +76,8 @@ export function createGcpConnectionCache<T>(deps: {
       const lookup = deps
         .lookup(connectionId)
         .then((connection) => {
-          setEntry(connectionId, {
-            connection,
-            expiresAt: now() + (connection ? ttlMs : missingTtlMs),
-          });
+          const ttlMs = deps.ttlFor(connection);
+          if (ttlMs > 0) setEntry(connectionId, { connection, expiresAt: now() + ttlMs });
           return connection;
         })
         .finally(() => inflight.delete(connectionId));
