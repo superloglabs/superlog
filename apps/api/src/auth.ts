@@ -201,11 +201,15 @@ export const auth = betterAuth({
   rateLimit: AUTH_RATE_LIMIT,
   emailAndPassword: {
     enabled: true,
-    // Sign-ups still land logged-in immediately to keep dev/worktree flows
-    // fast — the verification email is still sent (see `emailVerification`
-    // below) so the user can confirm at their leisure. Flip this to true once
-    // we want to gate /api/* access on a verified address.
-    requireEmailVerification: false,
+    // Sign-ups must verify their email before the session is usable against
+    // /api/* (the session middleware in index.ts gates on
+    // session.user.emailVerified, with a narrow allowlist for /api/me +
+    // resend-verification so users can complete verification). The
+    // verification email is sent on sign-up (see `emailVerification` below).
+    // Pre-existing unverified members are grandfathered by membership
+    // created_at (see EMAIL_VERIFICATION_GRANDFATHER_CUTOFF in
+    // email-verification-gate.ts).
+    requireEmailVerification: true,
     sendResetPassword: async ({ user, url }) => {
       const body = passwordResetEmailBody(url);
       await sendEmail({ to: user.email, subject: "Reset your Superlog password", ...body });
@@ -215,7 +219,17 @@ export const auth = betterAuth({
     sendOnSignUp: true,
     autoSignInAfterVerification: true,
     sendVerificationEmail: async ({ user, url }) => {
-      const body = verificationEmailBody(url);
+      // Land verified users on the web verify page (confirmation + route to
+      // /app) instead of Better-Auth's default API-root redirect.
+      let verifyUrl = url;
+      try {
+        const parsed = new URL(url);
+        parsed.searchParams.set("callbackURL", `${WEB_ORIGIN}/verify-email?verified=true`);
+        verifyUrl = parsed.toString();
+      } catch {
+        // Keep the Better-Auth default rather than failing the send.
+      }
+      const body = verificationEmailBody(verifyUrl);
       await sendEmail({ to: user.email, subject: "Confirm your email for Superlog", ...body });
     },
   },
@@ -225,14 +239,15 @@ export const auth = betterAuth({
   },
   plugins: [
     organization({
-      // Better Auth defaults this to `true`, which would gate getInvitation /
-      // acceptInvitation / rejectInvitation on a verified email. But sign-ups
-      // land logged-in while still unverified (emailAndPassword
-      // .requireEmailVerification is false above), so the default locks the
-      // typical invitee out of accepting — Better Auth throws FORBIDDEN and the
-      // accept page surfaces it as a misleading "Invitation not found" (looks
-      // like a 404). Keep the invite flow as permissive as the rest of the app.
-      requireEmailVerificationOnInvitation: false,
+      // Better Auth defaults this to `true`, which gates getInvitation /
+      // acceptInvitation / rejectInvitation on a verified email. Keep the
+      // default: the invitation `id` in the emailed URL must not be the sole
+      // proof of mailbox ownership, otherwise anyone holding a forwarded link
+      // (or anyone who pre-registered the victim's address while verification
+      // was unenforced) can claim org membership. Unverified invitees see an
+      // explicit "verify your email first" state in the web accept page instead
+      // of the previous misleading "Invitation not found".
+      requireEmailVerificationOnInvitation: true,
       schema: {
         // Our `org_members` table uses `orgId` (TS) / `org_id` (SQL) instead
         // of Better Auth's expected `organizationId`. Same for `invitations`.

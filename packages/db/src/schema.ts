@@ -552,6 +552,10 @@ export const orgMembers = pgTable(
   },
   (t) => ({
     uniq: uniqueIndex("org_members_org_user_idx").on(t.orgId, t.userId),
+    // Grandfather check in apps/api/src/email-verification-gate.ts filters on
+    // (user_id, created_at); the composite unique above leads with org_id and
+    // can't serve it. Without this, every unverified API request scans.
+    userCreatedIdx: index("org_members_user_created_idx").on(t.userId, t.createdAt),
   }),
 );
 
@@ -658,9 +662,10 @@ export const invitations = pgTable(
     role: text("role"),
     status: text("status").notNull().default("pending"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    inviterId: uuid("inviter_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+    // Nullable + SET NULL: deleting a user must not delete pending invites
+    // they sent (previously CASCADE). Better-Auth always writes inviterId on
+    // invite-member; it is only nulled when the inviter row is deleted.
+    inviterId: uuid("inviter_id").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({

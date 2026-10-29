@@ -7,17 +7,27 @@ import { test } from "node:test";
 process.env.DATABASE_URL ??= "postgres://localhost:5434/superlog";
 process.env.BETTER_AUTH_SECRET ??= "test-better-auth-secret";
 
-test("organization plugin does not gate invitations on email verification", async () => {
+test("organization plugin gates invitations on email verification", async () => {
   const { auth } = await import("./auth.js");
   const plugins = auth.options.plugins as Array<{ id: string; options?: Record<string, unknown> }>;
   const orgPlugin = plugins.find((p) => p.id === "organization");
   assert.ok(orgPlugin, "organization plugin should be registered");
 
-  // Better Auth defaults requireEmailVerificationOnInvitation to `true`. That
-  // contradicts emailAndPassword.requireEmailVerification:false — sign-ups land
-  // logged-in but unverified (the default state), and the default would lock
-  // those users out of getInvitation/acceptInvitation with a FORBIDDEN that the
-  // UI renders as a misleading "Invitation not found" (looks like a 404). Pin it
-  // false so the invite flow matches the app's "verification is optional" stance.
-  assert.equal(orgPlugin.options?.requireEmailVerificationOnInvitation, false);
+  // B-01: the invitation `id` in the emailed URL must not be the sole proof of
+  // mailbox ownership. Keep the Better Auth default (true) so getInvitation /
+  // acceptInvitation / rejectInvitation reject unverified sessions with
+  // FORBIDDEN — the web accept page maps that to an explicit "verify your
+  // email first" state instead of "Invitation not found".
+  assert.equal(orgPlugin.options?.requireEmailVerificationOnInvitation, true);
+});
+
+test("email+password sign-ups require verification", async () => {
+  const { auth } = await import("./auth.js");
+  const emailAndPassword = auth.options.emailAndPassword as
+    | { requireEmailVerification?: unknown }
+    | undefined;
+  // Pairs with the organization flag above and the session-middleware gate in
+  // index.ts: unverified sessions can only reach GET /api/me + the
+  // verify/resend endpoints until they confirm.
+  assert.equal(emailAndPassword?.requireEmailVerification, true);
 });

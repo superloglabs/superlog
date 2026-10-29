@@ -22,8 +22,8 @@ import { ResetPassword } from "./ResetPassword.tsx";
 import { Settings } from "./Settings.tsx";
 import { SignupSourceCapture } from "./SignupSourceCapture.tsx";
 import { VercelCallback } from "./VercelCallback.tsx";
-import { AlertEdit } from "./alerts/AlertEdit.tsx";
-import { AlertsList } from "./alerts/AlertsList.tsx";
+import { VerifyEmail } from "./VerifyEmail.tsx";
+import { AlertEdit } from "./alerts/AlertEdit.tsx";import { AlertsList } from "./alerts/AlertsList.tsx";
 import { AnomalyScanDetail } from "./anomaly-scanner/AnomalyScanDetail.tsx";
 import { AnomalyScanner } from "./anomaly-scanner/AnomalyScanner.tsx";
 import { useMe } from "./api.ts";
@@ -134,6 +134,7 @@ export function App() {
         <Route path="/signup" element={<SignupRoute />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/verify-email" element={<VerifyEmail />} />
         {/* Public, no-auth feedback link reached from agent-opened PR descriptions. */}
         <Route path="/feedback/pr/:owner/:repo/:number" element={<PrFeedback />} />
         {/* Landing target of the Vercel OAuth callback — public so the result
@@ -191,6 +192,13 @@ function AuthenticatedApp() {
   const paygPromotionAvailable = isPaygPromotionAvailable(billingCustomer);
   if (isPending) return null;
   if (!data) return <Landing />;
+  // B-01: unverified addresses get a verify banner (the API gates /api/*
+  // on verification, so little else works until they confirm). /api/me
+  // reports the real flag, so grandfathered legacy members see the nudge too
+  // while the middleware bypass keeps their API access working. Only
+  // strictly-false triggers the banner so mixed-version deploys returning
+  // undefined don't flash it.
+  const verifyEmailNeeded = me.data?.user.emailVerified === false;
   const scopedRoute = matchPath("/app/org/:orgSlug/project/:projectSlug/*", pathname);
   const orgSlug = scopedRoute?.params.orgSlug;
   const projectSlug = scopedRoute?.params.projectSlug;
@@ -208,13 +216,20 @@ function AuthenticatedApp() {
   const projectRoot =
     orgSlug && projectSlug ? buildProjectPath({ orgSlug, projectSlug }, "/") : "/app";
   const app = (
-    <OnboardingGate>
+    <>
+      {/* Review P2: OnboardingGate replaces everything below with the wizard
+          for pre-org users, so an in-ribbon banner would never reach the
+          people who need it most (fresh unverified signups whose create-org
+          call is verification-gated). Render the banner above the gate. */}
+      {verifyEmailNeeded && <VerifyEmailBar email={data.user.email} />}
+      <OnboardingGate>
       <div className={APP_FRAME_CLASS}>
         <TopRibbon
           impersonating={impersonating}
           email={data.user.email}
           billingPaused={billingPaused}
           paygPromotionAvailable={paygPromotionAvailable}
+          verifyEmailNeeded={verifyEmailNeeded}
         />
         <ProductShell
           toolbar={<ProductToolbar />}
@@ -263,7 +278,8 @@ function AuthenticatedApp() {
       </div>
       <CommandPalette />
       <McpInstallPill />
-    </OnboardingGate>
+      </OnboardingGate>
+    </>
   );
   const projectApp =
     orgSlug && projectSlug ? (
@@ -313,24 +329,74 @@ function useGlobalKeybinds(enabled: boolean) {
 }
 
 // Single app-wide status ribbon slot. Only one bar shows at a time, in priority
-// order: impersonation (staff) > demo mode > billing paused. Demo mode reads the
-// exploration context so the bar tracks the same opt-in that gates the demo app.
+// order: impersonation (staff) > unverified email > demo mode > billing paused.
+// Demo mode reads the exploration context so the bar tracks the same opt-in
+// that gates the demo app.
 function TopRibbon({
   impersonating,
   email,
   billingPaused,
   paygPromotionAvailable,
+  verifyEmailNeeded,
 }: {
   impersonating: boolean;
   email: string;
   billingPaused: boolean;
   paygPromotionAvailable: boolean;
+  verifyEmailNeeded: boolean;
 }) {
   const { exploring } = useDemoExploration();
   if (impersonating) return <ImpersonationBar email={email} />;
+  if (verifyEmailNeeded) return <VerifyEmailBar email={email} />;
   if (exploring) return <DemoModeBar />;
   if (billingPaused) return <BillingLimitBar paygPromotionAvailable={paygPromotionAvailable} />;
   return null;
+}
+
+function VerifyEmailBar({ email }: { email: string }) {
+  const [resent, setResent] = useState(false);
+  const [failed, setFailed] = useState(false);
+  async function resend() {
+    setFailed(false);
+    try {
+      const result = await authClient.sendVerificationEmail({
+        email,
+        callbackURL: `${window.location.origin}/verify-email?verified=true`,
+      });
+      if (result.error) {
+        setFailed(true);
+        return;
+      }
+      setResent(true);
+    } catch {
+      // Network/transport failure: surface retry state instead of an
+      // unhandled rejection with no feedback.
+      setFailed(true);
+    }
+  }
+  return (
+    <div className="flex h-7 w-full items-center justify-center gap-2 bg-amber-400 px-3 text-[11px] text-black">
+      <span className="font-semibold">Verify your email</span>
+      <span className="opacity-80">
+        {resent ? "Verification link sent — check your inbox." : "Confirm your address to unlock the dashboard."}
+      </span>
+      {failed && <span className="font-medium">Couldn't send — try again.</span>}
+      {!resent && (
+        <>
+          <Link to="/verify-email" className="font-medium underline underline-offset-2 hover:opacity-80">
+            Verify →
+          </Link>
+          <button
+            type="button"
+            onClick={() => void resend()}
+            className="font-medium underline underline-offset-2 hover:opacity-80"
+          >
+            Resend
+          </button>
+        </>
+      )}
+    </div>
+  );
 }
 
 function DemoModeBar() {

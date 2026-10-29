@@ -11,6 +11,7 @@ import {
   useStartSlackInstall,
 } from "../api.ts";
 import { authClient, useSession } from "../auth-client.ts";
+import { isEmailVerificationError } from "../api-error.ts";
 import { Btn, Wordmark } from "../design/ui.tsx";
 import { getSkillOnboardingIntent } from "../skillOnboarding.ts";
 import { AwsConnectFlow } from "./AwsConnectFlow.tsx";
@@ -314,7 +315,16 @@ function CreateOrgStep() {
           className="mt-2 block w-full rounded-[10px] border border-[rgba(255,255,255,0.12)] bg-[#0f1014] px-3 py-2 text-[14px] text-fg outline-none transition-colors focus:border-[#8C98F0] disabled:opacity-60"
         />
         {createOrg.error && (
-          <p className="m-0 mt-2 text-[12.5px] text-danger">{String(createOrg.error)}</p>
+          <p className="m-0 mt-2 text-[12.5px] text-danger">
+            {isEmailVerificationError(createOrg.error) ? (
+              <>
+                Please verify your email first — check your inbox for the
+                verification link, then come back and create your organization.
+              </>
+            ) : (
+              String(createOrg.error)
+            )}
+          </p>
         )}
       </div>
       <StepFooter

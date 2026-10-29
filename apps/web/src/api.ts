@@ -11,7 +11,17 @@ export function apiRequestUrl(path: string, apiUrl = API_URL): string {
 }
 
 export type Me = {
-  user: { id: string; email: string; name: string; isStaff: boolean; impersonating: boolean };
+  user: {
+    id: string;
+    email: string;
+    name: string;
+    isStaff: boolean;
+    impersonating: boolean;
+    // False until the address is confirmed via the verification email.
+    // Optional so mixed-version deploys don't break the client: undefined
+    // is treated the same as verified (no banner).
+    emailVerified?: boolean;
+  };
   // Both null when the user signed up but hasn't created their first org yet.
   // The onboarding wizard's create-org step posts to /api/me/orgs to fix that.
   org: { id: string; name: string; slug: string; githubSetupNeeded: boolean } | null;
