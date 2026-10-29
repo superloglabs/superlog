@@ -62,8 +62,9 @@ export function mountMcpPublic<T extends Hono<any, any, any>>(app: T, ch: ClickH
       });
     }
     const tokenCtx = resolved;
+    // Any cut-over row forwards; an empty or invalid address fails closed.
     const workspaceUrl = await cutOverWorkspaceUrl(tokenCtx.projectId);
-    if (workspaceUrl) return forwardToWorkspace(c.req.raw, tokenCtx, workspaceUrl);
+    if (workspaceUrl !== null) return forwardToWorkspace(c.req.raw, tokenCtx, workspaceUrl);
 
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

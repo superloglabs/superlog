@@ -52,7 +52,7 @@ export type McpForward = {
   projectId: string;
 };
 
-const FORWARD_TIMEOUT_MS = 120_000;
+const FORWARD_HEADERS_TIMEOUT_MS = 120_000;
 // Streamable HTTP headers pass both ways. The client's Authorization header
 // holds this product's token and stays here.
 const FORWARDED_REQUEST_HEADERS = [
@@ -83,6 +83,7 @@ export async function forwardMcpRequest(
   request: Request,
   forward: McpForward,
   send: typeof fetch = fetch,
+  timeoutMs = FORWARD_HEADERS_TIMEOUT_MS,
 ): Promise<Response> {
   const headers = new Headers();
   for (const name of FORWARDED_REQUEST_HEADERS) {
@@ -94,13 +95,25 @@ export async function forwardMcpRequest(
   headers.set(MCP_FORWARD_HEADERS.email, forward.email);
   headers.set(MCP_FORWARD_HEADERS.access, forward.access);
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
-  const upstream = await send(forward.endpoint, {
-    body: hasBody ? await request.arrayBuffer() : undefined,
-    headers,
-    method: request.method,
-    redirect: "manual",
-    signal: AbortSignal.timeout(FORWARD_TIMEOUT_MS),
-  });
+  // The timeout covers waiting for the response headers only. A stream, such
+  // as a GET event stream, stays open for as long as the workspace keeps it.
+  const headersTimeout = new AbortController();
+  const timer = setTimeout(
+    () => headersTimeout.abort(new Error("workspace MCP endpoint did not answer in time")),
+    timeoutMs,
+  );
+  let upstream: Response;
+  try {
+    upstream = await send(forward.endpoint, {
+      body: hasBody ? await request.arrayBuffer() : undefined,
+      headers,
+      method: request.method,
+      redirect: "manual",
+      signal: headersTimeout.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   if (upstream.type === "opaqueredirect" || (upstream.status >= 300 && upstream.status < 400)) {
     await upstream.body?.cancel().catch(() => {});
     throw new McpForwardRedirectError(upstream.status);

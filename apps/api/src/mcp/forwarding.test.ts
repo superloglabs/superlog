@@ -177,7 +177,66 @@ test("never follows the workspace's redirect with the credential", async () => {
   }
 });
 
-async function seedToken(input: { cutOverAt?: Date | null; scope?: string } = {}) {
+async function listen(handler: Parameters<typeof createServer>[1]) {
+  const server = createServer(handler);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    endpoint: new URL(`http://localhost:${(server.address() as AddressInfo).port}/api/mcp`),
+    close: () => {
+      server.closeAllConnections();
+      return new Promise((resolve) => server.close(resolve));
+    },
+  };
+}
+
+function forwardTo(endpoint: URL, method: string, timeoutMs: number) {
+  return forwardMcpRequest(
+    new Request("https://api.example.com/mcp", {
+      method,
+      headers: { accept: "text/event-stream" },
+    }),
+    {
+      access: "read",
+      credential: "forward-secret",
+      email: "ash@example.com",
+      endpoint,
+      projectId: "11111111-1111-4111-8111-111111111111",
+    },
+    fetch,
+    timeoutMs,
+  );
+}
+
+test("keeps a stream open past the timeout once its headers arrive", async () => {
+  const workspace = await listen((_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write("data: one\n\n");
+    setTimeout(() => res.end("data: two\n\n"), 300);
+  });
+  try {
+    const response = await forwardTo(workspace.endpoint, "GET", 50);
+
+    assert.equal(response.headers.get("content-type"), "text/event-stream");
+    assert.equal(await response.text(), "data: one\n\ndata: two\n\n");
+  } finally {
+    await workspace.close();
+  }
+});
+
+test("gives up when the workspace sends no headers in time", async () => {
+  const workspace = await listen((_req, res) => {
+    setTimeout(() => res.end("{}"), 1_000);
+  });
+  try {
+    await assert.rejects(forwardTo(workspace.endpoint, "POST", 50));
+  } finally {
+    await workspace.close();
+  }
+});
+
+async function seedToken(
+  input: { cutOverAt?: Date | null; scope?: string; workspaceUrl?: string } = {},
+) {
   const tag = `mcp-forward-${Date.now()}-${randomBytes(4).toString("hex")}`;
   const [user] = await db
     .insert(schema.users)
@@ -214,7 +273,7 @@ async function seedToken(input: { cutOverAt?: Date | null; scope?: string } = {}
   if (input.cutOverAt !== undefined) {
     await db.insert(schema.projectMigrations).values({
       projectId: project.id,
-      workspaceUrl: "https://us.example.com",
+      workspaceUrl: input.workspaceUrl ?? "https://us.example.com",
       cutOverAt: input.cutOverAt,
     });
   }
@@ -306,6 +365,19 @@ test("answers 502 when a cut-over project's workspace redirects", async () => {
 
   assert.equal(response.status, 502);
   assert.equal(fetch.mock.callCount(), 1);
+});
+
+test("fails closed for a cut-over project with an empty or invalid address", async () => {
+  process.env.LEGACY_MCP_FORWARD_TOKEN = "forward-secret";
+  const fetch = stubWorkspace();
+  const app = mcpApp();
+
+  for (const workspaceUrl of ["", "not a url", "http://us.example.com"]) {
+    const seeded = await seedToken({ cutOverAt: new Date(), workspaceUrl });
+    const response = await initialize(app, seeded.token);
+    assert.equal(response.status, 503, workspaceUrl);
+  }
+  assert.equal(fetch.mock.callCount(), 0);
 });
 
 test("refuses a cut-over project's requests when forwarding is not configured", async () => {

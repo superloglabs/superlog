@@ -26,7 +26,7 @@ after(async () => {
   }
 });
 
-async function seedSlackProject(cutOverAt?: Date) {
+async function seedSlackProject(cutOverAt?: Date, team?: string) {
   const tag = randomBytes(4).toString("hex");
   const [org] = await db
     .insert(schema.orgs)
@@ -39,7 +39,7 @@ async function seedSlackProject(cutOverAt?: Date) {
     .values({ orgId: org.id, name: "Default", slug: "default" })
     .returning();
   if (!project) throw new Error("seed project failed");
-  const teamId = `T${tag}`;
+  const teamId = team ?? `T${tag}`;
   const channelId = `C${tag}`;
   await db.insert(schema.slackInstallations).values({
     projectId: project.id,
@@ -62,6 +62,23 @@ async function seedSlackProject(cutOverAt?: Date) {
   if (!installation) throw new Error("seed installation failed");
   return { channelId, installationId: installation.id, projectId: project.id, teamId };
 }
+
+test("keeps a cut-over project's channel from routing to another project in the team", async () => {
+  const slack = mock.method(globalThis, "fetch", async () => Response.json({ ok: true }));
+  const team = `T${randomBytes(4).toString("hex")}`;
+  const moved = await seedSlackProject(new Date(), team);
+  const active = await seedSlackProject(undefined, team);
+
+  await mention(moved);
+
+  assert.equal((await chatsFor(moved.projectId)).length, 0);
+  assert.equal((await chatsFor(active.projectId)).length, 0);
+  assert.equal(slack.mock.callCount(), 0);
+
+  await mention(active);
+
+  assert.equal((await chatsFor(active.projectId)).length, 1);
+});
 
 // An incident with a Slack thread and a finished investigation.
 async function seedIncidentThread(seeded: Awaited<ReturnType<typeof seedSlackProject>>) {

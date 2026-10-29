@@ -1872,12 +1872,10 @@ async function handleChatEvent(
       installation: row,
     };
   } else {
-    const routable: typeof installations = [];
-    for (const installation of installations) {
-      if (!(await isProjectCutOver(installation.projectId))) routable.push(installation);
-    }
+    // Channel ownership is resolved across every project, cut over or not, so
+    // a cut-over project's channel never routes to another project.
     const resolution = resolveChatInstallation(
-      routable.map((i) => ({
+      installations.map((i) => ({
         id: i.id,
         projectId: i.projectId,
         channelId: i.channelId,
