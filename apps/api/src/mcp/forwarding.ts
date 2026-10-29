@@ -53,11 +53,32 @@ export type McpForward = {
 };
 
 const FORWARD_TIMEOUT_MS = 120_000;
-// The client's Authorization header holds this product's token and stays here.
-const FORWARDED_REQUEST_HEADERS = ["accept", "content-type", "mcp-protocol-version"];
-const FORWARDED_RESPONSE_HEADERS = ["cache-control", "content-type"];
+// Streamable HTTP headers pass both ways. The client's Authorization header
+// holds this product's token and stays here.
+const FORWARDED_REQUEST_HEADERS = [
+  "accept",
+  "content-type",
+  "last-event-id",
+  "mcp-protocol-version",
+  "mcp-session-id",
+];
+const FORWARDED_RESPONSE_HEADERS = [
+  "cache-control",
+  "content-type",
+  "mcp-session-id",
+  "retry-after",
+];
+
+export class McpForwardRedirectError extends Error {
+  constructor(readonly status: number) {
+    super(`workspace MCP endpoint answered with redirect ${status}`);
+    this.name = "McpForwardRedirectError";
+  }
+}
 
 // Sends the client's JSON-RPC request on unchanged and streams the answer back.
+// A redirect is never followed, since it would carry the credential and the
+// email to another address.
 export async function forwardMcpRequest(
   request: Request,
   forward: McpForward,
@@ -77,8 +98,13 @@ export async function forwardMcpRequest(
     body: hasBody ? await request.arrayBuffer() : undefined,
     headers,
     method: request.method,
+    redirect: "manual",
     signal: AbortSignal.timeout(FORWARD_TIMEOUT_MS),
   });
+  if (upstream.type === "opaqueredirect" || (upstream.status >= 300 && upstream.status < 400)) {
+    await upstream.body?.cancel().catch(() => {});
+    throw new McpForwardRedirectError(upstream.status);
+  }
   const responseHeaders = new Headers();
   for (const name of FORWARDED_RESPONSE_HEADERS) {
     const value = upstream.headers.get(name);

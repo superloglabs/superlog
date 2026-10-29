@@ -6,7 +6,7 @@
 import { type AgentChat, db, hydrateSlackInstallation, schema } from "@superlog/db";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { ChatDeliveryUnavailableError } from "../../agent-chats/workflow.js";
-import { type SlackTarget, postSlackMessage } from "./api.js";
+import { PROJECT_CUT_OVER_ERROR, type SlackTarget, postSlackMessage } from "./api.js";
 
 // The reply-claim takeover (agent-chats/tick.ts) assumes no post can still
 // be in flight once a claim is old enough to steal; this bound is what makes
@@ -31,6 +31,9 @@ export async function postAgentChatMessage(chat: AgentChat, text: string): Promi
     threadTs: chat.slackThreadTs,
     timeoutMs: CHAT_POST_TIMEOUT_MS,
   });
+  if (res?.error === PROJECT_CUT_OVER_ERROR) {
+    throw new ChatDeliveryUnavailableError(`chat ${chat.id} belongs to a cut-over project`);
+  }
   if (!res?.ok) {
     throw new Error(`slack chat post failed: ${res?.error ?? "network_error"}`);
   }

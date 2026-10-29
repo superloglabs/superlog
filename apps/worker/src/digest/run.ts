@@ -50,6 +50,9 @@ export type RunDigestForProjectDeps = {
   logger: DigestLogger;
   policy: DigestPolicy;
   now(): Date;
+  // A project cut over to its Superlog application workspace gets no digest,
+  // even on a forced run: the workspace now posts to its Slack.
+  isProjectCutOver(projectId: string): Promise<boolean>;
 };
 
 export type RunDigestResult =
@@ -61,6 +64,7 @@ export async function runDigestForProjectWorkflow(
   deps: RunDigestForProjectDeps,
   opts: { force?: boolean } = {},
 ): Promise<RunDigestResult> {
+  if (await deps.isProjectCutOver(projectId)) return { status: "skipped", reason: "cut over" };
   const settings = await deps.repo.findProjectSettings(projectId);
   if (!settings) return { status: "skipped", reason: "no project settings row" };
   if (!opts.force && !settings.enabled) return { status: "skipped", reason: "disabled" };

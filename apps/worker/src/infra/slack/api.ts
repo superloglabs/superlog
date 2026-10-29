@@ -2,8 +2,10 @@
 // to Slack on behalf of a project (incident threads, autorecovery
 // proposals, future digest pings, …). Centralised so we have one place
 // that handles bot-token revocation: if Slack returns `token_revoked` or a
-// peer, we mark the installation revoked in pg so we stop pinging.
-import { clearedSlackCredentialFields, db, schema } from "@superlog/db";
+// peer, we mark the installation revoked in pg so we stop pinging. It is also
+// where posts for a project cut over to its Superlog application workspace
+// stop: they come back as not ok with `project_cut_over`.
+import { clearedSlackCredentialFields, db, isSlackInstallationCutOver, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import { logger } from "../../logger.js";
 
@@ -17,6 +19,8 @@ export type SlackTarget = {
 
 export type SlackPostMessageResponse = { ok: boolean; error?: string; ts?: string };
 export type SlackUpdateMessageResponse = { ok: boolean; error?: string };
+
+export const PROJECT_CUT_OVER_ERROR = "project_cut_over";
 
 async function markInstallationRevoked(installationId: string): Promise<void> {
   await db
@@ -36,6 +40,9 @@ export async function postSlackMessage(opts: {
   timeoutMs?: number;
 }): Promise<SlackPostMessageResponse | null> {
   try {
+    if (await isSlackInstallationCutOver(opts.target.installationId)) {
+      return { ok: false, error: PROJECT_CUT_OVER_ERROR };
+    }
     const res = await fetch("https://slack.com/api/chat.postMessage", {
       method: "POST",
       headers: {
@@ -134,6 +141,9 @@ export async function updateSlackMessage(opts: {
   blocks?: unknown[];
 }): Promise<SlackUpdateMessageResponse | null> {
   try {
+    if (await isSlackInstallationCutOver(opts.target.installationId)) {
+      return { ok: false, error: PROJECT_CUT_OVER_ERROR };
+    }
     const res = await fetch("https://slack.com/api/chat.update", {
       method: "POST",
       headers: {

@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { after, afterEach, before, mock, test } from "node:test";
 import { closeDb, db, runMigrations, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
+import { postSlackMessage, updateSlackMessage } from "./api.js";
 import {
   fetchSlackTargetsForOrg,
   postIncidentRootMessage,
@@ -141,4 +142,29 @@ test("leaves cut-over projects' channels out of org-level notifications", async 
     targets.map((target) => target.channelId),
     [staying.installation.channelId],
   );
+});
+
+test("drops every post and update for a cut-over project's installation", async () => {
+  const org = await seedOrg();
+  const staying = await seedProject(org);
+  const moved = await seedProject(org, new Date());
+  const slack = stubSlack();
+  const target = (installation: typeof moved.installation) => ({
+    installationId: installation.id,
+    channelId: installation.channelId ?? "",
+    botToken: "xoxb-test",
+  });
+
+  const posted = await postSlackMessage({ target: target(staying.installation), text: "digest" });
+  const dropped = await postSlackMessage({ target: target(moved.installation), text: "digest" });
+  const updated = await updateSlackMessage({
+    target: target(moved.installation),
+    ts: "1.000100",
+    text: "Resolved",
+  });
+
+  assert.equal(posted?.ok, true);
+  assert.deepEqual(dropped, { ok: false, error: "project_cut_over" });
+  assert.deepEqual(updated, { ok: false, error: "project_cut_over" });
+  assert.equal(slack.mock.callCount(), 1);
 });

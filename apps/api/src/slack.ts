@@ -9,6 +9,7 @@ import {
   hydrateSlackInstallation,
   integrationSecretEncryptionConfigured,
   isProjectCutOver,
+  isSlackInstallationCutOver,
   loadCurrentIncidentResolutionProof,
   mentionsBot,
   recordInboundChatMessage,
@@ -530,6 +531,7 @@ async function handleSlackOpenPr(
         : `:no_entry: PR implementation not started (${result.reason.replace(/_/g, " ")}).`
       : `:hammer_and_wrench: ${clickedBy} asked the agent to implement the confirmed fix and open a PR.`;
   await postSlackThreadReply({
+    projectId: incident.projectId,
     botToken: installation.botAccessToken,
     channel: incident.slackChannelId,
     threadTs: incident.slackThreadTs,
@@ -562,6 +564,7 @@ async function handleSlackRetryInvestigation(
   const slackUserId = payload.user?.id ?? null;
   const attribution = slackUserId ? ` by <@${slackUserId}>` : "";
   await postSlackThreadReply({
+    projectId: incident.projectId,
     botToken: installation.botAccessToken,
     channel: incident.slackChannelId,
     threadTs: incident.slackThreadTs,
@@ -795,6 +798,7 @@ async function handleSlackResolveIncident(
   }
   if (incident.slackChannelId && incident.slackThreadTs) {
     await postSlackThreadReply({
+      projectId: incident.projectId,
       botToken: installation.botAccessToken,
       channel: incident.slackChannelId,
       threadTs: incident.slackThreadTs,
@@ -851,6 +855,7 @@ async function handleSlackUnsilenceResolve(
   }
   if (incident.slackChannelId && incident.slackThreadTs) {
     await postSlackThreadReply({
+      projectId: incident.projectId,
       botToken: installation.botAccessToken,
       channel: incident.slackChannelId,
       threadTs: incident.slackThreadTs,
@@ -892,6 +897,7 @@ async function handleSlackMergePr(
   const reply = async (text: string) => {
     if (!installation || !incident.slackChannelId || !incident.slackThreadTs) return;
     await postSlackThreadReply({
+      projectId: incident.projectId,
       botToken: installation.botAccessToken,
       channel: incident.slackChannelId,
       threadTs: incident.slackThreadTs,
@@ -1057,6 +1063,7 @@ async function handleProposalDecision(
       },
     },
   ];
+  if (await isSlackInstallationCutOver(installation.id)) return;
   try {
     await fetch("https://slack.com/api/chat.update", {
       method: "POST",
@@ -1131,6 +1138,7 @@ async function handleFollowUpConfirm(
           : `:no_entry: Follow-up not started (${result.reason.replace(/_/g, " ")}).`
       : `:mag: Follow-up investigation queued by ${clickedBy} — the agent will take this feedback into account.`;
   await postSlackThreadReply({
+    projectId: incident.projectId,
     botToken: installation.botAccessToken,
     channel: incident.slackChannelId,
     threadTs: incident.slackThreadTs,
@@ -1138,13 +1146,17 @@ async function handleFollowUpConfirm(
   });
 }
 
+// A project cut over to its Superlog application workspace gets no replies
+// here. Null marks a workspace-level notice that names no project.
 async function postSlackThreadReply(opts: {
+  projectId: string | null;
   botToken: string;
   channel: string;
   // Null posts to the channel root (DM conversations have no thread anchor).
   threadTs: string | null;
   text: string;
 }): Promise<void> {
+  if (opts.projectId && (await isProjectCutOver(opts.projectId))) return;
   try {
     const res = await fetch("https://slack.com/api/chat.postMessage", {
       method: "POST",
@@ -1774,6 +1786,7 @@ async function handleIncidentThreadReply(
   // One instant acknowledgement in the originating thread so the human knows
   // the message landed, rather than silence until the agent replies.
   await postSlackThreadReply({
+    projectId: incident.projectId,
     botToken: installation.botAccessToken,
     channel: event.channel,
     threadTs: event.thread_ts,
@@ -1883,6 +1896,7 @@ async function handleChatEvent(
       const anyInstall = await findInstallationForTeam(teamId);
       if (anyInstall) {
         await postSlackThreadReply({
+          projectId: null,
           botToken: anyInstall.botAccessToken,
           channel: event.channel,
           threadTs: isDm ? null : anchorThreadTs,
@@ -1917,6 +1931,7 @@ async function handleChatEvent(
   if (result.outcome === "skipped") {
     if (result.reason === "chat_disabled" && !existing && target.installation && mayPostNotices) {
       await postSlackThreadReply({
+        projectId: target.projectId,
         botToken: target.installation.botAccessToken,
         channel: event.channel,
         threadTs: isDm ? null : anchorThreadTs,
@@ -1934,6 +1949,7 @@ async function handleChatEvent(
   // actual answer without an extra "on it" in between.
   if (result.created && target.installation) {
     await postSlackThreadReply({
+      projectId: target.projectId,
       botToken: target.installation.botAccessToken,
       channel: event.channel,
       threadTs: isDm ? null : anchorThreadTs,

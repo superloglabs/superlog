@@ -1,12 +1,19 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { after, afterEach, before, mock, test } from "node:test";
 import type { ClickHouseClient } from "@clickhouse/client";
 import { closeDb, db, hashToken, runMigrations, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
-import { forwardMcpRequest, mcpForwardAccess, workspaceMcpEndpoint } from "./forwarding.js";
+import {
+  McpForwardRedirectError,
+  forwardMcpRequest,
+  mcpForwardAccess,
+  workspaceMcpEndpoint,
+} from "./forwarding.js";
 import { mountMcpPublic } from "./index.js";
 
 const orgIds: string[] = [];
@@ -76,6 +83,8 @@ test("forwards the JSON-RPC body unchanged and streams the answer back", async (
       status: 200,
       headers: {
         "content-type": "application/json",
+        "mcp-session-id": "session-2",
+        "retry-after": "5",
         "set-cookie": "session=1",
         "www-authenticate": "Bearer realm=other",
       },
@@ -91,7 +100,9 @@ test("forwards the JSON-RPC body unchanged and streams the answer back", async (
         authorization: "Bearer old-token",
         "content-type": "application/json",
         cookie: "session=old",
+        "last-event-id": "event-7",
         "mcp-protocol-version": "2025-06-18",
+        "mcp-session-id": "session-1",
       },
     }),
     {
@@ -111,17 +122,59 @@ test("forwards the JSON-RPC body unchanged and streams the answer back", async (
   assert.deepEqual(Object.fromEntries(new Headers(sent.init.headers).entries()), {
     accept: "application/json, text/event-stream",
     "content-type": "application/json",
+    "last-event-id": "event-7",
     "mcp-protocol-version": "2025-06-18",
+    "mcp-session-id": "session-1",
     "x-legacy-mcp-access": "read",
     "x-legacy-mcp-forward-token": "forward-secret",
     "x-legacy-mcp-project-id": "11111111-1111-4111-8111-111111111111",
     "x-legacy-mcp-user-email": "ash@example.com",
   });
   assert.equal(response.status, 200);
+  assert.equal(sent.init.redirect, "manual");
   assert.deepEqual(Object.fromEntries(response.headers.entries()), {
     "content-type": "application/json",
+    "mcp-session-id": "session-2",
+    "retry-after": "5",
   });
   assert.equal(await response.text(), '{"jsonrpc":"2.0","id":1,"result":{}}');
+});
+
+test("never follows the workspace's redirect with the credential", async () => {
+  const elsewhere: string[] = [];
+  const other = createServer((req, res) => {
+    elsewhere.push(String(req.headers["x-legacy-mcp-forward-token"]));
+    res.end("{}");
+  });
+  await new Promise<void>((resolve) => other.listen(0, "127.0.0.1", resolve));
+  const otherPort = (other.address() as AddressInfo).port;
+  const workspace = createServer((_req, res) => {
+    res.writeHead(307, { location: `http://127.0.0.1:${otherPort}/api/mcp` });
+    res.end();
+  });
+  await new Promise<void>((resolve) => workspace.listen(0, "127.0.0.1", resolve));
+  const workspacePort = (workspace.address() as AddressInfo).port;
+  try {
+    const forward = () =>
+      forwardMcpRequest(
+        new Request("https://api.example.com/mcp", { method: "POST", body: "{}" }),
+        {
+          access: "read",
+          credential: "forward-secret",
+          email: "ash@example.com",
+          endpoint: new URL(`http://localhost:${workspacePort}/api/mcp`),
+          projectId: "11111111-1111-4111-8111-111111111111",
+        },
+      );
+
+    await assert.rejects(forward, McpForwardRedirectError);
+    assert.deepEqual(elsewhere, []);
+  } finally {
+    await Promise.all([
+      new Promise((resolve) => workspace.close(resolve)),
+      new Promise((resolve) => other.close(resolve)),
+    ]);
+  }
 });
 
 async function seedToken(input: { cutOverAt?: Date | null; scope?: string } = {}) {
@@ -240,6 +293,19 @@ test("forwards a cut-over project's requests as the token owner", async () => {
   assert.equal(headers.get("x-legacy-mcp-project-id"), seeded.projectId);
   assert.equal(headers.get("x-legacy-mcp-user-email"), seeded.email);
   assert.equal(headers.get("x-legacy-mcp-access"), "read");
+});
+
+test("answers 502 when a cut-over project's workspace redirects", async () => {
+  process.env.LEGACY_MCP_FORWARD_TOKEN = "forward-secret";
+  const fetch = mock.method(globalThis, "fetch", async () =>
+    Response.redirect("https://elsewhere.example.com/api/mcp", 302),
+  );
+  const seeded = await seedToken({ cutOverAt: new Date() });
+
+  const response = await initialize(mcpApp(), seeded.token);
+
+  assert.equal(response.status, 502);
+  assert.equal(fetch.mock.callCount(), 1);
 });
 
 test("refuses a cut-over project's requests when forwarding is not configured", async () => {

@@ -12,6 +12,7 @@ export {
   createCutOverLookup,
   cutOverWorkspaceUrl,
   isProjectCutOver,
+  isSlackInstallationCutOver,
   loadCutOverWorkspaceUrl,
 } from "./project-migrations.js";
 export {

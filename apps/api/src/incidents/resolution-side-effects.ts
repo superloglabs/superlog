@@ -316,11 +316,13 @@ export async function updateResolvedIncidentSlackRootMessage(input: {
   text: string;
   blocks: unknown[];
 }): Promise<void> {
-  const { db, hydrateSlackInstallation, schema } = await import("@superlog/db");
+  const { db, hydrateSlackInstallation, isProjectCutOver, schema } = await import("@superlog/db");
   const row = await db.query.incidents.findFirst({
     where: eq(schema.incidents.id, input.incident.id),
   });
   if (!row?.slackChannelId || !row.slackThreadTs || !row.slackInstallationId) return;
+  // The project's Superlog application workspace now serves its Slack.
+  if (await isProjectCutOver(row.projectId)) return;
 
   const installationRow = await db.query.slackInstallations.findFirst({
     where: and(

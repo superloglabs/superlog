@@ -1,6 +1,6 @@
 import { and, eq, isNotNull } from "drizzle-orm";
 import { db } from "./client.js";
-import { projectMigrations } from "./schema.js";
+import { projectMigrations, slackInstallations } from "./schema.js";
 
 // A project is cut over to its Superlog application workspace once its
 // project_migrations row has cut_over_at set. From then on the workspace
@@ -44,4 +44,26 @@ export const cutOverWorkspaceUrl = createCutOverLookup(loadCutOverWorkspaceUrl);
 
 export async function isProjectCutOver(projectId: string): Promise<boolean> {
   return (await cutOverWorkspaceUrl(projectId)) !== null;
+}
+
+// An installation belongs to one project for its whole life, so its project
+// is remembered; the cut-over answer itself stays on the 30-second cache.
+const installationProjects = new Map<string, string>();
+
+// Whether a Slack installation's project is cut over. Every Slack post made
+// for a project checks this, so the old product stays out of a channel the
+// project's workspace now serves.
+export async function isSlackInstallationCutOver(installationId: string): Promise<boolean> {
+  let projectId = installationProjects.get(installationId);
+  if (!projectId) {
+    const row = await db.query.slackInstallations.findFirst({
+      columns: { projectId: true },
+      where: eq(slackInstallations.id, installationId),
+    });
+    if (!row) return false;
+    projectId = row.projectId;
+    if (installationProjects.size >= 10_000) installationProjects.clear();
+    installationProjects.set(installationId, projectId);
+  }
+  return isProjectCutOver(projectId);
 }
