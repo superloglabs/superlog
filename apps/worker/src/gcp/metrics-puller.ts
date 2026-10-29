@@ -370,7 +370,8 @@ function distributionBounds(
   const linear = options?.linearBuckets;
   const linearCount = linear?.numFiniteBuckets;
   const linearWidth = linear?.width;
-  const linearOffset = linear?.offset;
+  // ProtoJSON omits scalar fields whose value is the protobuf default (zero).
+  const linearOffset = linear?.offset ?? 0;
   if (
     typeof linearCount === "number" &&
     linearCount > 0 &&
