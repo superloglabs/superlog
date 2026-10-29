@@ -4,6 +4,7 @@ import type { ClickHouseClient } from "@clickhouse/client";
 import {
   countSeries,
   fieldColumnExpr,
+  getTraceDetail,
   listAttributeKeys,
   listAttributeValues,
   listMetricNames,
@@ -1182,4 +1183,32 @@ test("countSeries falls back to the raw table when the rollup table is absent", 
   );
 
   assert.match(capture.query ?? "", /FROM otel_traces/);
+});
+
+test("getTraceDetail queries spans and logs, bound by the trace-id index window", async () => {
+  const queries: string[] = [];
+
+  await getTraceDetail(fakeClickhouseMulti(queries), "project-1", "abc123");
+
+  assert.equal(queries.length, 2);
+  const spansQuery = queries.find((q) => /FROM otel_traces/.test(q));
+  const logsQuery = queries.find((q) => /FROM otel_logs/.test(q));
+  assert.ok(spansQuery, "expected a spans query");
+  assert.ok(logsQuery, "expected a logs query");
+
+  // Both legs must be pruned via otel_traces_trace_id_ts: a bare TraceId
+  // predicate cannot use the primary index and full-scans every partition.
+  for (const query of [spansQuery, logsQuery]) {
+    assert.match(query, /otel_traces_trace_id_ts/);
+    assert.match(query, /\{traceId:String\}/);
+  }
+});
+
+test("getTraceDetail passes the trace id as a bound parameter", async () => {
+  const capture: { query?: string; params?: Record<string, unknown> } = {};
+
+  await getTraceDetail(fakeClickhouse(capture), "project-1", "abc123");
+
+  assert.equal(capture.params?.traceId, "abc123");
+  assert.doesNotMatch(capture.query ?? "", /abc123/);
 });
