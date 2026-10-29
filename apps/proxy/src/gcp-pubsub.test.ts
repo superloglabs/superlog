@@ -35,7 +35,7 @@ test("Pub/Sub delivery remains ingestible while disconnect is provisional", () =
 });
 
 test("Pub/Sub acknowledges permanent ingest rejects but preserves retryable failures", () => {
-  for (const status of [400, 402, 413]) {
+  for (const status of [400, 402, 404, 413]) {
     const permanentDrop = acknowledgeGcpPubSubDelivery(new Response("rejected", { status }));
     assert.equal(permanentDrop.status, 204);
     assert.equal(permanentDrop.headers.get("x-superlog-pubsub-drop"), String(status));
