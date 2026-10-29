@@ -1,6 +1,7 @@
 import type { ClickHouseClient } from "@clickhouse/client";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
+  cutOverWorkspaceUrl,
   db,
   hashToken,
   isPersonalAccessToken,
@@ -12,7 +13,7 @@ import { eq } from "drizzle-orm";
 import type { Hono } from "hono";
 import { logger } from "../logger.js";
 import { type McpConfig, loadMcpConfig } from "./config.js";
-import { cutOverWorkspaceUrl, forwardToWorkspace } from "./forwarding.js";
+import { forwardToWorkspace } from "./forwarding.js";
 import { mountOauthDecision, mountOauthEndpoints, mountOauthMetadata } from "./oauth.js";
 import {
   createBoundedTokenObservationTracker,

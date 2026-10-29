@@ -9,6 +9,12 @@ export {
 } from "./agent-runtime.js";
 export { runMigrations } from "./migrate.js";
 export {
+  createCutOverLookup,
+  cutOverWorkspaceUrl,
+  isProjectCutOver,
+  loadCutOverWorkspaceUrl,
+} from "./project-migrations.js";
+export {
   clearedLinearCredentialFields,
   clearedNotionCredentialFields,
   clearedSlackCredentialFields,

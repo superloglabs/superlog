@@ -11,6 +11,7 @@ import {
   completeAgentPullRequestReviewContinuationClaim,
   db,
   isAgentPullRequestReviewEventKind,
+  isProjectCutOver,
   latestAgentPullRequestSettlementAt,
   listAccessibleGithubInstallsForProject,
   reconcileAgentPullRequestProviderObservation,
@@ -939,7 +940,7 @@ async function handleAgentPrWebhook(
       occurredAt: now,
     });
     if (reviewEvent.disposition === "limit_reached") {
-      if (reviewEvent.shouldNotify) {
+      if (reviewEvent.shouldNotify && !(await agentPrProjectCutOver(agentPrRow))) {
         await postReviewContinuationLimitComment({
           agentPrRow,
           payload,
@@ -1308,6 +1309,16 @@ function isPrContinuationEligibleCommenter(comment: EligiblePrComment): boolean 
     userType: comment.actor?.type ?? null,
     authorAssociation: comment.authorAssociation,
   });
+}
+
+// A project cut over to its Superlog application workspace gets no more
+// comments from this product on its pull requests.
+async function agentPrProjectCutOver(agentPrRow: schema.AgentPullRequest): Promise<boolean> {
+  const incident = await db.query.incidents.findFirst({
+    where: eq(schema.incidents.id, agentPrRow.incidentId),
+    columns: { projectId: true },
+  });
+  return incident ? isProjectCutOver(incident.projectId) : false;
 }
 
 async function postReviewContinuationLimitComment(opts: {

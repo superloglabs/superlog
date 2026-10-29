@@ -14,6 +14,9 @@ export type EvaluateIncidentDeps = {
   repo: AutorecoveryRepository;
   slack: SlackPoster;
   logger: AutorecoveryLogger;
+  // A project cut over to its Superlog application workspace gets no
+  // proposals: its incident threads belong to the old product.
+  isProjectCutOver(projectId: string): Promise<boolean>;
   runAgent(incident: CandidateIncident): Promise<ProposalToolInput | null>;
 };
 
@@ -22,6 +25,7 @@ export type EvaluateIncidentResult =
       kind: "skipped";
       reason:
         | "no_project"
+        | "cut_over"
         | "no_live_signatures"
         | "still_happening"
         | "below_confidence"
@@ -37,6 +41,7 @@ export async function evaluateIncident(
 ): Promise<EvaluateIncidentResult> {
   const project = await deps.repo.findProject(incident.projectId);
   if (!project) return { kind: "skipped", reason: "no_project" };
+  if (await deps.isProjectCutOver(project.id)) return { kind: "skipped", reason: "cut_over" };
 
   // Defense in depth against selectCandidates returning incidents whose live
   // issues have all been silenced/merged. The agent's `query_incident_activity`

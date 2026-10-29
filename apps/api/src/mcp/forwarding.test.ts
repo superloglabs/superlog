@@ -6,12 +6,7 @@ import type { ClickHouseClient } from "@clickhouse/client";
 import { closeDb, db, hashToken, runMigrations, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
-import {
-  createCutOverLookup,
-  forwardMcpRequest,
-  mcpForwardAccess,
-  workspaceMcpEndpoint,
-} from "./forwarding.js";
+import { forwardMcpRequest, mcpForwardAccess, workspaceMcpEndpoint } from "./forwarding.js";
 import { mountMcpPublic } from "./index.js";
 
 const orgIds: string[] = [];
@@ -37,31 +32,6 @@ after(async () => {
   } finally {
     await closeDb();
   }
-});
-
-test("caches whether a project is cut over, including when it is not", async () => {
-  let clock = 0;
-  const answers = new Map<string, string | null>([["moved", "https://us.example.com"]]);
-  const loads: string[] = [];
-  const lookup = createCutOverLookup(
-    async (projectId) => {
-      loads.push(projectId);
-      return answers.get(projectId) ?? null;
-    },
-    { ttlMs: 30_000, now: () => clock },
-  );
-
-  assert.equal(await lookup("moved"), "https://us.example.com");
-  assert.equal(await lookup("stayed"), null);
-  answers.set("stayed", "https://us.example.com");
-  clock = 29_999;
-  assert.equal(await lookup("moved"), "https://us.example.com");
-  assert.equal(await lookup("stayed"), null);
-  assert.deepEqual(loads, ["moved", "stayed"]);
-
-  clock = 30_000;
-  assert.equal(await lookup("stayed"), "https://us.example.com");
-  assert.deepEqual(loads, ["moved", "stayed", "stayed"]);
 });
 
 test("forwards read-only access unless the token has the full grant", () => {

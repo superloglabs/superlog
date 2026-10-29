@@ -22,7 +22,7 @@
 // This file is now a thin facade that wires real deps and re-exports the
 // scheduled-job and manual entry points.
 import Anthropic from "@anthropic-ai/sdk";
-import { db } from "@superlog/db";
+import { db, isProjectCutOver } from "@superlog/db";
 import { recordTokenUsage } from "./ai-usage.js";
 import {
   type AutorecoveryTokenAccountant,
@@ -61,6 +61,7 @@ function makeDeps(apiKey: string, policy: AutorecoveryPolicy, signal?: AbortSign
     now: () => new Date(),
     isCancelled: () => signal?.aborted ?? false,
     selectCandidates: (now, p, opts) => repo.selectCandidates(now, p, opts),
+    isProjectCutOver,
     async runAgent(incident: CandidateIncident) {
       const project = await repo.findProject(incident.projectId);
       if (!project) return null;

@@ -8,6 +8,7 @@ import {
   findChatByAnchor,
   hydrateSlackInstallation,
   integrationSecretEncryptionConfigured,
+  isProjectCutOver,
   loadCurrentIncidentResolutionProof,
   mentionsBot,
   recordInboundChatMessage,
@@ -1595,7 +1596,7 @@ async function upsertInstallation(v: {
     });
 }
 
-async function handleSlackEventEnvelope(payload: SlackEventEnvelope): Promise<void> {
+export async function handleSlackEventEnvelope(payload: SlackEventEnvelope): Promise<void> {
   const event = payload.event;
   if (!event || (event.type !== "message" && event.type !== "app_mention")) return;
   if (event.subtype || event.bot_id) return;
@@ -1631,6 +1632,9 @@ async function handleSlackEventEnvelope(payload: SlackEventEnvelope): Promise<vo
         eventTs: inbound.ts,
       });
       if (route === "ignore") return;
+      // The project's Superlog application workspace receives these events
+      // too and answers them.
+      if (await isProjectCutOver(incident.projectId)) return;
       if (route === "incident") {
         await handleIncidentThreadReply(payload, inbound, incident);
         return;
@@ -1855,8 +1859,12 @@ async function handleChatEvent(
       installation: row,
     };
   } else {
+    const routable: typeof installations = [];
+    for (const installation of installations) {
+      if (!(await isProjectCutOver(installation.projectId))) routable.push(installation);
+    }
     const resolution = resolveChatInstallation(
-      installations.map((i) => ({
+      routable.map((i) => ({
         id: i.id,
         projectId: i.projectId,
         channelId: i.channelId,
@@ -1887,6 +1895,9 @@ async function handleChatEvent(
     if (!row) return;
     target = { projectId: row.projectId, installationId: row.id, installation: row };
   }
+  // A cut-over project's chats are answered by its Superlog application
+  // workspace, which receives the same events.
+  if (await isProjectCutOver(target.projectId)) return;
 
   const result = await recordInboundChatMessage(db, {
     projectId: target.projectId,
