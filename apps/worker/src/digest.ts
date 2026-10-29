@@ -5,7 +5,7 @@
 //   - digest/ranker.ts        LLM ranking with injected client + accountant
 //   - digest/run.ts           runDigestForProjectWorkflow + runDigestsTickWorkflow
 import Anthropic from "@anthropic-ai/sdk";
-import { db, schema } from "@superlog/db";
+import { db, isProjectCutOver, schema } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import { recordTokenUsage } from "./ai-usage.js";
 import type { DigestCandidate, DigestPick } from "./digest/domain.js";
@@ -74,6 +74,7 @@ function makeDepsForProject(projectId: string): RunDigestForProjectDeps {
     slack: createDigestSlackPoster(),
     logger,
     now: () => new Date(),
+    isProjectCutOver,
     rank: rankerForProject(projectId),
   };
 }
@@ -94,6 +95,7 @@ export async function tickDigests(): Promise<number> {
     slack: createDigestSlackPoster(),
     logger,
     now: () => new Date(),
+    isProjectCutOver,
     // Tick dispatches to runDigestForProject below, which wires its own rank().
     rank: async () => [],
   };

@@ -125,6 +125,7 @@ function makeDeps(opts: {
   slack?: SlackPoster;
   proposal?: ProposalToolInput | null;
   candidates?: CandidateIncident[];
+  cutOverProjectIds?: string[];
 }): TickDeps {
   const slack = opts.slack ?? makeSlack({ calls: opts.calls });
   return {
@@ -132,6 +133,9 @@ function makeDeps(opts: {
     repo: opts.repo,
     slack,
     logger: makeLogger(opts.calls),
+    async isProjectCutOver(projectId) {
+      return opts.cutOverProjectIds?.includes(projectId) ?? false;
+    },
     async runAgent(_incident) {
       opts.calls.push(`runAgent:${_incident.id}`);
       return opts.proposal ?? null;
@@ -224,6 +228,21 @@ test("evaluateIncident: skips when project no longer exists", async () => {
   assert.equal(result.kind, "skipped");
   if (result.kind === "skipped") assert.equal(result.reason, "no_project");
   assert.ok(!calls.some((c) => c.startsWith("runAgent")));
+});
+
+test("evaluateIncident: skips a project cut over to its new workspace", async () => {
+  const calls: string[] = [];
+  const repo = makeRepo({ calls });
+  const deps = makeDeps({ calls, repo, proposal: makeProposal(), cutOverProjectIds: ["proj-1"] });
+  const result = await evaluateIncident(
+    makeCandidate({ slackChannelId: "C1", slackThreadTs: "1.0", slackInstallationId: "inst-1" }),
+    deps,
+  );
+  assert.equal(result.kind, "skipped");
+  if (result.kind === "skipped") assert.equal(result.reason, "cut_over");
+  assert.ok(!calls.some((c) => c.startsWith("runAgent")));
+  assert.ok(!calls.some((c) => c.startsWith("insertProposal")));
+  assert.ok(!calls.some((c) => c.startsWith("postProposal")));
 });
 
 test("evaluateIncident: race-condition guard when another proposal already open", async () => {

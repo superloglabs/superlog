@@ -3495,6 +3495,19 @@ export const projectTopologies = pgTable(
   }),
 );
 
+// A project whose customer moves to a workspace of the Superlog application.
+// The workspace has the project's ID and lives at workspaceUrl, the origin of
+// the application deployment that holds it. Once cutOverAt is set, the MCP
+// endpoint forwards the project's requests there instead of serving them.
+export const projectMigrations = pgTable("project_migrations", {
+  projectId: uuid("project_id")
+    .primaryKey()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  workspaceUrl: text("workspace_url").notNull(),
+  cutOverAt: timestamp("cut_over_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 export type ProjectTopology = typeof projectTopologies.$inferSelect;
 export type Org = typeof orgs.$inferSelect;
 export type User = typeof users.$inferSelect;

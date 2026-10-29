@@ -51,6 +51,7 @@ test("a project digest loads settings and candidates only for that project", asy
       slack: { postDigest: async () => ({ ok: true, ts: "1" }) },
       logger: { info() {}, warn() {}, error() {} },
       now: () => new Date("2026-07-14T12:00:00Z"),
+      isProjectCutOver: async () => false,
     },
     { force: true },
   );

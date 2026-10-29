@@ -129,6 +129,7 @@ function makeDeps(opts: {
   slack: DigestSlackPoster;
   picks?: DigestPick[];
   policy?: DigestPolicy;
+  cutOverProjectIds?: string[];
 }): RunDigestForProjectDeps {
   return {
     repo: opts.repo,
@@ -136,6 +137,9 @@ function makeDeps(opts: {
     logger: makeLogger(opts.calls),
     policy: opts.policy ?? DEFAULT_DIGEST_POLICY,
     now: () => NOW,
+    async isProjectCutOver(projectId) {
+      return opts.cutOverProjectIds?.includes(projectId) ?? false;
+    },
     async rank(candidates) {
       opts.calls.push(`rank:${candidates.length}`);
       return opts.picks ?? candidates.map((c) => ({ agentRunId: c.agentRunId, rationale: "ok" }));
@@ -163,6 +167,23 @@ test("runDigestForProject: full happy path posts and stamps last-run", async () 
   assert.deepEqual(result, { status: "posted", pickCount: 2, ts: "1700000000.0001" });
   assert.ok(calls.includes(`stampLastRun:project-1:${NOW.toISOString()}`));
   assert.ok(calls.includes("postDigest:C1"));
+});
+
+test("runDigestForProject: a cut-over project gets no digest, even when forced", async () => {
+  const calls: string[] = [];
+  const repo = makeRepo({
+    calls,
+    settings: {},
+    installation: INSTALLATION,
+    candidates: [makeCandidate()],
+  });
+  const slack = makeSlack({ calls });
+  const deps = makeDeps({ calls, repo, slack, cutOverProjectIds: ["project-1"] });
+
+  const result = await runDigestForProjectWorkflow("project-1", deps, { force: true });
+  assert.deepEqual(result, { status: "skipped", reason: "cut over" });
+  assert.ok(!calls.some((call) => call.startsWith("postDigest")));
+  assert.ok(!calls.some((call) => call.startsWith("rank")));
 });
 
 test("runDigestForProject: skipped when no settings row", async () => {

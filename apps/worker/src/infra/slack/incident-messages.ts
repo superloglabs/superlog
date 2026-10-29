@@ -2,6 +2,7 @@ import {
   db,
   environmentFromResourceAttrs,
   hydrateSlackInstallation,
+  isProjectCutOver,
   readStoredCredential,
   schema,
 } from "@superlog/db";
@@ -32,7 +33,11 @@ async function incidentUrlForProject(projectId: string, incidentId: string): Pro
     : `${WEB_ORIGIN}/incidents/${incidentId}`;
 }
 
+// A project cut over to its Superlog application workspace has no target: the
+// workspace now posts to the customer's Slack, so incident roots, thread
+// replies, and updates stop here.
 async function fetchSlackTarget(projectId: string): Promise<SlackTarget | null> {
+  if (await isProjectCutOver(projectId)) return null;
   const row = await db.query.slackInstallations.findFirst({
     where: and(
       eq(schema.slackInstallations.projectId, projectId),
@@ -53,11 +58,12 @@ async function fetchSlackTarget(projectId: string): Promise<SlackTarget | null> 
 // (not incident-level) notifications like usage-limit warnings. Slack installs
 // are per-project, so an org with several connected projects may have several
 // channels; we post once per distinct channel. Picks the most recently installed
-// row per channel for its bot token.
+// row per channel for its bot token. Channels of cut-over projects are left out.
 export async function fetchSlackTargetsForOrg(orgId: string): Promise<SlackTarget[]> {
   const rows = await db
     .select({
       id: schema.slackInstallations.id,
+      projectId: schema.slackInstallations.projectId,
       channelId: schema.slackInstallations.channelId,
       plaintext: schema.slackInstallations.botAccessToken,
       ciphertext: schema.slackInstallations.botAccessTokenCiphertext,
@@ -80,9 +86,13 @@ export async function fetchSlackTargetsForOrg(orgId: string): Promise<SlackTarge
       ),
       desc(schema.slackInstallations.id),
     );
+  const cutOver = new Set<string>();
+  for (const projectId of new Set(rows.map((row) => row.projectId))) {
+    if (await isProjectCutOver(projectId)) cutOver.add(projectId);
+  }
   const seen = new Set<string>();
   return rows.flatMap((row) => {
-    if (!row.channelId || seen.has(row.channelId)) return [];
+    if (!row.channelId || cutOver.has(row.projectId) || seen.has(row.channelId)) return [];
     seen.add(row.channelId);
     return [
       {
@@ -97,6 +107,7 @@ export async function fetchSlackTargetsForOrg(orgId: string): Promise<SlackTarge
 async function fetchSlackTargetForIncident(
   incident: Pick<schema.Incident, "projectId" | "slackChannelId" | "slackInstallationId">,
 ): Promise<SlackTarget | null> {
+  if (await isProjectCutOver(incident.projectId)) return null;
   if (incident.slackChannelId && incident.slackInstallationId) {
     const row = await db.query.slackInstallations.findFirst({
       where: and(

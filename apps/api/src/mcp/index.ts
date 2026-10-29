@@ -1,6 +1,7 @@
 import type { ClickHouseClient } from "@clickhouse/client";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
+  cutOverWorkspaceUrl,
   db,
   hashToken,
   isPersonalAccessToken,
@@ -12,6 +13,7 @@ import { eq } from "drizzle-orm";
 import type { Hono } from "hono";
 import { logger } from "../logger.js";
 import { type McpConfig, loadMcpConfig } from "./config.js";
+import { forwardToWorkspace } from "./forwarding.js";
 import { mountOauthDecision, mountOauthEndpoints, mountOauthMetadata } from "./oauth.js";
 import {
   createBoundedTokenObservationTracker,
@@ -60,6 +62,9 @@ export function mountMcpPublic<T extends Hono<any, any, any>>(app: T, ch: ClickH
       });
     }
     const tokenCtx = resolved;
+    // Any cut-over row forwards; an empty or invalid address fails closed.
+    const workspaceUrl = await cutOverWorkspaceUrl(tokenCtx.projectId);
+    if (workspaceUrl !== null) return forwardToWorkspace(c.req.raw, tokenCtx, workspaceUrl);
 
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

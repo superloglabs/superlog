@@ -6,7 +6,7 @@
 //
 // Lives in its own module because feedback.ts and slack.ts already import
 // from each other's domains; this only depends on @superlog/db.
-import { db, hydrateSlackInstallation, schema } from "@superlog/db";
+import { db, hydrateSlackInstallation, isProjectCutOver, schema } from "@superlog/db";
 import { desc, eq } from "drizzle-orm";
 import { logger } from "./logger.js";
 // User-provided feedback must not be able to inject mentions (<!channel>,
@@ -53,6 +53,8 @@ export async function offerFollowUpForFeedback(feedback: schema.Feedback): Promi
     where: eq(schema.incidents.id, incidentId),
   });
   if (!incident?.slackChannelId || !incident.slackThreadTs) return;
+  // The project's Superlog application workspace now serves its Slack.
+  if (await isProjectCutOver(incident.projectId)) return;
 
   // Only offer when there is a finished run to follow up on — mirrors the
   // no_prior_run eligibility check so the button isn't shown when clicking
