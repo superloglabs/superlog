@@ -107,8 +107,15 @@ export async function runRailwayPullOnce(deps: RailwayPullerDeps): Promise<Railw
     errors: 0,
   };
 
+  // Set when Railway rejects the OAuth *application* credentials (invalid_client).
+  // Unlike per-installation errors (e.g. invalid_grant), this affects every
+  // installation because they all share the same client_id + client_secret.
+  // The flag breaks the installation loop so we stop hammering the token endpoint.
+  let appLevelOAuthError: string | null = null;
+
   const installations = await deps.store.listActiveInstallations();
   for (const installation of installations) {
+    if (appLevelOAuthError !== null) break;
     stats.installations += 1;
     try {
       await pullInstallation(installation);
@@ -146,6 +153,18 @@ export async function runRailwayPullOnce(deps: RailwayPullerDeps): Promise<Railw
       });
       if (!refreshed.ok) {
         stats.errors += 1;
+        if (refreshed.error === "invalid_client") {
+          // Railway rejected the OAuth *application* credentials — not just this
+          // installation's refresh token.  All remaining installations share the
+          // same client_id + client_secret and will fail identically.  Abort this
+          // pull cycle; rotate RAILWAY_CLIENT_ID / RAILWAY_CLIENT_SECRET to recover.
+          appLevelOAuthError = refreshed.error;
+          deps.log.error(
+            { error: refreshed.error },
+            "railway OAuth app credentials rejected — rotate RAILWAY_CLIENT_ID/RAILWAY_CLIENT_SECRET to recover",
+          );
+          return;
+        }
         deps.log.error(
           { installation_id: installation.id, error: refreshed.error },
           "railway token refresh failed",
