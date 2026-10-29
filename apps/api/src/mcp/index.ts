@@ -12,6 +12,7 @@ import { eq } from "drizzle-orm";
 import type { Hono } from "hono";
 import { logger } from "../logger.js";
 import { type McpConfig, loadMcpConfig } from "./config.js";
+import { cutOverWorkspaceUrl, forwardToWorkspace } from "./forwarding.js";
 import { mountOauthDecision, mountOauthEndpoints, mountOauthMetadata } from "./oauth.js";
 import {
   createBoundedTokenObservationTracker,
@@ -60,6 +61,8 @@ export function mountMcpPublic<T extends Hono<any, any, any>>(app: T, ch: ClickH
       });
     }
     const tokenCtx = resolved;
+    const workspaceUrl = await cutOverWorkspaceUrl(tokenCtx.projectId);
+    if (workspaceUrl) return forwardToWorkspace(c.req.raw, tokenCtx, workspaceUrl);
 
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
