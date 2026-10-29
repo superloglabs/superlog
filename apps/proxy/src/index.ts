@@ -11,7 +11,7 @@ import {
   syncLoopsContactsForProject,
 } from "@superlog/db";
 import { db } from "@superlog/db";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { OAuth2Client } from "google-auth-library";
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -33,7 +33,12 @@ import {
   parseAccountIdFromFirehoseArn,
 } from "./firehose.js";
 import {
-  GCP_PUBSUB_INGESTIBLE_STATUSES,
+  createGcpConnectionCache,
+  createLogReceiptRecorder,
+  gcpConnectionCacheTtlMs,
+  isIngestibleGcpConnection,
+} from "./gcp-pubsub-connection.js";
+import {
   type GcpIdTokenVerifier,
   acknowledgeGcpPubSubDelivery,
   authenticateGcpPubSubPush,
@@ -506,6 +511,26 @@ app.post("/aws/firehose/logs", (c) => forwardFirehose(c, FIREHOSE_LOGS_COLLECTOR
 // the configured push service account; only after audience + email verification
 // do we resolve the connection id to a tenant and enter the normal bounded
 // ingest pipeline. No customer-controlled project id is trusted from the body.
+// Pub/Sub pushes one request per log entry, so the connection lookup and the
+// receipt timestamp must not touch Postgres per request (see
+// gcp-pubsub-connection.ts). Disconnects propagate within the cache TTL.
+const gcpConnectionCache = createGcpConnectionCache({
+  lookup: async (connectionId) =>
+    (await db.query.gcpConnections.findFirst({
+      where: eq(schema.gcpConnections.id, connectionId),
+    })) ?? null,
+  ttlFor: gcpConnectionCacheTtlMs,
+});
+const gcpLogReceiptRecorder = createLogReceiptRecorder({
+  write: async (connectionId, receivedAt) => {
+    await db
+      .update(schema.gcpConnections)
+      .set({ lastLogReceivedAt: receivedAt, updatedAt: receivedAt })
+      .where(eq(schema.gcpConnections.id, connectionId));
+  },
+  onError: (err) => logger.warn({ err }, "failed to update GCP log receipt time"),
+});
+
 app.post("/gcp/pubsub/:connectionId", async (c) => {
   if (!GCP_PUBSUB_PUSH_AUDIENCE || !GCP_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL) {
     return c.json({ error: "GCP Pub/Sub intake is not configured" }, 503);
@@ -525,14 +550,8 @@ app.post("/gcp/pubsub/:connectionId", async (c) => {
     return c.json({ error: "unauthorized" }, 401);
   }
 
-  const connection = await db.query.gcpConnections.findFirst({
-    where: and(
-      eq(schema.gcpConnections.id, c.req.param("connectionId")),
-      inArray(schema.gcpConnections.status, [...GCP_PUBSUB_INGESTIBLE_STATUSES]),
-      isNull(schema.gcpConnections.revokedAt),
-    ),
-  });
-  if (!connection) {
+  const connection = await gcpConnectionCache.resolve(c.req.param("connectionId"));
+  if (!connection || !isIngestibleGcpConnection(connection)) {
     return acknowledgeGcpPubSubDelivery(c.json({ error: "GCP connection not found" }, 404));
   }
 
@@ -568,11 +587,7 @@ app.post("/gcp/pubsub/:connectionId", async (c) => {
     },
   });
   if (response.ok && response.headers.get("x-superlog-ingest-drop") !== "body_filtered") {
-    void db
-      .update(schema.gcpConnections)
-      .set({ lastLogReceivedAt: new Date(), updatedAt: new Date() })
-      .where(eq(schema.gcpConnections.id, connection.id))
-      .catch((err: unknown) => logger.warn({ err }, "failed to update GCP log receipt time"));
+    gcpLogReceiptRecorder.record(connection.id);
   }
   return acknowledgeGcpPubSubDelivery(response);
 });
