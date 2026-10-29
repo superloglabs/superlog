@@ -536,37 +536,49 @@ app.post("/gcp/pubsub/:connectionId", async (c) => {
     return acknowledgeGcpPubSubDelivery(c.json({ error: "GCP connection not found" }, 404));
   }
 
-  const response = await forward(c, "/v1/logs", "resourceLogs", {
-    source: "gcp",
-    trustedProjectId: connection.projectId,
-    bodyTransform: (body) => {
-      const transformed = transformGcpPubSubLog(
-        body,
-        connection.gcpProjectId,
-        connection.excludedLogNames,
-      );
-      if (transformed.outcome === "excluded") {
-        logger.debug(
-          {
-            connectionId: connection.id,
-            gcpProjectId: connection.gcpProjectId,
-            logName: transformed.logName,
-            reason: "excluded",
-          },
-          "GCP log entry filtered by exclusion policy",
+  let response: Response;
+  try {
+    response = await forward(c, "/v1/logs", "resourceLogs", {
+      source: "gcp",
+      trustedProjectId: connection.projectId,
+      bodyTransform: (body) => {
+        const transformed = transformGcpPubSubLog(
+          body,
+          connection.gcpProjectId,
+          connection.excludedLogNames,
         );
-        proxyOperationalRecorder.recordGcpLogDrop({
-          projectId: connection.projectId,
-          reason: "excluded",
-        });
-        return null;
-      }
-      return {
-        body: Buffer.from(JSON.stringify(transformed.payload)),
-        contentType: "application/json",
-      };
-    },
-  });
+        if (transformed.outcome === "excluded") {
+          logger.debug(
+            {
+              connectionId: connection.id,
+              gcpProjectId: connection.gcpProjectId,
+              logName: transformed.logName,
+              reason: "excluded",
+            },
+            "GCP log entry filtered by exclusion policy",
+          );
+          proxyOperationalRecorder.recordGcpLogDrop({
+            projectId: connection.projectId,
+            reason: "excluded",
+          });
+          return null;
+        }
+        return {
+          body: Buffer.from(JSON.stringify(transformed.payload)),
+          contentType: "application/json",
+        };
+      },
+    });
+  } catch (err) {
+    logger.error(
+      { err, connectionId: connection.id, gcpProjectId: connection.gcpProjectId },
+      "GCP Pub/Sub ingest failed",
+    );
+    response = new Response(JSON.stringify({ error: "ingest failed" }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
   if (response.ok && response.headers.get("x-superlog-ingest-drop") !== "body_filtered") {
     void db
       .update(schema.gcpConnections)
