@@ -226,10 +226,17 @@ export async function loadAgentRunContext(
   });
   if (!org) return null;
   const automation = await getProjectAutomation(project.id);
+  // Cap the issue set so the subsequent inArray never exceeds Postgres's
+  // 65,535 bind parameter limit. Join issues here to sort by lastSeen before
+  // applying the limit, ensuring the most-recent issues are always included.
+  const ISSUE_CONTEXT_LIMIT = 200;
   const issueIds = await db
     .select({ issueId: schema.incidentIssues.issueId })
     .from(schema.incidentIssues)
-    .where(eq(schema.incidentIssues.incidentId, incident.id));
+    .innerJoin(schema.issues, eq(schema.issues.id, schema.incidentIssues.issueId))
+    .where(eq(schema.incidentIssues.incidentId, incident.id))
+    .orderBy(desc(schema.issues.lastSeen))
+    .limit(ISSUE_CONTEXT_LIMIT);
   const issueRows =
     issueIds.length > 0
       ? await db.query.issues.findMany({
