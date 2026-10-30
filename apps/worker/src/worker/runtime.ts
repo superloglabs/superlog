@@ -26,12 +26,17 @@ export async function runWorker(opts: {
 }): Promise<void> {
   logger.info({ pollMs: opts.pollIntervalMs, batchSize: opts.batchSize }, "worker up");
   while (!opts.signal?.aborted) {
+    let batchLimited = false;
     try {
       const { spans, logs, agentRuns, sentryEvents, alerts, digests, webhooks } = await opts.tick();
       // Heartbeat for the tick-lateness gauge/alarm: recorded only on a
       // completed cycle, so a wedged step shows up as a climbing age even
       // while the process stays alive.
       recordTickHeartbeat();
+      // When either ingest batch returned a full page of rows the cursor is
+      // still behind — skip the poll interval so the next batch starts
+      // immediately and drains the backlog at full throughput.
+      batchLimited = spans >= opts.batchSize || logs >= opts.batchSize;
       if (
         spans > 0 ||
         logs > 0 ||
@@ -57,6 +62,8 @@ export async function runWorker(opts: {
     } catch (err) {
       logger.error({ err }, "tick failed");
     }
-    await sleep(opts.pollIntervalMs, opts.signal);
+    if (!batchLimited) {
+      await sleep(opts.pollIntervalMs, opts.signal);
+    }
   }
 }
