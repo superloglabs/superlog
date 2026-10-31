@@ -191,6 +191,31 @@ test("forwards fresh logs to the intake with the ingest key and advances the cur
   assert.equal(at(calls.cursors, 0).logCursor["env-1"], "2026-07-07T14:59:59.5Z");
 });
 
+test("accepts firstPullLogBatchLimit and completes first pull successfully", async () => {
+  // Verifies that firstPullLogBatchLimit is wired through the dep injection
+  // surface and that a cursor-less (first-pull) environment pull still
+  // forwards logs and seeds the cursor when the smaller limit is set.
+  const { store, calls } = fakeStore([installation()]);
+  const forwarded: Forwarded = [];
+  const stats = await runRailwayPullOnce({
+    store,
+    config: CONFIG,
+    intakeBaseUrl: "https://intake.test",
+    log: LOGGER,
+    now: () => NOW,
+    fetchImpl: fakeFetch({ logs: [LOG_LINE], forwarded }),
+    logBatchLimit: 1000,
+    firstPullLogBatchLimit: 50,
+    metricsIntervalSeconds: 999999,
+    metricsPollState: new Map([["inst-1:env-1:svc-1", Math.floor(NOW.getTime() / 1000)]]),
+  });
+  // First-pull path should forward the seed batch and advance the cursor.
+  assert.equal(stats.logsForwarded, 1);
+  assert.equal(stats.errors, 0);
+  assert.equal(forwarded.length, 1);
+  assert.ok(at(calls.cursors, 0).logCursor["env-1"], "cursor must be seeded after first pull");
+});
+
 test("seeds the log cursor on first pull so history isn't re-read", async () => {
   const { store, calls } = fakeStore([installation()]);
   const forwarded: Forwarded = [];

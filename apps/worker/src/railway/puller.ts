@@ -65,8 +65,14 @@ export type RailwayPullerDeps = {
   log: PullerLogger;
   fetchImpl?: typeof fetch;
   now?: () => Date;
-  /** Max log lines per environment per pass. */
+  /** Max log lines per environment per incremental pass (cursor exists). */
   logBatchLimit?: number;
+  /**
+   * Max log lines fetched on the very first pull for an environment (no prior
+   * cursor). Kept small so a new installation's historical backfill cannot
+   * flood the per-project-serialized issue-transition queue.
+   */
+  firstPullLogBatchLimit?: number;
   /** Minimum seconds between metrics polls per service. */
   metricsIntervalSeconds?: number;
   metricsSampleRateSeconds?: number;
@@ -95,6 +101,7 @@ export async function runRailwayPullOnce(deps: RailwayPullerDeps): Promise<Railw
   const fetchImpl = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date());
   const logBatchLimit = deps.logBatchLimit ?? 1000;
+  const firstPullLogBatchLimit = deps.firstPullLogBatchLimit ?? 50;
   const metricsInterval = deps.metricsIntervalSeconds ?? 300;
   const sampleRate = deps.metricsSampleRateSeconds ?? 60;
   const pollState = deps.metricsPollState ?? sharedMetricsPollState;
@@ -212,7 +219,7 @@ export async function runRailwayPullOnce(deps: RailwayPullerDeps): Promise<Railw
           accessToken,
           environmentId: environment.id,
           ...(cursorTs ? { afterDate: cursorTs } : { anchorDate: now().toISOString() }),
-          limit: logBatchLimit,
+          limit: cursorTs ? logBatchLimit : firstPullLogBatchLimit,
           fetchImpl,
         });
         if (!logsRead.ok) {
