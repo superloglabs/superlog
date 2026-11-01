@@ -10,8 +10,8 @@ import { Btn } from "./design/ui.tsx";
 // behind that endpoint.
 //
 // kind + refId together identify what the feedback is about. The caller
-// (IssueDrawer / IncidentDrawerBody) passes its own ids. projectId is
-// optional and only used by the API for orgId attribution in the inbox.
+// (IssueDrawer / IncidentDrawerBody) passes its own ids. projectId scopes the
+// submission: the API checks the caller can read the record through it.
 export function FeedbackTrigger({
   kind,
   refId,
@@ -21,7 +21,7 @@ export function FeedbackTrigger({
 }: {
   kind: "incident" | "issue";
   refId: string;
-  projectId?: string;
+  projectId: string;
   label?: string;
   className?: string;
 }) {
@@ -56,7 +56,7 @@ function FeedbackModal({
 }: {
   kind: "incident" | "issue";
   refId: string;
-  projectId?: string;
+  projectId: string;
   onClose: () => void;
 }) {
   const [body, setBody] = useState("");
