@@ -69,3 +69,22 @@ test("legacy LLM gateway routes are unavailable to authenticated CLI sessions", 
     else process.env.ANTHROPIC_API_KEY = previousApiKey;
   }
 });
+
+test("device user codes do not come from Math.random", async () => {
+  const previousRandom = Math.random;
+  Math.random = () => 0;
+
+  try {
+    const app = new Hono();
+    mountGateway(app, {} as ClickHouseClient);
+
+    const issue = async () => {
+      const res = await app.request("/oauth/device", { method: "POST" });
+      return ((await res.json()) as { user_code: string }).user_code;
+    };
+
+    assert.notEqual(await issue(), await issue());
+  } finally {
+    Math.random = previousRandom;
+  }
+});

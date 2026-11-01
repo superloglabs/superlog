@@ -602,7 +602,7 @@ function IssueDetailContent({
           <h2 className="truncate text-[15px] font-semibold leading-snug text-fg">{issue.title}</h2>
         </div>
         <div className="flex shrink-0 items-center gap-3">
-          <FeedbackTrigger kind="issue" refId={issue.id} projectId={projectId} />
+          {projectId && <FeedbackTrigger kind="issue" refId={issue.id} projectId={projectId} />}
           <button
             onClick={onClose}
             className="text-muted transition-colors hover:text-fg"

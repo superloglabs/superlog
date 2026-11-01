@@ -251,7 +251,7 @@ export function useSubmitFeedback() {
       kind: "incident" | "issue";
       refId: string;
       body: string;
-      projectId?: string;
+      projectId: string;
     }) =>
       fetcher<{ ok: true }>("/api/feedback", {
         method: "POST",

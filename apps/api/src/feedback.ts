@@ -3,8 +3,10 @@ import { and, eq } from "drizzle-orm";
 import type { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { auth } from "./auth.js";
+import { UUID_RE, resolveEffectiveReadProjectId } from "./demo.js";
 import { offerFollowUpForFeedback } from "./follow-up-offer.js";
 import { logger } from "./logger.js";
+import { escapeSlackLinkText as escapeSlackText } from "./slack-format.js";
 
 const log = logger.child({ scope: "feedback" });
 
@@ -90,11 +92,9 @@ export function mountFeedbackPublic(app: Hono<any>): void {
 // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
 export function mountFeedbackAuthed(app: Hono<any>): void {
   // In-product dialog. The dialog is rendered on incident and issue
-  // drawers, so kind is always 'incident' or 'issue'. We trust the caller
-  // to pass the correct ref_id (incident or issue UUID); we don't gate on
-  // whether the user can actually see that incident — feedback is an
-  // unauth'd-by-design signal and the admin inbox is the only thing that
-  // reads it.
+  // drawers, so kind is always 'incident' or 'issue'. The row binds to the
+  // caller's project, and feedback on an incident can reach that incident's
+  // Slack thread and agent, so the record has to be one the caller can read.
   app.post("/api/feedback", async (c) => {
     const userId = c.var.userId as string;
     const body = (await c.req.json().catch(() => ({}))) as {
@@ -116,23 +116,15 @@ export function mountFeedbackAuthed(app: Hono<any>): void {
     if (text.length > MAX_BODY_LEN) {
       throw new HTTPException(400, { message: "body too long" });
     }
-    // Resolve projectId via lookup before we trust it. A garbage string
-    // (non-UUID syntax, or a stale ID whose project was deleted) would
-    // otherwise hit the feedback.project_id FK and 500 on insert. We
-    // wrap the lookup in try/catch because postgres throws a `22P02`
-    // syntax error rather than returning empty for malformed UUIDs.
-    const requestedProjectId = typeof body.projectId === "string" ? body.projectId : null;
-    let projectId: string | null = null;
-    let orgId: string | null = null;
-    if (requestedProjectId) {
-      const project = await db.query.projects
-        .findFirst({ where: eq(schema.projects.id, requestedProjectId) })
-        .catch(() => null);
-      if (project) {
-        projectId = project.id;
-        orgId = project.orgId;
-      }
-    }
+    const projectId = typeof body.projectId === "string" ? body.projectId : "";
+    if (!projectId) throw new HTTPException(400, { message: "projectId required" });
+
+    const target = await resolveDialogTarget({
+      userId,
+      kind: kind as "incident" | "issue",
+      refId,
+      projectId,
+    });
 
     await recordFeedback({
       kind: kind as "incident" | "issue",
@@ -142,14 +134,65 @@ export function mountFeedbackAuthed(app: Hono<any>): void {
       body: text,
       authorUserId: userId,
       authorExternal: null,
-      orgId,
-      projectId,
+      orgId: target.orgId,
+      projectId: target.projectId,
+      offerFollowUp: !target.demo,
     });
 
     return c.json({ ok: true });
   });
 
   // Staff triage reads the same `feedback` table directly.
+}
+
+// Resolves a dialog submission against the caller's access. Every miss answers
+// 404 so the route can't be used to tell which ids exist in other tenants. The
+// record is looked up in the project the caller reads from, which is the shared
+// demo project while theirs is overlaid; the row stays attributed to their own
+// project, and demo records never offer a follow-up.
+async function resolveDialogTarget(input: {
+  userId: string;
+  kind: "incident" | "issue";
+  refId: string;
+  projectId: string;
+}): Promise<{ orgId: string; projectId: string; demo: boolean }> {
+  const notFound = new HTTPException(404, { message: "not found" });
+  if (!UUID_RE.test(input.refId) || !UUID_RE.test(input.projectId)) throw notFound;
+
+  const project = await db.query.projects.findFirst({
+    where: eq(schema.projects.id, input.projectId),
+    columns: { id: true, orgId: true },
+  });
+  if (!project) throw notFound;
+  const membership = await db.query.orgMembers.findFirst({
+    where: and(
+      eq(schema.orgMembers.orgId, project.orgId),
+      eq(schema.orgMembers.userId, input.userId),
+    ),
+    columns: { userId: true },
+  });
+  if (!membership) throw notFound;
+
+  const readProject = await resolveEffectiveReadProjectId(project.id);
+  const record =
+    input.kind === "incident"
+      ? await db.query.incidents.findFirst({
+          where: and(
+            eq(schema.incidents.id, input.refId),
+            eq(schema.incidents.projectId, readProject.id),
+          ),
+          columns: { id: true },
+        })
+      : await db.query.issues.findFirst({
+          where: and(
+            eq(schema.issues.id, input.refId),
+            eq(schema.issues.projectId, readProject.id),
+          ),
+          columns: { id: true },
+        });
+  if (!record) throw notFound;
+
+  return { orgId: project.orgId, projectId: project.id, demo: readProject.demo };
 }
 
 // Shared insert + notify. Exported so the github webhook handler and Slack
@@ -252,7 +295,9 @@ async function notifyFeedbackSlack(row: schema.Feedback): Promise<void> {
   // Optional staff tooling deep link. Unset -> no deep link.
   const adminOrigin = process.env.ADMIN_WEB_ORIGIN;
   const link = adminOrigin ? `${adminOrigin}/feedback?id=${row.id}` : null;
-  const preview = row.body.length > 280 ? `${row.body.slice(0, 277)}…` : row.body;
+  // Bodies, logins and PR refs can come from anonymous submitters. Escape them so
+  // they can't inject mentions or links into the team channel.
+  const preview = escapeSlackText(row.body.length > 280 ? `${row.body.slice(0, 277)}…` : row.body);
   let authorEmail: string | null = null;
   if (row.authorUserId) {
     const user = await db.query.users.findFirst({
@@ -261,9 +306,9 @@ async function notifyFeedbackSlack(row: schema.Feedback): Promise<void> {
     authorEmail = user?.email ?? null;
   }
   const author = authorEmail
-    ? authorEmail
+    ? escapeSlackText(authorEmail)
     : row.authorExternal?.githubLogin
-      ? `@${row.authorExternal.githubLogin} (github)`
+      ? `@${escapeSlackText(row.authorExternal.githubLogin)} (github)`
       : row.authorExternal?.slackUserId
         ? `<@${row.authorExternal.slackUserId}> (slack)`
         : "anonymous";
@@ -277,11 +322,10 @@ async function notifyFeedbackSlack(row: schema.Feedback): Promise<void> {
   const refDesc =
     row.kind === "pr"
       ? row.refId.includes("#")
-        ? `PR ${row.refId}`
-        : `PR ${row.refRepo ?? ""} (${row.refId.slice(0, 8)}…)`
+        ? `PR ${escapeSlackText(row.refId)}`
+        : `PR ${escapeSlackText(row.refRepo ?? "")} (${row.refId.slice(0, 8)}…)`
       : `${row.kind} ${row.refId.slice(0, 8)}…`;
-  const ratingBadge =
-    row.rating === "helpful" ? "👍 " : row.rating === "unhelpful" ? "👎 " : "";
+  const ratingBadge = row.rating === "helpful" ? "👍 " : row.rating === "unhelpful" ? "👎 " : "";
   const text = `:speech_balloon: *New feedback* on ${refDesc} via _${row.source}_ from ${author}\n>${ratingBadge}${preview}${
     link ? `\n<${link}|Open in admin>` : ""
   }`;

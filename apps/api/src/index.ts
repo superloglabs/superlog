@@ -189,7 +189,11 @@ import {
 import { mountSentryMcpRelayPublic } from "./sentry/relay.js";
 import { createDrizzleSentryWebhookInbox } from "./sentry/repository.js";
 import { mountSettingsAuthed } from "./settings.js";
-import { normalizeSignupIntentKeyHash, normalizeSignupIntentKeyPrefix } from "./signup-intents.js";
+import {
+  normalizeSignupIntentKeyHash,
+  normalizeSignupIntentKeyPrefix,
+  normalizeSignupIntentReturnTo,
+} from "./signup-intents.js";
 import { mountSlackAuthed, mountSlackPublic } from "./slack.js";
 import { sourceMapObjectStoreFromEnv } from "./sourcemaps.js";
 import { userIsStaff } from "./staff.js";
@@ -314,8 +318,7 @@ app.post("/api/signup-intents", async (c) => {
   if (!keyHash || !keyPrefix) {
     throw new HTTPException(400, { message: "valid keyHash and keyPrefix required" });
   }
-  const returnTo =
-    typeof body.returnTo === "string" && body.returnTo.length <= 1024 ? body.returnTo : null;
+  const returnTo = normalizeSignupIntentReturnTo(body.returnTo);
 
   const intentId = `sui_${nanoid(24)}`;
   const expiresAt = new Date(Date.now() + SIGNUP_INTENT_TTL_MS);
