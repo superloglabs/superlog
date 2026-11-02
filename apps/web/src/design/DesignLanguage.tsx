@@ -1,4 +1,6 @@
 import { type ReactNode, useState } from "react";
+import type { SpendLimit } from "../api.ts";
+import { SpendLimitPanel } from "../settings/SpendLimitCard.tsx";
 import { Dropdown, type DropdownOption } from "./Dropdown.tsx";
 import {
   Btn,
@@ -13,11 +15,35 @@ import {
   OutOfCreditsBanner,
   PageHeader,
   SearchInput,
+  SpendLimitBadge,
+  SpendLimitBanner,
   Tabs,
   ThemeToggle,
   Tile,
   Wordmark,
 } from "./ui.tsx";
+
+const SPEND_LIMIT_BASE: SpendLimit = {
+  available: true,
+  minimumUsd: 1,
+  limitUsd: 200,
+  status: "under",
+  billUsd: 62.4,
+  pct: 31,
+  resetsAt: Date.UTC(2026, 11, 1),
+};
+
+const SPEND_LIMIT_EXAMPLES: Array<{ label: string; limit: SpendLimit }> = [
+  {
+    label: "Spend limit not set",
+    limit: { ...SPEND_LIMIT_BASE, limitUsd: null, status: "none", pct: null },
+  },
+  { label: "Under the limit", limit: SPEND_LIMIT_BASE },
+  {
+    label: "Limit reached",
+    limit: { ...SPEND_LIMIT_BASE, status: "reached", billUsd: 200.4, pct: 100 },
+  },
+];
 
 // The living system sheet for the real primitives shipped by the product.
 // It intentionally reads like an operational workspace: quiet chrome, dense
@@ -628,6 +654,30 @@ function Feedback() {
           <PanelLabel>Decision banner</PanelLabel>
           <OutOfCreditsBanner />
         </Tile>
+      </div>
+      <div className="mt-3 grid gap-3 lg:grid-cols-[0.7fr_1.5fr]">
+        <Tile>
+          <PanelLabel>Spend limit status</PanelLabel>
+          <SpendLimitBadge />
+        </Tile>
+        <Tile>
+          <PanelLabel>Spend limit banner</PanelLabel>
+          <SpendLimitBanner />
+        </Tile>
+      </div>
+      <div className="mt-3 grid gap-3 lg:grid-cols-3">
+        {SPEND_LIMIT_EXAMPLES.map(({ label, limit }) => (
+          <Tile key={label}>
+            <PanelLabel>{label}</PanelLabel>
+            <SpendLimitPanel
+              limit={limit}
+              busy={false}
+              error={null}
+              onSave={() => {}}
+              onRemove={() => {}}
+            />
+          </Tile>
+        ))}
       </div>
     </section>
   );

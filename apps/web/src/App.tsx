@@ -26,7 +26,7 @@ import { AlertEdit } from "./alerts/AlertEdit.tsx";
 import { AlertsList } from "./alerts/AlertsList.tsx";
 import { AnomalyScanDetail } from "./anomaly-scanner/AnomalyScanDetail.tsx";
 import { AnomalyScanner } from "./anomaly-scanner/AnomalyScanner.tsx";
-import { useMe } from "./api.ts";
+import { useMe, useSpendLimit } from "./api.ts";
 import { authClient, useSession } from "./auth-client.ts";
 import { isPaygPromotionAvailable, signalAtHardCap } from "./billing.ts";
 import { DashboardView } from "./dashboards/DashboardView.tsx";
@@ -189,6 +189,16 @@ function AuthenticatedApp() {
     // customer (e.g. a brand-new org) so billing state can't black-screen the app.
     ["spans", "logs", "metric_points"].some((f) => signalAtHardCap(check, f));
   const paygPromotionAvailable = isPaygPromotionAvailable(billingCustomer);
+  // A paying org that reached its own spend limit: nothing to upgrade, so the bar
+  // points at the limit. Free orgs have no bill and skip the lookup.
+  const spendLimit = useSpendLimit({
+    enabled:
+      !impersonating &&
+      billingCustomer?.subscriptions?.some(
+        (subscription) => subscription.status === "active" && subscription.planId !== "free",
+      ) === true,
+  });
+  const spendLimitReached = !impersonating && spendLimit.data?.status === "reached";
   if (isPending) return null;
   if (!data) return <Landing />;
   const scopedRoute = matchPath("/app/org/:orgSlug/project/:projectSlug/*", pathname);
@@ -214,6 +224,7 @@ function AuthenticatedApp() {
           impersonating={impersonating}
           email={data.user.email}
           billingPaused={billingPaused}
+          spendLimitReached={spendLimitReached}
           paygPromotionAvailable={paygPromotionAvailable}
         />
         <ProductShell
@@ -319,16 +330,19 @@ function TopRibbon({
   impersonating,
   email,
   billingPaused,
+  spendLimitReached,
   paygPromotionAvailable,
 }: {
   impersonating: boolean;
   email: string;
   billingPaused: boolean;
+  spendLimitReached: boolean;
   paygPromotionAvailable: boolean;
 }) {
   const { exploring } = useDemoExploration();
   if (impersonating) return <ImpersonationBar email={email} />;
   if (exploring) return <DemoModeBar />;
+  if (spendLimitReached) return <SpendLimitBar />;
   if (billingPaused) return <BillingLimitBar paygPromotionAvailable={paygPromotionAvailable} />;
   return null;
 }
@@ -367,6 +381,22 @@ function ImpersonationBar({ email }: { email: string }) {
       >
         stop (⌘⇧P)
       </button>
+    </div>
+  );
+}
+
+function SpendLimitBar() {
+  const projectPath = useProjectPath();
+  return (
+    <div className="flex h-7 w-full items-center justify-center gap-2 bg-danger px-3 text-[11px] text-white">
+      <span className="font-semibold">Spend limit reached</span>
+      <span className="opacity-90">Billable ingest and investigations are paused.</span>
+      <Link
+        to={projectPath("/settings?scope=org&section=billing")}
+        className="font-medium underline underline-offset-2 hover:opacity-80"
+      >
+        Review spend limit →
+      </Link>
     </div>
   );
 }

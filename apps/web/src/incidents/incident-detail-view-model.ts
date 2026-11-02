@@ -86,23 +86,22 @@ export function buildIncidentDetailMeta({
       label: "Investigation",
       value: agentRunLabel(agentRunState, incident),
       kind: "agent",
-      tone:
-        !agentRunState && incident.autoInvestigateBlockedReason === "no_credits"
-          ? "danger"
-          : undefined,
+      tone: !agentRunState && incident.autoInvestigateBlockedReason !== null ? "danger" : undefined,
     },
   ];
 }
 
 // The "Agent run" row shows the live run state when there is one. With no run,
 // it explains *why*: an org over its investigation limit reads "out of credits"
-// (actionable — upgrade), everything else falls back to a plain "not queued".
+// (actionable — upgrade), an org at its own spend limit says so, and everything
+// else falls back to a plain "not queued".
 export function agentRunLabel(
   agentRunState: AgentRun["state"] | null,
   incident: Pick<Incident, "autoInvestigateBlockedReason">,
 ): string {
   if (agentRunState) return agentRunState;
   if (incident.autoInvestigateBlockedReason === "no_credits") return "Out of credits";
+  if (incident.autoInvestigateBlockedReason === "spend_limit") return "Spend limit reached";
   return "not queued";
 }
 

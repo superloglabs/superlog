@@ -15,6 +15,8 @@ import {
 import { TERMINAL_STATES as AGENT_RUN_TERMINAL_STATES } from "../agent-runs/domain.js";
 import { dispatchAgentRunJob } from "../agent-runs/enqueue.js";
 import { investigationGate } from "../billing/investigation-gate.js";
+import { isSpendLimitReached } from "../billing/spend-limit-infra.js";
+import { buildSpendLimitIncidentSlackText } from "../billing/spend-limit-notifier.js";
 import { usageNotifier } from "../billing/usage-notifier-infra.js";
 import { buildNoCreditsIncidentSlackText } from "../billing/usage-notifier.js";
 import { isAutoAgentRunSuppressed } from "../incident-cooldown.js";
@@ -44,6 +46,7 @@ export type ReopenedIncidentQueueStatus =
   | "suppressed"
   | "disabled"
   | "no_credits"
+  | "spend_limit"
   | "incident_closed";
 
 async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
@@ -84,7 +87,9 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
   });
   let creditApproved = false;
   let paygPromotionAvailable = true;
-  const authorizeNewRun = async (): Promise<"incident_closed" | "no_credits" | null> => {
+  const authorizeNewRun = async (): Promise<
+    "incident_closed" | "no_credits" | "spend_limit" | null
+  > => {
     // Investigation credit gate (Autumn). The org is the Autumn customer. Free
     // orgs that have spent their monthly credits are blocked here; paid plans
     // allow overage so the gate returns true. Fails open if billing is unset or
@@ -98,6 +103,8 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
       return null;
     }
 
+    const blockedReason = (await isSpendLimitReached(project.orgId)) ? "spend_limit" : "no_credits";
+
     // Persist the block only while the Incident is still open. Resolution uses
     // the same lock, so an external gate response cannot revive stale UI state.
     const marked = await db.transaction(async (tx) => {
@@ -109,11 +116,21 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
       if (!canQueueInvestigationForLockedIncident(locked[0]?.status ?? null)) return false;
       await tx
         .update(schema.incidents)
-        .set({ autoInvestigateBlockedReason: "no_credits" })
+        .set({ autoInvestigateBlockedReason: blockedReason })
         .where(eq(schema.incidents.id, incident.id));
       return true;
     });
     if (!marked) return "incident_closed";
+
+    // The spend-limit job already told the org; the upgrade nudge below doesn't
+    // apply to a paying customer who set their own ceiling.
+    if (blockedReason === "spend_limit") {
+      logger.info(
+        { scope: "agent_run", incidentId: incident.id, orgId: project.orgId },
+        "skipping auto-agent run; org reached its monthly spend limit",
+      );
+      return "spend_limit";
+    }
 
     logger.info(
       { scope: "agent_run", incidentId: incident.id, orgId: project.orgId },
@@ -326,6 +343,13 @@ export async function handleIssueTransitionWithResult(
       buildNoCreditsIncidentSlackText({
         manageBillingUrl: buildAppUrl(WEB_ORIGIN, "/settings?scope=org&section=billing"),
         promotionAvailable: paygPromotionAvailable !== false,
+      }),
+    );
+  } else if (queueStatus === "spend_limit") {
+    await postIncidentThreadMessage(
+      incident.id,
+      buildSpendLimitIncidentSlackText({
+        manageBillingUrl: buildAppUrl(WEB_ORIGIN, "/settings?scope=org&section=billing"),
       }),
     );
   }

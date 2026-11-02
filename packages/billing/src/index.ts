@@ -6,4 +6,5 @@ export * from "./pricing.js";
 export * from "./period.js";
 export * from "./payg-promotion.js";
 export * from "./quota.js";
+export * from "./spend-limit.js";
 export * from "./usage-notifications.js";

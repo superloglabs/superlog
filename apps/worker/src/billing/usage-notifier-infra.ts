@@ -40,7 +40,7 @@ type ResendSend = (to: string, subject: string, html: string) => Promise<void>;
 
 // Minimal Resend client (raw fetch, same style as the Slack/Autumn helpers).
 // null when RESEND_API_KEY is unset — email is then skipped (Slack still posts).
-function createResendSend(apiKey: string, fetchImpl: typeof fetch): ResendSend {
+export function createResendSend(apiKey: string, fetchImpl: typeof fetch): ResendSend {
   return async (to, subject, html) => {
     const res = await fetchImpl(RESEND_API_URL, {
       method: "POST",
@@ -94,6 +94,29 @@ async function fetchAutumnCustomer(
   }
 }
 
+// Atomic claim: insert one row per step, ignore conflicts, and return the rows
+// that were actually inserted — i.e. the steps this call won.
+export async function claimUsageThresholds(
+  orgId: string,
+  periodKey: string,
+  thresholds: number[],
+  feature: string,
+): Promise<number[]> {
+  if (thresholds.length === 0) return [];
+  const inserted = await db
+    .insert(schema.usageNotifications)
+    .values(thresholds.map((threshold) => ({ orgId, periodKey, threshold, feature })))
+    .onConflictDoNothing({
+      target: [
+        schema.usageNotifications.orgId,
+        schema.usageNotifications.periodKey,
+        schema.usageNotifications.threshold,
+      ],
+    })
+    .returning({ threshold: schema.usageNotifications.threshold });
+  return inserted.map((r) => r.threshold);
+}
+
 function buildDeps(
   secretKey: string,
   fetchImpl: typeof fetch,
@@ -137,23 +160,7 @@ function buildDeps(
       };
     },
 
-    // Atomic claim: insert one row per step, ignore conflicts, and return the
-    // rows that were actually inserted — i.e. the steps this call won.
-    claimThresholds: async (orgId, periodKey, thresholds, feature) => {
-      if (thresholds.length === 0) return [];
-      const inserted = await db
-        .insert(schema.usageNotifications)
-        .values(thresholds.map((threshold) => ({ orgId, periodKey, threshold, feature })))
-        .onConflictDoNothing({
-          target: [
-            schema.usageNotifications.orgId,
-            schema.usageNotifications.periodKey,
-            schema.usageNotifications.threshold,
-          ],
-        })
-        .returning({ threshold: schema.usageNotifications.threshold });
-      return inserted.map((r) => r.threshold);
-    },
+    claimThresholds: claimUsageThresholds,
 
     fetchMembers: (orgId) => fetchOrgMemberContacts(orgId),
 

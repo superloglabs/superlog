@@ -779,7 +779,7 @@ async function forward(
         return c.json(
           {
             error:
-              "telemetry quota exceeded for this billing period; upgrade your plan to resume ingest",
+              "telemetry quota or spend limit reached for this billing period; upgrade your plan or raise your spend limit to resume ingest",
           },
           402,
         );
@@ -1074,7 +1074,7 @@ async function forwardFirehose(
         span.setAttribute("ingest.blocked", "quota_exceeded");
         return fail(
           402,
-          "telemetry quota exceeded for this billing period; upgrade your plan to resume ingest",
+          "telemetry quota or spend limit reached for this billing period; upgrade your plan or raise your spend limit to resume ingest",
         );
       }
 

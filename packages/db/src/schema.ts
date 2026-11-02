@@ -165,10 +165,11 @@ export type AgentRunMobileRegressionTest =
 export type IncidentSeverity = "SEV-1" | "SEV-2" | "SEV-3";
 
 // Why auto-investigation was skipped for this incident, when the reason is worth
-// surfacing to the user. Currently only `no_credits`: the org is over its plan's
-// monthly investigation limit and billing enforcement is on. Extend this union
-// (don't repurpose it) if other user-actionable skip reasons need surfacing.
-export type IncidentAutoInvestigateBlockedReason = "no_credits";
+// surfacing to the user. `no_credits`: the org is over its plan's monthly
+// investigation limit and billing enforcement is on. `spend_limit`: the org's
+// bill reached the monthly spend limit it set. Extend this union (don't
+// repurpose it) if other user-actionable skip reasons need surfacing.
+export type IncidentAutoInvestigateBlockedReason = "no_credits" | "spend_limit";
 // "autoresolved_noise" is legacy: noise verdicts now silence the linked issues
 // and resolve the incident plainly. Rows written by pre-cutover workers are
 // migrated to "resolved"; readers must still treat any straggler as closed.
@@ -1741,6 +1742,20 @@ export const usageNotifications = pgTable(
     ),
   }),
 );
+
+// Customer-set ceiling on the monthly bill. No row means no limit. This holds the
+// customer's intent only: whether the limit is currently reached is derived from
+// billing-provider balances on every pass (@superlog/billing spend-limit.ts).
+// A null limit means the customer removed it: the row stays until the scheduled
+// pass has lifted any freeze, so a pass already in flight can't orphan one.
+export const orgSpendLimits = pgTable("org_spend_limits", {
+  orgId: uuid("org_id")
+    .primaryKey()
+    .references(() => orgs.id, { onDelete: "cascade" }),
+  monthlyLimitCents: integer("monthly_limit_cents"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
 
 export const cliSessions = pgTable("cli_sessions", {
   id: uuid("id").primaryKey().defaultRandom(),

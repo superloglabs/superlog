@@ -66,6 +66,8 @@ import {
   Chip,
   OutOfCreditsBadge,
   PageHeader,
+  SpendLimitBadge,
+  SpendLimitBanner,
   Tabs,
 } from "./design/ui.tsx";
 import { type IncidentStatusAction, getIncidentStatusActions } from "./incident-status-action.ts";
@@ -1081,6 +1083,7 @@ export function IncidentRow({
 }) {
   const { incident, agentRun, pendingResolutionProposal } = row;
   const outOfCredits = !agentRun && incident.autoInvestigateBlockedReason === "no_credits";
+  const spendLimited = !agentRun && incident.autoInvestigateBlockedReason === "spend_limit";
   const [rowRef, nearViewport] = useNearViewport<HTMLButtonElement>();
   const hasInlineActivity = row.buckets !== undefined;
   const stats = useIncidentStats(incident.projectId, incident.id, {
@@ -1115,6 +1118,7 @@ export function IncidentRow({
             <ServiceEnv service={incident.service} environment={incident.environment} />
             {pendingResolutionProposal && <RecoveryDetectedBadge />}
             {outOfCredits && <OutOfCreditsBadge />}
+            {spendLimited && <SpendLimitBadge />}
           </div>
           <p className="truncate text-[13px] font-medium text-fg">{incident.title}</p>
           {incident.codename && (
@@ -1624,6 +1628,7 @@ export function IncidentDetailContent({
     pendingRecovery: !!pendingResolutionProposal,
   });
   const outOfCredits = !agentRun && incident.autoInvestigateBlockedReason === "no_credits";
+  const spendLimited = !agentRun && incident.autoInvestigateBlockedReason === "spend_limit";
   const sidebarSummary =
     incident.agentSummary ??
     agentRun?.result?.summary ??
@@ -1753,6 +1758,7 @@ export function IncidentDetailContent({
             {activeTab === "activity" && (
               <div className="space-y-8">
                 {outOfCredits && <BillingAwareOutOfCreditsBanner />}
+                {spendLimited && <SpendLimitBanner />}
                 <div className="space-y-3">
                   {eventsLoading && <p className="text-[12px] text-muted">loading…</p>}
                   {eventsError && (
@@ -1762,6 +1768,7 @@ export function IncidentDetailContent({
                     !eventsError &&
                     events.length === 0 &&
                     !outOfCredits &&
+                    !spendLimited &&
                     !awaitingQuestion &&
                     !triggeringIssue && <p className="text-[12px] text-muted">No activity yet.</p>}
                   <IncidentActivityFeed
@@ -1842,6 +1849,7 @@ export function IncidentDetailContent({
                 )}
 
                 {outOfCredits && <BillingAwareOutOfCreditsBanner />}
+                {spendLimited && <SpendLimitBanner />}
 
                 <AgentRunView
                   incident={incident}
