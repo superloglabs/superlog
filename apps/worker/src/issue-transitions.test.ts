@@ -85,7 +85,7 @@ test("escalations dedupe per observation cycle across a time slot", async () => 
   const [first, repeat, nextCycle] = fb.sent.map(
     (job) => job.options as { singletonKey: string; singletonSeconds: number },
   );
-  assert.equal(first?.singletonSeconds, 3600);
+  assert.equal(first?.singletonSeconds, 300);
   assert.equal(repeat?.singletonKey, first?.singletonKey);
   assert.notEqual(nextCycle?.singletonKey, first?.singletonKey);
 });

@@ -50,8 +50,10 @@ export const ISSUE_TRANSITION_QUEUE = "issue-transition";
 // `under_observation`, which only happens once its job runs. Without a slot,
 // a queue running behind gains a job per over-threshold issue per minute, and
 // that backlog is what keeps it behind. A dropped re-fire costs nothing: the
-// issue stays observed, so a later sweep dispatches again.
-const ESCALATION_DEDUPE_SECONDS = 3600;
+// issue stays observed, so a later sweep dispatches again. The slot also
+// matches finished jobs, so its length is how long a failed escalation waits
+// before that retry; keep it short.
+const ESCALATION_DEDUPE_SECONDS = 300;
 
 // How many transitions run concurrently, as independent single-job consumers
 // (`localConcurrency`), never a fetch batch: pg-boss completes a batch only
