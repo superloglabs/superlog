@@ -18,6 +18,9 @@ const CREDIT_FEATURE_ID = "investigations";
 const BILLED_FEATURE_IDS: readonly string[] = [...SIGNAL_FEATURE_IDS, CREDIT_FEATURE_ID];
 
 const FREE_PLAN_ID = "free";
+// Statuses that still grant the plan. A past-due plan keeps billing, so its limit
+// has to keep holding.
+const ACCESS_STATUSES = new Set(["active", "trialing", "past_due"]);
 const MINIMUM_LIMIT_CENTS = 100;
 // Fits the Postgres integer column.
 const MAXIMUM_LIMIT_CENTS = 2_147_483_647;
@@ -142,9 +145,9 @@ export function minimumSpendLimitUsd(planId: string | null): number | null {
 export function resolveSpendLimitPlan(
   subscriptions: ReadonlyArray<{ planId: string; status: string }>,
 ): string | null {
-  const active = subscriptions.filter((subscription) => subscription.status === "active");
-  const paid = active.find((subscription) => subscription.planId !== FREE_PLAN_ID);
-  return (paid ?? active[0])?.planId ?? null;
+  const live = subscriptions.filter((subscription) => ACCESS_STATUSES.has(subscription.status));
+  const paid = live.find((subscription) => subscription.planId !== FREE_PLAN_ID);
+  return (paid ?? live[0])?.planId ?? null;
 }
 
 // The freeze for this pass. A feature already frozen lower keeps that value, so

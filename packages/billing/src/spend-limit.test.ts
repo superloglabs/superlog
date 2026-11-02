@@ -131,6 +131,15 @@ test("the active paid plan wins over a parallel Free subscription and scheduled 
     "pack_150",
   );
   assert.equal(resolveSpendLimitPlan([{ planId: "free", status: "active" }]), "free");
+  for (const status of ["past_due", "trialing"]) {
+    assert.equal(
+      resolveSpendLimitPlan([
+        { planId: "free", status: "active" },
+        { planId: "payg", status },
+      ]),
+      "payg",
+    );
+  }
   assert.equal(resolveSpendLimitPlan([]), null);
 });
 
@@ -290,6 +299,22 @@ test("moving to a plan we cannot price leaves no freeze behind", async () => {
 
   assert.equal(state.status, "inactive");
   assert.deepEqual(writes, [[]]);
+});
+
+test("a past-due subscription keeps its freeze", async () => {
+  const frozen = [{ featureId: "investigations", enabled: true, overageLimit: 30 }];
+  const { writes, deps } = harness(
+    customer({
+      planId: resolveSpendLimitPlan([{ planId: "payg", status: "past_due" }]),
+      balances: [balance("investigations", 80, 50)],
+      spendLimits: frozen,
+    }),
+  );
+
+  const state = await reconcileSpendLimit(deps, { orgId: "org", limitCents: 4_000 });
+
+  assert.equal(state.status, "reached");
+  assert.deepEqual(writes, []);
 });
 
 test("an unreadable customer changes nothing", async () => {
