@@ -143,15 +143,17 @@ export function createIssueTransitionDispatcher(opts: {
     try {
       // Only escalations dedupe. pg-boss ignores singletonKey on a standard
       // queue unless singletonSeconds is set, and the slot also matches jobs
-      // that already finished, so applying it to "recurred" could swallow a
-      // genuine second recurrence that nothing would ever re-dispatch.
+      // that already finished. So the key carries the observation start, which
+      // keeps a new observation cycle from waiting out the previous one's
+      // slot, and "recurred" stays out: a slot could swallow a genuine second
+      // recurrence that nothing would ever re-dispatch.
       await opts.boss.send(
         ISSUE_TRANSITION_QUEUE,
         data,
         ...(transition === "escalated"
           ? [
               {
-                singletonKey: `${issue.id}:${transition}`,
+                singletonKey: `${issue.id}:${transition}:${issue.observationStartedAt?.getTime()}`,
                 singletonSeconds: ESCALATION_DEDUPE_SECONDS,
               },
             ]

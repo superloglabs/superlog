@@ -66,18 +66,28 @@ test("dispatcher enqueues the transition instead of running it inline", async ()
   });
 });
 
-test("escalations dedupe per issue across a time slot", async () => {
+test("escalations dedupe per observation cycle across a time slot", async () => {
   const fb = fakeBoss();
   const dispatch = createIssueTransitionDispatcher({ boss: fb.boss, inline: async () => {} });
+  const cycle = (startedAt: string) =>
+    ({
+      ...issueOf("issue-1", "project-1", "under_observation"),
+      observationStartedAt: new Date(startedAt),
+    }) as schema.Issue;
 
-  await dispatch(issueOf("issue-1", "project-1"), "escalated");
+  await dispatch(cycle("2026-07-06T12:00:00.000Z"), "escalated");
+  await dispatch(cycle("2026-07-06T12:00:00.000Z"), "escalated");
+  await dispatch(cycle("2026-07-06T12:10:00.000Z"), "escalated");
 
   // pg-boss ignores singletonKey on a standard queue unless singletonSeconds
-  // is set, so both are needed for the sweep's re-fires to collapse.
-  assert.deepEqual(fb.sent[0]?.options, {
-    singletonKey: "issue-1:escalated",
-    singletonSeconds: 3600,
-  });
+  // is set, so both are needed for the sweep's re-fires to collapse. The slot
+  // also matches finished jobs, so a fresh observation needs its own key.
+  const [first, repeat, nextCycle] = fb.sent.map(
+    (job) => job.options as { singletonKey: string; singletonSeconds: number },
+  );
+  assert.equal(first?.singletonSeconds, 3600);
+  assert.equal(repeat?.singletonKey, first?.singletonKey);
+  assert.notEqual(nextCycle?.singletonKey, first?.singletonKey);
 });
 
 test("a new or recurred transition is never deduped against an earlier job", async () => {
