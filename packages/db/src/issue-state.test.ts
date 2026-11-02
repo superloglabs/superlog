@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   decideOccurrenceAction,
   escalationTriggerFired,
+  isIssueTransitionStale,
   parseEscalationTrigger,
 } from "./issue-state.js";
 
@@ -95,4 +96,25 @@ test("rate trigger fires on the per-minute average since the last evaluation", (
     }),
     true,
   );
+});
+
+test("an escalation is only live while the issue is still under observation", () => {
+  assert.equal(isIssueTransitionStale("under_observation", "escalated"), false);
+  assert.equal(isIssueTransitionStale("silenced", "escalated"), true);
+  assert.equal(isIssueTransitionStale("resolved", "escalated"), true);
+  // A prior escalation already reopened it; a duplicate must not open another.
+  assert.equal(isIssueTransitionStale("open", "escalated"), true);
+});
+
+test("a silenced issue never starts a recurrence", () => {
+  assert.equal(isIssueTransitionStale("silenced", "recurred"), true);
+  assert.equal(isIssueTransitionStale("open", "recurred"), false);
+  assert.equal(isIssueTransitionStale("resolved", "recurred"), false);
+  assert.equal(isIssueTransitionStale("under_observation", "recurred"), false);
+});
+
+test("a new-issue transition is never stale", () => {
+  for (const status of ["open", "silenced", "under_observation", "resolved"] as const) {
+    assert.equal(isIssueTransitionStale(status, "new"), false);
+  }
 });

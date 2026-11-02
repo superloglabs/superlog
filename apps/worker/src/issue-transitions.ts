@@ -18,7 +18,7 @@
 // queue worker does the same per job instead of relying on pg-boss retries,
 // because the handler is not written to be safely re-runnable in all cases.
 import { metrics } from "@opentelemetry/api";
-import type { schema } from "@superlog/db";
+import { isIssueTransitionStale, type schema } from "@superlog/db";
 import type { IssueTransition } from "./incidents/workflow.js";
 import { logger as defaultLogger } from "./logger.js";
 
@@ -39,8 +39,19 @@ const failureCounter = meter.createCounter("superlog.issue_transitions.failures"
   description: "Issue transitions whose side effects threw and were skipped (at-most-once).",
   unit: "1",
 });
+const staleCounter = meter.createCounter("superlog.issue_transitions.stale_skipped", {
+  description: "Issue transitions dropped because the issue's status no longer justified them.",
+  unit: "1",
+});
 
 export const ISSUE_TRANSITION_QUEUE = "issue-transition";
+
+// The observation sweep re-fires every minute until the issue leaves
+// `under_observation`, which only happens once its job runs. Without a slot,
+// a queue running behind gains a job per over-threshold issue per minute, and
+// that backlog is what keeps it behind. A dropped re-fire costs nothing: the
+// issue stays observed, so a later sweep dispatches again.
+const ESCALATION_DEDUPE_SECONDS = 3600;
 
 // How many transitions run concurrently, as independent single-job consumers
 // (`localConcurrency`), never a fetch batch: pg-boss completes a batch only
@@ -130,13 +141,22 @@ export function createIssueTransitionDispatcher(opts: {
       enqueuedAtMs: Date.now(),
     };
     try {
-      // singletonKey dedupes while a matching job is queued: a rapid
-      // re-dispatch of the same (issue, transition) collapses to one job.
-      // Event counters were already bumped by the upsert, so one execution
-      // of the side effects is all that's needed.
-      await opts.boss.send(ISSUE_TRANSITION_QUEUE, data, {
-        singletonKey: `${issue.id}:${transition}`,
-      });
+      // Only escalations dedupe. pg-boss ignores singletonKey on a standard
+      // queue unless singletonSeconds is set, and the slot also matches jobs
+      // that already finished, so applying it to "recurred" could swallow a
+      // genuine second recurrence that nothing would ever re-dispatch.
+      await opts.boss.send(
+        ISSUE_TRANSITION_QUEUE,
+        data,
+        ...(transition === "escalated"
+          ? [
+              {
+                singletonKey: `${issue.id}:${transition}`,
+                singletonSeconds: ESCALATION_DEDUPE_SECONDS,
+              },
+            ]
+          : []),
+      );
     } catch (err) {
       logger.warn(
         {
@@ -211,15 +231,24 @@ export async function registerIssueTransitionWorker(
           }
           const startedAt = Date.now();
           try {
-            const issue = await opts.loadIssue(data.issueId);
-            if (!issue) {
-              logger.warn(
-                { scope: "issue-transitions", issueId: data.issueId, jobId: job.id },
-                "issue no longer exists; skipping transition",
-              );
-              return;
-            }
-            await perProject(data.projectId, () => opts.handle(issue, data.transition));
+            // Load inside the lock: a job can wait here a long time behind its
+            // project's other transitions, and the status it acts on must be
+            // the one after that wait.
+            await perProject(data.projectId, async () => {
+              const issue = await opts.loadIssue(data.issueId);
+              if (!issue) {
+                logger.warn(
+                  { scope: "issue-transitions", issueId: data.issueId, jobId: job.id },
+                  "issue no longer exists; skipping transition",
+                );
+                return;
+              }
+              if (isIssueTransitionStale(issue.status, data.transition)) {
+                staleCounter.add(1, { transition: data.transition });
+                return;
+              }
+              await opts.handle(issue, data.transition);
+            });
           } catch (err) {
             failureCounter.add(1, { transition: data.transition });
             logger.error(
