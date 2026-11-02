@@ -1,3 +1,4 @@
+import { billableOverage, billedTelemetryUsd } from "@superlog/billing";
 import { useAggregateEvents, useCustomer } from "autumn-js/react";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -9,9 +10,10 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { useCancelBilling, useEnsurePaygPromotion } from "../api.ts";
+import { useCancelBilling, useEnsurePaygPromotion, useSpendLimit } from "../api.ts";
 import { isPaygPromotionAvailable, signalAtHardCap } from "../billing.ts";
 import { Btn } from "../design/ui.tsx";
+import { SpendLimitCard } from "./SpendLimitCard.tsx";
 
 // Autumn plan ids → display names (must match autumn.config.ts / pricing.ts).
 const PLAN_NAMES: Record<string, string> = {
@@ -73,14 +75,9 @@ function formatResetDate(timestamp: number): string {
   }).format(new Date(timestamp));
 }
 
-// Metered rates + plan base fees / per-credit overage (mirror pricing.ts). Used
+// Plan base fees / per-credit overage (mirror pricing.ts). Used
 // to estimate the current bill from this period's usage. Free is never billed
 // (hard caps), so its bill is always $0.
-const SIGNAL_RATE_PER_MILLION_USD: Record<string, number> = {
-  spans: 0.5,
-  logs: 0.5,
-  metric_points: 0.15,
-};
 const PLAN_BASE_USD: Record<string, number> = { free: 0, payg: 0, pack_150: 150, pack_300: 300 };
 const CREDIT_OVERAGE_USD: Record<string, number> = {
   free: 0,
@@ -95,6 +92,7 @@ export function BillingCard() {
   const [error, setError] = useState<string | null>(null);
   const cancelBilling = useCancelBilling();
   const paygPromotion = useEnsurePaygPromotion();
+  const spendLimit = useSpendLimit();
   const promotionRequestedFor = useRef<string | null>(null);
   // Usage time-series straight from Autumn (same source as the meters above), so
   // the graph and the meters always reconcile. customerId is inferred from the
@@ -193,25 +191,22 @@ export function BillingCard() {
   // True when any hard-capped signal (Free tier) is exhausted — ingest/usage is
   // paused, so we surface the upgrade CTA. signalAtHardCap guards against
   // autumn-js check() throwing on a not-yet-hydrated customer (see billing.ts).
-  const atLimit = ["investigations", "spans", "logs", "metric_points"].some((f) =>
-    signalAtHardCap(check, f),
-  );
+  const atLimit =
+    spendLimit.data?.status !== "reached" &&
+    ["investigations", "spans", "logs", "metric_points"].some((f) => signalAtHardCap(check, f));
 
   // Estimated current bill: plan base fee + this period's metered usage beyond
-  // what the plan includes (granted). On paid plans telemetry has granted 0 (all
-  // metered); credits are billed beyond the plan's included credits. Free has no
-  // overage price, so it's always $0.
+  // what the plan includes. Free has no overage price, so it's always $0.
   const billableBeyond = (featureId: string) => {
     const b = balanceOf(featureId);
-    if (!b || b.unlimited) return 0;
-    return Math.max(0, b.usage - b.granted);
+    return b ? billableOverage(b) : 0;
   };
   const currentBillUsd =
     planId === "free"
       ? 0
       : (PLAN_BASE_USD[planId] ?? 0) +
         (["spans", "logs", "metric_points"] as const).reduce(
-          (sum, s) => sum + (billableBeyond(s) / 1_000_000) * (SIGNAL_RATE_PER_MILLION_USD[s] ?? 0),
+          (sum, s) => sum + billedTelemetryUsd(s, billableBeyond(s)),
           0,
         ) +
         billableBeyond("investigations") * (CREDIT_OVERAGE_USD[planId] ?? 0);
@@ -351,6 +346,8 @@ export function BillingCard() {
           </div>
         </div>
       </div>
+
+      <SpendLimitCard />
 
       {/* Usage over time */}
       <BillingUsageChart series={usageSeries} loading={usage.isLoading} />

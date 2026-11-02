@@ -173,3 +173,15 @@ test("linearTicketSidebarTarget preserves a recorded ticket without a provider U
     { label: "ENG-42", url: null },
   );
 });
+
+test("buildIncidentDetailMeta shows a red 'spend limit reached' when the org hit its own limit", () => {
+  const meta = buildIncidentDetailMeta({
+    incident: { ...incident, autoInvestigateBlockedReason: "spend_limit" },
+    agentRunState: null,
+    pendingRecovery: false,
+  });
+
+  const row = meta.find((entry) => entry.label === "Investigation");
+  assert.equal(row?.value, "Spend limit reached");
+  assert.equal(row?.tone, "danger");
+});

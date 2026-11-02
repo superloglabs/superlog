@@ -23,13 +23,13 @@ const EMAIL_SHELL = `<!doctype html>
         <tr><td style="padding:0 0 26px;"><img src="https://images.vialoops.com/cmowh1ofc04l30i53nid5hp2v/cmqz06roj2wy30j1a8ze0gr60.png" alt="superlog" width="150" style="display:block;border:0;width:150px;max-width:100%;"></td></tr>
         <tr><td style="padding:0 0 10px;color:#18181b;font-size:23px;font-weight:600;line-height:30px;letter-spacing:-.02em;">{{headline}}</td></tr>
         <tr><td style="padding:0 0 26px;color:#5b5e66;font-size:15px;line-height:23px;">{{intro}}</td></tr>
-        <tr><td style="padding:0 0 8px;color:#5b5e66;font-size:13px;line-height:20px;">Usage this cycle</td></tr>
+        <tr><td style="padding:0 0 8px;color:#5b5e66;font-size:13px;line-height:20px;">{{rowsHeading}}</td></tr>
         <tr><td><table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:#f3f3f4;border-radius:14px;border-collapse:separate;">{{usageRows}}</table></td></tr>
         <tr><td style="padding:33px 0 42px;"><table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;"><tr>
           <td valign="middle" style="vertical-align:middle;font-size:15px;color:#5b5e66;line-height:22px;padding-right:18px;">{{ctaCopy}}</td>
           <td valign="middle" style="vertical-align:middle;text-align:right;white-space:nowrap;"><a href="{{ctaUrl}}" style="display:inline-block;background:#485ae2;color:#fff;font-size:16px;font-weight:500;text-decoration:none;padding:6px 11px;border-radius:8px;"><span style="font-size:16px;vertical-align:-1px;">&#8593;</span>&nbsp;{{ctaLabel}}</a></td>
         </tr></table></td></tr>
-        <tr><td style="font-size:12px;color:#9c9fa6;line-height:18px;">You're getting this because your Superlog organization is on the Free plan. Manage your plan anytime in organization billing settings.</td></tr>
+        <tr><td style="font-size:12px;color:#9c9fa6;line-height:18px;">{{footer}}</td></tr>
       </table>
     </td></tr>
   </table>
@@ -145,12 +145,72 @@ export function renderUsageEmail(input: UsageEmailInput): { subject: string; htm
   const copy = variantCopy(input);
   const html = EMAIL_SHELL.replace("{{headline}}", esc(copy.headline))
     .replace("{{intro}}", copy.intro)
+    .replace("{{rowsHeading}}", "Usage this cycle")
     .replace("{{usageRows}}", usageRowsHtml(input.balances, input.feature))
+    .replace(
+      "{{footer}}",
+      "You're getting this because your Superlog organization is on the Free plan. Manage your plan anytime in organization billing settings.",
+    )
     .replace("{{ctaCopy}}", esc(copy.ctaCopy))
     .replace(
       "{{ctaLabel}}",
       input.promotionAvailable ? "Upgrade and get 100 free credits" : "Upgrade to pay as you go",
     )
+    .replace("{{ctaUrl}}", esc(input.manageBillingUrl));
+  return { subject: copy.subject, html };
+}
+
+function spendRowHtml(label: string, value: string, color: string, divider: boolean): string {
+  const border = divider ? "border-bottom:1px solid #e6e6e8;" : "";
+  const cell = "font-family:'Inter';font-size:15px;";
+  return `<tr><td style="padding:14px 18px;${border}"><table width="100%" role="presentation"><tr><td style="${cell}color:#232326;">${esc(label)}</td><td style="${cell}text-align:right;color:${color};font-weight:500;">${esc(value)}</td></tr></table></td></tr>`;
+}
+
+export type SpendLimitEmailInput = {
+  orgName: string;
+  billUsd: number;
+  limitUsd: number;
+  pct: number;
+  reached: boolean;
+  manageBillingUrl: string;
+};
+
+export function renderSpendLimitEmail(input: SpendLimitEmailInput): {
+  subject: string;
+  html: string;
+} {
+  const limit = `$${input.limitUsd.toFixed(2)}`;
+  const org = esc(input.orgName);
+  const copy = input.reached
+    ? {
+        subject: `${input.orgName} reached its ${limit} monthly spend limit`,
+        headline: "You've reached your monthly spend limit",
+        intro: `<strong>${org}</strong> has reached its ${esc(limit)} limit. New telemetry beyond your included allowance is being dropped and billable investigations are paused until your next billing cycle.`,
+        ctaCopy: "Raise or remove the limit to resume now.",
+      }
+    : {
+        subject: `${input.orgName} has used ${input.pct}% of its monthly spend limit`,
+        headline: `You've used ${input.pct}% of your monthly spend limit`,
+        intro: `<strong>${org}</strong> is approaching its ${esc(limit)} limit. When it's reached, new telemetry beyond your included allowance is dropped and billable investigations pause until your next billing cycle.`,
+        ctaCopy: "Raise the limit to avoid an interruption.",
+      };
+  const rows =
+    spendRowHtml(
+      "Estimated bill",
+      `$${input.billUsd.toFixed(2)}`,
+      input.reached ? RED : COBALT,
+      true,
+    ) + spendRowHtml("Spend limit", limit, "#18181b", false);
+  const html = EMAIL_SHELL.replace("{{headline}}", esc(copy.headline))
+    .replace("{{intro}}", copy.intro)
+    .replace("{{rowsHeading}}", "This billing cycle")
+    .replace("{{usageRows}}", rows)
+    .replace(
+      "{{footer}}",
+      "You're getting this because your Superlog organization set a monthly spend limit. Manage it anytime in organization billing settings.",
+    )
+    .replace("{{ctaCopy}}", esc(copy.ctaCopy))
+    .replace("{{ctaLabel}}", "Manage spend limit")
     .replace("{{ctaUrl}}", esc(input.manageBillingUrl));
   return { subject: copy.subject, html };
 }

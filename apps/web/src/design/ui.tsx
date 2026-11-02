@@ -717,6 +717,57 @@ export function OutOfCreditsBanner({
   );
 }
 
+// Same callouts for an incident skipped because the org's bill reached the
+// monthly spend limit it set. There's nothing to upgrade, so the path to billing
+// is about the limit itself.
+export function SpendLimitBadge() {
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[11px] text-danger"
+      style={{
+        backgroundColor: "color-mix(in srgb, var(--color-danger) 20%, transparent)",
+        borderColor: "color-mix(in srgb, var(--color-danger) 25%, transparent)",
+      }}
+    >
+      <HugeiconsIcon icon={CreditCardIcon} size={12} strokeWidth={2} />
+      Spend limit reached
+    </span>
+  );
+}
+
+export function SpendLimitBanner() {
+  const projectPath = useProjectPath();
+  return (
+    <div
+      className="rounded-md border p-4"
+      style={{
+        backgroundColor: "color-mix(in srgb, var(--color-danger) 12%, transparent)",
+        borderColor: "color-mix(in srgb, var(--color-danger) 25%, transparent)",
+      }}
+    >
+      <div className="mb-1 flex items-center gap-2 text-[14px] font-semibold leading-snug text-danger">
+        <HugeiconsIcon icon={CreditCardIcon} size={14} strokeWidth={2} />
+        Spend limit reached
+      </div>
+      <p
+        className="mb-3 text-[13px] leading-relaxed"
+        style={{ color: "color-mix(in srgb, var(--color-danger) 82%, var(--color-fg))" }}
+      >
+        Your organization reached the monthly spend limit it set, so auto-investigation was skipped.
+        Raise or remove the limit to keep investigating new incidents.
+      </p>
+      <div className="flex items-center justify-end">
+        <Link
+          to={projectPath("/settings?scope=org&section=billing")}
+          className="inline-flex items-center rounded-md bg-fg px-3 py-1.5 text-[13px] font-medium text-bg transition-opacity hover:opacity-90"
+        >
+          Review spend limit
+        </Link>
+      </div>
+    </div>
+  );
+}
+
 export function BillingAwareOutOfCreditsBanner() {
   const { data: customer } = useCustomer();
   const promotionAvailable = isPaygPromotionAvailable(customer);

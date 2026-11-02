@@ -3,7 +3,7 @@ import "./net.js";
 import { serve } from "@hono/node-server";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
-import { ensurePaygPromotion } from "@superlog/billing";
+import { createAutumnSpendLimitDeps, ensurePaygPromotion } from "@superlog/billing";
 import {
   INTERNAL_INCIDENT_EVENT_KIND_SQL_PATTERN,
   ISSUE_STATUSES,
@@ -146,7 +146,10 @@ import {
 import { mountMcpAuthed, mountMcpPublic } from "./mcp/index.js";
 import { mountNotionAuthed, mountNotionPublic } from "./notion.js";
 import { suggestOrgNameFromEmail } from "./onboarding-org-suggestion.js";
-import { requireProjectManagerContext } from "./org-authorization-http.js";
+import {
+  requireOrgManagerContext,
+  requireProjectManagerContext,
+} from "./org-authorization-http.js";
 import { resolveActiveOrgContext, resolveMaybeActiveOrgContext } from "./org-context.js";
 import { ORG_NAME_MAX, createOrgWithDefaults, mountOrgCrud } from "./orgs.js";
 import { mountPersonalAccessTokens } from "./personal-access-tokens.js";
@@ -196,6 +199,12 @@ import {
 } from "./signup-intents.js";
 import { mountSlackAuthed, mountSlackPublic } from "./slack.js";
 import { sourceMapObjectStoreFromEnv } from "./sourcemaps.js";
+import {
+  SPEND_LIMIT_UNAVAILABLE,
+  SpendLimitRejected,
+  createSpendLimitService,
+  createSpendLimitStore,
+} from "./spend-limit-service.js";
 import { userIsStaff } from "./staff.js";
 import { symbolicateIssueSample, symbolicateTelemetrySample } from "./symbolication.js";
 import { buildSystemCapabilities } from "./system-capabilities.js";
@@ -1076,6 +1085,61 @@ app.post("/api/me/billing/cancel", async (c) => {
     }
     throw err;
   }
+  return c.json({ ok: true });
+});
+
+function spendLimitService() {
+  const secretKey = process.env.AUTUMN_SECRET_KEY;
+  if (!secretKey || process.env.BILLING_SPEND_LIMITS_ENABLED !== "true") return null;
+  return createSpendLimitService({
+    store: createSpendLimitStore(),
+    billing: createAutumnSpendLimitDeps(new Autumn({ secretKey })),
+  });
+}
+
+const SPEND_LIMIT_REJECTIONS: Record<SpendLimitRejected["reason"], string> = {
+  invalid_amount: "enter a spend limit of at least $1",
+  unsupported_plan: "spend limits aren't available on this plan",
+  below_plan_fee: "the spend limit must be above your plan's monthly fee",
+  unavailable: "billing is unavailable right now; try again shortly",
+};
+
+app.get("/api/me/billing/spend-limit", async (c) => {
+  const ctx = await resolveMaybeActiveOrgContext({
+    userId: c.var.userId,
+    preferredOrgId: c.var.orgId,
+  });
+  if (!ctx.org) throw new HTTPException(400, { message: "no active org" });
+  const service = spendLimitService();
+  return c.json(service ? await service.read(ctx.org.id) : SPEND_LIMIT_UNAVAILABLE);
+});
+
+// Reaching a limit pauses ingest and investigations for the whole org, so
+// changing one is reserved for org managers.
+app.put("/api/me/billing/spend-limit", async (c) => {
+  const { orgId } = await requireOrgManagerContext(c);
+  const service = spendLimitService();
+  if (!service) throw new HTTPException(400, { message: "billing is not configured" });
+  const body = await c.req.json<{ limitUsd?: unknown }>().catch(() => null);
+  const limitUsd = body?.limitUsd;
+  if (typeof limitUsd !== "number") {
+    throw new HTTPException(400, { message: SPEND_LIMIT_REJECTIONS.invalid_amount });
+  }
+  try {
+    return c.json(await service.set(orgId, Math.round(limitUsd * 100)));
+  } catch (err) {
+    if (err instanceof SpendLimitRejected) {
+      throw new HTTPException(400, { message: SPEND_LIMIT_REJECTIONS[err.reason] });
+    }
+    throw err;
+  }
+});
+
+app.delete("/api/me/billing/spend-limit", async (c) => {
+  const { orgId } = await requireOrgManagerContext(c);
+  const service = spendLimitService();
+  if (!service) throw new HTTPException(400, { message: "billing is not configured" });
+  await service.remove(orgId);
   return c.json({ ok: true });
 });
 

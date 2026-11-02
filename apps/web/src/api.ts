@@ -2611,6 +2611,51 @@ export function useEnsurePaygPromotion() {
   });
 }
 
+export type SpendLimit = {
+  // False on plans that can't carry a limit (Free, custom) or while billing
+  // can't be read.
+  available: boolean;
+  minimumUsd: number | null;
+  limitUsd: number | null;
+  status: "none" | "under" | "reached";
+  billUsd: number | null;
+  pct: number | null;
+  resetsAt: number | null;
+};
+
+export function useSpendLimit(options: { enabled?: boolean } = {}) {
+  const fetcher = useFetcher();
+  return useQuery({
+    queryKey: ["spend-limit"],
+    queryFn: () => fetcher<SpendLimit>("/api/me/billing/spend-limit"),
+    enabled: options.enabled ?? true,
+    staleTime: 60_000,
+  });
+}
+
+export function useSetSpendLimit() {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (limitUsd: number) =>
+      fetcher<SpendLimit>("/api/me/billing/spend-limit", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limitUsd }),
+      }),
+    onSuccess: (limit) => qc.setQueryData(["spend-limit"], limit),
+  });
+}
+
+export function useRemoveSpendLimit() {
+  const fetcher = useFetcher();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => fetcher<{ ok: boolean }>("/api/me/billing/spend-limit", { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["spend-limit"] }),
+  });
+}
+
 export function useMcpStatus(projectId: string | undefined) {
   const fetcher = useFetcher();
   return useQuery({
@@ -2839,7 +2884,8 @@ export type IncidentSeverity = "SEV-1" | "SEV-2" | "SEV-3";
 
 // Why auto-investigation was skipped for this incident, when worth surfacing to
 // the user. 'no_credits' = org over its plan's monthly investigation limit.
-export type IncidentAutoInvestigateBlockedReason = "no_credits";
+// 'spend_limit' = org's bill reached the monthly spend limit it set.
+export type IncidentAutoInvestigateBlockedReason = "no_credits" | "spend_limit";
 
 // Free-form text explaining why the issue is noise. Previously a closed enum
 // (cosmetic_log_only, lifecycle_signal, self_telemetry, expected_third_party,
@@ -2982,8 +3028,8 @@ export type Incident = {
   noiseClassification: IncidentNoiseClassification | null;
   resolutionClassification: IncidentResolutionClassification | null;
   findingsAgentRunId: string | null;
-  // Why auto-investigation was skipped, when worth surfacing. 'no_credits' = org
-  // over its plan's monthly investigation limit. Null when queued or not blocked.
+  // Why auto-investigation was skipped, when worth surfacing. Null when queued or
+  // not blocked.
   autoInvestigateBlockedReason: IncidentAutoInvestigateBlockedReason | null;
   createdAt: string;
   updatedAt: string;
