@@ -97,7 +97,7 @@ export function isIssueTransitionStale(
   transition: "new" | "recurred" | "escalated",
 ): boolean {
   if (transition === "escalated") return status !== "under_observation";
-  if (transition === "recurred") return status === "silenced";
+  if (transition === "recurred") return status === "silenced" || status === "under_observation";
   return false;
 }
 

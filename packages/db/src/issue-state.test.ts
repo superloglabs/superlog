@@ -106,11 +106,13 @@ test("an escalation is only live while the issue is still under observation", ()
   assert.equal(isIssueTransitionStale("open", "escalated"), true);
 });
 
-test("a silenced issue never starts a recurrence", () => {
+test("a recurrence is stale once a later verdict suppresses the issue", () => {
   assert.equal(isIssueTransitionStale("silenced", "recurred"), true);
+  // Occurrences during observation are suppressed at ingest, so a recurrence
+  // running now was queued before the observe verdict.
+  assert.equal(isIssueTransitionStale("under_observation", "recurred"), true);
   assert.equal(isIssueTransitionStale("open", "recurred"), false);
   assert.equal(isIssueTransitionStale("resolved", "recurred"), false);
-  assert.equal(isIssueTransitionStale("under_observation", "recurred"), false);
 });
 
 test("a new-issue transition is never stale", () => {
