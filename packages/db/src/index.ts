@@ -327,6 +327,7 @@ export {
   buildIssueSilencePatch,
   decideOccurrenceAction,
   escalationTriggerFired,
+  isIssueTransitionStale,
   ISSUE_STATUSES,
   OBSERVATION_RATE_WINDOW_MINUTES,
   parseEscalationTrigger,

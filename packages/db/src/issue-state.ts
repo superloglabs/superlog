@@ -88,6 +88,19 @@ export function buildIssueReopenPatch(): Partial<schema.Issue> {
   };
 }
 
+// Transitions run out-of-band and can sit queued long after they were
+// dispatched, so the verdict that justified one may be gone by the time it
+// runs. Acting on it anyway opens an incident for an issue nothing is wrong
+// with. Checked against the issue's current status immediately before running.
+export function isIssueTransitionStale(
+  status: schema.IssueStatus,
+  transition: "new" | "recurred" | "escalated",
+): boolean {
+  if (transition === "escalated") return status !== "under_observation";
+  if (transition === "recurred") return status === "silenced" || status === "under_observation";
+  return false;
+}
+
 // Escalation triggers arrive from the agent result (LLM output) and from API
 // payloads; both are untrusted. Returns null rather than throwing so callers
 // can decide their own fallback (the completion path downgrades a malformed

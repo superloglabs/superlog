@@ -1,3 +1,4 @@
+import "./agent-run.test-env.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { schema } from "@superlog/db";
@@ -8,8 +9,12 @@ import {
   registerIssueTransitionWorker,
 } from "./issue-transitions.js";
 
-function issueOf(id: string, projectId: string): schema.Issue {
-  return { id, projectId } as schema.Issue;
+function issueOf(
+  id: string,
+  projectId: string,
+  status: schema.IssueStatus = "open",
+): schema.Issue {
+  return { id, projectId, status } as schema.Issue;
 }
 
 type SentJob = { name: string; data: unknown; options: unknown };
@@ -59,9 +64,43 @@ test("dispatcher enqueues the transition instead of running it inline", async ()
     transition: "new",
     enqueuedAtMs: undefined,
   });
-  // Rapid duplicate dispatches of the same (issue, transition) must dedupe
-  // while a matching job is still queued.
-  assert.deepEqual(fb.sent[0]?.options, { singletonKey: "issue-1:new" });
+});
+
+test("escalations dedupe per observation cycle across a time slot", async () => {
+  const fb = fakeBoss();
+  const dispatch = createIssueTransitionDispatcher({ boss: fb.boss, inline: async () => {} });
+  const cycle = (startedAt: string) =>
+    ({
+      ...issueOf("issue-1", "project-1", "under_observation"),
+      observationStartedAt: new Date(startedAt),
+    }) as schema.Issue;
+
+  await dispatch(cycle("2026-07-06T12:00:00.000Z"), "escalated");
+  await dispatch(cycle("2026-07-06T12:00:00.000Z"), "escalated");
+  await dispatch(cycle("2026-07-06T12:10:00.000Z"), "escalated");
+
+  // pg-boss ignores singletonKey on a standard queue unless singletonSeconds
+  // is set, so both are needed for the sweep's re-fires to collapse. The slot
+  // also matches finished jobs, so a fresh observation needs its own key.
+  const [first, repeat, nextCycle] = fb.sent.map(
+    (job) => job.options as { singletonKey: string; singletonSeconds: number },
+  );
+  assert.equal(first?.singletonSeconds, 300);
+  assert.equal(repeat?.singletonKey, first?.singletonKey);
+  assert.notEqual(nextCycle?.singletonKey, first?.singletonKey);
+});
+
+test("a new or recurred transition is never deduped against an earlier job", async () => {
+  const fb = fakeBoss();
+  const dispatch = createIssueTransitionDispatcher({ boss: fb.boss, inline: async () => {} });
+
+  await dispatch(issueOf("issue-1", "project-1"), "new");
+  await dispatch(issueOf("issue-1", "project-1"), "recurred");
+
+  assert.deepEqual(
+    fb.sent.map((job) => job.options),
+    [undefined, undefined],
+  );
 });
 
 test("dispatcher runs inline when no queue is configured", async () => {
@@ -191,12 +230,81 @@ test("observation escalations dispatch through the queue too", async () => {
     handle: async (_issue, transition) => {
       handled.push(transition);
     },
-    loadIssue: async (id) => issueOf(id, "project-1"),
+    loadIssue: async (id) => issueOf(id, "project-1", "under_observation"),
   });
   const worker = fb.workers.get(ISSUE_TRANSITION_QUEUE);
   assert.ok(worker);
   await worker([{ id: "j1", data: fb.sent[0]?.data }]);
   assert.deepEqual(handled, ["escalated"]);
+});
+
+test("a queued escalation is dropped once the issue has left observation", async () => {
+  const fb = fakeBoss();
+  const handled: string[] = [];
+  await registerIssueTransitionWorker(fb.boss, {
+    handle: async (issue) => {
+      handled.push(issue.id);
+    },
+    loadIssue: async (id) =>
+      issueOf(id, "project-1", id === "observed" ? "under_observation" : "silenced"),
+  });
+
+  const worker = fb.workers.get(ISSUE_TRANSITION_QUEUE);
+  assert.ok(worker);
+  await worker([
+    { id: "j1", data: { issueId: "silenced", projectId: "project-1", transition: "escalated" } },
+    { id: "j2", data: { issueId: "observed", projectId: "project-1", transition: "escalated" } },
+  ]);
+
+  assert.deepEqual(handled, ["observed"]);
+});
+
+test("a queued recurrence is dropped once the issue has been silenced", async () => {
+  const fb = fakeBoss();
+  const handled: string[] = [];
+  await registerIssueTransitionWorker(fb.boss, {
+    handle: async (issue) => {
+      handled.push(issue.id);
+    },
+    loadIssue: async (id) => issueOf(id, "project-1", "silenced"),
+  });
+
+  const worker = fb.workers.get(ISSUE_TRANSITION_QUEUE);
+  assert.ok(worker);
+  await worker([
+    { id: "j1", data: { issueId: "issue-1", projectId: "project-1", transition: "recurred" } },
+  ]);
+
+  assert.deepEqual(handled, []);
+});
+
+test("issue state is read after the project lock", async () => {
+  const fb = fakeBoss();
+  const handled: string[] = [];
+  let status: schema.IssueStatus = "under_observation";
+  let releaseFirst: () => void = () => {};
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  await registerIssueTransitionWorker(fb.boss, {
+    handle: async (issue) => {
+      handled.push(issue.id);
+      await firstGate;
+      // The running transition closes the observation while the next job waits.
+      status = "silenced";
+    },
+    loadIssue: async (id) => issueOf(id, "project-1", status),
+  });
+
+  const worker = fb.workers.get(ISSUE_TRANSITION_QUEUE);
+  assert.ok(worker);
+  const data = { issueId: "issue-1", projectId: "project-1", transition: "escalated" };
+  const first = worker([{ id: "j1", data }]);
+  const second = worker([{ id: "j2", data }]);
+  releaseFirst();
+  await Promise.all([first, second]);
+
+  assert.deepEqual(handled, ["issue-1"]);
 });
 
 test("the queue worker skips malformed job payloads", async () => {
