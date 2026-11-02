@@ -14,10 +14,22 @@
  * A permit count of <= 0 disables the limiter (acquire resolves immediately,
  * release is a no-op) — an escape hatch via INGEST_MAX_INFLIGHT_REQUESTS=0.
  */
+
+// Singly-linked list node for the FIFO waiter queue. Using a linked list keeps
+// both enqueue (push to tail) and dequeue (pop from head) O(1). The previous
+// Array-based implementation called Array.shift() in release(), which is O(n)
+// because it copies every remaining element one slot forward. Under burst
+// concurrency where multiple requests queue on the semaphore, repeated O(n)
+// shifts produce O(n²) total work — a superlinear CPU spike that shows up as
+// elevated event-loop utilization.
+type WaiterNode = { fn: () => void; next: WaiterNode | null };
+
 export class Semaphore {
   private readonly limited: boolean;
   private available: number;
-  private readonly waiters: Array<() => void> = [];
+  private waiterHead: WaiterNode | null = null;
+  private waiterTail: WaiterNode | null = null;
+  private waiterCount = 0;
 
   constructor(permits: number) {
     this.limited = permits > 0;
@@ -31,18 +43,28 @@ export class Semaphore {
       return Promise.resolve();
     }
     return new Promise<void>((resolve) => {
-      this.waiters.push(resolve);
+      const node: WaiterNode = { fn: resolve, next: null };
+      if (this.waiterTail) {
+        this.waiterTail.next = node;
+      } else {
+        this.waiterHead = node;
+      }
+      this.waiterTail = node;
+      this.waiterCount += 1;
     });
   }
 
   release(): void {
     if (!this.limited) return;
-    const next = this.waiters.shift();
-    if (next) {
+    const node = this.waiterHead;
+    if (node) {
       // Hand the permit straight to the next waiter without round-tripping
       // through `available`, so a steady stream of releases keeps the queue
       // draining in FIFO order.
-      next();
+      this.waiterHead = node.next;
+      if (this.waiterHead === null) this.waiterTail = null;
+      this.waiterCount -= 1;
+      node.fn();
       return;
     }
     this.available += 1;
@@ -53,6 +75,6 @@ export class Semaphore {
   }
 
   get queueLength(): number {
-    return this.waiters.length;
+    return this.waiterCount;
   }
 }
