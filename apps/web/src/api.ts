@@ -2630,6 +2630,8 @@ export function useSpendLimit(options: { enabled?: boolean } = {}) {
     queryFn: () => fetcher<SpendLimit>("/api/me/billing/spend-limit"),
     enabled: options.enabled ?? true,
     staleTime: 60_000,
+    // The scheduled job can reach the limit while the app stays open.
+    refetchInterval: 60_000,
   });
 }
 

@@ -78,7 +78,7 @@ export async function isSpendLimitReached(orgId: string): Promise<boolean> {
       where: eq(schema.orgSpendLimits.orgId, orgId),
       columns: { monthlyLimitCents: true },
     });
-    if (!row) return false;
+    if (row?.monthlyLimitCents == null) return false;
     const state = await readSpendLimit(createSpendLimitBilling(secretKey), {
       orgId,
       limitCents: row.monthlyLimitCents,

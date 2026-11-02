@@ -16,17 +16,100 @@ function customer(usage: number): SpendLimitCustomer {
   };
 }
 
-test("the job only schedules when billing and spend limits are both on", async () => {
-  const off = [
-    {},
-    { AUTUMN_SECRET_KEY: "configured" },
-    { BILLING_SPEND_LIMITS_ENABLED: "true" },
-    { AUTUMN_SECRET_KEY: "configured", BILLING_SPEND_LIMITS_ENABLED: "false" },
-  ];
-  for (const env of off) {
+test("the job only schedules when billing is configured", async () => {
+  const unbilled = [{}, { BILLING_SPEND_LIMITS_ENABLED: "true" }];
+  for (const env of unbilled) {
     assert.equal(await createSpendLimitJob({ env }).create({} as JobDeps), null);
   }
   assert.ok(await createSpendLimitJob({ env: ENABLED }).create({} as JobDeps));
+  assert.ok(
+    await createSpendLimitJob({ env: { AUTUMN_SECRET_KEY: "configured" } }).create({} as JobDeps),
+  );
+});
+
+test("with the feature off, existing freezes are lifted and limits are kept", async () => {
+  const writes: Array<[string, unknown[]]> = [];
+  const notified: string[] = [];
+  const forgotten: string[] = [];
+  const definition = createSpendLimitJob({
+    env: { AUTUMN_SECRET_KEY: "configured", BILLING_SPEND_LIMITS_ENABLED: "false" },
+    createBilling: () => ({
+      loadCustomer: async () => ({
+        ...customer(100),
+        spendLimits: [{ featureId: "investigations", enabled: true, overageLimit: 50 }],
+      }),
+      writeSpendLimits: async (orgId, limits) => {
+        writes.push([orgId, limits]);
+      },
+    }),
+    loadLimits: async () => [{ orgId: "over", monthlyLimitCents: 5_000 }],
+    forgetRemoved: async (_db, orgId) => {
+      forgotten.push(orgId);
+    },
+    notify: async ({ orgId }) => {
+      notified.push(orgId);
+    },
+  });
+
+  const handler = await definition.create({} as JobDeps);
+  await handler?.();
+
+  assert.deepEqual(writes, [["over", []]]);
+  assert.deepEqual(notified, []);
+  assert.deepEqual(forgotten, []);
+});
+
+test("a removed limit is lifted before its row is forgotten", async () => {
+  const log: string[] = [];
+  const definition = createSpendLimitJob({
+    env: ENABLED,
+    createBilling: () => ({
+      loadCustomer: async () => ({
+        ...customer(100),
+        spendLimits: [{ featureId: "investigations", enabled: true, overageLimit: 50 }],
+      }),
+      writeSpendLimits: async () => {
+        log.push("lift");
+      },
+    }),
+    loadLimits: async () => [{ orgId: "removed", monthlyLimitCents: null }],
+    forgetRemoved: async () => {
+      log.push("forget");
+    },
+    notify: async () => {
+      log.push("notify");
+    },
+  });
+
+  const handler = await definition.create({} as JobDeps);
+  await handler?.();
+
+  assert.deepEqual(log, ["lift", "forget"]);
+});
+
+test("a failed lift keeps the row for the next pass", async () => {
+  const forgotten: string[] = [];
+  const definition = createSpendLimitJob({
+    env: ENABLED,
+    createBilling: () => ({
+      loadCustomer: async () => ({
+        ...customer(100),
+        spendLimits: [{ featureId: "investigations", enabled: true, overageLimit: 50 }],
+      }),
+      writeSpendLimits: async () => {
+        throw new Error("autumn 500");
+      },
+    }),
+    loadLimits: async () => [{ orgId: "removed", monthlyLimitCents: null }],
+    forgetRemoved: async (_db, orgId) => {
+      forgotten.push(orgId);
+    },
+  });
+
+  const handler = await definition.create({} as JobDeps);
+  await handler?.();
+
+  assert.deepEqual(forgotten, []);
 });
 
 test("each pass reconciles every limit and reports the result", async () => {

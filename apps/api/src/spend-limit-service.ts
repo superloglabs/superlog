@@ -68,7 +68,10 @@ export function createSpendLimitStore(): SpendLimitStore {
         });
     },
     remove: async (orgId) => {
-      await db.delete(schema.orgSpendLimits).where(eq(schema.orgSpendLimits.orgId, orgId));
+      await db
+        .update(schema.orgSpendLimits)
+        .set({ monthlyLimitCents: null, updatedAt: new Date() })
+        .where(eq(schema.orgSpendLimits.orgId, orgId));
     },
   };
 }
@@ -130,10 +133,18 @@ export function createSpendLimitService(deps: {
       return measure(orgId, customer, cents);
     },
 
-    // Lift first: once the row is gone, nothing would reconcile a leftover freeze.
+    // The scheduled pass drops the row once it has lifted any freeze, which also
+    // covers a failed lift here and a pass already in flight.
     remove: async (orgId: string): Promise<void> => {
-      await reconcileSpendLimit(billing, { orgId, limitCents: null });
       await store.remove(orgId);
+      try {
+        await reconcileSpendLimit(billing, { orgId, limitCents: null });
+      } catch (err) {
+        logger.warn(
+          { scope: "billing.spend-limit", orgId, err },
+          "spend limit removed but freeze not yet lifted",
+        );
+      }
     },
   };
 }

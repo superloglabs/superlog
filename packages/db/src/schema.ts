@@ -1746,11 +1746,13 @@ export const usageNotifications = pgTable(
 // Customer-set ceiling on the monthly bill. No row means no limit. This holds the
 // customer's intent only: whether the limit is currently reached is derived from
 // billing-provider balances on every pass (@superlog/billing spend-limit.ts).
+// A null limit means the customer removed it: the row stays until the scheduled
+// pass has lifted any freeze, so a pass already in flight can't orphan one.
 export const orgSpendLimits = pgTable("org_spend_limits", {
   orgId: uuid("org_id")
     .primaryKey()
     .references(() => orgs.id, { onDelete: "cascade" }),
-  monthlyLimitCents: integer("monthly_limit_cents").notNull(),
+  monthlyLimitCents: integer("monthly_limit_cents"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });

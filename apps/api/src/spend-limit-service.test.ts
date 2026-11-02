@@ -157,7 +157,7 @@ test("a saved limit survives a failed provider write, for the next pass to apply
   assert.equal(view.limitUsd, 40);
 });
 
-test("removing a limit lifts the freeze before dropping the row", async () => {
+test("removing a limit clears the intent before lifting the freeze", async () => {
   const frozen = [{ featureId: "investigations", enabled: true, overageLimit: 30 }];
   const { service, stored, log } = harness({
     customer: paygCustomer({ spendLimits: frozen }),
@@ -166,11 +166,11 @@ test("removing a limit lifts the freeze before dropping the row", async () => {
 
   await service.remove(ORG);
 
-  assert.deepEqual(log, ["write", "remove"]);
+  assert.deepEqual(log, ["remove", "write"]);
   assert.equal(stored.limitCents, null);
 });
 
-test("a failed lift keeps the row so the freeze can't be orphaned", async () => {
+test("a failed lift still removes the limit, for the next pass to finish", async () => {
   const frozen = [{ featureId: "investigations", enabled: true, overageLimit: 30 }];
   const { service, stored, failNextWrites } = harness({
     customer: paygCustomer({ spendLimits: frozen }),
@@ -178,6 +178,7 @@ test("a failed lift keeps the row so the freeze can't be orphaned", async () => 
   });
   failNextWrites();
 
-  await assert.rejects(service.remove(ORG), /autumn down/);
-  assert.equal(stored.limitCents, 4_000);
+  await service.remove(ORG);
+
+  assert.equal(stored.limitCents, null);
 });

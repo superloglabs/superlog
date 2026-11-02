@@ -1,0 +1,1 @@
+ALTER TABLE "org_spend_limits" ALTER COLUMN "monthly_limit_cents" DROP NOT NULL;
