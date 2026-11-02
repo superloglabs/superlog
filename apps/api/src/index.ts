@@ -267,6 +267,12 @@ app.use(
   "/.well-known/*",
   cors({
     origin: "*",
+    // Keep an explicit allowHeaders even though these routes are GET-only: an
+    // omitted list makes Hono reflect and split the request's
+    // Access-Control-Request-Headers. That parser was quadratic in the header
+    // length (CVE-2026-69207), so pinning the list here removes the parse path
+    // regardless of the installed Hono version.
+    allowHeaders: ["content-type", "authorization"],
     allowMethods: ["GET", "OPTIONS"],
   }),
 );
