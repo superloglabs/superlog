@@ -67,10 +67,15 @@ export function fingerprint(input: {
 
 export function fingerprintLog(input: LogFingerprintInput): Fingerprint {
   if (input.stacktrace && input.stacktrace.trim().length > 0) {
-    return fingerprint({
+    const fromStack = fingerprint({
       type: input.exceptionType || input.severity || "LogError",
       stacktrace: input.stacktrace,
     });
+    // A stack the frame parser can't read (Python, Java, ...) yields no frames,
+    // so its hash would be the exception type alone and every log error of
+    // that type, from any service, would merge into one issue. Fall back to
+    // the service + message identity used for logs without a stacktrace.
+    if (fromStack.normalizedFrames.length > 0) return fromStack;
   }
 
   const type = input.exceptionType || input.severity || "LogError";
