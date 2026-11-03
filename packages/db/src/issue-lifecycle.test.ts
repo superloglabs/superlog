@@ -205,6 +205,39 @@ async function assertStaleClosedMergeRollsBack(closedParticipant: "source" | "ta
   }
 }
 
+test("a project can open an incident after its friendly codename pool is exhausted", async () => {
+  const { db, client } = await freshDb();
+  try {
+    const project = await seedProject(db);
+    const now = new Date("2026-09-18T13:00:00Z");
+    await db.insert(schema.incidents).values({
+      projectId: project.id,
+      title: "Existing incident",
+      codename: "amber-otter",
+      status: "resolved",
+      firstSeen: now,
+      lastSeen: now,
+    });
+
+    const fallbackId = "018dbe5e-1d7d-7c2a-9d8a-1d8d9c5f0b3a";
+    const incident = await createIncidentLifecycle(db, {
+      generateCodename: () => "amber-otter",
+      generateIncidentId: () => fallbackId,
+    }).createOpen({
+      projectId: project.id,
+      service: "api",
+      title: "New incident",
+      firstSeen: now,
+      lastSeen: now,
+    });
+
+    assert.equal(incident.id, fallbackId);
+    assert.equal(incident.codename, `amber-otter-${fallbackId}`);
+  } finally {
+    await client.close();
+  }
+});
+
 test("resolve with default outcome marks current issues resolved", async () => {
   const { db, client } = await freshDb();
   try {
