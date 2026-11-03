@@ -501,17 +501,35 @@ async function findMatchingIncident(
   if (heuristic) {
     return { match: heuristic, standaloneSource: null, standaloneReason: null, failedReason: null };
   }
+  // Load the service-unfiltered candidates once and share them between the
+  // same-trace check and the LLM call. Both paths need identical data;
+  // fetching it twice per transition was costing one extra
+  // findOpenIncidentCandidates + loadLinkedIncidentIssues round-trip for every
+  // new issue that falls through heuristic matching, which compounds under the
+  // perProject mutex when many new issues arrive in the same project at once.
+  const candidates = await deps.repo.findOpenIncidentCandidates(issue, { filterService: false });
+  if (candidates.length === 0) {
+    return {
+      match: null,
+      standaloneSource: "heuristic",
+      standaloneReason: "No open incidents in this project.",
+      failedReason: null,
+    };
+  }
+  const linked = await deps.repo.loadLinkedIncidentIssues(candidates);
   // Same request = same incident: join an open incident that shares this
   // issue's trace id (a span exception and its own log line, or several logs
   // from one failed request) before spending an LLM call. Cross-service, since
   // the span and its Vercel-drained log arrive under different service names.
-  const sameTrace = await findSameTraceMatchingIncident(issue, deps);
-  if (sameTrace) {
-    return { match: sameTrace, standaloneSource: null, standaloneReason: null, failedReason: null };
+  if (issueSample(issue)?.traceId) {
+    const sameTrace = findSameTraceIncidentMatch(issue, candidates, linked);
+    if (sameTrace) {
+      return { match: sameTrace, standaloneSource: null, standaloneReason: null, failedReason: null };
+    }
   }
   // Alert-episode issues go through LLM grouping like errors do: a breach can
   // be another manifestation of an incident opened by errors (or vice versa).
-  return findLlmMatchingIncident(issue, deps, opts);
+  return findLlmMatchingIncident(issue, deps, opts, candidates, linked);
 }
 
 async function findHeuristicMatchingIncident(
@@ -542,18 +560,9 @@ async function findLlmMatchingIncident(
   issue: schema.Issue,
   deps: IntakeDeps,
   opts: { includeLifetimeOccurrenceEvidence?: boolean } = {},
+  candidates: schema.Incident[],
+  linked: LinkedIncidentIssue[],
 ): Promise<Grouping> {
-  const candidates = await deps.repo.findOpenIncidentCandidates(issue, { filterService: false });
-  if (candidates.length === 0) {
-    return {
-      match: null,
-      standaloneSource: "heuristic",
-      standaloneReason: "No open incidents in this project.",
-      failedReason: null,
-    };
-  }
-
-  const linked = await deps.repo.loadLinkedIncidentIssues(candidates);
   const groupingCandidates = candidates
     .map((incident) => buildGroupingCandidate(incident, linked))
     .filter((candidate): candidate is GroupingCandidateIncident => candidate !== null);

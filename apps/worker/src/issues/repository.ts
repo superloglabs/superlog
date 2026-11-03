@@ -6,7 +6,7 @@ import {
   db,
   schema,
 } from "@superlog/db";
-import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { IssueGroupingSource, IssueGroupingState, LinkedIncidentIssue } from "./domain.js";
 
 const INCIDENT_GROUPING_CANDIDATE_LIMIT = parsePositiveInt(
@@ -14,6 +14,13 @@ const INCIDENT_GROUPING_CANDIDATE_LIMIT = parsePositiveInt(
   200,
   1000,
 );
+
+// Must match GROUPING_CANDIDATE_ISSUE_LIMIT in domain.ts. Capping here
+// prevents an incident with thousands of linked issues (e.g., after a bulk
+// backfill event) from returning an unbounded result set to every caller of
+// loadLinkedIncidentIssues, since the grouping logic only uses up to this
+// many issues per incident.
+const LINKED_ISSUES_PER_INCIDENT_CAP = 5;
 
 const incidentLifecycle = createIncidentLifecycle(db);
 
@@ -94,7 +101,7 @@ export async function loadLinkedIncidentIssues(
   incidents: schema.Incident[],
 ): Promise<LinkedIncidentIssue[]> {
   if (incidents.length === 0) return [];
-  return db
+  const rows = await db
     .select({
       incidentId: schema.incidentIssues.incidentId,
       issueId: schema.issues.id,
@@ -116,7 +123,19 @@ export async function loadLinkedIncidentIssues(
         schema.incidentIssues.incidentId,
         incidents.map((incident) => incident.id),
       ),
-    );
+    )
+    .orderBy(asc(schema.incidentIssues.incidentId), desc(schema.issues.lastSeen));
+  // Cap to the most-recently-seen issues per incident. Incidents with thousands
+  // of linked issues (e.g., after a bulk-issue backfill event) would otherwise
+  // return an unbounded result set even though the grouping logic only consumes
+  // the first LINKED_ISSUES_PER_INCIDENT_CAP issues per incident.
+  const countByIncident = new Map<string, number>();
+  return rows.filter((row) => {
+    const count = countByIncident.get(row.incidentId) ?? 0;
+    if (count >= LINKED_ISSUES_PER_INCIDENT_CAP) return false;
+    countByIncident.set(row.incidentId, count + 1);
+    return true;
+  });
 }
 
 export async function findProject(projectId: string): Promise<schema.Project | undefined> {
