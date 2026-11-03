@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useRef } from "react";
 import { type Me, useSetActiveContext } from "./api.ts";
 import { Btn } from "./design/ui.tsx";
+import { projectMovedDelaySeconds, projectMovedTarget } from "./project-moved.ts";
 import { projectRouteFailureKind } from "./project-route-failure.ts";
 import type { ProjectRouteSlugs } from "./project-route.ts";
 
@@ -27,6 +28,35 @@ export function ProjectRouteFailure({ error, onRetry }: { error: unknown; onRetr
   );
 }
 
+// Shown instead of a project that moved to its Superlog application
+// workspace. It opens the workspace after a few seconds.
+export function ProjectMoved({ projectName, target }: { projectName: string; target: string }) {
+  useEffect(() => {
+    const timer = setTimeout(
+      () => window.location.replace(target),
+      projectMovedDelaySeconds * 1000,
+    );
+    return () => clearTimeout(timer);
+  }, [target]);
+  const host = new URL(target).host;
+  return (
+    <main className="grid min-h-screen place-items-center bg-bg px-6 text-fg">
+      <div className="max-w-md text-center">
+        <h1 className="text-lg font-semibold">
+          {projectName} moved to {host}
+        </h1>
+        <p className="mt-2 text-[13px] text-muted">
+          Your alerts, dashboards, and agent now run in the new Superlog. Sign in there with the
+          same account. Taking you there in {projectMovedDelaySeconds} seconds.
+        </p>
+        <Btn className="mt-4" onClick={() => window.location.replace(target)}>
+          Open {host}
+        </Btn>
+      </div>
+    </main>
+  );
+}
+
 export function ProjectRouteBoundary({
   children,
   me,
@@ -44,12 +74,15 @@ export function ProjectRouteBoundary({
 
   const openProject = useCallback(() => {
     attempted.current = target;
-    mutateActiveContext({ orgSlug: slugs.orgSlug, projectSlug: slugs.projectSlug }, {
-      // Reloading is intentional: org-scoped queries and Better Auth's session
-      // store may both contain the previous tenant. The scoped URL survives the
-      // reload, while every query starts cleanly in the selected context.
-      onSuccess: () => window.location.reload(),
-    });
+    mutateActiveContext(
+      { orgSlug: slugs.orgSlug, projectSlug: slugs.projectSlug },
+      {
+        // Reloading is intentional: org-scoped queries and Better Auth's session
+        // store may both contain the previous tenant. The scoped URL survives the
+        // reload, while every query starts cleanly in the selected context.
+        onSuccess: () => window.location.reload(),
+      },
+    );
   }, [mutateActiveContext, slugs.orgSlug, slugs.projectSlug, target]);
 
   useEffect(() => {
@@ -57,7 +90,14 @@ export function ProjectRouteBoundary({
     openProject();
   }, [me, openProject, selected, target]);
 
-  if (selected) return children;
+  if (selected) {
+    const moved = projectMovedTarget(me);
+    return moved && me.project ? (
+      <ProjectMoved projectName={me.project.name} target={moved} />
+    ) : (
+      children
+    );
+  }
   if (setActiveContext.error) {
     return <ProjectRouteFailure error={setActiveContext.error} onRetry={openProject} />;
   }
