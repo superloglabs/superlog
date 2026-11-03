@@ -5,6 +5,7 @@ import { registerAgentRunHealthMetrics } from "./agent-run-health-metrics.js";
 import { startAgentRunQueue } from "./agent-runs/queue-wiring.js";
 import { initAiUsageSink } from "./ai-usage.js";
 import { handleIssueTransition } from "./incidents/workflow.js";
+import { getClickhouseConfig } from "./infra/clickhouse/config.js";
 import {
   createIssueTransitionDispatcher,
   registerIssueTransitionWorker,
@@ -31,18 +32,11 @@ registerTenantMetrics();
 registerAgentRunHealthMetrics();
 registerQueueHealthMetrics();
 
-const CLICKHOUSE_URL = process.env.CLICKHOUSE_URL ?? "http://localhost:8123";
-const CLICKHOUSE_DB = process.env.CLICKHOUSE_DB ?? "superlog";
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 3000);
 const BATCH_SIZE = Number(process.env.BATCH_SIZE ?? 500);
 const TELEMETRY_DISCOVERY_WINDOW_MS = Number(process.env.TELEMETRY_DISCOVERY_WINDOW_MS);
 
-const ch = createClient({
-  url: CLICKHOUSE_URL,
-  username: process.env.CLICKHOUSE_USER ?? "default",
-  password: process.env.CLICKHOUSE_PASSWORD ?? "",
-  database: CLICKHOUSE_DB,
-});
+const ch = createClient(getClickhouseConfig());
 
 registerDatastoreObservability({ db, clickhouse: ch, logger });
 
