@@ -25,3 +25,22 @@ export function clickHouseClientConfig(env: NodeJS.ProcessEnv): ClickHouseClient
 export function createApiClickHouseClient(env: NodeJS.ProcessEnv = process.env) {
   return createClient(clickHouseClientConfig(env));
 }
+
+/**
+ * Dedicated ClickHouse client for MCP telemetry queries (query_logs,
+ * query_traces, query_metrics, list_services). MCP queries may cover wide time
+ * ranges chosen by an AI agent and are wrapped by executeRecoverableTelemetryQuery,
+ * which turns remaining timeouts into retry_required guidance. Use aligned
+ * 90 s client / 85 s server deadlines so the server cancels the query before
+ * the HTTP client gives up — the same approach used for managed session queries.
+ */
+export function createMcpClickHouseClient(env: NodeJS.ProcessEnv = process.env) {
+  return createClient({
+    ...clickHouseClientConfig(env),
+    request_timeout: 90_000,
+    clickhouse_settings: {
+      cancel_http_readonly_queries_on_client_close: 1,
+      max_execution_time: 85,
+    },
+  });
+}

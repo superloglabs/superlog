@@ -11,6 +11,7 @@ import {
 } from "@superlog/db";
 import { eq } from "drizzle-orm";
 import type { Hono } from "hono";
+import { createMcpClickHouseClient } from "../clickhouse-client.js";
 import { logger } from "../logger.js";
 import { type McpConfig, loadMcpConfig } from "./config.js";
 import { forwardToWorkspace } from "./forwarding.js";
@@ -21,6 +22,11 @@ import {
   resolveStoredMcpOauthScope,
 } from "./scope-authorization.js";
 import { createMcpServerForSession } from "./server.js";
+
+// Shared ClickHouse client for all MCP sessions. Uses aligned 90 s client /
+// 85 s server deadlines so wide-range telemetry queries have room to complete
+// before the recovery handler returns retry_required to the agent.
+const mcpCh = createMcpClickHouseClient();
 
 const log = logger.child({ scope: "mcp-bearer" });
 const shouldLogLegacyScopeFallback = createBoundedTokenObservationTracker();
@@ -70,7 +76,7 @@ export function mountMcpPublic<T extends Hono<any, any, any>>(app: T, ch: ClickH
       sessionIdGenerator: undefined,
     });
     const server = createMcpServerForSession({
-      ch,
+      ch: mcpCh,
       userId: tokenCtx.userId,
       tokenId: tokenCtx.tokenId,
       tokenKind: tokenCtx.tokenKind,
