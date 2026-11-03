@@ -189,7 +189,7 @@ export function createPaygPromotionReconcileJob(
           loadCursor: cursorStore.load,
           saveCursor: cursorStore.save,
         });
-        if (summary.examined > 0) recordExamined(summary.examined);
+        recordExamined(summary.examined);
         if (summary.granted > 0) recordOutcome("granted", summary.granted);
         if (summary.alreadyGranted > 0) {
           recordOutcome("already_granted", summary.alreadyGranted);

@@ -61,6 +61,33 @@ test("the scheduled reconciliation grants every active PAYG customer exactly onc
   ]);
 });
 
+test("examined counter is emitted even when all customers are pre-filtered as already granted", async () => {
+  const examined: number[] = [];
+  const outcomes: Array<[string, number]> = [];
+  const definition = createPaygPromotionReconcileJob({
+    env: { AUTUMN_SECRET_KEY: "configured" },
+    recordExamined: (count) => examined.push(count),
+    recordOutcome: (outcome, count) => outcomes.push([outcome, count]),
+    logger: { info: () => {} },
+    cursorStore: { load: async () => undefined, save: async () => {} },
+    createProvider: () => ({
+      listActivePaygCustomers: async () => ({
+        customerIds: [],
+        scanned: 4,
+        nextCursor: null,
+      }),
+      grantPromotion: async () => "granted",
+    }),
+  });
+
+  const handler = await definition.create({} as JobDeps);
+  assert.ok(handler);
+  await handler();
+  // examined must always be recorded so the OTel counter is registered for export
+  assert.deepEqual(examined, [0]);
+  assert.deepEqual(outcomes, []);
+});
+
 test("a missing billing secret logs why reconciliation is disabled", async () => {
   const messages: string[] = [];
   const outcomes: Array<[string, number]> = [];
