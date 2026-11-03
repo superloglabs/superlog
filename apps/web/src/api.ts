@@ -21,6 +21,9 @@ export type Me = {
     slug: string;
     hasIngested: boolean;
     hasSentryIssues: boolean;
+    // The origin of the Superlog application workspace this project moved
+    // to, or null while it is served here.
+    workspaceUrl?: string | null;
   } | null;
   suggestedOrgName: string | null;
   // True when a shared demo project is configured and this project hasn't

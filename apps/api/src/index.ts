@@ -14,6 +14,7 @@ import {
   confirmResolutionProposal,
   createIncidentLifecycle,
   createSentryCredentialRepository,
+  cutOverWorkspaceUrl,
   db,
   dismissResolutionProposal,
   isAgentRunProvider,
@@ -612,6 +613,9 @@ app.get("/api/me", async (c) => {
       slug: project.slug,
       hasIngested,
       hasSentryIssues,
+      // Set once the project is cut over to its Superlog application
+      // workspace; the web app then sends members there.
+      workspaceUrl: await cutOverWorkspaceUrl(project.id),
     },
     suggestedOrgName: null,
     favorite: { orgId: user.favoriteOrgId, projectId: user.favoriteProjectId },
