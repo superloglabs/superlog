@@ -8,6 +8,7 @@ import { registerAgentConfigTools } from "./agent-config.js";
 import { registerAlertTools } from "./alerts.js";
 import { instrumentMcpToolAnalytics } from "./analytics.js";
 import {
+  getTraceDetail,
   listServices,
   queryLogs,
   queryMetrics,
@@ -272,6 +273,36 @@ export function createMcpServerForSession(session: McpSession): McpServer {
             spanAttrs: input.span_attrs,
             limit: input.limit,
           }),
+      );
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    },
+  );
+
+  server.registerTool(
+    "get_trace",
+    {
+      title: "Get trace",
+      description:
+        "Fetch every span of one trace by id, plus the log records correlated to that trace. " +
+        "Targets the session's active project unless project_id is given. " +
+        "Use this after query_traces surfaces an interesting trace_id: query_traces only returns spans " +
+        "matching its filters, so the fast child spans of a slow request fall below min_duration_ms and " +
+        "never appear, and it cannot be narrowed to a single trace. This returns the whole tree instead, " +
+        "each span carrying parent_span_id so the caller can rebuild the hierarchy and see where the " +
+        "time actually went.",
+      annotations: READ_ONLY_TOOL,
+      inputSchema: {
+        project_id: projectIdSchema,
+        trace_id: z
+          .string()
+          .regex(/^[a-fA-F0-9]{1,64}$/, "trace id must be hex")
+          .describe("Trace id as hex, e.g. the trace_id returned by query_traces or query_logs."),
+      },
+    },
+    async (input) => {
+      const projectId = await resolveProject(input.project_id);
+      const result = await executeTelemetryQuery("get_trace", input, projectId, () =>
+        getTraceDetail(session.ch, projectId, input.trace_id),
       );
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     },

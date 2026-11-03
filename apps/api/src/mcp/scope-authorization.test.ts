@@ -123,6 +123,7 @@ test("mcp:read sessions expose reads but not writes or deletes", async () => {
     "get_incident",
     "get_issue_filter",
     "get_project_context",
+    "get_trace",
     "list_agent_mcp_servers",
     "list_agent_memories",
     "list_alerts",
