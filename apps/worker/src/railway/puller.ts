@@ -146,22 +146,28 @@ export async function runRailwayPullOnce(deps: RailwayPullerDeps): Promise<Railw
       });
       if (!refreshed.ok) {
         stats.errors += 1;
-        deps.log.error(
+        deps.log.warn(
           { installation_id: installation.id, error: refreshed.error },
           "railway token refresh failed",
         );
-        return;
+        // The stored accessToken is still valid until expiresAt. Only skip the
+        // installation if it has truly expired; otherwise continue with the
+        // stored token for this pass.
+        if (expiresAt !== null && expiresAt <= now().getTime()) {
+          return;
+        }
+      } else {
+        accessToken = refreshed.accessToken;
+        // Rotating refresh tokens: persist the replacement before doing anything
+        // else — losing it would strand the installation at access-token expiry.
+        await deps.store.saveTokens(installation.id, {
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken ?? installation.refreshToken,
+          tokenExpiresAt: refreshed.expiresInSeconds
+            ? new Date(now().getTime() + refreshed.expiresInSeconds * 1000)
+            : null,
+        });
       }
-      accessToken = refreshed.accessToken;
-      // Rotating refresh tokens: persist the replacement before doing anything
-      // else — losing it would strand the installation at access-token expiry.
-      await deps.store.saveTokens(installation.id, {
-        accessToken: refreshed.accessToken,
-        refreshToken: refreshed.refreshToken ?? installation.refreshToken,
-        tokenExpiresAt: refreshed.expiresInSeconds
-          ? new Date(now().getTime() + refreshed.expiresInSeconds * 1000)
-          : null,
-      });
     }
 
     // --- Grant snapshot ---------------------------------------------------
