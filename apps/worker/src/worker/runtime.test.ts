@@ -17,6 +17,35 @@ const EMPTY_TICK = {
   usageReported: 0,
 };
 
+test("the worker skips the poll interval and runs a second tick immediately when the ingest batch was full", async () => {
+  const controller = new AbortController();
+  const ticks: number[] = [];
+  const start = Date.now();
+
+  const worker = runWorker({
+    // Use a very long poll interval so the test would time out if sleep is not skipped.
+    pollIntervalMs: 60_000,
+    batchSize: 5,
+    signal: controller.signal,
+    tick: async () => {
+      ticks.push(Date.now() - start);
+      // First tick: return spans === batchSize → batch was full, skip sleep.
+      // Second tick: return 0 → no backlog, abort before sleeping.
+      if (ticks.length === 1) return { ...EMPTY_TICK, spans: 5 };
+      controller.abort();
+      return EMPTY_TICK;
+    },
+  });
+
+  await worker;
+
+  assert.equal(ticks.length, 2, "worker must run a second tick without waiting for pollIntervalMs");
+  assert.ok(
+    ticks[1]! - ticks[0]! < 1_000,
+    `second tick should start within 1s of first (elapsed: ${ticks[1]! - ticks[0]!}ms)`,
+  );
+});
+
 test("the worker finishes its current tick and stops polling when shutdown begins", async () => {
   const controller = new AbortController();
   let ticks = 0;
