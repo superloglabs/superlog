@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { AuthForm } from "./AuthForm.tsx";
+import { isEmailVerificationRequiredError } from "./accept-invitation-verification.ts";
 import { authClient, useSession } from "./auth-client.ts";
 import { Btn, CenteredShell, Wordmark } from "./design/ui.tsx";
 
@@ -169,6 +170,14 @@ function AcceptInvitationInner({
     );
   }
 
+  const needsVerification =
+    (state.kind === "error" && isEmailVerificationRequiredError(state.message)) ||
+    (actionError !== null && isEmailVerificationRequiredError(actionError));
+
+  if (needsVerification) {
+    return <VerifyEmailFirst email={userEmail} />;
+  }
+
   if (state.kind === "error") {
     return (
       <CenteredShell>
@@ -242,6 +251,50 @@ function AcceptInvitationInner({
             disabled={action !== "idle"}
           >
             Decline
+          </Btn>
+        </div>
+      </div>
+    </CenteredShell>
+  );
+}
+
+// Shown when the invite target has not confirmed its address yet. The invite
+// stays pending, so confirming it and reloading this page accepts normally.
+function VerifyEmailFirst({ email }: { email: string }) {
+  const [status, setStatus] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+
+  const resend = async () => {
+    setStatus("sending");
+    const res = await authClient.sendVerificationEmail({
+      email,
+      callbackURL: window.location.href,
+    });
+    setStatus(res.error ? "failed" : "sent");
+  };
+
+  return (
+    <CenteredShell>
+      <Wordmark />
+      <div className="mt-8 w-full max-w-md rounded-2xl border border-border bg-surface p-6">
+        <h1 className="text-[15px] font-medium">Confirm your email to join</h1>
+        <p className="mt-2 text-[13px] text-muted">
+          This invitation was sent to <strong className="text-fg">{email}</strong>, and that address
+          has not been confirmed yet. Open the verification link we emailed you, then reload this
+          page to accept.
+        </p>
+        {status === "sent" && (
+          <p className="mt-3 text-[12px] text-success">
+            Verification email sent. Check your inbox.
+          </p>
+        )}
+        {status === "failed" && (
+          <p className="mt-3 text-[12px] text-danger">
+            Could not send the verification email. Try again in a minute.
+          </p>
+        )}
+        <div className="mt-5">
+          <Btn onClick={resend} loading={status === "sending"} disabled={status === "sending"}>
+            Resend verification email
           </Btn>
         </div>
       </div>
