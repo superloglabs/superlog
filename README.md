@@ -69,7 +69,7 @@ We also provide a hosted Superlog Cloud edition with a free tier, a pay-to-go pl
 
 Prerequisites:
 
-- Node.js 20+
+- Node.js 22.12+
 - pnpm 9+
 - Docker
 
