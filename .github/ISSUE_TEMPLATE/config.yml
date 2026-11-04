@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security report
+    url: https://github.com/superloglabs/superlog/blob/main/SECURITY.md
+    about: Report a vulnerability privately through the process in SECURITY.md.
+  - name: Discord
+    url: https://discord.gg/wJ56aRh8hx
+    about: Ask usage questions and talk to the team.
