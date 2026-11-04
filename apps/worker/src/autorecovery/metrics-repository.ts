@@ -1,4 +1,5 @@
-import type { ClickHouseClient } from "@clickhouse/client";
+import { type ClickHouseClient, createClient } from "@clickhouse/client";
+import { resolveClickhouseConfig } from "../infra/clickhouse/config.js";
 import type { CandidateIncident } from "./domain.js";
 
 export type ActivityBucket = { hour: string; count: number };
@@ -196,14 +197,8 @@ let cachedClient: ClickHouseClient | null = null;
 // (tests, alt-region readers) should construct their own and pass it in.
 export async function defaultClickhouseClient(): Promise<ClickHouseClient> {
   if (cachedClient) return cachedClient;
-  const { createClient } = await import("@clickhouse/client");
-  cachedClient = createClient({
-    url: process.env.CLICKHOUSE_URL ?? "http://localhost:8123",
-    username: process.env.CLICKHOUSE_USER ?? "default",
-    password: process.env.CLICKHOUSE_PASSWORD ?? "",
-    // Local portless stacks ship a `superlog` database; prod uses `olly`.
-    // `CLICKHOUSE_DB` is the env name `scripts/portless-stack.sh` writes.
-    database: process.env.CLICKHOUSE_DATABASE ?? process.env.CLICKHOUSE_DB ?? "olly",
-  });
+  // Same resolver as the worker's ingest client and the trace-context reader.
+  // Recovery must query the store the worker actually writes (issue #286).
+  cachedClient = createClient(resolveClickhouseConfig(process.env));
   return cachedClient;
 }

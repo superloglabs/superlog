@@ -1,14 +1,8 @@
 import { createClient } from "@clickhouse/client";
 import { logger } from "../../logger.js";
+import { resolveClickhouseConfig } from "./config.js";
 
-const CLICKHOUSE_URL = process.env.CLICKHOUSE_URL ?? "http://localhost:8123";
-const CLICKHOUSE_DB = process.env.CLICKHOUSE_DB ?? "superlog";
-const ch = createClient({
-  url: CLICKHOUSE_URL,
-  username: process.env.CLICKHOUSE_USER ?? "default",
-  password: process.env.CLICKHOUSE_PASSWORD ?? "",
-  database: CLICKHOUSE_DB,
-});
+const ch = createClient(resolveClickhouseConfig(process.env));
 
 type TraceSpanRow = {
   timestamp: string;
