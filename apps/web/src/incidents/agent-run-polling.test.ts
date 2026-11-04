@@ -21,8 +21,12 @@ test("polls in the pre-work active states (queued, repo_discovery, resuming, pr_
   }
 });
 
-test("keeps polling while awaiting a human — a Slack reply elsewhere can resume the run", () => {
+test("keeps polling while a human can resume the run: a Slack reply flips it back", () => {
   assert.equal(incidentPollIntervalMs("awaiting_human"), INCIDENT_POLL_INTERVAL_MS);
+});
+
+test("keeps polling while pull requests are out for review: a PR event resumes the run", () => {
+  assert.equal(incidentPollIntervalMs("awaiting_events"), INCIDENT_POLL_INTERVAL_MS);
 });
 
 test("stops polling in terminal states", () => {
