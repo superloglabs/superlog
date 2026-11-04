@@ -24,8 +24,8 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Check CI workflow security
-        run: pnpm test:ci-workflows
+      - name: Check repository contracts
+        run: pnpm test:repository-contracts
       - name: typecheck
         run: pnpm typecheck
       - name: build
