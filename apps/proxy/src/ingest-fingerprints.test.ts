@@ -268,3 +268,157 @@ test("stampIssueFingerprints leaves compressed payloads untouched", () => {
   assert.equal(stamped.body, body);
   assert.equal(stamped.stampedCount, 0);
 });
+
+test("stampIssueFingerprints drops client-supplied superlog.* keys before stamping logs", () => {
+  const input = {
+    path: "/v1/logs",
+    contentType: "application/json",
+    body: Buffer.from(
+      JSON.stringify({
+        resourceLogs: [
+          {
+            resource: {
+              attributes: [
+                { key: "service.name", value: { stringValue: "api" } },
+                { key: "superlog.project_id", value: { stringValue: "attacker" } },
+              ],
+            },
+            scopeLogs: [
+              {
+                logRecords: [
+                  {
+                    severityText: "INFO",
+                    severityNumber: 9,
+                    body: { stringValue: "not an error" },
+                    attributes: [
+                      { key: "superlog.issue_fingerprint", value: { stringValue: "spoofed" } },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    ),
+  };
+
+  const stamped = stampIssueFingerprints(input);
+  const payload = JSON.parse(stamped.body.toString("utf8"));
+  const resourceAttrs = payload.resourceLogs[0].resource.attributes;
+  const logAttrs = payload.resourceLogs[0].scopeLogs[0].logRecords[0].attributes;
+
+  assert.equal(stamped.stampedCount, 0);
+  assert.deepEqual(
+    logAttrs.map((a: { key: string }) => a.key),
+    [],
+  );
+  assert.deepEqual(
+    resourceAttrs.map((a: { key: string }) => a.key),
+    ["service.name"],
+  );
+});
+
+test("stampIssueFingerprints replaces a client-supplied fingerprint on error logs", () => {
+  const input = {
+    path: "/v1/logs",
+    contentType: "application/json",
+    body: Buffer.from(
+      JSON.stringify({
+        resourceLogs: [
+          {
+            resource: {
+              attributes: [{ key: "service.name", value: { stringValue: "api" } }],
+            },
+            scopeLogs: [
+              {
+                logRecords: [
+                  {
+                    severityText: "ERROR",
+                    body: { stringValue: "boom" },
+                    attributes: [
+                      { key: "superlog.issue_fingerprint", value: { stringValue: "deadbeef" } },
+                      { key: "exception.type", value: { stringValue: "Error" } },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    ),
+  };
+
+  const stamped = stampIssueFingerprints(input);
+  const payload = JSON.parse(stamped.body.toString("utf8"));
+  const attrs = payload.resourceLogs[0].scopeLogs[0].logRecords[0].attributes;
+  const fingerprints = attrs.filter(
+    (a: { key: string }) => a.key === "superlog.issue_fingerprint",
+  );
+
+  assert.equal(stamped.stampedCount, 1);
+  assert.equal(fingerprints.length, 1);
+  assert.notEqual(fingerprints[0].value.stringValue, "deadbeef");
+  assert.equal(fingerprints[0].value.stringValue.length, 16);
+});
+
+test("stampIssueFingerprints drops client superlog.* keys from JSON traces", () => {
+  const input = {
+    path: "/v1/traces",
+    contentType: "application/json",
+    body: Buffer.from(
+      JSON.stringify({
+        resourceSpans: [
+          {
+            resource: {
+              attributes: [
+                { key: "service.name", value: { stringValue: "api" } },
+                { key: "superlog.project_id", value: { stringValue: "attacker" } },
+              ],
+            },
+            scopeSpans: [
+              {
+                spans: [
+                  {
+                    name: "GET /x",
+                    attributes: [
+                      { key: "superlog.issue_fingerprint", value: { stringValue: "spoofed" } },
+                    ],
+                    events: [
+                      {
+                        name: "exception",
+                        attributes: [
+                          { key: "exception.type", value: { stringValue: "Error" } },
+                          {
+                            key: "superlog.issue_fingerprint",
+                            value: { stringValue: "deadbeef" },
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    ),
+  };
+
+  const stamped = stampIssueFingerprints(input);
+  const payload = JSON.parse(stamped.body.toString("utf8"));
+  const span = payload.resourceSpans[0].scopeSpans[0].spans[0];
+  const eventFingerprints = span.events[0].attributes.filter(
+    (a: { key: string }) => a.key === "superlog.issue_fingerprint",
+  );
+
+  assert.equal(stamped.stampedCount, 1);
+  assert.deepEqual(
+    span.attributes.map((a: { key: string }) => a.key),
+    [],
+  );
+  assert.equal(eventFingerprints.length, 1);
+  assert.notEqual(eventFingerprints[0].value.stringValue, "deadbeef");
+});

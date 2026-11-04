@@ -13,9 +13,18 @@
 //   attributes/from_metadata  -> insert superlog.project_id (from the request's
 //                                 x-superlog-project-id) into RESOURCE attrs
 // so: strip every superlog.* key, then stamp superlog.project_id onto resource attrs.
+// The proxy also recomputes superlog.issue_fingerprint from the record itself, so
+// the activity materialized views admit the row without trusting anything the
+// client sent (issue #285).
 //
 // Logs and traces are implemented here. The five metrics tables follow the same
 // shape and are a planned follow-up.
+
+import {
+  ISSUE_FINGERPRINT_ATTRIBUTE,
+  errorLogFingerprint,
+  traceExceptionFingerprint,
+} from "./issue-fingerprint.js";
 
 type OtlpAnyValue = {
   stringValue?: string;
@@ -96,6 +105,17 @@ export function otlpLogsToRows(payload: OtlpLogsExport, projectId: string): Otel
       const scopeSchemaUrl = sl.schemaUrl ?? "";
 
       for (const lr of sl.logRecords ?? []) {
+        const body = anyValueToString(lr.body);
+        const attrs = lr.attributes ?? [];
+        const logAttributes = stripSuperlog(kvListToMap(attrs));
+        const fingerprintHash = errorLogFingerprint({
+          service: serviceName,
+          severityText: lr.severityText,
+          severityNumber: lr.severityNumber,
+          body,
+          attrs,
+        });
+        if (fingerprintHash) logAttributes[ISSUE_FINGERPRINT_ATTRIBUTE] = fingerprintHash;
         rows.push({
           Timestamp: nanosToClickHouseDateTime64(pickTime(lr.timeUnixNano, lr.observedTimeUnixNano)),
           TraceId: toHex(lr.traceId),
@@ -104,14 +124,14 @@ export function otlpLogsToRows(payload: OtlpLogsExport, projectId: string): Otel
           SeverityText: lr.severityText ?? "",
           SeverityNumber: lr.severityNumber ?? 0,
           ServiceName: serviceName,
-          Body: anyValueToString(lr.body),
+          Body: body,
           ResourceSchemaUrl: resourceSchemaUrl,
           ResourceAttributes: resourceAttributes,
           ScopeSchemaUrl: scopeSchemaUrl,
           ScopeName: scopeName,
           ScopeVersion: scopeVersion,
           ScopeAttributes: scopeAttributes,
-          LogAttributes: stripSuperlog(kvListToMap(lr.attributes)),
+          LogAttributes: logAttributes,
           EventName: lr.eventName ?? "",
         });
       }
@@ -219,7 +239,15 @@ export function otlpTracesToRows(payload: OtlpTracesExport, projectId: string): 
           StatusMessage: span.status?.message ?? "",
           "Events.Timestamp": events.map((e) => nanosToClickHouseDateTime64(e.timeUnixNano ?? 0)),
           "Events.Name": events.map((e) => e.name ?? ""),
-          "Events.Attributes": events.map((e) => stripSuperlog(kvListToMap(e.attributes))),
+          "Events.Attributes": events.map((event) => {
+            const attributes = stripSuperlog(kvListToMap(event.attributes));
+            if (event.name === "exception") {
+              attributes[ISSUE_FINGERPRINT_ATTRIBUTE] = traceExceptionFingerprint(
+                event.attributes ?? [],
+              );
+            }
+            return attributes;
+          }),
           "Links.TraceId": links.map((l) => toHex(l.traceId)),
           "Links.SpanId": links.map((l) => toHex(l.spanId)),
           "Links.TraceState": links.map((l) => l.traceState ?? ""),

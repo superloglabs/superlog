@@ -36,13 +36,22 @@ processors:
   # both span/log/datapoint and resource scope. The proxy is the only
   # authoritative source of `superlog.*` keys; without this strip a customer
   # could spoof another tenant by setting `superlog.project_id` themselves.
+  #
+  # The one exception is `superlog.issue_fingerprint`, which the proxy stamps
+  # per record and the ClickHouse issue-activity views read. The stash key has
+  # no dot so this strip does not remove it before it is restored. The proxy
+  # removes any client-supplied copy before stamping, so the value restored
+  # here is the proxy's.
   transform/strip_superlog:
     error_mode: ignore
     trace_statements:
       - delete_matching_keys(span.attributes, "^superlog\\..*")
       - delete_matching_keys(resource.attributes, "^superlog\\..*")
     log_statements:
+      - set(log.attributes["superlog_fp"], log.attributes["superlog.issue_fingerprint"]) where log.attributes["superlog.issue_fingerprint"] != nil
       - delete_matching_keys(log.attributes, "^superlog\\..*")
+      - set(log.attributes["superlog.issue_fingerprint"], log.attributes["superlog_fp"]) where log.attributes["superlog_fp"] != nil
+      - delete_key(log.attributes, "superlog_fp")
       - delete_matching_keys(resource.attributes, "^superlog\\..*")
     metric_statements:
       - delete_matching_keys(datapoint.attributes, "^superlog\\..*")

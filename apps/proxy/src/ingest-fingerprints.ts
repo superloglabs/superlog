@@ -1,7 +1,10 @@
 import { createRequire } from "node:module";
-import { fingerprint, fingerprintLog } from "@superlog/fingerprint";
+import {
+  ISSUE_FINGERPRINT_ATTRIBUTE,
+  errorLogFingerprint,
+  traceExceptionFingerprint,
+} from "./issue-fingerprint.js";
 
-const ISSUE_FINGERPRINT_ATTRIBUTE = "superlog.issue_fingerprint";
 const require = createRequire(import.meta.url);
 const otlpRoot = require("@opentelemetry/otlp-transformer/build/esm/generated/root.js");
 const ExportTraceServiceRequest =
@@ -90,19 +93,84 @@ export function stampIssueFingerprints(input: StampInput): StampedIngestPayload 
   return { body: input.body, stampedCount: 0 };
 }
 
-function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
-  const payload = JSON.parse(body.toString("utf8")) as {
-    resourceSpans?: Array<{
-      scopeSpans?: Array<{
-        spans?: Array<{
-          events?: Array<{
-            name?: string;
-            attributes?: OtlpKeyValue[];
-          }>;
-        }>;
+// Client payloads are untrusted. Strip every superlog.* key before enrichment,
+// so the only reserved keys downstream are the ones this proxy wrote. Without
+// this, a client-supplied superlog.issue_fingerprint on a record we do not stamp
+// (non-error log, gzipped or oversized body) would survive to the collector,
+// which now preserves that key for rollups.
+const SUPERLOG_PREFIX = "superlog.";
+
+type TraceAttributesPayload = {
+  resourceSpans?: Array<{
+    resource?: { attributes?: OtlpKeyValue[] };
+    scopeSpans?: Array<{
+      spans?: Array<{
+        attributes?: OtlpKeyValue[];
+        events?: Array<{ name?: string; attributes?: OtlpKeyValue[] }>;
+        links?: Array<{ attributes?: OtlpKeyValue[] }>;
       }>;
     }>;
-  };
+  }>;
+};
+
+type LogAttributesPayload = {
+  resourceLogs?: Array<{
+    resource?: { attributes?: OtlpKeyValue[] };
+    scopeLogs?: Array<{
+      logRecords?: Array<{
+        severityText?: string;
+        severityNumber?: number;
+        body?: OtlpAnyValue;
+        attributes?: OtlpKeyValue[];
+      }>;
+    }>;
+  }>;
+};
+
+function stripReservedAttributes(attrs: OtlpKeyValue[] | undefined): boolean {
+  if (!attrs?.length) return false;
+  const kept = attrs.filter((attr) => !(attr.key ?? "").startsWith(SUPERLOG_PREFIX));
+  if (kept.length === attrs.length) return false;
+  attrs.length = 0;
+  for (const attr of kept) attrs.push(attr);
+  return true;
+}
+
+function sanitizeTraceAttributes(payload: TraceAttributesPayload): boolean {
+  let changed = false;
+  for (const resourceSpan of payload.resourceSpans ?? []) {
+    changed = stripReservedAttributes(resourceSpan.resource?.attributes) || changed;
+    for (const scopeSpan of resourceSpan.scopeSpans ?? []) {
+      for (const span of scopeSpan.spans ?? []) {
+        changed = stripReservedAttributes(span.attributes) || changed;
+        for (const event of span.events ?? []) {
+          changed = stripReservedAttributes(event.attributes) || changed;
+        }
+        for (const link of span.links ?? []) {
+          changed = stripReservedAttributes(link.attributes) || changed;
+        }
+      }
+    }
+  }
+  return changed;
+}
+
+function sanitizeLogAttributes(payload: LogAttributesPayload): boolean {
+  let changed = false;
+  for (const resourceLog of payload.resourceLogs ?? []) {
+    changed = stripReservedAttributes(resourceLog.resource?.attributes) || changed;
+    for (const scopeLog of resourceLog.scopeLogs ?? []) {
+      for (const logRecord of scopeLog.logRecords ?? []) {
+        changed = stripReservedAttributes(logRecord.attributes) || changed;
+      }
+    }
+  }
+  return changed;
+}
+
+function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
+  const payload = JSON.parse(body.toString("utf8")) as TraceAttributesPayload;
+  const sanitized = sanitizeTraceAttributes(payload);
 
   let stampedCount = 0;
   for (const resourceSpan of payload.resourceSpans ?? []) {
@@ -111,35 +179,24 @@ function stampJsonTraceFingerprints(body: Buffer): StampedIngestPayload {
         for (const event of span.events ?? []) {
           if (event.name !== "exception") continue;
           const attrs = event.attributes ?? [];
-          const fp = fingerprint({
-            type: stringAttribute(attrs, "exception.type") || "Error",
-            message: stringAttribute(attrs, "exception.message"),
-            stacktrace: stringAttribute(attrs, "exception.stacktrace"),
-          });
-          event.attributes = setStringAttribute(attrs, ISSUE_FINGERPRINT_ATTRIBUTE, fp.hash);
+          event.attributes = setStringAttribute(
+            attrs,
+            ISSUE_FINGERPRINT_ATTRIBUTE,
+            traceExceptionFingerprint(attrs),
+          );
           stampedCount += 1;
         }
       }
     }
   }
 
-  if (stampedCount === 0) return { body, stampedCount };
+  if (stampedCount === 0 && !sanitized) return { body, stampedCount };
   return { body: Buffer.from(JSON.stringify(payload)), stampedCount };
 }
 
 function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
-  const payload = ExportTraceServiceRequest.decode(body) as {
-    resourceSpans?: Array<{
-      scopeSpans?: Array<{
-        spans?: Array<{
-          events?: Array<{
-            name?: string;
-            attributes?: OtlpKeyValue[];
-          }>;
-        }>;
-      }>;
-    }>;
-  };
+  const payload = ExportTraceServiceRequest.decode(body) as TraceAttributesPayload;
+  const sanitized = sanitizeTraceAttributes(payload);
 
   let stampedCount = 0;
   for (const resourceSpan of payload.resourceSpans ?? []) {
@@ -148,36 +205,24 @@ function stampProtobufTraceFingerprints(body: Buffer): StampedIngestPayload {
         for (const event of span.events ?? []) {
           if (event.name !== "exception") continue;
           const attrs = event.attributes ?? [];
-          const fp = fingerprint({
-            type: stringAttribute(attrs, "exception.type") || "Error",
-            message: stringAttribute(attrs, "exception.message"),
-            stacktrace: stringAttribute(attrs, "exception.stacktrace"),
-          });
-          event.attributes = setStringAttribute(attrs, ISSUE_FINGERPRINT_ATTRIBUTE, fp.hash);
+          event.attributes = setStringAttribute(
+            attrs,
+            ISSUE_FINGERPRINT_ATTRIBUTE,
+            traceExceptionFingerprint(attrs),
+          );
           stampedCount += 1;
         }
       }
     }
   }
 
-  if (stampedCount === 0) return { body, stampedCount };
+  if (stampedCount === 0 && !sanitized) return { body, stampedCount };
   return { body: Buffer.from(ExportTraceServiceRequest.encode(payload).finish()), stampedCount };
 }
 
 function stampJsonLogFingerprints(body: Buffer): StampedIngestPayload {
-  const payload = JSON.parse(body.toString("utf8")) as {
-    resourceLogs?: Array<{
-      resource?: { attributes?: OtlpKeyValue[] };
-      scopeLogs?: Array<{
-        logRecords?: Array<{
-          severityText?: string;
-          severityNumber?: number;
-          body?: OtlpAnyValue;
-          attributes?: OtlpKeyValue[];
-        }>;
-      }>;
-    }>;
-  };
+  const payload = JSON.parse(body.toString("utf8")) as LogAttributesPayload;
+  const sanitized = sanitizeLogAttributes(payload);
 
   let stampedCount = 0;
   for (const resourceLog of payload.resourceLogs ?? []) {
@@ -186,21 +231,21 @@ function stampJsonLogFingerprints(body: Buffer): StampedIngestPayload {
     for (const scopeLog of resourceLog.scopeLogs ?? []) {
       for (const logRecord of scopeLog.logRecords ?? []) {
         const attrs = logRecord.attributes ?? [];
-        if (!isErrorLog(logRecord.severityNumber, logRecord.severityText, attrs)) continue;
-        const fp = fingerprintLog({
+        const fp = errorLogFingerprint({
           service,
-          severity: logRecord.severityText || String(logRecord.severityNumber ?? ""),
+          severityText: logRecord.severityText,
+          severityNumber: logRecord.severityNumber,
           body: stringValue(logRecord.body) ?? "",
-          exceptionType: stringAttribute(attrs, "exception.type"),
-          stacktrace: stringAttribute(attrs, "exception.stacktrace"),
+          attrs,
         });
-        logRecord.attributes = setStringAttribute(attrs, ISSUE_FINGERPRINT_ATTRIBUTE, fp.hash);
+        if (!fp) continue;
+        logRecord.attributes = setStringAttribute(attrs, ISSUE_FINGERPRINT_ATTRIBUTE, fp);
         stampedCount += 1;
       }
     }
   }
 
-  if (stampedCount === 0) return { body, stampedCount };
+  if (stampedCount === 0 && !sanitized) return { body, stampedCount };
   return { body: Buffer.from(JSON.stringify(payload)), stampedCount };
 }
 
@@ -210,25 +255,6 @@ function isJsonContentType(contentType: string): boolean {
 
 function isProtobufContentType(contentType: string): boolean {
   return contentType.toLowerCase().includes("protobuf");
-}
-
-function isErrorLog(
-  severityNumber: number | undefined,
-  severityText: string | undefined,
-  attrs: OtlpKeyValue[],
-): boolean {
-  if (typeof severityNumber === "number" && severityNumber >= 17) return true;
-  const normalizedSeverity = severityText?.toUpperCase();
-  if (
-    normalizedSeverity === "ERROR" ||
-    normalizedSeverity === "FATAL" ||
-    normalizedSeverity === "CRITICAL"
-  ) {
-    return true;
-  }
-  return Boolean(
-    stringAttribute(attrs, "exception.type") || stringAttribute(attrs, "exception.stacktrace"),
-  );
 }
 
 function setStringAttribute(attrs: OtlpKeyValue[], key: string, value: string): OtlpKeyValue[] {
