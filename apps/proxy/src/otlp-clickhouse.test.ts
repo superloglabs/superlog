@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
 import { otlpLogsToRows, otlpTracesToRows } from "./otlp-clickhouse.js";
+import { errorLogFingerprint, traceExceptionFingerprint } from "./issue-fingerprint.js";
 
 // A minimal OTLP/JSON logs export, shaped like what the OTLP receiver decodes.
 // One resource (with a superlog.* routing key that must be stripped), one scope,
@@ -77,7 +78,7 @@ test("otlpLogsToRows maps one row per log record with collector-compatible colum
   assert.equal(r.Timestamp, "2024-06-10 06:13:20.123456789");
 });
 
-test("otlpLogsToRows strips superlog.* from resource attrs and stamps the real project id", () => {
+test("otlpLogsToRows strips client superlog.* keys and stamps project id plus a recomputed fingerprint", () => {
   const rows = otlpLogsToRows(logsExport, "proj-123");
   assert.equal(rows[0]!.ResourceAttributes["superlog.project_id"], "proj-123");
   assert.equal(rows[0]!.ResourceAttributes["service.name"], "checkout");
@@ -85,12 +86,20 @@ test("otlpLogsToRows strips superlog.* from resource attrs and stamps the real p
   // no stray superlog.* keys other than the stamped project id
   const superlogKeys = Object.keys(rows[0]!.ResourceAttributes).filter((k) => k.startsWith("superlog."));
   assert.deepEqual(superlogKeys, ["superlog.project_id"]);
-  // superlog.* is stripped from log record attributes too (matches the collector's
-  // transform/strip_superlog on log.attributes); project id lives only on resource attrs.
-  assert.equal(rows[0]!.LogAttributes["superlog.issue_fingerprint"], undefined);
+  // The client's "deadbeef" is not trusted: the mapper recomputes the value the
+  // issue-activity view needs, so the row is admitted.
+  const expected = errorLogFingerprint({
+    service: "checkout",
+    severityText: "ERROR",
+    severityNumber: 17,
+    body: "boom",
+    attrs: [],
+  });
+  assert.equal(rows[0]!.LogAttributes["superlog.issue_fingerprint"], expected);
+  assert.notEqual(rows[0]!.LogAttributes["superlog.issue_fingerprint"], "deadbeef");
   assert.equal(
-    Object.keys(rows[0]!.LogAttributes).some((k) => k.startsWith("superlog.")),
-    false,
+    Object.keys(rows[0]!.LogAttributes).filter((k) => k.startsWith("superlog.")).length,
+    1,
   );
 });
 
@@ -205,7 +214,15 @@ test("otlpTracesToRows flattens events and links into parallel arrays", () => {
   const r = otlpTracesToRows(tracesExport, "proj-xyz")[0]!;
   assert.deepEqual(r["Events.Name"], ["exception"]);
   assert.equal(r["Events.Timestamp"][0]!, "2024-06-10 06:13:20.500000000");
-  assert.deepEqual(r["Events.Attributes"], [{ "exception.type": "Error" }]);
+  // The exception event carries a recomputed fingerprint, not the client's
+  // "deadbeef", because the issue-activity view filters on that key.
+  const eventAttributes = r["Events.Attributes"][0]!;
+  assert.equal(eventAttributes["exception.type"], "Error");
+  assert.equal(
+    eventAttributes["superlog.issue_fingerprint"],
+    traceExceptionFingerprint([{ key: "exception.type", value: { stringValue: "Error" } }]),
+  );
+  assert.notEqual(eventAttributes["superlog.issue_fingerprint"], "deadbeef");
   assert.deepEqual(r["Links.TraceId"], ["11111111111111111111111111111111"]);
   assert.deepEqual(r["Links.SpanId"], ["2222222222222222"]);
 });
