@@ -225,14 +225,13 @@ export const auth = betterAuth({
   },
   plugins: [
     organization({
-      // Better Auth defaults this to `true`, which would gate getInvitation /
-      // acceptInvitation / rejectInvitation on a verified email. But sign-ups
-      // land logged-in while still unverified (emailAndPassword
-      // .requireEmailVerification is false above), so the default locks the
-      // typical invitee out of accepting — Better Auth throws FORBIDDEN and the
-      // accept page surfaces it as a misleading "Invitation not found" (looks
-      // like a 404). Keep the invite flow as permissive as the rest of the app.
-      requireEmailVerificationOnInvitation: false,
+      // Gate invitation reads and acceptance on a verified email. Sign-ups still
+      // land logged-in while unverified (emailAndPassword.requireEmailVerification
+      // is false above), but without this flag possession of an invitation id was
+      // enough: whoever registered the invitee's address first could join before
+      // confirming it (issue #519). Verification mail is sent on sign-up, and the
+      // accept page offers a resend.
+      requireEmailVerificationOnInvitation: true,
       schema: {
         // Our `org_members` table uses `orgId` (TS) / `org_id` (SQL) instead
         // of Better Auth's expected `organizationId`. Same for `invitations`.
