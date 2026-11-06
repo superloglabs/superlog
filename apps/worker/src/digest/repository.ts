@@ -7,6 +7,7 @@ import {
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import type { DigestCandidate, WeeklyDigestSummary } from "./domain.js";
 import type { DigestPolicy } from "./policy.js";
+import { logger } from "../logger.js";
 
 export type ProjectDigestSettings = {
   projectId: string;
@@ -51,7 +52,17 @@ function toDigestSettings(row: schema.ProjectAutomationSetting): ProjectDigestSe
 export function createDigestRepository(db: DB): DigestRepository {
   return {
     async findProjectSettings(projectId) {
-      await adoptLegacyOrgDigestSettings(db, projectId);
+      try {
+        await adoptLegacyOrgDigestSettings(db, projectId);
+      } catch (err) {
+        // The legacy migration is a best-effort compatibility bridge. A
+        // transient DB error must not prevent an already-configured project
+        // from getting its digest settings.
+        logger.warn(
+          { scope: "digest.migrate", projectId, err },
+          "legacy digest settings migration failed; continuing with existing project settings",
+        );
+      }
       const row = await db.query.projectAutomationSettings.findFirst({
         where: eq(schema.projectAutomationSettings.projectId, projectId),
       });
@@ -69,7 +80,18 @@ export function createDigestRepository(db: DB): DigestRepository {
     },
 
     async listRunnableProjectSettings() {
-      await adoptLegacyOrgDigestSettings(db);
+      try {
+        await adoptLegacyOrgDigestSettings(db);
+      } catch (err) {
+        // The legacy migration is a best-effort compatibility bridge. A
+        // transient DB error must not abort the whole digest sweep — projects
+        // with existing project-level settings must still receive their
+        // digests. The migration retries automatically on the next tick.
+        logger.warn(
+          { scope: "digest.migrate", err },
+          "legacy digest settings migration failed; continuing with existing project settings",
+        );
+      }
       const rows = await db.query.projectAutomationSettings.findMany({
         where: or(
           eq(schema.projectAutomationSettings.digestEnabled, true),

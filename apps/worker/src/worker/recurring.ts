@@ -170,8 +170,10 @@ export async function registerRecurringStep(
           {
             scope: "worker.recurring",
             step: step.queue,
-            err: err instanceof Error ? err.message : String(err),
-            stack: err instanceof Error ? err.stack : undefined,
+            // Pass the full Error object so pino's err serializer includes
+            // the message, stack, and cause chain (e.g. the underlying
+            // Postgres error wrapped inside a DrizzleQueryError).
+            err,
           },
           "recurring step pass failed",
         );
