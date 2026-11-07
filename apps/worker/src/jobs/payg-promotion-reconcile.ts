@@ -82,12 +82,13 @@ function createPaygPromotionCursorStore(database: DB): PaygPromotionCursorStore 
   };
 }
 
-function isExistingPromotionBalance(error: unknown, balanceId: string): boolean {
+export function isExistingPromotionBalance(error: unknown, balanceId: string): boolean {
   if (!(error instanceof AutumnError) || error.statusCode !== 409) return false;
   const body = error.body.toLowerCase();
   return (
     body.includes("balance_already_exists") ||
     body.includes("balance already exists") ||
+    body.includes("is already in use") ||
     (body.includes("duplicate") && body.includes(balanceId.toLowerCase()))
   );
 }
