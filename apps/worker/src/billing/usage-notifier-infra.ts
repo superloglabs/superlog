@@ -40,15 +40,47 @@ type ResendSend = (to: string, subject: string, html: string) => Promise<void>;
 
 // Minimal Resend client (raw fetch, same style as the Slack/Autumn helpers).
 // null when RESEND_API_KEY is unset — email is then skipped (Slack still posts).
-export function createResendSend(apiKey: string, fetchImpl: typeof fetch): ResendSend {
+//
+// Retries up to MAX_ATTEMPTS times on transient errors (network-level failures
+// and 5xx responses) with exponential back-off. 4xx (bad request / auth) are
+// never retried — they indicate a permanent configuration problem.
+// Without retries, a single transient blip permanently drops the email because
+// the threshold dedup row is already claimed before sendUsageEvent is called.
+const MAX_ATTEMPTS = 3;
+const RETRY_BASE_MS = 1_000;
+
+export function createResendSend(
+  apiKey: string,
+  fetchImpl: typeof fetch,
+  sleepMs: (ms: number) => Promise<void> = (ms) =>
+    new Promise((resolve) => setTimeout(resolve, ms)),
+): ResendSend {
   return async (to, subject, html) => {
-    const res = await fetchImpl(RESEND_API_URL, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from: FROM_EMAIL, to: [to], subject, html }),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    if (!res.ok) throw new Error(`resend -> ${res.status}`);
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        await sleepMs(RETRY_BASE_MS * 2 ** (attempt - 1));
+      }
+      let res: Response;
+      try {
+        res = await fetchImpl(RESEND_API_URL, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ from: FROM_EMAIL, to: [to], subject, html }),
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        });
+      } catch (err) {
+        // Network-level error (fetch failed, timeout, etc.) — retryable.
+        lastErr = err;
+        continue;
+      }
+      if (res.ok) return;
+      // 4xx = permanent client error; do not retry.
+      if (res.status >= 400 && res.status < 500) throw new Error(`resend -> ${res.status}`);
+      // 5xx = transient server error; retry.
+      lastErr = new Error(`resend -> ${res.status}`);
+    }
+    throw lastErr;
   };
 }
 

@@ -17,6 +17,7 @@
     "test:git-auth-no-argv": "tsx scripts/test-git-auth-no-argv.ts",
     "test:patch-normalization": "tsx scripts/test-patch-normalization.ts",
     "test:usage-notifier": "tsx --test src/billing/usage-notifier.test.ts",
+    "test:usage-notifier-infra": "DATABASE_URL=postgres://test:test@localhost:5432/test tsx --test src/billing/usage-notifier-infra.test.ts",
     "test:usage-email": "tsx --test src/billing/usage-email.test.ts",
     "test:slack-pinning": "tsx --test src/slack-pinning.test.ts",
     "test:slack-cut-over": "tsx --test src/infra/slack/incident-messages.cut-over.test.ts",
