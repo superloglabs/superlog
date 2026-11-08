@@ -200,6 +200,17 @@ export function mountLinearPublic(app: Hono<any>): void {
     try {
       await handleLinearWebhook(parsed, install, delivery);
     } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (
+        message === "linear installation requires reauthorization" ||
+        message === "linear installation is revoked"
+      ) {
+        // Permanent state — retrying won't help. Respond with 422 so Linear
+        // stops replaying this delivery, and log at WARN since this is an
+        // expected condition when a user's OAuth grant expires or is revoked.
+        log.warn({ err: e, webhook_id: webhookId }, "linear webhook handler failed");
+        return c.json({ error: message }, 422);
+      }
       log.error({ err: e, webhook_id: webhookId }, "linear webhook handler failed");
       return c.json({ error: "handler failed" }, 500);
     }

@@ -161,6 +161,8 @@ async function postAgentChatReply(chat: schema.AgentChat, text: string): Promise
   if (!installationRow)
     throw new ChatDeliveryUnavailableError("Linear installation is unavailable");
   const installation = hydrateLinearInstallation(installationRow);
+  if (installation.reauthRequiredAt)
+    throw new ChatDeliveryUnavailableError("Linear installation requires reauthorization");
   const activity = await createLinearAgentActivity({
     accessToken: installation.accessToken,
     agentSessionId: session.agentSessionId,
