@@ -36,9 +36,12 @@ test("email sign-in is limited to five attempts per IP in fifteen minutes", asyn
   assert.notEqual((await request("198.51.100.12")).status, 429);
 });
 
-test("rate limiting is always enabled with shared storage", () => {
+test("rate limiting is always enabled and disables unconfigured routes", () => {
   assert.equal(AUTH_RATE_LIMIT.enabled, true);
-  assert.equal(AUTH_RATE_LIMIT.storage, "database");
+  // Memory storage avoids better-auth v1.6's concurrent-INSERT race condition
+  // on rate_limits_key_idx; the cross-instance global pre-handler limit
+  // (auth-rate-limit-repository.ts) handles shared enforcement.
+  assert.equal(AUTH_RATE_LIMIT.storage, "memory");
   assert.equal(AUTH_RATE_LIMIT.customRules?.["*"], false);
 });
 
