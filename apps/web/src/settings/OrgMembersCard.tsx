@@ -199,6 +199,7 @@ function MemberRow({
 
   const updateRole = useMutation({
     mutationFn: async (newRole: Role) => {
+      if (!member.id) throw new Error("Member ID unavailable — please refresh and try again");
       const res = await authClient.organization.updateMemberRole({
         memberId: member.id,
         role: newRole,
@@ -213,6 +214,7 @@ function MemberRow({
 
   const remove = useMutation({
     mutationFn: async () => {
+      if (!member.id) throw new Error("Member ID unavailable — please refresh and try again");
       const res = await authClient.organization.removeMember({
         memberIdOrEmail: member.id,
         organizationId: orgId,
