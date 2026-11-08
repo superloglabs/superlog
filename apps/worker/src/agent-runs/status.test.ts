@@ -345,6 +345,19 @@ test("isTransientError finds transient nested causes", () => {
   assert.equal(isTransientError(err), true);
 });
 
+test("isTransientError does not overflow on deeply nested linear cause chains", () => {
+  // Simulate what undici/fetch can produce after many internal retry layers:
+  // a long non-cyclic cause chain.  The old recursive implementation would
+  // throw "Maximum call stack size exceeded" for chains ~10 000+ levels deep.
+  let root: { code: string; cause?: unknown } = { code: "NOPE" };
+  for (let i = 0; i < 20_000; i++) {
+    root = { code: "NOPE", cause: root };
+  }
+
+  // Must return without throwing and without finding a transient code.
+  assert.equal(isTransientError(root), false);
+});
+
 test("agentRunErrorLogMeta preserves bounded error messages", () => {
   const err = Object.assign(new Error("Failed to validate or open the PR."), {
     code: "ERR_PR_OPEN",
