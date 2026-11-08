@@ -40,6 +40,9 @@ export type Me = {
   // gates the "Ingest paused" bar so we don't show it when nothing is blocked.
   billingEnforcement?: boolean;
   features?: { anomalyScanner: boolean };
+  // The current user's role in the active org. Absent (pre-org) when org is
+  // null. Only "owner" and "admin" may update org settings.
+  orgRole?: "owner" | "admin" | "member";
 };
 
 export type ApiKey = {
