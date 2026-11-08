@@ -15,6 +15,11 @@ export function OrgGeneralCard() {
   const orgId = me.data?.org?.id;
   const orgName = me.data?.org?.name ?? "";
   const orgSlug = me.data?.org?.slug ?? "";
+  // Only "owner" and "admin" roles may update org settings. "member" is
+  // read-only. Default to false while /api/me is loading to prevent a flash
+  // of an editable form.
+  const canEdit =
+    me.data?.orgRole === "owner" || me.data?.orgRole === "admin";
 
   const [name, setName] = useState(orgName);
   const [slug, setSlug] = useState(orgSlug);
@@ -76,7 +81,12 @@ export function OrgGeneralCard() {
           description="Shown across the app and in emails"
           control={
             <div className="w-60">
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme" />
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Acme"
+                disabled={!canEdit}
+              />
             </div>
           }
         />
@@ -90,17 +100,20 @@ export function OrgGeneralCard() {
                 value={slug}
                 onChange={(e) => setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"))}
                 placeholder="acme"
+                disabled={!canEdit}
               />
             </div>
           }
         />
-        <SettingsCardFooter>
-          {error && <span className="mr-auto text-[12px] text-danger">{error}</span>}
-          {savedTick && <span className="text-[12px] text-success">Saved</span>}
-          <Btn type="submit" size="sm" loading={update.isPending} disabled={!dirty || !name.trim()}>
-            Save
-          </Btn>
-        </SettingsCardFooter>
+        {canEdit && (
+          <SettingsCardFooter>
+            {error && <span className="mr-auto text-[12px] text-danger">{error}</span>}
+            {savedTick && <span className="text-[12px] text-success">Saved</span>}
+            <Btn type="submit" size="sm" loading={update.isPending} disabled={!dirty || !name.trim()}>
+              Save
+            </Btn>
+          </SettingsCardFooter>
+        )}
       </SettingsCard>
     </form>
   );

@@ -598,6 +598,12 @@ app.get("/api/me", async (c) => {
     columns: { anomalyScannerEnabled: true },
   });
 
+  const membership = await db.query.orgMembers.findFirst({
+    where: and(eq(schema.orgMembers.orgId, org.id), eq(schema.orgMembers.userId, user.id)),
+    columns: { role: true },
+  });
+  const orgRole = (membership?.role ?? "member") as "owner" | "admin" | "member";
+
   return c.json({
     user: {
       id: user.id,
@@ -607,6 +613,7 @@ app.get("/api/me", async (c) => {
       impersonating: c.var.impersonating === true,
     },
     org: { id: org.id, name: org.name, slug: org.slug, githubSetupNeeded },
+    orgRole,
     project: {
       id: project.id,
       name: project.name,
