@@ -172,14 +172,16 @@ const TRANSIENT_ERROR_CODES = new Set([
   "UND_ERR_CONNECT_TIMEOUT",
 ]);
 
-export function isTransientError(err: unknown, seen = new WeakSet<object>()): boolean {
-  if (!err || typeof err !== "object") return false;
-  if (seen.has(err)) return false;
-  seen.add(err);
-  const code = (err as { code?: unknown }).code;
-  if (typeof code === "string" && TRANSIENT_ERROR_CODES.has(code)) return true;
-  const cause = (err as { cause?: unknown }).cause;
-  if (cause && isTransientError(cause, seen)) return true;
+export function isTransientError(err: unknown): boolean {
+  let current: unknown = err;
+  const seen = new WeakSet<object>();
+  while (current !== null && typeof current === "object") {
+    if (seen.has(current as object)) return false;
+    seen.add(current as object);
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && TRANSIENT_ERROR_CODES.has(code)) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
   return false;
 }
 
