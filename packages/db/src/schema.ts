@@ -88,7 +88,11 @@ export type AgentRunFailureReason =
   // The run's incident or project no longer exists, so its context can never
   // load and it can never make progress — reaped from the tick rather than
   // left to rotate through the active set forever.
-  | "context_unavailable";
+  | "context_unavailable"
+  // A non-transient error (e.g. RangeError: Maximum call stack size exceeded)
+  // was thrown on every advance attempt, so the run can never make progress.
+  // Failing it immediately prevents infinite sweep re-enqueuing.
+  | "advance_error_unrecoverable";
 
 export type AgentRunFailureCategory = "agent" | "deliverable" | "infra";
 

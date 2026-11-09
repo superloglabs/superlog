@@ -72,6 +72,10 @@ export type AgentRunQueueDeps = {
   // Permanent condition (incident/project deleted): the run can never make
   // progress, so failing it is the only way it leaves the active set.
   failContextUnavailable(run: schema.AgentRun): Promise<void>;
+  // Non-transient advance error (e.g. RangeError): the run repeatedly throws
+  // on every attempt and can never make progress. Fail it immediately so the
+  // sweep stops re-enqueuing it forever.
+  failPermanentAdvanceError(agentRunId: string): Promise<void>;
   hasDetachedSessionTermination(agentRunId: string): Promise<boolean>;
   listActiveRunIds(): Promise<string[]>;
   handlers: {
@@ -228,6 +232,23 @@ export async function registerAgentRunQueue(
             },
             "agent-run advance failed; the next sweep re-enqueues it",
           );
+          // RangeError (stack overflow) is never transient — it will repeat on
+          // every future advance attempt and the run can never make progress.
+          // Fail it immediately so the sweep stops re-enqueuing it forever.
+          if (err instanceof RangeError) {
+            try {
+              await deps.failPermanentAdvanceError(data.agentRunId);
+            } catch (failErr) {
+              logger.error(
+                {
+                  scope: "agent-run-queue",
+                  agent_run_id: data.agentRunId,
+                  err: failErr instanceof Error ? failErr.message : String(failErr),
+                },
+                "failed to mark permanently-stuck run as failed; it will keep looping",
+              );
+            }
+          }
         }
       }
     },
