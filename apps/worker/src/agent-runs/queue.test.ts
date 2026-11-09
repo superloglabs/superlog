@@ -81,6 +81,11 @@ function makeDeps(overrides: DepsOverrides = {}) {
       (async () => {
         calls.push("fail_context_unavailable");
       }),
+    failPermanentAdvanceError:
+      overrides.failPermanentAdvanceError ??
+      (async () => {
+        calls.push("fail_permanent_advance_error");
+      }),
     hasDetachedSessionTermination: overrides.hasDetachedSessionTermination ?? (async () => false),
     listActiveRunIds: overrides.listActiveRunIds ?? (async () => []),
     handlers: {
@@ -242,6 +247,37 @@ test("a run whose incident or project is gone is failed as context_unavailable",
 
   assert.deepEqual(failed, ["run-1"]);
   assert.deepEqual(calls, []);
+});
+
+test("a RangeError (stack overflow) triggers failPermanentAdvanceError and does not block other jobs", async () => {
+  const fb = fakeBoss();
+  const permanentlyFailed: string[] = [];
+  const { deps, calls } = makeDeps({
+    handlers: {
+      start: async () => {
+        throw new RangeError("Maximum call stack size exceeded");
+      },
+    },
+    loadRun: async (id) => runOf(id, id === "overflow" ? "queued" : "running"),
+    failPermanentAdvanceError: async (agentRunId) => {
+      permanentlyFailed.push(agentRunId);
+    },
+  });
+  await registerAgentRunQueue(fb.boss, deps);
+  const worker = fb.workers.get(AGENT_RUN_ADVANCE_QUEUE);
+  assert.ok(worker);
+
+  await worker([
+    { id: "job-1", data: { agentRunId: "overflow" } },
+    { id: "job-2", data: { agentRunId: "run-2" } },
+  ]);
+
+  assert.deepEqual(permanentlyFailed, ["overflow"], "must mark the overflowing run as failed");
+  assert.deepEqual(
+    calls,
+    ["reconcile_handoff", "reconcile_handoff", "sync"],
+    "the healthy job must still be processed",
+  );
 });
 
 test("one job's failure is swallowed and the rest of the batch still runs", async () => {

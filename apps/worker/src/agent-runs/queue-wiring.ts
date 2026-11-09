@@ -41,6 +41,21 @@ export async function startAgentRunQueue(boss: AgentRunQueueBoss): Promise<void>
         category: "infra",
       });
     },
+    failPermanentAdvanceError: async (agentRunId) => {
+      const agentRun = await db.query.agentRuns.findFirst({
+        where: eq(schema.agentRuns.id, agentRunId),
+        columns: { id: true, state: true },
+      });
+      if (!agentRun) return;
+      if (!(ACTIVE_STATES as readonly string[]).includes(agentRun.state)) return;
+      await lifecycle.fail({
+        id: agentRun.id,
+        currentState: agentRun.state,
+        reason: "advance_error_unrecoverable",
+        summary: "Investigation advance permanently failed with an unrecoverable error.",
+        category: "infra",
+      });
+    },
     hasDetachedSessionTermination: hasPendingDetachedAgentRunSession,
     listActiveRunIds: async () => {
       const [rows, pendingHandoffs, pendingDetachedSessions] = await Promise.all([
