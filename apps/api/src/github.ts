@@ -651,6 +651,14 @@ async function maybeEnqueuePrObservabilityReview(
               projectId,
               repoId: input.repoId,
               updatedAt: new Date(),
+              // Re-queue a review whose processing was interrupted (the worker
+              // died while the row was 'running', or a previous attempt
+              // 'failed'). GitHub retries unacknowledged webhook deliveries with
+              // the same headSha, so the conflict fires against the stuck row.
+              // 'completed' and 'superseded' rows are left unchanged to avoid
+              // posting a duplicate GitHub review.
+              status: sql`CASE WHEN ${schema.prObservabilityReviews.status} IN ('running', 'failed') THEN 'queued' ELSE ${schema.prObservabilityReviews.status} END`,
+              startedAt: sql`CASE WHEN ${schema.prObservabilityReviews.status} IN ('running', 'failed') THEN NULL ELSE ${schema.prObservabilityReviews.startedAt} END`,
             },
           })
           .returning({ id: schema.prObservabilityReviews.id });
