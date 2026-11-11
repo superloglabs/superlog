@@ -19,6 +19,7 @@ const config: IngestQueueConfig = {
   sendLingerMs: 0,
   s3MaxSockets: 128,
   sqsMaxSockets: 64,
+  collectorTimeoutMs: 120_000,
 };
 
 const inlineBody = encodeIngestMessage(
