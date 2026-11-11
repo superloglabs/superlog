@@ -115,7 +115,7 @@ function buildQueue(overrides: Partial<IngestQueueConfig> = {}) {
 
 test("getIngestQueueConfig reads the collector request timeout", () => {
   const defaults = getIngestQueueConfig({ INGEST_QUEUE_URL: "http://localhost/queue" });
-  assert.equal(defaults?.collectorTimeoutMs, 120_000);
+  assert.equal(defaults?.collectorTimeoutMs, 100_000);
 
   const tuned = getIngestQueueConfig({
     INGEST_QUEUE_URL: "http://localhost/queue",

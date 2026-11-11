@@ -54,8 +54,10 @@ const DEFAULT_CONSUMER_CONCURRENCY = 4;
 // holds undici's 300s default headers timeout, and because a received batch is
 // deleted only after every message in it settles, one hung request freezes the
 // whole batch and its consumer slot. Keep it above the collector exporter's own
-// timeout plus one retry so a slow-but-recovering export is not abandoned.
-const DEFAULT_COLLECTOR_TIMEOUT_MS = 120_000;
+// timeout plus one retry so a slow-but-recovering export is not abandoned, and
+// below the queue visibility timeout so the message is not redelivered to
+// another consumer while this request is still in flight.
+const DEFAULT_COLLECTOR_TIMEOUT_MS = 100_000;
 const MAX_COLLECTOR_ERROR_BODY_CHARS = 1_000;
 // SQS hard limits on a single SendMessageBatch/DeleteMessageBatch call: at most
 // 10 entries, and (for sends) at most 256 KiB of total payload across entries.
