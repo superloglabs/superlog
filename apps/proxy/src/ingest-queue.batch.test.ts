@@ -36,6 +36,7 @@ function buildConfig(overrides: Partial<IngestQueueConfig> = {}): IngestQueueCon
     sendLingerMs: 5,
     s3MaxSockets: 128,
     sqsMaxSockets: 64,
+    collectorTimeoutMs: 120_000,
     ...overrides,
   };
 }
@@ -111,6 +112,17 @@ function buildQueue(overrides: Partial<IngestQueueConfig> = {}) {
   (queue as unknown as { s3: FakeS3 }).s3 = s3;
   return { queue, sqs, s3 };
 }
+
+test("getIngestQueueConfig reads the collector request timeout", () => {
+  const defaults = getIngestQueueConfig({ INGEST_QUEUE_URL: "http://localhost/queue" });
+  assert.equal(defaults?.collectorTimeoutMs, 100_000);
+
+  const tuned = getIngestQueueConfig({
+    INGEST_QUEUE_URL: "http://localhost/queue",
+    INGEST_COLLECTOR_TIMEOUT_MS: "45000",
+  });
+  assert.equal(tuned?.collectorTimeoutMs, 45_000);
+});
 
 test("getIngestQueueConfig reads the send linger with a batching default", () => {
   const defaults = getIngestQueueConfig({ INGEST_QUEUE_URL: "http://localhost/queue" });
@@ -307,6 +319,37 @@ test("consumer deletes a processed batch with one DeleteMessageBatch call", asyn
 
   assert.deepEqual(sqs.deleteBatches, [["r-1", "r-2", "r-3"]]);
   assert.equal(sqs.singleDeletes.length, 0, "deletes must be batched, not per-message");
+});
+
+test("a collector request that never answers is abandoned after the collector timeout", async () => {
+  const sqs = new FakeConsumerSqs([
+    { MessageId: "m-1", ReceiptHandle: "r-1", Body: inlineMessageBody("p-1") },
+    { MessageId: "m-2", ReceiptHandle: "r-2", Body: inlineMessageBody("p-2") },
+  ]);
+  const queue = new IngestQueue(buildConfig({ collectorTimeoutMs: 50 }), noopLogger);
+  (queue as unknown as { sqs: FakeConsumerSqs }).sqs = sqs;
+
+  const originalFetch = globalThis.fetch;
+  // p-1's collector hangs until the request is aborted; p-2's answers at once.
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const projectId = new Headers(init?.headers).get("x-superlog-project-id");
+    if (projectId === "p-2") return new Response(new Uint8Array(0), { status: 200 });
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) return;
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  }) as typeof fetch;
+  try {
+    queue.startConsumer("http://collector.local");
+    await waitFor(() => sqs.deleteBatches.length === 1);
+    await queue.stop();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  // The hung message stays on the queue for redelivery; the batch is not held hostage.
+  assert.deepEqual(sqs.deleteBatches, [["r-2"]]);
 });
 
 test("poison messages are dropped through the same batched delete", async () => {

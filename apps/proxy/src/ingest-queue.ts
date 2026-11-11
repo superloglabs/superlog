@@ -49,6 +49,15 @@ const DEFAULT_WAIT_TIME_SECONDS = 20;
 const DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 120;
 const DEFAULT_BATCH_SIZE = 10;
 const DEFAULT_CONSUMER_CONCURRENCY = 4;
+// Upper bound on one consumer -> collector delivery. Without it a request to a
+// collector whose exporter is wedged (e.g. on a dead ClickHouse connection)
+// holds undici's 300s default headers timeout, and because a received batch is
+// deleted only after every message in it settles, one hung request freezes the
+// whole batch and its consumer slot. Keep it above the collector exporter's own
+// timeout plus one retry so a slow-but-recovering export is not abandoned, and
+// below the queue visibility timeout so the message is not redelivered to
+// another consumer while this request is still in flight.
+const DEFAULT_COLLECTOR_TIMEOUT_MS = 100_000;
 const MAX_COLLECTOR_ERROR_BODY_CHARS = 1_000;
 // SQS hard limits on a single SendMessageBatch/DeleteMessageBatch call: at most
 // 10 entries, and (for sends) at most 256 KiB of total payload across entries.
@@ -82,6 +91,7 @@ export type IngestQueueConfig = {
   sendLingerMs: number;
   s3MaxSockets: number;
   sqsMaxSockets: number;
+  collectorTimeoutMs: number;
 };
 
 /**
@@ -191,6 +201,10 @@ export function getIngestQueueConfig(env: NodeJS.ProcessEnv): IngestQueueConfig 
     sendLingerMs: readNonNegativeInt(env.INGEST_QUEUE_SEND_LINGER_MS, DEFAULT_SEND_LINGER_MS),
     s3MaxSockets: readPositiveInt(env.INGEST_S3_MAX_SOCKETS, DEFAULT_S3_MAX_SOCKETS),
     sqsMaxSockets: readPositiveInt(env.INGEST_SQS_MAX_SOCKETS, DEFAULT_SQS_MAX_SOCKETS),
+    collectorTimeoutMs: readPositiveInt(
+      env.INGEST_COLLECTOR_TIMEOUT_MS,
+      DEFAULT_COLLECTOR_TIMEOUT_MS,
+    ),
   };
 }
 
@@ -876,6 +890,7 @@ export class IngestQueue {
         method: "POST",
         headers,
         body,
+        signal: AbortSignal.timeout(this.config.collectorTimeoutMs),
       });
       if (!response.ok) {
         collectorFailure = describeCollectorFailure(
