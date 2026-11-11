@@ -1007,6 +1007,62 @@ test("an opted-in pull request webhook queues one observability review per head 
   assert.equal(reviews[0]?.status, "queued");
 });
 
+test("a webhook retry re-queues a review stuck in 'running' after a worker restart", async () => {
+  const fixture = await seedAgentPrFixture("observability-review-retry");
+  await db
+    .update(schema.githubInstallations)
+    .set({ observabilityReviewEnabled: true, agentEnabled: false })
+    .where(eq(schema.githubInstallations.installationId, fixture.installationId));
+  const app = new Hono();
+  mountGithubPublic(app);
+  const payload = {
+    action: "opened",
+    repository: { id: 1, full_name: fixture.repoFullName },
+    pull_request: {
+      number: fixture.prNumber,
+      draft: false,
+      head: { sha: "retry-head-1", ref: fixture.branchName },
+    },
+    installation: { id: fixture.installationId },
+  };
+
+  // First delivery — creates the queued row.
+  assert.equal(
+    (await postGithub(app, "pull_request", `gh-${fixture.tag}-retry-1`, payload)).status,
+    200,
+  );
+
+  // Simulate the worker claiming the row (it starts processing, then the worker crashes).
+  await db
+    .update(schema.prObservabilityReviews)
+    .set({ status: "running", startedAt: new Date() })
+    .where(
+      and(
+        eq(schema.prObservabilityReviews.repoFullName, fixture.repoFullName),
+        eq(schema.prObservabilityReviews.prNumber, fixture.prNumber),
+        eq(schema.prObservabilityReviews.headSha, "retry-head-1"),
+      ),
+    );
+
+  // GitHub retries the same webhook delivery after the worker restart.
+  assert.equal(
+    (await postGithub(app, "pull_request", `gh-${fixture.tag}-retry-2`, payload)).status,
+    200,
+  );
+
+  const reviews = await db.query.prObservabilityReviews.findMany({
+    where: and(
+      eq(schema.prObservabilityReviews.repoFullName, fixture.repoFullName),
+      eq(schema.prObservabilityReviews.prNumber, fixture.prNumber),
+    ),
+  });
+  assert.equal(reviews.length, 1);
+  assert.equal(reviews[0]?.headSha, "retry-head-1");
+  // The row must be re-queued so the restarted worker can pick it up.
+  assert.equal(reviews[0]?.status, "queued");
+  assert.equal(reviews[0]?.startedAt, null);
+});
+
 test("an org-scoped installation can enable observability reviews from an authorized project", async () => {
   const tag = `test-org-review-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
   const [org] = await db.insert(schema.orgs).values({ name: tag, slug: tag }).returning();
