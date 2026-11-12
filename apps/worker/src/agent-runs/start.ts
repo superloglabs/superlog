@@ -375,7 +375,13 @@ const GITHUB_TOKEN_MAX_REPOSITORIES = 500;
 // Each probe costs up to three GitHub contents-API requests, so only the
 // strongest candidates get one; the rest start with an empty list and the
 // agent falls back to looking for instruction files itself after cloning.
-const INSTRUCTION_FILE_PROBE_LIMIT = 10;
+// Capped at 3: each path is wrapped individually by the external-content
+// boundary (enforceExternalContentBoundary), adding ~310 chars of metadata
+// overhead per path. For large organisations with many instruction files,
+// probing 10 repos × up to 20 paths × 310 chars = ~62 KB of boundary text
+// can push the managed-session initial prompt past the provider's context
+// limit, causing immediate session termination without any tool call.
+const INSTRUCTION_FILE_PROBE_LIMIT = 3;
 
 // Best-effort: the probe must never cost us a repo candidate, so both
 // rejected promises and synchronous throws from the dep degrade to [].
