@@ -44,7 +44,7 @@ Default local services:
 | ------------ | ------------------------- |
 | Web app      | http://localhost:5173     |
 | API          | http://localhost:4100     |
-| OTLP proxy   | http://localhost:4101     |
+| OTLP proxy   | http://localhost:4000     |
 | Sample app   | http://localhost:3005     |
 
 If something fails on first boot, run `pnpm dev:portless:status` to see what came up. For a clean restart:
