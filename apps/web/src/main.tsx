@@ -134,6 +134,17 @@ async function bootstrap() {
 }
 
 void bootstrap().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  const isStaleChunk = message.includes("Failed to fetch dynamically imported module");
+  if (isStaleChunk && !sessionStorage.getItem("_sl_chunk_reload")) {
+    // A new deployment replaced the content-hashed Vite chunk that this
+    // cached bundle references. Auto-reload once to pick up the fresh bundle.
+    // The flag prevents an infinite loop if the asset is genuinely missing.
+    sessionStorage.setItem("_sl_chunk_reload", "1");
+    bootSpan.end();
+    window.location.reload();
+    return;
+  }
   reportBrowserException(error, "bootstrap");
   bootSpan.end();
   throw error;
