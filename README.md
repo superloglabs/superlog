@@ -91,7 +91,10 @@ The default local services are:
 
 - Web: `http://localhost:5173`
 - API: `http://localhost:4100`
-- OTLP intake: `http://localhost:4101`
+- OTLP intake: `http://localhost:4000`
+  - Traces: `http://localhost:4000/v1/traces`
+  - Logs: `http://localhost:4000/v1/logs`
+  - Metrics: `http://localhost:4000/v1/metrics`
 
 ## Development
 
