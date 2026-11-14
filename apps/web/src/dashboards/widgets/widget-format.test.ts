@@ -69,3 +69,20 @@ test("formatValue is safe for non-finite input", () => {
   assert.equal(formatValue(Number.NaN, "none"), "—");
   assert.equal(formatValue(Number.POSITIVE_INFINITY, "duration_ms"), "—");
 });
+
+test("formatValue duration rolls over to the next unit when rounding reaches it", () => {
+  assert.equal(formatValue(999.6, "duration_ms"), "1s");
+  assert.equal(formatValue(59_960, "duration_ms"), "1min");
+  assert.equal(formatValue(3_599_000, "duration_ms"), "1h");
+  assert.equal(formatValue(86_399_000, "duration_ms"), "1d");
+  assert.equal(formatValue(-999.6, "duration_ms"), "-1s");
+  assert.equal(formatValue(999.4, "duration_ms"), "999ms");
+  assert.equal(formatValue(59_940, "duration_ms"), "59.9s");
+});
+
+test("formatValue bytes rolls over to the next unit when rounding reaches it", () => {
+  assert.equal(formatValue(1023.6, "bytes"), "1KB");
+  assert.equal(formatValue(1_048_575, "bytes"), "1MB");
+  assert.equal(formatValue(1023.4, "bytes"), "1023B");
+  assert.equal(formatValue(1024 ** 6, "bytes"), "1024PB");
+});
