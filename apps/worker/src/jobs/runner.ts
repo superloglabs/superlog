@@ -9,7 +9,7 @@
 // the connecting role can CREATE, so it self-installs.
 
 import { PgBoss } from "pg-boss";
-import { type JobDeps, type LoadedJob, loadJobs } from "../jobs.js";
+import { type DisabledJob, type JobDeps, type LoadedJob, loadJobs } from "../jobs.js";
 import { logger } from "../logger.js";
 
 // The slice of the pg-boss API the runner uses. Declared as an interface so
@@ -20,13 +20,44 @@ export interface JobBoss {
   updateQueue(name: string, options?: unknown): Promise<unknown>;
   work(name: string, handler: (jobs: unknown[]) => Promise<unknown>): Promise<unknown>;
   schedule(name: string, cron: string, data?: unknown, options?: unknown): Promise<unknown>;
+  unschedule(name: string): Promise<unknown>;
 }
 
 // Start the boss and register every job: one exclusive queue + worker + cron
-// schedule each. A failure registering one job is logged and skipped so it
-// can't block the others or worker boot.
-export async function registerJobs(boss: JobBoss, jobs: LoadedJob[]): Promise<void> {
+// schedule each. For jobs that opted out (disabled), remove any stale pg-boss
+// cron schedule so the queue does not accumulate unclaimed jobs. A failure
+// registering or unscheduling one job is logged and skipped so it can't block
+// the others or worker boot.
+export async function registerJobs(
+  boss: JobBoss,
+  jobs: LoadedJob[],
+  disabled: DisabledJob[] = [],
+): Promise<void> {
   await boss.start();
+
+  // Remove stale cron schedules for jobs that opted out. Without this, pg-boss
+  // keeps firing the cron from a prior deployment's registered schedule, creating
+  // `created`-state jobs that pile up with no handler to consume them.
+  for (const job of disabled) {
+    if (!job.schedule) continue;
+    try {
+      await boss.unschedule(job.name);
+      logger.info(
+        { scope: "jobs.runner", job: job.name },
+        "unscheduled disabled job cron to prevent unclaimed job accumulation",
+      );
+    } catch (err) {
+      logger.error(
+        {
+          scope: "jobs.runner",
+          job: job.name,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "failed to unschedule disabled job; skipping",
+      );
+    }
+  }
+
   for (const job of jobs) {
     try {
       await boss.createQueue(job.name, {
@@ -74,7 +105,7 @@ export async function startJobRunner(deps: JobDeps): Promise<PgBoss | null> {
     return null;
   }
 
-  const jobs = await loadJobs(deps);
+  const { loaded: jobs, disabled } = await loadJobs(deps);
 
   const boss = new PgBoss({
     connectionString,
@@ -88,7 +119,7 @@ export async function startJobRunner(deps: JobDeps): Promise<PgBoss | null> {
     logger.error({ scope: "jobs.runner", err: err.message }, "pg-boss error"),
   );
 
-  await registerJobs(boss, jobs);
+  await registerJobs(boss, jobs, disabled);
   logger.info(
     { scope: "jobs.runner", jobs: jobs.map((j) => j.name) },
     "background job runner started",
