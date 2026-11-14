@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { LoadedJob } from "../jobs.js";
+import type { DisabledJob, LoadedJob } from "../jobs.js";
 import { type JobBoss, registerJobs } from "./runner.js";
 
 type WorkHandler = (jobs: unknown[]) => Promise<unknown>;
@@ -10,6 +10,7 @@ function fakeBoss() {
   const queues: string[] = [];
   const queueUpdates: Array<{ name: string; options: unknown }> = [];
   const schedules: Array<{ name: string; cron: string }> = [];
+  const unscheduled: string[] = [];
   const workers = new Map<string, WorkHandler>();
   const boss: JobBoss = {
     async start() {
@@ -31,8 +32,12 @@ function fakeBoss() {
       schedules.push({ name, cron });
       calls.push(`schedule:${name}:${cron}`);
     },
+    async unschedule(name) {
+      unscheduled.push(name);
+      calls.push(`unschedule:${name}`);
+    },
   };
-  return { boss, calls, queues, queueUpdates, schedules, workers };
+  return { boss, calls, queues, queueUpdates, schedules, unscheduled, workers };
 }
 
 test("registerJobs starts the boss and registers a queue, worker, and cron schedule per job", async () => {
@@ -115,5 +120,48 @@ test("a job that fails to register is skipped without aborting the others", asyn
   ]);
 
   // good.sync still got scheduled despite bad.sync throwing.
+  assert.deepEqual(fb.schedules, [{ name: "good.sync", cron: "* * * * *" }]);
+});
+
+test("unschedules disabled scheduled jobs so stale pg-boss crons don't fire", async () => {
+  const fb = fakeBoss();
+  const disabled: DisabledJob[] = [
+    { name: "attio.sync", schedule: "0 * * * *" },
+  ];
+
+  await registerJobs(fb.boss, [], disabled);
+
+  assert.deepEqual(fb.unscheduled, ["attio.sync"], "must unschedule the disabled job's cron");
+  assert.deepEqual(fb.queues, [], "must not create a queue for the disabled job");
+  assert.deepEqual(fb.schedules, [], "must not re-schedule the disabled job");
+});
+
+test("ignores disabled jobs with no schedule (they never had a cron to remove)", async () => {
+  const fb = fakeBoss();
+  const disabled: DisabledJob[] = [{ name: "some.event-consumer" }];
+
+  await registerJobs(fb.boss, [], disabled);
+
+  assert.deepEqual(fb.unscheduled, []);
+});
+
+test("a failed unschedule does not abort registration of loaded jobs", async () => {
+  const fb = fakeBoss();
+  const boss: JobBoss = {
+    ...fb.boss,
+    async unschedule(name) {
+      if (name === "bad.disabled") throw new Error("unschedule failed");
+      return fb.boss.unschedule(name);
+    },
+  };
+  const disabled: DisabledJob[] = [
+    { name: "bad.disabled", schedule: "* * * * *" },
+  ];
+  const loaded: LoadedJob[] = [
+    { name: "good.sync", schedule: "* * * * *", handler: async () => {} },
+  ];
+
+  await registerJobs(boss, loaded, disabled);
+
   assert.deepEqual(fb.schedules, [{ name: "good.sync", cron: "* * * * *" }]);
 });

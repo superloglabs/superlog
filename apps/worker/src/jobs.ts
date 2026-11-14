@@ -62,6 +62,21 @@ export type LoadedJob = {
   handler: JobHandler;
 };
 
+// A job whose create() returned null (opted out). When it carries a schedule,
+// any previously registered cron in pg-boss must be removed so the queue does
+// not accumulate unclaimed `created`-state jobs with no handler to consume them.
+export type DisabledJob = {
+  name: string;
+  schedule?: string;
+};
+
+export type LoadJobsResult = {
+  loaded: LoadedJob[];
+  // Scheduled jobs that opted out at create() — the runner must unschedule
+  // these so their pg-boss cron rows don't fire against an absent handler.
+  disabled: DisabledJob[];
+};
+
 type JobModule = { job?: unknown };
 
 const DEFAULT_JOBS_DIR = new URL("./jobs/", import.meta.url);
@@ -85,23 +100,27 @@ function isJobDefinition(value: unknown): value is JobDefinition {
 }
 
 // Scan the jobs directory, import each job file, and return the jobs that opted
-// in (create() returned a handler). Resilient by design: a missing directory
-// yields an empty list, and a file that fails to import / throws in create() /
-// exports no valid job is logged and skipped, so one bad job can never block
-// worker boot.
-export async function loadJobs(deps: JobDeps, options: { dir?: URL } = {}): Promise<LoadedJob[]> {
+// in (create() returned a handler) alongside any scheduled jobs that opted out.
+// Resilient by design: a missing directory yields empty lists, and a file that
+// fails to import / throws in create() / exports no valid job is logged and
+// skipped, so one bad job can never block worker boot.
+export async function loadJobs(
+  deps: JobDeps,
+  options: { dir?: URL } = {},
+): Promise<LoadJobsResult> {
   const dir = options.dir ?? DEFAULT_JOBS_DIR;
 
   let entries: string[];
   try {
     entries = await readdir(dir);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { loaded: [], disabled: [] };
     throw err;
   }
 
   const files = entries.filter(isJobFile).sort();
-  const jobs: LoadedJob[] = [];
+  const loaded: LoadedJob[] = [];
+  const disabled: DisabledJob[] = [];
 
   for (const file of files) {
     const specifier = new URL(file, dir).href;
@@ -114,10 +133,16 @@ export async function loadJobs(deps: JobDeps, options: { dir?: URL } = {}): Prom
       const def = mod.job;
       const handler = await def.create(deps);
       if (!handler) {
-        logger.info({ scope: "jobs.load", job: def.name }, "job opted out at create(); skipping");
+        logger.info(
+          { scope: "jobs.load", job: def.name, schedule: def.schedule },
+          "job opted out at create(); skipping",
+        );
+        // Track opted-out scheduled jobs so the runner can unschedule their
+        // pg-boss cron, preventing unclaimed jobs from accumulating.
+        if (def.schedule) disabled.push({ name: def.name, schedule: def.schedule });
         continue;
       }
-      jobs.push({
+      loaded.push({
         name: def.name,
         schedule: def.schedule,
         policy: def.policy,
@@ -136,5 +161,5 @@ export async function loadJobs(deps: JobDeps, options: { dir?: URL } = {}): Prom
     }
   }
 
-  return jobs;
+  return { loaded, disabled };
 }
