@@ -8,7 +8,8 @@
 //
 // Render rate limits are per user API key: the logs endpoints allow 30
 // requests/minute, so logs are read in one batched query per region (all
-// resources of a region share a query) with a small page budget per pass;
+// resources of a region share a query), and one pass spends at most
+// `logPageBudget` log requests per installation, split across its regions;
 // metrics GETs (400/minute) are batched per kind across all resources.
 //
 // IO is behind narrow ports (store + fetch) so the pull logic is unit-testable
@@ -81,7 +82,11 @@ export type RenderPullerDeps = {
   log: PullerLogger;
   fetchImpl?: typeof fetch;
   now?: () => Date;
-  /** Max log pages (of `logPageLimit` lines) per region group per pass. */
+  /**
+   * Max log pages (of `logPageLimit` lines) per installation per pass, split
+   * evenly across its regions. Passes run once a minute, so this is also the
+   * installation's log requests per minute and must stay under Render's 30.
+   */
   logPageBudget?: number;
   /** Log lines per page (Render caps at 100). */
   logPageLimit?: number;
@@ -125,7 +130,9 @@ const UNAUTHORIZED_REVOKE_THRESHOLD = 3;
 export async function runRenderPullOnce(deps: RenderPullerDeps): Promise<RenderPullStats> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date());
-  const logPageBudget = deps.logPageBudget ?? 5;
+  // 24 pages of 100 lines reads 2,400 lines a minute, leaving room under
+  // Render's 30 log requests a minute for the key's other uses.
+  const logPageBudget = deps.logPageBudget ?? 24;
   const logPageLimit = deps.logPageLimit ?? 100;
   const metricsInterval = deps.metricsIntervalSeconds ?? 300;
   const resolution = deps.metricsResolutionSeconds ?? 60;
@@ -228,6 +235,7 @@ export async function runRenderPullOnce(deps: RenderPullerDeps): Promise<RenderP
       }
     }
 
+    const regionPageBudget = Math.max(1, Math.floor(logPageBudget / Math.max(1, byRegion.size)));
     for (const [region, group] of byRegion) {
       const resources = group.map((s) => s.id);
       const cursorTs = logCursorTs(logCursor[region]);
@@ -260,7 +268,7 @@ export async function runRenderPullOnce(deps: RenderPullerDeps): Promise<RenderP
         // to the page budget; anything left over is picked up next pass.
         let startTime: string = cursorTs;
         let endTime: string = now().toISOString();
-        for (let page = 0; page < logPageBudget; page++) {
+        for (let page = 0; page < regionPageBudget; page++) {
           const read = await fetchLogs({
             apiKey: installation.renderApiKey,
             ownerId: installation.ownerId,
@@ -272,10 +280,12 @@ export async function runRenderPullOnce(deps: RenderPullerDeps): Promise<RenderP
             fetchImpl,
           });
           if (!read.ok) {
-            readOk = false;
+            // Pages already read run contiguously from the cursor, so they
+            // are kept and the next pass resumes after them.
+            if (page === 0) readOk = false;
             stats.errors += 1;
             deps.log.warn(
-              { installation_id: installation.id, region, error: read.error },
+              { installation_id: installation.id, region, page, error: read.error },
               "render log read failed",
             );
             break;
