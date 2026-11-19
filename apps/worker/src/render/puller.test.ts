@@ -129,6 +129,7 @@ function makeFetch(
     if (url.includes("/v1/services")) return respond(SERVICES_PAGE);
     if (url.includes("/v1/logs")) {
       const next = logsResponses.shift() ?? { logs: [], hasMore: false };
+      if (typeof next.status === "number") return respond({ message: "rate limited" }, next.status);
       return respond(next);
     }
     if (url.includes("/v1/metrics/cpu")) return respond([CPU_SERIES]);
@@ -333,4 +334,87 @@ test("an intake rejection keeps the cursor so nothing is lost", async () => {
   // failed too; either way nothing recorded a log-cursor move.)
   const moved = state.savedCursors.some((c) => c.logCursor.oregon !== "2026-07-07T14:19:00Z");
   assert.equal(moved, false);
+});
+
+// One forward page per call, each pointing at the next, until the test's
+// clock: a backlog longer than any budget.
+function endlessLogPages(count: number): Array<Record<string, unknown>> {
+  return Array.from({ length: count }, (_, i) => ({
+    logs: [
+      {
+        ...LOG_LINE,
+        id: `log-${i}`,
+        timestamp: new Date(Date.parse("2026-07-07T13:00:00Z") + i * 1000).toISOString(),
+      },
+    ],
+    hasMore: true,
+    nextStartTime: new Date(Date.parse("2026-07-07T13:00:00Z") + (i + 1) * 1000).toISOString(),
+  }));
+}
+
+test("a backlog is read up to the installation's page budget, split across regions", async () => {
+  const oneRegion = makeStore([installation({ logCursor: { oregon: "2026-07-07T12:59:59Z" } })]);
+  const single = makeFetch({ logsResponses: endlessLogPages(40) });
+  await runRenderPullOnce({
+    store: oneRegion.store,
+    intakeBaseUrl: "http://intake.test",
+    log: silentLog,
+    fetchImpl: single.impl,
+    now: () => NOW,
+    metricsPollState: new Map(),
+  });
+  assert.equal(single.calls.filter((c) => c.url.includes("/v1/logs")).length, 24);
+
+  const twoRegions = makeStore([
+    installation({
+      services: [
+        { id: "srv-1", name: "acme-api", type: "web_service", region: "oregon", suspended: false },
+        {
+          id: "srv-3",
+          name: "acme-eu",
+          type: "web_service",
+          region: "frankfurt",
+          suspended: false,
+        },
+      ],
+      logCursor: { oregon: "2026-07-07T12:59:59Z", frankfurt: "2026-07-07T12:59:59Z" },
+    }),
+  ]);
+  const split = makeFetch({ logsResponses: endlessLogPages(40) });
+  // The inventory read answers with the one-region fixture, so keep the
+  // stored two-region snapshot by failing that read.
+  const impl: typeof fetch = async (input, init) =>
+    String(input).includes("/v1/services")
+      ? new Response("{}", { status: 500 })
+      : split.impl(input, init);
+  await runRenderPullOnce({
+    store: twoRegions.store,
+    intakeBaseUrl: "http://intake.test",
+    log: silentLog,
+    fetchImpl: impl,
+    now: () => NOW,
+    metricsPollState: new Map(),
+  });
+  assert.equal(split.calls.filter((c) => c.url.includes("/v1/logs")).length, 24);
+});
+
+test("a failed later page keeps the pages already read", async () => {
+  const { store, state } = makeStore([
+    installation({ logCursor: { oregon: "2026-07-07T12:59:59Z" } }),
+  ]);
+  const { impl } = makeFetch({ logsResponses: [...endlessLogPages(2), { status: 429 }] });
+
+  const stats = await runRenderPullOnce({
+    store,
+    intakeBaseUrl: "http://intake.test",
+    log: silentLog,
+    fetchImpl: impl,
+    now: () => NOW,
+    metricsPollState: new Map(),
+  });
+
+  assert.equal(stats.logsForwarded, 2);
+  assert.ok(stats.errors >= 1);
+  const saved = state.savedCursors.at(-1);
+  assert.deepEqual(saved?.logCursor.oregon, { ts: "2026-07-07T13:00:01.000Z", ids: ["log-1"] });
 });
