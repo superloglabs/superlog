@@ -7,7 +7,7 @@ import {
   fingerprintLog,
   stripNullBytes,
 } from "@superlog/fingerprint";
-import { inArray, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { logger } from "../logger.js";
 
 const tracer = trace.getTracer("@superlog/worker");
@@ -229,14 +229,23 @@ function chStringToDate(s: string): Date {
   return new Date(`${s.replace(" ", "T")}Z`);
 }
 
-async function existingProjectIds(database: DB, projectIds: string[]): Promise<Set<string>> {
+type BatchProjects = { existing: Set<string>; cutOver: Set<string> };
+
+// The batch's projects that exist, and which of them are cut over. A cut-over
+// project's error issues live in its Superlog application workspace, so the
+// old product opens no issues for it.
+async function loadBatchProjects(database: DB, projectIds: string[]): Promise<BatchProjects> {
   const unique = [...new Set(projectIds.filter((id) => UUID_RE.test(id)))];
-  if (unique.length === 0) return new Set();
+  if (unique.length === 0) return { existing: new Set(), cutOver: new Set() };
   const rows = await database
-    .select({ id: schema.projects.id })
+    .select({ id: schema.projects.id, cutOverAt: schema.projectMigrations.cutOverAt })
     .from(schema.projects)
+    .leftJoin(schema.projectMigrations, eq(schema.projectMigrations.projectId, schema.projects.id))
     .where(inArray(schema.projects.id, unique));
-  return new Set(rows.map((row) => row.id));
+  return {
+    existing: new Set(rows.map((row) => row.id)),
+    cutOver: new Set(rows.filter((row) => row.cutOverAt).map((row) => row.id)),
+  };
 }
 
 // Strip NUL bytes from attribute keys/values before they are JSON-encoded into
@@ -679,7 +688,7 @@ async function tickSpans(opts: {
       }
 
       let nextCursor = cursor;
-      const validProjectIds = await existingProjectIds(
+      const projects = await loadBatchProjects(
         opts.database,
         rows.map((row) => row.project_id),
       );
@@ -694,10 +703,11 @@ async function tickSpans(opts: {
         // Advance past every selected row up front (even skipped/failed ones) so
         // the batch can never wedge the cursor; the upserts happen afterward.
         nextCursor = { ts: row.cursor_ts, key: row.cursor_key };
-        if (!validProjectIds.has(row.project_id)) {
+        if (!projects.existing.has(row.project_id)) {
           skippedUnknownProjects += 1;
           continue;
         }
+        if (projects.cutOver.has(row.project_id)) continue;
         const filter = issueFilters.get(row.project_id) ?? schema.EMPTY_ISSUE_FILTER_CONFIG;
         if (!eventPassesIssueFilter("span", filter, [row.resource_attrs, row.span_attrs])) {
           skippedByFilter += 1;
@@ -825,7 +835,7 @@ async function tickLogs(opts: {
       }
 
       let nextCursor = cursor;
-      const validProjectIds = await existingProjectIds(
+      const projects = await loadBatchProjects(
         opts.database,
         rows.map((row) => row.project_id),
       );
@@ -840,10 +850,11 @@ async function tickLogs(opts: {
         // Advance past every selected row up front (even skipped/failed ones) so
         // the batch can never wedge the cursor; the upserts happen afterward.
         nextCursor = { ts: row.cursor_ts, key: row.cursor_key };
-        if (!validProjectIds.has(row.project_id)) {
+        if (!projects.existing.has(row.project_id)) {
           skippedUnknownProjects += 1;
           continue;
         }
+        if (projects.cutOver.has(row.project_id)) continue;
         const filter = issueFilters.get(row.project_id) ?? schema.EMPTY_ISSUE_FILTER_CONFIG;
         if (!eventPassesIssueFilter("log", filter, [row.resource_attrs, row.log_attrs])) {
           skippedByFilter += 1;

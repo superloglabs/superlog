@@ -390,8 +390,8 @@ const VALID_PROJECT_ID = "11111111-1111-4111-8111-111111111111";
 // A fake DB whose project resolves (valid UUID) so rows reach `upsertIssue`.
 // `execute` runs `onExecute(call#)` so a test can make a specific row's upsert
 // throw — simulating the Postgres `22021` NUL-byte rejection that used to wedge
-// the whole batch.
-function fakeDbWithProject(opts: { onExecute?: (call: number) => void }): {
+// the whole batch. `cutOver` marks the project as cut over to its workspace.
+function fakeDbWithProject(opts: { onExecute?: (call: number) => void; cutOver?: boolean }): {
   database: DB;
   state: Map<string, { cursor: Date; cursorKey?: string }>;
   executeCalls: () => number;
@@ -428,8 +428,17 @@ function fakeDbWithProject(opts: { onExecute?: (call: number) => void }): {
       return {
         from() {
           return {
-            async where() {
-              return [{ id: VALID_PROJECT_ID }];
+            leftJoin() {
+              return {
+                async where() {
+                  return [
+                    {
+                      id: VALID_PROJECT_ID,
+                      cutOverAt: opts.cutOver ? new Date("2026-05-01T00:00:00.000Z") : null,
+                    },
+                  ];
+                },
+              };
             },
           };
         },
@@ -548,6 +557,46 @@ test("log ingestion collapses same-fingerprint rows into a single upsert", async
   assert.equal(await ingestor.tickLogs(), 3);
   // Three rows, one fingerprint => exactly one upsert round-trip.
   assert.equal(executeCalls(), 1);
+});
+
+test("ingestion opens no issues for a project cut over to its workspace", async () => {
+  const { database, state, executeCalls } = fakeDbWithProject({ cutOver: true });
+  const spans = [
+    { ...spanRow({ traceId: "t1", spanId: "s1", message: "boom" }), project_id: VALID_PROJECT_ID },
+  ];
+  const logs = [
+    { ...logRow({ traceId: "t2", spanId: "s2", body: "boom" }), project_id: VALID_PROJECT_ID },
+  ];
+  const served = new Set<string>();
+  const clickhouse = {
+    async query(input: QueryCall) {
+      const kind = /kind = 'span'/.test(input.query) ? "span" : "log";
+      const out = served.has(kind) ? [] : kind === "span" ? spans : logs;
+      served.add(kind);
+      return {
+        async json() {
+          return out;
+        },
+      };
+    },
+  };
+  const transitions: string[] = [];
+  const ingestor = createTelemetryIngestor({
+    clickhouse,
+    database,
+    batchSize: 10,
+    async handleIssueTransition(issue, transition) {
+      transitions.push(`${issue.id}:${transition}`);
+    },
+  });
+
+  assert.equal(await ingestor.tickSpans(), 1);
+  assert.equal(await ingestor.tickLogs(), 1);
+  assert.equal(executeCalls(), 0);
+  assert.deepEqual(transitions, []);
+  // The cursors still move past the skipped rows.
+  assert.notEqual(state.get("fingerprint")?.cursor.toISOString(), "2026-05-23T10:00:00.000Z");
+  assert.notEqual(state.get("fingerprint-logs")?.cursor.toISOString(), "2026-05-23T10:00:00.000Z");
 });
 
 function spanRow(opts: { traceId: string; spanId: string; message: string }) {
