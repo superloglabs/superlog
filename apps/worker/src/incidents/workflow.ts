@@ -14,6 +14,7 @@ import {
 } from "../agent-run.js";
 import { TERMINAL_STATES as AGENT_RUN_TERMINAL_STATES } from "../agent-runs/domain.js";
 import { dispatchAgentRunJob } from "../agent-runs/enqueue.js";
+import { aiSpendGuard } from "../billing/ai-spend-guard.js";
 import { investigationGate } from "../billing/investigation-gate.js";
 import { isSpendLimitReached } from "../billing/spend-limit-infra.js";
 import { buildSpendLimitIncidentSlackText } from "../billing/spend-limit-notifier.js";
@@ -47,6 +48,7 @@ export type ReopenedIncidentQueueStatus =
   | "disabled"
   | "no_credits"
   | "spend_limit"
+  | "ai_spend_limit"
   | "incident_closed";
 
 async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
@@ -88,7 +90,7 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
   let creditApproved = false;
   let paygPromotionAvailable = true;
   const authorizeNewRun = async (): Promise<
-    "incident_closed" | "no_credits" | "spend_limit" | null
+    "incident_closed" | "no_credits" | "spend_limit" | "ai_spend_limit" | null
   > => {
     // Investigation credit gate (Autumn). The org is the Autumn customer. Free
     // orgs that have spent their monthly credits are blocked here; paid plans
@@ -99,6 +101,30 @@ async function queueAgentRunIfNeeded(incident: schema.Incident): Promise<{
       columns: { orgId: true },
     });
     if (!project?.orgId || (await investigationGate.canRunInvestigation(project.orgId))) {
+      // Platform-level daily AI spend cap. Applies to every org regardless of
+      // billing tier so a new tenant cannot silently accumulate unbounded COGS.
+      // Fails open (guard returns true) when the spend data is unavailable.
+      if (project?.orgId && !(await aiSpendGuard.canStartAgentRun(project.orgId))) {
+        const marked = await db.transaction(async (tx) => {
+          const locked = await tx
+            .select({ status: schema.incidents.status })
+            .from(schema.incidents)
+            .where(eq(schema.incidents.id, incident.id))
+            .for("update");
+          if (!canQueueInvestigationForLockedIncident(locked[0]?.status ?? null)) return false;
+          await tx
+            .update(schema.incidents)
+            .set({ autoInvestigateBlockedReason: "ai_spend_limit" })
+            .where(eq(schema.incidents.id, incident.id));
+          return true;
+        });
+        if (!marked) return "incident_closed";
+        logger.info(
+          { scope: "agent_run", incidentId: incident.id, orgId: project.orgId },
+          "skipping auto-agent run; org exceeded platform AI daily spend limit",
+        );
+        return "ai_spend_limit";
+      }
       creditApproved = true;
       return null;
     }
@@ -351,6 +377,11 @@ export async function handleIssueTransitionWithResult(
       buildSpendLimitIncidentSlackText({
         manageBillingUrl: buildAppUrl(WEB_ORIGIN, "/settings?scope=org&section=billing"),
       }),
+    );
+  } else if (queueStatus === "ai_spend_limit") {
+    await postIncidentThreadMessage(
+      incident.id,
+      ":warning: Investigation paused — this organization has reached the platform's daily AI usage safety cap. The investigation will resume when usage resets.",
     );
   }
   if (agentRun && linkedIssue && !createdIncident && isActiveAgentRunState(agentRun.state)) {
