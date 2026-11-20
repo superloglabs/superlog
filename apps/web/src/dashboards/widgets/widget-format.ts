@@ -95,22 +95,26 @@ function formatNumber(value: number): string {
     : plainFormat.format(value);
 }
 
-// Trim trailing zeros from a fixed-precision number so "15.0" -> "15".
-function trim(value: number, digits: number): string {
-  return String(Number(value.toFixed(digits)));
+// Round to a fixed precision so "15.0" -> "15".
+function round(value: number, digits: number): number {
+  return Number(value.toFixed(digits));
 }
 
 function formatDuration(ms: number): string {
   const sign = ms < 0 ? "-" : "";
   const x = Math.abs(ms);
-  if (x < 1000) return `${sign}${trim(x, x < 10 ? 1 : 0)}ms`;
+  const roundedMs = round(x, x < 10 ? 1 : 0);
+  if (roundedMs < 1000) return `${sign}${roundedMs}ms`;
   const s = x / 1000;
-  if (s < 60) return `${sign}${trim(s, s < 10 ? 2 : 1)}s`;
+  const roundedS = round(s, s < 10 ? 2 : 1);
+  if (roundedS < 60) return `${sign}${roundedS}s`;
   const m = s / 60;
-  if (m < 60) return `${sign}${trim(m, 1)}min`;
+  const roundedM = round(m, 1);
+  if (roundedM < 60) return `${sign}${roundedM}min`;
   const h = m / 60;
-  if (h < 24) return `${sign}${trim(h, 1)}h`;
-  return `${sign}${trim(h / 24, 1)}d`;
+  const roundedH = round(h, 1);
+  if (roundedH < 24) return `${sign}${roundedH}h`;
+  return `${sign}${round(h / 24, 1)}d`;
 }
 
 const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];
@@ -119,9 +123,9 @@ function formatBytes(bytes: number): string {
   const sign = bytes < 0 ? "-" : "";
   let x = Math.abs(bytes);
   let i = 0;
-  while (x >= 1024 && i < BYTE_UNITS.length - 1) {
+  while (round(x, i === 0 ? 0 : 1) >= 1024 && i < BYTE_UNITS.length - 1) {
     x /= 1024;
     i++;
   }
-  return `${sign}${trim(x, i === 0 ? 0 : 1)}${BYTE_UNITS[i]}`;
+  return `${sign}${round(x, i === 0 ? 0 : 1)}${BYTE_UNITS[i]}`;
 }
