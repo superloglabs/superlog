@@ -1,4 +1,5 @@
 import type { ClickHouseClient } from "@clickhouse/client";
+import { getClickhouseConfig } from "../infra/clickhouse/config.js";
 import type { CandidateIncident } from "./domain.js";
 
 export type ActivityBucket = { hour: string; count: number };
@@ -197,13 +198,6 @@ let cachedClient: ClickHouseClient | null = null;
 export async function defaultClickhouseClient(): Promise<ClickHouseClient> {
   if (cachedClient) return cachedClient;
   const { createClient } = await import("@clickhouse/client");
-  cachedClient = createClient({
-    url: process.env.CLICKHOUSE_URL ?? "http://localhost:8123",
-    username: process.env.CLICKHOUSE_USER ?? "default",
-    password: process.env.CLICKHOUSE_PASSWORD ?? "",
-    // Local portless stacks ship a `superlog` database; prod uses `olly`.
-    // `CLICKHOUSE_DB` is the env name `scripts/portless-stack.sh` writes.
-    database: process.env.CLICKHOUSE_DATABASE ?? process.env.CLICKHOUSE_DB ?? "olly",
-  });
+  cachedClient = createClient(getClickhouseConfig());
   return cachedClient;
 }
