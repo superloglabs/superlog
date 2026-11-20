@@ -169,7 +169,10 @@ export type IncidentSeverity = "SEV-1" | "SEV-2" | "SEV-3";
 // investigation limit and billing enforcement is on. `spend_limit`: the org's
 // bill reached the monthly spend limit it set. Extend this union (don't
 // repurpose it) if other user-actionable skip reasons need surfacing.
-export type IncidentAutoInvestigateBlockedReason = "no_credits" | "spend_limit";
+export type IncidentAutoInvestigateBlockedReason =
+  | "no_credits"
+  | "spend_limit"
+  | "ai_spend_limit";
 // "autoresolved_noise" is legacy: noise verdicts now silence the linked issues
 // and resolve the incident plainly. Rows written by pre-cutover workers are
 // migrated to "resolved"; readers must still treat any straggler as closed.

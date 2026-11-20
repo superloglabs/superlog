@@ -4,6 +4,7 @@ import { db, shutdownAnalytics } from "@superlog/db";
 import { registerAgentRunHealthMetrics } from "./agent-run-health-metrics.js";
 import { startAgentRunQueue } from "./agent-runs/queue-wiring.js";
 import { initAiUsageSink } from "./ai-usage.js";
+import { initAiSpendGuard } from "./billing/ai-spend-guard.js";
 import { handleIssueTransition } from "./incidents/workflow.js";
 import {
   createIssueTransitionDispatcher,
@@ -26,6 +27,9 @@ logger.info({ scope: "boot" }, "env loaded");
 // Install the configured AI-usage sink before any tick can record usage.
 // No-op unless AI_USAGE_SINK_MODULE is set (stock / self-hosted builds).
 await initAiUsageSink();
+// Install the configured per-org daily AI spend guard before any agent run
+// can be queued. No-op unless AI_SPEND_GUARD_MODULE is set.
+await initAiSpendGuard();
 
 registerTenantMetrics();
 registerAgentRunHealthMetrics();
