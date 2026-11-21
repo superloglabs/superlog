@@ -32,6 +32,23 @@ test("getIngestQueueConfig reads bounded consumer concurrency", () => {
   assert.equal(config?.consumerConcurrency, 32);
 });
 
+test("getIngestQueueConfig reads INGEST_SQS_SEND_TIMEOUT_MS", () => {
+  const config = getIngestQueueConfig({
+    INGEST_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123/superlog-test-ingest",
+    INGEST_SQS_SEND_TIMEOUT_MS: "3000",
+  });
+
+  assert.equal(config?.sqsSendTimeoutMs, 3000);
+});
+
+test("getIngestQueueConfig uses default SQS send timeout when unset", () => {
+  const config = getIngestQueueConfig({
+    INGEST_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123/superlog-test-ingest",
+  });
+
+  assert.equal(config?.sqsSendTimeoutMs, 10_000);
+});
+
 test("encodeIngestMessage stores small payloads inline", () => {
   const encoded = encodeIngestMessage(
     baseInput,
