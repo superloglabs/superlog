@@ -47,6 +47,17 @@ test("OAuth discovery rejects private destinations at the outbound request bound
   );
 });
 
+test("OAuth discovery wraps connection errors with the server URL", async () => {
+  const tlsError = Object.assign(new Error("self-signed certificate"), {
+    code: "DEPTH_ZERO_SELF_SIGNED_CERT",
+  });
+  const failFetch = (() => Promise.reject(tlsError)) as unknown as typeof fetch;
+  await assert.rejects(
+    createFetchProjectMcpOAuthHttp(failFetch).discover("https://mcp.example/mcp"),
+    /MCP server unreachable at https:\/\/mcp\.example\/mcp.*self-signed certificate/i,
+  );
+});
+
 test("OAuth dynamic registration restricts the client to requested scopes", async () => {
   const registrationBodies: Record<string, unknown>[] = [];
   const fakeFetch = (async (_input: URL | string | Request, init?: RequestInit) => {

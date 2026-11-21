@@ -485,15 +485,21 @@ async function discoverProjectMcpOAuth(
   signal?: AbortSignal,
 ): Promise<ProjectMcpOAuthDiscovery> {
   const endpoint = new URL(serverUrl);
-  const initial = await fetchImpl(endpoint, {
-    method: "GET",
-    headers: {
-      accept: "application/json, text/event-stream",
-      "mcp-protocol-version": "2025-11-25",
-    },
-    redirect: "manual",
-    signal,
-  });
+  let initial: Response;
+  try {
+    initial = await fetchImpl(endpoint, {
+      method: "GET",
+      headers: {
+        accept: "application/json, text/event-stream",
+        "mcp-protocol-version": "2025-11-25",
+      },
+      redirect: "manual",
+      signal,
+    });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`MCP server unreachable at ${serverUrl}: ${reason}`);
+  }
   const challenge = initial.headers.get("www-authenticate") ?? "";
   const advertised = /resource_metadata="([^"]+)"/i.exec(challenge)?.[1];
   const resourceCandidates = [
