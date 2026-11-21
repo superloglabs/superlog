@@ -14,6 +14,7 @@ import { favoriteProjectToSeed, pickActiveOrgId as pickActiveOrgIdRule } from ".
 import { AUTH_CLIENT_IP_HEADER } from "./auth-client-ip.js";
 import { AUTH_RATE_LIMIT } from "./auth-rate-limit.js";
 import {
+  changeEmailEmailBody,
   orgInvitationEmailBody,
   passwordResetEmailBody,
   sendEmail,
@@ -153,6 +154,23 @@ async function mirrorLastUsedOrg(userId: string, activeOrgId: string): Promise<v
 export const auth = betterAuth({
   baseURL: API_ORIGIN,
   secret: BETTER_AUTH_SECRET,
+  user: {
+    changeEmail: {
+      enabled: true,
+      // Send an approval link to the CURRENT email so the account owner must
+      // confirm the change before the new address is verified. Without this
+      // callback Better Auth skips step 1 and only verifies the new address,
+      // so anyone holding an active session could silently move the account.
+      sendChangeEmailConfirmation: async ({ user, newEmail, url }) => {
+        const body = changeEmailEmailBody(newEmail, url);
+        void sendEmail({
+          to: user.email,
+          subject: "Approve your Superlog email change",
+          ...body,
+        });
+      },
+    },
+  },
   // Provider access and refresh tokens are recoverable credentials. Better
   // Auth reads pre-encryption rows during rollout and encrypts every new or
   // refreshed grant with BETTER_AUTH_SECRET.

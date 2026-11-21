@@ -79,6 +79,20 @@ export function passwordResetEmailBody(url: string): { html: string; text: strin
   };
 }
 
+export function changeEmailEmailBody(
+  newEmail: string,
+  url: string,
+): { html: string; text: string } {
+  const safeUrl = escape(url);
+  const safeEmail = escape(newEmail);
+  return {
+    text: `Someone requested to change your Superlog account email to ${newEmail}.\n\nApprove: ${url}\n\nThis link expires in 1 hour. If you didn't request this change, you can safely ignore this email.`,
+    html: `<p>Someone requested to change your Superlog account email to <strong>${safeEmail}</strong>.</p>
+<p><a href="${safeUrl}">Approve email change</a></p>
+<p style="color:#888">This link expires in 1 hour. If you didn't request this change, you can safely ignore this email.</p>`,
+  };
+}
+
 export function orgInvitationEmailBody(args: {
   url: string;
   orgName: string;
