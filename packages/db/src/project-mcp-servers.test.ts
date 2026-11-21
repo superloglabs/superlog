@@ -128,6 +128,38 @@ test("editing preserves a credential unless authentication is explicitly replace
   assert.deepEqual(disconnected.auth, { type: "none", hasCredential: false });
 });
 
+test("MCP server URL rejects a raw IPv4 address", async () => {
+  const manager = createProjectMcpServerManager(new InMemoryProjectMcpServerRepository());
+
+  await assert.rejects(
+    manager.add({
+      projectId: "project-1",
+      actorUserId: "user-1",
+      name: "bad-ip",
+      url: "https://140.82.112.3/mcp",
+      auth: { type: "none" },
+      confirmTrusted: true,
+    }),
+    /IP address/i,
+  );
+});
+
+test("MCP server URL rejects a raw IPv6 address", async () => {
+  const manager = createProjectMcpServerManager(new InMemoryProjectMcpServerRepository());
+
+  await assert.rejects(
+    manager.add({
+      projectId: "project-1",
+      actorUserId: "user-1",
+      name: "bad-ipv6",
+      url: "https://[2606:50c0:8000::153]/mcp",
+      auth: { type: "none" },
+      confirmTrusted: true,
+    }),
+    /IP address/i,
+  );
+});
+
 test("equivalent endpoint URL spellings cannot create duplicate MCP servers", async () => {
   const manager = createProjectMcpServerManager(new InMemoryProjectMcpServerRepository());
   const created = await manager.add({

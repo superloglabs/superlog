@@ -1,3 +1,5 @@
+import { isIP } from "node:net";
+
 export const MAX_ENABLED_CUSTOM_MCP_SERVERS = 19;
 
 const MAX_DISPLAY_NAME_LENGTH = 80;
@@ -269,6 +271,14 @@ export function parseProjectMcpServerUrl(value: string): string {
     throw new ProjectMcpServerError(
       "invalid_url",
       "URL must use HTTPS and must not contain credentials",
+    );
+  }
+  // Strip IPv6 brackets that the URL parser preserves in hostname (e.g. "[::1]").
+  const rawHostname = parsed.hostname.replace(/^\[/, "").replace(/\]$/, "");
+  if (isIP(rawHostname) !== 0) {
+    throw new ProjectMcpServerError(
+      "invalid_url",
+      "URL must use a hostname, not a raw IP address",
     );
   }
   return parsed.toString();
