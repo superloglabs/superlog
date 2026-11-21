@@ -80,8 +80,10 @@ export function createWorkerTick(opts: {
         }
       }
       try {
-        const spans = await safe("spans", opts.telemetryIngestor.tickSpans, 0);
-        const logs = await safe("logs", opts.telemetryIngestor.tickLogs, 0);
+        const [spans, logs] = await Promise.all([
+          safe("spans", opts.telemetryIngestor.tickSpans, 0),
+          safe("logs", opts.telemetryIngestor.tickLogs, 0),
+        ]);
         const agentRuns = skip.has("agent_runs") ? 0 : await safe("agent_runs", tickAgentRuns, 0);
         const agentChats = skip.has("agent_chats")
           ? 0
