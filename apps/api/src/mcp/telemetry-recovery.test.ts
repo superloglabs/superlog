@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   executeRecoverableTelemetryQuery,
   recoverTelemetryTimeout,
+  type TelemetryValidationFailed,
 } from "./telemetry-recovery.js";
 
 test("a telemetry timeout becomes retry guidance without dropping filters", () => {
@@ -227,4 +228,63 @@ test("the MCP boundary still rejects permanent backend failures", async () => {
     (cause) => cause === error,
   );
   assert.deepEqual(observed, [error]);
+});
+
+test("a future-offset until bound (now() + INTERVAL 1 DAY) returns validation_failed without calling onPermanentFailure", async () => {
+  const TimeRangeValidationError = class extends Error {
+    override name = "TimeRangeValidationError";
+  };
+  const observed: unknown[] = [];
+
+  const result = await executeRecoverableTelemetryQuery(
+    "query_logs",
+    { range: { until: "now() + INTERVAL 1 DAY" } },
+    async () => {
+      throw new TimeRangeValidationError("invalid until time bound: now() + INTERVAL 1 DAY");
+    },
+    undefined,
+    (cause) => observed.push(cause),
+  );
+
+  assert.equal((result as TelemetryValidationFailed).status, "validation_failed");
+  assert.equal((result as TelemetryValidationFailed).retryable, false);
+  assert.equal(observed.length, 0, "onPermanentFailure must not be called for validation errors");
+});
+
+test("a compound interval since (now() - INTERVAL 8 HOUR 30 MINUTE) returns validation_failed without calling onPermanentFailure", async () => {
+  const TimeRangeValidationError = class extends Error {
+    override name = "TimeRangeValidationError";
+  };
+  const observed: unknown[] = [];
+
+  const result = await executeRecoverableTelemetryQuery(
+    "query_logs",
+    { range: { since: "now() - INTERVAL 8 HOUR 30 MINUTE" } },
+    async () => {
+      throw new TimeRangeValidationError("invalid since time bound: now() - INTERVAL 8 HOUR 30 MINUTE");
+    },
+    undefined,
+    (cause) => observed.push(cause),
+  );
+
+  assert.equal((result as TelemetryValidationFailed).status, "validation_failed");
+  assert.equal(observed.length, 0, "onPermanentFailure must not be called for validation errors");
+});
+
+test("a compound relative range retries correctly with summed offset", () => {
+  const recovery = recoverTelemetryTimeout(
+    "query_logs",
+    {
+      range: {
+        since: "now() - INTERVAL 8 HOUR 30 MINUTE",
+        until: "now()",
+      },
+    },
+    new Error("Timeout error."),
+  );
+
+  assert.deepEqual(recovery?.suggested_input.range, {
+    since: "now() - INTERVAL 1 HOUR",
+    until: "now()",
+  });
 });
