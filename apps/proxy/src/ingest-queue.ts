@@ -58,6 +58,13 @@ const DEFAULT_CONSUMER_CONCURRENCY = 4;
 // below the queue visibility timeout so the message is not redelivered to
 // another consumer while this request is still in flight.
 const DEFAULT_COLLECTOR_TIMEOUT_MS = 100_000;
+// Upper bound on a single SQS SendMessageBatch call. Without it a transient
+// SQS slowdown holds every ingest forward() promise for the full AWS-side stall
+// (observed 515 ms–1146 ms in production; could be far longer). Keeping this
+// well above normal SQS RTT (~10–50 ms) while still bounding worst-case ingest
+// latency. Only applies to SendMessageBatch — ReceiveMessage uses long-poll
+// (DEFAULT_WAIT_TIME_SECONDS) and must not be bounded by this value.
+const DEFAULT_SQS_SEND_TIMEOUT_MS = 10_000;
 const MAX_COLLECTOR_ERROR_BODY_CHARS = 1_000;
 // SQS hard limits on a single SendMessageBatch/DeleteMessageBatch call: at most
 // 10 entries, and (for sends) at most 256 KiB of total payload across entries.
@@ -91,6 +98,7 @@ export type IngestQueueConfig = {
   sendLingerMs: number;
   s3MaxSockets: number;
   sqsMaxSockets: number;
+  sqsSendTimeoutMs: number;
   collectorTimeoutMs: number;
 };
 
@@ -201,6 +209,7 @@ export function getIngestQueueConfig(env: NodeJS.ProcessEnv): IngestQueueConfig 
     sendLingerMs: readNonNegativeInt(env.INGEST_QUEUE_SEND_LINGER_MS, DEFAULT_SEND_LINGER_MS),
     s3MaxSockets: readPositiveInt(env.INGEST_S3_MAX_SOCKETS, DEFAULT_S3_MAX_SOCKETS),
     sqsMaxSockets: readPositiveInt(env.INGEST_SQS_MAX_SOCKETS, DEFAULT_SQS_MAX_SOCKETS),
+    sqsSendTimeoutMs: readPositiveInt(env.INGEST_SQS_SEND_TIMEOUT_MS, DEFAULT_SQS_SEND_TIMEOUT_MS),
     collectorTimeoutMs: readPositiveInt(
       env.INGEST_COLLECTOR_TIMEOUT_MS,
       DEFAULT_COLLECTOR_TIMEOUT_MS,
@@ -646,6 +655,7 @@ export class IngestQueue {
             MessageBody: entry.messageBody,
           })),
         }),
+        { abortSignal: AbortSignal.timeout(this.config.sqsSendTimeoutMs) },
       );
       const failed = new Map((result.Failed ?? []).map((failure) => [failure.Id, failure]));
       chunk.forEach((entry, index) => {

@@ -36,6 +36,7 @@ function buildConfig(overrides: Partial<IngestQueueConfig> = {}): IngestQueueCon
     sendLingerMs: 5,
     s3MaxSockets: 128,
     sqsMaxSockets: 64,
+    sqsSendTimeoutMs: 10_000,
     collectorTimeoutMs: 120_000,
     ...overrides,
   };
