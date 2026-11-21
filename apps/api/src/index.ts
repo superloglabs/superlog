@@ -152,7 +152,7 @@ import {
   requireProjectManagerContext,
 } from "./org-authorization-http.js";
 import { resolveActiveOrgContext, resolveMaybeActiveOrgContext } from "./org-context.js";
-import { ORG_NAME_MAX, createOrgWithDefaults, mountOrgCrud } from "./orgs.js";
+import { ORG_NAME_MAX, createOrgWithDefaults, mountOrgCrud, slugifyOrgName } from "./orgs.js";
 import { mountPersonalAccessTokens } from "./personal-access-tokens.js";
 import { mountPorterAuthed } from "./porter.js";
 import {
@@ -389,7 +389,25 @@ app.on(["POST", "GET"], "/api/auth/*", async (c) => {
     recordAuthRateLimited("/api/auth/*", DEPLOYMENT_ENVIRONMENT);
     return globalLimitResponse;
   }
-  const response = await auth.handler(requestWithAuthClientIp(c.req.raw, clientIp));
+
+  // Better Auth's createOrganization endpoint requires a `slug` field, but
+  // callers using the client library without an explicit slug omit it and hit
+  // a Zod validation error. Auto-derive a slug from the name so the request
+  // succeeds; Better Auth still enforces slug uniqueness separately.
+  let rawRequest = c.req.raw;
+  if (c.req.method === "POST" && c.req.path === "/api/auth/organization/create") {
+    try {
+      const body = (await c.req.raw.clone().json()) as Record<string, unknown>;
+      if (typeof body.name === "string" && !body.slug) {
+        body.slug = slugifyOrgName(body.name) || "org";
+        rawRequest = new Request(c.req.raw, { body: JSON.stringify(body) });
+      }
+    } catch {
+      // Body parse failure — let Better Auth's own validator surface the error.
+    }
+  }
+
+  const response = await auth.handler(requestWithAuthClientIp(rawRequest, clientIp));
   if (response.status === 429) {
     recordAuthRateLimited(c.req.path, DEPLOYMENT_ENVIRONMENT);
   }
