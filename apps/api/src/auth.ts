@@ -198,6 +198,15 @@ export const auth = betterAuth({
         }
       : {}),
   },
+  session: {
+    // GET /get-session becomes read-only: it returns the session but skips the
+    // DB refresh write. When the response includes needsRefresh: true the client
+    // automatically sends POST /get-session to perform the actual refresh. This
+    // separates reads from writes and allows GET requests to be safely routed to
+    // read replicas in the future; it also enables any client that explicitly
+    // POSTs to /get-session to work correctly.
+    deferSessionRefresh: true,
+  },
   rateLimit: AUTH_RATE_LIMIT,
   emailAndPassword: {
     enabled: true,
