@@ -121,7 +121,7 @@ export function mountGithubPublic(
     process.env.GITHUB_CLIENT_SECRET;
   const installRedirectUrl =
     process.env.GITHUB_INSTALL_OAUTH_REDIRECT_URL ??
-    "http://localhost:4100/github/install/callback";
+    `${process.env.BETTER_AUTH_URL ?? "http://localhost:4100"}/github/install/callback`;
   const authorRedirectUrl =
     process.env.GITHUB_AUTHOR_OAUTH_REDIRECT_URL ??
     `${process.env.BETTER_AUTH_URL ?? "http://localhost:4100"}/github/author/callback`;
