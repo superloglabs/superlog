@@ -8,6 +8,7 @@ import {
 import { autumn } from "autumn-js/better-auth";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { APIError } from "better-auth/api";
 import { admin, organization } from "better-auth/plugins";
 import { eq } from "drizzle-orm";
 import { favoriteProjectToSeed, pickActiveOrgId as pickActiveOrgIdRule } from "./active-context.js";
@@ -20,6 +21,7 @@ import {
   verificationEmailBody,
 } from "./email.js";
 import { readSignupAttributionFromCookieHeader } from "./signup-click-ids.js";
+import { SIGNUPS_CLOSED_MESSAGE, newSignupsOpen } from "./signup-policy.js";
 import { enqueueUserCreated } from "./user-created-publisher.js";
 import { configuredWebOrigins } from "./web-origins.js";
 
@@ -273,6 +275,14 @@ export const auth = betterAuth({
     },
     user: {
       create: {
+        // Covers every way a users row is created: email, social sign-in and
+        // invitations alike.
+        before: async (user) => {
+          if (!newSignupsOpen()) {
+            throw new APIError("FORBIDDEN", { message: SIGNUPS_CLOSED_MESSAGE });
+          }
+          return { data: user };
+        },
         after: async (user, context) => {
           // Fires on every new users row — email and social signups alike, and
           // users who never finish onboarding — so the signup count is captured
