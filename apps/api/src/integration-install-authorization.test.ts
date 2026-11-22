@@ -159,3 +159,280 @@ test("GitHub callback rejects legacy state authorized only by a user code", asyn
 
   assert.equal(callback.status, 400);
 });
+
+function signMgmtOrgState(orgId: string): string {
+  const body = `mgmt-v1.${Buffer.from(JSON.stringify({ scope: "org", orgId, returnUrl: null }), "utf8").toString("base64url")}.${Date.now()}`;
+  const signature = crypto.createHmac("sha256", "state-secret").update(body).digest("base64url");
+  return `${Buffer.from(body, "utf8").toString("base64url")}.${signature}`;
+}
+
+function withGithubOAuthEnv<T>(run: () => Promise<T>): Promise<T> {
+  const previous = {
+    id: process.env.GITHUB_OAUTH_CLIENT_ID,
+    secret: process.env.GITHUB_OAUTH_CLIENT_SECRET,
+    redirect: process.env.GITHUB_AUTHOR_OAUTH_REDIRECT_URL,
+  };
+  process.env.GITHUB_OAUTH_CLIENT_ID = "gh-client";
+  process.env.GITHUB_OAUTH_CLIENT_SECRET = "gh-secret";
+  process.env.GITHUB_AUTHOR_OAUTH_REDIRECT_URL = "https://api.example.test/github/author/callback";
+  return run().finally(() => {
+    for (const [key, value] of [
+      ["GITHUB_OAUTH_CLIENT_ID", previous.id],
+      ["GITHUB_OAUTH_CLIENT_SECRET", previous.secret],
+      ["GITHUB_AUTHOR_OAUTH_REDIRECT_URL", previous.redirect],
+    ] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+}
+
+test("GitHub callback asks the user to authorize before linking an installation", () =>
+  withGithubOAuthEnv(async () => {
+    let checks = 0;
+    const app = new Hono();
+    mountGithubPublic(app, {
+      ...installDependencies(
+        () => device.userId,
+        () => true,
+      ),
+      userCanAccessInstallation: async () => {
+        checks++;
+        return { ok: false };
+      },
+    });
+    const kickoff = await app.request("/github/install?user_code=ABCD-EFGH");
+    const state = new URL(kickoff.headers.get("location") ?? "").searchParams.get("state");
+    assert.ok(state);
+
+    const callback = await app.request(
+      `/github/install/callback?installation_id=123&state=${encodeURIComponent(state)}`,
+    );
+
+    assert.equal(callback.status, 302);
+    const location = new URL(callback.headers.get("location") ?? "");
+    assert.equal(location.origin + location.pathname, "https://github.com/login/oauth/authorize");
+    assert.equal(location.searchParams.get("client_id"), "gh-client");
+    assert.equal(
+      location.searchParams.get("redirect_uri"),
+      "https://api.example.test/github/author/callback",
+    );
+    assert.ok(location.searchParams.get("state"));
+    assert.equal(checks, 0);
+  }));
+
+test("GitHub callback refuses an installation the user cannot access", () =>
+  withGithubOAuthEnv(async () => {
+    const seen: number[] = [];
+    const app = new Hono();
+    mountGithubPublic(app, {
+      ...installDependencies(
+        () => device.userId,
+        () => true,
+      ),
+      userCanAccessInstallation: async ({ installationId, redirectUrl }) => {
+        seen.push(installationId);
+        assert.equal(redirectUrl, "https://api.example.test/github/author/callback");
+        return { ok: false };
+      },
+    });
+    const kickoff = await app.request("/github/install?user_code=ABCD-EFGH");
+    const state = new URL(kickoff.headers.get("location") ?? "").searchParams.get("state");
+    assert.ok(state);
+    const first = await app.request(
+      `/github/install/callback?installation_id=123&state=${encodeURIComponent(state)}`,
+    );
+    const confirmState = new URL(first.headers.get("location") ?? "").searchParams.get("state");
+    assert.ok(confirmState);
+
+    const callback = await app.request(
+      `/github/install/callback?code=user-code&state=${encodeURIComponent(confirmState)}`,
+    );
+
+    assert.equal(callback.status, 302);
+    assert.equal(
+      callback.headers.get("location"),
+      "https://app.example.test/activate?code=ABCD-EFGH&gh=error",
+    );
+    assert.deepEqual(seen, [123]);
+  }));
+
+test("GitHub callback ignores an installation id swapped in on the way back", () =>
+  withGithubOAuthEnv(async () => {
+    const seen: number[] = [];
+    const app = new Hono();
+    mountGithubPublic(app, {
+      ...installDependencies(
+        () => device.userId,
+        () => true,
+      ),
+      userCanAccessInstallation: async ({ installationId }) => {
+        seen.push(installationId);
+        return { ok: false };
+      },
+    });
+    const kickoff = await app.request("/github/install?user_code=ABCD-EFGH");
+    const state = new URL(kickoff.headers.get("location") ?? "").searchParams.get("state");
+    assert.ok(state);
+    const first = await app.request(
+      `/github/install/callback?installation_id=123&state=${encodeURIComponent(state)}`,
+    );
+    const confirmState = new URL(first.headers.get("location") ?? "").searchParams.get("state");
+    assert.ok(confirmState);
+
+    await app.request(
+      `/github/install/callback?installation_id=999&code=user-code&state=${encodeURIComponent(confirmState)}`,
+    );
+
+    assert.deepEqual(seen, [123]);
+  }));
+
+test("GitHub management callback also requires the user's GitHub access", () =>
+  withGithubOAuthEnv(async () => {
+    let checks = 0;
+    const app = new Hono();
+    mountGithubPublic(app, {
+      ...installDependencies(
+        () => null,
+        () => false,
+      ),
+      userCanAccessInstallation: async () => {
+        checks++;
+        return { ok: false };
+      },
+    });
+    const state = signMgmtOrgState("platform-org");
+
+    const first = await app.request(
+      `/github/install/callback?installation_id=456&state=${encodeURIComponent(state)}`,
+    );
+    const authorize = new URL(first.headers.get("location") ?? "");
+    assert.equal(authorize.origin, "https://github.com");
+    const confirmState = authorize.searchParams.get("state");
+    assert.ok(confirmState);
+
+    const callback = await app.request(
+      `/github/install/callback?code=user-code&state=${encodeURIComponent(confirmState)}`,
+    );
+    assert.equal(callback.status, 302);
+    assert.equal(callback.headers.get("location"), "https://app.example.test/app?gh=error");
+    assert.equal(checks, 1);
+  }));
+
+test("GitHub callback refuses an install code that does not cover the installation", () =>
+  withGithubOAuthEnv(async () => {
+    const redirects: string[] = [];
+    const app = new Hono();
+    mountGithubPublic(app, {
+      ...installDependencies(
+        () => null,
+        () => false,
+      ),
+      userCanAccessInstallation: async ({ redirectUrl }) => {
+        redirects.push(redirectUrl);
+        return { ok: false };
+      },
+    });
+    const state = signMgmtOrgState("platform-org");
+
+    const callback = await app.request(
+      `/github/install/callback?installation_id=456&code=install-code&state=${encodeURIComponent(state)}`,
+    );
+
+    assert.equal(callback.headers.get("location"), "https://app.example.test/app?gh=error");
+    assert.deepEqual(redirects, ["http://localhost:4100/github/install/callback"]);
+  }));
+
+test("GitHub author callback hands install confirmations back to the install callback", () =>
+  withGithubOAuthEnv(async () => {
+    const { mountGithubAuthorOAuth } = await import("./github.js");
+    const app = new Hono();
+    mountGithubPublic(app, {
+      ...installDependencies(
+        () => null,
+        () => false,
+      ),
+      userCanAccessInstallation: async () => ({ ok: false }),
+    });
+    mountGithubAuthorOAuth(app);
+    const first = await app.request(
+      `/github/install/callback?installation_id=456&state=${encodeURIComponent(signMgmtOrgState("platform-org"))}`,
+    );
+    const confirmState = new URL(first.headers.get("location") ?? "").searchParams.get("state");
+    assert.ok(confirmState);
+
+    const query = `code=user-code&state=${encodeURIComponent(confirmState)}`;
+    const hop = await app.request(`/github/author/callback?${query}`);
+
+    assert.equal(hop.status, 302);
+    assert.equal(hop.headers.get("location"), `/github/install/callback?${query}`);
+  }));
+
+test("GitHub install checks only management links against the installation creation time", () =>
+  withGithubOAuthEnv(async () => {
+    const createdAfter: Array<Date | null> = [];
+    const app = new Hono();
+    mountGithubPublic(app, {
+      ...installDependencies(
+        () => device.userId,
+        () => true,
+      ),
+      userCanAccessInstallation: async ({ installationCreatedAfter }) => {
+        createdAfter.push(installationCreatedAfter);
+        return { ok: false };
+      },
+    });
+    const kickoff = await app.request("/github/install?user_code=ABCD-EFGH");
+    const deviceState = new URL(kickoff.headers.get("location") ?? "").searchParams.get("state");
+    assert.ok(deviceState);
+    await app.request(
+      `/github/install/callback?installation_id=123&code=install-code&state=${encodeURIComponent(deviceState)}`,
+    );
+    const before = Date.now();
+    await app.request(
+      `/github/install/callback?installation_id=456&code=install-code&state=${encodeURIComponent(signMgmtOrgState("platform-org"))}`,
+    );
+
+    assert.equal(createdAfter.length, 2);
+    assert.equal(createdAfter[0], null);
+    const mgmtCutoff = createdAfter[1];
+    assert.ok(mgmtCutoff instanceof Date);
+    assert.ok(Math.abs(mgmtCutoff.getTime() - before) < 5_000);
+  }));
+
+test("GitHub author callback rejects a browser that did not start the flow", () =>
+  withGithubOAuthEnv(async () => {
+    const { mountGithubAuthorOAuth } = await import("./github.js");
+    let providerCalls = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      providerCalls++;
+      return Response.json({ error: "unexpected" }, { status: 500 });
+    };
+    try {
+      const app = new Hono();
+      mountGithubAuthorOAuth(app, {
+        getAuthenticatedUserId: async () => "other-user",
+        hasProjectManagerAccess: async () => true,
+      });
+      const body = `owner-org.owner-project.${device.userId}.access.${Date.now()}`;
+      const signature = crypto
+        .createHmac("sha256", "state-secret")
+        .update(body)
+        .digest("base64url");
+      const state = `${Buffer.from(body, "utf8").toString("base64url")}.${signature}`;
+
+      const callback = await app.request(
+        `/github/author/callback?code=user-code&state=${encodeURIComponent(state)}`,
+      );
+
+      assert.equal(callback.status, 302);
+      assert.equal(
+        callback.headers.get("location"),
+        "https://app.example.test/app/settings?github_author=error",
+      );
+      assert.equal(providerCalls, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }));

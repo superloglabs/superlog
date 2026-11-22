@@ -82,6 +82,14 @@ type GithubPublicDependencies = GithubWebhookPort & {
     userCode: string,
   ): NonNullable<ReturnType<typeof getSkillDeviceForIntegration>> | null;
   hasProjectManagerAccess: typeof hasProjectManagerAccess;
+  userCanAccessInstallation(opts: {
+    clientId: string;
+    clientSecret: string;
+    code: string;
+    redirectUrl: string;
+    installationId: number;
+    installationCreatedAfter: Date | null;
+  }): Promise<{ ok: true; token: string } | { ok: false }>;
 };
 
 export function mountGithubPublic(
@@ -113,7 +121,12 @@ export function mountGithubPublic(
     process.env.GITHUB_CLIENT_SECRET;
   const installRedirectUrl =
     process.env.GITHUB_INSTALL_OAUTH_REDIRECT_URL ??
-    "http://localhost:4100/github/install/callback";
+    `${process.env.BETTER_AUTH_URL ?? "http://localhost:4100"}/github/install/callback`;
+  const authorRedirectUrl =
+    process.env.GITHUB_AUTHOR_OAUTH_REDIRECT_URL ??
+    `${process.env.BETTER_AUTH_URL ?? "http://localhost:4100"}/github/author/callback`;
+  const userCanAccessInstallation =
+    dependencies.userCanAccessInstallation ?? defaultUserCanAccessInstallation;
 
   if (!appSlug) {
     log.warn("GITHUB_APP_SLUG not set — /github/install disabled");
@@ -159,21 +172,68 @@ export function mountGithubPublic(
 
   app.get("/github/install/callback", async (c) => {
     if (!stateSecret) return c.json({ error: "github app not configured" }, 503);
-    const installationIdRaw = c.req.query("installation_id");
-    const state = c.req.query("state") ?? "";
-    const setupAction = c.req.query("setup_action") ?? "install";
-    const oauthCode = c.req.query("code") ?? null;
+    const rawState = c.req.query("state") ?? "";
+    const queryCode = c.req.query("code") ?? null;
+    // Second leg: the user came back from GitHub's authorize screen with the
+    // installation details carried in a signed state.
+    const confirmation = verifyInstallConfirmState(rawState, stateSecret);
+    const installationIdRaw = confirmation
+      ? String(confirmation.installationId)
+      : c.req.query("installation_id");
+    const state = confirmation?.state ?? rawState;
+    const setupAction = confirmation?.setupAction ?? c.req.query("setup_action") ?? "install";
     log.info(
       {
         setup_action: setupAction,
         installation_id: installationIdRaw ?? null,
-        has_oauth_code: !!oauthCode,
+        has_oauth_code: !!queryCode,
+        confirmation: !!confirmation,
       },
       "github install callback received",
     );
 
     const installationId = Number(installationIdRaw);
     const marker = setupAction === "update" ? "updated" : "done";
+
+    // An installation is only linked once the signed-in GitHub user is shown
+    // to have access to it. When GitHub did not send a user code with the
+    // install redirect, ask the user to authorize first and come back.
+    const confirmAccess = async (
+      installationCreatedAfter: Date | null = null,
+    ): Promise<
+      | { kind: "confirmed"; installerToken: string | null }
+      | { kind: "authorize"; url: string }
+      | { kind: "denied" }
+    > => {
+      if (!oauthClientId || !oauthClientSecret) {
+        log.warn("github oauth not configured; cannot confirm installation access");
+        return { kind: "denied" };
+      }
+      if (!confirmation && !queryCode) {
+        const url = new URL("https://github.com/login/oauth/authorize");
+        url.searchParams.set("client_id", oauthClientId);
+        url.searchParams.set("redirect_uri", authorRedirectUrl);
+        url.searchParams.set(
+          "state",
+          signInstallConfirmState({ state, installationId, setupAction }, stateSecret),
+        );
+        return { kind: "authorize", url: url.toString() };
+      }
+      if (!queryCode) return { kind: "denied" };
+      const result = await userCanAccessInstallation({
+        clientId: oauthClientId,
+        clientSecret: oauthClientSecret,
+        code: queryCode,
+        redirectUrl: confirmation ? authorRedirectUrl : installRedirectUrl,
+        installationId,
+        installationCreatedAfter,
+      });
+      if (!result.ok) {
+        log.warn({ installation_id: installationId }, "github installation access not confirmed");
+        return { kind: "denied" };
+      }
+      return { kind: "confirmed", installerToken: confirmation ? null : result.token };
+    };
 
     // First try the management-API state shape for platform provisioning.
     // Falls through to the user-bound device/web state shape if not a mgmt state.
@@ -199,6 +259,13 @@ export function mountGithubPublic(
         resolvedOrgId = project.orgId;
         resolvedProjectId = project.id;
       }
+      // Management states are not tied to a signed-in user, so they can only
+      // link an installation created after the state was issued.
+      const access = await confirmAccess(mgmtStateIssuedAt(state) ?? new Date());
+      if (access.kind === "authorize") return c.redirect(access.url, 302);
+      if (access.kind === "denied") {
+        return c.redirect(`${failTarget}${failTarget.includes("?") ? "&" : "?"}gh=error`, 302);
+      }
       const rowId = await upsertInstallation({
         orgId: resolvedOrgId,
         projectId: resolvedProjectId,
@@ -210,10 +277,7 @@ export function mountGithubPublic(
       await maybeCaptureInstallerIdentity({
         installationRowId: rowId,
         installationId,
-        oauthCode,
-        clientId: oauthClientId,
-        clientSecret: oauthClientSecret,
-        redirectUrl: installRedirectUrl,
+        installerToken: access.installerToken,
       });
       const successTarget = mgmt.returnUrl ?? buildAppWebUrl(callbackWebOrigin);
       return c.redirect(
@@ -286,15 +350,20 @@ export function mountGithubPublic(
           302,
         );
       }
+      const access = await confirmAccess();
+      if (access.kind === "authorize") return c.redirect(access.url, 302);
+      if (access.kind === "denied") {
+        return c.redirect(
+          `${callbackWebOrigin}/activate?code=${userCode}${flowQuery}&gh=error`,
+          302,
+        );
+      }
       const rowId = await upsertInstallation({ orgId, projectId, installationId });
       await resumeBlockedAgentRunsForProjects([projectId], "github_install");
       await maybeCaptureInstallerIdentity({
         installationRowId: rowId,
         installationId,
-        oauthCode,
-        clientId: oauthClientId,
-        clientSecret: oauthClientSecret,
-        redirectUrl: installRedirectUrl,
+        installerToken: access.installerToken,
       });
       return c.redirect(
         `${callbackWebOrigin}/activate?code=${userCode}${flowQuery}&gh=${marker}`,
@@ -305,15 +374,17 @@ export function mountGithubPublic(
     if (!Number.isFinite(installationId) || installationId <= 0 || !orgId || !projectId) {
       return c.redirect(buildAppWebUrl(callbackWebOrigin, "?gh=error"), 302);
     }
+    const access = await confirmAccess();
+    if (access.kind === "authorize") return c.redirect(access.url, 302);
+    if (access.kind === "denied") {
+      return c.redirect(buildAppWebUrl(callbackWebOrigin, "?gh=error"), 302);
+    }
     const rowId = await upsertInstallation({ orgId, projectId, installationId });
     await resumeBlockedAgentRunsForProjects([projectId], "github_install");
     await maybeCaptureInstallerIdentity({
       installationRowId: rowId,
       installationId,
-      oauthCode,
-      clientId: oauthClientId,
-      clientSecret: oauthClientSecret,
-      redirectUrl: installRedirectUrl,
+      installerToken: access.installerToken,
     });
     return c.redirect(buildAppWebUrl(callbackWebOrigin, `?gh=${marker}`), 302);
   });
@@ -1615,22 +1686,83 @@ async function upsertInstallation(args: {
   return row.id;
 }
 
-async function maybeCaptureInstallerIdentity(opts: {
-  installationRowId: string;
-  installationId: number;
-  oauthCode: string | null;
-  clientId: string | undefined;
-  clientSecret: string | undefined;
+async function defaultUserCanAccessInstallation(opts: {
+  clientId: string;
+  clientSecret: string;
+  code: string;
   redirectUrl: string;
-}): Promise<void> {
-  if (!opts.oauthCode || !opts.clientId || !opts.clientSecret) return;
+  installationId: number;
+  installationCreatedAfter: Date | null;
+}): Promise<{ ok: true; token: string } | { ok: false }> {
   try {
     const token = await exchangeGithubOAuthCode({
       clientId: opts.clientId,
       clientSecret: opts.clientSecret,
-      code: opts.oauthCode,
+      code: opts.code,
       redirectUrl: opts.redirectUrl,
     });
+    const installations = await listUserAccessibleInstallations(token);
+    if (!installations.some((installation) => installation.id === opts.installationId)) {
+      return { ok: false };
+    }
+    if (!(await userSeesEveryInstallationRepo(token, opts.installationId))) {
+      return { ok: false };
+    }
+    if (opts.installationCreatedAfter) {
+      const createdAt = await fetchInstallationCreatedAt(opts.installationId);
+      // Allow for clock skew between GitHub and this server.
+      const earliest = opts.installationCreatedAfter.getTime() - 2 * 60 * 1000;
+      if (!createdAt || createdAt.getTime() < earliest) {
+        return { ok: false };
+      }
+    }
+    return { ok: true, token };
+  } catch (err) {
+    log.warn({ err, installation_id: opts.installationId }, "github installation check failed");
+    return { ok: false };
+  }
+}
+
+// A linked installation exposes every repo it covers, so the linking user must
+// be able to see all of them, not only a repo they collaborate on.
+async function userSeesEveryInstallationRepo(
+  userToken: string,
+  installationId: number,
+): Promise<boolean> {
+  const userView = await githubUserRequest<{ total_count: number }>(
+    `/user/installations/${installationId}/repositories?per_page=1`,
+    userToken,
+  );
+  const installationToken = await createInstallationToken({
+    installationId,
+    permissions: { metadata: "read" },
+  });
+  const installationView = await githubRequest<{ total_count: number }>(
+    "/installation/repositories?per_page=1",
+    installationToken,
+  );
+  return userView.total_count >= installationView.total_count;
+}
+
+async function fetchInstallationCreatedAt(installationId: number): Promise<Date | null> {
+  const cfg = getGithubAppConfig();
+  if (!cfg) return null;
+  const installation = await githubRequest<{ created_at?: string }>(
+    `/app/installations/${installationId}`,
+    signGithubAppJwt(cfg.appId, cfg.privateKey),
+  );
+  const createdAt = installation.created_at ? new Date(installation.created_at) : null;
+  return createdAt && Number.isFinite(createdAt.getTime()) ? createdAt : null;
+}
+
+async function maybeCaptureInstallerIdentity(opts: {
+  installationRowId: string;
+  installationId: number;
+  installerToken: string | null;
+}): Promise<void> {
+  const token = opts.installerToken;
+  if (!token) return;
+  try {
     const author = await fetchCommitAuthor(token);
     await db
       .update(schema.githubInstallations)
@@ -2616,8 +2748,16 @@ export function mountGithubAuthed(app: Hono<any>): void {
   });
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
-export function mountGithubAuthorOAuth(app: Hono<any>): void {
+export function mountGithubAuthorOAuth(
+  // biome-ignore lint/suspicious/noExplicitAny: Hono Variables invariance.
+  app: Hono<any>,
+  dependencies: Partial<
+    Pick<GithubPublicDependencies, "getAuthenticatedUserId" | "hasProjectManagerAccess">
+  > = {},
+): void {
+  const getAuthenticatedUserId =
+    dependencies.getAuthenticatedUserId ?? getDefaultAuthenticatedUserId;
+  const canManageProject = dependencies.hasProjectManagerAccess ?? hasProjectManagerAccess;
   const clientId =
     process.env.GITHUB_OAUTH_CLIENT_ID ??
     process.env.GITHUB_APP_CLIENT_ID ??
@@ -2640,6 +2780,11 @@ export function mountGithubAuthorOAuth(app: Hono<any>): void {
     if (!clientId || !clientSecret || !stateSecret) {
       return c.json({ error: "github oauth not configured" }, 503);
     }
+    // Install callbacks borrow this registered redirect URL to confirm the
+    // installation against the user's GitHub access; hand them back.
+    if (verifyInstallConfirmState(c.req.query("state") ?? "", stateSecret)) {
+      return c.redirect(`/github/install/callback${new URL(c.req.url).search}`, 302);
+    }
     const err = c.req.query("error");
     if (err) return c.redirect(buildAppWebUrl(webOrigin, "/settings?github_author=denied"), 302);
 
@@ -2649,13 +2794,14 @@ export function mountGithubAuthorOAuth(app: Hono<any>): void {
 
     const decoded = verifyAuthorState(state, stateSecret);
     if (!decoded) return c.json({ error: "invalid state" }, 400);
-    if (
-      !(await hasProjectManagerAccess({
-        userId: decoded.userId,
-        preferredOrgId: decoded.orgId,
-        projectId: decoded.projectId,
-      }))
-    ) {
+    const authorization = await authorizeIntegrationInstall({
+      authenticatedUserId: await getAuthenticatedUserId(c.req.raw.headers),
+      initiatingUserId: decoded.userId,
+      preferredOrgId: decoded.orgId,
+      projectId: decoded.projectId,
+      canManageProject,
+    });
+    if (authorization !== "authorized") {
       return c.redirect(buildAppWebUrl(webOrigin, "/settings?github_author=error"), 302);
     }
 
@@ -2675,6 +2821,10 @@ export function mountGithubAuthorOAuth(app: Hono<any>): void {
         decoded.purpose === "author"
           ? await Promise.all([fetchCommitAuthor(token), listUserAccessibleInstallations(token)])
           : [null, await listUserAccessibleInstallations(token)];
+      const fullyVisible = await Promise.all(
+        installations.map((installation) => userSeesEveryInstallationRepo(token, installation.id)),
+      );
+      installations = installations.filter((_, index) => fullyVisible[index]);
       reposByInstallation = new Map(
         await Promise.all(
           installations.map(
@@ -3121,6 +3271,53 @@ function verifyState(state: string, secret: string): { kind: StateKind; value: s
   return { kind, value };
 }
 
+// Carries an install callback through GitHub's authorize screen so the
+// installation can be checked against the user's own GitHub access.
+const INSTALL_CONFIRM_STATE_PREFIX = "install-confirm-v1";
+type InstallConfirmState = { state: string; installationId: number; setupAction: string };
+
+function signInstallConfirmState(payload: InstallConfirmState, secret: string): string {
+  const body = `${INSTALL_CONFIRM_STATE_PREFIX}.${Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")}.${Date.now()}`;
+  const sig = crypto.createHmac("sha256", secret).update(body).digest("base64url");
+  return `${Buffer.from(body, "utf8").toString("base64url")}.${sig}`;
+}
+
+function verifyInstallConfirmState(state: string, secret: string): InstallConfirmState | null {
+  const [payloadB64, sig] = state.split(".");
+  if (!payloadB64 || !sig) return null;
+  const body = Buffer.from(payloadB64, "base64url").toString("utf8");
+  const expected = crypto.createHmac("sha256", secret).update(body).digest("base64url");
+  const provided = Buffer.from(sig);
+  const expectedBuf = Buffer.from(expected);
+  if (provided.length !== expectedBuf.length) return null;
+  if (!crypto.timingSafeEqual(provided, expectedBuf)) return null;
+  const parts = body.split(".");
+  if (parts.length !== 3 || parts[0] !== INSTALL_CONFIRM_STATE_PREFIX) return null;
+  const ts = Number(parts[2]);
+  if (!Number.isFinite(ts) || Date.now() - ts > 10 * 60 * 1000) return null;
+  try {
+    const parsed = JSON.parse(
+      Buffer.from(parts[1] as string, "base64url").toString("utf8"),
+    ) as Partial<InstallConfirmState>;
+    if (
+      typeof parsed.state !== "string" ||
+      typeof parsed.installationId !== "number" ||
+      !Number.isSafeInteger(parsed.installationId) ||
+      parsed.installationId <= 0 ||
+      typeof parsed.setupAction !== "string"
+    ) {
+      return null;
+    }
+    return {
+      state: parsed.state,
+      installationId: parsed.installationId,
+      setupAction: parsed.setupAction,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Management-API install state. Used when a platform backend mints an install
 // URL via /api/v1/...; the state encodes scope (org vs project) and an
 // optional return URL the user is bounced to after install. 30-min TTL since
@@ -3134,6 +3331,13 @@ function signMgmtState(payload: GithubMgmtState, secret: string): string {
   const body = `${MGMT_STATE_PREFIX}.${Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")}.${Date.now()}`;
   const sig = crypto.createHmac("sha256", secret).update(body).digest("base64url");
   return `${Buffer.from(body, "utf8").toString("base64url")}.${sig}`;
+}
+
+function mgmtStateIssuedAt(state: string): Date | null {
+  const [payloadB64] = state.split(".");
+  if (!payloadB64) return null;
+  const ts = Number(Buffer.from(payloadB64, "base64url").toString("utf8").split(".")[2]);
+  return Number.isFinite(ts) ? new Date(ts) : null;
 }
 
 function verifyMgmtState(state: string, secret: string): GithubMgmtState | null {
