@@ -367,3 +367,72 @@ test("GitHub author callback hands install confirmations back to the install cal
     assert.equal(hop.status, 302);
     assert.equal(hop.headers.get("location"), `/github/install/callback?${query}`);
   }));
+
+test("GitHub install checks only management links against the installation creation time", () =>
+  withGithubOAuthEnv(async () => {
+    const createdAfter: Array<Date | null> = [];
+    const app = new Hono();
+    mountGithubPublic(app, {
+      ...installDependencies(
+        () => device.userId,
+        () => true,
+      ),
+      userCanAccessInstallation: async ({ installationCreatedAfter }) => {
+        createdAfter.push(installationCreatedAfter);
+        return { ok: false };
+      },
+    });
+    const kickoff = await app.request("/github/install?user_code=ABCD-EFGH");
+    const deviceState = new URL(kickoff.headers.get("location") ?? "").searchParams.get("state");
+    assert.ok(deviceState);
+    await app.request(
+      `/github/install/callback?installation_id=123&code=install-code&state=${encodeURIComponent(deviceState)}`,
+    );
+    const before = Date.now();
+    await app.request(
+      `/github/install/callback?installation_id=456&code=install-code&state=${encodeURIComponent(signMgmtOrgState("platform-org"))}`,
+    );
+
+    assert.equal(createdAfter.length, 2);
+    assert.equal(createdAfter[0], null);
+    const mgmtCutoff = createdAfter[1];
+    assert.ok(mgmtCutoff instanceof Date);
+    assert.ok(Math.abs(mgmtCutoff.getTime() - before) < 5_000);
+  }));
+
+test("GitHub author callback rejects a browser that did not start the flow", () =>
+  withGithubOAuthEnv(async () => {
+    const { mountGithubAuthorOAuth } = await import("./github.js");
+    let providerCalls = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      providerCalls++;
+      return Response.json({ error: "unexpected" }, { status: 500 });
+    };
+    try {
+      const app = new Hono();
+      mountGithubAuthorOAuth(app, {
+        getAuthenticatedUserId: async () => "other-user",
+        hasProjectManagerAccess: async () => true,
+      });
+      const body = `owner-org.owner-project.${device.userId}.access.${Date.now()}`;
+      const signature = crypto
+        .createHmac("sha256", "state-secret")
+        .update(body)
+        .digest("base64url");
+      const state = `${Buffer.from(body, "utf8").toString("base64url")}.${signature}`;
+
+      const callback = await app.request(
+        `/github/author/callback?code=user-code&state=${encodeURIComponent(state)}`,
+      );
+
+      assert.equal(callback.status, 302);
+      assert.equal(
+        callback.headers.get("location"),
+        "https://app.example.test/app/settings?github_author=error",
+      );
+      assert.equal(providerCalls, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }));
