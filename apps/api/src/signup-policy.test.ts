@@ -15,3 +15,9 @@ test("other environments stay open unless turned off", () => {
   assert.equal(newSignupsOpen({}), true);
   assert.equal(newSignupsOpen({ NODE_ENV: "test", SIGNUPS_ENABLED: "false" }), false);
 });
+
+test("SUPERLOG_ENV identifies production even without NODE_ENV", () => {
+  assert.equal(newSignupsOpen({ SUPERLOG_ENV: "production" }), false);
+  assert.equal(newSignupsOpen({ SUPERLOG_ENV: "production", NODE_ENV: "development" }), false);
+  assert.equal(newSignupsOpen({ SUPERLOG_ENV: "staging", NODE_ENV: "production" }), true);
+});
