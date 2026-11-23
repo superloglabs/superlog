@@ -4,15 +4,15 @@ import { type MergeCandidateIncident, buildUserMessage } from "./merge-agent-run
 
 const representative = {
   exceptionType: "RuntimeError",
-  message: "Failed to get NET32 session: Invalid username or password",
+  message: "Failed to get supplier session: Invalid username or password",
   topFrame: "worker.py:1362",
   normalizedFrames: ["worker.py:1362"],
 };
 
 const candidate: MergeCandidateIncident = {
   id: "incident-canonical",
-  title: "DentalCity order history retries indefinitely on invalid credentials",
-  service: "websites-api-worker",
+  title: "Supplier order history retries indefinitely on invalid credentials",
+  service: "orders-worker",
   firstSeen: "2026-06-11T00:00:00.000Z",
   lastSeen: "2026-06-14T00:00:00.000Z",
   issueCount: 12,
@@ -25,10 +25,10 @@ const candidate: MergeCandidateIncident = {
 
 test("buildUserMessage surfaces fix targets so the judge can match same-file fixes", () => {
   const message = buildUserMessage({
-    projectName: "Alara",
+    projectName: "Acme",
     source: {
-      title: "NET32 order history retries indefinitely",
-      service: "websites-api-worker",
+      title: "Supplier order history retries indefinitely",
+      service: "orders-worker",
       firstSeen: "2026-06-12T00:00:00.000Z",
       lastSeen: "2026-06-14T00:00:00.000Z",
       issueCount: 9,

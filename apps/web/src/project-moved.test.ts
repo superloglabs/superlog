@@ -16,8 +16,8 @@ const project = {
   hasIngested: true,
   hasSentryIssues: false,
   id: "p1",
-  name: "Alara",
-  slug: "alara",
+  name: "Acme",
+  slug: "acme",
 };
 
 test("a project that moved sends its members to the workspace origin", () => {
@@ -54,9 +54,9 @@ test("staff impersonating a member stay, and only HTTPS origins are followed", (
 
 test("the notice names the project and links to the workspace", () => {
   const html = renderToStaticMarkup(
-    createElement(ProjectMoved, { projectName: "Alara", target: "https://us.superlog.sh/" }),
+    createElement(ProjectMoved, { projectName: "Acme", target: "https://us.superlog.sh/" }),
   );
 
-  assert.match(html, /Alara moved to us\.superlog\.sh/);
+  assert.match(html, /Acme moved to us\.superlog\.sh/);
   assert.match(html, /Open us\.superlog\.sh/);
 });
