@@ -212,3 +212,40 @@ test("anonymous submissions cannot inject Slack markup into the team notificatio
     } else process.env.FEEDBACK_SLACK_WEBHOOK = previousWebhook;
   }
 });
+
+test("PR-link feedback is limited to 10 submissions per client IP in 10 minutes", async () => {
+  const counts = new Map<string, number>();
+  const seen: Array<{ key: string; max: number; windowMs: number }> = [];
+  let ip = "client-a";
+  const app = new Hono();
+  mountFeedbackPublic(app, {
+    rateLimit: {
+      consume: async (input) => {
+        seen.push({ key: input.key, max: input.max, windowMs: input.windowMs });
+        const count = (counts.get(input.key) ?? 0) + 1;
+        counts.set(input.key, count);
+        const allowed = count <= input.max;
+        return { allowed, retryAfterSeconds: allowed ? null : 42 };
+      },
+    },
+    clientIp: () => ip,
+  });
+  const submit = () =>
+    app.request(`/feedback/pr/acme/widgets-${randomUUID()}/1`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body: "looks good" }),
+    });
+
+  for (let i = 0; i < 10; i++) assert.equal((await submit()).status, 200);
+  const limited = await submit();
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("retry-after"), "42");
+
+  ip = "client-b";
+  assert.equal((await submit()).status, 200);
+
+  assert.ok(seen.every((call) => call.max === 10 && call.windowMs === 10 * 60_000));
+  assert.equal(counts.get("feedback:pr-link:client-a"), 11);
+  assert.equal(counts.get("feedback:pr-link:client-b"), 1);
+});

@@ -344,6 +344,16 @@ export function mountGateway(app: Hono<any>, ch: ClickHouseClient): void {
       where: eq(schema.orgs.id, session.orgId),
     });
     if (!user || !org) return c.json({ error: "session references missing account" }, 401);
+    // The token was minted for an org member. Stop honoring it once the user
+    // leaves or is removed from that org.
+    const membership = await db.query.orgMembers.findFirst({
+      where: and(
+        eq(schema.orgMembers.orgId, session.orgId),
+        eq(schema.orgMembers.userId, session.userId),
+      ),
+      columns: { userId: true },
+    });
+    if (!membership) return c.json({ error: "invalid token" }, 401);
 
     c.set("principal", {
       sessionId: session.id,

@@ -7,7 +7,7 @@
 // Lives in its own module because feedback.ts and slack.ts already import
 // from each other's domains; this only depends on @superlog/db.
 import { db, hydrateSlackInstallation, isProjectCutOver, schema } from "@superlog/db";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { logger } from "./logger.js";
 // User-provided feedback must not be able to inject mentions (<!channel>,
 // <@U…>) or links into the incident thread — escape the mrkdwn control chars.
@@ -39,6 +39,30 @@ export async function resolveFeedbackIncidentId(
   return null;
 }
 
+// Feedback from the public PR link can come from anyone who has the link. It
+// may reach the incident's Slack thread and agent only when its author is a
+// signed-in member of the org that owns the incident.
+export async function feedbackMayReachIncident(
+  feedback: Pick<schema.Feedback, "source" | "authorUserId">,
+  incident: Pick<schema.Incident, "projectId">,
+): Promise<boolean> {
+  if (feedback.source !== "pr_link") return true;
+  if (!feedback.authorUserId) return false;
+  const project = await db.query.projects.findFirst({
+    where: eq(schema.projects.id, incident.projectId),
+    columns: { orgId: true },
+  });
+  if (!project) return false;
+  const membership = await db.query.orgMembers.findFirst({
+    where: and(
+      eq(schema.orgMembers.orgId, project.orgId),
+      eq(schema.orgMembers.userId, feedback.authorUserId),
+    ),
+    columns: { userId: true },
+  });
+  return membership !== undefined;
+}
+
 // Best-effort: failures are logged and swallowed; the feedback insert must
 // never depend on Slack availability.
 export async function offerFollowUpForFeedback(feedback: schema.Feedback): Promise<void> {
@@ -53,6 +77,7 @@ export async function offerFollowUpForFeedback(feedback: schema.Feedback): Promi
     where: eq(schema.incidents.id, incidentId),
   });
   if (!incident?.slackChannelId || !incident.slackThreadTs) return;
+  if (!(await feedbackMayReachIncident(feedback, incident))) return;
   // The project's Superlog application workspace now serves its Slack.
   if (await isProjectCutOver(incident.projectId)) return;
 
