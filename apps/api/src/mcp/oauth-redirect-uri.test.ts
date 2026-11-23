@@ -28,6 +28,14 @@ test("accepts https redirect URIs", async () => {
 test("accepts http loopback redirect URIs", async () => {
   assert.equal(await isValid("http://localhost:33418/callback"), true);
   assert.equal(await isValid("http://127.0.0.1:33418/callback"), true);
+  assert.equal(await isValid("http://[::1]:33418/callback"), true);
+});
+
+test("rejects redirect URIs with a fragment or credentials in the authority", async () => {
+  assert.equal(await isValid("https://widgets.example/cb#frag"), false);
+  assert.equal(await isValid("https://widgets.example/cb#"), false);
+  assert.equal(await isValid("https://claude.ai@widgets.example/cb"), false);
+  assert.equal(await isValid("https://user:pass@widgets.example/cb"), false);
 });
 
 test("rejects http redirect URIs on non-loopback hosts", async () => {
