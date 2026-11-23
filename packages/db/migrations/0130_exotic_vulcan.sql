@@ -1,0 +1,1 @@
+DROP INDEX "slack_installations_default_chat_idx";

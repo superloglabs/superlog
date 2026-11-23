@@ -911,6 +911,13 @@
       "when": 1795437258990,
       "tag": "0129_lonely_triathlon",
       "breakpoints": true
+    },
+    {
+      "idx": 130,
+      "version": "7",
+      "when": 1795439946966,
+      "tag": "0130_exotic_vulcan",
+      "breakpoints": true
     }
   ]
 }
