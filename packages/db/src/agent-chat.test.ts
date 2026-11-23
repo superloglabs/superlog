@@ -146,6 +146,30 @@ test("only the org that connected the workspace first answers chats", () => {
   }
 });
 
+test("the first org keeps chat routing after removing its oldest install", () => {
+  // org-first's original install (2026-06-01) was revoked; its remaining
+  // install is newer than org-later's.
+  const firstRemaining = install({
+    id: "inst-2",
+    projectId: "proj-2",
+    orgId: "org-first",
+    createdAt: new Date("2026-06-05T00:00:00Z"),
+    orgFirstConnectedAt: new Date("2026-06-01T00:00:00Z"),
+  });
+  const later = install({
+    id: "inst-3",
+    projectId: "proj-3",
+    orgId: "org-later",
+    channelId: "C1",
+    createdAt: new Date("2026-06-02T00:00:00Z"),
+    orgFirstConnectedAt: new Date("2026-06-02T00:00:00Z"),
+  });
+  assert.deepEqual(resolveChatInstallation([later, firstRemaining], "C1"), {
+    outcome: "resolved",
+    installation: firstRemaining,
+  });
+});
+
 test("the first org keeps chat routing between its own projects", () => {
   const routed = install({ id: "inst-2", projectId: "proj-2", orgId: "org-a", channelId: "C1" });
   const flagged = install({

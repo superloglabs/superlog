@@ -541,10 +541,14 @@ export async function incidentBelongsToSlackTeam(
   if (!incident) return false;
   const installation = await db.query.slackInstallations.findFirst({
     where: incident.slackInstallationId
-      ? eq(schema.slackInstallations.id, incident.slackInstallationId)
+      ? and(
+          eq(schema.slackInstallations.id, incident.slackInstallationId),
+          isNull(schema.slackInstallations.revokedAt),
+        )
       : and(
           eq(schema.slackInstallations.projectId, incident.projectId),
           eq(schema.slackInstallations.teamId, teamId),
+          isNull(schema.slackInstallations.revokedAt),
         ),
     columns: { teamId: true },
   });
@@ -1634,6 +1638,11 @@ export function mountSlackAuthed(app: Hono<any>): void {
     const enabled = typeof body.enabled === "boolean" ? body.enabled : true;
 
     await db.transaction(async (tx) => {
+      // Serializes updates for one org and workspace so two requests cannot
+      // both leave a default set.
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${`slack-chat-default:${project.orgId}:${install.teamId}`}, 0))`,
+      );
       if (enabled) {
         await tx
           .update(schema.slackInstallations)
@@ -1976,6 +1985,7 @@ async function handleChatEvent(
   } else {
     // Channel ownership is resolved across every project, cut over or not, so
     // a cut-over project's channel never routes to another project.
+    const orgFirstConnectedAt = await orgsFirstConnectedAt(teamId);
     const resolution = resolveChatInstallation(
       installations.map((i) => ({
         id: i.id,
@@ -1985,6 +1995,7 @@ async function handleChatEvent(
         isDefaultChatProject: i.isDefaultChatProject,
         installedAt: i.installedAt,
         createdAt: i.createdAt,
+        orgFirstConnectedAt: orgFirstConnectedAt.get(i.orgId),
       })),
       event.channel,
     );
@@ -2057,6 +2068,23 @@ async function handleChatEvent(
       text: ":mag: On it — I'll answer here shortly.",
     });
   }
+}
+
+// When each org first connected the workspace, counting revoked rows, so an
+// org keeps chat ownership after removing one of its installs.
+async function orgsFirstConnectedAt(teamId: string): Promise<Map<string, Date>> {
+  const rows = await db
+    .select({
+      orgId: schema.projects.orgId,
+      firstConnectedAt: sql<Date>`min(${schema.slackInstallations.createdAt})`.mapWith(
+        (value: string | Date) => new Date(value),
+      ),
+    })
+    .from(schema.slackInstallations)
+    .innerJoin(schema.projects, eq(schema.projects.id, schema.slackInstallations.projectId))
+    .where(eq(schema.slackInstallations.teamId, teamId))
+    .groupBy(schema.projects.orgId);
+  return new Map(rows.map((row) => [row.orgId, row.firstConnectedAt]));
 }
 
 // Every non-revoked installation row for a workspace (one per connected

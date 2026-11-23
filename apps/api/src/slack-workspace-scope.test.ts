@@ -145,6 +145,64 @@ test("Slack buttons act only on incidents of the workspace that clicked them", a
   }
 });
 
+test("Slack buttons do nothing once the workspace's installation is revoked", async () => {
+  mock.method(globalThis, "fetch", async () => Response.json({ ok: true }));
+  const { org } = await seedOrg();
+  const teamId = `T${tag()}`;
+  const { project, installation } = await seedSlackProject({ orgId: org.id, teamId });
+  const pinned = await seedIncidentThread({
+    projectId: project.id,
+    installationId: installation.id,
+    channelId: "CINC",
+  });
+  const unpinned = await seedIncidentThread({
+    projectId: project.id,
+    installationId: null,
+    channelId: "CINC",
+  });
+  await db
+    .update(schema.slackInstallations)
+    .set({ revokedAt: new Date() })
+    .where(eq(schema.slackInstallations.id, installation.id));
+
+  for (const incident of [pinned, unpinned]) {
+    await handleSlackBlockActions(click(`resolve_incident:${incident.id}`, teamId));
+    assert.equal(await incidentStatus(incident.id), "open");
+  }
+});
+
+test("concurrent default-chat updates leave one default per org and workspace", async () => {
+  const teamId = `T${tag()}`;
+  const owner = await seedOrg();
+  const projects = await Promise.all(
+    Array.from({ length: 4 }, () => seedSlackProject({ orgId: owner.org.id, teamId })),
+  );
+  const app = new Hono<{ Variables: { userId: string; orgId: string | null } }>();
+  app.use("*", (c, next) => {
+    c.set("userId", owner.user.id);
+    c.set("orgId", owner.org.id);
+    return next();
+  });
+  mountSlackAuthed(app);
+
+  for (let round = 0; round < 5; round++) {
+    const responses = await Promise.all(
+      projects.map(({ project }) =>
+        app.request(`/api/projects/${project.id}/slack-chat-default`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ enabled: true }),
+        }),
+      ),
+    );
+    for (const res of responses) assert.equal(res.status, 200);
+    const defaults = await db.query.slackInstallations.findMany({
+      where: eq(schema.slackInstallations.teamId, teamId),
+    });
+    assert.equal(defaults.filter((row) => row.isDefaultChatProject).length, 1);
+  }
+});
+
 test("a follow-up click never runs feedback from an anonymous PR link", async () => {
   mock.method(globalThis, "fetch", async () => Response.json({ ok: true }));
   const { org } = await seedOrg();

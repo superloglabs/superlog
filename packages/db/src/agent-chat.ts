@@ -42,6 +42,9 @@ export type ChatInstallationCandidate = {
   isDefaultChatProject: boolean;
   installedAt: Date | null;
   createdAt: Date;
+  // When the project's org first connected this workspace, counting rows
+  // revoked since. Defaults to createdAt.
+  orgFirstConnectedAt?: Date;
 };
 
 export type ChatInstallationResolution =
@@ -51,7 +54,8 @@ export type ChatInstallationResolution =
 
 // Pick which project answers a mention when a workspace is connected to
 // several. Callers pass the team's non-revoked installations. Only the org
-// that connected the workspace first answers chats; installs from orgs that
+// that connected the workspace first (and still has it connected) answers
+// chats; installs from orgs that
 // connected later are never candidates, so they cannot take over routing.
 // Within that org: the install routed to the mention's channel, else the
 // org's only install, else the flagged default-chat project, else ambiguous
@@ -85,15 +89,18 @@ export function resolveChatInstallation(
   return { outcome: "ambiguous" };
 }
 
-// The org whose install of the workspace is oldest. Ties on createdAt fall
-// back to the row id so the choice never depends on query order.
+// Among orgs with a live install, the one that connected the workspace
+// first. Ties fall back to the row id so the choice never depends on query
+// order.
 function chatOwnerOrgId(installations: ChatInstallationCandidate[]): string | null {
+  const connectedAt = (i: ChatInstallationCandidate) =>
+    (i.orgFirstConnectedAt ?? i.createdAt).getTime();
   let earliest: ChatInstallationCandidate | null = null;
   for (const candidate of installations) {
     if (
       !earliest ||
-      candidate.createdAt.getTime() < earliest.createdAt.getTime() ||
-      (candidate.createdAt.getTime() === earliest.createdAt.getTime() && candidate.id < earliest.id)
+      connectedAt(candidate) < connectedAt(earliest) ||
+      (connectedAt(candidate) === connectedAt(earliest) && candidate.id < earliest.id)
     ) {
       earliest = candidate;
     }
